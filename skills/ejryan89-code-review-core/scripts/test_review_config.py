@@ -452,6 +452,79 @@ class ConfigurationTests(unittest.TestCase):
         config["dashboard"] = {"ignored_repositories": ["exam*one/*", "example/x*", "e*/one?"]}
         validate_config(config)
 
+    def test_a_repository_identity_holds_githubs_name_rule_and_every_reader_built_on_it_agrees(self) -> None:
+        # GitHub's repository name rule: up to 100 letters, digits, `_`, `.`, and `-`, any of them first, as in an
+        # organization's `.github`, except a name made only of dots: GitHub refuses `.` and `..`, and the rule
+        # refuses every longer run, which a Windows archive path would not name as written. The owner is a login and
+        # starts with a letter or a digit.
+        accepted = [
+            "owner/.github",
+            "owner/a.b",
+            "owner/.git",
+            "owner/a..",
+            "owner/..a",
+            "owner/-repo",
+            "owner/_repo",
+            "Owner/.GitHub",
+            "o/" + "n" * 100,
+            "o" * 100 + "/n",
+        ]
+        refused = [
+            "owner/.",
+            "owner/..",
+            "owner/...",
+            "owner/....",
+            "owner/",
+            ".owner/repo",
+            "-owner/repo",
+            "owner",
+            "owner/repo/x",
+            "owner/./x",
+            "owner/repo name",
+            "owner/repo\n",
+            "o/" + "n" * 101,
+            "o" * 101 + "/n",
+        ]
+        for identity in accepted:
+            with self.subTest(identity=identity):
+                self.assertEqual(identity.lower(), review_config.validate_repository_identity(identity))
+                # A mute names any identity the check reports, and matches it.
+                entry = review_config.normalize_ignored_repository(identity, "entry")
+                self.assertEqual(entry, review_config.ignored_repository_match(identity, [entry]))
+                # A status override's key is the identity and a pull request's number.
+                config = valid_config()
+                config["dashboard"] = {"status_overrides": {f"{identity}#1": "On hold"}}
+                validate_config(config)
+        for identity in refused:
+            with (
+                self.subTest(identity=identity),
+                self.assertRaisesRegex(ConfigurationError, "^Invalid repository identity: "),
+            ):
+                review_config.validate_repository_identity(identity)
+
+    def test_a_status_override_key_an_earlier_release_accepted_still_loads(self) -> None:
+        # The previous release's key check took any run of letters, digits, `_`, `.`, and `-` on each side of the
+        # slash, and its `override --set` wrote what it took; the next release loads every such configuration, since
+        # every code-review skill reads it and `override` itself validates the file before it edits it.
+        for key in (
+            "-owner/repo#1",
+            ".owner/repo#1",
+            "_owner/repo#1",
+            "owner/.#1",
+            "owner/..#1",
+            "o/" + "n" * 101 + "#1",
+        ):
+            with self.subTest(key=key):
+                config = valid_config()
+                config["dashboard"] = {"status_overrides": {key: "On hold"}}
+                validate_config(config)
+        for key in ("owner/repo", "owner#1", "owner/repo/x#1", "owner/re po#1", "owner/repo#0", "/repo#1"):
+            with self.subTest(key=key):
+                config = valid_config()
+                config["dashboard"] = {"status_overrides": {key: "On hold"}}
+                with self.assertRaisesRegex(ConfigurationError, "^Invalid dashboard status override key: "):
+                    validate_config(config)
+
     def test_an_ignored_entry_splits_owner_from_name_at_the_first_slash(self) -> None:
         match = review_config.ignored_repository_match
         self.assertEqual("octo/*", match("Octo/Sandbox", ["other/*", "octo/*"]))

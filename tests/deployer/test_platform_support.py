@@ -702,29 +702,87 @@ class InstallHintTests(unittest.TestCase):
 
 class HomeDirectoryTests(unittest.TestCase):
     PROFILE = r"D:\Profiles\Some One"
+    # Absolute paths on the platform the suite runs on, which decides what an absolute path is, as the runtimes' own
+    # platform does, while the tests choose which variable names the home.
+    ANCHOR = Path(Path.cwd().anchor)
+    ABSOLUTE_PROFILE = str(ANCHOR / "Profiles" / "Some One")
+    ABSOLUTE_HOME = str(ANCHOR / "home" / "some one")
+    FALLBACK = ANCHOR / "Fallback"
+    # Each value that is set but is no absolute path: relative, and on Windows drive-relative or rooted on the
+    # working directory's drive.
+    RELATIVE = (
+        ".",
+        "home",
+        "Profiles/Some One",
+        *(("C:Profiles", r"\Users\Some One") if sys.platform == "win32" else ()),
+    )
 
     def test_on_windows_the_profile_folder_is_the_home_whatever_home_says(self) -> None:
         with mock.patch.object(platform_support, "WINDOWS", True):
-            for home in (None, "C:/Temp/other-home", "/c/Temp/other-home", self.PROFILE):
+            for home in (None, "C:/Temp/other-home", "/c/Temp/other-home", "relative", self.ABSOLUTE_PROFILE):
                 with self.subTest(home=home):
-                    environment = {"USERPROFILE": self.PROFILE, **({"HOME": home} if home else {})}
-                    self.assertEqual(Path(self.PROFILE), platform_support.home_directory(environment))
+                    environment = {"USERPROFILE": self.ABSOLUTE_PROFILE, **({"HOME": home} if home else {})}
+                    self.assertEqual(Path(self.ABSOLUTE_PROFILE), platform_support.home_directory(environment))
 
     def test_off_windows_home_is_the_home_whatever_a_profile_variable_says(self) -> None:
         with mock.patch.object(platform_support, "WINDOWS", False):
-            for profile in (None, self.PROFILE):
+            for profile in (None, "relative", self.ABSOLUTE_PROFILE):
                 with self.subTest(profile=profile):
-                    environment = {"HOME": "/home/some one", **({"USERPROFILE": profile} if profile else {})}
-                    self.assertEqual(Path("/home/some one"), platform_support.home_directory(environment))
+                    environment = {"HOME": self.ABSOLUTE_HOME, **({"USERPROFILE": profile} if profile else {})}
+                    self.assertEqual(Path(self.ABSOLUTE_HOME), platform_support.home_directory(environment))
 
     def test_without_the_variable_the_python_home_is_used(self) -> None:
-        for windows, environment in ((True, {"HOME": "C:/Temp/other"}), (False, {"USERPROFILE": self.PROFILE})):
+        for windows, environment in (
+            (True, {"HOME": "C:/Temp/other"}),
+            (True, {"USERPROFILE": ""}),
+            (False, {"USERPROFILE": self.PROFILE}),
+            (False, {"HOME": ""}),
+        ):
             with (
-                self.subTest(windows=windows),
+                self.subTest(windows=windows, environment=environment),
                 mock.patch.object(platform_support, "WINDOWS", windows),
-                mock.patch("deployer.platform_support.Path.home", return_value=Path("C:/Fallback")),
+                mock.patch("deployer.platform_support.Path.home", return_value=self.FALLBACK),
             ):
-                self.assertEqual(Path("C:/Fallback"), platform_support.home_directory(environment))
+                self.assertEqual(self.FALLBACK, platform_support.home_directory(environment))
+
+    def test_a_home_variable_that_is_not_an_absolute_path_is_refused_by_name(self) -> None:
+        # Before, the value was the home as given, which the deployer then completed from its working directory.
+        for windows, variable in ((True, "USERPROFILE"), (False, "HOME")):
+            for value in self.RELATIVE:
+                with (
+                    self.subTest(variable=variable, value=value),
+                    mock.patch.object(platform_support, "WINDOWS", windows),
+                    mock.patch("deployer.platform_support.Path.home", return_value=self.FALLBACK),
+                    self.assertRaises(DeployError) as raised,
+                ):
+                    platform_support.home_directory({variable: value})
+                self.assertEqual(
+                    (
+                        f"ERROR: {variable} is {value!r}, which is not an absolute path, so the folder the runtimes "
+                        "read skills from is not known.",
+                        f"Set {variable} to the absolute path of your home folder and run the command again.",
+                    ),
+                    raised.exception.lines,
+                )
+
+    def test_without_the_variable_a_python_home_that_is_missing_or_not_absolute_is_refused(self) -> None:
+        for windows, variable in ((True, "USERPROFILE"), (False, "HOME")):
+            for home in (mock.Mock(side_effect=RuntimeError("Could not determine home directory.")), Path("home")):
+                found = home if isinstance(home, mock.Mock) else mock.Mock(return_value=home)
+                with (
+                    self.subTest(variable=variable, home=home),
+                    mock.patch.object(platform_support, "WINDOWS", windows),
+                    mock.patch("deployer.platform_support.Path.home", found),
+                    self.assertRaises(DeployError) as raised,
+                ):
+                    platform_support.home_directory({})
+                self.assertEqual(
+                    (
+                        f"ERROR: {variable} is not set, and Python finds no absolute home folder either.",
+                        f"Set {variable} to the absolute path of your home folder and run the command again.",
+                    ),
+                    raised.exception.lines,
+                )
 
     if platform_support.WINDOWS:
 
@@ -739,6 +797,9 @@ class HomeDirectoryTests(unittest.TestCase):
                 (self.PROFILE, None),
                 ("d:/profiles/some one/", None),
                 ("/d/Profiles/Some One", None),
+                # A relative HOME is never the profile folder, wherever the deployer runs from.
+                ("Some One", "Some One"),
+                ("relative/home", "relative/home"),
             ):
                 with self.subTest(home=home):
                     environment = {"USERPROFILE": self.PROFILE, **({"HOME": home} if home is not None else {})}

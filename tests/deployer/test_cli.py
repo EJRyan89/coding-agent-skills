@@ -4,6 +4,8 @@ import contextlib
 import io
 import json
 import os
+import subprocess
+import sys
 from functools import partial
 from pathlib import Path
 from typing import Any
@@ -345,8 +347,36 @@ class CopilotHomeTests(DeployerTestCase):
         self.assertIsNone(paths.copilot_home({}))
         self.assertIsNone(paths.copilot_home({"COPILOT_HOME": ""}))
         self.assertEqual(self.copilot_home, paths.copilot_home({"COPILOT_HOME": str(self.copilot_home)}))
-        # A relative value is read from the working directory, as Copilot reads it.
-        self.assertEqual(Path.cwd() / "relative", paths.copilot_home({"COPILOT_HOME": "relative"}))
+
+    def test_a_copilot_home_that_is_not_an_absolute_path_is_refused_by_name(self) -> None:
+        # Copilot CLI completes it from the directory each session starts in, so the deployer's own working directory,
+        # which it was completed from before, names no folder Copilot reads.
+        relative = [".", "relative", "copilot home/.copilot"]
+        relative += ["C:copilot", r"\copilot"] if platform_support.WINDOWS else []
+        for value in relative:
+            with self.subTest(value=value), self.assertRaises(errors.DeployError) as raised:
+                paths.copilot_home({"COPILOT_HOME": value})
+            self.assertEqual(self.copilot_refusal(value), raised.exception.lines)
+
+    def copilot_refusal(self, value: str) -> tuple[str, str]:
+        return (
+            f"ERROR: COPILOT_HOME is {value!r}, which is not an absolute path, so GitHub Copilot CLI reads its "
+            "configuration from a folder that depends on the directory it starts in.",
+            "Set COPILOT_HOME to an absolute path, or unset it, and run the command again; see \"Copilot's "
+            'configuration directory" in docs/copilot-support.md.',
+        )
+
+    def test_the_entry_point_refuses_a_relative_copilot_home_before_anything_else(self) -> None:
+        environment = {"HOME": str(self.home), "USERPROFILE": str(self.home), "COPILOT_HOME": "relative copilot"}
+        result = self.run_entry_point("--all", "--dry-run", environment=environment)
+        self.assertEqual(1, result.code, result.output)
+        expected = "\n" + "\n".join(self.copilot_refusal("relative copilot")) + "\n\n"
+        self.assertEqual(expected, result.output.replace("\r\n", "\n"))
+
+    def test_verify_refuses_a_relative_copilot_home_in_the_environment_it_starts_copilot_with(self) -> None:
+        with self.assertRaises(errors.DeployError) as raised:
+            verify.unlisted_note("copilot", [], self.paths, {"COPILOT_HOME": "relative copilot"})
+        self.assertEqual(self.copilot_refusal("relative copilot"), raised.exception.lines)
 
     def test_unset_reads_the_default_copilot_skills_and_warns_about_nothing_else(self) -> None:
         self.write(self.home / ".copilot" / "skills" / "alpha" / "SKILL.md", "native Copilot skill\n")
@@ -394,6 +424,39 @@ class CopilotHomeTests(DeployerTestCase):
         self.assertEqual(0, result.code, result.output)
         self.assertIn(self.warning(forward(self.copilot_home)), unwrapped(result.output))
         self.assertFalse(self.copilot_home.exists())
+
+
+class HomeVariableTests(DeployerTestCase):
+    """deploy.py refuses a home variable that is not an absolute path before it reads or writes anything, rather than
+    completing it from its working directory, where no runtime reads skills."""
+
+    def test_the_entry_point_refuses_a_relative_home_by_name(self) -> None:
+        variable = "USERPROFILE" if platform_support.WINDOWS else "HOME"
+        workdir = self.root / "working directory"
+        workdir.mkdir()
+        environment = {name: value for name, value in os.environ.items() if name.upper() not in {"HOME", "USERPROFILE"}}
+        environment.update({"HOME": "relative home", "USERPROFILE": "relative home"})
+        program = [sys.executable, "-B", str(self.checkout_copy() / "deploy.py"), "--all", "--dry-run"]
+        completed = subprocess.run(
+            program,
+            cwd=workdir,
+            env=environment,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            stdin=subprocess.DEVNULL,
+            timeout=120,
+            check=False,
+        )
+        self.assertEqual(1, completed.returncode, completed.stdout + completed.stderr)
+        self.assertEqual(
+            f"\nERROR: {variable} is 'relative home', which is not an absolute path, so the folder the runtimes read "
+            f"skills from is not known.\nSet {variable} to the absolute path of your home folder and run the command "
+            "again.\n\n",
+            completed.stderr,
+        )
+        self.assertEqual("", completed.stdout)
+        self.assertEqual([], list(workdir.iterdir()))
 
 
 # Run deploy.py as written in a child Python whose deploy and check commands raise past everything they handle, so the

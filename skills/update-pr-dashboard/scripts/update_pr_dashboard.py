@@ -32,6 +32,7 @@ from review_config import (
     DASHBOARD_SECTION_DRAFTS,
     DASHBOARD_SECTION_MINE,
     DASHBOARD_SECTION_TO_REVIEW,
+    REPOSITORY,
     ConfigurationError,
     dashboard_status_heading,
     dashboard_status_key,
@@ -91,7 +92,7 @@ CANDIDATE_STATES = frozenset({DASHBOARD_AI_REVIEW_MISSING, DASHBOARD_AI_REVIEW_S
 # A new file the tracker writes is readable by its owner alone; a file it replaces keeps the mode it had.
 NEW_FILE_MODE = 0o600
 # A pull request's number has at most ten digits, as GitHub's 32-bit numbers do, so int() never meets the digit limit.
-PULL_KEY_PATTERN = re.compile(r"([A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*)#([1-9][0-9]{0,9})")
+PULL_KEY_PATTERN = re.compile(rf"({REPOSITORY})#([1-9][0-9]{{0,9}})")
 
 
 class TrackerError(ValueError):

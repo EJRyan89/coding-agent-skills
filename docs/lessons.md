@@ -241,9 +241,12 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
 - **Use:** `tests.validation.duplication:_shared_facts`, the registry of facts each read from its owner; where a fact
   is a behavior, the owner's function, such as `frontmatter:Frontmatter.user_only`, `frontmatter:user_only_value` for
   another reader's values, `typed_text:read_typed`, the read of a title or body file without its byte-order mark, and
-  `deployer.journal:finish_backup`, the one rule a committed run's finalization and its recovery settle a backup by.
+  `deployer.journal:finish_backup`, the one rule a committed run's finalization and its recovery settle a backup by,
+  and `review_config:REPOSITORY`, the one rule of a repository identity the mute and pull-key patterns are built
+  on, and the adapter schema's repository pattern is probed against.
   A module more than one part of the repository needs moves to skill-core.
 - **Guard:** `tests/deployer/test_backup_settlement.py::SettlementTests`, which runs each backup through both paths,
+  `skills/ejryan89-code-review-core/scripts/test_review_config.py::ConfigurationTests::test_a_repository_identity_holds_githubs_name_rule_and_every_reader_built_on_it_agrees`,
   `tests/validation/duplication.py::DuplicationPolicies::test_repository_owners_hold_every_shared_fact`,
   `tests/validation/duplication.py::DuplicationPolicies::test_repository_copies_only_what_it_sanctions`,
   `tests/validation/test_duplication.py::SharedFactPolicy`,
@@ -260,7 +263,7 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   `rg -n "def (_?inside|strictly_inside|_lexically_inside)\b"` and other helpers of one job held in several modules;
   a live step and its recovery, such as a run's finalization and the completion of an interrupted one, each deciding
   in its own code what becomes of the same state on disk.
-- **Examples:** #1349, #1477, #1495, #1596, #1679, #2295, #2296
+- **Examples:** #1349, #1477, #1495, #1596, #1679, #2219, #2295, #2296
 
 ### A promise in prose is held where its reader reads it
 
