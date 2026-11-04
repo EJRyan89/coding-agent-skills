@@ -15,7 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan8
 import bash_agreement
 
 from deployer import platform_support
-from tools import hub_guard
+from tools import bash_syntax, hub_guard
 
 START = Path(__file__).resolve().parent
 
@@ -342,6 +342,23 @@ class RunnerTests(unittest.TestCase):
                     self.assertTrue(reading(f"{program} {option} x y").unread)
             with self.subTest(program=program, word="unsettled"):
                 self.assertTrue(reading(f"{program} $x y").unread)
+
+
+class RedirectionTests(unittest.TestCase):
+    def test_a_redirection_naming_its_descriptor_by_a_variable_is_refused_in_every_operator(self) -> None:
+        # Bash assigns the descriptor it opens, or closes, to the variable {NAME} names, which may be any.
+        reason = hub_guard.NOT_READ["construct named descriptor"]
+        # &> and &>> take no descriptor, so a word before them is an argument, which assigns nothing.
+        operators = sorted(bash_syntax.REDIRECTIONS - bash_syntax.HERE_DOCUMENTS - {"&>", "&>>"})
+        for operator in operators:
+            target = "-" if operator in {">&", "<&"} else "/dev/null"
+            command = f": {{HOME}}{operator}{target}; cd"
+            with self.subTest(operator=operator):
+                self.assertIn(reason, " ".join(reading(command).unread))
+        for document in sorted(bash_syntax.HERE_DOCUMENTS):
+            with self.subTest(operator=document):
+                self.assertIn(reason, " ".join(reading(f"cat {{fd}}{document}'EOF'\nx\nEOF").unread))
+        self.assertEqual([], reading("echo x 2>&1 >/dev/null 3>&-").unread)
 
 
 class ExpansionTests(unittest.TestCase):

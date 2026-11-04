@@ -161,6 +161,9 @@ class HereDocument:
 @dataclass(frozen=True)
 class Operator:
     text: str
+    # The descriptor word written right before a redirection, as 2 in 2>&1 or {fd} in {fd}>out, which Bash assigns
+    # the descriptor it opens to the variable NAME names.
+    descriptor: str = ""
 
 
 Token = Word | Operator | HereDocument
@@ -171,6 +174,8 @@ class Redirect:
     operator: str
     target: Word | None
     here: HereDocument | None = None
+    # The descriptor word written before the operator, as its Operator token keeps it; "" for none.
+    descriptor: str = ""
 
 
 @dataclass
@@ -269,6 +274,8 @@ class Lexer:
         self.redirections_only = True
         self.redirecting = False
         self.naming_function = False
+        # The descriptor word before the redirection being read, kept for its Operator token.
+        self.descriptor = ""
         # The variables the expansions read since the word being read began assign.
         self.assigned: list[str] = []
 
@@ -295,7 +302,8 @@ class Lexer:
                     return self.tokens
                 depth += {"(": 1, ")": -1}.get(operator, 0)
                 self.index += len(operator)
-                self.tokens.append(Operator(operator))
+                self.tokens.append(Operator(operator, self.descriptor))
+                self.descriptor = ""
                 if operator in REDIRECTIONS:
                     self.redirecting = operator not in HERE_DOCUMENTS
                     self.command_start = self.command_start and self.redirections_only
@@ -309,7 +317,9 @@ class Lexer:
                     self.open_here_document(operator)
             else:
                 word = self.word(subscripts=self.command_start and not self.redirecting)
-                if not (self.peek() and self.peek() in "<>" and DESCRIPTOR.fullmatch(word.raw)):
+                if self.peek() and self.peek() in "<>" and DESCRIPTOR.fullmatch(word.raw):
+                    self.descriptor = word.raw
+                else:
                     self.follow_word(word)
                     self.tokens.append(word)
         if self.nested:
@@ -859,6 +869,8 @@ class Parser:
         return Simple(words, redirects)
 
     def redirect(self) -> Redirect:
+        token = self.peek()
+        descriptor = token.descriptor if isinstance(token, Operator) else ""
         operator = self.operator()
         target = self.peek()
         if not isinstance(target, Word):
@@ -872,7 +884,7 @@ class Parser:
                 raise BashSyntaxError(f"`{operator}` has no body")
             self.index += 1
             here = document
-        return Redirect(operator, target, here)
+        return Redirect(operator, target, here, descriptor)
 
     def redirects(self) -> list[Redirect]:
         found: list[Redirect] = []

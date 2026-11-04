@@ -309,13 +309,15 @@ a row decides it.
   nothing the guard reads, such as `errexit`, `pipefail`, `nounset`, and `nullglob`, and so is a shell the
   environment starts under them, through `SHELLOPTS` and `BASHOPTS`. Each other option, `keyword`, `posix`, `lastpipe`,
   and `cdable_vars` among them, and one neither table names, is refused, and so is a shell the environment hands
-  `POSIXLY_CORRECT` or `BASH_COMPAT`, `xtrace` where the environment's `PS4` holds an expansion, and a command named
+  `POSIXLY_CORRECT` or `BASH_COMPAT`, `xtrace` where the environment's `PS4` holds an expansion, whatever turns it
+  on, `set`, `shopt -o`, or the environment's `SHELLOPTS`, and a command named
   after a function the environment hands the shell as `BASH_FUNC_<name>%%`.
 - **gh.** `gh pr checkout`, `gh pr co`, and `gh repo sync` check a branch out in the checkout gh runs in, and are
   judged as a checkout git makes there.
 - **Redirections.** A redirection that writes a file at a path the text settles is refused when the file lies in a
   guarded hub's tracked files or anywhere in its git directory, as a file tool's edit is; a duplication such as
-  `2>&1` and a device such as `/dev/null` write none. A target the text does not settle to a literal path, or a
+  `2>&1` and a device such as `/dev/null` write none. A redirection that names its descriptor by a variable, as
+  `{fd}>out`, `{fd}<in`, or `{fd}>&-`, assigns that variable, any one, and is refused in every operator. A target the text does not settle to a literal path, or a
   relative one in a directory it does not settle, may lie in a hub and is refused, but for one under the system's
   temporary folder that `TMP`, `TEMP`, or `TMPDIR` names from the environment, as `> "$TMP/out.txt"` does.
 - **Programs.** A command may start any program a literal name names, but for the programs that run another command,

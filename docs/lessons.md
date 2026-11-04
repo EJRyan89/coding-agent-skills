@@ -109,7 +109,8 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
 - **Why:** A step that never ran, a listing that failed, or an empty input otherwise reads as everything checked and
   nothing found.
 - **Use:** `conditions:MissingEvidence`, `deployer.discovery:ListingError`, `tools.hub_guard:Reading.time_left`, the
-  hub guard's own reading time, below the hook timeout that would let a command it cut short run
+  hub guard's own reading time, below the hook timeout, so a command it cannot finish reading is refused with a reason
+  rather than blocked by a timed-out hook
 - **Guard:** `skills/ejryan89-code-review-core/scripts/test_review_pipeline.py::test_finalize_refuses_a_result_the_guard_never_claimed_with_nothing_recorded`,
   `skills/audit-ai-config/scripts/test_audit_ai_config.py::test_a_repository_whose_files_show_nothing_says_the_checks_did_not_run`,
   `tests/tools/test_hub_guard.py::test_an_event_that_names_no_command_or_file_is_allowed_with_a_note_never_unseen`,

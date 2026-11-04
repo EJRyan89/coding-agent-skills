@@ -658,6 +658,7 @@ NOT_READ = {
     "construct arithmetic command": "(( )) evaluates arithmetic, which may assign any variable",
     "construct arithmetic for": "for (( )) evaluates arithmetic, which may assign any variable",
     "construct element assignment": "NAME[SUBSCRIPT]= evaluates its subscript as arithmetic",
+    "construct named descriptor": "a redirection's {NAME} assigns the descriptor it opens to NAME, any variable",
     "construct assignment before git": "an assignment before git may change where it acts or what configuration "
     "it reads",
     # set's and shopt's options, in the state the tables refuse.
@@ -1631,9 +1632,12 @@ def bash_start(reading: Reading) -> BashStart:
     """Reads the shell state the hook's environment hands the Bash tool's shell, and tells the reading of each
     option it turns on that the tables do not read."""
     environment = reading.environment
+    expanding_ps4 = any(mark in environment.get("PS4", "") for mark in "$`")
     for variable, table in (("SHELLOPTS", "set"), ("BASHOPTS", "shopt")):
         for option in filter(None, environment.get(variable, "").split(":")):
             judge_option(reading, table, option, True, f"the {variable} the environment holds")
+            if table == "set":
+                judge_xtrace(reading, option, True, expanding_ps4)
     for variable, option in (("POSIXLY_CORRECT", "posix"), ("BASH_COMPAT", "compat44")):
         if variable in environment:
             table = "set" if option == "posix" else "shopt"
@@ -1641,8 +1645,14 @@ def bash_start(reading: Reading) -> BashStart:
     functions = frozenset(
         folded(match.group(1)) for match in (EXPORTED_FUNCTION.match(folded(name)) for name in environment) if match
     )
-    ps4 = environment.get("PS4", "")
-    return BashStart(home(environment), bool(environment.get("CDPATH")), functions, any(mark in ps4 for mark in "$`"))
+    return BashStart(home(environment), bool(environment.get("CDPATH")), functions, expanding_ps4)
+
+
+def judge_xtrace(reading: Reading, option: str | None, on: bool, expanding_ps4: bool) -> None:
+    """The one check of xtrace, whatever turns it on, set, shopt -o, or the environment's SHELLOPTS: refused where
+    the environment's PS4 holds an expansion, which xtrace runs before each command."""
+    if option == "xtrace" and on and expanding_ps4:
+        reading.cannot_read(NOT_READ_XTRACE)
 
 
 def judge_option(reading: Reading, table: str, option: str | None, on: bool, source: str) -> None:
@@ -1798,6 +1808,8 @@ class BashReader:
 
     def read_redirects(self, redirects: list[bash_syntax.Redirect], directory: Directory) -> None:
         for redirect in redirects:
+            if redirect.descriptor.startswith("{"):
+                self.reading.cannot_read(f"{NOT_READ['construct named descriptor']} ({redirect.descriptor})")
             here = redirect.here
             if here is not None:
                 for text in here.substitutions:
@@ -2126,8 +2138,7 @@ class BashReader:
             index += 1
 
     def note_xtrace(self, option: str | None, on: bool) -> None:
-        if option == "xtrace" and on and self.start.expanding_ps4:
-            self.reading.cannot_read(NOT_READ_XTRACE)
+        judge_xtrace(self.reading, option, on, self.start.expanding_ps4)
 
     def read_shopt(self, arguments: list[Word]) -> None:
         """shopt's -s and -u, each judged by SHOPT_OPTIONS, or by SET_OPTIONS with -o; printing changes nothing."""
@@ -2491,6 +2502,15 @@ class PowerShellReader:
             return [text + value[0] if len(value) == 1 and value[0] is not None else None]
         return [text]
 
+    def attached(self, command: Any) -> list[Any]:
+        """The value attached by a colon to each parameter of a command, as -MemberName:Delete attaches Delete."""
+        elements = command.get("elements") if isinstance(command, dict) else None
+        return [
+            element.get("argument")
+            for element in (elements if isinstance(elements, list) else [])[1:]
+            if isinstance(element, dict) and element.get("kind") == "parameter" and "argument" in element
+        ]
+
     def values(self, command: Any) -> list[Word]:
         """Every value a cmdlet is given, by position or attached to a parameter by a colon, as -Path:<value>; None
         for one the text does not settle; a parameter written alone gives none, its value being the next element."""
@@ -2592,7 +2612,7 @@ class PowerShellReader:
             elements = command.get("elements") or []
             if POWERSHELL_COMMANDS[name.lower()] == "foreach-object" and any(
                 not isinstance(element, dict) or element.get("kind") not in {"block", "parameter"}
-                for element in elements[1:]
+                for element in [*elements[1:], *self.attached(command)]
             ):
                 # ForEach-Object given a name rather than a script block calls the member by that name.
                 self.reading.cannot_read("ForEach-Object given a member's name runs that member, which may run code")

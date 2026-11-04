@@ -1874,6 +1874,14 @@ class UnderstoodSetTests(GuardTestCase):
                 self.assertEqual(expected, self.bash("git status", self.tree, environment))
         environment = {**self.environment, "PS4": "+ $(git commit -m x) "}
         self.assertEqual("deny", self.bash("set -x; git status", self.tree, environment))
+        for source in ("set -o xtrace;", "shopt -so xtrace;", "set -ex;"):
+            with self.subTest(source=source):
+                self.assertEqual("deny", self.bash(f"{source} true", self.tree, environment))
+        # Whatever turns it on: the environment's SHELLOPTS too, before any command is read.
+        for value in ("xtrace", "braceexpand:xtrace"):
+            with self.subTest(shellopts=value):
+                self.assertEqual("deny", self.bash("true", self.tree, {**environment, "SHELLOPTS": value}))
+        self.assertIsNone(self.bash("true", self.tree, {**self.environment, "SHELLOPTS": "xtrace"}))
         self.assertIsNone(self.bash("set -x; git status", self.tree))
         environment = {**self.environment, "BASH_FUNC_ls%%": "() { git commit -m x; }"}
         self.assertEqual("deny", self.bash("ls", self.tree, environment))
@@ -1907,6 +1915,9 @@ class PowerShellUnderstoodSetTests(GuardTestCase):
             ("$x.ToString()", self.tree, "deny"),
             ("$x.$name", self.tree, "deny"),
             ("Get-ChildItem | ForEach-Object Name", self.tree, "deny"),
+            ("Get-ChildItem | ForEach-Object -MemberName Delete", self.tree, "deny"),
+            ("Get-ChildItem | ForEach-Object -MemberName:Delete -ArgumentList:$true", self.tree, "deny"),
+            ("Get-ChildItem | ForEach-Object -Process:{ $_.Name }", self.tree, None),
             ("Get-ChildItem | Where-Object { $_.Length -gt 1 } | Sort-Object { $_.Name }", self.tree, None),
             ("Invoke-Command { git status }", self.tree, "deny"),
             ("iex 'git status'", self.tree, "deny"),
