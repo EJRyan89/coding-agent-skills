@@ -1246,23 +1246,58 @@ class EnvironmentSetDifferentialTests(unittest.TestCase):
 
 
 # Lists each reference to a node's Extent in a PowerShell script, by PowerShell's own parser: the function that holds
-# it and the member read from it, or nothing when the extent itself is kept or handed on.
+# it and the member read from it, or nothing when the extent itself is kept or handed on. It lists too, by a name in
+# angle brackets, each other route to a node's source text it can see: a ToString() call, which an Ast answers with
+# its extent's text, a member whose name is computed, a psobject member, and the name Extent written anywhere but as a
+# member, as `Select-Object -ExpandProperty Extent` and `.psobject.Properties['Extent']` write it.
 EXTENT_REFERENCES = r"""
 param([string] $Path)
 $tokens = $errors = $null
 $ast = [Management.Automation.Language.Parser]::ParseFile($Path, [ref] $tokens, [ref] $errors)
-foreach ($node in $ast.FindAll({ param($n) $n -is [Management.Automation.Language.MemberExpressionAst] -and
-            $n.Member -is [Management.Automation.Language.StringConstantExpressionAst] -and
-            $n.Member.Value -eq 'Extent' }, $true)) {
+foreach ($node in $ast.FindAll({ param($n)
+            $n -is [Management.Automation.Language.MemberExpressionAst] -or
+            ($n -is [Management.Automation.Language.StringConstantExpressionAst] -and $n.Value -eq 'Extent')
+        }, $true)) {
     $function = $node.Parent
     while ($null -ne $function -and $function -isnot [Management.Automation.Language.FunctionDefinitionAst]) {
         $function = $function.Parent
     }
-    $read = if ($node.Parent -is [Management.Automation.Language.MemberExpressionAst] -and
-        [object]::ReferenceEquals($node.Parent.Expression, $node)) { $node.Parent.Member.Extent.Text } else { '' }
+    $member = if ($node -is [Management.Automation.Language.MemberExpressionAst]) { $node.Member } else { $null }
+    $read = if ($node -is [Management.Automation.Language.StringConstantExpressionAst]) {
+        if ($node.Parent -is [Management.Automation.Language.MemberExpressionAst] -and
+            [object]::ReferenceEquals($node.Parent.Member, $node)) { continue }
+        '<Extent named>'
+    } elseif ($member -isnot [Management.Automation.Language.StringConstantExpressionAst]) {
+        '<computed member>'
+    } elseif ($member.Value -eq 'psobject') {
+        '<psobject>'
+    } elseif ($member.Value -eq 'ToString' -and $node -is [Management.Automation.Language.InvokeMemberExpressionAst]) {
+        '<ToString>'
+    } elseif ($member.Value -ne 'Extent') {
+        continue
+    } elseif ($node.Parent -is [Management.Automation.Language.MemberExpressionAst] -and
+        [object]::ReferenceEquals($node.Parent.Expression, $node)) {
+        $node.Parent.Member.Extent.Text
+    } else { '' }
     "$(if ($function) { $function.Name })`t$read"
 }
 """
+# A reader that holds each route to a node's source text EXTENT_REFERENCES lists, each in a function of its own, with
+# the reads each gives. The routes it does not see are its limits: a node converted to a string, as "$Node",
+# [string]$Node, -join, -f, and Out-String do, and a member reached by reflection or through a variable that holds a
+# psobject; each is a deliberate conversion rather than a member a reader author reaches for, and review reads it.
+SOURCE_TEXT_ROUTES: dict[str, tuple[str, ...]] = {
+    "function Get-A { param($Node) $Node.ToString() }": ("<ToString>",),
+    "function Get-B { param($Node) $Node.toSTRING() }": ("<ToString>",),
+    "function Get-C { param($Node) $Node.psobject.Properties['Extent'].Value }": ("<psobject>", "<Extent named>"),
+    "function Get-D { param($Node) $Node.PSObject }": ("<psobject>",),
+    "function Get-E { param($Node) $Node.('Ext' + 'ent').Text }": ("<computed member>",),
+    "function Get-F { param($Node, $Name) $Node.$Name }": ("<computed member>",),
+    "function Get-G { param($Node) $Node | Select-Object -ExpandProperty Extent }": ("<Extent named>",),
+    'function Get-H { param($Node) $Node | ForEach-Object "extent" }': ("<Extent named>",),
+    "function Get-I { param($Node) $Node.extent.TEXT }": ("TEXT",),
+    "function Get-J { param($Node) $Node.Extent }": ("",),
+}
 # Each reference to a node's Extent the reader may hold, by function and the member read, with how many and why. None
 # decides what a node does: that comes from the syntax tree and the resolver, so another spelling cannot change it.
 SANCTIONED_EXTENTS = {
@@ -1281,9 +1316,11 @@ SANCTIONED_EXTENTS = {
 class ReaderSourceTests(unittest.TestCase):
     """The PowerShell reader decides what a node does by its syntax tree and the resolver, never by its source text,
     which another spelling of the same node does not match: every reference to a node's Extent, read by PowerShell's
-    own parser, is one SANCTIONED_EXTENTS names."""
+    own parser, is one SANCTIONED_EXTENTS names, and the reader holds no other route to a node's source text that
+    EXTENT_REFERENCES sees."""
 
-    def test_every_reference_to_a_nodes_extent_in_the_reader_is_sanctioned(self) -> None:
+    @staticmethod
+    def extent_references(path: Path) -> collections.Counter[tuple[str, ...]]:
         pwsh = platform_support.find_pwsh(os.environ.get("PATH", ""))
         if pwsh is None:
             raise AssertionError("pwsh was not found on PATH; pwsh parses the PowerShell reader")
@@ -1291,11 +1328,23 @@ class ReaderSourceTests(unittest.TestCase):
             script = Path(folder) / "extents.ps1"
             script.write_text(EXTENT_REFERENCES, encoding="utf-8")
             command = [pwsh, "-NoLogo", "-NoProfile", "-NonInteractive", "-File", str(script)]
-            result = run_bounded([*command, "-Path", str(hub_guard.POWERSHELL_READER)], 120, env=os.environ)
-        found = collections.Counter(
+            result = run_bounded([*command, "-Path", str(path)], 120, env=os.environ)
+        return collections.Counter(
             tuple(line.split("\t", 1)) for line in result.stdout.decode("utf-8", "replace").splitlines() if line
         )
-        self.assertEqual(SANCTIONED_EXTENTS, dict(found))
+
+    def test_every_reference_to_a_nodes_extent_in_the_reader_is_sanctioned(self) -> None:
+        self.assertEqual(SANCTIONED_EXTENTS, dict(self.extent_references(hub_guard.POWERSHELL_READER)))
+
+    def test_each_other_route_to_a_nodes_source_text_is_listed(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            reader = Path(folder) / "reader.ps1"
+            reader.write_text("\n".join(SOURCE_TEXT_ROUTES), encoding="utf-8")
+            found = self.extent_references(reader)
+        expected = collections.Counter(
+            (source.split()[1], read) for source, reads in SOURCE_TEXT_ROUTES.items() for read in reads
+        )
+        self.assertEqual(expected, found)
 
 
 class UnsetDifferentialTests(unittest.TestCase):

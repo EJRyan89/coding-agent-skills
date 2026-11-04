@@ -885,11 +885,13 @@ def local_branches(git: GitClient, top: Path) -> dict[str, str]:
 def merged_lines(
     git: GitClient, client: GitHubClient, place: Place, pulls: Sequence[Pull], base: str | None
 ) -> list[str]:
-    """A MERGED line for each worktree but the hub that a merged pull request carried and no open one, a draft
-    included, does."""
+    """A MERGED line for each worktree but the hub that a merged pull request carried and no open one of this
+    repository, a draft included, does. A pull request from another repository holds no worktree's line back, by its
+    branch's name or by its head: only one whose head branch is in this repository shows that branch still open."""
     merged = read_merged(client, place.repository)
-    open_branches = {pull.branch for pull in pulls}
-    open_heads = {pull.head for pull in pulls}
+    own = [pull for pull in pulls if not pull.cross_repository]
+    open_branches = {pull.branch for pull in own}
+    open_heads = {pull.head for pull in own}
     candidates = [
         worktree
         for worktree in place.worktrees[1:]

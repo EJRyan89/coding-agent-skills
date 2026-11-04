@@ -95,8 +95,12 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   another among them; `returncode != 0` followed by `return None` where git's error is an answer about a place
   other than absence, such as a start inside a git directory, which has no work tree to show; `.wait()` or a
   `returncode` of a command that reports a per-file error on stderr and goes on, such as `git grep`, read as the whole
-  answer with its stderr unread, where `status not in {0, 1}` makes an exit 1 with an error "no match".
-- **Examples:** #1320, #1365, #1599, #1601, #1887, #1888, #2090, #2091, #2131, #2133, #2182, #2185, #2205, #2236, #2245
+  answer with its stderr unread, where `status not in {0, 1}` makes an exit 1 with an error "no match"; in a shipped
+  `.sh`, `rg -n '\$\(git |git .*\| *tr ' skills --glob '*.sh'`, a git answer taken through a command substitution or a
+  pipeline whose status no branch reads, which a script without `set -e` reads as an empty answer, and a
+  `rev-parse --verify --quiet` whose exit 1 is not told from any other failure.
+- **Examples:** #1320, #1365, #1599, #1601, #1887, #1888, #2090, #2091, #2131, #2133, #2182, #2185, #2205, #2218, #2236,
+  #2245
 
 ### Evidence that was never produced is never a pass
 
@@ -327,7 +331,11 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   `.claude/skills/shepherd-pull-requests/scripts/test_shepherd_pull_requests.py::ShapeTest::test_a_check_run_member_the_rollup_leaves_out_is_malformed_never_a_default`,
   the same table for each check run in a rollup, and
   `tests/deployer/test_state_files.py::ReaderTests::test_a_journal_entry_with_any_key_of_another_type_is_malformed_never_an_error`,
-  which gives every key of each journal entry the deployer writes a list, an object, and a number
+  which gives every key of each journal entry the deployer writes a list, an object, and a number, and
+  `tests/malformed_input/test_malformed_input.py::test_every_function_that_calls_a_shared_reader_is_held_reached_or_pending`,
+  which fails a function calling a shared reader that no table holds, no held reader of its own module reaches, and
+  the pending list does not name, passes a helper a held reader reaches, and fails a pending name the scan no longer
+  finds unheld
 - **Search for:** `if not isinstance(` followed by `continue` in a loop over another program's entries; `.get(` with a
   default, or `["key"]`, on `json_reader` output with no `isinstance` or `FieldReader` check; a top-level value used
   without `isinstance(value, dict)`; a regular expression over another program's output with no branch for no match;
@@ -335,7 +343,7 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   such as arming, holding, or a rerun, and an absent member would read as the answer that allows it;
   `rg -n "\.get\([^)]*\)\)? (not )?in [A-Z_{(]"`, a field read from a file tested against a set, a frozenset, or a
   dictionary before its type is checked, which a list or an object fails with `TypeError` rather than as malformed.
-- **Examples:** #1890, #1892, #2227, #2235, #2292
+- **Examples:** #1890, #1892, #2054, #2227, #2235, #2292
 
 ### A reader of another program's language reads it as that program does
 
@@ -659,11 +667,13 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
 - **Guard:** `skills/ejryan89-skill-core/scripts/test_pull_carried.py::CarriedTests`,
   `.claude/skills/shepherd-pull-requests/scripts/test_shepherd_pull_requests.py::MergedTest::test_a_worktree_at_main_that_reuses_a_merged_branch_s_name_is_not_named`,
   `.claude/skills/shepherd-pull-requests/scripts/test_shepherd_pull_requests.py::MergedTest::test_a_worktree_with_its_own_commit_that_reuses_a_merged_branch_s_name_is_not_named`,
-  `.claude/skills/shepherd-pull-requests/scripts/test_shepherd_pull_requests.py::MergedTest::test_a_local_branch_that_reuses_a_merged_branch_s_name_is_not_named_for_deletion`
+  `.claude/skills/shepherd-pull-requests/scripts/test_shepherd_pull_requests.py::MergedTest::test_a_local_branch_that_reuses_a_merged_branch_s_name_is_not_named_for_deletion`,
+  `.claude/skills/shepherd-pull-requests/scripts/test_shepherd_pull_requests.py::MergedTest::test_only_an_open_pull_request_of_this_repository_holds_a_merged_worktree_s_line_back`
 - **Search for:** a branch, a ref, or a path compared by name, `== branch` or `in branches`, in a decision that a
   pull request is merged, a worktree retired, or a file owned; a `headRefName` read where a `headRefOid` or a commit
-  is meant.
-- **Examples:** #1901
+  is meant; a name or a head read from another repository's pull request, `isCrossRepository` true, in a decision
+  about this repository's own branches.
+- **Examples:** #1901, #2238
 
 ### A time option is a positive finite number of seconds
 

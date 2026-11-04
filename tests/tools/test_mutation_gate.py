@@ -3916,3 +3916,36 @@ def test_a_ci_outcome_is_held_to_the_ci_legs_suites_and_not_the_local_runs(liste
     leg = read_record_file(local_leg_record({**LOCAL_RECORD, **suites, "outcomes": outcomes}, ci))
     assert leg.outcomes[PATH_MODULE][0].status == TIMED_OUT
     assert mutation_gate.judged_outcomes(leg)[PATH_MODULE][0].status == KILLED
+
+
+@pytest.mark.parametrize(
+    ("entry", "reason"),
+    [
+        ({"executed_lines": [True]}, "holds a executed_lines that is not a list of line numbers"),
+        ({"missing_lines": [False]}, "holds a missing_lines that is not a list of line numbers"),
+        ({"excluded_lines": ["1"]}, "holds a excluded_lines that is not a list of line numbers"),
+        ({"executed_lines": [1], "contexts": {"1": [True]}}, "holds contexts that do not map a line"),
+        ({"executed_lines": [1], "contexts": ["1"]}, "holds contexts that do not map a line"),
+        (1, "holds a files entry that is not a module's object"),
+    ],
+)
+def test_a_coverage_report_whose_line_list_holds_a_boolean_or_another_kind_is_refused(
+    entry: object, reason: str, tmp_path: Path
+) -> None:
+    # JSON true and false are Python bools, which isinstance(..., int) alone would take as lines 1 and 0.
+    report = tmp_path / "report.json"
+    report.write_text(json.dumps({"files": {"module.py": entry}}), encoding="utf-8")
+    found = mutation_gate.read_report(report)
+    assert isinstance(found, str), found
+    assert found.startswith(reason), found
+    whole = {"files": {"module.py": {"executed_lines": [1, 2], "contexts": {"1": ["t"]}}}}
+    report.write_text(json.dumps(whole), encoding="utf-8")
+    assert mutation_gate.read_report(report) == whole
+
+
+def test_a_coverage_report_measured_without_contexts_is_read(tmp_path: Path) -> None:
+    # coverage json writes contexts only with --show-contexts, so an entry without them is a report it wrote.
+    report = tmp_path / "report.json"
+    plain = {"files": {"module.py": {"executed_lines": [1], "missing_lines": [2], "excluded_lines": []}}}
+    report.write_text(json.dumps(plain), encoding="utf-8")
+    assert mutation_gate.read_report(report) == plain
