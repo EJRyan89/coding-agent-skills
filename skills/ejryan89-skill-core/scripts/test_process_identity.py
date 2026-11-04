@@ -15,7 +15,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import job_tree
 import process_identity
-from process_identity import ProcessStatus, proc_status, process_status, stat_fields
+from process_identity import ProcessStatus, proc_status, process_status, read_pid, stat_fields
+from typed_fields import FieldError, FieldReader
 
 # Seconds a started child gets to come up, and an ended one to be reported as ended, on a loaded machine.
 SETTLE_SECONDS = 20.0
@@ -58,6 +59,12 @@ class ProcessStatusTests(unittest.TestCase):
             with self.subTest(pid=pid):
                 self.assertFalse(process_status(pid).alive)
 
+    def test_a_pid_past_the_platforms_range_names_no_process_though_its_low_bits_name_this_one(self) -> None:
+        # Truncated to the 32 bits OpenProcess takes, 2**32 + this PID would name this process.
+        for pid in (2**32 + os.getpid(), process_identity.PID_MAXIMUM + 1):
+            with self.subTest(pid=pid):
+                self.assertEqual(ProcessStatus(False, None), process_status(pid))
+
     if sys.platform != "win32":
 
         def test_a_child_that_has_ended_but_is_not_yet_reaped_is_not_alive(self) -> None:
@@ -70,6 +77,30 @@ class ProcessStatusTests(unittest.TestCase):
                     self.fail("the child never became a zombie")
                 time.sleep(0.05)
             self.assertEqual(ProcessStatus(False, None), process_status(child.pid))
+
+
+class PidRangeTests(unittest.TestCase):
+    def test_each_platforms_pid_range_is_the_one_its_kernel_allots(self) -> None:
+        # Pinned contract values: a Windows PID is a DWORD, and Linux's PID_MAX_LIMIT on a 64-bit kernel is 2**22.
+        self.assertEqual(4294967295, process_identity.WINDOWS_PID_MAXIMUM)
+        self.assertEqual(4194303, process_identity.LINUX_PID_MAXIMUM)
+        expected = 4294967295 if sys.platform == "win32" else 4194303
+        self.assertEqual(expected, process_identity.PID_MAXIMUM)
+
+    def test_a_pid_is_read_within_the_platforms_range_and_anything_else_is_refused_by_its_path(self) -> None:
+        self.assertEqual(1, read_pid(1, "info.pid"))
+        self.assertEqual(process_identity.PID_MAXIMUM, read_pid(process_identity.PID_MAXIMUM, "info.pid"))
+        for value in (0, -1, process_identity.PID_MAXIMUM + 1, 2**32 + os.getpid(), True, 1.0, "1", None):
+            with self.subTest(value=value), self.assertRaises(FieldError) as raised:
+                read_pid(value, "info.pid")
+            self.assertEqual("info.pid", raised.exception.path)
+
+    def test_a_pid_is_refused_with_the_readers_own_error(self) -> None:
+        class Refused(FieldError):
+            pass
+
+        with self.assertRaises(Refused):
+            read_pid(2**32, "owner.pid", FieldReader(Refused))
 
 
 class ProcStatusTests(unittest.TestCase):
@@ -138,10 +169,11 @@ class ProcStatusTests(unittest.TestCase):
             with mock.patch.object(process_identity, "PROC", self.proc / "not mounted"):
                 self.assertEqual(ProcessStatus(True, None), proc_status(os.getpid()))
 
-    def test_no_signal_is_sent_for_a_pid_of_zero_or_below(self) -> None:
-        with mock.patch.object(os, "kill") as kill:
-            self.assertEqual(ProcessStatus(False, None), proc_status(0))
-        kill.assert_not_called()
+    def test_no_signal_is_sent_for_a_pid_of_zero_or_below_or_past_linuxs_range(self) -> None:
+        for pid in (0, process_identity.LINUX_PID_MAXIMUM + 1, 2**31):
+            with self.subTest(pid=pid), mock.patch.object(os, "kill") as kill:
+                self.assertEqual(ProcessStatus(False, None), proc_status(pid))
+            kill.assert_not_called()
 
 
 class OpenFailureTests(unittest.TestCase):

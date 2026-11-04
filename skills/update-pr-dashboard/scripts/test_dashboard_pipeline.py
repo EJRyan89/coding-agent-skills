@@ -1793,6 +1793,25 @@ class RepositoryTests(TrackerPipelineFixture):
         self.assertEqual((0, ""), (code, err))
         self.assertNotIn("UNTRACKED_IGNORED", out)
 
+    def test_a_repository_whose_name_starts_with_a_dot_is_named_untracked_and_a_mute_clears_it(self) -> None:
+        # GitHub names an organization's community-health repository `.github`; one pull request there is one
+        # untracked repository, never a failed check, and the mute SKILL.md offers for it is one the check reaches.
+        self.serve_default_pages()
+        self.github.searches = {
+            "is:pr is:open archived:false author:reviewer": [search_page(["example/one", "Other/.github"])]
+        }
+        code, out, err = self.run_main("collect", "--output", str(self.input))
+        self.assertEqual((0, ""), (code, err))
+        self.assertEqual(
+            ["UNTRACKED_REPOSITORY other/.github"], [line for line in out.splitlines() if line.startswith("UNTRACKED_")]
+        )
+        code, out, err = self.run_main("repository", "--ignore", "other/.github")
+        self.assertEqual((0, ""), (code, err))
+        self.assertEqual(["IGNORED other/.github", f"WROTE {self.config_path}"], out.splitlines())
+        code, out, err = self.run_main("collect", "--output", str(self.input))
+        self.assertEqual((0, ""), (code, err))
+        self.assertEqual(["UNTRACKED_IGNORED 1"], [line for line in out.splitlines() if line.startswith("UNTRACKED_")])
+
     def test_a_refused_ignore_or_unignore_writes_nothing(self) -> None:
         code, _, err = self.run_main("repository", "--ignore", "other/three")
         self.assertEqual((0, ""), (code, err))

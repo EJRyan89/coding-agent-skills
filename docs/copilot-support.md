@@ -36,7 +36,9 @@ The deployer reads `COPILOT_HOME` but never writes into Copilot's configuration 
 - a deployment warns when the variable names another directory than `~/.copilot`, printing the folder to set it to; and
 - `python deploy.py verify`, which starts Copilot with your environment, explains the `NOT FOUND` and `SHADOWED` lines when the variable hides every adapter.
 
-The deployer cannot see `--config-dir`, an argument of one session, so a session started with it finds none of the adapters without a warning. To use the deployed skills in Copilot CLI, leave `COPILOT_HOME` unset, or set it to the `.copilot` folder of your home spelled as the warning prints it, and start Copilot without `--config-dir`. A `--canary-home` deployment ignores `COPILOT_HOME`, since its runtimes read the throwaway home.
+A `COPILOT_HOME` that is not an absolute path is refused, by `deploy.py` and every command of it before anything else: Copilot completes such a value from the directory each session starts in, so no one folder holds the skills it reads. Set it to an absolute path, or unset it.
+
+The deployer cannot see `--config-dir`, an argument of one session, so a session started with it finds none of the adapters without a warning. To use the deployed skills in Copilot CLI, leave `COPILOT_HOME` unset, or set it to the `.copilot` folder of your home spelled as the warning prints it, and start Copilot without `--config-dir`. A `--canary-home` deployment ignores an absolute `COPILOT_HOME`, since its runtimes read the throwaway home.
 
 ## Headless sessions
 
