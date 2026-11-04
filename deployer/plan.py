@@ -28,6 +28,7 @@ from .report import (
     SKIPPED_WITH_SKILL,
     Action,
     ReportLine,
+    plural,
     print_report,
 )
 from .source import Source
@@ -43,6 +44,8 @@ KINDS_ALLOWED = {
 }
 
 DIFF_LINES_REPORTED = 40
+# The line that ends a deployment report's diff past DIFF_LINES_REPORTED, with the count of the lines it leaves out.
+DIFF_CUT = "... {count}; run with --dry-run for the whole diff"
 
 
 @dataclass(frozen=True)
@@ -68,8 +71,17 @@ class PlanEntry:
         dry = title == DRY_RUN
         label = ACTION_LABELS[self.action][0 if dry else 1]
         return ReportLine(
-            self.name, label, self.reason, self.diff if dry else self.diff[:DIFF_LINES_REPORTED], self.kind.label
+            self.name, label, self.reason, self.diff if dry else reported_diff(self.diff), self.kind.label
         )
+
+
+def reported_diff(diff: tuple[str, ...]) -> tuple[str, ...]:
+    """A diff as a deployment report shows it: its first DIFF_LINES_REPORTED lines, and past them one line saying how
+    many it leaves out and that the dry run shows them all."""
+    if len(diff) <= DIFF_LINES_REPORTED:
+        return diff
+    left_out = plural(len(diff) - DIFF_LINES_REPORTED, "more line")
+    return (*diff[:DIFF_LINES_REPORTED], DIFF_CUT.format(count=left_out))
 
 
 def _tree_diff(destination: Path, staged: dict[str, bytes], label: str) -> list[str]:
@@ -343,7 +355,8 @@ def validate_shared_assets(context: Context, selected: list[str]) -> dict[str, s
             if dependency not in assets:
                 raise DeployError(
                     f"ERROR: Skill '{name}' declares shared_dep "
-                    f"'{dependency}' but it is not in source.json shared_assets"
+                    f"'{dependency}' but it is not in source.json shared_assets",
+                    f"Add '{dependency}' to shared_assets in source.json, or remove it from {name}'s shared_deps.",
                 )
     return assets
 
@@ -360,7 +373,9 @@ def _declared_assets(src: Source) -> dict[str, str]:
     taken = {platform_support.name_key(name): (SKILL.noun, name) for name in sorted(src.skills)}
     for asset in sorted(assets):
         if asset in src.skills:
-            raise DeployError(f"ERROR: Shared asset '{asset}' collides with a skill of the same name")
+            raise DeployError(
+                f"ERROR: Shared asset '{asset}' collides with a skill of the same name", "Rename one of them."
+            )
         key = platform_support.name_key(asset)
         if key in taken:
             noun, existing = taken[key]
@@ -375,37 +390,67 @@ def _declared_assets(src: Source) -> dict[str, str]:
 def _check_role(paths: Paths, asset: str, role: str) -> None:
     """A role is owner or dependency, and an owned asset is a file in this source."""
     if role not in ("owner", "dependency"):
-        raise DeployError(f"ERROR: Shared asset '{asset}' has invalid role '{role}' (must be 'owner' or 'dependency')")
+        raise DeployError(
+            f"ERROR: Shared asset '{asset}' has invalid role '{role}' (must be 'owner' or 'dependency')",
+            f"Give '{asset}' the role 'owner' or 'dependency' in source.json.",
+        )
     if role == "owner" and not (paths.skills_src / asset).is_file():
         raise DeployError(
             f"ERROR: source.json declares '{asset}' as owned but file not found at "
-            f"{platform_support.normalize(paths.skills_src / asset)}"
+            f"{platform_support.normalize(paths.skills_src / asset)}",
+            f"Add the file to the source, or give '{asset}' the role 'dependency' when another source owns it.",
         )
+
+
+# The step each refusal of a needed dependency ends with: one missing or unowned, one this source owns, one whose
+# owner's record is not an owner's, and one changed after its owner deployed it.
+DEPLOY_OWNER_FIRST = "Deploy '{asset}' from the source that owns it first, then rerun with --dry-run."
+OWN_IT = (
+    "Give '{asset}' the role 'owner' in this source's source.json, since the manifest records this source owning it."
+)
+REDEPLOY_OWNER = (
+    "Deploy '{asset}' again from source '{owner}', which the manifest names as its owner, then rerun with --dry-run."
+)
+RESTORE_OWNERS_COPY = (
+    "Put back the copy source '{owner}' deployed, for example by deploying '{asset}' again from that source, then "
+    "rerun with --dry-run."
+)
 
 
 def _check_dependency(context: Context, asset: str) -> None:
-    """A needed dependency is installed, and another source owns it with the hash of what is installed."""
+    """A needed dependency is installed, and another source owns it with the hash of what is installed. Each refusal
+    ends with the step to take."""
     destination = context.paths.dest_dir / asset
+    first = DEPLOY_OWNER_FIRST.format(asset=asset)
     if not destination.is_file():
         raise DeployError(
-            f"ERROR: Dependency '{asset}' not found at destination ({platform_support.normalize(destination)})"
+            f"ERROR: Dependency '{asset}' not found at destination ({platform_support.normalize(destination)})", first
         )
     owner = context.manifest.shared_owners.get(asset)
     if owner is None:
-        raise DeployError(f"ERROR: Dependency '{asset}' has no owner in the manifest")
+        raise DeployError(f"ERROR: Dependency '{asset}' has no owner in the manifest", first)
     if owner == context.source_id:
-        raise DeployError(f"ERROR: Dependency '{asset}' is declared as both dependency and owned by this source")
+        raise DeployError(
+            f"ERROR: Dependency '{asset}' is declared as both dependency and owned by this source",
+            OWN_IT.format(asset=asset),
+        )
+    redeploy = REDEPLOY_OWNER.format(asset=asset, owner=owner)
     entry: Mapping[str, object] = context.manifest.entry(owner, SHARED.key, asset) or {}
     owner_role = entry.get("role", "")
     if owner_role != "owner":
         raise DeployError(
-            f"ERROR: Dependency '{asset}' owner '{owner}' does not have role 'owner' (has '{owner_role}')"
+            f"ERROR: Dependency '{asset}' owner '{owner}' does not have role 'owner' (has '{owner_role}')", redeploy
         )
     expected = entry.get("hash", "")
     if not isinstance(expected, str) or not hashing.HASH_PATTERN.fullmatch(expected):
-        raise DeployError(f"ERROR: Dependency '{asset}' owner '{owner}' has no valid SHA-256 hash in manifest")
+        raise DeployError(
+            f"ERROR: Dependency '{asset}' owner '{owner}' has no valid SHA-256 hash in manifest", redeploy
+        )
     if hashing.hash_path(destination) != expected:
-        raise DeployError(f"ERROR: Dependency '{asset}' at destination does not match owner's manifest hash")
+        raise DeployError(
+            f"ERROR: Dependency '{asset}' at destination does not match owner's manifest hash",
+            RESTORE_OWNERS_COPY.format(asset=asset, owner=owner),
+        )
 
 
 def shared_to_stage(context: Context, selected: list[str], assets: dict[str, str]) -> list[str]:

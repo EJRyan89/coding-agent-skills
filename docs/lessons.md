@@ -163,17 +163,20 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   `xml_reader:CONTENT_ERRORS`, `frontmatter:CONTENT_ERRORS`, `typed_text:CONTENT_ERRORS`,
   `guidance_record:CONTENT_ERRORS`, `check_provenance:CONTENT_ERRORS`, and `diff_paths:CONTENT_ERRORS`, named whole in
   the handler, and the readers each module names, such as `json_reader:CONTENT_READERS`; `review_io:CONTENT_ERRORS`
-  and `file_presence:NotAFile`; and `review_io:PersistenceError`, the family of `review_io:read_json`, which the
-  content-errors policy's `tests.validation.python_checks:core_reader_families` names for that reader.
+  and `file_presence:NotAFile`; `review_io:PersistenceError`, the family of `review_io:read_json`, which the
+  content-errors policy's `tests.validation.python_checks:core_reader_families` names for that reader; and
+  `deployer.journal:RECOVERY_FAILURES`, every failure a recovery step meets that a rerun would meet again.
 - **Guard:** `tests/validation/python_checks.py::PythonChecksPolicies::test_each_handler_around_a_reader_catches_its_whole_content_family`,
   `tests/malformed_input/test_malformed_input.py::test_each_reader_refuses_or_documents_accepting_each_case`,
   `tests/validation/python_checks.py::PythonChecksPolicies::test_json_reader_is_the_one_parse_of_json`,
-  `tests/validation/test_python_checks.py::test_content_errors_policy_reads_read_json_as_raising_persistence_error`
+  `tests/validation/test_python_checks.py::test_content_errors_policy_reads_read_json_as_raising_persistence_error`,
+  `tests/deployer/test_recovery_migration.py::RecoveryFailureTests::test_each_failure_other_than_an_os_error_a_rerun_repeats_sends_a_committed_run_to_the_manual_steps`
 - **Search for:** `except json.JSONDecodeError`, `except UnicodeDecodeError:`, or `except tomllib.TOMLDecodeError:`
   around a reader that raises more; `except ValueError` near an `xml_reader`, `tomllib`, or `csv.` call; an `except X`
   around a helper that raises a class outside `X`; an `except (`, `OSError`, or `ValueError` around a
-  `validate_record_pair` or `read_json` call with no `PersistenceError` beside it.
-- **Examples:** #1634, #1816, #1874, #2221
+  `validate_record_pair` or `read_json` call with no `PersistenceError` beside it; `.encode("utf-8")` of a name read
+  from disk with no handler, which raises `UnicodeEncodeError` for a lone surrogate or a surrogate escape.
+- **Examples:** #1634, #1816, #1874, #2221, #2294
 
 ### A result cut short says it was cut
 
@@ -182,8 +185,8 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
 - **Why:** A listing cut at its limit otherwise reads as the whole set, and what lies past the cut is never judged.
 - **Use:** `github_client:GitHubClient.capped_list`, which asks gh for one more item than its limit and says whether
   GitHub held more; `bounded_process:run_bounded`, `pr_status:_list_pulls`, `audit_repository:duplicates`,
-  `review_guidance:overlaps`, `tools.mutation_gate:unfinished_line`, and `review_github:PullFiles.cut`, which says
-  whether a pull request's file listing holds the files it changes.
+  `review_guidance:overlaps`, `tools.mutation_gate:unfinished_line`, `deployer.plan:reported_diff`, and
+  `review_github:PullFiles.cut`, which says whether a pull request's file listing holds the files it changes.
 - **Guard:** `tests/validation/python_checks.py::PythonChecksPolicies::test_no_gh_listing_is_capped_outside_the_client`,
   which refuses a limit passed to gh by hand outside the GitHub client unless its module states why,
   `skills/ejryan89-skill-core/scripts/test_github_client.py::CappedListTests`,
@@ -191,13 +194,14 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   `skills/review-insights/scripts/test_review_guidance.py::ReportTests::test_a_search_that_stops_at_its_budget_is_named_in_a_fact_line_and_the_input`,
   `tests/tools/test_mutation_gate.py::SummaryFixtures::test_a_run_the_cap_cut_short_says_so_on_its_first_line_naming_each_module_and_its_counts`,
   `skills/review-document/scripts/test_review_document.py::PullRequestTests::test_a_file_listing_shorter_than_the_files_the_pull_request_changes_fails_before_any_document_is_read`,
-  `skills/ejryan89-code-review-core/scripts/test_adversarial_inputs.py::ChangeSizeTests::test_a_file_listing_cut_short_or_read_at_a_moved_head_is_refused_by_each_of_its_readers`
+  `skills/ejryan89-code-review-core/scripts/test_adversarial_inputs.py::ChangeSizeTests::test_a_file_listing_cut_short_or_read_at_a_moved_head_is_refused_by_each_of_its_readers`,
+  `tests/deployer/test_plan.py::UnmanagedDiffTests`
 - **Search for:** `"--limit"` in a `gh` call whose result is never compared with the limit; a pull request's
   `pulls/<n>/files` pages read outside `review_github:GitHubClient.list_pull_files`, or its `PullFiles` used without
   comparing `files` with `changed`, since GitHub's files API lists at most 3,000; a slice such as
   `[:MAX_RELATED_TESTS]` or `rg -n "\[:[A-Z_a-z]*(LIMIT|MAX|BUDGET|CAP)[A-Z_a-z]*\]"` with no flag beside it; a
   `break` on a counter in a loop that returns no sign it stopped.
-- **Examples:** #1845, #1857, #1864, #1891, #2220
+- **Examples:** #1845, #1857, #1864, #1891, #2213, #2220
 
 ### One source that cannot be read costs only its own findings
 
