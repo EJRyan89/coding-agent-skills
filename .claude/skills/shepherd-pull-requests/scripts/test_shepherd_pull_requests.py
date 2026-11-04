@@ -4,6 +4,7 @@ import contextlib
 import dataclasses
 import importlib
 import io
+import itertools
 import json
 import os
 import re
@@ -1771,6 +1772,20 @@ class MergedTest(FixtureTestCase):
             [f'MERGED #8 worktree "{done.as_posix()}" branch fix/done'],
             [line for line in lines if line.startswith("MERGED")],
         )
+
+    def test_only_an_open_pull_request_of_this_repository_holds_a_merged_worktree_s_line_back(self) -> None:
+        done = self.add_worktree("done", "fix/done")
+        pushed = self.commit_in(done, "done")
+        merged = [{"number": 8, "headRefName": "fix/done", "headRefOid": pushed}]
+        line = f'MERGED #8 worktree "{done.as_posix()}" branch fix/done'
+        # An open pull request naming the worktree's branch, or holding its head, by each draft state.
+        openings = {"its branch's name": ("fix/done", OTHER), "its head": ("fix/elsewhere", pushed)}
+        for (how, (branch, head)), cross, draft in itertools.product(openings.items(), (True, False), (False, True)):
+            with self.subTest(how=how, cross=cross, draft=draft):
+                opened = pull(40, cross=cross, draft=draft, branch=branch, head=head)
+                _, lines = self.tick(StubGh([opened], merged=merged), dry_run=True)
+                found = [each for each in lines if each.startswith("MERGED")]
+                self.assertEqual([] if not cross else [line], found, lines)
 
     def commit_in(self, directory: Path, name: str) -> str:
         (directory / f"{name}.md").write_text(f"{name}\n", encoding="utf-8")

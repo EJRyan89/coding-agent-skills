@@ -82,6 +82,15 @@ class ContractValueReaders(unittest.TestCase):
                 '# The tools.\nGH = (2, 48, 0)\nT = Tool(name="gh", label="gh", locate=locate, minimum=GH)\n',
             ),
         )
+        # A provider's name or floor moved into a constant inside the dict is the same floor.
+        self.assertEqual(
+            [],
+            changed(
+                "deployer/tools.py",
+                'T = Tool("pdftotext", "pdftotext", locate, provider_minimum={"xpdf": (4, 6)})\n',
+                'X = "xpdf"\nXPDF = (4, 6)\nT = Tool("pdftotext", "pdftotext", locate, provider_minimum={X: XPDF})\n',
+            ),
+        )
 
 
 TOOL = "@dataclass\nclass Tool:\n    name: str\n    label: str\n    locate: object\n    version_arguments: tuple\n"
@@ -113,6 +122,12 @@ TOOL = "@dataclass\nclass Tool:\n    name: str\n    label: str\n    locate: obje
             "MINIMUM_PYTHON: tuple[int, ...] = (3, 11, 4)\n",
             "MINIMUM_PYTHON: tuple[int, ...] = (3, 12, 0)\n",
             id="an annotated floor",
+        ),
+        pytest.param(
+            "deployer/tools.py",
+            'XPDF = (4, 6)\nT = Tool("pdftotext", "pdftotext", locate, provider_minimum={"xpdf": XPDF})\n',
+            'XPDF = (4, 7)\nT = Tool("pdftotext", "pdftotext", locate, provider_minimum={"xpdf": XPDF})\n',
+            id="a provider's floor raised in a constant inside the dict",
         ),
         # The control: a floor by keyword, as the check always read one.
         pytest.param(

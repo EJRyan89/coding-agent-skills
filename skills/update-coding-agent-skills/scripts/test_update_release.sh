@@ -253,6 +253,151 @@ grep -qx "CROSSED unknown..v6.0.0" <<<"$OUTPUT" ||
   fail "release from no deployed commit accepted: crossing not named: $OUTPUT"
 expect_deployed "release from no deployed commit accepted" "--all --at refs/tags/v6.0.0"
 
+# A deployed commit the clone does not hold, as one on a branch since deleted and pruned, is named on a NOT_IN_CLONE line
+# wherever the update would read it, never read as one the release adds nothing to and drops nothing from: its release
+# cannot be read, so the release channel stops at any release as with no deployed commit, and once --cross-major
+# accepts it the update lists the commits the release adds to local main.
+begin_case 'release from a deployed commit the clone does not hold'
+LOST=0123456789abcdef0123456789abcdef01234567
+! git -C "$CLONE" cat-file -e "$LOST" 2>/dev/null || fail "release from a lost commit: the clone holds $LOST"
+BEFORE=$(git -C "$CLONE" rev-parse HEAD)
+publish "seventh major"
+tag_upstream v7.0.0
+printf '%s\n' "$LOST" >"$CLONE/.fake-deployed"
+run_subject "$CLONE" release
+expect_status 1 "release from a lost commit"
+expect_first_line "MAJOR_UPDATE unknown..v7.0.0" "release from a lost commit"
+expect_no_stderr "release from a lost commit"
+[ "$(printf '%s\n' "$OUTPUT" | sed -n 2p)" = "NOT_IN_CLONE $LOST" ] ||
+  fail "release from a lost commit: NOT_IN_CLONE does not follow MAJOR_UPDATE: $OUTPUT"
+grep -q " seventh major$" <<<"$OUTPUT" || fail "release from a lost commit: the release's commit not listed: $OUTPUT"
+[ "$(git -C "$CLONE" rev-parse HEAD)" = "$BEFORE" ] || fail "release from a lost commit: main moved"
+expect_not_deployed "release from a lost commit"
+run_subject "$CLONE" release --cross-major
+expect_status 0 "release from a lost commit accepted"
+expect_first_line "UPDATED unknown..v7.0.0" "release from a lost commit accepted"
+expect_no_stderr "release from a lost commit accepted"
+[ "$(printf '%s\n' "$OUTPUT" | sed -n 2p)" = "NOT_IN_CLONE $LOST" ] ||
+  fail "release from a lost commit accepted: NOT_IN_CLONE does not follow UPDATED: $OUTPUT"
+grep -q " seventh major$" <<<"$OUTPUT" || fail "release from a lost commit accepted: commit not listed: $OUTPUT"
+if grep -q "NOT_IN_RELEASE" <<<"$OUTPUT"; then
+  fail "release from a lost commit accepted: claimed what the release drops from a commit it cannot read: $OUTPUT"
+fi
+grep -qx "CROSSED unknown..v7.0.0" <<<"$OUTPUT" || fail "release from a lost commit accepted: crossing not named: $OUTPUT"
+expect_deployed "release from a lost commit accepted" "--all --at refs/tags/v7.0.0"
+
+# A list of commits git cannot read, here because the clone's configuration names a date format git log refuses, is an
+# UNLISTED line naming the range and git's error in its place, never an empty list: the release's added commits, and
+# in place of NOT_IN_RELEASE, the commits it may drop.
+begin_case 'commits git cannot list'
+V7=$(git -C "$SEED" rev-parse "v7.0.0^{commit}")
+publish "seven one"
+tag_upstream v7.1.0
+git_quiet -C "$CLONE" config log.date bogus
+run_subject "$CLONE" release
+git_quiet -C "$CLONE" config --unset log.date
+expect_status 0 "commits git cannot list"
+expect_first_line "UPDATED $(git -C "$CLONE" rev-parse --short "$V7")..v7.1.0" "commits git cannot list"
+expect_no_stderr "commits git cannot list"
+for RANGE in "$V7..refs/tags/v7.1.0" "refs/tags/v7.1.0..$V7"; do
+  grep -qx "UNLISTED $RANGE fatal: unknown date format bogus" <<<"$OUTPUT" ||
+    fail "commits git cannot list: no UNLISTED line for $RANGE: $OUTPUT"
+done
+if grep -q "NOT_IN_RELEASE" <<<"$OUTPUT"; then
+  fail "commits git cannot list: claimed what the release drops from a list git could not read: $OUTPUT"
+fi
+expect_deployed "commits git cannot list" "--all --at refs/tags/v7.1.0"
+
+# A git that fails where the update reads it ends the update with a FAILED line naming what it could not read, or an
+# UNLISTED line in place of a list, never an empty answer. A stand-in for git, first on the update's PATH, runs git
+# itself for every call, and for a call whose arguments hold one of the |-separated forms in FAKE_GIT_FAIL, from its
+# FAKE_GIT_FAIL_NTH matching call on (the first by default), runs it against another repository, so the failure and
+# its words are real git's: a form written as <form>=><git dir> runs in that git dir, and any other in one that does
+# not exist.
+REAL_GIT=$(command -v git)
+SHIM="$FIXTURE/git-shim"
+mkdir -p "$SHIM"
+cat >"$SHIM/git" <<'EOF'
+#!/usr/bin/env bash
+IFS='|' read -r -a entries <<<"${FAKE_GIT_FAIL:-}"
+for entry in "${entries[@]}"; do
+  form=${entry%%=>*}
+  directory=$FAKE_GIT_MISSING
+  [[ "$entry" != *"=>"* ]] || directory=${entry#*=>}
+  if [[ " $* " == *" $form "* ]]; then
+    count=$(($(cat "$FAKE_GIT_COUNT" 2>/dev/null || echo 0) + 1))
+    echo "$count" >"$FAKE_GIT_COUNT"
+    if [ "$count" -ge "${FAKE_GIT_FAIL_NTH:-1}" ]; then
+      GIT_DIR=$directory exec "$REAL_GIT" "$@"
+    fi
+  fi
+done
+exec "$REAL_GIT" "$@"
+EOF
+chmod +x "$SHIM/git"
+export REAL_GIT
+export FAKE_GIT_MISSING="$FIXTURE/no-repository.git"
+NOT_A_REPOSITORY="fatal: not a git repository: "
+# A repository with no commit, where HEAD names a branch that does not exist yet.
+UNBORN="$FIXTURE/unborn.git"
+git_quiet init --bare -b main "$UNBORN"
+failing_git() {
+  local forms=$1 nth=$2
+  shift 2
+  export FAKE_GIT_COUNT="$FIXTURE/git-shim-count"
+  rm -f -- "$FAKE_GIT_COUNT"
+  PATH="$SHIM:$PATH" FAKE_GIT_FAIL=$forms FAKE_GIT_FAIL_NTH=$nth run_subject "$@"
+}
+V71=$(git -C "$SEED" rev-parse "v7.1.0^{commit}")
+[ "$(recorded_line 1)" = "$V71" ] || fail "git failures: the case starts from v7.1.0, not $(recorded_line 1)"
+
+# A lookup of the deployed commit that fails other than with git's quiet "no such commit" is a FAILED line, never a
+# commit the clone lacks.
+begin_case 'deployed commit git cannot look up'
+failing_git "rev-parse --verify --quiet $V71^{commit}" 1 "$CLONE" release
+expect_failed "FAILED cannot look up the deployed commit $V71: $NOT_A_REPOSITORY" \
+  "deployed commit git cannot look up"
+expect_not_deployed "deployed commit git cannot look up"
+
+# The major stop lists the commits from the deployed commit, and a lookup of it there that git cannot answer is an
+# UNLISTED line in place of the list.
+begin_case 'major stop list git cannot read'
+publish "eighth major"
+tag_upstream v8.0.0
+failing_git "rev-parse --verify --quiet $V71^{commit}" 2 "$CLONE" release
+expect_status 1 "major stop list git cannot read"
+expect_first_line "MAJOR_UPDATE v7.1.0..v8.0.0" "major stop list git cannot read"
+case "$(printf '%s\n' "$OUTPUT" | sed -n 2p)" in
+  "UNLISTED $V71..refs/tags/v8.0.0 $NOT_A_REPOSITORY"*) ;;
+  *) fail "major stop list git cannot read: no UNLISTED line in place of the list: $OUTPUT" ;;
+esac
+[ "$(printf '%s\n' "$OUTPUT" | wc -l | tr -d ' ')" = "2" ] || fail "major stop list git cannot read: more lines: $OUTPUT"
+expect_not_deployed "major stop list git cannot read"
+
+# A short name git cannot give, of main before or after the fast-forward or of the deployed commit, ends the update
+# with a FAILED line naming it, never an UPDATED line with an empty end.
+begin_case 'short names git cannot give'
+for SITE in "rev-parse --short HEAD|1|main before the fast-forward" \
+  "rev-parse --short HEAD|2|main after the fast-forward" \
+  "rev-parse --short $V71|1|the deployed commit $V71"; do
+  IFS='|' read -r FORM NTH WHAT <<<"$SITE"
+  failing_git "$FORM" "$NTH" "$CLONE" release --cross-major
+  expect_failed "FAILED cannot read the short name of $WHAT: $NOT_A_REPOSITORY" "short name of $WHAT"
+  expect_not_deployed "short name of $WHAT"
+done
+
+# A clone whose branch and commit git cannot name stops before the checkout, on the branch it was found on, with
+# git's reason: here the branch lookup fails, and the commit lookup meets a HEAD that names no commit yet, which git
+# explains only without --quiet.
+begin_case 'branch git cannot name'
+git_quiet -C "$CLONE" checkout -q -b aside
+failing_git "symbolic-ref --quiet --short HEAD|rev-parse --verify HEAD=>$UNBORN" 1 "$CLONE" release --cross-major
+expect_failed "FAILED cannot read the branch or the commit the clone is on: fatal: Needed a single revision" \
+  "branch git cannot name"
+[ "$(git -C "$CLONE" branch --show-current)" = "aside" ] || fail "branch git cannot name: the clone left its branch"
+expect_not_deployed "branch git cannot name"
+git_quiet -C "$CLONE" checkout -q main
+
 # Without a release tag on origin/main the release channel has nothing to deploy: it stops after the fetch, and the
 # main channel still follows main.
 begin_case 'no release'

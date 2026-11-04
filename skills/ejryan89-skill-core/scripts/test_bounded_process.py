@@ -399,6 +399,37 @@ class BoundedProcessTests(unittest.TestCase):
         self.assertEqual(set(), set(REPOSITORY_SELECTING) & set(seen))
         self.assertEqual(CONFIGURING, {name: seen.get(name) for name in CONFIGURING})
 
+    def test_each_repository_selecting_variable_in_a_given_environment_is_left_out_whatever_its_value(self) -> None:
+        # A given environment may be built from another process's, such as a hook's, so a variable in it is never one
+        # the caller chose: each is left out, GIT_INDEX_FILE too, at a value this process did not inherit.
+        base = bounded_process.without_repository_variables(os.environ)
+        for name in REPOSITORY_SELECTING:
+            with self.subTest(variable=name):
+                given = {**base, name: "a value another process set"}
+                seen = json.loads(run_bounded([sys.executable, "-c", GIT_VARIABLES_PROGRAM], 60, env=given).stdout)
+                self.assertNotIn(name, seen)
+
+    def test_the_index_file_keyword_alone_names_the_commands_index(self) -> None:
+        # index_file is the one way to set GIT_INDEX_FILE: it names the index whatever an environment, given or
+        # inherited, holds, and without it none reaches the command.
+        program = [sys.executable, "-c", GIT_VARIABLES_PROGRAM]
+        index = Path(tempfile.gettempdir()) / "a throwaway index"
+        with mock.patch.dict(os.environ, {"GIT_INDEX_FILE": "an inherited index"}):
+            rows = {
+                "no environment given": (None, index, str(index)),
+                "an environment holding another": ({**os.environ, "GIT_INDEX_FILE": "another"}, index, str(index)),
+                "no keyword, an inherited one": (None, None, None),
+                "no keyword, a given one": ({**os.environ, "GIT_INDEX_FILE": "another"}, None, None),
+            }
+            for row, (given, index_file, expected) in rows.items():
+                with self.subTest(row=row):
+                    finished = run_bounded(program, 60, env=given, index_file=index_file)
+                    self.assertEqual(expected, json.loads(finished.stdout).get("GIT_INDEX_FILE"))
+
+    def test_the_variable_the_keyword_sets_is_the_index_file(self) -> None:
+        self.assertEqual("GIT_INDEX_FILE", bounded_process.INDEX_FILE_VARIABLE)
+        self.assertIn(bounded_process.INDEX_FILE_VARIABLE, bounded_process.REPOSITORY_VARIABLES)
+
     def test_a_command_started_with_the_default_environment_sees_no_repository_selecting_variable(self) -> None:
         program = "import os; print(sorted(name for name in os.environ if name.upper().startswith('GIT_')))"
         with mock.patch.dict(os.environ, {"GIT_DIR": "elsewhere", "GIT_INDEX_FILE": "another index"}):

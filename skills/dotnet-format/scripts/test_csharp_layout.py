@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import ast
 import contextlib
 import errno
 import io
 import json
 import os
+import re
 import stat
 import sys
 import tempfile
@@ -422,6 +424,36 @@ class FileTests(unittest.TestCase):
         ):
             layout.read_source(path)
         self.assertEqual("it cannot be read: Permission denied", str(raised.exception))
+
+    def test_a_listed_file_that_cannot_be_read_is_unreadable_and_the_rest_are_checked_as_the_docstring_says(
+        self,
+    ) -> None:
+        # The module docstring names a file the script cannot read among the UNREADABLE ones, and the run goes on.
+        doc = " ".join((layout.__doc__ or "").split())
+        self.assertIn("`UNREADABLE <file> <reason>` per listed file it cannot read", doc)
+        self.assertIn("a listed file it cannot read is UNREADABLE instead, and the run goes on", doc)
+        held = self.root / "Held.cs"
+        held.write_bytes(b"class A {}\n")
+        (self.root / "Good.cs").write_bytes(b"#region R\n\n#endregion R\n")
+        file_list = self.file_list("Held.cs", "Good.cs")
+        read_bytes = Path.read_bytes
+
+        def locked(path: Path) -> bytes:
+            if path == held:
+                raise PermissionError(errno.EACCES, "The process cannot access the file")
+            return read_bytes(path)
+
+        with mock.patch.object(Path, "read_bytes", autospec=True, side_effect=locked):
+            status, lines = self.main("check", "--repo-root", str(self.root), "--file-list", str(file_list))
+        self.assertEqual(1, status)
+        self.assertEqual(
+            [
+                ["UNREADABLE", "Held.cs", "it cannot be read: The process cannot access the file"],
+                ["VIOLATION", "Good.cs", "3", "warning", "endregion-description"],
+                ["SUMMARY", "1", "1", "endregion-description"],
+            ],
+            [fields[:5] for fields in lines],
+        )
 
     def test_a_listed_file_that_does_not_exist_fails_before_any_check_or_fix(self) -> None:
         fixable = self.root / "Fixable.cs"
@@ -959,6 +991,9 @@ class ConfigTests(unittest.TestCase):
             ({"Analyzer": [{"Filename": "Roslynator.Formatting.Analyzers", "Extension": ".dll"}]}, "present"),
             ({"Analyzer": [{"Filename": "Roslynator.Formatting.Analyzers.CodeFixes"}]}, "missing"),
             ({"PackageReference": [{"Identity": "Roslynator.Analyzers"}]}, "missing"),
+            # NuGet compares ids ordinally ignoring case, so a long s or a Kelvin sign names another package.
+            ({"PackageReference": [{"Identity": "Ro\u017flynator.Formatting.Analyzers"}]}, "missing"),
+            ({"Analyzer": [{"Filename": "Roslynator.Formatting.Analyzer\u017f"}]}, "missing"),
         )
         for items, state in cases:
             with self.subTest(items=items):
@@ -1084,6 +1119,17 @@ class ConfigTests(unittest.TestCase):
             ("", "present"),
             ("global_level = 99\n", "present"),
             ("global_level = high\n", "present"),
+            # The compiler reads the level with .NET's int.TryParse, which takes a sign and ASCII digits alone, within
+            # a 32-bit integer; any other spelling sets no level, so the file keeps its default of 0.
+            ("global_level = +200\n", "other:none"),
+            ("global_level = 0200\n", "other:none"),
+            ("global_level = -5\n", "present"),
+            ("global_level = 2_00\n", "present"),
+            ("global_level = ٢٠٠\n", "present"),
+            ("global_level = 2147483647\n", "other:none"),
+            ("global_level = 2147483648\n", "present"),
+            ("global_level = 2e2\n", "present"),
+            ("global_level = 2 00\n", "present"),
         )
         for level, state in cases:
             with self.subTest(level=level):
@@ -1094,6 +1140,76 @@ class ConfigTests(unittest.TestCase):
         added = self.added()
         self.assertEqual({".editorconfig"}, {target for target, _, _ in added}, "a global file is no chain member")
         self.assertTrue(inner.read_text(encoding="utf-8").startswith("is_global = true\n"))
+
+    def test_a_negative_global_level_is_read_with_its_sign_down_to_the_32_bit_floor(self) -> None:
+        # The inner global file sets no level, so it is at 0, and wins only over a .globalconfig whose level is read as
+        # below 0: a reader that drops the sign reads -200 as 200, and one past the floor keeps the default 100.
+        inner = self.root / "src" / "App" / ".editorconfig"
+        inner.write_text("is_global = true\ndotnet_diagnostic.RCS0063.severity = none\n", encoding="utf-8")
+        cases = (
+            ("global_level = -200\n", "other:none"),
+            ("global_level = -2147483648\n", "other:none"),
+            ("global_level = -2147483649\n", "present"),
+            ("global_level = 1\n", "present"),
+        )
+        for level, state in cases:
+            with self.subTest(level=level):
+                (self.root / ".globalconfig").write_text(
+                    f"{level}dotnet_diagnostic.RCS0063.severity = warning\n", encoding="utf-8"
+                )
+                self.assertEqual(state, self.severity("RCS0063"))
+
+    def test_keys_and_values_are_lowered_as_the_compiler_lowers_them_never_case_folded(self) -> None:
+        # The compiler lowers a key one character for one, so a key spelled with a long s, which Unicode case folding
+        # reads as s, names another setting; ASCII case alone is ignored, in keys and in the values compared.
+        editorconfig = self.root / ".editorconfig"
+        cases = (
+            ("DOTNET_DIAGNOSTIC.RCS0063.SEVERITY = WARNING\n", "present"),
+            ("dotnet_diagno\u017ftic.RCS0063.severity = warning\n", "missing"),
+            ("dotnet_diagnostic.RCS0063.severity = \u017fuggestion\n", "other:\u017fuggestion"),
+            # A dotted capital I lowers to i, as the compiler special-cases it, so this key names the setting.
+            ("dotnet_d\u0130agnostic.RCS0063.severity = warning\n", "present"),
+            # Another capital beyond ASCII lowers one for one, so the value is read as its lowercase.
+            ("dotnet_diagnostic.RCS0063.severity = \u00c9rror\n", "other:\u00e9rror"),
+            # A character beyond the 16-bit range is two surrogates to .NET, which it does not lower.
+            ("dotnet_diagnostic.RCS0063.severity = \U00010400x\n", "other:\U00010400x"),
+        )
+        for line, state in cases:
+            with self.subTest(line=line):
+                editorconfig.write_text(f"root = true\n\n[*.cs]\n{line}", encoding="utf-8")
+                self.assertEqual(state, self.severity("RCS0063"))
+
+    def test_a_character_is_lowered_one_for_one_as_the_compiler_lowers_it(self) -> None:
+        # Python's lowercase of a dotted capital I is two characters; the compiler's is i. A character whose Python
+        # lowercase is several characters otherwise stays itself, and so does one beyond the 16-bit range.
+        cases = (
+            ("\u0130", "i"),
+            ("A\u00c9", "a\u00e9"),
+            ("\U00010400", "\U00010400"),
+            ("\u017f\u00df", "\u017f\u00df"),
+            ("I", "i"),
+        )
+        for text, lowered in cases:
+            with self.subTest(text=text):
+                self.assertEqual(lowered, layout.roslyn_lower(text))
+
+    def test_an_editorconfig_that_sets_is_global_to_any_value_is_a_global_config(self) -> None:
+        # The compiler asks only whether the preamble holds the key, so `is_global = false` makes the file global too:
+        # its preamble then reaches every file, as a global config's does, and it ends no .editorconfig chain.
+        (self.root / ".globalconfig").write_text("dotnet_diagnostic.RCS0063.severity = warning\n", encoding="utf-8")
+        inner = self.root / "src" / "App" / ".editorconfig"
+        for value in ("true", "false", "no"):
+            with self.subTest(value=value):
+                inner.write_text(
+                    f"is_global = {value}\nglobal_level = 200\ndotnet_diagnostic.RCS0063.severity = none\n",
+                    encoding="utf-8",
+                )
+                self.assertEqual("other:none", self.severity("RCS0063"))
+        self.assertFalse(
+            layout.AnalyzerConfig(Path("src/.globalconf\ufb01g"), {}, []).named_global,
+            "a name the compiler compares ordinally is no .globalconfig through a ligature",
+        )
+        self.assertTrue(layout.AnalyzerConfig(Path("src/.GlobalConfig"), {}, []).named_global)
 
     def test_a_global_configs_section_applies_only_to_the_file_whose_absolute_path_it_names(self) -> None:
         program = (self.root / "src" / "App" / "Program.cs").as_posix()
@@ -1672,3 +1788,62 @@ class CheckFilesPresenceTests(unittest.TestCase):
         with stat_failing_at(self.root / "A.cs"), self.assertRaises(PermissionError) as raised:
             self.check("A.cs")
         self.assertEqual(str(self.root / "A.cs"), raised.exception.filename)
+
+
+SCRIPTS = Path(__file__).resolve().parent
+# A status word as a docstring names one: opening a backquoted line, as in `FAILED <reason>`, or heading a row of a
+# table of lines indented by four spaces.
+DOCUMENTED_WORD = re.compile(r"`([A-Z][A-Z_]{2,})\b|^ {4}([A-Z][A-Z_]{2,})\s", re.MULTILINE)
+PRINTED_WORD = re.compile(r"([A-Z][A-Z_]{2,})(?: |$)")
+
+
+def documented_words(source: str) -> set[str]:
+    """The status words a module's docstring names."""
+    doc = ast.get_docstring(ast.parse(source), clean=False) or ""
+    return {backquoted or tabled for backquoted, tabled in DOCUMENTED_WORD.findall(doc)}
+
+
+def printed_words(source: str) -> set[str]:
+    """The status words a module prints: the first argument of each `fact_line` call, and the word a text passed to
+    `print` or `emit` opens with."""
+    words: set[str] = set()
+    for node in ast.walk(ast.parse(source)):
+        if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Name) or not node.args:
+            continue
+        first = node.args[0]
+        if node.func.id == "fact_line" and isinstance(first, ast.Constant) and isinstance(first.value, str):
+            words.add(first.value)
+        elif node.func.id in ("print", "emit"):
+            opening = first.values[0] if isinstance(first, ast.JoinedStr) and first.values else first
+            if isinstance(opening, ast.Constant) and isinstance(opening.value, str):
+                words.update(PRINTED_WORD.findall(opening.value)[:1])
+    return words
+
+
+def printed_by(module: str) -> set[str]:
+    """The status words a script prints, itself or through a sibling script whose functions it calls."""
+    source = (SCRIPTS / f"{module}.py").read_text(encoding="utf-8")
+    siblings = {
+        node.module
+        for node in ast.walk(ast.parse(source))
+        if isinstance(node, ast.ImportFrom) and node.module and (SCRIPTS / f"{node.module}.py").is_file()
+    }
+    words = printed_words(source)
+    for sibling in siblings:
+        words |= printed_words((SCRIPTS / f"{sibling}.py").read_text(encoding="utf-8"))
+    return words
+
+
+@pytest.mark.parametrize("module", ["csharp_layout", "dotnet_format_targets", "run_dotnet_format"])
+def test_each_status_word_a_scripts_docstring_names_is_one_it_prints(module: str) -> None:
+    named = documented_words((SCRIPTS / f"{module}.py").read_text(encoding="utf-8"))
+    assert "FAILED" in named, "the docstring names its failure line"
+    assert named - printed_by(module) == set()
+
+
+def test_a_docstring_naming_a_status_word_nothing_prints_is_told_apart() -> None:
+    source = (
+        '"""It prints `DONE <file>`, `GHOST <file>`, and:\n\n    TABLED <x>\n"""\n'
+        'print(fact_line("DONE", name))\nprint(f"TABLED {x}")\n'
+    )
+    assert documented_words(source) - printed_words(source) == {"GHOST"}

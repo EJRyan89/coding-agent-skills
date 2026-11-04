@@ -319,3 +319,21 @@ class RuntimePromptsTestCase(unittest.TestCase):
         ):
             runtime_prompts.copilot_entrypoint(self.root / "copilot")
         self.assertFalse((self.root / "copilot" / "run").exists())
+
+
+class PullRecordTests(unittest.TestCase):
+    """A fixture's pull request record is refused, naming the file and why, unless it is a JSON object."""
+
+    def test_a_record_that_is_not_json_or_not_an_object_is_refused_naming_the_file(self) -> None:
+        root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        record = root / "pull.json"
+        for text, message in (
+            ("{", "cannot read pull.json: "),
+            ("[]", "pull.json is not a JSON object"),
+        ):
+            record.write_text(text, encoding="utf-8")
+            with self.subTest(text=text), self.assertRaises(runtime_prompts.RenderError) as raised:
+                runtime_prompts.read_pull_record(record)
+            self.assertTrue(str(raised.exception).startswith(message), str(raised.exception))
+        record.write_text('{"number": 7}', encoding="utf-8")
+        self.assertEqual({"number": 7}, runtime_prompts.read_pull_record(record))
