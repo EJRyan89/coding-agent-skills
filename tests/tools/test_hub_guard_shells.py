@@ -1015,6 +1015,18 @@ OPTION_SPELLINGS: tuple[tuple[str, str, str], ...] = (
             's=abc; : "${s:POSIXLY_CORRECT=1}"; PROBE',
             'v=POSIXLY_CORRECT; let "$v=1"; PROBE',
             ": <<< $(( POSIXLY_CORRECT = 1 )); PROBE",
+            # A number joined to a name, a loop number made a reference and undone, an element of a loop number, what
+            # Bash sets itself, and a compound assignment's subscript.
+            "x1='POSIXLY_CORRECT=1'; for i in 1; do : $(( x$i )); done; PROBE",
+            "x1='POSIXLY_CORRECT=1'; for i in 1; do : $(( x${i} )); done; PROBE",
+            "x1='POSIXLY_CORRECT=1'; set -- a; : $(( x$# )); PROBE",
+            "v='POSIXLY_CORRECT=1'; for i in 1; do declare -n i=v; declare +n i; : $(( i )); done; PROBE",
+            "i=(0 'POSIXLY_CORRECT=1'); for i in 1; do : $(( i[1] )); done; PROBE",
+            ": 'POSIXLY_CORRECT=1'; : $(( $_ )); PROBE",
+            "getopts a: o -a POSIXLY_CORRECT=1; : $(( OPTARG )); PROBE",
+            "[[ POSIXLY_CORRECT=1 =~ (.*) ]]; : $(( BASH_REMATCH )); PROBE",
+            "a=([POSIXLY_CORRECT=1]=x); PROBE",
+            "declare -a a=([POSIXLY_CORRECT=1]=x); PROBE",
         )
     ),
     *(

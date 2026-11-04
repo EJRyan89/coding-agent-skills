@@ -904,9 +904,58 @@ class ShellOptionTableTests(unittest.TestCase):
             ("read -r v; LINENO=$v; echo $((LINENO)); git status", True),
             ("RANDOM='POSIXLY_CORRECT=1'; echo $((RANDOM)); git status", True),
             ("a=(x); read -r k; echo $(( ${#a[k]} )); git status", True),
+            # A number joined to a name makes a name the text does not settle, whole operands do not.
+            ("x1='POSIXLY_CORRECT=1'; for i in 1 2; do echo $(( x$i )); done; git status", True),
+            ("x1='POSIXLY_CORRECT=1'; for i in 1 2; do echo $(( x${i} )); done; git status", True),
+            ("x1='POSIXLY_CORRECT=1'; for i in 1 2; do echo $(( ${i}x )); done; git status", True),
+            ("for i in 1 2; do (( x$i )); : ${a[x$i]}; done; git status", True),
+            ('for i in 1 2; do let "x$i"; done; git status', True),
+            ("for i in 1 2; do [[ x$i -eq 0 ]]; done; git status", True),
+            ("echo $(( x$# )); git status", True),
+            ("echo $(( x${#} )); git status", True),
+            ("echo $(( x${#a} )); git status", True),
+            ("echo $(( ${#a[@]}x )); git status", True),
+            ("for i in 1 2; do echo $(( $i + ${i} - $# * ${#a} )); done; git status", False),
+            # A loop number made a reference and undone, and an element of one.
+            (
+                "v='POSIXLY_CORRECT=1'; for i in 1 2; do declare -n i=v; declare +n i; echo $((i)); done; git status",
+                True,
+            ),
+            (
+                "v='POSIXLY_CORRECT=1'; for i in 1 2; do typeset -n i=v; typeset +n i; echo $((i)); done; git status",
+                True,
+            ),
+            ("for i in 1 2; do declare +n i; echo $((i)); done; git status", True),
+            ("i=(0 'POSIXLY_CORRECT=1'); for i in 1 2; do echo $(( i[1] )); done; git status", True),
+            ("for i in 1 2; do echo $(( i [0] )); done; git status", True),
+            # The variables Bash sets itself.
+            (": 'POSIXLY_CORRECT=1'; echo $(( $_ )); git status", True),
+            (": 'POSIXLY_CORRECT=1'; echo $(( _ )); git status", True),
+            ("getopts a: o; echo $(( OPTARG )); git status", True),
+            ("[[ $v =~ (.*) ]]; echo $(( BASH_REMATCH )); git status", True),
+            ("select x in a; do echo $(( REPLY )); done; git status", True),
+            ("mapfile < f; echo $(( MAPFILE )); git status", True),
+            ("echo $(( PWD + OLDPWD )); git status", True),
+            # A compound assignment's subscripts, before a command and as a declaration's argument.
+            ("a=([POSIXLY_CORRECT=1]=x); echo ok; git status", True),
+            ("declare -a a=([BASH_COMPAT=44]=x); git status", True),
+            ("a+=(x [k]=y); read -r k; b=([k]=z); git status", True),
+            ("a=(x [1]=y [k]=z); git status", False),
+            ("a+=([POSIXLY_CORRECT=1]=x); git status", True),
+            ("a=(x [POSIXLY_CORRECT=1]=y); git status", True),
+            # A digit that belongs to a name joins the number to it.
+            ("x11='POSIXLY_CORRECT=1'; for i in 1 2; do echo $(( x1$i )); done; git status", True),
+            # A quoted here-document's body is not expanded.
+            ("cat <<'END'\n$(( POSIXLY_CORRECT = 1 ))\nEND\ngit status", False),
         ):
             with self.subTest(command=command):
                 self.assertEqual(refused, bool(bash_reading(command).unread), bash_reading(command).unread)
+        # What Bash sets itself is unsettled, whatever the environment the shell starts with hands it.
+        for name in ("MAPFILE", "OLDPWD", "OPTARG", "REPLY", "_"):
+            with self.subTest(name=name):
+                reading = hub_guard.Reading({}, f"echo $(( {name} )); git status")
+                hub_guard.read_bash(f"echo $(( {name} )); git status", START, reading, 1, {name: "1"})
+                self.assertTrue(reading.unread)
         # A loop's number stays one after it, a copy's numbers are its own, and an unset one is no longer one.
         shell = hub_guard.Shell(None, {}, set(), numbers={"i"})
         self.assertEqual("0", hub_guard.settled_variable(shell, "i"))

@@ -429,7 +429,12 @@ refused while a guarded hub is in view, and what they do not see at all is named
   turn: an expansion or variable whose value the text does not settle, a substitution's output, or a `${ }` other than
   a plain name. A number the text does not settle is read as a number: a `for` loop's variable over words that are each
   a literal integer, `$#`, `$?`, `$$`, `$!`, a length (`${#NAME}`, `${#NAME[@]}`), and `RANDOM`, `SECONDS`, `LINENO`,
-  `BASHPID`, `PPID`, `UID`, and `EUID` while the text neither assigns nor unsets them. Nor can it read one that gives a variable the integer attribute (`declare -i` and the like), after
+  `BASHPID`, `PPID`, `UID`, and `EUID` while the text neither assigns nor unsets them. Each stands for itself only as
+  a whole operand: joined to a name, as in `x$i` or `x$#`, it makes a name the text does not settle. A loop's number
+  is its variable's first element alone, so a subscripted read of it, as `i[1]`, is unsettled, and making it a name
+  reference or undoing one ends it. The variables Bash sets itself from what a command is given, reads, or matches,
+  `_`, `OPTARG`, `BASH_REMATCH`, `REPLY`, `MAPFILE`, and the like, are unsettled. A compound array assignment's
+  element subscripts, as in `a=([k]=v)`, are arithmetic too. Nor can it read one that gives a variable the integer attribute (`declare -i` and the like), after
   which each assignment to it is arithmetic. A command that only names either variable, as
   `git log -S POSIXLY_CORRECT` does, is read as before. Each table names each option Bash lists and whether a shell
   holding it is one the guard reads: the guard follows allexport, reads a shell under an option that changes nothing

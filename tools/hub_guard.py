@@ -2200,6 +2200,9 @@ def declared_name(shell: Shell, name: str, value: str | None, referencing: bool 
     name reference, and otherwise the variable the name reaches. None when the declaration is done: a value given to
     a reference that stands for none names the variable it stands for, and a name that reaches a variable the text
     does not settle may be any variable."""
+    if referencing is not None:
+        # Making or undoing a name reference leaves the name holding no number the reader knows of.
+        shell.numbers.discard(name)
     if referencing:
         if value is None:
             value = shell.references[name] if name in shell.references else shell.variables.get(name, "")
@@ -2488,6 +2491,14 @@ ARITHMETIC_EXPANSION = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][
 NUMERIC_EXPANSION = re.compile(r"\$[#?$!]|\$\{[#?$!]\}|\$\{#[A-Za-z_][A-Za-z0-9_]*(?:\[[@*]\])?\}")
 INTEGER = re.compile(r"\s*[-+]?[0-9]+\s*")
 INTEGER_WORD = re.compile(r"[-+]?[0-9]+")
+NAME_CHARACTER = re.compile(r"[A-Za-z0-9_]")
+# The variables Bash sets itself from what a command is given, reads, matches, or runs, whatever the text assigns:
+# the last argument, getopts's value, a [[ =~ ]] match, read's and select's line, mapfile's lines, the command a trap
+# runs, the arguments, the function and file names, a coprocess, and the directories.
+BASH_SET_VARIABLES = {
+    *("_", "OPTARG", "BASH_REMATCH", "REPLY", "MAPFILE", "BASH_COMMAND", "BASH_EXECUTION_STRING"),
+    *("BASH_ARGV", "BASH_ARGV0", "BASH_SOURCE", "FUNCNAME", "COPROC", "PWD", "OLDPWD"),
+}
 # How deep arithmetic follows a variable whose value is itself an expression, which Bash evaluates in turn.
 ARITHMETIC_DEPTH = 8
 
@@ -2549,6 +2560,9 @@ def arithmetic_contexts(raw: str) -> list[str | None]:
     if head is not None:
         end = matching(raw, head.end() - 1)
         found.append(None if end is None else raw[head.end() : end])
+    compound = re.match(r"[A-Za-z_][A-Za-z0-9_]*\+?=\(", raw)
+    if compound is not None:
+        found.extend(compound_subscripts(raw[compound.end() :]))
     index, single = 0, False
     while index < len(raw):
         character = raw[index]
@@ -2573,6 +2587,17 @@ def arithmetic_contexts(raw: str) -> list[str | None]:
             index = end + 1
         else:
             index += 1
+    return found
+
+
+def compound_subscripts(elements: str) -> list[str | None]:
+    """The subscript of each element of a compound array assignment, NAME=([k]=v ...), as the text after its `(`
+    holds them: each [ ] that starts an element, which Bash evaluates as arithmetic for an indexed array; None for one
+    that does not close."""
+    found: list[str | None] = []
+    for start in (match.end() - 1 for match in re.finditer(r"(?:^|[\s(])\[", elements)):
+        end = matching(elements, start)
+        found.append(None if end is None else elements[start + 1 : end])
     return found
 
 
@@ -2602,14 +2627,20 @@ def arithmetic_hazard(expression: str | None, shell: Shell, depth: int = 0) -> s
     a variable whose value is an expression that does, followed to ARITHMETIC_DEPTH."""
     if expression is None or depth > ARITHMETIC_DEPTH:
         return "an arithmetic expression the guard does not read to its end"
-    text = NUMERIC_EXPANSION.sub("0", expression.replace("$((", "((").replace("$[", "["))
+    text = expression.replace("$((", "((").replace("$[", "[")
+    # A number the text does not settle stands for itself only as a whole operand: joined to a name, as in x$#, it
+    # makes a name the text does not settle either.
+    text = NUMERIC_EXPANSION.sub(lambda match: "\0" if joins_name(match) else "0", text)
     if "`" in text or "$(" in text:
         return "an arithmetic expression that holds a substitution's output"
 
     def expand(match: re.Match[str]) -> str:
-        value = settled_variable(shell, match.group(1) or match.group(2))
+        name = match.group(1) or match.group(2)
+        value = settled_variable(shell, name)
+        if value is None or (unsettled_number(shell, name) and joins_name(match)):
+            return "\0"
         # Bash puts the value in the expression as text, so it may name the variable an operator assigns.
-        return value if value is not None else "\0"
+        return value
 
     text = ARITHMETIC_EXPANSION.sub(expand, text)
     if "\0" in text or "$" in text:
@@ -2618,9 +2649,12 @@ def arithmetic_hazard(expression: str | None, shell: Shell, depth: int = 0) -> s
     if found is not None:
         name = found.group(1) or found.group(2)
         return f"an arithmetic assignment to {name}, which turns on {OPTION_SETTING_VARIABLES[name]}"
-    for name in dict.fromkeys(ARITHMETIC_NAME.findall(text)):
+    for match in ARITHMETIC_NAME.finditer(text):
+        name = match.group()
         value = settled_variable(shell, name)
-        if value is None:
+        # A subscript reads an element, which a number the text does not settle, set in its first alone, leaves open.
+        subscripted = text[match.end() :].lstrip().startswith("[")
+        if value is None or (subscripted and unsettled_number(shell, name)):
             return f"an arithmetic expression that evaluates {name}, whose value the text does not settle"
         if value and not INTEGER.fullmatch(value):
             reason = arithmetic_hazard(value, shell, depth + 1)
@@ -2632,13 +2666,27 @@ def arithmetic_hazard(expression: str | None, shell: Shell, depth: int = 0) -> s
 def settled_variable(shell: Shell, name: str) -> str | None:
     """A variable's value as arithmetic reads it, through any name reference: "" when it is unset, as Bash's own
     numbers, RANDOM, SECONDS, LINENO, BASHPID, PPID, UID, and EUID, are to the reader until the text assigns them;
-    "0" for one that holds a number the text does not settle (Shell.numbers); None when the text does not settle it."""
+    "0" for one that holds a number the text does not settle (Shell.numbers); None when the text does not settle it,
+    and for each variable Bash sets itself from what a command is given, reads, or matches (BASH_SET_VARIABLES)."""
     target = shell.target(name)
-    if target is None or shell.opaque:
+    if target is None or shell.opaque or target in BASH_SET_VARIABLES:
         return None
     if target in shell.numbers:
         return "0"
     return shell.variables.get(target, "")
+
+
+def unsettled_number(shell: Shell, name: str) -> bool:
+    """Whether a name reaches a variable that holds a number the text does not settle (Shell.numbers)."""
+    return shell.target(name) in shell.numbers
+
+
+def joins_name(match: re.Match[str]) -> bool:
+    """Whether an expansion stands beside a character a name may hold, so that its value joins that name."""
+    text, start, end = match.string, match.start(), match.end()
+    return bool(start and NAME_CHARACTER.match(text[start - 1])) or bool(
+        end < len(text) and NAME_CHARACTER.match(text[end])
+    )
 
 
 def shell_ps4(shell: Shell) -> tuple[Word, ...]:
