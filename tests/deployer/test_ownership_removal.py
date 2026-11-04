@@ -636,8 +636,12 @@ class UnlistedFolderTests(DeployerTestCase):
         with self.unlisted_scandir(), self.assertRaises(DeployError) as raised:
             hashing.find_link(self.skills_dir / "beta")
         self.assertEqual(
-            f"ERROR: Cannot list {forward(self.unlisted)} to hash it or check it for links: Permission denied",
-            raised.exception.lines[0],
+            (
+                f"ERROR: Cannot list {forward(self.unlisted)} to hash it or check it for links: Permission denied",
+                # Pinned against a literal: the step a user reads.
+                "Give your account read access to it, or move it out of the way, then rerun with --dry-run.",
+            ),
+            raised.exception.lines,
         )
 
     def test_a_deselected_skill_holding_a_folder_that_cannot_be_listed_is_refused_not_removed(self) -> None:
@@ -648,6 +652,50 @@ class UnlistedFolderTests(DeployerTestCase):
                 self.assertIn(f"ERROR: Cannot list {forward(self.unlisted)}", result.output)
                 self.assertEqual("kept by the user\n", (self.unlisted / "notes.txt").read_text(encoding="utf-8"))
                 self.assertIn("beta", self.owned("skills"))
+
+
+# A file name UTF-8 cannot encode: on Linux a byte that is not UTF-8, which Python reads as this surrogate escape, and
+# on Windows the lone surrogate itself, which NTFS holds.
+UNENCODABLE_NAME = "note\udcff.md"
+
+
+class UnencodableNameTests(DeployerTestCase):
+    """A deployed file whose name is not valid UTF-8 cannot be hashed: the dry run and the deployment refuse it as a
+    DeployError naming the item and the path, never an uncaught UnicodeEncodeError."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.make_source_json()
+        self.make_skill("alpha", "Alpha")
+        self.make_config()
+        self.deploy_ok("--all")
+        self.unencodable = self.skills_dir / "alpha" / UNENCODABLE_NAME
+        self.unencodable.write_text("kept by the user\n", encoding="utf-8")
+
+    def expected(self) -> tuple[str, str]:
+        # Pinned against literals: the refusal, with the character escaped, and the step a user reads.
+        shown = f"{forward(self.skills_dir / 'alpha')}/note\\udcff.md"
+        return (
+            f"ERROR: Cannot hash alpha: the name of {shown} is not valid UTF-8",
+            "Rename or remove that file, then rerun with --dry-run.",
+        )
+
+    def test_reading_the_tree_refuses_the_name_naming_its_item_and_path(self) -> None:
+        with self.assertRaises(DeployError) as raised:
+            hashing.hash_path(self.skills_dir / "alpha")
+        self.assertEqual(self.expected(), raised.exception.lines)
+        self.assertIsInstance(raised.exception.__cause__, UnicodeEncodeError)
+
+    def test_the_dry_run_and_the_deployment_refuse_it_with_no_traceback(self) -> None:
+        for arguments in (("--all", "--dry-run"), ("--all",)):
+            with self.subTest(arguments=arguments):
+                result = self.deploy_fails(*arguments, pattern="Cannot hash alpha")
+                self.assertEqual(1, result.code, result.output)
+                self.assert_lines(result.output, *self.expected())
+                self.assertNotIn("Unexpected", result.output)
+                self.assertNotIn("Traceback", result.output)
+                self.assertEqual("kept by the user\n", self.unencodable.read_text(encoding="utf-8"))
+                self.assertIn("alpha", self.owned("skills"))
 
 
 class ManagedRootTests(DeployerTestCase):
