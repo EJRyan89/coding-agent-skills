@@ -257,7 +257,6 @@ class VariableTests(unittest.TestCase):
         for command, environment in (
             ("GIT_DIR=x ls", None),
             ("GIT_DIR=x; true", None),
-            ("BASH_FUNC_f%%=x ls", None),
             ("EDITOR=x; true", {"EDITOR": "vi"}),
             ("for EDITOR in a; do :; done", {"EDITOR": "vi"}),
             ("echo ${EDITOR:=x}", {"EDITOR": "vi"}),
@@ -265,6 +264,25 @@ class VariableTests(unittest.TestCase):
             with self.subTest(command=command):
                 self.assertTrue(reading(command, environment).unread)
         self.assertEqual([], reading("EDITOR=x ls", {"EDITOR": "vi"}).unread)
+
+
+class RunnerTests(unittest.TestCase):
+    def test_each_runner_is_refused_in_a_form_the_guard_does_not_read_and_any_other_program_is_read(self) -> None:
+        for name, reason in hub_guard.RUNNERS.items():
+            with self.subTest(runner=name):
+                self.assertGreater(len(reason.split()), 2)
+                self.assertTrue(reading(f"x=1 {name} --frobnicate git status").unread)
+        for command in ("some-tool x", "./tools/x.sh", "python -B x.py", "node x.js", "npm test", "make all"):
+            with self.subTest(command=command):
+                self.assertEqual([], reading(command).unread)
+
+    def test_a_program_with_an_option_that_runs_a_command_is_refused_on_that_option(self) -> None:
+        for program, options in hub_guard.COMMAND_OPTIONS.items():
+            for option in sorted(options - hub_guard.FIND_COMMANDS):
+                with self.subTest(program=program, option=option):
+                    self.assertTrue(reading(f"{program} {option} x y").unread)
+            with self.subTest(program=program, word="unsettled"):
+                self.assertTrue(reading(f"{program} $x y").unread)
 
 
 class ExpansionTests(unittest.TestCase):

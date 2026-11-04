@@ -145,28 +145,69 @@ EXPORTED_FUNCTION = re.compile(r"^BASH_FUNC_(.+)%%$")
 # generate their rows from the catalogue each shell lists itself, `compgen -b`, `compgen -k`, `set -o`, `shopt`, and
 # `compgen -v` from Bash and the AST node types by reflection from PowerShell, and fail on an entry neither table holds.
 
-# The programs a command may start while a guarded hub is in view. None of them starts a command its words name,
-# so what one does reaches git only from inside itself, in its own language (a Python script, an awk program, a sed
-# script), which the guard does not read. Each maps to the options that would make it start a command its words
-# name, which are refused, and so is any word of its that the text does not settle when it has such options.
-PROGRAMS: dict[str, frozenset[str]] = {
+# The programs that run another command their words name, by the catalogue the guard refuses: each is refused unless
+# the guard reads the command it runs, which RUNNER_OPTIONS and the readers of env, xargs, bash, sh, pwsh, and find
+# settle, and which is then read as a command. Every other program a literal name starts is understood: what it does
+# inside itself, in its own language (a Python script, an awk program, a test suite), the guard does not see.
+RUNNERS: dict[str, str] = {
+    **dict.fromkeys(("bash", "sh"), "a shell, read only as `-c` with a literal script, which is read as Bash"),
+    "pwsh": "PowerShell, read only as `-Command` or `-c` with one literal script, after -NoProfile, -NonInteractive, "
+    "or "
+    "-NoLogo, which is read as PowerShell",
+    "powershell": "Windows PowerShell, whose parser differs from pwsh's, so the guard does not read its script",
+    **dict.fromkeys(
+        ("zsh", "dash", "ksh", "mksh", "fish", "csh", "tcsh", "busybox"), "a shell whose script the guard does not read"
+    ),
+    "cmd": "Windows' command interpreter, whose script the guard does not read",
+    "wsl": "runs a command in a Linux distribution, which the guard does not read",
+    "env": "runs its command after the assignments before it, read when it has no option and each assignment is one an "
+    "assignment before that command may make",
+    "xargs": "runs its command with words from its input, read with those words unsettled",
+    **dict.fromkeys(("timeout", "nohup", "nice", "stdbuf"), "runs the command after its options, read as a command"),
+    **dict.fromkeys(
+        ("sudo", "doas", "su", "runuser"), "runs a command as another user, in an environment its policy decides"
+    ),
+    "chroot": "runs a command under another root",
+    "ssh": "runs a command on another host, this one among them",
     **dict.fromkeys(
         (
-            # Text, files, and their listings.
-            *("awk", "base64", "basename", "cat", "cmp", "comm", "cut", "diff", "dirname", "du", "file", "fold"),
-            *("grep", "head", "hexdump", "iconv", "jq", "ls", "md5sum", "od", "paste", "pdftotext", "readlink"),
-            *("realpath", "rev", "sed", "seq", "sha1sum", "sha256sum", "sha512sum", "stat", "strings", "tail"),
-            *("tee", "tr", "uniq", "wc", "xxd", "cygpath", "which", "where", "whoami", "hostname", "uname", "nproc"),
-            *("date", "sleep", "uptime", "ps", "pgrep", "tasklist", "ping", "unzip", "cp", "mv", "rm", "mkdir"),
-            *("rmdir", "touch", "chmod", "curl", "mktemp"),
-            # Interpreters and tools that run a program in their own language, and the agent runtimes, which run git
-            # under their own guards.
-            *("python", "python3", "py", "node", "shellcheck", "actionlint", "ruff", "mypy", "pytest", "pip"),
-            *("dotnet", "dotnet-format", "claude", "codex", "copilot"),
+            *("ionice", "chrt", "taskset", "setsid", "flock", "unbuffer", "chronic", "strace", "ltrace", "time"),
+            *("watch", "script", "parallel"),
         ),
-        frozenset(),
+        "runs a command its words name, whose options the guard does not read",
     ),
-    "find": frozenset({"-exec", "-execdir", "-ok", "-okdir"}),
+}
+# The runners whose options the guard reads before the command they run: each one's options that take no value, those
+# that take the next word or their value attached, and how many operands come before the command.
+RUNNER_OPTIONS: dict[str, tuple[frozenset[str], frozenset[str], int]] = {
+    "timeout": (
+        frozenset({"-v", "--verbose", "--preserve-status", "--foreground"}),
+        frozenset({"-s", "--signal", "-k", "--kill-after"}),
+        1,
+    ),
+    "nohup": (frozenset(), frozenset(), 0),
+    "nice": (frozenset(), frozenset({"-n", "--adjustment"}), 0),
+    "stdbuf": (frozenset(), frozenset({"-i", "-o", "-e", "--input", "--output", "--error"}), 0),
+    "xargs": (
+        frozenset({"-0", "--null", "-r", "--no-run-if-empty", "-t", "--verbose", "-x", "--exit"}),
+        frozenset(
+            {
+                *("-n", "--max-args", "-P", "--max-procs", "-L", "--max-lines", "-I", "-d", "--delimiter", "-s"),
+                *("--max-chars", "-a", "--arg-file", "-E"),
+            }
+        ),
+        0,
+    ),
+}
+GH_LIMIT_ALLOWED = {
+    "RUNNER_OPTIONS": "xargs's own -L, the input lines it hands each command; it is read from a command, and no gh "
+    "listing is made here"
+}
+# The options that make a program the guard understands run a command its words name: find's run the command after
+# them, which is read; the others are refused, and so is any word of such a program that the text does not settle.
+FIND_COMMANDS = frozenset({"-exec", "-execdir", "-ok", "-okdir"})
+COMMAND_OPTIONS: dict[str, frozenset[str]] = {
+    "find": FIND_COMMANDS,
     "rg": frozenset({"--pre"}),
     "sort": frozenset({"--compress-program"}),
     "tar": frozenset(
@@ -176,6 +217,8 @@ PROGRAMS: dict[str, frozenset[str]] = {
         }
     ),
 }
+# pwsh's options that change nothing the guard reads before -Command.
+PWSH_QUIET = frozenset({"-noprofile", "-noninteractive", "-nologo"})
 # The variables an assignment before git may give it, each with the values it may take, or none for any literal
 # value: who a commit is by and when, an editor that edits nothing, and no prompt. Every other variable git reads
 # may change where it acts, what configuration and aliases it reads, or what program it runs.
@@ -192,10 +235,9 @@ GIT_PREFIXES: dict[str, frozenset[str]] = {
 }
 # gh runs git itself for these subcommands, which check a branch out in the checkout gh runs in.
 GH_CHECKOUTS = {("pr", "checkout"), ("pr", "co"), ("repo", "sync")}
-# timeout starts the command after its options and its duration; these are its options, those taking no value and
-# those taking the next word, or their value attached.
-TIMEOUT_FLAGS = frozenset({"-v", "--verbose", "--preserve-status", "--foreground"})
-TIMEOUT_VALUED = frozenset({"-s", "--signal", "-k", "--kill-after"})
+# The variables naming the system's temporary folder, whose value from the environment a redirection's target may
+# take, as `> "$TMP/out.txt"` does.
+TEMPORARY_VARIABLES = frozenset({"TMP", "TEMP", "TMPDIR"})
 # Files a redirection may write that are no file of a checkout.
 DEVICE_FILES = frozenset({"/dev/null", "/dev/stdout", "/dev/stderr", "/dev/tty", "nul", "NUL"})
 
@@ -342,7 +384,7 @@ BASH_VARIABLES: dict[str, str] = {
 
 # The kinds of expansion a word may hold, by the form bash_syntax gives each, and the parameter-expansion operators
 # inside `${ }`: each understood here leaves its word one the text does not settle, which an argument of a program in
-# PROGRAMS may be, and each other is in NOT_READ.
+# a program may be, and each other is in NOT_READ.
 EXPANSIONS_UNDERSTOOD = {
     "$NAME": "a variable's value",
     "${NAME}": "a variable's value",
@@ -412,6 +454,19 @@ POWERSHELL_UNDERSTOOD = {
     "ConstantExpressionAst": "a number",
     "ExpandableStringExpressionAst": "a double-quoted string, whose expansions leave its word unsettled",
     "AssignmentStatementAst": "an assignment, understood to a plain variable PowerShell neither sets nor reads itself",
+    "MemberExpressionAst": "a property's value, understood for an instance's member a constant names, never a "
+    "static one",
+    **dict.fromkeys(
+        ("ConvertExpressionAst", "TypeExpressionAst", "TypeConstraintAst"),
+        "a cast or a type, understood for a type POWERSHELL_CASTS names",
+    ),
+    "ScriptBlockExpressionAst": "a script block, understood as an argument of a command "
+    "POWERSHELL_BLOCK_COMMANDS names, "
+    "whose commands are read",
+    **dict.fromkeys(
+        ("IfStatementAst", "ForEachStatementAst", "StatementBlockAst", "BreakStatementAst", "ContinueStatementAst"),
+        "control flow, whose conditions and bodies are read, and a foreach's variable as an assignment",
+    ),
     "VariableExpressionAst": "a variable's value, which leaves its word one the text does not settle",
     **dict.fromkeys(
         (
@@ -424,7 +479,8 @@ POWERSHELL_UNDERSTOOD = {
     "MergingRedirectionAst": "a redirection of one stream into another, as 2>&1",
 }
 # The PowerShell commands the guard understands, by every name and alias PowerShell gives them, lower-cased, each with
-# the cmdlet it stands for. A native program by any other name is read through PROGRAMS, git and gh as in Bash.
+# the cmdlet it stands for. A program by any other name is read as in Bash, but for a name PowerShell keeps for its
+# own commands (powershell_command), which is not read.
 POWERSHELL_LOCATION = {**dict.fromkeys(("set-location", "cd", "chdir", "sl"), "set-location")}
 POWERSHELL_PUSH = {**dict.fromkeys(("push-location", "pushd"), "push-location")}
 POWERSHELL_POP = {**dict.fromkeys(("pop-location", "popd"), "pop-location")}
@@ -444,6 +500,9 @@ POWERSHELL_COMMANDS = {
     **dict.fromkeys(("get-command", "gcm"), "get-command"),
     **dict.fromkeys(("get-process", "gps", "ps"), "get-process"),
     **dict.fromkeys(("format-table", "ft"), "format-table"),
+    **dict.fromkeys(("foreach-object", "%", "foreach"), "foreach-object"),
+    **dict.fromkeys(("where-object", "?", "where"), "where-object"),
+    **dict.fromkeys(("group-object", "group"), "group-object"),
     **dict.fromkeys(("format-list", "fl"), "format-list"),
     **dict.fromkeys(("start-sleep", "sleep"), "start-sleep"),
     **dict.fromkeys(("remove-item", "rm", "del", "erase", "rd", "ri", "rmdir"), "remove-item"),
@@ -489,6 +548,60 @@ POWERSHELL_PATH_COMMANDS = frozenset(
         *("move-item", "new-item", "set-content", "add-content", "out-file", "test-path", "resolve-path", "join-path"),
         *("split-path", "get-filehash", "mkdir"),
     }
+)
+# The types a cast or a type expression may name, lower-cased as PowerShell's accelerators and their full names:
+# converting to one runs no code the text does not show.
+POWERSHELL_CASTS = frozenset(
+    {
+        *("string", "int", "int32", "bool", "boolean", "array", "object[]", "hashtable", "pscustomobject"),
+        *("psobject", "datetime", "version", "collections.hashtable", "management.automation.pscustomobject"),
+    }
+)
+# The commands whose script-block arguments the guard reads: each runs its block in the session, on its input.
+POWERSHELL_BLOCK_COMMANDS = frozenset(
+    {"foreach-object", "where-object", "sort-object", "select-object", "group-object"}
+)
+# The names PowerShell gives a command before it looks for a program, each held to the shell: every alias Get-Alias
+# lists in a pwsh started with no profile, each function PowerShell itself defines with no verb in its name (as
+# Get-Command lists those of no module), and every verb Get-Verb lists, which begins the name of each cmdlet and
+# function. A command by such a name that POWERSHELL_COMMANDS does not hold is not read; any other name is a program.
+POWERSHELL_ALIASES = frozenset(
+    name.lower()
+    for name in (
+        *("%", "?", "ac", "cat", "cd", "chdir", "clc", "clear", "clhy", "cli", "clp", "cls", "clv", "cnsn", "compare"),
+        *("copy", "cp", "cpi", "cpp", "cvpa", "dbp", "del", "diff", "dir", "dnsn", "ebp", "echo", "epal", "epcsv"),
+        *("erase", "etsn", "exsn", "fc", "fhx", "fl", "foreach", "ft", "fw", "gal", "gbp", "gc", "gci", "gcm", "gcs"),
+        *("gdr", "gerr", "ghy", "gi", "gin", "gjb", "gl", "gm", "gmo", "gp", "gps", "gpv", "group", "gsn", "gsv"),
+        *("gtz", "gu", "gv", "h", "history", "icm", "iex", "ihy", "ii", "ipal", "ipcsv", "ipmo", "irm", "iwr", "kill"),
+        *("lp", "ls", "man", "md", "measure", "mi", "mount", "move", "mp", "mv", "nal", "ndr", "ni", "nmo", "nsn"),
+        *("nv", "ogv", "oh", "popd", "ps", "pushd", "pwd", "r", "rbp", "rcjb", "rcsn", "rd", "rdr", "ren", "ri"),
+        *("rjb", "rm", "rmdir", "rmo", "rni", "rnp", "rp", "rsn", "rv", "rvpa", "sajb", "sal", "saps", "sasv", "sbp"),
+        *("scb", "select", "set", "shcm", "si", "sl", "sleep", "sls", "sort", "sp", "spjb", "spps", "spsv", "start"),
+        *("stz", "sv", "tee", "type", "where", "wjb", "write"),
+    )
+)
+POWERSHELL_FUNCTIONS = frozenset(
+    name.lower()
+    for name in (
+        *("cd..", "cd\\", "cd~", "help", "mkdir", "more", "oss", "Pause", "prompt", "TabExpansion2", "Configuration"),
+        *("ImportSystemModules", "PSConsoleHostReadLine"),
+        *(f"{letter}:" for letter in "ABCDEFGHIJKLMNOPQRSTUVWXYZ"),
+    )
+)
+POWERSHELL_VERBS = frozenset(
+    name.lower()
+    for name in (
+        *("Add", "Approve", "Assert", "Backup", "Block", "Build", "Checkpoint", "Clear", "Close", "Compare"),
+        *("Complete", "Compress", "Confirm", "Connect", "Convert", "ConvertFrom", "ConvertTo", "Copy", "Debug", "Deny"),
+        *("Deploy", "Disable", "Disconnect", "Dismount", "Edit", "Enable", "Enter", "Exit", "Expand", "Export"),
+        *("Find", "Format", "Get", "Grant", "Group", "Hide", "Import", "Initialize", "Install", "Invoke", "Join"),
+        *("Limit", "Lock", "Measure", "Merge", "Mount", "Move", "New", "Open", "Optimize", "Out", "Ping", "Pop"),
+        *("Protect", "Publish", "Push", "Read", "Receive", "Redo", "Register", "Remove", "Rename", "Repair"),
+        *("Request", "Reset", "Resize", "Resolve", "Restart", "Restore", "Resume", "Revoke", "Save", "Search"),
+        *("Select", "Send", "Set", "Show", "Skip", "Split", "Start", "Step", "Stop", "Submit", "Suspend", "Switch"),
+        *("Sync", "Test", "Trace", "Unblock", "Undo", "Uninstall", "Unlock", "Unprotect", "Unpublish", "Unregister"),
+        *("Update", "Use", "Wait", "Watch", "Write"),
+    )
 )
 # A PowerShell path on a provider other than the file system: a drive whose name is more than one letter, such as
 # env:, alias:, or HKLM:, or a provider-qualified path such as Environment::.
@@ -569,29 +682,27 @@ NOT_READ = {
     # PowerShell AST node types.
     **{
         f"PowerShell {name}": "computes a value the text does not settle"
-        for name in ("ConvertExpressionAst", "TypeExpressionAst", "AttributedExpressionAst", "UsingExpressionAst")
+        for name in ("AttributedExpressionAst", "UsingExpressionAst")
     },
     "PowerShell UnaryExpressionAst": "++ and -- assign the variable they hold, which may be the environment's",
     **{
         f"PowerShell {name}": "reaches a member, which may run any code, git among it"
-        for name in ("MemberExpressionAst", "InvokeMemberExpressionAst", "BaseCtorInvokeMemberExpressionAst")
+        for name in ("InvokeMemberExpressionAst", "BaseCtorInvokeMemberExpressionAst")
     },
-    "PowerShell ScriptBlockExpressionAst": "a script block, which a command may run",
     **{
         f"PowerShell {name}": "defines a function, a type, a configuration, or a parameter, or loads a module"
         for name in (
             *("FunctionDefinitionAst", "TypeDefinitionAst", "FunctionMemberAst", "PropertyMemberAst"),
             *("ConfigurationDefinitionAst", "DynamicKeywordStatementAst", "UsingStatementAst", "ParamBlockAst"),
-            *("ParameterAst", "AttributeAst", "NamedAttributeArgumentAst", "TypeConstraintAst"),
+            *("ParameterAst", "AttributeAst", "NamedAttributeArgumentAst"),
         )
     },
     **{
         f"PowerShell {name}": "a statement the guard does not read in PowerShell"
         for name in (
-            *("IfStatementAst", "SwitchStatementAst", "ForStatementAst", "ForEachStatementAst", "WhileStatementAst"),
-            *("DoWhileStatementAst", "DoUntilStatementAst", "TryStatementAst", "CatchClauseAst", "TrapStatementAst"),
-            *("DataStatementAst", "BlockStatementAst", "StatementBlockAst", "BreakStatementAst"),
-            *("ContinueStatementAst", "ReturnStatementAst", "ExitStatementAst", "ThrowStatementAst"),
+            *("SwitchStatementAst", "ForStatementAst", "WhileStatementAst", "DoWhileStatementAst"),
+            *("DoUntilStatementAst", "TryStatementAst", "CatchClauseAst", "TrapStatementAst", "DataStatementAst"),
+            *("BlockStatementAst", "ReturnStatementAst", "ExitStatementAst", "ThrowStatementAst"),
         )
     },
     **{
@@ -622,21 +733,10 @@ DENY_REASON = (
 )
 PLACE_IT = "Write the directory into the command itself, as `git -C <dir>` or `cd <dir> &&`, and run it again."
 REWRITE_IT = (
-    "Write it as plain commands with literal words, each program one the guard reads (PROGRAMS in tools/hub_guard.py), "
-    "and run it again; the guard's contract in docs/parallel-sessions.md lists what it reads."
+    "Write it as plain commands with literal words, running each program by its name rather than through another "
+    "that runs it (RUNNERS in tools/hub_guard.py), and run it again; the guard's contract in "
+    "docs/parallel-sessions.md lists what it reads."
 )
-
-
-# Platform programs PROGRAMS names, which the guard reads by name alone on every platform: a command naming one
-# where it is not installed starts nothing.
-PLATFORM_ALLOWED = {
-    "cygpath": "PROGRAMS names Git Bash's path converter as a program that starts no command, read alike everywhere",
-    "tasklist": "PROGRAMS names Windows' process lister as a program that starts no command, read alike everywhere",
-}
-# PROGRAMS is a table of the programs a command may start, not a git command line, though one of them is grep.
-GIT_SEPARATOR_ALLOWED = {
-    "PROGRAMS": "a table of program names, grep among them, that no git call is made from",
-}
 
 
 # Commands whose program the commands reader cannot read, by the scope that starts them, and why.
@@ -1703,7 +1803,26 @@ class BashReader:
                 redirect.operator in {"<&", ">&"} and value is not None and DESCRIPTOR_TARGET.fullmatch(value)
             ):
                 continue
-            read_written(value, directory, self.reading)
+            read_written(self.target_value(redirect.target) if value is None else value, directory, self.reading)
+
+    def target_value(self, word: bash_syntax.Word) -> Word:
+        """A redirection target the text settles but for the system's temporary folder, named by a variable
+        TEMPORARY_VARIABLES lists that the environment holds; None for any other."""
+        pieces: list[str] = []
+        for part in word.parts:
+            if part.kind == "text" and (part.quoted or not (GLOB.search(part.text) or BRACE.search(part.text))):
+                pieces.append(part.text)
+            elif part.kind == "home":
+                pieces.append(str(self.start.home))
+            elif (
+                part.kind == "parameter"
+                and part.text in TEMPORARY_VARIABLES
+                and self.reading.environment.get(part.text)
+            ):
+                pieces.append(self.reading.environment[part.text])
+            else:
+                return None
+        return "".join(pieces)
 
     def read_simple(self, node: bash_syntax.Simple, directory: Directory) -> Outcome:
         words = node.words
@@ -1759,31 +1878,100 @@ class BashReader:
             if f"builtin {name}" in NOT_READ:
                 self.reading.cannot_read(f"{name}: {NOT_READ[f'builtin {name}']}")
                 return certain(UNKNOWN)
+            # The grammar reads [[ and coproc as a command's name; Bash reads each as a reserved word.
+            if f"keyword {name}" in NOT_READ:
+                self.reading.cannot_read(f"{name}: {NOT_READ[f'keyword {name}']}")
+                return certain(UNKNOWN)
             if name in BUILTINS_UNDERSTOOD:
                 return self.read_builtin(name, arguments, directory)
         program = command_name(name) or ""
         if program in GIT_NAMES:
             read_git(arguments, directory.cwd, self.reading)
-        elif program == "timeout":
-            return self.read_timeout(arguments, directory)
+        elif program in RUNNERS:
+            return self.read_runner(program, arguments, directory)
         elif program == "gh":
             read_gh(arguments, directory, self.reading)
-        elif program in PROGRAMS:
-            read_program(program, arguments, self.reading)
-        else:
-            self.reading.cannot_read(f"runs {name}, which is not among the programs the guard reads, and may run git")
-            return certain(UNKNOWN)
+        elif program in COMMAND_OPTIONS:
+            return self.read_program(program, arguments, directory)
         return certain(directory)
 
-    def read_timeout(self, arguments: list[Word], directory: Directory) -> Outcome:
-        """timeout's options, its duration, and the command it starts, which is read as the command."""
-        start, reason = timeout_start(arguments)
-        if reason is not None:
-            self.reading.cannot_read(reason)
-            return certain(UNKNOWN)
-        if start is None:
+    def read_runner(self, program: str, arguments: list[Word], directory: Directory) -> Outcome:
+        """A program that runs another command: the command it runs is read where the guard reads the runner's form,
+        and the runner is refused otherwise."""
+        if program in RUNNER_OPTIONS:
+            start, reason = runner_start(program, arguments)
+            if reason is not None:
+                self.reading.cannot_read(reason)
+                return certain(UNKNOWN)
+            if start is None:
+                return certain(directory)
+            # xargs hands its command words from its input, which the text does not settle.
+            extra: list[Word] = [None] if program == "xargs" else []
+            return self.read_command_words([*arguments[start:], *extra], directory)
+        if program == "env":
+            return self.read_env(arguments, directory)
+        script = shell_script(program, arguments)
+        if script is not None and program in {"bash", "sh"}:
+            # The script runs in a shell of its own, so what it changes dies with it.
+            self.nested().read_text(script, directory)
             return certain(directory)
-        return self.read_command_words(arguments[start:], directory)
+        if script is not None:
+            read_powershell(script, directory.cwd, self.reading, self.depth + 1)
+            return certain(directory)
+        self.reading.cannot_read(f"runs {program}: {RUNNERS[program]}")
+        return certain(UNKNOWN)
+
+    def read_env(self, arguments: list[Word], directory: Directory) -> Outcome:
+        """env with no option, whose assignments are read as ones before the command it runs."""
+        prefixes: list[tuple[str, Word]] = []
+        index = 0
+        while index < len(arguments):
+            word = arguments[index]
+            if word is None or word.startswith("-"):
+                self.reading.cannot_read(f"runs env: {RUNNERS['env']} ({word or 'a word the text does not settle'})")
+                return certain(UNKNOWN)
+            name, assigns, value = word.partition("=")
+            if not assigns:
+                break
+            if not bash_syntax.NAME.fullmatch(name):
+                self.reading.cannot_read(f"runs env: {RUNNERS['env']} ({word})")
+                return certain(UNKNOWN)
+            prefixes.append((name, value))
+            index += 1
+        if index == len(arguments):
+            self.read_prefixes(prefixes, git=False)
+            return certain(directory)
+        return self.read_command_words(arguments[index:], directory, prefixes)
+
+    def read_program(self, program: str, arguments: list[Word], directory: Directory) -> Outcome:
+        """A program with options that run a command: find's run the command after them, read as a command, in a
+        directory of the found file's for -execdir and -okdir; any other such option is refused, and so is a word the
+        text does not settle, which may be one."""
+        options = COMMAND_OPTIONS[program]
+        index = 0
+        while index < len(arguments):
+            word = arguments[index]
+            if word is None:
+                self.reading.cannot_read(
+                    f"{program} may run a command its words name (a word the text does not settle)"
+                )
+                return certain(UNKNOWN)
+            option = word.partition("=")[0]
+            if program == "find" and word in FIND_COMMANDS:
+                end = next(
+                    (place for place in range(index + 1, len(arguments)) if arguments[place] in {";", "+"}),
+                    len(arguments),
+                )
+                if end > index + 1:
+                    place = directory if word in {"-exec", "-ok"} else UNKNOWN
+                    self.read_command_words(arguments[index + 1 : end], place)
+                index = end + 1
+                continue
+            if option in options:
+                self.reading.cannot_read(f"{program} runs a command its words name ({word})")
+                return certain(UNKNOWN)
+            index += 1
+        return certain(directory)
 
     def read_builtin(self, name: str, arguments: list[Word], directory: Directory) -> Outcome:
         if name == "cd":
@@ -1943,55 +2131,73 @@ def named_paths(value: str) -> list[str]:
 QUOTED_PART = re.compile(r"""["']([^"']+)["']""")
 
 
-def timeout_start(arguments: list[Word]) -> tuple[int | None, str | None]:
-    """Where the command timeout starts begins among its words, after its options and its duration, or None where it
-    starts none; with why, for a form the guard does not read: an option TIMEOUT_FLAGS and TIMEOUT_VALUED do not name,
-    an abbreviation or a bundle among them, or a word the text does not settle where an option may stand."""
+def runner_start(program: str, arguments: list[Word]) -> tuple[int | None, str | None]:
+    """Where the command a runner RUNNER_OPTIONS names starts among its words, after its options and its operands, or
+    None where it starts none; with why, for a form the guard does not read: an option its table does not name, an
+    abbreviation or a bundle among them, or a word the text does not settle where an option may stand."""
+    flags, valued, operands = RUNNER_OPTIONS[program]
     index = 0
     while index < len(arguments):
         word = arguments[index]
         if word is None:
-            return None, "timeout is given a word the text does not settle, which may be an option"
+            return None, f"{program} is given a word the text does not settle, which may be an option"
         if word == "--":
             index += 1
             break
         if not word.startswith("-") or word == "-":
             break
-        if word in TIMEOUT_FLAGS or (word.partition("=")[0] in TIMEOUT_VALUED and "=" in word):
-            index += 1
-        elif word in TIMEOUT_VALUED:
+        attached = word[:2] in valued and not word.startswith("--")
+        niceness = program == "nice" and word[1:].isdigit()
+        if word in valued:
             index += 2
-        elif word[:2] in {"-s", "-k"}:
+        elif word in flags or attached or niceness or (word.partition("=")[0] in valued and "=" in word):
             index += 1
         else:
-            return None, f"timeout's option {word}, which the guard does not read"
-    return (index + 1 if index + 1 < len(arguments) else None), None
+            return None, f"{program}'s option {word}, which the guard does not read"
+    start = index + operands
+    return (start if start < len(arguments) else None), None
 
 
-def read_program(program: str, arguments: list[Word], reading: Reading) -> None:
-    """A program PROGRAMS holds, refused where one of its words is an option that starts a command, or may be."""
-    starting = PROGRAMS[program]
-    for argument in arguments:
-        if starting and (argument is None or argument.partition("=")[0] in starting):
-            shown = argument or "a word the text does not settle"
-            reading.cannot_read(f"{program} may start a command its words name ({shown})")
-            return
+def shell_script(program: str, arguments: list[Word]) -> str | None:
+    """The literal script a shell runs, where the guard reads the shell's form: `bash -c <script>` or `sh -c
+    <script>`, with any words after it its positional parameters, and pwsh's `-Command` or `-c` with one script after
+    the options PWSH_QUIET names; None for every other form."""
+    if program in {"bash", "sh"}:
+        if len(arguments) >= 2 and arguments[0] == "-c" and arguments[1] is not None:
+            return arguments[1]
+        return None
+    if program != "pwsh":
+        return None
+    index = 0
+    while index < len(arguments) and arguments[index] is not None and str(arguments[index]).lower() in PWSH_QUIET:
+        index += 1
+    rest = arguments[index:]
+    if len(rest) == 2 and rest[0] is not None and rest[0].lower() in {"-c", "-command"} and rest[1] is not None:
+        return rest[1]
+    return None
 
 
 def read_written(value: Word, directory: Directory, reading: Reading) -> None:
-    """A file a redirection writes: one the text places in a guarded hub is refused, as a file tool's edit is. One
-    whose path or directory the text does not settle is one the guard does not see, as a program's own writes are
-    ("What it does not see"), with a note."""
+    """A file a redirection writes: one the text places in a guarded hub is refused, as a file tool's edit is, and so
+    is one whose path or directory the text does not settle, which may lie in one."""
     if value is None:
-        reading.notes.append("a redirection writes a file the text does not settle")
+        reading.cannot_read("a redirection writes a file the text does not settle, which may lie in a hub")
         return
     if value in DEVICE_FILES or value.lower() == "$null":
         return
     path = Path(platform_support.from_shell_path(value))
     if not path.is_absolute() and directory.cwd is None:
-        reading.notes.append(f"a redirection writes {value} in a directory the text does not settle")
+        reading.cannot_read(f"a redirection writes {value} in a directory the text does not settle")
     else:
         reading.writes.append(path if path.is_absolute() else (directory.cwd or Path()) / path)
+
+
+def powershell_command(name: str) -> bool:
+    """Whether PowerShell finds a name among its own commands before it looks for a program: an alias, a function it
+    defines itself, or a cmdlet's or function's verb-noun name."""
+    lowered = name.lower()
+    verb, dash, _ = lowered.partition("-")
+    return lowered in POWERSHELL_ALIASES or lowered in POWERSHELL_FUNCTIONS or bool(dash and verb in POWERSHELL_VERBS)
 
 
 def read_gh(arguments: list[Word], directory: Directory, reading: Reading) -> None:
@@ -2171,6 +2377,7 @@ def read_powershell(command: str, cwd: Path | None, reading: Reading, depth: int
     for node in unread:
         reading.cannot_read(f"{node}: {NOT_READ.get(f'PowerShell {node}', 'a node type the guard does not know')}")
     reader = PowerShellReader(reading, commands)
+    unread.extend(reader.read_forms(output))
     if unread or not isinstance(statements, list):
         # Each git call is still read, from a directory only a command list the guard reads settles.
         moves = any(reader.may_move(command) for command in commands)
@@ -2188,6 +2395,40 @@ class PowerShellReader:
     def __init__(self, reading: Reading, commands: list[Any]) -> None:
         self.reading = reading
         self.commands = commands
+
+    def read_forms(self, output: Mapping[str, Any]) -> list[str]:
+        """Tells the reading of each understood node type's form that is not read: an assignment to the environment
+        or to PowerShell's own variable, a static member or one the text does not name, a cast to a type
+        POWERSHELL_CASTS does not name, and a script block handed to a command POWERSHELL_BLOCK_COMMANDS does not
+        name; returns them."""
+        found = [
+            f"assigns {name if isinstance(name, str) else 'something other than a plain variable'}, which "
+            "PowerShell or git reads, or which the guard does not follow"
+            for name, qualified in (
+                (assigned.get("name"), assigned.get("qualified")) if isinstance(assigned, dict) else (None, False)
+                for assigned in output.get("assigned") or []
+            )
+            if not isinstance(name, str) or qualified or name.lower() in POWERSHELL_VARIABLES
+        ]
+        found.extend(
+            "a static member, or one the text does not name, which may run any code"
+            for member in output.get("members") or []
+            if not isinstance(member, dict) or member.get("static") or not member.get("constant")
+        )
+        found.extend(
+            f"a cast or a type the guard does not read ({name}), whose conversion may run code"
+            for name in output.get("types") or []
+            if not isinstance(name, str) or name.lower().removeprefix("system.") not in POWERSHELL_CASTS
+        )
+        found.extend(
+            f"a script block handed to {command or 'no command'}, which may run it as anything"
+            for command in output.get("blocks") or []
+            if POWERSHELL_COMMANDS.get(command.lower() if isinstance(command, str) else "")
+            not in POWERSHELL_BLOCK_COMMANDS
+        )
+        for reason in found:
+            self.reading.cannot_read(reason)
+        return found
 
     def element(self, element: Any) -> list[Word]:
         """A command element's words: its text, a list's each, or None where the text does not settle it."""
@@ -2239,12 +2480,9 @@ class PowerShellReader:
             if isinstance(index, int) and index < len(self.commands)
         ):
             directory = UNKNOWN
-        if "assigns" in statement:
-            self.read_assignment(statement.get("assigns"))
-            return directory
         if not pipelines:
-            self.reading.cannot_read("a PowerShell statement the reader could not list")
-            return UNKNOWN
+            # An assignment, an if, or a foreach: what it runs is all nested, read above.
+            return directory
         outcome = self.read_pipeline(pipelines[0], directory)
         for operator, pipeline in zip(operators, pipelines[1:], strict=False):
             if operator == "&&":
@@ -2254,16 +2492,6 @@ class PowerShellReader:
                 after = self.read_pipeline(pipeline, outcome.fail)
                 outcome = Outcome(joined(outcome.ok, after.ok), after.fail)
         return directory if statement.get("background") else outcome.merged()
-
-    def read_assignment(self, assigns: Any) -> None:
-        """An assignment to a plain variable PowerShell neither sets nor reads itself is understood; one on a drive,
-        as $env:GIT_DIR is, one to PowerShell's own, and one to anything but a plain variable are not read."""
-        name = assigns.get("name") if isinstance(assigns, dict) else None
-        if not isinstance(name, str) or assigns.get("qualified") or name.lower() in POWERSHELL_VARIABLES:
-            shown = name if isinstance(name, str) else "something other than a plain variable"
-            self.reading.cannot_read(
-                f"assigns {shown}, which PowerShell or git reads, or which the guard does not follow"
-            )
 
     def read_pipeline(self, pipeline: Any, directory: Directory) -> Outcome:
         indexes = pipeline if isinstance(pipeline, list) else []
@@ -2297,6 +2525,14 @@ class PowerShellReader:
             )
             return certain(UNKNOWN)
         if name.lower() in POWERSHELL_COMMANDS:
+            elements = command.get("elements") or []
+            if POWERSHELL_COMMANDS[name.lower()] == "foreach-object" and any(
+                not isinstance(element, dict) or element.get("kind") not in {"block", "parameter"}
+                for element in elements[1:]
+            ):
+                # ForEach-Object given a name rather than a script block calls the member by that name.
+                self.reading.cannot_read("ForEach-Object given a member's name runs that member, which may run code")
+                return certain(UNKNOWN)
             return self.read_cmdlet(name, words[1:], directory)
         program = command_name(name) or ""
         if program in GIT_NAMES:
@@ -2305,10 +2541,18 @@ class PowerShellReader:
             read_git(arguments, directory.cwd, self.reading)
         elif program == "gh":
             read_gh(words[1:], directory, self.reading)
-        elif program in PROGRAMS:
-            read_program(program, words[1:], self.reading)
-        else:
-            self.reading.cannot_read(f"runs {name}, which is not among the commands the guard reads, and may run git")
+        elif powershell_command(name):
+            self.reading.cannot_read(f"runs {name}, a PowerShell command the guard does not read, which may run git")
+            return certain(UNKNOWN)
+        elif program in RUNNERS:
+            self.reading.cannot_read(
+                f"runs {program} from PowerShell: {RUNNERS[program]}, which the guard reads only from Bash"
+            )
+            return certain(UNKNOWN)
+        elif program in COMMAND_OPTIONS and any(
+            word is None or word.partition("=")[0] in COMMAND_OPTIONS[program] for word in words[1:]
+        ):
+            self.reading.cannot_read(f"{program} may run a command its words name")
             return certain(UNKNOWN)
         return certain(directory)
 

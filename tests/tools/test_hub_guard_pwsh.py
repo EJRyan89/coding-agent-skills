@@ -179,12 +179,34 @@ class NodeCatalogueTests(unittest.TestCase):
 
 
 class CommandNameTests(unittest.TestCase):
+    def test_every_alias_function_and_verb_powershell_lists_is_one_the_guard_keeps_for_its_own_commands(self) -> None:
+        script = (
+            "ConvertTo-Json -Compress -InputObject @("
+            "@(Get-Alias | ForEach-Object Name), "
+            "@(Get-Command -CommandType Function | Where-Object { -not $_.ModuleName } | ForEach-Object Name), "
+            "@(Get-Verb | ForEach-Object Verb))"
+        )
+        aliases, functions, verbs = json.loads(pwsh(script))
+        self.assertEqual(set(), {name.lower() for name in aliases} - hub_guard.POWERSHELL_ALIASES)
+        self.assertEqual(
+            set(),
+            {name.lower() for name in functions if "-" not in name} - hub_guard.POWERSHELL_FUNCTIONS,
+        )
+        self.assertEqual(set(), {name.lower() for name in verbs} - hub_guard.POWERSHELL_VERBS)
+        for name in ("iex", "Invoke-Expression", "Start-Process", "help", "C:"):
+            with self.subTest(name=name):
+                self.assertTrue(hub_guard.powershell_command(name))
+        for name in ("git", "python", "dotnet-format", "shellcheck"):
+            with self.subTest(name=name):
+                self.assertFalse(hub_guard.powershell_command(name))
+
     def test_each_alias_the_table_gives_a_cmdlet_is_the_one_powershell_gives_it(self) -> None:
         aliases = [name for name, cmdlet in hub_guard.POWERSHELL_COMMANDS.items() if name != cmdlet]
         script = (
             "$names = [Console]::In.ReadToEnd() | ConvertFrom-Json; "
             "ConvertTo-Json -Compress -InputObject @(foreach ($name in $names) { "
-            "$alias = Get-Alias -Name $name -ErrorAction SilentlyContinue; "
+            # By its exact name: Get-Alias -Name reads ? and % as wildcards.
+            "$alias = Get-Alias | Where-Object { $_.Name -eq $name } | Select-Object -First 1; "
             "if ($null -eq $alias) { '' } else { $alias.Definition } })"
         )
         resolved = json.loads(pwsh(script, json.dumps(aliases)))
@@ -194,6 +216,5 @@ class CommandNameTests(unittest.TestCase):
                     self.assertEqual(hub_guard.POWERSHELL_COMMANDS[name], definition.lower())
                 else:
                     # Where PowerShell gives the name no alias, as ls and cat on Linux, it runs the program, one the
-                    # guard reads as harmless either way: mkdir is a function on Windows, and write on Linux is the
-                    # program that writes to another user's terminal.
-                    self.assertIn(name, {*hub_guard.PROGRAMS, "mkdir", "write"})
+                    # guard reads as harmless either way: none of them runs another command.
+                    self.assertNotIn(name, hub_guard.RUNNERS)

@@ -66,6 +66,7 @@ from validation_support import (
 )
 
 from deployer import platform_support, render
+from tools.hub_guard import FIND_COMMANDS
 
 PLATFORM_ALLOWED = {
     "pathlib.PureWindowsPath": "reads a command's program after either path separator on every platform",
@@ -143,7 +144,7 @@ LOOKUP_ONLY_OPTIONS = frozenset({"-v", "-V"})
 # The commands that run a script a word holds: eval its arguments, and a shell the script after its -c.
 SCRIPT_SHELLS = frozenset({"bash", "sh", "zsh", "dash", "ksh"})
 # find's actions that run the program the next word names.
-FIND_ACTIONS = frozenset({"-exec", "-execdir", "-ok", "-okdir"})
+FIND_ACTIONS = FIND_COMMANDS
 # What a reader records for a program a wrapper runs but that no literal names, such as `xargs "$tool"`, so the command
 # policy refuses it rather than passing it unseen; it never names a program.
 UNREAD_PROGRAM = "<unread> "

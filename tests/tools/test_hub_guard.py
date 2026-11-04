@@ -10,6 +10,7 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
 import types
 import unittest
 from collections.abc import Iterator, Mapping, Sequence
@@ -1634,7 +1635,12 @@ class UnderstoodSetTests(GuardTestCase):
             ('git -C "$SOMEWHERE" commit -m x', self.tree, "deny"),
             ("git $VERB x", self.hub, "deny"),
             ("git $VERB x", self.tree, "deny"),
-            ('python -B tools/worktrees.py list > "$TMP/out.txt"', self.tree, None),
+            (
+                f'python -B tools/worktrees.py list > "{Path(tempfile.gettempdir()).as_posix()}/out.txt"',
+                self.tree,
+                None,
+            ),
+            ('python -B tools/worktrees.py list > "$f"', self.tree, "deny"),
             ("ls *.md | head -1", self.hub, None),
         ):
             with self.subTest(command=command, cwd=cwd.name):
@@ -1661,6 +1667,8 @@ class UnderstoodSetTests(GuardTestCase):
             ("echo x >> README.md", self.hub, "deny"),
             (f'echo x 2> "{self.hub / ".git" / "HEAD"}"', self.tree, "deny"),
             ("echo x > notes.txt", self.tree, None),
+            ('echo x > "$out"', self.tree, "deny"),
+            ('cd "$d" && echo x > notes.txt', self.tree, "deny"),
             ("echo x > local.json", self.hub, None),
             ("git status > /dev/null 2>&1", self.hub, None),
             ("echo x >&2", self.hub, None),
@@ -1670,6 +1678,9 @@ class UnderstoodSetTests(GuardTestCase):
                 self.assertEqual(expected, self.bash(command, cwd))
         self.bash("echo x >> README.md", self.hub)
         self.assertIn("redirects its output into", self.reason)
+        # A target under the system's temporary folder, by a variable naming it that the environment holds, is placed.
+        environment = {**self.environment, "TMP": tempfile.gettempdir()}
+        self.assertIsNone(self.bash('echo x > "$TMP/out.txt"', self.tree, environment))
         self.assertEqual("hub\n", (self.hub / "README.md").read_text(encoding="utf-8"))
 
     def test_gh_checking_a_branch_out_is_judged_as_the_checkout_git_makes(self) -> None:
@@ -1707,9 +1718,12 @@ class UnderstoodSetTests(GuardTestCase):
     def test_each_class_of_construct_the_guard_does_not_read_is_refused_while_a_hub_is_in_view(self) -> None:
         # One row for each class the contract refuses, each in a command that runs no git of its own text.
         for command in (
-            "bash -c 'echo hi'",
+            "bash script.sh",
+            "bash -lc 'echo hi'",
             "sh script.sh",
-            "pwsh -c 'Get-Date'",
+            "pwsh -File x.ps1",
+            "zsh -c 'echo hi'",
+            "cmd /c dir",
             "eval 'echo hi'",
             "source .venv/bin/activate",
             ". ./env.sh",
@@ -1740,11 +1754,14 @@ class UnderstoodSetTests(GuardTestCase):
             "[[ -n x ]]",
             "test -v 'a[0]'",
             "$cmd status",
-            "xargs echo",
-            "env FOO=1 ls",
-            "nohup ls",
-            "find . -exec ls {} +",
-            "jq . x.json && unknown-program",
+            "xargs --frobnicate echo",
+            "env -i ls",
+            "env PATH=/elsewhere ls",
+            "sudo ls",
+            "watch ls",
+            "find . -exec sudo ls {} +",
+            "nice -frobnicate ls",
+            "echo x > $out",
             "printf -v x %s y",
             "read PATH",
             "unset x",
@@ -1770,6 +1787,12 @@ class UnderstoodSetTests(GuardTestCase):
             "[ -f README.md ] && echo yes",
             "command -v pwsh",
             'x=$(mktemp -d) && cp README.md "$x/"',
+            "./tools/some-script.sh --flag && node x.js && npm test",
+            "xargs -0 grep -n x < list.txt",
+            "find . -name '*.py' -exec grep -n x {} +",
+            "timeout 60 nice -n 5 python -B x.py",
+            "env PYTHONUTF8=1 python -B x.py",
+            "bash -c 'git status && ls'",
         ):
             with self.subTest(command=command):
                 self.assertIsNone(self.bash(command, self.tree))
@@ -1789,6 +1812,25 @@ class UnderstoodSetTests(GuardTestCase):
             with self.subTest(command=command):
                 self.assertEqual("deny", self.bash(command, outside, environment))
                 self.assertIn(UNREAD, self.reason)
+
+    def test_a_runner_s_command_is_read_as_a_command(self) -> None:
+        for command, cwd, expected in (
+            (f'nohup git -C "{self.hub}" commit -m x', self.tree, "deny"),
+            (f'nice -n 5 git -C "{self.hub}" commit -m x', self.tree, "deny"),
+            (f'stdbuf -oL git -C "{self.hub}" commit -m x', self.tree, "deny"),
+            (f'env GIT_EDITOR=true git -C "{self.hub}" commit -m x', self.tree, "deny"),
+            (f'env GIT_DIR="{self.hub / ".git"}" git status', self.tree, "deny"),
+            (f'echo x | xargs git -C "{self.hub}" checkout', self.tree, "deny"),
+            (f'echo x | xargs git -C "{self.hub}" log', self.tree, None),
+            (f"bash -c 'cd \"{self.hub}\" && git commit -m x'", self.tree, "deny"),
+            (f"bash -c 'cd \"{self.hub}\"'; git commit -m x", self.tree, None),
+            (f"pwsh -NoProfile -Command 'git -C \"{self.hub}\" commit -m x'", self.tree, "deny"),
+            (f'find . -exec git -C "{self.hub}" add {{}} +', self.tree, "deny"),
+            ("find . -execdir git commit -m x {} \\;", self.hub, "deny"),
+            ("find . -execdir git status {} \\;", self.hub, None),
+        ):
+            with self.subTest(command=command, cwd=cwd.name):
+                self.assertEqual(expected, self.bash(command, cwd))
 
     def test_the_leftovers_recorded_on_the_fail_closed_issue_are_refused(self) -> None:
         # The binders found against the modelling reader, and the forms its last review left open.
@@ -1852,17 +1894,32 @@ class PowerShellUnderstoodSetTests(GuardTestCase):
             ("gh pr checkout 12", self.hub, "deny"),
             ("'text'", self.hub, None),
             ("$x = 1; git status", self.tree, None),
+            ("(Get-Command git).Source", self.tree, None),
+            ("foreach ($c in 'a', 'b') { if ($c) { Write-Output $c } }", self.tree, None),
+            (f"if ($true) {{ git -C '{self.hub}' commit -m x }}", self.tree, "deny"),
+            ("[int]'5'; [string] 7", self.tree, None),
+            ("[IO.File]::Exists('x')", self.tree, "deny"),
+            ("[System.Diagnostics.Process] 'x'", self.tree, "deny"),
+            ("$x.ToString()", self.tree, "deny"),
+            ("$x.$name", self.tree, "deny"),
+            ("Get-ChildItem | ForEach-Object Name", self.tree, "deny"),
+            ("Get-ChildItem | Where-Object { $_.Length -gt 1 } | Sort-Object { $_.Name }", self.tree, None),
+            ("Invoke-Command { git status }", self.tree, "deny"),
+            ("iex 'git status'", self.tree, "deny"),
+            ("dotnet-format --verify-no-changes", self.tree, None),
+            ("timeout 5 git status", self.tree, "deny"),
             ("$env:X = 1; git status", self.tree, "deny"),
             ("$PSDefaultParameterValues = @{}", self.tree, "deny"),
             ("git -C $env:SOMEWHERE status", self.tree, None),
             ("git -C $env:SOMEWHERE commit -m x", self.tree, "deny"),
             (f"Write-Output (git -C '{self.hub}' commit -m x)", self.tree, "deny"),
-            ("Write-Output $x.Name", self.tree, "deny"),
+            ("Write-Output $x.Name", self.tree, None),
+            ("git status > $env:TEMP\\out.txt", self.tree, "deny"),
             ("Invoke-Expression 'git status'", self.tree, "deny"),
             ("& $exe status", self.tree, "deny"),
             ("[scriptblock]::Create('git status')", self.tree, "deny"),
-            ("if ($true) { git status }", self.tree, "deny"),
-            ("Get-ChildItem | ForEach-Object { $_.Name }", self.tree, "deny"),
+            ("if ($true) { git status }", self.tree, None),
+            ("Get-ChildItem | ForEach-Object { $_.Name }", self.tree, None),
             ("Set-Location env:", self.tree, "deny"),
             ("Get-Item alias:git", self.tree, "deny"),
             ("Start-Process git", self.tree, "deny"),
@@ -2067,9 +2124,9 @@ class ContractListTests(unittest.TestCase):
         # The guard reads git_client's list, the one home of the options git reads a value after.
         self.assertEqual(sorted(git_client.GLOBAL_VALUE_OPTIONS), sorted(contract_names("or as the next word (", ")")))
 
-    def test_the_programs_the_guard_reads_are_the_ones_its_contract_names(self) -> None:
-        named = contract_names("with `git`, `gh`, and `timeout`:", "None of them starts")
-        self.assertEqual(sorted(hub_guard.PROGRAMS), sorted(named))
+    def test_the_runners_the_guard_refuses_are_the_ones_its_contract_names(self) -> None:
+        named = contract_names("`RUNNERS`:", "Each is refused")
+        self.assertEqual(sorted(hub_guard.RUNNERS), sorted(named))
 
     def test_the_powershell_commands_the_guard_reads_are_the_ones_its_contract_names(self) -> None:
         named = contract_names("these cmdlets, by its name or an alias PowerShell gives it:", "Every other node")

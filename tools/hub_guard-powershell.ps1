@@ -19,9 +19,14 @@ using namespace System.Management.Automation.Language
 #     and a redirection {"kind": "file", "target": element} or {"kind": "merge"}
 #   "statements": the top-level statements, each {"pipelines": [[command index]], "operators": ["&&" | "||"],
 #     "background": bool, "nested": [command index]}, nested naming each command inside the statement's own
-#     expressions, which runs before it, and an assignment's also {"assigns": {"name", "qualified"}}, the variable it
-#     assigns and whether a drive qualifies it, as env: does, or null when its target is no plain variable; or
-#     statements is null when one of them is none of these
+#     expressions and bodies, which runs before or within it; an assignment, an if, or a foreach has no pipelines of
+#     its own; statements is null when one of them is none of these
+#   "assigned": each variable an assignment or a foreach assigns, anywhere in the tree, {"name", "qualified"}, the
+#     name and whether a drive qualifies it, as env: does, with name null for a target that is no plain variable
+#   "members": each member a property access reaches, {"static": bool, "constant": bool}, whether it is a type's
+#     static member and whether a constant names it
+#   "types": the name of each type a cast or a type expression names, as written
+#   "blocks": for each script block, the name of the command it is an argument of, or null for none
 #
 # hub_guard.py starts it with -Command rather than -File, so no execution policy applies to it.
 
@@ -31,6 +36,9 @@ $ErrorActionPreference = 'Stop'
 function ConvertTo-Element([Ast] $Element) {
     if ($Element -is [CommandParameterAst]) {
         return [ordered]@{ kind = 'parameter'; text = $Element.Extent.Text }
+    }
+    if ($Element -is [ScriptBlockExpressionAst]) {
+        return [ordered]@{ kind = 'block' }
     }
     if ($Element -is [ArrayLiteralAst]) {
         $texts = foreach ($item in $Element.Elements) {
@@ -83,15 +91,9 @@ function Get-Chain([Ast] $Statement, [Collections.Generic.List[CommandBaseAst]] 
             operators = @($left.operators + $operator + $right.operators)
         }
     }
-    if ($Statement -is [AssignmentStatementAst]) {
-        $target = $Statement.Left
-        $assigns = if ($target -is [VariableExpressionAst]) {
-            [ordered]@{
-                name = $target.VariablePath.UserPath -replace '^(?i:global|local|script|private):', ''
-                qualified = [bool] $target.VariablePath.IsDriveQualified
-            }
-        } else { $null }
-        return [ordered]@{ pipelines = @(); operators = @(); assigns = $assigns }
+    if ($Statement -is [AssignmentStatementAst] -or $Statement -is [IfStatementAst] -or
+        $Statement -is [ForEachStatementAst]) {
+        return [ordered]@{ pipelines = @(); operators = @() }
     }
     if ($Statement -isnot [PipelineAst]) {
         return $null
@@ -104,8 +106,8 @@ function Get-Chain([Ast] $Statement, [Collections.Generic.List[CommandBaseAst]] 
 # hold them, which are not the statement's pipeline elements.
 function Get-Nested([Ast] $Statement, [Collections.Generic.List[CommandBaseAst]] $Commands) {
     $own = [Collections.Generic.HashSet[int]]::new()
-    # An assignment's value is all nested: the commands it runs come before the assignment.
-    $pipelines = if ($Statement -is [AssignmentStatementAst]) { @() } else {
+    # An assignment's value and a control statement's bodies are all nested: none is a pipeline of its own.
+    $pipelines = if ($Statement -isnot [PipelineBaseAst]) { @() } else {
         $Statement.FindAll({ param($node) $node -is [PipelineAst] }, $false)
     }
     foreach ($pipeline in $pipelines) {
@@ -151,8 +153,45 @@ if ($blocks.Count -eq 0 -and $null -ne $ast.EndBlock) {
         $statements.Add($chain)
     }
 }
+function ConvertTo-Assigned([Ast] $Target) {
+    if ($Target -is [VariableExpressionAst]) {
+        return [ordered]@{
+            name = $Target.VariablePath.UserPath -replace '^(?i:global|local|script|private):', ''
+            qualified = [bool] $Target.VariablePath.IsDriveQualified
+        }
+    }
+    [ordered]@{ name = $null; qualified = $false }
+}
+$assigned = foreach ($node in $all) {
+    if ($node -is [AssignmentStatementAst]) { ConvertTo-Assigned $node.Left }
+    elseif ($node -is [ForEachStatementAst]) { ConvertTo-Assigned $node.Variable }
+}
+$members = foreach ($node in $all) {
+    if ($node -is [MemberExpressionAst] -and $node -isnot [InvokeMemberExpressionAst]) {
+        [ordered]@{ static = [bool] $node.Static; constant = $node.Member -is [StringConstantExpressionAst] }
+    }
+}
+$types = foreach ($node in $all) {
+    if ($node -is [ConvertExpressionAst]) { $node.Type.TypeName.Name }
+    elseif ($node -is [TypeExpressionAst]) { $node.TypeName.Name }
+}
+$blocks = foreach ($node in $all) {
+    if ($node -is [ScriptBlockExpressionAst]) {
+        # Through a parameter, and a calculated property's hashtable and the list holding it, to the command.
+        $parent = $node.Parent
+        while ($parent -is [CommandParameterAst] -or $parent -is [CommandExpressionAst] -or
+            $parent -is [PipelineAst] -or $parent -is [HashtableAst] -or $parent -is [ArrayLiteralAst]) {
+            $parent = $parent.Parent
+        }
+        if ($parent -is [CommandAst]) { , "$($parent.GetCommandName())" } else { , $null }
+    }
+}
 [ordered]@{
     nodes = $nodes
+    assigned = @($assigned)
+    members = @($members)
+    types = @($types)
+    blocks = @($blocks)
     commands = @(foreach ($command in $commands) { ConvertTo-Command $command })
     # The comma keeps a single statement a list: an if statement's output is otherwise unrolled.
     statements = if ($null -eq $statements) { $null } else { , $statements.ToArray() }

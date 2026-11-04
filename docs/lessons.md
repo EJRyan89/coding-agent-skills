@@ -274,7 +274,7 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   `tests/validation/skill_grants.py::SkillGrantsPolicies::test_skill_markdown_names_every_status_line_its_scripts_print`,
   `tests/validation/workflows.py::WorkflowsPolicies::test_deployable_workflow_answers_every_prompt_configure_declares_in_both_jobs`,
   `tests/tools/test_hub_guard.py::test_the_refused_subcommands_are_the_writing_subcommands`,
-  `tests/tools/test_hub_guard.py::ContractListTests::test_the_programs_the_guard_reads_are_the_ones_its_contract_names`,
+  `tests/tools/test_hub_guard.py::ContractListTests::test_the_runners_the_guard_refuses_are_the_ones_its_contract_names`,
   `tests/code-review/test_format_contract.py::test_the_threat_model_rows_name_each_file_the_analyzer_inventory_parses`,
   `.claude/skills/review-repository/scripts/test_review_repository.py::test_the_trust_boundary_route_matches_its_scripts_and_each_choice_matches_a_file`
 - **Search for:** a module-level `frozenset({` or tuple of strings whose members another module also spells; a
@@ -355,7 +355,7 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
 - **Why:** A hand-written reader that misses a construct the program reads lets a command or an entry pass unjudged.
   The hub guard's modelling reader closed one spelling per fix and every review found the next, until it was rebuilt
   to refuse what it does not understand.
-- **Use:** `tools.hub_guard:read_powershell`, `tools.hub_guard:timeout_start`, and `tools.hub_guard:expansion_form`
+- **Use:** `tools.hub_guard:read_powershell`, `tools.hub_guard:runner_start`, and `tools.hub_guard:expansion_form`
 - **Guard:** `tests/tools/test_bash_syntax.py::ArrayAssignmentTests::test_an_array_assignment_to_a_subscript_is_read_where_bash_reads_an_array`,
   `skills/ejryan89-skill-core/scripts/test_git_client.py::IsolatedClientTests::test_a_plain_client_refuses_a_command_line_setting_that_can_define_an_alias`,
   `tests/tools/test_hub_guard_bash.py::BuiltinTests::test_every_builtin_bash_lists_is_understood_or_not_read_and_never_both`,
@@ -379,7 +379,8 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   and compares text with .NET's ordinal comparison ignoring case; in `tools/hub_guard.py`, a construct a table neither
   understands nor lists in `NOT_READ`, a table whose test types its rows rather than taking them from the shell's own
   catalogue, a word settled from what an earlier command assigns rather than the assignment refused, a program added
-  to `PROGRAMS` or a cmdlet to `POWERSHELL_COMMANDS` that starts a command its words name, and a refusal that waits
+  to `RUNNERS` with no row, a program that runs a command its words name left out of it, a cmdlet added to
+  `POWERSHELL_COMMANDS` that starts a command its words name, and a refusal that waits
   for the command to name git; a `re.compile(` in `tools/runtime_*.py` or `deployer/discovery.py` with no sample
   under `tests/fixtures/captured-output/`; a test whose sample output was typed rather than captured; a refusal of an
   empty or absent member of another program's entries, such as `reported(..., empty=False)`, whose fixture rows give

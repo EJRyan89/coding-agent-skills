@@ -1,12 +1,12 @@
-"""Holds tools/hub_guard.py's reading of timeout, the one program the guard reads as the command it starts, to the
-real timeout, and pins every other program that starts a command as one the guard does not read.
+"""Holds tools/hub_guard.py's reading of the runners whose options it reads (RUNNER_OPTIONS) to the real programs,
+and pins every other runner as one the guard refuses.
 
-The timeout the system installs, Git Bash's on Windows and the system's elsewhere, runs every option form below with
+Each program the system installs, Git Bash's on Windows and the system's elsewhere, runs every option form below with
 its command replaced by a probe that records its arguments, its directory, and one variable. The guard reads the same
-words, and for each form must either read the command timeout started or decline to read it, which refuses it while a
-hub is guarded; it must never read another. A form timeout refuses, or one after which it starts nothing, holds the
-guard to nothing: judging a command that never runs refuses only more. The forms come from timeout's own --help, so
-an option the guard's tables do not list is tried too, alongside the hub guard suite's examples.
+words, and for each form must either read the command the program started or decline to read it, which refuses it
+while a hub is guarded; it must never read another. A form the program refuses, or one after which it starts nothing,
+holds the guard to nothing: judging a command that never runs refuses only more. The forms come from each program's
+own --help, so an option the guard's tables do not list is tried too, alongside the hub guard suite's examples.
 """
 
 from __future__ import annotations
@@ -29,8 +29,6 @@ from tools import hub_guard
 SKIP_ALLOWED = {
     "PrefixProgramAgreementTests.agree": ("a program the system does not install has no behavior to hold the guard to"),
 }
-# The programs that start the command their words name, which the guard once modelled and now does not read.
-NOT_READ_STARTERS = ("env", "nice", "nohup", "stdbuf", "time", "sudo", "doas", "xargs", "watch", "setsid", "chronic")
 
 # The variable whose value the probe records: set to OUTER for every form, so env's -i, -u, and NAME=value show.
 VARIABLE = "HUB_GUARD_PROBE_VARIABLE"
@@ -47,12 +45,21 @@ MARKER = ".where"
 # The operands each program takes before its command, as its manual gives them.
 OPERANDS = {"timeout": ["5"]}
 # A value each option that takes one accepts, by program and long name; any other takes VALUE.
-VALUES = {"timeout": {"signal": "TERM", "kill-after": "5"}}
+VALUES = {
+    "nice": {"adjustment": "5"},
+    "timeout": {"signal": "TERM", "kill-after": "5"},
+    "stdbuf": {"input": "0", "output": "L", "error": "L"},
+}
 SECOND_VALUES: dict[tuple[str, str], str] = {}
 VALUE = "5"
 OPTIONAL_VALUE = "INT"
 # The hub guard suite's examples of each program's options.
-FIXTURE_FORMS = {"timeout": [["-k5"], ["-s", "TERM"], ["-vk5"], ["--signal=TERM"], ["--sig=TERM"], ["--"]]}
+FIXTURE_FORMS = {
+    "nice": [["-n5"], ["-n", "5"], ["--adjustment=5"], ["-5"], ["-n", "5", "-n", "3"]],
+    "stdbuf": [["-oL"], ["-oL", "-eL"], ["-o", "L"]],
+    "timeout": [["-k5"], ["-s", "TERM"], ["-vk5"], ["--signal=TERM"], ["--sig=TERM"], ["--"]],
+    "nohup": [["--"]],
+}
 HELP_OPTION = re.compile(r"^\s+(?:(-[A-Za-z0-9]),?\s*)?(?:(--[a-z][a-z0-9-]*)(\[=|=)?)?")
 DISCOVER = r"""cd "$1" || exit 1
 shift
@@ -215,7 +222,7 @@ def run_bash(script: str, *arguments: str) -> None:
 
 
 def discover(workspace: Path) -> dict[str, Program]:
-    names = ["timeout"]
+    names = sorted(set(hub_guard.RUNNER_OPTIONS) - {"xargs"})
     run_bash(DISCOVER, platform_support.normalize(workspace), *names)
     programs: dict[str, Program] = {}
     for name in names:
@@ -284,10 +291,9 @@ def real_runs() -> Runs:
 
 def guard_reading(program: str, words: list[str], index: int) -> Started | str | None:
     """What the guard reads a form to start: a Started, None for nothing, or "declined" for a form it cannot read.
-    timeout starts its command in its own directory with its own environment."""
-    del program
+    Each runner starts its command in its own directory with its own environment."""
     arguments: list[hub_guard.Word] = [*words, PROBE_WORD, PROBE_WORD, "-v", f"f{index}"]
-    start, reason = hub_guard.timeout_start(arguments)
+    start, reason = hub_guard.runner_start(program, arguments)
     if reason is not None:
         return "declined"
     if start is None:
@@ -331,10 +337,23 @@ class PrefixProgramAgreementTests(unittest.TestCase):
     def test_timeout(self) -> None:
         self.agree("timeout")
 
-    def test_every_other_program_that_starts_a_command_is_one_the_guard_does_not_read(self) -> None:
-        for name in NOT_READ_STARTERS:
+    def test_nice(self) -> None:
+        self.agree("nice")
+
+    def test_nohup(self) -> None:
+        self.agree("nohup")
+
+    def test_stdbuf(self) -> None:
+        self.agree("stdbuf")
+
+    def test_every_runner_whose_options_are_read_is_held_to_its_program(self) -> None:
+        tested = {name.removeprefix("test_") for name in dir(self) if name.startswith("test_")}
+        self.assertLessEqual(set(hub_guard.RUNNER_OPTIONS) - {"xargs"}, tested)
+
+    def test_every_runner_with_no_reader_is_refused_and_no_git_call_is_read_from_it(self) -> None:
+        read = {*hub_guard.RUNNER_OPTIONS, "env", "bash", "sh", "pwsh"}
+        for name in sorted(set(hub_guard.RUNNERS) - read):
             with self.subTest(program=name):
-                self.assertNotIn(name, hub_guard.PROGRAMS)
                 reading = hub_guard.Reading({}, text="")
                 hub_guard.read_bash(f"x=1 {name} git status", GUARD_ROOT, reading)
                 self.assertTrue(reading.unread)
