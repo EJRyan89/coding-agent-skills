@@ -163,14 +163,17 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   `xml_reader:CONTENT_ERRORS`, `frontmatter:CONTENT_ERRORS`, `typed_text:CONTENT_ERRORS`,
   `guidance_record:CONTENT_ERRORS`, `check_provenance:CONTENT_ERRORS`, and `diff_paths:CONTENT_ERRORS`, named whole in
   the handler, and the readers each module names, such as `json_reader:CONTENT_READERS`; `review_io:CONTENT_ERRORS`
-  and `file_presence:NotAFile`.
+  and `file_presence:NotAFile`; and `review_io:PersistenceError`, the family of `review_io:read_json`, which the
+  content-errors policy's `tests.validation.python_checks:core_reader_families` names for that reader.
 - **Guard:** `tests/validation/python_checks.py::PythonChecksPolicies::test_each_handler_around_a_reader_catches_its_whole_content_family`,
   `tests/malformed_input/test_malformed_input.py::test_each_reader_refuses_or_documents_accepting_each_case`,
-  `tests/validation/python_checks.py::PythonChecksPolicies::test_json_reader_is_the_one_parse_of_json`
+  `tests/validation/python_checks.py::PythonChecksPolicies::test_json_reader_is_the_one_parse_of_json`,
+  `tests/validation/test_python_checks.py::test_content_errors_policy_reads_read_json_as_raising_persistence_error`
 - **Search for:** `except json.JSONDecodeError`, `except UnicodeDecodeError:`, or `except tomllib.TOMLDecodeError:`
   around a reader that raises more; `except ValueError` near an `xml_reader`, `tomllib`, or `csv.` call; an `except X`
-  around a helper that raises a class outside `X`.
-- **Examples:** #1634, #1816, #1874
+  around a helper that raises a class outside `X`; an `except (`, `OSError`, or `ValueError` around a
+  `validate_record_pair` or `read_json` call with no `PersistenceError` beside it.
+- **Examples:** #1634, #1816, #1874, #2221
 
 ### A result cut short says it was cut
 
