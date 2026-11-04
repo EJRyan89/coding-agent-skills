@@ -176,6 +176,12 @@ class StubGitHub:
         """`entries` answers the contents of a (commit, path) with an object of its own, such as a symbolic link's."""
         self.pages, self.trees, self.sizes, self.entries = pages, trees, sizes or {}, entries or {}
         self.commands: list[list[str]] = []
+        # The count GitHub gives as the pull request's changed_files, every listed entry unless a test caps the
+        # listing, and the head each read of the pull request answers in turn, its last one for every later read.
+        self.changed_files = sum(len(page) for page in pages)
+        self.heads = [HEAD]
+        self.bases = [BRANCH_TIP]  # the base branch's tip each read answers, as heads are
+        self.pull_reads = 0
         self.blobs = {blob_id(content): content for tree in trees.values() for content in tree.values()}
 
     def client(self) -> GitHubClient:
@@ -194,6 +200,9 @@ class StubGitHub:
 
     def answer(self, endpoint: str, options: list[str]) -> Any:
         if endpoint == "pulls/7" and not options:
+            head = self.heads[min(self.pull_reads, len(self.heads) - 1)]
+            base = self.bases[min(self.pull_reads, len(self.bases) - 1)]
+            self.pull_reads += 1
             return {
                 "number": 7,
                 "title": AUTHORED,
@@ -202,8 +211,9 @@ class StubGitHub:
                 "state": "open",
                 "draft": False,
                 "merged_at": None,
-                "base": {"ref": "main", "sha": BRANCH_TIP},
-                "head": {"ref": AUTHORED.replace(" ", "-"), "sha": HEAD},
+                "base": {"ref": "main", "sha": base},
+                "head": {"ref": AUTHORED.replace(" ", "-"), "sha": head},
+                "changed_files": self.changed_files,
             }
         if endpoint == f"compare/{BRANCH_TIP}...{HEAD}?per_page=1" and not options:
             return {"merge_base_commit": {"sha": MERGE_BASE}}
@@ -234,7 +244,15 @@ class StubGitHub:
 
 def changed(path: str, status: str, previous: str | None = None) -> dict[str, Any]:
     """A pull request file listing's entry, with the fields GitHub sends that review-document never reads."""
-    entry = {"filename": path, "status": status, "sha": "0" * 40, "additions": 1, "deletions": 0, "patch": AUTHORED}
+    entry = {
+        "filename": path,
+        "status": status,
+        "sha": "0" * 40,
+        "additions": 1,
+        "deletions": 0,
+        "changes": 1,
+        "patch": AUTHORED,
+    }
     return entry if previous is None else {**entry, "previous_filename": previous}
 
 
@@ -1338,6 +1356,66 @@ class PullRequestTests(PipelineTestCase):
                         "build", "octo-org/widgets#7", "--output", str(self.output), github=stub.client()
                     )
                 self.assertEqual(expected, (code, lines))
+                self.assertFalse(self.output.exists())
+
+    def skill_phrase(self, pattern: str) -> str:
+        """The words of a FAILED line SKILL.md promises, as it writes them in the code span `pattern` finds."""
+        skill = (Path(__file__).resolve().parents[1] / "SKILL.md").read_text(encoding="utf-8")
+        [phrase] = re.findall(pattern, skill)
+        return str(phrase)
+
+    def test_a_file_listing_shorter_than_the_files_the_pull_request_changes_fails_before_any_document_is_read(
+        self,
+    ) -> None:
+        # GitHub's files API lists at most 3,000 files, so a document past its cut would go unreviewed unseen.
+        stub = self.stub()
+        stub.changed_files = 3001
+        code, lines = run_main("build", "octo-org/widgets#7", "--output", str(self.output), github=stub.client())
+        self.assertEqual(1, code, lines)
+        [line] = lines
+        listed = self.skill_phrase(r"files API `(lists <n> of the <count> files)`")
+        # The remedy the line names is the one SKILL.md tells the agent to offer.
+        remedy = self.skill_phrase(r"offer to (review a document by its path in a checkout of the pull request's head)")
+        self.assertEqual(
+            f"FAILED GitHub's files API {listed.replace('<n>', '6').replace('<count>', '3,001')} octo-org/widgets#7 "
+            "changes, so a document past its cut would go unreviewed; "
+            + remedy.replace("a document", "such a document"),
+            line,
+        )
+        self.assertEqual([], stub.reads())
+        self.assertFalse(self.output.exists())
+
+    def test_a_pull_request_that_moves_while_its_files_are_listed_fails_before_any_document_is_read(
+        self,
+    ) -> None:
+        # The listing is served by pull number, which follows a push, while the documents are read at the head the
+        # build began with and the merge base of the base it began with; a moved head before the pages, or after
+        # them, or a base retargeted by the end of them, mixes two commits' changes.
+        moved = "4" * 40
+        promised = self.skill_phrase(r"pull request `(changed while its files were being read)`")
+        retargeted = "5" * 40
+        for heads, bases, name, was, now in (
+            ([HEAD, moved], [BRANCH_TIP], "head", HEAD, moved),
+            ([HEAD, HEAD, moved], [BRANCH_TIP], "head", HEAD, moved),
+            ([HEAD], [BRANCH_TIP, BRANCH_TIP, retargeted], "base", BRANCH_TIP, retargeted),
+        ):
+            with self.subTest(heads=heads, bases=bases):
+                stub = self.stub()
+                stub.heads, stub.bases = heads, bases
+                code, lines = run_main(
+                    "build", "octo-org/widgets#7", "--output", str(self.output), github=stub.client()
+                )
+                self.assertEqual(
+                    (
+                        1,
+                        [
+                            f"FAILED octo-org/widgets#7 {promised} ({name} {was[:12]} is now {now[:12]}); "
+                            "run build again"
+                        ],
+                    ),
+                    (code, lines),
+                )
+                self.assertEqual([], stub.reads())
                 self.assertFalse(self.output.exists())
 
     def test_a_pull_request_with_no_document_to_review_is_refused(self) -> None:
