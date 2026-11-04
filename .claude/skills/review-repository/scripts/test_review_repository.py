@@ -101,6 +101,10 @@ TRUST_BOUNDARY_SCRIPTS = (
     # the checkout's fixtures signed in as the user.
     "tools/checkout_trust.py",
     "tools/skill_evals.py",
+    # The canaries, which deploy or build the checkout's skills and run them signed in as the user, refusing a foreign
+    # checkout through checkout_trust.py first.
+    "tools/plugin_canary.py",
+    "tools/runtime_canary.py",
     "tests/tools/test_checkout_trust.py",
     "tests/tools/test_plugin_canary.py",
     "tests/tools/test_runtime_canary.py",
@@ -142,6 +146,7 @@ TRUST_BOUNDARY_SCRIPTS = (
     f"{SKILL_CORE}/path_keys.py",
     f"{SKILL_CORE}/pdf_tool.py",
     f"{SKILL_CORE}/process_identity.py",
+    f"{SKILL_CORE}/skill_menu.py",
     f"{SKILL_CORE}/typed_fields.py",
     f"{SKILL_CORE}/versions.py",
     f"{SKILL_CORE}/whole_number.py",
@@ -151,6 +156,8 @@ TRUST_BOUNDARY_SCRIPTS = (
 ALTERNATIVES = re.compile(r"\(\?:([^()]*\|[^()]*)\)")
 # The repository modules a trust-boundary module imports that the boundary does not depend on, each with its reason.
 OUTSIDE_THE_BOUNDARY = {
+    f"{SKILL_CORE}/release_tags.py": "reads which release tag a commit holds, after the checkout's refusal has passed",
+    f"{SKILL_CORE}/runtime_support.py": "reads the trusted metadata's runtime declaration the canary compares runs to",
     f"{PIPELINE_SCRIPTS}/review_archive.py": "allocates paths in the review archive, which the threat model trusts",
     f"{PIPELINE_SCRIPTS}/review_config.py": "reads the code-review configuration, which the threat model trusts",
     f"{PIPELINE_SCRIPTS}/review_flags.py": "keeps the user's flag store, which no author's content reaches",
@@ -171,8 +178,6 @@ OUTSIDE_THE_BOUNDARY = {
 # Each repository tool that imports the run contract or a pipeline module that stages a run, with why the
 # trust-boundary reviewer need not hold it: none carries a pull request's text to a reviewer.
 TOOLS_OUTSIDE_THE_BOUNDARY = {
-    "tools/plugin_canary.py": "stages a guarded run of its own fixture in a throwaway configuration to check the guard",
-    "tools/runtime_canary.py": "takes Copilot's session version and local session from review_hosts, starting no run",
     "tools/runtime_command_lines.py": "builds each runtime's command line from review_hosts and starts it signed out",
     "tools/runtime_prompts.py": "renders each reviewer prompt from fixtures into its committed sample, staging no run",
     "tools/skill_evals_scenarios.py": "reads the fixed scenarios under tests/fixtures/skill-evals, staging no run",
@@ -230,21 +235,24 @@ NAMED_ELSEWHERE = {
     "deploy.py": "the deployer route; the threat model names `deploy.py check`, which reports pdf_tool.py's floors",
     "review_config.py": "named as a script a grant must not reach, which the skill-scripts route reviews",
 }
+# The route a file no specialist matches reaches: the generic reviewer, which `uncovered` lists it for.
+GENERIC = "generic-review"
 # Each file the trust model in docs/design.md names, other than a document or a validation policy, that the
-# trust-boundary reviewer does not hold, with the reason.
+# trust-boundary reviewer does not hold: the route that does, a specialist's id or GENERIC, and why.
 DESIGN_NAMED_ELSEWHERE = {
-    "deployer/tools.py": "the deployer route; its row names the catalogue of the tools a skill may run",
+    "deployer/tools.py": ("deployer", "its row names the catalogue of the tools a skill may run"),
     f"{SKILL_CORE}/skill_roots.py": (
-        "the skill-scripts route; its row names it for the folders a skill's working files must stay out of"
+        "skill-scripts",
+        "its row names it for the folders a skill's working files must stay out of",
     ),
-    "tools/plugin_canary.py": (
-        "refuses a foreign checkout through checkout_trust.py, which test_checkout_trust.py holds it to calling, and "
-        "stages only its own fixture's run"
+    "tools/release_notes.py": (
+        GENERIC,
+        "reproduces approved bodies as authored Markdown the maintainer reviews before release",
     ),
-    "tools/release_notes.py": "reproduces approved bodies as authored Markdown the maintainer reviews before release",
-    "tests/tools/test_release_notes.py": "holds release_notes.py, which the row leaves to the maintainer's review",
+    "tests/tools/test_release_notes.py": (GENERIC, "holds release_notes.py, which the row leaves to the maintainer"),
     ".github/workflows/validate.yml": (
-        "reads the body into a fixed file for validation; the row leaves what the body says to the maintainer's review"
+        GENERIC,
+        "reads the body into a fixed file for validation; the row leaves what the body says to the maintainer's review",
     ),
 }
 
@@ -628,6 +636,19 @@ class ManifestTests(unittest.TestCase):
         self.assertLessEqual(set(DESIGN_NAMED_ELSEWHERE), named)
         self.assertEqual([], [path for path in held if "trust-boundary" not in reached([path])[path]])
         self.assertEqual([], [path for path in DESIGN_NAMED_ELSEWHERE if "trust-boundary" in reached([path])[path]])
+        # Each file named elsewhere reaches the route its entry names, so a reason cannot name a route that has lost it.
+        self.assertEqual(
+            {},
+            {
+                path: holder
+                for path, (holder, _reason) in DESIGN_NAMED_ELSEWHERE.items()
+                if (
+                    path not in uncovered(MANIFEST, [path])
+                    if holder == GENERIC
+                    else holder not in reached([path])[path]
+                )
+            },
+        )
         on_a_fix = route(MANIFEST, held, lambda name: True, title="fix: refuse a spelling")
         self.assertEqual(held, on_a_fix.get("sibling-spellings"))
 
