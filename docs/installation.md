@@ -138,7 +138,7 @@ It reports each adapter as `FOUND`, `NOT FOUND` (with the runtime's reason when 
 
 ### Skipped items
 
-If an unmanaged or locally modified destination differs from the rendered template, deployment skips it and lists it under `SKIPPED`, with a diff for unmanaged skills; a dry run lists the same items under `CONFLICT`. Review the difference before explicitly replacing only that item:
+If an unmanaged or locally modified destination differs from the rendered template, deployment skips it and lists it under `SKIPPED`, with a diff for unmanaged skills; a dry run lists the same items under `CONFLICT`. The dry run shows each diff whole, while a deployment shows its first lines and ends a longer one with `... <count> more lines; run with --dry-run for the whole diff`. Review the difference before explicitly replacing only that item:
 
 ```bash
 python deploy.py --all --force-item dotnet-format
