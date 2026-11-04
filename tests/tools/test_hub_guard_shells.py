@@ -1062,6 +1062,7 @@ OPTION_SPELLINGS: tuple[tuple[str, str, str], ...] = (
             ("echo PS4 POSIXLY_CORRECT $BASH_COMPAT; unset POSIXLY_CORRECT; PROBE", "posix"),
             ("echo $(( POSIXLY_CORRECT == 1 )); PROBE", "posix"),
             ("n=0; (( n += 1 )); a=(x); : ${a[n-1]}; PROBE", "posix"),
+            ("for i in 1 2 3; do : $(( i + RANDOM + $# + ${#a[@]} )); done; PROBE", "posix"),
             ("export PS4='+ ${BASH_SOURCE}:${LINENO}: '; PROBE", "posix"),
             ("bash -c 'PROBE'", "posix"),
             ("bash -lc 'PROBE'", "posix"),

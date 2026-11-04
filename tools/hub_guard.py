@@ -1253,6 +1253,9 @@ class Shell:
     exported_functions: set[str] = field(default_factory=set)
     environment_functions: set[str] = field(default_factory=set)
     reading: Reading | None = None
+    # The variables whose value the text does not settle but which always hold an integer, such as a for loop's over
+    # words that are each one, which arithmetic reads as a number.
+    numbers: set[str] = field(default_factory=set)
 
     def copy(self) -> Shell:
         return replace(
@@ -1263,6 +1266,7 @@ class Shell:
             functions=dict(self.functions),
             references=dict(self.references),
             exported_functions=set(self.exported_functions),
+            numbers=set(self.numbers),
         )
 
     def target(self, name: str) -> str | None:
@@ -1354,6 +1358,7 @@ class Shell:
         if target in SHELL_OPTION_VARIABLES:
             return  # read-only: Bash refuses the assignment
         self.note_option_variable(target, value)
+        self.numbers.discard(target)
         self.variables[target] = value
         if export or self.allexport:
             self.exported.add(target)
@@ -1367,6 +1372,7 @@ class Shell:
             return
         if target in SHELL_OPTION_VARIABLES:
             return
+        self.numbers.discard(target)
         self.variables.pop(target, None)
         self.exported.discard(target)
 
@@ -1416,6 +1422,8 @@ def join(first: Shell, second: Shell) -> Shell:
         first.exported_functions | second.exported_functions,
         first.environment_functions | second.environment_functions,
         first.reading,
+        # A number on both paths, unless one settles it to another value.
+        {name for name in first.numbers & second.numbers if variables.get(name) is None},
     )
 
 
@@ -1610,6 +1618,9 @@ class BashReader:
                 state.references[node.name] = None
             elif node.name is not None:
                 state.assign(node.name, None, export=False)
+                # Over words that are each a literal integer, the variable holds a number whichever it holds.
+                if node.words and all(INTEGER_WORD.fullmatch(word.literal or "") for word in node.words):
+                    state.numbers.add(node.name)
             after = self.run_list(node.body, state).merged()
             seen.append(after)
             state = join(shell, after).copy()
@@ -2121,6 +2132,7 @@ def bash_declare(reader: BashReader, arguments: list[Word], _: object, shell: Sh
             continue
         if has_value and not referencing:
             shell.note_option_variable(subject, value)
+            shell.numbers.discard(subject)
             shell.variables[subject] = value
         if unexporting:
             shell.exported.discard(subject)
@@ -2471,9 +2483,11 @@ PLAIN_BRACED = re.compile(r"[A-Za-z_][A-Za-z0-9_]*|[0-9]+|[#?$!@*-]")
 # A name in an arithmetic expression, which Bash reads as a variable, not one inside a number such as 0x1f or 16#ff.
 ARITHMETIC_NAME = re.compile(r"(?<![A-Za-z0-9_#])[A-Za-z_][A-Za-z0-9_]*")
 ARITHMETIC_EXPANSION = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)")
-# An expansion whose value is always a number: $#, $?, $$, $!, and ${#NAME}, a length.
-NUMERIC_EXPANSION = re.compile(r"\$[#?$!]|\$\{#[A-Za-z_][A-Za-z0-9_]*\}")
+# An expansion whose value is always a number: $#, $?, $$, $!, the same braced, and a length, ${#NAME},
+# ${#NAME[@]}, or ${#NAME[*]}. A length with any other subscript stays, since its subscript is arithmetic too.
+NUMERIC_EXPANSION = re.compile(r"\$[#?$!]|\$\{[#?$!]\}|\$\{#[A-Za-z_][A-Za-z0-9_]*(?:\[[@*]\])?\}")
 INTEGER = re.compile(r"\s*[-+]?[0-9]+\s*")
+INTEGER_WORD = re.compile(r"[-+]?[0-9]+")
 # How deep arithmetic follows a variable whose value is itself an expression, which Bash evaluates in turn.
 ARITHMETIC_DEPTH = 8
 
@@ -2616,11 +2630,14 @@ def arithmetic_hazard(expression: str | None, shell: Shell, depth: int = 0) -> s
 
 
 def settled_variable(shell: Shell, name: str) -> str | None:
-    """A variable's value as arithmetic reads it, through any name reference: "" when it is unset; None when the text
-    does not settle it."""
+    """A variable's value as arithmetic reads it, through any name reference: "" when it is unset, as Bash's own
+    numbers, RANDOM, SECONDS, LINENO, BASHPID, PPID, UID, and EUID, are to the reader until the text assigns them;
+    "0" for one that holds a number the text does not settle (Shell.numbers); None when the text does not settle it."""
     target = shell.target(name)
     if target is None or shell.opaque:
         return None
+    if target in shell.numbers:
+        return "0"
     return shell.variables.get(target, "")
 
 

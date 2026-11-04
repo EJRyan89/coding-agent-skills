@@ -427,7 +427,9 @@ refused while a guarded hub is in view, and what they do not see at all is named
   word or pattern, or a `for` list. The guard cannot read a command whose arithmetic assigns either variable, or
   evaluates what the text does not settle to a number, since Bash evaluates a variable's value as an expression in
   turn: an expansion or variable whose value the text does not settle, a substitution's output, or a `${ }` other than
-  a plain name. Nor can it read one that gives a variable the integer attribute (`declare -i` and the like), after
+  a plain name. A number the text does not settle is read as a number: a `for` loop's variable over words that are each
+  a literal integer, `$#`, `$?`, `$$`, `$!`, a length (`${#NAME}`, `${#NAME[@]}`), and `RANDOM`, `SECONDS`, `LINENO`,
+  `BASHPID`, `PPID`, `UID`, and `EUID` while the text neither assigns nor unsets them. Nor can it read one that gives a variable the integer attribute (`declare -i` and the like), after
   which each assignment to it is arithmetic. A command that only names either variable, as
   `git log -S POSIXLY_CORRECT` does, is read as before. Each table names each option Bash lists and whether a shell
   holding it is one the guard reads: the guard follows allexport, reads a shell under an option that changes nothing

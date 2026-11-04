@@ -883,6 +883,38 @@ class ShellOptionTableTests(unittest.TestCase):
             with self.subTest(command=command):
                 self.assertEqual([], bash_reading(command).unread)
 
+    def test_arithmetic_reads_a_number_the_text_does_not_settle_as_a_number(self) -> None:
+        for command, refused in (
+            # A loop variable over literal integers, the special parameters, a length, and Bash's own numbers.
+            ("for i in 1 2 3; do echo $((i)); done; git status", False),
+            ("for i in -1 +2; do (( i > 0 )); done; git status", False),
+            ("for i in 1 2; do : $(( $i * 2 )) ${a[i]}; done; git status", False),
+            ("echo $(( $# + $? + $$ + $! + ${#} + ${?} )); git status", False),
+            ("a=(x y); echo $(( ${#a[@]} + ${#a[*]} + ${#a} )); git status", False),
+            ("echo $(( RANDOM + SECONDS + LINENO + BASHPID + PPID + UID + EUID )); git status", False),
+            ("echo $(( $RANDOM % 6 + ${SECONDS} )); git status", False),
+            # Any other loop list, a number the text then changes, and one of Bash's numbers the text assigns.
+            ("for i in $(cmd); do echo $((i)); done; git status", True),
+            ('for i in "$@"; do echo $((i)); done; git status', True),
+            ("for i; do echo $((i)); done; git status", True),
+            ("for i in 1 x; do echo $((i)); done; git status", True),
+            ("for i in 1 '2'; do echo $((i)); done; git status", True),
+            ("for i in 1 2; do read -r i; echo $((i)); done; git status", True),
+            ("for i in 1 2; do declare i=$v; echo $((i)); done; git status", True),
+            ("read -r v; LINENO=$v; echo $((LINENO)); git status", True),
+            ("RANDOM='POSIXLY_CORRECT=1'; echo $((RANDOM)); git status", True),
+            ("a=(x); read -r k; echo $(( ${#a[k]} )); git status", True),
+        ):
+            with self.subTest(command=command):
+                self.assertEqual(refused, bool(bash_reading(command).unread), bash_reading(command).unread)
+        # A loop's number stays one after it, a copy's numbers are its own, and an unset one is no longer one.
+        shell = hub_guard.Shell(None, {}, set(), numbers={"i"})
+        self.assertEqual("0", hub_guard.settled_variable(shell, "i"))
+        shell.copy().numbers.add("j")
+        self.assertEqual({"i"}, shell.numbers)
+        shell.unset("i")
+        self.assertEqual("", hub_guard.settled_variable(shell, "i"))
+
     def test_the_arithmetic_readers_take_each_form_as_bash_does(self) -> None:
         # The contexts a word's raw text holds: none inside single quotes or after a backslash.
         for raw, expected in (

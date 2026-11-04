@@ -3851,6 +3851,8 @@ SHELL_JOINS: dict[str, list[tuple[object, object, object]]] = {
     ],
     "exported_functions": [({"f"}, {"g"}, {"f", "g"})],
     "environment_functions": [({"f"}, {"g"}, {"f", "g"})],
+    # A number on one path only may hold anything on the other.
+    "numbers": [({"i"}, {"i"}, {"i"}), ({"i"}, {"j"}, set()), ({"i"}, set(), set())],
 }
 SESSION_JOINS: dict[str, list[tuple[object, object, object]]] = {
     "cwd": SHELL_JOINS["cwd"],
