@@ -11,9 +11,10 @@
     endregion-brace-spacing no blank line between an #endregion and a directly following closing brace
 
 It prints `VIOLATION <file> <line> <severity> <rule> <message>` per violation, `FIXED <file> <line> <rule>` per fix with
---fix (preserving line endings, BOM, and encoding), `UNREADABLE <file> <reason>` per file whose byte order mark names an
-encoding its bytes are not in, which it neither checks nor fixes, and `SUMMARY <violations> <files> <rules>`. It exits 1
-when a VIOLATION remains, a file was UNREADABLE, or a listed entry was REFUSED (findings), 0 otherwise. Every line of
+--fix (preserving line endings, BOM, and encoding), `UNREADABLE <file> <reason>` per listed file it cannot read, such as
+one another process holds open without sharing it, or whose byte order mark names an encoding its bytes are not in,
+which it neither checks nor fixes before going on to the next file, and `SUMMARY <violations> <files> <rules>`. It exits
+1 when a VIOLATION remains, a file was UNREADABLE, or a listed entry was REFUSED (findings), 0 otherwise. Every line of
 either command is tab separated, and each value it holds, and a FAILED line's reason, is flattened by
 ejryan89-skill-core's `fact_line` or `flat_text`, so a tab, a control character, or a line break in a file name prints
 as a space and one fact stays one line.
@@ -27,14 +28,18 @@ when dotnet is not installed or MSBuild cannot evaluate a project. A setting is 
 .editorconfig files above the file, nearest last, up to the repository root or the first whose preamble, the lines
 before its first section, sets `root = true`; and below them from the global analyzer configs, the nearest
 `.globalconfig` at or above the file's project folder within the repository and any .editorconfig whose preamble sets
-`is_global = true`, each giving its preamble to every file and a section only to the file whose absolute path it names,
-the higher `global_level` winning (100 for a `.globalconfig` that sets none, 0 for any other file) and a key two files
-at one level both set left unset. A global config a project names in `GlobalAnalyzerConfigFiles` is not read. With
+`is_global` to any value, each giving its preamble to every file and a section only to the file whose absolute path it
+names, the higher `global_level` winning, read as .NET's int.TryParse reads it, an optional sign and ASCII digits within
+a 32-bit integer (100 for a `.globalconfig` that sets none or another value, 0 for any other file) and a key two files
+at one level both set left unset. Keys, and the values compared, are lowered as the compiler lowers them, one character
+for one, never by Unicode case folding. A global config a project names in `GlobalAnalyzerConfigFiles` is not read. With
 --apply it adds only the missing settings, as a `[*.cs]` section placed first in the outermost .editorconfig that
 applies, so every existing section, and every value a global config sets, still holds, and prints `ADDED <.editorconfig>
-<key> <value>`; it never changes a value the repository already sets and never adds a package reference. It exits 1 when
-a setting is still missing, because --apply was not given or could not write it, or a listed entry was REFUSED
-(findings), 0 otherwise: another value is the repository's choice, and the package is advice the skill cannot act on.
+<key> <value>`, or `UNREADABLE <.editorconfig> <reason>` for one whose byte order mark names an encoding its bytes are
+not in, to which it adds nothing, so its settings stay missing; it never changes a value the repository already sets and
+never adds a package reference. It exits 1 when a setting is still missing, because --apply was not given or could not
+write it, or a listed entry was REFUSED (findings), 0 otherwise: another value is the repository's choice, and the
+package is advice the skill cannot act on.
 
 Both act only inside the repository. Each reads a FILE_LIST entry only when it lies inside the repository root, judged
 from its text before anything touches it and then as resolved: an absolute entry, one whose `..` segments leave the
@@ -52,10 +57,11 @@ prints `REFUSED <.editorconfig> <reason>`, adds nothing there, adds the rest, an
 replaces a file it writes whole, keeping its encoding, byte order mark, and permissions, so a write that fails part way
 leaves the file as it was.
 
-A failure, such as a listed file that does not exist or a file it cannot read or write, prints `FAILED <reason>`
-as the last line and exits 1. A write that fails after the checks, such as a full disk, a folder the script may not
-create a file in, or a file another process holds or made read-only since, ends the run there: the `FIXED` or `ADDED`
-lines before the `FAILED` line name changes already written, and the files after it are unchanged. A usage error
+A failure, such as a listed entry that names no regular file, a FILE_LIST, solution, or analyzer configuration it cannot
+read, or a write that fails, prints `FAILED <reason>` as the last line and exits 1; a listed file it cannot read is
+UNREADABLE instead, and the run goes on. A write that fails after the checks, such as a full disk, a folder the script
+may not create a file in, or a file another process holds or made read-only since, ends the run there: the `FIXED` or
+`ADDED` lines before the `FAILED` line name changes already written, and the files after it are unchanged. A usage error
 exits 2.
 """
 
@@ -100,6 +106,11 @@ GLOBAL_CONFIG = ".globalconfig"
 NEW_FILE_MODE = 0o644
 # The global_level the compiler gives a global analyzer config that sets none: 100 for a file named .globalconfig.
 NAMED_GLOBAL_LEVEL = 100
+# A global_level as the compiler reads it, with .NET's int.TryParse: an optional sign and ASCII digits, the value a
+# 32-bit integer holds. Any other text, such as an underscore, another script's digits, or a value past that range,
+# sets no level.
+GLOBAL_LEVEL = re.compile(r"([+-]?)([0-9]+)")
+INT32_LIMIT = 1 << 31
 # The layout rules the analyzers enforce; the dotnet-format section of docs/skills.md says which rule each covers.
 SETTINGS = (
     ("insert_final_newline", "true"),
@@ -787,7 +798,8 @@ def section_matches(section: str, relative_path: str) -> bool:
 @dataclass(frozen=True)
 class AnalyzerConfig:
     """One analyzer configuration file as the compiler reads it: the properties of its preamble, the lines before its
-    first section, and each section's name and properties in order, keys and values case-folded."""
+    first section, and each section's name and properties in order, keys and values lowered as `roslyn_lower`
+    lowers them."""
 
     path: Path
     preamble: dict[str, str]
@@ -795,13 +807,15 @@ class AnalyzerConfig:
 
     @property
     def named_global(self) -> bool:
-        return self.path.name.casefold() == GLOBAL_CONFIG
+        """Whether its name is .globalconfig, compared as the compiler compares it, ordinally ignoring case, which only
+        ASCII letters can match."""
+        return self.path.name.isascii() and self.path.name.lower() == GLOBAL_CONFIG
 
     @property
     def is_global(self) -> bool:
         """Whether the compiler reads it as a global config: a file named .globalconfig, or one whose preamble sets
-        `is_global = true`, which an .editorconfig may."""
-        return self.named_global or self.preamble.get("is_global") == "true"
+        `is_global` to any value, which an .editorconfig may: the compiler asks only whether the key is there."""
+        return self.named_global or "is_global" in self.preamble
 
     @property
     def is_root(self) -> bool:
@@ -810,10 +824,30 @@ class AnalyzerConfig:
 
     @property
     def global_level(self) -> int:
-        try:
-            return int(self.preamble["global_level"])
-        except (KeyError, ValueError):
-            return NAMED_GLOBAL_LEVEL if self.named_global else 0
+        written = GLOBAL_LEVEL.fullmatch(self.preamble.get("global_level", ""))
+        digits = None if written is None else whole_number.parse(written.group(2))
+        if written is not None and digits is not None:
+            level = -digits if written.group(1) == "-" else digits
+            if -INT32_LIMIT <= level < INT32_LIMIT:
+                return level
+        return NAMED_GLOBAL_LEVEL if self.named_global else 0
+
+
+def _roslyn_lower(character: str) -> str:
+    """A character as the compiler's CaseInsensitiveComparison.ToLower lowers it: its simple lowercase, one character
+    for one, `İ` as `i`, and a character beyond the 16-bit range, which .NET holds as two surrogates it does not lower,
+    unchanged."""
+    if character == "\u0130":
+        return "i"
+    lower = character.lower()
+    return lower if len(lower) == 1 and ord(character) <= 0xFFFF else character
+
+
+def roslyn_lower(text: str) -> str:
+    """Text lowered as the compiler lowers an analyzer config's key, and the values it compares without regard to
+    case, one character at a time, never with Unicode case folding, which would read the long s as `s` or the
+    sharp s as `ss`."""
+    return text.lower() if text.isascii() else "".join(_roslyn_lower(character) for character in text)
 
 
 def read_analyzer_config(path: Path) -> AnalyzerConfig:
@@ -829,7 +863,7 @@ def read_analyzer_config(path: Path) -> AnalyzerConfig:
             sections.append((line[1:-1], current))
         elif "=" in line:
             key, value = (part.strip() for part in line.split("=", 1))
-            current[key.casefold()] = value.casefold()
+            current[roslyn_lower(key)] = roslyn_lower(value)
     return AnalyzerConfig(path, preamble, sections)
 
 
@@ -951,7 +985,9 @@ def evaluated_reference(root: Path, project: Path, services: Services) -> bool |
         found = [item[metadata] for kind, metadata in PACKAGE_ITEMS for item in items.get(kind, [])]
     except (ValueError, KeyError, TypeError, AttributeError):
         return f"MSBuild's evaluation of {name} is not the items it was asked for"
-    return any(isinstance(value, str) and value.casefold() == PACKAGE.casefold() for value in found)
+    # NuGet and MSBuild compare a package id or a file name ordinally ignoring case, which only ASCII letters can match
+    # against this ASCII name: Unicode case folding would read a long s or a Kelvin sign as the letter it imitates.
+    return any(isinstance(value, str) and value.isascii() and value.lower() == PACKAGE.lower() for value in found)
 
 
 def package_state(

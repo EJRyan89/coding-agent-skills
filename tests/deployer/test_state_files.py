@@ -279,7 +279,7 @@ class StateFileTests(DeployerTestCase):
             "another checkout recorded": (other_checkout, f"ERROR: Source '{SOURCE_ID}' is deployed from ", {}),
             "lock metadata with no PID": (
                 functools.partial(held_lock, '{"token": "x"}'),
-                "ERROR: Lock metadata is malformed (no PID).",
+                "ERROR: Lock metadata is malformed (no valid PID): ",
                 {},
             ),
             "lock held by a live deployment": (
@@ -375,8 +375,11 @@ class StateFileTests(DeployerTestCase):
                 self.lock_dir.mkdir(parents=True, exist_ok=True)
                 self.write(self.lock_dir / "token", "old-token")
                 self.write(self.lock_dir / "info.json", text)
-                result = self.deploy_fails("--all", pattern=re.escape("ERROR: Lock metadata is malformed (no PID)."))
                 lock = platform_support.normalize(self.lock_dir)
+                refusal = (
+                    f"ERROR: Lock metadata is malformed: {lock}/info.json is not a JSON object the deployer reads."
+                )
+                result = self.deploy_fails("--all", pattern=re.escape(refusal))
                 self.assertIn(
                     f"If no deployment is running, the lock is stale: remove {lock}, then retry.", result.output
                 )
@@ -395,7 +398,10 @@ class StateFileTests(DeployerTestCase):
         for case, text in UNREADABLE.items():
             with self.subTest(case=case, file="source.json"):
                 self.write(source_json, text)
-                self.deploy_fails("--all", "--dry-run", pattern=re.escape("ERROR: Invalid source ID format: null"))
+                refusal = (
+                    f"ERROR: source.json is malformed: {shown(source_json)} is not a JSON object the deployer reads."
+                )
+                self.deploy_fails("--all", "--dry-run", pattern=refusal)
         source_json.unlink()
         source_json.mkdir()
         self.deploy_fails("--all", "--dry-run", pattern=f"ERROR: source.json at {shown(source_json)} is not a file.")

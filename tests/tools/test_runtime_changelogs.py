@@ -101,7 +101,7 @@ class StubFetcher:
 def answers() -> dict[str, Fetched]:
     found = {CLAUDE.url: Fetched(200, CLAUDE.url, CLAUDE_CHANGELOG.encode("utf-8"))}
     for number, page in enumerate(CODEX_PAGES, start=1):
-        url = f"{CODEX.url}?per_page=100&page={number}"
+        url = f"{CODEX.url}?per_page=30&page={number}"
         found[url] = Fetched(200, url, json.dumps(page).encode("utf-8"))
     return found
 
@@ -123,7 +123,7 @@ class ChangelogTests(unittest.TestCase):
         fetcher = StubFetcher(answers())
         releases = watch.changelog_releases(CODEX, fetcher, 1.0)
         self.assertEqual(["0.164.0", "0.163.1"], [found.name for found in releases])
-        self.assertEqual([f"{CODEX.url}?per_page=100&page=1", f"{CODEX.url}?per_page=100&page=2"], fetcher.requested)
+        self.assertEqual([f"{CODEX.url}?per_page=30&page=1", f"{CODEX.url}?per_page=30&page=2"], fetcher.requested)
 
     def test_kept_entries_name_the_terms_they_mention_each_in_its_own_changelog(self) -> None:
         claude = watch.changelog_lines(CLAUDE, watch.changelog_releases(CLAUDE, StubFetcher(answers()), 1.0), WATCHED)
@@ -160,9 +160,9 @@ class ChangelogTests(unittest.TestCase):
         cases = (
             (CLAUDE, {CLAUDE.url: Fetched(503, CLAUDE.url, reason="HTTP 503 Unavailable")}, "HTTP 503 Unavailable"),
             (CLAUDE, {CLAUDE.url: Fetched(200, CLAUDE.url, b"# Changelog\n\nNothing here.\n")}, "names no release"),
-            (CODEX, {f"{CODEX.url}?per_page=100&page=1": Fetched(403, CODEX.url, reason="rate limit")}, "rate limit"),
-            (CODEX, {f"{CODEX.url}?per_page=100&page=1": Fetched(200, CODEX.url, b"{")}, "did not return JSON"),
-            (CODEX, {f"{CODEX.url}?per_page=100&page=1": Fetched(200, CODEX.url, b"{}")}, "not return a list"),
+            (CODEX, {f"{CODEX.url}?per_page=30&page=1": Fetched(403, CODEX.url, reason="rate limit")}, "rate limit"),
+            (CODEX, {f"{CODEX.url}?per_page=30&page=1": Fetched(200, CODEX.url, b"{")}, "did not return JSON"),
+            (CODEX, {f"{CODEX.url}?per_page=30&page=1": Fetched(200, CODEX.url, b"{}")}, "not return a list"),
         )
         for changelog, table, reason in cases:
             with self.subTest(reason=reason), self.assertRaises(watch.WatchError) as caught:
@@ -171,7 +171,7 @@ class ChangelogTests(unittest.TestCase):
 
     def test_github_releases_that_never_reach_the_recorded_release_stop_the_watch(self) -> None:
         page = json.dumps([release("rust-v9.0.0", "- newer")]).encode("utf-8")
-        table = {f"{CODEX.url}?per_page=100&page={n}": Fetched(200, CODEX.url, page) for n in range(1, 11)}
+        table = {f"{CODEX.url}?per_page=30&page={n}": Fetched(200, CODEX.url, page) for n in range(1, 35)}
         with self.assertRaises(watch.WatchError) as caught:
             watch.changelog_releases(CODEX, StubFetcher(table), 1.0)
         self.assertIn("name no release 0.163.0, the read_through", str(caught.exception))
@@ -231,7 +231,7 @@ def test_a_real_codex_releases_page_is_read_by_release_with_its_prerelease_left_
     )
     assert watch.matching(releases[0].entries[-1], "codex", [Term("flag", "-c", "codex")]) == ["-c"]
     changelog = Changelog("codex", "https://example.com/releases", "github-releases", "0.163.0")
-    url = f"{changelog.url}?per_page=100&page=1"
+    url = f"{changelog.url}?per_page=30&page=1"
     fetcher = StubFetcher({url: Fetched(200, url, json.dumps(CODEX_RELEASES).encode("utf-8"))})
     assert [release.name for release in watch.changelog_releases(changelog, fetcher, 1.0)] == ["0.164.0"]
 
@@ -257,7 +257,7 @@ def test_a_real_copilot_release_without_a_bullet_is_listed_as_unread_beside_the_
 def test_a_real_codex_release_without_a_bullet_is_listed_as_unread_and_its_neighbour_is_read() -> None:
     page = json.loads((CAPTURED / "codex-release-without-entries.json").read_text(encoding="utf-8"))
     changelog = Changelog("codex", "https://example.com/releases", "github-releases", "0.148.0")
-    url = f"{changelog.url}?per_page=100&page=1"
+    url = f"{changelog.url}?per_page=30&page=1"
     later = [*page, release("rust-v0.148.0", "- read before")]
     releases = watch.changelog_releases(
         changelog, StubFetcher({url: Fetched(200, url, json.dumps(later).encode())}), 1.0
@@ -294,8 +294,8 @@ def test_a_read_through_the_changelog_never_names_stops_the_watch() -> None:
         f"the claude-code changelog {CLAUDE.url} names no release 2.1.3020, the read_through {GUIDANCE_PATH} "
         "records for claude-code"
     )
-    pages = {f"{CODEX.url}?per_page=100&page=1": Fetched(200, CODEX.url, json.dumps(CODEX_PAGES[0]).encode())}
-    pages[f"{CODEX.url}?per_page=100&page=2"] = Fetched(200, CODEX.url, b"[]")
+    pages = {f"{CODEX.url}?per_page=30&page=1": Fetched(200, CODEX.url, json.dumps(CODEX_PAGES[0]).encode())}
+    pages[f"{CODEX.url}?per_page=30&page=2"] = Fetched(200, CODEX.url, b"[]")
     with pytest.raises(watch.WatchError) as caught:
         watch.changelog_releases(CODEX, StubFetcher(pages), 1.0)
     assert "name no release 0.163.0, the read_through" in str(caught.value)
@@ -305,7 +305,7 @@ def test_github_releases_are_read_past_an_older_backport_to_the_recorded_release
     backport = [release("rust-v0.164.0", "- newer"), release("rust-v0.162.1", "- a backported fix")]
     pages = [backport, [release("rust-v0.163.1", "- also newer"), release("rust-v0.163.0", "- read")]]
     table = {
-        f"{CODEX.url}?per_page=100&page={number}": Fetched(200, CODEX.url, json.dumps(page).encode())
+        f"{CODEX.url}?per_page=30&page={number}": Fetched(200, CODEX.url, json.dumps(page).encode())
         for number, page in enumerate(pages, start=1)
     }
     fetcher = StubFetcher(table)
@@ -524,7 +524,7 @@ class MainTests(unittest.TestCase):
                 text = f"## 99.0.0\n\n- Changed --allowedTools and `allowed-tools`\n\n## {changelog.read_through}\n"
                 table[changelog.url] = Fetched(200, changelog.url, text.encode("utf-8"))
             else:
-                url = f"{changelog.url}?per_page=100&page=1"
+                url = f"{changelog.url}?per_page=30&page=1"
                 page = [release("rust-v99.0.0", "- Nothing watched"), release(f"v{changelog.read_through}", "")]
                 table[url] = Fetched(200, url, json.dumps(page).encode("utf-8"))
         moved, gone = record.pages[0].url, record.pages[1].url
@@ -572,7 +572,7 @@ class MainTests(unittest.TestCase):
             if changelog.format == "markdown":
                 table[changelog.url] = Fetched(200, changelog.url, f"## {changelog.read_through}\n".encode())
             else:
-                url = f"{changelog.url}?per_page=100&page=1"
+                url = f"{changelog.url}?per_page=30&page=1"
                 page = [release(f"v{changelog.read_through}", "")]
                 table[url] = Fetched(200, url, json.dumps(page).encode("utf-8"))
         samples = json.loads((REPOSITORY / PROVENANCE).read_text(encoding="utf-8"))["samples"]
@@ -644,14 +644,61 @@ class MainTests(unittest.TestCase):
         self.assertTrue({page.url for page in record.pages} <= set(fetcher.timeouts))
         self.assertEqual({7.5}, set(fetcher.timeouts.values()))
 
-    def test_a_watch_that_cannot_run_prints_one_failed_line_and_exits_1(self) -> None:
+    def test_a_changelog_that_cannot_be_read_is_listed_and_the_others_and_the_pages_keep_their_watch(self) -> None:
         record = watch.read_record(REPOSITORY)
-        url = record.changelogs[0].url
-        code, lines = self.run_main({**self.table(), url: Fetched(500, url, reason="HTTP 500 Server Error")})
+        for failing in record.changelogs:
+            url = failing.url if failing.format == "markdown" else f"{failing.url}?per_page=30&page=1"
+            summary = Path(self.enterContext(tempfile.TemporaryDirectory())) / "summary.md"
+            table = {**self.table(), url: Fetched(504, url, reason="HTTP 504 Gateway Timeout")}
+            with self.subTest(subject=failing.subject):
+                code, lines = self.run_main(table, "--summary", str(summary))
+                self.assertEqual(1, code, lines)
+                unreadable = [line for line in lines if line.startswith("UNREADABLE_CHANGELOG ")]
+                self.assertEqual(1, len(unreadable), lines)
+                self.assertTrue(unreadable[0].startswith(f'UNREADABLE_CHANGELOG {failing.subject} "cannot fetch '))
+                self.assertIn("HTTP 504 Gateway Timeout", unreadable[0])
+                listed = {line.split(" ")[1] for line in lines if line.startswith("CHANGELOG ")}
+                self.assertEqual({c.subject for c in record.changelogs} - {failing.subject}, listed)
+                self.assertIn(f"GONE {record.pages[1].url} 404", lines)
+                text = summary.read_text(encoding="utf-8")
+                reason = watch.markdown_cell(json.loads(unreadable[0].split(" ", 2)[2]))
+                self.assertIn("HTTP 504 Gateway Timeout", reason)
+                # The section comes first, under the summary's heading, set apart by blank lines.
+                self.assertTrue(
+                    text.startswith(
+                        f"## Runtime changelogs and guidance pages\n\n\n### {failing.subject}: not read\n\n{reason}\n\n"
+                    ),
+                    text[:300],
+                )
+
+    def test_each_terms_line_counts_the_watched_terms_of_its_kind(self) -> None:
+        lines = watch.watch(REPOSITORY, StubFetcher(self.table()), 1.0, WATCHED)
+        self.assertEqual(["TERMS flag 3", "TERMS variable 1", "TERMS path 1", "TERMS frontmatter 2"], lines[:4])
+
+    def test_a_watch_that_cannot_run_prints_one_failed_line_and_exits_1(self) -> None:
+        top = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        (top / GUIDANCE_PATH).parent.mkdir(parents=True)
+        (top / GUIDANCE_PATH).write_text("{", encoding="utf-8")
+        with pytest.MonkeyPatch.context() as patch:
+            printed: list[str] = []
+            patch.setattr("builtins.print", lambda line: printed.append(line))
+            code = watch.main([], fetcher=StubFetcher(self.table()), top=top)
         self.assertEqual(1, code)
-        self.assertEqual(1, len(lines))
-        self.assertTrue(lines[0].startswith("FAILED cannot fetch the "), lines)
-        self.assertIn("HTTP 500 Server Error", lines[0])
+        self.assertEqual(1, len(printed))
+        self.assertTrue(printed[0].startswith("FAILED cannot read the guidance record"), printed)
+
+    def test_github_releases_are_asked_for_thirty_a_page_which_the_api_answers_in_its_time(self) -> None:
+        # A hundred of Codex's release bodies a page answered 504; thirty is GitHub's default page.
+        record = watch.read_record(REPOSITORY)
+        fetcher = StubFetcher(self.table())
+        with pytest.MonkeyPatch.context() as patch:
+            patch.setattr("builtins.print", lambda line: None)
+            self.assertEqual(0, watch.main([], fetcher=fetcher, top=REPOSITORY))
+        github = [changelog.url for changelog in record.changelogs if changelog.format != "markdown"]
+        self.assertTrue(github)
+        asked = [url for url in fetcher.requested if url.split("?", 1)[0] in github]
+        self.assertTrue(asked)
+        self.assertTrue(all("per_page=30&" in url for url in asked), asked)
 
     def test_a_record_naming_no_changelog_for_a_supported_runtime_cannot_run(self) -> None:
         top = Path(self.enterContext(tempfile.TemporaryDirectory()))

@@ -13,6 +13,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts"))
 
+import process_identity
 from harness import (
     DEPLOY_COMMAND,
     FAILS_PARTWAY,
@@ -605,8 +606,40 @@ class LockRemedyTests(RemedyTestCase):
         )
         self.write(self.lock_dir / "info.json", json.dumps({"token": "x"}))
         self.assert_lines(
-            self.deploy_fails("--all", pattern="no PID").output, "ERROR: Lock metadata is malformed (no PID).", *stale
+            self.deploy_fails("--all", pattern="no valid PID").output,
+            "ERROR: Lock metadata is malformed (no valid PID): pid must be an integer from 1 to "
+            f"{process_identity.PID_MAXIMUM}, found null.",
+            *stale,
         )
+        info = self.lock_dir / "info.json"
+        info.unlink()
+        info.mkdir()
+        self.assert_lines(
+            self.deploy_fails("--all", pattern="is not a file").output,
+            f"ERROR: The lock's metadata at {forward(info)} is not a file.",
+            *stale,
+        )
+        info.rmdir()
+        info.write_bytes(b'{"pid": 4242, "token": "\xff"}')
+        self.assert_lines(
+            self.deploy_fails("--all", pattern="not UTF-8").output,
+            f"ERROR: Lock metadata is malformed: {forward(info)} is not UTF-8 text.",
+            *stale,
+        )
+        self.write(info, json.dumps({"pid": 4242}))
+        real_read = Path.read_text
+
+        def read_text(path: Path, *arguments: Any, **options: Any) -> str:
+            if path == info:
+                raise PermissionError(13, "Access is denied", str(path))
+            return real_read(path, *arguments, **options)
+
+        with mock.patch.object(Path, "read_text", read_text):
+            self.assert_lines(
+                self.deploy_fails("--all", pattern="Could not read the lock's metadata").output,
+                f"ERROR: Could not read the lock's metadata at {forward(info)}: Access is denied.",
+                *stale,
+            )
         self.write(self.lock_dir / "info.json", json.dumps({"pid": 4242, "start_time": None}))
         self.assert_lines(
             self.deploy_fails("--all", pattern="cannot be verified", probe=probe_returning(True, 7)).output,

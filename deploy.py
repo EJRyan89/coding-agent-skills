@@ -30,10 +30,15 @@ def require_supported_python(version_info: Sequence[int | str] = sys.version_inf
 def main() -> int:
     require_supported_python()
     from deployer import cli, platform_support
+    from deployer.errors import DeployError, print_error
     from deployer.paths import Paths, copilot_home
 
-    home = platform_support.home_directory()
-    return cli.main(sys.argv[1:], Paths(Path(__file__).resolve().parent, home, copilot_home=copilot_home()))
+    try:
+        paths = Paths(Path(__file__).resolve().parent, platform_support.home_directory(), copilot_home=copilot_home())
+    except DeployError as error:
+        print_error(error)
+        return error.exit_code
+    return cli.main(sys.argv[1:], paths)
 
 
 def traceback_requested() -> bool:
