@@ -4,22 +4,21 @@ Usage:
   python tools/hub_guard.py   reads one PreToolUse event on stdin and prints a deny decision, or nothing
 
 The guard refuses file edits inside the hub and git commands that would move the hub's HEAD or write its tree,
-whether they run through the Bash tool, the PowerShell tool, or the Monitor tool, whose command runs in Bash. Each
-command is read by its shell's own grammar: Bash by tools/bash_syntax.py, PowerShell by PowerShell's own parser
-(tools/hub_guard-powershell.ps1). What a reader settles is judged; a git call it cannot place is refused while a
-guarded hub is in view; what it does not see is named in docs/parallel-sessions.md ("The guard's contract"). Every
-decision is made here. It finds the checkout that holds a path, and runs git, through tools/worktrees.py, which owns
-the hub and its worktrees. It is inert unless `git config coding-agent-skills.hubGuard true` was set in this clone.
+whether they run through the Bash tool, the PowerShell tool, or the Monitor tool, whose command runs in Bash. It fails
+closed: it reads a command only as far as it understands it, Bash by tools/bash_syntax.py's grammar and PowerShell by
+PowerShell's own parser (tools/hub_guard-powershell.ps1), judges every git call it can place, and refuses every part
+it does not understand while a guarded hub is in view. What it understands is the tables below, each a catalogue a
+shell publishes with every entry understood or in NOT_READ, and docs/parallel-sessions.md ("The guard's contract")
+states the contract. Every decision is made here. It finds the checkout that holds a path, and runs git, through
+tools/worktrees.py, which owns the hub and its worktrees. It is inert unless `git config coding-agent-skills.hubGuard
+true` was set in this clone.
 """
 
 from __future__ import annotations
 
 import base64
 import contextlib
-import dataclasses
-import fnmatch
 import functools
-import itertools
 import json
 import math
 import os
@@ -31,7 +30,7 @@ import time
 from collections.abc import Callable, Iterable, Iterator, Mapping
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Any, Literal, TypeVar
+from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "ejryan89-skill-core" / "scripts"))
@@ -134,24 +133,141 @@ LOCATION_VARIABLES = ("GIT_DIR", "GIT_WORK_TREE")
 # The variables that carry command-line configuration, which git reads for core.worktree and alias.<name>.
 CONFIGURATION_VARIABLES = ("GIT_CONFIG_PARAMETERS", "GIT_CONFIG_COUNT")
 CONFIGURATION_PAIR = re.compile(r"GIT_CONFIG_(?:KEY|VALUE)_[0-9]+")
-# The variables a bash takes its options from as it starts, set's from SHELLOPTS and shopt's from BASHOPTS, each by its
-# exact name; Bash keeps both read-only, listing the options it holds, and hands each on only once it is exported.
-SHELLOPTS, BASHOPTS = "SHELLOPTS", "BASHOPTS"
-SHELL_OPTION_VARIABLES = (SHELLOPTS, BASHOPTS)
-ALLEXPORT = "allexport"
-# xtrace, under which Bash expands PS4 before each command it traces, running any substitution PS4 holds.
-XTRACE, PS4 = "xtrace", "PS4"
-# The shell options the guard reads, one table for set's and one for shopt's, through which every source of options
-# is read: set, shopt, a nested bash's own options, and the SHELLOPTS, BASHOPTS, and POSIXLY_CORRECT its environment
-# hands it. Each set option has the letter that names it in a bundle, or none, and each option of either the state in
-# which the guard cannot read a shell that holds it, "on" or "off", or "" where neither changes what the guard reads.
-# allexport, which the guard follows, is read apart. An option no table names is one the guard cannot read.
+# The environment variable by which Bash hands a shell it starts a function exported with export -f.
+EXPORTED_FUNCTION = re.compile(r"^BASH_FUNC_(.+)%%$")
+
+# ---------------------------------------------------------------------------------------------------------------
+# What the readers understand
+#
+# The guard reads a command only as far as it understands it, and refuses the rest while a guarded hub is in view
+# ("The guard's contract" in docs/parallel-sessions.md). Each table below is one catalogue the shells publish, and
+# every entry is either understood, with how, or in NOT_READ, with why the guard does not read it. The guard's suites
+# generate their rows from the catalogue each shell lists itself, `compgen -b`, `compgen -k`, `set -o`, `shopt`, and
+# `compgen -v` from Bash and the AST node types by reflection from PowerShell, and fail on an entry neither table holds.
+
+# The programs that run another command their words name, by the catalogue the guard refuses. While a hub is guarded,
+# each is refused where the command it runs is or may be git (runner_refusal); a runner around any other command is
+# understood. Every other program a literal name starts is understood: what it does inside itself, in its own
+# language (a Python script, an awk program, a test suite), the guard does not see.
+RUNNERS: dict[str, str] = {
+    "bash": "a shell, whose script is read only as `-c` with a literal script, and refused where it runs git",
+    "sh": "Bash in POSIX mode, or dash, either of which keeps an assignment made before a special builtin after it, "
+    "which the guard does not follow",
+    "pwsh": "PowerShell, whose script is read only as `-Command` or `-c` with one literal script, after -NoProfile, "
+    "-NonInteractive, or -NoLogo, and refused where it runs git",
+    "powershell": "Windows PowerShell, whose parser differs from pwsh's, so the guard does not read its script",
+    **dict.fromkeys(
+        ("zsh", "dash", "ksh", "mksh", "fish", "csh", "tcsh", "busybox"), "a shell whose script the guard does not read"
+    ),
+    "cmd": "Windows' command interpreter, whose script the guard does not read",
+    "wsl": "runs a command in a Linux distribution, which the guard does not read",
+    "env": "runs its command after the assignments before it, or, with -S, a command it splits from a string",
+    "xargs": "runs its command with words from its input, or, with -I, -i, or --replace, words it builds from them",
+    **dict.fromkeys(
+        ("timeout", "nohup", "nice", "stdbuf", "ionice", "chrt", "taskset", "setsid", "unbuffer", "chronic"),
+        "runs the command its words name",
+    ),
+    **dict.fromkeys(("strace", "ltrace", "time", "chroot", "sudo", "doas"), "runs the command its words name"),
+    **dict.fromkeys(
+        ("su", "runuser", "ssh", "script", "watch", "parallel", "flock"),
+        "runs a command line it is handed as a string, which may be any command",
+    ),
+}
+# The runners refused whatever they run: a shell whose script the guard does not read, and a runner that runs a
+# command line it is handed as a string, whose words no reading of its own words settles.
+RUNNERS_ALWAYS_REFUSED = frozenset(
+    {
+        *("sh", "powershell", "zsh", "dash", "ksh", "mksh", "fish", "csh", "tcsh", "busybox", "cmd", "wsl"),
+        *("su", "runuser", "ssh", "script", "watch", "parallel", "flock"),
+    }
+)
+# The options of a runner that build its command from text, refused whatever it runs: xargs's replacement, which puts
+# its input in the command's words, and env's split string, which makes a command of one word.
+RUNNER_BUILDING_OPTIONS = {
+    "xargs": frozenset({"-I", "-i", "--replace"}),
+    "env": frozenset({"-S", "--split-string"}),
+}
+# The options that make a program the guard understands run a command its words name, refused in every spelling the
+# program takes, an attached value, an abbreviation, or a bundle (command_option): find's -exec family whatever it
+# runs, and so is any word of such a program that the text does not settle.
+FIND_COMMANDS = frozenset({"-exec", "-execdir", "-ok", "-okdir"})
+COMMAND_OPTIONS: dict[str, frozenset[str]] = {
+    "find": FIND_COMMANDS,
+    "rg": frozenset({"--pre"}),
+    "sort": frozenset({"--compress-program"}),
+    "tar": frozenset(
+        {
+            *("--to-command", "--use-compress-program", "-I", "--checkpoint-action", "--info-script", "-F"),
+            *("--new-volume-script", "--rsh-command", "--rmt-command"),
+        }
+    ),
+}
+# pwsh's options that change nothing the guard reads before -Command.
+PWSH_QUIET = frozenset({"-noprofile", "-noninteractive", "-nologo"})
+# The variables an assignment before git may give it, each with the values it may take, or none for any literal
+# value: who a commit is by and when, an editor that edits nothing, and no prompt. Every other variable git reads
+# may change where it acts, what configuration and aliases it reads, or what program it runs.
+GIT_PREFIXES: dict[str, frozenset[str]] = {
+    **dict.fromkeys(
+        (
+            *("GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_AUTHOR_DATE", "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL"),
+            *("GIT_COMMITTER_DATE", "GIT_TERMINAL_PROMPT"),
+        ),
+        frozenset(),
+    ),
+    **dict.fromkeys(("GIT_EDITOR", "GIT_SEQUENCE_EDITOR"), frozenset({"true", ":"})),
+    "GIT_PAGER": frozenset({"cat", ""}),
+}
+# gh runs git itself for these subcommands, which check a branch out in the checkout gh runs in.
+GH_CHECKOUTS = {("pr", "checkout"), ("pr", "co"), ("repo", "sync")}
+# The variables naming the system's temporary folder, whose value from the environment a redirection's target may
+# take, as `> "$TMP/out.txt"` does.
+TEMPORARY_VARIABLES = frozenset({"TMP", "TEMP", "TMPDIR"})
+# Files a redirection may write that are no file of a checkout.
+DEVICE_FILES = frozenset({"/dev/null", "/dev/stdout", "/dev/stderr", "/dev/tty", "nul", "NUL"})
+
+# The Bash builtins the guard understands (`compgen -b` lists every one), with what each does that the guard reads.
+# Every other builtin is in NOT_READ.
+BUILTINS_UNDERSTOOD = {
+    **dict.fromkeys((":", "true", "false"), "runs nothing"),
+    **dict.fromkeys(("echo", "pwd", "type", "times", "help", "caller"), "prints, and changes nothing"),
+    "jobs": "prints the jobs; -x, which runs the command its words name, is not read",
+    "printf": "prints its words; -v, which assigns a variable, is not read",
+    **dict.fromkeys(("test", "["), "tests its words; -v, which may evaluate a subscript as arithmetic, is not read"),
+    "cd": "moves the shell to a directory, which places the git calls after it",
+    "pushd": "moves the shell to a directory and keeps the one it left, which places the git calls after it",
+    "popd": "moves the shell back to the directory pushd kept",
+    **dict.fromkeys(("break", "continue", "exit", "return"), "ends a loop, a function, or the shell"),
+    "shift": "renumbers the positional parameters",
+    "wait": "waits for background jobs; an option, as -p, which assigns a variable, is not read",
+    "kill": "sends a signal",
+    **dict.fromkeys(("umask", "ulimit"), "sets the mode or the limits of what the shell starts"),
+    "read": "assigns its input to names the guard needs no value of (a free name)",
+    "command": "with -v or -V prints what a name is; run any other way it starts the name, which is not read",
+    "set": "turns on or off the options SET_OPTIONS decides, or sets the positional parameters",
+    "shopt": "turns on or off the options SHOPT_OPTIONS decides, or prints them",
+}
+# The Bash reserved words the guard understands (`compgen -k`); every other one is in NOT_READ. A compound command's
+# words and bodies are read, a git call in one is placed only where no directory change in it may precede it, and the
+# directory after one that changes it is unknown.
+KEYWORDS_UNDERSTOOD = {
+    **dict.fromkeys(("if", "then", "else", "elif", "fi"), "a conditional, whose bodies are read"),
+    **dict.fromkeys(("case", "esac", "in"), "a case, whose word, patterns, and bodies are read"),
+    **dict.fromkeys(("for", "select", "while", "until", "do", "done"), "a loop, whose words and bodies are read"),
+    **dict.fromkeys(("{", "}"), "a group, whose body is read"),
+    "!": "negates a pipeline's status",
+    "time": "times a pipeline, which is read",
+}
+# set's options (`set -o`): each with the letter that names it in a bundle, or none, and the state in which the guard
+# does not read a shell that holds it, "on" or "off", or "" where neither changes what it reads; NOT_READ says why
+# for each that has one. An option the table does not name is not read either.
 SET_OPTIONS: dict[str, tuple[str, str]] = {
-    ALLEXPORT: ("a", ""),
-    # Off, a brace stays as written; on or off, an unquoted brace leaves a word unsettled (word_value).
+    # Exports each later assignment, so a free name reaches every program's environment, git's among them where
+    # names fold case.
+    "allexport": ("a", "on"),
+    # A brace expansion leaves a word unsettled, on or off.
     "braceexpand": ("B", ""),
-    # Line editing, history, and job notices, which a command run as a script never uses: Bash expands no history in
-    # a -c script, even with -H.
+    # Line editing, history, and job notices, which a command run as a script never uses.
     **dict.fromkeys(("emacs", "vi", "history", "ignoreeof", "nolog"), ("", "")),
     "histexpand": ("H", ""),
     "notify": ("b", ""),
@@ -162,245 +278,459 @@ SET_OPTIONS: dict[str, tuple[str, str]] = {
     "nounset": ("u", ""),
     "noclobber": ("C", ""),
     "pipefail": ("", ""),
-    # Traps, which the guard does not read ("What it does not see").
+    # Traps, which the text cannot set, since trap is not read.
     "errtrace": ("E", ""),
     "functrace": ("T", ""),
     "hashall": ("h", ""),
-    # Job control, which only turns lastpipe off, and lastpipe is refused on.
     "monitor": ("m", ""),
-    # Off, a glob stays as written; on or off, an unquoted glob leaves a word unsettled (word_value).
+    # A glob leaves a word unsettled, on or off.
     "noglob": ("f", ""),
     "verbose": ("v", ""),
-    # On, every assignment word after a command's name goes into its environment.
     "keyword": ("k", "on"),
-    # On, an assignment before a special builtin stays in the shell, special builtins come before functions, and
-    # tilde and alias expansion change.
     "posix": ("", "on"),
-    # On, cd resolves symbolic links, so `cd <link>/..` leaves for another directory.
     "physical": ("P", "on"),
-    # On, a nested bash ignores the SHELLOPTS and functions its environment hands it.
-    "privileged": ("p", "on"),
-    # On, each command's trace expands PS4, which may hold a command substitution: judge_options refuses it where PS4
-    # may hold an expansion, and read_bash a command that names PS4.
+    # Only how a nested bash starts, which the guard does not read.
+    "privileged": ("p", ""),
+    # Expands PS4 before each command, which the guard reads where the environment's PS4 holds no expansion.
     "xtrace": ("x", ""),
-    # Off in a script, Bash reads a word starting with # as a comment all the same; in an interactive bash, -i, it
-    # does not.
     "interactive-comments": ("", "off"),
-    # Git Bash's, on which a carriage return at a line's end is dropped where the guard reads it as text.
-    "igncr": ("", "on"),
+    # Git Bash's, which drops a carriage return the guard reads as a blank.
+    "igncr": ("", ""),
 }
+SET_LETTERS = {letter: name for name, (letter, _) in SET_OPTIONS.items() if letter}
+# shopt's options (`shopt`): each with the state in which the guard does not read a shell that holds it.
 SHOPT_OPTIONS: dict[str, str] = {
-    # On, a cd to a name that is no directory takes the variable by that name as one.
     "cdable_vars": "on",
-    # On, the last command of a pipeline runs in the shell itself, while job control is off.
     "lastpipe": "on",
-    # On in an interactive bash, a command that names a directory changes to it, and cd corrects a misspelled one.
-    "autocd": "on",
     "cdspell": "on",
-    # On, an earlier Bash's behavior, in ways the guard does not follow.
     **dict.fromkeys(("compat31", "compat32", "compat40", "compat41", "compat42", "compat43", "compat44"), "on"),
-    # On at a bash's start, it runs the debugger's profile first.
     "extdebug": "on",
-    # On, a local variable starts with its caller's value, or unset reveals its caller's.
-    "localvar_inherit": "on",
-    "localvar_unset": "on",
-    # On, case and [[ ]] match patterns in any case.
-    "nocasematch": "on",
-    # On, a subscript is expanded once, which changes what a subscript's substitution runs.
-    "array_expand_once": "on",
-    "assoc_expand_once": "on",
-    # Off in an interactive bash, a word starting with # is no comment.
     "interactive_comments": "off",
-    # Globs, which leave a word unsettled however they expand (word_value); extglob only makes more text one word,
-    # which the guard reads as more commands or cannot read.
-    **dict.fromkeys(
-        ("dotglob", "extglob", "failglob", "globasciiranges", "globskipdots", "globstar", "nocaseglob", "nullglob"), ""
-    ),
-    # Expansions inside ${...} and translated strings, which leave a word unsettled either way.
-    **dict.fromkeys(("extquote", "patsub_replacement", "noexpand_translation"), ""),
-    # Aliases, whose definitions the guard refuses (bash_alias).
-    "expand_aliases": "",
-    # A sourced file, which the guard does not read; exec, after which the guard reads on either way; and errors.
-    **dict.fromkeys(("sourcepath", "execfail", "inherit_errexit", "gnu_errfmt", "shift_verbose"), ""),
-    # Completion, history, prompts, job and window handling, mail, and output, none of which a script uses or which
-    # change nothing a git call sees.
+    # The rest change nothing the guard reads: globs and expansions leave a word unsettled whatever they do, the
+    # builtins they change (local, the arrays, the subscripts) are not read, aliases the text cannot define, and
+    # completion, history, prompts, jobs, mail, and output are an interactive shell's.
     **dict.fromkeys(
         (
-            *("checkhash", "checkjobs", "checkwinsize", "cmdhist", "complete_fullquote", "completion_strip_exe"),
-            *("direxpand", "dirspell", "force_fignore", "histappend", "histreedit", "histverify", "hostcomplete"),
-            *("huponexit", "lithist", "mailwarn", "no_empty_cmd_completion", "progcomp", "progcomp_alias"),
-            *("promptvars", "varredir_close", "xpg_echo", "bash_source_fullpath"),
+            *("dotglob", "extglob", "failglob", "globasciiranges", "globskipdots", "globstar", "nocaseglob"),
+            *("nullglob", "extquote", "patsub_replacement", "noexpand_translation", "expand_aliases", "sourcepath"),
+            *("execfail", "inherit_errexit", "gnu_errfmt", "shift_verbose", "localvar_inherit", "localvar_unset"),
+            *("nocasematch", "array_expand_once", "assoc_expand_once", "autocd", "checkhash", "checkjobs"),
+            *("checkwinsize", "cmdhist", "complete_fullquote", "completion_strip_exe", "direxpand", "dirspell"),
+            *("force_fignore", "histappend", "histreedit", "histverify", "hostcomplete", "huponexit", "lithist"),
+            *("mailwarn", "no_empty_cmd_completion", "progcomp", "progcomp_alias", "promptvars", "varredir_close"),
+            *("xpg_echo", "bash_source_fullpath", "login_shell", "restricted_shell"),
         ),
         "",
     ),
-    # Read-only, saying how the shell started.
-    **dict.fromkeys(("login_shell", "restricted_shell"), ""),
 }
-SET_LETTERS = {letter: name for name, (letter, _) in SET_OPTIONS.items() if letter}
-# Each table's options by the state that refuses a shell holding one.
-OPTION_STATES = {"set": {name: state for name, (_, state) in SET_OPTIONS.items()}, "shopt": SHOPT_OPTIONS}
-# The letters only a bash takes as it starts, beside set's: -c and -s say where its script comes from (bash_script),
-# -i makes it interactive, -l a login shell, -r restricted, and -D lists its strings and runs nothing.
-BASH_START_LETTERS = set("cilrsD")
-# A bash's long options, each with the set option it turns on or "" for none; --rcfile and --init-file take the next
-# word (BASH_LONG_OPTIONS_WITH_VALUE). --debugger turns on extdebug, which the guard cannot read.
-BASH_LONG_OPTIONS = {
-    **dict.fromkeys(("--norc", "--noprofile", "--login", "--noediting", "--restricted", "--rcfile"), ""),
-    **dict.fromkeys(("--init-file", "--dump-strings", "--dump-po-strings", "--help", "--version", "--debug"), ""),
-    "--pretty-print": "",
-    "--verbose": "verbose",
-    "--posix": "posix",
-    "--debugger": "extdebug",
+# The variables Bash itself reads or sets, from its manual's "Shell Variables" and `compgen -v` in a bash started
+# with no environment, each with "" where assigning it changes nothing the guard reads, or why it does. A name Bash
+# neither reads nor sets is free: the guard needs its value only where an expansion of it stands, which leaves its
+# word unsettled.
+BASH_VARIABLES: dict[str, str] = {
+    **dict.fromkeys(
+        (
+            *("_", "BASH", "BASHPID", "BASH_ARGC", "BASH_ARGV", "BASH_ARGV0", "BASH_COMMAND"),
+            *("BASH_EXECUTION_STRING", "BASH_LINENO", "BASH_MONOSECONDS", "BASH_REMATCH", "BASH_SOURCE"),
+            *("BASH_SUBSHELL", "BASH_TRAPSIG", "BASH_VERSINFO", "BASH_VERSION", "CHILD_MAX", "COLUMNS"),
+            *("COMP_CWORD", "COMP_KEY", "COMP_LINE", "COMP_POINT", "COMP_TYPE", "COMP_WORDBREAKS", "COMP_WORDS"),
+            *("COMPREPLY", "COPROC", "COPROC_PID", "DIRSTACK", "EMACS", "EPOCHREALTIME", "EPOCHSECONDS", "EUID"),
+            *("FCEDIT", "FIGNORE", "FUNCNAME", "GLOBIGNORE", "GLOBSORT", "GROUPS", "histchars", "HISTCMD"),
+            *("HISTCONTROL", "HISTFILE", "HISTFILESIZE", "HISTIGNORE", "HISTSIZE", "HISTTIMEFORMAT", "HOSTFILE"),
+            *("HOSTNAME", "HOSTTYPE", "IFS", "IGNOREEOF", "INPUTRC", "INSIDE_EMACS", "LANG", "LC_ALL"),
+            *("LC_COLLATE", "LC_CTYPE", "LC_MESSAGES", "LC_NUMERIC", "LC_TIME", "LINENO", "LINES", "MACHTYPE"),
+            *("MAIL", "MAILCHECK", "MAILPATH", "MAPFILE", "OPTARG", "OPTERR", "OPTIND", "OSTYPE", "PIPESTATUS"),
+            *("PPID", "PROMPT_COMMAND", "PROMPT_DIRTRIM", "PS0", "PS1", "PS2", "PS3", "RANDOM", "READLINE_ARGUMENT"),
+            *("READLINE_LINE", "READLINE_MARK", "READLINE_POINT", "REPLY", "SECONDS", "SHELL", "SHLVL", "SRANDOM"),
+            *("TERM", "TIMEFORMAT", "TMOUT", "TMPDIR", "UID", "auto_resume"),
+            # Git Bash's own, from the MSYS runtime.
+            *platform_support.GIT_BASH_SHELL_VARIABLES,
+        ),
+        "",
+    ),
+    "PATH": "chooses the program every later command name runs",
+    "EXECIGNORE": "hides programs from the search, so a later command name runs another",
+    "BASH_ALIASES": "its elements are aliases, which a later word runs as other text",
+    "BASH_CMDS": "its elements choose the program a later command name runs",
+    "BASH_LOADABLES_PATH": "chooses the builtins enable loads",
+    "BASH_ENV": "names a file a bash runs as it starts",
+    "ENV": "names a file a bash in POSIX mode runs as it starts",
+    "HOME": "is where cd with no directory and a leading ~ go, and where git reads its global configuration",
+    "PWD": "is where a logical cd .. starts from",
+    "OLDPWD": "is where cd - goes",
+    "CDPATH": "is searched by cd for a relative directory",
+    "PS4": "is expanded before each command xtrace traces, running any substitution it holds",
+    "SHELLOPTS": "lists set's options, read-only",
+    "BASHOPTS": "lists shopt's options, read-only",
+    "POSIXLY_CORRECT": "turns on POSIX mode",
+    "BASH_COMPAT": "turns on an earlier Bash's behavior",
+    "BASH_XTRACEFD": "sends xtrace's output to a descriptor",
+    "FUNCNEST": "limits how deep functions nest",
 }
-# The variables whose assignment turns a shell option on as it is made, so the guard cannot read a shell where one is
-# assigned or that its environment hands one: POSIXLY_CORRECT turns on POSIX mode, whatever its value, and BASH_COMPAT
-# an earlier Bash's behavior. Bash reads each by its exact name.
-OPTION_SETTING_VARIABLES = {"POSIXLY_CORRECT": "posix", "BASH_COMPAT": "an earlier Bash's behavior"}
-# Each variable a bash takes a setting from as it starts, by a name in any case where the starter folds names.
-SHELL_SETTING_VARIABLES = {*SHELL_OPTION_VARIABLES, *OPTION_SETTING_VARIABLES, "PS4"}
-# An arithmetic expression's assignment to one of them, by =, an operator before =, ++, or --, as `(( ))`, `$(( ))`,
-# `let`, and an arithmetic for's header write it; arithmetic assigns a number, which turns either on all the same.
-ARITHMETIC_OPTION_ASSIGNMENT = re.compile(
-    r"\b(POSIXLY_CORRECT|BASH_COMPAT)\s*(?:\+\+|--|(?:[-+*/%&|^]|<<|>>)?=(?!=))"
-    r"|(?:\+\+|--)\s*(POSIXLY_CORRECT|BASH_COMPAT)\b"
+
+# The kinds of expansion a word may hold, by the form bash_syntax gives each, and the parameter-expansion operators
+# inside `${ }`: each understood here leaves its word one the text does not settle, which an argument of a program in
+# a program may be, and each other is in NOT_READ.
+EXPANSIONS_UNDERSTOOD = {
+    "$NAME": "a variable's value",
+    "${NAME}": "a variable's value",
+    "$@": "the positional parameters",
+    **dict.fromkeys(("$*", "$#", "$?", "$-", "$$", "$!", "$0", "$1"), "a special parameter's value"),
+    "$(": "a command substitution, whose commands are read",
+    "`": "a command substitution, whose commands are read",
+    "<(": "a process substitution, whose commands are read",
+    ">(": "a process substitution, whose commands are read",
+    "~": "the home directory, or another user's or a directory stack's",
+    "$'": "an ANSI-C string holding an escape",
+    "glob": "pathname expansion, *, ?, and [ ]",
+    "brace": "brace expansion, {a,b} and {1..3}",
+    **dict.fromkeys(
+        (
+            *("${NAME:-word}", "${NAME-word}", "${NAME:+word}", "${NAME+word}", "${NAME:?word}", "${NAME?word}"),
+            *("${#NAME}", "${NAME#word}", "${NAME##word}", "${NAME%word}", "${NAME%%word}", "${NAME/word}"),
+            *("${NAME//word}", "${NAME/#word}", "${NAME/%word}", "${NAME^}", "${NAME^^}", "${NAME,}", "${NAME,,}"),
+        ),
+        "a variable's value, tested or matched against a word",
+    ),
+    "${NAME:=word}": "assigns a free name, and is its value",
+    "${NAME=word}": "assigns a free name, and is its value",
+}
+# Bash's parameter-expansion operators after a name inside `${ }`, longest first, by the form they make.
+PARAMETER_OPERATORS = (
+    (":=", "${NAME:=word}"),
+    (":-", "${NAME:-word}"),
+    (":+", "${NAME:+word}"),
+    (":?", "${NAME:?word}"),
+    ("=", "${NAME=word}"),
+    ("-", "${NAME-word}"),
+    ("+", "${NAME+word}"),
+    ("?", "${NAME?word}"),
+    ("##", "${NAME##word}"),
+    ("#", "${NAME#word}"),
+    ("%%", "${NAME%%word}"),
+    ("%", "${NAME%word}"),
+    ("//", "${NAME//word}"),
+    ("/#", "${NAME/#word}"),
+    ("/%", "${NAME/%word}"),
+    ("/", "${NAME/word}"),
+    ("^^", "${NAME^^}"),
+    ("^", "${NAME^}"),
+    (",,", "${NAME,,}"),
+    (",", "${NAME,}"),
+    (":", "${NAME:offset}"),
+    ("@", "${NAME@op}"),
+    ("[", "${NAME[subscript]}"),
 )
-# A path on the environment provider: on the env: drive, or provider-qualified as Environment::, which may carry a
-# leading backslash or, without one, the provider's module. A variable may follow a separator on the drive only: after
-# Environment:: PowerShell keeps the separator as part of the variable's name.
-ENVIRONMENT_QUALIFIED = r"(?:\\|Microsoft\.PowerShell\.Core\\)?Environment::"
-ENVIRONMENT_PROVIDER = r"^(?:env:|" + ENVIRONMENT_QUALIFIED + r")"
-ENVIRONMENT_ITEM = re.compile(r"^(?:env:[\\/]?|" + ENVIRONMENT_QUALIFIED + r")([^\\/:]+)$", re.IGNORECASE)
-ENVIRONMENT_ROOT = re.compile(ENVIRONMENT_PROVIDER + r"[\\/]?$", re.IGNORECASE)
-ENVIRONMENT_PATH = re.compile(ENVIRONMENT_PROVIDER, re.IGNORECASE)
-# A PowerShell location on a drive or provider that is not a drive letter, such as env:, HKLM:, or Environment::.
-PROVIDER_LOCATION = re.compile(r"^(?:(?:[\w.]+\\)?[A-Za-z]\w*::|[A-Za-z][\w-]+:)")
-ASSIGNMENT = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)(\+?)=")
+PARAMETER_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*|[0-9]+|[@*#?$!-]")
+GLOB = re.compile(r"[*?]|\[.*\]")
+BRACE = re.compile(r"\{[^{}]*(?:,|\.\.)[^{}]*\}")
+
+# The PowerShell AST node types (System.Management.Automation.Language, by reflection) the guard understands: a
+# list of pipelines of commands, joined by && and ||, whose elements are constants, strings without expansions, and
+# parameters, with redirections. Every other type is in NOT_READ.
+POWERSHELL_UNDERSTOOD = {
+    "ScriptBlockAst": "the command's text, whose statements are read",
+    "NamedBlockAst": "the block the statements stand in",
+    "PipelineAst": "a pipeline of commands",
+    "PipelineChainAst": "pipelines joined by && or ||",
+    "CommandAst": "a command and its elements",
+    "CommandParameterAst": "a parameter, written as a word",
+    "CommandExpressionAst": "an expression standing as a command, read by what it holds",
+    "StringConstantExpressionAst": "a literal word or string",
+    "ConstantExpressionAst": "a number",
+    "ExpandableStringExpressionAst": "a double-quoted string, whose expansions leave its word unsettled",
+    "AssignmentStatementAst": "an assignment, understood to a plain variable PowerShell neither sets nor reads itself",
+    "MemberExpressionAst": "a property's value, understood for an instance's member a constant names, never a "
+    "static one",
+    **dict.fromkeys(
+        ("ConvertExpressionAst", "TypeExpressionAst", "TypeConstraintAst"),
+        "a cast or a type, understood for a type POWERSHELL_CASTS names",
+    ),
+    "ScriptBlockExpressionAst": "a script block, understood as an argument of a command "
+    "POWERSHELL_BLOCK_COMMANDS names, "
+    "whose commands are read",
+    **dict.fromkeys(
+        ("IfStatementAst", "ForEachStatementAst", "StatementBlockAst", "BreakStatementAst", "ContinueStatementAst"),
+        "control flow, whose conditions and bodies are read, and a foreach's variable as an assignment",
+    ),
+    "VariableExpressionAst": "a variable's value, which leaves its word one the text does not settle",
+    **dict.fromkeys(
+        (
+            *("ParenExpressionAst", "SubExpressionAst", "ArrayExpressionAst", "ArrayLiteralAst"),
+            *("BinaryExpressionAst", "HashtableAst", "IndexExpressionAst", "TernaryExpressionAst"),
+        ),
+        "computes a value from what it holds, each command in it read, which leaves its word unsettled",
+    ),
+    "FileRedirectionAst": "a redirection to a file",
+    "MergingRedirectionAst": "a redirection of one stream into another, as 2>&1",
+}
+# The PowerShell commands the guard understands, by every name and alias PowerShell gives them, lower-cased, each with
+# the cmdlet it stands for. A program by any other name is read as in Bash, but for a name PowerShell keeps for its
+# own commands (powershell_command), which is not read.
+POWERSHELL_LOCATION = {**dict.fromkeys(("set-location", "cd", "chdir", "sl"), "set-location")}
+POWERSHELL_PUSH = {**dict.fromkeys(("push-location", "pushd"), "push-location")}
+POWERSHELL_POP = {**dict.fromkeys(("pop-location", "popd"), "pop-location")}
+POWERSHELL_COMMANDS = {
+    **POWERSHELL_LOCATION,
+    **POWERSHELL_PUSH,
+    **POWERSHELL_POP,
+    **dict.fromkeys(("get-childitem", "ls", "dir", "gci"), "get-childitem"),
+    **dict.fromkeys(("get-content", "cat", "gc", "type"), "get-content"),
+    **dict.fromkeys(("select-string", "sls"), "select-string"),
+    **dict.fromkeys(("select-object", "select"), "select-object"),
+    **dict.fromkeys(("sort-object", "sort"), "sort-object"),
+    **dict.fromkeys(("measure-object", "measure"), "measure-object"),
+    **dict.fromkeys(("write-output", "echo", "write"), "write-output"),
+    **dict.fromkeys(("get-location", "pwd", "gl"), "get-location"),
+    **dict.fromkeys(("get-item", "gi"), "get-item"),
+    **dict.fromkeys(("get-command", "gcm"), "get-command"),
+    **dict.fromkeys(("get-process", "gps", "ps"), "get-process"),
+    **dict.fromkeys(("format-table", "ft"), "format-table"),
+    **dict.fromkeys(("foreach-object", "%", "foreach"), "foreach-object"),
+    **dict.fromkeys(("where-object", "?", "where"), "where-object"),
+    **dict.fromkeys(("group-object", "group"), "group-object"),
+    **dict.fromkeys(("format-list", "fl"), "format-list"),
+    **dict.fromkeys(("start-sleep", "sleep"), "start-sleep"),
+    **dict.fromkeys(("remove-item", "rm", "del", "erase", "rd", "ri", "rmdir"), "remove-item"),
+    **dict.fromkeys(("copy-item", "cp", "copy", "cpi"), "copy-item"),
+    **dict.fromkeys(("move-item", "mv", "move", "mi"), "move-item"),
+    **dict.fromkeys(("new-item", "ni"), "new-item"),
+    **dict.fromkeys(("resolve-path", "rvpa"), "resolve-path"),
+    **{
+        name: name
+        for name in (
+            *("write-host", "out-string", "out-null", "test-path", "join-path", "split-path", "get-date"),
+            *("get-filehash", "convertfrom-json", "convertto-json", "set-content", "add-content", "out-file"),
+            "mkdir",
+        )
+    },
+}
+# The variables PowerShell sets or reads itself, by Get-Variable in a pwsh started with no profile and by its
+# documentation of the automatic and preference variables, lower-cased: an assignment to one, as to
+# $PSDefaultParameterValues or $PSNativeCommandArgumentPassing, changes how a later command runs.
+POWERSHELL_VARIABLES = frozenset(
+    name.lower()
+    for name in (
+        *("$", "?", "^", "_", "args", "ConfirmPreference", "DebugPreference", "EnabledExperimentalFeatures", "Error"),
+        *("ErrorActionPreference", "ErrorView", "Event", "EventArgs", "EventSubscriber", "ExecutionContext", "false"),
+        *("foreach", "FormatEnumerationLimit", "HOME", "Host", "InformationPreference", "input", "IsCoreCLR"),
+        *("IsLinux", "IsMacOS", "IsWindows", "LASTEXITCODE", "LogCommandHealthEvent", "LogCommandLifecycleEvent"),
+        *("LogEngineHealthEvent", "LogEngineLifecycleEvent", "LogProviderHealthEvent", "LogProviderLifecycleEvent"),
+        *("Matches", "MaximumHistoryCount", "MyInvocation", "NestedPromptLevel", "null", "OFS", "OutputEncoding"),
+        *("PID", "PROFILE", "ProgressPreference", "PSBoundParameters", "PSCmdlet", "PSCommandPath", "PSCulture"),
+        *("PSDebugContext", "PSDefaultParameterValues", "PSEdition", "PSEmailServer", "PSHOME", "PSItem"),
+        *("PSModuleAutoLoadingPreference", "PSNativeCommandArgumentPassing"),
+        *("PSNativeCommandUseErrorActionPreference", "PSScriptRoot", "PSSenderInfo", "PSSessionApplicationName"),
+        *("PSSessionConfigurationName", "PSSessionOption", "PSStyle", "PSUICulture", "PSVersionTable", "PWD"),
+        *("sender", "ShellId", "StackTrace", "switch", "this", "Transcript", "true", "VerbosePreference"),
+        *("WarningPreference", "WhatIfPreference"),
+    )
+)
+# The commands POWERSHELL_COMMANDS names that take a path, on which one on a provider other than the file system is
+# not read.
+POWERSHELL_PATH_COMMANDS = frozenset(
+    {
+        *("set-location", "push-location", "get-childitem", "get-content", "get-item", "remove-item", "copy-item"),
+        *("move-item", "new-item", "set-content", "add-content", "out-file", "test-path", "resolve-path", "join-path"),
+        *("split-path", "get-filehash", "mkdir"),
+    }
+)
+# The types a cast or a type expression may name, lower-cased as PowerShell's accelerators and their full names:
+# converting to one runs no code the text does not show.
+POWERSHELL_CASTS = frozenset(
+    {
+        *("string", "int", "int32", "bool", "boolean", "array", "object[]", "hashtable", "pscustomobject"),
+        *("psobject", "datetime", "version", "collections.hashtable", "management.automation.pscustomobject"),
+    }
+)
+# The commands whose script-block arguments the guard reads: each runs its block in the session, on its input.
+POWERSHELL_BLOCK_COMMANDS = frozenset(
+    {"foreach-object", "where-object", "sort-object", "select-object", "group-object"}
+)
+# The names PowerShell gives a command before it looks for a program, each held to the shell: every alias Get-Alias
+# lists in a pwsh started with no profile, each function PowerShell itself defines with no verb in its name (as
+# Get-Command lists those of no module), and every verb Get-Verb lists, which begins the name of each cmdlet and
+# function. A command by such a name that POWERSHELL_COMMANDS does not hold is not read; any other name is a program.
+POWERSHELL_ALIASES = frozenset(
+    name.lower()
+    for name in (
+        *("%", "?", "ac", "cat", "cd", "chdir", "clc", "clear", "clhy", "cli", "clp", "cls", "clv", "cnsn", "compare"),
+        *("copy", "cp", "cpi", "cpp", "cvpa", "dbp", "del", "diff", "dir", "dnsn", "ebp", "echo", "epal", "epcsv"),
+        *("erase", "etsn", "exsn", "fc", "fhx", "fl", "foreach", "ft", "fw", "gal", "gbp", "gc", "gci", "gcm", "gcs"),
+        *("gdr", "gerr", "ghy", "gi", "gin", "gjb", "gl", "gm", "gmo", "gp", "gps", "gpv", "group", "gsn", "gsv"),
+        *("gtz", "gu", "gv", "h", "history", "icm", "iex", "ihy", "ii", "ipal", "ipcsv", "ipmo", "irm", "iwr", "kill"),
+        *("lp", "ls", "man", "md", "measure", "mi", "mount", "move", "mp", "mv", "nal", "ndr", "ni", "nmo", "nsn"),
+        *("nv", "ogv", "oh", "popd", "ps", "pushd", "pwd", "r", "rbp", "rcjb", "rcsn", "rd", "rdr", "ren", "ri"),
+        *("rjb", "rm", "rmdir", "rmo", "rni", "rnp", "rp", "rsn", "rv", "rvpa", "sajb", "sal", "saps", "sasv", "sbp"),
+        *("scb", "select", "set", "shcm", "si", "sl", "sleep", "sls", "sort", "sp", "spjb", "spps", "spsv", "start"),
+        *("stz", "sv", "tee", "type", "where", "wjb", "write"),
+    )
+)
+POWERSHELL_FUNCTIONS = frozenset(
+    name.lower()
+    for name in (
+        *("cd..", "cd\\", "cd~", "help", "mkdir", "more", "oss", "Pause", "prompt", "TabExpansion2", "Configuration"),
+        *("ImportSystemModules", "PSConsoleHostReadLine"),
+        # pwsh off Windows: replaces the session with the program its words name, a runner the guard does not read.
+        "exec",
+        *(f"{letter}:" for letter in "ABCDEFGHIJKLMNOPQRSTUVWXYZ"),
+    )
+)
+POWERSHELL_VERBS = frozenset(
+    name.lower()
+    for name in (
+        *("Add", "Approve", "Assert", "Backup", "Block", "Build", "Checkpoint", "Clear", "Close", "Compare"),
+        *("Complete", "Compress", "Confirm", "Connect", "Convert", "ConvertFrom", "ConvertTo", "Copy", "Debug", "Deny"),
+        *("Deploy", "Disable", "Disconnect", "Dismount", "Edit", "Enable", "Enter", "Exit", "Expand", "Export"),
+        *("Find", "Format", "Get", "Grant", "Group", "Hide", "Import", "Initialize", "Install", "Invoke", "Join"),
+        *("Limit", "Lock", "Measure", "Merge", "Mount", "Move", "New", "Open", "Optimize", "Out", "Ping", "Pop"),
+        *("Protect", "Publish", "Push", "Read", "Receive", "Redo", "Register", "Remove", "Rename", "Repair"),
+        *("Request", "Reset", "Resize", "Resolve", "Restart", "Restore", "Resume", "Revoke", "Save", "Search"),
+        *("Select", "Send", "Set", "Show", "Skip", "Split", "Start", "Step", "Stop", "Submit", "Suspend", "Switch"),
+        *("Sync", "Test", "Trace", "Unblock", "Undo", "Uninstall", "Unlock", "Unprotect", "Unpublish", "Unregister"),
+        *("Update", "Use", "Wait", "Watch", "Write"),
+    )
+)
+# Of them, those that write or remove what their path names, which on the environment provider sets or removes a
+# variable git reads.
+POWERSHELL_WRITING_COMMANDS = frozenset(
+    {"set-content", "add-content", "out-file", "new-item", "copy-item", "move-item", "remove-item", "mkdir"}
+)
+# A PowerShell path on a provider other than the file system: a drive whose name is more than one letter, such as
+# env:, alias:, or HKLM:, or a provider-qualified path such as Environment::.
+PROVIDER_PATH = re.compile(r"^(?:(?:[\w.]+\\)?[A-Za-z]\w*::|[A-Za-z][\w-]+:)")
+
+# Every catalogue entry the guard does not read, with why: a command holding one is refused while a guarded hub is in
+# view. Keyed by its catalogue and its name as that catalogue lists it.
+NOT_READ = {
+    # Bash builtins.
+    **{f"builtin {name}": "runs a file's commands, which the guard does not read" for name in (".", "source")},
+    "builtin alias": "defines a name a later word runs as other text",
+    "builtin unalias": "changes what a later word runs",
+    **{f"builtin {name}": "job control, which a command run as a script does not use" for name in ("bg", "fg")},
+    "builtin disown": "job control, which a command run as a script does not use",
+    "builtin suspend": "job control, which a command run as a script does not use",
+    "builtin logout": "a login shell's exit, which a command run as a script does not use",
+    "builtin bind": "binds a key to a command, which -x runs",
+    "builtin builtin": "runs the builtin its next word names",
+    "builtin enable": "loads a builtin or turns one off, which changes what a later name runs",
+    "builtin eval": "runs text as commands",
+    "builtin exec": "replaces the shell with the command its words name, or changes its file descriptors",
+    "builtin fc": "runs commands again from the history",
+    "builtin hash": "makes a name run another program, with -p",
+    "builtin history": "edits the history, from which fc runs commands",
+    "builtin trap": "runs text as commands when a signal or a command fires it",
+    "builtin let": "evaluates arithmetic, which may assign any variable and run a subscript's substitution",
+    "builtin getopts": "assigns variables from the positional parameters",
+    "builtin unset": "removes a variable or a function, by a name the guard does not follow",
+    "builtin dirs": "prints or clears the directory stack popd reads",
+    **{
+        f"builtin {name}": "declares a variable: exports it, makes a name reference or an integer of it, which change "
+        "what a later command sees or evaluates"
+        for name in ("declare", "typeset", "local", "export", "readonly")
+    },
+    **{f"builtin {name}": "assigns an array, and runs a callback with -C" for name in ("mapfile", "readarray")},
+    **{
+        f"builtin {name}": "completion, whose -C and -F run a command or a function"
+        for name in ("compgen", "complete", "compopt")
+    },
+    # Bash reserved words, and the constructs the grammar reads without one.
+    "keyword [[": "a conditional expression, whose arithmetic comparisons and -v evaluate arithmetic",
+    "keyword ]]": "ends a conditional expression",
+    "keyword function": "defines a function, which may take any command name",
+    "keyword coproc": "runs a command as a coprocess, in the background with its descriptors kept",
+    "construct function definition": "defines a function, which may take any command name, git's among them",
+    "construct arithmetic command": "(( )) evaluates arithmetic, which may assign any variable",
+    "construct arithmetic for": "for (( )) evaluates arithmetic, which may assign any variable",
+    "construct element assignment": "NAME[SUBSCRIPT]= evaluates its subscript as arithmetic",
+    "construct named descriptor": "a redirection's {NAME} assigns the descriptor it opens to NAME, any variable",
+    "construct assignment before git": "an assignment before git may change where it acts or what configuration "
+    "it reads",
+    # set's and shopt's options, in the state the tables refuse.
+    "set -o allexport": "exports each later assignment, so a name reaches git's environment",
+    "set -o keyword": "puts each assignment word after a command's name into its environment, as GIT_DIR=<dir> after "
+    "git",
+    "set -o posix": "changes how assignments before special builtins, aliases, and expansions are read",
+    "set -o physical": "cd resolves symbolic links, where the guard reads a directory as Bash's logical cd does",
+    "set -o interactive-comments": "off, a word starting with # is no comment",
+    "shopt cdable_vars": "a cd to a name that is no directory takes the variable by that name as one",
+    "shopt lastpipe": "the last command of a pipeline runs in the shell itself, so a cd there moves it",
+    "shopt cdspell": "cd corrects a misspelled directory to another",
+    **{f"shopt {name}": "an earlier Bash's behavior" for name in ("compat31", "compat32", "compat40", "compat41")},
+    **{f"shopt {name}": "an earlier Bash's behavior" for name in ("compat42", "compat43", "compat44")},
+    "shopt extdebug": "runs the debugger's profile, and lets a DEBUG trap skip or replace commands",
+    "shopt interactive_comments": "off, a word starting with # is no comment",
+    # Expansions.
+    "expansion $((": "arithmetic, which may assign any variable and run a subscript's substitution",
+    "expansion $[": "arithmetic, which may assign any variable and run a subscript's substitution",
+    "expansion NAME=( )": "an array assignment, which evaluates each element's subscript as arithmetic",
+    "expansion ${NAME[subscript]}": "a subscript, evaluated as arithmetic",
+    "expansion ${NAME:offset}": "an offset and length, evaluated as arithmetic",
+    "expansion ${!NAME}": "indirection, which evaluates a subscript the value names, or lists names",
+    "expansion ${NAME@op}": "a transformation, whose @P expands a prompt and runs what it holds",
+    "expansion ${ command; }": "runs a command in the shell itself, Bash 5.3's",
+    "expansion ${| command; }": "runs a command in the shell itself and takes REPLY, Bash 5.3's",
+    "expansion nested ${": "an expansion inside another's word, which the guard does not read apart",
+    "expansion ${unread}": "a braced expansion of a form the guard does not read",
+    "expansion assigning": "assigns a variable Bash or git reads, or one the environment holds",
+    # PowerShell AST node types.
+    **{
+        f"PowerShell {name}": "computes a value the text does not settle"
+        for name in ("AttributedExpressionAst", "UsingExpressionAst")
+    },
+    "PowerShell UnaryExpressionAst": "++ and -- assign the variable they hold, which may be the environment's",
+    **{
+        f"PowerShell {name}": "reaches a member, which may run any code, git among it"
+        for name in ("InvokeMemberExpressionAst", "BaseCtorInvokeMemberExpressionAst")
+    },
+    **{
+        f"PowerShell {name}": "defines a function, a type, a configuration, or a parameter, or loads a module"
+        for name in (
+            *("FunctionDefinitionAst", "TypeDefinitionAst", "FunctionMemberAst", "PropertyMemberAst"),
+            *("ConfigurationDefinitionAst", "DynamicKeywordStatementAst", "UsingStatementAst", "ParamBlockAst"),
+            *("ParameterAst", "AttributeAst", "NamedAttributeArgumentAst"),
+        )
+    },
+    **{
+        f"PowerShell {name}": "a statement the guard does not read in PowerShell"
+        for name in (
+            *("SwitchStatementAst", "ForStatementAst", "WhileStatementAst", "DoWhileStatementAst"),
+            *("DoUntilStatementAst", "TryStatementAst", "CatchClauseAst", "TrapStatementAst", "DataStatementAst"),
+            *("BlockStatementAst", "ReturnStatementAst", "ExitStatementAst", "ThrowStatementAst"),
+        )
+    },
+    **{
+        f"PowerShell {name}": "text PowerShell could not parse, which runs nothing"
+        for name in ("ErrorStatementAst", "ErrorExpressionAst")
+    },
+}
+
 GIT_NAMES = {"git"}
-BASH_NAMES = {"bash", "sh"}
-POWERSHELL_NAMES = {"pwsh", "powershell"}
-ENV_NAMES = {"env"}
-LOCATION_NAMES = {"cd", "chdir", "sl", "set-location"}
-PUSH_LOCATION_NAMES = {"pushd", "push-location"}
-POP_LOCATION_NAMES = {"popd", "pop-location"}
-# Bash builtins that declare variables; export, and the others with -x, export them, and +x or export -n stops that.
-DECLARE_NAMES = {"export", "declare", "typeset", "local", "readonly"}
-# PowerShell commands that set an environment variable when a path they write is on the environment provider, and
-# the parameters, as the command declares them, that name that path. Add-Content and Move-Item fail there: the
-# provider can neither seek within a variable nor move one.
-ENVIRONMENT_WRITERS = {
-    **dict.fromkeys(["set-item", "si", "new-item", "ni", "set-content", "sc"], ("path", "literalpath")),
-    **dict.fromkeys(["copy-item", "copy", "cp", "cpi"], ("destination",)),
-}
-# Commands that remove the variable their path names on the environment provider.
-ENVIRONMENT_REMOVERS = {"remove-item", "ri", "rm", "rmdir", "del", "erase", "rd", "clear-item", "cli"}
-# New-Item names the variable with -Name when its path is the provider's root; Rename-Item names it with -NewName.
-NEW_ITEM_NAMES = {"new-item", "ni"}
-RENAME_ITEM_NAMES = {"rename-item", "ren", "rni"}
-NEW_DRIVE_NAMES = {"new-psdrive", "ndr", "mount"}
-# Options of env that take no value, and those that take the next word as one.
-ENV_FLAGS = {"-0", "--null", "-v", "--debug"}
-ENV_UNSET = {"-u", "--unset"}
-ENV_CHDIR = {"-C", "--chdir"}
-ENV_CLEAR = {"-i", "--ignore-environment", "-"}
-# Programs that start the command after their own options: each one's options that take no value, those that take
-# the next word, and how many operands come before the command.
-PREFIX_PROGRAMS: dict[str, tuple[frozenset[str], frozenset[str], int]] = {
-    "nohup": (frozenset(), frozenset(), 0),
-    "nice": (frozenset(), frozenset({"-n", "--adjustment"}), 0),
-    "timeout": (
-        frozenset({"-v", "--verbose", "--preserve-status", "--foreground"}),
-        frozenset({"-s", "--signal", "-k", "--kill-after"}),
-        1,
-    ),
-    "stdbuf": (frozenset(), frozenset({"-i", "-o", "-e", "--input", "--output", "--error"}), 0),
-    # The program, which Bash runs where `time` is not a command's first word, as after an assignment or a
-    # redirection, or is quoted.
-    "time": (
-        frozenset({"-p", "--portability", "-v", "--verbose", "-a", "--append", "-q", "--quiet"}),
-        frozenset({"-f", "--format", "-o", "--output"}),
-        0,
-    ),
-}
-# Programs that run the command after their options as another user: each one's options that take no value, those
-# that take the next word or, short, the rest of their word, and those after which they start no command. Their
-# policy, sudoers or doas.conf, decides which variables reach the command, so each the shell holds is unsettled there;
-# a login shell starts in the user's home. No test starts them, since they may prompt or raise privileges.
-ELEVATING_PROGRAMS: dict[str, tuple[frozenset[str], frozenset[str], frozenset[str]]] = {
-    "sudo": (
-        frozenset(
-            {
-                *("-A", "--askpass", "-B", "--bell", "-b", "--background", "-E", "--preserve-env", "-H", "--set-home"),
-                *("-i", "--login", "-k", "--reset-timestamp", "-N", "--no-update", "-n", "--non-interactive"),
-                *("-P", "--preserve-groups", "-S", "--stdin", "-s", "--shell"),
-                # sudo for Windows
-                *("--inline", "--new-window", "--disable-input"),
-            }
-        ),
-        frozenset(
-            {
-                *("-C", "--close-from", "-D", "--chdir", "-g", "--group", "-p", "--prompt", "-R", "--chroot"),
-                *("-r", "--role", "-T", "--command-timeout", "-t", "--type", "-U", "--other-user", "-u", "--user"),
-                "--host",
-            }
-        ),
-        frozenset({"-e", "--edit", "-K", "--remove-timestamp", "-l", "--list", "-V", "--version", "-v", "--validate"}),
-    ),
-    "doas": (frozenset({"-L", "-n", "-s"}), frozenset({"-u"}), frozenset({"-C"})),
-}
-GH_LIMIT_ALLOWED = {
-    "ELEVATING_PROGRAMS": "doas's own -L, which clears its remembered authentication; it is read from a command, and "
-    "no gh listing is made here"
-}
-# Those that take NAME=value words before their command, as env does.
-ASSIGNING_ELEVATORS = {"sudo"}
-LOGIN_OPTIONS = {"-i", "--login"}
-CHDIR_OPTIONS = {"-D", "--chdir"}
-# Bash's long options whose next word is their value, so it is not the script that -c runs; in a single-dash or
-# single-plus bundle each o and O takes the next word (bash_option_values).
-BASH_LONG_OPTIONS_WITH_VALUE = {"--rcfile", "--init-file"}
-# The variable whose elements are Bash's aliases, by name: assigning one defines an alias, as `alias` does.
-BASH_ALIASES = "BASH_ALIASES"
-# The variable whose elements are the programs Bash runs for command names, by name: assigning one, or hash -p,
-# makes a later word by that name run the program it names.
-BASH_CMDS = "BASH_CMDS"
-# What a name each table defines is to a later word, by the table.
-NAME_TABLES = {BASH_ALIASES: "an alias", BASH_CMDS: "a command name"}
-# The function Bash runs, with the command's words, for a command it finds no program for.
-NOT_FOUND_HANDLER = "command_not_found_handle"
-# The environment variable by which Bash hands a function exported with export -f to a shell it starts, holding the
-# function's body after its name, and the start of the value Bash imports a function from.
-EXPORTED_FUNCTION = re.compile(r"^BASH_FUNC_(.+)%%$")
-EXPORTED_FUNCTION_VALUE = "() {"
-# How deep bash -c, pwsh -Command, eval, a function call, and Invoke-Expression are followed; the PowerShell reader is
-# handed what is left of it. Deeper nesting is a command the guard cannot read.
+# How deep a substitution and a shell alias are followed; deeper is a command the guard does not read.
 NESTING_LIMIT = 4
-# How deep loops and PowerShell script blocks are followed, counted across nested shells and function calls. Each is
-# read twice, so the innermost is read twice per level; deeper is a command the guard cannot read.
-LOOP_NESTING_LIMIT = 8
 POWERSHELL_READER = Path(__file__).with_name("hub_guard-powershell.ps1")
 # How long the guard reads and judges one command, pwsh included, before it is a command the guard cannot read in
-# time. The hook's own 30-second timeout in .claude/settings.json lets a command it cuts short run, so this leaves room
-# for starting Python and writing the decision; the hub lookups before and after reading, and each git call they
-# start, are held to it too (lookups_within).
+# time. The hook's own 30-second timeout in .claude/settings.json blocks a command it cuts short (onFailure), so this
+# leaves room for starting Python and writing the decision; the hub lookups before and after reading, and each git
+# call they start, are held to it too (lookups_within).
 READING_SECONDS = 15
-# How much of the reader's output is kept: far more than the events of any command a tool call carries, and a reading
-# cut short is not JSON, so it is a command the guard cannot read rather than one read in part.
+# How much of the reader's output is kept: far more than any command a tool call carries, and a reading cut short is
+# not JSON, so it is a command the guard cannot read rather than one read in part.
 POWERSHELL_OUTPUT_LIMIT = 1 << 22
-MENTIONS_GIT = re.compile(r"git", re.IGNORECASE)
-MENTIONS_WRITING_SUBCOMMAND = re.compile(
-    r"\b(?:" + "|".join(map(re.escape, sorted(WRITING_SUBCOMMANDS | {FETCH}))) + r")\b", re.IGNORECASE
-)
-# A git word followed, in the same statement, by something that computes a word: what a subcommand could be made of.
-COMPUTED_AFTER_GIT = re.compile(r"git[^;|&\n]*[$@(`{\[]", re.IGNORECASE)
-# The characters either shell joins one word across without a space: Bash's quotes and backslash, and PowerShell's
-# quotes, its typographic quotes, and its backtick, so com'mit' is the word commit to both.
-WORD_JOINERS = re.compile(r"[\"'`\\\u2018\u2019\u201a\u201b\u201c\u201d\u201e]")
+# How many paths a command names are looked up for a guarded hub when none is in view and it holds a part the guard
+# does not read.
+NAMED_PATH_LIMIT = 32
 DENY_REASON = (
     "This checkout is the hub: it stays on main and is never edited, so parallel sessions cannot carry each "
     "other's changes (docs/parallel-sessions.md). Create a worktree with "
     "`python tools/worktrees.py new <kind> <name>`, enter it, and work there."
 )
 PLACE_IT = "Write the directory into the command itself, as `git -C <dir>` or `cd <dir> &&`, and run it again."
+REWRITE_IT = (
+    "Write it as plain commands with literal words, running each program by its name rather than through another "
+    "that runs it (RUNNERS in tools/hub_guard.py), and run it again; the guard's contract in "
+    "docs/parallel-sessions.md lists what it reads."
+)
 
 
 # Commands whose program the commands reader cannot read, by the scope that starts them, and why.
@@ -422,7 +752,6 @@ GIT_STATUS_ALLOWED = {
         "fails closed: any failure but exit 1 refuses the call; exit 1 is git's answer that no such alias is set, or "
         "that the name is one no alias can have, which git cannot run either"
     ),
-    "mentions_alias": "fails closed: any failure but exit 1 reads as an alias; exit 1 is git's answer that none is set",
 }
 
 
@@ -593,9 +922,11 @@ class Place:
 class GitCall:
     place: Place
     subcommand: str | None  # None when the text does not settle it
-    arguments: list[str]
+    arguments: list[str | None]  # None for a word the text does not settle
     # git's own options as read before the subcommand, from which an alias's expansion goes on reading.
     options: GitOptions | None = None
+    # gh for a gh command that runs git itself to check a branch out.
+    program: str = "git"
 
     @property
     def directory(self) -> Path | None:
@@ -604,22 +935,25 @@ class GitCall:
 
 @dataclass
 class Reading:
-    """What the guard read from one command: the git calls it makes, in order, the parts of it the guard could not
-    read, which are refused while a guarded hub is in view, and notes on what it passed over."""
+    """What the guard read from one command: the git calls it makes, in order, the files its redirections write,
+    the parts of it the guard does not read, which are refused while a guarded hub is in view, the paths it names,
+    and notes on what it passed over."""
 
     environment: Mapping[str, str]
     text: str = ""
     calls: list[GitCall] = field(default_factory=list)
+    writes: list[Path] = field(default_factory=list)
     unread: list[str] = field(default_factory=list)
+    named: list[str] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
     context_hubs: set[Path] = field(default_factory=set)
-    # When the guard's reading time ends, by reading_clock, and how many loops enclose the part being read.
+    # When the guard's reading time ends, by reading_clock.
     deadline: float = math.inf
-    loops: int = 0
 
     def cannot_read(self, what: str) -> None:
-        """Text that may start git and that the guard cannot read: refused when the command names git at all."""
-        (self.unread if mentions(MENTIONS_GIT, self.text) else self.notes).append(what)
+        """A part of the command the guard does not read: refused while a guarded hub is in view."""
+        if what not in self.unread:
+            self.unread.append(what)
 
     def time_left(self) -> float:
         """The seconds left of the reading time; past it, raises ReadingTimeout, which the hook refuses as a failure
@@ -680,44 +1014,10 @@ def checkout_of(path: Path) -> Checkout | None:
     return worktrees.checkout_of(path, lookup_timeout())
 
 
-def mentions(pattern: re.Pattern[str], text: str) -> bool:
-    """Whether pattern finds a word in the text as written, or with the quotes and escapes that join a word taken out
-    as either shell takes them out."""
-    return any(pattern.search(spelling) for spelling in (text, WORD_JOINERS.sub("", text)))
-
-
 # A word is its text, or None when the text does not settle its value (an unset variable, a $( ) result).
 Word = str | None
-# How the PowerShell reader would report a parameter's value a command may take from its pipeline: a word the text
-# does not settle.
-PIPED_WORD: Mapping[str, Any] = {"text": "", "dynamic": True}
 # The variables a shell has set, by name; a value is None when the text does not settle it.
 Variables = Mapping[str, Word]
-# A function's body as either shell's reader holds it.
-Body = TypeVar("Body")
-
-
-def joined_functions(
-    first: Mapping[str, tuple[Body, ...]], second: Mapping[str, tuple[Body, ...]], absent: Body
-) -> dict[str, tuple[Body, ...]]:
-    """The functions of a shell that may have taken either of two paths: each name with every body either path gives
-    it, and absent for a path on which no function has the name, where a call runs the builtin or program it names."""
-    joined: dict[str, tuple[Body, ...]] = {}
-    for name in [*first, *(name for name in second if name not in first)]:
-        bodies: list[Body] = []
-        for body in (*first.get(name, (absent,)), *second.get(name, (absent,))):
-            if body not in bodies:
-                bodies.append(body)
-        joined[name] = tuple(bodies)
-    return joined
-
-
-Taken = TypeVar("Taken", "Shell", "Session")
-
-
-def paths(state: Taken, count: int) -> list[Taken]:
-    """The state each of count paths starts from: the state itself for one, and a copy of it for each of several."""
-    return [state] if count == 1 else [state.copy() for _ in range(count)]
 
 
 def moved(directory: Path | None, target: Word) -> Path | None:
@@ -751,12 +1051,6 @@ def is_tracked(name: str) -> bool:
     )
 
 
-def is_handed(name: str) -> bool:
-    """Whether a shell hands this variable on only as its starter passes it, never as the hook's environment holds it:
-    one git reads, or one a bash reads its options from as it starts."""
-    return is_tracked(name) or folded(name) in SHELL_OPTION_VARIABLES
-
-
 def tracked_variables(variables: Variables) -> dict[str, Word]:
     return {name: value for name, value in variables.items() if is_tracked(name)}
 
@@ -787,14 +1081,8 @@ def git_variables(variables: Variables, notes: list[str]) -> dict[str, Word]:
 
 
 def inherited_variables(environment: Mapping[str, str]) -> dict[str, Word]:
-    """The handed variables a shell starts with: those the guard's own process was given."""
-    return {name: value for name, value in environment.items() if is_handed(name)}
-
-
-def started_environment(reading: Reading, variables: Variables) -> dict[str, Word]:
-    """The environment a shell starts with: the one the hook was given, but for the handed variables, which are those
-    its starter passes on, so that one its starter removed stays removed."""
-    return {**{name: value for name, value in reading.environment.items() if not is_handed(name)}, **variables}
+    """The tracked variables a shell starts with: those the guard's own process was given."""
+    return {name: value for name, value in environment.items() if is_tracked(name)}
 
 
 # ---------------------------------------------------------------------------------------------------------------
@@ -939,11 +1227,12 @@ def read_git_options(arguments: list[Word], options: GitOptions, reading: Readin
     return None
 
 
-def read_git(arguments: list[Word], cwd: Path | None, variables: Variables, reading: Reading, opaque: bool) -> None:
-    """One git call: its place, from the variables it sees and its own options, and its subcommand."""
-    values = git_variables(variables, reading.notes)
-    options = GitOptions.initial(cwd, values, opaque)
-    record_git_call(arguments, options, reading)
+def read_git(arguments: list[Word], cwd: Path | None, reading: Reading) -> None:
+    """One git call: its place, from the variables the hook's environment gives it and its own options, and its
+    subcommand. The command itself assigns none it is read with: an assignment before git, and every builtin that
+    exports one, is a part the guard does not read."""
+    values = git_variables(inherited_variables(reading.environment), reading.notes)
+    record_git_call(arguments, GitOptions.initial(cwd, values, opaque=False), reading)
 
 
 def record_git_call(arguments: list[Word], options: GitOptions, reading: Reading) -> None:
@@ -955,9 +1244,8 @@ def record_git_call(arguments: list[Word], options: GitOptions, reading: Reading
             reading.notes.append("a git subcommand is computed at run time")
         reading.calls.append(GitCall(options.place(), None, [], options.copy()))
         return
-    # A computed argument is kept as "", which no allowance matches.
-    rest = [argument or "" for argument in arguments[index + 1 :]]
-    reading.calls.append(GitCall(options.place(), arguments[index], rest, options.copy()))
+    # A word the text does not settle is kept as None, which refusal reads as any option.
+    reading.calls.append(GitCall(options.place(), arguments[index], arguments[index + 1 :], options.copy()))
 
 
 # ---------------------------------------------------------------------------------------------------------------
@@ -1039,7 +1327,12 @@ def renames_a_branch(arguments: list[str]) -> bool:
 
 def refusal(call: GitCall) -> str | None:
     """Why this git call would move HEAD or write the index or tree of the checkout it runs in; None if it would not."""
-    subcommand, arguments = call.subcommand, call.arguments
+    if call.program == "gh":
+        return f"`gh {call.subcommand}` checks a branch out in the checkout it runs in."
+    subcommand = call.subcommand
+    if None in call.arguments and (subcommand == FETCH or subcommand in WRITING_SUBCOMMANDS):
+        return f"`git {subcommand}` is given a word the text does not settle, which may be any of its options."
+    arguments = [argument for argument in call.arguments if argument is not None]
     if subcommand == FETCH:
         if updates_head(arguments):
             return "`git fetch --update-head-ok` would move the branch the hub's HEAD names."
@@ -1091,10 +1384,14 @@ class Judge:
         if reading.unread:
             if self.hubs:
                 return (
-                    f"The guard could not read part of this command ({reading.unread[0]}), and it names git, so it is "
-                    "refused while a hub is guarded. Rewrite it so each git command is written out."
+                    f"The guard does not read part of this command ({reading.unread[0]}), so it is refused while a "
+                    f"hub is guarded. {REWRITE_IT}"
                 )
             self.notes.extend(reading.unread)
+        for path in reading.writes:
+            reading.time_left()
+            if hub_protected(path):
+                return f"The command redirects its output into {path}, a file of a guarded hub."
         for call in reading.calls:
             reading.time_left()
             reason = self.judge(call, depth)
@@ -1103,6 +1400,9 @@ class Judge:
         return None
 
     def judge(self, call: GitCall, depth: int) -> str | None:
+        if call.subcommand is None and self.hubs:
+            # Whatever place it runs in, a subcommand the text does not settle may be an alias that writes a hub.
+            return "The guard could not tell which git subcommand runs, so it is refused while a hub is guarded."
         hub, unknown = reached_hub(call.place)
         if hub is None and not (unknown and self.hubs):
             if unknown and (call.subcommand is None or refusal(call) is not None):
@@ -1169,10 +1469,12 @@ class Judge:
             return self.unreadable(call, f"it nests more than {NESTING_LIMIT} deep")
         reading = Reading(self.environment, expansion, deadline=self.deadline)
         if expansion.startswith("!"):
+            if None in call.arguments:
+                return self.unreadable(call, "a word after it is one the text does not settle")
             # git runs a shell alias at the top of the work tree, with the call's arguments after it.
-            script = " ".join([expansion[1:], *map(shlex.quote, call.arguments)])
+            script = " ".join([expansion[1:], *(shlex.quote(argument or "") for argument in call.arguments)])
             reading.text = script
-            read_bash(script, top, reading, depth + 1, inherited_variables(self.environment))
+            read_bash(script, top, reading, depth + 1)
         else:
             try:
                 words: list[Word] = list(shlex.split(expansion))
@@ -1201,7 +1503,11 @@ class AliasLookup:
 def may_be_alias(call: GitCall) -> bool:
     """Whether a call's subcommand may be an alias: one the guard neither refuses itself nor finds among git's
     builtins, which no alias can stand for."""
-    return call.subcommand is not None and call.subcommand not in WRITING_SUBCOMMANDS | {FETCH} | git_builtins()
+    return (
+        call.program == "git"
+        and call.subcommand is not None
+        and call.subcommand not in WRITING_SUBCOMMANDS | {FETCH} | git_builtins()
+    )
 
 
 def alias_lookups(place: Place) -> list[AliasLookup]:
@@ -1224,2007 +1530,798 @@ def denied(reading: Reading, hubs: Iterable[Path] = (), depth: int = 0) -> str |
 
 
 # ---------------------------------------------------------------------------------------------------------------
-# The Bash reader
+# Where a shell is
 
 
-@dataclass
-class Shell:
-    """A Bash shell as the guard follows it: its directory, its pushd stack, its variables, and its functions.
-
-    variables holds every variable the shell has, by name as written, starting with the environment it inherits;
-    exported, those its commands see. opaque marks a shell in which a command the guard cannot read, such as a
-    sourced file, may have set any variable. references holds each name reference declare -n, local -n, or
-    typeset -n made, by its name: the variable it stands for, "" while it stands for none, so that its first
-    assignment names one, or None when the text does not settle which. functions holds each name a path the
-    shell may have taken defines a function by, with every body it may have, and None where it may have none.
-    exported_functions holds the functions export -f exported, or that were defined under allexport, which a shell
-    it starts defines. environment_functions holds those its environment handed it, which on a platform whose
-    environment names fold case a later word may call in any case, since the guard may have read their names folded.
-    reading, when set, is told of each name that reaches BASH_ALIASES, whose elements are aliases, or BASH_CMDS, whose
-    elements are command names.
-    """
+@dataclass(frozen=True)
+class Directory:
+    """Where a shell is, as far as the text settles it, and its pushd stack; None is a directory it does not."""
 
     cwd: Path | None
-    variables: dict[str, Word]
-    exported: set[str]
-    stack: list[Path | None] = field(default_factory=list)
-    allexport: bool = False
-    opaque: bool = False
-    functions: dict[str, tuple[bash_syntax.Command | None, ...]] = field(default_factory=dict)
-    references: dict[str, str | None] = field(default_factory=dict)
-    exported_functions: set[str] = field(default_factory=set)
-    environment_functions: set[str] = field(default_factory=set)
-    reading: Reading | None = None
-    # The variables whose value the text does not settle but which always hold an integer, such as a for loop's over
-    # words that are each one, which arithmetic reads as a number.
-    numbers: set[str] = field(default_factory=set)
-
-    def copy(self) -> Shell:
-        return replace(
-            self,
-            variables=dict(self.variables),
-            exported=set(self.exported),
-            stack=list(self.stack),
-            functions=dict(self.functions),
-            references=dict(self.references),
-            exported_functions=set(self.exported_functions),
-            numbers=set(self.numbers),
-        )
-
-    def target(self, name: str) -> str | None:
-        """The variable a name reaches: itself, or the one its chain of name references ends at; None when a
-        reference in the chain stands for no variable, for an element, or for one the text does not settle, or when
-        the chain is deeper than Bash follows, eight references.
-
-        A name that reaches BASH_ALIASES or BASH_CMDS, by any spelling of an assignment, a declaration, a builtin
-        that sets a variable, or an expansion that assigns, may define an alias or a command name, which the reading
-        is told of."""
-        for _ in range(8):
-            self.note_alias(name)
-            if name not in self.references:
-                return name
-            reached = self.references[name]
-            if reached is None or not bash_syntax.NAME.fullmatch(reached):
-                self.note_alias(reached or "")
-                return None
-            name = reached
-        self.note_alias(name)
-        return None if name in self.references else name
-
-    def note_alias(self, name: str) -> None:
-        """Tells the reading of a name of BASH_ALIASES or BASH_CMDS or one of their elements, which may define an
-        alias or a command name."""
-        table = name.partition("[")[0]
-        if table in NAME_TABLES and self.reading is not None:
-            self.reading.cannot_read(f"{NAME_TABLES[table]} the command defines ({table})")
-
-    def may_assign_any(self) -> None:
-        """An assignment whose name the text does not settle: it may set any variable, so the shell is one the text
-        does not settle, and it may set one that turns on a shell option, or PS4, which the guard cannot read."""
-        self.opaque = True
-        if self.reading is not None:
-            self.reading.cannot_read(
-                "could not read the name a command assigns, which may be any variable, one that turns on a shell "
-                "option or PS4 among them"
-            )
-
-    def note_option_variable(self, name: str, value: Word) -> None:
-        """Tells the reading of an assignment to a variable that turns on a shell option as it is made, whatever its
-        value (OPTION_SETTING_VARIABLES), and of a PS4 that may hold an expansion, which xtrace runs."""
-        if self.reading is None:
-            return
-        found = None
-        if name in OPTION_SETTING_VARIABLES:
-            effect = OPTION_SETTING_VARIABLES[name]
-            found = f"the command assigns {name}, which turns on {effect}; the guard does not read it"
-        elif name == PS4 and expanding_ps4((value,)):
-            found = f"the command assigns {PS4} a value that may hold an expansion, run by {XTRACE}"
-        # A loop's body is read twice, so an assignment in it is told once.
-        if found is not None and found not in (*self.reading.unread, *self.reading.notes):
-            self.reading.cannot_read(found)
-
-    def function_named(self, name: str) -> str | None:
-        """The function a command by this name calls: one the shell defines by it, or, where environment names fold
-        case, one its environment handed it whose name matches in any case; None for none."""
-        if name in self.functions:
-            return name
-        if platform_support.ENVIRONMENT_NAMES_FOLD_CASE:
-            folded_name = name.upper()
-            named = (each for each in sorted(self.environment_functions) if each in self.functions)
-            return next((each for each in named if each.upper() == folded_name), None)
-        return None
-
-    def lookup(self, name: str) -> Word:
-        """A variable's value as the shell expands it, through any name reference; None when the text does not settle
-        it."""
-        target = self.target(name)
-        if target != name:
-            return None if target is None else self.lookup(target)
-        if name == "PWD":
-            return None if self.cwd is None else str(self.cwd)
-        if self.opaque or name == "OLDPWD":
-            return None
-        return self.variables.get(name)
-
-    def assign(self, name: str, value: Word, export: bool) -> None:
-        """NAME=value, through any name reference: a variable already exported stays so, as every variable does under
-        allexport. The first assignment to a reference that stands for none names the variable it stands for, and
-        one through a reference the text does not settle may set any variable."""
-        if self.references.get(name) == "":
-            self.references[name] = value
-            return
-        target = self.target(name)
-        if target is None:
-            self.may_assign_any()
-            return
-        if target in SHELL_OPTION_VARIABLES:
-            return  # read-only: Bash refuses the assignment
-        self.note_option_variable(target, value)
-        self.numbers.discard(target)
-        self.variables[target] = value
-        if export or self.allexport:
-            self.exported.add(target)
-
-    def unset(self, name: str) -> None:
-        """unset NAME, through any name reference; one the text does not settle may unset any variable. Bash refuses
-        to unset a read-only variable."""
-        target = self.target(name)
-        if target is None:
-            self.opaque = True
-            return
-        if target in SHELL_OPTION_VARIABLES:
-            return
-        self.numbers.discard(target)
-        self.variables.pop(target, None)
-        self.exported.discard(target)
-
-    def program_variables(self, local: Mapping[str, Word]) -> dict[str, Word]:
-        """The variables a program the shell starts sees: those exported, and the command's own assignments, but for a
-        read-only one, which Bash refuses to assign. Each is read by its own name, not through a reference: an
-        exported reference gives a program its own value.
-
-        SHELLOPTS, once exported, lists the options the shell holds when it starts the program, allexport among them
-        while it is on. A shell the text does not settle may have exported it by a name it does not settle, so
-        under allexport its value is not settled either."""
-        given = {name: self.variables.get(name) for name in self.exported if name in self.variables}
-        given.update((name, value) for name, value in local.items() if name not in SHELL_OPTION_VARIABLES)
-        if SHELLOPTS in self.exported:
-            given[SHELLOPTS] = ALLEXPORT if self.allexport else ""
-        elif self.opaque and self.allexport:
-            given[SHELLOPTS] = None
-        return given
+    stack: tuple[Path | None, ...] = ()
 
 
-_ABSENT = object()
+UNKNOWN = Directory(None)
 
 
-def join(first: Shell, second: Shell) -> Shell:
-    """A shell that may be either: what the two agree on stays settled, and the rest is not."""
-    if first is second:
-        return first
-    variables: dict[str, Word] = {}
-    for name in first.variables.keys() | second.variables.keys():
-        left, right = first.variables.get(name, _ABSENT), second.variables.get(name, _ABSENT)
-        variables[name] = left if left == right and isinstance(left, str) else None
-    references: dict[str, str | None] = {}
-    for name in first.references.keys() | second.references.keys():
-        # A reference only one path made, or one the two paths point elsewhere, stands for no variable the guard knows.
-        left, right = first.references.get(name), second.references.get(name)
-        references[name] = left if left == right else None
-    stack = first.stack if first.stack == second.stack else [None] * max(len(first.stack), len(second.stack))
-    return Shell(
-        first.cwd if same_place(first.cwd, second.cwd) else None,
-        variables,
-        first.exported | second.exported,
-        list(stack),
-        first.allexport or second.allexport,
-        first.opaque or second.opaque,
-        joined_functions(first.functions, second.functions, None),
-        references,
-        first.exported_functions | second.exported_functions,
-        first.environment_functions | second.environment_functions,
-        first.reading,
-        # A number on both paths, unless one settles it to another value.
-        {name for name in first.numbers & second.numbers if variables.get(name) is None},
+def joined(first: Directory, second: Directory) -> Directory:
+    """A shell that may be in either directory: what the two agree on stays settled, and the rest is not."""
+    cwd = first.cwd if same_place(first.cwd, second.cwd) else None
+    if len(first.stack) == len(second.stack) and all(map(same_place, first.stack, second.stack)):
+        return Directory(cwd, first.stack)
+    return Directory(cwd, (None,) * max(len(first.stack), len(second.stack)))
+
+
+@dataclass(frozen=True)
+class Outcome:
+    """Where a shell is after a command that succeeded, and after one that failed, which && and || go on from."""
+
+    ok: Directory
+    fail: Directory
+
+    def merged(self) -> Directory:
+        return joined(self.ok, self.fail)
+
+
+def certain(directory: Directory) -> Outcome:
+    return Outcome(directory, directory)
+
+
+def moved_to(directory: Directory, target: Path, stack: tuple[Path | None, ...]) -> Outcome:
+    """A directory change to target: where it succeeds, the shell is there; a target that is no directory now fails,
+    which leaves the shell where it was, unless an earlier command makes it one."""
+    path = Path(os.path.normpath(target))
+    arrived = Directory(path, stack)
+    return certain(arrived) if path.is_dir() else Outcome(arrived, directory)
+
+
+def home(environment: Mapping[str, str]) -> Path:
+    value = environment.get("HOME")
+    return Path(platform_support.from_shell_path(value)) if value else Path.home()
+
+
+def free_name(name: str, environment: Mapping[str, str]) -> bool:
+    """Whether a variable's value is one nothing the guard reads takes from the shell: a name Bash neither reads nor
+    sets, or one it reads for what changes nothing the guard reads, that git does not read, and that the environment
+    does not hold, so that assigning it reaches no program."""
+    held = any(each == name for each in environment)
+    return bool(bash_syntax.NAME.fullmatch(name)) and harmless_name(name) and not held
+
+
+def harmless_name(name: str) -> bool:
+    """Whether a variable is one an assignment before a program may give it: one git does not read, and Bash does not
+    read for what the guard reads."""
+    return (
+        BASH_VARIABLES.get(name, "") == ""
+        and not folded(name).startswith("GIT_")
+        and not EXPORTED_FUNCTION.match(folded(name))
     )
 
 
-def join_all(shells: list[Shell]) -> Shell:
-    result = shells[0]
-    for shell in shells[1:]:
-        result = join(result, shell)
-    return result
+# ---------------------------------------------------------------------------------------------------------------
+# The Bash reader
 
 
-@dataclass
-class Outcome:
-    """The shell after a command that succeeded, and after one that failed, which && and || go on from."""
+@dataclass(frozen=True)
+class BashStart:
+    """What a bash takes from the environment it starts with that the reader needs: its home, whether it searches
+    CDPATH, the functions it is handed by name, and whether xtrace may run what PS4 holds."""
 
-    ok: Shell
-    fail: Shell
-
-    def merged(self) -> Shell:
-        return join(self.ok, self.fail)
-
-
-def certain(shell: Shell) -> Outcome:
-    return Outcome(shell, shell)
+    home: Path
+    cdpath: bool
+    functions: frozenset[str]
+    expanding_ps4: bool
 
 
-GLOB = re.compile(r"[*?]|\[.*\]|\{[^{}]*(?:,|\.\.)[^{}]*\}")
-SPLIT = re.compile(r"[\s*?\[]")
+def bash_start(reading: Reading) -> BashStart:
+    """Reads the shell state the hook's environment hands the Bash tool's shell, and tells the reading of each
+    option it turns on that the tables do not read."""
+    environment = reading.environment
+    expanding_ps4 = any(mark in environment.get("PS4", "") for mark in "$`")
+    for variable, table in (("SHELLOPTS", "set"), ("BASHOPTS", "shopt")):
+        for option in filter(None, environment.get(variable, "").split(":")):
+            judge_option(reading, table, option, True, f"the {variable} the environment holds")
+            if table == "set":
+                judge_xtrace(reading, option, True, expanding_ps4)
+    for variable, option in (("POSIXLY_CORRECT", "posix"), ("BASH_COMPAT", "compat44")):
+        if variable in environment:
+            table = "set" if option == "posix" else "shopt"
+            judge_option(reading, table, option, True, f"the {variable} the environment holds")
+    functions = frozenset(
+        folded(match.group(1)) for match in (EXPORTED_FUNCTION.match(folded(name)) for name in environment) if match
+    )
+    if folded("command_not_found_handle") in functions:
+        reading.cannot_read(
+            "the environment hands the shell command_not_found_handle, which runs for any command it does not find"
+        )
+    return BashStart(home(environment), bool(environment.get("CDPATH")), functions, expanding_ps4)
 
 
-def word_value(word: bash_syntax.Word, shell: Shell, assignment: bool = False) -> Word:
-    """The text Bash makes of a word; None when only running settles it: an expansion of what the text does not
-    set, a substitution, or an unquoted glob, brace, or value that splits into words. An assignment's value is neither
-    split nor globbed."""
-    pieces: list[str] = []
-    for part in word.parts:
-        if part.kind == "text":
-            if not part.quoted and not assignment and GLOB.search(part.text):
-                return None
-            pieces.append(part.text)
-        elif part.kind == "parameter":
-            value = shell.lookup(part.text)
-            if value is None or (not part.quoted and not assignment and SPLIT.search(value)):
-                return None
-            pieces.append(value)
-        elif part.kind == "home":
-            pieces.append(str(Path.home()))
-        else:
-            return None
-    return "".join(pieces)
+def judge_xtrace(reading: Reading, option: str | None, on: bool, expanding_ps4: bool) -> None:
+    """The one check of xtrace, whatever turns it on, set, shopt -o, or the environment's SHELLOPTS: refused where
+    the environment's PS4 holds an expansion, which xtrace runs before each command."""
+    if option == "xtrace" and on and expanding_ps4:
+        reading.cannot_read(NOT_READ_XTRACE)
 
 
-def assigned_value(assignment: bash_syntax.Assignment, shell: Shell) -> Word:
-    """The value a simple command's assignment gives its variable: unsettled when it appends, or when it names an
-    element and so makes the variable an array."""
-    if assignment.appends or assignment.element:
-        return None
-    return word_value(bash_syntax.Word("", assignment.value), shell, assignment=True)
+def judge_option(reading: Reading, table: str, option: str | None, on: bool, source: str) -> None:
+    """Tells the reading of an option turned on or off that the tables do not read a shell under."""
+    if option is None:
+        reading.cannot_read(f"an option {source} turns on or off that the text does not settle")
+        return
+    state = (SET_OPTIONS.get(option, ("", "unknown"))[1]) if table == "set" else SHOPT_OPTIONS.get(option, "unknown")
+    if state == "unknown":
+        reading.cannot_read(
+            f"the option {option}, which {source} turns {'on' if on else 'off'}, is one the guard does not know"
+        )
+    elif state == ("on" if on else "off"):
+        reason = NOT_READ[f"set -o {option}" if table == "set" else f"shopt {option}"]
+        reading.cannot_read(f"{source} turns {option} {state}: {reason}")
 
 
 class BashReader:
-    """Follows a Bash command tree as Bash runs it, recording each git call with where it acts.
+    """Reads a Bash command tree for the git calls it makes and where each acts, and tells the reading of each part
+    the guard does not read.
 
-    A part that runs only when another succeeds or fails, or only in some passes of a loop, leaves the shell as either
-    outcome might; what both agree on stays settled. A subshell, a pipeline's commands, a background job, and every
-    command or process substitution run in a copy whose changes die with it.
+    Only a list of simple commands is placed exactly: a command that runs only when another succeeds or fails goes on
+    from that outcome, a subshell, a pipeline's commands, and a background job run in a copy whose changes die with it,
+    and a compound command that changes the directory leaves every git call in it, and every one after it, in a
+    directory the text does not settle.
     """
 
-    def __init__(self, reading: Reading, depth: int, builtin: str = "", unsettled_name: bool = False) -> None:
+    def __init__(self, reading: Reading, depth: int, start: BashStart) -> None:
         self.reading = reading
         self.depth = depth
-        # The name a builtin was called by, which export, declare, command, and the rest read.
-        self.current_builtin = builtin
-        # Whether a word after the command's name may be an assignment whose name the text does not settle: one the
-        # text does not settle that the grammar does not read as an assignment, which a declaration builtin may take
-        # as one, as `export "$v=1"`.
-        self.unsettled_name = unsettled_name
+        self.start = start
 
-    def with_builtin(self, name: str) -> BashReader:
-        return BashReader(self.reading, self.depth, name, self.unsettled_name)
+    def nested(self) -> BashReader:
+        return BashReader(self.reading, self.depth + 1, self.start)
 
-    def run_text(self, text: str, shell: Shell) -> Outcome:
+    def read_text(self, text: str, directory: Directory) -> Directory:
+        if self.depth > NESTING_LIMIT:
+            self.reading.cannot_read(f"substitutions nest more than {NESTING_LIMIT} deep")
+            return UNKNOWN
         try:
             tree = bash_syntax.parse(text)
         except bash_syntax.BashSyntaxError as exc:
             self.reading.cannot_read(f"Bash would not read it as written, or the guard cannot ({exc})")
-            lost = shell.copy()
-            lost.cwd, lost.opaque = None, True
-            return certain(lost)
-        return self.run_list(tree, shell)
+            return UNKNOWN
+        return self.read_list(tree, directory)
 
-    def run_list(self, node: bash_syntax.CommandList, shell: Shell) -> Outcome:
-        outcome = certain(shell)
+    def read_list(self, node: bash_syntax.CommandList, directory: Directory) -> Directory:
         for and_or, background in node.items:
-            state = outcome.merged()
-            if background:
-                self.run_and_or(and_or, state.copy())
-                outcome = certain(state)
-            else:
-                outcome = self.run_and_or(and_or, state)
-        return outcome
+            outcome = self.read_and_or(and_or, directory)
+            if not background:
+                directory = outcome.merged()
+        return directory
 
-    def run_and_or(self, node: bash_syntax.AndOr, shell: Shell) -> Outcome:
-        outcome = self.run_pipeline(node.first, shell)
+    def read_and_or(self, node: bash_syntax.AndOr, directory: Directory) -> Outcome:
+        outcome = self.read_pipeline(node.first, directory)
         for operator, pipeline in node.rest:
             if operator == "&&":
-                after = self.run_pipeline(pipeline, outcome.ok.copy())
-                outcome = Outcome(after.ok, join(outcome.fail, after.fail))
+                after = self.read_pipeline(pipeline, outcome.ok)
+                outcome = Outcome(after.ok, joined(outcome.fail, after.fail))
             else:
-                after = self.run_pipeline(pipeline, outcome.fail.copy())
-                outcome = Outcome(join(outcome.ok, after.ok), after.fail)
+                after = self.read_pipeline(pipeline, outcome.fail)
+                outcome = Outcome(joined(outcome.ok, after.ok), after.fail)
         return outcome
 
-    def run_pipeline(self, node: bash_syntax.Pipeline, shell: Shell) -> Outcome:
+    def read_pipeline(self, node: bash_syntax.Pipeline, directory: Directory) -> Outcome:
         if len(node.commands) == 1:
-            outcome = self.run_command(node.commands[0], shell)
+            outcome = self.read_command(node.commands[0], directory)
         else:
             for command in node.commands:
-                self.run_command(command, shell.copy())
-            outcome = certain(shell)
+                self.read_command(command, directory)
+            outcome = certain(directory)
         return Outcome(outcome.fail, outcome.ok) if node.negated else outcome
 
-    def run_command(self, node: bash_syntax.Command, shell: Shell) -> Outcome:
+    def read_command(self, node: bash_syntax.Command, directory: Directory) -> Outcome:
         self.reading.time_left()
         if isinstance(node, bash_syntax.Simple):
-            return self.run_simple(node, shell)
+            return self.read_simple(node, directory)
         if isinstance(node, bash_syntax.FunctionDefinition):
-            shell.functions[node.name] = (node.body,)
-            if shell.allexport:
-                # Under allexport a function is exported as it is defined, as a variable is as it is assigned.
-                shell.exported_functions.add(node.name)
-            return certain(shell)
-        self.read_substitutions([], node.redirects, shell)
-        if isinstance(node, bash_syntax.Subshell):
-            expression = arithmetic_command(node)
-            if expression is not None:
-                self.note_arithmetic([expression], shell)
-            self.run_list(node.body, shell.copy())
-            # The reader reads an arithmetic command, (( )), as a subshell, though it runs in this shell, so an
-            # expansion in it that assigns leaves its variable unsettled here too.
-            assign_expanded(shell, subtree_assigns(node.body))
-            return certain(shell)
-        if isinstance(node, bash_syntax.Group):
-            return self.run_list(node.body, shell)
-        if isinstance(node, bash_syntax.If):
-            return self.run_if(node, shell)
+            self.reading.cannot_read(NOT_READ["construct function definition"])
+            return certain(UNKNOWN)
+        self.read_redirects(node.redirects, directory)
+        if isinstance(node, bash_syntax.Subshell) and arithmetic_command(node):
+            self.reading.cannot_read(NOT_READ["construct arithmetic command"])
+        moves = changes_directory(node)
+        inside = UNKNOWN if moves else directory
+        if isinstance(node, bash_syntax.Loop):
+            if node.header:
+                self.reading.cannot_read(NOT_READ["construct arithmetic for"])
+            if node.name is not None and not free_name(node.name, self.reading.environment):
+                self.reading.cannot_read(
+                    f"a loop assigns {node.name}, which Bash or git reads or the environment holds"
+                )
+            self.read_words(node.words or [], directory)
         if isinstance(node, bash_syntax.Case):
-            # Bash expands each pattern as it tests it, so each pattern's substitutions and arithmetic may run.
-            self.read_substitutions([node.word, *node.patterns], [], shell)
-            branches = [self.run_list(branch, shell.copy()).merged() for branch in node.branches]
-            return certain(join_all([shell, *branches]))
-        return self.run_loop(node, shell)
+            self.read_words([node.word, *node.patterns], directory)
+        for body in command_bodies(node):
+            self.read_list(body, inside)
+        if moves and not isinstance(node, bash_syntax.Subshell):
+            return certain(UNKNOWN)
+        return certain(directory)
 
-    def run_if(self, node: bash_syntax.If, shell: Shell) -> Outcome:
-        results: list[Shell] = []
-        state = shell
-        for condition, body in node.clauses:
-            tested = self.run_list(condition, state)
-            results.append(self.run_list(body, tested.ok.copy()).merged())
-            state = tested.fail.copy()
-        results.append(self.run_list(node.otherwise, state).merged() if node.otherwise is not None else state)
-        return certain(join_all(results))
+    def read_words(self, words: Iterable[bash_syntax.Word], directory: Directory) -> list[Word]:
+        """Each word's value, None where the text does not settle it, once every substitution in it is read."""
+        values = []
+        for word in words:
+            for text in word.substitutions:
+                self.nested().read_text(text, directory)
+            values.append(self.word_value(word))
+        return values
 
-    def run_loop(self, node: bash_syntax.Loop, shell: Shell) -> Outcome:
-        """A loop's body may run any number of times: two passes, the second from either the entry or the first pass's
-        end, reach every state the guard tells apart."""
-        if node.words is not None:
-            self.read_substitutions(node.words, [], shell)
-        self.read_substitutions(node.header, [], shell)
-        if node.header:
-            self.note_arithmetic([" ".join(unquoted(word.raw) for word in node.header)], shell)
-        if self.reading.loops >= LOOP_NESTING_LIMIT:
-            self.reading.cannot_read(f"loops nest more than {LOOP_NESTING_LIMIT} deep")
-            lost = shell.copy()
-            lost.cwd, lost.opaque = None, True
-            return certain(lost)
-        self.reading.loops += 1
-        try:
-            return self.run_passes(node, shell)
-        finally:
-            self.reading.loops -= 1
+    def word_value(self, word: bash_syntax.Word) -> Word:
+        """The text Bash makes of a word, or None where only running settles it; tells the reading of each part of
+        it the guard does not read."""
+        for name in word.assigns:
+            self.read_assigned(name)
+        pieces: list[str] = []
+        settled = True
+        for part in word.parts:
+            if part.kind == "text":
+                if not part.quoted and "$[" in part.text:
+                    self.reading.cannot_read(NOT_READ["expansion $["])
+                if not part.quoted and (GLOB.search(part.text) or BRACE.search(part.text)):
+                    settled = False
+                pieces.append(part.text)
+            elif part.kind == "home":
+                pieces.append(str(self.start.home))
+            elif part.kind == "parameter":
+                settled = False
+            else:
+                settled = False
+                self.read_dynamic(part.text)
+        if not settled:
+            return None
+        value = "".join(pieces)
+        self.reading.named.extend(named_paths(value))
+        return value
 
-    def run_passes(self, node: bash_syntax.Loop, shell: Shell) -> Outcome:
-        seen = [shell]
-        state = shell.copy()
-        for _ in range(2):
-            if node.condition is not None:
-                tested = self.run_list(node.condition, state)
-                seen.append((tested.ok if node.kind == "until" else tested.fail).copy())
-                state = (tested.fail if node.kind == "until" else tested.ok).copy()
-            if node.name in state.references:
-                # A name reference as the loop's variable stands for each word in turn.
-                state.references[node.name] = None
-            elif node.name is not None:
-                state.assign(node.name, None, export=False)
-                # Over words that are each a literal integer, the variable holds a number whichever it holds.
-                if node.words and all(INTEGER_WORD.fullmatch(word.literal or "") for word in node.words):
-                    state.numbers.add(node.name)
-            after = self.run_list(node.body, state).merged()
-            seen.append(after)
-            state = join(shell, after).copy()
-        return certain(join_all(seen))
+    def read_assigned(self, name: str) -> None:
+        if name.startswith("!") or "[" in name or not free_name(name, self.reading.environment):
+            self.reading.cannot_read(f"{NOT_READ['expansion assigning']} ({name})")
 
-    def read_substitutions(
-        self, words: list[bash_syntax.Word], redirects: list[bash_syntax.Redirect], shell: Shell
-    ) -> None:
-        """Each command and process substitution runs, in a subshell, before the command it is part of, and each
-        expansion that assigns, ${NAME:=word} or ${NAME=word}, assigns in this shell."""
-        texts = [text for word in words for text in word.substitutions]
-        assigns = [name for word in words for name in word.assigns]
+    def read_dynamic(self, form: str) -> None:
+        """Tells the reading of an expansion of a form the guard does not read."""
+        key = expansion_form(form)
+        if key not in EXPANSIONS_UNDERSTOOD:
+            reason = NOT_READ.get(f"expansion {key}", "an expansion the guard does not know")
+            self.reading.cannot_read(f"{reason} ({form})")
+
+    def read_redirects(self, redirects: list[bash_syntax.Redirect], directory: Directory) -> None:
         for redirect in redirects:
-            if redirect.target is not None:
-                texts.extend(redirect.target.substitutions)
-                assigns.extend(redirect.target.assigns)
-            if redirect.here is not None:
-                texts.extend(redirect.here.substitutions)
-                assigns.extend(redirect.here.assigns)
-        for text in texts:
-            self.run_text(text, shell.copy())
-        # Each arithmetic expression the words, the redirection targets, and an unquoted here-document's body hold.
-        raws = [word.raw for word in words]
-        raws.extend(redirect.target.raw for redirect in redirects if redirect.target is not None)
-        raws.extend(
-            redirect.here.body for redirect in redirects if redirect.here is not None and not redirect.here.quoted
-        )
-        self.note_arithmetic((expression for raw in raws for expression in arithmetic_contexts(raw)), shell)
-        assign_expanded(shell, assigns)
+            if redirect.descriptor.startswith("{"):
+                self.reading.cannot_read(f"{NOT_READ['construct named descriptor']} ({redirect.descriptor})")
+            here = redirect.here
+            if here is not None:
+                for text in here.substitutions:
+                    self.nested().read_text(text, directory)
+                for name in here.assigns:
+                    self.read_assigned(name)
+                for part in here.expansions:
+                    self.read_dynamic(part.text)
+                if not here.quoted and "$[" in here.body:
+                    self.reading.cannot_read(NOT_READ["expansion $["])
+                continue
+            if redirect.target is None:
+                continue
+            value = self.read_words([redirect.target], directory)[0]
+            if redirect.operator in {"<", "<<<"} or (
+                redirect.operator in {"<&", ">&"} and value is not None and DESCRIPTOR_TARGET.fullmatch(value)
+            ):
+                continue
+            read_written(self.target_value(redirect.target) if value is None else value, directory, self.reading)
 
-    def note_arithmetic(self, expressions: Iterable[str | None], shell: Shell) -> None:
-        """Tells the reading of the first arithmetic expression that may turn on a shell option (arithmetic_hazard),
-        once for the command, whose loops the reader reads twice."""
-        for expression in expressions:
-            reason = arithmetic_hazard(expression, shell)
-            if reason is not None:
-                message = f"the command holds {reason}, which the guard does not read"
-                if message not in (*self.reading.unread, *self.reading.notes):
-                    self.reading.cannot_read(message)
-                return
+    def target_value(self, word: bash_syntax.Word) -> Word:
+        """A redirection target the text settles but for the system's temporary folder, named by a variable
+        TEMPORARY_VARIABLES lists that the environment holds; None for any other."""
+        pieces: list[str] = []
+        for part in word.parts:
+            if part.kind == "text" and (part.quoted or not (GLOB.search(part.text) or BRACE.search(part.text))):
+                pieces.append(part.text)
+            elif part.kind == "home":
+                pieces.append(str(self.start.home))
+            elif (
+                part.kind == "parameter"
+                and part.text in TEMPORARY_VARIABLES
+                and self.reading.environment.get(part.text)
+            ):
+                pieces.append(self.reading.environment[part.text])
+            else:
+                return None
+        return "".join(pieces)
 
-    def run_simple(self, node: bash_syntax.Simple, shell: Shell) -> Outcome:
-        self.read_substitutions(node.words, node.redirects, shell)
+    def read_simple(self, node: bash_syntax.Simple, directory: Directory) -> Outcome:
         words = node.words
-        # let evaluates each operand, and [[ ]] each operand of an arithmetic comparison.
-        if words and words[0].literal == "let":
-            self.note_arithmetic((unquoted(word.raw) for word in words[1:]), shell)
-        # A builtin that takes an operand as an array reference evaluates its subscript, whatever quotes it.
-        if words and words[0].literal in ARRAY_REFERENCE_BUILTINS:
-            self.note_arithmetic((each for word in words[1:] for each in array_reference_contexts(word.raw)), shell)
-        if words and words[0].literal == "[[":
-            operands = [
-                unquoted(words[index + step].raw)
-                for index, word in enumerate(words)
-                if word.literal in ARITHMETIC_COMPARISONS
-                for step in (-1, 1)
-                if 0 <= index + step < len(words)
-            ]
-            self.note_arithmetic(operands, shell)
-            return certain(shell)
+        values = self.read_words(words, directory)
+        self.read_redirects(node.redirects, directory)
         index = 0
         while index < len(words) and words[index].assignment is not None:
             index += 1
-        assignments = [word.assignment for word in words[:index] if word.assignment is not None]
-        for word in words[index:]:
-            # A declaration builtin's assignment, whose value the text may not settle, still names its variable.
-            if word.assignment is not None:
-                shell.note_alias(word.assignment.name)
-                # An element's assignment sets the variable too, so a value it does not settle may be any.
-                shell.note_option_variable(word.assignment.name, assigned_value(word.assignment, shell))
-        self.unsettled_name = any(
-            word.assignment is None and word_value(word, shell) is None for word in words[index + 1 :]
-        )
+        prefixes: list[tuple[str, Word]] = []
+        for word in words[:index]:
+            assignment = word.assignment
+            if assignment is None or word.array:
+                continue  # an array's value, NAME=( ), is a form word_value does not read
+            if assignment.element:
+                self.reading.cannot_read(NOT_READ["construct element assignment"])
+            elif index == len(words) and not free_name(assignment.name, self.reading.environment):
+                self.reading.cannot_read(f"assigns {assignment.name}, which Bash or git reads or the environment holds")
+            else:
+                prefixes.append((assignment.name, self.word_value(bash_syntax.Word("", assignment.value))))
         if index == len(words):
-            assigned = [(assignment.name, assigned_value(assignment, shell)) for assignment in assignments]
-            for name, value in assigned:
-                # A variable already exported stays so, but one reached through an exported reference is not exported.
-                shell.assign(name, value, export=False)
-            return certain(shell)
-        # Before a command's name Bash refuses an element's assignment, NAME[SUBSCRIPT]=, sets nothing for it, and
-        # runs the command all the same. Each other one reaches its variable through any name reference.
-        values = [word_value(word, shell) for word in words[index:]]
-        local: dict[str, Word] = {}
-        for assignment in assignments:
-            target = shell.target(assignment.name)
-            if target is None:
-                # One through a reference the text does not settle may give the command any variable.
-                shell.may_assign_any()
-            elif not assignment.element:
-                local[target] = assigned_value(assignment, shell)
-                # Before a builtin or a function, Bash sets it in the shell while the command runs.
-                shell.note_option_variable(target, local[target])
-        return self.run_words(values, node.redirects, shell, local)
+            return certain(directory)
+        return self.read_command_words(values[index:], directory, prefixes)
 
-    def run_words(
-        self, values: list[Word], redirects: list[bash_syntax.Redirect], shell: Shell, local: dict[str, Word]
+    def read_prefixes(self, prefixes: list[tuple[str, Word]], git: bool) -> None:
+        """The assignments before a command, which its environment holds while it runs: before git, only those
+        GIT_PREFIXES names with a value it allows, and those Bash reads for nothing the guard reads, since git takes
+        where it acts and its configuration from its environment; before any other command, a name git does not read
+        and Bash reads for nothing the guard reads."""
+        for name, value in prefixes:
+            if git and name in GIT_PREFIXES:
+                allowed = GIT_PREFIXES[name]
+                if value is None or (allowed and value not in allowed):
+                    self.reading.cannot_read(f"{NOT_READ['construct assignment before git']} ({name})")
+            elif git and name not in BASH_VARIABLES:
+                self.reading.cannot_read(f"{NOT_READ['construct assignment before git']} ({name})")
+            elif not harmless_name(name):
+                self.reading.cannot_read(f"assigns {name} before a command, which Bash or git reads")
+
+    def read_command_words(
+        self, values: list[Word], directory: Directory, prefixes: list[tuple[str, Word]] | None = None
     ) -> Outcome:
         name, arguments = values[0], values[1:]
+        prefixes = list(prefixes or [])
         if name is None:
-            if not arguments:
-                return certain(shell)
-            # A word the text does not settle may expand to nothing, and the next word is then the command's name.
-            vanished = self.run_words(arguments, redirects, shell.copy(), local).merged()
-            return certain(join(shell, vanished))
-        function = shell.function_named(name)
-        if function is not None:
-            # A name the paths before the call define differently runs each body, or no function, on its own path.
-            bodies = shell.functions[function]
-            outcomes = [
-                self.run_unless_function(name, arguments, redirects, path, local)
-                if body is None
-                else self.call_function(function, body, path)
-                for body, path in zip(bodies, paths(shell, len(bodies)), strict=True)
-            ]
-            return Outcome(
-                join_all([outcome.ok for outcome in outcomes]), join_all([outcome.fail for outcome in outcomes])
+            self.reading.cannot_read(
+                "a command name the text does not settle, which may be any command, git among them"
             )
-        return self.run_unless_function(name, arguments, redirects, shell, local)
-
-    def run_unless_function(
-        self,
-        name: str,
-        arguments: list[Word],
-        redirects: list[bash_syntax.Redirect],
-        shell: Shell,
-        local: dict[str, Word],
-    ) -> Outcome:
-        """A command no function takes: the builtin or the program it names."""
-        builtin = BASH_BUILTINS.get(name)
-        if builtin is not None:
-            return builtin(self.with_builtin(name), arguments, redirects, shell, local)
-        program = command_name(name)
-        if NOT_FOUND_HANDLER in shell.functions and program not in GIT_NAMES:
-            # Bash runs the handler, in an environment of its own, for a program it does not find, which the text
-            # does not settle, so each body it may have is read as a path that may run.
-            for body in shell.functions[NOT_FOUND_HANDLER]:
-                if body is not None:
-                    self.call_function(NOT_FOUND_HANDLER, body, shell.copy())
-        self.run_program(program, arguments, redirects, shell, shell.program_variables(local))
-        return certain(shell)
-
-    def call_function(self, name: str, body: bash_syntax.Command, shell: Shell) -> Outcome:
-        if self.depth >= NESTING_LIMIT:
-            self.reading.cannot_read(f"the function {name} nests more than {NESTING_LIMIT} deep")
-            lost = shell.copy()
-            lost.cwd, lost.opaque = None, True
-            return certain(lost)
-        before = dict(shell.references)
-        outcome = BashReader(self.reading, self.depth + 1).run_command(body, shell)
-        # declare -n and local -n make a reference local to the function, which Bash drops when it returns, unless
-        # declare -g made it, so after the call a reference it made or changed stands for no variable the guard knows.
-        for after in (outcome.ok, outcome.fail):
-            for reference, target in after.references.items():
-                if before.get(reference) != target:
-                    after.references[reference] = None
-        return outcome
-
-    def run_program(
-        self,
-        program: str | None,
-        arguments: list[Word],
-        redirects: list[bash_syntax.Redirect],
-        shell: Shell,
-        variables: dict[str, Word],
-    ) -> None:
-        """A program a Bash command starts, in the shell's directory and with these variables in its environment. A
-        shell the text does not settle may have exported any variable, so a shell it starts is one too."""
+            return certain(UNKNOWN)
+        if "/" not in name and "\\" not in name:
+            if folded(name) in self.start.functions:
+                self.reading.cannot_read(f"{name} is a function the environment hands the shell, which may run git")
+                return certain(UNKNOWN)
+            if f"builtin {name}" in NOT_READ:
+                self.reading.cannot_read(f"{name}: {NOT_READ[f'builtin {name}']}")
+                return certain(UNKNOWN)
+            # The grammar reads [[ and coproc as a command's name; Bash reads each as a reserved word.
+            if f"keyword {name}" in NOT_READ:
+                self.reading.cannot_read(f"{name}: {NOT_READ[f'keyword {name}']}")
+                return certain(UNKNOWN)
+            if name in BUILTINS_UNDERSTOOD:
+                self.read_prefixes(prefixes, git=False)
+                return self.read_builtin(name, arguments, directory)
+        program = command_name(name) or ""
+        if program in RUNNERS:
+            # A runner is transparent: its assignments reach the command it starts, judged against that command.
+            return self.read_runner(program, arguments, directory, prefixes)
+        self.read_prefixes(prefixes, git=program in GIT_NAMES)
         if program in GIT_NAMES:
-            read_git(arguments, shell.cwd, variables, self.reading, shell.opaque)
-        elif program in BASH_NAMES:
-            script = bash_script(arguments, redirects, shell)
-            read = functools.partial(
-                read_bash,
-                functions=exported_functions(shell),
-                allexport=bash_allexport(
-                    program, arguments, self.reading, script, {**variables, PS4: None} if shell.opaque else variables
-                ),
-                opaque=shell.opaque,
+            read_git(arguments, directory.cwd, self.reading)
+        elif program == "gh":
+            read_gh(arguments, directory, self.reading)
+        elif program in COMMAND_OPTIONS:
+            return self.read_program(program, arguments, directory, prefixes)
+        return certain(directory)
+
+    def read_runner(
+        self, program: str, arguments: list[Word], directory: Directory, prefixes: list[tuple[str, Word]]
+    ) -> Outcome:
+        """A program that runs another command: refused where that command is or may be git (runner_refusal), and,
+        for bash -c and pwsh -Command, where the literal script it runs holds a git call; around any other command it
+        is understood, its assignments judged as ones before that command."""
+        if program == "env":
+            # env's own assignments are ones before the command it runs, as those before env are.
+            for word in arguments:
+                if word is None or (not word.startswith("-") and "=" not in word):
+                    break
+                name, assigns, value = word.partition("=")
+                if assigns and bash_syntax.NAME.fullmatch(name):
+                    prefixes = [*prefixes, (name, value)]
+        self.read_prefixes(prefixes, git=False)
+        reason = runner_refusal(program, arguments)
+        if reason is None and program in {"bash", "pwsh"}:
+            reason = self.script_refusal(program, arguments, directory)
+        if reason is not None:
+            self.reading.cannot_read(f"runs {program}: {reason}")
+            return certain(UNKNOWN)
+        # gh runs git itself for the subcommands GH_CHECKOUTS names, wherever a runner starts it.
+        start = next(
+            (index for index, word in enumerate(arguments) if word is not None and command_name(word) == "gh"), None
+        )
+        if start is not None:
+            read_gh(arguments[start + 1 :], directory, self.reading)
+        return certain(directory)
+
+    def script_refusal(self, program: str, arguments: list[Word], directory: Directory) -> str | None:
+        """Why a shell's script is refused: a form the guard does not read, or a literal script that runs git, read
+        whole as its shell reads it, each part it does not read refused as in any command."""
+        script = shell_script(program, arguments)
+        if script is None:
+            return RUNNERS[program]
+        before = len(self.reading.calls)
+        if program == "bash":
+            # The script runs in a shell of its own, so what it changes dies with it.
+            self.nested().read_text(script, directory)
+        else:
+            read_powershell(script, directory.cwd, self.reading, self.depth + 1)
+        if len(self.reading.calls) > before:
+            return "its script runs git, which a runner's command may not be while a hub is guarded"
+        return None
+
+    def read_program(
+        self, program: str, arguments: list[Word], directory: Directory, prefixes: list[tuple[str, Word]]
+    ) -> Outcome:
+        """A program with options that run a command, refused on any of them in any spelling it takes
+        (command_option), find's -exec family whatever it runs, and on a word the text does not settle, which may be
+        one."""
+        del prefixes  # judged before this, as ones before a program that is not git
+        for index, word in enumerate(arguments):
+            if word is None:
+                self.reading.cannot_read(
+                    f"{program} may run a command its words name (a word the text does not settle)"
+                )
+                return certain(UNKNOWN)
+            if command_option(program, word, first=index == 0):
+                self.reading.cannot_read(f"{program} runs a command its words name ({word})")
+                return certain(UNKNOWN)
+        return certain(directory)
+
+    def read_builtin(self, name: str, arguments: list[Word], directory: Directory) -> Outcome:
+        if name == "cd":
+            return self.read_cd(arguments, directory, push=False)
+        if name == "pushd":
+            return self.read_cd(arguments, directory, push=True)
+        if name == "popd":
+            if arguments:
+                return certain(Directory(None, directory.stack[1:]))
+            if not directory.stack:
+                return certain(directory)
+            return certain(Directory(directory.stack[0], directory.stack[1:]))
+        if name == "printf" and arguments and (arguments[0] is None or arguments[0].startswith("-v")):
+            self.reading.cannot_read("printf -v assigns a variable")
+        elif name in {"test", "["}:
+            self.read_test(arguments)
+        elif name == "wait" and any(word is None or word.startswith("-") for word in arguments):
+            self.reading.cannot_read("wait is given an option, as -p, which assigns a variable")
+        elif name == "jobs" and any(word is None or (word.startswith("-") and "x" in word[1:]) for word in arguments):
+            self.reading.cannot_read("jobs -x runs the command its words name, which may be git")
+        elif name == "command" and (not arguments or arguments[0] not in {"-v", "-V"}):
+            self.reading.cannot_read("command runs the name it is given, which may be git under another name")
+        elif name == "read":
+            self.read_read(arguments)
+        elif name == "set":
+            self.read_set(arguments)
+        elif name == "shopt":
+            self.read_shopt(arguments)
+        return certain(directory)
+
+    def read_cd(self, arguments: list[Word], directory: Directory, push: bool) -> Outcome:
+        """cd or pushd to a directory: a literal one settles where the shell goes; one the text does not settle, cd -,
+        a CDPATH search, and pushd's rotations leave it unknown, and an option is not read."""
+        if arguments[:1] == ["--"]:
+            arguments = arguments[1:]
+        elif arguments and arguments[0] is not None and arguments[0].startswith(("-", "+")) and arguments[0] != "-":
+            self.reading.cannot_read(
+                f"{'pushd' if push else 'cd'}'s option {arguments[0]}, which the guard does not read"
             )
-            follow(program, script, shell.cwd, variables, self.reading, self.depth, read)
-        elif program in POWERSHELL_NAMES:
-            # A bash the pwsh starts defines the functions this shell exported, which pwsh hands on in its
-            # environment.
-            follow_powershell(
-                program,
-                arguments,
-                shell.cwd,
-                variables,
-                self.reading,
-                self.depth,
-                exported_functions(shell),
-                opaque=shell.opaque,
-            )
-        elif program in ENV_NAMES or program in PREFIX_PROGRAMS or program in ELEVATING_PROGRAMS:
-            command = started_command(program, arguments, shell.cwd, variables, self.reading)
-            if command is not None:
-                name, rest, cwd, given = command
-                started = shell.copy()
-                started.cwd = cwd
-                self.run_program(name, rest, redirects, started, given)
+            return certain(UNKNOWN)
+        stack = (directory.cwd, *directory.stack) if push else directory.stack
+        if not arguments:
+            if push:
+                return certain(Directory(None, (None, *directory.stack[1:])))
+            return moved_to(directory, self.start.home, stack)
+        if len(arguments) > 1:
+            return certain(directory)  # Bash refuses more than one directory, and stays
+        target = arguments[0]
+        if target is None or target == "-":
+            return certain(Directory(None, stack))
+        path = Path(platform_support.from_shell_path(target))
+        if not path.is_absolute():
+            relative_to_cwd = target.startswith(("./", "../")) or target in {".", ".."}
+            if directory.cwd is None or (self.start.cdpath and not relative_to_cwd):
+                return certain(Directory(None, stack))
+            path = directory.cwd / path
+        return moved_to(directory, path, stack)
+
+    def read_test(self, arguments: list[Word]) -> None:
+        """test and [ evaluate a subscript as arithmetic for -v, which runs what the subscript holds: refused where
+        a word that is -v, or may be, has an operand after it that holds a subscript or may."""
+        words = arguments[:-1] if arguments[-1:] == ["]"] else arguments
+        for index, word in enumerate(words[:-1]):
+            operand = words[index + 1]
+            if (word is None or word == "-v") and (operand is None or "[" in operand):
+                self.reading.cannot_read("test -v evaluates its operand's subscript as arithmetic")
+                return
+
+    def read_read(self, arguments: list[Word]) -> None:
+        """read's options and the names it assigns, each of which must be free."""
+        names: list[Word] = []
+        index = 0
+        while index < len(arguments):
+            word = arguments[index]
+            if word is None:
+                self.reading.cannot_read("read is given a word the text does not settle, which may be any name")
+                return
+            if word == "--":
+                names.extend(arguments[index + 1 :])
+                break
+            if not word.startswith("-") or len(word) == 1:
+                names.extend(arguments[index:])
+                break
+            for position, letter in enumerate(word[1:], start=1):
+                if letter in "rse":
+                    continue
+                if letter in "adpntNui":
+                    attached = word[position + 1 :]
+                    value = attached or (arguments[index + 1] if index + 1 < len(arguments) else None)
+                    if letter == "a":
+                        names.append(value)
+                    if not attached:
+                        index += 1
+                    break
+                self.reading.cannot_read(f"read's option -{letter}, which the guard does not read")
+                return
+            index += 1
+        for name in names:
+            if name is None or not free_name(name, self.reading.environment):
+                self.reading.cannot_read(f"read assigns {name}, which Bash or git reads or the environment holds")
+
+    def read_set(self, arguments: list[Word]) -> None:
+        """set's options, each judged by SET_OPTIONS, before its positional parameters."""
+        index = 0
+        while index < len(arguments):
+            word = arguments[index]
+            if word is None:
+                self.reading.cannot_read("set is given a word the text does not settle, which may be any option")
+                return
+            if word in {"--", "-"} or not word.startswith(("-", "+")):
+                return
+            on = word.startswith("-")
+            for letter in word[1:]:
+                if letter == "o":
+                    index += 1
+                    option = arguments[index] if index < len(arguments) else ""
+                    if option != "":
+                        judge_option(self.reading, "set", option, on, "set")
+                        self.note_xtrace(option, on)
+                else:
+                    option = SET_LETTERS.get(letter)
+                    judge_option(self.reading, "set", option or letter, on, "set")
+                    self.note_xtrace(option, on)
+            index += 1
+
+    def note_xtrace(self, option: str | None, on: bool) -> None:
+        judge_xtrace(self.reading, option, on, self.start.expanding_ps4)
+
+    def read_shopt(self, arguments: list[Word]) -> None:
+        """shopt's -s and -u, each judged by SHOPT_OPTIONS, or by SET_OPTIONS with -o; printing changes nothing."""
+        state: bool | None = None
+        table = "shopt"
+        for word in arguments:
+            if word is None:
+                self.reading.cannot_read("shopt is given a word the text does not settle, which may be any option")
+                return
+            if word.startswith("-") and len(word) > 1:
+                for letter in word[1:]:
+                    if letter in "su":
+                        state = letter == "s"
+                    elif letter == "o":
+                        table = "set"
+                    elif letter not in "pq":
+                        self.reading.cannot_read(f"shopt's option -{letter}, which the guard does not read")
+                        return
+            elif state is not None:
+                judge_option(self.reading, table, word, state, "shopt")
+                self.note_xtrace(word if table == "set" else None, state)
 
 
-def exported_functions(shell: Shell) -> dict[str, tuple[bash_syntax.Command | None, ...]]:
-    """The functions a shell this one starts defines: those it exported."""
-    return {name: shell.functions[name] for name in shell.exported_functions if name in shell.functions}
+def named_paths(value: str) -> list[str]:
+    """The paths a settled word may name: its value after its last =, and each quoted part of it, as a string eval
+    is handed holds them, that holds a separator."""
+    candidates = [value.rpartition("=")[2], *QUOTED_PART.findall(value)]
+    return [candidate for candidate in candidates if "/" in candidate or "\\" in candidate]
 
 
-def subtree_assigns(node: object) -> list[str]:
-    """The variables every expansion that assigns in a command tree names, as a word's assigns holds them."""
-    if isinstance(node, (bash_syntax.Word, bash_syntax.HereDocument)):
-        return list(node.assigns)
-    if isinstance(node, (list, tuple)):
-        return [name for item in node for name in subtree_assigns(item)]
-    if dataclasses.is_dataclass(node) and not isinstance(node, type):
-        return [name for item in dataclasses.fields(node) for name in subtree_assigns(getattr(node, item.name))]
+QUOTED_PART = re.compile(r"""["']([^"']+)["']""")
+
+
+def runner_refusal(program: str, arguments: list[Word]) -> str | None:
+    """Why a runner is refused: one RUNNERS_ALWAYS_REFUSED names; an option that builds its command from text
+    (RUNNER_BUILDING_OPTIONS), in any spelling; or a word that is or may be git: one that names git or another runner,
+    or one the text does not settle, which may be either. None for a runner around any other command, and for bash and
+    pwsh, whose scripts script_refusal reads."""
+    if program in RUNNERS_ALWAYS_REFUSED:
+        return RUNNERS[program]
+    building = RUNNER_BUILDING_OPTIONS.get(program, frozenset())
+    for word in arguments:
+        if word is None:
+            return f"{RUNNERS[program]}, and a word the text does not settle may be git"
+        option = word.partition("=")[0]
+        if option in building or any(len(each) == 2 and word.startswith(each) for each in building):
+            return f"{RUNNERS[program]} ({word})"
+        name = command_name(word)
+        if program not in {"bash", "pwsh"} and (name in GIT_NAMES or name in RUNNERS):
+            return f"{RUNNERS[program]}, and {word} names git or another runner, which may run git"
+    return None
+
+
+def command_option(program: str, word: str, first: bool) -> bool:
+    """Whether a word of a program COMMAND_OPTIONS names is one of its options that run a command, in any spelling the
+    program takes: find's exactly, as find reads them; a long option abbreviated or with its value attached; or a
+    short option's letter in a bundle, tar's first word without its dash included."""
+    options = COMMAND_OPTIONS[program]
+    if program == "find":
+        return word in options
+    if word.startswith("--"):
+        name = word.partition("=")[0]
+        return len(name) > 2 and any(option.startswith(name) for option in options if option.startswith("--"))
+    letters = {option[1] for option in options if len(option) == 2}
+    if word.startswith("-") or (program == "tar" and first):
+        return any(letter in letters for letter in word.lstrip("-"))
+    return False
+
+
+def shell_script(program: str, arguments: list[Word]) -> str | None:
+    """The literal script a shell runs, where the guard reads the shell's form: `bash -c <script>`, with any words
+    after it its positional parameters, and pwsh's `-Command` or `-c` with one script after the options PWSH_QUIET
+    names; None for every other form, `sh -c` among them, since sh runs in POSIX mode (RUNNERS)."""
+    if program == "bash":
+        if len(arguments) >= 2 and arguments[0] == "-c" and arguments[1] is not None:
+            return arguments[1]
+        return None
+    if program != "pwsh":
+        return None
+    index = 0
+    while index < len(arguments) and arguments[index] is not None and str(arguments[index]).lower() in PWSH_QUIET:
+        index += 1
+    rest = arguments[index:]
+    if len(rest) == 2 and rest[0] is not None and rest[0].lower() in {"-c", "-command"} and rest[1] is not None:
+        return rest[1]
+    return None
+
+
+def read_written(value: Word, directory: Directory, reading: Reading) -> None:
+    """A file a redirection writes: one the text places in a guarded hub is refused, as a file tool's edit is, and so
+    is one whose path or directory the text does not settle, which may lie in one."""
+    if value is None:
+        reading.cannot_read("a redirection writes a file the text does not settle, which may lie in a hub")
+        return
+    if value in DEVICE_FILES:
+        return
+    path = Path(platform_support.from_shell_path(value))
+    if not path.is_absolute() and directory.cwd is None:
+        reading.cannot_read(f"a redirection writes {value} in a directory the text does not settle")
+    else:
+        reading.writes.append(path if path.is_absolute() else (directory.cwd or Path()) / path)
+
+
+def provider_refusal(name: str, cmdlet: str, values: list[Word]) -> str | None:
+    """Why a path cmdlet's values are not read: one that names a provider other than the file system, as env: or
+    alias:, whether given by position or attached to a parameter by a colon, and, for a cmdlet that writes, one the text
+    does not settle, which may name such a provider; None for any other command."""
+    if cmdlet not in POWERSHELL_PATH_COMMANDS:
+        return None
+    for value in values:
+        if value is None and cmdlet in POWERSHELL_WRITING_COMMANDS:
+            return f"{name} writes at a path the text does not settle, which may lie on a provider such as env:"
+        if value is not None and PROVIDER_PATH.match(value) and not value.startswith("-"):
+            return f"{name} names {value}, a path on a provider other than the file system"
+    return None
+
+
+def powershell_command(name: str) -> bool:
+    """Whether PowerShell finds a name among its own commands before it looks for a program: an alias, a function it
+    defines itself, or a cmdlet's or function's verb-noun name."""
+    lowered = name.lower()
+    verb, dash, _ = lowered.partition("-")
+    return lowered in POWERSHELL_ALIASES or lowered in POWERSHELL_FUNCTIONS or bool(dash and verb in POWERSHELL_VERBS)
+
+
+def read_gh(arguments: list[Word], directory: Directory, reading: Reading) -> None:
+    """gh, which runs git itself to check a branch out for the subcommands GH_CHECKOUTS names, in the checkout it
+    runs in."""
+    named: list[Word] = []
+    words = iter(arguments)
+    for word in words:
+        if word in {"-R", "--repo", "--hostname"}:
+            next(words, None)
+        elif word is None or not word.startswith("-"):
+            named.append(word)
+    named = named[:2]
+    if named[:1] == [None] or (named[:1] in (["pr"], ["repo"]) and None in named):
+        reading.cannot_read("a gh subcommand the text does not settle, which may check a branch out")
+    elif tuple(named) in GH_CHECKOUTS:
+        place = Place(directory.cwd, directory.cwd)
+        reading.calls.append(GitCall(place, " ".join(str(word) for word in named), [], program="gh"))
+
+
+NOT_READ_XTRACE = "xtrace expands PS4 before each command, and the environment's PS4 holds an expansion, which may run"
+# A redirection's target that names a descriptor to duplicate or close, as in 2>&1 or >&-.
+DESCRIPTOR_TARGET = re.compile(r"[0-9]+-?|-")
+
+
+def expansion_form(form: str) -> str:
+    """The catalogue entry of an expansion, by the form bash_syntax gives its dynamic part."""
+    if form.startswith("${") and form.endswith("}"):
+        return parameter_form(form[2:-1])
+    if form.startswith("$") and len(form) == 2:
+        return "$1" if form[1].isdigit() else form
+    return "NAME=( )" if form == "(" else form
+
+
+def parameter_form(content: str) -> str:
+    """The catalogue entry of a braced expansion's content: a name and an operator from PARAMETER_OPERATORS, read
+    only when its word holds no further expansion the guard would have to read apart."""
+    if not content or content[0] in " \t\n":
+        return "${ command; }"
+    if content[0] == "|":
+        return "${| command; }"
+    if content[0] == "!":
+        return "${!NAME}"
+    if content[0] == "#" and len(content) > 1 and PARAMETER_NAME.fullmatch(content[1:]):
+        return "${#NAME}"
+    name = PARAMETER_NAME.match(content)
+    if name is None:
+        return "${unread}"
+    rest = content[name.end() :]
+    if not rest:
+        return "${NAME}"
+    for operator, key in PARAMETER_OPERATORS:
+        if rest.startswith(operator):
+            word = rest[len(operator) :]
+            if key in EXPANSIONS_UNDERSTOOD and any(mark in word for mark in ("${", "$((", "$[")):
+                return "nested ${"
+            return key
+    return "${unread}"
+
+
+def arithmetic_command(node: bash_syntax.Subshell) -> bool:
+    """Whether a subshell is an arithmetic command, (( )), which the grammar reads as a subshell holding only a
+    subshell; ( ( ) ), which Bash runs the same, reads alike."""
+    body = node.body
+    if len(body.items) != 1:
+        return False
+    and_or, background = body.items[0]
+    commands = and_or.first.commands
+    return not background and not and_or.rest and len(commands) == 1 and isinstance(commands[0], bash_syntax.Subshell)
+
+
+def command_bodies(node: bash_syntax.Command) -> list[bash_syntax.CommandList]:
+    """The lists a compound command runs, its conditions included."""
+    if isinstance(node, (bash_syntax.Subshell, bash_syntax.Group)):
+        return [node.body]
+    if isinstance(node, bash_syntax.If):
+        lists = [each for clause in node.clauses for each in clause]
+        return [*lists, node.otherwise] if node.otherwise is not None else lists
+    if isinstance(node, bash_syntax.Loop):
+        return [node.condition, node.body] if node.condition is not None else [node.body]
+    if isinstance(node, bash_syntax.Case):
+        return list(node.branches)
     return []
 
 
-def assign_expanded(shell: Shell, names: Iterable[str]) -> None:
-    """What each ${NAME:=word} or ${NAME=word} leaves: the variable unsettled, unless the shell holds a value for it
-    that is not empty, which neither form changes. ${!NAME:=word} assigns the variable NAME's value names, which may
-    be any variable when the text does not settle that value."""
-    for name in names:
-        if name.startswith("!"):
-            named = shell.lookup(name[1:])
-            if named is None:
-                shell.may_assign_any()
-            else:
-                assign_unsettled(shell, [named])
-        elif "[" in name or not shell.lookup(name):
-            assign_unsettled(shell, [name])
-
-
-def started_command(
-    program: str, arguments: list[Word], cwd: Path | None, variables: Variables, reading: Reading
-) -> tuple[str | None, list[Word], Path | None, dict[str, Word]] | None:
-    """The command env or a prefix program such as nice starts: its name, its arguments, its directory, and its
-    environment; None when it starts none, and when its options cannot be read, which is recorded as unread.
-
-    env starts its program with the environment it is given: emptied by -i, less each -u, plus each NAME=value, and in
-    the directory -C names."""
-    if program in ELEVATING_PROGRAMS:
-        return elevated_command(program, arguments, cwd, variables, reading)
-    if program not in ENV_NAMES:
-        command = prefixed_command(program, arguments)
-        if command is None:
-            reading.cannot_read(f"could not read the options passed to {program}")
-            return None
-        return (command_name(command[0]), command[1:], cwd, dict(variables)) if command else None
-    read = read_env_options(arguments, cwd, variables)
-    if read is None:
-        reading.cannot_read(f"could not read the option {first_unread_env_option(arguments)} passed to env")
-        return None
-    index, cwd, given = read
-    index = read_assignments(program, arguments, index, given, reading)
-    if index < len(arguments):
-        return command_name(arguments[index]), arguments[index + 1 :], cwd, given
-    return None
-
-
-def read_assignments(program: str, arguments: list[Word], index: int, given: dict[str, Word], reading: Reading) -> int:
-    """The NAME=value words env or sudo takes before its command, into given; returns the index of the command.
-
-    Each takes every word holding `=` there as NAME=value, whatever the name: a[1]=x and `x y=1` too. A word the text
-    does not settle, such as FOO=$(cmd), may be one for any name, git's variables among them, so the guard cannot read
-    it, and every handed variable is unsettled for the words after it, read as the command."""
-    while index < len(arguments) and ((word := arguments[index]) is None or "=" in word):
-        if word is None:
-            reading.cannot_read(f"could not read a word passed to {program}, which may assign any variable")
-            given.update((name, None) for name in list(given) if is_handed(name))
-            given.update(dict.fromkeys((*LOCATION_VARIABLES, *CONFIGURATION_VARIABLES, *SHELL_OPTION_VARIABLES)))
-        else:
-            name, _, assigned = word.partition("=")
-            given[name] = assigned
-        index += 1
-    return index
-
-
-def elevated_command(
-    program: str, arguments: list[Word], cwd: Path | None, variables: Variables, reading: Reading
-) -> tuple[str | None, list[Word], Path | None, dict[str, Word]] | None:
-    """The command sudo or doas starts as another user: its name, its arguments, its directory, and its environment,
-    in which each variable the shell holds is unsettled, since the program's policy decides which reach it; None when
-    it starts none, and when its options cannot be read, which is recorded as unread.
-
-    Short options bundle, a value taking the rest of its word or the next word; a long option takes its value after
-    = or as the next word. -D and --chdir move the command, and a login shell, -i, starts in a home the text does not
-    settle; -s and -i run the command through a shell, which runs it as written."""
-    flags, valued, no_command = ELEVATING_PROGRAMS[program]
-    index = 0
-    while index < len(arguments):
-        word = arguments[index]
-        if word is None:
-            reading.cannot_read(f"could not read the options passed to {program}")
-            return None
-        if word == "--":
-            index += 1
-            break
-        if not word.startswith("-") or word == "-":
-            break
-        options, index = elevated_options(arguments, index, valued)
-        for option, value in options:
-            if option in no_command:
-                return None
-            if option not in flags | valued:
-                reading.cannot_read(f"could not read the option {option} passed to {program}")
-                return None
-            if option in LOGIN_OPTIONS:
-                cwd = None
-            elif option in CHDIR_OPTIONS:
-                cwd = moved(cwd, value)
-        index += 1
-    given: dict[str, Word] = dict.fromkeys(variables)
-    if program in ASSIGNING_ELEVATORS:
-        # sudo sets each NAME=value before its command in the command's environment, as env does; doas takes none,
-        # so such a word is its program.
-        index = read_assignments(program, arguments, index, given, reading)
-    if index >= len(arguments):
-        return None
-    return command_name(arguments[index]), arguments[index + 1 :], cwd, given
-
-
-def elevated_options(arguments: list[Word], index: int, valued: frozenset[str]) -> tuple[list[tuple[str, Word]], int]:
-    """The options of the word at index, each with its value or None, and the index of the last word they take."""
-    word = arguments[index] or ""
-    if word.startswith("--"):
-        option, has_value, value = word.partition("=")
-        if option in valued and not has_value:
-            index += 1
-            return [(option, arguments[index] if index < len(arguments) else None)], index
-        return [(option, value if has_value else None)], index
-    options: list[tuple[str, Word]] = []
-    for position, letter in enumerate(word[1:], start=2):
-        option = f"-{letter}"
-        if option in valued:
-            attached: Word = word[position:]
-            if not attached:
-                index += 1
-                attached = arguments[index] if index < len(arguments) else None
-            options.append((option, attached))
-            break
-        options.append((option, None))
-    return options, index
-
-
-def read_env_options(
-    arguments: list[Word], cwd: Path | None, variables: Mapping[str, Word]
-) -> tuple[int, Path | None, dict[str, Word]] | None:
-    """env's options: where its command starts, its directory, and the environment it gives; None when one cannot
-    be read.
-
-    A short option's value is read attached, as in `-uNAME` and `-CDIR`, or as the next word. env changes directory
-    once, to the last -C it is given, read from where env starts."""
-    given = dict(variables)
-    directory: tuple[Word] | None = None
-    index = 0
-    while index < len(arguments):
-        word = arguments[index]
-        value = arguments[index + 1] if index + 1 < len(arguments) else None
-        if word is None or not word.startswith("-") or word == "--":
-            index += word == "--"
-            break
-        option, _, inline_value = word.partition("=")
-        # The value of -u or -C: the next word after the option alone, else after a long option's =, else attached.
-        separate = word in ENV_UNSET | ENV_CHDIR
-        named = value if separate else inline_value if word.startswith("--") else word[2:]
-        if word in ENV_CLEAR:
-            given.clear()
-        elif option == "--unset" or word.startswith("-u"):
-            given.pop(named or "", None)
-        elif option == "--chdir" or word.startswith("-C"):
-            directory = (named,)
-        elif word not in ENV_FLAGS:
-            return None
-        index += 2 if separate else 1
-    return index, cwd if directory is None else moved(cwd, directory[0]), given
-
-
-def first_unread_env_option(arguments: list[Word]) -> str:
-    """The first option read_env_options does not read, past the value of each -u and -C given as the next word."""
-    known = ENV_FLAGS | ENV_UNSET | ENV_CHDIR | ENV_CLEAR
-    index = 0
-    while index < len(arguments):
-        word = arguments[index]
-        if word is None or not word.startswith("-"):
-            break
-        if word not in known and not word.startswith(("-u", "-C", "--unset=", "--chdir=")):
-            return word
-        index += 2 if word in ENV_UNSET | ENV_CHDIR else 1
-    return "?"
-
-
-def prefixed_command(program: str, arguments: list[Word]) -> list[Word] | None:
-    """The command a prefix program such as nohup, nice, or timeout starts; None when its options cannot be read.
-
-    A short option that takes a value takes the rest of its word when anything follows it there, as in `nice -n5`
-    and `stdbuf -oL`, the way getopt reads it; any other bundle of short options is not read."""
-    flags, valued, operands = PREFIX_PROGRAMS[program]
-    index = 0
-    while index < len(arguments):
-        word = arguments[index]
-        if word is None:
-            return None
-        if word == "--":
-            index += 1
-            break
-        if not word.startswith("-") or word == "-":
-            break
-        option = word.partition("=")[0]
-        if word in flags or (program == "nice" and word[1:].isdigit()):
-            index += 1
-        elif option in valued:
-            index += 1 if "=" in word else 2
-        elif not word.startswith("--") and word[:2] in valued:
-            index += 1
-        else:
-            return None
-    index += operands
-    return arguments[index:] if index <= len(arguments) else []
-
-
-def bash_cd(reader: BashReader, arguments: list[Word], _: object, shell: Shell, __: object) -> Outcome:
-    """Where Bash's cd leaves the shell: home when bare, unknown for `cd -` or a CDPATH search; with an unknown
-    option or two operands it fails and stays."""
-    index = 0
-    while index < len(arguments) and (word := arguments[index]) is not None and word.startswith("-") and word != "-":
-        index += 1
-        if word == "--":
-            break
-        if not set(word[1:]) <= set("LPe@"):
-            return certain(shell)
-    operands = arguments[index:]
-    if len(operands) > 1:
-        return certain(shell)
-    target = operands[0] if operands else str(Path.home())
-    if target is None or target == "-":
-        return change_directory(shell, None)
-    # CDPATH is read through any name reference, and may be set where the text does not settle which variable is; an
-    # unset CDPATH, unlike one the text does not settle, searches nothing.
-    variable = None if shell.opaque else shell.target("CDPATH")
-    path = None if variable is None else shell.variables.get(variable, "")
-    # Bash searches it for any directory but an absolute one, . and .., and one under them; a ~ left after expansion
-    # was quoted, and is searched too.
-    searched = not is_absolute(target) and target not in (".", "..") and not target.startswith(("./", "../"))
-    if searched and path != "":
-        return change_directory(shell, None)
-    return change_directory(shell, moved(shell.cwd, target))
-
-
-def change_directory(shell: Shell, target: Path | None, push: bool = False) -> Outcome:
-    """A directory change that fails, and leaves the shell where it was, when its target is not a directory."""
-    moved_shell = shell.copy()
-    if push:
-        moved_shell.stack.append(shell.cwd)
-    moved_shell.cwd = target
-    if target is not None and target.is_dir():
-        return certain(moved_shell)
-    return Outcome(moved_shell, shell)
-
-
-def bash_pushd(reader: BashReader, arguments: list[Word], _: object, shell: Shell, __: object) -> Outcome:
-    operands = [word for word in arguments if word != "--"]
-    if len(operands) == 1 and operands[0] is not None and not operands[0].startswith(("-", "+")):
-        return change_directory(shell, moved(shell.cwd, operands[0]), push=True)
-    pushed = shell.copy()
-    pushed.stack.append(shell.cwd)
-    pushed.cwd = None
-    return certain(pushed)
-
-
-def bash_popd(reader: BashReader, arguments: list[Word], _: object, shell: Shell, __: object) -> Outcome:
-    popped = shell.copy()
-    popped.cwd = popped.stack.pop() if popped.stack and not arguments else None
-    return certain(popped)
-
-
-def bash_declare(reader: BashReader, arguments: list[Word], _: object, shell: Shell, __: object) -> Outcome:
-    """export, declare, typeset, local, and readonly: the variables they set, export, or stop exporting, each reached
-    through any name reference, and the name references declare, typeset, and local make with -n and undo with
-    +n."""
-    builtin = reader.current_builtin
-    refuse_integer_attribute(reader, arguments)
-    if None in arguments:
-        # A word the text does not settle may be -fx, which exports any function.
-        shell.exported_functions |= set(shell.functions)
-    if any(is_declare_option(word) and names_functions(builtin, word) for word in arguments if word is not None):
-        return certain(declare_functions(builtin, arguments, shell))
-    exporting, unexporting = builtin == "export", False
-    referencing: bool | None = None
-    for word in arguments:
-        if word is None:
-            declare_unsettled(reader, shell, referencing)
-            continue
-        if is_declare_option(word):
-            flags = word[1:]
-            if builtin == "export" and "n" in flags:
-                unexporting = True
-                continue
-            if "x" in flags:
-                exporting, unexporting = word.startswith("-"), word.startswith("+")
-            if "n" in flags and builtin in {"declare", "typeset", "local"}:
-                referencing = word.startswith("-")
-            continue
-        name, has_value, value = word.partition("=")
-        subject = declared_name(shell, name, value if has_value else None, referencing)
-        if subject is None:
-            continue
-        if has_value and subject in SHELL_OPTION_VARIABLES:
-            # Bash refuses a value for a read-only variable; export exports it all the same, and the others do not.
-            if builtin == "export" and not unexporting:
-                shell.exported.add(subject)
-            continue
-        if has_value and not referencing:
-            shell.note_option_variable(subject, value)
-            shell.numbers.discard(subject)
-            shell.variables[subject] = value
-        if unexporting:
-            shell.exported.discard(subject)
-        elif exporting or (shell.allexport and has_value):
-            shell.exported.add(subject)
-    return certain(shell)
-
-
-def refuse_integer_attribute(reader: BashReader, arguments: list[Word]) -> None:
-    """A declaration that gives a variable the integer attribute, -i alone or in a bundle: Bash evaluates each later
-    assignment to it as arithmetic, which may assign any variable, so the guard cannot read the shell after it."""
-    if any(word is not None and is_declare_option(word) and word.startswith("-") and "i" in word for word in arguments):
-        reader.reading.cannot_read(
-            "the command gives a variable the integer attribute, so each assignment to it is arithmetic, which the "
-            "guard does not read"
-        )
-
-
-def declare_unsettled(reader: BashReader, shell: Shell, referencing: bool | None) -> None:
-    """A declaration word the text does not settle: the shell is one the text does not settle. It may assign any
-    variable where the grammar does not read it as an assignment, as `export "$v=1"`, and where it makes a name
-    reference, as `declare -n r=$v`, whose later assignments reach a variable the text does not settle; one the grammar
-    reads as an assignment names its variable, whose value alone is unsettled."""
-    if reader.unsettled_name or referencing:
-        shell.may_assign_any()
-    else:
-        shell.opaque = True
-
-
-def is_declare_option(word: str) -> bool:
-    return word.startswith(("-", "+")) and not ASSIGNMENT.match(word)
-
-
-def names_functions(builtin: str, option: str) -> bool:
-    """Whether a declaration's option makes its names functions: -f, or for declare, typeset, and local also -F,
-    which export and readonly refuse."""
-    flags = option[1:]
-    return "f" in flags or (builtin in {"declare", "typeset", "local"} and "F" in flags)
-
-
-def declare_functions(builtin: str, arguments: list[Word], shell: Shell) -> Shell:
-    """export -f, and declare, typeset, local, or readonly with -f: the functions it exports to the shells this one
-    starts, with -x or as export, or stops exporting, with +x or export -n. A name the text does not settle may be
-    any function: every one the shell defines is exported, and none stops being exported."""
-    exporting, unexporting = builtin == "export", False
-    names: list[Word] = []
-    for word in arguments:
-        if word is None or not is_declare_option(word):
-            names.append(word)
-        elif builtin == "export":
-            unexporting = unexporting or "n" in word[1:]
-        elif "x" in word[1:]:
-            exporting, unexporting = word.startswith("-"), word.startswith("+")
-    for name in names:
-        if unexporting:
-            if name is not None:
-                shell.exported_functions.discard(name)
-        elif exporting:
-            shell.exported_functions |= set(shell.functions) if name is None else {name} & shell.functions.keys()
-    return shell
-
-
-def declared_name(shell: Shell, name: str, value: str | None, referencing: bool | None) -> str | None:
-    """The variable a declaration of a name sets and exports: the name itself when it makes (-n) or undoes (+n) a
-    name reference, and otherwise the variable the name reaches. None when the declaration is done: a value given to
-    a reference that stands for none names the variable it stands for, and a name that reaches a variable the text
-    does not settle may be any variable."""
-    if referencing is not None:
-        # Making or undoing a name reference leaves the name holding no number the reader knows of.
-        shell.numbers.discard(name)
-    if referencing:
-        if value is None:
-            value = shell.references[name] if name in shell.references else shell.variables.get(name, "")
-        shell.references[name] = value
-        if value or name in shell.variables:
-            # The reference's own value, which a program sees when it is exported.
-            shell.variables[name] = value
-        return name
-    if referencing is False and name in shell.references:
-        del shell.references[name]
-        return name
-    if value is not None and shell.references.get(name) == "":
-        shell.references[name] = value
-        return None
-    target = shell.target(name)
-    if target is None:
-        shell.may_assign_any()
-    return target
-
-
-def builtin_operands(arguments: list[Word], with_value: str) -> tuple[list[tuple[str, str]], list[str]] | None:
-    """A builtin's options, each flag with its value or "", and its operands, as Bash's own option reader takes them:
-    flags bundled in one word, a value attached or else the next word, and -- ending the options. None when a word
-    the text does not settle is among them, since it may split into any options and operands."""
-    words = [word for word in arguments if word is not None]
-    if len(words) < len(arguments):
-        return None
-    options: list[tuple[str, str]] = []
-    index = 0
-    while index < len(words):
-        word = words[index]
-        if word == "--":
-            index += 1
-            break
-        if not word.startswith("-") or word == "-":
-            break
-        flags, attached = bundle_flags(word, with_value)
-        if attached == "":
-            index += 1
-            attached = words[index] if index < len(words) else ""
-        options.extend((flag, "") for flag in flags)
-        if attached is not None:
-            options[-1] = (flags[-1], attached)
-        index += 1
-    return options, words[index:]
-
-
-def bundle_flags(word: str, with_value: str) -> tuple[str, str | None]:
-    """The flags of one option word, as Bash's option reader takes a bundle such as -ca: each letter in turn, up to
-    the first that takes a value, which is the rest of the word, "" when it is the next word, or None for no such
-    flag."""
-    for position, flag in enumerate(word[1:], start=2):
-        if flag in with_value:
-            return word[1:position], word[position:]
-    return word[1:], None
-
-
-def bash_read(reader: BashReader, arguments: list[Word], _: object, shell: Shell, __: object) -> Outcome:
-    """read, which sets each name it is given, or REPLY, to what it reads, and with -a makes its name an array: each
-    is left unsettled, and a word the text does not settle may name any variable."""
-    parsed = builtin_operands(arguments, "adinNptu")
-    if parsed is None:
-        shell.may_assign_any()
-        return certain(shell)
-    options, operands = parsed
-    names: list[Word] = [value for flag, value in options if flag == "a"]
-    assign_unsettled(shell, [*names, *operands] or ["REPLY"])
-    return certain(shell)
-
-
-def bash_mapfile(reader: BashReader, arguments: list[Word], _: object, shell: Shell, __: object) -> Outcome:
-    """mapfile and readarray, which make the variable they name, or MAPFILE, an array of the lines they read, which
-    no program sees: left unsettled, and a word the text does not settle may name any variable. A callback -C names
-    runs as a command of this shell, where the guard does not read it."""
-    parsed = builtin_operands(arguments, "dnOsuCc")
-    if parsed is None:
-        shell.may_assign_any()
-        return certain(shell)
-    options, operands = parsed
-    if any(flag == "C" for flag, _ in options):
-        reader.reading.cannot_read(f"could not read the callback {reader.current_builtin} runs")
-        shell.opaque = True
-    assign_unsettled(shell, operands[:1] or ["MAPFILE"])
-    return certain(shell)
-
-
-def bash_wait(reader: BashReader, arguments: list[Word], _: object, shell: Shell, __: object) -> Outcome:
-    """wait -p NAME, which sets NAME to the job it waited for, left unsettled; a word the text does not settle may
-    name any variable."""
-    parsed = builtin_operands(arguments, "p")
-    if parsed is None:
-        shell.may_assign_any()
-        return certain(shell)
-    options, _operands = parsed
-    assign_unsettled(shell, [value for flag, value in options if flag == "p"])
-    return certain(shell)
-
-
-def bash_printf(reader: BashReader, arguments: list[Word], _: object, shell: Shell, __: object) -> Outcome:
-    """printf -v NAME, which sets NAME to the text it formats, left unsettled; a word the text does not settle where
-    -v may stand may name any variable."""
-    index = 0
-    while index < len(arguments):
-        word = arguments[index]
-        if word is None:
-            assign_unsettled(shell, [None])
-            break
-        if not word.startswith("-v"):
-            break  # the format, or -- before it
-        if word == "-v":
-            # -v's name is the next word, unless it is attached, as in -vNAME.
-            index += 1
-            assign_unsettled(shell, arguments[index : index + 1])
-        else:
-            assign_unsettled(shell, [word[2:]])
-        index += 1
-    return certain(shell)
-
-
-def bash_getopts(reader: BashReader, arguments: list[Word], _: object, shell: Shell, __: object) -> Outcome:
-    """getopts OPTSTRING NAME, which sets NAME to the option it finds, left unsettled."""
-    operands = arguments[1:] if arguments[:1] == ["--"] else arguments
-    assign_unsettled(shell, operands[1:2] if operands[:1] != [None] else [None])
-    return certain(shell)
-
-
-def assign_unsettled(shell: Shell, names: Iterable[Word]) -> None:
-    """Gives each name a value the text does not settle, through any name reference; a name of one element sets its
-    array. A name the text does not settle may be any variable."""
-    for name in names:
-        if name is None:
-            shell.may_assign_any()
-        elif name:
-            shell.assign(name.partition("[")[0], None, export=False)
-
-
-def bash_unset(reader: BashReader, arguments: list[Word], _: object, shell: Shell, __: object) -> Outcome:
-    """unset NAME, through any name reference, and the function NAME where no variable is set by it; -v NAME, the
-    variable alone; -f NAME, a function, which -n beside it does not change; and -n NAME, a name reference itself.
-
-    Its options are read as Bash's own option reader takes them, bundled in one word or apart (builtin_operands); -f
-    with -v, or an option Bash does not know, unsets nothing. An option word the text does not settle may be any of
-    them, which the guard cannot read; an operand the text does not settle may name any variable, or any function."""
-    settled = list(itertools.takewhile(lambda word: word is not None, arguments))
-    options, operands = builtin_operands(settled, "") or ([], [])
-    unsettled = len(settled) < len(arguments)
-    if unsettled and not operands and "--" not in settled:
-        reader.reading.cannot_read("could not read the options passed to unset")
-        shell.opaque = True
-        for name in shell.functions:
-            may_unset_function(shell, name)
-        return certain(shell)
-    flags = {flag for flag, _ in options}
-    if not flags <= set("fnv") or {"f", "v"} <= flags:
-        return certain(shell)
-    # -f comes first, so -n beside it changes nothing, as Bash ignores it for a function.
-    functions, references = "f" in flags, "n" in flags
-    # Without -f, -v, or -n, a name no variable is set by unsets the function by it, as POSIX says. Whether one is
-    # set on every path Bash may take is more than the guard settles: a variable one branch assigns, a local one, one
-    # a function declared, or one Bash sets itself, such as BASH, the guard holds or not as it may. So the function
-    # may be gone, and keeps every body beside none.
-    either = not flags
-    for word in [*operands, *([None] if unsettled else [])]:
-        if word is None:
-            shell.opaque = True
-            for name in shell.functions if functions or either else ():
-                may_unset_function(shell, name)
-        elif functions:
-            shell.functions.pop(word, None)
-        elif references and word in shell.references:
-            del shell.references[word]
-            shell.variables.pop(word, None)
-            shell.exported.discard(word)
-        else:
-            if either:
-                may_unset_function(shell, word)
-            shell.unset(word)
-    return certain(shell)
-
-
-def may_unset_function(shell: Shell, name: str) -> None:
-    """A function a path may have removed: every body it had, and none."""
-    bodies = shell.functions.get(name)
-    if bodies is not None and None not in bodies:
-        shell.functions[name] = (*bodies, None)
-
-
-def bash_set(reader: BashReader, arguments: list[Word], _: object, shell: Shell, __: object) -> Outcome:
-    """set's options, each read through SET_OPTIONS (judge_options): -a, -o allexport, and their + forms export every
-    variable assigned while they hold; each o in a bundle, as in `set -eo allexport`, takes the next word as the
-    option it sets."""
-    changes = option_changes(arguments, starting=False)
-    if changes is None:
-        reader.reading.cannot_read("could not read the options passed to set")
-        return certain(shell)
-    allexport = judge_options(changes, reader.reading, "set", shell_ps4(shell))
-    if allexport is not None:
-        shell.allexport = allexport
-    return certain(shell)
-
-
-# One change a source of options makes: the table its option is in, "set" or "shopt", the option's name, and whether
-# it turns the option on.
-OptionChange = tuple[Literal["set", "shopt"], str, bool]
-
-
-def option_changes(arguments: list[Word], starting: bool) -> list[OptionChange] | None:
-    """The options set, or a bash as it starts, turns on and off, in order: each letter of a bundle, the next word
-    for each o, and as a bash starts the shopt option for each O and its long options (BASH_LONG_OPTIONS); None when a
-    word the text does not settle stands among them, which may be any option. A letter or long option no table names
-    is a change to an option by that spelling, which no table names either. The options end at the first word that is
-    none, at `--`, and at a lone - or +."""
-    changes: list[OptionChange] = []
-    index = 0
-    while index < len(arguments):
-        word = arguments[index]
-        if word is None:
-            return None
-        if word in ("--", "-", "+") or word[:1] not in ("-", "+"):
-            break
-        if starting and word.startswith("--"):
-            option = BASH_LONG_OPTIONS.get(word, word)
-            if option:
-                changes.append(("shopt" if option in SHOPT_OPTIONS else "set", option, True))
-            index += 1 + bash_option_values(word)
-            continue
-        on = word.startswith("-")
-        values = iter(arguments[index + 1 :])
-        for letter in word[1:]:
-            if letter in "oO" and (letter == "o" or starting):
-                index += 1
-                named = next(values, "")
-                if named is None:
-                    return None
-                if named:
-                    changes.append(("set" if letter == "o" else "shopt", named, on))
-            elif not (starting and letter in BASH_START_LETTERS):
-                changes.append(("set", SET_LETTERS.get(letter, f"-{letter}"), on))
-        index += 1
-    return changes
-
-
-def judge_options(
-    changes: Iterable[OptionChange], reading: Reading, source: str, ps4: tuple[Word, ...] = ()
-) -> bool | None:
-    """Records as a part the guard cannot read each change to an option no table names, and each that leaves an
-    option in the state SET_OPTIONS or SHOPT_OPTIONS names, and xtrace turned on where the PS4 the shell holds, if
-    any, may hold an expansion (expanding_ps4); returns what the changes leave allexport, the last winning, or None
-    when they leave it as it was."""
-    allexport: bool | None = None
-    for table, name, on in changes:
-        state = "on" if on else "off"
-        if table == "set" and name == ALLEXPORT:
-            allexport = on
-        if table == "set" and name == XTRACE and on and expanding_ps4(ps4):
-            reading.cannot_read(f"{XTRACE} is turned on by {source} where {PS4} may hold an expansion, which it runs")
-        refused = OPTION_STATES[table].get(name)
-        if refused is None:
-            reading.cannot_read(f"the option {name} is turned {state} by {source}, and the guard does not read it")
-        elif refused == state:
-            reading.cannot_read(f"{name} is turned {state} by {source}, under which the guard cannot read the shell")
-    return allexport
-
-
-def expanding_ps4(ps4: tuple[Word, ...]) -> bool:
-    """Whether a PS4, given as (value,) or () when the shell holds none, may run something as xtrace expands it: a
-    value the text does not settle, or one holding a command substitution, a backquote, an arithmetic expansion, or a
-    ${ } other than a plain name's, which may assign. A plain $NAME or ${NAME} runs nothing."""
-    if not ps4:
-        return False
-    value = ps4[0]
-    if value is None or "`" in value or re.search(r"\$[(\[]", value):
-        return True
-    return any(
-        not closed or not PLAIN_BRACED.fullmatch(content) for content, closed in re.findall(r"\$\{([^}]*)(\}?)", value)
-    )
-
-
-# What a ${ } may hold and run nothing as it expands: a name, a positional parameter, or a special one.
-PLAIN_BRACED = re.compile(r"[A-Za-z_][A-Za-z0-9_]*|[0-9]+|[#?$!@*-]")
-# A name in an arithmetic expression, which Bash reads as a variable, not one inside a number such as 0x1f or 16#ff.
-ARITHMETIC_NAME = re.compile(r"(?<![A-Za-z0-9_#])[A-Za-z_][A-Za-z0-9_]*")
-ARITHMETIC_EXPANSION = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)")
-# An expansion whose value is always a number: $#, $?, $$, $!, the same braced, and a length, ${#NAME},
-# ${#NAME[@]}, or ${#NAME[*]}. A length with any other subscript stays, since its subscript is arithmetic too.
-NUMERIC_EXPANSION = re.compile(r"\$[#?$!]|\$\{[#?$!]\}|\$\{#[A-Za-z_][A-Za-z0-9_]*(?:\[[@*]\])?\}")
-INTEGER = re.compile(r"\s*[-+]?[0-9]+\s*")
-INTEGER_WORD = re.compile(r"[-+]?[0-9]+")
-# The variables Bash sets itself, as it starts or as a command runs, which arithmetic reads as the text does not
-# settle them: each `env -i bash -c 'compgen -v'` lists, held to Bash by ShellOptionSpellingTests, and each a command
-# sets as it runs, getopts's, read's, select's, mapfile's, a [[ =~ ]] match's, a coprocess's, cd's, a function's, a
-# trap's, completion's, and an interactive shell's. Arithmetic reads a name Bash does not set as unset until the text
-# assigns it.
-BASH_SET_VARIABLES = {
-    *("_", "BASH", "BASHOPTS", "BASHPID", "BASH_ALIASES", "BASH_ARGC", "BASH_ARGV", "BASH_ARGV0", "BASH_CMDS"),
-    *("BASH_COMMAND", "BASH_EXECUTION_STRING", "BASH_LINENO", "BASH_LOADABLES_PATH", "BASH_MONOSECONDS"),
-    *("BASH_REMATCH", "BASH_SOURCE", "BASH_SUBSHELL", "BASH_TRAPSIG", "BASH_VERSINFO", "BASH_VERSION"),
-    *("COLUMNS", "COMP_CWORD", "COMP_KEY", "COMP_LINE", "COMP_POINT", "COMP_TYPE", "COMP_WORDBREAKS", "COMP_WORDS"),
-    *("COMPREPLY", "COPROC", "COPROC_PID", "DIRSTACK", "EPOCHREALTIME", "EPOCHSECONDS", "EUID", "FUNCNAME"),
-    *("GROUPS", "HISTCMD", "HISTFILE", "HISTFILESIZE", "HISTSIZE", "HOSTNAME", "HOSTTYPE", "IFS", "LINENO", "LINES"),
-    *("MACHTYPE", "MAILCHECK", "MAPFILE", "OLDPWD", "OPTARG", "OPTERR", "OPTIND", "OSTYPE", "PATH", "PIPESTATUS"),
-    *("PPID", "PS1", "PS2", "PS4", "PWD", "RANDOM", "READLINE_ARGUMENT", "READLINE_LINE", "READLINE_MARK"),
-    *("READLINE_POINT", "REPLY", "SECONDS", "SHELL", "SHELLOPTS", "SHLVL", "SRANDOM", "TERM", "UID"),
-    # Git Bash's own, from the MSYS runtime.
-    *platform_support.GIT_BASH_SHELL_VARIABLES,
-}
-# Of them, those that always hold a number while the text leaves them alone.
-BASH_NUMERIC_VARIABLES = {
-    *("OPTIND", "BASH_ARGC", "BASH_LINENO", "HISTCMD", "GROUPS", "PIPESTATUS", "BASH_SUBSHELL", "SECONDS", "LINENO"),
-    *("RANDOM", "SRANDOM", "EPOCHSECONDS", "BASH_MONOSECONDS", "BASHPID", "PPID", "UID", "EUID", "COLUMNS", "LINES"),
-    "COPROC_PID",
-}
-# How deep arithmetic follows a variable whose value is itself an expression, which Bash evaluates in turn.
-ARITHMETIC_DEPTH = 8
-
-
-ARITHMETIC_COMPARISONS = {"-eq", "-ne", "-lt", "-le", "-gt", "-ge"}
-
-
-def unquoted(raw: str) -> str:
-    """A word's raw text without its quote marks, as arithmetic reads an operand; what single quotes hold is read as
-    if it expanded, which can only refuse more."""
-    return raw.replace('"', "").replace("'", "")
-
-
-def arithmetic_command(node: bash_syntax.Subshell) -> str | None:
-    """The expression of an arithmetic command, (( )), which the grammar reads as one simple command in a subshell
-    in a subshell; None for any other subshell."""
-    inner = sole_command(node.body)
-    if not isinstance(inner, bash_syntax.Subshell):
-        return None
-    command = sole_command(inner.body)
-    if not isinstance(command, bash_syntax.Simple):
-        return None
-    return " ".join(unquoted(word.raw) for word in command.words)
-
-
-def sole_command(body: bash_syntax.CommandList) -> bash_syntax.Command | None:
-    """The one command a list holds, alone in its pipeline and not in the background; None for any other list."""
-    if len(body.items) != 1:
-        return None
-    and_or, background = body.items[0]
-    if background or and_or.rest or len(and_or.first.commands) != 1 or and_or.first.negated:
-        return None
-    return and_or.first.commands[0]
-
-
-def matching(text: str, start: int) -> int | None:
-    """The index of the bracket that closes the one at start, counting the same kind nested in it; None when none
-    does."""
-    opening = text[start]
-    closing = {"(": ")", "[": "]", "{": "}"}[opening]
-    depth = 0
-    for index in range(start, len(text)):
-        if text[index] == opening:
-            depth += 1
-        elif text[index] == closing:
-            depth -= 1
-            if depth == 0:
-                return index
-    return None
-
-
-def arithmetic_contexts(raw: str) -> list[str | None]:
-    """The text of each arithmetic expression a word's raw text holds, where Bash evaluates it as it expands the word:
-    each $(( )) and $[ ], each subscript of a ${NAME[...]}, each offset and length of a ${NAME:offset:length}, and the
-    subscript of an assignment to an element, NAME[...]=, at the word's start; None for one that does not close.
-    Nothing inside single quotes expands, and a backslash-newline is gone before Bash reads the word."""
-    raw = raw.replace("\\\n", "")
-    found: list[str | None] = []
-    head = re.match(r"[A-Za-z_][A-Za-z0-9_]*\[", raw)
-    if head is not None:
-        end = matching(raw, head.end() - 1)
-        found.append(None if end is None else raw[head.end() : end])
-    compound = re.match(r"[A-Za-z_][A-Za-z0-9_]*\+?=\(", raw)
-    if compound is not None:
-        found.extend(compound_subscripts(raw[compound.end() :]))
-    index, single = 0, False
-    while index < len(raw):
-        character = raw[index]
-        if single:
-            single = character != "'"
-            index += 1
-        elif character == "'":
-            single = True
-            index += 1
-        elif character == "\\":
-            index += 2
-        elif raw.startswith("$((", index) or raw.startswith("$[", index):
-            end = matching(raw, index + 1)
-            found.append(None if end is None else raw[index + 2 : end])
-            index = len(raw) if end is None else end + 1
-        elif raw.startswith("${", index):
-            end = matching(raw, index + 1)
-            if end is None:
-                found.append(None)
-                return found
-            found.extend(braced_arithmetic(raw[index + 2 : end]))
-            index = end + 1
-        else:
-            index += 1
-    return found
-
-
-def array_reference_contexts(raw: str) -> list[str | None]:
-    """The subscripts of an operand a builtin takes as an array reference, as its text is once Bash removes quotes and
-    backslashes: NAME[...] to unset, read, printf -v, wait -p, mapfile, or a declaration, and a declaration's compound
-    value, NAME=(...), quoted or escaped, as `declare -a "a=([k]=v)"` or `declare -a a=\\([k]=v\\)` give it."""
-    text = re.sub(r"\\(.)", r"\1", raw.replace("\\\n", ""), flags=re.DOTALL).replace('"', "").replace("'", "")
-    found: list[str | None] = []
-    head = re.match(r"[A-Za-z_][A-Za-z0-9_]*\[", text)
-    if head is not None:
-        end = matching(text, head.end() - 1)
-        found.append(None if end is None else text[head.end() : end])
-    compound = re.match(r"[A-Za-z_][A-Za-z0-9_]*\+?=\(", text)
-    if compound is not None:
-        found.extend(compound_subscripts(text[compound.end() :]))
-    return found
-
-
-# The builtins that take an operand as an array reference, NAME[subscript], or a declaration's compound value.
-ARRAY_REFERENCE_BUILTINS = {
-    *("unset", "read", "printf", "wait", "mapfile", "readarray"),
-    *("declare", "typeset", "local", "export", "readonly"),
-}
-
-
-def compound_subscripts(elements: str) -> list[str | None]:
-    """The subscript of each element of a compound array assignment, NAME=([k]=v ...), as the text after its `(`
-    holds them: each [ ] that starts an element, which Bash evaluates as arithmetic for an indexed array; None for one
-    that does not close."""
-    found: list[str | None] = []
-    for start in (match.end() - 1 for match in re.finditer(r"(?:^|[\s(])\[", elements)):
-        end = matching(elements, start)
-        found.append(None if end is None else elements[start + 1 : end])
-    return found
-
-
-def braced_arithmetic(content: str) -> list[str | None]:
-    """The arithmetic expressions in a ${ }'s content: its subscript, its offset and length, and each nested in it."""
-    found: list[str | None] = []
-    name = re.match(r"[#!]?([A-Za-z_][A-Za-z0-9_]*|[0-9]+|[#?$!@*-])", content)
-    rest = content[name.end() :] if name is not None else content
-    if rest.startswith("["):
-        end = matching(rest, 0)
-        if end is None:
-            return [None]
-        if rest[1:end] not in ("@", "*"):
-            found.append(rest[1:end])
-        rest = rest[end + 1 :]
-    if rest.startswith(":") and rest[1:2] not in ("-", "=", "?", "+"):
-        found.extend(rest[1:].split(":")[:2])
-    # The subscript is read whole above; what follows the name and subscript, an operator's word, may hold more.
-    found.extend(arithmetic_contexts(rest))
-    return found
-
-
-def arithmetic_hazard(expression: str | None, shell: Shell, depth: int = 0) -> str | None:
-    """Why an arithmetic expression may turn on a shell option, or None when it cannot: it assigns POSIXLY_CORRECT or
-    BASH_COMPAT, or holds what the text does not settle to a number, which may be such an assignment as Bash evaluates
-    it: an expansion or a variable whose value is unsettled, a substitution's output, a ${ } other than a plain name, or
-    a variable whose value is an expression that does, followed to ARITHMETIC_DEPTH."""
-    if expression is None or depth > ARITHMETIC_DEPTH:
-        return "an arithmetic expression the guard does not read to its end"
-    # Quotes and a backslash-newline are gone before Bash evaluates the text; any other backslash is not read.
-    text = expression.replace("\\\n", "").replace('"', "").replace("'", "")
-    if "\\" in text:
-        return "an arithmetic expression that holds a backslash"
-    # An expansion stands for its value only as a whole operand: beside a name or another expansion, as x$i, x"$#",
-    # ${w}$i, or x$((i)) make, it joins them into a name the text does not settle.
-    if any(expansion_joins(text, index) for index, character in enumerate(text) if character == "$"):
-        return "an arithmetic expression whose expansion joins a name or another expansion"
-    text = NUMERIC_EXPANSION.sub("0", text.replace("$((", "((").replace("$[", "["))
-    if "`" in text or "$(" in text:
-        return "an arithmetic expression that holds a substitution's output"
-
-    def expand(match: re.Match[str]) -> str:
-        value = settled_variable(shell, match.group(1) or match.group(2))
-        # Bash puts the value in the expression as text, so it may name the variable an operator assigns.
-        return "\0" if value is None else value
-
-    text = ARITHMETIC_EXPANSION.sub(expand, text)
-    if "\0" in text or "$" in text:
-        return "an arithmetic expression that expands what the text does not settle"
-    found = ARITHMETIC_OPTION_ASSIGNMENT.search(text)
-    if found is not None:
-        name = found.group(1) or found.group(2)
-        return f"an arithmetic assignment to {name}, which turns on {OPTION_SETTING_VARIABLES[name]}"
-    for match in ARITHMETIC_NAME.finditer(text):
-        name = match.group()
-        value = settled_variable(shell, name)
-        # A subscript reads an element, which a number the text does not settle, set in its first alone, leaves open.
-        subscripted = text[match.end() :].lstrip().startswith("[")
-        if value is None or (subscripted and unsettled_number(shell, name)):
-            return f"an arithmetic expression that evaluates {name}, whose value the text does not settle"
-        if value and not INTEGER.fullmatch(value):
-            reason = arithmetic_hazard(value, shell, depth + 1)
-            if reason is not None:
-                return reason
-    return None
-
-
-def settled_variable(shell: Shell, name: str) -> str | None:
-    """A variable's value as arithmetic reads it, through any name reference: "" when it is unset, as Bash's own
-    numbers (BASH_NUMERIC_VARIABLES) are to the reader until the text assigns them; "0" for one that holds a number
-    the text does not settle (Shell.numbers); None when the text does not settle it, and for every other variable Bash
-    sets itself (BASH_SET_VARIABLES), whatever the text or the environment gives it."""
-    target = shell.target(name)
-    if target is None or shell.opaque:
-        return None
-    if target in shell.numbers:
-        return "0"
-    if target in BASH_SET_VARIABLES and target not in BASH_NUMERIC_VARIABLES:
-        return None
-    return shell.variables.get(target, "")
-
-
-def unsettled_number(shell: Shell, name: str) -> bool:
-    """Whether a name reaches a variable that holds a number the text does not settle (Shell.numbers)."""
-    return shell.target(name) in shell.numbers
-
-
-def expansion_joins(text: str, start: int) -> bool:
-    """Whether the expansion at start, a $, joins what stands beside it: a name's character before it, or a name's
-    character, another expansion, or a subscript after it, which also catches an expansion after another; an expansion
-    that does not close joins too."""
-    end = expansion_end(text, start)
-    if end is None:
-        return True
-    before = text[start - 1] if start else ""
-    after = text[end] if end < len(text) else ""
-    return bool(re.fullmatch(r"[A-Za-z0-9_]", before) or re.fullmatch(r"[A-Za-z0-9_$\[]", after))
-
-
-def expansion_end(text: str, start: int) -> int | None:
-    """The index just past the expansion whose $ stands at start: a ${ }, $(( )), $( ), or $[ ] to its close, a name,
-    or one special parameter's character; None for one that does not close. A positional parameter ends at the $,
-    so its digits join it, which is unsettled either way."""
-    following = text[start + 1 : start + 2]
-    if following in ("{", "(", "["):
-        end = matching(text, start + 1)
-        return None if end is None else end + 1
-    name = re.compile(r"[A-Za-z_][A-Za-z0-9_]*|[#?$!@*-]").match(text, start + 1)
-    return start + 1 if name is None else name.end()
-
-
-def shell_ps4(shell: Shell) -> tuple[Word, ...]:
-    """The PS4 a shell holds, as expanding_ps4 takes it; any value in a shell the text does not settle."""
-    if shell.opaque:
-        return (None,)
-    return (shell.variables[PS4],) if PS4 in shell.variables else ()
-
-
-def handed_ps4(environment: Mapping[str, Word], names_folded: bool) -> tuple[Word, ...]:
-    """The PS4 an environment hands a bash, as expanding_ps4 takes it, by a name in any case where the starter folds
-    names."""
-    found = [value for name, value in environment.items() if (name.upper() if names_folded else name) == PS4]
-    return (found[0],) if found else ()
-
-
-def bash_allexport(
-    program: str | None,
-    arguments: list[Word],
-    reading: Reading,
-    script: list[Word] | None,
-    environment: Mapping[str, Word],
-    names_folded: bool = False,
-) -> bool:
-    """Whether a bash starts with allexport on, by its own options before its script, as -a or -o allexport; each
-    other option is judged (judge_options), and sh, which Bash runs in POSIX mode, is a shell the guard cannot read.
-    Only a script the guard reads is judged: a script file it does not read whatever the options, and one the text
-    does not hold, which an option word the text does not settle also makes (bash_script), it cannot read already.
-    Its PS4 is the one the environment it starts with, these handed variables over the hook's own, gives it."""
-    changes = option_changes(arguments, starting=True)
-    if changes is None or script is None or script == [None]:
-        return False
-    if program == "sh":
-        changes.insert(0, ("set", "posix", True))
-    ps4 = handed_ps4(started_environment(reading, environment), names_folded)
-    return judge_options(changes, reading, f"{program}'s own options", ps4) is True
-
-
-def bash_shopt(reader: BashReader, arguments: list[Word], _: object, shell: Shell, __: object) -> Outcome:
-    """shopt -s and -u, each operand read through SHOPT_OPTIONS, or with -o through SET_OPTIONS, as `shopt -so
-    allexport` turns allexport on (judge_options); without either it only lists or tests options. A word the text does
-    not settle may be any option, and so may a flag shopt does not take, which makes it set none."""
-    read = builtin_operands(arguments, "")
-    flags = None if read is None else {flag for flag, _ in read[0]}
-    if read is None or flags is None or not flags <= set("supqo") or {"s", "u"} <= flags:
-        reader.reading.cannot_read("could not read the options passed to shopt")
-        return certain(shell)
-    if flags & {"s", "u"}:
-        table: Literal["set", "shopt"] = "set" if "o" in flags else "shopt"
-        changes: list[OptionChange] = [(table, name, "s" in flags) for name in read[1]]
-        allexport = judge_options(changes, reader.reading, "shopt", shell_ps4(shell))
-        if allexport is not None:
-            shell.allexport = allexport
-    return certain(shell)
-
-
-def bash_hash(reader: BashReader, arguments: list[Word], _: object, shell: Shell, __: object) -> Outcome:
-    """hash -p puts a name in BASH_CMDS, so a later word by that name runs the program it gives; a word the text
-    does not settle may be -p."""
-    read = builtin_operands(arguments, "p")
-    if read is None or any(flag == "p" for flag, _ in read[0]):
-        reader.reading.cannot_read(f"{NAME_TABLES[BASH_CMDS]} the command defines (hash -p)")
-    return certain(shell)
-
-
-def bash_eval(reader: BashReader, arguments: list[Word], _: object, shell: Shell, __: object) -> Outcome:
-    """eval runs its words, joined, as a command of this shell."""
-    if None in arguments or reader.depth >= NESTING_LIMIT:
-        reader.reading.cannot_read("could not read the command passed to eval")
-        lost = shell.copy()
-        lost.cwd, lost.opaque = None, True
-        return certain(lost)
-    text = " ".join(word for word in arguments if word is not None)
-    return BashReader(reader.reading, reader.depth + 1).run_text(text, shell)
-
-
-def bash_alias(reader: BashReader, arguments: list[Word], _: object, shell: Shell, __: object) -> Outcome:
-    """alias defines a name a later command may use for git, which the reader would take for another program; it
-    only lists aliases when every word is an option or a name without a value."""
-    if any(word is None or "=" in word for word in arguments):
-        reader.reading.cannot_read("an alias the command defines (alias)")
-    return certain(shell)
-
-
-def bash_source(reader: BashReader, arguments: list[Word], _: object, shell: Shell, __: object) -> Outcome:
-    """A sourced file runs in this shell, where the guard does not read it: it may change the directory and any
-    variable, so both are unknown after it."""
-    reader.reading.notes.append(
-        "a sourced file may change the directory and the environment, which the guard does not read"
-    )
-    lost = shell.copy()
-    lost.cwd, lost.opaque = None, True
-    return certain(lost)
-
-
-def bash_exec(
-    reader: BashReader,
-    arguments: list[Word],
-    redirects: list[bash_syntax.Redirect],
-    shell: Shell,
-    local: dict[str, Word],
-) -> Outcome:
-    """exec, command, and builtin run the command after their own options, read as Bash's option reader takes them:
-    exec's -a takes the rest of its word or the next word, in a bundle as in -ca NAME, as the name the program is
-    started by, and Bash started by the name sh, or one the text does not settle, runs in POSIX mode."""
-    index = 0
-    started_as: list[Word] = []
-    while index < len(arguments) and (word := arguments[index]) is not None and word.startswith("-"):
-        if word == "--":
-            index += 1
-            break
-        flags, value = bundle_flags(word, "a" if reader.current_builtin == "exec" else "")
-        if reader.current_builtin == "command" and set(flags) & {"v", "V"}:
-            return certain(shell)
-        if value is not None:
-            started_as = [value or (arguments[index + 1] if index + 1 < len(arguments) else "")]
-        index += 2 if value == "" else 1
-    rest = arguments[index:]
-    if not rest:
-        return certain(shell)
-    if rest[0] is None:
-        # A word the text does not settle, among the options or as the name, may expand to nothing.
-        return reader.run_words(rest, redirects, shell, local)
-    if reader.current_builtin == "builtin" and rest[0] not in BASH_BUILTINS:
-        return certain(shell)
-    if rest[0] in BASH_BUILTINS:
-        return BASH_BUILTINS[rest[0]](reader.with_builtin(rest[0]), rest[1:], redirects, shell, local)
-    program = command_name(rest[0])
-    if program in BASH_NAMES and started_as and (started_as[0] is None or started_name(started_as[0]) == "sh"):
-        program = "sh"
-    reader.run_program(program, rest[1:], redirects, shell, shell.program_variables(local))
-    return certain(shell)
-
-
-def started_name(name: str) -> str:
-    """The name Bash takes itself to be started by: that of the program, past the - a login shell's name starts with."""
-    return (command_name(name) or "").lstrip("-")
-
-
-BuiltinReader = Callable[[BashReader, list[Word], list[bash_syntax.Redirect], Shell, dict[str, Word]], Outcome]
-BASH_BUILTINS: dict[str, BuiltinReader] = {
-    "cd": bash_cd,
-    "pushd": bash_pushd,
-    "popd": bash_popd,
-    **dict.fromkeys(DECLARE_NAMES, bash_declare),
-    "unset": bash_unset,
-    "set": bash_set,
-    "read": bash_read,
-    "printf": bash_printf,
-    "getopts": bash_getopts,
-    **dict.fromkeys(("mapfile", "readarray"), bash_mapfile),
-    "wait": bash_wait,
-    "eval": bash_eval,
-    "alias": bash_alias,
-    "hash": bash_hash,
-    "shopt": bash_shopt,
-    "source": bash_source,
-    ".": bash_source,
-    **dict.fromkeys(("exec", "command", "builtin"), bash_exec),
-}
-
-
-def bash_script(arguments: list[Word], redirects: list[bash_syntax.Redirect], shell: Shell) -> list[Word] | None:
-    """The one word bash runs from -c, alone or in a bundle such as -lc: its first operand, after every option and a
-    `--`, as in `bash -c -e '<script>'`; or, with no script file or with -s, the here-string or here-document it reads;
-    [None], a script the text does not hold, for one it reads from a pipe or the standard input the command inherits,
-    and where a word the text does not settle stands among its options, as -c"$x" or $x -c, which may be -c; None
-    for a script file, which the guard does not read."""
-    index = 0
-    from_input = command_mode = False
-    while index < len(arguments):
-        word = arguments[index]
-        if word is None and not command_mode:
-            return [None]
-        if word is None or not word.startswith(("-", "+")) or word == "--":
-            index += word == "--"
-            break
-        command_mode = command_mode or (not word.startswith("--") and "c" in word[1:])
-        # -s reads the script from standard input and takes every operand as a positional parameter.
-        from_input = from_input or (word.startswith("-") and not word.startswith("--") and "s" in word[1:])
-        index += 1 + bash_option_values(word)
-    if command_mode:
-        return arguments[index : index + 1]
-    if index < len(arguments) and not from_input:
-        return None  # a script file, which the guard does not read
-    script: list[Word] | None = [None]
-    for redirect in redirects:
-        if redirect.operator == "<<<" and redirect.target is not None:
-            script = [word_value(redirect.target, shell, assignment=True)]
-        elif redirect.here is not None:
-            here = redirect.here
-            settled = here.quoted or not re.search(r"[$`\\]", here.body)
-            script = [here.body if settled else None]
-        elif redirect.operator in {"<", "<>"}:
-            script = None
-    return script
-
-
-def bash_option_values(word: str) -> int:
-    """How many of the words after a bash or set option are its values: one for --rcfile and --init-file, and in a
-    single-dash or single-plus bundle one for each o and O, which Bash takes in order, as in `-euo pipefail` and
-    `-oc pipefail '<script>'`."""
-    if word.startswith("--"):
-        return int(word in BASH_LONG_OPTIONS_WITH_VALUE)
-    return sum(flag in "oO" for flag in word[1:])
-
-
-def powershell_script(arguments: list[Word]) -> list[Word] | None:
-    """The script pwsh runs inline: every word after -Command, or the one word after -CommandWithArgs, whose other
-    words are its arguments; None when it runs no inline script."""
-    for index, word in enumerate(arguments):
-        inline = powershell_inline(word)
-        if inline == "commandwithargs":
-            return arguments[index + 1 : index + 2]
-        if inline == "command":
-            return arguments[index + 1 :]
-    return None
-
-
-def powershell_inline(word: Word) -> str | None:
-    """The inline-script parameter a pwsh argument names, "command" or "commandwithargs", by any spelling of its
-    name, a prefix of it, or the alias -cwa; None for any other word."""
-    if word is None:
-        return None
-    if powershell_parameter(word, (("commandwithargs", "commandw"), ("cwa", "cwa"))):
-        return "commandwithargs"
-    if powershell_parameter(word, (("command", "c"),)):
-        return "command"
-    return None
-
-
-def powershell_reads_input(arguments: list[Word]) -> bool:
-    """Whether pwsh runs a script it reads from its standard input, which the text does not hold: -Command - or
-    -File -, or none of an inline command, a script file, or an encoded command. A word the text does not settle
-    before that is decided may be any of them, so it counts too.
-
-    The parameters are spelled as in powershell_switch and abbreviated as in powershell_takes_value."""
-    encoded = (("encodedcommand", "e"), ("ec", "ec"))
-    file = (("file", "f"),)
-    index = 0
-    while index < len(arguments):
-        word = arguments[index]
-        following = arguments[index + 1] if index + 1 < len(arguments) else None
-        if word is None:
-            return True
-        name = powershell_switch(word)
-        if name is None:
-            return False  # a script file, named without -File
-        if not name:
-            return True  # a lone dash reads standard input, whatever follows it
-        inline = powershell_inline(word)
-        if inline == "commandwithargs" or powershell_parameter(word, encoded):
-            return False
-        if inline == "command" or powershell_parameter(word, file):
-            return following == "-"
-        index += 2 if powershell_takes_value(word) else 1
-    return True
-
-
-def powershell_arguments(program: str, arguments: list[Word]) -> list[Word]:
-    """The arguments as the shell reads them: Windows PowerShell runs a leading word that names no parameter as
-    -Command does, every word from it on, where pwsh runs it as a script file, so for Windows PowerShell -Command goes
-    before that word. A word the text does not settle, an inline command, a script file, or an encoded command before
-    it leaves the arguments as they are."""
-    if program != "powershell":
-        return arguments
-    index = 0
-    while index < len(arguments):
-        word = arguments[index]
-        if word is None or powershell_starts_script(word):
-            return arguments
-        name = powershell_switch(word)
-        if name is None:
-            return [*arguments[:index], "-Command", *arguments[index:]]
-        if not name:
-            return arguments
-        index += 2 if powershell_takes_value(word) else 1
-    return arguments
-
-
-def powershell_starts_script(word: str) -> bool:
-    """Whether a pwsh argument names the script it runs: an inline command, a script file, or an encoded command."""
-    script = (("encodedcommand", "e"), ("ec", "ec"), ("file", "f"))
-    return powershell_inline(word) is not None or powershell_parameter(word, script)
-
-
-def powershell_directory(arguments: list[Word], cwd: Path | None) -> Path | None:
-    """Where a pwsh started with these arguments in cwd starts: the directory -WorkingDirectory (-wd) names before its
-    script, read from cwd, or else cwd; None when the text does not settle it. pwsh takes the last -WorkingDirectory it
-    is given, and reads a leading ~ as home, as Set-Location does."""
-    index = 0
-    directory = cwd
-    while index < len(arguments):
-        word = arguments[index]
-        if word is None:
-            return None  # it may be -WorkingDirectory
-        if not powershell_switch(word) or powershell_starts_script(word):
-            break
-        if powershell_parameter(word, (("workingdirectory", "wo"), ("wd", "wd"))):
-            value = arguments[index + 1] if index + 1 < len(arguments) else None
-            if value is None:
-                return None
-            directory = home_path(value) or moved(cwd, value)
-        index += 2 if powershell_takes_value(word) else 1
-    return directory
-
-
-def home_path(value: str) -> Path | None:
-    """The path a PowerShell file system path with a leading ~ names, under home; None for any other."""
-    if value == "~" or value.startswith(("~/", "~\\")):
-        return Path.home() / value[2:]
-    return None
-
-
-def powershell_takes_value(word: str) -> bool:
-    """Whether a pwsh parameter takes the next word as its value.
-
-    Each is given by its name and the shortest prefix of it pwsh accepts, and each alias by itself. The table sits in
-    the function, not the module, so that it runs in the tests that call the function rather than at import."""
-    takes_value = (
-        ("configurationfile", "configurationfile"),
-        ("configurationname", "config"),
-        ("custompipename", "custompipename"),
-        ("executionpolicy", "ex"),
-        ("ep", "ep"),
-        ("inputformat", "inp"),
-        ("if", "if"),
-        ("outputformat", "o"),
-        ("of", "of"),
-        ("settingsfile", "settings"),
-        ("windowstyle", "w"),
-        ("workingdirectory", "wo"),
-        ("wd", "wd"),
-    )
-    return powershell_parameter(word, takes_value)
-
-
-def powershell_parameter(word: str, forms: Iterable[tuple[str, str]]) -> bool:
-    """Whether a word names one of these pwsh parameters, in any case and spelled as powershell_switch reads it: a
-    prefix of a name at least as long as its shortest form."""
-    name = powershell_switch(word)
-    return name is not None and any(full.startswith(name) and name.startswith(short) for full, short in forms)
-
-
-def powershell_switch(word: str) -> str | None:
-    """The parameter name a pwsh argument spells, lower-cased, as pwsh reads its command line; None for a word that is
-    not a parameter, such as a script file's name. A lone dash gives the empty name.
-
-    pwsh trims the word's white space, every character of which Python's strip removes too, and takes off a leading
-    dash, a hyphen, an en dash, an em dash, or a horizontal bar, and then a second dash the same as the first. A
-    leading slash marks a parameter too, on every platform, so an absolute path after it names no parameter the guard
-    knows."""
-    text = word.strip()
-    if not text:
-        return None
-    first, name = text[0], text[1:]
-    if first in "-\u2013\u2014\u2015":
-        name = name[1:] if name.startswith(first) else name
-    elif first != "/":
-        return None
-    return name.lower()
-
-
-def follow(
-    name: str,
-    script: list[Word] | None,
-    cwd: Path | None,
-    variables: Variables,
-    reading: Reading,
-    depth: int,
-    read: ShellReader,
-) -> None:
-    """Reads the script another shell is handed as text. It runs as a process of its own, so its cd stays there.
-
-    It starts with the variables its parent exported to it, and what it exports dies with it.
-    """
-    if script is None:
-        return
-    if not script or None in script or depth >= NESTING_LIMIT:
-        reading.cannot_read(f"could not read the command passed to {name}")
-        return
-    read(" ".join(word for word in script if word is not None), cwd, reading, depth + 1, variables)
-
-
-def follow_powershell(
-    program: str,
-    arguments: list[Word],
-    cwd: Path | None,
-    variables: Variables,
-    reading: Reading,
-    depth: int,
-    functions: Mapping[str, tuple[bash_syntax.Command | None, ...]] | None = None,
-    opaque: bool = False,
-) -> None:
-    """Reads the script a pwsh or Windows PowerShell started in cwd runs, where -WorkingDirectory starts it, with the
-    Bash functions its environment hands a bash it starts, from a starter the text may not settle."""
-    arguments = powershell_arguments(program, arguments)
-    script: list[Word] | None = [None] if powershell_reads_input(arguments) else powershell_script(arguments)
-    read = functools.partial(read_powershell, functions=functions, opaque=opaque)
-    follow(program, script, powershell_directory(arguments, cwd), variables, reading, depth, read)
-
-
-def started_allexport(environment: Mapping[str, Word], names_folded: bool) -> Literal["on", "off", "unsettled"]:
-    """Whether a bash starts with allexport on by the SHELLOPTS its environment hands it, which Bash reads by its exact
-    name, whatever its own options say: on when it lists allexport, off without it, and unsettled when the text does
-    not settle its value, or its name, which a starter that holds names folded to one case does not keep.
-
-    BASHOPTS hands shopt's options the same way, which started_options judges with SHELLOPTS's others."""
-    value = environment.get(SHELLOPTS, "")
-    if value is None:
-        return "unsettled"
-    if ALLEXPORT not in value.split(":"):
-        return "off"
-    return "unsettled" if names_folded else "on"
-
-
-def started_options(environment: Mapping[str, Word], names_folded: bool, reading: Reading) -> None:
-    """Judges each option other than allexport the environment hands a bash as it starts (judge_options): set's that
-    SHELLOPTS lists, shopt's that BASHOPTS lists, and POSIX mode or an earlier Bash's behavior that POSIXLY_CORRECT or
-    BASH_COMPAT turns on whatever its value. A BASHOPTS whose value the text does not settle may list any option; one
-    that SHELLOPTS lists is read by started_allexport. A starter that holds names folded to one case hands each by a
-    name in any case, which Bash may read."""
-    shellopts = environment.get(SHELLOPTS, "") or ""
-    changes: list[OptionChange] = [("set", name, True) for name in shellopts.split(":") if name]
-    bashopts = environment.get(BASHOPTS, "")
-    if bashopts is None:
-        reading.cannot_read(f"could not read the {BASHOPTS} its environment hands bash, which may turn on any option")
-    else:
-        changes.extend(("shopt", name, True) for name in bashopts.split(":") if name)
-    judge_options(changes, reading, "the environment bash starts with", handed_ps4(environment, names_folded))
-    handed = {name.upper() if names_folded else name for name in environment}
-    for name, effect in OPTION_SETTING_VARIABLES.items():
-        if name in handed:
-            reading.cannot_read(
-                f"the {name} its environment hands bash turns on {effect}, which the guard does not read"
-            )
-
-
-def read_bash(
-    command: str,
-    cwd: Path | None,
-    reading: Reading,
-    depth: int,
-    variables: Variables,
-    functions: Mapping[str, tuple[bash_syntax.Command | None, ...]] | None = None,
-    allexport: bool = False,
-    opaque: bool = False,
-    names_folded: bool = False,
-) -> None:
-    """Reads a Bash command, started with these variables exported, as Bash runs it, with the functions the shell
-    that starts it exported, and those its environment hands it as BASH_FUNC_<name>%% variables, defined; with
-    allexport on when its own options turn it on, or the SHELLOPTS its environment hands it does (started_allexport).
-    A starter the text does not settle may have handed it any variable."""
-    inherited = started_environment(reading, variables)
-    started = started_allexport(inherited, names_folded)
-    if started == "unsettled":
-        reading.cannot_read(f"could not read the {SHELLOPTS} its environment hands bash, which may turn on allexport")
-    started_options(inherited, names_folded, reading)
-    allexport = allexport or started == "on"
-    shell = Shell(cwd, dict(inherited), set(inherited), allexport=allexport, opaque=opaque, reading=reading)
-    shell.functions.update(functions or {})
-    reader = BashReader(reading, depth)
-    for name, value in inherited.items():
-        # From Bash a variable reaches here only with a value, since env reads a word the text does not settle as its
-        # program; a PowerShell cmdlet that writes the environment provider leaves one unsettled.
-        function = EXPORTED_FUNCTION.match(name)
-        if function is not None and value is None:
-            reading.cannot_read(f"a function its environment hands bash ({name}), whose body the text does not settle")
-        elif function is not None and value is not None and value.startswith(EXPORTED_FUNCTION_VALUE):
-            shell = reader.run_text(f"{function.group(1)} {value}", shell).merged()
-            shell.environment_functions.add(function.group(1))
-    shell.exported_functions = set(shell.functions)
-    reader.run_text(command, shell)
+def changes_directory(node: object) -> bool:
+    """Whether a compound command holds a command that may change the shell's directory: cd, pushd, or popd, or one
+    whose name the text does not settle, which is refused while a hub is in view anyway."""
+    if isinstance(node, bash_syntax.Simple):
+        names = [word for word in node.words if word.assignment is None][:1]
+        return bool(names) and names[0].literal in {"cd", "pushd", "popd", None}
+    if isinstance(node, bash_syntax.CommandList):
+        return any(changes_directory(and_or) for and_or, _ in node.items)
+    if isinstance(node, bash_syntax.AndOr):
+        return any(changes_directory(pipeline) for pipeline in (node.first, *(each for _, each in node.rest)))
+    if isinstance(node, bash_syntax.Pipeline):
+        return any(changes_directory(command) for command in node.commands)
+    return isinstance(node, bash_syntax.Command) and any(changes_directory(body) for body in command_bodies(node))
+
+
+def read_bash(command: str, cwd: Path | None, reading: Reading, depth: int = 0) -> None:
+    """Reads a Bash command started in cwd with the environment the hook was given."""
+    BashReader(reading, depth, bash_start(reading)).read_text(command, Directory(cwd))
 
 
 # ---------------------------------------------------------------------------------------------------------------
@@ -3240,18 +2337,18 @@ def powershell_reader() -> str:
     return "\n".join(line for line in lines if not line.lstrip().startswith("#"))
 
 
-def powershell_events(command: str, reading: Reading, depth: int) -> list[dict[str, Any]] | None:
-    """The reader's events for one command, or None when there are none, with why.
+def powershell_events(command: str, reading: Reading) -> dict[str, Any] | None:
+    """What PowerShell's own parser makes of one command, or None, with why, when it could not be read.
 
     pwsh starts with -Command rather than -File, so no execution policy applies, and not with -EncodedCommand,
-    which endpoint protection treats as a sign of malware. The command, and how much nesting is left to follow,
-    travel base64-encoded on stdin, past any console code page.
+    which endpoint protection treats as a sign of malware. The command travels base64-encoded on stdin, past any
+    console code page.
     """
     pwsh = platform_support.find_pwsh(reading.environment.get("PATH", ""))
     if pwsh is None:
         reading.cannot_read("could not find pwsh to read a PowerShell command")
         return None
-    payload = json.dumps({"command": command, "limit": NESTING_LIMIT - depth})
+    payload = json.dumps({"command": command})
     try:
         # run_bounded takes git's repository-selecting variables out of the hook's environment, and the tree ends
         # every process pwsh starts once it has finished or been killed.
@@ -3275,538 +2372,299 @@ def powershell_events(command: str, reading: Reading, depth: int) -> list[dict[s
         errors = result.stderr.decode("utf-8", "replace").strip().splitlines()
         reading.cannot_read(f"pwsh could not read the command ({(errors or [''])[0]})")
         return None
+    if not isinstance(output, dict):
+        reading.cannot_read("pwsh answered with something other than the reader's object")
+        return None
     if "error" in output:
         # PowerShell parses a whole script before it runs any of it, so a command that does not parse runs
         # nothing; a Bash command's lines before a syntax error do run.
         reading.notes.append(f"PowerShell would not parse the command, so none of it runs ({output['error']})")
         return None
-    events: list[dict[str, Any]] = output["events"]
-    return events
+    return output
 
 
-def mentions_alias(command: str, directories: Iterable[Path]) -> bool:
-    """Whether the text names an alias git defines in any of these checkouts; true when one cannot be listed.
-
-    git lists them in the environment the hook was given, which is the one the command runs in."""
-    for directory in directories:
-        result = git(directory, "config", "--name-only", "--get-regexp", r"^alias\.")
-        if result.returncode == 1:
-            continue
-        if result.returncode != 0:
-            return True
-        names = (line.partition(".")[2] for line in output_lines(result.stdout))
-        for name in filter(None, names):
-            if mentions(re.compile(rf"(?<![\w-]){re.escape(name)}(?![\w-])", re.IGNORECASE), command):
-                return True
-    return False
-
-
-def may_refuse(command: str, cwd: Path | None, reading: Reading) -> bool:
-    """Whether the text could hold a git call the guard refuses: what pwsh is started to read.
-
-    It names git and, as a word, a refused subcommand or fetch, an alias git defines where the command starts or in
-    a hub in view, or command-line alias configuration; or git is followed in its statement by something that computes
-    a word; or the command starts outside every repository, where the aliases a hub defines cannot be listed.
-    """
-    if not mentions(MENTIONS_GIT, command):
-        return False
-    if mentions(MENTIONS_WRITING_SUBCOMMAND, command) or COMPUTED_AFTER_GIT.search(command) or "alias." in command:
-        return True
-    if cwd is None:
-        return True
-    try:
-        if checkout_of(cwd) is None:
-            return True
-    except GitError:
-        return True  # A checkout git cannot read lists no aliases either.
-    return mentions_alias(command, [cwd, *sorted(reading.context_hubs)])
-
-
-@dataclass
-class Region:
-    """Events PowerShell runs only on some paths: a branch runs once or not at all, a loop or a script block any number
-    of times, a function's body only where a command calls it, and a child pwsh in a process of its own."""
-
-    kind: str
-    name: str
-    children: list[Region | dict[str, Any]] = field(default_factory=list)
-    # A child pwsh's words as the reader reports them, its name first, from which where it starts is read.
-    words: list[Any] = field(default_factory=list)
-
-
-def event_tree(events: list[dict[str, Any]]) -> list[Region | dict[str, Any]]:
-    root = Region("root", "")
-    stack = [root]
-    for event in events:
-        kind = event.get("kind")
-        if kind == "open":
-            region = Region(str(event.get("region")), str(event.get("name") or ""), words=event.get("words") or [])
-            stack[-1].children.append(region)
-            stack.append(region)
-        elif kind == "close":
-            if len(stack) > 1:
-                stack.pop()
-        else:
-            stack[-1].children.append(event)
-    return root.children
-
-
-@dataclass
-class Session:
-    """A PowerShell session's location, its Push-Location stack, the tracked variables of its environment, and its
-    functions. opaque marks a session in which a command the guard cannot read may have set any variable. functions
-    holds each name a path the session may have taken defines a function by, with every body it may have, and None
-    where it may have none."""
-
-    cwd: Path | None
-    variables: dict[str, Word]
-    stack: list[Path | None] = field(default_factory=list)
-    opaque: bool = False
-    functions: dict[str, tuple[list[Region | dict[str, Any]] | None, ...]] = field(default_factory=dict)
-
-    def copy(self) -> Session:
-        return replace(self, variables=dict(self.variables), stack=list(self.stack), functions=dict(self.functions))
-
-    def lookup(self, path: str) -> Word:
-        """The value of the variable a path names on the environment provider, as the session holds it; None for one
-        it does not hold or does not settle, or a path elsewhere."""
-        match = ENVIRONMENT_ITEM.match(path)
-        if self.opaque or match is None:
-            return None
-        return self.variables.get(folded(match.group(1)))
-
-    def word(self, word: Mapping[str, Any]) -> Word:
-        """A word the reader reports: its text, or, for one that holds environment variables, its text with the value
-        each has in this session, which the command's own assignments set; None when the text does not settle it."""
-        if "variable" in word:
-            return self.lookup(str(word["variable"]))
-        if "expansions" in word:
-            text = str(word["text"])
-            for expansion in word["expansions"]:
-                value = self.lookup(str(expansion["variable"]))
-                if value is None:
-                    return None
-                text = text.replace(str(expansion["token"]), value)
-            return text
-        return None if word["dynamic"] else str(word["text"])
-
-
-def join_sessions(first: Session, second: Session) -> Session:
-    variables: dict[str, Word] = {}
-    for name in first.variables.keys() | second.variables.keys():
-        left, right = first.variables.get(name, _ABSENT), second.variables.get(name, _ABSENT)
-        variables[name] = left if left == right and isinstance(left, str) else None
-    stack = first.stack if first.stack == second.stack else [None] * max(len(first.stack), len(second.stack))
-    return Session(
-        first.cwd if same_place(first.cwd, second.cwd) else None,
-        variables,
-        list(stack),
-        first.opaque or second.opaque,
-        joined_functions(first.functions, second.functions, None),
-    )
-
-
-def environment_names(paths: list[Word], literal: bool, known: Iterable[str] = ()) -> list[str] | None:
-    """The variables these provider paths name, by the name git reads; None when a path is not settled. A path that is
-    not on the environment provider names none; a wildcard in a -Path names every one it matches among those known and
-    the tracked ones."""
-    found: list[str] = []
-    for path in paths:
-        if path is None:
-            return None
-        match = ENVIRONMENT_ITEM.match(path)
-        if match is None:
-            continue
-        name = match.group(1)
-        if not literal and any(character in name for character in "*?["):
-            candidates = {*known, *LOCATION_VARIABLES, *CONFIGURATION_VARIABLES}
-            found.extend(sorted(variable for variable in candidates if fnmatch.fnmatchcase(variable, folded(name))))
-        else:
-            found.append(folded(name))
-    return found
-
-
-def defines_powershell_alias(name: str | None, arguments: list[Word], piped: Iterable[str] = ()) -> bool:
-    """Whether a PowerShell command defines an alias: a cmdlet that defines one, by its name or an alias of it, or one
-    that writes an item or its content at a path on the alias: drive or the Alias provider the text names, or at a
-    path it may take from its pipeline, one of the parameters piped names.
-
-    The tables sit in the function, not the module, so that they run in the tests that call the function rather than
-    at import."""
-    definers = {"set-alias", "sal", "new-alias", "nal", "import-alias", "ipal"}
-    return name in definers or writes_definition_drive(name, arguments, "alias", piped)
-
-
-def writes_definition_drive(name: str | None, arguments: list[Word], drive: str, piped: Iterable[str] = ()) -> bool:
-    """Whether a PowerShell command writes an item, or an item's content, at a path on the alias: or function: drive
-    the text names, as alias:g, Alias::g, or Microsoft.PowerShell.Core\\Function::f, or at a path it may take from its
-    pipeline, by one of the parameters piped names that name the item it writes: a definition a later word runs."""
-    writers = {"set-item", "si", "new-item", "ni", "copy-item", "copy", "cp", "cpi", "rename-item", "ren", "rni"}
-    writers |= {"set-content", "sc", "add-content", "ac", "move-item", "mi", "move", "mv"}
-    from_pipeline = not {"path", "literalpath", "destination"}.isdisjoint(piped)
-    return name in writers and (
-        from_pipeline or any(word is not None and definition_drive(word) == drive for word in arguments)
-    )
-
-
-def definition_drive(path: str) -> str | None:
-    """The drive whose items are definitions a later word runs, "alias" or "function", that a PowerShell path or a
-    drive-qualified variable's path is on, by the drive or the provider; None for any other."""
-    match = re.match(r"^(?:(?:\\|Microsoft\.PowerShell\.Core\\)?(alias|function)::|(alias|function):)", path, re.I)
-    return None if match is None else (match.group(1) or match.group(2)).lower()
-
-
-def defined(drive: str) -> str:
-    """What a definition on the alias: or function: drive is, as a refusal names it."""
-    return {"alias": "an alias the command defines", "function": "a function the command defines from text"}[drive]
-
-
-def definition_provider(providers: list[Word] | None) -> bool:
-    """Whether New-PSDrive's -PSProvider may be the Alias or Function provider, under whose new drive a path the text
-    names is a definition: true when the text does not settle it."""
-    provider = (providers or [None])[0]
-    return provider is None or re.search(r"(?:^|\\)(?:alias|function)$", provider, re.I) is not None
-
-
-def function_name(name: str) -> str:
-    """The name PowerShell defines or calls a function by, lower-cased, without a scope such as global: or script:."""
-    return re.sub(r"^(?:global|script|local|private):", "", name, flags=re.IGNORECASE).lower()
+def read_powershell(command: str, cwd: Path | None, reading: Reading, depth: int = 0) -> None:
+    """Reads a PowerShell command through PowerShell's own parser: understood only when every node of its tree is one
+    POWERSHELL_UNDERSTOOD names, and then read statement by statement as Bash's commands are."""
+    del depth  # PowerShell nests nothing the guard reads
+    output = powershell_events(command, reading)
+    if output is None:
+        return
+    nodes, statements, commands = output.get("nodes"), output.get("statements"), output.get("commands")
+    if not isinstance(nodes, list) or not isinstance(commands, list):
+        reading.cannot_read("pwsh answered without the nodes and commands the reader lists")
+        return
+    unread = [str(node) for node in nodes if node not in POWERSHELL_UNDERSTOOD]
+    for node in unread:
+        reading.cannot_read(f"{node}: {NOT_READ.get(f'PowerShell {node}', 'a node type the guard does not know')}")
+    reader = PowerShellReader(reading, commands)
+    unread.extend(reader.read_forms(output))
+    if unread or not isinstance(statements, list):
+        # Each git call is still read, from a directory only a command list the guard reads settles.
+        moves = any(reader.may_move(command) for command in commands)
+        for command in commands:
+            reader.read_git_only(command, None if moves else cwd)
+        return
+    directory = Directory(cwd)
+    for statement in statements:
+        directory = reader.read_statement(statement, directory)
+    if reader.redirections_read < output.get("fileRedirections", 0):
+        # A file redirection no statement read may write anywhere, a hub among the places.
+        reading.cannot_read("a file redirection the reader did not reach, which may write in a hub")
 
 
 class PowerShellReader:
-    def __init__(
-        self,
-        reading: Reading,
-        depth: int,
-        bash_functions: Mapping[str, tuple[bash_syntax.Command | None, ...]] | None = None,
-    ) -> None:
+    """Reads the statements of a PowerShell command the guard understands, as BashReader reads Bash's."""
+
+    def __init__(self, reading: Reading, commands: list[Any]) -> None:
         self.reading = reading
-        self.depth = depth
-        # The Bash functions the bash that started this pwsh exported, which its environment hands each bash it starts.
-        self.bash_functions = dict(bash_functions or {})
+        self.commands = commands
+        self.redirections_read = 0
 
-    def run(self, nodes: list[Region | dict[str, Any]], session: Session) -> Session:
-        for node in nodes:
-            self.reading.time_left()
-            session = self.region(node, session) if isinstance(node, Region) else self.event(node, session)
-        return session
-
-    def region(self, region: Region, session: Session) -> Session:
-        if region.kind == "function":
-            session.functions[function_name(region.name)] = (region.children,)
-            return session
-        if region.kind == "child":
-            child = session.copy()
-            child.cwd = powershell_directory([session.word(word) for word in region.words[1:]], session.cwd)
-            self.run(region.children, child)
-            return session
-        if region.kind == "branch":
-            return join_sessions(session, self.run(region.children, session.copy()))
-        if self.reading.loops >= LOOP_NESTING_LIMIT:
-            self.reading.cannot_read(f"loops and script blocks nest more than {LOOP_NESTING_LIMIT} deep")
-            lost = session.copy()
-            lost.cwd, lost.opaque = None, True
-            return lost
-        self.reading.loops += 1
-        try:
-            first = self.run(region.children, session.copy())
-            second = self.run(region.children, join_sessions(session, first))
-        finally:
-            self.reading.loops -= 1
-        return join_sessions(join_sessions(session, first), second)
-
-    def event(self, event: dict[str, Any], session: Session) -> Session:
-        kind = event.get("kind")
-        if kind == "command":
-            return self.command(event, session)
-        if kind == "assigned":
-            # The reader reports every assignment with the variable's path.
-            path = str(event["path"])
-            drive = definition_drive(path)
-            if drive is not None:
-                # $alias:g = 'git' or $function:f = '...': a name a later word runs, which the reader cannot follow.
-                self.reading.cannot_read(f"{defined(drive)} (${{{path}}})")
-            self.assigned(event, session)
-        elif kind == "setVariable":
-            variable = event.get("name")
-            if variable is None:
-                session.opaque = True
-            elif event.get("removed"):
-                session.variables.pop(folded(str(variable)), None)
-            else:
-                session.variables[folded(str(variable))] = None
-        elif kind == "opaque":
-            session.opaque = True
-        elif kind == "unread":
-            self.reading.cannot_read(str(event.get("text")))
-        elif kind == "note":
-            self.reading.notes.append(str(event.get("text")))
-        return session
-
-    @staticmethod
-    def assigned(event: dict[str, Any], session: Session) -> None:
-        """An assignment to a variable on the environment provider: a plain one sets the value the reader reports, an
-        empty one or $null removes the variable, as PowerShell does, and any other leaves its value unsettled."""
-        value = session.word(event["value"]) if "value" in event else None
-        for name in environment_names([str(event.get("path", ""))], literal=True) or []:
-            if event.get("removed") or value == "":
-                session.variables.pop(name, None)
-            else:
-                session.variables[name] = value
-
-    def command(self, event: dict[str, Any], session: Session) -> Session:
-        words: list[Word] = [session.word(word) for word in event["words"]]
-        name = command_name(words[0])
-        function = None if name is None else function_name(name)
-        if function not in session.functions:
-            return self.run_unless_function(event, session)
-        # A name the paths before the call define differently runs each body, or no function, on its own path.
-        bodies = session.functions[function]
-        sessions = [
-            self.run_unless_function(event, path) if body is None else self.call_function_event(event, body, path)
-            for body, path in zip(bodies, paths(session, len(bodies)), strict=True)
+    def read_forms(self, output: Mapping[str, Any]) -> list[str]:
+        """Tells the reading of each understood node type's form that is not read: an assignment to the environment
+        or to PowerShell's own variable, a static member or one the text does not name, a cast to a type
+        POWERSHELL_CASTS does not name, and a script block handed to a command POWERSHELL_BLOCK_COMMANDS does not
+        name; returns them."""
+        found = [
+            f"assigns {name if isinstance(name, str) else 'something other than a plain variable'}, which "
+            "PowerShell or git reads, or which the guard does not follow"
+            for name, qualified in (
+                (assigned.get("name"), assigned.get("qualified")) if isinstance(assigned, dict) else (None, False)
+                for assigned in output.get("assigned") or []
+            )
+            if not isinstance(name, str) or qualified or name.lower() in POWERSHELL_VARIABLES
         ]
-        return functools.reduce(join_sessions, sessions)
+        found.extend(
+            "a static member, or one the text does not name, which may run any code"
+            for member in output.get("members") or []
+            if not isinstance(member, dict) or member.get("static") or not member.get("constant")
+        )
+        found.extend(
+            f"a cast or a type the guard does not read ({name}), whose conversion may run code"
+            for name in output.get("types") or []
+            if not isinstance(name, str) or name.lower().removeprefix("system.") not in POWERSHELL_CASTS
+        )
+        found.extend(
+            f"a script block handed to {command or 'no command'}, which may run it as anything"
+            for command in output.get("blocks") or []
+            if POWERSHELL_COMMANDS.get(command.lower() if isinstance(command, str) else "")
+            not in POWERSHELL_BLOCK_COMMANDS
+        )
+        for reason in found:
+            self.reading.cannot_read(reason)
+        return found
 
-    def call_function_event(
-        self, event: dict[str, Any], body: list[Region | dict[str, Any]], session: Session
-    ) -> Session:
-        """A command a function takes."""
-        name = str(command_name(session.word(event["words"][0])))
-        if event.get("failed"):
-            # A simple function takes the words the binder cannot bind into $args and runs, where an advanced one
-            # runs nothing, so its body is read as a path that may run.
-            return join_sessions(session, self.call_function(name, body, session.copy()))
-        # -WhatIf reaches only the cmdlets in the body that honour it; a native command such as git still runs.
-        return self.call_function(name, body, session)
+    def element(self, element: Any) -> list[Word]:
+        """A command element's words: its text, a list's each, or None where the text does not settle it."""
+        if isinstance(element, dict) and element.get("kind") == "words":
+            texts = element.get("texts")
+            if isinstance(texts, list) and all(isinstance(text, str) for text in texts):
+                return list(texts)
+        if not isinstance(element, dict) or element.get("kind") not in {"word", "parameter"}:
+            return [None]
+        text = element.get("text")
+        if not isinstance(text, str):
+            return [None]
+        if "argument" in element:
+            # A native program is handed -Name:value as one word; one whose value the text does not settle is too.
+            value = self.element(element.get("argument"))
+            return [text + value[0] if len(value) == 1 and value[0] is not None else None]
+        return [text]
 
-    def run_unless_function(self, event: dict[str, Any], session: Session) -> Session:
-        """A command no function takes: the cmdlet or the program it names."""
-        words: list[Word] = [session.word(word) for word in event["words"]]
-        parameters = {
-            name.lower(): [session.word(word) for word in values]
-            for name, values in (event.get("parameters") or {}).items()
-        }
-        # The words the reader reports for each parameter, from which a path the text does not settle is judged.
-        reported = {name.lower(): values for name, values in (event.get("parameters") or {}).items()}
-        # A command after the first in its pipeline may take each parameter its arguments leave unbound from there,
-        # with a value the text does not settle.
-        piped = {str(parameter).lower() for parameter in event.get("fromPipeline") or []}
-        for parameter in piped:
-            parameters.setdefault(parameter, [None])
-            reported.setdefault(parameter, [dict(PIPED_WORD)])
-        name, arguments = command_name(words[0]), words[1:]
-        if event.get("failed") or event.get("whatIf"):
-            return session  # A command PowerShell cannot bind, or one told -WhatIf, runs nothing.
-        # A definition may stand for git in a later command, which the reader would take for another program.
-        if defines_powershell_alias(name, arguments, piped):
-            self.reading.cannot_read(f"{defined('alias')} ({name})")
-        if writes_definition_drive(name, arguments, "function", piped):
-            self.reading.cannot_read(f"{defined('function')} ({name})")
-        if name in NEW_DRIVE_NAMES and definition_provider(parameters.get("psprovider")):
-            self.reading.cannot_read(f"a drive on the alias or function provider ({name})")
-        if name in LOCATION_NAMES | PUSH_LOCATION_NAMES | POP_LOCATION_NAMES:
-            return self.location(name, arguments, parameters, session)
-        if name in GIT_NAMES | BASH_NAMES | ENV_NAMES or name in PREFIX_PROGRAMS or name in ELEVATING_PROGRAMS:
-            self.run_program(name, arguments, session.cwd, session.variables, session.opaque)
-        elif name in POWERSHELL_NAMES:
-            # The reader follows a pwsh the session starts with an inline script; one it reads from its standard
-            # input, the text does not hold. Windows PowerShell runs a leading word that names no parameter as
-            # -Command, which the reader does not see, so that script is followed here.
-            started = powershell_arguments(name, arguments)
-            if started is not arguments:
-                follow_powershell(
-                    name,
-                    arguments,
-                    session.cwd,
-                    session.variables,
-                    self.reading,
-                    self.depth,
-                    self.bash_functions,
-                    opaque=session.opaque,
-                )
-            elif powershell_reads_input(arguments):
-                self.reading.cannot_read(f"could not read the command passed to {name}")
-        else:
-            self.environment_change(name, parameters, session, reported)
-        return session
+    def attached(self, command: Any) -> list[Any]:
+        """The value attached by a colon to each parameter of a command, as -MemberName:Delete attaches Delete."""
+        elements = command.get("elements") if isinstance(command, dict) else None
+        return [
+            element.get("argument")
+            for element in (elements if isinstance(elements, list) else [])[1:]
+            if isinstance(element, dict) and element.get("kind") == "parameter" and "argument" in element
+        ]
 
-    def run_program(
-        self, name: str | None, arguments: list[Word], cwd: Path | None, variables: Variables, opaque: bool
-    ) -> None:
-        """A program a PowerShell command starts, in this directory and with these variables in its environment. A pwsh
-        the session starts itself is read by the PowerShell reader; one that env or a prefix program starts, here.
+    def values(self, command: Any) -> list[Word]:
+        """Every value a cmdlet is given, by position or attached to a parameter by a colon, as -Path:<value>; None
+        for one the text does not settle; a parameter written alone gives none, its value being the next element."""
+        found: list[Word] = []
+        for element in (command.get("elements") or [None])[1:]:
+            if not isinstance(element, dict):
+                found.append(None)
+            elif element.get("kind") == "parameter":
+                if "argument" in element:
+                    found.extend(self.element(element.get("argument")))
+            elif element.get("kind") != "block":
+                found.extend(self.element(element))
+        return found
 
-        A bash reads the SHELLOPTS the session hands it by its exact name, which the session holds folded where the
-        platform folds environment names, and which a session the text does not settle may have set to anything."""
-        if name in GIT_NAMES:
-            read_git(arguments, cwd, variables, self.reading, opaque)
-        elif name in BASH_NAMES:
-            script = bash_script(arguments, [], Shell(None, {}, set()))
-            handed = {**variables, SHELLOPTS: None, BASHOPTS: None, PS4: None} if opaque else variables
-            folds = platform_support.ENVIRONMENT_NAMES_FOLD_CASE
-            read = functools.partial(
-                read_bash,
-                functions=self.bash_functions,
-                allexport=bash_allexport(name, arguments, self.reading, script, handed, folds),
-                opaque=opaque,
-                names_folded=folds,
-            )
-            follow(name, script, cwd, handed, self.reading, self.depth, read)
-        elif name in POWERSHELL_NAMES:
-            follow_powershell(
-                name, arguments, cwd, variables, self.reading, self.depth, self.bash_functions, opaque=opaque
-            )
-        elif name in ENV_NAMES or name in PREFIX_PROGRAMS or name in ELEVATING_PROGRAMS:
-            command = started_command(name, arguments, cwd, variables, self.reading)
-            if command is not None:
-                self.run_program(*command, opaque)
-
-    def call_function(self, name: str, body: list[Region | dict[str, Any]], session: Session) -> Session:
-        if self.depth >= NESTING_LIMIT:
-            self.reading.cannot_read(f"the function {name} nests more than {NESTING_LIMIT} deep")
-            session.cwd, session.opaque = None, True
-            return session
-        return PowerShellReader(self.reading, self.depth + 1, self.bash_functions).run(body, session)
-
-    def location(
-        self, name: str, arguments: list[Word], parameters: Mapping[str, list[Word]], session: Session
-    ) -> Session:
-        """Set-Location and Push-Location go where the path PowerShell binds names; bare, Set-Location goes home and
-        Push-Location stays. A location on a provider other than the file system, or a path that is not a directory,
-        which makes the command fail where it stands, leaves where git starts unknown or as it was."""
-        if name in POP_LOCATION_NAMES:
-            session.cwd = session.stack.pop() if session.stack else None
-            return session
-        paths = parameters.get("path", []) + parameters.get("literalpath", [])
-        if not paths and arguments and all(word in {"-", "+"} for word in arguments):
-            paths = [None]  # `cd -` and `cd +` walk a history the text does not show
-        pushing = name in PUSH_LOCATION_NAMES
-        if not paths and pushing:
-            session.stack.append(session.cwd)
-            return session
-        target = location_after(session.cwd, bool(paths), paths[0] if len(paths) == 1 else None)
-        if paths and paths[0] is not None and PROVIDER_LOCATION.match(paths[0]):
-            target, session.opaque = None, True
-        moved_session = session.copy()
-        if pushing:
-            moved_session.stack.append(session.cwd)
-        moved_session.cwd = target
-        if target is not None and target.is_dir():
-            return moved_session
-        return join_sessions(moved_session, session)
-
-    def environment_change(
-        self,
-        name: str | None,
-        parameters: Mapping[str, list[Word]],
-        session: Session,
-        reported: Mapping[str, list[dict[str, Any]]] | None = None,
-    ) -> None:
-        """Sets, removes, renames, or makes unknown the tracked variables a cmdlet reaches on the environment
-        provider, read from the parameters PowerShell binds.
-
-        A path or name the text does not settle, in a parameter that names the variable such a cmdlet writes or
-        removes, may name any variable, so the session's variables are unknown after it, as they are after Bash's
-        `export "$v"=...`, unless may_name_tracked passes it over. reported holds the words the reader reports for each
-        parameter."""
-        literal = parameters.get("literalpath", [])
-        paths = parameters.get("path", []) + literal
-        reached = set(ENVIRONMENT_WRITERS.get(name or "", ()))
-        if name in ENVIRONMENT_REMOVERS or name in RENAME_ITEM_NAMES:
-            reached |= {"path", "literalpath"}
-        # -Name and -NewName name a variable only where the path may be on the environment provider.
-        if (name in NEW_ITEM_NAMES or name in RENAME_ITEM_NAMES) and any(
-            path is None or ENVIRONMENT_PATH.match(path) for path in paths
-        ):
-            reached |= {"name", "newname"}
-        words = [word for parameter in sorted(reached) for word in (reported or {}).get(parameter, [])]
-        if any(session.word(word) is None and may_name_tracked(word) for word in words):
-            session.opaque = True
-        if name in NEW_DRIVE_NAMES:
-            provider = (parameters.get("psprovider") or [None])[0]
-            if provider is None or "environment" in provider.lower():
-                session.opaque = True
-            return
-        known = session.variables.keys()
-        settled = environment_names(parameters.get("path", []), literal=False, known=known) or []
-        settled += environment_names(literal, literal=True) or []
-        for parameter in ENVIRONMENT_WRITERS.get(name or "", ()):
-            written = parameters.get(parameter, [])
-            for variable in environment_names(written, literal=parameter == "literalpath", known=known) or []:
-                session.variables[variable] = None
-        if name in ENVIRONMENT_REMOVERS:
-            for variable in settled:
-                session.variables.pop(variable, None)
-        elif name in NEW_ITEM_NAMES and any(ENVIRONMENT_ROOT.match(path or "") for path in paths):
-            self.set_named(parameters.get("name", []), session)
-        elif name in RENAME_ITEM_NAMES and any(ENVIRONMENT_PATH.match(path or "") for path in paths):
-            for variable in settled:
-                session.variables.pop(variable, None)
-            self.set_named(parameters.get("newname", []), session)
-
-    @staticmethod
-    def set_named(names: list[Word], session: Session) -> None:
-        for word in names:
+    def words(self, command: Any) -> list[Word]:
+        elements = command.get("elements") if isinstance(command, dict) else None
+        words: list[Word] = [
+            word for element in (elements if isinstance(elements, list) else []) for word in self.element(element)
+        ]
+        for word in words[1:]:
             if word is not None:
-                session.variables[folded(word)] = None
+                self.reading.named.extend(named_paths(word))
+        return words or [None]
+
+    def may_move(self, command: Any) -> bool:
+        """Whether a command may move the session's location: one that names a location cmdlet, or whose name the
+        text does not settle; an expression standing as a command moves nothing."""
+        if isinstance(command, dict) and command.get("expression"):
+            return False
+        name = self.words(command)[0]
+        return name is None or name.lower() in {**POWERSHELL_LOCATION, **POWERSHELL_PUSH, **POWERSHELL_POP}
+
+    def read_git_only(self, command: Any, cwd: Path | None) -> None:
+        words = self.words(command)
+        if words[0] is not None and command_name(words[0]) in GIT_NAMES:
+            read_git(words[1:], cwd, self.reading)
+
+    def read_statement(self, statement: Any, directory: Directory) -> Directory:
+        pipelines = statement.get("pipelines") if isinstance(statement, dict) else None
+        operators = statement.get("operators") if isinstance(statement, dict) else None
+        nested = statement.get("nested") if isinstance(statement, dict) else None
+        if not isinstance(pipelines, list) or not isinstance(operators, list) or not isinstance(nested, list):
+            self.reading.cannot_read("a PowerShell statement the reader could not list")
+            return UNKNOWN
+        # A command inside the statement's expressions runs before it, in the session, so one that may move the
+        # location leaves it unknown for the statement and after it.
+        inside = self.read_pipeline(nested, directory).merged() if nested else directory
+        if not same_place(inside.cwd, directory.cwd) or any(
+            self.may_move(self.commands[index])
+            for index in nested
+            if isinstance(index, int) and index < len(self.commands)
+        ):
+            directory = UNKNOWN
+        if not pipelines:
+            # An assignment, an if, or a foreach: what it runs is all nested, read above.
+            return directory
+        outcome = self.read_pipeline(pipelines[0], directory)
+        for operator, pipeline in zip(operators, pipelines[1:], strict=False):
+            if operator == "&&":
+                after = self.read_pipeline(pipeline, outcome.ok)
+                outcome = Outcome(after.ok, joined(outcome.fail, after.fail))
+            else:
+                after = self.read_pipeline(pipeline, outcome.fail)
+                outcome = Outcome(joined(outcome.ok, after.ok), after.fail)
+        return directory if statement.get("background") else outcome.merged()
+
+    def read_redirections(self, command: Mapping[str, Any], directory: Directory) -> None:
+        """The one reading of a command's file redirections, whatever the command, through read_written; each is
+        counted, so read_powershell can hold the count to every file redirection the tree holds."""
+        for redirection in command.get("redirections") or []:
+            if isinstance(redirection, dict) and redirection.get("kind") == "file":
+                self.redirections_read += 1
+                target = redirection.get("target")
+                if isinstance(target, dict) and target.get("kind") == "null":
+                    continue  # > $null discards the output and writes no file
+                read_written(self.element(redirection.get("target"))[0], directory, self.reading)
+
+    def read_pipeline(self, pipeline: Any, directory: Directory) -> Outcome:
+        indexes = pipeline if isinstance(pipeline, list) else []
+        commands = [self.commands[index] for index in indexes if isinstance(index, int) and index < len(self.commands)]
+        if len(commands) == 1:
+            return self.read_command(commands[0], directory)
+        moved = False
+        for command in commands:
+            moved = self.may_move(command) or moved
+            self.read_command(command, directory)
+        # Every command of a PowerShell pipeline runs in the session, so a location one sets outlives it.
+        return certain(UNKNOWN if moved else directory)
+
+    def read_command(self, command: Any, directory: Directory) -> Outcome:
+        self.reading.time_left()
+        if not isinstance(command, dict):
+            return certain(directory)
+        self.read_redirections(command, directory)
+        if command.get("expression"):
+            return certain(directory)
+        if command.get("invocation") == "Dot":
+            self.reading.cannot_read("a command dot-sourced into the session, which may define anything")
+            return certain(UNKNOWN)
+        words = self.words(command)
+        name = words[0]
+        if name is None:
+            self.reading.cannot_read(
+                "a command name the text does not settle, which may be any command, git among them"
+            )
+            return certain(UNKNOWN)
+        if name.lower() in POWERSHELL_COMMANDS:
+            elements = command.get("elements") or []
+            if POWERSHELL_COMMANDS[name.lower()] == "foreach-object" and any(
+                not isinstance(element, dict) or element.get("kind") not in {"block", "parameter"}
+                for element in [*elements[1:], *self.attached(command)]
+            ):
+                # ForEach-Object given a name rather than a script block calls the member by that name.
+                self.reading.cannot_read("ForEach-Object given a member's name runs that member, which may run code")
+                return certain(UNKNOWN)
+            return self.read_cmdlet(name, words[1:], directory, self.values(command))
+        program = command_name(name) or ""
+        if program in GIT_NAMES:
+            # A native program is handed ~ as written; whether pwsh expands it first differs by release.
+            arguments = [None if word is not None and word.startswith("~") else word for word in words[1:]]
+            read_git(arguments, directory.cwd, self.reading)
+        elif program == "gh":
+            read_gh(words[1:], directory, self.reading)
+        elif powershell_command(name):
+            self.reading.cannot_read(f"runs {name}, a PowerShell command the guard does not read, which may run git")
+            return certain(UNKNOWN)
+        elif program in RUNNERS:
+            reason = RUNNERS[program] if program in {"bash", "pwsh"} else runner_refusal(program, words[1:])
+            if reason is not None:
+                self.reading.cannot_read(f"runs {program} from PowerShell: {reason}")
+                return certain(UNKNOWN)
+        elif program in COMMAND_OPTIONS and any(
+            word is None or word.partition("=")[0] in COMMAND_OPTIONS[program] for word in words[1:]
+        ):
+            self.reading.cannot_read(f"{program} may run a command its words name")
+            return certain(UNKNOWN)
+        return certain(directory)
+
+    def read_cmdlet(self, name: str, arguments: list[Word], directory: Directory, values: list[Word]) -> Outcome:
+        """A command POWERSHELL_COMMANDS names: one that moves the location is followed, any other changes nothing the
+        guard reads, unless a path it is given lies on a provider other than the file system (provider_refusal)."""
+        cmdlet = POWERSHELL_COMMANDS[name.lower()]
+        reason = provider_refusal(name, cmdlet, values)
+        if reason is not None:
+            self.reading.cannot_read(reason)
+            return certain(UNKNOWN)
+        if cmdlet == "set-location":
+            return self.read_location(arguments, directory, push=False)
+        if cmdlet == "push-location":
+            return self.read_location(arguments, directory, push=True)
+        if cmdlet == "pop-location":
+            if arguments:
+                return certain(Directory(None, directory.stack[1:]))
+            if not directory.stack:
+                return certain(directory)
+            return certain(Directory(directory.stack[0], directory.stack[1:]))
+        return certain(directory)
+
+    def read_location(self, arguments: list[Word], directory: Directory, push: bool) -> Outcome:
+        """Set-Location or Push-Location to a literal file-system path, by -Path, -LiteralPath, or position; a leading
+        ~ is home, and - and + leave the location unknown, as a path the text does not settle does."""
+        if arguments and arguments[0] is not None and arguments[0].lower() in {"-path", "-literalpath"}:
+            arguments = arguments[1:]
+        stack = (directory.cwd, *directory.stack) if push else directory.stack
+        if not arguments:
+            return moved_to(directory, home(self.reading.environment), stack)
+        target = arguments[0]
+        if target is not None and target.startswith("-") and target != "-":
+            self.reading.cannot_read(f"Set-Location's parameter {target}, which the guard does not read")
+            return certain(UNKNOWN)
+        if len(arguments) > 1 or target is None or target in {"-", "+"}:
+            return certain(Directory(None, stack))
+        if target == "~" or target.startswith(("~/", "~\\")):
+            path = home(self.reading.environment) / target[2:]
+        else:
+            path = Path(target)
+        if not path.is_absolute():
+            if directory.cwd is None:
+                return certain(Directory(None, stack))
+            path = directory.cwd / path
+        return moved_to(directory, path, stack)
 
 
-def may_name_tracked(word: Mapping[str, Any]) -> bool:
-    """Whether a provider path or name the reader reports, and the text does not settle, may name a variable git reads.
-
-    It may unless the part after its last separator is literal text naming none: `"$dir\\out.txt"` names the variable
-    out.txt wherever $dir points, and nothing else on the environment provider. Every expansion the reader reports
-    begins with $, so a last part that holds one holds a $."""
-    text = str(word.get("text") or "")
-    last = re.split(r"[\\/]", text)[-1]
-    if not last or re.search(r"[$`*?\[\]:]", last):
-        return True
-    # One a bash reads its options from as it starts, or a POSIXLY_CORRECT, BASH_COMPAT, or PS4 it is handed.
-    return is_tracked(last) or last.upper() in SHELL_SETTING_VARIABLES
-
-
-def location_after(cwd: Path | None, named: bool, target: Word) -> Path | None:
-    """Where Set-Location leaves the session. Bare, it goes home; `-` and `+` walk a history the text does not show."""
-    if not named:
-        return Path.home()
-    if target is None or target in {"-", "+"}:
-        return None
-    # PowerShell's file system provider reads a leading ~ as home; the parser leaves it as text.
-    return home_path(target) or moved(cwd, target)
-
-
-def read_powershell(
-    command: str,
-    cwd: Path | None,
-    reading: Reading,
-    depth: int,
-    variables: Variables,
-    functions: Mapping[str, tuple[bash_syntax.Command | None, ...]] | None = None,
-    opaque: bool = False,
-) -> None:
-    """Reads a PowerShell command with PowerShell's own parser, started only for text it could refuse, with the Bash
-    functions the bash that starts it exported, which a bash it starts defines. A starter the text does not settle
-    may have handed it any variable.
-
-    Starting pwsh costs far more than the guard's git calls, so text may_refuse passes never pays for it, unless a
-    Bash function reaches the session, whose body a bash the text starts may run. A location belongs to the session,
-    not to a script block's scope, so only a child pwsh restores one.
-    """
-    handed = bool(functions) or any(EXPORTED_FUNCTION.match(name) for name in variables)
-    if not handed and not may_refuse(command, cwd, reading):
-        return
-    events = powershell_events(command, reading, depth)
-    if events is None:
-        return
-    # A session inherits the environment the hook was given; the handed variables are those its starter passes on.
-    inherited = {name: value for name, value in started_environment(reading, variables).items() if not is_tracked(name)}
-    environment = {folded(name): value for name, value in inherited.items()}
-    session = Session(cwd, {**environment, **git_variables(variables, reading.notes)}, opaque=opaque)
-    PowerShellReader(reading, depth, functions).run(event_tree(events), session)
-
-
-ShellReader = Callable[[str, "Path | None", Reading, int, Variables], None]
+ShellReader = Callable[[str, "Path | None", Reading, int], None]
 # Monitor's command runs in the shell the Bash tool uses, so the guard reads it as Bash.
 SHELL_READERS: dict[str, ShellReader] = {"Bash": read_bash, "Monitor": read_bash, "PowerShell": read_powershell}
 
@@ -3821,7 +2679,7 @@ def read_command(tool: str, command: str, cwd: Path, environment: Mapping[str, s
 def read_into(reading: Reading, tool: str, cwd: Path, environment: Mapping[str, str]) -> None:
     """Reads the reading's command with the tool's shell reader, its hub lookups held to the reading time."""
     with lookups_within(reading.deadline):
-        SHELL_READERS[tool](reading.text, cwd, reading, 0, inherited_variables(environment))
+        SHELL_READERS[tool](reading.text, cwd, reading, 0)
 
 
 def start_reading(command: str, cwd: Path, environment: Mapping[str, str]) -> Reading:
@@ -3848,6 +2706,34 @@ def reached_hubs(reading: Reading, found: set[Path] | None = None) -> set[Path]:
             reading.time_left()
             try:
                 hub, _ = reached_hub(call.place)
+            except GitError as exc:
+                failures.append(exc)
+                continue
+            if hub is not None:
+                found.add(hub)
+    if failures:
+        raise failures[0]
+    return found
+
+
+def named_hubs(reading: Reading, cwd: Path, found: set[Path]) -> set[Path]:
+    """The guarded hubs the paths a command names lie in, looked up when none is in view and the command holds a part
+    the guard does not read, which may reach one of them; at most NAMED_PATH_LIMIT directories, each within the
+    reading time. A path git answers with an error for may be a guarded hub's, raised once the others are looked up."""
+    directories: list[Path] = []
+    for name in reading.named:
+        try:
+            directory = worktrees.existing_directory(resolve(name, cwd))
+        except (GitError, ValueError):
+            continue  # text that is no path the system can look at names no hub
+        if directory is not None and not any(same_path(directory, each) for each in directories):
+            directories.append(directory)
+    failures: list[GitError] = []
+    with lookups_within(reading.deadline):
+        for directory in directories[:NAMED_PATH_LIMIT]:
+            reading.time_left()
+            try:
+                hub = guarded_hub_at(directory)
             except GitError as exc:
                 failures.append(exc)
                 continue
@@ -3890,6 +2776,8 @@ def guard(stream: str) -> int:
             read_into(reading, tool, cwd, os.environ)
             looking_up = True
             reached_hubs(reading, hubs)
+            if reading.unread and not hubs:
+                named_hubs(reading, cwd, hubs)
             looking_up = False
             reason = denied(reading, hubs)
             refused = None if reason is None else f"{reason} {DENY_REASON}"
@@ -3897,14 +2785,14 @@ def guard(stream: str) -> int:
                 print(f"hub guard could not judge part of the command: {note}", file=sys.stderr)
     except Exception as exc:  # noqa: BLE001 - a broken guard must not block every tool; the regression suite pins what it refuses
         cut_short = looking_up and isinstance(exc, (ReadingTimeout, GitError))
-        if in_view is None or not ((in_view[1] or cut_short) and mentions(MENTIONS_GIT, in_view[0])):
+        if in_view is None or not (in_view[1] or cut_short):
             print(f"hub guard skipped: {type(exc).__name__}: {exc}", file=sys.stderr)
             return 0
-        # Where a guarded hub is in view, a command naming git that the guard failed to read or judge is one it cannot
-        # read, whether a reader fails on nesting past Python's recursion limit or on any other error.
+        # Where a guarded hub is in view, a command the guard failed to read or judge is one it does not read,
+        # whether a reader fails on nesting past Python's recursion limit or on any other error.
         refused = (
-            f"The guard failed reading this command ({type(exc).__name__}: {exc}), and it names git, so it is refused "
-            f"while a hub is guarded. Rewrite it so each git command is written out. {DENY_REASON}"
+            f"The guard failed reading this command ({type(exc).__name__}: {exc}), so it is refused while a hub is "
+            f"guarded. {REWRITE_IT} {DENY_REASON}"
         )
     if refused is not None:
         print(

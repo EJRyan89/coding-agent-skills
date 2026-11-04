@@ -197,7 +197,8 @@ setting a variable named `\` and then exits with status 0. PowerShell parses a w
 it, so the rest is written in what both shells parse, `test` rather than `[`, `env -u` rather than a loop of
 `unset`, and `awk` printing to `/dev/stderr` rather than `>&2`, which PowerShell refuses to parse.
 `HookCommandUnderPowerShellTests` in `tests/tools/test_hub_guard.py` runs the tracked command under `pwsh`, opted in,
-not, and with an opt-in git cannot read, and holds that it exits 0 with no output and starts no program.
+not, and with an opt-in git cannot read, and holds that it exits 0 with no output and starts no program. The hook
+declares `onFailure: "block"`, which [The guard's contract](#the-guards-contract) explains.
 
 With the guard enabled:
 
@@ -257,313 +258,186 @@ The guard is Claude Code's. For Codex and Copilot CLI the `CLAUDE.md` rules are 
 
 ### The guard's contract
 
-The hook is given the text of a command, not what runs under it. The guard reads that text with each shell's own
-rules, and every decision it makes is one of three: what its readers settle is judged, what they cannot settle is
-refused while a guarded hub is in view, and what they do not see at all is named below.
+The hook is given the text of a command, not what runs under it. The guard fails closed: it reads a command only as
+far as it understands it, and every decision it makes is one of three. What it understands is judged; a part it does
+not understand is refused while a guarded hub is in view; and what no shell's text shows is named below. What it
+understands is a set of tables in `tools/hub_guard.py`, each a catalogue a shell publishes, with every entry either
+understood or in `NOT_READ` with the reason it is not read. The guard's suites take each catalogue from the shell
+itself, `compgen -b`, `compgen -k`, `set -o`, `shopt`, and `compgen -v` from Bash and the AST node types by
+reflection from PowerShell, and fail on an entry neither table holds, so an entry a later shell adds is refused until
+a row decides it.
 
-#### What the readers settle
+#### What it understands
 
 - **Where a git call acts.** git writes the `HEAD` and index of its repository and the files of its work tree, so a
   call acts on the hub when either one is the hub's. The repository is the one `--git-dir` or `GIT_DIR` names, or
   else the one git finds from where it starts, which inside a git directory, such as `-C <hub>/.git`, is that
-  directory's own repository; the work tree is the one `--work-tree`, `GIT_WORK_TREE`, or a
-  `core.worktree` setting names, or else where git starts, after each `-C`. A relative path is read from where git
-  finally starts, and a relative `core.worktree` from the repository it is set for. `GIT_COMMON_DIR` names only the
-  store of refs and objects every worktree shares, so it does not change which checkout a call writes. The guard
-  reads git's own options as git does, with no abbreviation and with a value attached after `=` or as the next word
-  (`-C`, `-c`, `--attr-source`, `--config-env`, `--git-dir`, `--namespace`, `--shallow-file`, `--super-prefix`,
-  `--work-tree`), and `core.worktree` and `alias.<name>` among the command-line configuration a call sees:
-  `GIT_CONFIG_PARAMETERS`, `GIT_CONFIG_COUNT` with its pairs, then each `-c` and `--config-env`.
-- **Location variables.** `GIT_DIR`, `GIT_WORK_TREE`, and the two configuration variables reach a git call from
-  the environment Claude Code gives the hook, and from whatever the command sets: in Bash, for one command
-  (`GIT_DIR=<dir> git ...`, `env GIT_DIR=<dir> git ...`) or exported for the rest (`export`, `declare -x`,
-  `typeset -x`, an assignment under `set -a`, `set -o allexport` in a bundle as in `set -eo allexport`,
-  `shopt -so allexport`, or a nested `bash -a`, `bash -o allexport`, or `bash` handed a `SHELLOPTS` listing
-  `allexport`, or to a
-  variable already exported), and removed by `unset`,
-  `export -n`, `env -i`, and `env -u`, while `read`, `printf -v`, `getopts`, `mapfile`, `readarray`, and
-  `wait -p` leave each variable they set unsettled, as an expansion that assigns does, `${NAME:=word}` or
-  `${NAME=word}`, to an element or not, or `${!NAME:=word}` through the variable it names, in any word or
-  redirection, an arithmetic `for`'s header, or nested in another expansion, unless the variable already holds a
-  value that is not empty, which neither form changes, and every variable when a word the text does not settle is among
-  their options or operands; a name reference that `declare -n`, `local -n`, or `typeset -n` makes stands for the variable it names,
-  so an assignment to it, its expansion, and each of those builtins reach that variable, until `unset -n` or
-  `declare +n` ends it, and one a function makes stands for no variable the guard knows once the function returns;
-  in PowerShell, through `$env:<name>` and `${<path>}` on the environment provider (cast,
-  in parentheses, or as any target of a multiple assignment), a `foreach` loop's variable, `PSVariable.Set`,
-  `[Environment]::SetEnvironmentVariable`, and the cmdlets that write the provider: `Set-Item`,
-  `New-Item`, and `Set-Content` at their path, `Copy-Item` at its destination, `New-Item` on the provider's root
-  with `-Name`, and `Rename-Item` with `-NewName`, while `Remove-Item` and `Clear-Item` remove one, and so does
-  assigning `$null`. `PSVariable.Set` is read on every receiver the resolver types as `PSVariableIntrinsics`,
-  quoted, parenthesized, scoped, through `$PSCmdlet`, or cast, and on one it does not type, which includes one typed
-  as `[object]` or any other type an engine object can be assigned to; `Invoke` and `DynamicInvoke` on a receiver it
-  does not type are read as either setter. `SetEnvironmentVariable` sets the session's variable unless its target
-  settles to another, as a string, a number, a cast, or a member of `EnvironmentVariableTarget`; neither is decided by
-  the text it is spelled in. A method reached without a call, as `[Environment]::SetEnvironmentVariable` kept or
-  handed to `.Invoke`, and a member called by its name, through `ForEach-Object -MemberName` or `.ForEach('Set')`,
-  are parts the guard cannot read. The provider's paths are the `env:` drive (`env:<name>`, `env:\<name>`, `env:/<name>`) and
-  `Environment::<name>` (also `\Environment::<name>` and `Microsoft.PowerShell.Core\Environment::<name>`); after
-  `Environment::` a separator becomes part of the variable's name, which git never reads. On Windows git reads an
-  environment name in any case, so `git_dir` is `GIT_DIR` there; elsewhere only the upper-case name counts. Bash
-  keeps each spelling a variable of its own, and when two spellings reaching git disagree, the call is judged by
-  the upper-case one, the spelling git reads, with a note.
+  directory's own repository; the work tree is the one `--work-tree`, `GIT_WORK_TREE`, or a `core.worktree` setting
+  names, or else where git starts, after each `-C`. A relative path is read from where git finally starts, and a
+  relative `core.worktree` from the repository it is set for. `GIT_COMMON_DIR` names only the store of refs and
+  objects every worktree shares, so it does not change which checkout a call writes. The guard reads git's own
+  options as git does, with no abbreviation and with a value attached after `=` or as the next word (`-C`, `-c`,
+  `--attr-source`, `--config-env`, `--git-dir`, `--namespace`, `--shallow-file`, `--super-prefix`, `--work-tree`),
+  and `core.worktree` and `alias.<name>` among the command-line configuration a call sees: `GIT_CONFIG_PARAMETERS`,
+  `GIT_CONFIG_COUNT` with its pairs, then each `-c` and `--config-env`. The location and configuration variables
+  reach a call from the environment Claude Code gives the hook; the command itself sets none of them, since every
+  form that would, an assignment before git, `export`, `env`, and a PowerShell assignment among them, is a part the
+  guard does not read. On Windows git reads an environment name in any case, so `git_dir` is `GIT_DIR` there; when
+  two spellings disagree, the call is judged by the upper-case one, the spelling git reads, with a note.
 - **Bash, by its grammar.** `tools/bash_syntax.py` reads Bash as Bash parses it: single and double quotes, `$'...'`,
-  escapes and line continuations, comments, and here-documents, whose bodies are data and never commands; and the
-  command tree of lists, `&&` and `||`, pipelines, `( )` subshells, `{ }` groups, `if`, `while`, `until`, `for`,
-  `select`, `case`, `[[ ]]`, `!`, `time`, and function definitions, reading an arithmetic command, `(( ))`, as a
-  subshell, after which each variable an expansion in it assigns is unsettled, with redirections and array assignments,
-  whose substitutions it reads and whose value it leaves unsettled. Before a command's name it reads every
-  assignment Bash reads there, and places the command after them: `NAME=value`, `NAME+=value`, an element's
-  `NAME[SUBSCRIPT]=value` and `NAME[SUBSCRIPT]+=value`, whose subscript it reads whole as Bash does, blanks, quotes,
-  and nested brackets included, and an array's, `NAME=( )` and `NAME+=( )`, to a subscript or not. Bash refuses an
-  element's assignment before a command, sets nothing for it, and runs the command all the same, and the guard reads
-  it so; on its own an element's assignment makes the variable an array, whose value it leaves unsettled. No form of
-  assignment Bash reads before a command stays outside what the guard sees. A redirection may stand before the
-  command's name and among its assignments, as in `2>/dev/null git push` or `x=1 >out git push`, and the guard
-  places that call as it places the bare one, with every redirection operator Bash has: `<`, `>`, `>>`, `>|`, `<>`,
-  `&>`, `&>>`, `<<<`, a here-document, and a duplication such as `2>&1`, with or without a descriptor. As Bash does,
-  it still assigns each assignment after such a redirection, but after one that follows an assignment it reads no
-  subscript whole and refuses `NAME=( )`, and it reads a reserved word only as a command's first word, so in
-  `2>/dev/null time git push` or `x=1 time git push` Bash runs the program `time`. A word's value comes from its
-  literal text, `~`, and each `$NAME` the command sets or the environment holds, and `$PWD` is where the shell is; a
-  substitution, arithmetic, a special parameter, a glob, a brace expansion, or a value that would split leaves the
-  word unsettled. An unsettled word as a command's name, or among the options of `command`, `exec`, or `builtin`,
-  may expand to nothing, so the words after it are also read as the command that runs, as in `$x git commit`. The
-  guard follows `cd` (with `--`; bare goes home, `cd -` and a `CDPATH` search leave the
-  directory unknown), `pushd`, `popd`, and `env -C`, whose last `-C` alone counts, read from where `env` starts, and
-  runs a function's body where a command calls it.
-  Commands after `exec`, `command`, `builtin`, `nohup`, `nice`, `timeout`, `stdbuf`, the program `time`, `sudo`,
-  `doas`, and `env` are read as the commands they start, a short option's value read attached, as in `nice -n5`,
-  `stdbuf -oL`, and `env -C<dir>`, or as the next word, in a bundle too, as in `exec -ca <name>`; `env`'s after every word holding `=`, which it takes as an
-  assignment whatever the name; and `eval` of fixed words is read as part of the shell. `sudo` and `doas` run their
-  command as another user under a policy that decides which variables reach it, so each one the shell holds is
-  unsettled there, and `sudo` sets each `NAME=value` word before its command there as `env` does, where `doas`
-  takes such a word as its program; `-D` moves the command, a login shell (`-i`) starts in a home the text does not settle, an option
-  after which they start no command, such as `sudo -l`, starts none, and one the guard does not know is a part it
-  cannot read. `tests/tools/test_prefix_programs.py` runs `env` and each of those programs but `sudo` and `doas`,
-  which may prompt or raise privileges, where the system installs it, on the option forms its own `--help` lists, and
-  holds the guard, form by form, to reading the command the program starts or refusing the form. Every command or process
-  substitution runs, as Bash runs it, in a subshell before the command that holds it, and so does one in an unquoted
-  here-document's body.
-- **PowerShell, by its parser.** A PowerShell command is read by PowerShell's own parser, not by a second
-  hand-written grammar, and each command's arguments by the parameters PowerShell's binder gives them, so a
-  parameter abbreviated, aliased, or left positional, and each path of an array, is read. A cmdlet after the first in
-  its pipeline may take each parameter its arguments leave unbound from there, by value or by property name, as its
-  metadata says, in a parameter set that holds those its arguments bind; such a parameter's value is one the text
-  does not settle, so `'<dir>' | Set-Location` leaves the directory unknown, an environment variable a piped path may
-  name is unknown after it, and an item or content cmdlet that may take the path it writes from its pipeline is a
-  definition, as below. A command the binder refuses, or one given `-WhatIf`, runs nothing, except a call to a
-  function the command defines, a native program, and a cmdlet after the first in its pipeline, which may take what
-  the binder sees missing from there.
-  A function runs its body whatever `-WhatIf` says, since it reaches only the cmdlets that honour it, and a simple
-  function takes the words it declares no parameter for into `$args` and runs, so its body is read as a path that may
-  run; one defined with a scope, as `function global:f`, is called by its bare name and its scoped one. A native
-  program such as git is handed its words as they are, `-WhatIf` and a repeated option among them.
-  `tools/hub_guard-powershell.ps1` only reports what the parser and
-  binder found, in the order PowerShell would run it, and `tools/hub_guard.py` makes every decision. The guard
-  follows `cd`, `chdir`, `sl`, and `Set-Location` (bare goes home, a leading `~` means home, `cd -` and `cd +` leave
-  the location unknown, and one on a provider other than the file system leaves it unknown),
-  `Push-Location` and `Pop-Location` with their stack, `$env:NAME` and strings whose only expansions are
-  environment variables, and a function's body where a command calls it. A variable's value is the one the session
-  holds at that point, as in Bash: the one the hook was given, or the word a plain assignment in the command gives it
-  (`$env:NAME = <word>` or `${env:NAME} = <word>`, on any path of the provider), while an empty value or `$null`
-  removes it. A compound, cast, parenthesized, or multiple assignment, a `foreach` loop's variable, `PSVariable.Set`,
-  `[Environment]::SetEnvironmentVariable`, and a cmdlet that writes the provider leave its value unsettled, and a
-  variable the session does not hold is unsettled too. A cmdlet that writes, removes, or renames a variable at a
-  path or name the text does not settle may reach any variable, so every one is unsettled after it, as after Bash's
-  `export "$v"=x` or `unset "$v"`; a path whose last part is literal text, as in `"$dir\out.txt"`, can name only the
-  variable that part names, so it is passed over when git does not read that one, nor a bash it starts takes a
-  setting from (`SHELLOPTS`, `BASHOPTS`, `POSIXLY_CORRECT`, `BASH_COMPAT`, or `PS4`). A command after the programs
-  `env`, `nohup`, `nice`, `timeout`, `stdbuf`, `time`, `sudo`, and `doas` is read as in Bash, as the command it
-  starts. A location
-  set inside a script block outlives the block, as it does in PowerShell. `Invoke-Expression` (`iex`) with a fixed
-  string is read as part of the same session. A command that does not parse is allowed: PowerShell parses a whole
-  script before it runs any of it, so none of it runs.
-- **Paths that do not all run.** A command that runs only when another succeeds or fails, only in some branch, or
-  any number of times in a loop or script block, is read as running, and so is the `command_not_found_handle`
-  function a command defines, with each body it may have, at each program a later word starts, since Bash runs it
-  for a program it does not find, and afterwards the guard keeps only what every path agrees on: a directory or
-  variable one path changes is unknown after it. A function one path defines, redefines, or removes keeps every body
-  the paths give it, and no function where one leaves it undefined, and a call to it, a nested `bash` it is exported
-  to included, is read once with each, as the builtin or program its name names where it has none. `unset` removes a
-  function with `-f` in any bundle or word, `-n` beside it included, as in `unset -fn`, and a bare `unset NAME`
-  removes the function by the name where no variable by it is set, which the guard does not settle for every path
-  Bash may take, so after it the function keeps its bodies beside none; `-f` with `-v`, or an option Bash does not
-  know, removes nothing, and
-  an option word the text does not settle may be any of them, which the guard cannot read. A directory
-  change whose target is not a directory fails and leaves the shell where it was, so it is unknown after it too,
-  except along `&&`, which goes on only when it succeeded. The guard reads a loop's or script block's body twice, so
-  it follows loops and
-  script blocks, counted together across nested shells and function calls, to eight deep; deeper is a command the
-  guard cannot read, and the directory and every variable are unknown after it.
-- **Nested shells.** `bash -c` (alone or in a bundle such as `-lc`), `bash <<< '<script>'`, a here-document handed
-  to `bash`, and `pwsh -c` (or `powershell -Command`) or `pwsh -CommandWithArgs` (`-cwa`) with a fixed script are
-  read in either shell, by every spelling pwsh takes for a parameter: a leading `-`, en dash, em dash, or
-  horizontal bar, that dash doubled, as in `--command`, white space around the word, and a leading `/`, as in
-  `/Command`, on every platform. `tests/tools/test_hub_guard_shells.py` runs pwsh on these spellings and Bash on
-  the builtins above that set a variable, and holds the guard to what each shell does. `bash` runs as its `-c`
-  script the first word after all of its options and a `--`, as in `bash -c -e '<script>'`, each `o` or `O` in a
-  bundle taking the next word as its value, as in `bash -euo pipefail -c '<script>'`, and Windows PowerShell
-  runs a leading word that names no parameter as `-Command`, as in `powershell '<script>'`, where `pwsh` runs it as a
-  script file. Each nested shell is read as a process of its own that starts with the variables its parent exported,
-  a nested `bash` or `sh` also with the functions its parent exported (`export -f`, `declare -fx`, `declare -Fx`
-  in either case and order, or a definition under allexport), through any `pwsh` between them, and those its
-  environment hands it as `BASH_FUNC_<name>%%`, from Bash or from a PowerShell assignment such as
-  `${env:BASH_FUNC_<name>%%}`, a declaration word the text does not settle exporting every function, in its parent's directory or the one the last
-  `pwsh -WorkingDirectory` (`-wd`) names, read from there with a leading `~` as home; its directory and
-  what it exports do not outlive it. A nested `bash` or `sh` turns allexport on, whatever its own options say, when
-  the `SHELLOPTS` its environment hands it lists `allexport` by that exact name: one `env` gives it, or the one Bash
-  keeps read-only and lists its options in, once `export` or `declare -x` exports it, never one a prefix assignment
-  names; `env -u` and `env -i` remove it, and `export -n` stops exporting it. A `SHELLOPTS` whose value the text does
-  not settle, or one listing `allexport` from a PowerShell session, which holds environment names folded where the
-  platform folds them, so that Bash may not read it, is a part the guard cannot read. `BASHOPTS` hands on `shopt`'s
-  options the same way. Every source of a shell option is read through one table of `set`'s options and one of
-  `shopt`'s (`SET_OPTIONS` and `SHOPT_OPTIONS` in `tools/hub_guard.py`): `set` and `shopt -s`, `-u`, and `-o`, a
-  nested `bash`'s own letters, `-o`, `-O`, and long options, `sh`, which Bash runs in POSIX mode, a `bash` that
-  `exec -a sh` starts by that name, the `SHELLOPTS` and `BASHOPTS` its environment hands it, and a `POSIXLY_CORRECT`
-  or `BASH_COMPAT` it is handed or the command assigns, by any builtin that assigns, before a command, through a name
-  reference, or by arithmetic. Every arithmetic context is read for what it may assign: `(( ))`, `$(( ))`, `let`,
-  an arithmetic `for`, each operand of an arithmetic comparison in `[[ ]]`, an array subscript, in a `${ }` or before
-  an element's `=`, and a `${NAME:offset:length}`, in a word, a redirection target, an unquoted here-document, a case
-  word or pattern, or a `for` list. The guard cannot read a command whose arithmetic assigns either variable, or
-  evaluates what the text does not settle to a number, since Bash evaluates a variable's value as an expression in
-  turn: an expansion or variable whose value the text does not settle, a substitution's output, or a `${ }` other than
-  a plain name. A number the text does not settle is read as a number: a `for` loop's variable over words that are each
-  a literal integer, `$#`, `$?`, `$$`, `$!`, a length (`${#NAME}`, `${#NAME[@]}`), and `RANDOM`, `SECONDS`, `LINENO`,
-  `BASHPID`, `PPID`, `UID`, and `EUID` while the text neither assigns nor unsets them. Once Bash has removed quotes
-  and backslash-newlines, an expansion stands for its value only as a whole operand: beside a name or another
-  expansion, as in `x$i`, `x"$#"`, `${w}$i`, or `x$((i))`, it makes a name the text does not settle, and any other
-  backslash is not read. A loop's number is its variable's first element alone, so a subscripted read of it, as
-  `i[1]`, is unsettled, and making it a name reference or undoing one ends it. Every variable Bash sets itself
-  (`BASH_SET_VARIABLES` in `tools/hub_guard.py`, held to what `compgen -v` lists in a bash started with no
-  environment) is unsettled, `SHELLOPTS`, `BASHOPTS`, `DIRSTACK`, `_`, `OPTARG`, `BASH_REMATCH`, and `REPLY` among
-  them, but for those that always hold a number while the text leaves them alone, such as `OPTIND`, `PIPESTATUS`,
-  and `RANDOM`; a name Bash does not set is unset until the text assigns it. A compound array assignment's element
-  subscripts, as in `a=([k]=v)`, are arithmetic too, and so is the subscript of each operand a builtin takes as an
-  array reference, quoted or escaped, as `unset 'a[k]'`, `printf -v 'a[k]'`, or `declare -a "a=([k]=v)"` give it.
-  An associative array's keys are no arithmetic, but the guard reads them as if they were, so `declare -A m=([$k]=v)`
-  with `$k` unsettled is refused all the same. Nor can it read one that gives a variable the integer attribute (`declare -i` and the like), after
-  which each assignment to it is arithmetic. A command that only names either variable, as
-  `git log -S POSIXLY_CORRECT` does, is read as before. Each table names each option Bash lists and whether a shell
-  holding it is one the guard reads: the guard follows allexport, reads a shell under an option that changes nothing
-  it reads, such as `errexit`, `pipefail`, `nounset`, or `extglob`, and cannot read one under `keyword`, `posix`,
-  `lastpipe`, `cdable_vars`, `physical`, `privileged`, or the others its table marks, nor an option it does not
-  name. `xtrace` expands `PS4` before each command it traces, so the guard cannot read a shell where it is turned on
-  while the shell holds a `PS4` that may run something as it expands, nor one that assigns `PS4` such a value: one
-  the text does not settle, or one holding a command substitution, a backquote, an arithmetic expansion, or a `${ }`
-  other than a plain name's. The usual `PS4='+ ${BASH_SOURCE}:${LINENO}: '` runs nothing. An assignment whose name
-  the text does not settle, by `export`, `declare`, `typeset`, `local`, `readonly`, `read`, `printf -v`, `mapfile`,
-  `wait -p`, a name reference, or `${!NAME:=word}`, may assign any variable, one of these among them, so the guard
-  cannot read it, which refuses `read -r name value; declare "$name=$value"` too. A nested `bash`'s own options are judged only where the guard reads its script: a script
-  file is unread whatever they are. An
-  `env` word the text does not settle, as in `env FOO=$(cmd)`, may assign any variable, so the guard cannot read it,
-  and every variable git or a nested bash reads is unsettled for the command after it. A shell the text does not settle may have exported any
-  variable, so a shell it starts is one the text does not settle either. Nesting of shells, `eval`, function calls,
-  and `Invoke-Expression` is followed to four deep; deeper is
-  a command the guard cannot read.
-- **When pwsh starts.** Starting `pwsh` costs far more than the guard's git calls, so the guard starts it only when
-  the text names `git` and either, as a word, a refused subcommand, `fetch`, or an alias git defines where the
-  command starts or in a hub in view, or command-line alias configuration, each also read with the quotes, backticks,
-  and backslashes that join a word taken out, so `com'mit'` names `commit`; or something that computes a word
-  follows `git` in its statement; or the command starts outside every repository. `git status`, `git log`, and
-  every non-git command never wait for it.
+  escapes and line continuations, comments, and here-documents, and the command tree of lists, `&&` and `||`,
+  pipelines, `( )` subshells, `{ }` groups, `if`, `case`, `while`, `until`, `for`, `select`, `!`, and `time`. The
+  guard understands a simple command whose name is literal once quotes are removed and is a builtin
+  `BUILTINS_UNDERSTOOD` names or a program, wherever the tree holds it, as the runner rule below judges it, and reads
+  each of its words as literal text, `~`, or an expansion `EXPANSIONS_UNDERSTOOD` names, which leaves its word one
+  the text does not settle. Such a word may stand among a program's arguments and among a git call's words after its
+  subcommand, where a refused subcommand given one is refused in the hub, since it may be any option. Each command
+  or process substitution is read as the commands it runs, and so is one in an unquoted here-document's body. A
+  quoted here-document's body, as `<<'EOF'` gives it, and a here-string's quoted word do not expand: each is data
+  handed to the command's input, read as nothing it runs.
+- **Directories.** `cd`, `pushd`, and `popd` to a literal directory move the shell, and each git call after them is
+  placed there: along `&&` where the change succeeded, along `||` where it failed, and after `;` where the target is
+  a directory now, or else nowhere the text settles, since an earlier command may make it one. A pipeline's commands
+  and a background job run in subshells of their own, so a change there moves nothing after them. A target the text
+  does not settle, `cd -`, a `CDPATH` search, and `pushd`'s rotations leave the directory unknown, and a compound
+  command that holds a change leaves every git call in it and after it in a directory the text does not settle.
+- **Assignments.** A bare assignment is understood to a free name: one `BASH_VARIABLES` gives no reason, git does not
+  read, and the environment does not hold. Before a command, an assignment is understood to a name git does not read
+  and `BASH_VARIABLES` gives no reason, and before git only to a name `GIT_PREFIXES` lists, with a value it allows,
+  such as `GIT_EDITOR=true`, or to such a name of Bash's own, such as `LC_ALL`.
+- **Shell options.** `set` and `shopt` are understood for the options `SET_OPTIONS` and `SHOPT_OPTIONS` decide change
+  nothing the guard reads, such as `errexit`, `pipefail`, `nounset`, and `nullglob`, and so is a shell the
+  environment starts under them, through `SHELLOPTS` and `BASHOPTS`. Each other option, `keyword`, `posix`, `lastpipe`,
+  and `cdable_vars` among them, and one neither table names, is refused, and so is a shell the environment hands
+  `POSIXLY_CORRECT` or `BASH_COMPAT`, `xtrace` where the environment's `PS4` holds an expansion, whatever turns it
+  on, `set`, `shopt -o`, or the environment's `SHELLOPTS`, and a command named
+  after a function the environment hands the shell as `BASH_FUNC_<name>%%`.
+- **gh.** `gh pr checkout`, `gh pr co`, and `gh repo sync` check a branch out in the checkout gh runs in, and are
+  judged as a checkout git makes there.
+- **Redirections.** A redirection that writes a file at a path the text settles is refused when the file lies in a
+  guarded hub's tracked files or anywhere in its git directory, as a file tool's edit is; a duplication such as
+  `2>&1` and a device such as `/dev/null` write none. In PowerShell every command's file redirection is read so,
+  an expression standing as a command, as `'x' > <file>`, included, and one the reader does not reach is refused.
+  A redirection that names its descriptor by a variable, as
+  `{fd}>out`, `{fd}<in`, or `{fd}>&-`, assigns that variable, any one, and is refused in every operator. A target the text does not settle to a literal path, or a
+  relative one in a directory it does not settle, may lie in a hub and is refused, but for one under the system's
+  temporary folder that `TMP`, `TEMP`, or `TMPDIR` names from the environment, as `> "$TMP/out.txt"` does.
+- **Programs.** A command may start any program a literal name names. The programs that run another command their
+  words name are `RUNNERS`: `bash`, `busybox`, `chroot`, `chronic`, `chrt`, `cmd`, `csh`, `dash`, `doas`, `env`,
+  `fish`, `flock`, `ionice`, `ksh`, `ltrace`, `mksh`, `nice`, `nohup`, `parallel`, `powershell`, `pwsh`, `runuser`,
+  `script`, `setsid`, `sh`, `ssh`, `stdbuf`, `strace`, `su`, `sudo`, `taskset`, `tcsh`, `time`, `timeout`,
+  `unbuffer`, `watch`, `wsl`, `xargs`, and `zsh`. While a hub is guarded, a runner whose command is or may be git is
+  refused, and a runner around a command that is not git is understood. Its command may be git where one of its words
+  names git, by its name or a path, or names another runner, which may run git in turn, or is a word the text does
+  not settle, which may be either; the guard reads none of a runner's own options to place its command, since no
+  option makes git of a command that is not. `bash -c` with a literal script is read as Bash, and `pwsh -Command` or
+  `-c` with one literal script, after `-NoProfile`, `-NonInteractive`, or `-NoLogo`, as PowerShell, each refused
+  where the script runs git and in every other form, a script file among them. Some are refused whatever they run,
+  `RUNNERS_ALWAYS_REFUSED`: `busybox`, `cmd`, `csh`, `dash`, `fish`, `flock`, `ksh`, `mksh`, `parallel`,
+  `powershell`, `runuser`, `script`, `sh`, `ssh`, `su`, `tcsh`, `watch`, `wsl`, and `zsh`. Of these, the shells are
+  ones whose scripts the guard does not read, `sh` among them since it runs Bash in POSIX mode, or dash, either of
+  which keeps an assignment made before a special builtin after it, and the rest run a command line handed to them as
+  one string. So are the options that build a runner's command from text, `xargs`'s `-I`, `-i`, and `--replace` and
+  `env`'s `-S` and `--split-string`, in every spelling. The assignments before a runner, and `env`'s own, are judged
+  as ones before a command that is not git. `tests/tools/test_prefix_programs.py` holds the rule to every option form
+  the `--help` of `env`, `nice`, `nohup`, `stdbuf`, `timeout`, and `xargs` lists. The options that make another
+  program run a command are refused in every spelling the program takes, and so is any word of such a program's that
+  the text does not settle: `find`'s `-exec`, `-execdir`, `-ok`, and `-okdir`, whatever they run, `rg`'s `--pre`,
+  `sort`'s `--compress-program`, and `tar`'s options that run a program. git keeps its own subcommands' judgment.
+- **PowerShell.** A PowerShell command is read by PowerShell's own parser, not by a second hand-written grammar,
+  and is understood when every node type in its tree is one `POWERSHELL_UNDERSTOOD` names, in the forms that invoke
+  nothing: pipelines of commands joined by `&&` and `||`, with redirections, whose elements are constants, strings,
+  lists, parameters, and the values variables, value expressions, and properties compute, which leave their word one
+  the text does not settle, as Bash's expansions do; `if` and `foreach`, whose conditions and bodies are read; a cast
+  to a type `POWERSHELL_CASTS` names, such as `[int]` or `[string]`; and a script block handed to `ForEach-Object`,
+  `Where-Object`, `Sort-Object`, `Select-Object`, or `Group-Object`. Each command inside an expression or a body is
+  read as a command that runs within the statement holding it. An assignment, and a `foreach`'s variable, is
+  understood to a plain variable PowerShell neither sets nor reads itself (`POWERSHELL_VARIABLES`, held to what
+  `Get-Variable` lists in a pwsh started with no profile), and not to one on a drive, as `$env:GIT_DIR` is. A method
+  call, a static member such as `[IO.File]::Delete`, a member the text does not name, a cast to another type, a
+  script block handed to any other command, and `ForEach-Object` given a member's name are not read. A command is
+  understood when it is a program, judged by the runner rule above, `bash` and `pwsh` refused whatever they
+  run since the guard reads their scripts only from Bash, but for a name PowerShell keeps for its own commands, an
+  alias, a function of its own, or a verb-noun name (held to `Get-Alias`, `Get-Command`, and `Get-Verb`), which is understood only for one of these cmdlets, by
+  its name or an alias PowerShell gives it: `Set-Location`, `Push-Location`, `Pop-Location`,
+  `Get-ChildItem`, `Get-Content`, `Select-String`, `Select-Object`, `Sort-Object`, `Measure-Object`, `Write-Output`,
+  `ForEach-Object`, `Where-Object`, `Group-Object`,
+  `Write-Host`, `Out-String`, `Out-Null`, `Out-File`, `Get-Location`, `Get-Item`, `Get-Command`, `Get-Process`,
+  `Format-Table`, `Format-List`, `Start-Sleep`, `Remove-Item`, `Copy-Item`, `Move-Item`, `New-Item`, `Set-Content`,
+  `Add-Content`, `Resolve-Path`, `Test-Path`, `Join-Path`, `Split-Path`, `Get-Date`, `Get-FileHash`, `ConvertFrom-Json`,
+  `ConvertTo-Json`, and the function `mkdir`. Every other node type and command is a part the guard does not read. The location cmdlets are
+  followed as Bash's `cd`, `pushd`, and `popd` are, to a literal file-system path given by position, `-Path`, or
+  `-LiteralPath`, a leading `~` read as home; a path on another provider, as `env:` or `alias:`, given by position or
+  attached to a parameter by a colon, as `-Path:env:GIT_DIR`, is not read, nor is a path a cmdlet that writes, such as
+  `Set-Content`, is given that the text does not settle, and a
+  location a pipeline of several commands sets is unknown after it, since each of them runs in the session.
+  `tools/hub_guard-powershell.ps1` only reports what the parser found, and `tools/hub_guard.py` makes every decision.
+  A command that does not parse is allowed: PowerShell parses a whole script before it runs any of it, so none of it
+  runs. pwsh starts for every PowerShell tool call and for a Bash command that hands it a literal script; no other
+  Bash command waits for it.
 
-#### What it refuses because it cannot settle it
+#### What it refuses
 
-A guarded hub is in view when it is the hub of the session's own directory, of its project, or of a place the
-command names, or the one whose git directory holds that directory or place. A place whose lookup the reading time
-cuts short, between git calls or inside one, or whose lookup git answers with an error for, may be a guarded hub's,
-so the guard then refuses a command that names git as if one were in view; it looks up every other place first, so
-the hubs they reach stay in view. While one is, the guard refuses:
+A guarded hub is in view when it is the hub of the session's own directory, of its project, or of a place a git call
+the command makes names, or the one whose git directory holds that directory or place. While one is, the guard
+refuses:
 
-- a git call that would write the checkout it runs in, where the text does not settle its repository or work tree:
-  a directory or location variable named by a value the command computes or does not set, or set by a builtin that
-  leaves it unsettled or through a name reference the text does not settle, which may reach any variable, a
-  directory that only some paths change, or a shell after a sourced file, which may change the directory and any
-  variable;
-- a git call whose subcommand the text does not settle, or that comes after an option of git's own the guard does
-  not read;
-- a command with a part it cannot read that may start git, when the command names git: Bash its grammar cannot read
-  (the lines before a syntax error do run, unlike PowerShell's), Bash nested deeper than its reader follows, loops
-  and script blocks nested more than eight deep, a script handed to `bash`, `pwsh`, `eval`, or `Invoke-Expression`
-  that the text does not settle or that nests more than four deep, a `bash` with a word the text does not settle
-  among its options, as in `bash -c"$x"` or `bash $x -c`, which may be `-c`, an option word of `set` or `shopt`
-  the text does not settle, which may turn on allexport, a shell where an option the guard's tables mark as unread
-  holds or one they do not name is turned on, by any source above, `sh` and a `POSIXLY_CORRECT` the command assigns
-  or its environment hands it among them, `xtrace` turned on where `PS4` may run something as it expands, a `PS4`
-  assigned such a value, an assignment whose name the text does not settle, arithmetic that may assign one of them
-  or that evaluates what the text does not settle to a number, an integer attribute, a `BASH_FUNC_<name>%%` a
-  PowerShell cmdlet writes,
-  whose body the text does not settle, a script `bash` or `sh` reads from its standard input when that is a pipe or the input the command
-  inherits (`... | bash`, `bash -s`), a script `pwsh` reads from its standard input (`-Command -`, `-File -`, a
-  lone `-` before any of them, a word after `/` that names no parameter, such as an absolute path, or no inline
-  command, script file, or encoded command at all), a callback `mapfile -C` runs, every `env -S`, whatever follows
-  it, an option of `env` or of a prefix program above that the guard does not read, a PowerShell command when `pwsh`
-  cannot be started or does not finish reading it in the time the guard has left, a command the guard does not
-  finish reading and judging within 15 seconds, `pwsh` included, and the lookups of the hubs the places it names
-  reach, each git call of theirs given no more than the time left, which keeps it inside the hook's own 30-second
-  timeout, past which Claude Code lets the command run, and a command either shell's reader fails on with an error
-  of its own;
-- a shell alias the command defines, by Bash's `alias` with a value or a name that reaches `BASH_ALIASES` (an
-  element's assignment, `declare -A`, a builtin that sets a variable, an expansion that assigns, or a name
-  reference), or a command name it defines by `hash -p` or a name that reaches `BASH_CMDS` the same ways, or by PowerShell's
-  `Set-Alias`, `New-Alias`, `Import-Alias`, an item or content cmdlet or an assignment such as `$alias:g = 'git'`
-  writing the `alias:` drive or the Alias provider at a path the text names or one it may take from its pipeline, or
-  a drive `New-PSDrive` makes on the Alias or Function provider; a PowerShell function defined from text the same
-  ways on the `function:` drive; and each member through which PowerShell may run text as commands, read by one
-  resolver that settles a member's name, a constant in parentheses or not, as in `[scriptblock]::('Create')`, and
-  its receiver's type, through parentheses, casts such as `[type]'scriptblock'`, the engine's automatic variables
-  (`$ExecutionContext`, `$Host`, `$MyInvocation`, `$PSCmdlet`), and each property, field, or method whose type
-  reflection settles: on a type of PowerShell's engine or of reflection (one in `System.Management.Automation`,
-  `Microsoft.PowerShell`, or `System.Reflection`, a `Type`, `Activator`, or `AppDomain`), each method, whether
-  called or reached as a member as in `[scriptblock]::Create.Invoke(...)`, other than `PSVariable.Set`, which is
-  read as an assignment, and each object of such a type the command keeps rather than reaching a member of, as
-  `$i = $ExecutionContext.SessionState.InvokeProvider.Item` keeps one; a member whose name the text does not settle
-  on such a type or on one it does not settle; a static member of a type it does not settle, as in `$t::Create(...)`;
-  and, on a receiver it does not type, `NewScriptBlock`, `InvokeScript`, `ExpandString`, `AddScript`, `AddCommand`,
-  `GetScriptBlock`, `CreateNestedPipeline`, `CreatePipeline`, `ParseInput`, and `ParseFile` by name, when the
-  command names git: a later word may then run git under another name, or text the parser never read as a command;
-- an alias that cannot be read, as above.
+- a part of the command it does not understand, whatever else the command holds and whether or not it names git:
+  each entry of `NOT_READ`, among them a nested shell, `eval`, `source` and `.`, `exec`, `alias`, a function
+  definition, `export` and the other declarations, `trap`, `hash`, `enable`, arithmetic of every kind, a subscript,
+  an indirection, Bash 5.3's `${ command; }`, a command name the text does not settle, a runner whose command is or
+  may be git, one `RUNNERS_ALWAYS_REFUSED` names, and an option that builds a runner's command from text, a redirection to a target the text does not settle, an
+  assignment the rules above do not understand, an option the tables refuse, Bash its grammar cannot read (the lines
+  before a syntax error do run, unlike PowerShell's), substitutions nested more than four deep, and in PowerShell
+  every node type outside `POWERSHELL_UNDERSTOOD` and each form above that invokes something, method calls, static
+  members, `Invoke-Expression`, `&` with a name the text does not settle, and every cmdlet the list above does not
+  name among them, an assignment to the environment or to PowerShell's own variables, a dot-sourced command, and a
+  path on a provider other than the file system;
+- a git call that would write the checkout it runs in where the text does not settle its directory, a git call whose
+  subcommand the text does not settle, wherever it runs, since it may be an alias that writes a hub, a git call after
+  an option of git's own the guard does not read, and a refused subcommand given a word the text does not settle;
+- an alias that cannot be read, nests more than four deep, or runs a part the guard does not read;
+- a command the guard does not finish reading and judging within 15 seconds, `pwsh` included, and the lookups of the
+  hubs the places it names reach, each git call of theirs given no more than the time left; a PowerShell command when
+  `pwsh` cannot be found or started; and a command either reader fails on with an error of its own.
 
-The refusal names what it could not settle and asks for the directory to be written out, as `git -C <dir>` or
-`cd <dir> &&`. With no guarded hub in view, the same calls are allowed with a note on stderr. A defect in the guard
-itself, once it has found a guarded hub in view, is refused the same way when the command names git, since a failure
-says nothing about where the call acts; a defect before that, such as an event it cannot decode, an event that names
-no command or file path, or a hub of the session's own directory or project it cannot look up, an opt-in git cannot
-read among them, is allowed with a note on stderr, so that it cannot block every tool and is never passed unseen. A
-reading the time cuts short before the lookups of the places it names, in either reader, `pwsh` not finishing
-included, is such a failure: refused while a hub of the session's own directory or project is in view, and
-otherwise allowed with a note. A directory of the session's below a checkout, which a `.git` in it or above it
-marks, where git answers with an error is one such hub: it is noted and passed over, never read as a place outside
-every repository, and the other hubs in view still count; a git call that starts there is a place git answers with
-an error for, refused as above. A successful answer that is not the lines the guard asked for is read as such an
-error. A file an edit names in such a checkout, or in a git directory git answers with an error for, may lie in a
-guarded hub, so the edit is refused; one where git did not run or finish is allowed with a note. The hook command
-reads the project's own opt-in before it starts the guard, and when git cannot read it, stops there with a note on
-stderr the same way.
+The refusal names the first part it did not understand, or what it could not place, and asks for the command to be
+written as plain commands, or for the directory to be written out, as `git -C <dir>` or `cd <dir> &&`. With no guarded
+hub in view, the same is allowed with a note on stderr, unless the command holds a part the guard does not read and
+a path one of its literal words names, as `export GIT_DIR=<hub>/.git` or a string `eval` is handed does, lies in a
+guarded hub: that hub is then in view. A place whose lookup the reading time cuts short, between git calls or inside
+one, or whose lookup git answers with an error for, may be a guarded hub's, so the guard then refuses the command as
+if one were in view; it looks up every other place first, so the hubs they reach stay in view. A defect in the guard
+itself, once it has found a guarded hub in view, is refused the same way, since a failure says nothing about where a
+call acts; a defect before that, such as an event it cannot decode, an event that names no command or file path, or a
+hub of the session's own directory or project it cannot look up, an opt-in git cannot read among them, is allowed
+with a note on stderr, so that it cannot block every tool and is never passed unseen. A reading the time cuts short
+before the lookups of the places it names is such a failure: refused while a hub of the session's own directory or
+project is in view, and otherwise allowed with a note. A directory of the session's below a checkout, which a `.git`
+in it or above it marks, where git answers with an error is one such hub: it is noted and passed over, never read as
+a place outside every repository, and the other hubs in view still count; a git call that starts there is a place
+git answers with an error for, refused as above. A successful answer that is not the lines the guard asked for is
+read as such an error. A file an edit names in such a checkout, or in a git directory git answers with an error for,
+may lie in a guarded hub, so the edit is refused; one where git did not run or finish is allowed with a note.
+
+The hook declares `onFailure: "block"`, so Claude Code blocks a command when the hook times out, cannot start, or
+exits with an error, rather than letting it run unseen. The hook command reads the project's own opt-in before it
+starts the guard and exits 0 on every path where the clone has not opted in, git's answer that the setting is unset
+or false and a setting git cannot read among them, so a block can fall only where the clone is guarded, and there it
+is the refusal a failure is owed. One case blocks a clone that has not opted in: a `git config` that does not answer
+within the hook's own timeout, which leaves the hook timed out before it can exit.
 
 #### What it does not see
 
 The hook sees the command text. It does not see:
 
-- git run indirectly: from a script or program (`bash script.sh`, `bash < script.sh`, `xargs`, `find -exec`, `make`,
-  a Python script), through `Start-Process`, `cmd /c`, `pwsh -File`, or `pwsh -EncodedCommand`, from a `trap`, or by
-  a program whose name is computed at run time;
-- a script handed to a shell other than `bash`, `sh`, `pwsh`, and `powershell`, such as `zsh -c`, `dash -c`, or
-  `ksh -c`: the guard reads that shell as a program and never reads its script;
-- an alias `BASH_ALIASES` or a command name `BASH_CMDS` gains through a name the text does not settle;
-- a variable an arithmetic expression assigns, other than the two that turn on a shell option, which holds a
-  number, and a builtin `enable -f` loads from a shared object;
-- a Bash function a PowerShell command hands a `bash` through a variable whose name the text does not settle;
-- a shell option a shell's startup files turn on;
-- an alias or function the `alias:` or `function:` drive gains at a path the text does not settle, or one the
-  shell's startup files define;
-- text run as commands through an object of PowerShell's engine the text does not type, such as one a variable
-  holds from a command's output, as after `$o = Get-Variable ExecutionContext -ValueOnly`, reached by a method
-  outside the names above;
-- shell redirection or other programs writing files;
-- what the shell's own startup files set, or a variable the Bash tool's shell holds that the hook's environment does
-  not, or holds with another value;
+- inside a program: what a program does from inside itself, in its own language, as a Python script with any
+  script name, in the hub or in a worktree, an awk or sed program, a test suite, a script file, `make`'s recipes, or
+  `npm`'s scripts do, and an agent runtime it starts, which runs git under its own guards; the guard reads only the
+  command line, and refuses only the runners above where the command line they are given is or may be git;
+- a file a program writes;
+- what the shell's own startup files set: an alias, a function, or an option they define, or a variable the Bash
+  tool's shell holds that the hook's environment does not, or holds with another value;
 - a work tree set in a repository's own configuration, or `GIT_INDEX_FILE`, which moves only the index: the guard
   judges such a call by the checkout whose `HEAD` and tree it writes;
 - a ref moved from another checkout, such as `git update-ref refs/heads/main` run in a worktree: refs live in the

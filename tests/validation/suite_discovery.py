@@ -68,7 +68,6 @@ from validation_support import (
 )
 
 from deployer.platform_support import program_name
-from tools.hub_guard import BASH_LONG_OPTIONS_WITH_VALUE
 
 CONFTEST = "conftest.py"
 # A Python suite is split into one shard per this many tests, up to MAXIMUM_SHARDS. Smaller shards spread a long
@@ -475,8 +474,9 @@ READER_WRAPPERS: dict[str, frozenset[str]] = {
 # env's option whose value is a command line, split into the words it runs.
 ENV_SPLIT_OPTIONS = ("-S", "--split-string")
 # A shell's option letters that take the next word: -o and +o a set option's name, -O and +O a shopt option's. Its
-# long options that do are the hub guard's BASH_LONG_OPTIONS_WITH_VALUE.
+# long options that do are BASH_LONG_OPTIONS_WITH_VALUE.
 SHELL_ARGUMENT_LETTERS = frozenset("oO")
+BASH_LONG_OPTIONS_WITH_VALUE = frozenset({"--rcfile", "--init-file"})
 # The option set and shopt -o name, and the variable whose value lists it for a shell that starts with it.
 PIPEFAIL = "pipefail"
 OPTION_SETTERS = frozenset({"set", "shopt"})

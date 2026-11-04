@@ -119,7 +119,7 @@ TRUST_BOUNDARY_SCRIPTS = (
     "tests/tools/test_hub_guard.py",
     "tests/tools/test_hub_guard_bash.py",
     "tests/tools/test_hub_guard_pwsh.py",
-    "tests/tools/test_hub_guard_shells.py",
+    "tests/tools/test_prefix_programs.py",
     # The merge shepherd's admission of a pull request whose head branch is in this repository.
     ".claude/skills/shepherd-pull-requests/scripts/shepherd_pull_requests.py",
     ".claude/skills/shepherd-pull-requests/scripts/test_shepherd_pull_requests.py",

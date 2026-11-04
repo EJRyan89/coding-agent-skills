@@ -15,7 +15,12 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts"))
 
-from repository_hygiene import hub_guard_matcher_problems, private_references, tracked_settings_problems
+from repository_hygiene import (
+    hub_guard_failure_problems,
+    hub_guard_matcher_problems,
+    private_references,
+    tracked_settings_problems,
+)
 
 # Pinned here as literals, not read back from the policy's constants.
 SCHEMA = "https://json.schemastore.org/claude-code-settings.json"
@@ -38,6 +43,29 @@ class RepositoryHygieneFixtures(unittest.TestCase):
             ["$schema is 'https://example.com/other.json', not " + SCHEMA],
             tracked_settings_problems({"$schema": "https://example.com/other.json", "attribution": ATTRIBUTION_OFF}),
         )
+
+    def test_hub_guard_failure_policy_requires_the_hook_to_block_when_it_fails(self) -> None:
+        command = 'python -B "$CLAUDE_PROJECT_DIR/tools/hub_guard.py"'
+
+        def settings(**handler: object) -> dict[str, object]:
+            group = {"matcher": "Bash", "hooks": [{"type": "command", "command": command, **handler}]}
+            return {"hooks": {"PreToolUse": [group]}}
+
+        self.assertEqual([], hub_guard_failure_problems(settings(onFailure="block")))
+        self.assertEqual(
+            ["the hub guard's hook declares onFailure None, not 'block'"], hub_guard_failure_problems(settings())
+        )
+        self.assertEqual(
+            ["the hub guard's hook declares onFailure 'continue', not 'block'"],
+            hub_guard_failure_problems(settings(onFailure="continue")),
+        )
+        # Settings that run no hub guard hook give the policy nothing to hold, which is a refusal, never a pass.
+        missing = ["no PreToolUse hook runs tools/hub_guard.py"]
+        self.assertEqual(missing, hub_guard_failure_problems({}))
+        other: dict[str, object] = {
+            "hooks": {"PreToolUse": [{"hooks": [{"type": "command", "command": "python -B other.py"}]}]}
+        }
+        self.assertEqual(missing, hub_guard_failure_problems(other))
 
     def test_hub_guard_matcher_policy_detects_a_missing_tool_or_hook(self) -> None:
         command = 'python -B "$CLAUDE_PROJECT_DIR/tools/hub_guard.py"'
