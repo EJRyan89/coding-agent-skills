@@ -29,6 +29,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "validation"))
 
 import corpus
+import reader_scan
 import readers
 from known_failures import KNOWN_FAILURES, read_known_failures
 
@@ -119,6 +120,49 @@ def test_a_pending_reader_is_not_yet_in_a_table() -> None:
     assert not held & readers.PENDING.keys(), (
         f"remove each held reader from PENDING: {sorted(held & readers.PENDING.keys())}"
     )
+
+
+def test_every_function_that_calls_a_shared_reader_is_held_reached_or_pending() -> None:
+    held = {reader_scan.entry_name(reader.name) for reader in readers.READERS}
+    unheld = reader_scan.unheld_readers(held)
+    assert [name for name in unheld if name not in readers.PENDING] == [], (
+        "add each to its area's readers_*.py table, or to PENDING with the issue that adds it"
+    )
+    assert [name for name in readers.PENDING if name not in unheld] == [], (
+        "remove each from PENDING: a table holds it, a held reader reaches it, or it calls no shared reader"
+    )
+
+
+def test_the_scan_finds_each_spelling_of_a_shared_reader_call_and_credits_a_held_reader_s_helpers() -> None:
+    source = (
+        "import json_reader\n"
+        "import frontmatter as fm\n"
+        "from xml_reader import read_xml\n"
+        "from json_reader import loads as parse, JsonRefused\n"
+        "def attribute(text):\n    return json_reader.loads(text)\n"
+        "def aliased_module(path):\n    return fm.read(path)\n"
+        "def imported_name(text):\n    return read_xml(text)\n"
+        "def renamed(text):\n    return parse(text)\n"
+        "def outer(text):\n    def inner():\n        return json_reader.raw_decode(text)\n    return inner()\n"
+        "class Store:\n    def load(self, path):\n        return json_reader.read_file(path)\n"
+        "def refusal_only():\n    return JsonRefused\n"
+        "def held(text):\n    return _helper(text)\n"
+        "def _helper(text):\n    return json_reader.loads(text)\n"
+    )
+    assert reader_scan.reading_functions("tools.example", source) == [
+        "tools.example.attribute",
+        "tools.example.aliased_module",
+        "tools.example.imported_name",
+        "tools.example.renamed",
+        "tools.example.outer",
+        "tools.example.Store.load",
+        "tools.example._helper",
+    ]
+    covered = reader_scan.reached("tools.example", source, {"tools.example.held"})
+    assert "tools.example._helper" in covered
+    assert "tools.example.attribute" not in covered
+    assert reader_scan.entry_name("deployer.journal.pending_runs (backup entry)") == "deployer.journal.pending_runs"
+    assert reader_scan.entry_name("review_analyzers.inventory:package.json") == "review_analyzers.inventory"
 
 
 def _refuse(path: Path) -> object:

@@ -1008,6 +1008,43 @@ def executed_tests(
     return tests
 
 
+def _line_numbers(value: object) -> bool:
+    return isinstance(value, list) and all(isinstance(line, int) and not isinstance(line, bool) for line in value)
+
+
+def _report_entry_problem(name: object, entry: object) -> str | None:
+    """Why one module's entry of a coverage.py JSON report is not one executed_statements and executed_tests read, or
+    None: its line lists hold whole numbers and its contexts map a line to the names of the contexts that ran it."""
+    if not isinstance(name, str) or not isinstance(entry, dict):
+        return "holds a files entry that is not a module's object"
+    for key in ("executed_lines", "missing_lines", "excluded_lines"):
+        if key in entry and not _line_numbers(entry[key]):
+            return f"holds a {key} that is not a list of line numbers"
+    contexts = entry.get("contexts", {})
+    if not isinstance(contexts, dict) or not all(
+        isinstance(line, str) and isinstance(names, list) and all(isinstance(each, str) for each in names)
+        for line, names in contexts.items()
+    ):
+        return "holds contexts that do not map a line to the names of its contexts"
+    return None
+
+
+def read_report(path: Path) -> dict[str, Any] | str:
+    """The coverage.py JSON report `coverage json` wrote at `path`, or why it cannot be read: it cannot be read or
+    parsed, holds no files object, or holds a module's entry of another shape than coverage.py writes."""
+    try:
+        recorded = json_reader.read_file(path)
+    except (OSError, ValueError) as exc:  # unreadable, not UTF-8, not JSON, or nested past the reader's limit
+        return f"cannot be read: {exc}"
+    if not isinstance(recorded, dict) or not isinstance(recorded.get("files"), dict):
+        return "holds no files object"
+    for name, entry in recorded["files"].items():
+        problem = _report_entry_problem(name, entry)
+        if problem is not None:
+            return problem
+    return recorded
+
+
 def coverage_reach(tree: Path, suite: str, modules: Sequence[str], timeout: float) -> Reach | str:
     """Run a suite unmutated under coverage.py and give the lines of the changed modules it executed and the tests that
     ran each, or why not."""
@@ -1059,9 +1096,9 @@ def coverage_reach(tree: Path, suite: str, modules: Sequence[str], timeout: floa
                 )
         if not report.is_file():
             return f"failed in {code('coverage json')}, which wrote no report"
-        recorded = json_reader.read_file(report)
-        if not isinstance(recorded, dict) or not isinstance(recorded.get("files"), dict):
-            return f"failed in {code('coverage json')}, whose report holds no files object"
+        recorded = read_report(report)
+        if isinstance(recorded, str):
+            return f"failed in {code('coverage json')}, whose report {recorded}"
         collected = suite_tests(tree, suite, folder / "collected.txt")
         return Reach(
             seconds,

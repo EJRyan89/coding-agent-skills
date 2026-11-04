@@ -26,6 +26,7 @@ import sys
 import tempfile
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
+from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "ejryan89-skill-core" / "scripts"))
@@ -91,6 +92,18 @@ def review_prs(directory: Path) -> dict[str, str]:
     }
 
 
+def read_pull_record(path: Path) -> dict[str, Any]:
+    """A scenario fixture's pull request record, or RenderError when it cannot be read or is not a JSON object. Its
+    fields go on to the review pipeline, which reads each by kind."""
+    try:
+        pull = json_reader.read_file(path)
+    except (OSError, ValueError) as exc:  # unreadable, not UTF-8, not JSON, or nested past the reader's limit
+        raise RenderError(f"cannot read {path.name}: {exc}") from exc
+    if not isinstance(pull, dict):
+        raise RenderError(f"{path.name} is not a JSON object")
+    return pull
+
+
 def copilot_fixture(directory: Path) -> Path:
     """The pull fixture with a nondelegating trusted entrypoint and an open human comment, for the bounded host."""
     fixture = directory / "fixture"
@@ -111,7 +124,7 @@ def copilot_fixture(directory: Path) -> Path:
         json_writer.write(reviewer / "manifest.json", manifest)
         (reviewer / "SKILL.md").write_text("Review the change for correctness and report defects.\n", encoding="utf-8")
     pull_path = fixture / "pull.json"
-    pull = json_reader.read_file(pull_path)
+    pull = read_pull_record(pull_path)
     pull["manifest_path"] = "review/manifest.json"
     pull["threads"] = [
         {

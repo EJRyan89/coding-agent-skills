@@ -330,7 +330,11 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   `.claude/skills/shepherd-pull-requests/scripts/test_shepherd_pull_requests.py::ShapeTest::test_a_check_run_member_the_rollup_leaves_out_is_malformed_never_a_default`,
   the same table for each check run in a rollup, and
   `tests/deployer/test_state_files.py::ReaderTests::test_a_journal_entry_with_any_key_of_another_type_is_malformed_never_an_error`,
-  which gives every key of each journal entry the deployer writes a list, an object, and a number
+  which gives every key of each journal entry the deployer writes a list, an object, and a number, and
+  `tests/malformed_input/test_malformed_input.py::test_every_function_that_calls_a_shared_reader_is_held_reached_or_pending`,
+  which fails a function calling a shared reader that no table holds, no held reader of its own module reaches, and
+  the pending list does not name, passes a helper a held reader reaches, and fails a pending name the scan no longer
+  finds unheld
 - **Search for:** `if not isinstance(` followed by `continue` in a loop over another program's entries; `.get(` with a
   default, or `["key"]`, on `json_reader` output with no `isinstance` or `FieldReader` check; a top-level value used
   without `isinstance(value, dict)`; a regular expression over another program's output with no branch for no match;
@@ -338,7 +342,7 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   such as arming, holding, or a rerun, and an absent member would read as the answer that allows it;
   `rg -n "\.get\([^)]*\)\)? (not )?in [A-Z_{(]"`, a field read from a file tested against a set, a frozenset, or a
   dictionary before its type is checked, which a list or an object fails with `TypeError` rather than as malformed.
-- **Examples:** #1890, #1892, #2227, #2235, #2292
+- **Examples:** #1890, #1892, #2054, #2227, #2235, #2292
 
 ### A reader of another program's language reads it as that program does
 
