@@ -2512,7 +2512,7 @@ BASH_SET_VARIABLES = {
     *("PPID", "PS1", "PS2", "PS4", "PWD", "RANDOM", "READLINE_ARGUMENT", "READLINE_LINE", "READLINE_MARK"),
     *("READLINE_POINT", "REPLY", "SECONDS", "SHELL", "SHELLOPTS", "SHLVL", "SRANDOM", "TERM", "UID"),
     # Git Bash's own, from the MSYS runtime.
-    *("MSYSTEM", "SYSTEMROOT", "WINDIR"),
+    *platform_support.GIT_BASH_SHELL_VARIABLES,
 }
 # Of them, those that always hold a number while the text leaves them alone.
 BASH_NUMERIC_VARIABLES = {
