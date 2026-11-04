@@ -771,7 +771,7 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
 - **Search for:** the name of the function, call, or literal the fix changed, across `skills/`, `deployer/`, `tools/`,
   and `.claude/skills/`; its Bash twin in `*.sh` and its PowerShell twin in `*.ps1`; the **Search for** of the
   pattern above that the defect is an instance of.
-- **Examples:** #1369, #1521, #2184
+- **Examples:** #1369, #1521, #2184, #2297
 
 ### A foreign function declares its types
 
