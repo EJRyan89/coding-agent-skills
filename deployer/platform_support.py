@@ -615,6 +615,7 @@ def run_tool(
     *,
     timeout: float | None = None,
     separate_errors: bool = False,
+    index_file: Path | None = None,
 ) -> ToolResult:
     """Run a tool with stdout and stderr captured through files, never inherited pipes, within a deadline.
 
@@ -624,7 +625,8 @@ def run_tool(
     The tool and every process it starts are held in one process tree, which ends them all once it has finished: a
     Windows job object allows no breakaway, and a process group holds every process that does not start a session or
     group of its own. Its environment is this process's without git's repository-selecting variables, so a git it runs,
-    such as the source commit's, reads the checkout it names, with `environment` added.
+    such as the source commit's, reads the checkout it names, with `environment` added; with `index_file`, a git it
+    runs reads and writes that index, as bounded_process's `run_bounded` sets it, and no `environment` can.
     Raises ToolTimedOut when it has not finished within `timeout` seconds, TOOL_DEADLINE_SECONDS unless given, and
     DeployError when it cannot be held with the processes it starts.
     """
@@ -639,7 +641,15 @@ def run_tool(
     with tempfile.TemporaryFile() as captured, tempfile.TemporaryFile() as errors:
         stderr = errors if separate_errors else captured
         try:
-            finished = run_bounded(arguments, seconds, stdout=captured, stderr=stderr, env=merged, tree=process_tree())
+            finished = run_bounded(
+                arguments,
+                seconds,
+                stdout=captured,
+                stderr=stderr,
+                env=merged,
+                tree=process_tree(),
+                index_file=index_file,
+            )
         except subprocess.TimeoutExpired:
             raise ToolTimedOut(arguments[0], seconds) from None
         except JobRefused as exc:
