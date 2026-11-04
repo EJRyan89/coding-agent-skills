@@ -983,7 +983,7 @@ class ShellOptionTableTests(unittest.TestCase):
         ):
             with self.subTest(command=command):
                 self.assertEqual([], bash_reading(command).unread)
-        # A declaration by names the text does not settle may assign any variable, as #2171's fail-closed reading
+        # A declaration by names the text does not settle may assign any variable, as the readers' fail-closed rule
         # holds, so the common split-and-declare idiom is refused while a hub is guarded.
         self.assertEqual(
             [ANY_NAME], bash_reading('read -r name value <<< "a b"; declare "$name=$value"; git status').unread
