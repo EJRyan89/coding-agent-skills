@@ -3018,8 +3018,22 @@ def test_the_base_defaults_to_the_pull_requests_base_branch() -> None:
     assert mutation_gate.parse_arguments([], {"GITHUB_BASE_REF": "release"}).base == "origin/release"
     assert mutation_gate.parse_arguments([], {}).base == "origin/main"
     assert mutation_gate.parse_arguments([], {}).minutes == 40
-    with pytest.raises(SystemExit):
-        mutation_gate.parse_arguments(["--minutes", "0"], {})
+    assert mutation_gate.parse_arguments(["--minutes", "7"], {}).minutes == 7
+
+
+# int() read "1_0" as 10 minutes and an Arabic-Indic three as 3.
+@pytest.mark.parametrize("value", ["0", "-1", "1_0", " 7", "7.5", chr(0x0663)])
+def test_minutes_are_a_whole_number_of_at_least_one_in_ascii_digits(
+    value: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    with pytest.raises(SystemExit) as exited:
+        mutation_gate.parse_arguments([f"--minutes={value}"], {})
+    assert exited.value.code == 2
+    assert (
+        capsys.readouterr()
+        .err.splitlines()[-1]
+        .endswith(f"error: argument --minutes: must be a whole number of at least 1 in ASCII digits, not {value!r}")
+    )
 
 
 # A policy whose suites reached_suites is asked for itself.

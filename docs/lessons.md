@@ -226,12 +226,15 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
 - **Why:** An unbounded `int()` turns a hostile or garbled value into a `ValueError` past the digit limit, a huge
   allocation, or a negative count the code never expected.
 - **Use:** `whole_number:read`, which raises the caller's named error, and `whole_number:parse`, which gives None, for a
-  number in any other text, both capped at `whole_number:DIGIT_LIMIT`; `json_reader:loads` for a JSON number, which
-  refuses one past the same cap, and `typed_fields:FieldReader.integer` for its bounds; `process_identity:read_pid`
-  for a PID, bounded by the platform's range so none is truncated to another process's.
+  number in any other text, both capped at `whole_number:DIGIT_LIMIT`; `whole_number:argument`, the argparse type
+  of every option that takes one; `json_reader:loads` for a JSON number, which refuses one past the same cap, and
+  `typed_fields:FieldReader.integer` for its bounds; `process_identity:read_pid` for a PID, bounded by the
+  platform's range so none is truncated to another process's.
 - **Guard:** `tests/validation/python_checks.py::PythonChecksPolicies::test_whole_number_is_the_one_reader_of_a_number_from_text`,
   `tests/validation/test_python_checks.py::test_int_parse_policy_refuses_a_group_or_a_digit_tested_value_outside_whole_number`,
+  `tests/validation/test_python_checks.py::test_int_parse_policy_refuses_an_option_read_with_int_or_float`,
   `skills/ejryan89-skill-core/scripts/test_whole_number.py::ReadTests`,
+  `skills/ejryan89-skill-core/scripts/test_whole_number.py::ArgumentTests`,
   `skills/ejryan89-skill-core/scripts/test_json_reader.py::RefusalTests::test_an_integer_past_the_shared_digit_cap_is_refused_whatever_its_sign`,
   `skills/ejryan89-skill-core/scripts/test_typed_fields.py::FieldReaderTests::test_an_integer_within_its_bounds`,
   `skills/ejryan89-skill-core/scripts/test_process_identity.py::PidRangeTests::test_a_pid_is_read_within_the_platforms_range_and_anything_else_is_refused_by_its_path`
@@ -240,9 +243,10 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   past any bound; `int(` on a `.split(` of another program's output; `float(` on text from a file or an argument with no
   `math.isfinite`; `int(` on each item of a `.findall(`, or on text a `re.fullmatch(r"[0-9]+", ...)` admitted, which
   bounds no length; a refusal worded "more than N digits" for a `\d` group,
-  which also admits digits that are not ASCII; an integer read from a file and handed to a `ctypes` call, whose
-  declared type holds the kind and truncates the range.
-- **Examples:** #1611, #1729, #1879, #1886, #1895, #1897, #2215
+  which also admits digits that are not ASCII; `type=int` or `type=float` in an `add_argument`, and an argparse type
+  function that returns `int(value)`, which read `1_0` as 10 and an Arabic-Indic three as 3; an integer read from a
+  file and handed to a `ctypes` call, whose declared type holds the kind and truncates the range.
+- **Examples:** #1611, #1729, #1879, #1886, #1895, #1897, #2215, #2217
 
 ### One fact has one owner
 
