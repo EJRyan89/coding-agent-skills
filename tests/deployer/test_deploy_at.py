@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import itertools
+import subprocess
 import sys
 import tarfile
 import tempfile
@@ -14,6 +15,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts"))
 
+from git_client import GitError
 from harness import (
     DEPLOY_COMMAND,
     REPOSITORY_ROOT,
@@ -26,6 +28,9 @@ from harness import (
 
 from deployer import fsops, platform_support, source_ref, tools
 from deployer.errors import DeployError
+
+# The prefix of the directory --at reads a commit's attributes through, apart from the export's.
+ATTRIBUTE_INDEX_PREFIX = "deploy-at-attributes-"
 
 
 class RefValidationTests(unittest.TestCase):
@@ -319,11 +324,15 @@ class DeployAtTests(DeployerTestCase):
         real = source_ref._run_git
 
         def run_git(
-            arguments: Any, timeout: float | None = None, *, separate_errors: bool = False
+            arguments: Any,
+            timeout: float | None = None,
+            *,
+            separate_errors: bool = False,
+            index_file: Path | None = None,
         ) -> platform_support.ToolResult:
             if "for-each-ref" in arguments:
                 return platform_support.ToolResult(128, "", "fatal: refused by the test\n")
-            return real(arguments, timeout, separate_errors=separate_errors)
+            return real(arguments, timeout, separate_errors=separate_errors, index_file=index_file)
 
         return mock.patch.object(source_ref, "_run_git", run_git)
 
@@ -706,11 +715,290 @@ class DeployAtTests(DeployerTestCase):
 
     def test_an_export_git_refuses_leaves_no_directory_behind(self) -> None:
         patch, made = recorded_temporary_directories()
-        # The refusal carries git's reason, which git prints on stderr.
-        with patch, self.assertRaisesRegex(DeployError, "git archive could not export 0{40}: fatal: "):
+        # The refusal carries git's reason, which git prints on stderr; the attributes are read first, so they are
+        # taken as read here to reach git archive.
+        with (
+            patch,
+            mock.patch.object(source_ref, "refuse_archive_attributes"),
+            self.assertRaisesRegex(DeployError, "git archive could not export 0{40}: fatal: "),
+        ):
             source_ref.export(self.source, "0" * 40)
         self.assertEqual(1, len(made))
         self.assertFalse(made[0].exists())
+
+    def commit_attributes(self, branch: str, attributes: str) -> None:
+        """Commit, on a new branch, a .gitattributes holding these lines after the fixture's, and a SKILL.md for alpha
+        holding an export-subst placeholder, then return to main."""
+        git(self.source, "switch", "-q", "-c", branch)
+        self.write(self.source / ".gitattributes", f"* -text\n{attributes}")
+        self.make_skill("alpha", "Alpha $Format:%H$")
+        git(self.source, "add", "-A")
+        git(self.source, "commit", "-q", "-m", "Attributes")
+        git(self.source, "switch", "-q", "main")
+
+    def archived(self, ref: str) -> dict[str, bytes]:
+        """Each file `git archive` itself writes for the ref, by path, with the bytes it writes."""
+        written = subprocess.run(
+            ["git", "-C", str(self.source), "archive", "--format=tar", ref], capture_output=True, check=True
+        ).stdout
+        files: dict[str, bytes] = {}
+        with tarfile.open(fileobj=io.BytesIO(written), mode="r:") as handle:
+            for member in handle:
+                data = handle.extractfile(member) if member.isfile() else None
+                if data is not None:
+                    files[member.name] = data.read()
+        return files
+
+    def assert_archive_acts(self, ref: str, path: str, acts: bool) -> None:
+        """Whether git archive itself leaves out or rewrites a file at or under the path, the differential the
+        refusal is held to: it refuses exactly where git archive would not write the commit's file."""
+        archived = self.archived(ref)
+        changed = []
+        for name in git(self.source, "ls-tree", "-r", "--name-only", ref).splitlines():
+            if name != path and not (path.endswith("/") and name.startswith(path)):
+                continue
+            blob = ["git", "-C", str(self.source), "cat-file", "blob", f"{ref}:{name}"]
+            if archived.get(name) != subprocess.run(blob, capture_output=True, check=True).stdout:
+                changed.append(name)
+        self.assertEqual(acts, bool(changed), (ref, path, changed))
+
+    def assert_only_indexes_removed(self, made: list[Path], count: int = 1) -> None:
+        """The attributes were read through `count` throwaway indexes, each removed, and no export was made."""
+        self.assertEqual(count, len(made), made)
+        for directory in made:
+            self.assertTrue(directory.name.startswith(ATTRIBUTE_INDEX_PREFIX), directory)
+            self.assertFalse(directory.exists(), directory)
+
+    def assert_attribute_refused(self, ref: str, path: str, attribute: str, more: str = "") -> None:
+        self.assert_archive_acts(ref, path, acts=True)
+        patch, made = recorded_temporary_directories()
+        with patch:
+            result = self.deploy_fails("--all", "--at", ref, pattern=r"ERROR: The tree of [0-9a-f]{40} sets ")
+        commit = git(self.source, "rev-parse", ref)
+        done = source_ref.ARCHIVE_ONLY_ATTRIBUTES[attribute]
+        self.assert_lines(
+            result.output,
+            f"ERROR: The tree of {commit} sets {attribute} on {path!r}{more}; git archive would {done}, so the "
+            "exported tree would not be the commit's.",
+            "Deploy a commit whose .gitattributes, the checkout's .git/info/attributes, and Git's attributes files set "
+            "neither export-ignore nor export-subst.",
+            'See "Deploying an earlier commit" in docs/recovery.md.',
+        )
+        self.assert_only_indexes_removed(made)
+        self.assertFalse(self.manifest_file.exists())
+        self.assertFalse((self.skills_dir / "alpha").exists())
+        self.assert_head_unmoved()
+
+    def test_a_commit_that_sets_export_ignore_or_export_subst_is_refused_by_path_before_anything_is_made(self) -> None:
+        # git archive leaves an export-ignore path out of the export and rewrites an export-subst file's placeholder,
+        # so either would deploy a tree other than the commit's; a folder is asked with its slash, as git archive asks.
+        skill = "skills/alpha/SKILL.md"
+        for index, (attributes, path, attribute, more) in enumerate(
+            (
+                (f"{skill} export-ignore\n", skill, "export-ignore", ""),
+                (f"{skill} export-subst\n", skill, "export-subst", ""),
+                ("skills/alpha/ export-ignore\n", "skills/alpha/", "export-ignore", ""),
+                (f"[attr]hidden export-ignore\n{skill} hidden\n", skill, "export-ignore", ""),
+                (
+                    f"{skill} export-subst\n.gitattributes export-ignore\n",
+                    ".gitattributes",
+                    "export-ignore",
+                    ", among 2 such paths and attributes",
+                ),
+            )
+        ):
+            with self.subTest(attributes=attributes):
+                self.commit_attributes(f"attributes-{index}", attributes)
+                self.assert_attribute_refused(f"attributes-{index}", path, attribute, more)
+
+    def test_the_checkouts_info_attributes_are_read_as_git_archive_reads_them(self) -> None:
+        info = self.source / ".git" / "info" / "attributes"
+        self.write(info, "skills/alpha/SKILL.md export-ignore\n")
+        self.assert_attribute_refused("v1.0.0", "skills/alpha/SKILL.md", "export-ignore")
+        info.unlink()
+        self.deploy_ok("--all", "--at", "v1.0.0")
+
+    def test_the_attributes_file_gits_configuration_names_is_read_as_git_archive_reads_it(self) -> None:
+        self.commit_attributes("configured", "")
+        attributes = self.root / "configured attributes"
+        self.write(attributes, "skills/alpha/SKILL.md export-subst\n")
+        git(self.source, "config", "core.attributesFile", str(attributes))
+        self.assert_attribute_refused("configured", "skills/alpha/SKILL.md", "export-subst")
+        git(self.source, "config", "--unset", "core.attributesFile")
+        self.deploy_ok("--all", "--at", "configured")
+
+    def test_an_archive_attribute_git_archive_does_not_act_on_exports_the_commits_bytes(self) -> None:
+        # git archive acts only on a set attribute, and rewrites only a file's bytes, so a value, an unset attribute,
+        # or export-subst on a folder leaves every file as the commit holds it.
+        for index, attributes in enumerate(
+            (
+                "skills/alpha/SKILL.md export-ignore=no -export-subst\n",
+                "skills/alpha/ export-subst\n",
+                "skills/alpha/SKILL.md !export-ignore export-subst=yes\n",
+            )
+        ):
+            with self.subTest(attributes=attributes):
+                self.commit_attributes(f"unset-{index}", attributes)
+                self.assert_archive_acts(f"unset-{index}", "skills/alpha/", acts=False)
+                self.deploy_ok("--all", "--at", f"unset-{index}", *(["--unpin"] if index else []))
+                deployed = (self.skills_dir / "alpha" / "SKILL.md").read_text(encoding="utf-8")
+                self.assertIn("Alpha $Format:%H$", deployed)
+                self.assert_exports_removed(index + 1)
+
+    def test_a_commit_whose_attributes_git_cannot_read_is_refused_with_gits_reason_before_anything_is_made(
+        self,
+    ) -> None:
+        patch, made = recorded_temporary_directories()
+        with patch, self.assertRaises(DeployError) as raised:
+            source_ref.export(self.source, "0" * 40)
+        lines = raised.exception.lines
+        self.assertTrue(lines[0].startswith(f"ERROR: Git could not read the attributes of the tree of {'0' * 40}: "))
+        self.assertEqual("Put right what Git reports in the checkout, then retry.", lines[1])
+        # git ls-tree refuses the commit before any index is made.
+        self.assertEqual([], made)
+
+    def test_an_index_or_attribute_read_git_refuses_is_refused_with_gits_reason_and_leaves_no_index(self) -> None:
+        # git read-tree writes the throwaway index and git check-attr reads it; either one's failure is refused with
+        # Git's reason, the index's directory is removed, and no export is made.
+        reason = "fatal: synthetic failure"
+        listing = [f"100644 blob {'a' * 40}\tREADME.md"]
+        for step in ("read-tree", "check-attr"):
+            with self.subTest(step=step):
+                client = mock.Mock()
+                client.output.side_effect = GitError(reason, returncode=128) if step == "read-tree" else None
+                client.names.side_effect = [listing, GitError(reason, returncode=129)]
+                patch, made = recorded_temporary_directories()
+                with (
+                    patch,
+                    mock.patch.object(source_ref, "_client", return_value=client),
+                    self.assertRaises(DeployError) as raised,
+                ):
+                    source_ref.export(self.source, self.release)
+                self.assertEqual(
+                    (
+                        f"ERROR: Git could not read the attributes of the tree of {self.release}: {reason}",
+                        "Put right what Git reports in the checkout, then retry.",
+                        'See "Deploying an earlier commit" in docs/recovery.md.',
+                    ),
+                    raised.exception.lines,
+                )
+                called = [call.args[0] for call in (*client.output.call_args_list, *client.names.call_args_list)]
+                self.assertIn(step, [argument for arguments in called for argument in arguments])
+                self.assert_only_indexes_removed(made)
+
+    def commit_tree(self, branch: str, files: dict[str, str]) -> None:
+        """Commit these files, on a new branch, over the fixture's tree, then return to main, whose worktree and index
+        hold none of them."""
+        git(self.source, "switch", "-q", "-c", branch)
+        for name, text in files.items():
+            self.write(self.source / name, text)
+        git(self.source, "add", "-A")
+        git(self.source, "commit", "-q", "-m", branch)
+        git(self.source, "switch", "-q", "main")
+
+    def test_the_commits_attributes_are_read_from_an_index_of_its_tree_as_git_archive_reads_them(self) -> None:
+        # Real git read-tree and check-attr --cached, with nothing stubbed. Each commit's attributes are its own, not
+        # the worktree's or the checkout's index's, which hold none of them: a nested .gitattributes overrides the
+        # top-level one for the paths under it, a macro sets what it names, and .git/info/attributes counts.
+        skill, nested = "skills/alpha/SKILL.md", "skills/alpha/notes.md"
+        rows = {
+            "file": ({".gitattributes": f"{skill} export-ignore\n"}, "", [(skill, "export-ignore")]),
+            "folder": ({".gitattributes": "skills/alpha/ export-ignore\n"}, "", [("skills/alpha/", "export-ignore")]),
+            "macro": (
+                {".gitattributes": f"[attr]packed export-subst\n{skill} packed\n"},
+                "",
+                [(skill, "export-subst")],
+            ),
+            "nested precedence": (
+                {".gitattributes": "*.md export-ignore\n", "skills/alpha/.gitattributes": "*.md -export-ignore\n"},
+                "",
+                [("README.md", "export-ignore"), ("skills/beta/SKILL.md", "export-ignore")],
+            ),
+            "info/attributes": ({}, f"{nested} export-subst\n", [(nested, "export-subst")]),
+        }
+        info = self.source / ".git" / "info" / "attributes"
+        for name, (files, information, expected) in rows.items():
+            with self.subTest(row=name):
+                branch = f"read-{name.replace(' ', '-').replace('/', '-')}"
+                self.commit_tree(branch, {"README.md": "Readme\n", nested: "Notes\n", **files})
+                self.write(info, information)
+                commit = git(self.source, "rev-parse", branch)
+                index = (self.source / ".git" / "index").read_bytes()
+                patch, made = recorded_temporary_directories()
+                with patch:
+                    found = source_ref.archive_attributes(self.source, commit)
+                self.assertEqual(expected, found)
+                self.assert_only_indexes_removed(made)
+                # git read-tree wrote the throwaway index, never the checkout's: a GIT_INDEX_FILE left out of its
+                # environment once made it overwrite this one with the commit's tree.
+                self.assertEqual(index, (self.source / ".git" / "index").read_bytes())
+        info.unlink()
+        self.assert_head_unmoved()
+
+    def test_only_the_attribute_reads_are_given_the_throwaway_index_and_it_is_removed_after_an_export(self) -> None:
+        calls: list[tuple[list[str], dict[str, str] | None, Path | None]] = []
+        real = platform_support.run_tool
+
+        def run_tool(
+            arguments: list[str], environment: dict[str, str] | None = None, **options: Any
+        ) -> platform_support.ToolResult:
+            calls.append((arguments, environment, options.get("index_file")))
+            return real(arguments, environment, **options)
+
+        patch, made = recorded_temporary_directories()
+        with patch, mock.patch.object(platform_support, "run_tool", run_tool):
+            export = source_ref.export(self.source, self.release)
+        source_ref.remove(export)
+        steps = {"ls-tree", "read-tree", "check-attr", "archive"}
+        indexed = {
+            next(argument for argument in arguments if argument in steps)
+            for arguments, _, index_file in calls
+            if index_file is not None
+        }
+        self.assertEqual({"read-tree", "check-attr"}, indexed)
+        self.assertLessEqual({"ls-tree", "archive"}, {argument for arguments, _, _ in calls for argument in arguments})
+        # The index is named through run_tool's keyword alone, never through an environment.
+        self.assertEqual([], [environment for _, environment, _ in calls if environment])
+        self.assertEqual(2, len(made))
+        index, exported = made
+        self.assertTrue(index.name.startswith(ATTRIBUTE_INDEX_PREFIX))
+        self.assertFalse(index.exists())
+        self.assertFalse(exported.exists())
+        self.assertEqual({index / "index"}, {index_file for _, _, index_file in calls if index_file is not None})
+
+    def test_an_answer_check_attr_did_not_give_for_each_path_and_attribute_is_refused(self) -> None:
+        answers = {
+            "missing an attribute": ["README.md", "export-ignore", "unspecified"],
+            "another path": ["OTHER.md", "export-ignore", "unspecified", "OTHER.md", "export-subst", "unspecified"],
+            "attributes swapped": ["README.md", "export-subst", "unspecified", "README.md", "export-ignore", "set"],
+        }
+        listing = [f"100644 blob {'a' * 40}\tREADME.md"]
+        for name, answer in answers.items():
+            with self.subTest(name):
+                client = mock.Mock()
+                client.names.side_effect = [listing, answer]
+                with (
+                    mock.patch.object(source_ref, "_client", return_value=client),
+                    self.assertRaises(DeployError) as raised,
+                ):
+                    source_ref.archive_attributes(self.source, self.release)
+                self.assertIn("git check-attr did not answer for each path and attribute", raised.exception.lines[0])
+
+    def test_a_listing_entry_of_a_shape_ls_tree_does_not_print_is_refused(self) -> None:
+        client = mock.Mock()
+        client.names.return_value = [f"100644 blob {'a' * 40} README.md"]
+        with mock.patch.object(source_ref, "_client", return_value=client), self.assertRaises(DeployError) as raised:
+            source_ref.archive_attributes(self.source, self.release)
+        self.assertIn("git ls-tree listed an entry the deployer cannot read", raised.exception.lines[0])
+
+    def test_the_paths_are_split_into_check_attr_calls_within_the_bound_in_order(self) -> None:
+        paths = [f"skills/{index:04}/{'x' * 90}.md" for index in range(400)]
+        calls = source_ref._attribute_calls(paths)
+        self.assertGreater(len(calls), 1)
+        self.assertEqual(paths, [path for call in calls for path in call])
+        for call in calls:
+            self.assertLessEqual(sum(len(path) + 1 for path in call), source_ref.ATTRIBUTE_PATH_UNITS)
+        self.assertEqual([], source_ref._attribute_calls([]))
 
     def commit_link(self, branch: str, name: str, target: str) -> None:
         """Commit a symbolic link to target on a new branch through the index alone, as a checkout on Windows may not
@@ -743,7 +1031,8 @@ class DeployAtTests(DeployerTestCase):
                 self.assertFalse(self.manifest_file.exists())
                 self.assertFalse((self.skills_dir / "alpha").exists())
                 self.assert_head_unmoved()
-        self.assertEqual(3, len(made))
+        exports = [directory for directory in made if not directory.name.startswith(ATTRIBUTE_INDEX_PREFIX)]
+        self.assertEqual(3, len(exports))
         for directory in made:
             self.assertFalse(directory.exists(), directory)
 
@@ -763,6 +1052,7 @@ class DeployAtTests(DeployerTestCase):
         with (
             patch,
             mock.patch.object(source_ref, "_git", archive),
+            mock.patch.object(source_ref, "refuse_archive_attributes"),
             self.assertRaises(DeployError) as raised,
         ):
             source_ref.export(self.source, self.release)

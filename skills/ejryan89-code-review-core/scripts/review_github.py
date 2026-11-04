@@ -84,6 +84,17 @@ class PullFiles:
     changed: int
     head: str
 
+    @property
+    def cut(self) -> bool:
+        """Whether the listing holds other than the files the pull request changes, as a listing GitHub cut at its
+        3,000 does, so it is not the whole change and no caller may read it as one."""
+        return len(self.files) != self.changed
+
+    def moved_from(self, head: str) -> bool:
+        """Whether the pull request's head, as the listing read it before its pages, is no longer `head`, the commit
+        its caller reads the change at, so the listing may describe another commit's change."""
+        return self.head != head
+
 
 def _changed_file(value: Any, path: str) -> dict[str, Any]:
     """One entry of GitHub's files listing: its path and earlier path, status, count of changed lines, head blob, and

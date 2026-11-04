@@ -2298,11 +2298,20 @@ class InstalledCopyTests(RuntimeCanaryTestCase):
             runtime_canary.main([])
         attempts = [call.kwargs["attempts"] for call in canary.call_args_list]
         self.assertEqual([5, runtime_canary.DEFAULT_ATTEMPTS], attempts)
-        errors = io.StringIO()
-        with contextlib.redirect_stderr(errors), self.assertRaises(SystemExit) as raised:
-            runtime_canary.main(["--attempts", "0"])
-        self.assertEqual(2, raised.exception.code)
-        self.assertIn("--attempts takes at least one run: 0", errors.getvalue())
+        # int() read "1_0" as 10 runs and an Arabic-Indic three as 3.
+        for value in ("0", "-1", "1_0", chr(0x0663)):
+            errors = io.StringIO()
+            with (
+                self.subTest(value=ascii(value)),
+                contextlib.redirect_stderr(errors),
+                self.assertRaises(SystemExit) as raised,
+            ):
+                runtime_canary.main([f"--attempts={value}"])
+            self.assertEqual(2, raised.exception.code)
+            self.assertIn(
+                f"argument --attempts: must be a whole number of at least 1 in ASCII digits, not {value!r}",
+                errors.getvalue(),
+            )
         with (
             mock.patch.object(runtime_canary, "create_home", return_value=self.home),
             mock.patch.object(runtime_canary, "canary", return_value=1) as one,

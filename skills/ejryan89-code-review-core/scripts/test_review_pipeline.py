@@ -23,6 +23,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
+import process_identity
 import review_batches
 import review_canary
 import review_dispatch
@@ -3180,6 +3181,46 @@ class InlineReviewTests(PipelineFixture):
         ):
             with self.subTest(runtime=runtime, kind=kind):
                 self.assertEqual(dispatch, review_run.run_dispatch({"runtime": runtime, "kind": kind}))
+
+
+class HostClaimPidTests(unittest.TestCase):
+    """A host claim's PID is read as a PID the platform can give, so a malformed one is gone, never probed."""
+
+    def test_a_claim_pid_no_process_can_have_is_gone_and_never_probed(self) -> None:
+        cases: dict[str, object] = {
+            "a boolean": True,
+            "a string": "4242",
+            "a float": 4242.0,
+            "zero": 0,
+            "past the platform's range": process_identity.PID_MAXIMUM + 1,
+            # Truncated to the 32 bits Windows' OpenProcess takes, it would name this live process.
+            "this process past 32 bits": 2**32 + os.getpid(),
+        }
+        probed: list[int] = []
+
+        def probe(found: int) -> ProcessStatus:
+            probed.append(found)
+            return ProcessStatus(True, 1)
+
+        malformed = f"the Copilot CLI host's claim is malformed: {HOST_CLAIM} pid must be"
+        for name, pid in cases.items():
+            with self.subTest(name), tempfile.TemporaryDirectory() as temporary:
+                run = Path(temporary)
+                claim = new_claim(run, generation=0, now=0.0)
+                atomic_write_json(run / HOST_CLAIM, {**claim, "pid": pid, "start_time": 1})
+                state = host_state(run, probe=probe, now=0.0)
+                self.assertEqual("gone", state.status)
+                self.assertIsNone(state.pid)
+                self.assertIn(malformed, state.reason or "")
+        self.assertEqual([], probed)
+
+    def test_a_claim_pid_in_range_is_probed(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            run = Path(temporary)
+            claim = new_claim(run, generation=0, now=0.0)
+            atomic_write_json(run / HOST_CLAIM, {**claim, "pid": 4242, "start_time": 1})
+            state = host_state(run, probe=lambda pid: ProcessStatus(True, 1), now=0.0)
+        self.assertEqual(("running", 4242), (state.status, state.pid))
 
 
 class UnstatableRunStateTests(unittest.TestCase):

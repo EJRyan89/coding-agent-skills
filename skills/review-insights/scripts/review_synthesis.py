@@ -150,7 +150,9 @@ UNSAFE_TEXT = (
 # it holds no character UNSAFE_ARGUMENT matches and is at most this long.
 TARGET_PATH = 260
 ADJACENT_DAYS = 7
-PERIOD = re.compile(r"(\d{4}-\d{2}-\d{2})--(\d{4}-\d{2}-\d{2})")
+# A period's folder as the report names it: its start and end as ISO dates in ASCII digits, which `\d` would widen to
+# every Unicode decimal digit.
+PERIOD = re.compile(r"([0-9]{4}-[0-9]{2}-[0-9]{2})--([0-9]{4}-[0-9]{2}-[0-9]{2})")
 PROBLEMS_SHOWN = 20
 # The largest report or synthesis context written or read back. A report stores every finding an analyzer
 # recommendation covers as its evidence, so a long range of many reviews can grow large; one limit for writing and
@@ -327,15 +329,29 @@ def scoped_flags(flags: list[dict[str, Any]], repositories: list[str], start: da
     return lines
 
 
+def period_dates(name: str) -> tuple[date, date] | None:
+    """The start and end of the period a folder is named for, as the report names it, or None for a name that is no
+    period: one of another shape, or whose dates do not exist or end before they start."""
+    match = PERIOD.fullmatch(name)
+    if not match:
+        return None
+    try:
+        first, last = date.fromisoformat(match.group(1)), date.fromisoformat(match.group(2))
+    except ValueError:
+        return None
+    return (first, last) if first <= last else None
+
+
 def previous_period(set_root: Path, start: date, load: Any) -> tuple[Path, dict[str, Any]] | None:
-    """The report for the period that ends within a week before this one starts, the latest such. A folder or report
-    it cannot stat is the OSError file_presence raises, never a period with no report."""
+    """The report for the period that ends within a week before this one starts, the latest such. A folder whose name
+    is no period is passed over, as one that holds no report is. A folder or report it cannot stat is the OSError
+    file_presence raises, never a period with no report."""
     candidates = []
     for directory in set_root.iterdir() if file_presence.is_directory(set_root) else []:
-        match = PERIOD.fullmatch(directory.name)
-        if not match or not file_presence.is_present(directory / "insights.json"):
+        period = period_dates(directory.name)
+        if period is None or not file_presence.is_present(directory / "insights.json"):
             continue
-        end = date.fromisoformat(match.group(2))
+        end = period[1]
         if end < start and (start - end).days <= ADJACENT_DAYS:
             candidates.append((end, directory / "insights.json"))
     if not candidates:

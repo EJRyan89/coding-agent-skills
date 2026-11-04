@@ -150,8 +150,9 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   a handler that ends every failure in one code; two probes under one `except` that print one message; an `except`
   around a `git` or `gh` call that drops the exception's text; `FAILED KeyError`, `FAILED TypeError`, or
   `FAILED AttributeError` expected by a test; a state decided from the lines a step printed, such as
-  `split("\t")[0] ==`, instead of a value the step returned; a recorded failure a later, different command clears.
-- **Examples:** #1511, #1840, #1855, #1910, #2022, #2207, #2209
+  `split("\t")[0] ==`, instead of a value the step returned; a recorded failure a later, different command clears;
+  a reader that returns None or `{}` for every fault, whose caller then refuses a field of it as missing.
+- **Examples:** #1511, #1840, #1855, #1910, #2022, #2181, #2207, #2209
 
 ### A caller catches the whole error family its callee raises on content
 
@@ -162,14 +163,20 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   `xml_reader:CONTENT_ERRORS`, `frontmatter:CONTENT_ERRORS`, `typed_text:CONTENT_ERRORS`,
   `guidance_record:CONTENT_ERRORS`, `check_provenance:CONTENT_ERRORS`, and `diff_paths:CONTENT_ERRORS`, named whole in
   the handler, and the readers each module names, such as `json_reader:CONTENT_READERS`; `review_io:CONTENT_ERRORS`
-  and `file_presence:NotAFile`.
+  and `file_presence:NotAFile`; `review_io:PersistenceError`, the family of `review_io:read_json`, which the
+  content-errors policy's `tests.validation.python_checks:core_reader_families` names for that reader; and
+  `deployer.journal:RECOVERY_FAILURES`, every failure a recovery step meets that a rerun would meet again.
 - **Guard:** `tests/validation/python_checks.py::PythonChecksPolicies::test_each_handler_around_a_reader_catches_its_whole_content_family`,
   `tests/malformed_input/test_malformed_input.py::test_each_reader_refuses_or_documents_accepting_each_case`,
-  `tests/validation/python_checks.py::PythonChecksPolicies::test_json_reader_is_the_one_parse_of_json`
+  `tests/validation/python_checks.py::PythonChecksPolicies::test_json_reader_is_the_one_parse_of_json`,
+  `tests/validation/test_python_checks.py::test_content_errors_policy_reads_read_json_as_raising_persistence_error`,
+  `tests/deployer/test_recovery_migration.py::RecoveryFailureTests::test_each_failure_other_than_an_os_error_a_rerun_repeats_sends_a_committed_run_to_the_manual_steps`
 - **Search for:** `except json.JSONDecodeError`, `except UnicodeDecodeError:`, or `except tomllib.TOMLDecodeError:`
   around a reader that raises more; `except ValueError` near an `xml_reader`, `tomllib`, or `csv.` call; an `except X`
-  around a helper that raises a class outside `X`.
-- **Examples:** #1634, #1816, #1874
+  around a helper that raises a class outside `X`; an `except (`, `OSError`, or `ValueError` around a
+  `validate_record_pair` or `read_json` call with no `PersistenceError` beside it; `.encode("utf-8")` of a name read
+  from disk with no handler, which raises `UnicodeEncodeError` for a lone surrogate or a surrogate escape.
+- **Examples:** #1634, #1816, #1874, #2221, #2294
 
 ### A result cut short says it was cut
 
@@ -178,17 +185,39 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
 - **Why:** A listing cut at its limit otherwise reads as the whole set, and what lies past the cut is never judged.
 - **Use:** `github_client:GitHubClient.capped_list`, which asks gh for one more item than its limit and says whether
   GitHub held more; `bounded_process:run_bounded`, `pr_status:_list_pulls`, `audit_repository:duplicates`,
-  `review_guidance:overlaps`, `tools.mutation_gate:unfinished_line`.
+  `review_guidance:overlaps`, `tools.mutation_gate:unfinished_line`, `deployer.plan:reported_diff`, and
+  `review_github:PullFiles.cut`, which says whether a pull request's file listing holds the files it changes.
 - **Guard:** `tests/validation/python_checks.py::PythonChecksPolicies::test_no_gh_listing_is_capped_outside_the_client`,
   which refuses a limit passed to gh by hand outside the GitHub client unless its module states why,
   `skills/ejryan89-skill-core/scripts/test_github_client.py::CappedListTests`,
   `.claude/skills/audit-repository/scripts/test_audit_repository.py::DuplicateTests::test_a_search_that_finds_exactly_what_it_lists_is_not_cut`,
   `skills/review-insights/scripts/test_review_guidance.py::ReportTests::test_a_search_that_stops_at_its_budget_is_named_in_a_fact_line_and_the_input`,
-  `tests/tools/test_mutation_gate.py::SummaryFixtures::test_a_run_the_cap_cut_short_says_so_on_its_first_line_naming_each_module_and_its_counts`
-- **Search for:** `"--limit"` in a `gh` call whose result is never compared with the limit; a slice such as
+  `tests/tools/test_mutation_gate.py::SummaryFixtures::test_a_run_the_cap_cut_short_says_so_on_its_first_line_naming_each_module_and_its_counts`,
+  `skills/review-document/scripts/test_review_document.py::PullRequestTests::test_a_file_listing_shorter_than_the_files_the_pull_request_changes_fails_before_any_document_is_read`,
+  `skills/ejryan89-code-review-core/scripts/test_adversarial_inputs.py::ChangeSizeTests::test_a_file_listing_cut_short_or_read_at_a_moved_head_is_refused_by_each_of_its_readers`,
+  `tests/deployer/test_plan.py::UnmanagedDiffTests`
+- **Search for:** `"--limit"` in a `gh` call whose result is never compared with the limit; a pull request's
+  `pulls/<n>/files` pages read outside `review_github:GitHubClient.list_pull_files`, or its `PullFiles` used without
+  comparing `files` with `changed`, since GitHub's files API lists at most 3,000; a slice such as
   `[:MAX_RELATED_TESTS]` or `rg -n "\[:[A-Z_a-z]*(LIMIT|MAX|BUDGET|CAP)[A-Z_a-z]*\]"` with no flag beside it; a
   `break` on a counter in a loop that returns no sign it stopped.
-- **Examples:** #1845, #1857, #1864, #1891
+- **Examples:** #1845, #1857, #1864, #1891, #2213, #2220
+
+### One source that cannot be read costs only its own findings
+
+- **Rule:** A run over several independent sources, such as changelogs, pages, or repositories, lists a source it
+  cannot read as a line of its own and still reads the others, and a request to a remote API asks for a page its
+  server answers within its time.
+- **Why:** One source's failure that stops the run hides every other source's findings, and a page too large for the
+  server's time fails every run until someone reads the failure.
+- **Use:** `tools.runtime_changelogs:watch`, which lists a changelog it cannot read and reads on, and
+  `tools.runtime_changelogs:RELEASES_PER_PAGE`.
+- **Guard:** `tests/tools/test_runtime_changelogs.py::MainTests::test_a_changelog_that_cannot_be_read_is_listed_and_the_others_and_the_pages_keep_their_watch`,
+  `tests/tools/test_runtime_changelogs.py::MainTests::test_github_releases_are_asked_for_thirty_a_page_which_the_api_answers_in_its_time`
+- **Search for:** a comprehension that calls a reader raising on one source across all of them, as
+  `rg -n "\[\(\w+, \w+\([^)]*\)\) for \w+ in "`, with no `except` per source; `per_page=100` on an endpoint whose
+  items carry long bodies, such as releases.
+- **Examples:** #2286
 
 ### A number read from text is bounded
 
@@ -197,20 +226,27 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
 - **Why:** An unbounded `int()` turns a hostile or garbled value into a `ValueError` past the digit limit, a huge
   allocation, or a negative count the code never expected.
 - **Use:** `whole_number:read`, which raises the caller's named error, and `whole_number:parse`, which gives None, for a
-  number in any other text, both capped at `whole_number:DIGIT_LIMIT`; `json_reader:loads` for a JSON number, which
-  refuses one past the same cap, and `typed_fields:FieldReader.integer` for its bounds.
+  number in any other text, both capped at `whole_number:DIGIT_LIMIT`; `whole_number:argument`, the argparse type
+  of every option that takes one; `json_reader:loads` for a JSON number, which refuses one past the same cap, and
+  `typed_fields:FieldReader.integer` for its bounds; `process_identity:read_pid` for a PID, bounded by the
+  platform's range so none is truncated to another process's.
 - **Guard:** `tests/validation/python_checks.py::PythonChecksPolicies::test_whole_number_is_the_one_reader_of_a_number_from_text`,
   `tests/validation/test_python_checks.py::test_int_parse_policy_refuses_a_group_or_a_digit_tested_value_outside_whole_number`,
+  `tests/validation/test_python_checks.py::test_int_parse_policy_refuses_an_option_read_with_int_or_float`,
   `skills/ejryan89-skill-core/scripts/test_whole_number.py::ReadTests`,
+  `skills/ejryan89-skill-core/scripts/test_whole_number.py::ArgumentTests`,
   `skills/ejryan89-skill-core/scripts/test_json_reader.py::RefusalTests::test_an_integer_past_the_shared_digit_cap_is_refused_whatever_its_sign`,
-  `skills/ejryan89-skill-core/scripts/test_typed_fields.py::FieldReaderTests::test_an_integer_within_its_bounds`
+  `skills/ejryan89-skill-core/scripts/test_typed_fields.py::FieldReaderTests::test_an_integer_within_its_bounds`,
+  `skills/ejryan89-skill-core/scripts/test_process_identity.py::PidRangeTests::test_a_pid_is_read_within_the_platforms_range_and_anything_else_is_refused_by_its_path`
 - **Search for:** `rg -n "int\(\w+\.group\(|int\(match\["`, a number taken from a regular expression whose pattern
   has `\d+` or `[0-9]+` rather than a bounded count; `.isdigit()` before an `int(`, which admits digits `int` reads
   past any bound; `int(` on a `.split(` of another program's output; `float(` on text from a file or an argument with no
   `math.isfinite`; `int(` on each item of a `.findall(`, or on text a `re.fullmatch(r"[0-9]+", ...)` admitted, which
   bounds no length; a refusal worded "more than N digits" for a `\d` group,
-  which also admits digits that are not ASCII.
-- **Examples:** #1611, #1729, #1879, #1886, #1895, #1897
+  which also admits digits that are not ASCII; `type=int` or `type=float` in an `add_argument`, and an argparse type
+  function that returns `int(value)`, which read `1_0` as 10 and an Arabic-Indic three as 3; an integer read from a
+  file and handed to a `ctypes` call, whose declared type holds the kind and truncates the range.
+- **Examples:** #1611, #1729, #1879, #1886, #1895, #1897, #2215, #2217
 
 ### One fact has one owner
 
@@ -221,9 +257,12 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
 - **Use:** `tests.validation.duplication:_shared_facts`, the registry of facts each read from its owner; where a fact
   is a behavior, the owner's function, such as `frontmatter:Frontmatter.user_only`, `frontmatter:user_only_value` for
   another reader's values, `typed_text:read_typed`, the read of a title or body file without its byte-order mark, and
-  `deployer.journal:finish_backup`, the one rule a committed run's finalization and its recovery settle a backup by.
+  `deployer.journal:finish_backup`, the one rule a committed run's finalization and its recovery settle a backup by,
+  and `review_config:REPOSITORY`, the one rule of a repository identity the mute and pull-key patterns are built
+  on, and the adapter schema's repository pattern is probed against.
   A module more than one part of the repository needs moves to skill-core.
 - **Guard:** `tests/deployer/test_backup_settlement.py::SettlementTests`, which runs each backup through both paths,
+  `skills/ejryan89-code-review-core/scripts/test_review_config.py::ConfigurationTests::test_a_repository_identity_holds_githubs_name_rule_and_every_reader_built_on_it_agrees`,
   `tests/validation/duplication.py::DuplicationPolicies::test_repository_owners_hold_every_shared_fact`,
   `tests/validation/duplication.py::DuplicationPolicies::test_repository_copies_only_what_it_sanctions`,
   `tests/validation/test_duplication.py::SharedFactPolicy`,
@@ -240,7 +279,7 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   `rg -n "def (_?inside|strictly_inside|_lexically_inside)\b"` and other helpers of one job held in several modules;
   a live step and its recovery, such as a run's finalization and the completion of an interrupted one, each deciding
   in its own code what becomes of the same state on disk.
-- **Examples:** #1349, #1477, #1495, #1596, #1679, #2295, #2296
+- **Examples:** #1349, #1477, #1495, #1596, #1679, #2219, #2295, #2296
 
 ### A promise in prose is held where its reader reads it
 
@@ -253,14 +292,16 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   `tests/validation/test_skill_layout.py::SkillLayoutFixtures::test_runtime_page_policy_holds_each_support_statement_to_the_metadata`,
   `tests/validation/workflows.py::WorkflowsPolicies::test_a_token_step_that_runs_the_pull_requests_own_code_is_described_as_doing_so`,
   `tests/deployer/test_backup_settlement.py::RecoveryStopsTests::test_when_recovery_fails_names_every_stop_recovery_makes`,
-  which reads each stop from the code and fails one the guide's list leaves out
+  which reads each stop from the code and fails one the guide's list leaves out,
+  `skills/dotnet-format/scripts/test_csharp_layout.py::test_each_status_word_a_scripts_docstring_names_is_one_it_prints`,
+  which fails a dotnet-format script's docstring naming a status word the script never prints
 - **Search for:** an `assertEqual(` or `assertIn(` on a literal sentence a document states, where the test could read
   the document or the shared constant; `never`, `always`, `nothing`, `every`, or `only` in a `SKILL.md` or a
   docstring, each checked for a test of its exception; a docstring's exit codes against the function's `return` and
   `sys.exit(` values; a statement of which code a credential or the run's token reaches, checked for the code a
   pull request can change at those paths; a document's list of the cases a step stops or refuses on, checked against
   each `return False` or `raise` of that step.
-- **Examples:** #1317, #1584, #1629, #1861, #1864, #1869, #2237, #2296
+- **Examples:** #1317, #1584, #1629, #1861, #1864, #1869, #2224, #2237, #2296
 
 ### A reader refuses a shape it does not know
 
@@ -320,8 +361,15 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   `tests/tools/test_hub_guard_shells.py::ShellOptionsDifferentialTests`,
   `.claude/skills/shepherd-pull-requests/scripts/test_shepherd_pull_requests.py::ShapeTest::test_the_recorded_rollup_reads_its_newest_validation_run`,
   which reads a check rollup recorded from gh's pull request listing, and
-  `.claude/skills/shepherd-pull-requests/scripts/test_shepherd_pull_requests.py::ShapeTest::test_a_check_no_workflow_reports_neither_satisfies_nor_blocks_the_required_check`
-- **Search for:** an option table in `tools/hub_guard.py` with no differential case; an option table that holds
+  `.claude/skills/shepherd-pull-requests/scripts/test_shepherd_pull_requests.py::ShapeTest::test_a_check_no_workflow_reports_neither_satisfies_nor_blocks_the_required_check`,
+  `skills/dotnet-dependencies/scripts/test_msbuild_conditions.py::test_a_number_is_read_as_msbuild_reads_one_and_any_other_spelling_leaves_the_comparison_unsettled`
+  and
+  `skills/dotnet-dependencies/scripts/test_msbuild_conditions.py::test_equality_compares_numbers_booleans_and_text_as_msbuild_does`,
+  which hold the condition reader to MSBuild's verdicts captured from the .NET SDK's MSBuild
+- **Search for:** a Python parser or folding, `float(`, `int(` with or without a base, `casefold()`, `lower()`,
+  `strip()`, or a pattern with `re.IGNORECASE` and no `re.ASCII`, applied to a value another program reads, each
+  checked against that program's own reading of it, as MSBuild reads a number with .NET's invariant `Double.TryParse`
+  and compares text with .NET's ordinal comparison ignoring case; an option table in `tools/hub_guard.py` with no differential case; an option table that holds
   only the exact words of an option a bundle can hold, as `-o` in `-euo`, or tests a builtin's option by an exact
   word's membership, as `"-f" in arguments` misses `unset -fn` and `-a` misses `exec -ca`; each way the shell defines a name a later
   word runs, an alias, a function, a `hash -p` or `BASH_CMDS` command name, a `command_not_found_handle`, or one
@@ -349,7 +397,7 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   leaves one out, as `difftool --no-index` was; a git option table that leaves out one git.c reads a value after, as
   `--shallow-file` was; a failure labelled with `arguments[0]` rather than `git_client.command_name`.
 - **Examples:** #1412, #1429, #1430, #1592, #1606, #1843, #1851, #1865, #2032, #2088, #2089, #2134, #2135, #2136,
-  #2137, #2138, #2139, #2140, #2188, #2232, #2233, #2234, #2262, #2276
+  #2137, #2138, #2139, #2140, #2188, #2225, #2232, #2233, #2234, #2262, #2276
 
 ### A recursive parser of input has a depth bound
 
@@ -529,18 +577,22 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
 - **Use:** `versions:find`, `versions:read`, and `versions:latest`, the one version reader, which reads a version's
   numbers and orders by them; `release_tags:release_order` and `release_tags:highest_release`, a release tag through
   it; `path_keys:path_key`, the one form a path is compared in, which the deployer reaches as
-  `deployer.platform_support:path_key`; `guidance_record:canonical_url`.
+  `deployer.platform_support:path_key`; `guidance_record:canonical_url`; `deployer.source:any_case` and
+  `deployer.source:refuse_other_spellings`, which find a name the deployer reads spelled in any case on every
+  platform and refuse one spelled otherwise.
 - **Guard:** `tests/validation/duplication.py::DuplicationPolicies::test_repository_copies_only_what_it_sanctions`,
   which fails a version's numbers read by hand outside the version reader, and a path case-folded by hand outside
   the path key;
   `skills/ejryan89-skill-core/scripts/test_versions.py::OrderTests::test_versions_order_by_number_never_as_text`,
   `skills/ejryan89-skill-core/scripts/test_path_keys.py::PathKeyTests::test_two_spellings_of_one_path_have_one_key`,
   `skills/ejryan89-skill-core/scripts/test_release_tags.py::ReleaseTagTests::test_releases_are_ordered_by_their_numbers_not_their_text`,
-  `skills/ejryan89-skill-core/scripts/test_guidance_record.py::test_the_canonical_form_folds_only_raw_github_s_refs_heads_and_the_scheme_and_host_case`
+  `skills/ejryan89-skill-core/scripts/test_guidance_record.py::test_the_canonical_form_folds_only_raw_github_s_refs_heads_and_the_scheme_and_host_case`,
+  `tests/deployer/test_source_validation.py::MetadataValidationTests::test_a_name_the_deployer_reads_spelled_in_another_case_is_refused_by_name_on_every_platform`
 - **Search for:** `version in`, `.startswith(version`, `sorted(tags`, or `tags[-1]`; `int(part) for part in` or
   `map(int,` over a `.split(".")`; in a workflow, `grep` or `contains(` on a version; `==` between two paths with no
-  normalization, or `os.path.normcase` outside `path_keys.py`.
-- **Examples:** #1556, #1855, #1867, #1909
+  normalization, or `os.path.normcase` outside `path_keys.py`; a glob, `fnmatch.fnmatch(`, or `.is_file()` of a
+  fixed file name, which folds case on Windows, beside a dictionary keyed by each file's spelling on disk.
+- **Examples:** #1556, #1855, #1867, #1909, #2299
 
 ### A child process starts from an environment built for it
 
@@ -730,7 +782,7 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
 - **Search for:** the name of the function, call, or literal the fix changed, across `skills/`, `deployer/`, `tools/`,
   and `.claude/skills/`; its Bash twin in `*.sh` and its PowerShell twin in `*.ps1`; the **Search for** of the
   pattern above that the defect is an instance of.
-- **Examples:** #1369, #1521, #2184
+- **Examples:** #1369, #1521, #2184, #2297
 
 ### A foreign function declares its types
 
