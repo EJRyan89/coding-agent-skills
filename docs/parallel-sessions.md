@@ -316,7 +316,9 @@ a row decides it.
   judged as a checkout git makes there.
 - **Redirections.** A redirection that writes a file at a path the text settles is refused when the file lies in a
   guarded hub's tracked files or anywhere in its git directory, as a file tool's edit is; a duplication such as
-  `2>&1` and a device such as `/dev/null` write none. A redirection that names its descriptor by a variable, as
+  `2>&1` and a device such as `/dev/null` write none. In PowerShell every command's file redirection is read so,
+  an expression standing as a command, as `'x' > <file>`, included, and one the reader does not reach is refused.
+  A redirection that names its descriptor by a variable, as
   `{fd}>out`, `{fd}<in`, or `{fd}>&-`, assigns that variable, any one, and is refused in every operator. A target the text does not settle to a literal path, or a
   relative one in a directory it does not settle, may lie in a hub and is refused, but for one under the system's
   temporary folder that `TMP`, `TEMP`, or `TMPDIR` names from the environment, as `> "$TMP/out.txt"` does.
@@ -329,8 +331,10 @@ a row decides it.
   the words its input adds unsettled, held by `tests/tools/test_prefix_programs.py` to each program on every option
   form its own `--help` lists. A runner is transparent: the assignments before it, and `env`'s own, are in the
   environment of the command it starts, and are judged against that command, as ones before git where it is git,
-  before every command of a `bash -c` or `sh -c` script, and as ones before git for a `pwsh -Command` script; `env` with no option, its assignments read as ones before that command; `bash -c` and
-  `sh -c` with a literal script, read as Bash; and `pwsh -Command` with one literal script, read as PowerShell. The
+  before every command of a `bash -c` script, and as ones before git for a `pwsh -Command` script; `env` with no
+  option, its assignments read as ones before that command; `bash -c` with a literal script, read as Bash; and
+  `pwsh -Command` with one literal script, read as PowerShell. `sh` is refused whatever it is given: it runs Bash in
+  POSIX mode, or dash, either of which keeps an assignment made before a special builtin after it. The
   options that make a program run a command are read too: `find`'s `-exec`, `-execdir`, `-ok`, and `-okdir` run the
   command after them, read as a command, while `rg`'s `--pre`, `sort`'s `--compress-program`, and `tar`'s options
   that run a program are refused, and so is any word of such a program's that the text does not settle. git keeps its

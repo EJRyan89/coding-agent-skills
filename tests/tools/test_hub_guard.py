@@ -1813,6 +1813,15 @@ class UnderstoodSetTests(GuardTestCase):
                 self.assertEqual("deny", self.bash(command, outside, environment))
                 self.assertIn(UNREAD, self.reason)
 
+    def test_a_cdpath_search_and_cd_dash_leave_the_directory_unknown(self) -> None:
+        environment = {**self.environment, "CDPATH": str(self.root)}
+        self.assertEqual("deny", self.bash("cd sub && git commit -m x", self.hub, environment))
+        self.assertIn(UNPLACED.format("commit"), self.reason)
+        # A target CDPATH does not search, one starting ./ or ../, is placed as written.
+        self.assertIsNone(self.bash("cd ./.claude/worktrees/feat-demo && git commit -m x", self.hub, environment))
+        self.assertEqual("deny", self.bash("cd - && git commit -m x", self.tree))
+        self.assertIn(UNPLACED.format("commit"), self.reason)
+
     def test_a_runner_s_command_is_read_as_a_command(self) -> None:
         for command, cwd, expected in (
             (f'nohup git -C "{self.hub}" commit -m x', self.tree, "deny"),
@@ -1949,6 +1958,45 @@ class PowerShellUnderstoodSetTests(GuardTestCase):
             with self.subTest(command=command, cwd=cwd.name):
                 self.assertEqual(expected, self.powershell(command, cwd))
 
+    def test_a_file_redirection_is_read_in_every_statement_that_can_carry_one(self) -> None:
+        readme = self.hub / "README.md"
+        for command in (
+            f"'x' > '{readme}'",
+            f"Write-Output x >> '{readme}'",
+            f"if ($true) {{ 'x' > '{readme}' }}",
+            f"foreach ($c in 'a') {{ $c > '{readme}' }}",
+            f"git status && 'x' > '{readme}'",
+            f"$y = 'x'; $y > '{readme}'",
+            "'x' > $f",
+        ):
+            with self.subTest(command=command):
+                self.assertEqual("deny", self.powershell(command, self.tree))
+        self.assertIsNone(self.powershell("'x' > notes.txt", self.tree))
+        self.assertEqual("hub\n", readme.read_text(encoding="utf-8"))
+
+    def test_a_location_powershell_may_move_is_unknown_after_it(self) -> None:
+        outside = self.root / "not-a-repository"
+        outside.mkdir()
+        environment = {name: value for name, value in self.environment.items() if name != "CLAUDE_PROJECT_DIR"}
+        # With a part it does not read, a git call is read from no place where any command may move the location.
+        self.assertEqual(
+            "deny", self.powershell(f"Set-Location '{self.hub}'; $x.ToString(); git commit -m x", outside, environment)
+        )
+        for command in (
+            # A location a nested command moves, and one a pipeline of several commands moves, is unknown after it.
+            f"Write-Output (Set-Location '{self.tree}'); git commit -m x",
+            f"Set-Location '{self.tree}' | Out-Null; git commit -m x",
+        ):
+            with self.subTest(command=command):
+                self.assertEqual("deny", self.powershell(command, self.hub))
+                self.assertIn(UNPLACED.format("commit"), self.reason)
+        self.assertEqual("deny", self.powershell("Set-Location -StackName x; git status", self.tree))
+        self.assertIn("Set-Location's parameter -StackName", self.reason)
+        self.assertEqual("deny", self.powershell("cd -; git commit -m x", self.tree))
+        self.assertIn(UNPLACED.format("commit"), self.reason)
+        home = {**self.environment, "HOME": str(self.root)}
+        self.assertEqual("deny", self.powershell(f"Set-Location '~/{self.hub.name}'; git commit -m x", self.tree, home))
+
     def test_with_a_part_it_does_not_read_each_git_call_is_still_read_from_a_place_left_unknown(self) -> None:
         outside = self.root / "not-a-repository"
         outside.mkdir()
@@ -2071,6 +2119,12 @@ class GitCallTests(GuardTestCase):
                 self.assertIn("could not be read", self.stderr)
                 self.assertEqual("deny", shell("git hop", other))
                 self.assertIn(WRITES.format("commit"), self.reason)
+
+    def test_a_shell_alias_handed_a_word_the_text_does_not_settle_cannot_be_read(self) -> None:
+        self.git(self.hub, "config", "alias.peek", "!git status")
+        self.assertEqual("deny", self.bash('git peek "$x"', self.tree))
+        self.assertIn("a word after it is one the text does not settle", self.reason)
+        self.assertIsNone(self.bash("git peek x", self.tree))
 
     def test_a_subcommand_quoted_in_part_is_the_word_each_shell_makes_of_it(self) -> None:
         for command in ("git com'mit' -m x", 'git co"mm"it -m x'):

@@ -292,7 +292,6 @@ RUNNER_FORMS = {
     "xargs": "xargs {command}",
     "env": "env {command}",
     "bash": "bash -c '{command}'",
-    "sh": "sh -c '{command}'",
     "pwsh": "pwsh -NoProfile -Command '{command}'",
     "find": "find . -exec {command} {{}} +",
 }
@@ -300,7 +299,7 @@ RUNNER_FORMS = {
 
 class RunnerTests(unittest.TestCase):
     def test_every_runner_whose_command_the_guard_reads_has_a_form(self) -> None:
-        read = {*hub_guard.RUNNER_OPTIONS, "env", "bash", "sh", "pwsh", "find"}
+        read = {*hub_guard.RUNNER_OPTIONS, "env", "bash", "pwsh", "find"}
         self.assertEqual(read, set(RUNNER_FORMS))
 
     def test_an_assignment_before_a_runner_is_judged_against_the_command_it_starts(self) -> None:
@@ -317,7 +316,7 @@ class RunnerTests(unittest.TestCase):
                 # pwsh's commands are read apart, so what reaches them is judged as an assignment before git.
                 (f"PYTHONUTF8=1 {form.format(command='python -B x.py')}", refused if runner == "pwsh" else None),
             ):
-                if runner in {"bash", "sh", "pwsh"} and command.count("'") > 2:
+                if runner in {"bash", "pwsh"} and command.count("'") > 2:
                     continue  # a quoted form inside another quoted form is no command a session writes
                 with self.subTest(runner=runner, command=command):
                     unread = " ".join(reading(command, environment).unread)
@@ -342,6 +341,22 @@ class RunnerTests(unittest.TestCase):
                     self.assertTrue(reading(f"{program} {option} x y").unread)
             with self.subTest(program=program, word="unsettled"):
                 self.assertTrue(reading(f"{program} $x y").unread)
+
+
+class NestingTests(unittest.TestCase):
+    def test_substitutions_nested_past_the_limit_are_refused_and_to_it_read(self) -> None:
+        def nested(depth: int) -> str:
+            return "echo " + "$(echo " * depth + "hi" + ")" * depth
+
+        reason = f"substitutions nest more than {hub_guard.NESTING_LIMIT} deep"
+        self.assertNotIn(reason, " ".join(reading(nested(hub_guard.NESTING_LIMIT)).unread))
+        self.assertIn(reason, " ".join(reading(nested(hub_guard.NESTING_LIMIT + 1)).unread))
+
+    def test_sh_is_refused_whatever_it_is_given(self) -> None:
+        # sh runs in POSIX mode, where an assignment before a special builtin outlives it.
+        for command in ("sh -c 'echo x'", "sh -c 'TMP=/x :; echo x > \"$TMP/f\"'", "sh script.sh", "sh"):
+            with self.subTest(command=command):
+                self.assertIn(hub_guard.RUNNERS["sh"], " ".join(reading(command).unread))
 
 
 class RedirectionTests(unittest.TestCase):

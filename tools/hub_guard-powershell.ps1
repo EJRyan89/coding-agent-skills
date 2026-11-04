@@ -28,6 +28,7 @@ using namespace System.Management.Automation.Language
 #     static member and whether a constant names it
 #   "types": the name of each type a cast or a type expression names, as written
 #   "blocks": for each script block, the name of the command it is an argument of, or null for none
+#   "fileRedirections": how many file redirections the tree holds, which hub_guard.py holds to those it read
 #
 # hub_guard.py starts it with -Command rather than -File, so no execution policy applies to it.
 
@@ -68,15 +69,16 @@ function ConvertTo-Element([Ast] $Element) {
 }
 
 function ConvertTo-Command([CommandBaseAst] $Command) {
-    if ($Command -isnot [CommandAst]) {
-        return [ordered]@{ expression = $true }
-    }
+    # Every command carries its redirections, an expression standing as one, as 'x' > out.txt, included.
     $redirections = foreach ($redirection in $Command.Redirections) {
         if ($redirection -is [FileRedirectionAst]) {
             [ordered]@{ kind = 'file'; target = (ConvertTo-Element $redirection.Location) }
         } else {
             [ordered]@{ kind = 'merge' }
         }
+    }
+    if ($Command -isnot [CommandAst]) {
+        return [ordered]@{ expression = $true; redirections = @($redirections) }
     }
     [ordered]@{
         elements = @(foreach ($element in $Command.CommandElements) { ConvertTo-Element $element })
@@ -197,6 +199,7 @@ $blocks = foreach ($node in $all) {
 }
 [ordered]@{
     nodes = $nodes
+    fileRedirections = @($all | Where-Object { $_ -is [FileRedirectionAst] }).Count
     assigned = @($assigned)
     members = @($members)
     types = @($types)

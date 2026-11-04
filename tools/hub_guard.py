@@ -150,7 +150,9 @@ EXPORTED_FUNCTION = re.compile(r"^BASH_FUNC_(.+)%%$")
 # settle, and which is then read as a command. Every other program a literal name starts is understood: what it does
 # inside itself, in its own language (a Python script, an awk program, a test suite), the guard does not see.
 RUNNERS: dict[str, str] = {
-    **dict.fromkeys(("bash", "sh"), "a shell, read only as `-c` with a literal script, which is read as Bash"),
+    "bash": "a shell, read only as `-c` with a literal script, which is read as Bash",
+    "sh": "Bash in POSIX mode, or dash, either of which keeps an assignment made before a special builtin after it, "
+    "which the guard does not follow",
     "pwsh": "PowerShell, read only as `-Command` or `-c` with one literal script, after -NoProfile, -NonInteractive, "
     "or "
     "-NoLogo, which is read as PowerShell",
@@ -1947,7 +1949,7 @@ class BashReader:
         if program == "env":
             return self.read_env(arguments, directory, prefixes)
         script = shell_script(program, arguments)
-        if script is not None and program in {"bash", "sh"}:
+        if script is not None and program == "bash":
             # The script runs in a shell of its own, which holds the runner's assignments in its environment, so each
             # of its commands is judged with them; what it changes dies with it.
             self.read_prefixes(prefixes, git=False)
@@ -2200,10 +2202,10 @@ def runner_start(program: str, arguments: list[Word]) -> tuple[int | None, str |
 
 
 def shell_script(program: str, arguments: list[Word]) -> str | None:
-    """The literal script a shell runs, where the guard reads the shell's form: `bash -c <script>` or `sh -c
-    <script>`, with any words after it its positional parameters, and pwsh's `-Command` or `-c` with one script after
-    the options PWSH_QUIET names; None for every other form."""
-    if program in {"bash", "sh"}:
+    """The literal script a shell runs, where the guard reads the shell's form: `bash -c <script>`, with any words
+    after it its positional parameters, and pwsh's `-Command` or `-c` with one script after the options PWSH_QUIET
+    names; None for every other form, `sh -c` among them, since sh runs in POSIX mode (RUNNERS)."""
+    if program == "bash":
         if len(arguments) >= 2 and arguments[0] == "-c" and arguments[1] is not None:
             return arguments[1]
         return None
@@ -2442,6 +2444,9 @@ def read_powershell(command: str, cwd: Path | None, reading: Reading, depth: int
     directory = Directory(cwd)
     for statement in statements:
         directory = reader.read_statement(statement, directory)
+    if reader.redirections_read < output.get("fileRedirections", 0):
+        # A file redirection no statement read may write anywhere, a hub among the places.
+        reading.cannot_read("a file redirection the reader did not reach, which may write in a hub")
 
 
 class PowerShellReader:
@@ -2450,6 +2455,7 @@ class PowerShellReader:
     def __init__(self, reading: Reading, commands: list[Any]) -> None:
         self.reading = reading
         self.commands = commands
+        self.redirections_read = 0
 
     def read_forms(self, output: Mapping[str, Any]) -> list[str]:
         """Tells the reading of each understood node type's form that is not read: an assignment to the environment
@@ -2577,6 +2583,14 @@ class PowerShellReader:
                 outcome = Outcome(joined(outcome.ok, after.ok), after.fail)
         return directory if statement.get("background") else outcome.merged()
 
+    def read_redirections(self, command: Mapping[str, Any], directory: Directory) -> None:
+        """The one reading of a command's file redirections, whatever the command, through read_written; each is
+        counted, so read_powershell can hold the count to every file redirection the tree holds."""
+        for redirection in command.get("redirections") or []:
+            if isinstance(redirection, dict) and redirection.get("kind") == "file":
+                self.redirections_read += 1
+                read_written(self.element(redirection.get("target"))[0], directory, self.reading)
+
     def read_pipeline(self, pipeline: Any, directory: Directory) -> Outcome:
         indexes = pipeline if isinstance(pipeline, list) else []
         commands = [self.commands[index] for index in indexes if isinstance(index, int) and index < len(self.commands)]
@@ -2593,15 +2607,13 @@ class PowerShellReader:
         self.reading.time_left()
         if not isinstance(command, dict):
             return certain(directory)
+        self.read_redirections(command, directory)
         if command.get("expression"):
             return certain(directory)
         if command.get("invocation") == "Dot":
             self.reading.cannot_read("a command dot-sourced into the session, which may define anything")
             return certain(UNKNOWN)
         words = self.words(command)
-        for redirection in command.get("redirections") or []:
-            if isinstance(redirection, dict) and redirection.get("kind") == "file":
-                read_written(self.element(redirection.get("target"))[0], directory, self.reading)
         name = words[0]
         if name is None:
             self.reading.cannot_read(

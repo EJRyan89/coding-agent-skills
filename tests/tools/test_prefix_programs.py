@@ -351,7 +351,7 @@ class PrefixProgramAgreementTests(unittest.TestCase):
         self.assertLessEqual(set(hub_guard.RUNNER_OPTIONS) - {"xargs"}, tested)
 
     def test_every_runner_with_no_reader_is_refused_and_no_git_call_is_read_from_it(self) -> None:
-        read = {*hub_guard.RUNNER_OPTIONS, "env", "bash", "sh", "pwsh"}
+        read = {*hub_guard.RUNNER_OPTIONS, "env", "bash", "pwsh"}
         for name in sorted(set(hub_guard.RUNNERS) - read):
             with self.subTest(program=name):
                 reading = hub_guard.Reading({}, text="")
