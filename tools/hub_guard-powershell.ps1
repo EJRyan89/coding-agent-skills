@@ -16,6 +16,7 @@ using namespace System.Management.Automation.Language
 #       {"kind": "words", "texts"}, a list of such, as a,b, each a word of its own,
 #       {"kind": "parameter", "text"}, a parameter, as written, or, with a value attached by a colon,
 #         {"kind": "parameter", "text": "-Name:", "argument": element}, or
+#       {"kind": "null"}, $null, which a redirection discards its output to, or
 #       {"kind": "other", "type"}, any other element, which hub_guard.py does not settle;
 #     and a redirection {"kind": "file", "target": element} or {"kind": "merge"}
 #   "statements": the top-level statements, each {"pipelines": [[command index]], "operators": ["&&" | "||"],
@@ -49,6 +50,9 @@ function ConvertTo-Element([Ast] $Element) {
     }
     if ($Element -is [ScriptBlockExpressionAst]) {
         return [ordered]@{ kind = 'block' }
+    }
+    if ($Element -is [VariableExpressionAst] -and $Element.VariablePath.UserPath -eq 'null') {
+        return [ordered]@{ kind = 'null' }
     }
     if ($Element -is [ArrayLiteralAst]) {
         $texts = foreach ($item in $Element.Elements) {

@@ -356,14 +356,14 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
 - **Why:** A hand-written reader that misses a construct the program reads lets a command or an entry pass unjudged.
   The hub guard's modelling reader closed one spelling per fix and every review found the next, until it was rebuilt
   to refuse what it does not understand.
-- **Use:** `tools.hub_guard:read_powershell`, `tools.hub_guard:runner_start`, and `tools.hub_guard:expansion_form`
+- **Use:** `tools.hub_guard:read_powershell`, `tools.hub_guard:runner_refusal`, and `tools.hub_guard:expansion_form`
 - **Guard:** `tests/tools/test_bash_syntax.py::ArrayAssignmentTests::test_an_array_assignment_to_a_subscript_is_read_where_bash_reads_an_array`,
   `skills/ejryan89-skill-core/scripts/test_git_client.py::IsolatedClientTests::test_a_plain_client_refuses_a_command_line_setting_that_can_define_an_alias`,
   `tests/tools/test_hub_guard_bash.py::BuiltinTests::test_every_builtin_bash_lists_is_understood_or_not_read_and_never_both`,
   `tests/tools/test_hub_guard_bash.py::ShellOptionTests::test_each_set_option_is_read_by_its_table_from_every_source`,
   `tests/tools/test_hub_guard_bash.py::ExpansionTests::test_every_expansion_form_is_understood_or_not_read_and_has_a_sample`,
   `tests/tools/test_hub_guard_pwsh.py::NodeCatalogueTests::test_every_node_type_powershell_has_is_understood_or_not_read_and_never_both`,
-  `tests/tools/test_prefix_programs.py::PrefixProgramAgreementTests::test_timeout`,
+  `tests/tools/test_prefix_programs.py::RunnerFormTests::test_timeout`,
   `tests/tools/test_hub_guard.py::UnderstoodSetTests::test_each_class_of_construct_the_guard_does_not_read_is_refused_while_a_hub_is_in_view`,
   `tests/tools/test_captured_samples.py::test_every_sample_has_its_provenance_and_every_provenance_its_sample`,
   `tests/tools/test_runtime_changelogs.py::test_a_term_matches_only_where_a_real_entry_names_it`,
@@ -380,7 +380,7 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   and compares text with .NET's ordinal comparison ignoring case; in `tools/hub_guard.py`, a construct a table neither
   understands nor lists in `NOT_READ`, a table whose test types its rows rather than taking them from the shell's own
   catalogue, a word settled from what an earlier command assigns rather than the assignment refused, a program added
-  to `RUNNERS` with no row, a program that runs a command its words name left out of it, a cmdlet added to
+  to `RUNNERS` with no row, a program that runs a command its words name left out of it, a runner allowed around a command that may be git, a cmdlet added to
   `POWERSHELL_COMMANDS` that starts a command its words name, and a refusal that waits
   for the command to name git; a `re.compile(` in `tools/runtime_*.py` or `deployer/discovery.py` with no sample
   under `tests/fixtures/captured-output/`; a test whose sample output was typed rather than captured; a refusal of an

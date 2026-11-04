@@ -282,65 +282,85 @@ class VariableTests(unittest.TestCase):
         self.assertEqual([], reading("EDITOR=x ls", {"EDITOR": "vi"}).unread)
 
 
-# Each form of a runner whose command the guard reads, with {command} standing for that command: the rows below are
-# generated from it, so a runner that gains a reader gains its rows.
+# How a runner's command is written where it is no plain word after the runner, with {command} standing for it.
 RUNNER_FORMS = {
-    "timeout": "timeout 5 {command}",
-    "nice": "nice -n 5 {command}",
-    "nohup": "nohup {command}",
-    "stdbuf": "stdbuf -oL {command}",
-    "xargs": "xargs {command}",
-    "env": "env {command}",
     "bash": "bash -c '{command}'",
     "pwsh": "pwsh -NoProfile -Command '{command}'",
-    "find": "find . -exec {command} {{}} +",
+    # The program time, which Bash runs only where time is not a command's first word, as after an assignment.
+    "time": "x=1 time {command}",
 }
 
 
 class RunnerTests(unittest.TestCase):
-    def test_every_runner_whose_command_the_guard_reads_has_a_form(self) -> None:
-        read = {*hub_guard.RUNNER_OPTIONS, "env", "bash", "pwsh", "find"}
-        self.assertEqual(read, set(RUNNER_FORMS))
+    """The runner rule, a row per RUNNERS entry for git and for a command that is not git: while a hub is guarded, a
+    runner whose command is or may be git is refused, and one around any other command is understood, but for the
+    runners RUNNERS_ALWAYS_REFUSED names."""
 
-    def test_an_assignment_before_a_runner_is_judged_against_the_command_it_starts(self) -> None:
-        # A runner is transparent: what reaches git through one is judged as an assignment before git.
+    def test_each_runner_is_refused_around_git_and_understood_around_any_other_command_it_reads(self) -> None:
         environment = {"PATH": os.environ.get("PATH", "")}
-        refused = hub_guard.NOT_READ["construct assignment before git"]
-        for runner, form in RUNNER_FORMS.items():
-            for command, expected in (
-                (f"XDG_CONFIG_HOME=/x {form.format(command='git co')}", refused),
-                (f"EDITOR=vi {form.format(command='git commit -m x')}", refused),
-                (f"env XDG_CONFIG_HOME=/x {form.format(command='git status')}", refused),
-                (f"XDG_CONFIG_HOME=/x bash -c '{form.format(command='git status')}'", refused),
-                (f"LC_ALL=C {form.format(command='git log')}", None),
-                # pwsh's commands are read apart, so what reaches them is judged as an assignment before git.
-                (f"PYTHONUTF8=1 {form.format(command='python -B x.py')}", refused if runner == "pwsh" else None),
+        self.assertLessEqual(hub_guard.RUNNERS_ALWAYS_REFUSED, set(hub_guard.RUNNERS))
+        for runner, reason in hub_guard.RUNNERS.items():
+            form = RUNNER_FORMS.get(runner, f"{runner} {{command}}")
+            self.assertGreater(len(reason.split()), 2)
+            for command, refused in (
+                (form.format(command="git status"), True),
+                (form.format(command="/usr/bin/git log"), True),
+                (form.format(command="ls -la"), runner in hub_guard.RUNNERS_ALWAYS_REFUSED),
             ):
-                if runner in {"bash", "pwsh"} and command.count("'") > 2:
-                    continue  # a quoted form inside another quoted form is no command a session writes
                 with self.subTest(runner=runner, command=command):
-                    unread = " ".join(reading(command, environment).unread)
-                    if expected is None:
-                        self.assertEqual("", unread)
-                    else:
-                        self.assertIn(expected, unread)
-
-    def test_each_runner_is_refused_in_a_form_the_guard_does_not_read_and_any_other_program_is_read(self) -> None:
-        for name, reason in hub_guard.RUNNERS.items():
-            with self.subTest(runner=name):
-                self.assertGreater(len(reason.split()), 2)
-                self.assertTrue(reading(f"x=1 {name} --frobnicate git status").unread)
+                    self.assertEqual(refused, bool(reading(command, environment).unread))
         for command in ("some-tool x", "./tools/x.sh", "python -B x.py", "node x.js", "npm test", "make all"):
             with self.subTest(command=command):
                 self.assertEqual([], reading(command).unread)
 
-    def test_a_program_with_an_option_that_runs_a_command_is_refused_on_that_option(self) -> None:
+    def test_a_command_that_may_be_git_through_a_runner_is_refused(self) -> None:
+        for command in (
+            "timeout 5 $tool status",
+            "nice timeout 5 ls",
+            "env GIT_DIR=/x ls",
+            "XDG_CONFIG_HOME=/x timeout 5 git co",
+            "bash -c 'git status && ls'",
+            "bash -lc 'ls'",
+            "bash script.sh",
+            "xargs -I{} cp {} d",
+            "xargs -i cp {} d",
+            "xargs --replace=x cp x d",
+            "env -S 'ls -la'",
+            "env --split-string=ls",
+        ):
+            with self.subTest(command=command):
+                self.assertTrue(reading(command).unread)
+        self.assertEqual([], reading("bash -c 'ls && echo hi'").unread)
+        self.assertEqual([], reading("echo x | xargs -0 grep -n x").unread)
+
+    def test_a_program_with_an_option_that_runs_a_command_is_refused_in_every_spelling(self) -> None:
         for program, options in hub_guard.COMMAND_OPTIONS.items():
-            for option in sorted(options - hub_guard.FIND_COMMANDS):
+            for option in sorted(options):
                 with self.subTest(program=program, option=option):
                     self.assertTrue(reading(f"{program} {option} x y").unread)
             with self.subTest(program=program, word="unsettled"):
                 self.assertTrue(reading(f"{program} $x y").unread)
+        for command in (
+            "find . -exec ls {} +",
+            "find . -execdir ls {} ;",
+            "tar xIf a.tar",
+            "tar -xIf a.tar",
+            "tar --to-com=x -xf a.tar",
+            "tar --use-compress-prog=x -cf a.tar d",
+            "rg --pre=x pattern",
+            "sort --compress=x f",
+        ):
+            with self.subTest(command=command):
+                self.assertTrue(reading(command).unread)
+        for command in ("find . -name '*.py'", "tar -czf a.tar d", "tar xf a.tar", "rg --pretty x", "sort -u f"):
+            with self.subTest(command=command):
+                self.assertEqual([], reading(command).unread)
+
+    def test_a_not_found_handler_the_environment_hands_is_refused_whatever_runs(self) -> None:
+        # Bash runs command_not_found_handle for any command whose program it does not find.
+        environment = {"BASH_FUNC_command_not_found_handle%%": "() { git checkout -b x; }"}
+        self.assertTrue(reading("nosuchtool", environment).unread)
+        self.assertEqual([], reading("nosuchtool").unread)
 
 
 class NestingTests(unittest.TestCase):

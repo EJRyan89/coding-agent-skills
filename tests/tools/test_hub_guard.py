@@ -1603,7 +1603,7 @@ class UnderstoodSetTests(GuardTestCase):
             ("cd .claude/worktrees/feat-demo && git commit -m x", self.hub, None),
             ("cd ../../.. && git commit -m x", self.tree, "deny"),
             (f'timeout 60 git -C "{self.hub}" commit -m x', self.tree, "deny"),
-            (f'timeout -k 5 60 git -C "{self.tree}" commit -m x', self.hub, None),
+            (f'timeout -k 5 60 git -C "{self.tree}" commit -m x', self.hub, "deny"),
         ):
             with self.subTest(command=command, cwd=cwd.name):
                 self.assertEqual(expected, self.bash(command, cwd))
@@ -1670,6 +1670,7 @@ class UnderstoodSetTests(GuardTestCase):
             ('echo x > "$out"', self.tree, "deny"),
             ('cd "$d" && echo x > notes.txt', self.tree, "deny"),
             ("echo x > local.json", self.hub, None),
+            ("echo x > '$null'", self.hub, "deny"),
             ("git status > /dev/null 2>&1", self.hub, None),
             ("echo x >&2", self.hub, None),
             (f"cat <<'EOF' > \"{self.hub / 'README.md'}\"\nx\nEOF", self.tree, "deny"),
@@ -1720,6 +1721,7 @@ class UnderstoodSetTests(GuardTestCase):
         for command in (
             "bash script.sh",
             "bash -lc 'echo hi'",
+            "bash -c 'git status'",
             "sh script.sh",
             "pwsh -File x.ps1",
             "zsh -c 'echo hi'",
@@ -1754,13 +1756,13 @@ class UnderstoodSetTests(GuardTestCase):
             "[[ -n x ]]",
             "test -v 'a[0]'",
             "$cmd status",
-            "xargs --frobnicate echo",
-            "env -i ls",
+            "xargs -I{} echo {}",
+            "env -S 'ls'",
             "env PATH=/elsewhere ls",
-            "sudo ls",
+            "sudo git status",
             "watch ls",
             "find . -exec sudo ls {} +",
-            "nice -frobnicate ls",
+            "find . -exec ls {} +",
             "echo x > $out",
             "printf -v x %s y",
             "read PATH",
@@ -1789,10 +1791,10 @@ class UnderstoodSetTests(GuardTestCase):
             'x=$(mktemp -d) && cp README.md "$x/"',
             "./tools/some-script.sh --flag && node x.js && npm test",
             "xargs -0 grep -n x < list.txt",
-            "find . -name '*.py' -exec grep -n x {} +",
-            "timeout 60 nice -n 5 python -B x.py",
+            "timeout 60 python -B x.py",
             "env PYTHONUTF8=1 python -B x.py",
-            "bash -c 'git status && ls'",
+            "sudo ls",
+            "bash -c 'ls && echo hi'",
         ):
             with self.subTest(command=command):
                 self.assertIsNone(self.bash(command, self.tree))
@@ -1822,25 +1824,19 @@ class UnderstoodSetTests(GuardTestCase):
         self.assertEqual("deny", self.bash("cd - && git commit -m x", self.tree))
         self.assertIn(UNPLACED.format("commit"), self.reason)
 
-    def test_a_runner_s_command_is_read_as_a_command(self) -> None:
+    def test_a_runner_around_git_is_refused_and_around_another_command_understood(self) -> None:
         for command, cwd, expected in (
-            (f'nohup git -C "{self.hub}" commit -m x', self.tree, "deny"),
-            (f'XDG_CONFIG_HOME="{self.root}" timeout 5 git status', self.tree, "deny"),
-            (f'EDITOR=vi timeout 60 git -C "{self.tree}" commit', self.tree, "deny"),
-            (f"XDG_CONFIG_HOME=\"{self.root}\" bash -c 'git status'", self.tree, "deny"),
-            ("LC_ALL=C timeout 5 git log -1", self.tree, None),
-            (f'nice -n 5 git -C "{self.hub}" commit -m x', self.tree, "deny"),
-            (f'stdbuf -oL git -C "{self.hub}" commit -m x', self.tree, "deny"),
-            (f'env GIT_EDITOR=true git -C "{self.hub}" commit -m x', self.tree, "deny"),
-            (f'env GIT_DIR="{self.hub / ".git"}" git status', self.tree, "deny"),
-            (f'echo x | xargs git -C "{self.hub}" checkout', self.tree, "deny"),
-            (f'echo x | xargs git -C "{self.hub}" log', self.tree, None),
-            (f"bash -c 'cd \"{self.hub}\" && git commit -m x'", self.tree, "deny"),
+            (f'nohup git -C "{self.tree}" status', self.tree, "deny"),
+            (f'nice -n 5 git -C "{self.tree}" log', self.tree, "deny"),
+            ("echo x | xargs git log", self.tree, "deny"),
+            (f"bash -c 'git -C \"{self.tree}\" status'", self.tree, "deny"),
+            (f"pwsh -NoProfile -Command 'git -C \"{self.tree}\" status'", self.tree, "deny"),
+            ("find . -execdir git status {} \\;", self.hub, "deny"),
+            ("timeout 60 python -B tools/worktrees.py list", self.hub, None),
+            ("echo x | xargs grep -n x", self.tree, None),
             (f"bash -c 'cd \"{self.hub}\"'; git commit -m x", self.tree, None),
-            (f"pwsh -NoProfile -Command 'git -C \"{self.hub}\" commit -m x'", self.tree, "deny"),
-            (f'find . -exec git -C "{self.hub}" add {{}} +', self.tree, "deny"),
-            ("find . -execdir git commit -m x {} \\;", self.hub, "deny"),
-            ("find . -execdir git status {} \\;", self.hub, None),
+            ("timeout 40 gh pr checkout 3", self.hub, "deny"),
+            ("timeout 40 gh pr view 3", self.hub, None),
         ):
             with self.subTest(command=command, cwd=cwd.name):
                 self.assertEqual(expected, self.bash(command, cwd))
@@ -1972,6 +1968,9 @@ class PowerShellUnderstoodSetTests(GuardTestCase):
             with self.subTest(command=command):
                 self.assertEqual("deny", self.powershell(command, self.tree))
         self.assertIsNone(self.powershell("'x' > notes.txt", self.tree))
+        # > $null discards the output; a file named $null is a file, written in the hub here.
+        self.assertIsNone(self.powershell("git status > $null", self.hub))
+        self.assertEqual("deny", self.powershell("'x' > '$null'", self.hub))
         self.assertEqual("hub\n", readme.read_text(encoding="utf-8"))
 
     def test_a_location_powershell_may_move_is_unknown_after_it(self) -> None:
@@ -2199,8 +2198,13 @@ class ContractListTests(unittest.TestCase):
         self.assertEqual(sorted(git_client.GLOBAL_VALUE_OPTIONS), sorted(contract_names("or as the next word (", ")")))
 
     def test_the_runners_the_guard_refuses_are_the_ones_its_contract_names(self) -> None:
-        named = contract_names("`RUNNERS`:", "Each is refused")
+        named = contract_names("`RUNNERS`:", "While a hub is guarded")
         self.assertEqual(sorted(hub_guard.RUNNERS), sorted(named))
+        always = contract_names("`RUNNERS_ALWAYS_REFUSED`:", "Of these")
+        self.assertEqual(sorted(hub_guard.RUNNERS_ALWAYS_REFUSED), sorted(always))
+        building = contract_names("build a runner's command from text,", "in every spelling")
+        expected = {f"{option}" for options in hub_guard.RUNNER_BUILDING_OPTIONS.values() for option in options}
+        self.assertEqual(sorted(expected | {"env", "xargs"}), sorted(building))
 
     def test_the_powershell_commands_the_guard_reads_are_the_ones_its_contract_names(self) -> None:
         named = contract_names("these cmdlets, by its name or an alias PowerShell gives it:", "Every other node")

@@ -145,68 +145,51 @@ EXPORTED_FUNCTION = re.compile(r"^BASH_FUNC_(.+)%%$")
 # generate their rows from the catalogue each shell lists itself, `compgen -b`, `compgen -k`, `set -o`, `shopt`, and
 # `compgen -v` from Bash and the AST node types by reflection from PowerShell, and fail on an entry neither table holds.
 
-# The programs that run another command their words name, by the catalogue the guard refuses: each is refused unless
-# the guard reads the command it runs, which RUNNER_OPTIONS and the readers of env, xargs, bash, sh, pwsh, and find
-# settle, and which is then read as a command. Every other program a literal name starts is understood: what it does
-# inside itself, in its own language (a Python script, an awk program, a test suite), the guard does not see.
+# The programs that run another command their words name, by the catalogue the guard refuses. While a hub is guarded,
+# each is refused where the command it runs is or may be git (runner_refusal); a runner around any other command is
+# understood. Every other program a literal name starts is understood: what it does inside itself, in its own
+# language (a Python script, an awk program, a test suite), the guard does not see.
 RUNNERS: dict[str, str] = {
-    "bash": "a shell, read only as `-c` with a literal script, which is read as Bash",
+    "bash": "a shell, whose script is read only as `-c` with a literal script, and refused where it runs git",
     "sh": "Bash in POSIX mode, or dash, either of which keeps an assignment made before a special builtin after it, "
     "which the guard does not follow",
-    "pwsh": "PowerShell, read only as `-Command` or `-c` with one literal script, after -NoProfile, -NonInteractive, "
-    "or "
-    "-NoLogo, which is read as PowerShell",
+    "pwsh": "PowerShell, whose script is read only as `-Command` or `-c` with one literal script, after -NoProfile, "
+    "-NonInteractive, or -NoLogo, and refused where it runs git",
     "powershell": "Windows PowerShell, whose parser differs from pwsh's, so the guard does not read its script",
     **dict.fromkeys(
         ("zsh", "dash", "ksh", "mksh", "fish", "csh", "tcsh", "busybox"), "a shell whose script the guard does not read"
     ),
     "cmd": "Windows' command interpreter, whose script the guard does not read",
     "wsl": "runs a command in a Linux distribution, which the guard does not read",
-    "env": "runs its command after the assignments before it, read when it has no option and each assignment is one an "
-    "assignment before that command may make",
-    "xargs": "runs its command with words from its input, read with those words unsettled",
-    **dict.fromkeys(("timeout", "nohup", "nice", "stdbuf"), "runs the command after its options, read as a command"),
+    "env": "runs its command after the assignments before it, or, with -S, a command it splits from a string",
+    "xargs": "runs its command with words from its input, or, with -I, -i, or --replace, words it builds from them",
     **dict.fromkeys(
-        ("sudo", "doas", "su", "runuser"), "runs a command as another user, in an environment its policy decides"
+        ("timeout", "nohup", "nice", "stdbuf", "ionice", "chrt", "taskset", "setsid", "unbuffer", "chronic"),
+        "runs the command its words name",
     ),
-    "chroot": "runs a command under another root",
-    "ssh": "runs a command on another host, this one among them",
+    **dict.fromkeys(("strace", "ltrace", "time", "chroot", "sudo", "doas"), "runs the command its words name"),
     **dict.fromkeys(
-        (
-            *("ionice", "chrt", "taskset", "setsid", "flock", "unbuffer", "chronic", "strace", "ltrace", "time"),
-            *("watch", "script", "parallel"),
-        ),
-        "runs a command its words name, whose options the guard does not read",
+        ("su", "runuser", "ssh", "script", "watch", "parallel", "flock"),
+        "runs a command line it is handed as a string, which may be any command",
     ),
 }
-# The runners whose options the guard reads before the command they run: each one's options that take no value, those
-# that take the next word or their value attached, and how many operands come before the command.
-RUNNER_OPTIONS: dict[str, tuple[frozenset[str], frozenset[str], int]] = {
-    "timeout": (
-        frozenset({"-v", "--verbose", "--preserve-status", "--foreground"}),
-        frozenset({"-s", "--signal", "-k", "--kill-after"}),
-        1,
-    ),
-    "nohup": (frozenset(), frozenset(), 0),
-    "nice": (frozenset(), frozenset({"-n", "--adjustment"}), 0),
-    "stdbuf": (frozenset(), frozenset({"-i", "-o", "-e", "--input", "--output", "--error"}), 0),
-    "xargs": (
-        frozenset({"-0", "--null", "-r", "--no-run-if-empty", "-t", "--verbose", "-x", "--exit"}),
-        frozenset(
-            {
-                *("-n", "--max-args", "-P", "--max-procs", "-L", "--max-lines", "-I", "-d", "--delimiter", "-s"),
-                *("--max-chars", "-a", "--arg-file", "-E"),
-            }
-        ),
-        0,
-    ),
+# The runners refused whatever they run: a shell whose script the guard does not read, and a runner that runs a
+# command line it is handed as a string, whose words no reading of its own words settles.
+RUNNERS_ALWAYS_REFUSED = frozenset(
+    {
+        *("sh", "powershell", "zsh", "dash", "ksh", "mksh", "fish", "csh", "tcsh", "busybox", "cmd", "wsl"),
+        *("su", "runuser", "ssh", "script", "watch", "parallel", "flock"),
+    }
+)
+# The options of a runner that build its command from text, refused whatever it runs: xargs's replacement, which puts
+# its input in the command's words, and env's split string, which makes a command of one word.
+RUNNER_BUILDING_OPTIONS = {
+    "xargs": frozenset({"-I", "-i", "--replace"}),
+    "env": frozenset({"-S", "--split-string"}),
 }
-GH_LIMIT_ALLOWED = {
-    "RUNNER_OPTIONS": "xargs's own -L, the input lines it hands each command; it is read from a command, and no gh "
-    "listing is made here"
-}
-# The options that make a program the guard understands run a command its words name: find's run the command after
-# them, which is read; the others are refused, and so is any word of such a program that the text does not settle.
+# The options that make a program the guard understands run a command its words name, refused in every spelling the
+# program takes, an attached value, an abbreviation, or a bundle (command_option): find's -exec family whatever it
+# runs, and so is any word of such a program that the text does not settle.
 FIND_COMMANDS = frozenset({"-exec", "-execdir", "-ok", "-okdir"})
 COMMAND_OPTIONS: dict[str, frozenset[str]] = {
     "find": FIND_COMMANDS,
@@ -1647,6 +1630,10 @@ def bash_start(reading: Reading) -> BashStart:
     functions = frozenset(
         folded(match.group(1)) for match in (EXPORTED_FUNCTION.match(folded(name)) for name in environment) if match
     )
+    if folded("command_not_found_handle") in functions:
+        reading.cannot_read(
+            "the environment hands the shell command_not_found_handle, which runs for any command it does not find"
+        )
     return BashStart(home(environment), bool(environment.get("CDPATH")), functions, expanding_ps4)
 
 
@@ -1682,18 +1669,13 @@ class BashReader:
     directory the text does not settle.
     """
 
-    def __init__(
-        self, reading: Reading, depth: int, start: BashStart, carried: tuple[tuple[str, Word], ...] = ()
-    ) -> None:
+    def __init__(self, reading: Reading, depth: int, start: BashStart) -> None:
         self.reading = reading
         self.depth = depth
         self.start = start
-        # The assignments a runner's command line gave the shell this reader reads, as `X=1 bash -c '<script>'`
-        # does, which every command of it holds in its environment and is judged with.
-        self.carried = carried
 
-    def nested(self, carried: tuple[tuple[str, Word], ...] = ()) -> BashReader:
-        return BashReader(self.reading, self.depth + 1, self.start, (*self.carried, *carried))
+    def nested(self) -> BashReader:
+        return BashReader(self.reading, self.depth + 1, self.start)
 
     def read_text(self, text: str, directory: Directory) -> Directory:
         if self.depth > NESTING_LIMIT:
@@ -1892,7 +1874,7 @@ class BashReader:
         self, values: list[Word], directory: Directory, prefixes: list[tuple[str, Word]] | None = None
     ) -> Outcome:
         name, arguments = values[0], values[1:]
-        prefixes = [*self.carried, *(prefixes or [])]
+        prefixes = list(prefixes or [])
         if name is None:
             self.reading.cannot_read(
                 "a command name the text does not settle, which may be any command, git among them"
@@ -1925,94 +1907,67 @@ class BashReader:
             return self.read_program(program, arguments, directory, prefixes)
         return certain(directory)
 
-    def run_command(self, words: list[Word], directory: Directory, prefixes: list[tuple[str, Word]]) -> Outcome:
-        """The command a runner starts, read as a command with the assignments before the runner, and the runner's
-        own, in its environment; the one path every runner's command takes."""
-        if not words:
-            self.read_prefixes(prefixes, git=False)
-            return certain(directory)
-        return self.read_command_words(words, directory, prefixes)
-
     def read_runner(
         self, program: str, arguments: list[Word], directory: Directory, prefixes: list[tuple[str, Word]]
     ) -> Outcome:
-        """A program that runs another command: the command it runs is read where the guard reads the runner's form,
-        with the assignments before the runner carried into it, and the runner is refused otherwise."""
-        if program in RUNNER_OPTIONS:
-            start, reason = runner_start(program, arguments)
-            if reason is not None:
-                self.reading.cannot_read(reason)
-                return certain(UNKNOWN)
-            # xargs hands its command words from its input, which the text does not settle; with none it runs echo.
-            extra: list[Word] = [None] if program == "xargs" and start is not None else []
-            return self.run_command([*(arguments[start:] if start is not None else []), *extra], directory, prefixes)
+        """A program that runs another command: refused where that command is or may be git (runner_refusal), and,
+        for bash -c and pwsh -Command, where the literal script it runs holds a git call; around any other command it
+        is understood, its assignments judged as ones before that command."""
         if program == "env":
-            return self.read_env(arguments, directory, prefixes)
-        script = shell_script(program, arguments)
-        if script is not None and program == "bash":
-            # The script runs in a shell of its own, which holds the runner's assignments in its environment, so each
-            # of its commands is judged with them; what it changes dies with it.
-            self.read_prefixes(prefixes, git=False)
-            self.nested(tuple(prefixes)).read_text(script, directory)
-            return certain(directory)
-        if script is not None:
-            # PowerShell's commands are read apart, so the assignments are judged as ones before git, which any of
-            # them may be.
-            self.read_prefixes(prefixes, git=True)
-            read_powershell(script, directory.cwd, self.reading, self.depth + 1)
-            return certain(directory)
-        self.reading.cannot_read(f"runs {program}: {RUNNERS[program]}")
-        return certain(UNKNOWN)
+            # env's own assignments are ones before the command it runs, as those before env are.
+            for word in arguments:
+                if word is None or (not word.startswith("-") and "=" not in word):
+                    break
+                name, assigns, value = word.partition("=")
+                if assigns and bash_syntax.NAME.fullmatch(name):
+                    prefixes = [*prefixes, (name, value)]
+        self.read_prefixes(prefixes, git=False)
+        reason = runner_refusal(program, arguments)
+        if reason is None and program in {"bash", "pwsh"}:
+            reason = self.script_refusal(program, arguments, directory)
+        if reason is not None:
+            self.reading.cannot_read(f"runs {program}: {reason}")
+            return certain(UNKNOWN)
+        # gh runs git itself for the subcommands GH_CHECKOUTS names, wherever a runner starts it.
+        start = next(
+            (index for index, word in enumerate(arguments) if word is not None and command_name(word) == "gh"), None
+        )
+        if start is not None:
+            read_gh(arguments[start + 1 :], directory, self.reading)
+        return certain(directory)
 
-    def read_env(self, arguments: list[Word], directory: Directory, outer: list[tuple[str, Word]]) -> Outcome:
-        """env with no option, whose assignments join those before it as ones before the command it runs."""
-        prefixes: list[tuple[str, Word]] = list(outer)
-        index = 0
-        while index < len(arguments):
-            word = arguments[index]
-            if word is None or word.startswith("-"):
-                self.reading.cannot_read(f"runs env: {RUNNERS['env']} ({word or 'a word the text does not settle'})")
-                return certain(UNKNOWN)
-            name, assigns, value = word.partition("=")
-            if not assigns:
-                break
-            if not bash_syntax.NAME.fullmatch(name):
-                self.reading.cannot_read(f"runs env: {RUNNERS['env']} ({word})")
-                return certain(UNKNOWN)
-            prefixes.append((name, value))
-            index += 1
-        return self.run_command(arguments[index:], directory, prefixes)
+    def script_refusal(self, program: str, arguments: list[Word], directory: Directory) -> str | None:
+        """Why a shell's script is refused: a form the guard does not read, or a literal script that runs git, read
+        whole as its shell reads it, each part it does not read refused as in any command."""
+        script = shell_script(program, arguments)
+        if script is None:
+            return RUNNERS[program]
+        before = len(self.reading.calls)
+        if program == "bash":
+            # The script runs in a shell of its own, so what it changes dies with it.
+            self.nested().read_text(script, directory)
+        else:
+            read_powershell(script, directory.cwd, self.reading, self.depth + 1)
+        if len(self.reading.calls) > before:
+            return "its script runs git, which a runner's command may not be while a hub is guarded"
+        return None
 
     def read_program(
         self, program: str, arguments: list[Word], directory: Directory, prefixes: list[tuple[str, Word]]
     ) -> Outcome:
-        """A program with options that run a command: find's run the command after them, read as a command, in a
-        directory of the found file's for -execdir and -okdir; any other such option is refused, and so is a word the
-        text does not settle, which may be one."""
-        options = COMMAND_OPTIONS[program]
-        index = 0
-        while index < len(arguments):
-            word = arguments[index]
+        """A program with options that run a command, refused on any of them in any spelling it takes
+        (command_option), find's -exec family whatever it runs, and on a word the text does not settle, which may be
+        one."""
+        del prefixes  # judged before this, as ones before a program that is not git
+        for index, word in enumerate(arguments):
             if word is None:
                 self.reading.cannot_read(
                     f"{program} may run a command its words name (a word the text does not settle)"
                 )
                 return certain(UNKNOWN)
-            option = word.partition("=")[0]
-            if program == "find" and word in FIND_COMMANDS:
-                end = next(
-                    (place for place in range(index + 1, len(arguments)) if arguments[place] in {";", "+"}),
-                    len(arguments),
-                )
-                if end > index + 1:
-                    place = directory if word in {"-exec", "-ok"} else UNKNOWN
-                    self.run_command(arguments[index + 1 : end], place, prefixes)
-                index = end + 1
-                continue
-            if option in options:
+            if command_option(program, word, first=index == 0):
                 self.reading.cannot_read(f"{program} runs a command its words name ({word})")
                 return certain(UNKNOWN)
-            index += 1
         return certain(directory)
 
     def read_builtin(self, name: str, arguments: list[Word], directory: Directory) -> Outcome:
@@ -2174,31 +2129,40 @@ def named_paths(value: str) -> list[str]:
 QUOTED_PART = re.compile(r"""["']([^"']+)["']""")
 
 
-def runner_start(program: str, arguments: list[Word]) -> tuple[int | None, str | None]:
-    """Where the command a runner RUNNER_OPTIONS names starts among its words, after its options and its operands, or
-    None where it starts none; with why, for a form the guard does not read: an option its table does not name, an
-    abbreviation or a bundle among them, or a word the text does not settle where an option may stand."""
-    flags, valued, operands = RUNNER_OPTIONS[program]
-    index = 0
-    while index < len(arguments):
-        word = arguments[index]
+def runner_refusal(program: str, arguments: list[Word]) -> str | None:
+    """Why a runner is refused: one RUNNERS_ALWAYS_REFUSED names; an option that builds its command from text
+    (RUNNER_BUILDING_OPTIONS), in any spelling; or a word that is or may be git: one that names git or another runner,
+    or one the text does not settle, which may be either. None for a runner around any other command, and for bash and
+    pwsh, whose scripts script_refusal reads."""
+    if program in RUNNERS_ALWAYS_REFUSED:
+        return RUNNERS[program]
+    building = RUNNER_BUILDING_OPTIONS.get(program, frozenset())
+    for word in arguments:
         if word is None:
-            return None, f"{program} is given a word the text does not settle, which may be an option"
-        if word == "--":
-            index += 1
-            break
-        if not word.startswith("-") or word == "-":
-            break
-        attached = word[:2] in valued and not word.startswith("--")
-        niceness = program == "nice" and word[1:].isdigit()
-        if word in valued:
-            index += 2
-        elif word in flags or attached or niceness or (word.partition("=")[0] in valued and "=" in word):
-            index += 1
-        else:
-            return None, f"{program}'s option {word}, which the guard does not read"
-    start = index + operands
-    return (start if start < len(arguments) else None), None
+            return f"{RUNNERS[program]}, and a word the text does not settle may be git"
+        option = word.partition("=")[0]
+        if option in building or any(len(each) == 2 and word.startswith(each) for each in building):
+            return f"{RUNNERS[program]} ({word})"
+        name = command_name(word)
+        if program not in {"bash", "pwsh"} and (name in GIT_NAMES or name in RUNNERS):
+            return f"{RUNNERS[program]}, and {word} names git or another runner, which may run git"
+    return None
+
+
+def command_option(program: str, word: str, first: bool) -> bool:
+    """Whether a word of a program COMMAND_OPTIONS names is one of its options that run a command, in any spelling the
+    program takes: find's exactly, as find reads them; a long option abbreviated or with its value attached; or a
+    short option's letter in a bundle, tar's first word without its dash included."""
+    options = COMMAND_OPTIONS[program]
+    if program == "find":
+        return word in options
+    if word.startswith("--"):
+        name = word.partition("=")[0]
+        return len(name) > 2 and any(option.startswith(name) for option in options if option.startswith("--"))
+    letters = {option[1] for option in options if len(option) == 2}
+    if word.startswith("-") or (program == "tar" and first):
+        return any(letter in letters for letter in word.lstrip("-"))
+    return False
 
 
 def shell_script(program: str, arguments: list[Word]) -> str | None:
@@ -2226,7 +2190,7 @@ def read_written(value: Word, directory: Directory, reading: Reading) -> None:
     if value is None:
         reading.cannot_read("a redirection writes a file the text does not settle, which may lie in a hub")
         return
-    if value in DEVICE_FILES or value.lower() == "$null":
+    if value in DEVICE_FILES:
         return
     path = Path(platform_support.from_shell_path(value))
     if not path.is_absolute() and directory.cwd is None:
@@ -2589,6 +2553,9 @@ class PowerShellReader:
         for redirection in command.get("redirections") or []:
             if isinstance(redirection, dict) and redirection.get("kind") == "file":
                 self.redirections_read += 1
+                target = redirection.get("target")
+                if isinstance(target, dict) and target.get("kind") == "null":
+                    continue  # > $null discards the output and writes no file
                 read_written(self.element(redirection.get("target"))[0], directory, self.reading)
 
     def read_pipeline(self, pipeline: Any, directory: Directory) -> Outcome:
@@ -2641,10 +2608,10 @@ class PowerShellReader:
             self.reading.cannot_read(f"runs {name}, a PowerShell command the guard does not read, which may run git")
             return certain(UNKNOWN)
         elif program in RUNNERS:
-            self.reading.cannot_read(
-                f"runs {program} from PowerShell: {RUNNERS[program]}, which the guard reads only from Bash"
-            )
-            return certain(UNKNOWN)
+            reason = RUNNERS[program] if program in {"bash", "pwsh"} else runner_refusal(program, words[1:])
+            if reason is not None:
+                self.reading.cannot_read(f"runs {program} from PowerShell: {reason}")
+                return certain(UNKNOWN)
         elif program in COMMAND_OPTIONS and any(
             word is None or word.partition("=")[0] in COMMAND_OPTIONS[program] for word in words[1:]
         ):

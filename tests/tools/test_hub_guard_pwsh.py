@@ -218,6 +218,21 @@ class ProviderPathTests(unittest.TestCase):
         self.assertEqual(["Set-Content", "-Path:env:GIT_DIR", "-Value", "x", None], reader.words(command))
 
 
+class RedirectionReachTests(unittest.TestCase):
+    def test_a_file_redirection_no_statement_reaches_is_refused(self) -> None:
+        # The tree holds one file redirection, and the statements reach no command that carries it.
+        output = json.dumps(
+            {"nodes": ["ScriptBlockAst"], "commands": [], "statements": [], "fileRedirections": 1}
+        ).encode("utf-8")
+        reading = hub_guard.Reading({}, "x")
+        with (
+            mock.patch.object(platform_support, "find_pwsh", return_value="pwsh"),
+            mock.patch.object(hub_guard, "run_bounded", return_value=Finished(0, output, b"")),
+        ):
+            hub_guard.read_powershell("x", Path.cwd(), reading)
+        self.assertEqual(["a file redirection the reader did not reach, which may write in a hub"], reading.unread)
+
+
 class CommandNameTests(unittest.TestCase):
     def test_every_alias_function_and_verb_powershell_lists_is_one_the_guard_keeps_for_its_own_commands(self) -> None:
         script = (
