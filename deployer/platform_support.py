@@ -162,10 +162,27 @@ def home_directory(environment: Mapping[str, str] | None = None) -> Path:
     Claude Code, Codex, and Copilot CLI all read the profile folder on Windows, while Git Bash may set HOME to
     another directory and MSYS2 does by default. Elsewhere every runtime reads HOME. Without the variable, the home is
     Python's, which on Unix is the user's entry in the password database.
+
+    A home that is not an absolute path is refused, the variable's own value or Python's, never completed from the
+    working directory, which would put the skills where no runtime reads them.
     """
-    environment = os.environ if environment is None else environment
-    value = environment.get("USERPROFILE" if WINDOWS else "HOME")
-    return Path(value) if value else Path.home()
+    variable = "USERPROFILE" if WINDOWS else "HOME"
+    remedy = f"Set {variable} to the absolute path of your home folder and run the command again."
+    try:
+        named = executable_locator.required_environment_path(variable, environment)
+    except executable_locator.RelativeEnvironmentPath as error:
+        raise DeployError(
+            f"ERROR: {error}, so the folder the runtimes read skills from is not known.", remedy
+        ) from None
+    if named is not None:
+        return named
+    try:
+        home = Path.home()
+    except RuntimeError:
+        home = None
+    if home is None or not home.is_absolute():
+        raise DeployError(f"ERROR: {variable} is not set, and Python finds no absolute home folder either.", remedy)
+    return home
 
 
 # The variables a program needs to start and find the system's own files, which a run that must hold no credential
@@ -231,6 +248,10 @@ def ignored_home_variable(home: Path, environment: Mapping[str, str] | None = No
     if not value or not same_directory(home, home_directory(environment)):
         return None
     named = from_shell_path(normalize(value))
+    # A HOME that is not an absolute path is never the profile folder, and is never completed from the working
+    # directory to compare it.
+    if not Path(named).is_absolute():
+        return normalize(os.path.normpath(named))
     return None if same_directory(Path(named), home) else normalize(os.path.normpath(named))
 
 

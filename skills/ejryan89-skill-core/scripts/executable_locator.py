@@ -13,7 +13,7 @@ from __future__ import annotations
 import errno
 import os
 import sys
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 from path_keys import path_key
@@ -40,12 +40,56 @@ PRESENCE_ALLOWED = {
 }
 
 
-def environment_path(variable: str) -> Path | None:
-    """The absolute path the environment variable `variable` names, or None when it is unset, empty, or not an
-    absolute path, a drive-relative `C:bin` or a rooted `\\bin` on Windows included, so a caller that looks a program
-    or a settings file up from it never resolves one against the working directory."""
-    path = Path(os.environ.get(variable, ""))
-    return path if path.is_absolute() else None
+class RelativeEnvironmentPath(ValueError):
+    """An environment variable that is set names a path that is not absolute, which only the working directory could
+    complete."""
+
+    def __init__(self, variable: str, value: str) -> None:
+        super().__init__(f"{variable} is {value!r}, which is not an absolute path")
+        self.variable = variable
+        self.value = value
+
+
+def required_environment_path(variable: str, environment: Mapping[str, str] | None = None) -> Path | None:
+    """The absolute path the environment variable `variable` names in `environment`, this process's when it is None,
+    or None when it is unset or empty; raises RelativeEnvironmentPath for any other value that is not an absolute
+    path, a drive-relative `C:bin` or a rooted `\\bin` on Windows included. It is for a caller that must refuse such a
+    value rather than take the variable for unset, as a home or a runtime's configuration directory must."""
+    value = (os.environ if environment is None else environment).get(variable, "")
+    if not value:
+        return None
+    path = Path(value)
+    if not path.is_absolute():
+        raise RelativeEnvironmentPath(variable, value)
+    return path
+
+
+# The variable Python's home lookup reads first: the profile folder on Windows, and HOME elsewhere.
+HOME_VARIABLE = "USERPROFILE" if sys.platform == "win32" else "HOME"
+
+
+def absolute_home() -> Path:
+    """Python's home folder, `Path.home()`, which reads HOME_VARIABLE as given; raises RelativeEnvironmentPath naming
+    that variable when the home is not an absolute path, or cannot be found at all, so no folder under the home is read
+    relative to the working directory."""
+    try:
+        home = Path.home()
+    except RuntimeError:
+        raise RelativeEnvironmentPath(HOME_VARIABLE, "") from None
+    if not home.is_absolute():
+        raise RelativeEnvironmentPath(HOME_VARIABLE, str(home))
+    return home
+
+
+def environment_path(variable: str, environment: Mapping[str, str] | None = None) -> Path | None:
+    """The absolute path the environment variable `variable` names in `environment`, this process's when it is None,
+    or None when it is unset, empty, or not an absolute path, a drive-relative `C:bin` or a rooted `\\bin` on Windows
+    included, so a caller that looks a program or a settings file up from it never resolves one against the working
+    directory."""
+    try:
+        return required_environment_path(variable, environment)
+    except RelativeEnvironmentPath:
+        return None
 
 
 def link_folders() -> list[Path]:

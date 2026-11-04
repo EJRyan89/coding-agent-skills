@@ -26,7 +26,19 @@ from review_vocabularies import SEVERITIES, Severity
 from typed_fields import FieldError, FieldReader, describe
 
 SCHEMA_VERSION = 1
-REPOSITORY_PATTERN = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9_.-]{0,99})/[A-Za-z0-9](?:[A-Za-z0-9_.-]{0,99})$")
+# A GitHub repository identity, `owner/name`, the one rule every reader of one here builds on. Each part is at most
+# 100 of the characters GitHub allows, letters, digits, `_`, `.`, and `-`. The owner, a login, starts with a letter or
+# a digit. The name may start with any of them, as an organization's `.github` starts with a dot, but is never made
+# only of dots: GitHub refuses `.` and `..`, which would name the archive's folder or the one above it, and a longer
+# run of dots is refused too, since Windows trims a name's trailing dots and an archive path built from one would
+# not be the folder it names.
+# references/review-adapter.schema.json spells the same rule for an adapter's author, and the format-contract
+# suite's repository probes hold the two in agreement.
+REPOSITORY_CHARACTERS = "A-Za-z0-9_.-"
+REPOSITORY_OWNER = rf"[A-Za-z0-9][{REPOSITORY_CHARACTERS}]{{0,99}}"
+REPOSITORY_NAME = rf"(?!\.+(?![{REPOSITORY_CHARACTERS}]))[{REPOSITORY_CHARACTERS}]{{1,100}}"
+REPOSITORY = rf"{REPOSITORY_OWNER}/{REPOSITORY_NAME}"
+REPOSITORY_PATTERN = re.compile(REPOSITORY)
 RUNTIME_HOSTS = {"auto", "claude-code", "codex", "copilot-cli"}
 TOP_LEVEL_KEYS = {
     "schema_version",
@@ -78,7 +90,10 @@ DASHBOARD_KEYS = {"start_marker", "end_marker", "status_overrides", "author_name
 # The repositories update-pr-dashboard's `collect` never names as untracked: each entry an `owner/repo` identity, or a
 # pattern of one whose owner and name are each matched on their own, ignoring case, where `*` stands for any run of
 # characters and `?` for any one.
-IGNORED_REPOSITORY_PATTERN = re.compile(r"[A-Za-z0-9_.*?-]{1,100}/[A-Za-z0-9_.*?-]{1,100}")
+# Built from REPOSITORY_CHARACTERS, so every identity REPOSITORY_PATTERN accepts is an entry that mutes it. It keeps
+# the entries made only of dots an earlier release took, so a configuration that loaded still loads: an entry is only
+# matched against an identity, never made into a path, and no identity it could match is made only of dots.
+IGNORED_REPOSITORY_PATTERN = re.compile(rf"[*?{REPOSITORY_CHARACTERS}]{{1,100}}/[*?{REPOSITORY_CHARACTERS}]{{1,100}}")
 MAX_IGNORED_REPOSITORIES = 1000
 # The sections the pull-request tracker computes. update-pr-dashboard renders these names, and they live here, beside
 # the validation that refuses a status override naming one, so the names refused and the names rendered cannot drift:
@@ -576,7 +591,10 @@ def _validate_status_overrides(value: Any) -> None:
     overrides = READ.json_object(value, "config.dashboard.status_overrides")
     for raw_key, raw_status in overrides.items():
         key = READ.string(raw_key, "a key of config.dashboard.status_overrides")
-        if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#[1-9][0-9]*", key):
+        # Looser than REPOSITORY, so every key an earlier release wrote still loads: a configuration every code-review
+        # skill reads is never refused for an override only update-pr-dashboard reads, which refuses a key whose
+        # repository is not an identity when it reads the overrides.
+        if not re.fullmatch(rf"[{REPOSITORY_CHARACTERS}]+/[{REPOSITORY_CHARACTERS}]+#[1-9][0-9]*", key):
             raise ConfigurationError(f"Invalid dashboard status override key: {key!r}")
         status = READ.string(raw_status, f"config.dashboard.status_overrides.{key}")
         if dashboard_status_key(status) in COMPUTED_DASHBOARD_STATES:
