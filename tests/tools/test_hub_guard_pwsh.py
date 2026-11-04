@@ -112,6 +112,13 @@ UNSAMPLED = {
     "BlockStatementAst": "made only for a workflow's parallel or sequence block, which PowerShell 7 refuses to parse",
     "ErrorStatementAst": "made only for text PowerShell cannot parse, which runs nothing",
     "ErrorExpressionAst": "made only for text PowerShell cannot parse, which runs nothing",
+    # Off Windows, pwsh parses a Configuration only where PowerShell DSC for Linux has installed its schema store, so
+    # the sample is a parse error there, which runs nothing; Windows parses it, and the row holds the type there.
+    **(
+        {}
+        if platform_support.WINDOWS
+        else {"ConfigurationDefinitionAst": "parsed only where PowerShell DSC's schema store is installed"}
+    ),
 }
 
 
