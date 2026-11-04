@@ -284,6 +284,21 @@ class DeployableReportTests(unittest.TestCase):
         # A log written by PowerShell may start with a byte order mark.
         self.assertEqual(0, self.verify(deploy_exit=1, verify_output=BYTE_ORDER_MARK + COPILOT_FAILED)[0])
 
+    def test_verify_reads_a_signed_exit_code_and_refuses_one_not_in_ascii_digits(self) -> None:
+        self.fake.errors["copilot"] = SIGN_IN
+        self.use_fake_runtimes()
+        # PowerShell's $LASTEXITCODE is a signed 32-bit integer, negative for a process a Windows error ended.
+        self.assertEqual(0, self.verify(deploy_exit=-1073741819, verify_output=COPILOT_FAILED)[0])
+        self.assertEqual(1, self.verify(deploy_exit=-1073741819, verify_output=CODEX_FAILED)[0])
+        log = self.results_file.parent / "verify.log"
+        # int() read "1_0" as exit 10 and an Arabic-Indic zero as 0, a pass.
+        for value in ("1_0", " 0", "+0", chr(0x0660), "2147483648", "-2147483649", ""):
+            arguments = ["verify", "--label", "first deploy", f"--deploy-verify-exit={value}"]
+            arguments += ["--deploy-verify-log", str(log), "--results", str(self.results_file)]
+            with self.subTest(value=ascii(value)), self.assertRaises(SystemExit) as raised:
+                self.run_main(*arguments, "--home", str(self.home), "--source", str(self.paths.source_dir))
+            self.assertEqual(2, raised.exception.code)
+
     def test_a_second_pass_is_appended_to_the_results(self) -> None:
         self.results_file.write_text(json.dumps([{"label": "first deploy", "results": []}]), encoding="utf-8")
         self.use_fake_runtimes()

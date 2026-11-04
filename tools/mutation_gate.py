@@ -170,6 +170,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "ejryan8
 import file_presence
 import json_reader
 import json_writer
+import whole_number
 from bounded_process import run_bounded
 from console import run_main
 from duplication import SANCTION_SUFFIX
@@ -2284,12 +2285,6 @@ def select_step(gate: Gate, folder: Path, environment: Mapping[str, str]) -> Non
         print(f"{chosen.module}: {len(chosen.mutants)} mutants, run on {', '.join(ran) or 'no leg'}", flush=True)
 
 
-TIME_OPTION_ALLOWED = {
-    "parse_arguments": "--minutes is a whole number of minutes the leg records hold as an integer, and the function "
-    "refuses one below 1 with a usage error as soon as the arguments are parsed",
-}
-
-
 def parse_arguments(argv: Sequence[str] | None, environment: Mapping[str, str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Mutate a pull request's changed lines and report the survivors.")
     parser.add_argument(
@@ -2298,7 +2293,10 @@ def parse_arguments(argv: Sequence[str] | None, environment: Mapping[str, str]) 
         help="the branch the pull request merges into (default: origin/$GITHUB_BASE_REF, or origin/main)",
     )
     parser.add_argument(
-        "--minutes", type=int, default=DEFAULT_MINUTES, help=f"the cap on a leg (default: {DEFAULT_MINUTES})"
+        "--minutes",
+        type=whole_number.argument(1),
+        default=DEFAULT_MINUTES,
+        help=f"the cap on a leg (default: {DEFAULT_MINUTES})",
     )
     steps = parser.add_subparsers(dest="step", metavar="step", help="one step of a run split across jobs")
     for name, text in (
@@ -2313,10 +2311,7 @@ def parse_arguments(argv: Sequence[str] | None, environment: Mapping[str, str]) 
         ),
     ):
         steps.add_parser(name, help=text).add_argument("folder", type=Path, help="the folder the steps hand on")
-    arguments = parser.parse_args(argv)
-    if arguments.minutes < 1:
-        parser.error("--minutes must be at least 1")
-    return arguments
+    return parser.parse_args(argv)
 
 
 def main(argv: Sequence[str] | None = None, environment: Mapping[str, str] = os.environ) -> int:

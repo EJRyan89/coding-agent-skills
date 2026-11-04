@@ -162,10 +162,27 @@ def home_directory(environment: Mapping[str, str] | None = None) -> Path:
     Claude Code, Codex, and Copilot CLI all read the profile folder on Windows, while Git Bash may set HOME to
     another directory and MSYS2 does by default. Elsewhere every runtime reads HOME. Without the variable, the home is
     Python's, which on Unix is the user's entry in the password database.
+
+    A home that is not an absolute path is refused, the variable's own value or Python's, never completed from the
+    working directory, which would put the skills where no runtime reads them.
     """
-    environment = os.environ if environment is None else environment
-    value = environment.get("USERPROFILE" if WINDOWS else "HOME")
-    return Path(value) if value else Path.home()
+    variable = "USERPROFILE" if WINDOWS else "HOME"
+    remedy = f"Set {variable} to the absolute path of your home folder and run the command again."
+    try:
+        named = executable_locator.required_environment_path(variable, environment)
+    except executable_locator.RelativeEnvironmentPath as error:
+        raise DeployError(
+            f"ERROR: {error}, so the folder the runtimes read skills from is not known.", remedy
+        ) from None
+    if named is not None:
+        return named
+    try:
+        home = Path.home()
+    except RuntimeError:
+        home = None
+    if home is None or not home.is_absolute():
+        raise DeployError(f"ERROR: {variable} is not set, and Python finds no absolute home folder either.", remedy)
+    return home
 
 
 # The variables a program needs to start and find the system's own files, which a run that must hold no credential
@@ -231,6 +248,10 @@ def ignored_home_variable(home: Path, environment: Mapping[str, str] | None = No
     if not value or not same_directory(home, home_directory(environment)):
         return None
     named = from_shell_path(normalize(value))
+    # A HOME that is not an absolute path is never the profile folder, and is never completed from the working
+    # directory to compare it.
+    if not Path(named).is_absolute():
+        return normalize(os.path.normpath(named))
     return None if same_directory(Path(named), home) else normalize(os.path.normpath(named))
 
 
@@ -594,6 +615,7 @@ def run_tool(
     *,
     timeout: float | None = None,
     separate_errors: bool = False,
+    index_file: Path | None = None,
 ) -> ToolResult:
     """Run a tool with stdout and stderr captured through files, never inherited pipes, within a deadline.
 
@@ -603,7 +625,8 @@ def run_tool(
     The tool and every process it starts are held in one process tree, which ends them all once it has finished: a
     Windows job object allows no breakaway, and a process group holds every process that does not start a session or
     group of its own. Its environment is this process's without git's repository-selecting variables, so a git it runs,
-    such as the source commit's, reads the checkout it names, with `environment` added.
+    such as the source commit's, reads the checkout it names, with `environment` added; with `index_file`, a git it
+    runs reads and writes that index, as bounded_process's `run_bounded` sets it, and no `environment` can.
     Raises ToolTimedOut when it has not finished within `timeout` seconds, TOOL_DEADLINE_SECONDS unless given, and
     DeployError when it cannot be held with the processes it starts.
     """
@@ -618,7 +641,15 @@ def run_tool(
     with tempfile.TemporaryFile() as captured, tempfile.TemporaryFile() as errors:
         stderr = errors if separate_errors else captured
         try:
-            finished = run_bounded(arguments, seconds, stdout=captured, stderr=stderr, env=merged, tree=process_tree())
+            finished = run_bounded(
+                arguments,
+                seconds,
+                stdout=captured,
+                stderr=stderr,
+                env=merged,
+                tree=process_tree(),
+                index_file=index_file,
+            )
         except subprocess.TimeoutExpired:
             raise ToolTimedOut(arguments[0], seconds) from None
         except JobRefused as exc:
