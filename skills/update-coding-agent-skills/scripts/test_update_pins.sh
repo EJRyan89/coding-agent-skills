@@ -161,11 +161,16 @@ expect_status 0 "no deployed commit accepted"
 grep -qx "CROSSED unknown..v3.0.0" <<<"$OUTPUT" || fail "no deployed commit accepted: crossing not named: $OUTPUT"
 expect_deployed "no deployed commit accepted"
 
-# A deployed commit the clone does not hold is a named failure, not version zero.
+# A deployed commit the clone does not hold is named, never version zero: its release cannot be read, so it is
+# unknown, which any release raises, as with no deployed commit.
 begin_case 'deployed commit missing'
 MISSING_COMMIT=0123456789abcdef0123456789abcdef01234567
 FAKE_CHECK_OUTPUT="Deployed commit: $MISSING_COMMIT" run_subject "$CLONE" main
-expect_failed "FAILED cannot read the release tags reaching the deployed commit $MISSING_COMMIT: " "deployed commit missing"
+expect_status 1 "deployed commit missing"
+expect_first_line "MAJOR_UPDATE unknown..v3.0.0" "deployed commit missing"
+[ "$(printf '%s\n' "$OUTPUT" | sed -n 2p)" = "NOT_IN_CLONE $MISSING_COMMIT" ] ||
+  fail "deployed commit missing: NOT_IN_CLONE does not follow MAJOR_UPDATE: $OUTPUT"
+expect_no_stderr "deployed commit missing"
 expect_not_deployed "deployed commit missing"
 
 # A pin to a tag's full name, as the release channel's own pin is, at a commit the clone does not hold ends the update
