@@ -34,7 +34,18 @@ from deployer import tools
 from deployer.platform_support import PYTHON
 from tools import runtime_canary
 from tools.runtime_canary import Completed, Runner
-from tools.skill_evals_records import MODELS, RECORD, RUN, Index, Record, RecordError, names_model, review, unguarded
+from tools.skill_evals_records import (
+    MODELS,
+    RECORD,
+    REVIEWER_EFFORT,
+    RUN,
+    Index,
+    Record,
+    RecordError,
+    names_model,
+    review,
+    unguarded,
+)
 from tools.skill_evals_scenarios import REPOSITORY_ROOT, TRIGGER, Scenario, quote, reviewed_fixture, skill_arguments
 
 # The session's own model, which orchestrates the skill: the strongest, so the orchestration never limits a result.
@@ -50,7 +61,10 @@ PROFILE_GUARD = f"~/{GUARD.as_posix()}"
 # The file in each home holding the reviewer definition the session gets with --agents, and the frontmatter keys
 # that definition carries over; an agent with any other key is refused, since its definition would drop it.
 AGENTS = "agents.json"
-AGENT_KEYS = frozenset({"name", "description", "tools", "model", "omitClaudeMd", "hooks"})
+AGENT_KEYS = frozenset({"name", "description", "tools", "model", "effort", "omitClaudeMd", "hooks"})
+# The variables whose effort outranks an agent's own `effort`, which a run leaves out so the reviewer's stated effort
+# holds; a module-level *_VARIABLES collection, so tools/runtime_changelogs.py watches the changelogs for them.
+EFFORT_VARIABLES = ("CLAUDE_CODE_EFFORT_LEVEL",)
 # What the home's path may not hold: the hook command quotes it for Python inside a Bash double quote.
 UNQUOTABLE = re.compile(r"[\\'\"`$!]")
 # The review version a run's record must be, by the scenario's mode: a re-review's canary root first holds the prior
@@ -222,9 +236,10 @@ def skills_in_stream(output: str) -> list[str]:
 
 
 def run_environment(base: Mapping[str, str], run: Path, config: Path) -> dict[str, str]:
-    """The user's environment, sign-in included, with the run's own temporary directory and code-review files."""
+    """The user's environment, sign-in included, with the run's own temporary directory and code-review files, and
+    without the effort variable that would outrank the reviewer's stated effort."""
     return {
-        **base,
+        **{name: value for name, value in base.items() if name not in EFFORT_VARIABLES},
         "TMPDIR": str(run / "tmp"),
         "CODE_REVIEW_CONFIG": str(config),
         "CODE_REVIEW_STATE": str(run / "state.json"),
@@ -233,19 +248,22 @@ def run_environment(base: Mapping[str, str], run: Path, config: Path) -> dict[st
 
 
 def set_reviewer_model(home: Path, model: str) -> str | None:
-    """Put the model's ID in the home's copy of the reviewer agent in place of `model: inherit`; return why it
-    could not, or None."""
+    """Put the model's ID in the home's copy of the reviewer agent in place of `model: inherit`, and its reviewer
+    effort on the line after, in place of any effort the agent states; return why it could not, or None."""
     path = home / REVIEWER_AGENT
     try:
         lines = path.read_text(encoding="utf-8").split("\n")
-        at = lines.index("model: inherit", 1, lines.index("---", 1))
+        end = lines.index("---", 1)
+        head = [line for line in lines[1:end] if not line.startswith("effort:")]
+        at = head.index("model: inherit")
     except (OSError, ValueError):
         return f"{runtime_canary.forward(path)} has no frontmatter line `model: inherit` to set"
-    lines[at] = f"model: {MODELS[model]}"
-    path.write_text("\n".join(lines), encoding="utf-8")
-    if frontmatter.read(path).string("model") == MODELS[model]:
+    head[at : at + 1] = [f"model: {MODELS[model]}", f"effort: {REVIEWER_EFFORT[model]}"]
+    path.write_text("\n".join([lines[0], *head, *lines[end:]]), encoding="utf-8")
+    values = frontmatter.read(path)
+    if values.string("model") == MODELS[model] and values.string("effort") == REVIEWER_EFFORT[model]:
         return None
-    return f"the reviewer agent does not read as {MODELS[model]}"
+    return f"the reviewer agent does not read as {MODELS[model]} at {REVIEWER_EFFORT[model]} effort"
 
 
 class AgentError(Exception):
@@ -326,6 +344,8 @@ def reviewer_agents(home: Path) -> dict[str, Any]:
             "model": values.string("model"),
             "hooks": {"PreToolUse": [_guard_hook(hook_lines, home)]},
         }
+        if values.string("effort") is not None:
+            definition["effort"] = values.string("effort")
         if values.string("omitClaudeMd") == "true":
             definition["omitClaudeMd"] = True
     except (OSError, ValueError) as exc:

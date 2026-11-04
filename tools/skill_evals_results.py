@@ -12,16 +12,18 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from tools.skill_evals_judging import Outcome, counts
-from tools.skill_evals_records import Index
+from tools.skill_evals_records import REVIEWER_EFFORT, Index
 from tools.skill_evals_runs import Run, RunKey, run_keys
-from tools.skill_evals_scenarios import Scenario, ScenarioError, quote
+from tools.skill_evals_scenarios import TRIGGER, Scenario, ScenarioError, quote
 
 RESULTS_BEGIN = "<!-- skill-evals:begin -->"
 RESULTS_END = "<!-- skill-evals:end -->"
 RESULTS_HEADER = (
-    "| Skill | Model | Model ID | Passed | Runs | By scenario | Session model | Claude Code | Date |",
-    "| --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+    "| Skill | Model | Model ID | Reviewer effort | Passed | Runs | By scenario | Session model | Claude Code | Date |",
+    "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
 )
+# The reviewer effort of a row whose scenarios start no reviewer, only trigger sessions.
+NO_REVIEWER = "none"
 
 
 # A results table's cell border, a pipe its cell does not escape, and a separator cell, aligned or not.
@@ -42,13 +44,15 @@ def result_rows(
     version: str,
     today: datetime.date,
 ) -> list[str]:
-    """One row per model: the model IDs the part judged ran on, its expectations passed, the runs of each scenario,
+    """One row per model: the model IDs the part judged ran on, the effort its reviewers ran at, or none when every
+    scenario is a trigger scenario, which starts no reviewer, its expectations passed, the runs of each scenario,
     each scenario's counts, and the run's versions; a model none of whose judged part ran is recorded as not run, with
     its first run's reason as the results file records it, which names no path of the machine. A run none of whose
     reviewers ran on a model, such as one the session refused before starting any, holds no judgment of that model, so
     its expectations are left out of the model's count, and a scenario none of whose runs holds one says `not run`."""
     rows = []
     numbers = {key[2] for key in runs}
+    reviewed = any(scenario.mode != TRIGGER for scenario in scenarios)
     for model in models:
         mine = [(key, runs[key]) for key in run_keys(scenarios, [model], runs)]
         reviewers = sorted({name for _, run in mine for name in run.reviewers})
@@ -67,7 +71,9 @@ def result_rows(
             identifier = "not run"
             detail = next((run.recorded for _, run in mine if run.recorded), "no run")
         passed = f"{sum(1 for outcome in theirs if outcome.failure is None)}/{len(theirs)}"
-        cells = [skill, model, identifier, passed, str(len(numbers)), detail, session, version, today.isoformat()]
+        effort = REVIEWER_EFFORT[model] if reviewed else NO_REVIEWER
+        cells = [skill, model, identifier, effort, passed, str(len(numbers)), detail, session, version]
+        cells.append(today.isoformat())
         rows.append(f"| {' | '.join(_cell(cell) for cell in cells)} |")
     return rows
 
