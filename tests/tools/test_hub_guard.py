@@ -1816,6 +1816,10 @@ class UnderstoodSetTests(GuardTestCase):
     def test_a_runner_s_command_is_read_as_a_command(self) -> None:
         for command, cwd, expected in (
             (f'nohup git -C "{self.hub}" commit -m x', self.tree, "deny"),
+            (f'XDG_CONFIG_HOME="{self.root}" timeout 5 git status', self.tree, "deny"),
+            (f'EDITOR=vi timeout 60 git -C "{self.tree}" commit', self.tree, "deny"),
+            (f"XDG_CONFIG_HOME=\"{self.root}\" bash -c 'git status'", self.tree, "deny"),
+            ("LC_ALL=C timeout 5 git log -1", self.tree, None),
             (f'nice -n 5 git -C "{self.hub}" commit -m x', self.tree, "deny"),
             (f'stdbuf -oL git -C "{self.hub}" commit -m x', self.tree, "deny"),
             (f'env GIT_EDITOR=true git -C "{self.hub}" commit -m x', self.tree, "deny"),
@@ -1922,6 +1926,11 @@ class PowerShellUnderstoodSetTests(GuardTestCase):
             ("Get-ChildItem | ForEach-Object { $_.Name }", self.tree, None),
             ("Set-Location env:", self.tree, "deny"),
             ("Get-Item alias:git", self.tree, "deny"),
+            ("Set-Content -Path:env:GIT_DIR -Value x; git commit -m x", self.tree, "deny"),
+            ("Set-Content -LiteralPath:env:GIT_DIR -Value x", self.tree, "deny"),
+            ("Copy-Item a.txt -Destination:env:GIT_DIR", self.tree, "deny"),
+            ("Set-Content $p x", self.tree, "deny"),
+            ("Get-Content -LiteralPath:README.md", self.tree, None),
             ("Start-Process git", self.tree, "deny"),
             (". ./profile.ps1", self.tree, "deny"),
             (f"git status > '{self.hub / 'README.md'}'", self.tree, "deny"),

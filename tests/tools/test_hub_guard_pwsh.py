@@ -185,6 +185,39 @@ class NodeCatalogueTests(unittest.TestCase):
             hub_guard.read_powershell(reading.text, Path.cwd(), reading)
 
 
+class ProviderPathTests(unittest.TestCase):
+    def test_every_path_cmdlet_refuses_a_provider_path_by_position_or_attached_and_a_writer_an_unsettled_one(
+        self,
+    ) -> None:
+        for cmdlet in sorted(hub_guard.POWERSHELL_PATH_COMMANDS):
+            writes = cmdlet in hub_guard.POWERSHELL_WRITING_COMMANDS
+            rows: tuple[tuple[list[hub_guard.Word], bool], ...] = (
+                (["env:GIT_DIR"], True),
+                (["alias:git", "x"], True),
+                (["x", "Environment::GIT_DIR"], True),
+                ([None], writes),
+                (["README.md", "C:/x"], False),
+            )
+            for values, refused in rows:
+                with self.subTest(cmdlet=cmdlet, values=values):
+                    self.assertEqual(refused, hub_guard.provider_refusal(cmdlet, cmdlet, values) is not None)
+        self.assertIsNone(hub_guard.provider_refusal("Write-Output", "write-output", ["env:GIT_DIR"]))
+
+    def test_a_value_attached_to_a_parameter_is_judged_as_the_cmdlet_s_value(self) -> None:
+        reader = hub_guard.PowerShellReader(hub_guard.Reading({}, ""), [])
+        command = {
+            "elements": [
+                {"kind": "word", "text": "Set-Content"},
+                {"kind": "parameter", "text": "-Path:", "argument": {"kind": "word", "text": "env:GIT_DIR"}},
+                {"kind": "parameter", "text": "-Value"},
+                {"kind": "word", "text": "x"},
+                {"kind": "parameter", "text": "-LiteralPath:", "argument": {"kind": "other", "type": "X"}},
+            ]
+        }
+        self.assertEqual(["env:GIT_DIR", "x", None], reader.values(command))
+        self.assertEqual(["Set-Content", "-Path:env:GIT_DIR", "-Value", "x", None], reader.words(command))
+
+
 class CommandNameTests(unittest.TestCase):
     def test_every_alias_function_and_verb_powershell_lists_is_one_the_guard_keeps_for_its_own_commands(self) -> None:
         script = (

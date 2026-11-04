@@ -325,7 +325,9 @@ a row decides it.
   `wsl`, `xargs`, and `zsh`. Each is refused unless the guard reads the command it runs, which is then read as a
   command: `timeout`, `nice`, `nohup`, `stdbuf`, and `xargs` after the options `RUNNER_OPTIONS` names, `xargs`'s with
   the words its input adds unsettled, held by `tests/tools/test_prefix_programs.py` to each program on every option
-  form its own `--help` lists; `env` with no option, its assignments read as ones before that command; `bash -c` and
+  form its own `--help` lists. A runner is transparent: the assignments before it, and `env`'s own, are in the
+  environment of the command it starts, and are judged against that command, as ones before git where it is git,
+  before every command of a `bash -c` or `sh -c` script, and as ones before git for a `pwsh -Command` script; `env` with no option, its assignments read as ones before that command; `bash -c` and
   `sh -c` with a literal script, read as Bash; and `pwsh -Command` with one literal script, read as PowerShell. The
   options that make a program run a command are read too: `find`'s `-exec`, `-execdir`, `-ok`, and `-okdir` run the
   command after them, read as a command, while `rg`'s `--pre`, `sort`'s `--compress-program`, and `tar`'s options
@@ -352,13 +354,16 @@ a row decides it.
   `Write-Host`, `Out-String`, `Out-Null`, `Out-File`, `Get-Location`, `Get-Item`, `Get-Command`, `Get-Process`,
   `Format-Table`, `Format-List`, `Start-Sleep`, `Remove-Item`, `Copy-Item`, `Move-Item`, `New-Item`, `Set-Content`,
   `Add-Content`, `Resolve-Path`, `Test-Path`, `Join-Path`, `Split-Path`, `Get-Date`, `Get-FileHash`, `ConvertFrom-Json`,
-  and `ConvertTo-Json`. Every other node type and command is a part the guard does not read. The location cmdlets are
+  `ConvertTo-Json`, and the function `mkdir`. Every other node type and command is a part the guard does not read. The location cmdlets are
   followed as Bash's `cd`, `pushd`, and `popd` are, to a literal file-system path given by position, `-Path`, or
-  `-LiteralPath`, a leading `~` read as home; a path on another provider, as `env:` or `alias:`, is not read, and a
+  `-LiteralPath`, a leading `~` read as home; a path on another provider, as `env:` or `alias:`, given by position or
+  attached to a parameter by a colon, as `-Path:env:GIT_DIR`, is not read, nor is a path a cmdlet that writes, such as
+  `Set-Content`, is given that the text does not settle, and a
   location a pipeline of several commands sets is unknown after it, since each of them runs in the session.
   `tools/hub_guard-powershell.ps1` only reports what the parser found, and `tools/hub_guard.py` makes every decision.
   A command that does not parse is allowed: PowerShell parses a whole script before it runs any of it, so none of it
-  runs. pwsh starts for every PowerShell tool call; a Bash command never waits for it.
+  runs. pwsh starts for every PowerShell tool call and for a Bash command that hands it a literal script; no other
+  Bash command waits for it.
 
 #### What it refuses
 

@@ -4,6 +4,7 @@ and the rows below are generated from those tables, so an entry a later Bash add
 
 from __future__ import annotations
 
+import os
 import sys
 import unittest
 from pathlib import Path
@@ -157,6 +158,9 @@ class BuiltinTests(unittest.TestCase):
             '[ $x "$y" ]',
             "cd -P /",
             "pushd -n /",
+            "jobs -x git status",
+            "jobs -lx git status",
+            "jobs $x",
         ):
             with self.subTest(command=command):
                 self.assertTrue(reading(command).unread)
@@ -230,6 +234,10 @@ class ShellOptionTests(unittest.TestCase):
             ("set -Z", None),
             ("shopt -s frobnicate", None),
             ("set -o $x", None),
+            ("set $x", None),
+            ("set -e $x", None),
+            ("shopt -s $x", None),
+            ("shopt -x nullglob", None),
             ("true", {"SHELLOPTS": "frobnicate"}),
             ("true", {"BASHOPTS": "frobnicate"}),
             ("true", {"POSIXLY_CORRECT": ""}),
@@ -238,6 +246,14 @@ class ShellOptionTests(unittest.TestCase):
             with self.subTest(command=command, environment=environment):
                 self.assertTrue(reading(command, environment).unread)
         self.assertEqual([], reading("set -euo pipefail; set -- a b; set; shopt -p; shopt -q extglob").unread)
+        for command, reason in (
+            ("set $x", "set is given a word the text does not settle"),
+            ("set -e $x", "set is given a word the text does not settle"),
+            ("shopt -s $x", "shopt is given a word the text does not settle"),
+            ("shopt -x nullglob", "shopt's option -x, which the guard does not read"),
+        ):
+            with self.subTest(command=command):
+                self.assertIn(reason, " ".join(reading(command).unread))
 
 
 class VariableTests(unittest.TestCase):
@@ -266,7 +282,50 @@ class VariableTests(unittest.TestCase):
         self.assertEqual([], reading("EDITOR=x ls", {"EDITOR": "vi"}).unread)
 
 
+# Each form of a runner whose command the guard reads, with {command} standing for that command: the rows below are
+# generated from it, so a runner that gains a reader gains its rows.
+RUNNER_FORMS = {
+    "timeout": "timeout 5 {command}",
+    "nice": "nice -n 5 {command}",
+    "nohup": "nohup {command}",
+    "stdbuf": "stdbuf -oL {command}",
+    "xargs": "xargs {command}",
+    "env": "env {command}",
+    "bash": "bash -c '{command}'",
+    "sh": "sh -c '{command}'",
+    "pwsh": "pwsh -NoProfile -Command '{command}'",
+    "find": "find . -exec {command} {{}} +",
+}
+
+
 class RunnerTests(unittest.TestCase):
+    def test_every_runner_whose_command_the_guard_reads_has_a_form(self) -> None:
+        read = {*hub_guard.RUNNER_OPTIONS, "env", "bash", "sh", "pwsh", "find"}
+        self.assertEqual(read, set(RUNNER_FORMS))
+
+    def test_an_assignment_before_a_runner_is_judged_against_the_command_it_starts(self) -> None:
+        # A runner is transparent: what reaches git through one is judged as an assignment before git.
+        environment = {"PATH": os.environ.get("PATH", "")}
+        refused = hub_guard.NOT_READ["construct assignment before git"]
+        for runner, form in RUNNER_FORMS.items():
+            for command, expected in (
+                (f"XDG_CONFIG_HOME=/x {form.format(command='git co')}", refused),
+                (f"EDITOR=vi {form.format(command='git commit -m x')}", refused),
+                (f"env XDG_CONFIG_HOME=/x {form.format(command='git status')}", refused),
+                (f"XDG_CONFIG_HOME=/x bash -c '{form.format(command='git status')}'", refused),
+                (f"LC_ALL=C {form.format(command='git log')}", None),
+                # pwsh's commands are read apart, so what reaches them is judged as an assignment before git.
+                (f"PYTHONUTF8=1 {form.format(command='python -B x.py')}", refused if runner == "pwsh" else None),
+            ):
+                if runner in {"bash", "sh", "pwsh"} and command.count("'") > 2:
+                    continue  # a quoted form inside another quoted form is no command a session writes
+                with self.subTest(runner=runner, command=command):
+                    unread = " ".join(reading(command, environment).unread)
+                    if expected is None:
+                        self.assertEqual("", unread)
+                    else:
+                        self.assertIn(expected, unread)
+
     def test_each_runner_is_refused_in_a_form_the_guard_does_not_read_and_any_other_program_is_read(self) -> None:
         for name, reason in hub_guard.RUNNERS.items():
             with self.subTest(runner=name):

@@ -245,7 +245,8 @@ DEVICE_FILES = frozenset({"/dev/null", "/dev/stdout", "/dev/stderr", "/dev/tty",
 # Every other builtin is in NOT_READ.
 BUILTINS_UNDERSTOOD = {
     **dict.fromkeys((":", "true", "false"), "runs nothing"),
-    **dict.fromkeys(("echo", "pwd", "type", "jobs", "times", "help", "caller"), "prints, and changes nothing"),
+    **dict.fromkeys(("echo", "pwd", "type", "times", "help", "caller"), "prints, and changes nothing"),
+    "jobs": "prints the jobs; -x, which runs the command its words name, is not read",
     "printf": "prints its words; -v, which assigns a variable, is not read",
     **dict.fromkeys(("test", "["), "tests its words; -v, which may evaluate a subscript as arithmetic, is not read"),
     "cd": "moves the shell to a directory, which places the git calls after it",
@@ -604,6 +605,11 @@ POWERSHELL_VERBS = frozenset(
         *("Sync", "Test", "Trace", "Unblock", "Undo", "Uninstall", "Unlock", "Unprotect", "Unpublish", "Unregister"),
         *("Update", "Use", "Wait", "Watch", "Write"),
     )
+)
+# Of them, those that write or remove what their path names, which on the environment provider sets or removes a
+# variable git reads.
+POWERSHELL_WRITING_COMMANDS = frozenset(
+    {"set-content", "add-content", "out-file", "new-item", "copy-item", "move-item", "remove-item", "mkdir"}
 )
 # A PowerShell path on a provider other than the file system: a drive whose name is more than one letter, such as
 # env:, alias:, or HKLM:, or a provider-qualified path such as Environment::.
@@ -1664,13 +1670,18 @@ class BashReader:
     directory the text does not settle.
     """
 
-    def __init__(self, reading: Reading, depth: int, start: BashStart) -> None:
+    def __init__(
+        self, reading: Reading, depth: int, start: BashStart, carried: tuple[tuple[str, Word], ...] = ()
+    ) -> None:
         self.reading = reading
         self.depth = depth
         self.start = start
+        # The assignments a runner's command line gave the shell this reader reads, as `X=1 bash -c '<script>'`
+        # does, which every command of it holds in its environment and is judged with.
+        self.carried = carried
 
-    def nested(self) -> BashReader:
-        return BashReader(self.reading, self.depth + 1, self.start)
+    def nested(self, carried: tuple[tuple[str, Word], ...] = ()) -> BashReader:
+        return BashReader(self.reading, self.depth + 1, self.start, (*self.carried, *carried))
 
     def read_text(self, text: str, directory: Directory) -> Directory:
         if self.depth > NESTING_LIMIT:
@@ -1867,7 +1878,7 @@ class BashReader:
         self, values: list[Word], directory: Directory, prefixes: list[tuple[str, Word]] | None = None
     ) -> Outcome:
         name, arguments = values[0], values[1:]
-        self.read_prefixes(prefixes or [], git=name is not None and command_name(name) in GIT_NAMES)
+        prefixes = [*self.carried, *(prefixes or [])]
         if name is None:
             self.reading.cannot_read(
                 "a command name the text does not settle, which may be any command, git among them"
@@ -1885,47 +1896,63 @@ class BashReader:
                 self.reading.cannot_read(f"{name}: {NOT_READ[f'keyword {name}']}")
                 return certain(UNKNOWN)
             if name in BUILTINS_UNDERSTOOD:
+                self.read_prefixes(prefixes, git=False)
                 return self.read_builtin(name, arguments, directory)
         program = command_name(name) or ""
+        if program in RUNNERS:
+            # A runner is transparent: its assignments reach the command it starts, judged against that command.
+            return self.read_runner(program, arguments, directory, prefixes)
+        self.read_prefixes(prefixes, git=program in GIT_NAMES)
         if program in GIT_NAMES:
             read_git(arguments, directory.cwd, self.reading)
-        elif program in RUNNERS:
-            return self.read_runner(program, arguments, directory)
         elif program == "gh":
             read_gh(arguments, directory, self.reading)
         elif program in COMMAND_OPTIONS:
-            return self.read_program(program, arguments, directory)
+            return self.read_program(program, arguments, directory, prefixes)
         return certain(directory)
 
-    def read_runner(self, program: str, arguments: list[Word], directory: Directory) -> Outcome:
+    def run_command(self, words: list[Word], directory: Directory, prefixes: list[tuple[str, Word]]) -> Outcome:
+        """The command a runner starts, read as a command with the assignments before the runner, and the runner's
+        own, in its environment; the one path every runner's command takes."""
+        if not words:
+            self.read_prefixes(prefixes, git=False)
+            return certain(directory)
+        return self.read_command_words(words, directory, prefixes)
+
+    def read_runner(
+        self, program: str, arguments: list[Word], directory: Directory, prefixes: list[tuple[str, Word]]
+    ) -> Outcome:
         """A program that runs another command: the command it runs is read where the guard reads the runner's form,
-        and the runner is refused otherwise."""
+        with the assignments before the runner carried into it, and the runner is refused otherwise."""
         if program in RUNNER_OPTIONS:
             start, reason = runner_start(program, arguments)
             if reason is not None:
                 self.reading.cannot_read(reason)
                 return certain(UNKNOWN)
-            if start is None:
-                return certain(directory)
-            # xargs hands its command words from its input, which the text does not settle.
-            extra: list[Word] = [None] if program == "xargs" else []
-            return self.read_command_words([*arguments[start:], *extra], directory)
+            # xargs hands its command words from its input, which the text does not settle; with none it runs echo.
+            extra: list[Word] = [None] if program == "xargs" and start is not None else []
+            return self.run_command([*(arguments[start:] if start is not None else []), *extra], directory, prefixes)
         if program == "env":
-            return self.read_env(arguments, directory)
+            return self.read_env(arguments, directory, prefixes)
         script = shell_script(program, arguments)
         if script is not None and program in {"bash", "sh"}:
-            # The script runs in a shell of its own, so what it changes dies with it.
-            self.nested().read_text(script, directory)
+            # The script runs in a shell of its own, which holds the runner's assignments in its environment, so each
+            # of its commands is judged with them; what it changes dies with it.
+            self.read_prefixes(prefixes, git=False)
+            self.nested(tuple(prefixes)).read_text(script, directory)
             return certain(directory)
         if script is not None:
+            # PowerShell's commands are read apart, so the assignments are judged as ones before git, which any of
+            # them may be.
+            self.read_prefixes(prefixes, git=True)
             read_powershell(script, directory.cwd, self.reading, self.depth + 1)
             return certain(directory)
         self.reading.cannot_read(f"runs {program}: {RUNNERS[program]}")
         return certain(UNKNOWN)
 
-    def read_env(self, arguments: list[Word], directory: Directory) -> Outcome:
-        """env with no option, whose assignments are read as ones before the command it runs."""
-        prefixes: list[tuple[str, Word]] = []
+    def read_env(self, arguments: list[Word], directory: Directory, outer: list[tuple[str, Word]]) -> Outcome:
+        """env with no option, whose assignments join those before it as ones before the command it runs."""
+        prefixes: list[tuple[str, Word]] = list(outer)
         index = 0
         while index < len(arguments):
             word = arguments[index]
@@ -1940,12 +1967,11 @@ class BashReader:
                 return certain(UNKNOWN)
             prefixes.append((name, value))
             index += 1
-        if index == len(arguments):
-            self.read_prefixes(prefixes, git=False)
-            return certain(directory)
-        return self.read_command_words(arguments[index:], directory, prefixes)
+        return self.run_command(arguments[index:], directory, prefixes)
 
-    def read_program(self, program: str, arguments: list[Word], directory: Directory) -> Outcome:
+    def read_program(
+        self, program: str, arguments: list[Word], directory: Directory, prefixes: list[tuple[str, Word]]
+    ) -> Outcome:
         """A program with options that run a command: find's run the command after them, read as a command, in a
         directory of the found file's for -execdir and -okdir; any other such option is refused, and so is a word the
         text does not settle, which may be one."""
@@ -1966,7 +1992,7 @@ class BashReader:
                 )
                 if end > index + 1:
                     place = directory if word in {"-exec", "-ok"} else UNKNOWN
-                    self.read_command_words(arguments[index + 1 : end], place)
+                    self.run_command(arguments[index + 1 : end], place, prefixes)
                 index = end + 1
                 continue
             if option in options:
@@ -1992,6 +2018,8 @@ class BashReader:
             self.read_test(arguments)
         elif name == "wait" and any(word is None or word.startswith("-") for word in arguments):
             self.reading.cannot_read("wait is given an option, as -p, which assigns a variable")
+        elif name == "jobs" and any(word is None or (word.startswith("-") and "x" in word[1:]) for word in arguments):
+            self.reading.cannot_read("jobs -x runs the command its words name, which may be git")
         elif name == "command" and (not arguments or arguments[0] not in {"-v", "-V"}):
             self.reading.cannot_read("command runs the name it is given, which may be git under another name")
         elif name == "read":
@@ -2192,6 +2220,20 @@ def read_written(value: Word, directory: Directory, reading: Reading) -> None:
         reading.cannot_read(f"a redirection writes {value} in a directory the text does not settle")
     else:
         reading.writes.append(path if path.is_absolute() else (directory.cwd or Path()) / path)
+
+
+def provider_refusal(name: str, cmdlet: str, values: list[Word]) -> str | None:
+    """Why a path cmdlet's values are not read: one that names a provider other than the file system, as env: or
+    alias:, whether given by position or attached to a parameter by a colon, and, for a cmdlet that writes, one the text
+    does not settle, which may name such a provider; None for any other command."""
+    if cmdlet not in POWERSHELL_PATH_COMMANDS:
+        return None
+    for value in values:
+        if value is None and cmdlet in POWERSHELL_WRITING_COMMANDS:
+            return f"{name} writes at a path the text does not settle, which may lie on a provider such as env:"
+        if value is not None and PROVIDER_PATH.match(value) and not value.startswith("-"):
+            return f"{name} names {value}, a path on a provider other than the file system"
+    return None
 
 
 def powershell_command(name: str) -> bool:
@@ -2441,7 +2483,27 @@ class PowerShellReader:
         if not isinstance(element, dict) or element.get("kind") not in {"word", "parameter"}:
             return [None]
         text = element.get("text")
-        return [text if isinstance(text, str) else None]
+        if not isinstance(text, str):
+            return [None]
+        if "argument" in element:
+            # A native program is handed -Name:value as one word; one whose value the text does not settle is too.
+            value = self.element(element.get("argument"))
+            return [text + value[0] if len(value) == 1 and value[0] is not None else None]
+        return [text]
+
+    def values(self, command: Any) -> list[Word]:
+        """Every value a cmdlet is given, by position or attached to a parameter by a colon, as -Path:<value>; None
+        for one the text does not settle; a parameter written alone gives none, its value being the next element."""
+        found: list[Word] = []
+        for element in (command.get("elements") or [None])[1:]:
+            if not isinstance(element, dict):
+                found.append(None)
+            elif element.get("kind") == "parameter":
+                if "argument" in element:
+                    found.extend(self.element(element.get("argument")))
+            elif element.get("kind") != "block":
+                found.extend(self.element(element))
+        return found
 
     def words(self, command: Any) -> list[Word]:
         elements = command.get("elements") if isinstance(command, dict) else None
@@ -2535,7 +2597,7 @@ class PowerShellReader:
                 # ForEach-Object given a name rather than a script block calls the member by that name.
                 self.reading.cannot_read("ForEach-Object given a member's name runs that member, which may run code")
                 return certain(UNKNOWN)
-            return self.read_cmdlet(name, words[1:], directory)
+            return self.read_cmdlet(name, words[1:], directory, self.values(command))
         program = command_name(name) or ""
         if program in GIT_NAMES:
             # A native program is handed ~ as written; whether pwsh expands it first differs by release.
@@ -2558,14 +2620,14 @@ class PowerShellReader:
             return certain(UNKNOWN)
         return certain(directory)
 
-    def read_cmdlet(self, name: str, arguments: list[Word], directory: Directory) -> Outcome:
+    def read_cmdlet(self, name: str, arguments: list[Word], directory: Directory, values: list[Word]) -> Outcome:
         """A command POWERSHELL_COMMANDS names: one that moves the location is followed, any other changes nothing the
-        guard reads, unless a path it is given lies on a provider other than the file system."""
+        guard reads, unless a path it is given lies on a provider other than the file system (provider_refusal)."""
         cmdlet = POWERSHELL_COMMANDS[name.lower()]
-        for word in arguments if cmdlet in POWERSHELL_PATH_COMMANDS else []:
-            if word is not None and PROVIDER_PATH.match(word) and not word.startswith("-"):
-                self.reading.cannot_read(f"{name} names {word}, a path on a provider other than the file system")
-                return certain(UNKNOWN)
+        reason = provider_refusal(name, cmdlet, values)
+        if reason is not None:
+            self.reading.cannot_read(reason)
+            return certain(UNKNOWN)
         if cmdlet == "set-location":
             return self.read_location(arguments, directory, push=False)
         if cmdlet == "push-location":

@@ -93,14 +93,20 @@ def hub_guard_failure_problems(settings: dict[str, object]) -> list[str]:
     command run unseen when the hook times out, cannot start, or fails."""
     hooks = settings.get("hooks")
     groups = hooks.get("PreToolUse", []) if isinstance(hooks, dict) else []
-    return [
-        f"the hub guard's hook declares onFailure {hook.get('onFailure')!r}, not 'block'"
+    guard_hooks = [
+        hook
         for group in groups
         if isinstance(group, dict)
         for hook in group.get("hooks", [])
-        if isinstance(hook, dict)
-        and re.search(r"tools/hub_guard\.py\"?$", str(hook.get("command", "")))
-        and hook.get("onFailure") != "block"
+        if isinstance(hook, dict) and re.search(r"tools/hub_guard\.py\"?$", str(hook.get("command", "")))
+    ]
+    if not guard_hooks:
+        # Nothing to hold to onFailure is no pass: the hook the policy guards is missing.
+        return ["no PreToolUse hook runs tools/hub_guard.py"]
+    return [
+        f"the hub guard's hook declares onFailure {hook.get('onFailure')!r}, not 'block'"
+        for hook in guard_hooks
+        if hook.get("onFailure") != "block"
     ]
 
 

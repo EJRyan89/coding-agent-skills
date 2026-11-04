@@ -59,11 +59,13 @@ class RepositoryHygieneFixtures(unittest.TestCase):
             ["the hub guard's hook declares onFailure 'continue', not 'block'"],
             hub_guard_failure_problems(settings(onFailure="continue")),
         )
-        # Another hook is no business of this policy.
+        # Settings that run no hub guard hook give the policy nothing to hold, which is a refusal, never a pass.
+        missing = ["no PreToolUse hook runs tools/hub_guard.py"]
+        self.assertEqual(missing, hub_guard_failure_problems({}))
         other: dict[str, object] = {
             "hooks": {"PreToolUse": [{"hooks": [{"type": "command", "command": "python -B other.py"}]}]}
         }
-        self.assertEqual([], hub_guard_failure_problems(other))
+        self.assertEqual(missing, hub_guard_failure_problems(other))
 
     def test_hub_guard_matcher_policy_detects_a_missing_tool_or_hook(self) -> None:
         command = 'python -B "$CLAUDE_PROJECT_DIR/tools/hub_guard.py"'

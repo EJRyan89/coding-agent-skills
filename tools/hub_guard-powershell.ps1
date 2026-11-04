@@ -14,7 +14,8 @@ using namespace System.Management.Automation.Language
 #     or {"expression": true} for an expression standing as a command; an element is
 #       {"kind": "word", "text"}, a constant or a string with no expansion, by its value,
 #       {"kind": "words", "texts"}, a list of such, as a,b, each a word of its own,
-#       {"kind": "parameter", "text"}, a parameter, as written, or
+#       {"kind": "parameter", "text"}, a parameter, as written, or, with a value attached by a colon,
+#         {"kind": "parameter", "text": "-Name:", "argument": element}, or
 #       {"kind": "other", "type"}, any other element, which hub_guard.py does not settle;
 #     and a redirection {"kind": "file", "target": element} or {"kind": "merge"}
 #   "statements": the top-level statements, each {"pipelines": [[command index]], "operators": ["&&" | "||"],
@@ -35,7 +36,15 @@ $ErrorActionPreference = 'Stop'
 
 function ConvertTo-Element([Ast] $Element) {
     if ($Element -is [CommandParameterAst]) {
-        return [ordered]@{ kind = 'parameter'; text = $Element.Extent.Text }
+        if ($null -eq $Element.Argument) {
+            return [ordered]@{ kind = 'parameter'; text = $Element.Extent.Text }
+        }
+        # A value attached with a colon, as -Path:env:GIT_DIR, is reported apart, for hub_guard.py to judge.
+        return [ordered]@{
+            kind = 'parameter'
+            text = "-$($Element.ParameterName):"
+            argument = (ConvertTo-Element $Element.Argument)
+        }
     }
     if ($Element -is [ScriptBlockExpressionAst]) {
         return [ordered]@{ kind = 'block' }
