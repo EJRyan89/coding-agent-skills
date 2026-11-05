@@ -1788,7 +1788,7 @@ def _check_finding(
         raise SpecialistError(
             f"{name}: finding {index} has a field the output contract does not list: {', '.join(unlisted)}"
         )
-    file = READ.string(finding.get("path"), f"{path}.path")
+    file = READ.repository_path(finding.get("path"), f"{path}.path")
     line = READ.integer(finding.get("line"), f"{path}.line")
     READ.string(finding.get("body"), f"{path}.body")
     read_title(READ, finding.get("title"), f"{path}.title")

@@ -88,6 +88,19 @@ class PullTests(unittest.TestCase):
         self.assertEqual(PULL["threads"], pull["threads"])
         self.assertNotIn("manifest_path", pull)
 
+    def test_a_thread_path_is_a_repository_path_a_blank_one_included(self) -> None:
+        for path in (" ", "\N{NO-BREAK SPACE}"):
+            with self.subTest(path=path):
+                pull = copy.deepcopy(PULL)
+                pull["threads"][0]["path"] = path
+                self.assertEqual(path, validate_fixture_pull(pull)["threads"][0]["path"])
+        pull = copy.deepcopy(PULL)
+        pull["threads"][0]["path"] = ""
+        with self.assertRaisesRegex(
+            FixtureFieldError, r"threads\[0\]\.path must be a non-empty string, found an empty"
+        ):
+            validate_fixture_pull(pull)
+
     def test_a_description_may_be_given_and_may_be_empty(self) -> None:
         for body in ("## Upgrade note\n\nNone\n", ""):
             with self.subTest(body=body):

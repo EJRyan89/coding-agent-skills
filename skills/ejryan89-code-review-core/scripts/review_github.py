@@ -101,8 +101,10 @@ def _changed_file(value: Any, path: str) -> dict[str, Any]:
     patch, which GitHub leaves out of a binary file's entry and of one whose diff is too large."""
     entry = READ.json_object(value, path)
     return {
-        "filename": READ.string(entry.get("filename"), f"{path}.filename"),
-        "previous_filename": READ.optional(READ.string, entry.get("previous_filename"), f"{path}.previous_filename"),
+        "filename": READ.repository_path(entry.get("filename"), f"{path}.filename"),
+        "previous_filename": READ.optional(
+            READ.repository_path, entry.get("previous_filename"), f"{path}.previous_filename"
+        ),
         "status": READ.one_of(entry.get("status"), f"{path}.status", FILE_STATUSES),
         "changes": READ.integer(entry.get("changes"), f"{path}.changes", minimum=0),
         "sha": READ.optional(READ.hex_digest, entry.get("sha"), f"{path}.sha", 40, 64),
@@ -512,7 +514,7 @@ def _open_thread_comment(thread: dict[str, Any], path: str) -> dict[str, Any] | 
     line = READ.optional(READ.integer, thread.get("line"), f"{path}.line")
     return {
         "author": "ghost" if author is None else READ.string(author.get("login"), f"{where}.author.login"),
-        "path": READ.string(thread.get("path"), f"{path}.path"),
+        "path": READ.repository_path(thread.get("path"), f"{path}.path"),
         "line": line or READ.optional(READ.integer, thread.get("originalLine"), f"{path}.originalLine"),
         "outdated": READ.boolean(thread.get("isOutdated"), f"{path}.isOutdated"),
         "body": READ.string(first.get("body"), f"{where}.body", empty=True),

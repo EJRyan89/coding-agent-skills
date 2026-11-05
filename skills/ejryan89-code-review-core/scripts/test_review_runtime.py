@@ -8,6 +8,7 @@ import hashlib
 import io
 import json
 import os
+import re
 import subprocess
 import sys
 import tarfile
@@ -496,6 +497,32 @@ class RuntimeContractTests(unittest.TestCase):
             self.assertEqual(
                 [], review_runtime.review_coverage(diff, metadata)["unavailable_sources"], "reviewers have its source"
             )
+
+    def test_a_file_named_by_whitespace_alone_is_held_and_verified(self) -> None:
+        # Git names a file by a no-break space alone, which no unsafe-path rule refuses, so the snapshot holds it.
+        name = "\N{NO-BREAK SPACE}"
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            checkout, head = self._plumbing_repository(
+                root, {name.encode("utf-8"): ("100644", b"blank\n"), b"src/ok.py": ("100644", b"ok\n")}
+            )
+            snapshot = root / "snapshot"
+            metadata = materialize_source_snapshot(checkout, "example/one", head, snapshot, changed_paths=[name])
+            self.assertEqual({name, "src/ok.py"}, set(metadata["source_hashes"]))
+            self.assertEqual({}, metadata["excluded_paths"])
+            self.assertEqual("blank\n", (snapshot / name).read_text(encoding="utf-8"))
+            verify_source_snapshot(snapshot, expected_repository="example/one", expected_commit=head)
+
+    def test_an_extracted_document_is_keyed_by_a_repository_path_a_blank_one_included(self) -> None:
+        blank = "\N{NO-BREAK SPACE}"
+        digest = "a" * 64
+        review_runtime._validate_extracted({blank: "docx"}, {blank: digest})
+        review_runtime._validate_extracted({blank: "pdf"}, {f"{review_runtime.HELD_TEXT_FOLDER}/{blank}.txt": digest})
+        key = f"a key of {review_runtime.SOURCE_SNAPSHOT_MANIFEST}.{review_runtime.SNAPSHOT_EXTRACTED}"
+        with self.assertRaisesRegex(
+            review_runtime.RuntimeContractFieldError, f"^{re.escape(key)} must be a non-empty string, found an empty"
+        ):
+            review_runtime._validate_extracted({"": "docx"}, {"": digest})
 
     def test_an_undecodable_name_is_an_unsafe_path_and_a_coverage_gap_only_where_changed(self) -> None:
         # Two bytes that open a UTF-8 sequence and never finish it: one U+FFFD each, as diff.patch shows them.

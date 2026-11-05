@@ -8,7 +8,6 @@ import re
 import sys
 from collections.abc import Iterable
 from datetime import UTC, datetime
-from functools import partial
 from pathlib import Path, PurePosixPath
 from typing import Any, NotRequired, TypedDict, cast
 
@@ -579,7 +578,7 @@ def _validate_result_finding(finding: object, path: str, seen_keys: set[str]) ->
         read_analyzer(READ, finding["analyzer"], f"{path}.analyzer")
     READ.one_of(finding["severity"], f"{path}.severity", SEVERITIES)
     for field in ("category", "path", "body", "evidence", "source"):
-        READ.string(finding[field], f"{path}.{field}")
+        _read_finding_text(finding, field, path)
     if not safe_repository_path(finding["path"]):
         raise RecordError(f"Finding {key}.path must be a safe repository-relative path")
     READ.integer(finding["line"], f"{path}.line", minimum=1)
@@ -1169,17 +1168,18 @@ def _duration(seconds: int | None) -> str:
     return f"{minutes}m {remainder:02d}s" if minutes else f"{remainder}s"
 
 
-def read_repository_path(read: FieldReader, value: object, path: str) -> str:
-    """A repository file's path as git names it: any string but an empty one, a blank one included, since git takes a
-    file named by Unicode whitespace alone, such as a no-break space."""
-    if not isinstance(value, str) or not value:
-        raise read.fail(path, "a non-empty string", describe(value) if value != "" else "an empty string")
-    return value
+def _read_finding_text(finding: dict[str, Any], field: str, path: str) -> None:
+    """One text field of a finding, in the order the fields are checked: its `path` a repository path, a blank one
+    included, and every other field a non-blank string."""
+    if field == "path":
+        READ.repository_path(finding[field], f"{path}.{field}")
+    else:
+        READ.string(finding[field], f"{path}.{field}")
 
 
 def _read_path_set(value: object, path: str) -> list[str]:
     """A list of distinct non-empty paths."""
-    paths = READ.array(value, path, partial(read_repository_path, READ))
+    paths = READ.array(value, path, READ.repository_path)
     if len(set(paths)) != len(paths):
         raise RecordError("Review coverage is malformed")
     return paths
@@ -1272,7 +1272,7 @@ def _validate_patches(value: object) -> None:
     if not patches:
         raise RecordError("Review patches must be a non-empty object")
     for key, patch in patches.items():
-        path = READ.string(key, "a key of record.review.patches")
+        path = READ.repository_path(key, "a key of record.review.patches")
         if not safe_repository_path(path):
             raise RecordError("Review patch path is unsafe")
         item = f"record.review.patches.{path}"
@@ -1621,7 +1621,7 @@ def _validate_unreviewed(value: object, unavailable: set[str]) -> None:
     """Each unreviewed file keyed by its path, which no unavailable source repeats, with the suffix its name ends in."""
     field = "record.review.coverage.unreviewed_files"
     for path, suffix in READ.json_object(value, field).items():
-        READ.string(path, f"a key of {field}")
+        READ.repository_path(path, f"a key of {field}")
         READ.string(suffix, f"{field}.{path}")
         name = path.rpartition("/")[2].lower()
         if not is_unreviewed_suffix(suffix) or len(name) <= len(suffix) or not name.endswith(suffix):
@@ -1664,7 +1664,7 @@ def _validate_source_hashes(value: object) -> None:
     """The adapter's source files by safe relative path, each with its SHA-256 hash."""
     source_hashes = READ.json_object(value, "record.review.adapter.source_hashes")
     for key, hash_value in source_hashes.items():
-        path = READ.string(key, "a key of record.review.adapter.source_hashes")
+        path = READ.repository_path(key, "a key of record.review.adapter.source_hashes")
         if not safe_repository_path(path):
             raise RecordError("Review adapter source hash path is unsafe")
         READ.hex_digest(hash_value, f"record.review.adapter.source_hashes.{path}", 64)
@@ -1703,7 +1703,7 @@ def _validate_finding(value: object, path: str) -> None:
     if "analyzer" in finding:
         read_analyzer(READ, finding["analyzer"], f"{path}.analyzer")
     for field in ("candidate_key", "category", "path", "body", "evidence", "source"):
-        READ.string(finding[field], f"{path}.{field}")
+        _read_finding_text(finding, field, path)
     if not safe_repository_path(finding["path"]):
         raise RecordError(f"Review finding {finding['id']}.path is unsafe")
     READ.integer(finding["line"], f"{path}.line", minimum=1)

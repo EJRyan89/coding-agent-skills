@@ -274,7 +274,12 @@ ACCEPTED: list[tuple[str, Callable[[], dict[str, Any]], Mutation]] = [
             _record,
             _chain(_set((*FINDING, "path"), path), _set((*ADAPTER, "source_hashes"), {path: SHA256})),
         )
-        for path in ("src/space name.py", "src/a:b.py", "1:notes.md", "notes:archive/x.md")
+        for path in ("src/space name.py", "src/a:b.py", "1:notes.md", "notes:archive/x.md", " ", "\N{NO-BREAK SPACE}")
+    ),
+    (
+        "a patch keyed by a path of whitespace alone",
+        _full_record,
+        _set((*REVIEW, "patches"), {"\N{NO-BREAK SPACE}": {"sha256": SHA256, "lines": 1}}),
     ),
     ("every optional part", _full_record, _chain()),
     ("SHA-256 commit hashes", _record, _chain(_set((*PULL, "base_sha"), SHA256), _set((*PULL, "head_sha"), SHA256))),
@@ -1060,9 +1065,17 @@ REJECTED: list[tuple[str, Mutation, type[Exception], str]] = [
     ("finding analyzer empty", _set((*FINDING, "analyzer"), {}), F, f"record.findings[0].analyzer {ANALYZER_MISSING}"),
     *[
         case
-        for field in ("candidate_key", "category", "path", "body", "evidence", "source")
+        for field in ("candidate_key", "category", "body", "evidence", "source")
         for case in _blank_and_non_string((*FINDING, field))
     ],
+    # A path is any string but an empty one, a blank one included.
+    (
+        "findings.0.path empty",
+        _set((*FINDING, "path"), ""),
+        F,
+        "record.findings[0].path must be a non-empty string, found an empty string",
+    ),
+    ("findings.0.path not a string", _set((*FINDING, "path"), 1), F, _wrong("record.findings[0].path", TEXT, 1)),
     *[
         (f"finding path {path!r}", _set((*FINDING, "path"), path), R, "Review finding F001.path is unsafe")
         for path in ("/a.py", "\\a.py", "a\\b.py", "../a.py", "a/../b.py")
@@ -1826,7 +1839,7 @@ DISPOSITION_VALUES = ("addressed", "partially_addressed", "still_present", "supe
 ACCEPTED_RESULTS: list[tuple[str, Callable[[], dict[str, Any]], Mutation, dict[str, Any]]] = [
     *(
         (f"POSIX finding path {path}", _result, _set((*RESULT_FINDING, "path"), path), {})
-        for path in ("src/space name.py", "src/a:b.py", "1:notes.md", "notes:archive/x.md")
+        for path in ("src/space name.py", "src/a:b.py", "1:notes.md", "notes:archive/x.md", " ", "\N{NO-BREAK SPACE}")
     ),
     ("minimal result", _result, _chain(), {}),
     ("every optional field", _full_result, _chain(), FULL_REQUEST),
@@ -2153,7 +2166,22 @@ REJECTED_RESULTS: list[ResultCase] = [
         )
         for name, value in (("unknown", "LOW"), ("unhashable", []))
     ),
-    *[case for field in ("category", "path", "body", "evidence", "source") for case in _result_finding_text(field)],
+    *[case for field in ("category", "body", "evidence", "source") for case in _result_finding_text(field)],
+    # A path is any string but an empty one, a blank one included.
+    (
+        "finding path empty",
+        _set((*RESULT_FINDING, "path"), ""),
+        F,
+        "adapter-result.findings[0].path must be a non-empty string, found an empty string",
+        {},
+    ),
+    (
+        "finding path not a string",
+        _set((*RESULT_FINDING, "path"), None),
+        F,
+        _wrong("adapter-result.findings[0].path", TEXT, None),
+        {},
+    ),
     *[
         (f"finding path {path!r}", _set((*RESULT_FINDING, "path"), path), R, UNSAFE_PATH, {})
         for path in ("/a.py", "\\a.py", "a\\b.py", "../a.py", "a/../b.py")
