@@ -148,7 +148,7 @@ explicit_package_bases = true
 # repo-cleanup scripts the malformed-input reader tables import beside the others. Then
 # tests/deployer, whose suites import harness from beside them, tests/malformed_input, whose suite and reader tables
 # import the corpus and one another from beside them, tests/tools, whose hub guard and worktrees suites
-# import worktree_fixture from beside them, and tests/validation, whose policy modules and their suites import one
+# import worktree_fixture and guard_limits from beside them, and tests/validation, whose policy modules and their suites import one
 # another by bare name, as tests/run_validation.py does. Their imports then resolve as they do at run time. Validation
 # keeps this list equal to those directories.
 mypy_path = [
