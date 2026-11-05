@@ -119,4 +119,30 @@ expect_status 0 "pre-release to release accepted"
 grep -qx "CROSSED v2.0.0..v3.0.0" <<<"$OUTPUT" || fail "pre-release to release accepted: crossing not named"
 expect_deployed "pre-release to release accepted"
 
+# A version number longer than any machine integer is compared exactly, as release_tags.py reads it, never as a Bash
+# integer: a major of twenty digits stops the update, and a minor release under it then passes.
+begin_case 'long major'
+HUGE=100000000000000000000
+new_clone
+BEFORE=$(head_of "$CLONE" HEAD)
+publish "long major"
+tag_upstream "v$HUGE.0.0"
+run_subject "$CLONE" main
+expect_status 1 "long major"
+expect_first_line "MAJOR_UPDATE v3.0.0..v$HUGE.0.0" "long major"
+expect_no_stderr "long major"
+[ "$(head_of "$CLONE" HEAD)" = "$BEFORE" ] || fail "long major: main moved"
+expect_not_deployed "long major"
+run_subject "$CLONE" main --cross-major
+expect_status 0 "long major accepted"
+grep -qx "CROSSED v3.0.0..v$HUGE.0.0" <<<"$OUTPUT" || fail "long major accepted: crossing not named: $OUTPUT"
+expect_deployed "long major accepted"
+new_clone
+publish "long minor"
+tag_upstream "v$HUGE.7.0"
+run_subject "$CLONE" main
+expect_status 0 "long minor"
+if grep -q "CROSSED" <<<"$OUTPUT"; then fail "long minor: crossing reported"; fi
+expect_deployed "long minor"
+
 echo "update.sh release gate tests passed"

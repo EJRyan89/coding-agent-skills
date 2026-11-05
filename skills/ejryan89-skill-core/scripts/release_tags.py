@@ -10,18 +10,24 @@ holds is the highest release tag reachable from it, whatever tag of another name
 tools/release_notes.py starts a release's notes at the last release before it, the upgrade-notes check in
 tests/validation compares the contract files with the last release on origin/main, and update-coding-agent-skills'
 update.sh, which is Bash and cannot import this, runs this module to find the releases its major-version stop
-compares.
+compares, and to compare them, so no version number is read as a Bash integer.
 
 Usage:
   python release_tags.py <repository> <commit>
+  python release_tags.py --raises <current> <target>
 
-It prints `RELEASE <tag>`, the last release the commit holds in the repository at that path, or `NO_RELEASE` when no
-release tag reaches it; it prints `FAILED <reason>` when git cannot read the tags reaching the commit, such as for a
-commit the repository does not hold.
+The first form prints `RELEASE <tag>`, the last release the commit holds in the repository at that path, or
+`NO_RELEASE` when no release tag reaches it; it prints `FAILED <reason>` when git cannot read the tags reaching the
+commit, such as for a commit the repository does not hold.
+
+The second form prints `RAISES` when the release tag `<target>` raises the breaking component, the major, or the minor
+while the major is 0, above the release tag `<current>`, and `WITHIN` when it does not; `<current>` may be `untagged`,
+a commit no release reaches, counted as v0.0.0. It prints `FAILED <reason>` when either is not a release tag.
 
 Exit status:
-  0  RELEASE <tag> or NO_RELEASE
-  1  a last line FAILED <reason>, as when git cannot read the tags reaching the commit
+  0  RELEASE <tag> or NO_RELEASE; RAISES or WITHIN
+  1  a last line FAILED <reason>, as when git cannot read the tags reaching the commit or --raises is given a name that
+     is not a release tag
   2  a usage error
 """
 
@@ -39,6 +45,8 @@ from git_client import GitClient, GitError, output_lines
 
 TAGS = "refs/tags/"
 RELEASE_PREFIX = "v"
+# What --raises takes for a commit no release tag reaches, which counts as version zero.
+UNTAGGED = "untagged"
 
 
 def release_order(name: str) -> versions.Version | None:
@@ -68,13 +76,43 @@ def last_release(client: GitClient, repository: str | Path, commit: str) -> str 
     return highest_release(line.removeprefix(TAGS) for line in output_lines(listed))
 
 
+def breaking_component(order: versions.Version) -> tuple[int, int]:
+    """The component a release may not raise without acceptance, as (major, minor): the major and 0, or 0 and the minor
+    while the major is 0."""
+    major, minor = order[0], order[1]
+    return (major, 0) if major else (0, minor)
+
+
+def raises_breaking(current: versions.Version, target: versions.Version) -> bool:
+    """Whether the release `target` raises the breaking component above the release `current`."""
+    return breaking_component(target) > breaking_component(current)
+
+
+def _compare(current: str, target: str) -> int:
+    current_order = (0, 0, 0) if current == UNTAGGED else release_order(current)
+    target_order = release_order(target)
+    if current_order is None or target_order is None:
+        print(f"FAILED not a release tag: {flat_text(current if current_order is None else target)}")
+        return 1
+    print("RAISES" if raises_breaking(current_order, target_order) else "WITHIN")
+    return 0
+
+
 def main(argv: list[str]) -> int:
-    parser = argparse.ArgumentParser(description="Print the last release tag a commit holds.")
-    parser.add_argument("repository", help="the repository's path")
-    parser.add_argument("commit", help="the commit, or a ref naming it")
+    parser = argparse.ArgumentParser(
+        description="Print the last release tag a commit holds, or, with --raises, whether one release raises the "
+        "breaking component above another."
+    )
+    parser.add_argument(
+        "--raises", action="store_true", help=f"compare two release tags, the first of which may be {UNTAGGED}"
+    )
+    parser.add_argument("first", metavar="repository|current", help="the repository's path, or the current release")
+    parser.add_argument("second", metavar="commit|target", help="the commit or a ref naming it, or the target release")
     options = parser.parse_args(argv)
+    if options.raises:
+        return _compare(options.first, options.second)
     try:
-        found = last_release(GitClient(), Path(options.repository), options.commit)
+        found = last_release(GitClient(), Path(options.first), options.second)
     except GitError as error:
         print(f"FAILED git for-each-ref: {flat_text(str(error))}")
         return 1

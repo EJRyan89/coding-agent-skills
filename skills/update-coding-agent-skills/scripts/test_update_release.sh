@@ -386,17 +386,52 @@ for SITE in "rev-parse --short HEAD|1|main before the fast-forward" \
   expect_not_deployed "short name of $WHAT"
 done
 
-# A clone whose branch and commit git cannot name stops before the checkout, on the branch it was found on, with
-# git's reason: here the branch lookup fails, and the commit lookup meets a HEAD that names no commit yet, which git
-# explains only without --quiet.
+# A clone whose branch or commit git cannot name stops before the checkout, on the branch it was found on, with git's
+# reason. symbolic-ref --quiet says HEAD is detached only by exiting 1 with nothing on stderr, so a branch lookup that
+# fails otherwise is never read as a detached HEAD; and the commit lookup of a detached HEAD, here meeting a HEAD that
+# names no commit yet, which git explains only without --quiet, names git's reason.
 begin_case 'branch git cannot name'
 git_quiet -C "$CLONE" checkout -q -b aside
-failing_git "symbolic-ref --quiet --short HEAD|rev-parse --verify HEAD=>$UNBORN" 1 "$CLONE" release --cross-major
-expect_failed "FAILED cannot read the branch or the commit the clone is on: fatal: Needed a single revision" \
-  "branch git cannot name"
+failing_git "symbolic-ref --quiet --short HEAD" 1 "$CLONE" release --cross-major
+expect_failed "FAILED cannot read the branch the clone is on: $NOT_A_REPOSITORY" "branch git cannot name"
 [ "$(git -C "$CLONE" branch --show-current)" = "aside" ] || fail "branch git cannot name: the clone left its branch"
 expect_not_deployed "branch git cannot name"
+begin_case 'detached commit git cannot name'
+git_quiet -C "$CLONE" checkout -q --detach aside
+failing_git "rev-parse --verify HEAD=>$UNBORN" 1 "$CLONE" release --cross-major
+expect_failed "FAILED cannot read the commit the clone is on: fatal: Needed a single revision" \
+  "detached commit git cannot name"
+[ -z "$(git -C "$CLONE" branch --show-current)" ] || fail "detached commit git cannot name: HEAD not detached"
+expect_not_deployed "detached commit git cannot name"
 git_quiet -C "$CLONE" checkout -q main
+
+# Whether main has diverged is git's no only when merge-base --is-ancestor exits 1 with nothing on stderr. One that
+# warns before exiting 1, as git does over a broken ref, and a lookup of main that fails, are FAILED lines with git's
+# reason, never NOT_FAST_FORWARD. A stand-in for git warns and exits 1 for the comparison alone.
+begin_case 'ancestry git cannot tell'
+WARNING_SHIM="$FIXTURE/warning shim"
+mkdir -p "$WARNING_SHIM"
+cat >"$WARNING_SHIM/git" <<'EOF'
+#!/usr/bin/env bash
+case " $* " in
+  *" merge-base --is-ancestor "*) echo "warning: ignoring broken ref refs/heads/broken" >&2; exit 1 ;;
+esac
+exec "$REAL_GIT" "$@"
+EOF
+chmod +x "$WARNING_SHIM/git"
+PATH="$WARNING_SHIM:$PATH" run_subject "$CLONE" release --cross-major
+expect_failed "FAILED cannot tell whether refs/heads/main is an ancestor of refs/remotes/origin/main: warning: ignoring broken ref refs/heads/broken" \
+  "ancestry git cannot tell"
+expect_not_deployed "ancestry git cannot tell"
+failing_git "rev-parse --verify --quiet refs/heads/main^{commit}" 1 "$CLONE" release --cross-major
+expect_failed "FAILED cannot look up refs/heads/main: $NOT_A_REPOSITORY" "main git cannot look up"
+expect_not_deployed "main git cannot look up"
+
+# A clone git cannot open as a repository names git's reason.
+begin_case 'repository git cannot open'
+failing_git "rev-parse --git-dir" 1 "$CLONE" release
+expect_failed "FAILED cannot read $CLONE as a git repository: $NOT_A_REPOSITORY" "repository git cannot open"
+expect_not_deployed "repository git cannot open"
 
 # Without a release tag on origin/main the release channel has nothing to deploy: it stops after the fetch, and the
 # main channel still follows main.

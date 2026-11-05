@@ -92,7 +92,10 @@ FORCE_WORDS = {
     "blocking": "blocking",
     "critical": "critical",
 }
-LIST_ITEM = re.compile(r"\s*(?:[-*+]|\d+[.)])\s+(.*)")
+# A list item as Markdown reads one: CommonMark's bullet, or its ordered marker of one to nine ASCII digits and `.` or
+# `)`, then a space or a tab before the text. `\d` and `\s` would admit every Unicode digit and space, and any number of
+# digits, so a line Markdown shows as prose would join the items the overlaps compare.
+LIST_ITEM = re.compile(r"[ \t]*(?:[-*+]|[0-9]{1,9}[.)])[ \t]+(.*)")
 SENTENCE_END = re.compile(r"(?<=[.!?])\s+(?=[A-Z`*_(\"'])")
 WORD = re.compile(r"[a-z0-9_]+")
 LINK = re.compile(r"\]\(\s*<?([^)\s>#]+\.md)(?:#[^)\s]*)?>?\s*\)")

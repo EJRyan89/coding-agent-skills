@@ -37,7 +37,7 @@ cp "$SEED/deploy.py" "$PLAIN/deploy.py"
 export GIT_CEILING_DIRECTORIES="$FIXTURE"
 run_subject "$PLAIN" main
 unset GIT_CEILING_DIRECTORIES
-expect_failed "FAILED not a git repository: $PLAIN" "not a repository"
+expect_failed "FAILED cannot read $PLAIN as a git repository: fatal: not a git repository" "not a repository"
 expect_not_deployed "not a repository"
 
 # An up-to-date clone deploys without moving, even when untracked files are present.

@@ -88,6 +88,25 @@ class RuleTests(unittest.TestCase):
         conventions = [rule.text for rule in rg.rules("conventions.md", CONVENTIONS)]
         self.assertFalse(any("SUGGESTION" in text for text in conventions), "a fenced line is no rule")
 
+    def test_a_list_item_is_read_as_markdown_reads_one_and_any_other_line_as_prose(self) -> None:
+        # CommonMark's ordered list marker is one to nine ASCII digits and `.` or `)`, and a space or a tab separates a
+        # marker from its text. A line Markdown shows as prose continues the paragraph above it, so its rule starts
+        # on that paragraph's line; a list item starts its own.
+        paragraph = "Keep every function short and focused.\n"
+        item = "Return early from each nested helper function."
+        for marker, line in [
+            ("123456789. ", 2),
+            ("7)\t", 2),
+            ("  - ", 2),
+            (f"{chr(0x663)}. ", 1),  # an Arabic-Indic digit
+            ("1234567890. ", 1),  # ten digits
+            (f"1.{chr(0xA0)}", 1),  # a no-break space
+            (f"{chr(0x2003)}1. ", 1),  # an em space before the marker
+        ]:
+            with self.subTest(marker=marker):
+                found = [(rule.line, rule.text) for rule in rg.rules("guide.md", f"{paragraph}{marker}{item}\n")]
+                self.assertEqual((line, item), found[-1])
+
     def test_a_planted_contradiction_is_a_conflict_naming_what_differs(self) -> None:
         first, second = rg.rules("a.md", CONVENTIONS)[0], rg.rules("b.md", CHECKLIST)[0]
         candidate = rg.compare(first, second) or {}
