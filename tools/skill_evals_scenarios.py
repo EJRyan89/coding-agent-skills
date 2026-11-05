@@ -793,5 +793,8 @@ def load_scenarios(
         raise ScenarioError(f"no scenarios for {skill}: each is a <scenario>/scenario.json under {folder}")
     unknown = [name for name in names if name not in found]
     if unknown:
-        raise ScenarioError(f"no scenario {', '.join(unknown)} for {skill}")
+        # A folder whose scenario.json is gone is no scenario, so the refusal says what a scenario holds.
+        raise ScenarioError(
+            f"no scenario {', '.join(unknown)} for {skill}: each is a <scenario>/scenario.json under {folder}"
+        )
     return [load_scenario(skill, folder / name, checkout) for name in dict.fromkeys(names or found)]

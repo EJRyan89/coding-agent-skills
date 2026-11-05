@@ -45,8 +45,10 @@ configuration or a server supplies is flattened onto it with ejryan89-skill-core
     FAILED <reason>                     last line: the root is not a Git repository, or no server has the
                                         name --server gives
 
-Exit 0 when no CONFIG_ERROR was printed and no started server failed; 1 when a CONFIG_ERROR was printed, any
-server failed, or the run printed FAILED; 2 for a usage error.
+Exit status:
+  0  no CONFIG_ERROR was printed and no started server failed
+  1  a CONFIG_ERROR was printed, a server failed, or a last line FAILED <reason>
+  2  a usage error
 """
 
 from __future__ import annotations

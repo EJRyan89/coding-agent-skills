@@ -9,6 +9,11 @@ Usage:
 new takes as the kind a pull request title type, which the title check then holds the branch's pull request to, or inv
 for an investigation, and refuses any other kind with the list of those it takes, exiting 1.
 
+Exit status:
+  0  the worktree was created, the list printed, or the hub guard answered
+  1  an ERROR: line, such as a kind new refuses, or a last line FAILED <reason>
+  2  a usage error
+
 The hub guard, the Claude Code PreToolUse hook .claude/settings.json runs, is tools/hub_guard.py. It imports from here
 only what both share: MAIN, same_path, Checkout, checkout_of, and git with its client, and it wraps checkout_of and git
 so that each git call keeps to its reading time. This module imports nothing from it, and its guard subcommand only

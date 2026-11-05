@@ -554,6 +554,19 @@ class MetadataValidationTests(DeployerTestCase):
         result = self.deploy_fails("--all", pattern="has no matching skill directory")
         self.assert_lines(result.output, "ERROR: deploy-meta/ghost.json has no matching skill directory")
 
+    def test_a_skill_folder_whose_skill_md_is_gone_or_a_folder_is_named_as_that_never_as_no_folder(self) -> None:
+        self.make_source_json()
+        self.make_skill("alpha", "Test")
+        self.make_config()
+        skill_md = self.source / "skills" / "alpha" / "SKILL.md"
+        skill_md.unlink()
+        for state in ("missing", "a folder"):
+            if state == "a folder":
+                skill_md.mkdir()
+            with self.subTest(state=state):
+                result = self.deploy_fails("--all", pattern="has no SKILL.md file")
+                self.assert_lines(result.output, "ERROR: Skill 'alpha' has no SKILL.md file in skills/alpha")
+
     def test_a_required_variable_the_deployer_does_not_declare_is_refused(self) -> None:
         self.make_source_json()
         self.make_skill("alpha", "Test", ["GH_ORG"])

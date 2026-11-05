@@ -37,10 +37,14 @@ exact names are FILE_LIST's.
 FILE, SKIPPED_ASPNET, and SOLUTION paths are relative to REPO_ROOT with forward slashes, because dotnet-format
 runs from REPO_ROOT and matches --include paths against that directory.
 
-Exits 0 with its lines, ending in SOLUTION or STOP. When the directory is not in a Git repository, git is missing,
-a git command fails or does not finish in time, no base ref exists, a changed file's name is not UTF-8, which
-FILE_LIST cannot hold, or a file cannot be read or written, it prints
-`FAILED <reason>` as the last line and exits 1. A usage error exits 2.
+Its lines end in SOLUTION or STOP. When the directory is not in a Git repository, git is missing, a git command
+fails or does not finish in time, no base ref exists, a changed file's name is not UTF-8, which FILE_LIST cannot
+hold, or a file cannot be read or written, it prints `FAILED <reason>` as the last line instead.
+
+Exit status:
+  0  the lines were printed, ending in SOLUTION or STOP
+  1  a last line FAILED <reason>
+  2  a usage error
 """
 
 from __future__ import annotations

@@ -162,3 +162,10 @@ class ConvertedTests(unittest.TestCase):
 
     def test_any_other_exception_is_named_as_unexpected(self) -> None:
         self.assertEqual("ERROR: Unexpected RuntimeError: boom", errors.named(RuntimeError("boom"), "finish recovery"))
+
+
+class OneLineTests(unittest.TestCase):
+    def test_one_line_joins_the_lines_and_leaves_out_the_hint_a_tool_does_not_take(self) -> None:
+        error = errors.DeployError("ERROR: Could not read x: denied", RETRY, DEBUG_HINT, exit_code=2)
+        self.assertEqual(f"ERROR: Could not read x: denied {RETRY}", error.one_line())
+        self.assertEqual("ERROR: alone", errors.DeployError("ERROR: alone").one_line())

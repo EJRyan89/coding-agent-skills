@@ -9,8 +9,12 @@
     decide-custom
                 record one decision for every custom-candidate analyzer recommendation of a report together
 
-Every command prints machine-readable lines and exits 0 on success. Expected failures print
-`FAILED <reason>` as the last line and exit 1; only a usage error, such as a malformed date, exits 2.
+Every command prints machine-readable lines.
+
+Exit status:
+  0  the command succeeded
+  1  a last line FAILED <reason>
+  2  a usage error, such as a malformed date
 
 There are two kinds of recommendation. A category recommendation covers every finding in one finding category. An
 analyzer recommendation covers the findings reviewers said one diagnostic analyzer rule could catch: a rule in an
@@ -75,7 +79,7 @@ from console import run_main
 from flat_text import flat_text
 from git_client import GitClient, GitError
 from path_containment import within
-from review_archive import list_versions, pull_directory, record_files, record_paths
+from review_archive import ArchiveError, every_version, pull_directory, record_files, record_paths
 from review_config import (
     RUNTIME_HOSTS,
     ConfigurationError,
@@ -316,8 +320,8 @@ def read_ledgers(archive_root: Path, records: list[tuple[Path, ReviewRecord]], p
     for repository, number in pulls:
         try:
             directory = pull_directory(archive_root, repository, number)
-            history = [pairs.read(record_paths(directory, version)[0]) for version in list_versions(directory)]
-        except (KeyError, ValueError, OSError, RecordError, PersistenceError) as exc:
+            history = [pairs.read(record_paths(directory, version)[0]) for version in every_version(directory)]
+        except (KeyError, ValueError, OSError, RecordError, PersistenceError, ArchiveError) as exc:
             raise InsightError(f"Invalid review history for {repository}#{number}: {exc}") from exc
         by_version = ledger_history(history)
         versions = sorted(by_version)

@@ -18,7 +18,12 @@ Claude Code does not give a subagent that lists Bash on macOS, Linux, and WSL:
 The reviewer guard allows exactly these two commands for a reviewer's own run and role (see review_guard.py). The
 blob is read from the repository the run names in `run.json` as `source_repository`: the configured checkout, or the
 copy of a fixture's repository in the run; a run that names none has a whole snapshot. Each command prints one fact
-per line and exits 0, or 1 after `FAILED`.
+per line.
+
+Exit status:
+  0  SOURCE_FILE, EXCLUDED, or the MATCH lines and MATCHES were printed
+  1  a last line FAILED <reason>
+  2  a usage error
 """
 
 from __future__ import annotations
@@ -31,6 +36,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
+import file_presence
 import json_writer
 from console import run_main
 from executable_locator import PYTHON
@@ -69,8 +75,11 @@ def _run(run: Path, role: str) -> tuple[Path | None, str, str, Path]:
     """The run's source repository, None for a whole snapshot, its request's repository and head, and the role's read
     log, once the run is a prepared review run and the role is one of its roles."""
     run = run.resolve()
-    if not run.name.startswith(RUN_PREFIX) or not (run / RUN_FILE).is_file():
+    if not run.name.startswith(RUN_PREFIX):
         raise SourceError(f"{run} is not a review run")
+    # A run.json it cannot stat is the stat's OSError, never a folder that holds no run.
+    if not file_presence.is_present(run / RUN_FILE, other_is_absent=True):
+        raise SourceError(f"{run} is not a review run: it holds no {RUN_FILE} file")
     try:
         state = READ.json_object(read_json(run / RUN_FILE), "run")
         request = READ.json_object(
@@ -85,8 +94,14 @@ def _run(run: Path, role: str) -> tuple[Path | None, str, str, Path]:
         raise SourceError(f"the review run {run} could not be read: {exc}") from exc
     if not ROLE_ID.fullmatch(role) or role not in {item.get("id") for item in roles}:
         raise SourceError(f"the review run has no role {role}")
-    if repository is not None and not Path(repository).is_dir():
-        raise SourceError(f"the run's source repository {repository} is not a directory")
+    if repository is not None:
+        # A repository it cannot stat is the stat's OSError, never a folder that is not there.
+        try:
+            present = file_presence.is_directory(Path(repository))
+        except file_presence.NotADirectory:
+            raise SourceError(f"the run's source repository {repository} is not a directory") from None
+        if not present:
+            raise SourceError(f"the run's source repository {repository} does not exist")
     return (None if repository is None else Path(repository)), name, head, read_log(run, role)
 
 

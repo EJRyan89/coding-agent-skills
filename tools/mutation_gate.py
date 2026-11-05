@@ -122,9 +122,8 @@ outcome, module, line, and mutation. The report, each module's changed lines, co
 module with no mutant, each surviving mutant by its line, the mutation, and the suites it ran against, each with the
 count of its tests that ran when not all of them did, and each mutant not reached by its line and the mutation, goes to
 stdout and to the step summary GITHUB_STEP_SUMMARY names. A pull request that changes no such module writes one line
-saying so. A run, or its join, exits 0 once the gate has run to its end, whatever survived, and 1 when the run was
-unfinished, on any leg, after its summary and an error annotation repeating its first line; `select` and `leg` exit 0
-once they wrote their file. Any step exits 1 when it cannot run: the join finds no selection, no outcomes from a leg
+saying so. A run, or its join, unfinished on any leg ends after its summary and an error annotation repeating its
+first line. A step cannot run when the join finds no selection, no outcomes from a leg
 that had mutants to run, or a record that is not as its step writes it, such as a leg's naming another leg or leaving
 out a module that leg had mutants for, or a local run's naming a place outside a module's mutants, a module the leg
 does not run, or a place whose leg outcome was a verdict, `unrun` finds no leg of this platform, a completed one, a
@@ -133,6 +132,11 @@ mutmut no longer makes the mutant its
 canary expects on the canary's line alone, the reach run no longer measures its canary suite's own process and the
 process the suite's test starts, each line named with that test, which a missing coverage.py .pth file would cause, a
 changed sanction table is one no policy reads, or a git command fails.
+
+Exit status:
+  0  the gate ran to its end, whatever survived, or select or leg wrote its file
+  1  the run was unfinished on any leg, a step could not run, or a last line FAILED <reason>
+  2  a usage error
 """
 
 from __future__ import annotations

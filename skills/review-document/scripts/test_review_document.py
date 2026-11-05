@@ -33,6 +33,7 @@ from skill_roots import sibling_scripts
 
 sys.path.insert(0, str(sibling_scripts("ejryan89-code-review-core")))
 
+import json_reader
 import review_document
 import review_guard
 import review_pipeline as rp
@@ -2035,10 +2036,69 @@ class OutputTests(DocumentTestCase):
         document.write_bytes(b"# Plan\n")
         self.build(document)
         code, lines = run_main("report", "--fixture", str(self.output / "fixture"), "--report", str(document))
-        self.assertEqual((1, [f"FAILED {document} is not a report finalize recorded"]), (code, lines))
+        reason = "is not a report finalize recorded: no plan.json file is beside it"
+        self.assertEqual((1, [f"FAILED {document} {reason}"]), (code, lines))
         self.assertFalse((self.output / "report.md").exists())
         code, lines = run_main("report", "--fixture", str(self.root), "--report", str(document))
-        self.assertEqual((1, [f"FAILED {self.root} is not a fixture review-document built"]), (code, lines))
+        reason = "is not a fixture review-document built: it holds no pull.json file"
+        self.assertEqual((1, [f"FAILED {self.root} {reason}"]), (code, lines))
+
+    def test_report_refuses_a_fixture_whose_pull_json_holds_no_json_object(self) -> None:
+        document = self.root / "plan.md"
+        document.write_bytes(b"# Plan\n")
+        self.build(document)
+        fixture = (self.output / "fixture").resolve()
+        recorded = self.root / "canary" / "review.md"
+        recorded.parent.mkdir()
+        recorded.write_text("# Code Review\n", encoding="utf-8")
+        recorded.with_suffix(".json").write_text("{}", encoding="utf-8")
+        reason = "is not a fixture review-document built: its pull.json holds no JSON object"
+        for name, content in (("a list", b"[]"), ("not JSON", b"{not json")):
+            with self.subTest(name):
+                (fixture / "pull.json").write_bytes(content)
+                code, lines = run_main("report", "--fixture", str(fixture), "--report", str(recorded))
+                self.assertEqual((1, [f"FAILED {fixture} {reason}"]), (code, lines))
+                self.assertFalse((self.output / "report.md").exists())
+
+    def test_report_names_a_fixture_or_record_file_it_cannot_read_never_reading_it_as_absent(self) -> None:
+        document = self.root / "plan.md"
+        document.write_bytes(b"# Plan\n")
+        self.build(document)
+        fixture = self.output / "fixture"
+        recorded = self.root / "canary" / "review.md"
+        recorded.parent.mkdir()
+        recorded.write_text("# Code Review\n", encoding="utf-8")
+        recorded.with_suffix(".json").write_text("{}", encoding="utf-8")
+        arguments = ("report", "--fixture", str(fixture), "--report", str(recorded))
+        for path in (fixture / "pull.json", recorded.with_suffix(".json")):
+            original = path.read_bytes()
+            with self.subTest(file=path.name, fault="a directory in its place"):
+                path.unlink()
+                path.mkdir()
+                code, lines = run_main(*arguments)
+                self.assertEqual(1, code)
+                self.assertEqual(1, len(lines))
+                self.assertIn(path.name, lines[0])
+                path.rmdir()
+            with self.subTest(file=path.name, fault="its stat raises"):
+                path.write_bytes(original)
+                real_stat, denied = os.stat, os.path.normcase(path.resolve())
+
+                def stat(target: Any, *args: Any, real: Any = real_stat, denied: str = denied, **kwargs: Any) -> Any:
+                    if not isinstance(target, int) and os.path.normcase(Path(target).absolute()) == denied:
+                        raise PermissionError(13, "Permission denied", os.fspath(target))
+                    return real(target, *args, **kwargs)
+
+                with mock.patch.object(os, "stat", stat):
+                    code, lines = run_main(*arguments)
+                self.assertEqual((1, 1), (code, len(lines)), lines)
+                self.assertTrue(lines[0].startswith("FAILED [Errno 13] Permission denied"), lines)
+                self.assertIn(path.name, lines[0])
+            with self.subTest(file=path.name, fault="its read fails"):
+                with mock.patch.object(json_reader, "read_file", side_effect=PermissionError(13, "Denied", str(path))):
+                    code, lines = run_main(*arguments)
+                self.assertEqual((1, [f"FAILED [Errno 13] Denied: {str(path)!r}"]), (code, lines))
+        self.assertFalse((self.output / "report.md").exists())
 
 
 class ConsoleTests(DocumentTestCase):

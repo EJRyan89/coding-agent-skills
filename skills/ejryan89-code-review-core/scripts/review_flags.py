@@ -240,6 +240,9 @@ def add_flag(
     _check_text(category, "category")
     _check_text(body, "body")
     repository = validate_target(repository, pull_number, review_version, finding_id)
+    # A store it cannot read is refused before the lock makes the lock's folder; the read under the lock is the one
+    # the flag is added to.
+    load_store(path)
     lock = path.parent / ".locks" / "flags.lock"
     with ResourceLock(lock):
         store = load_store(path)
@@ -272,10 +275,12 @@ def _stored_flag(store: dict[str, Any], flag_id: str) -> dict[str, Any]:
 
 
 def _refuse_without_store(path: Path, flag_id: str) -> None:
-    """Refuse a flag ID when there is no store, before the lock creates the store's folder; a store it cannot stat is
-    the FileUnreadable `record_present` raises."""
+    """Refuse a flag ID when there is no store, and a store it cannot read, before the lock creates the lock's folder;
+    a store it cannot stat is the FileUnreadable `record_present` raises, and one it cannot open or parse the error
+    `load_store` raises. The read under the lock is the one a change is made to."""
     if not record_present(path):
         raise FlagError(f"Unknown flag ID: {flag_id}")
+    load_store(path)
 
 
 def _new_text(value: Any, field: str) -> str | None:

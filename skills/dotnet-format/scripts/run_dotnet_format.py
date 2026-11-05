@@ -31,13 +31,16 @@ passed to the formatter as `./<name>`, since either formatter would read the bar
 Files too many for one command line, which Windows limits to 32,767 characters, are formatted in several runs within
 the one time limit, and the log holds every run's output in order.
 
-`check` exits 1 when it prints a DIAGNOSTIC or a REFUSED line (findings) and 0 when it prints neither. `fix` exits 1
-when it prints a REFUSED line, and otherwise 0 once the formatter succeeds: its DIAGNOSTIC lines are what it found to
-fix, because its log does not say which of them it could not fix, so rerun `check` to see what remains. A failure, such
-as the formatter not being installed, exiting with an unexpected code, or not finishing in time, prints `FAILED
-<reason>` as the last line, after the LOG line when the formatter ran, and exits 1. A `fix` that fails tells its runs
-apart first: each run saves its fixes when it finishes, so SAVED names the files the runs before the failed one changed,
-and UNFINISHED every file of the failed run and of the runs after it. A usage error exits 2.
+`fix`'s DIAGNOSTIC lines are what it found to fix, not findings, because its log does not say which of them it could
+not fix, so rerun `check` to see what remains. A failure, such as the formatter not being installed, exiting with an
+unexpected code, or not finishing in time, prints `FAILED <reason>` as the last line, after the LOG line when the
+formatter ran. A `fix` that fails tells its runs apart first: each run saves its fixes when it finishes, so SAVED names
+the files the runs before the failed one changed, and UNFINISHED every file of the failed run and of the runs after it.
+
+Exit status:
+  0  check printed no DIAGNOSTIC or REFUSED line; fix printed no REFUSED line and the formatter succeeded
+  1  a DIAGNOSTIC (check) or REFUSED line, or a last line FAILED <reason>
+  2  a usage error
 """
 
 from __future__ import annotations

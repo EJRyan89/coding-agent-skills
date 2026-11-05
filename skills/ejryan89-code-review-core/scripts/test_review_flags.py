@@ -14,7 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
 from review_flags import FlagAlreadyResolved, FlagError, add_flag, edit_flag, load_store, resolve_flag
-from review_io import FileUnreadable
+from review_io import FileUnreadable, PersistenceError
 from test_review_archive import unstatable
 
 
@@ -124,6 +124,24 @@ class FlagTests(unittest.TestCase):
                 reason = f"[Errno 13] Permission denied: {str(path)!r}"
                 self.assertEqual(f"Cannot read valid JSON from {path}: {reason}", str(caught.exception))
                 self.assertEqual(before, path.read_bytes())
+
+    def test_a_store_it_cannot_read_is_refused_before_the_lock_makes_its_folder(self) -> None:
+        # Refused only once the lock was taken, a change would leave the store's .locks folder behind.
+        with tempfile.TemporaryDirectory() as temporary:
+            folder = Path(temporary) / "code-review"
+            folder.mkdir()
+            path = folder / "flags.json"
+            path.write_text("{not json", encoding="utf-8")
+            calls: dict[str, Callable[[], object]] = {
+                "add": lambda: add_flag(path, category="Guideline", body="Another rule."),
+                "edit": lambda: edit_flag(path, "RF-000001", body="Edited."),
+                "resolve": lambda: resolve_flag(path, "RF-000001", "Accepted"),
+            }
+            for name, call in calls.items():
+                with self.subTest(name), self.assertRaises(PersistenceError) as caught:
+                    call()
+                self.assertIn(str(path), str(caught.exception))
+                self.assertEqual(["flags.json"], sorted(entry.name for entry in folder.iterdir()))
 
     def test_edit_of_a_value_of_the_wrong_kind_fails_before_the_store_is_read(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

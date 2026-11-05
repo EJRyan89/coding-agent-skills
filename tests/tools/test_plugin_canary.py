@@ -345,6 +345,34 @@ def test_a_refused_install_path_gives_no_path_with_its_reason(tmp_path: Path) ->
     assert canary.install_path(tmp_path, {"installPath": placed}) == (placed, "")
 
 
+class ListingClaude(FakeClaude):
+    """Claude Code printing `listing` for `claude plugin list --json`."""
+
+    def __init__(self, home: Path, listing: str) -> None:
+        super().__init__(home)
+        self.listing = listing
+
+    def __call__(self, arguments: list[str], cwd: Path, environment: dict[str, str], timeout: float) -> Completed:
+        if arguments[1:3] == ["plugin", "list"]:
+            return Completed(0, self.listing, "")
+        return super().__call__(arguments, cwd, environment, timeout)
+
+
+@pytest.mark.parametrize(
+    "listing", ["7", "null", "true", '"text"', '{"id": "runtime-canary@canary"}', '["runtime-canary@canary"]', "[{"]
+)
+def test_a_listing_that_is_not_a_list_of_plugin_objects_lists_no_plugin(tmp_path: Path, listing: str) -> None:
+    plugins = canary.build(tmp_path, [REPOSITORY_ROOT, FIXTURE_SOURCE])
+    runner = ListingClaude(tmp_path, listing)
+    runner.plugins = plugins
+    lines = list(canary.install(session(tmp_path, runner), "claude", plugins))
+    refusal = quote("claude plugin list --json does not list it")
+    assert [line for line in lines if line.startswith("INSTALL")] == [
+        f"INSTALL_FAILED claude {plugin.name} {refusal}" for plugin in plugins
+    ]
+    assert lines[-1] == "PATHS {}"
+
+
 def test_a_plugin_the_canary_cannot_place_leaves_the_later_plugins_checked(tmp_path: Path) -> None:
     plugins = canary.build(tmp_path, [REPOSITORY_ROOT, FIXTURE_SOURCE])
     entry = {"id": "coding-agent-skills@canary", "version": "0.0.0-dev"}

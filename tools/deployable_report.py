@@ -10,11 +10,11 @@ Usage:
 
 `verify` asks Codex CLI and Copilot CLI which skills they find, the way `python deploy.py verify` does, and judges
 each runtime: PASSED when it finds every adapter, SKIPPED when it refuses to list skills until someone signs in,
-FAILED otherwise, a runtime that is not installed included, because the workflow installed both. It exits 1 when any
-runtime FAILED, when every runtime was SKIPPED (nothing was checked), or when `deploy.py verify` failed for a reason
-no skip explains: a skip explains only a failure verify's saved output names for runtimes SKIPPED here. It appends the
-pass to the results file. `summary` renders the tool versions and every recorded pass as Markdown, appended to the
-step summary file (GITHUB_STEP_SUMMARY by default) and printed.
+FAILED otherwise, a runtime that is not installed included, because the workflow installed both. It judges a failure
+when any runtime FAILED, when every runtime was SKIPPED (nothing was checked), or when `deploy.py verify` failed for a
+reason no skip explains: a skip explains only a failure verify's saved output names for runtimes SKIPPED here. It
+appends the pass to the results file. `summary` renders the tool versions and every recorded pass as Markdown,
+appended to the step summary file (GITHUB_STEP_SUMMARY by default) and printed.
 
 `layout` is the Claude Code check. Claude Code reads ~/.claude/skills directly, with no adapter, and has no command
 that lists skills without a session, so this checks the files instead: Claude Code is installed, every skill the
@@ -22,24 +22,29 @@ manifest owns has a non-empty SKILL.md, and every agent it owns is in place. Tha
 discovery check, and the result says so. It joins the pass with the same label in the results file.
 
 `leftovers` is the uninstall check. After the uninstall, it names every entry, files and directories alike, in the
-directories items deploy to, and each item the manifest still records, and records them for the summary; it exits 1
-when it names any. It allows what the uninstall leaves by design: the manifest, which keeps the source's entry with no
-items, and each directory's retained backups. Every path the deployment owns is an entry of one of those directories,
-so the listing after the uninstall is the whole check and nothing is saved before it; the workflow's step before the
-uninstall is the layout check, which refuses a profile with nothing deployed. One of those directories that cannot be
-examined or listed, or a file in its place, is an `ERROR:` line naming it, and the command exits 2, since an empty
-listing would read as a clean uninstall.
+directories items deploy to, and each item the manifest still records, and records them for the summary. It allows
+what the uninstall leaves by design: the manifest, which keeps the source's entry with no items, and each directory's
+retained backups. Every path the deployment owns is an entry of one of those directories, so the listing after the
+uninstall is the whole check and nothing is saved before it; the workflow's step before the uninstall is the layout
+check, which refuses a profile with nothing deployed. One of those directories that cannot be examined or listed, or a
+file in its place, is an `ERROR:` line naming it, since an empty listing would read as a clean uninstall.
 
 `pin` checks that a runtime the workflow installed is the version it asked for. It prints `NAME --version: TEXT`,
-what the program reported, and exits 0 when VERSION is `latest` or the version in that text is VERSION, compared as
+what the program reported, and passes when VERSION is `latest` or the version in that text is VERSION, compared as
 numbers part by part, so `1.0.9` does not match `1.0.98`. Otherwise it prints a `::error::` line saying why, a
-program that is not on PATH, that fails, or that reports no or another version, and exits 1.
+program that is not on PATH, that fails, or that reports no or another version.
 
 An absent results file starts an empty record. A results file that cannot be read, is not JSON, or does not hold a
-JSON array, and a results file that cannot be written are each an `ERROR:` line naming the file, and the command exits
-2, leaving the file as it was.
+JSON array, and a results file that cannot be written are each an `ERROR:` line naming the file, leaving the file as
+it was.
 
 Nothing here starts a model.
+
+Exit status:
+  0  the command's check passed, or its record or summary was written
+  1  verify judged a failure, layout failed, leftovers named an entry, pin found another version, or a last line
+     FAILED <reason>
+  2  a usage error, or an ERROR: line for a results file or a deployed directory it cannot read or write
 """
 
 from __future__ import annotations
@@ -66,7 +71,7 @@ from console import run_main
 
 from deployer import discovery, journal, manifest, platform_support, tools, verify
 from deployer.arguments import PROG, VERIFY_COMMAND_LINE
-from deployer.errors import DeployError, print_error
+from deployer.errors import DeployError
 from deployer.kinds import KINDS
 from deployer.paths import Paths
 
@@ -120,6 +125,12 @@ class RuntimeResult:
     runtime: str
     status: str
     detail: str = ""
+
+
+def report_error(error: DeployError) -> None:
+    """Print an error as one line on stderr: its ERROR line and its remedy, so the line that names what failed is the
+    last, and without the deployer's hint to rerun with --debug, which this tool does not take."""
+    print(error.one_line(), file=sys.stderr)
 
 
 def sign_in_problem(message: str) -> bool:
@@ -397,14 +408,14 @@ def _verify(arguments: argparse.Namespace) -> int:
     try:
         results = check_runtimes(paths, dict(os.environ))
     except DeployError as exc:
-        print_error(exc)
+        report_error(exc)
         return exc.exit_code
     for result in results:
         print(f"{result.status} {result.runtime} {result.detail}".rstrip())
     try:
         _record(Path(arguments.results), arguments.label, results)
     except DeployError as exc:
-        print_error(exc)
+        report_error(exc)
         return exc.exit_code
     return exit_code(results, arguments.deploy_verify_exit, _verify_log(arguments.deploy_verify_log))
 
@@ -414,13 +425,13 @@ def _layout(arguments: argparse.Namespace) -> int:
     try:
         result = check_layout(paths)
     except DeployError as exc:
-        print_error(exc)
+        report_error(exc)
         return exc.exit_code
     print(f"{result.status} {result.runtime} {result.detail}".rstrip())
     try:
         _record(Path(arguments.results), arguments.label, [result])
     except DeployError as exc:
-        print_error(exc)
+        report_error(exc)
         return exc.exit_code
     return 0 if result.status == PASSED else 1
 
@@ -431,7 +442,7 @@ def _leftovers(arguments: argparse.Namespace) -> int:
         left = leftovers(paths)
         _record_leftovers(Path(arguments.results), left)
     except DeployError as exc:
-        print_error(exc)
+        report_error(exc)
         return exc.exit_code
     for item in left:
         print(f"::error::left after uninstall: {item}")
@@ -474,7 +485,7 @@ def _summary(arguments: argparse.Namespace) -> int:
     try:
         passes = _read_results(Path(arguments.results))
     except DeployError as exc:
-        print_error(exc)
+        report_error(exc)
         return exc.exit_code
     versions = [] if arguments.no_probe else tool_versions()
     text = render_summary(passes, versions, arguments.note)

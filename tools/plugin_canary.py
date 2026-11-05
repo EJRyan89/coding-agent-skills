@@ -4,7 +4,7 @@ Usage:
   python tools/plugin_canary.py [--discovery-only] [--timeout SECONDS] [--keep-home]
   python tools/plugin_canary.py --remove-home DIR
 
-It first refuses, with FAILED "<reason>" and exit 1 before it makes a home, a checkout that follows another
+It first refuses, with FAILED "<reason>" before it makes a home, a checkout that follows another
 repository's pull request, as tools/checkout_trust.py reads it and tools/runtime_canary.py refuses it, since the run
 builds and runs the checkout's plugins and fixture signed in as the user.
 
@@ -30,7 +30,7 @@ copies loaded through --plugin-dir for that session alone and project settings o
 Each check is judged from the session's stream, never from what the model reports. It prints one fact per line:
 
   HOME "<dir>"                                        the throwaway home
-  NOTHING_CHECKED "<reason>"                          Claude Code is not installed, so nothing ran; exit 1
+  NOTHING_CHECKED "<reason>"                          Claude Code is not installed, so nothing ran
   BUILT <plugin> "<path>"                             a plugin assembled into the home
   VALIDATED claude <plugin>                           or VALIDATION_FAILED claude <plugin> "<reason>"
   INSTALLED claude <plugin> <version>                 or INSTALL_FAILED claude <plugin> "<reason>"
@@ -48,10 +48,15 @@ Each check is judged from the session's stream, never from what the model report
                                                       built or a file of the home written
   REMOVED "<dir>" or HOME_KEPT "<dir>" "<reason>"     as tools/runtime_canary.py ends
 
-It exits 1 when nothing was checked, when any check fails (a FAILED or *_FAILED line, an UNDISCOVERED line, a
-RUNTIME line that did not run, a main-session GUARD line that did not pass or a reviewer's that was not denied, an
-UNGUARDED line that was not refused), or when the home cannot be removed, and 0 otherwise. This is a manual check,
+A check fails on a FAILED or *_FAILED line, an UNDISCOVERED line, a RUNTIME line that did not run, a main-session
+GUARD line that did not pass or a reviewer's that was not denied, or an UNGUARDED line that was not refused. This is a
+manual check,
 never part of tests/run_validation.py: each started session calls a model.
+
+Exit status:
+  0  every check passed and the home was removed or kept
+  1  nothing was checked, a check failed, the home cannot be removed, or a last line FAILED <reason>
+  2  a usage error
 """
 
 from __future__ import annotations
@@ -216,6 +221,18 @@ def option_values(home: Path, plugin: plugin_build.Plugin) -> list[str]:
     return arguments
 
 
+def listed_entry(output: str, identifier: str) -> dict[str, Any] | None:
+    """The plugin's entry in what `claude plugin list --json` printed, or None when that is not a JSON list of objects
+    or none of them is the plugin's."""
+    try:
+        entries = json_reader.loads(output)
+    except ValueError:
+        return None
+    if not isinstance(entries, list) or not all(isinstance(entry, dict) for entry in entries):
+        return None
+    return next((entry for entry in entries if entry.get("id") == identifier), None)
+
+
 def install_path(home: Path, entry: Mapping[str, Any]) -> tuple[str, str]:
     """The installed copy's folder from its `claude plugin list --json` entry, and a reason to refuse it unless it is an
     absolute path whose parent folder is inside the throwaway home, since the probe writes beside the copy."""
@@ -284,9 +301,8 @@ def install(session: Session, executable: str, plugins: list[plugin_build.Plugin
             yield f"INSTALL_FAILED claude {plugin.name} {quote(last_line(result))}"
             continue
         listing = session.runner(list_command(executable), session.home, session.config, session.timeout)
-        try:
-            installed = next(item for item in json_reader.loads(listing.stdout) if item.get("id") == identifier)
-        except (ValueError, StopIteration, AttributeError):
+        installed = listed_entry(listing.stdout, identifier)
+        if installed is None:
             yield f"INSTALL_FAILED claude {plugin.name} {quote('claude plugin list --json does not list it')}"
             continue
         path, refusal = install_path(session.home, installed)

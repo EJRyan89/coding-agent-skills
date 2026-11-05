@@ -383,6 +383,13 @@ class LoaderTests(unittest.TestCase):
         with self.assertRaisesRegex(ScenarioError, "no scenarios for other"):
             skill_evals_scenarios.load_scenarios("other", root=self.root)
 
+    def test_a_named_scenario_whose_scenario_json_is_gone_is_refused_naming_the_file(self) -> None:
+        write_scenario(self.root, "one", scenario_spec())
+        (write_scenario(self.root, "two", scenario_spec()) / "scenario.json").unlink()
+        with self.assertRaises(ScenarioError) as raised:
+            skill_evals_scenarios.load_scenarios("demo", ["two"], root=self.root)
+        self.assertIn("no scenario two for demo: each is a <scenario>/scenario.json under", str(raised.exception))
+
     def test_a_skill_folder_misplaced_or_unexamined_is_refused_by_its_reason_never_as_no_scenarios(self) -> None:
         write_scenario(self.root, "one", scenario_spec())
         folder = self.root / "demo"

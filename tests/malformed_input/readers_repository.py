@@ -7,10 +7,14 @@ line, or a problem line is called through an adapter that raises that answer as 
 
 from __future__ import annotations
 
+import contextlib
+import io
 import json
 import sys
+import tempfile
 from pathlib import Path
 from typing import cast
+from unittest import mock
 
 from reader_table import REPOSITORY, NotText, Reader, Refused, module_at, text_of
 
@@ -20,7 +24,7 @@ sys.path.insert(0, str(REPOSITORY / "tests" / "validation"))
 
 import json_reader
 from github_client import CommandResult, GitHubClient, Listing
-from guidance_record import GUIDANCE_PATH, PYTHON_SUBJECT
+from guidance_record import GUIDANCE_PATH, PYTHON_SUBJECT, Changelog
 from job_selection import job_seconds
 from known_failures import KnownFailuresUnreadable, read_known_failures
 from runtime_support import RUNTIMES
@@ -30,13 +34,16 @@ from tools import (
     branch_protection,
     captured_samples,
     deployable_report,
+    hub_guard,
     mutation_gate,
     plugin_build,
+    plugin_canary,
     plugin_release,
     runtime_canary,
     runtime_changelogs,
     runtime_prompts,
     skill_evals_judging,
+    skill_evals_runs,
     skill_evals_scenarios,
     skill_reference,
     skill_shims,
@@ -46,6 +53,7 @@ from tools.skill_evals_records import MODELS, RecordError
 REPOSITORY_SKILLS = REPOSITORY / ".claude" / "skills"
 audit_repository = module_at(REPOSITORY_SKILLS / "audit-repository" / "scripts" / "audit_repository.py")
 change_skill = module_at(REPOSITORY_SKILLS / "change-skill" / "scripts" / "change_skill.py")
+conditions = module_at(REPOSITORY_SKILLS / "review-repository" / "scripts" / "conditions.py")
 pull_request = module_at(REPOSITORY_SKILLS / "implement-change" / "scripts" / "pull_request.py")
 untested_functions = module_at(REPOSITORY_SKILLS / "review-repository" / "scripts" / "untested_functions.py")
 shepherd = module_at(REPOSITORY_SKILLS / "shepherd-pull-requests" / "scripts" / "shepherd_pull_requests.py")
@@ -369,6 +377,121 @@ def _protection(path: Path) -> object:
     return branch_protection.protection_problems(document, document, document, document, document)
 
 
+# A PreToolUse event of an edit to a file outside every checkout, which the guard reads and lets through.
+HUB_EVENT = json.dumps(
+    {"tool_name": "Write", "tool_input": {"file_path": "example.txt"}, "cwd": tempfile.gettempdir()}
+).encode()
+
+
+def _hub_guard(path: Path) -> object:
+    """The guard on the event as its hook gives it on stdin: an event it skips, or a refusal it prints, is Refused."""
+    printed, noted = io.StringIO(), io.StringIO()
+    with contextlib.redirect_stdout(printed), contextlib.redirect_stderr(noted):
+        code = hub_guard.guard(text_of(path))
+    if printed.getvalue() or "hub guard skipped" in noted.getvalue():
+        raise Refused(f"{printed.getvalue()}{noted.getvalue()}")
+    return code
+
+
+# Each Claude Code stream reader passes over a line that is not an event it knows, so a stream from which it takes
+# nothing is its answer to one it cannot read: its caller reports that stream as a session that showed nothing.
+STREAM_PASSES_OVER = {
+    "torn_line": "a line cut off part way is no event, and the events before it are read",
+    "blank_lines": "a blank line holds no event and is passed over",
+}
+
+
+def _claude_stream(path: Path) -> object:
+    skills, denials = runtime_canary.claude_stream(text_of(path))
+    if skills is None and not denials:
+        raise Refused("the stream holds no init event and no denial")
+    return skills, denials
+
+
+def _skills_in_stream(path: Path) -> object:
+    found = skill_evals_runs.skills_in_stream(text_of(path))
+    if not found:
+        raise Refused("the stream starts no skill")
+    return found
+
+
+def _stream_models(path: Path) -> object:
+    session, subagents = skill_evals_runs.stream_models(text_of(path))
+    if not session | subagents:
+        raise Refused("the stream names no model")
+    return session, subagents
+
+
+def _plugin_events(path: Path) -> object:
+    events = list(plugin_canary.stream_events(text_of(path)))
+    if not events:
+        raise Refused("the stream holds no event")
+    return events
+
+
+PLUGIN_ID = f"example@{plugin_canary.MARKETPLACE}"
+
+
+def _plugin_listing(path: Path) -> object:
+    entry = plugin_canary.listed_entry(text_of(path), PLUGIN_ID)
+    if entry is None:
+        raise Refused("the listing does not list the plugin")
+    return entry
+
+
+# The home a canary marker names, which stands for the case's own folder, since no fixed document can name that.
+CANARY_HOME = "<the canary's home>"
+
+
+def _canary_claim(path: Path) -> object:
+    home = path.parents[1]
+    lexical = runtime_canary.lexical
+    with mock.patch.object(
+        runtime_canary, "lexical", lambda value: lexical(home) if value == CANARY_HOME else lexical(value)
+    ):
+        if not runtime_canary.claimed(home):
+            raise Refused("the marker does not claim its home")
+    return True
+
+
+CHANGELOG = Changelog("codex", "https://example.com/releases", "github-releases", "1.1.0")
+# One page of GitHub's releases API: a release after the read_through, and the read_through itself.
+RELEASES = json.dumps([{"tag_name": "v1.2.0", "body": "- Changed a flag"}, {"tag_name": "v1.1.0", "body": ""}]).encode()
+
+
+def _github_releases(path: Path) -> object:
+    try:
+        body = path.read_bytes()
+    except OSError as error:
+        raise NotText(f"{type(error).__name__}: {error}") from error
+    return runtime_changelogs.changelog_releases(
+        CHANGELOG, lambda url, timeout: runtime_changelogs.Fetched(200, url, body), 1.0
+    )
+
+
+def _briefs_marker(path: Path) -> object:
+    if not audit_repository.names_directory(path, Path("briefs")):
+        raise Refused("the marker does not name the briefs directory")
+    return True
+
+
+def _frontmatter_value(path: Path) -> object:
+    found = change_skill.frontmatter_value(text_of(path), "name")
+    if found is change_skill.UNREADABLE:
+        raise Refused("the frontmatter cannot be read")
+    return found
+
+
+def _user_only(path: Path) -> object:
+    if not change_skill.user_only(text_of(path)):
+        raise Refused("the frontmatter does not read as user-only")
+    return True
+
+
+def _snapshot_exclusions(path: Path) -> object:
+    return conditions.snapshot_exclusions(path.parent)
+
+
 READERS = [
     Reader(
         "audit_repository.read_guidance_record",
@@ -648,5 +771,149 @@ READERS = [
         filename="pull.json",
         open_fields="the record goes on to the review pipeline with its manifest path and a thread set, and the "
         "pipeline's own reader of a pull request record, held in its table, reads every other field by kind",
+    ),
+    Reader(
+        "tools.hub_guard.guard",
+        "json",
+        HUB_EVENT,
+        _hub_guard,
+        (Refused,),
+    ),
+    Reader(
+        "tools.runtime_canary.claude_stream",
+        "json-lines",
+        b'{"type": "system", "subtype": "init", "skills": ["example"]}\n',
+        _claude_stream,
+        (Refused,),
+        accepts={
+            **STREAM_PASSES_OVER,
+            **dict.fromkeys(
+                ("wrong_type:skills", "wrong_type:skills.0"),
+                "the canary compares the init event's skills by name with the skills it expects, so a list of another "
+                "type, or an entry of another type, finds none of them and fails each as unfound",
+            ),
+        },
+    ),
+    Reader(
+        "tools.skill_evals_runs.skills_in_stream",
+        "json-lines",
+        json.dumps(
+            {
+                "type": "assistant",
+                "message": {"content": [{"type": "tool_use", "name": "Skill", "input": {"skill": "example"}}]},
+            }
+        ).encode()
+        + b"\n",
+        _skills_in_stream,
+        (Refused,),
+        accepts=STREAM_PASSES_OVER,
+    ),
+    Reader(
+        "tools.skill_evals_runs.stream_models",
+        "json-lines",
+        b'{"type": "assistant", "message": {"model": "claude-example"}}\n',
+        _stream_models,
+        (Refused,),
+        accepts=STREAM_PASSES_OVER,
+    ),
+    Reader(
+        "tools.plugin_canary.stream_events",
+        "json-lines",
+        b'{"type": "result", "result": "done"}\n',
+        _plugin_events,
+        (Refused,),
+        accepts=STREAM_PASSES_OVER,
+        open_fields="it yields each event object whole, and each check reads the fields it needs by kind",
+    ),
+    Reader(
+        "tools.plugin_canary.listed_entry",
+        "json",
+        json.dumps([{"id": PLUGIN_ID, "version": "1.0.0", "installPath": "/home/cache/example"}]).encode(),
+        _plugin_listing,
+        (Refused,),
+        open_fields="it returns the plugin's entry whole, and install_path reads its installPath by kind",
+    ),
+    Reader(
+        "tools.runtime_canary.claimed",
+        "json",
+        json.dumps({"made_by": "tools/runtime_canary.py", "home": CANARY_HOME}).encode(),
+        _canary_claim,
+        (Refused,),
+        filename=f"home/{runtime_canary.STATE}/{runtime_canary.HOME_MARKER}",
+        refuses_links=True,
+        accepts={"wrong_type:made_by": "the claim is the home the marker names; made_by is for a person reading it"},
+    ),
+    Reader(
+        "tools.runtime_changelogs.changelog_releases",
+        "json",
+        RELEASES,
+        _github_releases,
+        (runtime_changelogs.WatchError,),
+        accepts={
+            "bom": "GitHub's body is decoded as UTF-8 with an optional byte-order mark",
+            "wrong_type:0": "an item that is not a release object is passed over, as a draft is, and the read_through "
+            "is still found on the page",
+            "wrong_type:0.tag_name": "a tag naming no release of numbers is passed over, as a tag of another product "
+            "is, and the read_through is still found on the page",
+            "wrong_type:0.body": "a body is read as its text, which holds no bullet, so the watch reports the release "
+            "as unread with that text",
+        },
+    ),
+    Reader(
+        "audit_repository.names_directory",
+        "json",
+        b'{"directory": "briefs"}',
+        _briefs_marker,
+        (Refused,),
+        refuses_links=True,
+    ),
+    Reader(
+        "change_skill.frontmatter_value",
+        "frontmatter",
+        FRONTMATTER,
+        _frontmatter_value,
+        (Refused, NotText),
+        accepts={
+            **dict.fromkeys(
+                ("empty", "no_frontmatter", "bom"),
+                "a document whose first line is not the opening rule has no frontmatter, so each key compares as "
+                "absent",
+            ),
+            "nul_bytes": "the body after the frontmatter's closing line is never read",
+        },
+    ),
+    Reader(
+        "change_skill.frontmatter_block",
+        "frontmatter",
+        FRONTMATTER,
+        lambda path: change_skill.frontmatter_block(text_of(path)),
+        (NotText,),
+        accepts={
+            **dict.fromkeys(
+                ("empty", "no_frontmatter", "bom"),
+                "a document whose first line is not the opening rule has no frontmatter, an empty block",
+            ),
+            "nul_bytes": "the body after the frontmatter's closing line is never read",
+            **dict.fromkeys(
+                ("truncated", "top_level_list", "deep_nesting", "duplicate_keys"),
+                "a block it cannot read is compared as all the document's lines, so a change to it is still seen",
+            ),
+        },
+    ),
+    Reader(
+        "change_skill.user_only",
+        "frontmatter",
+        b"---\nname: example\ndisable-model-invocation: true\n---\n",
+        _user_only,
+        (Refused, NotText),
+        accepts={"nul_bytes": "the body after the frontmatter's closing line is never read"},
+    ),
+    Reader(
+        "conditions.snapshot_exclusions",
+        "json",
+        b'{"excluded_paths": {".claude/settings.json": "agent-instruction"}}',
+        _snapshot_exclusions,
+        (conditions.MissingEvidence,),
+        filename=conditions.SNAPSHOT_MANIFEST,
     ),
 ]

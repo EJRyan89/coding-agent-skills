@@ -11,7 +11,7 @@ tests/validation/test_<module>.py, which run in the pool as regression suites. E
 split into shards, each its own pytest process that conftest.py's --suite-shard deals the suite's tests to, so no single
 suite sets the length of the run.
 -k selects the policy checks whose name, and the suites whose path, matches a pattern, and a pattern that matches
-none of either, alone or beside one that does, is a usage error, exit 2, rather than a run that passes without it. -k
+none of either, alone or beside one that does, is a usage error rather than a run that passes without it. -k
 selects by name, so --changed and --full, which select by the change, are usage errors beside it. VALIDATION_JOBS sets
 the number of workers.
 
@@ -48,6 +48,12 @@ to sys.stdout, so no policy check swaps a standard stream or changes the environ
 suite_discovery.pool_shared_state_problems holds the rule. main takes its streams and environment as parameters, which
 its suite, tests/test_run_validation.py, passes, and it constructs each check that judges the pull request with the
 --pr-body and --pr-title files it was given rather than setting them anywhere a check reads.
+
+Exit status:
+  0  every selected policy check and suite job passed
+  1  a policy check or suite job failed, or a last line FAILED <reason> when the runner itself crashed
+  2  a usage error, such as a -k pattern that matches nothing, -k beside --changed or --full, an empty
+     selection, a VALIDATION_JOBS that is no worker count, or legs that cannot be dealt; or a missing prerequisite
 """
 
 from __future__ import annotations
@@ -68,6 +74,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent / "validation"))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "skills" / "ejryan89-skill-core" / "scripts"))
 
 import duplication
+import exit_tables
+import file_presence
 import fsops_platform
 import job_selection
 import kinds_table
@@ -122,6 +130,7 @@ from tools.release_notes import ReleaseNotesError
 # tests run in the pool as the regression suite beside it.
 POLICY_MODULES = (
     duplication,
+    exit_tables,
     fsops_platform,
     job_selection,
     kinds_table,
@@ -304,11 +313,23 @@ def parse_arguments(argv: list[str] | None, errors: TextIO | None = None) -> arg
         parser.error("argument --changed: not allowed with argument -k, which selects by name instead")
     if arguments.full and arguments.patterns:
         parser.error("argument --full: not allowed with argument -k, which selects by name instead")
-    if arguments.pr_body is not None and not arguments.pr_body.is_file():
-        parser.error(f"--pr-body is not a file: {arguments.pr_body}")
-    if arguments.pr_title is not None and not arguments.pr_title.is_file():
-        parser.error(f"--pr-title is not a file: {arguments.pr_title}")
+    for option, path in (("--pr-body", arguments.pr_body), ("--pr-title", arguments.pr_title)):
+        problem = file_problem(option, path)
+        if problem is not None:
+            parser.error(problem)
     return arguments
+
+
+def file_problem(option: str, path: Path | None) -> str | None:
+    """Why an option's file cannot be read as one, or None when it is a file or the option was not given: a path that
+    is not a file, or one whose stat fails, which is named as that, never read as no file."""
+    if path is None:
+        return None
+    try:
+        present = file_presence.is_present(path, other_is_absent=True)
+    except OSError as error:
+        return f"{option} cannot be examined: {path}: {error.strerror or error}"
+    return None if present else f"{option} is not a file: {path}"
 
 
 def pull_request_only(arguments: argparse.Namespace) -> bool:

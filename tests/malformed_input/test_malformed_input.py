@@ -10,6 +10,10 @@ refusal leaves the case's folder as it was, so a step that writes before it vali
 beside its own are written by its prepare before the case is read. Each reader also reads its own well-formed
 document, so a reader whose adapter is broken cannot pass by refusing everything.
 
+Every function reader_scan.py finds calling a shared reader is held by a table, reached from a held reader of its own
+module, owed in readers.py's PENDING, or named in its NOT_READERS with why it is no reader; an entry of either that the
+scan no longer finds unheld fails, and no function is in both, or in a table and NOT_READERS.
+
 A reader that fails a case today is listed in known_failures.json with the open issue that fixes it, never marked as
 an expected failure, which validation refuses. A listed case must still fail, so its fix removes the entry, and an
 unlisted one must pass, so the list never grows in silence; tests/validation/known_failures.py holds the list's shape
@@ -122,14 +126,29 @@ def test_a_pending_reader_is_not_yet_in_a_table() -> None:
     )
 
 
-def test_every_function_that_calls_a_shared_reader_is_held_reached_or_pending() -> None:
+def test_a_function_named_no_reader_is_in_no_table_and_not_pending() -> None:
+    held = {reader_scan.entry_name(reader.name) for reader in readers.READERS}
+    assert not held & readers.NOT_READERS.keys(), (
+        f"a reader a table holds is no NOT_READERS entry: {sorted(held & readers.NOT_READERS.keys())}"
+    )
+    assert not readers.PENDING.keys() & readers.NOT_READERS.keys(), (
+        f"a function is owed as a reader or named no reader, never both: "
+        f"{sorted(readers.PENDING.keys() & readers.NOT_READERS.keys())}"
+    )
+
+
+def test_every_function_that_calls_a_shared_reader_is_held_reached_pending_or_named_no_reader() -> None:
     held = {reader_scan.entry_name(reader.name) for reader in readers.READERS}
     unheld = reader_scan.unheld_readers(held)
-    assert [name for name in unheld if name not in readers.PENDING] == [], (
-        "add each to its area's readers_*.py table, or to PENDING with the issue that adds it"
+    assert [name for name in unheld if name not in readers.PENDING and name not in readers.NOT_READERS] == [], (
+        "add each to its area's readers_*.py table, to PENDING with the issue that adds it, or to NOT_READERS with why "
+        "it is no reader"
     )
     assert [name for name in readers.PENDING if name not in unheld] == [], (
         "remove each from PENDING: a table holds it, a held reader reaches it, or it calls no shared reader"
+    )
+    assert [name for name in readers.NOT_READERS if name not in unheld] == [], (
+        "remove each from NOT_READERS: a table holds it, a held reader reaches it, or it calls no shared reader"
     )
 
 
@@ -163,6 +182,25 @@ def test_the_scan_finds_each_spelling_of_a_shared_reader_call_and_credits_a_held
     assert "tools.example.attribute" not in covered
     assert reader_scan.entry_name("deployer.journal.pending_runs (backup entry)") == "deployer.journal.pending_runs"
     assert reader_scan.entry_name("review_analyzers.inventory:package.json") == "review_analyzers.inventory"
+
+
+def test_the_scan_credits_a_held_reader_with_the_functions_a_module_level_table_it_reads_names() -> None:
+    source = (
+        "import json_reader\n"
+        "def held(name, text):\n    return PARSERS[name](text)\n"
+        "def _tabled(text):\n    return json_reader.loads(text)\n"
+        "PARSERS: dict = {'a.json': _tabled}\n"
+        "def _untabled(text):\n    return json_reader.loads(text)\n"
+        "OTHER = {'b.json': _untabled}\n"
+        "def _loaded(path):\n    return json_reader.read_file(path)\n"
+        "def also_held(name):\n    return DEFAULTS[name]\n"
+        "DEFAULTS = _loaded('defaults.json')\n"
+    )
+    covered = reader_scan.reached("tools.example", source, {"tools.example.held", "tools.example.also_held"})
+    assert "tools.example._tabled" in covered
+    assert "tools.example._untabled" not in covered
+    # A loader a module-level value calls reads at import time, never through the value, so no reader of it is held.
+    assert "tools.example._loaded" not in covered
 
 
 def _refuse(path: Path) -> object:

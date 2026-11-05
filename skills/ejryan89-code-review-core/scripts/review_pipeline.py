@@ -1,7 +1,8 @@
 """Deterministic review steps, so an orchestrating agent only dispatches reviewers.
 
     enumerate  list the pull requests a batch run should review, to a batch file (by default in a new
-               temporary directory)
+               temporary directory): LISTED, or REPOSITORY_FAILED with the reason, for each repository, PULL for
+               each pull request, and last BATCH <file>, which records a repository that failed for advance too
     prepare    fetch pull requests, snapshot each head, load its reviewer, write the request and prompts; or, as a
                fixture canary, read each pull request from a local fixture directory and nothing from GitHub
     dispatch   start the Copilot CLI host for a prepared run, detached, and return (copilot-cli runtime only)
@@ -19,14 +20,18 @@
     inspect-reviewer   say whether a repository's review skill runs as one reviewer or needs a manifest
     validate-reviewer  prove a repository reviewer's files, patterns, and routing without running a review
 
-Every command prints machine-readable lines on stdout. It exits 0 with its result, including a state to poll
-again (`RUNNING`), and 1 with findings to act on (`RETRY`, `INVALID`, `UNFINALIZED`) or an expected failure,
-printed as a `FAILED <reason>` line on stdout. Exit 2 is only argparse's usage error, before any work.
+Every command prints machine-readable lines on stdout, an expected failure as a `FAILED <reason>` line.
 `prepare` takes any number of pull requests, or a batch file, prepares them four at a time, and keeps the runs it
 publishes in a run list it names in a `RUNS <file> pending=<n>` line; `prepare --runs <file>` prepares the next four.
 `workflow`, `wait-reviewers`, `check`, `finalize`, and `unfinalized` take that list as `--runs <file>` in place of
 one `--run` per run directory, so the orchestrator never carries run directories from one command to the next. Each
 pull request or run succeeds or fails on its own, and every line names its pull request.
+
+Exit status:
+  0  the command's result, a state to poll again (RUNNING) included
+  1  findings to act on (RETRY, INVALID, UNFINALIZED, UNPREPARED), a REPOSITORY_FAILED line, or a FAILED <reason>
+     line
+  2  a usage error, before any work
 """
 
 from __future__ import annotations

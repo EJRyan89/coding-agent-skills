@@ -176,8 +176,8 @@ def test_an_item_this_reader_cannot_see_is_left_alone_and_named_so_no_run_claims
 
 def test_the_docstring_gives_the_lines_in_the_order_printed() -> None:
     doc = " ".join((project_release_sync.__doc__ or "").split())
-    assert "SYNCED (exit 0) once every item's Release matches its milestone, then one line saying how many" in doc
-    assert "DRIFTED (exit 1), then that line, then one line per problem left" in doc
+    assert "SYNCED once every item's Release matches its milestone, then one line saying how many" in doc
+    assert "DRIFTED, then that line, then one line per problem left" in doc
     assert run(FakeBoard([[node(1, "v0.2.0", "v0.2.0")]])) == (0, "SYNCED\nupdated 0, cleared 0\n", "")
 
 
