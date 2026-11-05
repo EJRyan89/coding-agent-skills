@@ -264,8 +264,9 @@ def has_undecodable(text: str) -> bool:
 
 
 def _safe_relative_path(value: Any, field: str, reader: FieldReader = READ) -> str:
-    """A repository-relative POSIX path that stays inside the repository; `reader` reads it as the format holding it."""
-    text = reader.string(value, field)
+    """A repository-relative POSIX path that stays inside the repository, a blank one included, as git names a file;
+    `reader` reads it as the format holding it."""
+    text = reader.repository_path(value, field)
     if "\\" in text:
         raise RuntimeContractError(f"{field} must be a non-empty POSIX relative path")
     path = PurePosixPath(text)
@@ -1587,7 +1588,7 @@ def _validate_extracted(extracted: Any, hashes: dict[str, Any]) -> None:
     documents = READ.json_object(extracted, path)
     beside: set[str] = set()
     for key, value in documents.items():
-        relative = READ.string(key, f"a key of {path}")
+        relative = READ.repository_path(key, f"a key of {path}")
         form = READ.one_of(value, f"{path}.{relative}", tuple(DOCUMENT_FORMATS.values()))
         if _in_held_text_folder(relative):
             raise RuntimeContractError(f"Source snapshot extracted document is invalid: {relative!r}")

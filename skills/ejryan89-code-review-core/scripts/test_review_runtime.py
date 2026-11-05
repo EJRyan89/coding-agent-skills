@@ -497,6 +497,21 @@ class RuntimeContractTests(unittest.TestCase):
                 [], review_runtime.review_coverage(diff, metadata)["unavailable_sources"], "reviewers have its source"
             )
 
+    def test_a_file_named_by_whitespace_alone_is_held_and_verified(self) -> None:
+        # Git names a file by a no-break space alone, which no unsafe-path rule refuses, so the snapshot holds it.
+        name = "\N{NO-BREAK SPACE}"
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            checkout, head = self._plumbing_repository(
+                root, {name.encode("utf-8"): ("100644", b"blank\n"), b"src/ok.py": ("100644", b"ok\n")}
+            )
+            snapshot = root / "snapshot"
+            metadata = materialize_source_snapshot(checkout, "example/one", head, snapshot, changed_paths=[name])
+            self.assertEqual({name, "src/ok.py"}, set(metadata["source_hashes"]))
+            self.assertEqual({}, metadata["excluded_paths"])
+            self.assertEqual("blank\n", (snapshot / name).read_text(encoding="utf-8"))
+            verify_source_snapshot(snapshot, expected_repository="example/one", expected_commit=head)
+
     def test_an_undecodable_name_is_an_unsafe_path_and_a_coverage_gap_only_where_changed(self) -> None:
         # Two bytes that open a UTF-8 sequence and never finish it: one U+FFFD each, as diff.patch shows them.
         name = "src/bad\ufffd\ufffd.py"

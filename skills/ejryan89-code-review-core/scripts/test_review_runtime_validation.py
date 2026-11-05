@@ -2125,8 +2125,9 @@ MANIFEST_KINDS: list[tuple[str, Callable[[], dict[str, Any]], ManifestMutation, 
     (
         "an agent profile",
         _entrypoint_manifest,
-        _put(("agent_profiles", 0), " "),
-        _wrong(f"{ENTRYPOINT}.agent_profiles[0]", "a non-empty string", " "),
+        # A repository path: any string but an empty one, a blank one included, as git names a file.
+        _put(("agent_profiles", 0), ""),
+        f"{ENTRYPOINT}.agent_profiles[0] must be a non-empty string, found an empty string",
     ),
     ("specialists id", _specialists_manifest, _put(("id",), []), _wrong(f"{SPECIALISTS}.id", "a non-empty string", [])),
     ("kind", _specialists_manifest, _put(("kind",), 2), _wrong(f"{SPECIALISTS}.kind", 'one of "specialists"', 2)),
