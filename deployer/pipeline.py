@@ -15,6 +15,7 @@ import time
 from pathlib import Path
 from typing import TextIO, assert_never
 
+import file_presence
 import json_writer
 
 from . import (
@@ -79,9 +80,14 @@ def _apply(
     staging_dir = paths.staging_root / run_id
     staged.write(staging_dir)
     record = journal.Journal(staging_dir / "journal.jsonl", run_id)
-    record.create()
     for root in dict.fromkeys(kind.root for kind in KINDS):
         fsops.make_directories(journal.root_directory(paths, root))
+    # A journal is only ever written beside a manifest, so one found beside none was moved or lost, never a first
+    # deployment's, and recovery stops rather than guess whether its run was committed. The first deployment saves the
+    # empty manifest a missing one reads as, which changes nothing the deployment reads.
+    if not file_presence.is_occupied(paths.manifest_file):
+        manifest.empty(paths.manifest_file).save()
+    record.create()
     for entry in entries:
         plan.carry_out(record, paths, staging_dir, entry)
     _commit_manifest(context, entries, run_id, context.commit)
@@ -419,6 +425,7 @@ def _execute(
     with held:
         try:
             _reject_other_checkout(paths, source_id, options.take_over_source, dry_run=False)
+            journal.check_manifest_beside_runs(paths)
         except (DeployError, OSError, KeyboardInterrupt) as exc:
             return fail(exc, debug, "check the source checkout")
         try:
@@ -501,6 +508,7 @@ def _dry_run(
             source.reject_linked_worktree(paths)
         lock.check_holder(paths, probe)
         _reject_other_checkout(paths, src.source_id, options.take_over_source, dry_run=True)
+        journal.check_manifest_beside_runs(paths)
         if _stop_for_pending_recovery(paths):
             return 0
         return _deploy(paths, options, src, values, stdin, None, pin)

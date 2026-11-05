@@ -412,9 +412,14 @@ def _upgrade_dependencies(data: ManifestData) -> None:
             details.setdefault(SKILL.dependency_key, sorted(set(skills) - {name}))
 
 
+def empty(path: Path) -> Manifest:
+    """The manifest of a home no source has deployed to, which load reads a missing file as."""
+    return Manifest(path, {"manifest_version": MANIFEST_VERSION, "sources": {}})
+
+
 def load(path: Path) -> Manifest:
     if not state_files.is_present(path, "The manifest", *MANIFEST_REMEDY):
-        return Manifest(path, {"manifest_version": MANIFEST_VERSION, "sources": {}})
+        return empty(path)
     text: str | None
     try:
         text = path.read_text(encoding="utf-8")

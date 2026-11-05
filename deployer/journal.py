@@ -727,12 +727,34 @@ def _print_manual_steps(run_dir: Path, run_id: str, committed: bool) -> None:
 def _committed_run_id(paths: Paths) -> str | None:
     """The run the manifest records as committed, "" when none, or None when the manifest cannot be trusted.
 
-    It is read through the validated loader: a manifest the deployment would refuse decides no recovery either.
+    It is read through the validated loader: a manifest the deployment would refuse decides no recovery either. A
+    missing manifest decides none too: a run saves the manifest before it writes its journal, so a journal beside no
+    manifest means the manifest was moved or lost, and whether its run was committed cannot be told.
     """
     try:
+        if not state_files.is_present(paths.manifest_file, "The manifest", *manifest.MANIFEST_REMEDY):
+            return None
         return manifest.load(paths.manifest_file).last_run_id()
     except DeployError:
         return None
+
+
+def check_manifest_beside_runs(paths: Paths) -> None:
+    """Refuse, before recovery and changing nothing, a run's journal beside no manifest, by the deployment and the dry
+    run alike: recovery could only guess whether the run was committed, and rolling back a committed run, or
+    completing one that was not, leaves the items and the manifest disagreeing."""
+    if state_files.is_present(paths.manifest_file, "The manifest", *manifest.MANIFEST_REMEDY):
+        return
+    pending = pending_runs(paths)
+    if not pending:
+        return
+    run_id = pending[0][0]
+    raise DeployError(
+        f"ERROR: The manifest {platform_support.normalize(paths.manifest_file)} is missing, but run {run_id}'s journal "
+        "remains, so whether that run was committed cannot be told.",
+        "Put back the manifest you moved, if you did; otherwise reconcile the run by hand, then rerun with --dry-run.",
+        see_recovery("When recovery fails"),
+    )
 
 
 @dataclass
@@ -805,7 +827,11 @@ def _recover_run(paths: Paths, run_dir: Path) -> bool:
     run_id = run_dir.name
     committed = _committed_run_id(paths)
     if committed is None:
-        print("  ERROR: Cannot read manifest during recovery.", file=sys.stderr)
+        print(
+            f"  ERROR: The manifest is missing or cannot be read, so recovery cannot tell whether run {run_id} was "
+            "committed.",
+            file=sys.stderr,
+        )
         return False
     try:
         is_journal = file_presence.is_present(journal_file)
@@ -868,8 +894,10 @@ def _run_folders(paths: Paths) -> list[Path]:
 def pending_runs(paths: Paths) -> list[tuple[str, bool]]:
     """Each interrupted run the next deployment will reconcile, with whether it can do so without the user.
 
-    Changes nothing, for --dry-run. A run without journal entries is not listed, since recovery only deletes it.
+    Changes nothing, for --dry-run. A run without journal entries is not listed, since recovery only deletes it, unless
+    the manifest cannot decide whether a run was committed, when recovery stops at any run whose journal remains.
     """
+    decided = _committed_run_id(paths) is not None
     try:
         if not file_presence.is_directory(paths.staging_root):
             return []
@@ -892,6 +920,9 @@ def pending_runs(paths: Paths) -> list[tuple[str, bool]]:
             pending.append((run_dir.name, False))
             continue
         if not journaled:
+            continue
+        if not decided:
+            pending.append((run_dir.name, False))
             continue
         if not journal_file.is_file():
             pending.append((run_dir.name, False))
