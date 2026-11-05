@@ -130,12 +130,21 @@ def test_check_reports_a_pin_that_differs_from_the_rebuild_and_an_entry_with_no_
     document["plugins"] = [
         {"name": "fixture-skills", "source": {"source": "archive", "url": url, "sha256": "0" * 64}},
         {"name": "other", "source": "./other"},
+        {
+            "name": "ghost",
+            "source": {
+                "source": "archive",
+                "url": f"{REPOSITORY}/releases/download/v1.2.3/ghost.zip",
+                "sha256": "1" * 64,
+            },
+        },
     ]
     write(checkout, ".claude-plugin/marketplace.json", json.dumps(document))
     code, lines = run(["check", "--root", str(checkout)])
     assert code == 1
     assert lines[0].startswith(f"PIN_DIFFERS fixture-skills v1.2.3 {'0' * 64} ")
     assert lines[1] == 'UNPINNED other "its source names no release asset with a sha256"'
+    assert lines[2] == 'UNPINNED ghost "v1.2.3 makes no plugin of this name"'
 
 
 @pytest.mark.parametrize(

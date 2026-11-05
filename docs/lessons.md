@@ -734,7 +734,7 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
 - **Use:** `tests.validation.python_checks:indirection_problems`, `tests.validation.python_checks:owner_only_problems`,
   and `tests.validation.python_checks:policed_call_problems`, which refuse dynamic name lookup, an owner-only callable
   referenced outside its owners, and an argument a policed call takes that its readers cannot follow, over the one
-  catalogue in `tests/validation/validation_support.py`;
+  catalogue of lookups by name, `tests.validation.validation_support:NAME_LOOKUPS`;
   `tests.validation.validation_support:scope_problems`, which holds a policy's scope, named as data, to every
   non-test module ruff checks, each part it leaves out stated with its reason, as
   `tests.validation.python_checks:claim_omissions` and `tests.validation.duplication:duplication_omissions` state them.
