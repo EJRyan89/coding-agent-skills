@@ -1367,6 +1367,7 @@ PROGRAM_SETTINGS_2_56 = (
     "core.editor",
     "core.fsmonitor",
     "core.gitProxy",
+    "core.hooksPath",
     "core.pager",
     "core.sshCommand",
     "credential.helper",
@@ -1639,6 +1640,10 @@ class IsolatedClientTests(unittest.TestCase):
             "the setting core.pager": ["-c", "Core.Pager=x", "log"],
             "the setting core.sshcommand": ["-c", "core.sshCommand=x", "fetch"],
             "the setting core.fsmonitor": ["--config-env=core.fsmonitor=V", "status"],
+            "the setting core.hookspath": ["-c", "core.hooksPath=/hooks", "commit", "-m", "x"],
+            "the setting core.hookspath ": ["-c", "core.hooksPath", "commit"],
+            "the setting core.hookspath  ": ["--config-env", f"core.hooksPath={os.devnull}", "commit"],
+            "the setting core.hookspath   ": ["-c", f"core.hooksPath={os.devnull}x", "commit"],
             "the setting sequence.editor": ["-c", "sequence.editor=x", "rebase", "-i", "HEAD~1"],
             "the setting diff.external": ["-c", "diff.external=x", "diff"],
             "the setting diff.a.textconv": ["-c", "diff.a.textconv=x", "log", "-p"],
@@ -1688,7 +1693,8 @@ class IsolatedClientTests(unittest.TestCase):
             ["init", "--quiet", "dir"],
             ["archive", "--format=tar", "HEAD"],
             ["log", "--exec=x"],
-            ["-c", "core.hooksPath=/empty", "commit", "-m", "x"],
+            ["-c", f"core.hooksPath={os.devnull}", "commit", "-m", "x"],
+            ["-c", f"Core.HooksPath={os.devnull}", "init", "--quiet", "dir"],
             ["-c", "protocol.file.allow=always", "submodule", "add", "url"],
             ["-c", "core.quotePath=off", "-c", "diff.a=x", "-c", "remote.textconv=x", "status"],
             ["--version"],
@@ -1726,7 +1732,7 @@ class IsolatedClientTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, rf"^the setting {re.escape(key.casefold())} starts"):
                     GitClient(runner).run(["-c", f"{key}=x", "status"])
                 self.assertEqual([], calls)
-        for key in ("core.hooksPath", "receive.procReceiveRefs", "core.fsmonitorHookVersion", "pull.rebase"):
+        for key in ("receive.procReceiveRefs", "core.fsmonitorHookVersion", "pull.rebase"):
             with self.subTest(key=key):
                 self.assertFalse(git_client.names_program(key.casefold()))
 

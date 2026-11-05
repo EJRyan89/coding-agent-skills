@@ -48,12 +48,14 @@ commands but the carriers, each one of git's own since 2.31, the oldest git `rev
 `--help` or `-h` that git reads as `git help` (`help_spelling`), which starts a viewer or a browser; of `submodule` and
 `bisect` only an action of `PLAIN_ACTIONS`, so not `submodule foreach` or `bisect run`; none of the options of
 `CARRIER_OPTIONS`, such as `rebase --exec` or `-x` and a transport's `--upload-pack`, in any abbreviation or bundle of
-short options git takes; and no setting on its command line that names a program git starts (`names_program`), such as
-`core.editor`, `sequence.editor`, `core.sshCommand`, a `hook.<name>.command`, or a diff, merge, or filter driver's.
+short options git takes; and no setting on its command line that names a program git starts, or a folder of hooks
+(`starts_configured_program`), such as `core.editor`, `sequence.editor`, `core.sshCommand`, `core.hooksPath`, a
+`hook.<name>.command`, or a diff, merge, or filter driver's, but a `core.hooksPath` of the null device, which runs none.
 The subcommands and actions are allow-lists, so a name it has not read is refused rather than run; the options and the
-settings are catalogues read from git's documentation. It still cannot see a hook, an editor, a driver, or a helper
-that git's configuration files or the environment name, nor a `git-merge-<strategy>` or `git-remote-<transport>`
-program a strategy or an address names; a caller over content it did not write asks for an isolated client. An alias
+settings are catalogues read from git's documentation. It still cannot see a hook in the repository's own hooks
+folder, nor a hook, an editor, a driver, or a helper that git's configuration files or the environment name, nor a
+`git-merge-<strategy>` or `git-remote-<transport>` program a strategy or an address names; a caller over content it
+did not write asks for an isolated client. An alias
 or an autocorrection that git's configuration files or the environment's `GIT_CONFIG_PARAMETERS` and
 `GIT_CONFIG_COUNT` define never runs on it either, on git 2.31 or later, since git lets neither take the name of one
 of its own commands. It cannot tell a folder of content it did not write from a repository, so a command that reads
@@ -304,11 +306,13 @@ CARRIER_OPTIONS = {
 # section in `PROGRAM_SECTIONS`, a whole key of `PROGRAM_KEYS`, such as `protocol.ext.allow`, which lets an `ext::`
 # address run a command, and a variable of `PROGRAM_VARIABLES` in any subsection of its section, such as
 # `diff.<driver>.textconv`. Read against every key `git help --config` lists on git 2.56: a `hook.<name>.command` runs
-# its command as a hook does, and `pull.twohead` and `pull.octopus` name a `git-merge-<strategy>` program. Left out,
-# with the reason: `core.hooksPath`, since a repository's own hooks folder already runs hooks on a plain client unseen,
-# so naming another adds none the client could have read, and a caller points it at an empty folder to run none; and
-# `receive.procReceiveRefs`, which runs only the hooks folder's `proc-receive` and only in `receive-pack`, which a plain
-# client refuses.
+# its command as a hook does, `core.hooksPath` and `init.templateDir` name a folder whose hooks git runs, and
+# `pull.twohead` and `pull.octopus` name a `git-merge-<strategy>` program. A `core.hooksPath` of exactly the null
+# device (`NO_HOOKS`) names no folder, so it runs no hook, and a caller that must keep the user's hooks from running
+# sets it so. Left out, with the reason: `receive.procReceiveRefs`, which runs only the hooks folder's `proc-receive`
+# and only in `receive-pack`, which a plain client refuses.
+HOOKS_PATH = "core.hookspath"
+NO_HOOKS = os.devnull
 PROGRAM_SECTIONS = frozenset(
     {
         "browser",
@@ -335,6 +339,7 @@ PROGRAM_KEYS = frozenset(
         "core.editor",
         "core.fsmonitor",
         "core.gitproxy",
+        HOOKS_PATH,
         "core.pager",
         "core.sshcommand",
         "diff.external",
@@ -621,20 +626,35 @@ def reads_no_repository(arguments: Sequence[str]) -> bool:
     )
 
 
-def configured_keys(arguments: Sequence[str]) -> list[str]:
-    """The name, case-folded, of each setting a `-c` or `--config-env` among git's own options in `arguments` makes,
-    in either spelling: the value as the next word or attached after `=`."""
+def configured_settings(arguments: Sequence[str]) -> list[tuple[str, str | None]]:
+    """The name, case-folded, and the value of each setting a `-c` or `--config-env` among git's own options in
+    `arguments` makes, in either spelling: the setting as the next word or attached after `=`. The value is None where
+    the command line does not hold it: a `-c <name>` with no `=`, which git reads as true, and every `--config-env`,
+    whose value an environment variable holds."""
     end = subcommand_index(arguments)
-    index, keys = 0, []
+    index, settings = 0, []
     while index < (len(arguments) if end is None else end):
         argument = arguments[index]
         option, attached, value = argument.partition("=")
         if argument in CONFIGURATION_OPTIONS and index + 1 < len(arguments):
-            keys.append(arguments[index + 1].partition("=")[0].casefold())
+            name, equals, given = arguments[index + 1].partition("=")
+            settings.append((name.casefold(), given if equals and argument == "-c" else None))
         elif attached and option == "--config-env":
-            keys.append(value.partition("=")[0].casefold())
+            settings.append((value.partition("=")[0].casefold(), None))
         index += 2 if argument in GLOBAL_VALUE_OPTIONS else 1
-    return keys
+    return settings
+
+
+def configured_keys(arguments: Sequence[str]) -> list[str]:
+    """The name, case-folded, of each setting `configured_settings` reads in `arguments`."""
+    return [key for key, _ in configured_settings(arguments)]
+
+
+def starts_configured_program(key: str, value: str | None) -> bool:
+    """Whether the setting `key`, case-folded, set to `value` (None when the command line does not hold it), names a
+    program git starts: `names_program`, but a `core.hooksPath` of exactly the null device (`NO_HOOKS`), which names
+    no folder of hooks and so runs none."""
+    return names_program(key) and not (key == HOOKS_PATH and value == NO_HOOKS)
 
 
 def defines_alias(arguments: Sequence[str]) -> bool:
@@ -702,7 +722,7 @@ def starts_unread_program(arguments: Sequence[str]) -> str | None:
     None: a setting on git's own command line that names one (`names_program`), a spelling git reads as `git help`
     (`help_spelling`), a subcommand outside `PLAIN_SUBCOMMANDS`, an action outside `PLAIN_ACTIONS`, or an option of
     `CARRIER_OPTIONS`."""
-    key = next((key for key in configured_keys(arguments) if names_program(key)), None)
+    key = next((key for key, value in configured_settings(arguments) if starts_configured_program(key, value)), None)
     if key is not None:
         return f"the setting {key}"
     index = subcommand_index(arguments)
