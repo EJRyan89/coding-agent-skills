@@ -583,7 +583,13 @@ LITERAL_EFFORT = re.compile(
 )
 STATUS_SPAN_WORD = re.compile(r"`([A-Z][A-Z0-9]*(?:_[A-Z0-9]+)*)(?:\s[^`]*)?`")
 SETTING_WORDS = ("model", "effort")
-SETTING_KEYS = {"model": "model", "effort": "effort", "reasoning_effort": "effort", "reviewer_effort": "effort"}
+SETTING_KEYS = {
+    "model": "model",
+    "effort": "effort",
+    "reasoning_effort": "effort",
+    "reviewer_effort": "effort",
+    "reviewer_model": "model",
+}
 MODEL_VALUE = re.compile(r"(?i)haiku|sonnet|opus|fable|claude-[\w.-]+")
 EFFORT_LEVELS = frozenset({"minimal", "low", "medium", "high", "xhigh", "max"})
 # A sibling skill a skill's Markdown reaches through its own directory.

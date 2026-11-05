@@ -49,6 +49,7 @@ SHARE_MESSAGE = "re_review_scope.full_share must be a number above 0 and at most
 # The kinds a field of the wrong kind is refused as expecting, written out independently of the reader.
 RUNTIME_KIND = 'one of "auto", "claude-code", "codex", "copilot-cli"'
 EFFORT_KIND = 'one of "high", "low", "max", "medium", "xhigh" or null'
+MODEL_KIND = 'one of "fable", "haiku", "inherit", "opus", "sonnet" or null'
 SEVERITY_KIND = 'one of "MUST_FIX", "SHOULD_FIX", "SUGGESTION"'
 POSITIVE = "an integer of at least 1"
 LINES_FIELD = "re_review_scope.full_lines"
@@ -116,6 +117,7 @@ def _expected() -> dict[str, Any]:
         "operation_repository_sets": {},
         "runtime": "auto",
         "reviewer_effort": None,
+        "reviewer_model": None,
         "re_review_scope": {"full_share": 0.5, "full_lines": 1000},
         "model_names": {},
         "unread_source_lines": 200,
@@ -188,6 +190,7 @@ def _full_config() -> dict[str, Any]:
         },
         "operation_repository_sets": {"review-prs": "work", "update-pr-dashboard": "solo"},
         "reviewer_effort": "high",
+        "reviewer_model": "sonnet",
         "re_review_scope": {"full_lines": 200},
         "model_names": {"arn:aws:bedrock:model/x": " Model X "},
         "unread_source_lines": 50,
@@ -277,6 +280,7 @@ def _full_expected() -> dict[str, Any]:
         },
         "operation_repository_sets": {"review-prs": "work", "update-pr-dashboard": "solo"},
         "reviewer_effort": "high",
+        "reviewer_model": "sonnet",
         "re_review_scope": {"full_share": 0.5, "full_lines": 200},
         "model_names": {"arn:aws:bedrock:model/x": "Model X"},
         "unread_source_lines": 50,
@@ -297,6 +301,7 @@ def _rich_config() -> dict[str, Any]:
     }
     config["runtime"] = "codex"
     config["reviewer_effort"] = "high"
+    config["reviewer_model"] = "sonnet"
     config["re_review_scope"] = {"full_share": 0.25, "full_lines": 200}
     config["verdict_policy"] = {"request_changes_for": ["MUST_FIX", "SHOULD_FIX"], "should_fix_threshold": 2}
     config["operation_repository_sets"] = {"update-pr-dashboard": "main"}
@@ -457,6 +462,7 @@ ACCEPTED: list[tuple[str, Mutation, Mutation]] = [
             _set((*REPO, "batch_size"), None),
             _set(("runtime",), "auto"),
             _set(("reviewer_effort",), None),
+            _set(("reviewer_model",), None),
             _set(("re_review_scope",), {}),
             _set(("verdict_policy",), {}),
             _set(("operation_repository_sets",), {}),
@@ -480,6 +486,10 @@ ACCEPTED: list[tuple[str, Mutation, Mutation]] = [
     *[
         (f"reviewer_effort {effort}", _set(("reviewer_effort",), effort), _set(("reviewer_effort",), effort))
         for effort in ["low", "medium", "high", "xhigh", "max"]
+    ],
+    *[
+        (f"reviewer_model {model}", _set(("reviewer_model",), model), _set(("reviewer_model",), model))
+        for model in ["inherit", "sonnet", "opus", "haiku", "fable"]
     ],
     (
         "identities lowercased",
@@ -1326,6 +1336,15 @@ REJECTED: list[Case] = [
         )
         for value in ["extreme", "High", "", 1, False]
     ],
+    *[
+        (
+            f"reviewer_model {value!r}",
+            _set(("reviewer_model",), value),
+            F,
+            _wrong("reviewer_model", MODEL_KIND, value),
+        )
+        for value in ["gpt", "Sonnet", "claude-sonnet-5-5", "", 1, False]
+    ],
     # re_review_scope
     (
         "re_review_scope null",
@@ -1661,6 +1680,7 @@ CONTAINER_CASES: list[Case] = [
         ((*REVIEWER, "scope"), "generic", f"{FIELD}.reviewer.scope", 'one of "generic", "repository"'),
         (("runtime",), "auto", "runtime", RUNTIME_KIND),
         (("reviewer_effort",), "high", "reviewer_effort", EFFORT_KIND),
+        (("reviewer_model",), "sonnet", "reviewer_model", MODEL_KIND),
         (("verdict_policy", "request_changes_for"), "MUST_FIX", "verdict_policy.request_changes_for[0]", SEVERITY_KIND),
         (
             ("operation_repository_sets", "review-prs"),
@@ -1891,6 +1911,7 @@ STAGES: list[Case] = [
     ),
     ("runtime", _set(("runtime",), "bash"), F, _wrong("runtime", RUNTIME_KIND, "bash")),
     ("reviewer_effort", _set(("reviewer_effort",), "extreme"), F, _wrong("reviewer_effort", EFFORT_KIND, "extreme")),
+    ("reviewer_model", _set(("reviewer_model",), "gpt"), F, _wrong("reviewer_model", MODEL_KIND, "gpt")),
     (
         "re_review_scope not an object",
         _set(("re_review_scope",), []),
@@ -2216,6 +2237,7 @@ class ConfigValidationTests(unittest.TestCase):
                 "operation_repository_sets",
                 "runtime",
                 "reviewer_effort",
+                "reviewer_model",
                 "re_review_scope",
                 "model_names",
                 "unread_source_lines",

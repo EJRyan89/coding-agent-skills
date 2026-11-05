@@ -30,7 +30,7 @@ from diff_paths import HUNK_HEADER, DiffPathError, header_path, unquote
 from flat_text import LINE_UNSAFE
 from job_tree import TreeNotEnded, process_tree
 from review_analyzers import inventory, tool_names
-from review_config import safe_repository_path
+from review_config import MODEL_ALIASES, safe_repository_path
 from review_io import (
     CONTENT_ERRORS,
     PersistenceError,
@@ -58,7 +58,6 @@ from review_runtime import (
     DESIGN_REVIEW_PROFILE,
     DOCUMENT_STAGES,
     GENERIC_SPECIALIST,
-    MODEL_ALIASES,
     PULL_REQUEST_BODY_CHARACTERS,
     SNAPSHOT_FETCHABLE,
     RuntimeContractError,
@@ -1252,8 +1251,10 @@ def profile_model(profile: str, text: str) -> tuple[str | None, str | None]:
     can leave pointing at a smaller model for minutes; a profile that names its model is protected from that.
     """
     value = frontmatter_value(f"Specialist profile {profile}", text, "model")
-    if value is None or value.casefold() == "inherit":
+    if value is None:
         return None, None
+    if value.casefold() == "inherit":
+        return "inherit", None
     if value.casefold() in MODEL_ALIASES:
         return value.casefold(), None
     return None, (
@@ -1265,10 +1266,11 @@ def profile_model(profile: str, text: str) -> tuple[str | None, str | None]:
 def specialist_model(specialist: dict[str, Any], reviewer_root: Path) -> tuple[str | None, str | None]:
     """The model a specialist's reviewer starts on, and a note when its profile names one the suite cannot apply.
 
-    The manifest's per-specialist `model` wins (`inherit` meaning the session's model); otherwise its profile's.
+    The manifest's per-specialist `model` wins; otherwise its profile's. `inherit`, which asks for the session's model
+    whatever the configuration's `reviewer_model` says, is returned as it is, and None means the specialist names none.
     """
     if "model" in specialist:
-        return (None if specialist["model"] == "inherit" else specialist["model"]), None
+        return specialist["model"], None
     profile = specialist["profile"]
     path = (
         suite_profile_path(profile)

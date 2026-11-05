@@ -244,7 +244,8 @@ TOOLS: dict[str, Any] = {
 SPECIALISTS = {
     "db-review": ("Database", "agents/db.md", "opus", None),
     "csharp-review": ("C#", "agents/cs.md", "sonnet", "high"),
-    "compat-review": ("Compatibility", "agents/compat.md", None, "low"),
+    # Its manifest says `inherit`, which the plan keeps so that prepare's configured default does not reach it.
+    "compat-review": ("Compatibility", "agents/compat.md", "inherit", "low"),
     "tools-review": ("Tooling", "agents/tools.md", None, None),
 }
 
@@ -1154,7 +1155,8 @@ class SpecialistTests(PlanFixture):
         files = {**REVIEWER_FILES, "agents/db.md": "DB rules\n", "agents/compat.md": "---\nmodel: opus\n---\n"}
         result = self.build(self.reviewer(files=files))
         self.assertEqual(
-            [("db-review", None), ("csharp-review", "sonnet"), ("compat-review", None), ("generic-review", None)],
+            # The plan keeps `inherit`, so prepare gives that role the session's model, not the configured default.
+            [("db-review", None), ("csharp-review", "sonnet"), ("compat-review", "inherit"), ("generic-review", None)],
             [(value["id"], value["model"]) for value in result["roles"]],
         )
         self.assertEqual([], result["notes"])

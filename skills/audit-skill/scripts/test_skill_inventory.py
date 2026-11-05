@@ -2449,7 +2449,10 @@ class SubagentSettingTests(SourceTreeTestCase):
         write(self.root / "deploy-meta" / "core.json", "{}")
         profile = write(core / "references" / "profile.md", "---\nmodel: haiku\neffort: inherit\n---\n# Profile\n")
         write(core / "references" / "other.md", "---\nmodel: inherit\n---\n# Inherits\n")
-        config = write(core / "references" / "config.json", '{\n  "roles": [\n    {"reviewer_effort": "low"}\n  ]\n}\n')
+        config = write(
+            core / "references" / "config.json",
+            '{\n  "roles": [\n    {"reviewer_effort": "low"},\n    {"reviewer_model": "opus"}\n  ]\n}\n',
+        )
         script = write(
             core / "scripts" / "dispatch.py", 'ROLE = {"model": "sonnet", "effort": None}\nrun(effort="low")\n'
         )
@@ -2459,6 +2462,7 @@ class SubagentSettingTests(SourceTreeTestCase):
             [
                 f"PINNED_SUBAGENT {(self.root / 'agents' / 'cheap.md').as_posix()} 4 model haiku",
                 f"PINNED_SUBAGENT {config.as_posix()} 3 effort low",
+                f"PINNED_SUBAGENT {config.as_posix()} 4 model opus",
                 f"PINNED_SUBAGENT {profile.as_posix()} 2 model haiku",
                 f"PINNED_SUBAGENT {script.as_posix()} 1 model sonnet",
                 f"PINNED_SUBAGENT {script.as_posix()} 2 effort low",

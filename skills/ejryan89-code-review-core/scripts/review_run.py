@@ -266,9 +266,17 @@ def _inside(path: Path, root: Path) -> bool:
 
 def _write_run(run: Path, state: RunState) -> None:
     """Write a prepared run's run.json. A run that cannot start a role on the model it asks for first notes that model
-    in place of its `MODEL` line, so the role runs on the session's model; a run whose reviewers start at an effort
+    in place of its `MODEL` line, so the role runs on the session's model, and a role whose specialist names no model
+    asks for the configuration's `reviewer_model`; a run whose reviewers start at an effort
     they are given records each role's, its specialist's else the configuration's; an inline run then seals every
     file prepare wrote."""
+    default_model = load_config(Path(state["config_path"])).get("reviewer_model")
+    for role in state["roles"]:
+        # A role whose specialist names no model gets the configuration's; `inherit` asks for the session's.
+        model = role.get("model") or default_model
+        model = None if model == "inherit" else model
+        if model is not None or "model" in role:  # an entrypoint role records a model only when it has one
+            role["model"] = model
     reason = _unapplied_model_reason(state["runtime"], state["dispatch"])
     if reason is not None:
         for role in state["roles"]:
