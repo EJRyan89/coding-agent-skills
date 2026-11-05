@@ -451,7 +451,17 @@ class Staged:
         prompt, result = run / PROMPT_NAME, run / RESULT_NAME
         try:
             atomic_write_text(run / INPUT_NAME, self.files[Path(self.synthesis["input"])])
-            atomic_write_text(prompt, prompt_text(run, **vars(self.facts)))
+            facts = self.facts
+            atomic_write_text(
+                prompt,
+                prompt_text(
+                    run,
+                    script=facts.script,
+                    report_path=facts.report_path,
+                    repositories=facts.repositories,
+                    span=facts.span,
+                ),
+            )
             role = {
                 "id": SYNTHESIS_ROLE,
                 "prompt_file": str(prompt),

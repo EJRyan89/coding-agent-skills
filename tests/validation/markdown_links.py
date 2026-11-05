@@ -117,8 +117,8 @@ def _definitions(body: list[ast.stmt]) -> Iterator[ast.FunctionDef | ast.AsyncFu
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
             yield node
         else:
-            for field in ("body", "orelse", "finalbody"):
-                yield from _definitions(getattr(node, field, []))
+            for block in (getattr(node, "body", []), getattr(node, "orelse", []), getattr(node, "finalbody", [])):
+                yield from _definitions(block)
             for handler in getattr(node, "handlers", []):
                 yield from _definitions(handler.body)
 

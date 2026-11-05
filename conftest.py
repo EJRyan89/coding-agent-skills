@@ -91,9 +91,6 @@ NO_AUTOMATIC_MAINTENANCE = {
     "gc.auto": "0",
     "gc.autoDetach": "false",
 }
-# The name a test class or a suite module gives the settings it adds to the global configuration, as
-# {"section.key": value}; a class's settings take the place of its module's.
-GIT_CONFIG = "git_config"
 # The autouse fixtures that isolate git, by scope; suite_discovery.py holds that each exists here and is autouse.
 ISOLATION_FIXTURES = {"module": "isolated_git_module", "class": "isolated_git_class", "function": "git_home"}
 # The option that runs one shard of a suite, and the one that records a heavy test's seconds.
@@ -181,7 +178,9 @@ def isolated_git(settings: Mapping[str, str] | None = None) -> Iterator[GitHome]
 def git_settings(*owners: Any) -> Mapping[str, str]:
     """The settings the first of a test's class and its module that names any gives as its git_config."""
     for owner in owners:
-        settings = getattr(owner, GIT_CONFIG, None) if owner is not None else None
+        # A test class or a suite module gives the settings it adds to the global configuration as git_config,
+        # {"section.key": value}; a class's settings take the place of its module's.
+        settings = getattr(owner, "git_config", None) if owner is not None else None
         if settings:
             found: Mapping[str, str] = settings
             return found

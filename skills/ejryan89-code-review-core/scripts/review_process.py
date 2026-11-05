@@ -21,6 +21,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-cor
 from bounded_process import without_repository_variables
 from process_identity import ProcessStatus
 
+OWNER_ONLY_ALLOWED = {
+    "start_detached.start": "starts the review host detached from this process's job on Windows, to outlive it, where "
+    "run_bounded waits for the command it starts",
+    "_start_session": "starts the review host in a session of its own off Windows, to outlive this process, where "
+    "run_bounded waits for the command it starts",
+}
 CREATE_NEW_PROCESS_GROUP = 0x00000200
 CREATE_BREAKAWAY_FROM_JOB = 0x01000000
 CREATE_NO_WINDOW = 0x08000000

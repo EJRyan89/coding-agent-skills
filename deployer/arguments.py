@@ -12,6 +12,16 @@ from .platform_support import PYTHON
 
 # deploy.py run by the command that runs Python here, so every command line the deployer prints is one the platform
 # runs: python on Windows, and python3 on Linux, where a distribution may install no python command.
+INDIRECTION_ALLOWED = {
+    "_parse": "argparse keeps each option under its dest, so a deploy option given beside a command is read by the "
+    "dest its action names",
+    "_check_deploy_options": "argparse keeps each option under its dest, so each deploy option given is read by the "
+    "dest its action names",
+}
+POLICED_CALL_ALLOWED = {
+    "_add_debug": "takes the top parser's False or a subcommand's argparse.SUPPRESS as --debug's default, a flag no "
+    "time or number policy reads",
+}
 PROG = f"{PYTHON} deploy.py"
 CONFIGURE_COMMAND = "configure"
 CONFIGURE_COMMAND_LINE = f"{PROG} {CONFIGURE_COMMAND}"

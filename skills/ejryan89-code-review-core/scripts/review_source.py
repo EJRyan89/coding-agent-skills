@@ -143,11 +143,13 @@ def source_search(run: Path, role: str, pattern: str) -> list[str]:
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0] if __doc__ else None)
     commands = parser.add_subparsers(dest="command", required=True)
-    for name, argument in (("source-file", "--path"), ("source-search", "--pattern")):
-        command = commands.add_parser(name)
+    source_file = commands.add_parser("source-file")
+    source_search = commands.add_parser("source-search")
+    for command in (source_file, source_search):
         command.add_argument("--run", type=Path, required=True)
         command.add_argument("--role", required=True)
-        command.add_argument(argument, required=True)
+    source_file.add_argument("--path", required=True)
+    source_search.add_argument("--pattern", required=True)
     return parser
 
 

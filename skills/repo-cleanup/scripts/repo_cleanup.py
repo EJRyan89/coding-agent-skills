@@ -84,6 +84,10 @@ PLAN_SCHEMA_VERSION = 1
 # lie outside every plans directory, so no directory a plan sits in carries a seal for it: a sweep's plans go to a new
 # directory mkdtemp makes, or one a sweep made and recorded, and save_plan refuses a path inside this folder.
 SEALS = Path(tempfile.gettempdir()) / "repo-cleanup-seals"
+OWNER_ONLY_ALLOWED = {
+    "save_plan": "writes a plan holding a branch name git gave as bytes that are not UTF-8 as its surrogate escapes, "
+    "as its JSON_WRITE_ALLOWED entry states",
+}
 JSON_WRITE_ALLOWED = {
     "save_plan": "a plan or a sweep record holds a branch name git gave as bytes that are not UTF-8 as its surrogate "
     "escapes, which json_writer refuses and parse_saved, the one reader of both, restores, so the later commands name "

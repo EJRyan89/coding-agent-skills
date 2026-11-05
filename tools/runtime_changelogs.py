@@ -112,6 +112,10 @@ from deployer.render import CODEX_USER_ONLY
 from tools import captured_samples, runtime_command_lines
 from tools.runtime_canary import DECLARED_RUNTIME, REPOSITORY_ROOT, quote
 
+INDIRECTION_ALLOWED = {
+    "path_terms": "reads each path property deployer/config.py's Paths derives, so a path added there is a term "
+    "without a second list of them",
+}
 DEFAULT_TIMEOUT = 30.0
 USER_AGENT = "coding-agent-skills-runtime-changelogs"
 # The releases one request to GitHub's releases API asks for: its default page. A hundred of Codex's long release

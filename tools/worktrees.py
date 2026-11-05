@@ -60,6 +60,10 @@ DUPLICATION_ALLOWED = {
 # A Claude Code session keeps the hook command it loaded when it started, so one started before the hub guard
 # moved into hub_guard.py still runs this script's guard subcommand, which runs the guard as its own program.
 HUB_GUARD = Path(__file__).with_name("hub_guard.py")
+INDIRECTION_ALLOWED = {
+    "guard": "runs hub_guard.py as its own program, as the hook it moved to would, for a session that still holds "
+    "the old hook command",
+}
 # What list shows for an ahead or behind count git could not take.
 UNKNOWN = "?"
 
@@ -265,9 +269,9 @@ def list_worktrees() -> int:
         Row("BRANCH", "STATE", "AHEAD", "BEHIND", "DIRTY", "PATH"),
         *(row(hub, t) for t in git_worktrees.list_worktrees(CLIENT, hub)),
     ]
-    widths = [max(len(getattr(r, field)) for r in rows) for field in ("branch", "state", "ahead", "behind", "dirty")]
-    for r in rows:
-        cells = (r.branch, r.state, r.ahead, r.behind, r.dirty)
+    table = [(r.branch, r.state, r.ahead, r.behind, r.dirty) for r in rows]
+    widths = [max(len(cell) for cell in column) for column in zip(*table, strict=True)]
+    for r, cells in zip(rows, table, strict=True):
         print("  ".join(cell.ljust(width) for cell, width in zip(cells, widths, strict=True)) + "  " + r.path)
     return 0
 

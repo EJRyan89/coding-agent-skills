@@ -457,6 +457,16 @@ class Activity:
     prs_reviewed_total: int
     capped: dict[str, list[str]] = field(default_factory=dict)
 
+    def counts(self, name: str) -> dict[str, int]:
+        """The monthly counts of the field a METRICS entry names."""
+        return {
+            "authored": self.authored,
+            "merged": self.merged,
+            "commits": self.commits,
+            "prs_reviewed": self.prs_reviewed,
+            "reviews_submitted": self.reviews_submitted,
+        }[name]
+
 
 def _field(item: Any, path: tuple[str, ...]) -> Any:
     value = item
@@ -656,9 +666,9 @@ def render_report(activity: Activity, org: str, user: str, today: date) -> str:
         "|---|---:|---:|---:|---:|---:|",
     ]
     for label in activity.months:
-        values = " | ".join(str(getattr(activity, column)[label]) for column in columns)
+        values = " | ".join(str(activity.counts(column)[label]) for column in columns)
         lines.append(f"| {label} | {values} |")
-    totals = [sum(getattr(activity, column).values()) for column in columns]
+    totals = [sum(activity.counts(column).values()) for column in columns]
     totals[3] = activity.prs_reviewed_total
     lines.append(f"| **Total** | {' | '.join(f'**{value}**' for value in totals)} |")
     lines += [
@@ -848,7 +858,7 @@ def _rows_of(activity: Activity, user: str, labels: list[str], current: str, cap
         _history_key(label, user): HistoryRow(
             label,
             user,
-            {metric: getattr(activity, field)[label] for metric, (field, _) in METRICS.items()},
+            {metric: activity.counts(field)[label] for metric, (field, _) in METRICS.items()},
             label == current,
             captured_at,
             tuple(metric for metric in METRICS if metric in capped[label]),
