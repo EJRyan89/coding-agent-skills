@@ -59,8 +59,10 @@ from dashboard_pipeline import main as dashboard_main
 from harness import Deployment, deployment
 from json_writer import JsonWriteRefused
 
-from deployer import journal, manifest
+from deployer import journal, manifest, platform_support
+from deployer.errors import DeployError
 from tools import (
+    checkout_trust,
     deployable_report,
     hub_guard,
     new_skill,
@@ -90,11 +92,12 @@ class Row:
     label: str = ""
 
 
-def raised(call: Callable[[], object]) -> str:
-    """The error a call raised, by its type and message, or what it returned when it raised none."""
+def raised(expected: type[Exception], call: Callable[[], object]) -> str:
+    """The error of the type the place's contract names that a call raised, by its type and message, or what it
+    returned when it raised none; any other error escapes and fails the row with its traceback."""
     try:
         returned = call()
-    except Exception as error:  # noqa: BLE001 - the outcome names whatever the place raised
+    except expected as error:
         return f"{type(error).__name__}: {error}"
     return f"returned {returned!r}"
 
@@ -147,7 +150,7 @@ def deploy_run(*arguments: str, deploy_first: bool = False) -> Callable[[Path], 
 
 def _deployer_error(drive: Callable[[Path], None]) -> Callable[[Path], object]:
     def run(folder: Path) -> object:
-        return forward(raised(lambda: drive(folder)), folder)
+        return forward(raised(DeployError, lambda: drive(folder)), folder)
 
     return run
 
@@ -163,7 +166,7 @@ def _manifest(folder: Path) -> None:
 def _hub_guard(folder: Path) -> object:
     reading = hub_guard.Reading({}, text="Get-Item x")
     with (
-        mock.patch.object(hub_guard.platform_support, "find_pwsh", return_value="pwsh"),
+        mock.patch.object(platform_support, "find_pwsh", return_value="pwsh"),
         mock.patch.object(hub_guard, "run_bounded") as bounded,
     ):
         events = hub_guard.powershell_events("Get-Item x", reading)
@@ -181,7 +184,7 @@ def _plugin_canary(folder: Path) -> object:
     home = folder / "home"
     home.mkdir()
     with (
-        mock.patch.object(plugin_canary.checkout_trust, "refusal", return_value=None),
+        mock.patch.object(checkout_trust, "refusal", return_value=None),
         mock.patch.object(plugin_canary, "create_home", return_value=home),
     ):
         code, out, err = ended(lambda: plugin_canary.main([]))
@@ -194,7 +197,7 @@ def _plugin_release_build(folder: Path) -> object:
         mock.patch.object(plugin_release, "archives", return_value={"alpha": b""}),
         mock.patch.object(plugin_release, "read_marketplace", return_value=({"plugins": entries}, entries)),
     ):
-        outcome = raised(lambda: plugin_release.build(folder, "v1.0.0", folder / "out"))
+        outcome = raised(plugin_release.ReleaseError, lambda: plugin_release.build(folder, "v1.0.0", folder / "out"))
     return outcome, sorted(path.name for path in folder.iterdir())
 
 
@@ -226,7 +229,7 @@ def _handshake(stream: Callable[..., Any] | None) -> Callable[[Path], object]:
             stack.enter_context(mock.patch.object(mcp_handshake, "resolve_command", return_value="server"))
             if stream is not None:
                 stack.enter_context(mock.patch.object(mcp_handshake, "streaming", stream))
-            return raised(lambda: mcp_handshake.handshake(folder, _handshake_entry(), 5.0))
+            return raised(RuntimeError, lambda: mcp_handshake.handshake(folder, _handshake_entry(), 5.0))
 
     return drive
 
@@ -240,7 +243,7 @@ def _memory_audit(folder: Path) -> object:
 def _load_config(folder: Path) -> object:
     path = folder / "config.json"
     path.write_text("{}\n", encoding="utf-8")
-    return raised(lambda: review_config.load_config(path))
+    return raised(review_config.ConfigurationError, lambda: review_config.load_config(path))
 
 
 def _log_read(folder: Path) -> object:
@@ -250,13 +253,16 @@ def _log_read(folder: Path) -> object:
     log = review_guard.read_log(folder, "reviewer")
     log.parent.mkdir()
     log.write_text("", encoding="utf-8")
-    outcome = raised(lambda: review_guard._log_read("Read", read, (folder, {"id": "reviewer"})))
-    return outcome, log.read_text(encoding="utf-8")
+    # The refused line is left uncounted and the read goes on: the call returns, and the log stays empty.
+    review_guard._log_read("Read", read, (folder, {"id": "reviewer"}))
+    return log.read_text(encoding="utf-8")
 
 
 def _atomic_write_json(folder: Path) -> object:
     path = folder / "record.json"
-    return forward(raised(lambda: review_io.atomic_write_json(path, {})), folder), path.exists()
+    return forward(
+        raised(review_io.PersistenceError, lambda: review_io.atomic_write_json(path, {})), folder
+    ), path.exists()
 
 
 def _expected_errors_of_the_pipeline(folder: Path) -> object:
@@ -269,16 +275,19 @@ def _expected_errors_of_the_pipeline(folder: Path) -> object:
 
 def _tarball(folder: Path) -> object:
     return raised(
+        review_runtime.RuntimeContractError,
         lambda: review_runtime.verify_github_tarball(
             folder / "archive.tar.gz", {}, repository="owner/name", commit="0123456789ab" + "0" * 28
-        )
+        ),
     )
 
 
 def _count(folder: Path) -> object:
     log = folder / "reads.log"
     log.write_text("", encoding="utf-8")
-    return raised(lambda: review_source._count(log, "read.txt")), log.read_text(encoding="utf-8")
+    # The refused entry is left uncounted: the call returns, and the log stays empty.
+    review_source._count(log, "read.txt")
+    return log.read_text(encoding="utf-8")
 
 
 def _source_main(folder: Path) -> object:
@@ -288,7 +297,9 @@ def _source_main(folder: Path) -> object:
 def _write_fixture(folder: Path) -> object:
     document = review_document.Document("notes.md", b"notes\n", None, review_document.Base(None, None, "new"))
     fixture = folder / "fixture"
-    outcome = raised(lambda: review_document.write_fixture(fixture, document, {"number": 1}, None))
+    outcome = raised(
+        review_document.DocumentError, lambda: review_document.write_fixture(fixture, document, {"number": 1}, None)
+    )
     return outcome, fixture.exists()
 
 
@@ -298,7 +309,10 @@ def _resolve_recorded(folder: Path) -> object:
     services.flags_path.return_value = folder / "flags.json"
     with mock.patch.object(review_insights, "write_report") as written:
         outcome = forward(
-            raised(lambda: review_insights._resolve_recorded(folder / "insights.json", {}, entries, "text", services)),
+            raised(
+                review_insights.InsightError,
+                lambda: review_insights._resolve_recorded(folder / "insights.json", {}, entries, "text", services),
+            ),
             folder,
         )
     return outcome, entries, written.call_count
@@ -308,19 +322,23 @@ def _write_briefs(folder: Path) -> object:
     briefs = folder / "briefs"
     briefs.mkdir()
     with mock.patch.object(audit_repository.tempfile, "mkdtemp", return_value=str(briefs)):
-        return forward(raised(lambda: audit_repository.write_briefs([("alpha", "brief")])), folder)
+        return forward(
+            raised(audit_repository.AuditError, lambda: audit_repository.write_briefs([("alpha", "brief")])), folder
+        )
 
 
 def _write_json(folder: Path) -> object:
     path = folder / "record.json"
-    return raised(lambda: audit_repository.write_json(path, {})), path.exists()
+    return raised(OSError, lambda: audit_repository.write_json(path, {})), path.exists()
 
 
 REFUSALS: tuple[Row, ...] = (
     Row(
         "tools.deployable_report._write_results",
         DUMPS,
-        lambda folder: forward(raised(lambda: deployable_report._write_results(folder / "results.json", [])), folder),
+        lambda folder: forward(
+            raised(DeployError, lambda: deployable_report._write_results(folder / "results.json", [])), folder
+        ),
         f"DeployError: ERROR: Cannot write the results file: <tmp>/results.json: {REASON}",
     ),
     Row(
@@ -339,7 +357,7 @@ REFUSALS: tuple[Row, ...] = (
     Row(
         "tools.plugin_build._json_file",
         DUMPS,
-        lambda _: raised(lambda: plugin_build._json_file("alpha", "plugin.json", {})),
+        lambda _: raised(plugin_build.BuildError, lambda: plugin_build._json_file("alpha", "plugin.json", {})),
         f"BuildError: plugin alpha: plugin.json cannot be written: {REASON}",
     ),
     Row(
@@ -453,7 +471,7 @@ REFUSALS: tuple[Row, ...] = (
     Row(
         "mcp_handshake.Session.send",
         DUMPS,
-        lambda _: raised(lambda: mcp_handshake.Session(mock.Mock()).send({"method": "initialize"})),
+        lambda _: raised(RuntimeError, lambda: mcp_handshake.Session(mock.Mock()).send({"method": "initialize"})),
         f"RuntimeError: cannot send the server's value back: {REASON}",
     ),
     Row(
@@ -477,7 +495,7 @@ REFUSALS: tuple[Row, ...] = (
         (1, [f"FAILED the audit report cannot be written: {REASON}"]),
     ),
     Row("review_config.load_config", "review_config.validate_config", _load_config, f"ConfigurationError: {REASON}"),
-    Row("review_guard._log_read", DUMPS, _log_read, ("returned None", "")),
+    Row("review_guard._log_read", DUMPS, _log_read, ""),
     Row(
         "review_io.atomic_write_json",
         DUMPS,
@@ -492,7 +510,7 @@ REFUSALS: tuple[Row, ...] = (
         f"RuntimeContractError: GitHub's tarball of owner/name@0123456789ab cannot be checked: {REASON}; set "
         "checkout_path for this repository to snapshot it from git objects",
     ),
-    Row("review_source._count", DUMPS, _count, ("returned None", "")),
+    Row("review_source._count", DUMPS, _count, ""),
     Row("review_source.main", "review_source.source_file", _source_main, (1, f"FAILED {REASON}\n", "")),
     Row(
         "flag_review_finding.main",
