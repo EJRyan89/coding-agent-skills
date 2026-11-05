@@ -27,6 +27,8 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts"))
 
+from guard_limits import process_limits_held
+
 from deployer import platform_support
 from tools import hub_guard
 
@@ -295,7 +297,8 @@ def understood(form: Form, program: str) -> bool:
 
 def refused(command: str) -> bool:
     reading = hub_guard.Reading({}, command)
-    hub_guard.read_bash(command, Path.cwd(), reading)
+    with process_limits_held():
+        hub_guard.read_bash(command, Path.cwd(), reading)
     return bool(reading.unread)
 
 

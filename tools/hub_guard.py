@@ -1153,10 +1153,18 @@ class LookupBound:
 LOOKUPS = LookupBound()
 
 
+def process_seconds(seconds: float) -> float:
+    """The wall-clock limit handed to a process the guard starts, git or pwsh: seconds, the part of the reading time
+    or of GUARD_GIT_TIMEOUT_SECONDS it may take. Every such limit passes through here, as every look at the time
+    passes through reading_clock, so a test that holds the clock still also gives each process a limit of its own
+    rather than race a real start against what is left of the reading time."""
+    return seconds
+
+
 def lookup_timeout() -> float:
     """How long one git call of a hub lookup may take: GUARD_GIT_TIMEOUT_SECONDS, or the reading time left when that
     is less; past the reading time, raises ReadingTimeout, so a lookup starts no git call the deadline has passed."""
-    return min(time_left(LOOKUPS.deadline), GUARD_GIT_TIMEOUT_SECONDS)
+    return process_seconds(min(time_left(LOOKUPS.deadline), GUARD_GIT_TIMEOUT_SECONDS))
 
 
 @contextlib.contextmanager
@@ -2752,7 +2760,7 @@ def powershell_events(command: str, reading: Reading) -> dict[str, Any] | None:
         # every process pwsh starts once it has finished or been killed.
         result = run_bounded(
             [pwsh, "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", powershell_reader()],
-            min(reading.time_left(), READING_SECONDS),
+            process_seconds(min(reading.time_left(), READING_SECONDS)),
             input_bytes=base64.b64encode(payload.encode("utf-8")),
             env=reading.environment,
             output_limit=POWERSHELL_OUTPUT_LIMIT,
