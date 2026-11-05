@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import functools
-import json
 import re
 import shutil
 import sys
@@ -15,6 +14,7 @@ from typing import Any, NamedTuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
+import json_writer
 from diff_paths import header_text, quote
 from git_client import GitClient, GitError, Runner
 from github_client import GitHubError, replace_undecodable
@@ -281,7 +281,7 @@ def _write_diff(
     changed = list(parsed)
     patches = patch_fingerprints(parsed)
     # Escaped, because each note is a line the orchestrator reads, and a raw path could add a line of its own.
-    named = ", ".join(json.dumps(path) for path in unsafe)
+    named = ", ".join(json_writer.dumps(path) for path in unsafe)
     if not changed:
         raise PipelineError(
             f"{selector} changes no files" + (f" a reviewer can be given safely: {named}" if unsafe else "")
@@ -297,7 +297,7 @@ def _write_diff(
         notes.append(
             f"Not reviewed in full: {len(omitted)} changed file{'s' if len(omitted) != 1 else ''} whose patch GitHub's "
             "files API leaves out, as it does for a diff too large to show, recorded as unavailable sources: "
-            + ", ".join(json.dumps(path) for path in omitted)
+            + ", ".join(json_writer.dumps(path) for path in omitted)
             + "."
         )
     return parsed, changed, [*unsafe, *omitted], patches
@@ -372,8 +372,8 @@ def _snapshot(
     notes.extend(f"snapshot excludes symbolic link {path}" for path in links)
     # A snapshot taken again for the same change refuses the same documents, so these notes stand for it too.
     notes.extend(
-        f"Not reviewed in full: the text of document {json.dumps(path)} could not be extracted ({reason}), so it "
-        "is recorded as an unavailable source."
+        f"Not reviewed in full: the text of document {json_writer.dumps(path)} could not be extracted ({reason}), "
+        "so it is recorded as an unavailable source."
         for path, reason in sorted(refused.items())
     )
     stats = {
@@ -584,7 +584,7 @@ def _document_diffs(
             continue
         base, refused = _extracted_base(form, old, binary[1], read_base)
         if refused is not None:
-            notes.append(f"The base version of document {json.dumps(path)} could not be extracted ({refused}).")
+            notes.append(f"The base version of document {json_writer.dumps(path)} could not be extracted ({refused}).")
         rendered[path] = document_diff(binary[0], old, new, base, head, base_refused=refused, form=form, held=held)
     if not rendered:
         return None

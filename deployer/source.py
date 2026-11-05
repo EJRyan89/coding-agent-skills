@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import fnmatch
 import graphlib
-import json
 import os
 import re
 from dataclasses import dataclass, field
@@ -16,6 +15,7 @@ from pathlib import Path
 
 import file_presence
 import frontmatter
+import json_writer
 import runtime_support
 from agent_skills import MAX_NAME, RESERVED_WORDS, XML_TAG_PATTERN
 from skill_menu import expand as expand
@@ -444,7 +444,7 @@ def _load_renamed(document: dict[str, object], source: Source) -> None:
             raise DeployError(f"ERROR: source.json renames '{old}', which is still a skill or bundle of this source")
         if not isinstance(new, str) or new not in source.skills:
             raise DeployError(
-                f"ERROR: source.json renames '{old}' to {json.dumps(new)}, which is no skill of this source"
+                f"ERROR: source.json renames '{old}' to {json_writer.dumps(new)}, which is no skill of this source"
             )
     for old, new in sorted(renamed.items()):
         source.renamed[old] = new

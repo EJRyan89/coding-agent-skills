@@ -19,7 +19,6 @@ from __future__ import annotations
 import base64
 import contextlib
 import functools
-import json
 import math
 import os
 import re
@@ -36,6 +35,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "ejryan89-skill-core" / "scripts"))
 
 import json_reader
+import json_writer
 import whole_number
 from bounded_process import run_bounded
 from console import run_main
@@ -2348,7 +2348,7 @@ def powershell_events(command: str, reading: Reading) -> dict[str, Any] | None:
     if pwsh is None:
         reading.cannot_read("could not find pwsh to read a PowerShell command")
         return None
-    payload = json.dumps({"command": command})
+    payload = json_writer.dumps({"command": command})
     try:
         # run_bounded takes git's repository-selecting variables out of the hook's environment, and the tree ends
         # every process pwsh starts once it has finished or been killed.
@@ -2796,7 +2796,7 @@ def guard(stream: str) -> int:
         )
     if refused is not None:
         print(
-            json.dumps(
+            json_writer.dumps(
                 {
                     "hookSpecificOutput": {
                         "hookEventName": "PreToolUse",

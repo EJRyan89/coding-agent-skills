@@ -19,7 +19,6 @@ one form, such as a raw GitHub file named by its branch and by `refs/heads/` and
 
 from __future__ import annotations
 
-import json
 from collections.abc import Sequence
 from dataclasses import dataclass
 from functools import partial
@@ -27,6 +26,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 import json_reader
+import json_writer
 import versions
 from release_tags import is_release_tag
 from typed_fields import FieldError, FieldReader
@@ -142,11 +142,11 @@ def document(record: GuidanceRecord) -> dict[str, object]:
 def _url(value: object, path: str) -> str:
     url = READ.string(value, path, single_line=True, trimmed=True)
     if not url.startswith(PAGE_SCHEME) or any(character.isspace() for character in url):
-        raise READ.fail(path, f"a URL starting {PAGE_SCHEME} without whitespace", json.dumps(url))
+        raise READ.fail(path, f"a URL starting {PAGE_SCHEME} without whitespace", json_writer.dumps(url))
     try:
         urlsplit(url)
     except ValueError:  # such as a host opening an IPv6 address it never closes, which canonical_url would raise
-        raise READ.fail(path, "a URL urllib can split", json.dumps(url)) from None
+        raise READ.fail(path, "a URL urllib can split", json_writer.dumps(url)) from None
     return url
 
 
@@ -168,12 +168,12 @@ def _changelog(value: object, path: str, subjects: Sequence[str]) -> Changelog:
     form = READ.one_of(fields["format"], f"{path}.format", CHANGELOG_FORMATS)
     release = READ.string(fields["read_through"], f"{path}.read_through", single_line=True, trimmed=True)
     if versions.read(release) is None:
-        raise READ.fail(f"{path}.read_through", "a release of numbers joined by dots", json.dumps(release))
+        raise READ.fail(f"{path}.read_through", "a release of numbers joined by dots", json_writer.dumps(release))
     return Changelog(subject, url, form, release)
 
 
 def _tag(value: object, path: str) -> str:
     tag = READ.string(value, path, single_line=True, trimmed=True)
     if not is_release_tag(tag):
-        raise READ.fail(path, "a release tag vX.Y.Z", json.dumps(tag))
+        raise READ.fail(path, "a release tag vX.Y.Z", json_writer.dumps(tag))
     return tag

@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import codecs
 import configparser
-import json
 import re
 import sys
 import tomllib
@@ -29,6 +28,7 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
 import json_reader
+import json_writer
 from dotnet_solution import read_bounded, read_text
 from flat_text import flat_text
 from msbuild_xml import is_sdk_style, local_name
@@ -239,7 +239,7 @@ def _selections(found: _Inventory, path: str, table: Any, prefix: str, keys: Ite
         return
     for key in keys:
         if key in table:
-            found.setting(path, f"{prefix}{key} = {json.dumps(table[key], ensure_ascii=False)}")
+            found.setting(path, f"{prefix}{key} = {json_writer.dumps(table[key], ensure_ascii=False)}")
 
 
 def _ruff(found: _Inventory, path: str, table: dict[str, Any], prefix: str) -> None:
@@ -292,7 +292,7 @@ def _shellcheckrc(found: _Inventory, path: str, text: str) -> None:
 def _package_json(found: _Inventory, path: str, text: str) -> None:
     document = json_reader.loads(text)
     # JSON's \u escapes can spell a lone surrogate, which no UTF-8 file, analyzers.json included, can hold.
-    json.dumps(document, ensure_ascii=False).encode("utf-8")
+    json_writer.dumps(document, ensure_ascii=False).encode("utf-8")
     if not isinstance(document, dict):
         return
     if "eslintConfig" in document:

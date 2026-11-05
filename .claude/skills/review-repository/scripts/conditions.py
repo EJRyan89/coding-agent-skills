@@ -9,13 +9,13 @@ sits beside them in the reviewer folder a review materializes.
 from __future__ import annotations
 
 import fnmatch
-import json
 import os
 import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
+import json_writer
 from console import failed_line
 from diff_paths import header_path, snapshot_path, unquote
 from json_reader import read_file
@@ -80,7 +80,7 @@ class MissingEvidence(Exception):
 def require_snapshot(root: Path) -> None:
     """Raise MissingEvidence unless the snapshot at `root` is a directory."""
     if not root.is_dir():
-        raise MissingEvidence(f"the snapshot {json.dumps(root.as_posix())} is not a directory")
+        raise MissingEvidence(f"the snapshot {json_writer.dumps(root.as_posix())} is not a directory")
 
 
 def snapshot_exclusions(root: Path) -> dict[str, str]:
@@ -191,4 +191,4 @@ def read_files(text: str, root: Path) -> tuple[list[FileDiff], list[str]]:
 
 def refusal_line(path: str) -> str:
     """The line a condition prints for a path `read_files` refused, the path quoted as JSON so it stays one line."""
-    return f"REFUSED {json.dumps(path)}: a path that could name a file outside the snapshot"
+    return f"REFUSED {json_writer.dumps(path)}: a path that could name a file outside the snapshot"

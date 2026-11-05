@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import functools
-import json
 import os
 import re
 import secrets
@@ -138,7 +137,7 @@ def parse_json(text: str) -> Any:
     of CONTENT_ERRORS."""
     value = json_reader.loads(text)
     if SURROGATE_ESCAPE.search(text):  # only an escape spells a surrogate, so text without one needs no second pass
-        json.dumps(value, ensure_ascii=False).encode("utf-8")
+        json_writer.dumps(value, ensure_ascii=False).encode("utf-8")
     return value
 
 

@@ -54,7 +54,6 @@ the plugin's reviewer, whose type Claude Code namespaces as `<plugin>:code-revie
 from __future__ import annotations
 
 import contextlib
-import json
 import os
 import re
 import sys
@@ -524,7 +523,7 @@ def main(stream: str) -> int:
         reason = f"Code-review reviewer boundary: the guard could not evaluate this call ({type(exc).__name__})."
     if reason:
         print(
-            json.dumps(
+            json_writer.dumps(
                 {
                     "hookSpecificOutput": {
                         "hookEventName": "PreToolUse",

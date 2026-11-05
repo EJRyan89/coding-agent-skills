@@ -25,7 +25,6 @@ from __future__ import annotations
 
 import argparse
 import contextlib
-import json
 import sys
 from pathlib import Path
 
@@ -111,7 +110,7 @@ def source_file(run: Path, role: str, relative: str) -> list[str]:
     source = run.resolve() / "source"
     found = fetch_source_file(repository, source, relative, repository=name, commit=head, staging=run.resolve())
     if isinstance(found, str):
-        return [f"EXCLUDED {json.dumps(relative)} {found}"]
+        return [f"EXCLUDED {json_writer.dumps(relative)} {found}"]
     _count(log, found.relative_to(source).as_posix())
     return [f"SOURCE_FILE {found}"]
 

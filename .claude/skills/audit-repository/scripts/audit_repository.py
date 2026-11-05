@@ -95,7 +95,6 @@ from __future__ import annotations
 
 import argparse
 import ast
-import json
 import re
 import sys
 import tempfile
@@ -592,7 +591,7 @@ def carried_issues(github: GitHubClient, milestone: str) -> list[Issue]:
 
 def json_text(text: str) -> str:
     """Text from GitHub on one line of output, flattened and written as a JSON string."""
-    return json.dumps(flat_text(text), ensure_ascii=False)
+    return json_writer.dumps(flat_text(text), ensure_ascii=False)
 
 
 def milestone_lines(release_milestone: str | None, next_milestone: str | None) -> list[str]:
@@ -861,7 +860,7 @@ def code_literal(value: str) -> str:
     and U+2029 among them, and the backtick are written as JSON escapes: the value stays on its line, cannot open or
     close the code span or start a heading, and a JSON parser reads it back exactly.
     """
-    quoted = json.dumps(value, ensure_ascii=False)
+    quoted = json_writer.dumps(value, ensure_ascii=False)
     return "`" + "".join(char if char.isprintable() and char != "`" else json_escape(char) for char in quoted) + "`"
 
 

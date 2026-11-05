@@ -64,7 +64,6 @@ from __future__ import annotations
 import argparse
 import ast
 import io
-import json
 import os
 import re
 import sys
@@ -77,6 +76,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[4] / "skills" / "ejryan89-skill-core" / "scripts"))
 
 import file_presence
+import json_writer
 from conditions import (
     DIFF_VARIABLE,
     FAILURE_STATUS,
@@ -661,7 +661,9 @@ def entries(root: Path, files: list[FileChange], unreadable: dict[str, str] | No
         if not file_presence.is_present(change.head, other_is_absent=True) and change.path not in excluded
     ]
     if absent:
-        raise MissingEvidence(f"the snapshot holds no {json.dumps(absent[0])}, which the diff leaves at the head")
+        raise MissingEvidence(
+            f"the snapshot holds no {json_writer.dumps(absent[0])}, which the diff leaves at the head"
+        )
     blocks = [excluded_entry(change, excluded[change.path]) for change in withheld]
     changes = [change for change in changes if change not in withheld]
     tests = Tests(suites(root), {} if unreadable is None else unreadable)
@@ -715,7 +717,7 @@ def _run() -> int:
     unreadable: dict[str, str] = {}
     found = entries(arguments.source_root, changes, unreadable)
     for path, reason in sorted(unreadable.items()):
-        print(f"UNREADABLE {json.dumps(path)}: {reason}")
+        print(f"UNREADABLE {json_writer.dumps(path)}: {reason}")
     print(f"UNTESTED {len(found)} given={min(len(found), MAX_ENTRIES)}")
     if not found:
         return 1

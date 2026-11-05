@@ -40,7 +40,6 @@ error, a directory that does not hold source.json and .claude/skills, or that li
 from __future__ import annotations
 
 import argparse
-import json
 import shutil
 import sys
 from pathlib import Path
@@ -49,6 +48,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "ejryan89-skill-core" / "scripts"))
 
 import file_presence
+import json_writer
 import runtime_support
 from console import run_main
 from skill_roots import SKILL_CORE, sibling_scripts
@@ -97,7 +97,7 @@ class ScaffoldError(Exception):
 
 def _yaml_string(value: str) -> str:
     # A JSON string is a valid YAML double-quoted scalar, and skill_reference reads it back the same way.
-    return json.dumps(value, ensure_ascii=False)
+    return json_writer.dumps(value, ensure_ascii=False)
 
 
 def skill_markdown(
@@ -107,7 +107,7 @@ def skill_markdown(
     if argument_hint is not None:
         lines.append(f"argument-hint: {_yaml_string(argument_hint)}")
     if allowed_tools is not None:
-        lines.append(f"allowed-tools: {json.dumps(allowed_tools)}")
+        lines.append(f"allowed-tools: {json_writer.dumps(allowed_tools)}")
     if user_only:
         lines.append("disable-model-invocation: true")
     title = name.replace("-", " ").capitalize()
@@ -145,7 +145,7 @@ def shell_grant_problems(allowed_tools: list[str]) -> list[str]:
 
 def metadata_text(document: dict[str, object]) -> str:
     """The canonical text of a deploy-meta file: one key per line, indented four spaces, each value on that line."""
-    lines = [f"    {json.dumps(key)}: {json.dumps(value)}" for key, value in document.items()]
+    lines = [f"    {json_writer.dumps(key)}: {json_writer.dumps(value)}" for key, value in document.items()]
     return "{\n" + ",\n".join(lines) + "\n}\n"
 
 

@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import contextlib
 import fnmatch
-import json
 import os
 import shutil
 import sys
@@ -18,6 +17,7 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "ejryan89-skill-core" / "scripts"))
 
+import json_writer
 from skill_roots import sibling_scripts
 
 sys.path.insert(0, str(sibling_scripts("ejryan89-code-review-core")))
@@ -115,7 +115,7 @@ class Scenario:
 
 
 def quote(value: str) -> str:
-    return json.dumps(value, ensure_ascii=False)
+    return json_writer.dumps(value, ensure_ascii=False)
 
 
 def _fields(spec: Mapping[str, object], required: set[str], optional: frozenset[str] = frozenset()) -> None:

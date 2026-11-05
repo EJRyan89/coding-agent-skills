@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 import fnmatch
-import json
 import ntpath
 import os
 import posixpath
@@ -18,6 +17,7 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
 import json_reader
+import json_writer
 from console import run_main
 from flat_text import LINE_UNSAFE
 from github_logins import is_login
@@ -352,7 +352,7 @@ def validate_unreviewed_suffixes(value: Any, field: str, *, reader: FieldReader 
             )
     for index, suffix in enumerate(suffixes):
         if suffix in suffixes[:index]:
-            raise reader.fail(field, "distinct file-name suffixes", f"{json.dumps(suffix)} twice")
+            raise reader.fail(field, "distinct file-name suffixes", f"{json_writer.dumps(suffix)} twice")
     return suffixes
 
 
@@ -388,7 +388,7 @@ def validate_glob_patterns(
                 describe(pattern),
             )
         if pattern.casefold() in seen:
-            raise reader.fail(field, "distinct glob patterns, ignoring case", f"{json.dumps(pattern)} twice")
+            raise reader.fail(field, "distinct glob patterns, ignoring case", f"{json_writer.dumps(pattern)} twice")
         seen.add(pattern.casefold())
     return patterns
 
@@ -559,7 +559,7 @@ def normalize_ignored_repositories(value: Any) -> list[str]:
     entries = READ.array(value, field, normalize_ignored_repository, maximum=MAX_IGNORED_REPOSITORIES)
     for index, entry in enumerate(entries):
         if entry in entries[:index]:
-            raise READ.fail(field, "distinct entries, ignoring case", f"{json.dumps(entry)} twice")
+            raise READ.fail(field, "distinct entries, ignoring case", f"{json_writer.dumps(entry)} twice")
     return entries
 
 

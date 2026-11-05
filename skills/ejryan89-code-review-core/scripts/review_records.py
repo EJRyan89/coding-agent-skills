@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import copy
 import hashlib
-import json
 import re
 import sys
 from collections.abc import Iterable
@@ -15,6 +14,7 @@ from typing import Any, NotRequired, TypedDict, cast
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
+import json_writer
 import whole_number
 from flat_text import flat_text
 from markdown_literal import markdown_line as _text
@@ -449,7 +449,7 @@ def valid_analyzer(value: object) -> bool:
 
 
 def canonical_json(value: object) -> str:
-    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return json_writer.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
 
 
 def sha256_text(value: str) -> str:
