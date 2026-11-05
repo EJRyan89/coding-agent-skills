@@ -639,7 +639,7 @@ READERS = [
         "frontmatter",
         b"---\nname: example\nallowed-tools: Read, Grep\n---\n\nBody.\n",
         _tool_grant,
-        (review_reviewers.RuntimeContractError,),
+        (review_runtime.RuntimeContractError,),
         # No tool list is every tool inherited, the widest grant, so the skill is inspected as one that can delegate.
         accepts=REVIEWER_FRONTMATTER,
     ),
@@ -648,7 +648,7 @@ READERS = [
         "frontmatter",
         b"---\nname: example\nmodel: opus\n---\n\nBody.\n",
         _profile_model,
-        (review_reviewers.RuntimeContractError,),
+        (review_runtime.RuntimeContractError,),
         # No model is the runtime's model inherited, which profile_model reports as the profile naming none.
         accepts=REVIEWER_FRONTMATTER,
     ),

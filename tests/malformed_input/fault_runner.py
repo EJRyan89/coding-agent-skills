@@ -94,6 +94,16 @@ def program_of(program: Any, command: Any) -> str:
     return os.fsdecode(command[0]) if command else ""
 
 
+def forms(path: Any) -> list[str]:
+    """A path's keys as the hook compares them: as given, and resolved, since a Windows temporary folder may be named
+    by its short name, which a script that resolves a path names by its long one."""
+    given = key(path)
+    if given is None:
+        return []
+    resolved = key(os.path.realpath(given))
+    return [given] if resolved in {None, given} else [given, resolved]
+
+
 def within(path: str, folders: list[str]) -> bool:
     return any(path == folder or path.startswith(folder.rstrip(os.sep) + os.sep) for folder in folders)
 
@@ -104,7 +114,10 @@ class Run:
     def __init__(self, spec: dict[str, Any]) -> None:
         self.fault: str = spec["fault"]
         self.target = key(spec.get("target"))
-        self.writable = [key(folder) or "" for folder in spec["writable"]]
+        self.targets = forms(spec.get("target"))
+        # The run's folders, and the null device, which a program it starts takes as its stdin or stdout.
+        self.writable = [found for folder in spec["writable"] for found in forms(folder)]
+        self.null = key(os.devnull)
         self.allow_git = not self.fault.startswith("git_")
         self.reached = False
         self.stopped: str | None = None
@@ -120,7 +133,7 @@ class Run:
         if self.fault == "stat_raises":
             return
         found = key(path)
-        if self.target is not None and found is not None and (found == self.target or within(found, [self.target])):
+        if found is not None and within(found, self.targets):
             self.reached = True
 
     def hook(self, event: str, arguments: tuple[Any, ...]) -> None:
@@ -141,14 +154,14 @@ class Run:
                 mode is None and isinstance(flags, int) and flags & WRITE_FLAGS
             )
             found = key(path)
-            if writes and found is not None and not within(found, self.writable):
+            if writes and found is not None and found != self.null and not within(found, self.writable):
                 self.stop(f"wrote outside the run's folders: {found}")
         elif event in READS:
             self.touches(arguments[0] if arguments else None)
             # A missing file is met by listing the folder that would hold it, as a glob or a walk finds files.
             if event != "open" and self.fault == "missing" and self.target is not None:
                 listed = key(arguments[0] if arguments and arguments[0] is not None else ".")
-                self.reached = self.reached or listed == key(Path(self.target).parent)
+                self.reached = self.reached or any(listed == key(Path(each).parent) for each in self.targets)
         elif event in WRITES:
             for index in WRITES[event]:
                 found = key(arguments[index]) if index < len(arguments) else None
@@ -201,8 +214,8 @@ def replace_git(run: Run, repository: Path) -> None:
         run.reached = True
         yield FaultedStream(command, float(keywords.get("idle_timeout") or 1), run.fault == "git_timeout")
 
-    git_client.run_bounded = runner  # type: ignore[assignment]  # the fault's runner, in the module's own name
-    git_client.streaming = streaming  # type: ignore[assignment]  # the same, for a command that answers requests
+    git_client.run_bounded = runner  # type: ignore[attr-defined]  # the fault's runner, in the name the client calls
+    git_client.streaming = streaming  # type: ignore[attr-defined,assignment]  # the fault's stream, which answers as Streaming does
     replace_deployer_git(run, repository)
 
 
@@ -228,7 +241,7 @@ def replace_deployer_git(run: Run, repository: Path) -> None:
             return platform_support.ToolResult(GIT_EXIT, "", reason)
         return platform_support.ToolResult(GIT_EXIT, reason)
 
-    platform_support.run_tool = run_tool  # type: ignore[assignment]  # the fault's runner, in the module's own name
+    platform_support.run_tool = run_tool
 
 
 def replace_gh(run: Run) -> None:
@@ -239,7 +252,7 @@ def replace_gh(run: Run) -> None:
         run.reached = True
         return bounded_process.Finished(1, b"", GH_FAILURE)
 
-    github_client.run_bounded = runner  # type: ignore[assignment]  # the fault's runner, in the module's own name
+    github_client.run_bounded = runner  # type: ignore[attr-defined]  # the fault's runner, in the name the client calls
 
 
 def raise_on_stat(run: Run) -> None:
@@ -247,7 +260,7 @@ def raise_on_stat(run: Run) -> None:
 
     def faulted(real: Any) -> Any:
         def stat(path: Any, *arguments: Any, **keywords: Any) -> Any:
-            if run.target is not None and key(path) == run.target:
+            if key(path) in run.targets:
                 run.reached = True
                 raise PermissionError(13, "Permission denied (injected)", os.fsdecode(path))
             return real(path, *arguments, **keywords)
@@ -264,7 +277,7 @@ def raise_on_stat(run: Run) -> None:
 
 def absent(run: Run, real: Any) -> Any:
     def check(path: Any) -> bool:
-        if run.target is not None and key(path) == run.target:
+        if key(path) in run.targets:
             run.reached = True
             return False
         return bool(real(path))

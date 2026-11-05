@@ -20,6 +20,8 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts"))
 
+import json_writer
+
 from tools import plugin_release
 
 REPOSITORY = "https://github.com/owner/fixture-skills"
@@ -216,7 +218,7 @@ def test_build_whose_marketplace_cannot_be_written_leaves_its_output_as_it_found
         assets.mkdir()
     before = (checkout / ".claude-plugin" / "marketplace.json").read_bytes()
     refused = PermissionError(13, "Permission denied", str(checkout / ".claude-plugin" / "marketplace.json"))
-    with mock.patch.object(plugin_release.json_writer, "write", side_effect=refused):
+    with mock.patch.object(json_writer, "write", side_effect=refused):
         code, lines = run(["build", "v1.2.3", "--root", str(checkout), "--output", str(assets)])
     assert code == 1
     assert len(lines) == 1, lines

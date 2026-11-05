@@ -75,6 +75,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "skills" / "ejry
 
 import duplication
 import exit_tables
+import file_presence
 import fsops_platform
 import job_selection
 import kinds_table
@@ -312,11 +313,23 @@ def parse_arguments(argv: list[str] | None, errors: TextIO | None = None) -> arg
         parser.error("argument --changed: not allowed with argument -k, which selects by name instead")
     if arguments.full and arguments.patterns:
         parser.error("argument --full: not allowed with argument -k, which selects by name instead")
-    if arguments.pr_body is not None and not arguments.pr_body.is_file():
-        parser.error(f"--pr-body is not a file: {arguments.pr_body}")
-    if arguments.pr_title is not None and not arguments.pr_title.is_file():
-        parser.error(f"--pr-title is not a file: {arguments.pr_title}")
+    for option, path in (("--pr-body", arguments.pr_body), ("--pr-title", arguments.pr_title)):
+        problem = file_problem(option, path)
+        if problem is not None:
+            parser.error(problem)
     return arguments
+
+
+def file_problem(option: str, path: Path | None) -> str | None:
+    """Why an option's file cannot be read as one, or None when it is a file or the option was not given: a path that
+    is not a file, or one whose stat fails, which is named as that, never read as no file."""
+    if path is None:
+        return None
+    try:
+        present = file_presence.is_present(path, other_is_absent=True)
+    except OSError as error:
+        return f"{option} cannot be examined: {path}: {error.strerror or error}"
+    return None if present else f"{option} is not a file: {path}"
 
 
 def pull_request_only(arguments: argparse.Namespace) -> bool:

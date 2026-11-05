@@ -73,9 +73,11 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   `tests/deployer/test_presence_reads.py::PresenceReadTests`,
   `tests/deployer/test_state_files.py::ReaderTests::test_a_state_file_whose_stat_fails_is_refused_with_the_reason_not_read_as_absent`,
   `skills/ejryan89-code-review-core/scripts/test_review_source.py::SearchErrorTests`,
-  `tests/malformed_input/test_faults.py::test_each_command_refuses_each_fault_as_its_docstring_says`, which runs
-  every command of every entry point with a file it reads unreadable, a directory, missing, or unstatable, and with
-  git exiting 128, git timing out, and gh failing, and fails a run that exits 0 or never names what failed
+  `tests/malformed_input/test_faults_unreadable.py::test_each_command_refuses_a_file_it_reads_that_it_cannot_read`,
+  `tests/malformed_input/test_faults_stat.py::test_each_command_refuses_a_file_whose_stat_fails`, and
+  `tests/malformed_input/test_faults_programs.py::test_each_command_refuses_a_git_or_gh_that_fails`,
+  which run every command of every entry point with a file it reads unreadable, a directory, missing, or unstatable,
+  and with git exiting 128, git timing out, and gh failing, and fail a run that exits 0 or never names what failed
 - **Search for:** `returncode == 0` or `returncode != 0` beside a `git` or `gh` command outside `git_client.py` and
   `github_client.py`, including a git the deployer runs through `platform_support.run_tool`, which reaches
   `GitClient` only through a runner over `run_tool`; `except GitError:` followed by `return None` or `return False`; `except OSError:` followed by
@@ -155,7 +157,7 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   `skills/repo-cleanup/scripts/test_repo_cleanup.py::SyncTests::test_each_stop_is_returned_as_the_state_it_stopped_in_never_read_back_from_the_lines`,
   `skills/repo-cleanup/scripts/test_repo_cleanup_stops.py::StopAndRefusalTests::test_a_branch_a_stopped_apply_never_offered_is_refused_and_the_stop_outlasts_later_commands`,
   `tests/validation/exit_tables.py::ExitTablePolicies::test_each_entry_point_s_exit_table_names_exactly_the_codes_it_can_exit_with`,
-  `tests/malformed_input/test_faults.py::test_each_command_refuses_each_fault_as_its_docstring_says`
+  `tests/malformed_input/test_faults_programs.py::test_each_command_refuses_a_git_or_gh_that_fails`
 - **Search for:** `rg -nU "except (OSError|ValueError|UnicodeDecodeError)[^\n]*:\n\s+(print\([^\n]*\)\n\s+)?return 1\b"`,
   a handler that ends every failure in one code; two probes under one `except` that print one message; an `except`
   around a `git` or `gh` call that drops the exception's text; `FAILED KeyError`, `FAILED TypeError`, or
@@ -473,8 +475,8 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   `tests/deployer/test_invariants.py::RefusalBeforeTheFirstWriteTests::test_every_root_refuses_a_backups_folder_it_could_not_keep_a_copy_in`,
   `tests/deployer/test_rendering_locking.py::LockTests::test_a_read_only_manifest_is_refused_before_the_first_change_and_by_the_dry_run`,
   `skills/curate-agent-memory/scripts/test_memory_audit.py::DeleteTests::test_a_read_only_memory_among_several_is_refused_before_any_is_deleted`,
-  `tests/malformed_input/test_faults.py::test_each_command_refuses_each_fault_as_its_docstring_says`, which compares
-  the home, the work folder, and each output a driver names before and after every refused run of every entry point
+  `tests/malformed_input/test_faults_directory.py::test_each_command_refuses_a_directory_in_a_file_s_place`, which
+  compares the home, the work folder, and each output a driver names before and after every refused run of every entry point
 - **Search for:** a `mkdir(parents=True` or `mkdtemp(` in `tools/` before the arguments are checked; a write before a
   `raise` of the step's refusal class; a check that runs only where the path is first used, after earlier writes, such
   as a destination judged in the step that creates it; a refusal added to a write the commit makes, such as

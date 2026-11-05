@@ -100,6 +100,9 @@ def git_environment(fixture: Fixture) -> dict[str, str]:
         "XDG_CONFIG_HOME": str(fixture.home / ".config"),
         "GIT_CONFIG_NOSYSTEM": "1",
         "GIT_CONFIG_GLOBAL": str(fixture.home / ".gitconfig"),
+        # No automatic maintenance, which a commit can start in the background and which writes in .git while a run
+        # is compared with how it found its folders.
+        "GIT_CONFIG_PARAMETERS": "'maintenance.auto'='false' 'gc.auto'='0'",
         "GIT_AUTHOR_NAME": "Fixture",
         "GIT_AUTHOR_EMAIL": "fixture@example.invalid",
         "GIT_COMMITTER_NAME": "Fixture",

@@ -33,6 +33,7 @@ from skill_roots import sibling_scripts
 
 sys.path.insert(0, str(sibling_scripts("ejryan89-code-review-core")))
 
+import json_reader
 import review_document
 import review_guard
 import review_pipeline as rp
@@ -2077,9 +2078,7 @@ class OutputTests(DocumentTestCase):
                 self.assertTrue(lines[0].startswith("FAILED [Errno 13] Permission denied"), lines)
                 self.assertIn(path.name, lines[0])
             with self.subTest(file=path.name, fault="its read fails"):
-                with mock.patch.object(
-                    review_document.json_reader, "read_file", side_effect=PermissionError(13, "Denied", str(path))
-                ):
+                with mock.patch.object(json_reader, "read_file", side_effect=PermissionError(13, "Denied", str(path))):
                     code, lines = run_main(*arguments)
                 self.assertEqual((1, [f"FAILED [Errno 13] Denied: {str(path)!r}"]), (code, lines))
         self.assertFalse((self.output / "report.md").exists())

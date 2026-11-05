@@ -50,6 +50,7 @@ import msbuild_conditions
 import msbuild_reader
 import repo_cleanup
 import review_document
+import review_guard
 import review_insights
 import review_synthesis
 import run_dotnet_format
@@ -386,7 +387,7 @@ SYNTHESIS_PROMPT = "<the synthesis prompt>"
 def _synthesis_run(path: Path) -> object:
     """Whether remove_run removed the run the case's run.json describes; a run it leaves is its refusal."""
     run = path.parent
-    with mock.patch.object(review_synthesis.tempfile, "gettempdir", return_value=str(run.parent)):
+    with mock.patch.object(tempfile, "gettempdir", return_value=str(run.parent)):
         review_synthesis.remove_run({"prompt": _SynthesisPrompt(run / "prompt.md")})
     if run.exists():
         raise Refused("the run is not one stage_run made")
@@ -555,7 +556,8 @@ READERS = [
         "json",
         b'{"permissions": {"blockReadsOutsideWorkingDirectories": false}}',
         _memory_settings,
-        (memory_audit.UnreadableSettings,),
+        # A file it cannot read, or anything else in the file's place, is the read's OSError naming it, a FAILED line.
+        (memory_audit.UnreadableSettings, OSError),
         filename="settings.json",
         accepts={
             "bom": UTF8_SIG,
@@ -610,7 +612,8 @@ READERS = [
         "json",
         b'{"number": 1}',
         _document_json,
-        (Refused,),
+        # A file it cannot read, a directory in its place included, is the read's OSError, which names it.
+        (Refused, OSError),
         filename="pull.json",
         open_fields="it returns the object whole, and its caller compares each field with the record's, so a field of "
         "another type fails as the review of another fixture",
@@ -837,6 +840,6 @@ READERS = [
         json.dumps({"roles": [{"id": review_synthesis.SYNTHESIS_ROLE, "prompt_file": SYNTHESIS_PROMPT}]}).encode(),
         _synthesis_run,
         (Refused,),
-        filename=f"{review_synthesis.RUN_PREFIX}example/{review_synthesis.RUN_FILE}",
+        filename=f"{review_guard.RUN_PREFIX}example/{review_guard.RUN_FILE}",
     ),
 ]

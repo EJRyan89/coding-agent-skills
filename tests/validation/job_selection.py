@@ -70,7 +70,7 @@ CHANGE_REACHES: tuple[tuple[tuple[str, ...], tuple[str, ...]], ...] = (
     # The fault corpus runs every entry point as a program, importing none of them.
     (
         ("*.py",),
-        ("tests/malformed_input/test_faults.py",),
+        ("tests/malformed_input/test_faults*.py",),
     ),
 )
 # The folders skills sit in: a change anywhere in a skill reaches the suites in its scripts/.
