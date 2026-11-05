@@ -53,8 +53,8 @@ T = TypeVar("T")
 Page = TypeVar("Page")
 SEARCH_PAGE_SIZE = 100
 SEARCH_RESULT_CAP = 1000
-# The nominal low end of the second date a single day over the cap is sliced by, from before GitHub held any pull
-# request or search result. The outermost slices are open-ended, so a date outside the nominal range still falls in one.
+# The nominal low end of a second date that falls on or before the day sliced, from before GitHub held any pull request
+# or search result. The outermost slices are open-ended, so a date outside the nominal range still falls in one.
 SLICE_START = date(2008, 1, 1)
 SEARCH_INTERVAL = 2.1
 MAX_INTERVAL = 8.0
@@ -214,19 +214,26 @@ def _next_cursor(page_info: Any, path: str, followed: set[str]) -> str | None:
 @dataclass(frozen=True)
 class RangedSearch:
     """A search over a range of days: `template` with `{span}` set to the range, and `slice_by`, a second date
-    qualifier that splits a single day still over the cap into parts, halving SLICE_START through `today`."""
+    qualifier that splits a single day still over the cap into parts. `slice_after` says which side of the day the
+    second date falls on: on or after it, through `today`, or on or before it, from SLICE_START."""
 
     template: str
     slice_by: str
+    slice_after: bool
     today: date
 
     def query(self, start: date, end: date) -> str:
         return self.template.replace("{span}", f"{start}..{end}")
 
-    def slice_query(self, query: str, low: date, high: date) -> str:
-        """`query` limited to the part low..high of `slice_by`, open at SLICE_START and at `today`."""
-        first = "*" if low == SLICE_START else str(low)
-        last = "*" if high == self.today else str(high)
+    def slice_bounds(self, day: date) -> tuple[date, date]:
+        """The nominal range of the second date of the results on `day`, which slicing halves."""
+        return (day, self.today) if self.slice_after else (SLICE_START, day)
+
+    def slice_query(self, query: str, low: date, high: date, bounds: tuple[date, date]) -> str:
+        """`query` limited to the part low..high of `slice_by`, open-ended where the part reaches either of `bounds`,
+        so a result whose second date lies outside them still falls in a part."""
+        first = "*" if low == bounds[0] else str(low)
+        last = "*" if high == bounds[1] else str(high)
         return f"{query} {self.slice_by}:{first}..{last}"
 
 
@@ -252,33 +259,36 @@ def _search_range(
         left, left_capped = _search_range(searcher, search, start, middle)
         right, right_capped = _search_range(searcher, search, middle + timedelta(days=1), end)
         return left + right, left_capped + right_capped
-    if total > SEARCH_RESULT_CAP:
+    bounds = search.slice_bounds(start)
+    if total > SEARCH_RESULT_CAP and bounds[0] < bounds[1]:
         print(
             f"{start} matches {total} results, over the search cap; searching it again in parts by {search.slice_by}.",
             file=sys.stderr,
         )
-        items, capped = _slices(searcher, search, query, SLICE_START, search.today)
+        items, capped = _slices(searcher, search, query, bounds, bounds)
         return searcher.distinct(items), [str(start)] if capped else []
     items, capped = searcher.fetch(query, page)
     return items, [str(start)] if capped else []
 
 
 def _slices(
-    searcher: _Searcher[Page], search: RangedSearch, query: str, low: date, high: date
+    searcher: _Searcher[Page], search: RangedSearch, query: str, span: tuple[date, date], bounds: tuple[date, date]
 ) -> tuple[list[Any], bool]:
-    """The results of `query`, a single day over the cap, in the two halves of low..high of `search.slice_by`, each
-    halved again while it is over the cap. Reports whether a part that is a single day of it still exceeded the cap.
+    """The results of `query`, a single day over the cap, in the two halves of `span`, a range of more than one day of
+    `search.slice_by` within its `bounds`, each halved again while it is over the cap. Reports whether a part that is a
+    single day of it still exceeded the cap.
 
     Parts are searched oldest first, so a result whose second date moves to today while they are searched, as an
     `updated` date does, is found again in the last part rather than missed, and the caller drops the repeat."""
+    low, high = span
     middle = low + (high - low) // 2
     items: list[Any] = []
     capped = False
     for part_low, part_high in ((low, middle), (middle + timedelta(days=1), high)):
-        part = search.slice_query(query, part_low, part_high)
+        part = search.slice_query(query, part_low, part_high, bounds)
         page, total = searcher.probe(part)
         if total > SEARCH_RESULT_CAP and part_low < part_high:
-            found, part_capped = _slices(searcher, search, query, part_low, part_high)
+            found, part_capped = _slices(searcher, search, query, (part_low, part_high), bounds)
         else:
             found, part_capped = searcher.fetch(part, page)
         items += found
@@ -638,7 +648,9 @@ def _review_dates(
 ) -> dict[str, list[date]]:
     """Submission dates of the user's non-pending reviews, per pull request someone else authored and updated from
     `start` through `today`."""
-    search = RangedSearch(f"org:{org} reviewed-by:{user} -author:{user} is:pr updated:{{span}}", "created", today)
+    search = RangedSearch(
+        f"org:{org} reviewed-by:{user} -author:{user} is:pr updated:{{span}}", "created", slice_after=False, today=today
+    )
     nodes, truncated = client.graphql_search_range(search, user, start, today)
     if truncated:
         capped.setdefault("Reviews", []).extend(truncated)
@@ -692,7 +704,7 @@ def collect_activity(
     authored = _monthly(
         client,
         "search/issues",
-        RangedSearch(f"org:{org} author:{user} is:pr created:{{span}}", "updated", today),
+        RangedSearch(f"org:{org} author:{user} is:pr created:{{span}}", "updated", slice_after=True, today=today),
         spans,
         labels,
         ("created_at",),
@@ -703,7 +715,9 @@ def collect_activity(
     merged = _monthly(
         client,
         "search/issues",
-        RangedSearch(f"org:{org} author:{user} is:pr is:merged merged:{{span}}", "created", today),
+        RangedSearch(
+            f"org:{org} author:{user} is:pr is:merged merged:{{span}}", "created", slice_after=False, today=today
+        ),
         spans,
         labels,
         ("pull_request", "merged_at"),
@@ -714,7 +728,7 @@ def collect_activity(
     commits = _monthly(
         client,
         "search/commits",
-        RangedSearch(f"org:{org} author:{user} author-date:{{span}}", "committer-date", today),
+        RangedSearch(f"org:{org} author:{user} author-date:{{span}}", "committer-date", slice_after=True, today=today),
         spans,
         labels,
         ("commit", "author", "date"),
@@ -911,12 +925,13 @@ def render_history(history: History) -> str:
 def months_to_pull(history: History, user: str, labels: list[str]) -> list[str]:
     """The months of `labels` to search for the user's activity: the last, which is the current, partial month, and
     each month the history lacks or captured while it was still partial, so the first run after a month ends pulls
-    it again, and each month a file written before the report recorded the cap holds, so its cap becomes known. A
-    closed month already in the history with its cap recorded is never searched for again."""
+    it again, each month a file written before the report recorded the cap holds, so its cap becomes known, and
+    each month the history records as capped, so a later run, which slices a day over the cap, can count it whole. A
+    closed month already in the history with no cap recorded is never searched for again."""
     pulled = []
     for label in labels:
         row = history.get(_history_key(label, user))
-        if label == labels[-1] or row is None or row.is_partial or row.capped is None:
+        if label == labels[-1] or row is None or row.is_partial or row.capped is None or row.capped:
             pulled.append(label)
     return pulled
 
@@ -950,21 +965,6 @@ def _rows_of(activity: Activity, user: str, labels: list[str], current: str, cap
         )
         for label in labels
     }
-
-
-def _recorded_cap_warnings(history: History, user: str, labels: list[str]) -> list[str]:
-    """A WARNING note for each of `labels` read back from the history whose row records a capped search."""
-    lines: list[str] = []
-    for label in labels:
-        row = history[_history_key(label, user)]
-        if row.capped:
-            headings = ", ".join(METRICS[metric][1] for metric in row.capped)
-            lines.append(
-                f"- WARNING: for {user}, {label} is read from the history file, which records that GitHub's "
-                f"1000-result Search API cap truncated its {headings} when it was captured; those counts are lower "
-                "than the true totals."
-            )
-    return lines
 
 
 METRIC_NOTES = {
@@ -1023,8 +1023,9 @@ def render_comparison(comparison: Comparison, today: date) -> str:
     if comparison.from_history:
         lines.append(
             "- Closed months already in the history file are read from it, not searched again, except once for each "
-            "month of a file written before the report recorded GitHub's search cap; the current month is searched "
-            "on every run, and a month the history captured while it was partial once more after it ends."
+            "month of a file written before the report recorded GitHub's search cap; the current month and each "
+            "month the history records as capped are searched on every run, and a month the history captured while "
+            "it was partial once more after it ends."
         )
     lines += comparison.warnings
     return "\n".join(lines) + "\n"
@@ -1062,7 +1063,6 @@ def compare(client: GitHubSearchClient, request: Request, history: History, now:
         except GitHubError as exc:
             raise GitHubError(f"{user}: {exc}", kind=exc.kind) from exc
         rows.update(_rows_of(activity, user, pulled, labels[-1], _captured_at(now)))
-        warnings += _recorded_cap_warnings(history, user, [label for label in labels if label not in pulled])
         warnings += _cap_warnings(activity.capped, f"for {user}, ")
     if history_path is not None:
         try:

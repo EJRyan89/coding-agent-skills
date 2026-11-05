@@ -107,8 +107,10 @@ def rows(count: int, start: int = 0) -> list[dict[str, str]]:
     return [{"id": f"i{index}"} for index in range(start, start + count)]
 
 
-def ranged(template: str = "q {span}", slice_by: str = "created", today: date = date(2026, 1, 31)) -> RangedSearch:
-    return RangedSearch(template, slice_by, today)
+def ranged(
+    template: str = "q {span}", slice_by: str = "created", slice_after: bool = False, today: date = date(2026, 1, 31)
+) -> RangedSearch:
+    return RangedSearch(template, slice_by, slice_after, today)
 
 
 def fetch(client: GitHubSearchClient) -> int:
@@ -190,8 +192,8 @@ class SearchTests(unittest.TestCase):
         self.assertEqual((2500, []), (len({item["id"] for item in items}), capped))
         self.assertEqual(2500, len(items), "a result found in two parts is kept once")
         sliced = [query for query in github.queries if len(RANGE.findall(query)) == 2]
-        self.assertEqual("q 2026-01-05..2026-01-05 created:*..2017-01-15", sliced[0])
-        self.assertIn("q 2026-01-05..2026-01-05 created:2017-01-16..*", sliced)
+        self.assertEqual("q 2026-01-05..2026-01-05 created:*..2017-01-02", sliced[0], "from 2008-01-01 to the day")
+        self.assertIn("q 2026-01-05..2026-01-05 created:2017-01-03..*", sliced)
         self.assertTrue(sliced[-1].endswith("..*"), "the last part stays open-ended")
         self.assertGreater(len(sliced), 2, "a half over the cap is halved again")
         self.assertTrue(all(query.startswith("q 2026-01-05..2026-01-05 created:") for query in sliced))
@@ -207,7 +209,7 @@ class SearchTests(unittest.TestCase):
         items, capped = client.search_range("search/issues", ranged(), date(2026, 1, 1), date(2026, 1, 8), KEY)
         self.assertEqual(["2026-01-05"], capped)
         self.assertEqual(1300, len(items), "the parts under the cap are kept whole, the one over it to the cap")
-        self.assertIn("q 2026-01-05..2026-01-05 created:2026-01-05..2026-01-05", github.queries)
+        self.assertIn("q 2026-01-05..2026-01-05 created:2026-01-05..*", github.queries)
 
     def test_a_multi_day_part_under_the_cap_is_not_sliced(self) -> None:
         dated = [(date(2026, 1, 1) + timedelta(days=index % 8), {"id": str(index)}) for index in range(1500)]
@@ -691,26 +693,54 @@ class CollectTests(unittest.TestCase):
 
     def test_each_search_slices_a_day_over_the_cap_by_its_own_second_date(self) -> None:
         day = date(2026, 4, 2)
-        searches: dict[str, tuple[str, Callable[[int], dict[str, Any]]]] = {
-            AUTHORED: ("updated", lambda index: {"node_id": f"PR_{index}", "created_at": f"{day}T10:00:00Z"}),
+
+        def after(index: int) -> date:
+            return day + timedelta(days=index % 40)
+
+        def before(index: int) -> date:
+            return date(2018, 1, 1) + timedelta(days=index)
+
+        # Each search's second date, the side of the day it falls on, and the two halves its slicing starts with: the
+        # day through today when it follows the day, 2008-01-01 through the day when it precedes it.
+        searches: dict[str, tuple[str, Callable[[int], dict[str, Any]], Callable[[int], date], tuple[str, str]]] = {
+            AUTHORED: (
+                "updated",
+                lambda index: {"node_id": f"PR_{index}", "created_at": f"{day}T10:00:00Z"},
+                after,
+                ("*..2026-04-26", "2026-04-27..*"),
+            ),
             MERGED: (
                 "created",
                 lambda index: {"node_id": f"PR_{index}", "pull_request": {"merged_at": f"{day}T10:00:00Z"}},
+                before,
+                ("*..2017-02-15", "2017-02-16..*"),
             ),
-            COMMITS: ("committer-date", lambda index: commit(f"{index:040x}", f"{day}T10:00:00Z")),
+            COMMITS: (
+                "committer-date",
+                lambda index: commit(f"{index:040x}", f"{day}T10:00:00Z"),
+                after,
+                ("*..2026-04-26", "2026-04-27..*"),
+            ),
         }
-        for prefix, (qualifier, result) in searches.items():
+        for prefix, (qualifier, result, second, halves) in searches.items():
             github = self.fake()
-            github.dated[prefix] = [
-                (day, {**result(index), SLICED_ON: date(2018, 1, 1) + timedelta(days=index)}) for index in range(1001)
-            ]
+            github.dated[prefix] = [(day, {**result(index), SLICED_ON: second(index)}) for index in range(1001)]
             with self.subTest(qualifier=qualifier):
                 activity = self.collect(github)
                 self.assertEqual({}, activity.capped)
-                self.assertIn(f"{prefix}{day}..{day} {qualifier}:*..2017-03-11", github.queries)
-                self.assertIn(f"{prefix}{day}..{day} {qualifier}:2017-03-12..*", github.queries)
+                for half in halves:
+                    self.assertIn(f"{prefix}{day}..{day} {qualifier}:{half}", github.queries)
                 counts = {AUTHORED: activity.authored, MERGED: activity.merged, COMMITS: activity.commits}[prefix]
                 self.assertEqual(1001, counts["2026-04"])
+
+    def test_a_day_whose_second_date_can_only_be_that_day_is_not_sliced(self) -> None:
+        github = self.fake()
+        github.dated[AUTHORED] = [
+            (TODAY, {"node_id": f"PR_{index}", "created_at": f"{TODAY}T10:00:00Z"}) for index in range(1001)
+        ]
+        activity = self.collect(github)
+        self.assertEqual({"PRs authored": [str(TODAY)]}, activity.capped, "updated falls on today, which cannot split")
+        self.assertFalse([query for query in github.queries if query.startswith(AUTHORED) and " updated:" in query])
 
     def test_review_search_splits_and_pages_past_the_cap(self) -> None:
         github = self.fake()
@@ -1270,10 +1300,11 @@ def capped_commits(github: GroupGitHub, day: date) -> None:
     )
 
 
-def test_a_capped_month_read_back_from_the_history_keeps_its_warning(tmp_path: Path) -> None:
+def test_a_month_recorded_as_capped_is_searched_again_until_it_is_counted_whole(tmp_path: Path) -> None:
     history = tmp_path / "activity.csv"
     github = group_github()
-    capped_commits(github, date(2026, 4, 2))
+    day = date(2026, 4, 2)
+    capped_commits(github, day)
     code, stdout, _ = run_group([*GROUP, "--history", str(history)], github, at(TODAY))
     assert code == 0, stdout
     assert "WARNING: for octo, Commits for 2026-04-02 exceeded GitHub's 1000-result Search API cap" in stdout
@@ -1283,13 +1314,22 @@ def test_a_capped_month_read_back_from_the_history_keeps_its_warning(tmp_path: P
     github.queries.clear()
     code, stdout, _ = run_group([*GROUP, "--history", str(history)], github, at(date(2026, 5, 22)))
     assert code == 0, stdout
-    assert query_starts(github.queries) == {"2026-05-01"}, "the capped month is read back, not searched"
-    assert (
-        "- WARNING: for octo, 2026-04 is read from the history file, which records that GitHub's 1000-result "
-        "Search API cap truncated its Commits when it was captured; those counts are lower than the true totals.\n"
-    ) in stdout
+    starts = query_starts(github.queries)
+    assert "2026-04-01" in starts, "the month recorded as capped is searched again"
+    assert "2026-03-01" not in starts, "a closed month with no cap recorded is not"
+    assert "WARNING: for octo, Commits for 2026-04-02 exceeded GitHub's 1000-result Search API cap" in stdout
     assert stdout.count("WARNING") == 1, "no other month, and not mona, is warned about"
-    assert history_lines(history)["2026-04,octo"] == first["2026-04,octo"]
+    assert history_lines(history)["2026-04,octo"] == "2026-04,octo,0,0,1000,0,0,false,2026-05-22T08:00:00Z,commits"
+    # The commits' committer dates now separate them, as when a run that slices reads a month an earlier one capped.
+    for index, (_, found) in enumerate(github.dated[COMMITS]):
+        found[SLICED_ON] = day + timedelta(days=index % 40)
+    code, stdout, _ = run_group([*GROUP, "--history", str(history)], github, at(date(2026, 5, 23)))
+    assert code == 0, stdout
+    assert "WARNING" not in stdout
+    assert history_lines(history)["2026-04,octo"] == "2026-04,octo,0,0,1001,0,0,false,2026-05-23T08:00:00Z,"
+    github.queries.clear()
+    assert run_group([*GROUP, "--history", str(history)], github, at(date(2026, 5, 24)))[0] == 0
+    assert query_starts(github.queries) == {"2026-05-01"}, "once counted whole, a closed month is not searched again"
 
 
 def test_a_review_cap_is_recorded_for_every_month_up_to_the_capped_day(tmp_path: Path) -> None:
@@ -1304,10 +1344,16 @@ def test_a_review_cap_is_recorded_for_every_month_up_to_the_capped_day(tmp_path:
     assert rows["2026-03,octo"].endswith(",prs_reviewed reviews_submitted")
     assert rows["2026-04,octo"].endswith(",prs_reviewed reviews_submitted")
     assert rows["2026-05,octo"].endswith(",true,2026-05-20T08:00:00Z,"), "reviews of a later month are not lowered"
+    github.queries.clear()
     code, stdout, _ = run_group([*GROUP, "--history", str(history)], github, at(date(2026, 5, 22)))
     assert code == 0, stdout
-    assert "for octo, 2026-03 is read from the history file" in stdout
-    assert "truncated its PRs reviewed, Reviews submitted when it was captured" in stdout
+    assert f"{REVIEWED}2026-03-01..2026-05-22" in github.queries, "the months recorded as capped are searched again"
+    assert (
+        "for octo, the review search exceeded GitHub's 1000-result Search API cap for pull requests last updated on "
+        "2026-04-20" in stdout
+    )
+    rows = history_lines(history)
+    assert rows["2026-03,octo"].endswith(",2026-05-22T08:00:00Z,prs_reviewed reviews_submitted")
 
 
 def test_a_review_day_sliced_under_the_cap_is_recorded_uncapped(tmp_path: Path) -> None:
@@ -1326,7 +1372,7 @@ def test_a_review_day_sliced_under_the_cap_is_recorded_uncapped(tmp_path: Path) 
     rows = history_lines(history)
     for month in ("2026-03", "2026-04"):
         assert rows[f"{month},octo"].endswith(",false,2026-05-20T08:00:00Z,"), "a sliced day records no cap"
-    assert f"{REVIEWED}2026-04-20..2026-04-20 created:*..2017-03-11" in github.queries
+    assert f"{REVIEWED}2026-04-20..2026-04-20 created:*..2017-02-24" in github.queries
 
 
 def old_format(text: str) -> str:
@@ -1353,7 +1399,9 @@ def test_a_history_written_before_the_cap_was_recorded_is_read_and_searched_agai
     assert rows["2026-04,mona"] == "2026-04,mona,2,2,0,0,0,false,2026-05-20T08:00:00Z,unknown", "kept as it was"
     github.queries.clear()
     assert run_group(arguments, github, at(date(2026, 5, 23)))[0] == 0
-    assert query_starts(github.queries) == {"2026-05-01"}, "once recorded, a closed month is not searched again"
+    starts = query_starts(github.queries)
+    assert "2026-03-01" in starts, "the month recorded as capped is searched again"
+    assert not [start for start in starts if start.startswith("2026-04")], "once recorded uncapped, a month is not"
 
 
 def test_the_first_run_after_a_month_ends_pulls_it_again(tmp_path: Path) -> None:
@@ -1636,6 +1684,7 @@ def test_a_comparison_with_a_history_says_which_months_it_searches_again(tmp_pat
     assert code == 0, stdout
     assert (
         "- Closed months already in the history file are read from it, not searched again, except once for each "
-        "month of a file written before the report recorded GitHub's search cap; the current month is searched on "
-        "every run, and a month the history captured while it was partial once more after it ends.\n"
+        "month of a file written before the report recorded GitHub's search cap; the current month and each month "
+        "the history records as capped are searched on every run, and a month the history captured while it was "
+        "partial once more after it ends.\n"
     ) in stdout
