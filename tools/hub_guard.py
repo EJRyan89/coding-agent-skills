@@ -204,7 +204,9 @@ class OptionTable:
     pattern of a word that is an option of its own, as nice's `-5`; assignments says NAME=VALUE words and a lone
     `-` stand among the options, as env's do; and slash maps the safe options of the program's Windows build, which
     reads an option written with a slash in any case, as System32's sort.exe does, by its upper-case name, `+` standing
-    for `/+n`, or is None for a program with no such build."""
+    for `/+n`, or is None for a program with no such build; dash_switches says that build may read a word that starts
+    with a dash as the slash option it would read with a slash, as sort.exe's `-t` might be its `/T`, so such a word is
+    held to the slash options too (slash_refusal)."""
 
     short: Mapping[str, str] = field(default_factory=dict)
     long: Mapping[str, str] = field(default_factory=dict)
@@ -215,6 +217,7 @@ class OptionTable:
     numbered: re.Pattern[str] | None = None
     assignments: bool = False
     slash: Mapping[str, str] | None = None
+    dash_switches: bool = False
 
 
 def option_table(short: str = "", long: str = "", **form: Any) -> OptionTable:
@@ -329,6 +332,9 @@ PROGRAM_OPTIONS: dict[str, OptionTable] = {
         permutes=True,
         # Windows' sort.exe: /O writes its output to a file and /T keeps its working files in a directory, so neither.
         slash="R REVERSE + L= LOCALE= M= MEMORY= REC= RECORD_MAXIMUM=",
+        # Whether sort.exe reads `-t` or `-temporary` as /T is not documented, so a dash word on Windows is held to the
+        # slash options too, and `sort -u` is refused there. find.exe has no option that writes or runs anything.
+        dash_switches=True,
     ),
     "tar": option_table(
         "AcdrtuvzjJZakmOpPhSBilnRof:X:b:K:N:V:",
@@ -2452,15 +2458,29 @@ def slash_refusal(table: OptionTable, arguments: list[Word], windows_build: bool
     wherever it stands, since how such a build reads one is not documented. A joined pair such as `/r/o`, a value
     attached as in `/Oout.txt` or `/O:out.txt`, a path such as `/tmp/x`, and a word another option would take as its
     value, as `/O` after `/L` or after GNU sort's `-t`, may each be read as an option that writes, so each is refused;
-    None where every such word is a safe option, and for a program with no slash options."""
+    None where every such word is a safe option, and for a program with no slash options. For a table whose
+    dash_switches says the build may read a dash as a slash, a word that starts with a dash is held to the same options
+    as though it started with a slash, after the reading of its GNU build has judged it too."""
     if not windows_build or table.slash is None:
         return None
-    return next((word for word in arguments if word and word.startswith("/") and slash_kind(table, word) is None), None)
+    prefixes = ("/", "-") if table.dash_switches else ("/",)
+    return next(
+        (
+            word
+            for word in arguments
+            if word and word.startswith(prefixes) and slash_kind(table, "/" + word[1:]) is None
+        ),
+        None,
+    )
 
 
 def slash_kind(table: OptionTable, word: str) -> str | None:
-    """How a Windows build's slash option takes its value, read in any case, `+` standing for `/+n`; None for a word
-    that is not exactly one of the table's slash options."""
+    """How a Windows build's slash option takes its value, read in any ASCII case, `+` standing for `/+n`; None for a
+    word that is not exactly one of the table's slash options, and for one holding any character outside ASCII, which
+    Python's case folding could turn into one, as the long s (U+017F) into `S`, while how the build compares it is not
+    documented."""
+    if not word.isascii():
+        return None
     name = word[1:].upper()
     return (table.slash or {}).get("+" if re.fullmatch(r"\+[0-9]+", name) else name)
 

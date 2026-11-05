@@ -364,7 +364,13 @@ a row decides it.
   file, and `/T` are refused, and so is such a program after `xargs`. Every word of such a program that starts with a
   slash must be exactly one of those options, wherever it stands, since how the Windows build reads any other is not
   documented: a joined pair such as `/r/o`, a value attached as in `/Oout.txt` or `/O:out.txt`, a slash word another
-  option takes as its value, as `/O` after `/L` or after `-t`, and a path such as `/tmp/x` are refused. A runner's command
+  option takes as its value, as `/O` after `/L` or after `-t`, and a path such as `/tmp/x` are refused, and a slash
+  option is matched in ASCII case only, so a word holding any other character is refused. Whether Windows `sort`
+  reads a word that starts with a dash as the switch it would read with a slash, `-t` as `/T`, is not documented
+  either, so on Windows a `sort` word that starts with a dash passes only where GNU `sort`'s table and Windows
+  `sort`'s safe switches both allow it, as `-r`, and `sort -u` is refused there while a hub is guarded; `find`'s
+  dash words are judged by GNU `find`'s table alone, since Windows `find` has no switch that writes or runs
+  anything. A runner's command
   that is one of them is held to its allow-list too, and after `xargs`, which adds words from its input, it is refused
   unless its words hold a `--` that ends its options, which `find` has none of. A variable one of them reads options
   from, `PROGRAM_VARIABLES`: `RIPGREP_CONFIG_PATH`, `TAPE`, and `TAR_OPTIONS`, is refused where it is assigned

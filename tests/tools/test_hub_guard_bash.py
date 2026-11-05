@@ -365,7 +365,7 @@ class RunnerTests(unittest.TestCase):
         ):
             with self.subTest(command=command):
                 self.assertTrue(reading(command).unread)
-        for command in ("find . -name '*.py'", "tar -czf a.tar d", "tar tf a.tar", "rg --pretty x", "sort -u f"):
+        for command in ("find . -name '*.py'", "tar -czf a.tar d", "tar tf a.tar", "rg --pretty x", "sort -r f"):
             with self.subTest(command=command):
                 self.assertEqual([], reading(command).unread)
 
