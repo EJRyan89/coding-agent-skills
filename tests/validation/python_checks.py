@@ -2241,6 +2241,24 @@ def ctypes_declaration_problems(root: Path, files: list[Path]) -> list[str]:
             for node, scope in scoped_nodes(tree.body)
             if isinstance(node, ast.Subscript) and libraries.libraries(node.value)
         ]
+        # A library a class binds to `self.x` is read only in that class: one read through an attribute a base class
+        # binds is refused rather than followed through the class's bases.
+        held = {key.rpartition(".")[2] for key in libraries.places if key.partition(".")[0] in libraries.class_names}
+        found += [
+            (
+                node.lineno,
+                scope,
+                f"reads the ctypes library {ast.unparse(node)} in a class that does not bind it; bind the library in "
+                f"the class that calls it, or state why in {CTYPES_ALLOWANCE}",
+            )
+            for node, scope in scoped_nodes(tree.body)
+            if isinstance(node, ast.Attribute)
+            and isinstance(node.ctx, ast.Load)
+            and isinstance(node.value, ast.Name)
+            and node.value.id in ("self", "cls")
+            and node.attr in held
+            and place_key(node, scope, libraries.class_names) not in libraries.places
+        ]
         for call, scope, function in calls:
             missing = [
                 declaration
@@ -3958,8 +3976,9 @@ def type_check_jobs() -> list[Job]:
 # Restrict indirection rather than model it. A policy that reads a call by its name holds only while the source spells
 # the name, and Python reaches a name by a value in an open set of ways: a lookup by a computed name, a namespace, a
 # rebinding, a parameter's default, a class attribute, or a `**` of a mapping. A policy widened to each spelling an
-# issue named left the next one open, so the three policies below refuse the ways at the source, in every module the
-# claim policies read, and the policies that read a call read only its direct forms.
+# issue named left the next one open, so the policies below refuse the ways at the source, in every module the
+# claim policies read, and the policies that read a call read only its direct forms. Each names a module it cannot
+# read, and refuses a listing that holds no module, rather than pass having checked nothing.
 #
 # 1. No dynamic name lookup. A NAME_LOOKUPS call is read only given a string literal for the name, and any other
 #    reference to one is refused; so is a reference to any INDIRECTION_CALLABLES entry, an INDIRECTION_ATTRIBUTES
@@ -3969,18 +3988,21 @@ def type_check_jobs() -> list[Job]:
 # 2. Owner-only names. Each OWNER_ONLY_NAMES callable is referenced at all, called, bound, passed, defaulted, returned,
 #    stored, or reached by a literal lookup, only in the modules that own it, so a rebinding, a default, a dictionary
 #    value, or a class attribute holding one is refused without being followed. JSON is written by json_writer and
-#    read by json_reader alone, so a direct call of json.dumps or json.loads elsewhere is refused too. A reference that
-#    must stay states why in a module-level OWNER_ONLY_ALLOWED.
-# 3. Policed calls take literal arguments. An add_argument, a json.dump or json.dumps, and a PROCESS_STARTS call
-#    unpack nothing into their arguments with `*` or `**`; an add_argument's option strings, `dest`, and `metavar` are
-#    string literals, and its `type` and `default`, and a JSON write's `cls` and `default`, are each a literal or a
-#    name the module or the builtins bind, an attribute of one, or a call of one given such arguments, never a
-#    parameter, a local, an attribute of either, a lambda, or a lookup by name. An add_argument is only called, never
-#    bound or passed. A call that must stay states why in a module-level POLICED_CALL_ALLOWED.
+#    read by json_reader alone, so a direct call of json.dumps or json.loads elsewhere is refused too. An event loop's
+#    process start is matched by its method's name on any receiver. A reference that must stay states why in a
+#    module-level OWNER_ONLY_ALLOWED.
+# 3. Policed calls spell their arguments. An add_argument, a json.dump or json.dumps, and a process start unpack
+#    nothing into their arguments with `*` or `**`; an add_argument's option strings, `dest`, and `metavar` are string
+#    literals; and its `type`, the `default` of one that names a time, and a JSON write's `cls` and `default` spell
+#    their value where it is read (_direct): a literal, a builtin, a name the top level binds only by imports, only by
+#    definitions, or once to a literal, an attribute of an imported module, or a call of such a callable given such
+#    arguments. Nothing is followed: a parameter, a local, `self.x`, a class attribute, a module-level name bound any
+#    other way, a lambda, and a lookup by name are refused. An add_argument is only called, never bound or passed. A
+#    call that must stay states why in a module-level POLICED_CALL_ALLOWED.
 INDIRECTION_ALLOWANCE = "INDIRECTION_ALLOWED"
 OWNER_ONLY_ALLOWANCE = "OWNER_ONLY_ALLOWED"
 POLICED_CALL_ALLOWANCE = "POLICED_CALL_ALLOWED"
-# The four modules that load a foreign library with ctypes, each declaring every function it calls.
+# The modules that load a foreign library with ctypes, each declaring every function it calls.
 CTYPES_OWNERS = frozenset(
     {
         "skills/ejryan89-skill-core/scripts/job_tree.py",
@@ -3995,19 +4017,18 @@ OWNER_ONLY_NAMES: dict[str, frozenset[str]] = {
     **dict.fromkeys(JSON_PARSERS, frozenset({JSON_READER})),
     **dict.fromkeys(LIBRARY_LOADERS | LIBRARY_NAMESPACES | LIBRARY_OBJECTS, CTYPES_OWNERS),
     **{name: frozenset({"skills/ejryan89-skill-core/scripts/path_containment.py"}) for name in COMMON_PATH_FUNCTIONS},
-    **{
-        name: frozenset({PROCESS_RUNNER})
-        for name in PROCESS_STARTS
-        if not name.startswith(("bounded_process.", f"{EVENT_LOOP}."))
-    },
+    # bounded_process's own runners are the way every other module starts a process, so they are no owner's alone;
+    # an event loop's starts are matched by their method's name, on any receiver (_event_loop_start).
+    **{name: frozenset({PROCESS_RUNNER}) for name in PROCESS_STARTS if not name.startswith("bounded_process.")},
 }
 # The method each add_argument call is, on any receiver, and the functions whose calls rule 3 polices.
 ADD_ARGUMENT = "add_argument"
 POLICED_FUNCTIONS = frozenset({JSON_DUMP, JSON_DUMPS, *PROCESS_STARTS})
-# The keywords of a policed call that take a string literal, and those that take a literal or a module-bound name.
+# The keywords of a policed call that take a string literal, and those that take a value spelled where it is read
+# (_direct); an add_argument that names a time takes its default so too.
 LITERAL_KEYWORDS = {ADD_ARGUMENT: frozenset({"dest", "metavar"})}
-NAMED_KEYWORDS = {
-    ADD_ARGUMENT: frozenset({"type", "default"}),
+DIRECT_KEYWORDS = {
+    ADD_ARGUMENT: frozenset({"type"}),
     JSON_DUMP: frozenset({"cls", "default"}),
     JSON_DUMPS: frozenset({"cls", "default"}),
 }
@@ -4116,8 +4137,13 @@ def _indirection(
 
 
 def _policy_trees(root: Path, files: list[Path], problems: list[str]) -> Iterator[tuple[str, ast.Module]]:
-    """Each module the claim policies read, as its repository path and its tree."""
-    for _, name, tree in python_trees(claim_files(root, files), root, problems):
+    """Each module the claim policies read, as its repository path and its tree. A module that is not valid Python or
+    not UTF-8 is reported by its name, and a listing that holds no module to read is reported too, since a policy
+    that read nothing has checked nothing."""
+    claimed = claim_files(root, files)
+    if not claimed:
+        problems.append(f"{root.as_posix()}: the listing holds no module the claim policies read, so none was checked")
+    for _, name, tree in python_trees(claimed, root, problems):
         yield name, tree
 
 
@@ -4153,7 +4179,9 @@ def owner_only_problems(root: Path, files: list[Path]) -> list[str]:
         aliases = import_aliases(tree)
         found: list[tuple[int, str, str]] = []
         for node, scope in scoped_nodes(tree.body):
-            reference = "" if id(node) in annotations else _reference(node, resolver, aliases)
+            reference = (
+                "" if id(node) in annotations else _event_loop_start(node) or _reference(node, resolver, aliases)
+            )
             owners = OWNER_ONLY_NAMES.get(reference)
             if owners is None or name in owners:
                 continue
@@ -4169,34 +4197,109 @@ def owner_only_problems(root: Path, files: list[Path]) -> list[str]:
     return problems
 
 
-def _module_bound(node: ast.expr, resolver: CallableResolver) -> bool:
-    """Whether an expression is a literal, a name the module or the builtins bind, an attribute of one, an operation
-    on such values, or a call of one given such arguments: never a parameter, a local, an attribute of either, or a
-    lookup by name, as getattr(builtins, "float") is."""
+def _is_literal(node: ast.expr) -> bool:
+    """Whether an expression is a literal: a constant, a sign or an operation on literals, or a tuple, list, set, or
+    dict of them."""
     if isinstance(node, ast.Constant):
         return True
     if isinstance(node, ast.UnaryOp):
-        return _module_bound(node.operand, resolver)
+        return _is_literal(node.operand)
     if isinstance(node, ast.BinOp):
-        return _module_bound(node.left, resolver) and _module_bound(node.right, resolver)
+        return _is_literal(node.left) and _is_literal(node.right)
     if isinstance(node, ast.Tuple | ast.List | ast.Set):
-        return all(not isinstance(item, ast.Starred) and _module_bound(item, resolver) for item in node.elts)
+        return all(not isinstance(item, ast.Starred) and _is_literal(item) for item in node.elts)
     if isinstance(node, ast.Dict):
-        return all(key is not None and _module_bound(key, resolver) for key in node.keys) and all(
-            _module_bound(value, resolver) for value in node.values
-        )
-    if isinstance(node, ast.Attribute):
-        return _module_bound(node.value, resolver)
-    if isinstance(node, ast.Call):
-        return (
-            resolver.name(node.func) not in NAME_LOOKUPS
-            and _module_bound(node.func, resolver)
-            and all(not isinstance(item, ast.Starred) and _module_bound(item, resolver) for item in node.args)
-            and all(keyword.arg is not None and _module_bound(keyword.value, resolver) for keyword in node.keywords)
-        )
+        return all(key is not None and _is_literal(key) for key in node.keys) and all(map(_is_literal, node.values))
+    return False
+
+
+# How a module's top level binds a name a policed argument reads: by an import, by a def or a class, or once to a
+# literal. A name bound any other way, or more than once to a literal, is neither.
+IMPORTED, DEFINED, CONSTANT = "import", "definition", "constant"
+
+
+def _stored_names(target: ast.expr | None) -> list[str]:
+    """Each name an assignment target stores to, through a tuple, a list, or a starred item."""
+    if target is None:
+        return []
+    return [node.id for node in ast.walk(target) if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store)]
+
+
+def _top_level_bindings(node: ast.stmt) -> list[tuple[str, str]]:
+    """Each name one top-level statement binds, with how: IMPORTED, DEFINED, CONSTANT, or "" for any other way."""
+    if isinstance(node, ast.Import | ast.ImportFrom):
+        return [(alias.asname or alias.name.split(".")[0], IMPORTED) for alias in node.names]
+    if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef):
+        return [(node.name, DEFINED)]
+    if isinstance(node, ast.Assign | ast.AnnAssign):
+        kind = CONSTANT if node.value is not None and _is_literal(node.value) else ""
+        targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+        return [(name, kind) for target in targets for name in _stored_names(target)]
+    if isinstance(node, ast.AugAssign | ast.For | ast.AsyncFor):
+        return [(name, "") for name in _stored_names(node.target)]
+    if isinstance(node, ast.With | ast.AsyncWith):
+        return [(name, "") for item in node.items for name in _stored_names(item.optional_vars)]
+    return []
+
+
+def _spelled_names(tree: ast.Module) -> dict[str, str]:
+    """Each name the module's top level binds only by imports, only by definitions, or once to a literal, with how;
+    a name a function rebinds through `global`, or an assignment expression binds, is none of them."""
+    kinds: dict[str, list[str]] = {}
+    for node in _top_level(tree.body):
+        for name, kind in _top_level_bindings(node):
+            kinds.setdefault(name, []).append(kind)
+    for walked in ast.walk(tree):
+        names = list(walked.names) if isinstance(walked, ast.Global) else []
+        names += _stored_names(walked.target) if isinstance(walked, ast.NamedExpr) else []
+        for name in names:
+            kinds.setdefault(name, []).append("")
+    spelled: dict[str, str] = {}
+    for name, found in kinds.items():
+        if found == [CONSTANT]:
+            spelled[name] = CONSTANT
+        elif len(set(found)) == 1 and found[0] in (IMPORTED, DEFINED):
+            spelled[name] = found[0]
+    return spelled
+
+
+def _direct(node: ast.expr, resolver: CallableResolver, spelled: dict[str, str]) -> bool:
+    """Whether an expression spells its value where it is read: a literal, a builtin, a name the module's top level
+    binds by an import or a definition or once to a literal, an attribute of an imported module, an operation on such
+    values, or a call of an imported, defined, or builtin callable given such arguments. A parameter, a local, a class
+    attribute, a module-level name bound to anything else, a lambda, and a lookup by name are refused, never
+    followed."""
+    if _is_literal(node):
+        return True
     if isinstance(node, ast.Name):
         owner = resolver.scopes[id(node)].owner(node.id)
-        return node.id in BUILTIN_NAMES if owner is None else owner.parent is None
+        if owner is None:
+            return node.id in BUILTIN_NAMES
+        return owner.parent is None and node.id in spelled
+    if isinstance(node, ast.Attribute):
+        root: ast.expr = node
+        while isinstance(root, ast.Attribute):
+            root = root.value
+        if not isinstance(root, ast.Name):
+            return False
+        held = resolver.scopes[id(root)].owner(root.id)
+        return held is not None and held.parent is None and spelled.get(root.id) == IMPORTED
+    if isinstance(node, ast.UnaryOp):
+        return _direct(node.operand, resolver, spelled)
+    if isinstance(node, ast.BinOp):
+        return _direct(node.left, resolver, spelled) and _direct(node.right, resolver, spelled)
+    if isinstance(node, ast.Tuple | ast.List | ast.Set):
+        return all(not isinstance(item, ast.Starred) and _direct(item, resolver, spelled) for item in node.elts)
+    if isinstance(node, ast.Call):
+        callee = node.func
+        constant = isinstance(callee, ast.Name) and spelled.get(callee.id) == CONSTANT
+        return (
+            resolver.name(callee) not in NAME_LOOKUPS | INDIRECTION_CALLABLES
+            and not constant
+            and _direct(callee, resolver, spelled)
+            and all(not isinstance(item, ast.Starred) and _direct(item, resolver, spelled) for item in node.args)
+            and all(keyword.arg is not None and _direct(keyword.value, resolver, spelled) for keyword in node.keywords)
+        )
     return False
 
 
@@ -4211,15 +4314,37 @@ def _names_add_argument(node: ast.AST, resolver: CallableResolver, aliases: dict
     )
 
 
+def _event_loop_start(node: ast.AST) -> str:
+    """The event loop's process start a node reads as an attribute, on any receiver, as PROCESS_STARTS names it, or
+    "": no receiver names the loop, so the method's name is what marks it."""
+    if isinstance(node, ast.Attribute) and isinstance(node.ctx, ast.Load) and node.attr in EVENT_LOOP_STARTS:
+        return f"{EVENT_LOOP}.{node.attr}"
+    return ""
+
+
 def _policed(call: ast.Call, resolver: CallableResolver, aliases: dict[str, str]) -> str:
-    """The policed call a call is, ADD_ARGUMENT on any receiver or a POLICED_FUNCTIONS name, or ""."""
+    """The policed call a call is, ADD_ARGUMENT on any receiver, an event loop's process start on any receiver, or a
+    POLICED_FUNCTIONS name, or ""."""
     if _names_add_argument(call.func, resolver, aliases):
         return ADD_ARGUMENT
+    if started := _event_loop_start(call.func):
+        return started
     name = _reference(call.func, resolver, aliases)
     return name if name in POLICED_FUNCTIONS else ""
 
 
-def _policed_refusals(call: ast.Call, policed: str, resolver: CallableResolver) -> Iterator[str]:
+def _names_a_time(call: ast.Call) -> bool:
+    """Whether an add_argument names a time, by one of TIME_WORDS, in an option string, its dest, or its metavar."""
+    names = [*call.args, *(keyword.value for keyword in call.keywords if keyword.arg in ("dest", "metavar"))]
+    return any(
+        isinstance(name, ast.Constant) and isinstance(name.value, str) and TIME_WORDS & _time_words(name.value)
+        for name in names
+    )
+
+
+def _policed_refusals(
+    call: ast.Call, policed: str, resolver: CallableResolver, spelled: dict[str, str]
+) -> Iterator[str]:
     """Why a policed call does not spell its arguments as rule 3 asks."""
     if any(isinstance(item, ast.Starred) for item in call.args) or any(item.arg is None for item in call.keywords):
         yield f"unpacks arguments into {policed} with * or **"
@@ -4227,13 +4352,19 @@ def _policed_refusals(call: ast.Call, policed: str, resolver: CallableResolver) 
         isinstance(item, ast.Constant) and isinstance(item.value, str) for item in call.args
     ):
         yield f"gives {ADD_ARGUMENT} an option string that is not a string literal"
+    direct = set(DIRECT_KEYWORDS.get(policed, ()))
+    if policed == ADD_ARGUMENT and _names_a_time(call):
+        direct.add("default")
     for keyword in call.keywords:
         value = keyword.value
         if keyword.arg in LITERAL_KEYWORDS.get(policed, ()):
             if not (isinstance(value, ast.Constant) and isinstance(value.value, str)):
                 yield f"gives {policed} a {keyword.arg}= that is not a string literal"
-        elif keyword.arg in NAMED_KEYWORDS.get(policed, ()) and not _module_bound(value, resolver):
-            yield f"gives {policed} a {keyword.arg}= that is neither a literal nor a name the module binds"
+        elif keyword.arg in direct and not _direct(value, resolver, spelled):
+            yield (
+                f"gives {policed} a {keyword.arg}= that is neither a literal nor an imported, defined, builtin, or "
+                "literal-bound name"
+            )
 
 
 def policed_call_problems(root: Path, files: list[Path]) -> list[str]:
@@ -4245,12 +4376,14 @@ def policed_call_problems(root: Path, files: list[Path]) -> list[str]:
         resolver = CallableResolver(tree)
         parents = _parents(tree)
         aliases = import_aliases(tree)
+        spelled = _spelled_names(tree)
         found: list[tuple[int, str, str]] = []
         for node, scope in scoped_nodes(tree.body):
             if _names_add_argument(node, resolver, aliases) and not _called(node, parents):
                 found.append((getattr(node, "lineno", 0), scope, f"refers to {ADD_ARGUMENT} other than calling it"))
             elif isinstance(node, ast.Call) and (policed := _policed(node, resolver, aliases)):
-                found += [(node.lineno, scope, refusal) for refusal in _policed_refusals(node, policed, resolver)]
+                refusals = _policed_refusals(node, policed, resolver, spelled)
+                found += [(node.lineno, scope, refusal) for refusal in refusals]
         found = [
             (
                 line,

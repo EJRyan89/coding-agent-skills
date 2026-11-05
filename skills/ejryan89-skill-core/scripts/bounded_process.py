@@ -41,14 +41,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import IO, Any, Protocol
 
-# Seconds to wait for a killed command to be reported gone; job_tree imports it as its wait for a refused command
-# and for an ended tree's processes.
 POLICED_CALL_ALLOWED = {
     "run_bounded": "takes its process tree's start options, creationflags on Windows and start_new_session elsewhere, "
     "which job_tree builds for each platform",
     "streaming": "takes its process tree's start options, creationflags on Windows and start_new_session elsewhere, "
     "which job_tree builds for each platform",
 }
+# Seconds to wait for a killed command to be reported gone; job_tree imports it as its wait for a refused command
+# and for an ended tree's processes.
 KILL_WAIT_SECONDS = 10.0
 # Seconds a stopped streaming command gets to exit by itself before it is killed.
 EXIT_WAIT_SECONDS = 60.0

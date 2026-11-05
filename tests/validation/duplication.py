@@ -42,13 +42,13 @@ from validation_support import (
     skill_dependency_closure,
 )
 
-# A module sanctions a copy beside the code it excuses, as a module-level DUPLICATION_ALLOWED = {name: reason}, and
-# every module holding the copy states it under its own name for the copy. Nothing sanctions a whole module: shared
-# code lives in ejryan89-skill-core. An allowance the module no longer needs is reported.
 INDIRECTION_ALLOWED = {
     "_flags": "reads the value of the re flag a pattern's call names, a member of re.RegexFlag, and runs no code by "
     "its name",
 }
+# A module sanctions a copy beside the code it excuses, as a module-level DUPLICATION_ALLOWED = {name: reason}, and
+# every module holding the copy states it under its own name for the copy. Nothing sanctions a whole module: shared
+# code lives in ejryan89-skill-core. An allowance the module no longer needs is reported.
 DUPLICATION_ALLOWANCE = "DUPLICATION_ALLOWED"
 # Every tree of the repository's own Python but its suites and fixtures: the shipped skills, the deployer, the tools,
 # the repository skills, which meet the shipped-skill standard, and the policies, which share what they repeat through

@@ -319,10 +319,6 @@ INDIRECTION_ALLOWED = {
     "mutmut_mutants": "imports mutmut's mutation module, which only the Mutation workflow installs, at the call, so "
     "the type check and every other run of this module import nothing of mutmut",
 }
-POLICED_CALL_ALLOWED = {
-    "parse_arguments": "takes --base's default from the pull request's base branch in the environment the workflow "
-    "passes",
-}
 
 
 class RecordError(RuntimeError):
