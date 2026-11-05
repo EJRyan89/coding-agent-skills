@@ -94,8 +94,12 @@ class ExecuteTests(unittest.TestCase):
         """A stand-in that records its call and returns outcome, raises it, or returns the next of a list."""
         outcomes = outcome if isinstance(outcome, list) else None
 
-        def call(*arguments: Any) -> Any:
-            self.calls.append(f"{name}({', '.join(self.describe(argument) for argument in arguments)})")
+        def call(*arguments: Any, **keywords: Any) -> Any:
+            described = [
+                *(self.describe(argument) for argument in arguments),
+                *(f"{keyword}={self.describe(value)}" for keyword, value in keywords.items()),
+            ]
+            self.calls.append(f"{name}({', '.join(described)})")
             result = outcomes.pop(0) if outcomes is not None else outcome
             if isinstance(result, BaseException):
                 raise result
@@ -160,7 +164,10 @@ class ExecuteTests(unittest.TestCase):
     @staticmethod
     def dry_run_checks() -> list[str]:
         """The checks a dry run makes before it reports a pending recovery: the deployment's own before it recovers."""
-        return ["check_holder(paths(home), probe)", f"_reject_other_checkout(paths(home), '{SOURCE_ID}', False)"]
+        return [
+            "check_holder(paths(home), probe)",
+            f"_reject_other_checkout(paths(home), '{SOURCE_ID}', False, dry_run=True)",
+        ]
 
     def prepared(self, home: str = "home") -> list[str]:
         """The calls of a run that prepares, discovers, and prints its source."""
@@ -189,7 +196,7 @@ class ExecuteTests(unittest.TestCase):
         return [
             "reject_linked_worktree(paths(home))",
             "acquire(paths(home), probe)",
-            f"_reject_other_checkout(paths(home), '{SOURCE_ID}', {take_over})",
+            f"_reject_other_checkout(paths(home), '{SOURCE_ID}', {take_over}, dry_run=False)",
         ]
 
     def test_a_deployment_returns_what_it_deployed_with_and_releases_the_lock(self) -> None:
@@ -210,6 +217,25 @@ class ExecuteTests(unittest.TestCase):
             self.execute(Options(take_over_source=True), stdin=self.stdin),
         )
 
+    def test_a_dry_run_taking_over_the_source_refuses_a_linked_worktree_first_and_previews_the_takeover(self) -> None:
+        # The deployment refuses a linked worktree before its lock whatever the flag, so the dry run with the flag
+        # does too, before the checks the dry run makes in the deployment's order.
+        self.assertEqual(
+            (
+                0,
+                [
+                    *self.prepared(),
+                    "reject_linked_worktree(paths(home))",
+                    "check_holder(paths(home), probe)",
+                    f"_reject_other_checkout(paths(home), '{SOURCE_ID}', True, dry_run=True)",
+                    "_stop_for_pending_recovery(paths(home))",
+                    "_deploy(paths(home), options, src, {'VALUE': 'configured'}, stdin, None, None)",
+                ],
+                [],
+            ),
+            self.execute(Options(dry_run=True, take_over_source=True), stdin=self.stdin),
+        )
+
     def test_a_canary_home_is_claimed_and_its_values_set_after_every_check(self) -> None:
         code, calls, lines = self.execute(Options(canary_home="throwaway"), stdin=self.stdin)
         self.assertEqual((0, []), (code, lines))
@@ -228,7 +254,7 @@ class ExecuteTests(unittest.TestCase):
                 f"canary('{SOURCE_ID}', canary, source)",
                 "claim_canary_home(canary)",
                 "acquire(paths(canary), probe)",
-                f"_reject_other_checkout(paths(canary), '{SOURCE_ID}', False)",
+                f"_reject_other_checkout(paths(canary), '{SOURCE_ID}', False, dry_run=False)",
                 "recover_incomplete(paths(canary))",
                 f"_deploy(paths(canary), options, src, {{'VALUE': 'canary'}}, stdin, '{RUN_ID}', None)",
                 "release",
@@ -326,8 +352,7 @@ class ExecuteTests(unittest.TestCase):
                 4,
                 [
                     *self.prepared(),
-                    "check_holder(paths(home), probe)",
-                    f"_reject_other_checkout(paths(home), '{SOURCE_ID}', False)",
+                    *self.dry_run_checks(),
                     "_stop_for_pending_recovery(paths(home))",
                     "_deploy(paths(home), options, src, {'VALUE': 'configured'}, stdin, None, None)",
                 ],
