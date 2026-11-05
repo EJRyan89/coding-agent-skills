@@ -13,6 +13,7 @@ one per group of faults, each judged by fault_check.py; the tests below show the
 from __future__ import annotations
 
 import ast
+import atexit
 import stat
 import subprocess
 import sys
@@ -331,7 +332,7 @@ def test_placed_puts_the_file_back_as_it_was(fault: str) -> None:
 def test_the_shared_checkout_is_removed_at_exit_read_only_git_objects_included(monkeypatch: pytest.MonkeyPatch) -> None:
     registered: list[Any] = []
     monkeypatch.setattr(fault_check, "repository_files", lambda root: [REPOSITORY / "README.md"])
-    monkeypatch.setattr(fault_check.atexit, "register", lambda function, *args: registered.append((function, args)))
+    monkeypatch.setattr(atexit, "register", lambda function, *args: registered.append((function, args)))
     root = fault_check.shared_checkout.__wrapped__()
     objects = [path for path in (root / ".git" / "objects").rglob("*") if path.is_file()]
     assert objects
