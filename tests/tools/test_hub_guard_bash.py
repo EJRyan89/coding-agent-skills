@@ -5,9 +5,11 @@ and the rows below are generated from those tables, so an entry a later Bash add
 from __future__ import annotations
 
 import os
+import pathlib
 import sys
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts"))
@@ -288,6 +290,11 @@ RUNNER_FORMS = {
     "pwsh": "pwsh -NoProfile -Command '{command}'",
     # The program time, which Bash runs only where time is not a command's first word, as after an assignment.
     "time": "x=1 time {command}",
+    # The operand each takes before its command: a duration, a priority, a CPU mask, and a new root.
+    "timeout": "timeout 5 {command}",
+    "chrt": "chrt 10 {command}",
+    "taskset": "taskset 3 {command}",
+    "chroot": "chroot /srv {command}",
 }
 
 
@@ -325,8 +332,11 @@ class RunnerTests(unittest.TestCase):
             "xargs -I{} cp {} d",
             "xargs -i cp {} d",
             "xargs --replace=x cp x d",
+            "echo git | xargs --replac=X X status",
+            "echo git | xargs -0IX X status",
             "env -S 'ls -la'",
             "env --split-string=ls",
+            "env --split='git status'",
         ):
             with self.subTest(command=command):
                 self.assertTrue(reading(command).unread)
@@ -334,27 +344,111 @@ class RunnerTests(unittest.TestCase):
         self.assertEqual([], reading("echo x | xargs -0 grep -n x").unread)
 
     def test_a_program_with_an_option_that_runs_a_command_is_refused_in_every_spelling(self) -> None:
-        for program, options in hub_guard.COMMAND_OPTIONS.items():
-            for option in sorted(options):
-                with self.subTest(program=program, option=option):
-                    self.assertTrue(reading(f"{program} {option} x y").unread)
+        # tests/tools/test_prefix_programs.py holds every option each program lists; these are the forms reviews found.
+        for program in hub_guard.PROGRAM_OPTIONS:
             with self.subTest(program=program, word="unsettled"):
                 self.assertTrue(reading(f"{program} $x y").unread)
         for command in (
             "find . -exec ls {} +",
             "find . -execdir ls {} ;",
+            "find . -delete",
             "tar xIf a.tar",
             "tar -xIf a.tar",
+            "tar -xIgit -f a.tar",
             "tar --to-com=x -xf a.tar",
             "tar --use-compress-prog=x -cf a.tar d",
             "rg --pre=x pattern",
+            "rg --hostname-bin=x pattern",
             "sort --compress=x f",
         ):
             with self.subTest(command=command):
                 self.assertTrue(reading(command).unread)
-        for command in ("find . -name '*.py'", "tar -czf a.tar d", "tar xf a.tar", "rg --pretty x", "sort -u f"):
+        for command in ("find . -name '*.py'", "tar -czf a.tar d", "tar tf a.tar", "rg --pretty x", "sort -u f"):
             with self.subTest(command=command):
                 self.assertEqual([], reading(command).unread)
+
+    def test_a_variable_a_program_reads_options_from_is_refused_wherever_it_is_set(self) -> None:
+        for program, variable in sorted(
+            (program, variable) for program, variables in hub_guard.PROGRAM_VARIABLES.items() for variable in variables
+        ):
+            for command, environment in (
+                (f"{variable}=x {program} -v y", {}),
+                (f"env {variable}=x {program} -v y", {}),
+                (f"env -i {variable}=x {program} -v y", {}),
+                (f"env -u X {variable}=x {program} -v y", {}),
+                (f"env --unset X {variable}=x {program} -v y", {}),
+                (f"env -u X -- {variable}=x {program} -v y", {}),
+                (f"sudo {variable}=x {program} -v y", {}),
+                (f"{variable}=x timeout 5 {program} -v y", {}),
+                (f"{program} -v y", {variable: "x"}),
+                (f"{program} -v y", {variable.lower(): "x"}),
+                (f"nice {program} -v y", {variable: "x"}),
+            ):
+                with self.subTest(command=command, environment=environment):
+                    self.assertIn(variable, " ".join(reading(command, environment).unread))
+            with self.subTest(program=program, variable="unset"):
+                self.assertEqual([], reading(f"OTHER=x {program} -v y").unread)
+                self.assertEqual([], reading(f"env OTHER=x {program} -v y").unread)
+        self.assertEqual({"tar": {"TAR_OPTIONS", "TAPE"}, "rg": {"RIPGREP_CONFIG_PATH"}}, hub_guard.PROGRAM_VARIABLES)
+
+    def test_a_command_s_name_is_read_after_either_separator_whatever_the_host_s_paths(self) -> None:
+        rows = {
+            "C:\\WINDOWS\\SysWOW64\\SORT.EXE": "sort",
+            "C:/Windows/System32/find.exe": "find",
+            "/usr/bin/git": "git",
+            "..\\tools\\gh.exe": "gh",
+            "timeout": "timeout",
+        }
+        # PurePosixPath reads a path as a Linux host does, where a backslash separates nothing.
+        for host in (pathlib.PurePosixPath, pathlib.PureWindowsPath):
+            with mock.patch.object(hub_guard, "Path", host):
+                for word, name in rows.items():
+                    with self.subTest(host=host.__name__, word=word):
+                        self.assertEqual(name, hub_guard.command_name(word))
+
+    def test_option_refusal_is_the_one_reading_of_a_program_s_words(self) -> None:
+        xargs = hub_guard.RUNNER_OPTIONS["xargs"]
+        self.assertEqual(("-0IX", 0), (hub_guard.option_refusal(xargs, ["-0IX", "X"]).refused, 0))
+        safe = hub_guard.option_refusal(xargs, ["-0rn1", "grep", "-n"])
+        self.assertEqual((None, 1), (safe.refused, safe.stop))
+        env = hub_guard.option_refusal(hub_guard.RUNNER_OPTIONS["env"], ["-u", "X", "Y=1", "ls"])
+        self.assertEqual(([("Y", "1")], 3), (env.assigned, env.stop))
+        tar = hub_guard.option_refusal(hub_guard.PROGRAM_OPTIONS["tar"], ["-tf", "a", "--force-local", "--", "-x"])
+        self.assertEqual((None, [("-f", "a")], ["--force-local"]), (tar.refused, tar.values, tar.longs))
+
+    def test_gh_a_runner_starts_is_read_where_the_runner_s_options_end(self) -> None:
+        for command in (
+            "env -u gh gh pr checkout 1",
+            "sudo -u gh gh pr checkout 1",
+            "sudo -g gh gh repo sync",
+            "timeout -s gh 60 gh pr checkout 1",
+        ):
+            with self.subTest(command=command):
+                read = reading(command)
+                self.assertEqual([], read.unread)
+                self.assertEqual(["gh"], [call.program for call in read.calls])
+        # xargs adds words from its input to gh's, which may make any subcommand a checkout.
+        for command in (
+            "echo checkout 1 | xargs gh pr",
+            "echo x | xargs -E gh gh pr checkout 1",
+            "xargs -0 gh pr view",
+        ):
+            with self.subTest(command=command):
+                self.assertIn("words from its input", " ".join(reading(command).unread))
+        # gh among the command's own words is not the command.
+        self.assertEqual([], reading("timeout 60 echo gh pr checkout 1").calls)
+
+    def test_gh_behind_chroot_is_read_where_the_text_does_not_settle_and_behind_timeout_where_it_runs(self) -> None:
+        unsettled = reading("chroot /srv gh pr checkout 1")
+        self.assertEqual([("gh", None)], [(call.program, call.place.start) for call in unsettled.calls])
+        placed = reading("timeout 60 gh pr checkout 1")
+        self.assertEqual([("gh", START)], [(call.program, call.place.start) for call in placed.calls])
+
+    def test_env_s_assignments_after_a_valued_option_reach_the_command_s_judgment(self) -> None:
+        # GIT_DIR after env's -u X is still an assignment before the command, as one before env is.
+        for command in ("env GIT_DIR=/x ls", "env -u X GIT_DIR=/x ls", "env --unset X -i GIT_DIR=/x ls"):
+            with self.subTest(command=command):
+                self.assertIn("GIT_DIR", " ".join(reading(command).unread))
 
     def test_a_not_found_handler_the_environment_hands_is_refused_whatever_runs(self) -> None:
         # Bash runs command_not_found_handle for any command whose program it does not find.
@@ -415,6 +509,8 @@ class ExpansionTests(unittest.TestCase):
 
     def test_an_expansion_in_an_unquoted_here_document_is_read_and_in_a_quoted_one_is_data(self) -> None:
         self.assertTrue(reading("cat <<EOF\n$((1 + 2))\nEOF").unread)
+        self.assertTrue(reading("cat <<EOF\n$[1 + 2]\nEOF").unread)
+        self.assertEqual([], reading("cat <<'EOF'\n$[1 + 2]\nEOF").unread)
         self.assertTrue(reading("cat <<EOF\n${ date; }\nEOF").unread)
         self.assertTrue(reading("cat <<EOF\n${PATH:=x}\nEOF").unread)
         self.assertEqual([], reading("cat <<'EOF'\n$((1 + 2)) ${ date; }\nEOF").unread)
