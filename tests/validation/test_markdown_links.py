@@ -97,7 +97,9 @@ class CitedTestPolicy(unittest.TestCase):
         "class Base(unittest.TestCase):\n    def test_inherited(self) -> None:\n        pass\n\n\n"
         "class Derived(Base):\n    pass\n\n\n"
         "if True:\n\n    class GuardTests(unittest.TestCase):\n        def test_held(self) -> None:\n"
-        "            pass\n\n        def check(self) -> None:\n            pass\n"
+        "            pass\n\n        def check(self) -> None:\n            pass\n\n\n"
+        "if False:\n    pass\nelse:\n\n    class OtherwiseTests(unittest.TestCase):\n"
+        "        def test_otherwise(self) -> None:\n            pass\n"
     )
 
     def problems(self, files: Mapping[str, str]) -> list[str]:
@@ -111,7 +113,8 @@ class CitedTestPolicy(unittest.TestCase):
         guide = (
             "# Guide\n\n"
             "Held by `tests/test_a.py::test_alone`, `tests/test_a.py::GuardTests::test_held`, and "
-            "`tests/test_a.py::Derived::test_inherited`.\n"
+            "`tests/test_a.py::Derived::test_inherited`, and `tests/test_a.py::OtherwiseTests::test_otherwise`, "
+            "defined under an `else`.\n"
             "The `GuardTests` cases and `test_held` in `tests/test_a.py`, and `test_alone` in `test_a.py`.\n"
             "| `GuardTests` | `test_a.py::Derived` |\n"
             "The policy `test_policy` in `tests/policy.py`, with its fixtures in `tests/test_a.py`.\n"
