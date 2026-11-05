@@ -100,7 +100,6 @@ class DeployUsageErrorTests(DeployerTestCase):
         canary = str(self.root)
         for arguments, message in (
             (("--include", "alpha"), "ERROR: --include can only be used with --all"),
-            (("--take-over-source", "--dry-run"), "ERROR: --take-over-source cannot be combined with --dry-run"),
             (("--canary-home", canary, "--dry-run"), "ERROR: --canary-home cannot be combined with --dry-run"),
             (
                 ("--canary-home", canary, "--migrate-from", "old/source"),
@@ -132,6 +131,11 @@ class DeployUsageErrorTests(DeployerTestCase):
                 namespace = parse_command(["--uninstall", *extra])
                 self.assertIsInstance(namespace, argparse.Namespace)
                 self.assertTrue(vars(namespace)["uninstall"])
+
+    def test_taking_over_the_source_goes_with_a_dry_run_that_previews_it(self) -> None:
+        namespace = parse_command(["--all", "--take-over-source", "--dry-run"])
+        self.assertIsInstance(namespace, argparse.Namespace)
+        self.assertEqual((True, True), (vars(namespace)["take_over_source"], vars(namespace)["dry_run"]))
 
     def test_migration_refuses_every_option_it_would_ignore(self) -> None:
         for extra, message in (

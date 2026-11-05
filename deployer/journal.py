@@ -17,7 +17,7 @@ from path_containment import posix_within
 
 from . import fsops, hashing, manifest, platform_support, state_files
 from .errors import DeployError, see_recovery
-from .names import BACKUP_SUFFIX, safe_name_problem, transient_name
+from .names import BACKUP_SUFFIX, deletion_name, safe_name_problem, transient_name
 from .paths import Paths
 from .render import ADAPTER_STAGING, AGENT_STAGING
 
@@ -461,20 +461,15 @@ def finish_backup(
     that a changed or unreadable copy was kept there; when it stays beside its item, keep_backup's warning says so.
 
     The run is committed, so a deletion that fails, such as of a file another program holds open, does not fail it:
-    the copy stays beside its item, named with the reason, as one keep_backup cannot move does.
+    the copy stays beside its item, or what is left of it at its deletion name, named with the reason, as one
+    keep_backup cannot move does. A copy is deleted only under its deletion name, so a deletion a kill stopped partway
+    is finished by recovery, never read as a change made after the plan.
     """
     item = entry["item"]
     transient = _item_path(paths, entry, BACKUP_SUFFIX)
     disposition, unreadable = backup_disposition(paths, entry)
     if disposition == "delete":
-        try:
-            fsops.remove(transient)
-        except OSError as error:
-            _warn(
-                f"{item}'s previous copy could not be deleted, so it, or what is left of it, stays at "
-                f"{platform_support.normalize(transient)}: {error.strerror or error}. Delete it once nothing holds it "
-                f"open. {see_recovery('Backups')}"
-            )
+        _delete_backup(item, transient, _deletion_path(paths, entry))
         return disposition, None
     if disposition == "gone":
         return disposition, None
@@ -492,6 +487,71 @@ def finish_backup(
             "instead of being deleted."
         )
     return disposition, kept_at
+
+
+def _deletion_path(paths: Paths, entry: JournalEntry) -> Path:
+    return root_directory(paths, entry_root(entry)) / deletion_name(entry["item"])
+
+
+def _finish_deletion(deletion: Path) -> bool:
+    """Delete what a deletion stopped partway, by a kill or an error, left at an item's deletion name, and return
+    whether something still stays there. The deployer had already decided to delete that copy, so what is left of it
+    is no one's change, and only the deployer uses the name.
+
+    What cannot be deleted, such as a copy holding a file another program has open, is named in a warning and left
+    for the user, so it holds up no later run: the caller then deletes its own copy where it stands.
+    """
+    try:
+        if file_presence.is_occupied(deletion):
+            fsops.remove(deletion)
+    except OSError as error:
+        _warn(
+            f"What is left of a copy the deployer was deleting stays at {platform_support.normalize(deletion)}: "
+            f"{error.strerror or error}. Delete it once nothing holds it open. {see_recovery('Backups')}"
+        )
+        return True
+    return False
+
+
+def _delete_copy(path: Path, deletion: Path) -> None:
+    """Delete path by renaming it to its item's deletion name first, so a kill or an error partway through leaves it
+    whole at path or what is left of it at deletion, which _finish_deletion completes, and never part of it at path,
+    where recovery would judge the remainder by its hash as a change the user made. While what an earlier deletion
+    left at that name stays, path is deleted where it stands. An OSError of the deletion is raised."""
+    if _finish_deletion(deletion):
+        fsops.remove(path)
+        return
+    fsops.move(path, deletion)
+    fsops.remove(deletion)
+
+
+def _delete_backup(item: str, transient: Path, deletion: Path) -> None:
+    """Delete a committed run's transient backup as _delete_copy does. The run is committed, so a failure, such as of a
+    file another program holds open, does not fail it: the warning names where the copy, or what is left of it, stays.
+    """
+    held = _finish_deletion(deletion)
+    try:
+        if held:
+            fsops.remove(transient)
+        elif file_presence.is_occupied(transient):
+            fsops.move(transient, deletion)
+    except OSError as error:
+        stays = "it, or what is left of it, stays" if held else "it stays"
+        _warn(
+            f"{item}'s previous copy could not be deleted, so {stays} at {platform_support.normalize(transient)}: "
+            f"{error.strerror or error}. Delete it once nothing holds it open. {see_recovery('Backups')}"
+        )
+        return
+    if held:
+        return
+    try:
+        fsops.remove(deletion)
+    except OSError as error:
+        _warn(
+            f"{item}'s previous copy could not be deleted, so what is left of it stays at "
+            f"{platform_support.normalize(deletion)}: {error.strerror or error}. Delete it once nothing holds it open. "
+            f"{see_recovery('Backups')}"
+        )
 
 
 def _finish_backup(paths: Paths, run_id: str, entry: BackupEntry) -> bool:
@@ -565,16 +625,24 @@ def _complete_committed(paths: Paths, run_id: str, entries: list[JournalEntry]) 
 
 
 def _undo_install(paths: Paths, entry: InstallEntry, backup_hash: str | None) -> bool:
-    """Remove what the run installed; backup_hash is the hash of the copy it replaced, if it replaced one."""
+    """Remove what the run installed; backup_hash is the hash of the copy it replaced, if it replaced one.
+
+    The copy is deleted by its deletion name, so an earlier rollback that stopped partway through deleting it left
+    what remains there, which this finishes, rather than a partial copy that matches neither hash. What an earlier
+    deletion left there that cannot be deleted is only named, so it never fails the rollback.
+    """
     target = _item_path(paths, entry)
+    deletion = _deletion_path(paths, entry)
     actual = _hash_existing(target)
     if actual is None:
         if file_presence.is_occupied(target):
             _warn(f"Unexpected state for {entry['item']} during rollback")
             return False
+        # A kill partway through deleting the copy left the rest of it at its deletion name.
+        _finish_deletion(deletion)
         return True
     if actual == entry["staged_hash"]:
-        fsops.remove(target)
+        _delete_copy(target, deletion)
         return True
     if actual == backup_hash and not file_presence.is_occupied(_item_path(paths, entry, BACKUP_SUFFIX)):
         # An earlier rollback that stopped partway already put the replaced copy back.
@@ -872,6 +940,10 @@ def recover_incomplete(paths: Paths) -> bool:
         if not file_presence.is_directory(paths.staging_root):
             return True
         run_dirs = _run_folders(paths)
+    # Only OSError, unlike the catch around each run below: listing and stat decode no name and read no file, and
+    # refuse nothing, so neither a DeployError nor a UnicodeError can come from them. A name not valid in the file
+    # system's encoding arrives as a surrogate escape on Linux, and Windows names are UTF-16, so it reaches the run it
+    # names, whose catch handles what it raises.
     except OSError as error:
         print(
             f"  ERROR: Cannot list the staging runs in {platform_support.normalize(paths.staging_root)}: "
