@@ -471,11 +471,16 @@ class ExecuteTests(unittest.TestCase):
 
     def test_any_failure_of_a_pre_recovery_check_is_reported_and_releases_the_lock(self) -> None:
         denied = OSError(5, "Access is denied", "skills")
-        cases: list[tuple[BaseException, int, list[str]]] = [
-            (denied, 1, ["", "ERROR: Could not check the source checkout: skills: Access is denied", CHECK, HINT, ""]),
-            (KeyboardInterrupt(), 130, ["", "Cancelled; nothing was changed.", ""]),
-        ]
+        # Each check names its own step: the manifest check reads the staging runs, not the source checkout.
+        steps = {
+            "_reject_other_checkout": "check the source checkout",
+            "check_manifest_beside_runs": "check the staging runs",
+        }
         for check in self.PRE_RECOVERY_CHECKS:
+            cases: list[tuple[BaseException, int, list[str]]] = [
+                (denied, 1, ["", f"ERROR: Could not {steps[check]}: skills: Access is denied", CHECK, HINT, ""]),
+                (KeyboardInterrupt(), 130, ["", "Cancelled; nothing was changed.", ""]),
+            ]
             for failure, code, lines in cases:
                 self.calls = []
                 with self.subTest(check=check, failure=failure):

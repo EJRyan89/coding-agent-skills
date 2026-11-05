@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any, ClassVar, get_args
 from unittest import mock
 
+import file_presence
 from harness import (
     DEPLOY_COMMAND,
     FAILS_PARTWAY,
@@ -2594,6 +2595,37 @@ class ManifestStateTests(RecoveryTestCase):
         self.assertEqual([("20260101-000000-kept", False)], journal.pending_runs(self.paths))
         self.assertIsNone(journal.journaled_runs(self.paths))
 
+    def test_a_failure_beside_a_missing_manifest_gives_manual_steps_that_decide_no_commit(self) -> None:
+        # The journal's stat fails before the run reads the manifest, so recover_incomplete prints the manual steps:
+        # beside no manifest they say the run's state cannot be told, never that it was not committed.
+        self.deployed(("alpha", "Alpha content"))
+        run = "20260101-000000-held"
+        journal_file = self.write_journal(run, install_entry("alpha", ZERO_HASH))
+        self.manifest_file.unlink()
+        real_is_occupied = file_presence.is_occupied
+
+        def unreadable_journal(path: Path, *rest: Any) -> bool:
+            if path == journal_file:
+                raise PermissionError(13, "Access is denied", str(path))
+            return bool(real_is_occupied(path, *rest))
+
+        captured = io.StringIO()
+        with (
+            mock.patch("deployer.journal.file_presence.is_occupied", side_effect=unreadable_journal),
+            contextlib.redirect_stdout(captured),
+            contextlib.redirect_stderr(captured),
+        ):
+            recovered = journal.recover_incomplete(self.paths)
+        self.assertFalse(recovered, captured.getvalue())
+        self.assert_lines(
+            captured.getvalue(),
+            f"  Whether run {run} was committed cannot be told, since the manifest is missing or cannot be read: put "
+            "the manifest back and rerun, or, if you know the run was committed, keep the copies it installed, and if "
+            "it was not, put back the copies it replaced. A replaced copy sits beside its item as "
+            f"<name>.deploying-bak; a retained backup is under .backups/{run}/ in the same root.",
+        )
+        self.assertNotIn("was not committed", captured.getvalue())
+
     def test_a_committed_run_whose_manifest_was_moved_aside_is_refused_alike_and_never_rolled_back(self) -> None:
         # A run killed after its commit, then the manifest moved out of the skills folder, as "A state file that does
         # not read" suggests for a manifest the user does not trust: recovery once read that as no run committed.
@@ -2609,8 +2641,8 @@ class ManifestStateTests(RecoveryTestCase):
         refusal = [
             f"ERROR: The manifest {forward(self.manifest_file)} is missing, but run {run}'s journal remains, so "
             "whether that run was committed cannot be told.",
-            "Put back the manifest you moved, if you did; otherwise reconcile the run by hand, then rerun with "
-            "--dry-run.",
+            "Put back the manifest you moved, if you did. Otherwise reconcile the run by hand, then rerun with "
+            "--dry-run: a run an earlier release left unfinished on a first deployment was not committed.",
             SEE_RECOVERY_FAILED,
         ]
         for arguments in (("--all", "--dry-run"), ("--all",)):

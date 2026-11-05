@@ -785,8 +785,19 @@ class ContextStepTests(unittest.TestCase):
         context = self.context({"alpha": []})
         with self.assertRaisesRegex(DeployError, "Cannot migrate without an existing manifest"):
             migrate.migrate(context, "old/source")
+        # The empty manifest a failed first deployment leaves records no source, so it is refused as a missing one is.
         self.paths.manifest_file.parent.mkdir(parents=True)
         context.manifest.save()
+        with self.assertRaises(DeployError) as raised:
+            migrate.migrate(context, "old/source")
+        self.assertEqual(
+            (
+                "ERROR: Cannot migrate without an existing manifest.",
+                "Nothing is deployed in this home, so there is nothing to take over: deploy without --migrate-from.",
+            ),
+            tuple(raised.exception.lines),
+        )
+        context.manifest.data["sources"]["another/source"] = {}
         with self.assertRaisesRegex(DeployError, "Migration source 'old/source' is not present in the manifest"):
             migrate.migrate(context, "old/source")
 

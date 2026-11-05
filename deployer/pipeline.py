@@ -415,11 +415,13 @@ def _execute(
         return fail(exc, debug, "prepare the deployment")
     # The one release point: every way out of this block releases the lock unless a failed recovery retained it.
     with held:
+        step = "check the source checkout"
         try:
             _reject_other_checkout(paths, source_id, options.take_over_source, dry_run=False)
+            step = "check the staging runs"
             journal.check_manifest_beside_runs(paths)
         except (DeployError, OSError, KeyboardInterrupt) as exc:
-            return fail(exc, debug, "check the source checkout")
+            return fail(exc, debug, step)
         try:
             recovered = journal.recover_incomplete(paths)
         except (Exception, KeyboardInterrupt) as exc:  # noqa: BLE001 - any failure while recovering ends in the one stopped-recovery report

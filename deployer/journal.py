@@ -17,6 +17,7 @@ from path_containment import posix_within
 
 from . import fsops, hashing, manifest, platform_support, state_files
 from .errors import DeployError, see_recovery
+from .kinds import KINDS
 from .names import BACKUP_SUFFIX, deletion_name, safe_name_problem, transient_name
 from .paths import Paths
 from .render import ADAPTER_STAGING, AGENT_STAGING
@@ -278,7 +279,7 @@ def _not_writable(backups: Path, error: OSError) -> DeployError:
 def prepare_roots(paths: Paths) -> None:
     """Make every root a run writes, and save the empty manifest when there is none, before the run writes its
     journal, so a journal is only ever written beside a manifest (manifest.save_if_missing)."""
-    for root in ROOT_PREFIXES:
+    for root in dict.fromkeys(kind.root for kind in KINDS):
         fsops.make_directories(root_directory(paths, root))
     manifest.save_if_missing(paths.manifest_file)
 
@@ -716,12 +717,24 @@ def _roll_back(paths: Paths, run_id: str, entries: list[JournalEntry]) -> bool:
     return reconciled
 
 
-def _print_manual_steps(run_dir: Path, run_id: str, committed: bool) -> None:
-    """Say what a reconciled run looks like, since only the user can decide what an unexpected file is."""
-    keep = "keep the copies it installed" if committed else "put back the copies it replaced"
+def _print_manual_steps(run_dir: Path, run_id: str, committed_run: str | None) -> None:
+    """Say what a reconciled run looks like, since only the user can decide what an unexpected file is.
+
+    committed_run is the run the manifest records as committed, as _committed_run_id answers: None, a manifest that is
+    missing or cannot be read, decides nothing, so the steps then say so rather than guess either way.
+    """
+    if committed_run is None:
+        state = (
+            f"  Whether run {run_id} was committed cannot be told, since the manifest is missing or cannot be read: "
+            "put the manifest back and rerun, or, if you know the run was committed, keep the copies it installed, "
+            "and if it was not, put back the copies it replaced."
+        )
+    elif committed_run == run_id:
+        state = f"  Run {run_id} was committed to the manifest, so keep the copies it installed."
+    else:
+        state = f"  Run {run_id} was not committed to the manifest, so put back the copies it replaced."
     print(
-        f"  Run {run_id} was {'' if committed else 'not '}committed to the manifest, so {keep}. "
-        f"A replaced copy sits beside its item as {transient_name('<name>')}; a retained backup is under "
+        f"{state} A replaced copy sits beside its item as {transient_name('<name>')}; a retained backup is under "
         f".backups/{run_id}/ in the same root.",
         file=sys.stderr,
     )
@@ -760,7 +773,8 @@ def check_manifest_beside_runs(paths: Paths) -> None:
     raise DeployError(
         f"ERROR: The manifest {platform_support.normalize(paths.manifest_file)} is missing, but run {run_id}'s journal "
         "remains, so whether that run was committed cannot be told.",
-        "Put back the manifest you moved, if you did; otherwise reconcile the run by hand, then rerun with --dry-run.",
+        "Put back the manifest you moved, if you did. Otherwise reconcile the run by hand, then rerun with --dry-run: "
+        "a run an earlier release left unfinished on a first deployment was not committed.",
         see_recovery("When recovery fails"),
     )
 
@@ -853,7 +867,7 @@ def _recover_run(paths: Paths, run_dir: Path) -> bool:
             "for manual inspection.",
             file=sys.stderr,
         )
-        _print_manual_steps(run_dir, run_id, committed == run_id)
+        _print_manual_steps(run_dir, run_id, committed)
         return False
     read = _read_entries(journal_file, run_id)
     entries, malformed = read.entries, read.malformed
@@ -869,7 +883,7 @@ def _recover_run(paths: Paths, run_dir: Path) -> bool:
             "for manual inspection.",
             file=sys.stderr,
         )
-        _print_manual_steps(run_dir, run_id, committed == run_id)
+        _print_manual_steps(run_dir, run_id, committed)
         return False
     if not entries:
         clear_run(run_dir)
@@ -884,7 +898,7 @@ def _recover_run(paths: Paths, run_dir: Path) -> bool:
             f"{platform_support.normalize(journal_file)}",
             file=sys.stderr,
         )
-        _print_manual_steps(run_dir, run_id, committed == run_id)
+        _print_manual_steps(run_dir, run_id, committed)
         return False
     clear_run(run_dir)
     print("  Recovery complete.")
@@ -997,7 +1011,7 @@ def recover_incomplete(paths: Paths) -> bool:
             recovered = _recover_run(paths, run_dir)
         except RECOVERY_FAILURES as error:
             _report(_recovery_failure(run_dir.name, run_dir, error))
-            _print_manual_steps(run_dir, run_dir.name, _committed_run_id(paths) == run_dir.name)
+            _print_manual_steps(run_dir, run_dir.name, _committed_run_id(paths))
             recovered = False
         succeeded = recovered and succeeded
     return succeeded
