@@ -4,8 +4,6 @@ import os
 import sys
 import traceback
 
-from json_writer import JsonWriteRefused
-
 # Set to anything but empty or 0, it prints tracebacks as --debug does, for runs whose command line is not at hand.
 DEBUG_VARIABLE = "DEPLOYER_DEBUG"
 DEBUG_HINT = "Rerun with --debug to see the traceback."
@@ -100,13 +98,15 @@ def os_error(error: OSError, action: str, remedy: str = CHECK_THE_PATH) -> Deplo
     return converted
 
 
-def fail(error: DeployError | OSError | JsonWriteRefused | KeyboardInterrupt, debug: bool, action: str) -> int:
+def fail(error: DeployError | OSError | ValueError | KeyboardInterrupt, debug: bool, action: str) -> int:
     """Print how a command ended before finishing and return its exit code.
 
-    An OSError is reported as its DeployError, a value json_writer would not write as one naming the action and what
-    the value holds, and Ctrl+C as a cancellation, exit 130.
+    An OSError is reported as its DeployError; a ValueError, which the callers pass only as a value json_writer would
+    not write (its JsonWriteRefused), as one naming the action and what the value holds; and Ctrl+C as a
+    cancellation, exit 130. It takes the base class so this module, which every deployer process loads, imports no
+    writer.
     """
-    if isinstance(error, JsonWriteRefused):
+    if isinstance(error, ValueError):
         refused = DeployError(f"ERROR: Could not {action}: {error}", DEBUG_HINT)
         refused.__cause__ = error
         error = refused
