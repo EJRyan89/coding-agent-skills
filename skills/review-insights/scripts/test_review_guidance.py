@@ -101,6 +101,8 @@ class RuleTests(unittest.TestCase):
             ("  - ", 2),
             ("123456789. ", 1),  # numbered other than 1, so the paragraph continues
             ("7)\t", 1),
+            ("    - ", 1),  # four columns of indentation make the line the paragraph's continuation
+            ("\t- ", 1),
             (f"{chr(0x663)}. ", 1),  # an Arabic-Indic digit
             ("1234567890. ", 1),  # ten digits
             (f"1.{chr(0xA0)}", 1),  # a no-break space

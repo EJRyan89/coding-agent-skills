@@ -87,8 +87,14 @@ NEXT_HEADINGS = {
     "setext heading over a line numbered 2": "The\n2. implications\n---",
     "setext heading over a line numbered with an Arabic-Indic digit": f"The\n{chr(0x663)}. implications\n---",
     "setext heading over a line of no-break spaces": f"The\n{chr(0xA0)}\nimplications\n---",
+    # An empty list item cannot interrupt a paragraph, so it continues it too.
+    "setext heading over an empty bullet": "The\n*\nimplications\n---",
+    "setext heading over an empty item numbered 1": "The\n1.\nimplications\n---",
     "closed ATX heading": "## Implications ##",
-    **{f"HTML heading {tag!r}": f"{tag}Implications</h2>" for tag in ("<h1>", "<h2>", "<H2 id='i'>", "  <h2>")},
+    **{
+        f"HTML heading {tag!r}": f"{tag}Implications</h2>"
+        for tag in ("<h1>", "<h2>", "<H2 id='i'>", "  <h2>", "<h2/>", "<h2\tid='i'>")
+    },
 }
 # Each form of a section that renders as nothing: invisible characters, entities for a space or for nothing, and tags
 # with no text, alone and around a filler.
@@ -252,6 +258,16 @@ def test_the_template_holds_a_placeholder_and_guidance() -> None:
         f"- ## A heading inside a list item\n\n{FILLED}",
         "&lt;br&gt; is refused as text it shows.",
         f"<details><summary>Catalogue</summary>\n\n{FILLED}</details>",
+        # A bullet or an item numbered 1 interrupts the paragraph, so the rule below it is a rule, not an underline
+        # that would make the whole paragraph a heading.
+        f"{FILLED}1. item\n---",
+        f"{FILLED}- item\n---",
+        f"{FILLED}01) item\n---",
+        # A digit outside ASCII or ten digits is text, not list markup, and a tag name followed by a no-break space
+        # starts no HTML block.
+        f"{chr(0x663)}.",
+        "1234567890.",
+        f"<h2{chr(0xA0)}id='x'>Not a heading</h2>\n\n{FILLED}",
     ],
 )
 def test_a_fix_body_with_a_filled_section_passes(section: str) -> None:

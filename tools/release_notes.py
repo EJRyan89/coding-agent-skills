@@ -71,7 +71,7 @@ NOTES_ENTRY_START = re.compile(r"^(?=#{1,3} )", re.MULTILINE)
 # whitespace, as markdown_sections reads it.
 BLOCK_START = re.compile(r"^[ \t]*(?:#{1,6}[ \t]|>|\|)")
 FENCE = re.compile(r"^[ \t]*(?:`{3,}|~{3,})")
-SQUASH_TITLE_NUMBER = re.compile(r"\(#(\d+)\)\s*$")
+SQUASH_TITLE_NUMBER = re.compile(r"\(#([0-9]+)\)[ \t]*$")
 # What git log -z writes after each of a commit's name, subject, and message: NUL, which git refuses in a commit message
 # and cuts a message at, so no message text can end a field early.
 FIELD_END = "\0"
@@ -153,7 +153,7 @@ def notes_entries(text: str | None) -> list[NotesEntry]:
         if block.startswith("### "):
             heading, *body = unwrapped(block)
             fields = {match.group(1): match.group(2) for match in NOTES_FIELD.finditer("\n".join(body))}
-            entries.append(NotesEntry(heading[4:].strip(), fields, "\n".join([heading, *body])))
+            entries.append(NotesEntry(heading[4:].strip(MARKDOWN_SPACE), fields, "\n".join([heading, *body])))
     return entries
 
 

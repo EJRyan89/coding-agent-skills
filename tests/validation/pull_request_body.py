@@ -38,8 +38,9 @@ PROFILE_HEADING = "## Pull requests"
 FORMS_LINE = re.compile(r" {0,3}## +Forms considered(?: +#*)?[ \t]*")
 # A heading of the first or second level ends the section; a third-level one, such as a table's caption, is inside it.
 # Each is a line indented up to three spaces: an ATX heading, an HTML h1 or h2 block, or, below a paragraph, a setext
-# underline, which makes the whole paragraph the heading.
-SECTION_END = re.compile(r" {0,3}(?:#{1,2}(?:[ \t]|$)|<h[12](?:[\s>/]|$))", re.IGNORECASE)
+# underline, which makes the whole paragraph the heading. CommonMark starts an HTML block only where the tag name is
+# followed by a space, a tab, the line's end, `>`, or `/>`, so any other Unicode space leaves the line text.
+SECTION_END = re.compile(r" {0,3}(?:#{1,2}(?:[ \t]|$)|<h[12](?:[ \t>]|/>|$))", re.IGNORECASE)
 SETEXT_UNDERLINE = re.compile(r" {0,3}(?:=+|-+)[ \t]*")
 # A line that is no paragraph's text: blank, a heading, a list item, a quote, a fence, or a rule. Markdown's whitespace
 # is the space and the tab, and its list markers are read by markdown_sections' rules, so a digit outside ASCII or a
@@ -60,8 +61,10 @@ HIDDEN_COMMENT = re.compile(r"<!--(?:-?>|.*?(?:-->|\Z))", re.DOTALL)
 # Characters that render as nothing but are neither whitespace nor a format character, which are dropped by their
 # category: the Hangul fillers and the blank braille pattern.
 INVISIBLE = frozenset("ᅟᅠㅤﾠ⠀")
-# What a line holds that is no text of the author's: list, quote, and table markers, rules, and punctuation.
-MARKUP = re.compile(r"[\s\-*+>|#:.,;_=~`'\"()\[\]]+|\d+[.)](?=\s|$)")
+# What a line holds that is no text of the author's: list, quote, and table markers, rules, and punctuation. A list
+# marker is read by markdown_sections' rule, followed by a space, a tab, or the line's end. The class's `\s` is not a
+# block rule: every Unicode space renders blank, so it is no text of the author's either.
+MARKUP = re.compile(rf"[\s\-*+>|#:.,;_=~`'\"()\[\]]+|{ORDERED_MARKER}(?=[ \t]|$)")
 # A filler word that stands in for an answer rather than giving one; the comparison ignores case.
 FILLERS = frozenset({"none", "n/a", "na", "tbd", "todo", "nothing", "same", "see above", "see below"})
 

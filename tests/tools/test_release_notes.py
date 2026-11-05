@@ -62,15 +62,25 @@ class BodyEntriesTests(unittest.TestCase):
             f"1.{nbsp}more",
             f"{em}- more",
             f"{em}# more",
+            "    - more",
         ):
             with self.subTest(continued=continued):
-                self.assertEqual([f"Some text {continued}"], release_notes.unwrapped(f"Some text\n{continued}"))
+                joined = f"Some text {continued.lstrip(' ')}"
+                self.assertEqual([joined], release_notes.unwrapped(f"Some text\n{continued}"))
         for started in ("1. more", "- more", "  * more", "# more", "> more"):
             with self.subTest(started=started):
                 self.assertEqual(["Some text", started], release_notes.unwrapped(f"Some text\n{started}"))
         # Below a list item, any item starts its own line, and a line of no-break spaces is text, not a blank line.
         self.assertEqual(["1. first", "2. second"], release_notes.unwrapped("1. first\n2. second"))
         self.assertEqual([f"Some text {nbsp} more"], release_notes.unwrapped(f"Some text\n{nbsp}\nmore"))
+
+    def test_a_heading_keeps_any_unicode_space_markdown_keeps_and_a_number_is_ascii(self) -> None:
+        nbsp = chr(0xA0)
+        entries = release_notes.body_entries(f"## Upgrade note\n\n### Changed{nbsp} \t\n\n- Level: patch.\n")
+        self.assertEqual([f"Changed{nbsp}"], [entry.heading for entry in entries])
+        commit = release_notes.Commit
+        self.assertEqual("#12", commit("a" * 40, "fix: a change (#12) \t", "").pull_request)
+        self.assertIsNone(commit("a" * 40, f"fix: a change (#{chr(0x663)})", "").pull_request)
 
     def test_a_wrapped_heading_and_wrapped_fields_are_read_whole(self) -> None:
         # A squash merge may carry a body hard-wrapped, as git and GitHub wrap commit messages, so a heading or a

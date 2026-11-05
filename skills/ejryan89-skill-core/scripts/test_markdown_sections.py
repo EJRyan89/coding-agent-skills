@@ -67,6 +67,11 @@ def test_a_list_item_is_read_as_commonmark_reads_one(line: str, text: str | None
         ("0. item", None),
         ("- ", None),
         ("1.  \t", None),
+        # Up to three columns of indentation interrupt; four or more, a tab among them, continue the paragraph.
+        ("   - item", "item"),
+        ("    - item", None),
+        ("\t- item", None),
+        ("  \t1. item", None),
     ],
 )
 def test_only_a_bullet_or_an_item_numbered_one_with_text_interrupts_a_paragraph(line: str, text: str | None) -> None:
@@ -78,6 +83,20 @@ def test_a_fence_inside_a_list_item_reads_the_marker_as_commonmark_does() -> Non
     assert FENCE_OPENER.fullmatch("123456789) ~~~") is not None
     assert FENCE_OPENER.fullmatch(f"{ARABIC_THREE}. ```bash") is None
     assert FENCE_OPENER.fullmatch("1234567890. ```bash") is None
+
+
+def test_a_nested_item_is_read_at_any_indentation_where_it_interrupts_nothing() -> None:
+    assert list_item("        - nested") == "nested"
+    assert list_item("\t\t2. nested") == "nested"
+
+
+def test_a_fence_closes_only_on_a_run_indented_with_spaces_and_tabs() -> None:
+    assert find_fences(["```", "body", f"{EM_SPACE}```", f"{NBSP}```", " \t```", "after"])[0].lines() == range(5)
+    assert find_fences(["```", "body", "```\r", "after"])[0].lines() == range(3)
+
+
+def test_a_heading_followed_by_another_unicode_space_is_not_that_heading() -> None:
+    assert markdown_section(f"## One{NBSP}\nfirst\n## One\nsecond", "## One") == "second"
 
 
 def test_only_spaces_and_tabs_make_a_line_blank() -> None:
