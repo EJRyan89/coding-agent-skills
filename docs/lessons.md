@@ -188,13 +188,14 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   `tests/malformed_input/test_malformed_input.py::test_each_reader_refuses_or_documents_accepting_each_case`,
   `tests/validation/python_checks.py::PythonChecksPolicies::test_json_reader_is_the_one_parse_of_json`,
   `tests/validation/test_python_checks.py::test_content_errors_policy_reads_read_json_as_raising_persistence_error`,
-  `tests/deployer/test_recovery_migration.py::RecoveryFailureTests::test_each_failure_other_than_an_os_error_a_rerun_repeats_sends_a_committed_run_to_the_manual_steps`
+  `tests/deployer/test_recovery_migration.py::RecoveryFailureTests::test_each_failure_other_than_an_os_error_a_rerun_repeats_sends_a_committed_run_to_the_manual_steps`,
+  `tests/deployer/test_recovery_migration.py::RecoveryFailureTests::test_each_failure_recovery_expects_outside_a_step_fails_its_run_and_the_next_still_recovers`
 - **Search for:** `except json.JSONDecodeError`, `except UnicodeDecodeError:`, or `except tomllib.TOMLDecodeError:`
   around a reader that raises more; `except ValueError` near an `xml_reader`, `tomllib`, or `csv.` call; an `except X`
   around a helper that raises a class outside `X`; an `except (`, `OSError`, or `ValueError` around a
   `validate_record_pair` or `read_json` call with no `PersistenceError` beside it; `.encode("utf-8")` of a name read
   from disk with no handler, which raises `UnicodeEncodeError` for a lone surrogate or a surrogate escape.
-- **Examples:** #1634, #1816, #1874, #2221, #2294
+- **Examples:** #1634, #1816, #1874, #2221, #2294, #2351
 
 ### A result cut short says it was cut
 
@@ -498,13 +499,17 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   that stops, and sends the user to the step that fails.
 - **Use:** `deployer.lock:check_holder`, which judges a lock already there as `deployer.lock:acquire` does and takes nothing, and
   `deployer.pipeline:_reject_other_checkout`, which reads the manifest and refuses another checkout: the deployment's
-  checks before it recovers, which `deployer.pipeline:_dry_run` makes first too, in the deployment's order.
+  checks before it recovers, which `deployer.pipeline:_dry_run` makes first too, in the deployment's order, beginning,
+  for a preview that takes the source over, with `deployer.source:reject_linked_worktree`, which the deployment runs
+  before its lock whatever the flag.
 - **Guard:** `tests/deployer/test_state_files.py::StateFileTests::test_a_dry_run_refuses_each_state_the_deployment_refuses_before_recovery_pending_run_or_not`,
-  a table of each state the deployment refuses before it recovers, each with a pending recovery beside it and without
+  a table of each state the deployment refuses before it recovers, each with a pending recovery beside it and without,
+  and `tests/deployer/test_source_validation.py::OtherCheckoutTests::test_a_dry_run_with_take_over_source_from_a_linked_worktree_is_refused_as_the_deployment_refuses_it`
 - **Search for:** a `return` in `_dry_run` or another preview before a check its run makes first, such as
   `_stop_for_pending_recovery(` before `check_holder(` or `_reject_other_checkout(`; a `--dry-run` branch taken before
-  a check the full run takes, such as the lock a preview never acquires but must still judge.
-- **Examples:** #2293
+  a check the full run takes, such as the lock a preview never acquires but must still judge; an option a preview
+  newly accepts, such as `--take-over-source`, whose run makes a check the preview skips, such as `_claim`'s.
+- **Examples:** #2293, #2313
 
 ### What one step accepts, every later step can read and write
 
@@ -863,6 +868,23 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
 - **Search for:** `.write_text(` or `open(` with `"w"` on a pid, lock, status, or record file another process polls;
   a reader that loops until `.exists()` and then reads at once.
 - **Examples:** #1354
+
+### A deletion stopped partway is told from a change
+
+- **Rule:** A copy whose content a later step judges, such as by a recorded hash, is renamed to a name only its deleter
+  uses before it is deleted, and the step that meets that name finishes the deletion.
+- **Why:** A deletion a kill or an error stops partway leaves a remainder that matches nothing, which a recovery that
+  reads it where the copy stood takes for someone's change and keeps or refuses.
+- **Use:** `deployer.journal:_delete_copy`, which renames the copy to `deployer.names:deletion_name` before deleting
+  it, and `deployer.journal:_finish_deletion`, which finishes what a stopped deletion left there and only names what
+  it cannot delete, so a held leftover fails no later run.
+- **Guard:** `tests/deployer/test_backup_settlement.py::SettlementTests::test_finalization_and_recovery_settle_each_backup_alike`,
+  whose rows include a deletion killed partway and one failing partway, and
+  `tests/deployer/test_recovery_migration.py::RecoveryTests::test_a_rollback_killed_partway_through_deleting_the_installed_copy_is_finished_by_the_next`,
+  and, for a leftover that cannot be deleted, `tests/deployer/test_recovery_migration.py::RecoveryFailureTests::test_a_held_leftover_at_the_deletion_name_fails_no_later_rollback_or_finalization`
+- **Search for:** `fsops.remove(` or `shutil.rmtree(` of a path a later step reads with `hash_path(`, `_hash_existing(`,
+  or `backup_unchanged(`; a retry that compares a tree it may have been deleting when it stopped.
+- **Examples:** #2314
 
 ### A grant is earned by a step that names its tool
 

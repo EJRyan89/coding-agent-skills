@@ -320,11 +320,12 @@ def _stop_for_pending_recovery(paths: Paths) -> bool:
     return True
 
 
-def _reject_other_checkout(paths: Paths, source_id: str, take_over: bool) -> None:
+def _reject_other_checkout(paths: Paths, source_id: str, take_over: bool, *, dry_run: bool) -> None:
     """Refuse a checkout other than the one the manifest records for this source, unless the user takes it over.
 
     Two clones share a source ID and a configuration, so a deployment from the wrong one would silently re-point every
-    installed skill at it and remove whatever it lacks.
+    installed skill at it and remove whatever it lacks. A dry run with the flag says what the deployment would take
+    over, and records nothing.
     """
     entry = manifest.load(paths.manifest_file).source(source_id) or {}
     recorded = entry.get("source_dir")
@@ -343,6 +344,10 @@ def _reject_other_checkout(paths: Paths, source_id: str, take_over: bool) -> Non
         )
     owned = ", ".join(report.plural(len(entry.get(kind.key) or {}), kind.noun) for kind in KINDS)
     print("")
+    if dry_run:
+        print(f"Would take over source '{source_id}' from {recorded}: {owned}.")
+        print(f"This checkout, {current}, would be recorded as their source if a deployment committed.")
+        return
     print(f"Taking over source '{source_id}' from {recorded}: {owned}.")
     print(f"This checkout, {current}, is recorded as their source when this deployment commits.")
 
@@ -413,7 +418,7 @@ def _execute(
     # The one release point: every way out of this block releases the lock unless a failed recovery retained it.
     with held:
         try:
-            _reject_other_checkout(paths, source_id, options.take_over_source)
+            _reject_other_checkout(paths, source_id, options.take_over_source, dry_run=False)
         except (DeployError, OSError, KeyboardInterrupt) as exc:
             return fail(exc, debug, "check the source checkout")
         try:
@@ -490,8 +495,12 @@ def _dry_run(
         # The deployment's own checks before it recovers, in its order, so a lock, a manifest, or a checkout it refuses
         # is refused here too, rather than answered with a pending recovery or a plan the deployment would never
         # reach. A live deployment's own journal is never reported as pending: its lock refuses the dry run first.
+        # The deployment refuses a linked worktree before its lock, whatever the flag; a dry run without the flag may
+        # preview one, which a recorded checkout refuses below, but one that would take the source over cannot.
+        if options.take_over_source:
+            source.reject_linked_worktree(paths)
         lock.check_holder(paths, probe)
-        _reject_other_checkout(paths, src.source_id, options.take_over_source)
+        _reject_other_checkout(paths, src.source_id, options.take_over_source, dry_run=True)
         if _stop_for_pending_recovery(paths):
             return 0
         return _deploy(paths, options, src, values, stdin, None, pin)

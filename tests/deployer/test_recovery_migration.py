@@ -36,10 +36,14 @@ from harness import (
 from deployer import fsops, hashing, journal, manifest, pipeline, platform_support, render
 from deployer.errors import RECOVERY_STOPPED, RUN_COMMITTED, RUN_NOT_COMMITTED, DeployError
 from deployer.kinds import KINDS
-from deployer.names import transient_name
+from deployer.names import deletion_name, transient_name
 from deployer.paths import CANARY_MARKER, CANARY_MARKER_TEXT
 
 SEE_RECOVERY_BACKUPS = 'See "Backups" in docs/recovery.md.'
+
+
+class Killed(BaseException):
+    """The process ending at a point, which nothing in the deployer catches."""
 
 
 class RecoveryTestCase(DeployerTestCase):
@@ -151,6 +155,35 @@ class RecoveryTests(RecoveryTestCase):
         self.assertIn("Alpha content", self.skill_text("alpha"))
         self.assertNotIn("corrupted", self.skill_text("alpha"))
         self.assertFalse((self.skills_dir / "alpha.deploying-bak").exists())
+
+    def test_a_rollback_killed_partway_through_deleting_the_installed_copy_is_finished_by_the_next(self) -> None:
+        # The rollback deletes what the run installed. A kill partway through that deletion leaves part of the copy,
+        # which matches neither hash where the copy stood; under its deletion name the next rollback finishes it.
+        self.deployed(("alpha", "Alpha content"))
+        original = hashing.hash_path(self.skills_dir / "alpha")
+        (self.skills_dir / "alpha").rename(self.skills_dir / transient_name("alpha"))
+        self.write(self.skills_dir / "alpha" / "SKILL.md", "interrupted replacement\n")
+        self.write(self.skills_dir / "alpha" / "notes.md", "a second file\n")
+        replacement = hashing.hash_path(self.skills_dir / "alpha")
+        run = "20260101-000000-kill"
+        self.write_journal(run, backup_entry("alpha", original), install_entry("alpha", replacement))
+        deleted = {self.skills_dir / "alpha", self.skills_dir / deletion_name("alpha")}
+        real_remove = fsops.remove
+
+        def killed_partway(path: Path) -> None:
+            if path in deleted:
+                real_remove(path / "SKILL.md")
+                raise Killed
+            real_remove(path)
+
+        with mock.patch.object(fsops, "remove", side_effect=killed_partway), self.assertRaises(Killed):
+            journal.recover_incomplete(self.paths)
+        result = self.deploy_ok("--all")
+        self.assertIn(f"Recovering uncommitted run {run} (rolling back)...\n  Recovery complete.", result.output)
+        self.assertNotIn("WARNING", result.output)
+        self.assertIn("Alpha content", self.skill_text("alpha"))
+        self.assertEqual(["alpha"], sorted(child.name for child in self.skills_dir.iterdir() if child.name[0] != "."))
+        self.assertFalse((self.skills_dir / deletion_name("alpha")).exists())
 
     def assert_adapter_journal_rolls_back(self, staging_label: str) -> None:
         self.deployed(("alpha", "Alpha content"))
@@ -558,7 +591,9 @@ class RecoveryFailureTests(RecoveryTestCase):
         self.rolled_back_fixture()
         self.later_run()
         alpha = self.skills_dir / "alpha"
-        with failing_at("remove", alpha):
+        # The installed copy is deleted under its deletion name, and Windows refuses to rename a folder holding a file
+        # another program has open, so the held copy stays whole where it was installed.
+        with failing_at("move", alpha):
             result = self.deploy_fails("--all", pattern="Recovery failed", changes_home=RECOVERS)
         self.assert_recovery_failed(result.output, alpha)
         self.assert_lines(result.output, "  WARNING: Both alpha and alpha.deploying-bak exist during rollback")
@@ -577,20 +612,76 @@ class RecoveryFailureTests(RecoveryTestCase):
         self.later_run()
         transient = self.skills_dir / "alpha.deploying-bak"
         # The run is committed, so a copy it cannot delete stays beside its item, named, and the journal is cleared;
-        # the deployment that follows recovery then refuses alpha until the copy is gone, as for any stale backup.
-        with failing_at("remove", transient):
+        # the deployment that follows recovery then refuses alpha until the copy is gone, as for any stale backup. A
+        # copy is deleted under its deletion name, and Windows refuses to rename a folder holding a file another
+        # program has open, so the held copy stays whole.
+        with failing_at("move", transient):
             result = self.deploy_fails("--all", pattern="transient backup already exists", changes_home=RECOVERS)
         self.assert_lines(
             result.output,
             f"Recovering committed run {self.HELD} (completing finalization)...",
-            "  WARNING: alpha's previous copy could not be deleted, so it, or what is left of it, stays at "
-            f"{forward(transient)}: Access is denied. Delete it once nothing holds it open. {SEE_RECOVERY_BACKUPS}",
+            f"  WARNING: alpha's previous copy could not be deleted, so it stays at {forward(transient)}: Access is "
+            f"denied. Delete it once nothing holds it open. {SEE_RECOVERY_BACKUPS}",
             "  Recovery complete.",
         )
         self.assertNotIn("Recovery failed", result.output)
         self.assertFalse(journal_file.exists())
         self.assertTrue((transient / "SKILL.md").is_file())
         self.assertFalse(self.lock_dir.exists())
+
+    def test_a_held_copy_at_its_deletion_name_is_left_named_and_completes_a_committed_run(self) -> None:
+        # The copy was renamed to its deletion name, and deleting it there failed: the run is committed, so what is
+        # left stays there, named whole, and the journal is cleared.
+        journal_file = self.committed_fixture(retain=False)
+        deletion = self.skills_dir / deletion_name("alpha")
+        with failing_at("remove", deletion):
+            result = self.deploy_ok("--all")
+        self.assert_lines(
+            result.output,
+            f"Recovering committed run {self.HELD} (completing finalization)...",
+            "  WARNING: alpha's previous copy could not be deleted, so what is left of it stays at "
+            f"{forward(deletion)}: Access is denied. Delete it once nothing holds it open. {SEE_RECOVERY_BACKUPS}",
+            "  Recovery complete.",
+        )
+        self.assertFalse(journal_file.exists())
+        self.assertFalse((self.skills_dir / "alpha.deploying-bak").exists())
+        self.assertTrue((deletion / "SKILL.md").is_file())
+
+    def test_a_held_leftover_at_the_deletion_name_fails_no_later_rollback_or_finalization(self) -> None:
+        # What a deletion a held file stopped left at the deletion name is named each time a later run meets it, and
+        # that run deletes its own copy where it stands, so the leftover holds up no run, however many follow.
+        self.deployed(("alpha", "Alpha content"))
+        deletion = self.skills_dir / deletion_name("alpha")
+        self.write(deletion / "SKILL.md", "left by a deletion a held file stopped\n")
+        named = (
+            f"  WARNING: What is left of a copy the deployer was deleting stays at {forward(deletion)}: Access is "
+            f"denied. Delete it once nothing holds it open. {SEE_RECOVERY_BACKUPS}"
+        )
+        transient = self.skills_dir / transient_name("alpha")
+        for attempt in range(2):
+            with self.subTest(attempt=attempt):
+                original = hashing.hash_path(self.skills_dir / "alpha")
+                (self.skills_dir / "alpha").rename(transient)
+                self.write(self.skills_dir / "alpha" / "SKILL.md", "installed by the interrupted run\n")
+                installed = hashing.hash_path(self.skills_dir / "alpha")
+                run = f"20260101-00000{attempt}-roll"
+                self.write_journal(run, backup_entry("alpha", original), install_entry("alpha", installed))
+                with failing_at("remove", deletion):
+                    result = self.deploy_ok("--all")
+                self.assert_lines(
+                    result.output, f"Recovering uncommitted run {run} (rolling back)...", named, "  Recovery complete."
+                )
+                self.assertIn("Alpha content", self.skill_text("alpha"))
+                self.assertFalse(transient.exists())
+                self.assertTrue((deletion / "SKILL.md").is_file())
+        # A deployment's own finalization deletes the unkept copy it replaced where it stands, beside the same leftover.
+        self.make_skill("alpha", "Updated alpha")
+        with failing_at("remove", deletion):
+            result = self.deploy_ok("--all")
+        self.assert_lines(result.output, named)
+        self.assertIn("Updated alpha", self.skill_text("alpha"))
+        self.assertFalse(transient.exists())
+        self.assertTrue((deletion / "SKILL.md").is_file())
 
     def test_a_backup_directory_that_cannot_be_created_keeps_the_copy_and_finishes_a_committed_run(self) -> None:
         self.committed_fixture(retain=True)
@@ -724,7 +815,8 @@ class RecoveryFailureTests(RecoveryTestCase):
         for expected in journal.RECOVERY_FAILURES:
             if expected is not OSError:
                 self.assertTrue(any(isinstance(error, expected) for error, _ in failures), expected)
-        steps = (("hash_path", "alpha", "deployer.hashing"), ("remove", "alpha.deploying-bak", "deployer.fsops"))
+        # The copy is settled by renaming it to its deletion name, the first change its deletion makes.
+        steps = (("hash_path", "alpha", "deployer.hashing"), ("move", "alpha.deploying-bak", "deployer.fsops"))
         for error, reason in failures:
             for function, item, module in steps:
                 with self.subTest(error=type(error).__name__, step=function):
@@ -752,6 +844,78 @@ class RecoveryFailureTests(RecoveryTestCase):
                     at = printed.index(expected_lines[0])
                     self.assertEqual(expected_lines, printed[at : at + len(expected_lines)], result.output)
                     self.assertTrue((self.skills_dir / "alpha.deploying-bak").is_dir())
+
+    def test_an_os_error_naming_no_path_or_reason_is_named_at_its_step_by_its_message(self) -> None:
+        # An OSError raised with a message alone has no filename and no strerror: the report names the step's path
+        # and the message, pinned against a literal.
+        self.committed_fixture(retain=False)
+        alpha = self.skills_dir / "alpha"
+        with failing_at("hash_path", alpha, "deployer.hashing", OSError("synthetic plain failure")):
+            result = self.deploy_fails("--all", pattern="Recovery failed", changes_home=RECOVERS)
+        self.assert_lines(
+            result.output, f"  ERROR: Recovery of run {self.HELD} failed at {forward(alpha)}: synthetic plain failure"
+        )
+
+    def test_each_failure_recovery_expects_outside_a_step_fails_its_run_and_the_next_still_recovers(self) -> None:
+        # The catalogue is journal.RECOVERY_FAILURES, each raised from _recover_run itself, outside any step _guarded
+        # runs: reading the run's journal. recover_incomplete reports it at the run's staging folder with the manual
+        # steps, keeps the run, and goes on to the next run, so no class of it stops recovery as an unexpected error
+        # would. Each report is pinned whole, against literals, for a run committed and one not.
+        failures: list[tuple[Exception, tuple[str, ...]]] = [
+            (OSError("synthetic plain failure"), ("synthetic plain failure",)),
+            (
+                DeployError("ERROR: synthetic refusal", "Synthetic remedy."),
+                ("synthetic refusal", "  Synthetic remedy."),
+            ),
+            (
+                UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte"),
+                ("UnicodeDecodeError: 'utf-8' codec can't decode byte 0xff in position 0: invalid start byte",),
+            ),
+        ]
+        for expected in journal.RECOVERY_FAILURES:
+            self.assertTrue(any(isinstance(error, expected) for error, _ in failures), expected)
+        real_read = journal._read_entries
+        for error, (reason, *more) in failures:
+            for committed in (False, True):
+                with self.subTest(error=type(error).__name__, committed=committed):
+                    self.start(Path(self.enterContext(tempfile.TemporaryDirectory(prefix="deploy-test."))))
+                    journal_file = self.committed_fixture(retain=False) if committed else self.rolled_back_fixture()
+                    self.later_run()
+                    installed = hashing.hash_path(self.skills_dir / "alpha")
+
+                    def read(path: Path, run_id: str, failure: Exception = error) -> journal.Entries:
+                        if run_id == self.HELD:
+                            raise failure
+                        return real_read(path, run_id)
+
+                    with mock.patch.object(journal, "_read_entries", side_effect=read):
+                        result = self.deploy_fails("--all", pattern="Recovery failed", changes_home=RECOVERS)
+                    run = self.staging_run(self.HELD)
+                    keep = "keep the copies it installed" if committed else "put back the copies it replaced"
+                    report = [
+                        f"  ERROR: Recovery of run {self.HELD} failed at {forward(run)}: {reason}",
+                        *more,
+                        f"  Run {self.HELD} was {'' if committed else 'not '}committed to the manifest, so {keep}. "
+                        "A replaced copy sits beside its item as <name>.deploying-bak; a retained backup is under "
+                        f".backups/{self.HELD}/ in the same root.",
+                        f"  When no .deploying-bak remains, delete {forward(run)} and rerun with --dry-run. "
+                        f"{SEE_RECOVERY_FAILED}",
+                    ]
+                    printed = result.stderr.splitlines()
+                    self.assertIn(report[0], printed, result.output)
+                    at = printed.index(report[0])
+                    self.assertEqual(report, printed[at : at + len(report)], result.output)
+                    self.assert_lines(
+                        result.output,
+                        f"Recovering uncommitted run {self.NEXT} (rolling back)...",
+                        "ERROR: Recovery failed, so this deployment stopped before deploying anything.",
+                    )
+                    self.assertNotIn(RECOVERY_STOPPED, result.output)
+                    self.assertNotIn("Traceback", result.output)
+                    self.assertTrue(journal_file.is_file())
+                    self.assertFalse((run.parent / self.NEXT).exists())
+                    self.assertEqual(installed, hashing.hash_path(self.skills_dir / "alpha"))
+                    self.assertFalse(self.lock_dir.exists())
 
     def test_an_unlistable_staging_root_fails_recovery_and_releases_the_lock(self) -> None:
         self.deployed(("alpha", "Alpha content"))
@@ -800,16 +964,15 @@ class RecoveryFailureTests(RecoveryTestCase):
 
     def assert_startup_recovery_stops(self, committed: bool, state: str) -> None:
         journal_file = self.interrupted_startup_run(committed)
-        # Rolling back moves the backup into place; completing a committed run deletes it.
-        operation = "remove" if committed else "move"
-        real = getattr(fsops, operation)
+        # Rolling back moves the backup into place; completing a committed run renames it to its deletion name first.
+        real = fsops.move
 
         def failing(source: Path, *rest: Path) -> None:
             if source.name == "alpha.deploying-bak":
                 raise RuntimeError("synthetic recovery failure")
             real(source, *rest)
 
-        with mock.patch(f"deployer.fsops.{operation}", side_effect=failing):
+        with mock.patch("deployer.fsops.move", side_effect=failing):
             result = self.deploy_fails("--all", pattern="Unexpected RuntimeError", changes_home=RECOVERS)
         self.assertEqual(1, result.code)
         heading = (
