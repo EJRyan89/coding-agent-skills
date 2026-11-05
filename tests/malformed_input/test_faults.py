@@ -13,6 +13,7 @@ one per group of faults, each judged by fault_check.py; the tests below show the
 from __future__ import annotations
 
 import ast
+import stat
 import subprocess
 import sys
 import tempfile
@@ -24,6 +25,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "validation"))
 
 import exit_tables
+import fault_check
 import faults
 from fault_check import REPOSITORY, TRACEBACK, changes, environment, judged, placed, run_entry
 from fault_table import (
@@ -324,3 +326,18 @@ def test_placed_puts_the_file_back_as_it_was(fault: str) -> None:
         with placed(fault, path):
             pass
         assert path.read_bytes() == b'{"value": 1}'
+
+
+def test_the_shared_checkout_is_removed_at_exit_read_only_git_objects_included(monkeypatch: pytest.MonkeyPatch) -> None:
+    registered: list[Any] = []
+    monkeypatch.setattr(fault_check, "repository_files", lambda root: [REPOSITORY / "README.md"])
+    monkeypatch.setattr(fault_check.atexit, "register", lambda function, *args: registered.append((function, args)))
+    root = fault_check.shared_checkout.__wrapped__()
+    objects = [path for path in (root / ".git" / "objects").rglob("*") if path.is_file()]
+    assert objects
+    for path in objects:
+        path.chmod(stat.S_IREAD)
+    [(function, args)] = registered
+    # The exit handler removes the whole copy, though Windows refuses a bare rmtree of a read-only file.
+    function(*args)
+    assert not root.parent.exists()

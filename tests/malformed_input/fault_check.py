@@ -74,9 +74,11 @@ def run_ids(runs: list[Run]) -> list[str]:
 def shared_checkout() -> Path:
     """A copy of this checkout, every file a commit could hold, committed once in a repository of its own, made once
     for the suite process and removed when it ends. Resolved, so the copy is named by the path a script resolves, not
-    a Windows short name of the temporary folder."""
-    temporary = Path(tempfile.mkdtemp(prefix="fault-checkout ")).resolve()
-    atexit.register(shutil.rmtree, temporary)
+    a Windows short name of the temporary folder. The folder's own cleanup removes it, which clears the read-only flag
+    Windows git sets on a repository's objects, where a bare rmtree is refused."""
+    folder = tempfile.TemporaryDirectory(prefix="fault-checkout ")
+    atexit.register(folder.cleanup)
+    temporary = Path(folder.name).resolve()
     root = temporary / "checkout"
     for path in repository_files(REPOSITORY):
         target = root / path.relative_to(REPOSITORY)

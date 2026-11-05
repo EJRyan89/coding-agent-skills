@@ -94,8 +94,14 @@ def _run(run: Path, role: str) -> tuple[Path | None, str, str, Path]:
         raise SourceError(f"the review run {run} could not be read: {exc}") from exc
     if not ROLE_ID.fullmatch(role) or role not in {item.get("id") for item in roles}:
         raise SourceError(f"the review run has no role {role}")
-    if repository is not None and not Path(repository).is_dir():
-        raise SourceError(f"the run's source repository {repository} is not a directory")
+    if repository is not None:
+        # A repository it cannot stat is the stat's OSError, never a folder that is not there.
+        try:
+            present = file_presence.is_directory(Path(repository))
+        except file_presence.NotADirectory:
+            raise SourceError(f"the run's source repository {repository} is not a directory") from None
+        if not present:
+            raise SourceError(f"the run's source repository {repository} does not exist")
     return (None if repository is None else Path(repository)), name, head, read_log(run, role)
 
 
