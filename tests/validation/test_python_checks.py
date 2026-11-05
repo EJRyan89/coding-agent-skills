@@ -35,6 +35,7 @@ import github_client
 import pdf_tool
 import python_checks
 import review_vocabularies
+import skill_scripts
 import toolchain
 import validation_support
 from call_tables import TEXT_OPENERS, TextOpener
@@ -5389,6 +5390,7 @@ CROSSED_POLICIES: dict[str, Callable[[Path, list[Path]], list[str]]] = {
     "policed": python_checks.policed_call_problems,
     "time-option": python_checks.time_option_problems,
     "ctypes": python_checks.ctypes_declaration_problems,
+    "console": lambda root, _files: skill_scripts.console_setup_problems(root),
 }
 CROSSED_MARK = "# refused:"
 
@@ -5522,6 +5524,29 @@ SUPERSEDED_RESOLVER_ROWS = [
         "        case object(object(commonpath=common)):\n            return common\n",
         SCRIPT,
         id="a sequence's, a mapping's, and a positional pattern's keyword, which read no subject's attribute",
+    ),
+    pytest.param(
+        "def f(fix=getattr(sys.stdout, 'reconfigure')):\n    fix(encoding='cp1252')  # refused: console\n",
+        # A tool, which the console policy reads whatever its folder holds, as it reads a skill's scripts beside its
+        # SKILL.md.
+        "tools/alpha.py",
+        id="a stream's reconfigure as a parameter's default",
+    ),
+    pytest.param(
+        "def close(handle, lib=ctypes.WinDLL('kernel32')):\n    return lib.CloseHandle(handle)  # refused: ctypes\n",
+        CTYPES_OWNER,
+        id="a library loaded as a parameter's default, inside a ctypes owner",
+    ),
+    pytest.param(
+        "def f(t):\n    match os.path:\n        case object(commonpath=common) as p:  # refused: owner-only\n"
+        "            return common(t), p\n",
+        SCRIPT,
+        id="an owner-only callable a captured class pattern binds",
+    ),
+    pytest.param(
+        "KIND = 'x'\n\n\ndef f(p):\n    p.add_argument('--x', type=KIND())  # refused: policed\n",
+        SCRIPT,
+        id="a literal-bound constant called as a type",
     ),
     pytest.param(
         "def f(t):\n    match os.path:\n        case object(commonpath=common):  # refused: owner-only\n"

@@ -572,9 +572,9 @@ class _BindingReader(ast.NodeVisitor):
                 self.visit(variadic.annotation)
 
     def _parameters(self, arguments: ast.arguments) -> None:
-        """Bind each parameter as a local value, or to its default when the default is a name or an attribute, as an
+        """Bind each parameter as a local value, or to its default, whatever expression the default is, as an
         assignment binds it: what a caller passes is never resolved, so a call through the parameter is read as a call
-        of its default."""
+        of its default, a default that is itself a call, as `lib=ctypes.WinDLL("kernel32")`, included."""
         positional = [*arguments.posonlyargs, *arguments.args]
         defaults: dict[int, ast.expr | None] = {
             id(argument): default
@@ -588,8 +588,7 @@ class _BindingReader(ast.NodeVisitor):
                 continue
             self.scopes[id(argument)] = self.scope
             default = defaults.get(id(argument))
-            named = isinstance(default, (ast.Name, ast.Attribute))
-            self.scope.bind(argument.arg, default if named else f"<local>.{argument.arg}")
+            self.scope.bind(argument.arg, default if default is not None else f"<local>.{argument.arg}")
 
     def visit_Import(self, node: ast.Import) -> None:
         for found in module_imports(node):
