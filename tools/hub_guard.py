@@ -267,7 +267,9 @@ FIND_COMMANDS = frozenset({"-exec", "-execdir", "-ok", "-okdir"})
 # that run a program, its extraction (-x, --extract, --get, and what only overwrites on extraction), and its -C, which
 # writes the files an archive names in a directory the option chooses, are among the ones refused, and so is any word
 # of such a program that the text does not settle. tar's archive named host:path, which tar opens through a remote
-# shell, is refused unless --force-local is given (remote_archive).
+# shell, is refused unless --force-local is given (remote_archive). tar's letters are the ones GNU tar and bsdtar,
+# Windows' tar.exe, either both read alike or one does not know: -H, -W, and -s, which one of them reads with a value
+# and the other without, are refused.
 PROGRAM_OPTIONS: dict[str, OptionTable] = {
     "find": option_table(
         "",
@@ -315,7 +317,7 @@ PROGRAM_OPTIONS: dict[str, OptionTable] = {
         permutes=True,
     ),
     "tar": option_table(
-        "AcdrtuvzjJZakmOpPhSWBilnRsof:T:X:b:H:K:N:V:",
+        "AcdrtuvzjJZakmOpPhSBilnRof:T:X:b:K:N:V:",
         " ".join(
             (
                 "catenate concatenate create diff compare append list update delete file= force-local",
@@ -2064,11 +2066,8 @@ class BashReader:
         """A program that runs another command: refused where that command is or may be git (runner_refusal), and,
         for bash -c and pwsh -Command, where the literal script it runs holds a git call; around any other command it
         is understood, its assignments judged as ones before that command."""
-        # env's own assignments are ones before the command it runs, as those before env are.
-        own: list[tuple[str, Word]] = [
-            (name, value) for name, value in runner_assignments(program, arguments) if bash_syntax.NAME.fullmatch(name)
-        ]
-        self.read_prefixes([*prefixes, *own], git=False)
+        # env's own assignments are judged with the runner, by the reading both shells share (read_runner_words).
+        self.read_prefixes(prefixes, git=False)
         return read_runner_words(
             program,
             arguments,
@@ -2262,7 +2261,7 @@ def runner_refusal(program: str, arguments: list[Word]) -> str | None:
         return RUNNERS[program]
     if program in RUNNER_OPTIONS:
         table = RUNNER_OPTIONS[program]
-        reading = read_options(table, arguments)
+        reading = option_refusal(table, arguments)
         if reading.refused is not None:
             return f"{RUNNERS[program]}, and {reading.refused} is not one of its options the guard knows to be safe"
         command = next_word(arguments, reading.stop)
@@ -2297,8 +2296,18 @@ def read_runner_words(
     reason = runner_refusal(program, arguments)
     if reason is None and program in {"bash", "pwsh"}:
         reason = script()
+    own = [name for name, _ in runner_assignments(program, arguments)] if reason is None else []
     if reason is None:
-        own = [name for name, _ in runner_assignments(program, arguments)]
+        # env's own assignments are ones before the command it runs, as those before env are.
+        reason = next(
+            (
+                f"{program} assigns {name} before a command, which Bash or git reads"
+                for name in own
+                if not harmless_name(name)
+            ),
+            None,
+        )
+    if reason is None:
         reason = runner_command_refusal(program, arguments, {*variables, *own, *reading.environment})
     if reason is not None:
         reading.cannot_read(f"runs {program}: {reason}")
@@ -2314,10 +2323,10 @@ def read_runner_words(
 
 def runner_assignments(program: str, arguments: list[Word]) -> list[tuple[str, str]]:
     """The NAME=VALUE words a runner reads among its options as assignments for its command, as env does, read as
-    read_options reads its words, so a value-taking option's value never ends them; none for any other runner."""
+    option_refusal reads its words, so a value-taking option's value never ends them; none for any other runner."""
     if program not in RUNNER_OPTIONS:
         return []
-    return read_options(RUNNER_OPTIONS[program], arguments).assigned
+    return option_refusal(RUNNER_OPTIONS[program], arguments).assigned
 
 
 def runner_command_refusal(program: str, arguments: list[Word], variables: Iterable[str]) -> str | None:
@@ -2326,14 +2335,14 @@ def runner_command_refusal(program: str, arguments: list[Word], variables: Itera
     the program's words hold `--`, after which they are its operands."""
     if program not in RUNNER_OPTIONS:
         return None
-    start = read_options(RUNNER_OPTIONS[program], arguments).stop
+    start = option_refusal(RUNNER_OPTIONS[program], arguments).stop
     command = command_name(arguments[start] or "") if start < len(arguments) else None
     if command not in PROGRAM_OPTIONS:
         return None
     rest = arguments[start + 1 :]
     if program == "xargs":
         # After a `--` that ends the program's options every word xargs adds is an operand; find has no such `--`.
-        stop = read_options(PROGRAM_OPTIONS[command], rest).stop
+        stop = option_refusal(PROGRAM_OPTIONS[command], rest).stop
         if stop >= len(rest) or rest[stop] != "--" or PROGRAM_OPTIONS[command].single_dash:
             return f"xargs runs {command} with words from its input, which may be options that run a command"
     return program_refusal(command, rest, variables)
@@ -2350,7 +2359,7 @@ def program_refusal(program: str, arguments: list[Word], variables: Iterable[str
         return f"{program} reads options or its archive from {handed[0]}, which may hold one that runs a command"
     if any(word is None for word in arguments):
         return f"{program} may run a command its words name (a word the text does not settle)"
-    reading = read_options(PROGRAM_OPTIONS[program], arguments)
+    reading = option_refusal(PROGRAM_OPTIONS[program], arguments)
     if reading.refused is not None:
         return f"{program} is given {reading.refused}, not one of its options the guard knows to be safe"
     return remote_archive(program, arguments, reading)
@@ -2358,8 +2367,9 @@ def program_refusal(program: str, arguments: list[Word], variables: Iterable[str
 
 def remote_archive(program: str, arguments: list[Word], reading: OptionReading) -> str | None:
     """Why tar is refused for an archive it reaches through a remote shell: one named host:path, with a colon before
-    any slash, which tar opens by running rsh or ssh, unless --force-local makes it a local file."""
-    if program != "tar" or "--force-local" in arguments:
+    any slash, which tar opens by running rsh or ssh, unless --force-local, read as an option rather than another
+    option's value or a word after `--`, makes it a local file."""
+    if program != "tar" or "--force-local" in reading.longs:
         return None
     for option, value in reading.values:
         if option in {"-f", "--file"} and value is not None and ":" in value.partition("/")[0]:
@@ -2367,25 +2377,21 @@ def remote_archive(program: str, arguments: list[Word], reading: OptionReading) 
     return None
 
 
-def option_refusal(table: OptionTable, arguments: list[Word]) -> str | None:
-    """The first option word of a program or runner that its OptionTable does not know to be safe, or None
-    (read_options)."""
-    return read_options(table, arguments).refused
-
-
 @dataclass(frozen=True)
 class OptionReading:
-    """What read_options found: the first option word not known to be safe, or None; the index its reading stopped
-    at; the NAME=VALUE words a table that takes assignments read, as env's; and each value-taking option with the
-    value it took, a short option by its dash and letter."""
+    """What option_refusal found: the first option word not known to be safe, or None; the index its reading stopped
+    at; the NAME=VALUE words a table that takes assignments read, as env's; each value-taking option with the value
+    it took, a short option by its dash and letter; and each long option read as an option, never one that is another
+    option's value or follows `--`."""
 
     refused: str | None
     stop: int
     assigned: list[tuple[str, str]]
     values: list[tuple[str, Word]]
+    longs: list[str]
 
 
-def read_options(table: OptionTable, arguments: list[Word]) -> OptionReading:
+def option_refusal(table: OptionTable, arguments: list[Word]) -> OptionReading:
     """A program's or runner's words read as getopt reads them. The reading stops at a runner's command, after its
     options and the operands it takes, at a program's `--`, or at the end of its words: a runner's options end at its
     command or at `--`, after which its operands and its command follow, and a program that permutes its arguments is
@@ -2398,9 +2404,10 @@ def read_options(table: OptionTable, arguments: list[Word]) -> OptionReading:
     ended = False  # past `--`, where no word is an option
     assigned: list[tuple[str, str]] = []
     values: list[tuple[str, Word]] = []
+    longs: list[str] = []
 
     def reading(refused: str | None, stop: int) -> OptionReading:
-        return OptionReading(refused, stop, assigned, values)
+        return OptionReading(refused, stop, assigned, values, longs)
 
     while index < len(arguments):
         word = arguments[index]
@@ -2434,6 +2441,8 @@ def read_options(table: OptionTable, arguments: list[Word]) -> OptionReading:
         if read is None:
             return reading(word, index)
         taken, valued, attached = read
+        if word.startswith("--"):
+            longs.append(word.partition("=")[0])
         if valued is not None:
             values.append((valued, next_word(arguments, index + 1) if taken else attached))
         index += 1 + taken

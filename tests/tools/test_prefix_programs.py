@@ -111,12 +111,12 @@ SAFE: dict[str, set[str]] = {
         *("--ignore-case", "--no-anchored", "--no-ignore-case", "--no-wildcards", "--no-wildcards-match-slash"),
         *("--wildcards", "--wildcards-match-slash", "--keep-newer-files", "-k", "--keep-old-files"),
         *("--no-overwrite-dir", "--skip-old-files"),
-        *("-W", "--verify", "-O", "--to-stdout", "--clamp-mtime", "--delay-directory-restore", "--group"),
+        *("--verify", "-O", "--to-stdout", "--clamp-mtime", "--delay-directory-restore", "--group"),
         *("--mode", "--mtime", "-m", "--touch", "--no-delay-directory-restore", "--no-same-owner"),
         *("--no-same-permissions", "--numeric-owner", "--owner", "-p", "--preserve-permissions"),
-        *("--same-permissions", "--same-owner", "--sort", "-s", "--acls", "--no-acls", "--no-selinux"),
+        *("--same-permissions", "--same-owner", "--sort", "--acls", "--no-acls", "--no-selinux"),
         *("--no-xattrs", "--selinux", "--xattrs", "-f", "--file", "-b", "--blocking-factor", "-B"),
-        *("--read-full-records", "-i", "--ignore-zeros", "--record-size", "-H", "--format", "--old-archive"),
+        *("--read-full-records", "-i", "--ignore-zeros", "--record-size", "--format", "--old-archive"),
         *("--portability", "--posix", "-V", "--label", "-a", "--auto-compress", "-j", "--bzip2", "-J", "--xz"),
         *("--lzip", "--lzma", "--lzop", "--no-auto-compress", "--zstd", "-z", "--gzip", "--gunzip", "--ungzip"),
         *("-Z", "--compress", "--uncompress", "--hard-dereference", "-h", "--dereference", "-K", "--newer-mtime"),
@@ -126,6 +126,8 @@ SAFE: dict[str, set[str]] = {
         *("-v", "--verbose", "--warning", "-o", "--starting-file"),
     },
 }
+# Another build of a program the guard reads by one table, whose catalogue the fixture holds beside it.
+OTHER_BUILDS = {"bsdtar": "tar"}
 # The words each runner takes after its options and before its command, as its manual gives them.
 OPERANDS = {"timeout": ["5"], "chrt": ["10"], "taskset": ["3"], "chroot": ["/srv"]}
 # Bash reads time as a keyword at a command's start, so the program time runs only after an assignment.
@@ -151,6 +153,13 @@ EXTRA_FORMS: dict[str, list[tuple[list[str], bool]]] = {
         (["--file=host:a.tar", "-t"], False),
         (["--file", "host:a.tar", "-t"], False),
         (["--force-local", "-tf", "host:a.tar"], True),
+        # --force-local only as an option: not as another option's value, nor as a word after --.
+        (["-tf", "host:a.tar", "--", "--force-local"], False),
+        (["-tf", "host:a.tar", "--exclude", "--force-local"], False),
+        (["-cf", "host:a.tar", "-T", "--force-local"], False),
+        # Letters bsdtar, Windows' tar.exe, reads with a value where GNU tar reads none, or the other way.
+        (["-tf", "a.tar", "-H", "--use-compress-program=git"], False),
+        (["-tf", "a.tar", "-W", "use-compress-program=git"], False),
         (["-tf", "./a:b.tar"], True),
         # A value given to an option that takes none.
         (["--verbose=1", "-tf", "a.tar"], False),
@@ -451,7 +460,7 @@ class ProgramBehindRunnerTests(unittest.TestCase):
 class CatalogueTests(unittest.TestCase):
     def test_every_program_the_guard_reads_options_of_has_a_catalogue_a_test_and_its_safe_options(self) -> None:
         tables = {**hub_guard.RUNNER_OPTIONS, **hub_guard.PROGRAM_OPTIONS}
-        self.assertEqual(sorted(tables), sorted(catalogues()))
+        self.assertEqual(sorted(tables), sorted(set(catalogues()) - set(OTHER_BUILDS)))
         self.assertEqual(sorted(tables), sorted(SAFE))
         tested = {
             name.removeprefix("test_")
@@ -473,6 +482,17 @@ class CatalogueTests(unittest.TestCase):
         readers = set(hub_guard.RUNNERS) - hub_guard.RUNNERS_ALWAYS_REFUSED - {"bash", "pwsh"}
         self.assertEqual(sorted(readers), sorted(hub_guard.RUNNER_OPTIONS))
         self.assertEqual(set(), set(hub_guard.PROGRAM_OPTIONS) & set(hub_guard.RUNNERS))
+
+    def test_tar_s_safe_options_take_their_values_as_every_build_of_tar_reads_them(self) -> None:
+        # From PowerShell on Windows tar is bsdtar, which reads some of GNU tar's letters with a value where GNU tar
+        # reads none, or the other way, so a value word could escape the reading.
+        for build, program in OTHER_BUILDS.items():
+            kinds = {each: option.value for option in options_of(build) for each in (option.short, option.long) if each}
+            gnu = {each: option.value for option in options_of(program) for each in (option.short, option.long) if each}
+            for name in sorted(SAFE[program]):
+                if name in kinds:
+                    with self.subTest(build=build, option=name):
+                        self.assertEqual(gnu[name], kinds[name])
 
     def test_find_s_actions_that_run_a_program_are_never_safe(self) -> None:
         self.assertEqual({"-exec", "-execdir", "-ok", "-okdir"}, hub_guard.FIND_COMMANDS)

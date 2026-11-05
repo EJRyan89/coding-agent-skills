@@ -319,6 +319,12 @@ class RunnerOptionTests(unittest.TestCase):
             ("env RIPGREP_CONFIG_PATH=c rg x", True),
             ("sudo 'TAR_OPTIONS=x' tar -tf a.tar", True),
             ("tar -tf host:a.tar", True),
+            ("tar -tf host:a.tar -- --force-local", True),
+            ("tar -tf host:a.tar --exclude --force-local", True),
+            ("tar -tf a.tar -H --use-compress-program=git", True),
+            ("tar -tf a.tar -W use-compress-program=git", True),
+            ("env GIT_DIR=x gh pr checkout 1", True),
+            ("env -u X GIT_DIR=x ls", True),
             ("tar -xf a.tar", True),
             ("tar -czf a.tar d", False),
             ("sort -u -k 2 f", False),
@@ -343,6 +349,12 @@ class RunnerOptionTests(unittest.TestCase):
                 program = command.split()[0]
                 self.assertIn(hub_guard.RUNNERS[program], " ".join(powershell_reading(command).unread))
 
+    def test_gh_behind_chroot_is_read_where_the_text_does_not_settle(self) -> None:
+        unsettled = powershell_reading("chroot /srv gh pr checkout 1")
+        self.assertEqual([("gh", None)], [(call.program, call.place.start) for call in unsettled.calls])
+        placed = powershell_reading("timeout 60 gh pr checkout 1")
+        self.assertEqual([("gh", Path.cwd())], [(call.program, call.place.start) for call in placed.calls])
+
     def test_gh_after_a_runner_is_read_as_the_checkout_it_makes(self) -> None:
         for command in ("timeout 60 gh pr checkout 1", "nice gh repo sync", "gh pr checkout 1"):
             with self.subTest(command=command):
@@ -360,7 +372,7 @@ class RunnerOptionTests(unittest.TestCase):
         ):
             with (
                 self.subTest(command=command, reader=read.__name__),
-                mock.patch.object(hub_guard, "read_options", wraps=hub_guard.read_options) as helper,
+                mock.patch.object(hub_guard, "option_refusal", wraps=hub_guard.option_refusal) as helper,
             ):
                 self.assertEqual([], read(command).unread)
                 self.assertTrue(helper.called)

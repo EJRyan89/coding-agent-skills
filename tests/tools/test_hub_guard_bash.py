@@ -389,6 +389,22 @@ class RunnerTests(unittest.TestCase):
                 self.assertEqual([], reading(f"env OTHER=x {program} -v y").unread)
         self.assertEqual({"tar": {"TAR_OPTIONS", "TAPE"}, "rg": {"RIPGREP_CONFIG_PATH"}}, hub_guard.PROGRAM_VARIABLES)
 
+    def test_option_refusal_is_the_one_reading_of_a_program_s_words(self) -> None:
+        xargs = hub_guard.RUNNER_OPTIONS["xargs"]
+        self.assertEqual(("-0IX", 0), (hub_guard.option_refusal(xargs, ["-0IX", "X"]).refused, 0))
+        safe = hub_guard.option_refusal(xargs, ["-0rn1", "grep", "-n"])
+        self.assertEqual((None, 1), (safe.refused, safe.stop))
+        env = hub_guard.option_refusal(hub_guard.RUNNER_OPTIONS["env"], ["-u", "X", "Y=1", "ls"])
+        self.assertEqual(([("Y", "1")], 3), (env.assigned, env.stop))
+        tar = hub_guard.option_refusal(hub_guard.PROGRAM_OPTIONS["tar"], ["-tf", "a", "--force-local", "--", "-x"])
+        self.assertEqual((None, [("-f", "a")], ["--force-local"]), (tar.refused, tar.values, tar.longs))
+
+    def test_gh_behind_chroot_is_read_where_the_text_does_not_settle_and_behind_timeout_where_it_runs(self) -> None:
+        unsettled = reading("chroot /srv gh pr checkout 1")
+        self.assertEqual([("gh", None)], [(call.program, call.place.start) for call in unsettled.calls])
+        placed = reading("timeout 60 gh pr checkout 1")
+        self.assertEqual([("gh", START)], [(call.program, call.place.start) for call in placed.calls])
+
     def test_env_s_assignments_after_a_valued_option_reach_the_command_s_judgment(self) -> None:
         # GIT_DIR after env's -u X is still an assignment before the command, as one before env is.
         for command in ("env GIT_DIR=/x ls", "env -u X GIT_DIR=/x ls", "env --unset X -i GIT_DIR=/x ls"):

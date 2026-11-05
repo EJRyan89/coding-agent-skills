@@ -3170,5 +3170,531 @@
     "value": "none"
    }
   ]
+ },
+ "bsdtar": {
+  "source": "libarchive bsdtar 3.7, Windows' tar.exe, its option table (tar/bsdtar.c and tar/cmdline.c)",
+  "abbreviates": true,
+  "options": [
+   {
+    "short": "-a",
+    "long": "--auto-compress",
+    "value": "none"
+   },
+   {
+    "short": "-B",
+    "long": "--read-full-blocks",
+    "value": "none"
+   },
+   {
+    "short": "-b",
+    "long": "--block-size",
+    "value": "value"
+   },
+   {
+    "short": "-C",
+    "long": "--cd",
+    "value": "value"
+   },
+   {
+    "short": null,
+    "long": "--directory",
+    "value": "value"
+   },
+   {
+    "short": "-c",
+    "long": "--create",
+    "value": "none"
+   },
+   {
+    "short": "-f",
+    "long": "--file",
+    "value": "value"
+   },
+   {
+    "short": "-H",
+    "long": null,
+    "value": "none"
+   },
+   {
+    "short": "-h",
+    "long": null,
+    "value": "none"
+   },
+   {
+    "short": "-I",
+    "long": null,
+    "value": "value"
+   },
+   {
+    "short": "-J",
+    "long": "--xz",
+    "value": "none"
+   },
+   {
+    "short": "-j",
+    "long": "--bzip2",
+    "value": "none"
+   },
+   {
+    "short": null,
+    "long": "--bunzip2",
+    "value": "none"
+   },
+   {
+    "short": "-k",
+    "long": "--keep-old-files",
+    "value": "none"
+   },
+   {
+    "short": "-L",
+    "long": null,
+    "value": "none"
+   },
+   {
+    "short": "-l",
+    "long": "--check-links",
+    "value": "none"
+   },
+   {
+    "short": "-m",
+    "long": "--modification-time",
+    "value": "none"
+   },
+   {
+    "short": "-n",
+    "long": "--no-recursion",
+    "value": "none"
+   },
+   {
+    "short": "-O",
+    "long": "--to-stdout",
+    "value": "none"
+   },
+   {
+    "short": "-o",
+    "long": null,
+    "value": "none"
+   },
+   {
+    "short": "-P",
+    "long": "--absolute-paths",
+    "value": "none"
+   },
+   {
+    "short": "-p",
+    "long": null,
+    "value": "none"
+   },
+   {
+    "short": null,
+    "long": "--preserve-permissions",
+    "value": "none"
+   },
+   {
+    "short": "-q",
+    "long": "--fast-read",
+    "value": "none"
+   },
+   {
+    "short": "-r",
+    "long": "--append",
+    "value": "none"
+   },
+   {
+    "short": "-S",
+    "long": null,
+    "value": "none"
+   },
+   {
+    "short": "-s",
+    "long": null,
+    "value": "value"
+   },
+   {
+    "short": "-T",
+    "long": "--files-from",
+    "value": "value"
+   },
+   {
+    "short": "-t",
+    "long": "--list",
+    "value": "none"
+   },
+   {
+    "short": "-U",
+    "long": "--unlink-first",
+    "value": "none"
+   },
+   {
+    "short": null,
+    "long": "--unlink",
+    "value": "none"
+   },
+   {
+    "short": "-u",
+    "long": "--update",
+    "value": "none"
+   },
+   {
+    "short": "-v",
+    "long": "--verbose",
+    "value": "none"
+   },
+   {
+    "short": "-W",
+    "long": null,
+    "value": "value"
+   },
+   {
+    "short": "-w",
+    "long": "--confirmation",
+    "value": "none"
+   },
+   {
+    "short": null,
+    "long": "--interactive",
+    "value": "none"
+   },
+   {
+    "short": "-X",
+    "long": "--exclude-from",
+    "value": "value"
+   },
+   {
+    "short": "-x",
+    "long": "--extract",
+    "value": "none"
+   },
+   {
+    "short": "-Z",
+    "long": "--compress",
+    "value": "none"
+   },
+   {
+    "short": null,
+    "long": "--uncompress",
+    "value": "none"
+   },
+   {
+    "short": "-z",
+    "long": "--gzip",
+    "value": "none"
+   },
+   {
+    "short": null,
+    "long": "--gunzip",
+    "value": "none"
+   },
+   {
+    "short": null,
+    "long": "--acls",
+    "value": "none"
+   },
+   {
+    "short": null,
+    "long": "--b64encode",
+    "value": "none"
+   },
+   {
+    "short": null,
+    "long": "--chroot",
+    "value": "none"
+   },
+   {
+    "short": null,
+    "long": "--clear-nochange-fflags",
+    "value": "none"
+   },
+   {
+    "short": null,
+    "long": "--exclude",
+    "value": "value"
+   },
+   {
+    "short": null,
+    "long": "--exclude-vcs",
+    "value": "none"
+   },
+   {
+    "short": null,
+    "long": "--format",
+    "value": "value"
+   },
+   {
+    "short": null,
+    "long": "--gid",
+    "value": "value"
+   },
+   {
+    "short": null,
+    "long": "--gname",
+    "value": "value"
+   },
+   {
+    "short": null,
+    "long": "--grzip",
+    "value": "none"
+   },
+   {
+    "short": null,
+    "long": "--help",
+    "value": "none"
+   },
+   {
+    "short": null,
+    "long": "--hfsCompression",
+    "value": "none"
+   },
+   {
+    "short": null,
+    "long": "--ignore-zeros",
+    "value": "none"
+   },
+   {
+    "short": null,
+    "long": "--include",
+    "value": "value"
+   },
+   {
+    "short": null,
+    "long": "--insecure",
+    "value": "none"
+   },
+   {
+    "short": null,
+    "long": "--keep-newer-files",
+    "value": "none"
+   },
+   {
+    "short": null,
+    "long": "--lrzip",
+    "value": "none"
+   },
+   {
+    "short": null,
+    "long": "--lz4",
+    "value": "none"
+   },
+   {
+    "short": null,
+    "long": "--lzip",
+    "value": "none"
+   },
+   {
+    "short": null,
+    "long": "--lzma",
+    "value": "none"
+   },
+   {
+    "short": null,
+    "long": "--lzop",
+    "value": "none"
+   },
+   {
+    "short": null,
+    "long": "--mac-metadata",
+    "value": "none"
+   },
+   {
+    "short": null,
+    "long": "--newer",
+    "value": "value"
+   },
+   {
+    "short": null,
+    "long": "--newer-ctime",
+    "value": "value"
+   },
+   {
+    "short": null,
+    "long": "--newer-ctime-than",
+    "value": "value"
+   },
+   {
+    "short": null,
+    "long": "--newer-mtime",
+    "value": "value"
+   },
+   {
+    "short": null,
+    "long": "--newer-mtime-than",
+    "value": "value"
+   },
+   {
+    "short": null,
+    "long": "--newer-than",
+    "value": "value"
+   },
+   {
+    "short": null,
+    "long": "--nodump",
+    "value": "none"
+   },
+   {
+    "short": null,
+    "long": "--no-acls",
+    "value": "none"
+   },
+   {
+    "short": null,
+    "long": "--no-fflags",
+    "value": "none"
+   },
+   {
+    "short": null,
+    "long": "--no-mac-metadata",
+    "value": "none"
+   },
+   {
+    "short": null,
+    "long": "--no-read-sparse",
+    "value": "none"
+   },
+   {
+    "short": null,
+    "long": "--no-safe-writes",
+    "value": "none"
+   },
+   {
+    "short": null,
+    "long": "--no-same-owner",
+    "value": "none"
+   },
+   {
+    "short": null,
+    "long": "--no-same-permissions",
+    "value": "none"
+   },
+   {
+    "short": null,
+    "long": "--no-xattrs",
+    "value": "none"
+   },
+   {
+    "short": null,
+    "long": "--null",
+    "value": "none"
+   },
+   {
+    "short": null,
+    "long": "--numeric-owner",
+    "value": "none"
+   },
+   {
+    "short": null,
+    "long": "--older",
+    "value": "value"
+   },
+   {
+    "short": null,
+    "long": "--older-ctime",
+    "value": "value"
+   },
+   {
+    "short": null,
+    "long": "--older-ctime-than",
+    "value": "value"
+   },
+   {
+    "short": null,
+    "long": "--older-mtime",
+    "value": "value"
+   },
+   {
+    "short": null,
+    "long": "--older-mtime-than",
+    "value": "value"
+   },
+   {
+    "short": null,
+    "long": "--older-than",
+    "value": "value"
+   },
+   {
+    "short": null,
+    "long": "--one-file-system",
+    "value": "none"
+   },
+   {
+    "short": null,
+    "long": "--options",
+    "value": "value"
+   },
+   {
+    "short": null,
+    "long": "--passphrase",
+    "value": "value"
+   },
+   {
+    "short": null,
+    "long": "--posix",
+    "value": "none"
+   },
+   {
+    "short": null,
+    "long": "--read-sparse",
+    "value": "none"
+   },
+   {
+    "short": null,
+    "long": "--safe-writes",
+    "value": "none"
+   },
+   {
+    "short": null,
+    "long": "--same-owner",
+    "value": "none"
+   },
+   {
+    "short": null,
+    "long": "--same-permissions",
+    "value": "none"
+   },
+   {
+    "short": null,
+    "long": "--strip-components",
+    "value": "value"
+   },
+   {
+    "short": null,
+    "long": "--totals",
+    "value": "none"
+   },
+   {
+    "short": null,
+    "long": "--uid",
+    "value": "value"
+   },
+   {
+    "short": null,
+    "long": "--uname",
+    "value": "value"
+   },
+   {
+    "short": null,
+    "long": "--use-compress-program",
+    "value": "value"
+   },
+   {
+    "short": null,
+    "long": "--uuencode",
+    "value": "none"
+   },
+   {
+    "short": null,
+    "long": "--version",
+    "value": "none"
+   },
+   {
+    "short": null,
+    "long": "--xattrs",
+    "value": "none"
+   },
+   {
+    "short": null,
+    "long": "--zstd",
+    "value": "none"
+   }
+  ]
  }
 }

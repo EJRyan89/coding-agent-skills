@@ -337,7 +337,8 @@ a row decides it.
   spelling getopt reads: exactly, with its value attached by `=` or directly, abbreviated, or as a letter in a
   bundle, as `-0IX` is. A long option is understood only spelled in full, since an abbreviation of a safe option may
   be one of another option too. `env`'s `NAME=VALUE` words are read among its options as assignments for its
-  command, a value-taking option's value never ending them; such a word before any other runner's command, as `sudo`
+  command, a value-taking option's value never ending them, and judged as ones before it, from Bash and PowerShell
+  alike; such a word before any other runner's command, as `sudo`
   takes, is refused, since it may set a variable the guard does not judge. `bash -c` with a literal script is read as
   Bash, and `pwsh -Command` or
   `-c` with one literal script, after `-NoProfile`, `-NonInteractive`, or `-NoLogo`, as PowerShell, each refused
@@ -352,7 +353,9 @@ a row decides it.
   Bash and PowerShell alike, its safe options ones that do none of these, and so is refused any word of theirs that
   the text does not settle. `tar`'s extraction, which writes the files an archive names, and its `-C`, which chooses
   where, are refused, and so is an archive it names `host:path`, which it opens through a remote shell, unless
-  `--force-local` makes it a file. A runner's command
+  `--force-local`, given as an option rather than as another option's value or after `--`, makes it a file. `tar`'s
+  table holds only letters GNU tar and bsdtar, Windows' `tar.exe`, read alike, so `-H`, `-W`, and `-s`, which one of
+  them reads with a value and the other without, are refused. A runner's command
   that is one of them is held to its allow-list too, and after `xargs`, which adds words from its input, it is refused
   unless its words hold a `--` that ends its options, which `find` has none of. A variable one of them reads options
   from, `PROGRAM_VARIABLES`: `RIPGREP_CONFIG_PATH`, `TAPE`, and `TAR_OPTIONS`, is refused where it is assigned
