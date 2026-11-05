@@ -7,14 +7,22 @@ from .errors import DeployError
 
 SAFE_NAME = re.compile(r"^[A-Za-z0-9._ -]+$")
 # The deployer's own files beside an item: <item>.deploying-bak is its transient backup during a deployment (plan.py,
-# journal.py), and .<file>.tmp.<suffix> is an atomic write in progress (fsops.py). No item may take either form.
+# journal.py), .<item>.deploying-del a copy of it being deleted (journal.py), and .<file>.tmp.<suffix> an atomic write
+# in progress (fsops.py). No item may take any of these forms; a safe name never starts with a dot.
 BACKUP_SUFFIX = ".deploying-bak"
+DELETION_SUFFIX = ".deploying-del"
 TEMPORARY_INFIX = ".tmp."
 
 
 def transient_name(item: str) -> str:
     """The name of item's transient backup, beside it while a deployment replaces it."""
     return f"{item}{BACKUP_SUFFIX}"
+
+
+def deletion_name(item: str) -> str:
+    """The name a copy of item takes while the deployer deletes it, so a deletion stopped partway leaves what is left
+    of the copy under a name only the deployer uses, never at a name whose content recovery judges by its hash."""
+    return f".{item}{DELETION_SUFFIX}"
 
 
 def safe_name_problem(name: str, context: str) -> str | None:
