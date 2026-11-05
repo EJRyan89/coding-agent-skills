@@ -184,6 +184,8 @@ def test_the_journal_reads_back_every_entry_written_and_its_run_needs_no_one(
     paths = Paths(source_dir=tmp_path, home=tmp_path)
     run_id = "20260101-000000-ab12"
     record = journal.Journal(paths.staging_root / run_id / "journal.jsonl", run_id)
+    # As a run does, the roots and the manifest before the journal, which a journal beside no manifest would refuse.
+    journal.prepare_roots(paths)
     record.create()
     kind = {"claude": "shared", "agents": ADAPTERS, "claude-agents": "agents"}[root]
     for index, name in enumerate(_deployed_names(kind)):

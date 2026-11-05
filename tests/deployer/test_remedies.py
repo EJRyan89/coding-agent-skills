@@ -32,7 +32,7 @@ from harness import (
     probe_returning,
 )
 
-from deployer import errors, fsops, journal, platform_support
+from deployer import errors, fsops, journal, manifest, platform_support
 from deployer.errors import DeployError
 from deployer.paths import Paths
 
@@ -415,6 +415,8 @@ class OwnershipRemedyTests(RemedyTestCase):
 class RecoveryRemedyTests(RemedyTestCase):
     def test_failed_rollback_says_what_to_put_back_and_where(self) -> None:
         self.fixture()
+        # A first deployment saves the empty manifest before its journal.
+        self.write_manifest(dict(manifest.empty(self.manifest_file).data))
         run = self.staging_run("20260101-000000-gone")
         self.write(run / "journal.jsonl", journal_line(backup_entry("alpha", ZERO_HASH)))
         result = self.deploy_fails("--all", pattern="Recovery failed")
@@ -446,6 +448,7 @@ class RecoveryRemedyTests(RemedyTestCase):
 
     def test_malformed_journal_gives_the_same_steps(self) -> None:
         self.fixture()
+        self.write_manifest(dict(manifest.empty(self.manifest_file).data))
         run = self.staging_run("20260101-000000-bad1")
         self.write(run / "journal.jsonl", '{"op":"backup"\n')
         result = self.deploy_fails("--all", pattern="Malformed journal entry")

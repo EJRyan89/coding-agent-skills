@@ -116,10 +116,25 @@ JOURNAL_ACCEPTS = {
 }
 
 
+def _journal_paths(path: Path) -> Paths:
+    """The paths of the home whose staging folder holds the journal at path."""
+    return Paths(source_dir=path.parents[4], home=path.parents[4])
+
+
+def _beside_a_manifest(path: Path) -> None:
+    """The empty manifest a run saves before it writes its journal: beside none, the survey cannot tell whether the run
+    was committed, and stops at every run, as test_the_journal_survey_stops_at_a_well_formed_run_beside_no_manifest
+    holds."""
+    manifest_file = _journal_paths(path).manifest_file
+    manifest_file.parent.mkdir(parents=True, exist_ok=True)
+    manifest_file.write_text(
+        json.dumps({"manifest_version": manifest.MANIFEST_VERSION, "sources": {}}), encoding="utf-8"
+    )
+
+
 def _read_journal(path: Path) -> object:
     """The journal as the dry run's survey reads it: a run it cannot reconcile without the user is refused."""
-    paths = Paths(source_dir=path.parents[4], home=path.parents[4])
-    pending = journal.pending_runs(paths)
+    pending = journal.pending_runs(_journal_paths(path))
     if any(not unattended for _, unattended in pending):
         raise Refused(f"the run needs the user: {pending}")
     return pending
@@ -287,6 +302,7 @@ READERS = [
         (Refused,),
         filename="home/.claude/deployer/staging/run/journal.jsonl",
         accepts=JOURNAL_ACCEPTS,
+        prepare=_beside_a_manifest,
     ),
     *(
         Reader(
@@ -297,6 +313,7 @@ READERS = [
             (Refused,),
             filename="home/.claude/deployer/staging/run/journal.jsonl",
             accepts=JOURNAL_ACCEPTS,
+            prepare=_beside_a_manifest,
         )
         for op, entry in JOURNAL_ENTRIES.items()
     ),
