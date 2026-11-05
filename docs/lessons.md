@@ -720,18 +720,22 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
 ### A test's time-out is injected, never raced
 
 - **Rule:** A test that expects a step to run out of time makes it run out, by a stub that raises the time-out or a
-  clock the test moves, and a test of anything else reads with a clock that moves only when the test moves it.
+  clock the test moves, and a test of anything else reads with a clock that moves only when the test moves it and
+  hands each real process it starts a limit of the test's own, through the same seam as the code's real limit.
 - **Why:** A real process given a limit it can beat, or a real clock a loaded runner can run out, decides the result
   by the runner's speed, so the test fails at random on a change that touches nothing it reads.
 - **Guard:** `tests/tools/test_hub_guard.py::ReadingBoundTests::test_a_reading_in_this_process_takes_its_time_from_the_tests_clock_and_never_from_the_wall`,
-  which fails while the guard's tests read with the wall clock, and
+  which fails while the guard's tests read with the wall clock or hand pwsh or git a limit other than the test's
+  own, and
   `tests/tools/test_hub_guard.py::PlaceLookupTests::test_a_lookup_git_call_the_reading_time_cuts_short_refuses_a_command_naming_git`,
   whose git stub raises the time-out of the call the reading time cuts short.
 - **Search for:** a stub that hands a real git or other process a timeout under a second and expects it to expire,
   such as `READING_SECONDS - 0.0005`; `time.monotonic() - started` asserted below a bound when the process timed
   can finish on its own, rather than one that sleeps far past the bound to show it was stopped; a test of a reason
-  other than the time-out that reads a command through a real clock while it starts pwsh, bash, or git.
-- **Examples:** #2256
+  other than the time-out that reads a command through a real clock while it starts pwsh, bash, or git; a test that
+  holds the clock still but lets the code hand a real process what is left of its time, as the guard handed pwsh
+  what was left of its reading time.
+- **Examples:** #2256, #2355
 
 ### A check reaches its whole rule
 
