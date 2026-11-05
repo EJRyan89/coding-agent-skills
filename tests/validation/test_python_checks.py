@@ -5135,6 +5135,106 @@ def test_indirection_policy_refuses_each_dynamic_lookup(body: str) -> None:
     assert refused == marked
 
 
+# Each standard-library callable or name that resolves an object from a dotted name or a string given as a value,
+# loads a module by a name or a path, unpickles, runs code given as a string, or hands out every live object or a
+# frame, which the indirection policy refuses wherever a module refers to it.
+STANDARD_RESOLVERS = (
+    "pydoc.locate",
+    "pydoc.resolve",
+    "pkgutil.find_loader",
+    "pkgutil.get_loader",
+    "pkgutil.get_importer",
+    "pkgutil.walk_packages",
+    "logging.config.dictConfig",
+    "logging.config.fileConfig",
+    "logging.config.listen",
+    "logging.config.BaseConfigurator",
+    "logging.config.DictConfigurator",
+    "unittest.mock.patch",
+    "unittest.mock._importer",
+    "unittest.mock._get_target",
+    "typing.ForwardRef",
+    "annotationlib.ForwardRef",
+    "annotationlib.call_evaluate_function",
+    "importlib.find_loader",
+    "importlib.util.find_spec",
+    "importlib.util.spec_from_loader",
+    "importlib.util.LazyLoader",
+    "importlib.machinery.SourcelessFileLoader",
+    "importlib.machinery.ExtensionFileLoader",
+    "importlib.machinery.PathFinder",
+    "importlib.machinery.FileFinder",
+    "importlib.metadata.entry_points",
+    "importlib.metadata.EntryPoint",
+    "importlib.metadata.EntryPoints",
+    "zipimport.zipimporter",
+    "imp.find_module",
+    "imp.load_module",
+    "imp.load_source",
+    "imp.load_compiled",
+    "imp.load_dynamic",
+    "sys.meta_path",
+    "sys.path_hooks",
+    "sys.path_importer_cache",
+    "pickle.load",
+    "pickle.loads",
+    "pickle.Unpickler",
+    "shelve.open",
+    "shelve.Shelf",
+    "shelve.DbfilenameShelf",
+    "shelve.BsdDbShelf",
+    "timeit.timeit",
+    "timeit.repeat",
+    "timeit.Timer",
+    "profile.run",
+    "profile.runctx",
+    "profile.Profile",
+    "cProfile.run",
+    "cProfile.runctx",
+    "cProfile.Profile",
+    "pdb.run",
+    "pdb.runeval",
+    "pdb.runctx",
+    "pdb.Pdb",
+    "code.interact",
+    "code.InteractiveInterpreter",
+    "code.InteractiveConsole",
+    "trace.Trace",
+    "doctest.testmod",
+    "doctest.testfile",
+    "doctest.run_docstring_examples",
+    "doctest.DocTestRunner",
+    "gc.get_objects",
+    "gc.get_referrers",
+    "gc.get_referents",
+    "sys._current_frames",
+    "inspect.stack",
+    "inspect.trace",
+    "inspect.getouterframes",
+    "inspect.getinnerframes",
+)
+
+
+@pytest.mark.parametrize("name", STANDARD_RESOLVERS)
+def test_indirection_policy_refuses_each_standard_resolver(name: str) -> None:
+    module = name.rpartition(".")[0]
+    body = f"import {module}\n\n\ndef f():\n    return {name}  # read\n"
+    refused, marked = restricted_rows(python_checks.indirection_problems, body)
+    assert refused == marked
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        pytest.param("def f(t):\n    return t.__subclasses__()  # read\n", id="__subclasses__"),
+        pytest.param("def f(t):\n    return t.entry_points(group='x')  # read\n", id="a distribution's entry_points"),
+    ],
+)
+def test_indirection_policy_refuses_each_enumerating_attribute(body: str) -> None:
+    refused, marked = restricted_rows(python_checks.indirection_problems, body)
+    assert refused == marked
+
+
 # Each owner-only callable referenced outside its owners, refused, and each form the rule leaves alone, read.
 OWNER_ONLY_ROWS = {
     "json.dumps bound to a name": "def f(t):\n    write = json.dumps  # read\n    return write(t)  # read\n",
@@ -5234,6 +5334,28 @@ POLICED_CALL_ROWS = {
         "    p.add_argument('--name', type=str, default=('a', 'b'), choices=['a', 'b'])\n"
     ),
     "a json write given a module's default": "def f(t):\n    return json.dumps(t, default=str, sort_keys=True)\n",
+    "a constant an augmented assignment rebinds": (
+        "WAIT = 30\nWAIT += 1\n\n\ndef f(p):\n"
+        "    p.add_argument('--wait', type=seconds_option.positive_seconds, default=WAIT)  # read\n"
+    ),
+    "a type a loop binds": (
+        "for KIND in (float,):\n    pass\n\n\ndef f(p):\n    p.add_argument('--timeout', type=KIND)  # read\n"
+    ),
+    "a type a with binds": (
+        "with open('x') as KIND:\n    pass\n\n\ndef f(p):\n    p.add_argument('--timeout', type=KIND)  # read\n"
+    ),
+    "a constant a function rebinds through global": (
+        "WAIT = 30\n\n\ndef g(wait):\n    global WAIT\n    WAIT = wait\n\n\ndef f(p):\n"
+        "    p.add_argument('--wait', type=seconds_option.positive_seconds, default=WAIT)  # read\n"
+    ),
+    "a constant an assignment expression binds": (
+        "if (WAIT := 30):\n    pass\n\n\ndef f(p):\n"
+        "    p.add_argument('--wait', type=seconds_option.positive_seconds, default=WAIT)  # read\n"
+    ),
+    "a constant bound to a literal twice": (
+        "WAIT = 30\nWAIT = 60\n\n\ndef f(p):\n"
+        "    p.add_argument('--wait', type=seconds_option.positive_seconds, default=WAIT)  # read\n"
+    ),
 }
 
 
@@ -5328,6 +5450,37 @@ SUPERSEDED_RESOLVER_ROWS = [
         "    def close(self, handle):\n        return self.lib.CloseHandle(handle)  # refused: ctypes\n",
         CTYPES_OWNER,
         id="a base class attribute holding a library, inside a ctypes owner",
+    ),
+    pytest.param(
+        "class A:\n    lib = ctypes.WinDLL('kernel32')\n\n\nclass B(A):\n    def close(self, handle):\n"
+        "        return B.lib.CloseHandle(handle)  # refused: ctypes\n",
+        CTYPES_OWNER,
+        id="a base class's library read through the subclass's name, inside a ctypes owner",
+    ),
+    pytest.param(
+        "def f(t):\n    match os.path:\n        case object(commonpath=common):  # refused: owner-only\n"
+        "            return common(t)\n",
+        SCRIPT,
+        id="an owner-only callable a class pattern binds",
+    ),
+    pytest.param(
+        "def f(t):\n    match builtins:  # refused: indirection\n"
+        "        case object(getattr=look):  # refused: indirection\n            return look(t, 'x')\n",
+        SCRIPT,
+        id="a name lookup a class pattern binds",
+    ),
+    pytest.param(
+        "def f(t):\n    match t:\n        case object(__dict__=namespace):  # refused: indirection\n"
+        "            return namespace\n",
+        SCRIPT,
+        id="a namespace a class pattern binds",
+    ),
+    pytest.param(
+        "def f(t):\n    match os:  # refused: indirection\n"
+        "        case object(path=object(commonpath=common)):  # refused: owner-only\n"
+        "            return common(t)\n",
+        SCRIPT,
+        id="an owner-only callable a nested class pattern binds",
     ),
     pytest.param(
         "def f(p, cfg):\n    options = {}\n    options.update(cfg)\n"
@@ -5545,6 +5698,7 @@ def test_indirection_catalogues_hold_each_construct() -> None:
         "inspect.currentframe",
         "sys._getframe",
         "sys.modules",
+        *STANDARD_RESOLVERS,
     } == set(validation_support.INDIRECTION_CALLABLES)
     assert {
         "__dict__",
@@ -5557,6 +5711,8 @@ def test_indirection_catalogues_hold_each_construct() -> None:
         "f_globals",
         "f_locals",
         "f_builtins",
+        "__subclasses__",
+        "entry_points",
     } == set(validation_support.INDIRECTION_ATTRIBUTES)
     assert {"__getattr__", "__getattribute__"} == set(validation_support.LOOKUP_HOOKS)
     assert {

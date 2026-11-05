@@ -2241,21 +2241,22 @@ def ctypes_declaration_problems(root: Path, files: list[Path]) -> list[str]:
             for node, scope in scoped_nodes(tree.body)
             if isinstance(node, ast.Subscript) and libraries.libraries(node.value)
         ]
-        # A library a class binds to `self.x` is read only in that class: one read through an attribute a base class
-        # binds is refused rather than followed through the class's bases.
+        # A library a class binds to `self.x`, or in its body, is read only through that class: a read through `self`,
+        # `cls`, or a class's name that does not bind it, as a subclass's, is refused rather than followed through the
+        # class's bases.
         held = {key.rpartition(".")[2] for key in libraries.places if key.partition(".")[0] in libraries.class_names}
         found += [
             (
                 node.lineno,
                 scope,
-                f"reads the ctypes library {ast.unparse(node)} in a class that does not bind it; bind the library in "
-                f"the class that calls it, or state why in {CTYPES_ALLOWANCE}",
+                f"reads the ctypes library {ast.unparse(node)} through a class that does not bind it; bind the library "
+                f"in the class it is read through, or state why in {CTYPES_ALLOWANCE}",
             )
             for node, scope in scoped_nodes(tree.body)
             if isinstance(node, ast.Attribute)
             and isinstance(node.ctx, ast.Load)
             and isinstance(node.value, ast.Name)
-            and node.value.id in ("self", "cls")
+            and (node.value.id in ("self", "cls") or node.value.id in libraries.class_names)
             and node.attr in held
             and place_key(node, scope, libraries.class_names) not in libraries.places
         ]
@@ -3983,10 +3984,12 @@ def type_check_jobs() -> list[Job]:
 # 1. No dynamic name lookup. A NAME_LOOKUPS call is read only given a string literal for the name, and any other
 #    reference to one is refused; so is a reference to any INDIRECTION_CALLABLES entry, an INDIRECTION_ATTRIBUTES
 #    attribute on any receiver, a definition of a LOOKUP_HOOKS method, and a module an import statement binds held as a
-#    value rather than as the receiver of an attribute or of a literal lookup. A site that must stay states why in a
-#    module-level INDIRECTION_ALLOWED = {scope: reason}.
+#    value rather than as the receiver of an attribute or of a literal lookup. A class pattern's keyword is a binding
+#    form (class_pattern_reads): one that binds such an attribute or callable from a match's subject is refused as
+#    well. A site that must stay states why in a module-level INDIRECTION_ALLOWED = {scope: reason}.
 # 2. Owner-only names. Each OWNER_ONLY_NAMES callable is referenced at all, called, bound, passed, defaulted, returned,
-#    stored, or reached by a literal lookup, only in the modules that own it, so a rebinding, a default, a dictionary
+#    stored, bound by a class pattern's keyword, or reached by a literal lookup, only in the modules that own it, so a
+#    rebinding, a default, a dictionary
 #    value, or a class attribute holding one is refused without being followed. JSON is written by json_writer and
 #    read by json_reader alone, so a direct call of json.dumps or json.loads elsewhere is refused too. An event loop's
 #    process start is matched by its method's name on any receiver. A reference that must stay states why in a
@@ -4136,6 +4139,50 @@ def _indirection(
     return ""
 
 
+def _pattern_reads(pattern: ast.pattern, base: str) -> Iterator[tuple[ast.MatchClass, str, str]]:
+    """Each keyword of a class pattern below `pattern`, with the dotted name it reads, the attribute of what `base`
+    names, "" when the base names nothing, and the attribute's name. A keyword's own pattern reads that attribute's
+    attributes in turn; an alternative or a capture keeps its subject, and a sequence's or a mapping's items do not."""
+    if isinstance(pattern, ast.MatchClass):
+        for attribute, inner in zip(pattern.kwd_attrs, pattern.kwd_patterns, strict=True):
+            name = f"{base}.{attribute}" if base else ""
+            yield pattern, name, attribute
+            yield from _pattern_reads(inner, name)
+        for inner in pattern.patterns:
+            yield from _pattern_reads(inner, "")
+    elif isinstance(pattern, ast.MatchAs) and pattern.pattern is not None:
+        yield from _pattern_reads(pattern.pattern, base)
+    elif isinstance(pattern, ast.MatchOr):
+        for inner in pattern.patterns:
+            yield from _pattern_reads(inner, base)
+    elif isinstance(pattern, ast.MatchSequence | ast.MatchMapping):
+        for inner in pattern.patterns:
+            yield from _pattern_reads(inner, "")
+
+
+def class_pattern_reads(
+    tree: ast.Module, resolver: CallableResolver, aliases: dict[str, str]
+) -> Iterator[tuple[ast.MatchClass, str, str]]:
+    """Each attribute a class pattern's keyword reads from a match's subject and binds, as `case object(commonpath=c)`
+    on `os.path` reads and binds os.path.commonpath, with the dotted name it reads through the module's imports ("" for
+    a subject that names nothing) and the attribute's name: a binding form, as `c = os.path.commonpath` is."""
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Match):
+            subject = _reference(node.subject, resolver, aliases)
+            for case in node.cases:
+                yield from _pattern_reads(case.pattern, subject)
+
+
+def _reads_by_pattern(
+    tree: ast.Module, resolver: CallableResolver, aliases: dict[str, str]
+) -> dict[int, list[tuple[str, str]]]:
+    """Each class pattern's keyword reads (class_pattern_reads), by the pattern's id."""
+    reads: dict[int, list[tuple[str, str]]] = {}
+    for pattern, read, attribute in class_pattern_reads(tree, resolver, aliases):
+        reads.setdefault(id(pattern), []).append((read, attribute))
+    return reads
+
+
 def _policy_trees(root: Path, files: list[Path], problems: list[str]) -> Iterator[tuple[str, ast.Module]]:
     """Each module the claim policies read, as its repository path and its tree. A module that is not valid Python or
     not UTF-8 is reported by its name, and a listing that holds no module to read is reported too, since a policy
@@ -4155,16 +4202,26 @@ def indirection_problems(root: Path, files: list[Path]) -> list[str]:
         parents = _parents(tree)
         modules = _imported_modules(tree)
         aliases = import_aliases(tree)
-        found = [
-            (
-                getattr(node, "lineno", 0),
-                scope,
-                f"{refusal}, which no policy reading the code can follow; spell the name, or state why in "
-                f"{INDIRECTION_ALLOWANCE}",
-            )
-            for node, scope in scoped_nodes(tree.body)
-            if (refusal := _indirection(node, parents, resolver, aliases, modules))
-        ]
+        reads = _reads_by_pattern(tree, resolver, aliases)
+        found: list[tuple[int, str, str]] = []
+        for node, scope in scoped_nodes(tree.body):
+            refusals = [_indirection(node, parents, resolver, aliases, modules)]
+            refusals += [
+                f"binds {read or attribute} by a class pattern's keyword, which reaches a namespace or a name by a "
+                "value"
+                for read, attribute in reads.get(id(node), [])
+                if attribute in INDIRECTION_ATTRIBUTES or read in INDIRECTION_CALLABLES | NAME_LOOKUPS
+            ]
+            found += [
+                (
+                    getattr(node, "lineno", 0),
+                    scope,
+                    f"{refusal}, which no policy reading the code can follow; spell the name, or state why in "
+                    f"{INDIRECTION_ALLOWANCE}",
+                )
+                for refusal in refusals
+                if refusal
+            ]
         problems += sanctioned_problems(name, tree, INDIRECTION_ALLOWANCE, found)
     return problems
 
@@ -4177,22 +4234,25 @@ def owner_only_problems(root: Path, files: list[Path]) -> list[str]:
         resolver = CallableResolver(tree)
         annotations = _annotation_ids(tree)
         aliases = import_aliases(tree)
+        reads = _reads_by_pattern(tree, resolver, aliases)
         found: list[tuple[int, str, str]] = []
         for node, scope in scoped_nodes(tree.body):
             reference = (
                 "" if id(node) in annotations else _event_loop_start(node) or _reference(node, resolver, aliases)
             )
-            owners = OWNER_ONLY_NAMES.get(reference)
-            if owners is None or name in owners:
-                continue
-            refusal = f"refers to {reference} outside {listed(sorted(owners), 'and')}, which own it"
-            found.append(
-                (
-                    getattr(node, "lineno", 0),
-                    scope,
-                    f"{refusal}; reach it through its owner, or state why in {OWNER_ONLY_ALLOWANCE}",
+            # A class pattern's keyword binds the subject's attribute it names, as an assignment would.
+            for candidate in [reference, *(read for read, _ in reads.get(id(node), []))]:
+                owners = OWNER_ONLY_NAMES.get(candidate)
+                if owners is None or name in owners:
+                    continue
+                refusal = f"refers to {candidate} outside {listed(sorted(owners), 'and')}, which own it"
+                found.append(
+                    (
+                        getattr(node, "lineno", 0),
+                        scope,
+                        f"{refusal}; reach it through its owner, or state why in {OWNER_ONLY_ALLOWANCE}",
+                    )
                 )
-            )
         problems += sanctioned_problems(name, tree, OWNER_ONLY_ALLOWANCE, found)
     return problems
 
