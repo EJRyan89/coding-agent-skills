@@ -2595,7 +2595,8 @@ class ManifestStateTests(RecoveryTestCase):
         self.assertIsNone(journal.journaled_runs(self.paths))
 
     def test_a_committed_run_whose_manifest_was_moved_aside_is_refused_alike_and_never_rolled_back(self) -> None:
-        # The reproduction of #2312: a run killed after its commit, then the manifest moved out of the skills folder.
+        # A run killed after its commit, then the manifest moved out of the skills folder, as "A state file that does
+        # not read" suggests for a manifest the user does not trust: recovery once read that as no run committed.
         self.deployed(("alpha", "Alpha content"))
         run = "20260101-000000-kept"
         self.write(self.skills_dir / "alpha.deploying-bak" / "SKILL.md", "previous alpha\n")
