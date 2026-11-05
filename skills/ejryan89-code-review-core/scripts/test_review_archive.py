@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 import errno
 import os
+import re
 import sys
 import tempfile
 import unittest
@@ -147,8 +148,12 @@ class ArchiveTests(unittest.TestCase):
                 ("owner./a", "trims the trailing dots of 'owner.'"),
             ):
                 with self.subTest(identity=identity):
-                    with self.assertRaisesRegex(ConfigurationError, f"^Repository {identity.lower()} .*{reason}"):
+                    with self.assertRaises(ConfigurationError) as refused:
                         pull_directory(root, identity, 1)
+                    # It names the folder an earlier release may have kept the repository's records in.
+                    folder = root.joinpath(*identity.lower().split("/"))
+                    self.assertRegex(str(refused.exception), f"^Repository {re.escape(identity.lower())} .*{reason}")
+                    self.assertTrue(str(refused.exception).endswith(f"; {folder} is neither read nor written"))
                     with self.assertRaisesRegex(ConfigurationError, reason):
                         commit_record(
                             root, identity, 1, self._record("example/one", 1, 1), expected_latest_version=None

@@ -38,7 +38,7 @@ READ = FieldReader(ArchiveFieldError)
 
 
 def pulls_directory(root: Path, repository: str) -> Path:
-    owner, name = repository_folders(repository)
+    owner, name = repository_folders(repository, root)
     return root / owner / name / "pulls"
 
 

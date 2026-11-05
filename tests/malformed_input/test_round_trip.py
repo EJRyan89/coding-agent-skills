@@ -234,13 +234,12 @@ def test_a_review_record_pair_reads_back_as_written(tmp_path: Path, text: str, p
     request = {**review_records_suite.valid_request(), "title": text, "uncovered_files": [path]}
     result = review_records_suite.valid_adapter_result()
     result["summary"] = text
-    # A finding's path is the reviewer's to give, which the result's validator holds to a non-blank one.
-    finding_path = path if path.strip() else "src/file.cs"
+    # A finding's path is a repository path, a blank one included, as the result's validator reads it.
     result["findings"] = [
         {
             **result["findings"][0],
             "candidate_key": f"candidate-{index}",
-            "path": finding_path,
+            "path": path,
             "body": text,
             "evidence": text,
         }
