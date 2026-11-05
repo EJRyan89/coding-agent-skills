@@ -17,6 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts"))
 
 from bounded_process import Finished
+from guard_limits import process_limits_held
 
 from deployer import platform_support
 from tools import hub_guard
@@ -282,14 +283,16 @@ class CommandNameTests(unittest.TestCase):
 def powershell_reading(command: str) -> hub_guard.Reading:
     """The guard's reading of a PowerShell command, as data: pwsh only parses it."""
     reading = hub_guard.Reading({"PATH": os.environ.get("PATH", "")}, command)
-    hub_guard.read_powershell(command, Path.cwd(), reading)
+    with process_limits_held():
+        hub_guard.read_powershell(command, Path.cwd(), reading)
     return reading
 
 
 def bash_reading(command: str) -> hub_guard.Reading:
     """The guard's reading of a Bash command, as data: nothing is run."""
     reading = hub_guard.Reading({}, command)
-    hub_guard.read_bash(command, Path.cwd(), reading)
+    with process_limits_held():
+        hub_guard.read_bash(command, Path.cwd(), reading)
     return reading
 
 
@@ -343,7 +346,8 @@ class RunnerOptionTests(unittest.TestCase):
         for command in ("tar -xf a.tar", "nice tar -xf a.tar"):
             with self.subTest(command=command):
                 reading = hub_guard.Reading({"PATH": os.environ.get("PATH", ""), "TAR_OPTIONS": "x"}, command)
-                hub_guard.read_powershell(command, Path.cwd(), reading)
+                with process_limits_held():
+                    hub_guard.read_powershell(command, Path.cwd(), reading)
                 self.assertIn("TAR_OPTIONS", " ".join(reading.unread))
 
     def test_sort_is_read_as_the_program_where_pwsh_gives_it_no_alias(self) -> None:
