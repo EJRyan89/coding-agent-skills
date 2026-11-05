@@ -948,6 +948,10 @@ class OtherCheckoutTests(LinkedWorktreeTestCase):
 
     def test_a_dry_run_with_take_over_source_previews_the_takeover_and_changes_nothing(self) -> None:
         clone = self.deployed_clone()
+        # The new checkout holds a skill the recorded one never deployed.
+        self.make_skill("beta", "Beta, only in the new checkout")
+        shutil.copytree(self.source / "skills" / "beta", clone / "skills" / "beta")
+        shutil.copy2(self.source / "deploy-meta" / "beta.json", clone / "deploy-meta" / "beta.json")
         home = tree_state(self.home)
         dry = self.deploy_from(clone, "--all", "--take-over-source", "--dry-run")
         self.assertIn(
@@ -965,16 +969,20 @@ class OtherCheckoutTests(LinkedWorktreeTestCase):
         self.assertEqual(
             self.listed(dry.output), [(as_planned[label], item) for label, item in self.listed(deployed.output)]
         )
+        # A label of more than one word is compared too: the new checkout's beta is a fresh install.
         self.assertIn(("UPDATE", "alpha"), self.listed(dry.output))
+        self.assertIn(("FRESH INSTALL", "beta"), self.listed(dry.output))
+        self.assertIn(("INSTALLED", "beta"), self.listed(deployed.output))
         self.assertEqual(forward(clone), self.recorded_source_dir())
 
     @staticmethod
     def listed(output: str) -> list[tuple[str, str]]:
-        """Each item a report lists, with the label it is listed under, as `UPDATE (1):` heads its items."""
+        """Each item a report lists, with the label it is listed under, as `UPDATE (1):` or `FRESH INSTALL (1):`
+        heads its items."""
         rows: list[tuple[str, str]] = []
         label = ""
         for line in output.splitlines():
-            heading = re.fullmatch(r"([A-Z]+) \(\d+\):", line)
+            heading = re.fullmatch(r"([A-Z]+(?: [A-Z]+)*) \(\d+\):", line)
             if heading is not None:
                 label = heading.group(1)
             elif label and line.startswith("  ") and line.strip():
@@ -1337,6 +1345,13 @@ class ContractValueTests(unittest.TestCase):
         self.assertFalse(journal.valid_entry({**backup, "to": "skills/alpha.other-bak"}, "run"))
         preserve = {"op": "preserve", "item": "alpha", "from": "skills/alpha.deploying-bak", "to": ".backups/run/alpha"}
         self.assertTrue(journal.valid_entry(preserve, "run"))
+
+    def test_the_deletion_name_is_the_one_docs_recovery_names_and_no_item_can_take(self) -> None:
+        # A pinned contract value: "Backups" in docs/recovery.md tells users a copy being deleted is
+        # .<name>.deploying-del, and its leading dot keeps it apart from every safe item name.
+        self.assertEqual(".alpha.deploying-del", names.deletion_name("alpha"))
+        self.assertIn("starts with dot", names.safe_name_problem(names.deletion_name("alpha"), "Skill") or "")
+        self.assertIn("`.<name>.deploying-del`", (REPOSITORY_ROOT / "docs" / "recovery.md").read_text(encoding="utf-8"))
 
     def test_this_source_records_each_renamed_skill_under_its_old_name(self) -> None:
         """An installation under an old name moves to the new one only while source.json records the pair."""

@@ -629,6 +629,60 @@ class RecoveryFailureTests(RecoveryTestCase):
         self.assertTrue((transient / "SKILL.md").is_file())
         self.assertFalse(self.lock_dir.exists())
 
+    def test_a_held_copy_at_its_deletion_name_is_left_named_and_completes_a_committed_run(self) -> None:
+        # The copy was renamed to its deletion name, and deleting it there failed: the run is committed, so what is
+        # left stays there, named whole, and the journal is cleared.
+        journal_file = self.committed_fixture(retain=False)
+        deletion = self.skills_dir / deletion_name("alpha")
+        with failing_at("remove", deletion):
+            result = self.deploy_ok("--all")
+        self.assert_lines(
+            result.output,
+            f"Recovering committed run {self.HELD} (completing finalization)...",
+            "  WARNING: alpha's previous copy could not be deleted, so what is left of it stays at "
+            f"{forward(deletion)}: Access is denied. Delete it once nothing holds it open. {SEE_RECOVERY_BACKUPS}",
+            "  Recovery complete.",
+        )
+        self.assertFalse(journal_file.exists())
+        self.assertFalse((self.skills_dir / "alpha.deploying-bak").exists())
+        self.assertTrue((deletion / "SKILL.md").is_file())
+
+    def test_a_held_leftover_at_the_deletion_name_fails_no_later_rollback_or_finalization(self) -> None:
+        # What a deletion a held file stopped left at the deletion name is named each time a later run meets it, and
+        # that run deletes its own copy where it stands, so the leftover holds up no run, however many follow.
+        self.deployed(("alpha", "Alpha content"))
+        deletion = self.skills_dir / deletion_name("alpha")
+        self.write(deletion / "SKILL.md", "left by a deletion a held file stopped\n")
+        named = (
+            f"  WARNING: What is left of a copy the deployer was deleting stays at {forward(deletion)}: Access is "
+            f"denied. Delete it once nothing holds it open. {SEE_RECOVERY_BACKUPS}"
+        )
+        transient = self.skills_dir / transient_name("alpha")
+        for attempt in range(2):
+            with self.subTest(attempt=attempt):
+                original = hashing.hash_path(self.skills_dir / "alpha")
+                (self.skills_dir / "alpha").rename(transient)
+                self.write(self.skills_dir / "alpha" / "SKILL.md", "installed by the interrupted run\n")
+                installed = hashing.hash_path(self.skills_dir / "alpha")
+                run = f"20260101-00000{attempt}-roll"
+                self.write_journal(run, backup_entry("alpha", original), install_entry("alpha", installed))
+                with failing_at("remove", deletion):
+                    result = self.deploy_ok("--all")
+                self.assert_lines(
+                    result.output, f"Recovering uncommitted run {run} (rolling back)...", named, "  Recovery complete."
+                )
+                self.assertIn("Alpha content", self.skill_text("alpha"))
+                self.assertFalse(transient.exists())
+                self.assertTrue((deletion / "SKILL.md").is_file())
+        # A deployment's own finalization deletes the unkept copy it replaced where it stands, beside the same leftover.
+        self.make_skill("alpha", "Updated alpha")
+        with failing_at("remove", deletion):
+            result = self.deploy_ok("--all")
+        self.assert_lines(result.output, named)
+        self.assertIn("Updated alpha", self.skill_text("alpha"))
+        self.assertFalse(transient.exists())
+        self.assertTrue((deletion / "SKILL.md").is_file())
+
     def test_a_backup_directory_that_cannot_be_created_keeps_the_copy_and_finishes_a_committed_run(self) -> None:
         self.committed_fixture(retain=True)
         self.later_run()

@@ -875,11 +875,13 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   uses before it is deleted, and the step that meets that name finishes the deletion.
 - **Why:** A deletion a kill or an error stops partway leaves a remainder that matches nothing, which a recovery that
   reads it where the copy stood takes for someone's change and keeps or refuses.
-- **Use:** `deployer.journal:_begin_deletion`, which finishes an earlier deletion and renames the copy to
-  `deployer.names:deletion_name`, and `deployer.journal:_finish_deletion`, which recovery runs for an item first.
+- **Use:** `deployer.journal:_delete_copy`, which renames the copy to `deployer.names:deletion_name` before deleting
+  it, and `deployer.journal:_finish_deletion`, which finishes what a stopped deletion left there and only names what
+  it cannot delete, so a held leftover fails no later run.
 - **Guard:** `tests/deployer/test_backup_settlement.py::SettlementTests::test_finalization_and_recovery_settle_each_backup_alike`,
   whose rows include a deletion killed partway and one failing partway, and
-  `tests/deployer/test_recovery_migration.py::RecoveryTests::test_a_rollback_killed_partway_through_deleting_the_installed_copy_is_finished_by_the_next`
+  `tests/deployer/test_recovery_migration.py::RecoveryTests::test_a_rollback_killed_partway_through_deleting_the_installed_copy_is_finished_by_the_next`,
+  and, for a leftover that cannot be deleted, `tests/deployer/test_recovery_migration.py::RecoveryFailureTests::test_a_held_leftover_at_the_deletion_name_fails_no_later_rollback_or_finalization`
 - **Search for:** `fsops.remove(` or `shutil.rmtree(` of a path a later step reads with `hash_path(`, `_hash_existing(`,
   or `backup_unchanged(`; a retry that compares a tree it may have been deleting when it stopped.
 - **Examples:** #2314
