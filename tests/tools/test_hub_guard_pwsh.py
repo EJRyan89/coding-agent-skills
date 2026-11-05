@@ -308,7 +308,7 @@ class RunnerOptionTests(unittest.TestCase):
             # sort alone is PowerShell's alias of Sort-Object; sort.exe is the program.
             ("sort.exe --compress=x f", True),
             ("sort.exe -o out.txt f", True),
-            ("sort.exe -u f", False),
+            ("sort.exe -r f", False),
             ("rg --pre x y", True),
             ("find . -exec ls '{}' ';'", True),
             ("find . -delete", True),
@@ -355,7 +355,7 @@ class RunnerOptionTests(unittest.TestCase):
         for aliased, command, refused in (
             (False, "sort --compress=x f", True),
             (False, "sort -o out.txt f", True),
-            (False, "sort -u f", False),
+            (False, "sort -r f", False),
             # On Windows sort is Sort-Object, whose parameters run nothing.
             (True, "sort --compress=x f", False),
             (True, "sort -Descending", False),
@@ -379,6 +379,24 @@ class RunnerOptionTests(unittest.TestCase):
             (True, "timeout 5 sort.exe /o out.txt f", True),
             (True, "sort.exe -- /o out.txt f", True),
             (True, "C:\\WINDOWS\\SysWOW64\\SORT.EXE /O out.txt f", True),
+            # A joined pair, an attached value, and a slash word another option takes as its value.
+            (True, "sort.exe /r/o out.txt f", True),
+            (True, "sort.exe /L C /O out.txt f", True),
+            (True, "sort.exe /L /O out.txt f", True),
+            (True, "sort.exe /Oout.txt f", True),
+            (True, "sort.exe /O:out.txt f", True),
+            (True, "sort.exe /Tdir f", True),
+            (True, "sort.exe -t /O out.txt f", True),
+            (True, "find.exe /c/v x f", True),
+            (True, "sort.exe /L C /r f", False),
+            # sort.exe may read a dash as a slash; find.exe has no option that writes or runs anything.
+            (True, "sort.exe -u f", True),
+            (True, "sort.exe -t x f", True),
+            (True, "sort.exe -temporary d f", True),
+            (True, "sort.exe -r f", False),
+            (False, "sort.exe -u f", False),
+            (True, "find.exe . -name x", False),
+            (True, "sort.exe /reve\u017fe f", True),
             (False, "sort.exe /o out.txt f", False),
         ):
             with (
