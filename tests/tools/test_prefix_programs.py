@@ -22,6 +22,7 @@ import tempfile
 import unittest
 from dataclasses import dataclass
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts"))
@@ -128,6 +129,13 @@ SAFE: dict[str, set[str]] = {
 }
 # Another build of a program the guard reads by one table, whose catalogue the fixture holds beside it.
 OTHER_BUILDS = {"bsdtar": "tar"}
+# The Windows builds, in System32, of programs the guard reads, whose options are written with a slash, and the slash
+# options of each this suite holds safe: Windows' sort writes a file by /O and keeps its working files by /T.
+WINDOWS_BUILDS = {"sort.exe": "sort", "find.exe": "find"}
+SAFE_SLASH = {
+    "sort": {"/+n", "/L", "/LOCALE", "/M", "/MEMORY", "/REC", "/RECORD_MAXIMUM", "/R", "/REVERSE"},
+    "find": {"/V", "/C", "/N", "/I", "/OFF", "/OFFLINE"},
+}
 # The words each runner takes after its options and before its command, as its manual gives them.
 OPERANDS = {"timeout": ["5"], "chrt": ["10"], "taskset": ["3"], "chroot": ["/srv"]}
 # Bash reads time as a keyword at a command's start, so the program time runs only after an assignment.
@@ -460,10 +468,67 @@ class ProgramBehindRunnerTests(unittest.TestCase):
                 self.assertEqual(expected, refused(command))
 
 
+class WindowsBuildTests(unittest.TestCase):
+    def rows(self, build: str) -> list[tuple[list[str], bool]]:
+        """Each slash option of a Windows build, in upper and lower case, its value after it, with whether this suite
+        holds it safe."""
+        program = WINDOWS_BUILDS[build]
+        rows: list[tuple[list[str], bool]] = []
+        for option in options_of(build):
+            for name in (option.short, option.long):
+                if name is None:
+                    continue
+                spelling = "/+3" if name == "/+n" else name
+                safe = name in SAFE_SLASH[program]
+                rows.extend(
+                    ([case, VALUE] if option.value == "value" else [case], safe)
+                    for case in (spelling, spelling.lower())
+                )
+        return rows
+
+    def test_each_windows_build_s_slash_option_is_refused_unless_safe_in_any_case(self) -> None:
+        for build, program in WINDOWS_BUILDS.items():
+            for words, safe in self.rows(build):
+                with self.subTest(build=build, form=shlex.join(words)):
+                    arguments: list[hub_guard.Word] = [*words, "x"]
+                    reason = hub_guard.program_refusal(program, arguments, windows_build=True)
+                    self.assertEqual(not safe, reason is not None)
+                    # The program's GNU build reads the same words as operands.
+                    self.assertIsNone(hub_guard.program_refusal(program, arguments))
+
+    def test_a_system32_path_names_the_windows_build_where_the_platform_s_programs_take_slashes(self) -> None:
+        for flag in (True, False):
+            with (
+                self.subTest(flag=flag),
+                mock.patch.object(platform_support, "SYSTEM_PROGRAMS_TAKE_SLASH_OPTIONS", flag),
+            ):
+                self.assertEqual(flag, refused("/c/Windows/System32/sort.exe /o out.txt f"))
+                self.assertEqual(flag, refused("C:/Windows/System32/sort.exe /T d f"))
+                self.assertFalse(refused("/c/Windows/System32/sort.exe /r f"))
+                # Git Bash's own sort, and a path that is no option, stay GNU sort's.
+                self.assertFalse(refused("sort /o f"))
+                self.assertFalse(refused("find /tmp -name x"))
+        self.assertEqual(platform_support.WINDOWS, platform_support.SYSTEM_PROGRAMS_TAKE_SLASH_OPTIONS)
+
+    def test_the_guard_s_slash_options_are_the_ones_this_suite_holds_safe(self) -> None:
+        for build, program in WINDOWS_BUILDS.items():
+            table = hub_guard.PROGRAM_OPTIONS[program].slash
+            assert table is not None
+            names = {"/+n" if name == "+" else f"/{name}" for name in table}
+            with self.subTest(program=program):
+                self.assertEqual(sorted(SAFE_SLASH[program]), sorted(names))
+                listed = {each for option in options_of(build) for each in (option.short, option.long) if each}
+                self.assertLessEqual(SAFE_SLASH[program], listed)
+        self.assertEqual(
+            sorted(WINDOWS_BUILDS.values()),
+            sorted(name for name, table in hub_guard.PROGRAM_OPTIONS.items() if table.slash is not None),
+        )
+
+
 class CatalogueTests(unittest.TestCase):
     def test_every_program_the_guard_reads_options_of_has_a_catalogue_a_test_and_its_safe_options(self) -> None:
         tables = {**hub_guard.RUNNER_OPTIONS, **hub_guard.PROGRAM_OPTIONS}
-        self.assertEqual(sorted(tables), sorted(set(catalogues()) - set(OTHER_BUILDS)))
+        self.assertEqual(sorted(tables), sorted(set(catalogues()) - set(OTHER_BUILDS) - set(WINDOWS_BUILDS)))
         self.assertEqual(sorted(tables), sorted(SAFE))
         tested = {
             name.removeprefix("test_")

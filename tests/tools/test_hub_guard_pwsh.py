@@ -364,6 +364,23 @@ class RunnerOptionTests(unittest.TestCase):
         here = powershell_reading("sort --compress=x f")
         self.assertEqual(not platform_support.WINDOWS, bool(here.unread), "this platform's own reading")
 
+    def test_a_windows_build_s_slash_option_is_read_where_pwsh_reaches_that_build(self) -> None:
+        for windows, command, refused in (
+            (True, "sort.exe /o out.txt f", True),
+            (True, "sort.exe /OUTPUT out.txt f", True),
+            (True, "sort.exe /t d f", True),
+            (True, "sort.exe /r f", False),
+            (True, "find.exe /c x f", False),
+            (True, "find.exe /x x f", True),
+            (True, "timeout 5 sort.exe /o out.txt f", True),
+            (False, "sort.exe /o out.txt f", False),
+        ):
+            with (
+                self.subTest(windows=windows, command=command),
+                mock.patch.object(platform_support, "SYSTEM_PROGRAMS_TAKE_SLASH_OPTIONS", windows),
+            ):
+                self.assertEqual(refused, bool(powershell_reading(command).unread))
+
     def test_bash_and_pwsh_are_refused_whatever_they_run(self) -> None:
         for command in ("bash -c 'ls'", "bash script.sh", "pwsh -NoProfile -Command 'Get-Date'", "pwsh -File x.ps1"):
             with self.subTest(command=command):

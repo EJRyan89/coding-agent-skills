@@ -354,8 +354,11 @@ a row decides it.
   the text does not settle. `tar`'s extraction, which writes the files an archive names, its `-C`, which chooses
   where, and its `-T`, whose list of names may hand it options, are refused, and so is an archive it names `host:path`, which it opens through a remote shell, unless
   `--force-local`, given as an option rather than as another option's value or after `--`, makes it a file. `tar`'s
-  table holds only letters GNU tar and bsdtar, Windows' `tar.exe`, read alike, so `-H`, `-W`, and `-s`, which one of
-  them reads with a value and the other without, are refused. A runner's command
+  table holds only letters GNU tar and bsdtar, Windows' `tar.exe`, read alike, or that only one of them knows, so
+  `-H`, `-W`, and `-s`, which one of them reads with a value and the other without, are refused. Where the command
+  reaches a program's Windows build, from PowerShell on Windows or by a path in `System32`, `sort`'s and `find`'s
+  options written with a slash are read in any case by their own allow-lists, so Windows `sort`'s `/O`, which writes
+  a file, and `/T` are refused. A runner's command
   that is one of them is held to its allow-list too, and after `xargs`, which adds words from its input, it is refused
   unless its words hold a `--` that ends its options, which `find` has none of. A variable one of them reads options
   from, `PROGRAM_VARIABLES`: `RIPGREP_CONFIG_PATH`, `TAPE`, and `TAR_OPTIONS`, is refused where it is assigned

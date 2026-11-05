@@ -201,8 +201,10 @@ class OptionTable:
     permutes says the program reads an option after an operand, as GNU sort and tar do, so every word is read until
     `--`; first_letters says a first word without a dash is a bundle of short options whose values follow it in order,
     tar's old style; single_dash says each option is a word of its own read exactly, as find's are; numbered is a
-    pattern of a word that is an option of its own, as nice's `-5`; and assignments says NAME=VALUE words and a lone
-    `-` stand among the options, as env's do."""
+    pattern of a word that is an option of its own, as nice's `-5`; assignments says NAME=VALUE words and a lone
+    `-` stand among the options, as env's do; and slash maps the safe options of the program's Windows build, which
+    reads an option written with a slash in any case, as System32's sort.exe does, by its upper-case name, `+` standing
+    for `/+n`, or is None for a program with no such build."""
 
     short: Mapping[str, str] = field(default_factory=dict)
     long: Mapping[str, str] = field(default_factory=dict)
@@ -212,11 +214,17 @@ class OptionTable:
     single_dash: bool = False
     numbered: re.Pattern[str] | None = None
     assignments: bool = False
+    slash: Mapping[str, str] | None = None
 
 
 def option_table(short: str = "", long: str = "", **form: Any) -> OptionTable:
     """An OptionTable from getopt's spelling: short letters, each followed by `:` for a value or `::` for an optional
-    one, and long names separated by spaces, each followed by `=` for a value or `=?` for an optional one."""
+    one, and long names separated by spaces, each followed by `=` for a value or `=?` for an optional one; a slash
+    spelling, given, names the Windows build's slash options as long names are named, without their slash."""
+    if isinstance(form.get("slash"), str):
+        form["slash"] = {
+            spec.removesuffix("="): VALUE if spec.endswith("=") else NO_VALUE for spec in form["slash"].split()
+        }
     shorts: dict[str, str] = {}
     for match in re.finditer(r"(.)(::?)?", short):
         shorts[match[1]] = {None: NO_VALUE, ":": VALUE, "::": OPTIONAL_VALUE}[match[2]]
@@ -269,8 +277,9 @@ FIND_COMMANDS = frozenset({"-exec", "-execdir", "-ok", "-okdir"})
 # options, are among the ones refused, and so is any word
 # of such a program that the text does not settle. tar's archive named host:path, which tar opens through a remote
 # shell, is refused unless --force-local is given (remote_archive). tar's letters are the ones GNU tar and bsdtar,
-# Windows' tar.exe, either both read alike or one does not know: -H, -W, and -s, which one of them reads with a value
-# and the other without, are refused.
+# Windows' tar.exe, either both read alike or only one of them knows: -H, -W, and -s, which one of them reads with a
+# value and the other without, are refused. sort's and find's Windows builds read options written with a slash, by
+# the slash allow-list each table holds, where the command reaches that build (option_refusal's windows_build).
 PROGRAM_OPTIONS: dict[str, OptionTable] = {
     "find": option_table(
         "",
@@ -287,6 +296,8 @@ PROGRAM_OPTIONS: dict[str, OptionTable] = {
         ),
         permutes=True,
         single_dash=True,
+        # Windows' find.exe reads its lines and counts them; none of its options writes or runs anything.
+        slash="V C N I OFF OFFLINE",
     ),
     "rg": option_table(
         "A:B:C:cd:e:E:f:Fg:HiIj:lLm:M:nNopPqr:sSt:T:uUvVwx0ab.",
@@ -316,6 +327,8 @@ PROGRAM_OPTIONS: dict[str, OptionTable] = {
             )
         ),
         permutes=True,
+        # Windows' sort.exe: /O writes its output to a file and /T keeps its working files in a directory, so neither.
+        slash="R REVERSE + L= LOCALE= M= MEMORY= REC= RECORD_MAXIMUM=",
     ),
     "tar": option_table(
         "AcdrtuvzjJZakmOpPhSBilnRof:X:b:K:N:V:",
@@ -2055,7 +2068,7 @@ class BashReader:
             read_gh(arguments, directory, self.reading)
         elif program in PROGRAM_OPTIONS:
             variables = {name for name, _ in prefixes} | set(self.reading.environment)
-            reason = program_refusal(program, arguments, variables)
+            reason = program_refusal(program, arguments, variables, system_program(name))
             if reason is not None:
                 self.reading.cannot_read(reason)
                 return certain(UNKNOWN)
@@ -2288,6 +2301,7 @@ def read_runner_words(
     reading: Reading,
     script: Callable[[], str | None],
     variables: Iterable[str] = (),
+    windows_build: bool = False,
 ) -> Outcome:
     """A runner, read the same from Bash and PowerShell: refused where runner_refusal or, for bash and pwsh, script
     refuses it, or where the command it starts is a program PROGRAM_OPTIONS names that runner_command_refusal refuses;
@@ -2309,7 +2323,7 @@ def read_runner_words(
             None,
         )
     if reason is None:
-        reason = runner_command_refusal(program, arguments, {*variables, *own, *reading.environment})
+        reason = runner_command_refusal(program, arguments, {*variables, *own, *reading.environment}, windows_build)
     if reason is not None:
         reading.cannot_read(f"runs {program}: {reason}")
         return certain(UNKNOWN)
@@ -2327,6 +2341,13 @@ def read_runner_words(
     return certain(directory)
 
 
+def system_program(name: str) -> bool:
+    """Whether a command word names a program in Windows' own System32 folder, whose builds of sort and find read slash
+    options, where the platform's system programs do (platform_support)."""
+    folded_name = name.replace("\\", "/").lower()
+    return platform_support.SYSTEM_PROGRAMS_TAKE_SLASH_OPTIONS and "/system32/" in folded_name
+
+
 def runner_assignments(program: str, arguments: list[Word]) -> list[tuple[str, str]]:
     """The NAME=VALUE words a runner reads among its options as assignments for its command, as env does, read as
     option_refusal reads its words, so a value-taking option's value never ends them; none for any other runner."""
@@ -2335,7 +2356,9 @@ def runner_assignments(program: str, arguments: list[Word]) -> list[tuple[str, s
     return option_refusal(RUNNER_OPTIONS[program], arguments).assigned
 
 
-def runner_command_refusal(program: str, arguments: list[Word], variables: Iterable[str]) -> str | None:
+def runner_command_refusal(
+    program: str, arguments: list[Word], variables: Iterable[str], windows_build: bool = False
+) -> str | None:
     """Why the command a runner starts is refused where it is a program PROGRAM_OPTIONS names: judged as that program
     is (program_refusal), and refused after xargs, which adds words from its input, which may be any options, unless
     the program's words hold `--`, after which they are its operands."""
@@ -2351,21 +2374,25 @@ def runner_command_refusal(program: str, arguments: list[Word], variables: Itera
         stop = option_refusal(PROGRAM_OPTIONS[command], rest).stop
         if stop >= len(rest) or rest[stop] != "--" or PROGRAM_OPTIONS[command].single_dash:
             return f"xargs runs {command} with words from its input, which may be options that run a command"
-    return program_refusal(command, rest, variables)
+    windows_build = windows_build or system_program(arguments[start] or "")
+    return program_refusal(command, rest, variables, windows_build)
 
 
-def program_refusal(program: str, arguments: list[Word], variables: Iterable[str] = ()) -> str | None:
+def program_refusal(
+    program: str, arguments: list[Word], variables: Iterable[str] = (), windows_build: bool = False
+) -> str | None:
     """Why a program PROGRAM_OPTIONS names is refused, read the same from Bash and PowerShell: an option it does not
     know to be safe, in any spelling (option_refusal), a word the text does not settle, which may be one, or a variable
     the program reads options from (PROGRAM_VARIABLES) among the names variables gives, those assigned before it and
-    those of the environment."""
+    those of the environment. windows_build says the command runs the program's Windows build, as System32's
+    sort.exe, which reads slash options (option_refusal)."""
     # Windows reads a variable's name in any case.
     handed = sorted(PROGRAM_VARIABLES.get(program, frozenset()) & {name.upper() for name in variables})
     if handed:
         return f"{program} reads options or its archive from {handed[0]}, which may hold one that runs a command"
     if any(word is None for word in arguments):
         return f"{program} may run a command its words name (a word the text does not settle)"
-    reading = option_refusal(PROGRAM_OPTIONS[program], arguments)
+    reading = option_refusal(PROGRAM_OPTIONS[program], arguments, windows_build)
     if reading.refused is not None:
         return f"{program} is given {reading.refused}, not one of its options the guard knows to be safe"
     return remote_archive(program, arguments, reading)
@@ -2397,14 +2424,20 @@ class OptionReading:
     longs: list[str]
 
 
-def option_refusal(table: OptionTable, arguments: list[Word]) -> OptionReading:
+# A word the Windows build of a program reads as a slash option: a slash, then a letter, `+`, or `?`, and no other
+# separator, so a path such as `/c/x` or `C:/x` is none.
+SLASH_OPTION = re.compile(r"/[A-Za-z+?][^/\\]*")
+
+
+def option_refusal(table: OptionTable, arguments: list[Word], windows_build: bool = False) -> OptionReading:
     """A program's or runner's words read as getopt reads them. The reading stops at a runner's command, after its
     options and the operands it takes, at a program's `--`, or at the end of its words: a runner's options end at its
     command or at `--`, after which its operands and its command follow, and a program that permutes its arguments is
     read to the end, or to `--`. Every spelling getopt reads is read: a long option with its value attached by `=` or
     after it, which is safe only spelled in full, and short options bundled in one word, each letter judged, a
-    value-taking one ending the bundle with the rest of its word or the next word as its value. A word the text does
-    not settle ends the reading, and the caller refuses it."""
+    value-taking one ending the bundle with the rest of its word or the next word as its value. Where windows_build
+    says the program is its Windows build, a slash option is read by the table's slash options, and refused where the
+    table has none. A word the text does not settle ends the reading, and the caller refuses it."""
     operands = table.operands
     index = 0
     ended = False  # past `--`, where no word is an option
@@ -2426,14 +2459,14 @@ def option_refusal(table: OptionTable, arguments: list[Word]) -> OptionReading:
             index += 1
             continue
         if index == 0 and table.first_letters and not word.startswith("-"):
-            # tar's old style: a bundle of letters, each that takes a value taking the next word, in order.
-            if any(letter not in table.short for letter in word):
+            taking = old_style(table, arguments)
+            if taking is None:
                 return reading(word, index)
-            taking = [letter for letter in word if table.short[letter] == VALUE]
-            values += [(f"-{letter}", next_word(arguments, index + 1 + k)) for k, letter in enumerate(taking)]
+            values += taking
             index += 1 + len(taking)
             continue
-        if ended or len(word) < 2 or not word.startswith("-"):
+        slash = windows_build and not ended and bool(SLASH_OPTION.fullmatch(word))
+        if not slash and (ended or len(word) < 2 or not word.startswith("-")):
             if table.assignments and "=" in word:
                 name, _, value = word.partition("=")
                 assigned.append((name, value))
@@ -2455,6 +2488,16 @@ def option_refusal(table: OptionTable, arguments: list[Word]) -> OptionReading:
     return reading(None, len(arguments))
 
 
+def old_style(table: OptionTable, arguments: list[Word]) -> list[tuple[str, Word]] | None:
+    """tar's old-style first word read: a bundle of letters, each that takes a value taking the next word, in order,
+    with the value each takes; None where a letter is not one the table knows to be safe."""
+    word = arguments[0] or ""
+    if any(letter not in table.short for letter in word):
+        return None
+    taking = [letter for letter in word if table.short[letter] == VALUE]
+    return [(f"-{letter}", next_word(arguments, 1 + k)) for k, letter in enumerate(taking)]
+
+
 def next_word(arguments: list[Word], index: int) -> Word:
     return arguments[index] if index < len(arguments) else ""
 
@@ -2465,6 +2508,11 @@ def option_word(table: OptionTable, word: str) -> tuple[int, str | None, str | N
     to be safe, a value given to an option that takes none among them."""
     if table.numbered is not None and table.numbered.fullmatch(word):
         return 0, None, None
+    if word.startswith("/"):
+        # A Windows build's slash option, in any case, by the table's slash options.
+        name = word[1:].upper()
+        kind = (table.slash or {}).get("+" if re.fullmatch(r"\+[0-9]+", name) else name)
+        return None if kind is None else (int(kind == VALUE), None, None)
     if table.single_dash or word.startswith("--"):
         name, attached, value = word.partition("=")
         kind = table.long.get(name)
@@ -2935,9 +2983,18 @@ class PowerShellReader:
             return certain(UNKNOWN)
         elif program in RUNNERS:
             # The guard reads a bash or pwsh script only from Bash, so from PowerShell each is refused whatever it runs.
-            return read_runner_words(program, words[1:], directory, self.reading, lambda: RUNNERS[program])
+            return read_runner_words(
+                program,
+                words[1:],
+                directory,
+                self.reading,
+                lambda: RUNNERS[program],
+                windows_build=platform_support.SYSTEM_PROGRAMS_TAKE_SLASH_OPTIONS,
+            )
         elif program in PROGRAM_OPTIONS:
-            reason = program_refusal(program, words[1:], self.reading.environment)
+            # From PowerShell a program's name reaches Windows' own build where there is one, as sort.exe and find.exe.
+            windows_build = platform_support.SYSTEM_PROGRAMS_TAKE_SLASH_OPTIONS
+            reason = program_refusal(program, words[1:], self.reading.environment, windows_build)
             if reason is not None:
                 self.reading.cannot_read(reason)
                 return certain(UNKNOWN)

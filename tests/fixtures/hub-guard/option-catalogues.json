@@ -3736,5 +3736,89 @@
     "value": "none"
    }
   ]
+ },
+ "sort.exe": {
+  "source": "Windows' System32 sort.exe, its /? (and its undocumented /C[ASE_SENSITIVE] and /UNIQ[UE])",
+  "abbreviates": false,
+  "slash": true,
+  "options": [
+   {
+    "short": "/+n",
+    "long": null,
+    "value": "numbered"
+   },
+   {
+    "short": "/L",
+    "long": "/LOCALE",
+    "value": "value"
+   },
+   {
+    "short": "/M",
+    "long": "/MEMORY",
+    "value": "value"
+   },
+   {
+    "short": "/REC",
+    "long": "/RECORD_MAXIMUM",
+    "value": "value"
+   },
+   {
+    "short": "/R",
+    "long": "/REVERSE",
+    "value": "none"
+   },
+   {
+    "short": "/T",
+    "long": "/TEMPORARY",
+    "value": "value"
+   },
+   {
+    "short": "/O",
+    "long": "/OUTPUT",
+    "value": "value"
+   },
+   {
+    "short": "/C",
+    "long": "/CASE_SENSITIVE",
+    "value": "none"
+   },
+   {
+    "short": "/UNIQ",
+    "long": "/UNIQUE",
+    "value": "none"
+   }
+  ]
+ },
+ "find.exe": {
+  "source": "Windows' System32 find.exe, its /?",
+  "abbreviates": false,
+  "slash": true,
+  "options": [
+   {
+    "short": "/V",
+    "long": null,
+    "value": "none"
+   },
+   {
+    "short": "/C",
+    "long": null,
+    "value": "none"
+   },
+   {
+    "short": "/N",
+    "long": null,
+    "value": "none"
+   },
+   {
+    "short": "/I",
+    "long": null,
+    "value": "none"
+   },
+   {
+    "short": "/OFF",
+    "long": "/OFFLINE",
+    "value": "none"
+   }
+  ]
  }
 }
