@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import contextlib
+import io
 import os
 import tempfile
 import unittest
@@ -11,6 +13,7 @@ from typing import Any
 from unittest import mock
 
 from harness import DeployerTestCase
+from json_writer import JsonWriteRefused
 
 from deployer import errors
 
@@ -89,6 +92,20 @@ class OSErrorTests(DeployerTestCase):
             ),
         ]
 
+    def test_a_source_value_json_writer_refuses_ends_the_run_naming_the_source_and_the_remedy(self) -> None:
+        refused = JsonWriteRefused("the value holds a lone surrogate U+D800, which UTF-8 cannot encode")
+        with mock.patch("deployer.source._discover_directories", side_effect=refused):
+            result = self.run_cli("--all", "--dry-run")
+        self.assertEqual(1, result.code, result.output)
+        self.assertTrue(
+            result.output.endswith(
+                f"\nERROR: Could not read the skill source: {refused}\n"
+                "Check that this checkout is complete and that you can read it, then retry.\n"
+                f"{DEBUG_HINT}\n\n"
+            ),
+            result.output,
+        )
+
     def test_an_os_error_ends_with_its_lines_and_no_traceback(self) -> None:
         for name, arguments, patch, lines in self.cases():
             with self.subTest(point=name), patch, mock.patch.dict(os.environ, {"DEPLOYER_DEBUG": ""}):
@@ -159,6 +176,23 @@ class ConvertedTests(unittest.TestCase):
                 self.assertEqual(lines, converted.lines)
                 self.assertEqual(130, converted.exit_code)
                 self.assertIs(interrupt, converted.__cause__)
+
+    def test_a_value_json_writer_refuses_ends_naming_the_action_and_what_it_holds(self) -> None:
+        refused = JsonWriteRefused("the value holds NaN or an infinity, which JSON does not define")
+        with contextlib.redirect_stderr(io.StringIO()) as stderr:
+            code = errors.fail(refused, False, "render alpha")
+        self.assertEqual(1, code)
+        # --debug's traceback shows where the refusal was raised, as an OSError's converted error does.
+        with mock.patch.object(errors, "print_error") as printed:
+            errors.fail(refused, True, "render alpha")
+        [(reported, debug)] = [call.args for call in printed.call_args_list]
+        self.assertIs(refused, reported.__cause__)
+        self.assertIs(True, debug)
+        self.assertEqual(
+            "\nERROR: Could not render alpha: the value holds NaN or an infinity, which JSON does not define\n"
+            f"{DEBUG_HINT}\n\n",
+            stderr.getvalue(),
+        )
 
     def test_any_other_exception_is_named_as_unexpected(self) -> None:
         self.assertEqual("ERROR: Unexpected RuntimeError: boom", errors.named(RuntimeError("boom"), "finish recovery"))

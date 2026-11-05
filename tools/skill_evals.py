@@ -256,6 +256,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "ejryan89-skill-core" / "scripts"))
 
+import json_writer
 import whole_number
 from bounded_process import without_repository_variables
 from console import run_main
@@ -509,7 +510,12 @@ def record_reading(skill: str, reading: str, results: Path) -> int:
     """Mark the skill's sampled transcript in the results file with the reader's reading."""
     try:
         text = read_sample(results.read_text(encoding="utf-8"), skill, reading)
-    except (OSError, UnicodeDecodeError, ScenarioError) as exc:  # a results file missing, not UTF-8, or not as read
+    except (
+        OSError,
+        UnicodeDecodeError,
+        json_writer.JsonWriteRefused,
+        ScenarioError,
+    ) as exc:  # a results file missing, not UTF-8, or not as read
         print(f"FAILED {quote(str(exc))}")
         return 1
     results.write_text(text, encoding="utf-8", newline="\n")

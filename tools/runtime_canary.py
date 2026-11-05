@@ -431,7 +431,7 @@ def forward(path: str | os.PathLike[str]) -> str:
 
 
 def quote(value: str) -> str:
-    return json.dumps(value, ensure_ascii=False)
+    return json_writer.dumps(value, ensure_ascii=False)
 
 
 def lexical(path: str | os.PathLike[str]) -> str:
@@ -751,7 +751,7 @@ def denied(entry: object) -> str:
     denial = entry if isinstance(entry, dict) else {"tool_input": entry}
     tool_input = denial.get("tool_input") or {}
     command = tool_input.get("command") if isinstance(tool_input, dict) else None
-    detail = command if isinstance(command, str) and command else json.dumps(tool_input, sort_keys=True)
+    detail = command if isinstance(command, str) and command else json_writer.dumps(tool_input, sort_keys=True)
     return f"{denial.get('tool_name', '?')}: {detail}"
 
 
@@ -834,7 +834,7 @@ def recorded_scripts(started: list[dict[str, Any]]) -> list[tuple[str, str, int 
     A command string, a module run with -m, and standard input name no script file, so none counts."""
 
     def key(record: dict[str, Any]) -> str:
-        return json.dumps([record.get("argv"), record.get("cwd"), record.get("pid")])
+        return json_writer.dumps([record.get("argv"), record.get("cwd"), record.get("pid")])
 
     exits = {
         key(record): record["exit"]

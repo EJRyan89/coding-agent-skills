@@ -581,6 +581,18 @@ class ParsingTests(unittest.TestCase):
                 discovery.parse_codex(lines)
             self.assertEqual(reason, str(caught.exception))
 
+    def test_codex_requests_are_these_lines_with_text_past_ascii_escaped(self) -> None:
+        # The bytes Codex reads, pinned whole: a change of separators, key order, or escaping fails here.
+        self.assertEqual(
+            [
+                '{"method": "initialize", "id": 0, "params": {"clientInfo": {"name": "coding-agent-skills", '
+                '"title": "coding-agent-skills", "version": "1"}}}',
+                '{"method": "initialized", "params": {}}',
+                '{"method": "skills/list", "id": 1, "params": {"cwds": ["work dir \\u00e9"]}}',
+            ],
+            discovery.codex_requests(Path("work dir é")),
+        )
+
     def test_codex_is_asked_for_the_skills_of_the_working_directory_after_its_handshake(self) -> None:
         cwd = Path("C:/a dir/work")
         requests = [json.loads(line) for line in discovery.codex_requests(cwd)]

@@ -32,6 +32,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "ejryan8
 
 import file_presence
 import frontmatter
+import json_writer
 import runtime_support
 import skill_menu
 from console import run_main
@@ -411,7 +412,7 @@ def main(argv: list[str] | None = None) -> int:
         if arguments.write:
             write(arguments.root)
         found = problems(arguments.root)
-    except (OSError, SkillReferenceError) as exc:
+    except (OSError, json_writer.JsonWriteRefused, SkillReferenceError) as exc:
         print(f"FAILED {exc}", file=sys.stderr)
         return 2
     for problem in found:

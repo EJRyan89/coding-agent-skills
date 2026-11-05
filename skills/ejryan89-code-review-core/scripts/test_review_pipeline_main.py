@@ -26,6 +26,7 @@ import review_dispatch
 import review_pipeline as rp
 import review_run
 from github_client import GitHubError
+from json_writer import JsonWriteRefused
 from review_archive import ArchiveError
 from review_canary import FixtureError
 from review_config import ConfigurationError
@@ -48,6 +49,7 @@ SERVICES = SERVICES_TYPE()
 CONFIG = "review config.json"
 EXPECTED = (
     review_run.PipelineError,
+    JsonWriteRefused,
     ConfigurationError,
     GitHubError,
     RuntimeContractError,

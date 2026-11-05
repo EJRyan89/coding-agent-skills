@@ -11,6 +11,7 @@ from collections.abc import Mapping
 from pathlib import Path
 
 import file_presence
+import json_writer
 
 from . import discovery, manifest, platform_support, tools
 from .arguments import PROG, VERIFY_COMMAND, parse_command
@@ -189,7 +190,7 @@ def execute(namespace: argparse.Namespace, paths: Paths, environment: Mapping[st
             where = platform_support.normalize(paths.adapter_dest_dir)
             raise DeployError(f"ERROR: No runtime adapters are deployed in {where}.", f"Deploy first with '{PROG}'.")
         return _verify(names, paths, dict(os.environ if environment is None else environment))
-    except (DeployError, OSError, KeyboardInterrupt) as exc:
+    except (DeployError, OSError, json_writer.JsonWriteRefused, KeyboardInterrupt) as exc:
         return fail(exc, debug, "finish verifying the adapters")
 
 

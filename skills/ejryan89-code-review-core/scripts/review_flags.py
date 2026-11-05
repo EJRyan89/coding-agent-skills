@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import os
 import re
 import sys
@@ -12,6 +11,7 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
+import json_writer
 from review_config import validate_repository_identity
 from review_io import ResourceLock, atomic_write_json, read_json, record_present
 from review_records import FINDING_ID
@@ -181,7 +181,7 @@ def load_store(path: Path) -> dict[str, Any]:
 
 def _write_store(path: Path, store: dict[str, Any]) -> None:
     """Write the store as atomic_write_json serializes it, or refuse, writing nothing, a store too large to read."""
-    size = len((json.dumps(store, indent=2, sort_keys=True, ensure_ascii=False) + "\n").encode("utf-8"))
+    size = len((json_writer.dumps(store, indent=2, sort_keys=True, ensure_ascii=False) + "\n").encode("utf-8"))
     if size > STORE_MAXIMUM_BYTES:
         raise FlagError(f"The flag store would exceed {STORE_MAXIMUM_BYTES} bytes, the most a flag store is read at")
     atomic_write_json(path, store, validator=validate_store)

@@ -23,7 +23,6 @@ from __future__ import annotations
 import base64
 import contextlib
 import functools
-import json
 import math
 import os
 import re
@@ -39,7 +38,9 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "ejryan89-skill-core" / "scripts"))
 
+import hook_decision
 import json_reader
+import json_writer
 import whole_number
 from bounded_process import run_bounded
 from console import run_main
@@ -730,6 +731,8 @@ DENY_REASON = (
     "`python tools/worktrees.py new <kind> <name>`, enter it, and work there."
 )
 PLACE_IT = "Write the directory into the command itself, as `git -C <dir>` or `cd <dir> &&`, and run it again."
+# The refusal the guard gives when its own reason holds what JSON cannot carry, such as a lone surrogate.
+UNWRITABLE_REASON = f"The guard refused this command for a reason that holds what JSON cannot carry. {DENY_REASON}"
 REWRITE_IT = (
     "Write it as plain commands with literal words, running each program by its name rather than through another "
     "that runs it (RUNNERS in tools/hub_guard.py), and run it again; the guard's contract in "
@@ -2352,8 +2355,9 @@ def powershell_events(command: str, reading: Reading) -> dict[str, Any] | None:
     if pwsh is None:
         reading.cannot_read("could not find pwsh to read a PowerShell command")
         return None
-    payload = json.dumps({"command": command})
     try:
+        # A command holding a lone surrogate has no JSON form, which json_writer refuses here.
+        payload = json_writer.dumps({"command": command})
         # run_bounded takes git's repository-selecting variables out of the hook's environment, and the tree ends
         # every process pwsh starts once it has finished or been killed.
         result = run_bounded(
@@ -2369,6 +2373,9 @@ def powershell_events(command: str, reading: Reading) -> dict[str, Any] | None:
         return None
     except OSError as exc:
         reading.cannot_read(f"could not start pwsh ({exc})")
+        return None
+    except json_writer.JsonWriteRefused as exc:
+        reading.cannot_read(f"could not hand pwsh the command ({exc})")
         return None
     try:
         output = json_reader.loads(result.stdout.decode("utf-8", "replace"))
@@ -2799,17 +2806,9 @@ def guard(stream: str) -> int:
             f"guarded. {REWRITE_IT} {DENY_REASON}"
         )
     if refused is not None:
-        print(
-            json.dumps(
-                {
-                    "hookSpecificOutput": {
-                        "hookEventName": "PreToolUse",
-                        "permissionDecision": "deny",
-                        "permissionDecisionReason": refused,
-                    }
-                }
-            )
-        )
+        # A reason JSON cannot carry, such as one naming a path whose name decoded to a lone surrogate, gives way to
+        # UNWRITABLE_REASON, so a refusal is always written: an error instead would let the command through.
+        print(hook_decision.denial(refused, UNWRITABLE_REASON))
     return 0
 
 

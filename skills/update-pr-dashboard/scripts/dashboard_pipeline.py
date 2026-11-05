@@ -44,6 +44,7 @@ from skill_roots import sibling_scripts
 sys.path.insert(0, str(sibling_scripts("ejryan89-code-review-core")))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import json_writer
 from console import run_main
 from flat_text import flat_text
 from github_client import GitHubError
@@ -170,6 +171,7 @@ class CollectionError(ValueError):
 
 EXPECTED_ERRORS = (
     CollectionError,
+    json_writer.JsonWriteRefused,
     TrackerError,
     ConfigurationError,
     GitHubError,

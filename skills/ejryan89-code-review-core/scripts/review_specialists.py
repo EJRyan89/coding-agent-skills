@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import codecs
 import hashlib
-import json
 import re
 import stat
 import subprocess
@@ -829,7 +828,7 @@ def prompt_json(value: Any, *, indent: int | None = 2) -> str:
     """`value` as JSON for a prompt, the one way a prompt carries text it does not own: non-ASCII text kept, every
     line break escaped, those `json.dumps` leaves raw included, so no string starts a prompt line, and every `</`
     written `<\\/`, which JSON reads the same, so no string closes the tag a prompt holds it between."""
-    text = json.dumps(value, indent=indent, ensure_ascii=False)
+    text = json_writer.dumps(value, indent=indent, ensure_ascii=False)
     for raw, escaped in RAW_LINE_BREAKS.items():
         text = text.replace(raw, escaped)
     return text.replace("</", "<\\/")

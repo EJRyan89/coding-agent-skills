@@ -11,7 +11,6 @@ check that a user-only skill stays out of the model's catalog.
 from __future__ import annotations
 
 import contextlib
-import json
 import os
 import queue
 import re
@@ -25,6 +24,7 @@ from pathlib import Path
 from typing import IO
 
 import json_reader
+import json_writer
 from bounded_process import KILL_WAIT_SECONDS, ProcessTree, without_repository_variables
 
 from . import platform_support
@@ -301,7 +301,7 @@ def codex_requests(cwd: Path) -> list[str]:
         {"method": "initialized", "params": {}},
         {"method": "skills/list", "id": CODEX_LIST_ID, "params": {"cwds": [str(cwd)]}},
     ]
-    return [json.dumps(message) for message in messages]
+    return [json_writer.dumps(message) for message in messages]
 
 
 def _codex_message(line: str) -> dict[str, object] | None:

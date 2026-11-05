@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import fnmatch
 import graphlib
-import json
 import os
 import re
 from dataclasses import dataclass, field
@@ -16,6 +15,7 @@ from pathlib import Path
 
 import file_presence
 import frontmatter
+import json_writer
 import runtime_support
 from agent_skills import MAX_NAME, RESERVED_WORDS, XML_TAG_PATTERN
 from skill_menu import expand as expand
@@ -24,7 +24,7 @@ from skill_menu import root_names as root_names
 
 from . import platform_support, state_files
 from .config import CONFIGURED_VARIABLES, DERIVED_VARIABLES
-from .errors import DeployError, os_error
+from .errors import DEBUG_HINT, DeployError, os_error
 from .names import safe_name_problem
 from .paths import Paths
 from .tools import SKILL_TOOLS
@@ -453,7 +453,7 @@ def _load_renamed(document: dict[str, object], source: Source) -> None:
             raise DeployError(f"ERROR: source.json renames '{old}', which is still a skill or bundle of this source")
         if not isinstance(new, str) or new not in source.skills:
             raise DeployError(
-                f"ERROR: source.json renames '{old}' to {json.dumps(new)}, which is no skill of this source"
+                f"ERROR: source.json renames '{old}' to {json_writer.dumps(new)}, which is no skill of this source"
             )
     for old, new in sorted(renamed.items()):
         source.renamed[old] = new
@@ -506,13 +506,17 @@ def _discover_agents(paths: Paths) -> dict[str, Path]:
     return agents
 
 
+# What a failure to read the source asks of the user.
+COMPLETE_CHECKOUT = "Check that this checkout is complete and that you can read it, then retry."
+
+
 def discover(paths: Paths, source_id: str) -> Source:
     try:
         return _discover(paths, source_id)
+    except json_writer.JsonWriteRefused as exc:
+        raise DeployError(f"ERROR: Could not read the skill source: {exc}", COMPLETE_CHECKOUT, DEBUG_HINT) from exc
     except OSError as exc:
-        raise os_error(
-            exc, "read the skill source", "Check that this checkout is complete and that you can read it, then retry."
-        ) from exc
+        raise os_error(exc, "read the skill source", COMPLETE_CHECKOUT) from exc
 
 
 def _metadata_files(meta_dir: Path) -> list[Path]:

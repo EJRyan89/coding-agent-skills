@@ -184,7 +184,7 @@ class Session:
                 continue
             if isinstance(message, dict) and message.get("id") == request_id:
                 if "error" in message:
-                    raise RuntimeError(f"server returned an error: {json.dumps(message['error'])}")
+                    raise RuntimeError(f"server returned an error: {json_writer.dumps(message['error'])}")
                 result = message.get("result")
                 if not isinstance(result, dict):
                     raise RuntimeError("response has no result object")
@@ -217,7 +217,7 @@ def initialize_result(result: dict[str, Any]) -> tuple[str, dict[str, Any]]:
     if not isinstance(version, str):
         raise RuntimeError("initialize result has no protocolVersion")
     if version not in SUPPORTED_PROTOCOL_VERSIONS:
-        raise RuntimeError(f"server chose unsupported protocol version {json.dumps(version)}")
+        raise RuntimeError(f"server chose unsupported protocol version {json_writer.dumps(version)}")
     capabilities = result.get("capabilities")
     if not isinstance(capabilities, dict):
         raise RuntimeError("initialize result has no capabilities object")
@@ -350,11 +350,14 @@ def handshake(root: Path, entry: dict[str, Any], timeout: float) -> str:
             session = Session(running)
             try:
                 return _initialize_and_list(session)
-            except OSError as error:
+            except (OSError, json_writer.JsonWriteRefused) as error:
                 raise RuntimeError(session.exited() or f"could not talk to the server: {error}") from error
             finally:
                 session.end_requests()
-    except OSError as error:  # talking to the server raises RuntimeError above, so this is starting it
+    except (
+        OSError,
+        json_writer.JsonWriteRefused,
+    ) as error:  # talking to the server raises RuntimeError above, so this is starting it
         raise RuntimeError(f"could not start: {error}") from error
 
 

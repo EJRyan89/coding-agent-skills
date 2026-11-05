@@ -197,6 +197,21 @@ class PowerShellReaderStartTests(unittest.TestCase):
             self.assertIsNone(hub_guard.powershell_events("git commit -m x", reading))
         self.assertEqual(["pwsh did not read the command in what was left of the guard's 15 seconds"], reading.unread)
 
+    def test_a_command_with_no_json_form_is_one_the_guard_cannot_read_and_pwsh_never_starts(self) -> None:
+        # A lone surrogate, which bytes that are not UTF-8 decode to, has no JSON form for the reader's payload.
+        command = "Get-Item x\ud800"
+        reading = hub_guard.Reading(isolated_environment(), text=command)
+        with (
+            mock.patch.object(platform_support, "find_pwsh", return_value="pwsh"),
+            mock.patch.object(hub_guard, "run_bounded") as bounded,
+        ):
+            self.assertIsNone(hub_guard.powershell_events(command, reading))
+        bounded.assert_not_called()
+        self.assertEqual(
+            ["could not hand pwsh the command (the value holds a lone surrogate U+D800, which UTF-8 cannot encode)"],
+            reading.unread,
+        )
+
     def test_output_that_is_not_utf8_is_read_with_replacement_characters_and_a_repeated_key_is_not(self) -> None:
         # A console code page can reach the reader's output; a byte it cannot decode costs only that character.
         cases: tuple[tuple[bytes, dict[str, Any] | None, list[str]], ...] = (
@@ -584,6 +599,16 @@ class ReaderFailureTests(GuardTestCase):
         with mock.patch.object(hub_guard, "read_bash", side_effect=RecursionError("maximum recursion depth exceeded")):
             self.assertEqual("deny", self.shell("Bash", "git save", self.tree))
         self.assertIn("The guard failed reading this command (RecursionError: ", self.reason)
+
+    def test_a_refusal_whose_reason_json_cannot_carry_still_refuses_with_the_fixed_reason(self) -> None:
+        # A reason can quote an error naming a path whose name decoded to a lone surrogate, which json_writer
+        # refuses; the guard must still print its refusal, since an error would let the command through.
+        with mock.patch.object(hub_guard, "denied", side_effect=OSError("cannot read /hub/x\udcff")):
+            self.assertEqual("deny", self.shell("Bash", "git commit -m x", self.hub))
+        self.assertEqual(
+            f"The guard refused this command for a reason that holds what JSON cannot carry. {hub_guard.DENY_REASON}",
+            self.reason,
+        )
 
     def test_an_error_judging_a_command_is_refused_while_a_guarded_hub_is_in_view(self) -> None:
         with mock.patch.object(hub_guard, "denied", side_effect=RuntimeError("the judge broke")):

@@ -5,7 +5,6 @@ judges the description of each skill the model may start, and the plugins assemb
 
 from __future__ import annotations
 
-import json
 import re
 import unittest
 from collections.abc import Mapping
@@ -15,6 +14,7 @@ from pathlib import Path
 import file_presence
 import frontmatter
 import json_reader
+import json_writer
 import skill_menu
 from agent_skills import MAX_NAME
 from markdown_sections import EXECUTABLE_FENCES, markdown_section
@@ -823,7 +823,7 @@ def _trigger_problem(spec: dict[str, object], skill: str, shipped: dict[str, boo
     of each shipped skill whether only the user may start it."""
     named, requests, near_misses = spec.get("skill"), spec.get("requests"), spec.get("near_misses")
     if named != skill:
-        return f"names skill {json.dumps(named)}, not its folder's, {skill}"
+        return f"names skill {json_writer.dumps(named)}, not its folder's, {skill}"
     if skill not in shipped:
         return f"names {skill}, which is no skill under skills/"
     if shipped[skill]:

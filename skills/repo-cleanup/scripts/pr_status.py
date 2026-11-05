@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import re
 import sys
 from collections.abc import Callable
@@ -12,6 +11,7 @@ from typing import Any, TypeVar
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
+import json_writer
 from flat_text import flat_text
 from git_client import GitClient, GitError, GitResult, output_line
 from github_client import GitHubClient, GitHubError, subprocess_runner
@@ -275,7 +275,9 @@ def pull_commits(repository: str, number: int, runner: GhRunner = subprocess_run
     )
     # --slurp wraps the pages in one array, so the output is a list of pages, each a list of commits.
     if not isinstance(pages, list) or not all(isinstance(page, list) for page in pages):
-        raise QueryError(f"gh api returned malformed commits for pull request {number}: {json.dumps(pages)[:200]}")
+        raise QueryError(
+            f"gh api returned malformed commits for pull request {number}: {json_writer.dumps(pages)[:200]}"
+        )
     commits: dict[str, list[str]] = {}
     for commit in (commit for page in pages for commit in page):
         parsed = _commit_parents(commit)

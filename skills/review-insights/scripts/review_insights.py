@@ -1190,7 +1190,7 @@ def _resolve_recorded(
                 skipped.append(flag_id)
             else:
                 resolved.append(flag_id)
-    except (FlagError, PersistenceError, OSError) as exc:
+    except (FlagError, PersistenceError, OSError, json_writer.JsonWriteRefused) as exc:
         for entry in entries:
             entry["resolved_flags"] = [flag for flag in entry["resolved_flags"] if flag in resolved]
         write_report(report_path, report)

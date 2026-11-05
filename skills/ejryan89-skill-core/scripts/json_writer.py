@@ -1,4 +1,4 @@
-"""The one writer of JSON for a file, refusing at the write what the strict reader would refuse on reading it back.
+"""The one writer of JSON text, refusing at the write what the strict reader would refuse on reading it back.
 
 The json module's writer writes `NaN`, `Infinity`, and `-Infinity`, which JSON does not define and `json_reader`
 refuses; a lone surrogate, which no UTF-8 file can hold; and a key twice, when a dictionary holds both `1` and `"1"`,
@@ -44,9 +44,10 @@ def dumps(
     """`value` as `json.dumps` writes it with these options, or `JsonWriteRefused` when it holds `NaN`, `Infinity`, or
     `-Infinity`, a lone surrogate, a key twice in one object, or nesting past the recursion limit. Whatever else
     `json.dumps` raises, such as a `TypeError` for a value of no JSON type, it raises."""
-    options: dict[str, Any] = {"indent": indent, "sort_keys": sort_keys, "separators": separators}
     try:
-        text = json.dumps(value, allow_nan=False, ensure_ascii=False, **options)
+        text = json.dumps(
+            value, allow_nan=False, ensure_ascii=False, indent=indent, sort_keys=sort_keys, separators=separators
+        )
     except ValueError as error:
         if str(error).startswith(NON_FINITE):
             raise JsonWriteRefused("the value holds NaN or an infinity, which JSON does not define") from error
@@ -64,7 +65,9 @@ def dumps(
         json_reader.loads(text)
     except json_reader.CONTENT_ERRORS as error:
         raise JsonWriteRefused(f"the value cannot be read back: {error}") from error
-    return json.dumps(value, ensure_ascii=True, **options) if ensure_ascii else text
+    if not ensure_ascii:
+        return text
+    return json.dumps(value, ensure_ascii=True, indent=indent, sort_keys=sort_keys, separators=separators)
 
 
 def write(

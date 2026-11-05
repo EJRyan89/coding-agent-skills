@@ -19,6 +19,7 @@ from typing import Any, NotRequired, TypedDict, TypeVar, cast, get_origin, get_t
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
 import file_presence
+import json_writer
 from executable_locator import PYTHON
 from git_client import Runner, subprocess_runner
 from github_client import GitHubError
@@ -220,6 +221,7 @@ READ = FieldReader(PipelineFieldError)
 
 EXPECTED_ERRORS = (
     PipelineError,
+    json_writer.JsonWriteRefused,
     ConfigurationError,
     GitHubError,
     RuntimeContractError,

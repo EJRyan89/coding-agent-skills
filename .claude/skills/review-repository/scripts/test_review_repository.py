@@ -135,6 +135,7 @@ TRUST_BOUNDARY_SCRIPTS = (
     f"{SKILL_CORE}/git_worktrees.py",
     f"{SKILL_CORE}/github_client.py",
     f"{SKILL_CORE}/github_remote.py",
+    f"{SKILL_CORE}/hook_decision.py",
     f"{SKILL_CORE}/job_tree.py",
     f"{SKILL_CORE}/json_reader.py",
     f"{SKILL_CORE}/json_writer.py",
@@ -823,12 +824,14 @@ class DocumentationDriftTests(unittest.TestCase):
         self.assertEqual(
             {
                 f"{SKILL}/scripts/conditions.py",
+                f"{SKILL_CORE}/atomic_file.py",
                 f"{SKILL_CORE}/console.py",
                 f"{SKILL_CORE}/device_names.py",
                 f"{SKILL_CORE}/diff_paths.py",
                 f"{SKILL_CORE}/file_presence.py",
                 f"{SKILL_CORE}/flat_text.py",
                 f"{SKILL_CORE}/json_reader.py",
+                f"{SKILL_CORE}/json_writer.py",
                 f"{SKILL_CORE}/link_probe.py",
                 f"{SKILL_CORE}/markdown_sections.py",
                 f"{SKILL_CORE}/nesting_depth.py",

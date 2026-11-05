@@ -15,6 +15,8 @@ import time
 from pathlib import Path
 from typing import TextIO, assert_never
 
+import json_writer
+
 from . import (
     config,
     errors,
@@ -393,7 +395,7 @@ def _execute(
 ) -> int:
     try:
         paths, source_id, options, values, src = _prepare(namespace, paths)
-    except (DeployError, OSError, KeyboardInterrupt) as exc:
+    except (DeployError, OSError, json_writer.JsonWriteRefused, KeyboardInterrupt) as exc:
         return fail(exc, debug, "prepare the deployment")
     _print_source(src, paths.home)
     if pin is not None:
@@ -402,7 +404,7 @@ def _execute(
         return _dry_run(paths, options, src, values, stdin, debug, pin, probe)
     try:
         values, held = _claim(paths, options, source_id, values, probe)
-    except (DeployError, OSError, KeyboardInterrupt) as exc:
+    except (DeployError, OSError, json_writer.JsonWriteRefused, KeyboardInterrupt) as exc:
         return fail(exc, debug, "prepare the deployment")
     # The one release point: every way out of this block releases the lock unless a failed recovery retained it.
     with held:
@@ -489,7 +491,7 @@ def _dry_run(
         if _stop_for_pending_recovery(paths):
             return 0
         return _deploy(paths, options, src, values, stdin, None, pin)
-    except (DeployError, OSError, KeyboardInterrupt) as exc:
+    except (DeployError, OSError, json_writer.JsonWriteRefused, KeyboardInterrupt) as exc:
         return fail(exc, debug, "finish the dry run")
 
 

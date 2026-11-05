@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import fnmatch
 import hashlib
-import json
 import os
 import re
 import shutil
@@ -24,6 +23,7 @@ from typing import IO, Any
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
 import file_presence
+import json_writer
 from device_names import is_reserved_device_name
 from diff_paths import MAX_SEGMENT_UNITS, unsafe_snapshot_name
 from executable_locator import find_executable
@@ -1405,7 +1405,7 @@ def _snapshot_stamp(metadata: dict[str, Any], tree: _SnapshotTree, manifest_dige
     digest = hashlib.sha256(manifest_digest.encode("ascii"))
     for relative in sorted([SOURCE_SNAPSHOT_MANIFEST, *metadata["source_hashes"]]):
         entry = [relative, tree.files[relative], tree.modified[relative]]
-        digest.update(json.dumps(entry).encode("ascii") + b"\n")
+        digest.update(json_writer.dumps(entry).encode("ascii") + b"\n")
     return digest.hexdigest()
 
 
@@ -2145,7 +2145,7 @@ def fetch_source_file(
         return str(metadata["excluded_paths"][relative])
     blob = metadata.get(SNAPSHOT_FETCHABLE, {}).get(relative)
     if blob is None:
-        raise RuntimeContractError(f"The head commit has no file {json.dumps(relative)} the snapshot can hold")
+        raise RuntimeContractError(f"The head commit has no file {json_writer.dumps(relative)} the snapshot can hold")
     target = _snapshot_path(root, relative)
     if relative in tree.files:
         _require_blob(root, relative, blob)
@@ -2158,7 +2158,7 @@ def fetch_source_file(
         if close is not None:  # a generator reader ends its git process
             close()
     if content is None or not blob_matches(blob, content):
-        raise RuntimeContractError(f"The checkout did not return blob {blob} of {json.dumps(relative)}")
+        raise RuntimeContractError(f"The checkout did not return blob {blob} of {json_writer.dumps(relative)}")
     if is_binary(content):
         return "binary"
     if held + len(content) > MAX_SOURCE_SNAPSHOT_BYTES:
@@ -2414,7 +2414,7 @@ def _tarball_blobs(archive: Path, algorithm: str) -> Counter[tuple[str, str, str
             elif member.isfile():
                 extracted = source.extractfile(member)
                 if extracted is None:
-                    raise RuntimeContractError(f"Cannot read tarball entry {json.dumps(name)}")
+                    raise RuntimeContractError(f"Cannot read tarball entry {json_writer.dumps(name)}")
                 blobs[(name, "file", _git_blob_id(algorithm, member.size, _chunks(extracted)))] += 1
             else:
                 blobs[(name, "non-regular", "")] += 1
@@ -2433,11 +2433,11 @@ def verify_github_tarball(archive: Path, tree: Any, *, repository: str, commit: 
     try:
         expected = _listed_blobs(tree)
         actual = _tarball_blobs(archive, "sha1" if len(commit) == 40 else "sha256")
-    except (RuntimeContractError, tarfile.TarError, EOFError, OSError) as exc:
+    except (RuntimeContractError, tarfile.TarError, EOFError, OSError, json_writer.JsonWriteRefused) as exc:
         raise RuntimeContractError(f"{where} cannot be checked: {exc}; {fix}") from exc
     differing = sorted({path for path, _, _ in (expected - actual) + (actual - expected)})
     if differing:
-        named = ", ".join(json.dumps(path) for path in differing[:5])
+        named = ", ".join(json_writer.dumps(path) for path in differing[:5])
         more = f" and {len(differing) - 5} more" if len(differing) > 5 else ""
         raise RuntimeContractError(
             f"{where} is not the commit's exact tree: {named}{more} differ. The repository's .gitattributes can leave "

@@ -38,6 +38,7 @@ from skill_roots import sibling_scripts
 sys.path.insert(0, str(sibling_scripts("ejryan89-code-review-core")))
 
 import file_presence
+import json_writer
 import whole_number
 from console import run_main
 from flat_text import flat_text
@@ -197,7 +198,15 @@ def main(arguments: list[str] | None = None) -> int:
     args = build_parser().parse_args(arguments)
     try:
         lines = run(args)
-    except (FlagError, ConfigurationError, PersistenceError, RecordError, ArchiveError, OSError) as exc:
+    except (
+        FlagError,
+        ConfigurationError,
+        PersistenceError,
+        RecordError,
+        ArchiveError,
+        OSError,
+        json_writer.JsonWriteRefused,
+    ) as exc:
         print(f"FAILED {flat_text(str(exc))}")
         return 1
     print("\n".join(lines))

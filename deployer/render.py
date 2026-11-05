@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import re
 import tempfile
 import tomllib
@@ -13,6 +12,7 @@ from pathlib import Path, PurePosixPath
 
 import frontmatter
 import json_reader
+import json_writer
 from agent_skills import CODEX_METADATA as CODEX_METADATA
 from agent_skills import MAX_DESCRIPTION as MAX_DESCRIPTION
 from markdown_sections import FENCE_LANGUAGES, Fence, find_fences
@@ -152,7 +152,7 @@ def _escape(key: str, value: str, context: str, logical: str) -> str:
             f"{context} fence; write the example in a Bash, PowerShell, or Python fence"
         )
     if context in ("json", "toml"):
-        return json.dumps(value, ensure_ascii=False)[1:-1]
+        return json_writer.dumps(value, ensure_ascii=False)[1:-1]
     unsafe = UNSAFE_CHARACTERS.get(context, "")
     offending = next((char for char in value if char in unsafe), None)
     if offending is None and context == "yaml" and ": " in value:
@@ -280,8 +280,8 @@ def _adapter(skill: str, home: str, guidance: list[str], rendered: bytes) -> dic
     lines = [
         "---",
         f"name: {skill}",
-        f"description: {json.dumps(description, ensure_ascii=False)}",
-        *([f"argument-hint: {json.dumps(hint, ensure_ascii=False)}"] if hint else []),
+        f"description: {json_writer.dumps(description, ensure_ascii=False)}",
+        *([f"argument-hint: {json_writer.dumps(hint, ensure_ascii=False)}"] if hint else []),
         *(["disable-model-invocation: true"] if user_only else []),
         "---",
         "",
@@ -505,7 +505,7 @@ def _parse_powershell(files: dict[str, bytes], workspace: Path, powershell: str)
         origins[str(target)] = logical
     result = platform_support.run_tool(
         [powershell, "-NoProfile", "-NonInteractive", "-Command", POWERSHELL_PARSE],
-        {"RENDERED_PS1_FILES": json.dumps(list(origins))},
+        {"RENDERED_PS1_FILES": json_writer.dumps(list(origins))},
     )
     if result.returncode != 0:
         lines = result.output.strip().splitlines()

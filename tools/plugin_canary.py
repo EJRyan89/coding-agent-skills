@@ -62,7 +62,6 @@ Exit status:
 from __future__ import annotations
 
 import argparse
-import json
 import os
 import re
 import secrets
@@ -132,7 +131,7 @@ GUARD_MARKER = "PLUGIN-CANARY-OUTSIDE"
 # The run the reviewer works in with every hook off, its one role, and the settings that turn the hooks off.
 UNGUARDED_RUN = f"{RUN_PREFIX}unguarded"
 UNGUARDED_ROLE = "canary"
-HOOKS_OFF = json.dumps({"disableAllHooks": True})
+HOOKS_OFF = json_writer.dumps({"disableAllHooks": True})
 BOUNDARY = "Code-review reviewer boundary"
 DETAILS = re.compile(r"^\s*(Skills|Agents|Hooks)\s+\(\d+\)\s*(.*)$")
 RECORDED = (
@@ -317,7 +316,7 @@ def install(session: Session, executable: str, plugins: list[plugin_build.Plugin
             for name in sorted(names):
                 known = name in listed[kind]
                 yield f"{'DISCOVERED' if known else 'UNDISCOVERED'} claude {plugin.name}:{name} {kind}"
-    yield f"PATHS {json.dumps(paths)}"
+    yield f"PATHS {json_writer.dumps(paths)}"
 
 
 def stream_events(output: str) -> Iterator[dict[str, Any]]:

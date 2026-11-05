@@ -305,7 +305,10 @@ class HandshakeTests(unittest.TestCase):
         self.assertEqual(3, len(lines), lines)
         self.assertTrue(lines[0].startswith("HANDSHAKE_FAILED crash source=.mcp.json server exited before responding"))
         self.assertIn("boom: missing dependency", lines[0])
-        self.assertTrue(lines[1].startswith("HANDSHAKE_FAILED refuse source=.mcp.json server returned an error"))
+        self.assertEqual(
+            'HANDSHAKE_FAILED refuse source=.mcp.json server returned an error: {"code": -32600, "message": "nope"}',
+            lines[1],
+        )
         self.assertEqual(
             "HANDSHAKE_FAILED missing source=.mcp.json command not found: no-such-mcp-command-for-tests", lines[2]
         )

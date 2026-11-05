@@ -36,7 +36,6 @@ from __future__ import annotations
 
 import argparse
 import hashlib
-import json
 import re
 import sys
 from pathlib import Path
@@ -162,13 +161,13 @@ def check(root: Path) -> tuple[list[str], bool]:
         digest = source.get("sha256") if isinstance(source, dict) else None
         match = ASSET.fullmatch(url) if isinstance(url, str) else None
         if match is None or match.group("file") != name or not isinstance(digest, str):
-            lines.append(f"UNPINNED {name} {json.dumps('its source names no release asset with a sha256')}")
+            lines.append(f"UNPINNED {name} {json_writer.dumps('its source names no release asset with a sha256')}")
             continue
         tag = match.group("tag")
         if tag not in rebuilt:
             rebuilt[tag] = archives(root, tag)
         if name not in rebuilt[tag]:
-            lines.append(f"UNPINNED {name} {json.dumps(f'{tag} makes no plugin of this name')}")
+            lines.append(f"UNPINNED {name} {json_writer.dumps(f'{tag} makes no plugin of this name')}")
             continue
         actual = hashlib.sha256(rebuilt[tag][name]).hexdigest()
         lines.append(f"PIN_MATCHES {name} {tag}" if actual == digest else f"PIN_DIFFERS {name} {tag} {digest} {actual}")
