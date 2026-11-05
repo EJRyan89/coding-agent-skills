@@ -27,6 +27,7 @@ import bash_agreement
 import git_client
 import git_worktrees
 from bounded_process import Finished, run_bounded
+from guard_limits import PROCESS_SECONDS, process_limits_held
 from markdown_sections import CODE_SPAN, markdown_section
 from worktree_fixture import GUARD_SCRIPT, HUB, REPOSITORY_ROOT, HubTestCase, isolated_environment
 
@@ -72,6 +73,9 @@ class GuardTestCase(HubTestCase):
         clock = mock.patch.object(hub_guard, "reading_clock", return_value=0.0)
         clock.start()
         self.addCleanup(clock.stop)
+        # Each process a reading starts, git or pwsh, gets a limit no loaded runner reaches rather than what is left of
+        # the reading time, so a slow start never ends a reading either; self.asked holds the limits the guard asked.
+        self.asked = self.enterContext(process_limits_held())
         # Bash checks every text a test hands the Bash reader at once, when the test ends, rather than one at a time.
         self.bash_texts: list[str] = []
         self.addCleanup(lambda: bash_agreement.assert_reader_agrees(self.bash_texts))
@@ -153,7 +157,10 @@ class PowerShellReaderStartTests(unittest.TestCase):
             "GIT_INDEX_FILE": "elsewhere-index",
         }
         reading = hub_guard.Reading(environment, text="git commit -m x")
+        # The guard asks for its whole reading time; the real pwsh is handed the test's own limit, so a slow start on
+        # a loaded runner is not read as pwsh failing to read the command.
         with (
+            process_limits_held() as asked,
             mock.patch.object(subprocess, "Popen", wraps=subprocess.Popen) as start,
             mock.patch.object(hub_guard, "run_bounded", wraps=run_bounded) as bounded,
         ):
@@ -166,9 +173,28 @@ class PowerShellReaderStartTests(unittest.TestCase):
         self.assertFalse(handed & {"GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE"}, handed)
         self.assertEqual("elsewhere", environment["GIT_WORK_TREE"], "the hook's own environment is left as it was")
         [call] = bounded.call_args_list
-        self.assertEqual(15, call.args[1])
+        self.assertEqual([15], asked)
+        self.assertEqual(PROCESS_SECONDS, call.args[1])
         self.assertIsNotNone(call.kwargs["tree"])
         self.assertEqual(4 * 1024 * 1024, call.kwargs["output_limit"])
+
+    def test_each_git_call_is_handed_the_limit_the_guard_asks_for(self) -> None:
+        # Outside the tests, process_seconds hands each process the limit the guard asks for, unchanged. No git runs.
+        self.assertEqual(7.5, hub_guard.process_seconds(7.5))
+        with (
+            tempfile.TemporaryDirectory(prefix="hub-guard-limits.") as folder,
+            mock.patch.object(hub_guard, "reading_clock", return_value=100.0),
+            hub_guard.lookups_within(103.0),
+            mock.patch.object(worktrees.CLIENT, "run", return_value=git_client.GitResult(128, "", "")) as run,
+            mock.patch.object(worktrees.CLIENT, "output", return_value="false\n/x\n") as output,
+        ):
+            # A folder outside every checkout, so the unanswered git calls read as no repository's.
+            place = Path(folder)
+            hub_guard.git(place, "status")
+            self.assertIsNone(hub_guard.checkout_of(place))
+            self.assertIsNone(hub_guard.git_directory_holding(place))
+        self.assertEqual([3.0, 3.0], [call.kwargs["timeout"] for call in run.call_args_list])
+        self.assertEqual([3.0], [call.kwargs["timeout"] for call in output.call_args_list])
 
     def test_pwsh_gets_what_is_left_of_the_reading_time(self) -> None:
         # The clock is pinned, so the time handed to pwsh is exactly what is left, with no rounding between two looks.
@@ -634,11 +660,26 @@ class ReadingBoundTests(GuardTestCase):
     def test_a_reading_in_this_process_takes_its_time_from_the_tests_clock_and_never_from_the_wall(self) -> None:
         # Each look at the wall clock is a thousand seconds later, past any reading time; the readings, which start
         # pwsh and look places up with git, are read and judged all the same, by the commit rule.
+        # Every process the readings start is handed the test's own limit, never a real part of the reading time, which
+        # a slow start on a loaded runner could run out: pwsh through the guard's run_bounded, git through the client's.
         wall = types.SimpleNamespace(monotonic=itertools.count(step=1000).__next__)
+        handed: list[tuple[str, float]] = []
+
+        def recorded(command: Sequence[str], timeout: float, **options: Any) -> Finished:
+            handed.append((Path(command[0]).stem.lower(), timeout))
+            return run_bounded(command, timeout, **options)
+
         for tool, command in (("Bash", "git commit -m x"), ("PowerShell", "git commit -m x")):
-            with self.subTest(tool=tool), mock.patch.object(hub_guard, "time", wall):
+            with (
+                self.subTest(tool=tool),
+                mock.patch.object(hub_guard, "time", wall),
+                mock.patch.object(hub_guard, "run_bounded", side_effect=recorded),
+                mock.patch.object(git_client, "run_bounded", side_effect=recorded),
+            ):
                 self.assertEqual("deny", self.shell(tool, command, self.hub))
                 self.assertIn(WRITES.format("commit"), self.reason)
+        self.assertTrue({"git", "pwsh"} <= {program for program, _ in handed}, handed)
+        self.assertEqual({PROCESS_SECONDS}, {timeout for _, timeout in handed}, handed)
 
     def test_a_command_not_read_within_the_reading_time_is_refused_while_a_hub_is_in_view(self) -> None:
         with mock.patch.object(hub_guard, "READING_SECONDS", 0):
@@ -730,7 +771,8 @@ class ReadingBoundTests(GuardTestCase):
         find = worktrees.checkout_of
 
         def slow_checkout_of(path: Path, timeout: float = worktrees.GUARD_GIT_TIMEOUT_SECONDS) -> object:
-            looked_up.append((clock[0], timeout))
+            # The limit the guard asked for this lookup's git call; git itself is handed the test's own.
+            looked_up.append((clock[0], self.asked[-1]))
             found = find(path, timeout)
             clock[0] += 1
             return found
@@ -816,10 +858,16 @@ class ReadingBoundTests(GuardTestCase):
             hub_guard.read_into(reading, "PowerShell", self.hub, self.environment)
 
     def test_a_lookups_git_call_gets_what_is_left_of_the_reading_time(self) -> None:
+        # self.asked holds the limit the guard asks for each git call; git itself is handed the test's own, which
+        # PowerShellReaderStartTests holds is the one asked for outside the tests.
         with mock.patch.object(hub_guard, "reading_clock", return_value=100.0):
-            self.assertEqual(worktrees.GUARD_GIT_TIMEOUT_SECONDS, hub_guard.lookup_timeout())
+            hub_guard.lookup_timeout()
+            self.assertEqual([worktrees.GUARD_GIT_TIMEOUT_SECONDS], self.asked)
             with hub_guard.lookups_within(103.0):
-                self.assertEqual(3.0, hub_guard.lookup_timeout())
+                self.asked.clear()
+                hub_guard.lookup_timeout()
+                self.assertEqual([3.0], self.asked)
+                self.asked.clear()
                 with (
                     mock.patch.object(worktrees, "git", wraps=worktrees.git) as git,
                     mock.patch.object(worktrees.CLIENT, "output", wraps=worktrees.CLIENT.output) as output,
@@ -831,15 +879,17 @@ class ReadingBoundTests(GuardTestCase):
                         self.assertEqual(self.hub, hub_guard.guarded_hub_of_repository(self.hub / ".git"))
                     hub_guard.guarded_hub_at.cache_clear()
                     hub_guard.guarded_hub_of_repository.cache_clear()
-                # The checkout's lookup, the opt-in's, and the git directory's are each given what is left.
+                # The checkout's lookup, the opt-in's, and the git directory's each ask for what is left.
                 self.assertTrue(git.call_args_list)
-                self.assertEqual({3.0}, {call.kwargs["timeout"] for call in git.call_args_list})
-                self.assertEqual({3.0}, {call.kwargs["timeout"] for call in output.call_args_list})
+                self.assertEqual(len(git.call_args_list) + len(output.call_args_list), len(self.asked))
+                self.assertEqual({3.0}, set(self.asked))
+            self.asked.clear()
             with hub_guard.lookups_within(120.0):
-                self.assertEqual(worktrees.GUARD_GIT_TIMEOUT_SECONDS, hub_guard.lookup_timeout())
+                hub_guard.lookup_timeout()
             with hub_guard.lookups_within(100.0), self.assertRaises(hub_guard.ReadingTimeout):
                 hub_guard.guard_enabled(self.hub)
-            self.assertEqual(worktrees.GUARD_GIT_TIMEOUT_SECONDS, hub_guard.lookup_timeout())
+            hub_guard.lookup_timeout()
+            self.assertEqual([worktrees.GUARD_GIT_TIMEOUT_SECONDS] * 2, self.asked)
 
     def test_the_hubs_a_command_names_are_the_guarded_hubs_its_settled_places_reach(self) -> None:
         outside = self.root / "outside"
@@ -922,16 +972,17 @@ class PlaceLookupTests(GuardTestCase):
         # The reading starts at 0 and its deadline is READING_SECONDS later; every later look at the clock leaves half
         # a millisecond, so the lookup's own git call is the one that runs out of time, not a look between calls. The
         # call given that half millisecond times out here as git_client times one out, since a real git can finish
-        # within it on a fast runner; the calls given their whole time run git.
+        # within it on a fast runner; the calls given their whole time run git, under the test's own limit.
         looks = iter([0.0])
         timeouts: list[float] = []
         find = worktrees.git
 
         def git(cwd: Path, *arguments: str, timeout: float | None = None) -> git_client.GitResult:
-            timeouts.append(timeout or 0.0)
-            if timeout is not None and timeout < worktrees.GUARD_GIT_TIMEOUT_SECONDS:
+            asked = self.asked[-1]
+            timeouts.append(asked)
+            if asked < worktrees.GUARD_GIT_TIMEOUT_SECONDS:
                 raise git_client.GitError(
-                    f"git {' '.join(arguments)} did not finish within {timeout:g} seconds", kind="timeout"
+                    f"git {' '.join(arguments)} did not finish within {asked:g} seconds", kind="timeout"
                 )
             return find(cwd, *arguments, timeout=timeout)
 
@@ -994,14 +1045,16 @@ class PlaceLookupTests(GuardTestCase):
                 self.assertRaises(git_client.GitError),
             ):
                 hub_guard.git_directory_holding(self.hub / ".git")
-            # Its git call is given what is left of the reading time, as every lookup's is.
+            # Its git call asks for what is left of the reading time, as every lookup's does.
+            self.asked.clear()
             with (
                 mock.patch.object(hub_guard, "reading_clock", return_value=100.0),
                 hub_guard.lookups_within(103.0),
                 mock.patch.object(worktrees.CLIENT, "output", wraps=worktrees.CLIENT.output) as output,
             ):
                 hub_guard.git_directory_holding(self.hub / ".git")
-            self.assertEqual([3.0], [call.kwargs["timeout"] for call in output.call_args_list])
+            self.assertEqual([3.0], self.asked)
+            self.assertEqual([PROCESS_SECONDS], [call.kwargs["timeout"] for call in output.call_args_list])
 
     def test_a_hub_a_named_place_reaches_is_in_view_for_a_place_the_text_does_not_settle(self) -> None:
         # The session starts outside every repository, so only the named place brings the hub into view, and the
