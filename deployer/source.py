@@ -24,7 +24,7 @@ from skill_menu import root_names as root_names
 
 from . import platform_support, state_files
 from .config import CONFIGURED_VARIABLES, DERIVED_VARIABLES
-from .errors import DeployError, os_error
+from .errors import DEBUG_HINT, DeployError, os_error
 from .names import safe_name_problem
 from .paths import Paths
 from .tools import SKILL_TOOLS
@@ -497,15 +497,17 @@ def _discover_agents(paths: Paths) -> dict[str, Path]:
     return agents
 
 
+# What a failure to read the source asks of the user.
+COMPLETE_CHECKOUT = "Check that this checkout is complete and that you can read it, then retry."
+
+
 def discover(paths: Paths, source_id: str) -> Source:
     try:
         return _discover(paths, source_id)
     except json_writer.JsonWriteRefused as exc:
-        raise DeployError(f"cannot read the skill source: {exc}") from exc
+        raise DeployError(f"ERROR: Could not read the skill source: {exc}", COMPLETE_CHECKOUT, DEBUG_HINT) from exc
     except OSError as exc:
-        raise os_error(
-            exc, "read the skill source", "Check that this checkout is complete and that you can read it, then retry."
-        ) from exc
+        raise os_error(exc, "read the skill source", COMPLETE_CHECKOUT) from exc
 
 
 def _metadata_files(meta_dir: Path) -> list[Path]:

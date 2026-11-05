@@ -197,6 +197,21 @@ class PowerShellReaderStartTests(unittest.TestCase):
             self.assertIsNone(hub_guard.powershell_events("git commit -m x", reading))
         self.assertEqual(["pwsh did not read the command in what was left of the guard's 15 seconds"], reading.unread)
 
+    def test_a_command_with_no_json_form_is_one_the_guard_cannot_read_and_pwsh_never_starts(self) -> None:
+        # A lone surrogate, which bytes that are not UTF-8 decode to, has no JSON form for the reader's payload.
+        command = "Get-Item x\ud800"
+        reading = hub_guard.Reading(isolated_environment(), text=command)
+        with (
+            mock.patch.object(platform_support, "find_pwsh", return_value="pwsh"),
+            mock.patch.object(hub_guard, "run_bounded") as bounded,
+        ):
+            self.assertIsNone(hub_guard.powershell_events(command, reading))
+        bounded.assert_not_called()
+        self.assertEqual(
+            ["could not hand pwsh the command (the value holds a lone surrogate U+D800, which UTF-8 cannot encode)"],
+            reading.unread,
+        )
+
     def test_output_that_is_not_utf8_is_read_with_replacement_characters_and_a_repeated_key_is_not(self) -> None:
         # A console code page can reach the reader's output; a byte it cannot decode costs only that character.
         cases: tuple[tuple[bytes, dict[str, Any] | None, list[str]], ...] = (

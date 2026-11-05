@@ -2348,8 +2348,9 @@ def powershell_events(command: str, reading: Reading) -> dict[str, Any] | None:
     if pwsh is None:
         reading.cannot_read("could not find pwsh to read a PowerShell command")
         return None
-    payload = json_writer.dumps({"command": command})
     try:
+        # A command holding a lone surrogate has no JSON form, which json_writer refuses here.
+        payload = json_writer.dumps({"command": command})
         # run_bounded takes git's repository-selecting variables out of the hook's environment, and the tree ends
         # every process pwsh starts once it has finished or been killed.
         result = run_bounded(
