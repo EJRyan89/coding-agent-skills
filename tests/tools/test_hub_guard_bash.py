@@ -15,6 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts"))
 
 import bash_agreement
+from guard_limits import process_limits_held
 
 from deployer import platform_support
 from tools import bash_syntax, hub_guard
@@ -25,7 +26,8 @@ START = Path(__file__).resolve().parent
 def reading(command: str, environment: dict[str, str] | None = None) -> hub_guard.Reading:
     """The guard's reading of a Bash command, as data: nothing is run."""
     result = hub_guard.Reading(environment or {}, command)
-    hub_guard.read_bash(command, START, result)
+    with process_limits_held():
+        hub_guard.read_bash(command, START, result)
     return result
 
 
