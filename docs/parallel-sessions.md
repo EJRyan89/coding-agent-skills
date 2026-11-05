@@ -336,7 +336,10 @@ a row decides it.
   `-C` does, nor write a file or run another program. Every other option word of a runner is refused, in every
   spelling getopt reads: exactly, with its value attached by `=` or directly, abbreviated, or as a letter in a
   bundle, as `-0IX` is. A long option is understood only spelled in full, since an abbreviation of a safe option may
-  be one of another option too. `bash -c` with a literal script is read as Bash, and `pwsh -Command` or
+  be one of another option too. `env`'s `NAME=VALUE` words are read among its options as assignments for its
+  command, a value-taking option's value never ending them; such a word before any other runner's command, as `sudo`
+  takes, is refused, since it may set a variable the guard does not judge. `bash -c` with a literal script is read as
+  Bash, and `pwsh -Command` or
   `-c` with one literal script, after `-NoProfile`, `-NonInteractive`, or `-NoLogo`, as PowerShell, each refused
   where the script runs git and in every other form, a script file among them. Some are refused whatever they run,
   `RUNNERS_ALWAYS_REFUSED`: `busybox`, `cmd`, `csh`, `dash`, `fish`, `flock`, `ksh`, `mksh`, `parallel`,
@@ -346,11 +349,14 @@ a row decides it.
   one string. The assignments before a runner, and `env`'s own, are judged as ones before a command that is not
   git. The programs that have options which run a command, write a file the command does not name, or change where
   the program acts, `PROGRAM_OPTIONS`: `find`, `rg`, `sort`, and `tar`, are read by an allow-list the same way, from
-  Bash and PowerShell alike, and so is refused any word of theirs that the text does not settle. A runner's command
+  Bash and PowerShell alike, its safe options ones that do none of these, and so is refused any word of theirs that
+  the text does not settle. `tar`'s extraction, which writes the files an archive names, and its `-C`, which chooses
+  where, are refused, and so is an archive it names `host:path`, which it opens through a remote shell, unless
+  `--force-local` makes it a file. A runner's command
   that is one of them is held to its allow-list too, and after `xargs`, which adds words from its input, it is refused
   unless its words hold a `--` that ends its options, which `find` has none of. A variable one of them reads options
-  from, `PROGRAM_VARIABLES`: `RIPGREP_CONFIG_PATH` and `TAR_OPTIONS`, is refused where it is assigned before the
-  program or a runner, where `env` sets it, and where the environment holds it. Among the options
+  from, `PROGRAM_VARIABLES`: `RIPGREP_CONFIG_PATH`, `TAPE`, and `TAR_OPTIONS`, is refused where it is assigned
+  before the program or a runner, where `env` sets it, and where the environment holds it. Among the options
   refused are `find`'s `-exec`, `-execdir`, `-ok`, `-okdir`, `-delete`, and `-fprint` family, `rg`'s `--pre` and
   `--hostname-bin`, `sort`'s `--compress-program` and `--output`, and `tar`'s options that run a program.
   `tests/tools/test_prefix_programs.py` holds each allow-list to every option the program's `--help` or getopt table

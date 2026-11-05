@@ -333,12 +333,12 @@
    {
     "short": "-p",
     "long": "--pid",
-    "value": "none"
+    "value": "value"
    },
    {
     "short": "-P",
     "long": "--pgid",
-    "value": "none"
+    "value": "value"
    },
    {
     "short": "-t",
@@ -348,7 +348,7 @@
    {
     "short": "-u",
     "long": "--uid",
-    "value": "none"
+    "value": "value"
    },
    {
     "short": "-h",
@@ -643,7 +643,7 @@
    },
    {
     "short": "-O",
-    "long": "--summary-wall-clock",
+    "long": "--summary-syscall-overhead",
     "value": "value"
    },
    {
@@ -3022,6 +3022,16 @@
    {
     "short": null,
     "long": "--strip-components",
+    "value": "value"
+   },
+   {
+    "short": null,
+    "long": "--set-mtime-command",
+    "value": "value"
+   },
+   {
+    "short": null,
+    "long": "--set-mtime-format",
     "value": "value"
    },
    {

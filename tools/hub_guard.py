@@ -232,7 +232,9 @@ def option_table(short: str = "", long: str = "", **form: Any) -> OptionTable:
 # as xargs's -I and env's -S do, nor to change where it runs, as env's -C does, nor to write a file or run another
 # program. While a hub is guarded every other option word of a runner is refused, in any spelling: exactly, with its
 # value attached, abbreviated, or inside a bundle (option_refusal). A long option is understood only spelled in full,
-# since an abbreviation of a safe option may be one of another option too. bash and pwsh are read by their scripts
+# since an abbreviation of a safe option may be one of another option too. env's NAME=VALUE words are read as
+# assignments for its command (runner_assignments); one before any other runner's command, as sudo takes, is refused,
+# since it may set a variable the guard does not judge. bash and pwsh are read by their scripts
 # (shell_script), and the runners RUNNERS_ALWAYS_REFUSED names are refused whatever their options.
 RUNNER_OPTIONS: dict[str, OptionTable] = {
     "env": option_table("i0u:v", "ignore-environment null unset= debug", assignments=True),
@@ -262,7 +264,10 @@ FIND_COMMANDS = frozenset({"-exec", "-execdir", "-ok", "-okdir"})
 # The options of the programs the guard understands that have options which run a command, write a file the command
 # does not name, or change where the program acts, by an allow-list as RUNNER_OPTIONS's: find's -exec family and its
 # -delete and -fprint family, rg's --pre and --hostname-bin, sort's --compress-program and --output, and tar's options
-# that run a program are among the ones refused, and so is any word of such a program that the text does not settle.
+# that run a program, its extraction (-x, --extract, --get, and what only overwrites on extraction), and its -C, which
+# writes the files an archive names in a directory the option chooses, are among the ones refused, and so is any word
+# of such a program that the text does not settle. tar's archive named host:path, which tar opens through a remote
+# shell, is refused unless --force-local is given (remote_archive).
 PROGRAM_OPTIONS: dict[str, OptionTable] = {
     "find": option_table(
         "",
@@ -310,13 +315,13 @@ PROGRAM_OPTIONS: dict[str, OptionTable] = {
         permutes=True,
     ),
     "tar": option_table(
-        "AcdrtuxvzjJZakmOpPhSUWBilnRsof:C:T:X:b:H:K:N:V:",
+        "AcdrtuvzjJZakmOpPhSWBilnRsof:T:X:b:H:K:N:V:",
         " ".join(
             (
-                "catenate concatenate create diff compare append list update extract get delete file= directory=",
+                "catenate concatenate create diff compare append list update delete file= force-local",
                 "files-from= exclude-from= exclude= verbose gzip gunzip ungzip bzip2 xz lzip lzma lzop zstd compress",
-                "uncompress auto-compress no-auto-compress keep-old-files skip-old-files keep-newer-files overwrite",
-                "overwrite-dir no-overwrite-dir touch to-stdout preserve-permissions same-permissions",
+                "uncompress auto-compress no-auto-compress keep-old-files skip-old-files keep-newer-files",
+                "no-overwrite-dir touch to-stdout preserve-permissions same-permissions",
                 "no-same-permissions same-owner no-same-owner numeric-owner absolute-names dereference",
                 "hard-dereference strip-components= wildcards no-wildcards wildcards-match-slash",
                 "no-wildcards-match-slash anchored no-anchored ignore-case no-ignore-case exclude-vcs",
@@ -327,7 +332,7 @@ PROGRAM_OPTIONS: dict[str, OptionTable] = {
                 "utc show-transformed-names show-stored-names show-omitted-dirs warning= quoting-style=",
                 "check-links block-number label= newer= after-date= newer-mtime= starting-file= clamp-mtime",
                 "delay-directory-restore no-delay-directory-restore acls no-acls xattrs no-xattrs selinux",
-                "no-selinux verify unlink-first exclude-tag= exclude-tag-all= exclude-tag-under= seek no-seek",
+                "no-selinux verify exclude-tag= exclude-tag-all= exclude-tag-under= seek no-seek",
             )
         ),
         permutes=True,
@@ -335,10 +340,11 @@ PROGRAM_OPTIONS: dict[str, OptionTable] = {
     ),
 }
 # The variables a program PROGRAM_OPTIONS names reads options from, as its words, or a file of them: tar's
-# TAR_OPTIONS and rg's configuration file. One assigned before the program, or in the environment, is refused, since
-# it may hand the program an option its allow-list refuses.
+# TAR_OPTIONS and TAPE, its default archive, which may name a remote one, and rg's configuration file. One assigned
+# before the program, or in the environment, is refused, since it may hand the program an option its allow-list
+# refuses.
 PROGRAM_VARIABLES: dict[str, frozenset[str]] = {
-    "tar": frozenset({"TAR_OPTIONS"}),
+    "tar": frozenset({"TAR_OPTIONS", "TAPE"}),
     "rg": frozenset({"RIPGREP_CONFIG_PATH"}),
 }
 # pwsh's options that change nothing the guard reads before -Command.
@@ -2058,15 +2064,11 @@ class BashReader:
         """A program that runs another command: refused where that command is or may be git (runner_refusal), and,
         for bash -c and pwsh -Command, where the literal script it runs holds a git call; around any other command it
         is understood, its assignments judged as ones before that command."""
-        if program == "env":
-            # env's own assignments are ones before the command it runs, as those before env are.
-            for word in arguments:
-                if word is None or (not word.startswith("-") and "=" not in word):
-                    break
-                name, assigns, value = word.partition("=")
-                if assigns and bash_syntax.NAME.fullmatch(name):
-                    prefixes = [*prefixes, (name, value)]
-        self.read_prefixes(prefixes, git=False)
+        # env's own assignments are ones before the command it runs, as those before env are.
+        own: list[tuple[str, Word]] = [
+            (name, value) for name, value in runner_assignments(program, arguments) if bash_syntax.NAME.fullmatch(name)
+        ]
+        self.read_prefixes([*prefixes, *own], git=False)
         return read_runner_words(
             program,
             arguments,
@@ -2259,9 +2261,17 @@ def runner_refusal(program: str, arguments: list[Word]) -> str | None:
     if program in RUNNERS_ALWAYS_REFUSED:
         return RUNNERS[program]
     if program in RUNNER_OPTIONS:
-        option = option_refusal(RUNNER_OPTIONS[program], arguments)
-        if option is not None:
-            return f"{RUNNERS[program]}, and {option} is not one of its options the guard knows to be safe"
+        table = RUNNER_OPTIONS[program]
+        reading = read_options(table, arguments)
+        if reading.refused is not None:
+            return f"{RUNNERS[program]}, and {reading.refused} is not one of its options the guard knows to be safe"
+        command = next_word(arguments, reading.stop)
+        variable, assigns, _ = (command or "").partition("=")
+        if assigns and not table.assignments and bash_syntax.NAME.fullmatch(variable):
+            # sudo, among others, sets a variable a NAME=VALUE word before its command names.
+            return (
+                f"{RUNNERS[program]}, and {command} may set a variable for its command, which the guard does not read"
+            )
     for word in arguments:
         if word is None:
             return f"{RUNNERS[program]}, and a word the text does not settle may be git"
@@ -2282,12 +2292,14 @@ def read_runner_words(
     """A runner, read the same from Bash and PowerShell: refused where runner_refusal or, for bash and pwsh, script
     refuses it, or where the command it starts is a program PROGRAM_OPTIONS names that runner_command_refusal refuses;
     otherwise understood, with gh read where the runner starts it, since gh runs git itself for the subcommands
-    GH_CHECKOUTS names. variables are the names assigned before the runner and by env's own assignments."""
+    GH_CHECKOUTS names. variables are the names assigned before the runner; env's own assignments
+    (runner_assignments) and the environment's are added here, for both shells."""
     reason = runner_refusal(program, arguments)
     if reason is None and program in {"bash", "pwsh"}:
         reason = script()
     if reason is None:
-        reason = runner_command_refusal(program, arguments, {*variables, *reading.environment})
+        own = [name for name, _ in runner_assignments(program, arguments)]
+        reason = runner_command_refusal(program, arguments, {*variables, *own, *reading.environment})
     if reason is not None:
         reading.cannot_read(f"runs {program}: {reason}")
         return certain(UNKNOWN)
@@ -2295,8 +2307,17 @@ def read_runner_words(
         (index for index, word in enumerate(arguments) if word is not None and command_name(word) == "gh"), None
     )
     if start is not None:
-        read_gh(arguments[start + 1 :], directory, reading)
+        # chroot runs its command at the root of another tree, which the text does not place.
+        read_gh(arguments[start + 1 :], UNKNOWN if program == "chroot" else directory, reading)
     return certain(directory)
+
+
+def runner_assignments(program: str, arguments: list[Word]) -> list[tuple[str, str]]:
+    """The NAME=VALUE words a runner reads among its options as assignments for its command, as env does, read as
+    read_options reads its words, so a value-taking option's value never ends them; none for any other runner."""
+    if program not in RUNNER_OPTIONS:
+        return []
+    return read_options(RUNNER_OPTIONS[program], arguments).assigned
 
 
 def runner_command_refusal(program: str, arguments: list[Word], variables: Iterable[str]) -> str | None:
@@ -2305,14 +2326,14 @@ def runner_command_refusal(program: str, arguments: list[Word], variables: Itera
     the program's words hold `--`, after which they are its operands."""
     if program not in RUNNER_OPTIONS:
         return None
-    _, start = read_options(RUNNER_OPTIONS[program], arguments)
+    start = read_options(RUNNER_OPTIONS[program], arguments).stop
     command = command_name(arguments[start] or "") if start < len(arguments) else None
     if command not in PROGRAM_OPTIONS:
         return None
     rest = arguments[start + 1 :]
     if program == "xargs":
         # After a `--` that ends the program's options every word xargs adds is an operand; find has no such `--`.
-        _, stop = read_options(PROGRAM_OPTIONS[command], rest)
+        stop = read_options(PROGRAM_OPTIONS[command], rest).stop
         if stop >= len(rest) or rest[stop] != "--" or PROGRAM_OPTIONS[command].single_dash:
             return f"xargs runs {command} with words from its input, which may be options that run a command"
     return program_refusal(command, rest, variables)
@@ -2326,83 +2347,126 @@ def program_refusal(program: str, arguments: list[Word], variables: Iterable[str
     # Windows reads a variable's name in any case.
     handed = sorted(PROGRAM_VARIABLES.get(program, frozenset()) & {name.upper() for name in variables})
     if handed:
-        return f"{program} reads options from {handed[0]}, which may hold one that runs a command"
+        return f"{program} reads options or its archive from {handed[0]}, which may hold one that runs a command"
     if any(word is None for word in arguments):
         return f"{program} may run a command its words name (a word the text does not settle)"
-    option = option_refusal(PROGRAM_OPTIONS[program], arguments)
-    if option is not None:
-        return f"{program} is given {option}, not one of its options the guard knows to be safe"
+    reading = read_options(PROGRAM_OPTIONS[program], arguments)
+    if reading.refused is not None:
+        return f"{program} is given {reading.refused}, not one of its options the guard knows to be safe"
+    return remote_archive(program, arguments, reading)
+
+
+def remote_archive(program: str, arguments: list[Word], reading: OptionReading) -> str | None:
+    """Why tar is refused for an archive it reaches through a remote shell: one named host:path, with a colon before
+    any slash, which tar opens by running rsh or ssh, unless --force-local makes it a local file."""
+    if program != "tar" or "--force-local" in arguments:
+        return None
+    for option, value in reading.values:
+        if option in {"-f", "--file"} and value is not None and ":" in value.partition("/")[0]:
+            return f"tar opens {value} through a remote shell, which runs a command; --force-local makes it a file"
     return None
 
 
 def option_refusal(table: OptionTable, arguments: list[Word]) -> str | None:
     """The first option word of a program or runner that its OptionTable does not know to be safe, or None
     (read_options)."""
-    return read_options(table, arguments)[0]
+    return read_options(table, arguments).refused
 
 
-def read_options(table: OptionTable, arguments: list[Word]) -> tuple[str | None, int]:
-    """The first option word of a program or runner that its OptionTable does not know to be safe, or None, and the
-    index of the word its reading stopped at: a runner's command, after its options and the operands it takes, a
-    program's `--`, or the end of its words. A runner's options end at its command or at `--`, after which its
-    operands and its command follow; a program that permutes its arguments is read to the end, or to `--`. Every
-    spelling getopt reads is read: a long option with its value attached by `=` or after it, which is safe only spelled
-    in full, and short options bundled in one word, each letter judged, a value-taking one ending the bundle with the
-    rest of its word or the next word as its value. A word the text does not settle ends the reading, and the caller
-    refuses it."""
+@dataclass(frozen=True)
+class OptionReading:
+    """What read_options found: the first option word not known to be safe, or None; the index its reading stopped
+    at; the NAME=VALUE words a table that takes assignments read, as env's; and each value-taking option with the
+    value it took, a short option by its dash and letter."""
+
+    refused: str | None
+    stop: int
+    assigned: list[tuple[str, str]]
+    values: list[tuple[str, Word]]
+
+
+def read_options(table: OptionTable, arguments: list[Word]) -> OptionReading:
+    """A program's or runner's words read as getopt reads them. The reading stops at a runner's command, after its
+    options and the operands it takes, at a program's `--`, or at the end of its words: a runner's options end at its
+    command or at `--`, after which its operands and its command follow, and a program that permutes its arguments is
+    read to the end, or to `--`. Every spelling getopt reads is read: a long option with its value attached by `=` or
+    after it, which is safe only spelled in full, and short options bundled in one word, each letter judged, a
+    value-taking one ending the bundle with the rest of its word or the next word as its value. A word the text does
+    not settle ends the reading, and the caller refuses it."""
     operands = table.operands
     index = 0
     ended = False  # past `--`, where no word is an option
+    assigned: list[tuple[str, str]] = []
+    values: list[tuple[str, Word]] = []
+
+    def reading(refused: str | None, stop: int) -> OptionReading:
+        return OptionReading(refused, stop, assigned, values)
+
     while index < len(arguments):
         word = arguments[index]
         if word is None:
-            return None, index
+            return reading(None, index)
         if word == "--" and not ended and not table.single_dash:
             if table.permutes:
-                return None, index
+                return reading(None, index)
             ended = True
             index += 1
             continue
         if index == 0 and table.first_letters and not word.startswith("-"):
             # tar's old style: a bundle of letters, each that takes a value taking the next word, in order.
             if any(letter not in table.short for letter in word):
-                return word, index
-            index += 1 + sum(table.short[letter] == VALUE for letter in word)
+                return reading(word, index)
+            taking = [letter for letter in word if table.short[letter] == VALUE]
+            values += [(f"-{letter}", next_word(arguments, index + 1 + k)) for k, letter in enumerate(taking)]
+            index += 1 + len(taking)
             continue
         if ended or len(word) < 2 or not word.startswith("-"):
-            assignment = table.assignments and ("=" in word or (word == "-" and not ended))
-            if not assignment and not table.permutes:
+            if table.assignments and "=" in word:
+                name, _, value = word.partition("=")
+                assigned.append((name, value))
+            elif not (table.assignments and word == "-" and not ended) and not table.permutes:
                 if operands == 0:
-                    return None, index
+                    return reading(None, index)
                 operands -= 1
             index += 1
             continue
-        taken = option_word(table, word)
-        if taken is None:
-            return word, index
+        read = option_word(table, word)
+        if read is None:
+            return reading(word, index)
+        taken, valued, attached = read
+        if valued is not None:
+            values.append((valued, next_word(arguments, index + 1) if taken else attached))
         index += 1 + taken
-    return None, len(arguments)
+    return reading(None, len(arguments))
 
 
-def option_word(table: OptionTable, word: str) -> int | None:
-    """How many of the following words an option word takes as its values, or None for a word that is or may hold an
-    option the table does not know to be safe."""
+def next_word(arguments: list[Word], index: int) -> Word:
+    return arguments[index] if index < len(arguments) else ""
+
+
+def option_word(table: OptionTable, word: str) -> tuple[int, str | None, str | None] | None:
+    """An option word read: how many of the following words it takes as its values, the value-taking option it holds,
+    if any, and the value attached to it; or None for a word that is or may hold an option the table does not know
+    to be safe, a value given to an option that takes none among them."""
     if table.numbered is not None and table.numbered.fullmatch(word):
-        return 0
+        return 0, None, None
     if table.single_dash or word.startswith("--"):
-        name, attached, _ = word.partition("=")
+        name, attached, value = word.partition("=")
         kind = table.long.get(name)
         if kind is None or (attached and (kind == NO_VALUE or table.single_dash)):
             return None
-        return int(kind == VALUE and not attached)
+        if kind == NO_VALUE:
+            return 0, None, None
+        return int(kind == VALUE and not attached), name, value if attached else None
     letters = word[1:]
     for position, letter in enumerate(letters):
         kind = table.short.get(letter)
         if kind is None:
             return None
         if kind != NO_VALUE:
-            return int(kind == VALUE and position == len(letters) - 1)
-    return 0
+            rest = letters[position + 1 :]
+            return int(kind == VALUE and not rest), f"-{letter}", rest or None
+    return 0, None, None
 
 
 def shell_script(program: str, arguments: list[Word]) -> str | None:

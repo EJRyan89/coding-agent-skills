@@ -102,15 +102,15 @@ SAFE: dict[str, set[str]] = {
     },
     "tar": {
         *("-A", "--catenate", "--concatenate", "-c", "--create", "--delete", "-d", "--diff", "--compare", "-r"),
-        *("--append", "-t", "--list", "-u", "--update", "-x", "--extract", "--get", "--ignore-failed-read"),
-        *("--no-seek", "-n", "--seek", "-S", "--sparse", "-C", "--directory", "--exclude", "--exclude-backups"),
+        *("--append", "-t", "--list", "-u", "--update", "--ignore-failed-read", "--force-local"),
+        *("--no-seek", "-n", "--seek", "-S", "--sparse", "--exclude", "--exclude-backups"),
         *("--exclude-caches", "--exclude-caches-all", "--exclude-caches-under", "--exclude-tag"),
         *("--exclude-tag-all", "--exclude-tag-under", "--exclude-vcs", "--exclude-vcs-ignores", "--no-null"),
         *("--no-recursion", "--no-unquote", "--no-verbatim-files-from", "--null", "--recursion", "-T"),
         *("--files-from", "--unquote", "--verbatim-files-from", "-X", "--exclude-from", "--anchored"),
         *("--ignore-case", "--no-anchored", "--no-ignore-case", "--no-wildcards", "--no-wildcards-match-slash"),
         *("--wildcards", "--wildcards-match-slash", "--keep-newer-files", "-k", "--keep-old-files"),
-        *("--no-overwrite-dir", "--overwrite", "--overwrite-dir", "--skip-old-files", "-U", "--unlink-first"),
+        *("--no-overwrite-dir", "--skip-old-files"),
         *("-W", "--verify", "-O", "--to-stdout", "--clamp-mtime", "--delay-directory-restore", "--group"),
         *("--mode", "--mtime", "-m", "--touch", "--no-delay-directory-restore", "--no-same-owner"),
         *("--no-same-permissions", "--numeric-owner", "--owner", "-p", "--preserve-permissions"),
@@ -132,21 +132,39 @@ OPERANDS = {"timeout": ["5"], "chrt": ["10"], "taskset": ["3"], "chroot": ["/srv
 BEFORE = {"time": "x=1 "}
 # Forms no catalogue lists, each with whether it is understood before a command that is not git.
 EXTRA_FORMS: dict[str, list[tuple[list[str], bool]]] = {
-    "env": [(["-"], True), (["X=1"], True), (["-i", "X=1", "-"], True), (["--"], True)],
+    "env": [(["-"], True), (["X=1"], True), (["-i", "X=1", "-"], True), (["--"], True), (["-u", "X", "Y=1"], True)],
     "nice": [(["-5"], True), (["--5"], True), (["-n5"], True), (["-n", "5", "-n", "3"], True), (["-5x"], False)],
     "timeout": [(["-vk5"], True), (["--sig=TERM"], False), (["--"], True), (["-vI5"], False)],
     "nohup": [(["--"], True)],
     "xargs": [(["-0rn1"], True), (["-0IX"], False), (["-I{}"], False), (["--replac=X"], False)],
     "tar": [
-        (["xf", "a.tar"], True),
+        (["tf", "a.tar"], True),
         (["czf", "a.tar", "d"], True),
+        # Extraction writes the files an archive names, and -C chooses where.
+        (["xf", "a.tar"], False),
+        (["-xf", "a.tar"], False),
+        (["-tf", "a.tar", "-C", "d"], False),
+        # An archive named host:path is opened through a remote shell, unless --force-local makes it a file.
+        (["-tf", "host:a.tar"], False),
+        (["-tfhost:a.tar"], False),
+        (["tf", "host:a.tar"], False),
+        (["--file=host:a.tar", "-t"], False),
+        (["--file", "host:a.tar", "-t"], False),
+        (["--force-local", "-tf", "host:a.tar"], True),
+        (["-tf", "./a:b.tar"], True),
+        # A value given to an option that takes none.
+        (["--verbose=1", "-tf", "a.tar"], False),
+        (["--verbose", "-tf", "a.tar"], True),
         (["xIf", "a.tar"], False),
         (["-xIgit", "-f", "a.tar"], False),
         (["--to-com=git", "-xf", "a.tar"], False),
     ],
     "sort": [(["--compress=x"], False), (["-uk2"], True), (["-ok"], False)],
-    "find": [(["-O3"], False), (["-newer", "x", "-exec", "ls", "{}", ";"], False)],
-    "rg": [(["-uuu"], True), (["-g*.py"], True), (["--pre", "x"], False)],
+    "find": [(["-O3"], False), (["-newer", "x", "-exec", "ls", "{}", ";"], False), (["-name=x"], False)],
+    "rg": [(["-uuu"], True), (["-g*.py"], True), (["--pre", "x"], False), (["--count=1"], False), (["--count"], True)],
+    # sudo sets a variable a NAME=VALUE word before its command names.
+    "sudo": [(["X=1"], False), (["-u", "root", "X=1"], False), (["-u", "root"], True)],
+    "doas": [(["X=1"], False)],
 }
 VALUE = "1"
 HELP_OPTION = re.compile(r"^\s+(?:(-[A-Za-z0-9]),?\s*)?(?:(--[a-z][a-z0-9-]*)(\[=|=)?)?")

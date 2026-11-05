@@ -361,7 +361,7 @@ class RunnerTests(unittest.TestCase):
         ):
             with self.subTest(command=command):
                 self.assertTrue(reading(command).unread)
-        for command in ("find . -name '*.py'", "tar -czf a.tar d", "tar xf a.tar", "rg --pretty x", "sort -u f"):
+        for command in ("find . -name '*.py'", "tar -czf a.tar d", "tar tf a.tar", "rg --pretty x", "sort -u f"):
             with self.subTest(command=command):
                 self.assertEqual([], reading(command).unread)
 
@@ -373,6 +373,10 @@ class RunnerTests(unittest.TestCase):
                 (f"{variable}=x {program} -v y", {}),
                 (f"env {variable}=x {program} -v y", {}),
                 (f"env -i {variable}=x {program} -v y", {}),
+                (f"env -u X {variable}=x {program} -v y", {}),
+                (f"env --unset X {variable}=x {program} -v y", {}),
+                (f"env -u X -- {variable}=x {program} -v y", {}),
+                (f"sudo {variable}=x {program} -v y", {}),
                 (f"{variable}=x timeout 5 {program} -v y", {}),
                 (f"{program} -v y", {variable: "x"}),
                 (f"{program} -v y", {variable.lower(): "x"}),
@@ -383,7 +387,13 @@ class RunnerTests(unittest.TestCase):
             with self.subTest(program=program, variable="unset"):
                 self.assertEqual([], reading(f"OTHER=x {program} -v y").unread)
                 self.assertEqual([], reading(f"env OTHER=x {program} -v y").unread)
-        self.assertEqual({"tar": {"TAR_OPTIONS"}, "rg": {"RIPGREP_CONFIG_PATH"}}, hub_guard.PROGRAM_VARIABLES)
+        self.assertEqual({"tar": {"TAR_OPTIONS", "TAPE"}, "rg": {"RIPGREP_CONFIG_PATH"}}, hub_guard.PROGRAM_VARIABLES)
+
+    def test_env_s_assignments_after_a_valued_option_reach_the_command_s_judgment(self) -> None:
+        # GIT_DIR after env's -u X is still an assignment before the command, as one before env is.
+        for command in ("env GIT_DIR=/x ls", "env -u X GIT_DIR=/x ls", "env --unset X -i GIT_DIR=/x ls"):
+            with self.subTest(command=command):
+                self.assertIn("GIT_DIR", " ".join(reading(command).unread))
 
     def test_a_not_found_handler_the_environment_hands_is_refused_whatever_runs(self) -> None:
         # Bash runs command_not_found_handle for any command whose program it does not find.

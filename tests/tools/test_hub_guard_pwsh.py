@@ -313,7 +313,13 @@ class RunnerOptionTests(unittest.TestCase):
             ("env -C d ls", True),
             ("timeout 5 tar --to-command=git -xf a.tar", True),
             ("Write-Output a | xargs rg x", True),
-            ("timeout 5 tar -xf a.tar", False),
+            ("timeout 5 tar -tf a.tar", False),
+            ("env 'TAR_OPTIONS=--to-command=git' tar -tf a.tar", True),
+            ("env -u X 'TAR_OPTIONS=--to-command=git' tar -tf a.tar", True),
+            ("env RIPGREP_CONFIG_PATH=c rg x", True),
+            ("sudo 'TAR_OPTIONS=x' tar -tf a.tar", True),
+            ("tar -tf host:a.tar", True),
+            ("tar -xf a.tar", True),
             ("tar -czf a.tar d", False),
             ("sort -u -k 2 f", False),
             ("find . -name x -mtime -1", False),
@@ -345,7 +351,7 @@ class RunnerOptionTests(unittest.TestCase):
                 self.assertEqual(["gh"], [call.program for call in reading.calls])
         self.assertEqual([], powershell_reading("timeout 60 gh pr view 1").calls)
 
-    def test_both_readers_judge_options_through_one_helper(self) -> None:
+    def test_both_readers_read_options_through_one_helper(self) -> None:
         for command, read in (
             ("timeout -s TERM 60 ls", powershell_reading),
             ("tar -czf a.tar d", powershell_reading),
@@ -354,7 +360,7 @@ class RunnerOptionTests(unittest.TestCase):
         ):
             with (
                 self.subTest(command=command, reader=read.__name__),
-                mock.patch.object(hub_guard, "option_refusal", wraps=hub_guard.option_refusal) as helper,
+                mock.patch.object(hub_guard, "read_options", wraps=hub_guard.read_options) as helper,
             ):
                 self.assertEqual([], read(command).unread)
-                helper.assert_called_once()
+                self.assertTrue(helper.called)
