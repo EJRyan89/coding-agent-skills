@@ -4244,6 +4244,27 @@ def test_sample_read_takes_the_skill_alone(extra: list[str], tmp_path: Path) -> 
     assert error.getvalue().endswith("error: --sample-read takes the skill alone and runs nothing\n")
 
 
+def test_the_options_sample_read_refuses_are_every_option_the_parser_takes() -> None:
+    # gives_another_option names each option it refuses; one the parser gains must join it, or --sample-read would
+    # take it and ignore it.
+    options = set(re.findall(r"--[a-z-]+", skill_evals.parser().format_usage()))
+    others = {"--records", "--scenario", "--model", "--write", "--timeout", "--jobs", "--runs"}
+    assert options == others | {"--sample-read"}
+    given = [
+        ["--records", "x"],
+        ["--scenario", "x"],
+        ["--model", "opus"],
+        ["--write"],
+        ["--timeout", "1"],
+        ["--jobs", "1"],
+        ["--runs", "1"],
+    ]
+    assert others == {option for option, *_ in given}
+    for option in given:
+        assert skill_evals.gives_another_option(["alpha", *option]), option
+    assert not skill_evals.gives_another_option(["alpha", "--sample-read", "agrees"])
+
+
 def test_sample_read_takes_agrees_or_disagrees_and_nothing_else(tmp_path: Path) -> None:
     results = tmp_path / "skill-evaluations.md"
     results.write_text(samples_text("| alpha | one | opus | 1 | 2026-01-01 | unread |"), encoding="utf-8")
