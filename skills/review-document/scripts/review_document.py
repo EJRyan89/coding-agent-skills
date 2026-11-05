@@ -15,6 +15,11 @@ Every command prints one fact per line:
           beside the original>.
 A failure prints `FAILED <reason>` and exits 1; a usage error exits 2.
 
+Exit status:
+  0  the command printed its facts
+  1  a last line FAILED <reason>
+  2  a usage error
+
 For a path, the head is the file as it is on disk, refused over the MAX_CHANGED_FILE_BYTES the snapshot reads of a
 changed file. The base is the version committed at HEAD when the file lies in a git checkout and is committed there,
 under the name git tracks it by, so the review covers the uncommitted change; otherwise, or with `--base none`, the base
@@ -755,10 +760,11 @@ def build_pull(
 
 def json_object(path: Path) -> dict[str, Any] | None:
     """The JSON object in the UTF-8 file at `path`, which the pipeline writes without a byte-order mark, or None when
-    it holds none or cannot be read, as a directory in its place, a byte-order mark, or another encoding cannot."""
+    it holds none, as a byte-order mark or another encoding does not. A file it cannot read, a directory in its place
+    included, is the read's OSError, which names it, never a file that holds no object."""
     try:
         value = json_reader.read_file(path)
-    except (OSError, ValueError):
+    except ValueError:
         return None
     return value if isinstance(value, dict) else None
 
@@ -768,7 +774,7 @@ def refuse_other_review(fixture: Path, recorded: Path, record: Path) -> None:
     the number, title, and refs the fixture's pull.json gives, the title naming the document."""
     pull = json_object(fixture / "pull.json")
     if pull is None:
-        raise DocumentError(f"{fixture} is not a fixture review-document built")
+        raise DocumentError(f"{fixture} is not a fixture review-document built: its pull.json holds no JSON object")
     saved = json_object(record)
     request = saved.get("pull_request") if saved is not None else None
     if saved is None or not isinstance(request, dict):
@@ -786,13 +792,16 @@ def report(fixture: Path, recorded: Path) -> list[str]:
     """Copy the recorded report beside the fixture, never over a file already there, once its record names the
     review of the fixture's document, and name the record JSON finalize wrote beside it."""
     fixture = fixture.resolve()
-    if not (fixture / "pull.json").is_file():
-        raise DocumentError(f"{fixture} is not a fixture review-document built")
+    # A file it cannot stat is the stat's OSError, which names it, never one that is not there.
+    if not file_presence.is_present(fixture / "pull.json", other_is_absent=True):
+        raise DocumentError(f"{fixture} is not a fixture review-document built: it holds no pull.json file")
     directory = working_path(fixture.parent, "review-document-", "")
     recorded = recorded.resolve()
     record = recorded.with_suffix(".json")
-    if recorded.suffix != ".md" or not recorded.is_file() or not record.is_file():
+    if recorded.suffix != ".md" or not file_presence.is_present(recorded, other_is_absent=True):
         raise DocumentError(f"{recorded} is not a report finalize recorded")
+    if not file_presence.is_present(record, other_is_absent=True):
+        raise DocumentError(f"{recorded} is not a report finalize recorded: no {record.name} file is beside it")
     refuse_other_review(fixture, recorded, record)
     target = directory / REPORT_NAME
     try:

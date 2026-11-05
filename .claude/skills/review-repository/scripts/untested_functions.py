@@ -57,6 +57,12 @@ Prints `UNTESTED <found> given=<n>`, counting every entry. Exit status 0 means i
 route; 1 that every changed definition is named by a test and converts no call site, or none changed, which closes
 it; 2 a usage error or a last line
 FAILED <reason>, which fails the review.
+
+Exit status:
+  0  it wrote entries, which opens the route
+  1  every changed definition is named by a test and converts no call site, or none changed, which closes the
+     route
+  2  a usage error or a last line FAILED <reason>, which fails the review
 """
 
 from __future__ import annotations

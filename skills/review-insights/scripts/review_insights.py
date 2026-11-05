@@ -12,6 +12,11 @@
 Every command prints machine-readable lines and exits 0 on success. Expected failures print
 `FAILED <reason>` as the last line and exit 1; only a usage error, such as a malformed date, exits 2.
 
+Exit status:
+  0  the command succeeded
+  1  a last line FAILED <reason>
+  2  a usage error, such as a malformed date
+
 There are two kinds of recommendation. A category recommendation covers every finding in one finding category. An
 analyzer recommendation covers the findings reviewers said one diagnostic analyzer rule could catch: a rule in an
 analyzer the repository already has but does not enforce (available), a rule in an established analyzer it does not

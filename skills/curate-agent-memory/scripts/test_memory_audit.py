@@ -446,6 +446,26 @@ class MemoryAuditTests(unittest.TestCase):
             )
         self.assertEqual((1, f"FAILED Permission denied: {named}\n"), (code, stdout))
 
+    def test_an_instruction_file_that_cannot_be_read_fails_the_audit_rather_than_losing_its_overlaps(self) -> None:
+        rule = "Never name the object under test sut; derive the variable name from its class instead."
+        write(self.memory_dir / "sut.md", memory("sut", rule))
+        write(self.memory_dir / "MEMORY.md", "")
+        named = write(self.root / "named" / "CLAUDE.md", f"- {rule}\n")
+        report = self.root / "report.json"
+        real = Path.read_text
+
+        def read_text(path: Path, *arguments: Any, **keywords: Any) -> str:
+            if path == named:
+                raise PermissionError(13, "Permission denied", str(path))
+            return real(path, *arguments, **keywords)
+
+        with mock.patch.object(Path, "read_text", read_text):
+            code, stdout, _ = run_main(
+                "audit", "--memory-dir", str(self.memory_dir), "--instructions", str(named), "--output", str(report)
+            )
+        self.assertEqual((1, f"FAILED Permission denied: {named}\n"), (code, stdout))
+        self.assertFalse(report.exists(), "a failed audit writes no report")
+
     def test_a_folder_named_like_an_instruction_file_is_passed_over(self) -> None:
         rule = "Never name the object under test sut; derive the variable name from its class instead."
         write(self.memory_dir / "sut.md", memory("sut", rule))
@@ -1266,6 +1286,27 @@ class ReindexTests(unittest.TestCase):
         write(self.memory_dir / "one.md", memory("one", "Body."))
         with mock.patch.object(Path, "read_text", side_effect=PermissionError(13, "Access is denied", "one.md")):
             self.assertEqual(["FAILED Access is denied: one.md"], self.reindex(code=1))
+
+    def test_an_entry_it_cannot_inspect_is_a_failed_line_and_nothing_is_written(self) -> None:
+        # A memory whose stat fails may be one it cannot read, so the rebuild fails rather than keep it as a
+        # non-memory, whether the index names it or not.
+        write(self.memory_dir / "one.md", memory("one", "Body."))
+        write(self.memory_dir / "two.md", memory("two", "Body."))
+        self.index.write_bytes(b"- [one](one.md) \xe2\x80\x94 one description\n")
+        real = os.lstat
+        for name in ("one.md", "two.md"):
+            denied = self.memory_dir / name
+
+            def lstat(path: object, *arguments: object, denied: Path = denied, **keywords: object) -> os.stat_result:
+                if Path(os.fsdecode(path)) == denied:  # type: ignore[arg-type]  # a path-like the stat was given
+                    raise PermissionError(13, "Permission denied", os.fsdecode(path))  # type: ignore[arg-type]  # the same
+                return real(path, *arguments, **keywords)  # type: ignore[arg-type]  # the same
+
+            with self.subTest(name=name):
+                with mock.patch.object(os, "lstat", lstat):
+                    lines = self.reindex("--write", code=1)
+                self.assertEqual([f"FAILED a memory cannot be read: {name}: Permission denied"], lines)
+                self.assertEqual(b"- [one](one.md) \xe2\x80\x94 one description\n", self.index.read_bytes())
 
     def test_entries_that_are_no_regular_file_stay_as_written_and_are_never_added(self) -> None:
         root = self.memory_dir.parent
@@ -2302,6 +2343,26 @@ class ResolveTests(unittest.TestCase):
         self.assertIsNone(self.resolve()["memory_dir"])
         write(settings, "{not json")
         self.assertIsNone(self.resolve()["memory_dir"])
+
+    def test_a_settings_file_that_cannot_be_read_fails_rather_than_leaving_the_directory_unresolved(self) -> None:
+        # A settings file git or the disk cannot give is not one that sets nothing: the directory it may choose is
+        # unknown, so resolve fails naming it rather than offering the candidates as if no setting chose one.
+        settings = self.home / ".claude" / "settings.json"
+        settings.parent.mkdir(parents=True, exist_ok=True)
+        settings.mkdir()
+        lines = self.resolve_lines(code=1)
+        self.assertEqual(1, len(lines), lines)
+        self.assertTrue(lines[0].startswith(f"FAILED cannot read the settings file {settings}: "), lines)
+        settings.rmdir()
+        write(settings, "{}")
+        denied = OSError(13, "Permission denied", str(settings))
+        real = Path.read_bytes
+        with mock.patch.object(
+            Path, "read_bytes", lambda path: (_ for _ in ()).throw(denied) if path == settings else real(path)
+        ):
+            self.assertEqual(
+                [f"FAILED cannot read the settings file {settings}: Permission denied"], self.resolve_lines(code=1)
+            )
 
 
 class SkillSourceTests(unittest.TestCase):

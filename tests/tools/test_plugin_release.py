@@ -205,6 +205,27 @@ def test_build_refuses_a_marketplace_no_json_file_can_hold_before_writing_anythi
     assert not (tmp_path / "assets").exists()
 
 
+@pytest.mark.parametrize("given", ["absent", "empty"])
+def test_build_whose_marketplace_cannot_be_written_leaves_its_output_as_it_found_it(
+    checkout: Path, tmp_path: Path, given: str
+) -> None:
+    # The pins are written after the archives, so a pin that fails takes the archives back out: an absent --output
+    # stays absent, and an empty one stays empty.
+    assets = tmp_path / "assets"
+    if given == "empty":
+        assets.mkdir()
+    before = (checkout / ".claude-plugin" / "marketplace.json").read_bytes()
+    refused = PermissionError(13, "Permission denied", str(checkout / ".claude-plugin" / "marketplace.json"))
+    with mock.patch.object(plugin_release.json_writer, "write", side_effect=refused):
+        code, lines = run(["build", "v1.2.3", "--root", str(checkout), "--output", str(assets)])
+    assert code == 1
+    assert len(lines) == 1, lines
+    assert lines[0].startswith("FAILED ")
+    assert "marketplace.json" in lines[0]
+    assert (checkout / ".claude-plugin" / "marketplace.json").read_bytes() == before
+    assert (list(assets.iterdir()) == []) if given == "empty" else not assets.exists()
+
+
 def test_check_of_a_marketplace_listing_no_plugin_fails_with_its_reason(checkout: Path) -> None:
     write(checkout, ".claude-plugin/marketplace.json", json.dumps({"name": "fixture", "plugins": []}))
     code, lines = run(["check", "--root", str(checkout)])

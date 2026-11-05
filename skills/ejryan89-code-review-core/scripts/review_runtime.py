@@ -1737,6 +1737,11 @@ INT_PARSE_ALLOWED = {
 def _batch_blob_size(stdout: GitStream, blob: str) -> int:
     """The size a `git cat-file --batch` answer's `<id> blob <size>` line gives the blob it names."""
     header = stdout.readline()
+    if not header:
+        # Git ended before it answered, as it does on a checkout it cannot read: its reason is the failure.
+        stdout.wait()
+        reason = stdout.stderr().strip() or "with no reason on stderr"
+        raise RuntimeContractError(f"git cat-file ended before it answered {blob}: {reason}")
     fields = header.split()
     if len(fields) == 2 and fields[1] == b"missing":
         raise RuntimeContractError(f"Blob {blob} is missing from the checkout's object store")

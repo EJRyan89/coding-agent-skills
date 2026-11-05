@@ -366,6 +366,29 @@ class DeployableReportTests(unittest.TestCase):
         self.assertIn("no skills are deployed", output.lower())
         self.assertIn(DEPLOY_FIRST, output)
 
+    def test_a_manifest_that_cannot_be_read_is_one_error_line_naming_it_without_a_debug_hint(self) -> None:
+        # The tool takes no --debug, and the line naming what failed is the last it prints.
+        self.paths.manifest_file.unlink()
+        self.paths.manifest_file.mkdir()
+        code, output = self.run_main(
+            "layout",
+            "--label",
+            "first deploy",
+            "--results",
+            str(self.results_file),
+            "--home",
+            str(self.home),
+            "--source",
+            str(self.paths.source_dir),
+        )
+        lines = output.splitlines()
+        self.assertEqual(1, code)
+        self.assertEqual(1, len(lines), lines)
+        self.assertTrue(lines[0].startswith("ERROR: "), lines)
+        self.assertIn(".deploy-manifest.json", lines[0])
+        self.assertNotIn("--debug", output)
+        self.assertFalse(self.results_file.exists())
+
     def test_the_layout_result_joins_the_pass_with_the_same_label(self) -> None:
         self.results_file.write_text(
             json.dumps(

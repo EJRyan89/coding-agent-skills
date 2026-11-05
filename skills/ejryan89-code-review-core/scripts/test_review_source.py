@@ -776,6 +776,30 @@ class CommandTests(LazySnapshotFixture):
             (1, [gone]), self.main("source-search", "--run", run, "--role", "generic-review", "--pattern=helper")
         )
 
+    def test_a_run_file_it_cannot_stat_or_that_is_no_file_is_named_never_read_as_no_run(self) -> None:
+        run, state = str(self.run_directory), self.run_directory / review_guard.RUN_FILE
+        arguments = ("source-file", "--run", run, "--role", "generic-review", "--path=src/unchanged.py")
+        real_stat, denied_path = os.stat, os.path.normcase(state.resolve())
+
+        def denied(path: Any, *args: Any, **kwargs: Any) -> os.stat_result:
+            if not isinstance(path, int) and os.path.normcase(Path(path).absolute()) == denied_path:
+                raise PermissionError(13, "Permission denied", os.fspath(path))
+            return real_stat(path, *args, **kwargs)
+
+        # Every stat of run.json raises: the failure names the file and the reason, never a folder that holds no run.
+        with mock.patch.object(os, "stat", denied):
+            code, lines = self.main(*arguments)
+        self.assertEqual(1, code)
+        self.assertEqual(1, len(lines))
+        self.assertTrue(lines[0].startswith("FAILED ") and "Permission denied" in lines[0], lines)
+        self.assertIn("run.json", lines[0])
+        # A run.json removed, or a folder in its place, is a folder that holds no run, which the line names.
+        no_run = (1, [f"FAILED {self.run_directory.resolve()} is not a review run: it holds no run.json file"])
+        state.unlink()
+        self.assertEqual(no_run, self.main(*arguments))
+        state.mkdir()
+        self.assertEqual(no_run, self.main(*arguments))
+
     def test_source_search_on_a_run_with_no_source_repository_searches_the_snapshot_s_files(self) -> None:
         # The run names no repository, as a whole snapshot's run does, so only the files the snapshot's manifest
         # hashes are searched: here the lazy snapshot's changed file, not the unchanged one it lists to fetch, even

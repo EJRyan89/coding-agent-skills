@@ -4,6 +4,11 @@ Prints the Markdown report on stdout and progress on stderr. A failure prints no
 `FAILED <reason> [<kind>]` on stdout, and exits 1; an invalid argument exits 2. A group, or a history file the
 caller names, gets one comparison table of a metric instead of the per-user table; the history is written only once
 every user's searches have succeeded, so a failure leaves it as it was.
+
+Exit status:
+  0  the Markdown report was printed
+  1  a last line FAILED <reason> [<kind>], and no table
+  2  a usage error, an invalid argument
 """
 
 from __future__ import annotations

@@ -63,6 +63,12 @@ UNREADABLE instead, and the run goes on. A write that fails after the checks, su
 may not create a file in, or a file another process holds or made read-only since, ends the run there: the `FIXED` or
 `ADDED` lines before the `FAILED` line name changes already written, and the files after it are unchanged. A usage error
 exits 2.
+
+Exit status:
+  0  check left no VIOLATION, UNREADABLE, or REFUSED line; config left no setting missing and no entry REFUSED
+  1  findings: a VIOLATION remains, a file was UNREADABLE, a setting is still missing, or an entry was REFUSED;
+     or a last line FAILED <reason>
+  2  a usage error
 """
 
 from __future__ import annotations
@@ -979,12 +985,16 @@ def evaluated_reference(root: Path, project: Path, services: Services) -> bool |
     if result.returncode != 0:
         return f"MSBuild could not evaluate {name}: it exited with code {result.returncode}"
     text = result.output.decode("utf-8", errors="replace")
+    unread = f"MSBuild's evaluation of {name} is not the items it was asked for"
     try:
         document, _ = json_reader.raw_decode(text, text.index("{"))
         items = document["Items"]
         found = [item[metadata] for kind, metadata in PACKAGE_ITEMS for item in items.get(kind, [])]
     except (ValueError, KeyError, TypeError, AttributeError):
-        return f"MSBuild's evaluation of {name} is not the items it was asked for"
+        return unread
+    # MSBuild gives every item's metadata as text, so a value of another kind is output of a shape this does not read.
+    if not all(isinstance(value, str) for value in found):
+        return unread
     # NuGet and MSBuild compare a package id or a file name ordinally ignoring case, which only ASCII letters can match
     # against this ASCII name: Unicode case folding would read a long s or a Kelvin sign as the letter it imitates.
     return any(isinstance(value, str) and value.isascii() and value.lower() == PACKAGE.lower() for value in found)

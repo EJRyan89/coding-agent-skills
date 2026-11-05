@@ -117,6 +117,12 @@ home sees it, and it fails nothing.
 
 This is a manual check, never part of tests/run_validation.py: each run calls a model, and a model may choose
 not to run the command. See .claude/skills/runtime-canary/SKILL.md.
+
+Exit status:
+  0  every runtime checked agreed with each skill's declared runtime support
+  1  a FAILED, UNDISCOVERED, DISCOVERY_FAILED, or NOTHING_CHECKED line, a MATRIX line that disagrees or a skill
+     that declares nothing, or a last line FAILED <reason>
+  2  a usage error, a SKILL no source names among them
 """
 
 from __future__ import annotations
@@ -1325,7 +1331,7 @@ def changed_since(ref: str | None, root: Path = REPOSITORY_ROOT, client: GitClie
         print(f"FAILED {quote(str(exc))}")
         return 1
     except DeployError as exc:
-        print(f"FAILED {quote(' '.join(exc.lines))}")
+        print(f"FAILED {quote(exc.one_line())}")
         return 1
     print(f"SINCE {since} {base}")
     named = changed_skills(paths, src, lambda name: starts_only_by_user(src.skills[name].directory / "SKILL.md"))

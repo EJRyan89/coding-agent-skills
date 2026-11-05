@@ -89,6 +89,11 @@ from HEAD only when git lists no release tag reaching it.
 
 Exit status 0 means the briefs were written, the entry or the reads recorded, the search run, or the directory
 deleted; 1 a last line FAILED <reason>; 2 a usage error.
+
+Exit status:
+  0  the briefs were written, the entry or the reads recorded, the search run, or the directory deleted
+  1  a last line FAILED <reason>
+  2  a usage error
 """
 
 from __future__ import annotations

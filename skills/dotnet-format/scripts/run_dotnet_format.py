@@ -38,6 +38,11 @@ as the formatter not being installed, exiting with an unexpected code, or not fi
 <reason>` as the last line, after the LOG line when the formatter ran, and exits 1. A `fix` that fails tells its runs
 apart first: each run saves its fixes when it finishes, so SAVED names the files the runs before the failed one changed,
 and UNFINISHED every file of the failed run and of the runs after it. A usage error exits 2.
+
+Exit status:
+  0  check printed no DIAGNOSTIC or REFUSED line; fix printed no REFUSED line and the formatter succeeded
+  1  a DIAGNOSTIC (check) or REFUSED line, or a last line FAILED <reason>
+  2  a usage error
 """
 
 from __future__ import annotations

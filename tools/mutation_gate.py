@@ -133,6 +133,11 @@ mutmut no longer makes the mutant its
 canary expects on the canary's line alone, the reach run no longer measures its canary suite's own process and the
 process the suite's test starts, each line named with that test, which a missing coverage.py .pth file would cause, a
 changed sanction table is one no policy reads, or a git command fails.
+
+Exit status:
+  0  the gate ran to its end, whatever survived, or select or leg wrote its file
+  1  the run was unfinished on any leg, a step could not run, or a last line FAILED <reason>
+  2  a usage error
 """
 
 from __future__ import annotations

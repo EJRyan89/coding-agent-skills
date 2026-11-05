@@ -66,6 +66,11 @@ With --summary FILE it also appends the findings to FILE as Markdown, as the wor
 finding is never a failure: the run exits 0 whatever it lists, and 1 only on FAILED or an UNREADABLE_CHANGELOG line.
 A usage error exits 2.
 
+Exit status:
+  0  the watch ran, whatever it lists
+  1  a last line FAILED <reason>, or an UNREADABLE_CHANGELOG line
+  2  a usage error
+
 It is the check .github/workflows/runtime-changelogs.yml runs weekly. It decides nothing: the guidance audit after
 each tag still judges each entry and page, starting from what the latest run lists. It starts no model, needs no
 secret, and makes only unauthenticated requests, so it stays a scheduled signal and never a required check, since what

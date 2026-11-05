@@ -68,6 +68,11 @@ directory searched, and every read only of a regular file within ejryan89-skill-
 The script changes nothing on disk but the graph file, runs no restore or build, and exits 1 when it printed a
 CONFLICT, REDIRECT_STALE, or UNREADABLE line, else 0; a FAILED <reason> line and exit 1 when the root cannot be
 resolved, and a usage error exits 2.
+
+Exit status:
+  0  the query or graph ran and printed no CONFLICT, REDIRECT_STALE, or UNREADABLE line
+  1  a CONFLICT, REDIRECT_STALE, or UNREADABLE line, or a last line FAILED <reason>
+  2  a usage error
 """
 
 from __future__ import annotations

@@ -19,6 +19,11 @@ well. It exits 2 when `gh` cannot read or change the board, the board has no Rel
 field the query asks for or holds one of another kind; setting a value twice changes nothing, so a run cut short is
 rerun. CONTRIBUTING.md runs it after an issue is filed or moved between milestones, and the release procedure in
 docs/releasing.md runs it with `--check`.
+
+Exit status:
+  0  SYNCED, or IN_SYNC with --check
+  1  DRIFTED, or a last line FAILED <reason>
+  2  a usage error, or `gh` cannot read or change the board, or its answer is not the one the query asks for
 """
 
 from __future__ import annotations

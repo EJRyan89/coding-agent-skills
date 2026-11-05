@@ -40,6 +40,12 @@ JSON array, and a results file that cannot be written are each an `ERROR:` line 
 2, leaving the file as it was.
 
 Nothing here starts a model.
+
+Exit status:
+  0  the command's check passed, or its record or summary was written
+  1  verify judged a failure, layout failed, leftovers named an entry, pin found another version, or a last line
+     FAILED <reason>
+  2  a usage error, or an ERROR: line for a results file or a deployed directory it cannot read or write
 """
 
 from __future__ import annotations
@@ -66,7 +72,7 @@ from console import run_main
 
 from deployer import discovery, journal, manifest, platform_support, tools, verify
 from deployer.arguments import PROG, VERIFY_COMMAND_LINE
-from deployer.errors import DeployError, print_error
+from deployer.errors import DeployError
 from deployer.kinds import KINDS
 from deployer.paths import Paths
 
@@ -120,6 +126,12 @@ class RuntimeResult:
     runtime: str
     status: str
     detail: str = ""
+
+
+def report_error(error: DeployError) -> None:
+    """Print an error as one line on stderr: its ERROR line and its remedy, so the line that names what failed is the
+    last, and without the deployer's hint to rerun with --debug, which this tool does not take."""
+    print(error.one_line(), file=sys.stderr)
 
 
 def sign_in_problem(message: str) -> bool:
@@ -397,14 +409,14 @@ def _verify(arguments: argparse.Namespace) -> int:
     try:
         results = check_runtimes(paths, dict(os.environ))
     except DeployError as exc:
-        print_error(exc)
+        report_error(exc)
         return exc.exit_code
     for result in results:
         print(f"{result.status} {result.runtime} {result.detail}".rstrip())
     try:
         _record(Path(arguments.results), arguments.label, results)
     except DeployError as exc:
-        print_error(exc)
+        report_error(exc)
         return exc.exit_code
     return exit_code(results, arguments.deploy_verify_exit, _verify_log(arguments.deploy_verify_log))
 
@@ -414,13 +426,13 @@ def _layout(arguments: argparse.Namespace) -> int:
     try:
         result = check_layout(paths)
     except DeployError as exc:
-        print_error(exc)
+        report_error(exc)
         return exc.exit_code
     print(f"{result.status} {result.runtime} {result.detail}".rstrip())
     try:
         _record(Path(arguments.results), arguments.label, [result])
     except DeployError as exc:
-        print_error(exc)
+        report_error(exc)
         return exc.exit_code
     return 0 if result.status == PASSED else 1
 
@@ -431,7 +443,7 @@ def _leftovers(arguments: argparse.Namespace) -> int:
         left = leftovers(paths)
         _record_leftovers(Path(arguments.results), left)
     except DeployError as exc:
-        print_error(exc)
+        report_error(exc)
         return exc.exit_code
     for item in left:
         print(f"::error::left after uninstall: {item}")
@@ -474,7 +486,7 @@ def _summary(arguments: argparse.Namespace) -> int:
     try:
         passes = _read_results(Path(arguments.results))
     except DeployError as exc:
-        print_error(exc)
+        report_error(exc)
         return exc.exit_code
     versions = [] if arguments.no_probe else tool_versions()
     text = render_summary(passes, versions, arguments.note)

@@ -49,6 +49,10 @@ plugin's hooks file runs it for every matching tool call of every session, and t
 reviewer itself. A call with no agent ID comes from the main session, and a call of any other agent type is another
 agent's; both pass. A subagent's call that carries no agent type cannot be placed, so it is denied, and a call of
 the plugin's reviewer, whose type Claude Code namespaces as `<plugin>:code-review-reviewer`, is held as above.
+
+Exit status:
+  0  the hook answered: a deny decision printed as JSON, or nothing, which lets the call through
+  1  a last line FAILED <reason>, which Claude Code reads as a hook error and lets the call through
 """
 
 from __future__ import annotations

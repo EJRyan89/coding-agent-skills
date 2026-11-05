@@ -18,6 +18,11 @@ Usage:
 It prints `RELEASE <tag>`, the last release the commit holds in the repository at that path, or `NO_RELEASE` when no
 release tag reaches it, and exits 0; it prints `FAILED <reason>` and exits 1 when git cannot read the tags reaching
 the commit, such as for a commit the repository does not hold.
+
+Exit status:
+  0  RELEASE <tag> or NO_RELEASE
+  1  a last line FAILED <reason>, as when git cannot read the tags reaching the commit
+  2  a usage error
 """
 
 from __future__ import annotations

@@ -34,6 +34,12 @@ cannot be read, with --write when docs/upgrade-notes.md cannot be read as UTF-8 
 repository-selecting variables that would read another repository. The release procedure in docs/releasing.md runs it
 before tagging and again at the tag, and the upgrade-notes check in tests/validation reads the same entries through the
 same git.
+
+Exit status:
+  0  the section was printed or written, or --check found it CURRENT
+  1  --write refused a version the file already has, --check found the section BEHIND, or a last line
+     FAILED <reason>
+  2  a usage error, or an ERROR: line naming what it could not read or write
 """
 
 from __future__ import annotations

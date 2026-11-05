@@ -45,6 +45,11 @@ A message is the runtime's own, with the throwaway home named <temp>, this check
 <home>. With --summary FILE it also appends a Markdown table of the same facts to FILE, as the workflow does with its
 step summary. A usage error exits 2.
 
+Exit status:
+  0  every runtime command line was started and accepted
+  1  a line the facts above end in exit 1, such as MISSING, REMOVED, or REFUSED, or a last line FAILED <reason>
+  2  a usage error
+
 It is the check .github/workflows/runtime-command-lines.yml runs weekly on the latest release of every runtime, on a
 fresh Windows runner and a fresh Linux one. It starts no model, so tests/run_validation.py could run it, but it reads
 the runtimes installed on the machine, so it is a scheduled signal and never a required check.

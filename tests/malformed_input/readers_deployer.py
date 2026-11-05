@@ -12,14 +12,14 @@ import json
 import sys
 from pathlib import Path
 
-from reader_table import REPOSITORY, Reader, Refused, text_of
+from reader_table import REPOSITORY, NotText, Reader, Refused, text_of
 
 sys.path.insert(0, str(REPOSITORY))
 sys.path.insert(0, str(REPOSITORY / "skills" / "ejryan89-skill-core" / "scripts"))
 
 from process_identity import ProcessStatus
 
-from deployer import config, discovery, journal, lock, manifest, source
+from deployer import config, discovery, journal, lock, manifest, render, source
 from deployer.errors import DeployError
 from deployer.kinds import AGENT_KIND, DEPENDENCY_KINDS, KINDS, SHARED, SKILL, ItemKind
 from deployer.names import transient_name
@@ -157,6 +157,38 @@ def _codex_refusals(path: Path) -> object:
     return discovery.parse_codex_refusals(_app_server_lines(path))
 
 
+def _codex_catalog(path: Path) -> object:
+    """The catalog as list_skills reads it, from the lines `codex debug prompt-input` prints."""
+    return discovery.parse_codex_catalog(text_of(path).splitlines())
+
+
+def _adapter_frontmatter(path: Path) -> object:
+    """The adapter's fields as the deployer reads them from a skill's rendered SKILL.md, whose bytes the case is."""
+    try:
+        rendered = path.read_bytes()
+    except OSError as error:
+        raise NotText(f"{type(error).__name__}: {error}") from error
+    return render._adapter_frontmatter("example", rendered)
+
+
+# The skills message of Codex's prompt input, as a run captured it: its roots table and one skill under one root.
+CODEX_CATALOG = json.dumps(
+    [
+        {
+            "type": "message",
+            "role": "developer",
+            "content": [
+                {
+                    "type": "input_text",
+                    "text": "## Skills\n### Skill roots\n- `r0` = `/home/.agents/skills`\n### Available skills\n"
+                    "- example: An example. (file: r0/example/SKILL.md)\n",
+                }
+            ],
+        }
+    ]
+).encode()
+
+
 # The app server writes one JSON-RPC message a line, and the readers take the last answer to their request.
 CODEX_LINES = {
     "bom": "a line that is not a message, such as the initialize answer behind a byte-order mark, is passed over",
@@ -239,6 +271,15 @@ READERS = [
         },
     ),
     Reader(
+        "deployer.discovery.parse_codex_catalog",
+        "json",
+        CODEX_CATALOG,
+        _codex_catalog,
+        (discovery.ListingError,),
+        open_fields="it reads every string the messages hold, wherever it sits, and refuses messages none of whose "
+        "strings is a skills message",
+    ),
+    Reader(
         "deployer.journal.pending_runs",
         "json-lines",
         JOURNAL_LINE + b"\n",
@@ -288,6 +329,17 @@ READERS = [
             f"wrong_type:sources.{SOURCE_ID}.{field}": "kept as written: the deployer only compares source_dir, as "
             "text it checks it is, and never reads deployed_at"
             for field in ("source_dir", "deployed_at")
+        },
+    ),
+    Reader(
+        "deployer.render._adapter_frontmatter",
+        "frontmatter",
+        b"---\nname: example\ndescription: An example.\n---\n\nBody.\n",
+        _adapter_frontmatter,
+        (DeployError,),
+        accepts={
+            "bom": "the rendered SKILL.md is decoded as UTF-8 with an optional byte-order mark",
+            "nul_bytes": "the body after the frontmatter's closing line is never read",
         },
     ),
     Reader(

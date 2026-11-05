@@ -2,7 +2,9 @@
 
 A reader joins its area's table in the pull request that adds it, as "Validation" in docs/adding-a-skill.md says;
 reader_table.py describes an entry. PENDING names each reader not yet in a table, with the open issue whose pull
-request adds it, so a reader is either held to the corpus or named as owed.
+request adds it, so a reader is either held to the corpus or named as owed. NOT_READERS names each function that calls
+a shared reader without being a reader, with why: it reads only what the same run just wrote, the repository's own
+committed text, or text a held reader in another module passes it.
 """
 
 from __future__ import annotations
@@ -21,105 +23,84 @@ READERS: list[Reader] = sorted(
 # Each function that calls a shared reader, as reader_scan.py finds it, that no table holds yet and no held reader
 # of its module reaches, by the name its entry will take, mapped to the issue whose pull request adds it or names it
 # as no reader.
-PENDING: dict[str, int] = {
-    "tools.hub_guard.powershell_events": 2345,
-    "tools.hub_guard.guard": 2345,
-    "tools.plugin_agents._scalar": 2345,
-    "tools.plugin_agents.plugin_agent": 2345,
-    "tools.plugin_build.render": 2345,
-    "tools.plugin_canary.expected": 2345,
-    "tools.plugin_canary.option_values": 2345,
-    "tools.plugin_canary.install": 2345,
-    "tools.plugin_canary.stream_events": 2345,
-    "tools.plugin_canary.checks": 2345,
-    "tools.runtime_canary.starts_only_by_user": 2345,
-    "tools.runtime_canary.claude_stream": 2345,
-    "tools.runtime_canary.claimed": 2345,
-    "tools.runtime_changelogs.frontmatter_terms": 2345,
-    "tools.runtime_changelogs.changelog_releases": 2345,
-    "tools.runtime_changelogs.summary": 2345,
-    "tools.runtime_prompts.copilot_entrypoint": 2345,
-    "tools.skill_evals_runs.skills_in_stream": 2345,
-    "tools.skill_evals_runs.set_reviewer_model": 2345,
-    "tools.skill_evals_runs._nested": 2345,
-    "tools.skill_evals_runs.reviewer_agents": 2345,
-    "tools.skill_evals_runs.stream_models": 2345,
-    "deployer.discovery.parse_codex_catalog": 2345,
-    "deployer.render._substitute_markdown": 2345,
-    "deployer.render.render_file": 2345,
-    "deployer.render._adapter_frontmatter": 2345,
-    "deployer.state_files.parse_json": 2345,
-    "deployer.state_files.holds_lone_surrogate": 2345,
-    "audit_ai_config._entry_value": 2345,
-    "audit_ai_config._block_scalar": 2345,
-    "audit_ai_config._skill_body": 2345,
-    "audit_ai_config._manifest_signal": 2345,
-    "audit_ai_config._codex_hooks": 2345,
-    "mcp_handshake.Session.response": 2345,
-    "skill_inventory.trigger_scenario_lines": 2345,
-    "skill_inventory.tools": 2345,
-    "skill_inventory.read_agent": 2345,
-    "skill_inventory.json_settings": 2345,
-    "skill_inventory.markdown_settings": 2345,
-    "skill_inventory.own_needs": 2345,
-    "memory_audit.manifest_skill_files": 2345,
-    "csharp_layout.evaluated_reference": 2345,
-    "dotnet_format_targets.pull_request_base": 2345,
-    "dotnet_format_targets.is_sdk_style": 2345,
-    "review_analyzers._package_json": 2345,
-    "review_config._main": 2345,
-    "review_dispatch.count_reads": 2345,
-    "review_guard._roles": 2345,
-    "review_guard._load_claim": 2345,
-    "review_guard._prune_claims": 2345,
-    "review_guard._restricted": 2345,
-    "review_guard.main": 2345,
-    "review_io.atomic_write_json": 2345,
-    "review_reviewers._tool_grant": 2345,
-    "review_reviewers.frontmatter_value": 2345,
-    "github_client.body_reasons": 2345,
-    "github_client.GitHubClient.partial_graphql": 2345,
-    "json_writer.dumps": 2345,
-    "review_synthesis.remove_run": 2345,
-    "audit_repository.names_directory": 2345,
-    "change_skill.frontmatter_block": 2345,
-    "change_skill.frontmatter_value": 2345,
-    "change_skill.user_only": 2345,
-    "conditions.snapshot_exclusions": 2345,
+PENDING: dict[str, int] = {}
+
+# Each function that calls a shared reader, as reader_scan.py finds it, that no table holds because it is no reader,
+# with why. Validation's policies read the repository's own committed files, which validation holds to their shape.
+COMMITTED_SETTINGS = "reads the committed .claude/settings.json, whose shape this policy and its siblings hold"
+DEPLOY_METADATA = "reads the committed deploy-meta/*.json, whose shape the metadata policies hold"
+SOURCE_JSON = "reads the committed source.json and deploy-meta/*.json, whose shape the metadata policies hold"
+SNAPSHOT = "reads the committed text of a release tag or the working tree, comparing what it cannot read as text"
+NOT_READERS: dict[str, str] = {
+    "tools.plugin_agents._scalar": "reads one hook value of a committed agent definition under agents/",
+    "tools.plugin_agents.plugin_agent": "splits a committed agent definition under agents/ to move its hooks into "
+    "the plugin's hooks file",
+    "tools.plugin_build.render": "renders a committed skill file into a plugin, splitting a Markdown file's "
+    "frontmatter only to choose its substitutions; one it cannot split renders as body",
+    "tools.plugin_canary.expected": "reads the hooks file plugin_build wrote for this run's plugin",
+    "tools.plugin_canary.option_values": "reads the manifest plugin_build wrote for this run's plugin",
+    "tools.plugin_canary.checks": "reads the PATHS line install wrote with json.dumps in this run",
+    "tools.runtime_canary.starts_only_by_user": "reads a SKILL.md or runtime adapter this run deployed from the "
+    "checkout into its throwaway home",
+    "tools.runtime_changelogs.frontmatter_terms": "reads the keys of the committed skills/*/SKILL.md and agents/*.md",
+    "tools.runtime_changelogs.summary": "reads the finding lines watch printed in this run, each reason json.dumps "
+    "wrote",
+    "tools.runtime_prompts.copilot_entrypoint": "reads the review request prepare_fixture wrote in this render's "
+    "throwaway folder",
+    "tools.skill_evals_runs.set_reviewer_model": "reads back the reviewer agent it has just written",
+    "tools.skill_evals_runs._nested": "reads a hook value of the reviewer agent this run deployed from agents/",
+    "tools.skill_evals_runs.reviewer_agents": "reads the reviewer agent this run deployed from agents/ into its "
+    "throwaway home",
+    "deployer.render._substitute_markdown": "splits a template's frontmatter only to quote each line for its "
+    "context; an opening rule never closed renders as Markdown",
+    "deployer.render.render_file": "re-reads only the JSON it has just rendered, to refuse a substitution that broke "
+    "it; a template it cannot decode is copied as it is",
+    "deployer.state_files.parse_json": "the deployer's one JSON parse of a state file's text, called by each state "
+    "file's reader, which readers_deployer.py holds",
+    "deployer.state_files.holds_lone_surrogate": "re-reads text deployer.manifest.load has already refused, to name "
+    "an earlier release's file",
+    "review_io.atomic_write_json": "reads back the text json_writer.dumps has just written, for the validator",
+    "json_writer.dumps": "reads back the text json.dumps has just written, to refuse a value that cannot round-trip",
     (
         "repository_hygiene.RepositoryHygienePolicies."
         "test_tracked_claude_settings_hold_schema_hooks_and_no_attribution_only"
-    ): 2345,
+    ): COMMITTED_SETTINGS,
     (
         "repository_hygiene.RepositoryHygienePolicies.test_hub_guard_hook_sees_every_tool_that_edits_files_or_runs_git"
-    ): 2345,
-    "repository_hygiene.RepositoryHygienePolicies.test_hub_guard_hook_blocks_a_command_when_it_fails": 2345,
-    "shell_targets.interpreter_problems": 2345,
-    "skill_grants.root_option_problems": 2345,
-    "skill_layout.deploy_variable_problems": 2345,
-    "skill_layout.metadata_format_problems": 2345,
-    "skill_layout.hooked_agents": 2345,
-    "skill_layout.own_needs": 2345,
-    "skill_layout.runtime_support_problems": 2345,
-    "skill_layout.runtime_page_problems": 2345,
-    "skill_layout.capability_guide_problems": 2345,
-    "skill_layout._path_documents": 2345,
-    "skill_layout.script_dependency_problems": 2345,
-    "skill_layout.fixture_source_problems": 2345,
-    "skill_layout._hook_problems": 2345,
-    "skill_layout._manifest_problems": 2345,
-    "skill_layout.marketplace_problems": 2345,
-    "skill_layout.trigger_scenario_problems": 2345,
-    "skill_layout.skill_tree_problems": 2345,
-    "skill_layout.repository_skill_name_problems": 2345,
-    "skill_layout.shared_guidance_problems": 2345,
-    "skill_layout.SkillLayoutPolicies.test_skills_leave_shared_runtime_guidance_to_their_adapters": 2345,
-    "skill_scripts.skill_command_problems": 2345,
-    "skill_scripts.optional_tool_placement_problems": 2345,
-    "toolchain.powershell_json": 2345,
-    "upgrade_notes._required_variables": 2345,
-    "upgrade_notes._review_schemas": 2345,
-    "validation_support.skill_dependency_closure": 2345,
+    ): COMMITTED_SETTINGS,
+    "repository_hygiene.RepositoryHygienePolicies.test_hub_guard_hook_blocks_a_command_when_it_fails": (
+        COMMITTED_SETTINGS
+    ),
+    "shell_targets.interpreter_problems": "reads the grants of the committed skills/*/SKILL.md",
+    "skill_grants.root_option_problems": "reads the grants of the committed skills' SKILL.md files",
+    "skill_layout.deploy_variable_problems": SOURCE_JSON,
+    "skill_layout.metadata_format_problems": DEPLOY_METADATA,
+    "skill_layout.hooked_agents": "reads the frontmatter of the committed agents/*.md",
+    "skill_layout.own_needs": "reads a committed skill's SKILL.md and deploy-meta/*.json",
+    "skill_layout.runtime_support_problems": DEPLOY_METADATA,
+    "skill_layout.runtime_page_problems": DEPLOY_METADATA,
+    "skill_layout.capability_guide_problems": DEPLOY_METADATA,
+    "skill_layout._path_documents": DEPLOY_METADATA,
+    "skill_layout.script_dependency_problems": DEPLOY_METADATA,
+    "skill_layout.fixture_source_problems": "reads the committed source.json and the fixture sources' source.json "
+    "under tests/fixtures/",
+    "skill_layout._hook_problems": "reads the hooks file plugin_build wrote for this policy's plugin",
+    "skill_layout._manifest_problems": "reads the committed .claude-plugin/marketplace.json and the manifest "
+    "plugin_build wrote for this policy's plugin",
+    "skill_layout.marketplace_problems": "reads the committed .claude-plugin/marketplace.json",
+    "skill_layout.trigger_scenario_problems": "reads the committed skills' SKILL.md and the scenario.json fixtures "
+    "under tests/fixtures/skill-evals/",
+    "skill_layout.skill_tree_problems": SOURCE_JSON,
+    "skill_layout.repository_skill_name_problems": "reads the committed .claude/skills/*/SKILL.md",
+    "skill_layout.shared_guidance_problems": SOURCE_JSON,
+    "skill_layout.SkillLayoutPolicies.test_skills_leave_shared_runtime_guidance_to_their_adapters": SOURCE_JSON,
+    "skill_scripts.skill_command_problems": DEPLOY_METADATA,
+    "skill_scripts.optional_tool_placement_problems": DEPLOY_METADATA,
+    "toolchain.powershell_json": "reads the last line validation's own PowerShell script prints, failing the policy "
+    "with the output when it is not a JSON list",
+    "upgrade_notes._required_variables": SNAPSHOT,
+    "upgrade_notes._review_schemas": SNAPSHOT,
+    "validation_support.skill_dependency_closure": DEPLOY_METADATA,
 }
 
-__all__ = ["PENDING", "READERS", "NotText", "Reader", "applicable_cases"]
+__all__ = ["NOT_READERS", "PENDING", "READERS", "NotText", "Reader", "applicable_cases"]

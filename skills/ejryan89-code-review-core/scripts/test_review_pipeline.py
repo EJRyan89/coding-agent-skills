@@ -1332,6 +1332,19 @@ class WorkflowTests(PipelineFixture):
         "}\n"
     )
 
+    def test_a_configuration_it_cannot_read_leaves_every_run_unmarked(self) -> None:
+        # Each run's configuration is read before any run is marked, so a refusal changes no run.json.
+        self.github.pulls[13] = rest_pull(13, self.head, self.base)
+        first, second = self.prepare(), self.prepare("example/one#13")
+        states = [run["run"] / review_run.RUN_FILE for run in (first, second)]
+        before = [state.read_bytes() for state in states]
+        self.config_path.unlink()
+        code, out, _ = self.run_main("workflow", "--run", str(first["run"]), "--run", str(second["run"]))
+        self.assertEqual(1, code)
+        self.assertTrue(out.startswith("FAILED Cannot read valid JSON from") and "config.json" in out, out)
+        self.assertEqual(before, [state.read_bytes() for state in states])
+        self.assertFalse((first["run"] / "reviewers.workflow.js").exists())
+
     def test_a_configured_reviewer_effort_reaches_every_workflow_agent(self) -> None:
         # For an A/B test of reviewer thinking: a Workflow agent takes a per-call effort, an ordinary subagent does not.
         config = json.loads(self.config_path.read_text(encoding="utf-8"))

@@ -19,6 +19,11 @@ skill was renamed or removed, or a stray file; it reports them, and a person del
 error, a directory that does not hold source.json and .claude/skills, or that lies in a skills directory, such as
 ~/.agents/skills, whose adapters the deployer owns. A file it cannot read or write, a skill's SKILL.md that is not
 UTF-8 included, ends the run with a FAILED line and exit 2.
+
+Exit status:
+  0  every shim is current, or --write wrote them
+  1  a missing, stale, or stray shim file, or a last line FAILED <reason>
+  2  a usage error, or a FAILED line when a file cannot be read or written
 """
 
 from __future__ import annotations

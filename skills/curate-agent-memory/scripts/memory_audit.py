@@ -26,8 +26,10 @@ No directory is a result, not a failure. A directory a repository's settings cho
 permissions.blockReadsOutsideWorkingDirectories is on in any scope, since Claude Code then loads no
 memory from it and saves none to it. Without settings, the directory is derived from the top level of
 the repository's main worktree, which all its worktrees share (see main_worktree). The current
-directory outside any repository, and a git that cannot run, does not finish, or fails, are each a
-`FAILED <reason>` line.
+directory outside any repository, a git that cannot run, does not finish, or fails, and a settings file
+that cannot be read or has a directory in its place, whose choice cannot then be known, are each a
+`FAILED <reason>` line; a settings file holding no readable JSON leaves the directory unresolved, with
+a NOTE naming it.
 
 audit writes its JSON report of mechanical problems and candidate overlaps to --output, else to a new
 temporary file, and prints `REPORT <path>`. It never replaces a file: it refuses, before reading
@@ -56,8 +58,8 @@ An entry whose target, after any leading `./`, is not a bare *.md name directly 
 segment, an absolute path, a subfolder, or a link or junction on the way) is never read or followed,
 and neither is one whose file exists but is not a regular file: each stays as written, and it and each
 such unindexed name print an `UNREADABLE <file>: <reason>` line before those. audit reports the same
-targets in its `unreadable` list. A memory it cannot read,
-or whose file name holds a line break, which no entry can link on one line, is a `FAILED` line,
+targets in its `unreadable` list. A memory it cannot read, an entry it cannot inspect,
+or a memory whose file name holds a line break, which no entry can link on one line, is a `FAILED` line,
 and nothing is written.
 
 delete removes the named memory files and nothing else. Each name must be a bare .md file name
@@ -83,6 +85,11 @@ Usage:
   python memory_audit.py reindex --memory-dir DIR [--write]
   python memory_audit.py delete --memory-dir DIR FILE [FILE ...]
   python memory_audit.py skill-source (NAME | --file FILE) [--repo ROOT] [--home DIR]
+
+Exit status:
+  0  the command did its job
+  1  a FAILED <reason> line, a delete refusal among them, or reindex's OVER_LIMIT finding
+  2  a usage error
 """
 
 from __future__ import annotations
@@ -379,6 +386,8 @@ def target_identity(memory_dir: Path, file: str) -> str:
 
 # What entry_problem gives for a path that names nothing, such as an index entry whose file is gone.
 MISSING = "no such file"
+# What entry_problem's reason starts with for a path whose lstat fails: whether a memory is there cannot be told.
+CANNOT_INSPECT = "cannot inspect: "
 
 
 def entry_problem(path: Path) -> str | None:
@@ -392,7 +401,7 @@ def entry_problem(path: Path) -> str | None:
     except (FileNotFoundError, NotADirectoryError):
         return MISSING
     except OSError as exc:
-        return f"cannot inspect: {reason(exc)}"
+        return f"{CANNOT_INSPECT}{reason(exc)}"
     if not is_plain_file(path, status):
         return "not a regular file"
     return None
@@ -484,13 +493,11 @@ def cited_presence(places: list[Path]) -> tuple[bool | None, str | None]:
 
 
 def destination_blocks(files: list[Path]) -> list[tuple[str, int, str, set[str]]]:
-    """Split destination documents into paragraphs and list items for overlap scoring."""
+    """Split destination documents into paragraphs and list items for overlap scoring. A document that cannot be read
+    raises its OSError, which fails the audit, rather than silently losing its overlaps."""
     blocks: list[tuple[str, int, str, set[str]]] = []
     for path in files:
-        try:
-            lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
-        except OSError:
-            continue
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
         current: list[str] = []
         start = 1
         for number, line in enumerate([*lines, ""], start=1):
@@ -689,6 +696,11 @@ def reindex(memory_dir: Path) -> dict[str, Any]:
     files, others = memory_entries(memory_dir)
     added = sorted(path.name for path in files if target_identity(memory_dir, path.name) not in seen)
     unreadable += [(name, problem) for name, problem in others if target_identity(memory_dir, name) not in seen]
+    for name, problem in unreadable:
+        # An entry whose stat fails may be a memory it cannot read, which fails the rebuild, never a non-memory to
+        # keep as written.
+        if problem.startswith(CANNOT_INSPECT):
+            raise OSError(f"a memory cannot be read: {name}: {problem.removeprefix(CANNOT_INSPECT)}")
     if added:
         while lines and not lines[-1].strip():
             lines.pop()
@@ -899,13 +911,19 @@ def unresolved(notes: list[str]) -> dict[str, Any]:
 
 
 def read_settings(path: Path) -> dict[str, Any]:
-    """A settings file's top-level object, empty when the file is absent or holds another value; a directory or
-    anything else in the file's place raises UnreadableSettings, as a file that cannot be read does."""
+    """A settings file's top-level object, empty when the file is absent or holds another value. One that holds no
+    readable JSON raises UnreadableSettings, which leaves the directory unresolved; one that cannot be read, or a
+    directory or anything else in the file's place, raises OSError naming it, a FAILED line, since the directory it
+    may choose cannot then be known and must never be read as unset."""
     try:
         if not is_present(path):
             return {}
-        settings = json_reader.loads(path.read_bytes().decode("utf-8-sig"))
-    except (OSError, ValueError) as exc:
+        data = path.read_bytes()
+    except OSError as exc:
+        raise OSError(exc.errno, f"cannot read the settings file {path}: {reason(exc)}") from exc
+    try:
+        settings = json_reader.loads(data.decode("utf-8-sig"))
+    except ValueError as exc:
         raise UnreadableSettings(f"Cannot read {path}: {exc}") from exc
     return settings if isinstance(settings, dict) else {}
 

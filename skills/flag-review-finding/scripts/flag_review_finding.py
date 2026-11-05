@@ -17,6 +17,11 @@ Every command prints one fact per line:
             title, or its body cut like a flag's; the path is collapsed to one line.
 A value that begins with - follows -- after the options, or is joined to its option, as in --body=-x.
 A failure prints `FAILED <reason>` and exits 1; a usage error exits 2.
+
+Exit status:
+  0  the command printed its facts
+  1  a last line FAILED <reason>
+  2  a usage error
 """
 
 from __future__ import annotations
@@ -37,7 +42,7 @@ import file_presence
 import whole_number
 from console import run_main
 from flat_text import flat_text
-from review_archive import ArchiveError, pull_directory, pull_records, record_paths
+from review_archive import ArchiveError, every_version, pull_directory, pull_records, record_paths
 from review_config import ConfigurationError, load_config
 from review_flags import (
     FlagAlreadyResolved,
@@ -136,6 +141,8 @@ def check_finding(config: Path | None, repository: str, pull: int, version: int,
     except OSError as exc:
         raise FlagError(f"Review v{version} of {repository}#{pull} could not be read: {exc}") from exc
     if not present:
+        # A version missing below the latest is a record gone from the archive, which every_version names.
+        every_version(directory)
         raise FlagError(f"{repository}#{pull} has no review v{version} in the archive")
     if finding_id not in {finding["id"] for finding in validate_record_pair(json_path, markdown_path)["findings"]}:
         raise FlagError(f"Review v{version} of {repository}#{pull} has no finding {finding_id}")

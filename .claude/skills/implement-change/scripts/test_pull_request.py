@@ -365,9 +365,22 @@ class DraftCommandTests(Repository):
         self.assertEqual(pull_request.draft_body(TEMPLATE, [12, 34]), body.read_text(encoding="utf-8"))
 
     def test_draft_without_a_template_fails_and_writes_nothing(self) -> None:
-        (self.root / ".github" / "pull_request_template.md").unlink()
-        code, lines = self.run_script("draft")
-        self.assertEqual((1, ["FAILED no pull request template in .github/, the top folder, or docs/"]), (code, lines))
+        # A folder in the template's place is no template, as GitHub reads it, so the refusal names the file it looked
+        # for rather than leaving a reader to guess why the folder did not count.
+        template = self.root / ".github" / "pull_request_template.md"
+        for place in ("missing", "folder"):
+            with self.subTest(place=place):
+                template.unlink()
+                if place == "folder":
+                    template.mkdir()
+                code, lines = self.run_script("draft")
+                failed = (
+                    "FAILED no pull request template, a pull_request_template.md file, in .github/, the top folder, "
+                )
+                self.assertEqual((1, [f"{failed}or docs/"]), (code, lines))
+                if place == "folder":
+                    template.rmdir()
+                template.write_text(TEMPLATE, encoding="utf-8")
 
     def test_an_issue_that_is_not_a_positive_number_is_a_usage_error(self) -> None:
         with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as raised:

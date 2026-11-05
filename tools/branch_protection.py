@@ -10,6 +10,11 @@ holds, or DRIFTED and one line per invariant that no longer holds (exit 1), then
 it. It exits 2 when `gh` cannot read them, such as without a sign-in or without admin rights on the repository. The
 absence of the issue template configuration counts as blank issues enabled, hence DRIFTED, not a read error. The
 release procedure in docs/releasing.md runs it before tagging.
+
+Exit status:
+  0  PROTECTED: every invariant holds
+  1  DRIFTED and one line per invariant that no longer holds, or a last line FAILED <reason>
+  2  a usage error (it takes no argument), or an ERROR: line when `gh` cannot read the settings
 """
 
 from __future__ import annotations

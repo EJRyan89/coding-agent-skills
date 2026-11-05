@@ -21,6 +21,12 @@
 Every command prints machine-readable lines and exits 0 on success. Expected failures, including a collection in
 which any repository failed and an update in which any pull request's comparison failed, print `FAILED <reason>` as the
 last line and exit 1; only a usage error exits 2.
+
+Exit status:
+  0  the command succeeded
+  1  a last line FAILED <reason>, a collection in which any repository failed and an update in which any pull
+     request's comparison failed included
+  2  a usage error
 """
 
 from __future__ import annotations

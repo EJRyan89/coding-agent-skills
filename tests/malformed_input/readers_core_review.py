@@ -2,18 +2,23 @@
 ejryan89-code-review-core's configuration, state, flags, runs, fixtures, manifests, records, and inventories.
 
 Each refusal is the exception its module names; a reader that answers a file it cannot read with a value, an UNREAD
-setting, or a torn lock is called through an adapter that raises that answer as Refused.
+setting, a torn lock, or a printed denial or FAILED line is called through an adapter that raises that answer as
+Refused.
 """
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
+import io
 import json
 import sys
 import tempfile
 from pathlib import Path
+from typing import Any, cast
 from unittest import mock
 
+import corpus
 from reader_table import REPOSITORY, Reader, Refused, text_of
 
 sys.path.insert(0, str(REPOSITORY / "skills" / "ejryan89-skill-core" / "scripts"))
@@ -24,7 +29,7 @@ import guidance_record
 import skill_menu
 import skill_roots
 from dotnet_solution import FileRefused, read_listed_projects
-from github_client import CommandResult, GitHubError, json_body
+from github_client import CommandResult, GitHubClient, GitHubError, body_reasons, json_body
 from skill_roots import sibling_scripts
 from xml_reader import XmlRefused
 
@@ -33,9 +38,12 @@ sys.path.insert(0, str(sibling_scripts("ejryan89-code-review-core")))
 import review_analyzers
 import review_canary
 import review_config
+import review_dispatch
 import review_flags
+import review_guard
 import review_operation
 import review_records
+import review_reviewers
 import review_run
 import review_runtime
 import review_specialists
@@ -277,6 +285,92 @@ OWNER_FIELDS = (
 )
 MATERIALIZATION_UNREAD = "the loader reads the manifest, the adapter, and the hashes by kind, and never this field"
 
+
+def _config_write(path: Path) -> object:
+    """`review_config.py write` of the case into a configuration beside it, which a refusal leaves unwritten."""
+    printed = io.StringIO()
+    with contextlib.redirect_stdout(printed):
+        code = review_config._main(["write", str(path), "--output", str(path.with_name("config.json"))])
+    if code != 0:
+        raise Refused(printed.getvalue())
+    return code
+
+
+READ_ROLE = "example"
+
+
+def _read_log_source(path: Path) -> None:
+    source = path.parents[1] / "source"
+    source.mkdir()
+    (source / "README.md").write_text("Example.\n", encoding="utf-8")
+
+
+def _read_counts(path: Path) -> object:
+    """The counts of the role's read log, which count_reads deletes once it has counted it, whatever it holds."""
+    state: dict[str, Any] = {"reads": {}}
+    review_dispatch.count_reads(path.parents[1], cast(Any, state), [READ_ROLE])
+    return state["reads"]
+
+
+READ_LOG = b'"README.md"\n{"search": "README"}\n'
+# count_reads passes over a line that is not a path of the snapshot or a search, since the guard alone writes the log,
+# and deletes the log once counted, so every case it can read is one it counts and accepts.
+READ_LOG_COUNTED = {
+    case.name: "a line that is not a path of the snapshot or a search the guard writes counts nothing"
+    for case in corpus.cases("json-lines", READ_LOG)
+    if case.content not in (corpus.DIRECTORY, corpus.LINK, corpus.UNREADABLE)
+}
+
+
+def _guard_event(path: Path) -> object:
+    """The guard on the event as its hook gives it on stdin: an event it denies is Refused."""
+    printed = io.StringIO()
+    with contextlib.redirect_stdout(printed):
+        review_guard.main(text_of(path))
+    if printed.getvalue():
+        raise Refused(printed.getvalue())
+    return None
+
+
+# A prepared run's roles, which _roles reads, and its restricted paths, which _restricted reads, each read apart.
+GUARD_ROLES = {"roles": [{"id": "example", "prompt_file": "/run/prompt.md", "result_file": "/run/result.json"}]}
+GUARD_RESTRICTED = {"restricted": {"work/issues.json": ["example"]}}
+# What a reviewer's own frontmatter leaves unsaid, the inspection takes as the widest a runtime would give it.
+NO_FRONTMATTER = "a document whose first line is not the opening rule has no frontmatter"
+REVIEWER_FRONTMATTER = {
+    **dict.fromkeys(("empty", "no_frontmatter", "bom"), NO_FRONTMATTER),
+    "nul_bytes": "the body after the frontmatter's closing line is never read as frontmatter",
+    **dict.fromkeys(("deep_nesting", "duplicate_keys"), "it reads one key, which the case does not hold"),
+}
+
+
+def _tool_grant(path: Path) -> object:
+    return review_reviewers._tool_grant("example", text_of(path))
+
+
+def _profile_model(path: Path) -> object:
+    return review_reviewers.frontmatter_value("example.md", text_of(path), "model")
+
+
+def _body_reasons(path: Path) -> object:
+    reasons = body_reasons(text_of(path))
+    if not reasons:
+        raise Refused("the body gives no reason")
+    return reasons
+
+
+# A GraphQL answer GitHub gives with one node the viewer may not read, which gh exits 1 on.
+PARTIAL_GRAPHQL = {"data": {"node": None}, "errors": [{"type": "NOT_FOUND", "message": "Could not resolve."}]}
+
+
+def _partial_graphql(path: Path) -> object:
+    output = text_of(path)
+    client = GitHubClient(lambda arguments: CommandResult(1, output, "gh: Could not resolve."))
+    return client.partial_graphql(
+        ["api", "graphql"], lambda error: isinstance(error, dict) and error.get("type") == "NOT_FOUND", retry=False
+    )
+
+
 READERS = [
     Reader(
         "check_provenance.load",
@@ -493,5 +587,86 @@ READERS = [
         (ValueError,),
         filename=str(skill_roots.PLUGIN_MANIFEST.as_posix()),
         accepts={"wrong_type:version": "it reads the manifest's name alone"},
+    ),
+    Reader(
+        "review_config._main",
+        "json",
+        _json(CONFIG),
+        _config_write,
+        (Refused,),
+        accepts={"bom": UTF8_SIG},
+    ),
+    Reader(
+        "review_dispatch.count_reads",
+        "json-lines",
+        READ_LOG,
+        _read_counts,
+        # A log it cannot stat or read raises its OSError, which check reports, never read as a role that read nothing.
+        (OSError,),
+        filename=f"run/work/reads-{READ_ROLE}.log",
+        accepts=READ_LOG_COUNTED,
+        prepare=_read_log_source,
+    ),
+    Reader(
+        "review_guard.main",
+        "json",
+        _json({"tool_name": "TodoWrite", "tool_input": {"todos": []}}),
+        _guard_event,
+        (Refused,),
+        accepts=dict.fromkeys(
+            ("wrong_type:tool_input", "wrong_type:tool_input.todos"),
+            "a tool the guard does not guard is let through before its input is read",
+        ),
+    ),
+    Reader(
+        "review_guard._roles",
+        "json",
+        _json(GUARD_ROLES),
+        lambda path: review_guard._roles(path.parent),
+        (review_guard.Denied,),
+        filename=review_guard.RUN_FILE,
+    ),
+    Reader(
+        "review_guard._restricted",
+        "json",
+        _json(GUARD_RESTRICTED),
+        lambda path: review_guard._restricted(path.parent),
+        (review_guard.Denied,),
+        filename=review_guard.RUN_FILE,
+    ),
+    Reader(
+        "review_reviewers._tool_grant",
+        "frontmatter",
+        b"---\nname: example\nallowed-tools: Read, Grep\n---\n\nBody.\n",
+        _tool_grant,
+        (review_reviewers.RuntimeContractError,),
+        # No tool list is every tool inherited, the widest grant, so the skill is inspected as one that can delegate.
+        accepts=REVIEWER_FRONTMATTER,
+    ),
+    Reader(
+        "review_reviewers.frontmatter_value",
+        "frontmatter",
+        b"---\nname: example\nmodel: opus\n---\n\nBody.\n",
+        _profile_model,
+        (review_reviewers.RuntimeContractError,),
+        # No model is the runtime's model inherited, which profile_model reports as the profile naming none.
+        accepts=REVIEWER_FRONTMATTER,
+    ),
+    Reader(
+        "github_client.body_reasons",
+        "json",
+        _json({"message": "Validation Failed", "errors": [{"message": "The listed users cannot be searched."}]}),
+        _body_reasons,
+        (Refused,),
+        accepts={"wrong_type:message": "it reads each error's message alone, never the body's own"},
+    ),
+    Reader(
+        "github_client.GitHubClient.partial_graphql",
+        "json",
+        _json(PARTIAL_GRAPHQL),
+        _partial_graphql,
+        (GitHubError,),
+        open_fields="once every error is one its caller's accept takes, it returns the body whole, and the caller "
+        "reads data and each error by kind",
     ),
 ]

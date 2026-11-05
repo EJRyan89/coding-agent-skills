@@ -48,6 +48,12 @@ to sys.stdout, so no policy check swaps a standard stream or changes the environ
 suite_discovery.pool_shared_state_problems holds the rule. main takes its streams and environment as parameters, which
 its suite, tests/test_run_validation.py, passes, and it constructs each check that judges the pull request with the
 --pr-body and --pr-title files it was given rather than setting them anywhere a check reads.
+
+Exit status:
+  0  every selected policy check and suite job passed
+  1  a policy check or suite job failed, or a last line FAILED <reason> when the runner itself crashed
+  2  a usage error, such as a -k pattern that matches nothing, -k beside --changed or --full, an empty
+     selection, a VALIDATION_JOBS that is no worker count, or legs that cannot be dealt; or a missing prerequisite
 """
 
 from __future__ import annotations
@@ -68,6 +74,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent / "validation"))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "skills" / "ejryan89-skill-core" / "scripts"))
 
 import duplication
+import exit_tables
 import fsops_platform
 import job_selection
 import kinds_table
@@ -122,6 +129,7 @@ from tools.release_notes import ReleaseNotesError
 # tests run in the pool as the regression suite beside it.
 POLICY_MODULES = (
     duplication,
+    exit_tables,
     fsops_platform,
     job_selection,
     kinds_table,

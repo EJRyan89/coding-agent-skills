@@ -27,6 +27,12 @@ offered, a deletion or removal Git refused, a confirmed worktree removal that di
 holds kept it, a directory whose deletion failed, that no longer resolves inside its area, or in which Git now tracks a
 file, or a last line FAILED <reason> when the command could not run at all. report exits 0, or 1 with its FAILED
 line. 2 is a usage error.
+
+Exit status:
+  0  every repository was cleaned, or every confirmed deletion ran, was done already, or was preserved
+  1  something needs the agent: a repository that stopped or was skipped, a confirmation the plan never offered,
+     a deletion Git refused or that failed or did not happen, or a last line FAILED <reason>
+  2  a usage error
 """
 
 from __future__ import annotations
@@ -879,8 +885,10 @@ def read_sealed(path: str | Path, what: str) -> bytes:
     """The bytes of the plan or record at `path`, named `what` in a refusal: refused unless they match the seal this
     script wrote when it last saved one there, so what they name is what a sweep recorded. A path with no seal, which
     the script never saved one at, one whose bytes changed since, and one whose seal cannot be read are refused
-    apart."""
+    apart. One whose stat fails is refused as unreadable too, before any command acts on it: every command saves the
+    plan after acting, and that save stats it."""
     try:
+        Path(path).stat()
         data = Path(path).read_bytes()
     except OSError as exc:
         raise CleanupError(f"cannot read {what} {path}: {exc}") from exc
@@ -2281,7 +2289,9 @@ def read_record(directory: Path) -> tuple[list[dict[str, Any]], list[str]]:
     except OSError as exc:
         raise CleanupError(f"cannot read the sweep record {path}: {exc}") from exc
     if not present:
-        raise CleanupError(f"{directory} holds no sweep record; name the directory a sweep printed as PLANS")
+        raise CleanupError(
+            f"{directory} holds no sweep record {SWEEP_RECORD}; name the directory a sweep printed as PLANS"
+        )
     data = read_sealed(path, "sweep record")
     try:
         record = parse_saved(data)

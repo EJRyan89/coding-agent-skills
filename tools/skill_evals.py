@@ -232,6 +232,11 @@ judged, as the citation's cells do; a run none of whose judged part ran, reviewe
 is left out of both counts, as a scenario none of whose runs held a judgment is `not run`.
 It exits 1 on any FAIL, FAILED, or DEPLOY_FAILED line, 0 otherwise, and 2 on a usage error.
 
+Exit status:
+  0  no FAIL, FAILED, or DEPLOY_FAILED line
+  1  a FAIL, FAILED, or DEPLOY_FAILED line
+  2  a usage error
+
 It records pass or fail, the model identifiers, the reviewers' effort, the runtime version, and the date,
 and nothing else: no tokens,
 cost, or timings. It calls models, so it is never part of validation; see .claude/skills/evaluate-skill/SKILL.md.

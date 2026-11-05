@@ -38,6 +38,11 @@ It prints one fact per line:
   AGENT <plugin> <agent>             an agent the plugin carries
   LEFT_OUT <item> "<reason>"         a menu item no plugin carries, and why
   FAILED <reason>                    the source cannot be read or the output cannot be written; exit 1
+
+Exit status:
+  0  the plugins were written
+  1  a last line FAILED <reason>: the source cannot be read or the output cannot be written
+  2  a usage error
 """
 
 from __future__ import annotations
@@ -118,7 +123,7 @@ def load_source(directory: Path) -> deploy_source.Source:
     try:
         return deploy_source.discover(paths, deploy_source.load_source_id(paths))
     except DeployError as exc:
-        raise BuildError(" ".join(exc.lines)) from exc
+        raise BuildError(exc.one_line()) from exc
 
 
 def load_catalogue(directory: Path) -> dict[str, dict[str, object]]:

@@ -1,6 +1,6 @@
 """Every function in the repository's code and validation's policies that reads a record through one of the shared
 readers, found by reading the code, so test_malformed_input.py can fail one that no reader table holds and no entry
-names as owed.
+names as owed or as no reader.
 
 A call counts when it names a reader of ejryan89-skill-core's on its module, as `json_reader.loads(...)`, or by a name
 imported from it, as `from json_reader import loads`: `json_reader.loads`, `json_reader.raw_decode`, and
@@ -108,26 +108,46 @@ def _definitions(tree: ast.Module) -> dict[str, ast.AST]:
     return found
 
 
-def _called(node: ast.AST, names: set[str]) -> set[str]:
-    """The module's own functions and methods `node` calls or passes on, by bare name or as `self.method`."""
+def _tables(tree: ast.Module, names: set[str]) -> dict[str, set[str]]:
+    """Each module-level name bound to a value that names the module's own functions, such as a table of parsers by
+    file name, with the functions it names."""
+    found: dict[str, set[str]] = {}
+    for node in tree.body:
+        if isinstance(node, ast.Assign):
+            targets, value = node.targets, node.value
+        elif isinstance(node, ast.AnnAssign) and node.value is not None:
+            targets, value = [node.target], node.value
+        else:
+            continue
+        named = {each.id for each in ast.walk(value) if isinstance(each, ast.Name) and each.id in names}
+        found |= {target.id: named for target in targets if isinstance(target, ast.Name) and named}
+    return found
+
+
+def _called(node: ast.AST, names: set[str], tables: dict[str, set[str]]) -> set[str]:
+    """The module's own functions and methods `node` calls or passes on, by bare name, as `self.method`, or through a
+    module-level table that names them."""
     found: set[str] = set()
     for each in ast.walk(node):
-        if isinstance(each, ast.Name) and each.id in names:
-            found.add(each.id)
+        if isinstance(each, ast.Name):
+            found |= ({each.id} & names) | tables.get(each.id, set())
         elif isinstance(each, ast.Attribute) and isinstance(each.value, ast.Name) and each.value.id in {"self", "cls"}:
             found |= {name for name in names if name.endswith(f".{each.attr}")}
     return found
 
 
 def reached(module: str, text: str, held: set[str]) -> set[str]:
-    """The functions of one module a held reader of the same module reaches by calling its own functions, held
-    readers included: a helper such a reader calls is read through that reader's table entry."""
-    definitions = _definitions(ast.parse(text))
+    """The functions of one module a held reader of the same module reaches by calling its own functions, directly or
+    through a module-level table of them, held readers included: a helper such a reader calls is read through that
+    reader's table entry."""
+    tree = ast.parse(text)
+    definitions = _definitions(tree)
     names = set(definitions)
+    tables = _tables(tree, names)
     seen = {name for name in names if f"{module}.{name}" in held}
     queue = list(seen)
     while queue:
-        for name in _called(definitions[queue.pop()], names) - seen:
+        for name in _called(definitions[queue.pop()], names, tables) - seen:
             seen.add(name)
             queue.append(name)
     return {f"{module}.{name}" for name in seen}

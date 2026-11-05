@@ -39,6 +39,11 @@ Every line is one fact:
 
 Exit status 0 means the body was drafted, the check found nothing, or the pull request opened; 1 one line per
 problem, and open opens nothing, or a last line FAILED <reason>; 2 a usage error.
+
+Exit status:
+  0  the body was drafted, the check found nothing, or the pull request opened
+  1  one line per problem, and open opens nothing, or a last line FAILED <reason>
+  2  a usage error
 """
 
 from __future__ import annotations
@@ -270,7 +275,9 @@ def template_of(git: GitClient, repository: Path) -> tuple[Path, Path]:
     top = top_of(git, repository)
     template = find_template(top)
     if template is None:
-        raise PullRequestError("no pull request template in .github/, the top folder, or docs/")
+        raise PullRequestError(
+            f"no pull request template, a {TEMPLATE_NAME} file, in .github/, the top folder, or docs/"
+        )
     return top, template
 
 

@@ -19,11 +19,11 @@ The Markdown report states its result on one line, before the SUMMARY lines:
     RESULT ERRORS         one or more ERROR-level findings
     RESULT INCONCLUSIVE   ambiguous, unconfigured, or alternative authority
 
-Exit codes:
-    0  RESULT COMPLIANT
-    1  RESULT ERRORS or RESULT INCONCLUSIVE, or a last line FAILED <reason>
-       (the root is not a Git repository, or --provenance could not read the provenance file)
-    2  usage error
+Exit status:
+  0  RESULT COMPLIANT
+  1  RESULT ERRORS or RESULT INCONCLUSIVE, or a last line FAILED <reason>
+     (the root is not a Git repository, or --provenance could not read the provenance file)
+  2  a usage error
 """
 
 from __future__ import annotations
@@ -674,9 +674,13 @@ def _inventory_recursive_files(root: Path, walk: Listing) -> list[Finding]:
         for name in RECURSIVE_INVENTORY_NAMES
         for rel in (path.relative_to(root).as_posix() for path in walk.paths if path.name == name)
     ]
+    # The root's own instruction files, which the walk passes by when a folder or anything else stands in a file's
+    # place: examined here, so such a thing is reported as CLAUDE.md's is and never taken for no file.
+    passed_by = [root / name for name in RECURSIVE_INVENTORY_NAMES if root / name not in walk.paths]
     unreadable = [
         *_inventory_unreadable(root, [path for path in walk.paths if path.name == "AGENTS.md"]),
         *_inventory_unreadable(root, [path for path in walk.paths if path.name != "AGENTS.md"], read=False),
+        *_inventory_unreadable(root, passed_by, read=False),
     ]
     return [*unreadable, *found, *outside_link_findings(root, walk)]
 
@@ -1758,6 +1762,9 @@ def _judge_manifest(root: Path, data: Any) -> tuple[str | None, dict[str, Any], 
     canonical = data.get("canonicalSource")
     if not data.get("generatedBy") or not canonical:
         return None, {}, []
+    if not isinstance(data["generatedBy"], str) or not isinstance(canonical, str):
+        # A generator or source that is not a name signals nothing: read as one, it would name an alternative source.
+        return None, {}, [_manifest_authority_finding("WARNING", "Manifest names its generator or source in no text")]
     if canonical != "CLAUDE.md":
         return (
             "alternative",
@@ -3107,6 +3114,9 @@ def hook_problems(rules: HookRules, hooks: Any) -> list[tuple[str, str]]:
             if not isinstance(handlers, list):
                 problems.append(("ERROR", f"Hook event '{event}': each matcher group needs a 'hooks' list"))
                 continue
+            # A matcher that is not text matches no tool the runtime names, so its hooks never run.
+            if not isinstance(group.get("matcher", ""), str):
+                problems.append(("ERROR", f"Hook event '{event}': a matcher must be text naming the tools it matches"))
             for handler in handlers:
                 problems.extend(_hook_handler_problems(rules, event, handler))
     return problems

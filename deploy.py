@@ -1,4 +1,11 @@
-"""Deploy this repository's skills, or configure them with `python deploy.py configure`. See README.md."""
+"""Deploy this repository's skills, or configure them with `python deploy.py configure`. See README.md.
+
+Exit status:
+  0    the command did its job, a dry run and --help included
+  1    a last line FAILED <reason>, an ERROR the deployer printed, or a Python older than the floor below
+  2    a usage error
+  130  Ctrl+C, or a recovery the user cancelled
+"""
 
 # Keep this module importable by a Python 3 older than the floor, so it reaches the version check below: nothing
 # from the deployer package until the check passes. ejryan89-skill-core's console module, imported first for the runner
@@ -15,6 +22,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parent / "skills" / "ejryan89-sk
 from console import run_main
 
 MINIMUM_PYTHON = (3, 11, 4)
+
+# The returns tests/validation/exit_tables.py cannot follow from main into the deployer, with where their codes come
+# from; the table above names them.
+EXIT_CODES_ALLOWED = {
+    "exc.code": "argparse's ParserExit in deployer/arguments.py: 0 after --help, 2 after a usage error",
+    "top.parse_known_args(arguments)": "the namespace deployer/arguments.py parses, which deployer/cli.py returns "
+    "only when it is an int, so it is no exit code",
+}
 
 
 def require_supported_python(version_info: Sequence[int | str] = sys.version_info) -> None:

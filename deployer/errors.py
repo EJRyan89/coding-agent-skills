@@ -60,6 +60,11 @@ class DeployError(Exception):
         self.lines = lines
         self.exit_code = exit_code
 
+    def one_line(self) -> str:
+        """The error's lines joined on one line, for a tool that reports it as its FAILED or ERROR line, without the
+        hint to rerun deploy.py with --debug, which such a tool does not take."""
+        return " ".join(line for line in self.lines if line != DEBUG_HINT)
+
 
 def print_error(error: DeployError, debug: bool = False) -> None:
     """Print an error's lines to stderr between blank lines, like every other deploy.py output.

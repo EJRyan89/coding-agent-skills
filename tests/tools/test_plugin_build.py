@@ -403,6 +403,18 @@ def test_a_source_the_deployer_refuses_is_a_build_error(source: Source) -> None:
         assembled(source)
 
 
+def test_a_source_the_deployer_cannot_read_is_one_line_naming_it_without_the_deployer_s_debug_hint(
+    source: Source,
+) -> None:
+    # A source folder that cannot be listed is the deployer's OSError refusal, which ends with its --debug hint.
+    with stat_denied(source.root, stat=False), pytest.raises(plugin_build.BuildError) as raised:
+        plugin_build.load_source(source.root)
+    message = str(raised.value)
+    assert "Could not read the source's folder" in message
+    assert len(message.splitlines()) == 1
+    assert "--debug" not in message
+
+
 def test_an_archive_depends_on_its_files_alone_and_holds_each_with_a_fixed_time_and_mode() -> None:
     first = plugin_build.archive_bytes({"b/two.txt": b"2", "a/one.md": b"1"})
     second = plugin_build.archive_bytes({"a/one.md": b"1", "b/two.txt": b"2"})

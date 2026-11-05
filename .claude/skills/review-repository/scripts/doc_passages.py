@@ -38,6 +38,11 @@ so an absent snapshot never reads as a change no document names.
 Prints `PASSAGES <found> given=<n> excluded=<n>`. Exit status 0 means it wrote passages or excluded documents, which
 opens the route; 1 that every document it searches was read and none names what changed, which closes it; 2 a
 usage error or a last line FAILED <reason>, which fails the review.
+
+Exit status:
+  0  it wrote passages or excluded documents, which opens the route
+  1  every document it searches was read and none names what changed, which closes the route
+  2  a usage error or a last line FAILED <reason>, which fails the review
 """
 
 from __future__ import annotations

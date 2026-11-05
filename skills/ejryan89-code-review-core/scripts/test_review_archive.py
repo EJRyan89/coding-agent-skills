@@ -17,7 +17,16 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
 from file_presence import NotADirectory
-from review_archive import ArchiveError, commit_record, latest_record, list_versions, pull_directory, record_files
+from review_archive import (
+    ArchiveError,
+    archive_head,
+    commit_record,
+    latest_record,
+    list_versions,
+    pull_directory,
+    pull_records,
+    record_files,
+)
 from review_records import ReviewRecord, build_record, validate_adapter_result
 from test_review_records import valid_adapter_result, valid_request
 
@@ -133,6 +142,28 @@ class ArchiveTests(unittest.TestCase):
             for name in names:
                 (directory / name).write_text("{}", encoding="utf-8")
             self.assertEqual([*range(1, 12), 100], list_versions(directory))
+
+    def test_a_record_missing_below_the_latest_is_refused_naming_it_never_read_as_a_shorter_history(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            for version in (1, 2, 3):
+                commit_record(
+                    root,
+                    "example/one",
+                    12,
+                    self._record("example/one", 12, version),
+                    expected_latest_version=version - 1 or None,
+                )
+            directory = pull_directory(root, "example/one", 12)
+            for name in ("review.json", "review-v2.json"):
+                original = (directory / name).read_bytes()
+                (directory / name).unlink()
+                for reader, read in (("pull_records", pull_records), ("archive_head", archive_head)):
+                    with self.subTest(name=name, reader=reader), self.assertRaises(ArchiveError) as caught:
+                        read(root, "example/one", 12)
+                    self.assertIn(name, str(caught.exception))
+                (directory / name).write_bytes(original)
+            self.assertEqual(3, len(pull_records(root, "example/one", 12)))
 
     def test_record_files_are_every_pair_of_a_repository_beside_its_version_chains(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

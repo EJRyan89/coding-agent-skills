@@ -20,6 +20,11 @@ NOT_FOUND and its AVAILABLE lines, or AMBIGUOUS lines, with STOP <message>, the 
 prints only that line for an empty name; it exits 1 after STOP. A missing or unreadable input prints
 FAILED <reason> as its last line and exits 1; only a usage error exits 2.
 
+Exit status:
+  0  the command printed its facts
+  1  a STOP, UNREADABLE, or NOT_A_CHECK line, or a last line FAILED <reason>
+  2  a usage error
+
 Plugins: a Claude Code plugin's root holds its manifest, its skills under skills/, its agents under agents/, and the
 hooks it runs in every session while enabled in hooks/hooks.json, at the paths ejryan89-skill-core's skill_menu names.
 locate's NAME may be <plugin>:<skill>, as Claude Code names a plugin's skill, and may be followed by a space and a
