@@ -2211,6 +2211,17 @@ def _assignment_targets(node: ast.Assign | ast.AnnAssign) -> Iterator[ast.expr]:
             yield target
 
 
+def _read_where_bound(node: ast.Attribute, scope: str, libraries: _ForeignLibraries) -> bool:
+    """Whether an attribute read names the library its own class binds: a plain `self`, `cls`, or class name as the
+    receiver, and that class's binding of the attribute. A read off ctypes's own namespaces, as
+    `ctypes.windll.kernel32`, loads the library by its name, which the policy keys itself, so it is no class's read."""
+    receiver = node.value
+    if any(reference.name in LIBRARY_NAMESPACES for reference in resolved_references(receiver, libraries.resolver)):
+        return True
+    plain = isinstance(receiver, ast.Name) and (receiver.id in ("self", "cls") or receiver.id in libraries.class_names)
+    return plain and place_key(node, scope, libraries.class_names) in libraries.places
+
+
 def ctypes_declaration_problems(root: Path, files: list[Path]) -> list[str]:
     """Each call of a ctypes foreign function whose module does not assign that library's function both argtypes and
     restype, argtypes excepted for a function every call gives no arguments, that no CTYPES_ALLOWED entry
@@ -2241,24 +2252,23 @@ def ctypes_declaration_problems(root: Path, files: list[Path]) -> list[str]:
             for node, scope in scoped_nodes(tree.body)
             if isinstance(node, ast.Subscript) and libraries.libraries(node.value)
         ]
-        # A library a class binds to `self.x`, or in its body, is read only through that class: a read through `self`,
-        # `cls`, or a class's name that does not bind it, as a subclass's, is refused rather than followed through the
-        # class's bases.
+        # A library a class binds to `self.x`, or in its body, is read only through that class. A read of the
+        # attribute is accepted only when its receiver is a plain `self`, `cls`, or a class's name and that class
+        # binds it; any other read, through a subclass, `super()`, `type(self)`, `self.__class__`, or any other
+        # receiver, is refused rather than followed through the class's bases.
         held = {key.rpartition(".")[2] for key in libraries.places if key.partition(".")[0] in libraries.class_names}
         found += [
             (
                 node.lineno,
                 scope,
-                f"reads the ctypes library {ast.unparse(node)} through a class that does not bind it; bind the library "
-                f"in the class it is read through, or state why in {CTYPES_ALLOWANCE}",
+                f"reads the ctypes library {ast.unparse(node)} other than through the class that binds it; read it "
+                f"as self, cls, or that class's name in the class that binds it, or state why in {CTYPES_ALLOWANCE}",
             )
             for node, scope in scoped_nodes(tree.body)
             if isinstance(node, ast.Attribute)
             and isinstance(node.ctx, ast.Load)
-            and isinstance(node.value, ast.Name)
-            and (node.value.id in ("self", "cls") or node.value.id in libraries.class_names)
             and node.attr in held
-            and place_key(node, scope, libraries.class_names) not in libraries.places
+            and not _read_where_bound(node, scope, libraries)
         ]
         for call, scope, function in calls:
             missing = [
@@ -4323,12 +4333,24 @@ def _spelled_names(tree: ast.Module) -> dict[str, str]:
     return spelled
 
 
-def _direct(node: ast.expr, resolver: CallableResolver, spelled: dict[str, str]) -> bool:
+@dataclass(frozen=True)
+class _ModuleNames:
+    """What rule 3 reads a module's names by: its resolver, its import aliases, which _reference falls back to,
+    and the names its top level spells (_spelled_names)."""
+
+    resolver: CallableResolver
+    aliases: dict[str, str]
+    spelled: dict[str, str]
+
+
+def _direct(node: ast.expr, names: _ModuleNames) -> bool:
     """Whether an expression spells its value where it is read: a literal, a builtin, a name the module's top level
     binds by an import or a definition or once to a literal, an attribute of an imported module, an operation on such
     values, or a call of an imported, defined, or builtin callable given such arguments. A parameter, a local, a class
     attribute, a module-level name bound to anything else, a lambda, and a lookup by name are refused, never
-    followed."""
+    followed. A callee is named through _reference, the lookup rules 1 and 2 use, so a name two import statements
+    bind is read through the module's imports here too."""
+    resolver, spelled = names.resolver, names.spelled
     if _is_literal(node):
         return True
     if isinstance(node, ast.Name):
@@ -4345,20 +4367,20 @@ def _direct(node: ast.expr, resolver: CallableResolver, spelled: dict[str, str])
         held = resolver.scopes[id(root)].owner(root.id)
         return held is not None and held.parent is None and spelled.get(root.id) == IMPORTED
     if isinstance(node, ast.UnaryOp):
-        return _direct(node.operand, resolver, spelled)
+        return _direct(node.operand, names)
     if isinstance(node, ast.BinOp):
-        return _direct(node.left, resolver, spelled) and _direct(node.right, resolver, spelled)
+        return _direct(node.left, names) and _direct(node.right, names)
     if isinstance(node, ast.Tuple | ast.List | ast.Set):
-        return all(not isinstance(item, ast.Starred) and _direct(item, resolver, spelled) for item in node.elts)
+        return all(not isinstance(item, ast.Starred) and _direct(item, names) for item in node.elts)
     if isinstance(node, ast.Call):
         callee = node.func
         constant = isinstance(callee, ast.Name) and spelled.get(callee.id) == CONSTANT
         return (
-            resolver.name(callee) not in NAME_LOOKUPS | INDIRECTION_CALLABLES
+            _reference(callee, resolver, names.aliases) not in NAME_LOOKUPS | INDIRECTION_CALLABLES
             and not constant
-            and _direct(callee, resolver, spelled)
-            and all(not isinstance(item, ast.Starred) and _direct(item, resolver, spelled) for item in node.args)
-            and all(keyword.arg is not None and _direct(keyword.value, resolver, spelled) for keyword in node.keywords)
+            and _direct(callee, names)
+            and all(not isinstance(item, ast.Starred) and _direct(item, names) for item in node.args)
+            and all(keyword.arg is not None and _direct(keyword.value, names) for keyword in node.keywords)
         )
     return False
 
@@ -4402,9 +4424,7 @@ def _names_a_time(call: ast.Call) -> bool:
     )
 
 
-def _policed_refusals(
-    call: ast.Call, policed: str, resolver: CallableResolver, spelled: dict[str, str]
-) -> Iterator[str]:
+def _policed_refusals(call: ast.Call, policed: str, names: _ModuleNames) -> Iterator[str]:
     """Why a policed call does not spell its arguments as rule 3 asks."""
     if any(isinstance(item, ast.Starred) for item in call.args) or any(item.arg is None for item in call.keywords):
         yield f"unpacks arguments into {policed} with * or **"
@@ -4420,7 +4440,7 @@ def _policed_refusals(
         if keyword.arg in LITERAL_KEYWORDS.get(policed, ()):
             if not (isinstance(value, ast.Constant) and isinstance(value.value, str)):
                 yield f"gives {policed} a {keyword.arg}= that is not a string literal"
-        elif keyword.arg in direct and not _direct(value, resolver, spelled):
+        elif keyword.arg in direct and not _direct(value, names):
             yield (
                 f"gives {policed} a {keyword.arg}= that is neither a literal nor an imported, defined, builtin, or "
                 "literal-bound name"
@@ -4436,13 +4456,13 @@ def policed_call_problems(root: Path, files: list[Path]) -> list[str]:
         resolver = CallableResolver(tree)
         parents = _parents(tree)
         aliases = import_aliases(tree)
-        spelled = _spelled_names(tree)
+        names = _ModuleNames(resolver, aliases, _spelled_names(tree))
         found: list[tuple[int, str, str]] = []
         for node, scope in scoped_nodes(tree.body):
             if _names_add_argument(node, resolver, aliases) and not _called(node, parents):
                 found.append((getattr(node, "lineno", 0), scope, f"refers to {ADD_ARGUMENT} other than calling it"))
             elif isinstance(node, ast.Call) and (policed := _policed(node, resolver, aliases)):
-                refusals = _policed_refusals(node, policed, resolver, spelled)
+                refusals = _policed_refusals(node, policed, names)
                 found += [(node.lineno, scope, refusal) for refusal in refusals]
         found = [
             (

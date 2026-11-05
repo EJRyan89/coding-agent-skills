@@ -5264,6 +5264,10 @@ OWNER_ONLY_ROWS = {
         "import json_reader\nimport json_writer\n\n\ndef f(t):\n    return json_reader.loads(json_writer.dumps(t))\n"
     ),
     "a runner's class in an annotation": "def f(t: subprocess.Popen[str]) -> subprocess.Popen[str]:\n    return t\n",
+    "a runner's class in an annotated assignment": (
+        "PROCESS: subprocess.Popen[str] | None = None\n\n\ndef f():\n"
+        "    local: subprocess.Popen[bytes] | None = None\n    return local\n"
+    ),
 }
 
 
@@ -5350,6 +5354,18 @@ POLICED_CALL_ROWS = {
     ),
     "a constant an assignment expression binds": (
         "if (WAIT := 30):\n    pass\n\n\ndef f(p):\n"
+        "    p.add_argument('--wait', type=seconds_option.positive_seconds, default=WAIT)  # read\n"
+    ),
+    "a constant bound to an operation on literals": (
+        "WAIT = 30 * 2\n\n\ndef f(p):\n"
+        "    p.add_argument('--wait', type=seconds_option.positive_seconds, default=WAIT)\n"
+    ),
+    "a constant bound to a dict of literals": (
+        "WAIT = {'a': 1, 'b': (2, 3)}\n\n\ndef f(p):\n"
+        "    p.add_argument('--wait', type=seconds_option.positive_seconds, default=WAIT)\n"
+    ),
+    "a constant bound to a dict that spreads another": (
+        "OTHER = {'a': 1}\nWAIT = {**OTHER}\n\n\ndef f(p):\n"
         "    p.add_argument('--wait', type=seconds_option.positive_seconds, default=WAIT)  # read\n"
     ),
     "a constant bound to a literal twice": (
@@ -5456,6 +5472,56 @@ SUPERSEDED_RESOLVER_ROWS = [
         "        return B.lib.CloseHandle(handle)  # refused: ctypes\n",
         CTYPES_OWNER,
         id="a base class's library read through the subclass's name, inside a ctypes owner",
+    ),
+    pytest.param(
+        "class A:\n    lib = ctypes.WinDLL('kernel32')\n\n\nclass B(A):\n    def close(self, handle):\n"
+        "        return super().lib.CloseHandle(handle)  # refused: ctypes\n",
+        CTYPES_OWNER,
+        id="a base class's library read through super()",
+    ),
+    pytest.param(
+        "class A:\n    lib = ctypes.WinDLL('kernel32')\n\n\nclass B(A):\n    def close(self, handle):\n"
+        "        return type(self).lib.CloseHandle(handle)  # refused: ctypes\n",
+        CTYPES_OWNER,
+        id="a base class's library read through type(self)",
+    ),
+    pytest.param(
+        "class A:\n    lib = ctypes.WinDLL('kernel32')\n\n\nclass B(A):\n    def close(self, handle):\n"
+        "        return self.__class__.lib.CloseHandle(handle)  # refused: ctypes\n",
+        CTYPES_OWNER,
+        id="a base class's library read through self.__class__",
+    ),
+    pytest.param(
+        "class A:\n    lib = ctypes.WinDLL('kernel32')\n\n\nclass B(A):\n    def close(self, handle):\n"
+        "        return [self][0].lib.CloseHandle(handle)  # refused: ctypes\n",
+        CTYPES_OWNER,
+        id="a base class's library read through a receiver no list names",
+    ),
+    pytest.param(
+        "class A:\n    lib = ctypes.WinDLL('kernel32')\n\n    def close(self, handle):\n"
+        "        A.lib.CloseHandle.argtypes = [ctypes.c_void_p]\n        A.lib.CloseHandle.restype = ctypes.c_int\n"
+        "        return self.lib.CloseHandle(handle), cls_read(A.lib)\n\n\ndef cls_read(lib):\n    return lib\n",
+        CTYPES_OWNER,
+        id="a library read through self and its own class's name, read",
+    ),
+    pytest.param(
+        "def f(p):\n    p.add_argument('--x', type=importlib.import_module('m'))  # refused: indirection, policed\n",
+        SCRIPT,
+        id="a module loaded by name as a type, in a module that imports importlib twice",
+    ),
+    pytest.param(
+        "def f(t):\n    match os.path:\n"
+        "        case object(commonpath=common) | object(commonprefix=common):  # refused: owner-only\n"
+        "            return common(t)\n",
+        SCRIPT,
+        id="an owner-only callable an alternative of a class pattern binds",
+    ),
+    pytest.param(
+        "def f(t):\n    match t:\n        case [object(commonpath=common)]:\n            return common\n"
+        "        case {'k': object(commonpath=common)}:\n            return common\n"
+        "        case object(object(commonpath=common)):\n            return common\n",
+        SCRIPT,
+        id="a sequence's, a mapping's, and a positional pattern's keyword, which read no subject's attribute",
     ),
     pytest.param(
         "def f(t):\n    match os.path:\n        case object(commonpath=common):  # refused: owner-only\n"
