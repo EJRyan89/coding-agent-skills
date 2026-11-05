@@ -68,6 +68,7 @@ from frontmatter import split as split_frontmatter
 from link_probe import is_link_or_junction
 from markdown_literal import markdown_line
 from path_containment import within
+from typed_fields import FieldError, FieldReader
 
 # ---------------------------------------------------------------------------
 # Finding model
@@ -567,8 +568,9 @@ READ_FILES: list[str] = [
 # Where Claude Code's memory page reads a project's CLAUDE.md: the root, or .claude/CLAUDE.md.
 CLAUDE_MD_FILES: tuple[str, ...] = ("CLAUDE.md", ".claude/CLAUDE.md")
 # The file the memory page has Claude Code read as the project's instructions when no CLAUDE.md is present, from
-# CLAUDE_AGENTS_MD_SINCE on.
+# CLAUDE_AGENTS_MD_SINCE on, and while no CLAUDE_LOCAL_MD is.
 CLAUDE_AGENTS_MD = "AGENTS.md"
+CLAUDE_LOCAL_MD = "CLAUDE.local.md"
 CLAUDE_AGENTS_MD_SINCE = "v2.1.277"
 
 
@@ -1473,15 +1475,18 @@ def derive_file_scope(root: Path) -> dict[str, list[str]]:
     recognized generator: check 3 of references/audit-policy.md.
 
     Claude Code by a CLAUDE.md where its memory page reads one, or by a root AGENTS.md, which the page has it read in
-    place of a CLAUDE.md; Codex by a root AGENTS.md or AGENTS.override.md, a .codex folder, or skills under
-    .agents/skills; and Copilot CLI and app and code review by a .github folder, since a repository hosted on GitHub has
-    its CLAUDE.md and AGENTS.md read by them without any setting of its own. The cloud agent needs its setup workflow.
+    place of a CLAUDE.md while no CLAUDE.local.md is present; Codex by a root AGENTS.md or AGENTS.override.md, a .codex
+    folder, or skills under .agents/skills; and Copilot CLI and app and code review by a .github folder, since a
+    repository hosted on GitHub has its CLAUDE.md and AGENTS.md read by them without any setting of its own. The cloud
+    agent needs its setup workflow.
     JetBrains and VS Code read instructions only through settings and Copilot's own files, which no file shows, so only
     a manifest targets them.
     """
     runtimes: list[str] = []
     # The inventory reports each of these paths that cannot be examined, or holds the wrong kind, as an ERROR.
-    if any(found_file(root / name) for name in (*CLAUDE_MD_FILES, CLAUDE_AGENTS_MD)):
+    if any(found_file(root / name) for name in CLAUDE_MD_FILES) or (
+        found_file(root / CLAUDE_AGENTS_MD) and not found_file(root / CLAUDE_LOCAL_MD)
+    ):
         runtimes.append("claude")
     if (
         any(found_file(root / name) for name in CODEX_INSTRUCTION_FILES)
@@ -2937,7 +2942,6 @@ def check_instruction_layering(
 
 CLAUDE_SETTINGS = ".claude/settings.json"
 CLAUDE_RULES = ".claude/rules"
-CLAUDE_LOCAL_MD = "CLAUDE.local.md"
 # The memory page's target length for a CLAUDE.md file or a rule.
 CLAUDE_MD_TARGET_LINES = 200
 # The permissions defaultMode values the settings reference lists, and those it says do not take effect from project
@@ -2968,6 +2972,8 @@ class HookRules:
 
 
 DEFAULT_HOOK_TIMEOUT = 600
+# The reader of a hook's timeout, which a number must pass before it is compared.
+FIELDS = FieldReader()
 CLAUDE_HOOKS = HookRules(
     runtime="Claude Code",
     events=frozenset(
@@ -3122,6 +3128,15 @@ def hook_problems(rules: HookRules, hooks: Any) -> list[tuple[str, str]]:
     return problems
 
 
+def _positive_seconds(value: object) -> bool:
+    """Whether a hook's timeout is a positive number of seconds: finite, as a TOML `inf` or `nan` is not, and never a
+    boolean."""
+    try:
+        return FIELDS.number(value, "timeout") > 0
+    except FieldError:
+        return False
+
+
 def _hook_handler_problems(rules: HookRules, event: str, handler: Any) -> list[tuple[str, str]]:
     """The severity and message of each problem one hook handler has."""
     if not isinstance(handler, dict):
@@ -3155,7 +3170,7 @@ def _hook_handler_problems(rules: HookRules, event: str, handler: Any) -> list[t
                     "seconds for it",
                 )
             )
-    elif isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or timeout <= 0:
+    elif not _positive_seconds(timeout):
         problems.append(("ERROR", f"Hook on '{event}': timeout must be a positive number of seconds"))
     on_failure = handler.get("onFailure")
     if rules.on_failure and on_failure is not None:

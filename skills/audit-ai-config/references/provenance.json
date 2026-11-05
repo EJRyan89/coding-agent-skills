@@ -287,7 +287,7 @@
         "decision": "The manifest is editable, so the scope it declares is compared with the literal targets of a recognized generator, read without running it: check 3 of references/audit-policy.md."
       },
       {
-        "decision": "Without a manifest or a generator, the scope is the runtimes and surfaces the repository's own files show it serves, a CLAUDE.md or a root AGENTS.md for Claude Code, a root AGENTS.md, .codex, or .agents/skills for Codex, and a .github folder for Copilot's CLI, app, and code review, which read those files with no setting of the repository's own: check 3 of references/audit-policy.md."
+        "decision": "Without a manifest or a generator, the scope is the runtimes and surfaces the repository's own files show it serves, a CLAUDE.md, or a root AGENTS.md with no CLAUDE.local.md, for Claude Code, a root AGENTS.md, .codex, or .agents/skills for Codex, and a .github folder for Copilot's CLI, app, and code review, which read those files with no setting of the repository's own: check 3 of references/audit-policy.md."
       },
       {
         "page": "https://code.claude.com/docs/en/memory",
