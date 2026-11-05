@@ -143,7 +143,7 @@ def main(arguments: list[str] | None = None) -> int:
             lines = source_file(args.run, args.role, args.path)
         else:
             lines = source_search(args.run, args.role, args.pattern)
-    except (SourceError, RuntimeContractError, OSError) as exc:
+    except (SourceError, RuntimeContractError, OSError, json_writer.JsonWriteRefused) as exc:
         print(f"FAILED {exc}")
         return 1
     for line in lines:

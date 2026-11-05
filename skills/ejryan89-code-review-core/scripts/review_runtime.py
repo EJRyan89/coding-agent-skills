@@ -2428,7 +2428,7 @@ def verify_github_tarball(archive: Path, tree: Any, *, repository: str, commit: 
     try:
         expected = _listed_blobs(tree)
         actual = _tarball_blobs(archive, "sha1" if len(commit) == 40 else "sha256")
-    except (RuntimeContractError, tarfile.TarError, EOFError, OSError) as exc:
+    except (RuntimeContractError, tarfile.TarError, EOFError, OSError, json_writer.JsonWriteRefused) as exc:
         raise RuntimeContractError(f"{where} cannot be checked: {exc}; {fix}") from exc
     differing = sorted({path for path, _, _ in (expected - actual) + (actual - expected)})
     if differing:

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import contextlib
+import io
 import os
 import tempfile
 import unittest
@@ -11,6 +13,7 @@ from typing import Any
 from unittest import mock
 
 from harness import DeployerTestCase
+from json_writer import JsonWriteRefused
 
 from deployer import errors
 
@@ -159,6 +162,17 @@ class ConvertedTests(unittest.TestCase):
                 self.assertEqual(lines, converted.lines)
                 self.assertEqual(130, converted.exit_code)
                 self.assertIs(interrupt, converted.__cause__)
+
+    def test_a_value_json_writer_refuses_ends_naming_the_action_and_what_it_holds(self) -> None:
+        refused = JsonWriteRefused("the value holds NaN or an infinity, which JSON does not define")
+        with contextlib.redirect_stderr(io.StringIO()) as stderr:
+            code = errors.fail(refused, False, "render alpha")
+        self.assertEqual(1, code)
+        self.assertEqual(
+            "\nERROR: Could not render alpha: the value holds NaN or an infinity, which JSON does not define\n"
+            f"{DEBUG_HINT}\n\n",
+            stderr.getvalue(),
+        )
 
     def test_any_other_exception_is_named_as_unexpected(self) -> None:
         self.assertEqual("ERROR: Unexpected RuntimeError: boom", errors.named(RuntimeError("boom"), "finish recovery"))

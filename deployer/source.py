@@ -500,6 +500,8 @@ def _discover_agents(paths: Paths) -> dict[str, Path]:
 def discover(paths: Paths, source_id: str) -> Source:
     try:
         return _discover(paths, source_id)
+    except json_writer.JsonWriteRefused as exc:
+        raise DeployError(f"cannot read the skill source: {exc}") from exc
     except OSError as exc:
         raise os_error(
             exc, "read the skill source", "Check that this checkout is complete and that you can read it, then retry."

@@ -2366,6 +2366,9 @@ def powershell_events(command: str, reading: Reading) -> dict[str, Any] | None:
     except OSError as exc:
         reading.cannot_read(f"could not start pwsh ({exc})")
         return None
+    except json_writer.JsonWriteRefused as exc:
+        reading.cannot_read(f"could not hand pwsh the command ({exc})")
+        return None
     try:
         output = json_reader.loads(result.stdout.decode("utf-8", "replace"))
     except ValueError:

@@ -363,7 +363,7 @@ def main(arguments: list[str] | None = None) -> int:
         source, catalogue = load_source(options.source), load_catalogue(options.source)
         assembly = assemble(source, catalogue, options.version, load_readme(options.source))
         lines = write(assembly, output_directory(options.output, options.source), archive=options.archive)
-    except (BuildError, OSError) as exc:
+    except (BuildError, OSError, json_writer.JsonWriteRefused) as exc:
         print(f"FAILED {flat_text(str(exc))}")
         return 1
     print("\n".join(lines))

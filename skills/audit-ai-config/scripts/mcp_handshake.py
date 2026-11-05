@@ -348,11 +348,14 @@ def handshake(root: Path, entry: dict[str, Any], timeout: float) -> str:
             session = Session(running)
             try:
                 return _initialize_and_list(session)
-            except OSError as error:
+            except (OSError, json_writer.JsonWriteRefused) as error:
                 raise RuntimeError(session.exited() or f"could not talk to the server: {error}") from error
             finally:
                 session.end_requests()
-    except OSError as error:  # talking to the server raises RuntimeError above, so this is starting it
+    except (
+        OSError,
+        json_writer.JsonWriteRefused,
+    ) as error:  # talking to the server raises RuntimeError above, so this is starting it
         raise RuntimeError(f"could not start: {error}") from error
 
 

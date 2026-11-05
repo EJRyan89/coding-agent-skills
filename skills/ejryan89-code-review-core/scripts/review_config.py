@@ -638,7 +638,7 @@ def load_config(path: Path | None = None) -> dict[str, Any]:
     selected_path = path or default_config_path()
     try:
         return validate_config(read_json(selected_path))
-    except PersistenceError as exc:
+    except (PersistenceError, json_writer.JsonWriteRefused) as exc:
         raise ConfigurationError(str(exc)) from exc
 
 

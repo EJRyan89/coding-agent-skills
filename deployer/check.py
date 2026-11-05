@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 
+import json_writer
 from pdf_tool import skipped_text
 
 from . import manifest, platform_support, source, source_commit, tools
@@ -214,7 +215,7 @@ def execute(namespace: argparse.Namespace, paths: Paths) -> int:
         checkout = source_commit.is_checkout(paths.source_dir)
         deploy_lines = _deploy_lines(checkout)
         skill_lines = [*_skill_lines(src, owned, checkout), *_setting_lines()]
-    except (DeployError, OSError, KeyboardInterrupt) as exc:
+    except (DeployError, OSError, json_writer.JsonWriteRefused, KeyboardInterrupt) as exc:
         return fail(exc, debug, "finish the check")
     print("")
     print(f"Source: {source.label(src.source_id, src.name)}")
