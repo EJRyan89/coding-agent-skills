@@ -184,6 +184,8 @@ def test_the_journal_reads_back_every_entry_written_and_its_run_needs_no_one(
     paths = Paths(source_dir=tmp_path, home=tmp_path)
     run_id = "20260101-000000-ab12"
     record = journal.Journal(paths.staging_root / run_id / "journal.jsonl", run_id)
+    # As a run does, the roots and the manifest before the journal, which a journal beside no manifest would refuse.
+    journal.prepare_roots(paths)
     record.create()
     kind = {"claude": "shared", "agents": ADAPTERS, "claude-agents": "agents"}[root]
     for index, name in enumerate(_deployed_names(kind)):
@@ -234,13 +236,12 @@ def test_a_review_record_pair_reads_back_as_written(tmp_path: Path, text: str, p
     request = {**review_records_suite.valid_request(), "title": text, "uncovered_files": [path]}
     result = review_records_suite.valid_adapter_result()
     result["summary"] = text
-    # A finding's path is the reviewer's to give, which the result's validator holds to a non-blank one.
-    finding_path = path if path.strip() else "src/file.cs"
+    # A finding's path is a repository path, a blank one included, as the result's validator reads it.
     result["findings"] = [
         {
             **result["findings"][0],
             "candidate_key": f"candidate-{index}",
-            "path": finding_path,
+            "path": path,
             "body": text,
             "evidence": text,
         }

@@ -156,19 +156,20 @@ class OverlapBoundTests(unittest.TestCase):
         self.assertTrue(found and {"duplicate"} == {item["relation"] for item in found})
         self.assertTrue(stopped, "pairs were left to compare")
 
-    def test_a_search_that_visits_exactly_the_budget_has_not_stopped(self) -> None:
-        # One rule in each file, visited once for each rare word they share. A budget of every visit leaves none
-        # unvisited; one fewer stops with one left.
+    def test_a_search_that_compares_every_pair_has_not_stopped_however_often_it_met_them(self) -> None:
+        # One rule in each file, which share several of their rarest words, so the search meets the pair through each.
+        # It compares the pair once: a budget of one pair leaves none uncompared, and none stops with it left.
         texts = {
             ("docs/a.md", "1"): "- Reviewers flag unchecked inputs in request handlers.\n",
             ("docs/b.md", "2"): "- Reviewers flag unchecked inputs in request handlers.\n",
         }
-        visits = len(
-            list(rg._visits([(key, rg.rules(key[0], text)) for key, text in texts.items()], self.order(texts)))
-        )
-        for budget, expected in ((visits, False), (visits - 1, True)):
+        by_version = [(key, rg.rules(key[0], text)) for key, text in texts.items()]
+        self.assertGreater(len(rg._prefix(by_version[0][1][0], self.order(texts))), 1, "the pair is met more than once")
+        self.assertEqual(1, len(list(rg._visits(by_version, self.order(texts)))))
+        for budget, expected in ((1, False), (0, True)):
             with self.subTest(budget=budget), mock.patch.object(rg, "CANDIDATE_BUDGET", budget):
-                self.assertEqual(expected, rg.overlaps("owner/repo", texts, {})[1])
+                found, stopped = rg.overlaps("owner/repo", texts, {})
+                self.assertEqual((expected, budget), (stopped, len(found)))
 
     def order(self, texts: dict[tuple[str, str], str]) -> dict[str, tuple[int, str]]:
         """The rarest-first order overlaps gives the words of these texts' rules."""
@@ -357,16 +358,45 @@ class ReadTests(unittest.TestCase):
         outside = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, outside)
         (outside / "checklist.md").write_text(CHECKLIST, encoding="utf-8", newline="\n")
-        for name, target in (("leaving", outside), ("staying", self.checkout / "docs")):
-            if sys.platform == "win32":  # a junction needs no privilege
-                import _winapi
-
-                _winapi.CreateJunction(str(target), str(self.checkout / name))
-            else:
-                (self.checkout / name).symlink_to(target, target_is_directory=True)
+        for name, target, reason in (
+            ("leaving", outside, "a symbolic link or junction leads the entry outside the tree"),
+            (
+                "staying",
+                self.checkout / "docs",
+                "a symbolic link or junction lies on the entry's path, which is never followed",
+            ),
+        ):
+            link(target, self.checkout / name)
             with self.subTest(name):
-                self.assertEqual(rg.WorkingCopy(None), rg.read_working_copy(self.checkout, f"{name}/checklist.md"))
+                self.assertEqual(
+                    rg.WorkingCopy(None, unreadable=reason), rg.read_working_copy(self.checkout, f"{name}/checklist.md")
+                )
         self.assertEqual(digest(CHECKLIST), rg.read_working_copy(self.checkout, "docs/checklist.md").digest)
+        self.assertEqual(
+            rg.WorkingCopy(None), rg.read_working_copy(self.checkout, "docs/absent.md"), "no file, no reason"
+        )
+
+    def test_a_guidance_file_reached_through_a_link_inside_the_checkout_is_named_not_dropped(self) -> None:
+        # As a CLAUDE.md that links to AGENTS.md is: the link is never followed, so the report names the file.
+        (self.checkout / "docs").rename(self.checkout / "guides")
+        link(self.checkout / "guides", self.checkout / "docs")
+        guidance = self.read()
+        self.assertEqual(
+            {
+                "docs/checklist.md": ("prose", "unavailable", False),
+                "docs/conventions.md": ("prose", "unavailable", False),
+                "scripts/check.py": ("code", "listed", False),
+            },
+            self.statuses(guidance),
+        )
+        reason = "a symbolic link or junction lies on the entry's path, which is never followed"
+        self.assertEqual(
+            [
+                f"GUIDANCE_UNREADABLE owner/repo docs/checklist.md fallback=none {reason}",
+                f"GUIDANCE_UNREADABLE owner/repo docs/conventions.md fallback=none {reason}",
+            ],
+            guidance.unreadable,
+        )
 
     def test_a_working_copy_whose_stat_fails_is_unreadable_never_no_file(self) -> None:
         # Its link state reads, so the stat through it is the one that fails, and is_file answers False for it, as
@@ -613,6 +643,16 @@ class ReadTests(unittest.TestCase):
         self.assertEqual(
             {("style",)}, {tuple(item["reviewers"]) for item in guidance.overlaps}, "security never read this text"
         )
+
+
+def link(target: Path, at: Path) -> None:
+    """A link to the folder `target` at `at`: a junction on Windows, which needs no privilege, else a symbolic link."""
+    if sys.platform == "win32":
+        import _winapi
+
+        _winapi.CreateJunction(str(target), str(at))
+    else:
+        at.symlink_to(target, target_is_directory=True)
 
 
 @contextmanager

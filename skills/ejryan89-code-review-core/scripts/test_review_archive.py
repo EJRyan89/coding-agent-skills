@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 import errno
 import os
+import re
 import sys
 import tempfile
 import unittest
@@ -16,6 +17,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
+import review_archive
 from file_presence import NotADirectory
 from review_archive import (
     ArchiveError,
@@ -27,6 +29,8 @@ from review_archive import (
     pull_records,
     record_files,
 )
+from review_config import ConfigurationError
+from review_io import ResourceLock
 from review_records import ReviewRecord, build_record, validate_adapter_result
 from test_review_records import valid_adapter_result, valid_request
 
@@ -120,6 +124,58 @@ class ArchiveTests(unittest.TestCase):
             first = pull_directory(root, "owner-a/shared", 1)
             second = pull_directory(root, "owner-b/shared", 1)
             self.assertNotEqual(first, second)
+
+    def test_a_repository_whose_folder_windows_would_share_or_open_as_a_device_is_refused_before_anything_is_written(
+        self,
+    ) -> None:
+        # Windows trims a folder name's trailing dots, so `a.` and `a..` would name `a`'s folder, and opens a reserved
+        # device name as a device: each is refused on every platform, where `a`, `.a`, and `a.b` keep folders of
+        # their own. A trailing space never reaches a folder, since the identity rule refuses a space.
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            kept = ["owner/a", "owner/.a", "owner/a.b", "owner/a..b", "owner/console", "owner/.con", "a.b/a"]
+            self.assertEqual(
+                [root.joinpath(*identity.split("/"), "pulls", "1") for identity in kept],
+                [pull_directory(root, identity, 1) for identity in kept],
+            )
+            for identity, reason in (
+                ("owner/a.", "trims the trailing dots of 'a.'"),
+                ("owner/a..", "trims the trailing dots of 'a..'"),
+                ("owner/con", "opens as a device 'con'"),
+                ("owner/NUL.js", "opens as a device 'nul.js'"),
+                ("owner/com1", "opens as a device 'com1'"),
+                ("con/a", "opens as a device 'con'"),
+                ("owner./a", "trims the trailing dots of 'owner.'"),
+            ):
+                with self.subTest(identity=identity):
+                    with self.assertRaises(ConfigurationError) as refused:
+                        pull_directory(root, identity, 1)
+                    # It names the folder an earlier release may have kept the repository's records in.
+                    folder = root.joinpath(*identity.lower().split("/"))
+                    self.assertRegex(str(refused.exception), f"^Repository {re.escape(identity.lower())} .*{reason}")
+                    self.assertTrue(str(refused.exception).endswith(f"; {folder} is neither read nor written"))
+                    with self.assertRaisesRegex(ConfigurationError, reason):
+                        commit_record(
+                            root, identity, 1, self._record("example/one", 1, 1), expected_latest_version=None
+                        )
+            with self.assertRaisesRegex(ConfigurationError, "^Invalid repository identity"):
+                pull_directory(root, "owner/a ", 1)
+            self.assertEqual([], list(root.iterdir()), "nothing is written for a refused repository")
+
+    def test_every_spelling_of_one_repository_takes_one_lock(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            taken: list[Path] = []
+            original = ResourceLock
+
+            def recording(path: Path) -> Any:
+                taken.append(path)
+                return original(path)
+
+            with mock.patch.object(review_archive, "ResourceLock", recording):
+                commit_record(root, "Example/One", 3, self._record("example/one", 3, 1), expected_latest_version=None)
+                commit_record(root, "example/one", 3, self._record("example/one", 3, 2), expected_latest_version=1)
+            self.assertEqual([root / ".locks" / "example__one#3.lock"] * 2, taken)
 
     def test_versions_are_allocated_under_lock(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

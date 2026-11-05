@@ -272,7 +272,15 @@ class StateFileTests(DeployerTestCase):
             self.write(self.lock_dir / "info.json", info)
 
         live = probe_returning(alive=True, start_time=1)
+        # A manifest moved aside beside a run's journal: the manifest alone says whether the run was committed, so
+        # neither answer rolls it back. With no run pending, a missing manifest is a home nothing was deployed to.
+        missing = (
+            f"ERROR: The manifest {platform_support.normalize(self.manifest_file)} is missing, but run {RUN_ID}'s "
+            "journal remains, so whether that run was committed cannot be told."
+        )
+        pending_only = {"manifest missing beside a pending run"}
         rows: dict[str, tuple[Callable[[], None], str, dict[str, Any]]] = {
+            "manifest missing beside a pending run": (self.manifest_file.unlink, missing, {}),
             "malformed manifest": (functools.partial(damage_manifest, False), "ERROR: Manifest is malformed: ", {}),
             "manifest not a file": (functools.partial(damage_manifest, True), "ERROR: The manifest at ", {}),
             "configuration not a file": (damage_configuration, "ERROR: The configuration at ", {}),
@@ -290,7 +298,7 @@ class StateFileTests(DeployerTestCase):
         }
         # Each row with a pending run beside it, and with none, where the dry run would otherwise plan.
         for case, (damage, refusal, options) in rows.items():
-            for pending in (True, False):
+            for pending in (True,) if case in pending_only else (True, False):
                 with self.subTest(case=case, pending=pending):
                     if pending:
                         journal = self.staging_run(RUN_ID) / "journal.jsonl"
@@ -300,6 +308,7 @@ class StateFileTests(DeployerTestCase):
                     for arguments in (("--all",), ("--all", "--dry-run")):
                         result = self.deploy_fails(*arguments, pattern=re.escape(refusal), **options)
                         self.assertNotIn("Pending recovery", result.output)
+                        self.assertNotIn("Recovering", result.output)
                         self.assertNotIn("UNCHANGED", result.output)
                         answers.append([line for line in result.output.splitlines() if line.startswith("ERROR: ")])
                     self.assertEqual(answers[0], answers[1])

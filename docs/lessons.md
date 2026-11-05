@@ -498,8 +498,9 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   answer, so it refuses what the run would refuse.
 - **Why:** A preview that answers before the read that refuses, such as reporting a pending recovery, promises a run
   that stops, and sends the user to the step that fails.
-- **Use:** `deployer.lock:check_holder`, which judges a lock already there as `deployer.lock:acquire` does and takes nothing, and
-  `deployer.pipeline:_reject_other_checkout`, which reads the manifest and refuses another checkout: the deployment's
+- **Use:** `deployer.lock:check_holder`, which judges a lock already there as `deployer.lock:acquire` does and takes nothing,
+  `deployer.pipeline:_reject_other_checkout`, which reads the manifest and refuses another checkout, and
+  `deployer.journal:check_manifest_beside_runs`, which refuses a run's journal beside no manifest: the deployment's
   checks before it recovers, which `deployer.pipeline:_dry_run` makes first too, in the deployment's order, beginning,
   for a preview that takes the source over, with `deployer.source:reject_linked_worktree`, which the deployment runs
   before its lock whatever the flag.
@@ -886,6 +887,24 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
 - **Search for:** `fsops.remove(` or `shutil.rmtree(` of a path a later step reads with `hash_path(`, `_hash_existing(`,
   or `backup_unchanged(`; a retry that compares a tree it may have been deleting when it stopped.
 - **Examples:** #2314
+
+### A missing record decides nothing it would have decided
+
+- **Rule:** A decision a record makes, such as whether a run was committed, is never taken from the default a loader
+  gives a missing record while evidence written after the record remains, and the writer writes the record before
+  that evidence, so a missing record beside it can only mean the record was moved or lost.
+- **Why:** A missing record read as its default answers in its place, as a manifest moved aside once read as "no run
+  committed" and rolled back a run it had committed.
+- **Use:** `deployer.manifest:save_if_missing`, which `deployer.journal:prepare_roots` runs before a run's journal;
+  `deployer.journal:check_manifest_beside_runs`, which refuses a journal beside no manifest before recovery; and
+  `deployer.journal:_committed_run_id`, which answers None, undecided, for a missing manifest.
+- **Guard:** `tests/deployer/test_state_files.py::StateFileTests::test_a_dry_run_refuses_each_state_the_deployment_refuses_before_recovery_pending_run_or_not`,
+  whose "manifest missing beside a pending run" row holds the deployment and the dry run to one refusal, and
+  `tests/deployer/test_recovery_migration.py::ManifestStateTests`
+- **Search for:** `manifest.load(` or another loader that returns a default for a missing file, read to decide
+  something a journal, a lock, or a staging folder written after that file still depends on; `.get("last_run_id", "")`
+  read where the file may be missing.
+- **Examples:** #2312
 
 ### A grant is earned by a step that names its tool
 

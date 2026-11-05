@@ -57,7 +57,7 @@ def tree_modes(tree: object) -> dict[str, str] | None:
         listing = READ.json_object(tree, "tree")
         entries = READ.array(listing.get("tree"), "tree.tree", READ.json_object)
         modes = {
-            READ.string(entry.get("path"), f"tree.tree[{index}].path", empty=True): READ.string(
+            READ.repository_path(entry.get("path"), f"tree.tree[{index}].path"): READ.string(
                 entry.get("mode"), f"tree.tree[{index}].mode", empty=True
             )
             for index, entry in enumerate(entries)
@@ -85,10 +85,10 @@ def changed_files(comparison: object) -> ChangedFiles | None:
 def _changed_file(value: object, path: str) -> tuple[str, str, str, str]:
     """One file a comparison changes: its path, status, previous path (empty when it was not renamed), and blob ID."""
     entry = READ.json_object(value, path)
-    filename = READ.string(entry.get("filename"), f"{path}.filename")
+    filename = READ.repository_path(entry.get("filename"), f"{path}.filename")
     status = READ.string(entry.get("status"), f"{path}.status")
     content = READ.string(entry.get("sha"), f"{path}.sha")
-    previous = READ.optional(READ.string, entry.get("previous_filename"), f"{path}.previous_filename") or ""
+    previous = READ.optional(READ.repository_path, entry.get("previous_filename"), f"{path}.previous_filename") or ""
     return filename, status, previous, content
 
 

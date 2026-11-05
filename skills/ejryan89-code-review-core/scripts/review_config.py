@@ -25,6 +25,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-cor
 import json_reader
 import json_writer
 from console import run_main
+from device_names import is_reserved_device_name
 from flat_text import LINE_UNSAFE
 from github_logins import is_login
 from review_io import CONTENT_ERRORS, PersistenceError, atomic_write_json, read_json
@@ -37,7 +38,8 @@ SCHEMA_VERSION = 1
 # a digit. The name may start with any of them, as an organization's `.github` starts with a dot, but is never made
 # only of dots: GitHub refuses `.` and `..`, which would name the archive's folder or the one above it, and a longer
 # run of dots is refused too, since Windows trims a name's trailing dots and an archive path built from one would
-# not be the folder it names.
+# not be the folder it names. repository_folders refuses the other names a folder cannot hold as written where an
+# identity becomes folders.
 # references/review-adapter.schema.json spells the same rule for an adapter's author, and the format-contract
 # suite's repository probes hold the two in agreement.
 REPOSITORY_CHARACTERS = "A-Za-z0-9_.-"
@@ -220,9 +222,29 @@ def safe_repository_path(value: str) -> bool:
     )
 
 
+def repository_folders(repository: str, under: Path | None = None) -> tuple[str, str]:
+    """A repository identity's owner and name, each the name of a folder, as the review archive and a reviewer's
+    manifest folder are built from them. A part no folder holds as written is refused, on every platform, so a folder
+    is a repository's alone wherever the archive is read: Windows trims a name's trailing dots, so `a.` and `a..` would
+    share `a`'s folder (the identity rule refuses a space, which it trims too), and opens a reserved device name, such
+    as `con` or `nul.js`, as a device rather than a folder. The refusal names the folder under `under`, when given,
+    that is neither read nor written, where an earlier release may have kept the repository's files."""
+    identity = validate_repository_identity(repository)
+    owner, name = identity.split("/", 1)
+    for part in (owner, name):
+        if part.endswith(".") or is_reserved_device_name(part):
+            folder = "" if under is None else f"; {under / owner / name} is neither read nor written"
+            raise ConfigurationError(
+                f"Repository {identity} cannot have a folder of its own: Windows "
+                + ("trims the trailing dots of " if part.endswith(".") else "opens as a device ")
+                + f"{part!r}, so it is refused on every platform{folder}"
+            )
+    return owner, name
+
+
 def default_manifest_path(config_path: Path, repository: str) -> Path:
     """Where `"manifest": true` looks: reviewers/<owner>/<repo>/manifest.json beside the configuration file."""
-    owner, name = validate_repository_identity(repository).split("/", 1)
+    owner, name = repository_folders(repository, config_path.parent / "reviewers")
     return config_path.parent / "reviewers" / owner / name / "manifest.json"
 
 

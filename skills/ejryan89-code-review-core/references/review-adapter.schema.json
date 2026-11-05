@@ -57,10 +57,10 @@
           },
           "category": { "type": "string", "minLength": 1, "pattern": "[^\\t-\\r\\u001c-\\u0020\\u0085\\u00a0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000]" },
           "path": {
-            "description": "A repository-relative POSIX path that stays inside the repository: no backslash, no leading slash or drive letter, and no .. segment.",
+            "description": "A repository-relative POSIX path that stays inside the repository: no backslash, no leading slash or drive letter, and no .. segment. A blank one is a path, as git names a file by whitespace alone; an empty one is not.",
             "type": "string",
             "minLength": 1,
-            "pattern": "^(?=[\\s\\S]*[^\\t-\\r\\u001c-\\u0020\\u0085\\u00a0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000])(?!/)(?![A-Za-z]:)(?!(?:[^/]*/)*\\.\\.(?:/|$))[^\\\\]*$"
+            "pattern": "^(?!/)(?![A-Za-z]:)(?!(?:[^/]*/)*\\.\\.(?:/|$))[^\\\\]*$"
           },
           "line": { "type": "integer", "minimum": 1 },
           "title": { "type": "string", "minLength": 1, "maxLength": 120, "pattern": "^[^\\t-\\r\\u001c-\\u0020\\u0085\\u00a0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000](?:[^\\n-\\r\\u001c-\\u001e\\u0085\\u2028\\u2029]*[^\\t-\\r\\u001c-\\u0020\\u0085\\u00a0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000])?$" },
@@ -68,7 +68,7 @@
           "evidence": { "type": "string", "minLength": 1, "pattern": "[^\\t-\\r\\u001c-\\u0020\\u0085\\u00a0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000]" },
           "source": { "type": "string", "minLength": 1, "pattern": "[^\\t-\\r\\u001c-\\u0020\\u0085\\u00a0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000]" },
           "repeats": {
-            "description": "Present only when the finding reports the same problem as another one, so it counts once: another finding's candidate_key, or the ID of a prior finding whose disposition is still_present or partially_addressed. The finding it names must be at least as severe and must not have repeats itself.",
+            "description": "Present only when the finding reports the same problem as another one, so it counts once: another finding's candidate_key, or the ID of a prior finding whose disposition is still_present or partially_addressed. The finding it names must be at least as severe and must not have repeats itself. A link to a finding of another category, letter case aside, is dropped, and the finding recorded as a new one.",
             "type": "string",
             "minLength": 1,
             "pattern": "[^\\t-\\r\\u001c-\\u0020\\u0085\\u00a0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000]"

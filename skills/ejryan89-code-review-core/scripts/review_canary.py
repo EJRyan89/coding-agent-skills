@@ -111,7 +111,8 @@ def _closing_issue(value: Any, path: str) -> dict[str, Any]:
 def _thread(value: Any, path: str) -> dict[str, Any]:
     thread = READ.json_object(value, path, required=THREAD_FIELDS)
     for name in ("author", "path", "body", "url"):
-        READ.string(thread[name], f"{path}.{name}")
+        # A thread's path is a repository path, a blank one included, as GitHub lists it.
+        (READ.repository_path if name == "path" else READ.string)(thread[name], f"{path}.{name}")
     READ.optional(READ.integer, thread["line"], f"{path}.line", minimum=1)
     READ.boolean(thread["outdated"], f"{path}.outdated")
     return thread

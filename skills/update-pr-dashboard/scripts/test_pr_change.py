@@ -170,24 +170,28 @@ class ChangeDetectorTests(unittest.TestCase):
             comparison(None),
             comparison(["a.py"]),
             comparison("a.py"),
-            # Each string a file names: its path, status, and blob ID, each non-blank, and its previous path.
+            # Each string a file names: its status and blob ID, each non-blank, and its path and previous path, each
+            # non-empty, since git names a file by a blank path.
             *(
                 comparison(good | {field: value})
-                for field in ("filename", "status", "sha")
+                for field in ("status", "sha")
                 for value in (None, "", " ", 5, True, ["a.py"], {"name": "a.py"})
             ),
+            *(comparison(good | {"filename": value}) for value in (None, "", 5, True, ["a.py"], {"name": "a.py"})),
             *(
                 comparison({key: value for key, value in good.items() if key != field})
                 for field in ("filename", "status", "sha")
             ),
             *(
                 comparison(good | {"previous_filename": value})
-                for value in (5, True, False, 0, "", " ", [], {}, ["a.py"], {"name": "a.py"})
+                for value in (5, True, False, 0, "", [], {}, ["a.py"], {"name": "a.py"})
             ),
         ]
         for value in cases:
             with self.subTest(value=value):
                 self.assertIsNone(changed_files(value))
+        blank = changed("\u00a0", "blob1", "renamed", previous_filename=" ")
+        self.assertEqual((("\u00a0", "renamed", " ", "blob1"),), changed_files(comparison(blank)))
 
     def test_a_tree_of_the_wrong_kind_anywhere_is_none(self) -> None:
         good = {"path": "a.py", "mode": "100644", "type": "blob"}

@@ -1095,6 +1095,22 @@ class HookTests(GuardFixture):
             (decision["permissionDecision"], decision["permissionDecisionReason"]),
         )
 
+    def test_an_event_holding_a_lone_surrogate_is_denied_wherever_its_path_leads(self) -> None:
+        # A `\udc80` escape is a lone surrogate, which Claude Code's runtime opens as U+FFFD, so the path the guard
+        # would judge is not the one opened: the event is refused, and the call denied even inside the snapshot.
+        self.claim()
+        for path in (self.run_directory / "source" / "app" / "x\udc80.cs", self.checkout / "app" / "x\udc80.cs"):
+            with self.subTest(path=path):
+                event = {"tool_name": "Read", "tool_input": {"file_path": str(path)}, "agent_id": AGENT}
+                stdout = io.StringIO()
+                with contextlib.redirect_stdout(stdout):
+                    self.assertEqual(0, guard.main(json.dumps(event)))
+                decision = json.loads(stdout.getvalue())["hookSpecificOutput"]
+                self.assertEqual(
+                    ("deny", "Code-review reviewer boundary: the guard could not evaluate this call (JsonRefused)."),
+                    (decision["permissionDecision"], decision["permissionDecisionReason"]),
+                )
+
     def test_ctrl_c_while_the_guard_decides_denies_the_call(self) -> None:
         event = {"tool_name": "Read", "tool_input": {"file_path": self.prompt()}, "agent_id": AGENT}
         stdout = io.StringIO()
