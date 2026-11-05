@@ -1130,6 +1130,20 @@ class SnapshotStampTests(unittest.TestCase):
             self.verify(stamp)
         self.assertEqual(message, str(caught.exception))
 
+    def test_a_stamp_hashes_these_lines_and_is_this_digest(self) -> None:
+        # Stored stamps hash each entry as one escaped JSON line, so a change of separators or escaping fails here.
+        # The digest is of b"0" * 64, then '["README \\u00e9.md", 9, 1700000000000000000]\n' and
+        # '["source-snapshot.json", 120, 1700000000500000000]\n'.
+        tree = review_runtime._SnapshotTree(
+            Path("snapshot"),
+            files={"README é.md": 9, "source-snapshot.json": 120},
+            modified={"README é.md": 1_700_000_000_000_000_000, "source-snapshot.json": 1_700_000_000_500_000_000},
+        )
+        self.assertEqual(
+            "b909137eaf668e106588fc6d5729f836e77cf54e680b2301c53d6e209a3bb3a8",
+            review_runtime._snapshot_stamp({"source_hashes": {"README é.md": "hash"}}, tree, "0" * 64),
+        )
+
     def test_a_stamp_is_one_digest_and_names_the_snapshot_it_was_taken_of(self) -> None:
         stamp = self.stamp()
         self.assertRegex(stamp, r"\A[0-9a-f]{64}\Z")

@@ -38,6 +38,7 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "ejryan89-skill-core" / "scripts"))
 
+import hook_decision
 import json_reader
 import json_writer
 import whole_number
@@ -730,6 +731,8 @@ DENY_REASON = (
     "`python tools/worktrees.py new <kind> <name>`, enter it, and work there."
 )
 PLACE_IT = "Write the directory into the command itself, as `git -C <dir>` or `cd <dir> &&`, and run it again."
+# The refusal the guard gives when its own reason holds what JSON cannot carry, such as a lone surrogate.
+UNWRITABLE_REASON = f"The guard refused this command for a reason that holds what JSON cannot carry. {DENY_REASON}"
 REWRITE_IT = (
     "Write it as plain commands with literal words, running each program by its name rather than through another "
     "that runs it (RUNNERS in tools/hub_guard.py), and run it again; the guard's contract in "
@@ -2803,17 +2806,9 @@ def guard(stream: str) -> int:
             f"guarded. {REWRITE_IT} {DENY_REASON}"
         )
     if refused is not None:
-        print(
-            json_writer.dumps(
-                {
-                    "hookSpecificOutput": {
-                        "hookEventName": "PreToolUse",
-                        "permissionDecision": "deny",
-                        "permissionDecisionReason": refused,
-                    }
-                }
-            )
-        )
+        # A reason JSON cannot carry, such as one naming a path whose name decoded to a lone surrogate, gives way to
+        # UNWRITABLE_REASON, so a refusal is always written: an error instead would let the command through.
+        print(hook_decision.denial(refused, UNWRITABLE_REASON))
     return 0
 
 

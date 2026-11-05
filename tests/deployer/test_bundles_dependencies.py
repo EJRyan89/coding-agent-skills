@@ -354,6 +354,18 @@ class BundleAndDependencyTests(DeployerTestCase):
         self.deploy_ok("--all")
         self.assertEqual(description, self.adapter("alpha").string("description"))
 
+    def test_adapter_frontmatter_is_these_bytes_with_text_past_ascii_kept(self) -> None:
+        # The bytes each runtime reads, pinned whole: a change of quoting or escaping fails here, not only on read.
+        self.make_source_json()
+        description = 'Sweep "x" #1\\ é\nThen stop.'
+        self.make_skill("alpha", "Alpha", description=json.dumps(description), argument_hint=json.dumps("[pr] | é"))
+        self.make_config()
+        self.deploy_ok("--all")
+        self.assertEqual(
+            '---\nname: alpha\ndescription: "Sweep \\"x\\" #1\\\\ é\\nThen stop."\nargument-hint: "[pr] | é"\n---\n',
+            "".join((self.agents_dir / "alpha" / "SKILL.md").read_text(encoding="utf-8").splitlines(True)[:5]),
+        )
+
     def test_adapter_carries_the_argument_hint_exactly_and_none_when_the_skill_declares_none(self) -> None:
         self.make_source_json()
         hint = "[<repo name or path>] [--since REF] | list"

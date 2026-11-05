@@ -600,6 +600,16 @@ class ReaderFailureTests(GuardTestCase):
             self.assertEqual("deny", self.shell("Bash", "git save", self.tree))
         self.assertIn("The guard failed reading this command (RecursionError: ", self.reason)
 
+    def test_a_refusal_whose_reason_json_cannot_carry_still_refuses_with_the_fixed_reason(self) -> None:
+        # A reason can quote an error naming a path whose name decoded to a lone surrogate, which json_writer
+        # refuses; the guard must still print its refusal, since an error would let the command through.
+        with mock.patch.object(hub_guard, "denied", side_effect=OSError("cannot read /hub/x\udcff")):
+            self.assertEqual("deny", self.shell("Bash", "git commit -m x", self.hub))
+        self.assertEqual(
+            f"The guard refused this command for a reason that holds what JSON cannot carry. {hub_guard.DENY_REASON}",
+            self.reason,
+        )
+
     def test_an_error_judging_a_command_is_refused_while_a_guarded_hub_is_in_view(self) -> None:
         with mock.patch.object(hub_guard, "denied", side_effect=RuntimeError("the judge broke")):
             for tool in ("Bash", "PowerShell"):

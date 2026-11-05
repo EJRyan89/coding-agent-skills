@@ -5,7 +5,9 @@ refusal_scan.py finds each place in the repository's code that catches it: an ex
 the errors an entry point ends as a FAILED line. Each row of REFUSALS names one such place, the step inside its handler
 that the row makes refuse, and how the row drives the place; the test patches that step to raise the refusal, drives
 the place, and holds what it ended with to the row's literal outcome: the exit code and the lines an entry point
-prints, or the error a converting function raises, by its type and message. The step is json_writer.dumps itself where
+prints, the error a converting function raises, by its type and message, or what a place that goes on past the
+refusal, as a suppress does, returns or leaves behind. A place that writes again past the refusal, as a fallback does,
+has its step refuse the first call alone. The step is json_writer.dumps itself where
 the place calls it directly, and otherwise the call in the handler's try that would reach it, since a handler such as
 skill_evals' that quotes its message through json_writer must still write its own line. A place the scan finds that no
 row drives, or a row whose place the scan no longer finds, fails, so a new catch takes its row in the pull request
@@ -17,6 +19,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import io
+import pkgutil
 import subprocess
 import sys
 from collections.abc import Callable, Iterator
@@ -44,6 +47,7 @@ sys.path.insert(0, str(sibling_scripts("review-insights")))
 sys.path.insert(0, str(sibling_scripts("update-pr-dashboard")))
 
 import flag_review_finding
+import hook_decision
 import json_writer
 import mcp_handshake
 import memory_audit
@@ -90,6 +94,9 @@ class Row:
     outcome: object
     # Which of the place's handlers the row drives, where it has more than one.
     label: str = ""
+    # Whether the step refuses its first call alone, for a place that writes again past the refusal, as a fallback
+    # does; otherwise it refuses every call.
+    once: bool = False
 
 
 def raised(expected: type[Exception], call: Callable[[], object]) -> str:
@@ -495,6 +502,14 @@ REFUSALS: tuple[Row, ...] = (
         (1, [f"FAILED the audit report cannot be written: {REASON}"]),
     ),
     Row("review_config.load_config", "review_config.validate_config", _load_config, f"ConfigurationError: {REASON}"),
+    Row(
+        "hook_decision.denial",
+        "hook_decision._denial_text",
+        lambda _: hook_decision.denial("refused", "fixed"),
+        '{"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny", '
+        '"permissionDecisionReason": "fixed"}}',
+        once=True,
+    ),
     Row("review_guard._log_read", DUMPS, _log_read, ""),
     Row(
         "review_io.atomic_write_json",
@@ -563,7 +578,9 @@ def _id(row: Row) -> str:
 
 @pytest.mark.parametrize("row", REFUSALS, ids=_id)
 def test_each_place_ends_a_refused_write_as_its_contract_says(row: Row, tmp_path: Path) -> None:
-    with mock.patch(row.step, side_effect=JsonWriteRefused(REASON)) as step:
+    refusal = JsonWriteRefused(REASON)
+    effect: object = [refusal, mock.DEFAULT] if row.once else refusal
+    with mock.patch(row.step, side_effect=effect, wraps=pkgutil.resolve_name(row.step)) as step:
         outcome = row.drive(tmp_path)
     assert step.called, f"{row.place} never reached {row.step}"
     assert outcome == row.outcome

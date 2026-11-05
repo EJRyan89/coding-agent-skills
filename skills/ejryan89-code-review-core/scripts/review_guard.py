@@ -69,6 +69,7 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
 import file_presence
+import hook_decision
 import json_reader
 import json_writer
 from console import run_main
@@ -114,6 +115,11 @@ SHELL_DRIVE = re.compile(r"^/([A-Za-z])(/|$)")
 # and `\\.\` on Windows, and `//host` where POSIX leaves its meaning to the system.
 NETWORK_OR_DEVICE = re.compile(r"^[\\/]{2}")
 AGENT_ID = re.compile(r"[A-Za-z0-9_-]{1,128}")
+# The reason a denial gives when its own holds what JSON cannot carry, such as a lone surrogate.
+UNWRITABLE_REASON = (
+    "Code-review reviewer boundary: the guard denied this call for a reason that holds what JSON cannot carry, such "
+    "as a path whose name is not valid Unicode."
+)
 CLAIMS = Path(tempfile.gettempdir()) / "code-review-reviewer-claims"
 # The subagent every reviewer role runs as, deployed from agents/ with ejryan89-code-review-core, and the plugin these
 # scripts run from, if any, which namespaces it.
@@ -530,17 +536,10 @@ def main(stream: str) -> int:
     except (Exception, KeyboardInterrupt) as exc:  # noqa: BLE001 - fail closed: an unevaluated call could read the wrong code
         reason = f"Code-review reviewer boundary: the guard could not evaluate this call ({type(exc).__name__})."
     if reason:
-        print(
-            json_writer.dumps(
-                {
-                    "hookSpecificOutput": {
-                        "hookEventName": "PreToolUse",
-                        "permissionDecision": "deny",
-                        "permissionDecisionReason": reason,
-                    }
-                }
-            )
-        )
+        # A reason JSON cannot carry, such as one quoting a resolved path whose name decoded to a lone surrogate,
+        # gives way to UNWRITABLE_REASON, so a denial is always written: a FAILED line instead would let the call
+        # through.
+        print(hook_decision.denial(reason, UNWRITABLE_REASON))
     return 0
 
 

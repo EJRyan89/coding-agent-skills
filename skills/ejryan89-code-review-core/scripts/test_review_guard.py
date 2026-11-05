@@ -1106,6 +1106,21 @@ class HookTests(GuardFixture):
             (decision["permissionDecision"], decision["permissionDecisionReason"]),
         )
 
+    def test_a_deny_reason_json_cannot_carry_still_denies_the_call_with_the_fixed_reason(self) -> None:
+        # A path resolved through a link can name a file whose bytes are not UTF-8, which Python holds as a lone
+        # surrogate; json_writer refuses one, and the guard must still print a denial rather than end in FAILED.
+        event = {"tool_name": "Read", "tool_input": {"file_path": self.prompt()}, "agent_id": AGENT}
+        stdout = io.StringIO()
+        reason = "Code-review reviewer boundary: /outside/x\udcff is outside it."
+        with mock.patch.object(guard, "decide", return_value=reason), contextlib.redirect_stdout(stdout):
+            self.assertEqual(0, guard.main(json.dumps(event)))
+        self.assertEqual(
+            '{"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny", '
+            '"permissionDecisionReason": "Code-review reviewer boundary: the guard denied this call for a reason that '
+            'holds what JSON cannot carry, such as a path whose name is not valid Unicode."}}\n',
+            stdout.getvalue(),
+        )
+
     def test_a_decision_survives_a_console_that_cannot_encode_it(self) -> None:
         # A Windows pipe defaults to a legacy code page, and a deny reason names the path the reviewer asked for.
         outside = self.root / "repo → ✓" / "x.cs"

@@ -135,6 +135,7 @@ TRUST_BOUNDARY_SCRIPTS = (
     f"{SKILL_CORE}/git_worktrees.py",
     f"{SKILL_CORE}/github_client.py",
     f"{SKILL_CORE}/github_remote.py",
+    f"{SKILL_CORE}/hook_decision.py",
     f"{SKILL_CORE}/job_tree.py",
     f"{SKILL_CORE}/json_reader.py",
     f"{SKILL_CORE}/json_writer.py",
