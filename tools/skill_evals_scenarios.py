@@ -26,7 +26,7 @@ sys.path.insert(0, str(sibling_scripts("review-document")))
 import file_presence
 import json_reader
 import whole_number
-from git_client import GitClient
+from git_client import NO_HOOKS, GitClient
 from path_containment import within
 from review_document import specialists_manifest
 from review_records import LEDGER_ID, source_parts
@@ -727,15 +727,15 @@ def stage_document(scenario: Scenario, folder: Path, git: GitClient) -> Path:
     folder.mkdir(parents=True)
     staged = folder / scenario.document.name
     if scenario.base is not None:
-        with tempfile.TemporaryDirectory(prefix="skill-evals-hooks.") as hooks:
-            isolated = ["-c", f"core.hooksPath={hooks}"]
-            git.output([*isolated, "init", "--quiet"], directory=folder)
-            staged.write_bytes(scenario.base.read_bytes())
-            git.output([*isolated, "add", "--", staged.name], directory=folder)
-            git.output(
-                [*isolated, *COMMIT, "commit", "--quiet", "--no-verify", "--message", "The committed base"],
-                directory=folder,
-            )
+        # Hooks read from the null device, which holds none, so neither the user's nor a template's run.
+        isolated = ["-c", f"core.hooksPath={NO_HOOKS}"]
+        git.output([*isolated, "init", "--quiet"], directory=folder)
+        staged.write_bytes(scenario.base.read_bytes())
+        git.output([*isolated, "add", "--", staged.name], directory=folder)
+        git.output(
+            [*isolated, *COMMIT, "commit", "--quiet", "--no-verify", "--message", "The committed base"],
+            directory=folder,
+        )
     staged.write_bytes(scenario.document.read_bytes())
     return staged
 

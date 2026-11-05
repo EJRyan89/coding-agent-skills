@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import contextlib
 import dataclasses
+import inspect
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -1087,6 +1089,17 @@ class RepositoryVariableTests(unittest.TestCase):
             self.assertEqual("named\n", self.client.output(config, directory=self.named))
             self.assertEqual(b"other\n", self.plain_git(config))
 
+    def test_no_client_call_takes_an_index_file(self) -> None:
+        # run_bounded's index_file is the one way to set GIT_INDEX_FILE; a client takes no keyword that reaches it, so
+        # a caller that needs another index builds the client on its own runner, as deploy.py --at does.
+        for name in ("__init__", "run", "output", "names", "quiet_output", "stream"):
+            with self.subTest(call=name):
+                self.assertNotIn("index_file", inspect.signature(getattr(GitClient, name)).parameters)
+        runner, calls = scripted(GitResult(0, "", ""))
+        with self.assertRaises(TypeError):
+            GitClient(runner).run(["status"], index_file=self.other / "index")  # type: ignore[call-arg]  # the keyword it refuses
+        self.assertEqual([], calls)
+
     def test_each_repository_selecting_variable_given_in_an_environment_reaches_no_git(self) -> None:
         # The real runner, given an environment holding one variable that points at the other repository, reads the
         # named one: an environment may come from another process, such as a hook's, so none of them, GIT_INDEX_FILE
@@ -1153,6 +1166,263 @@ class RepositoryVariableTests(unittest.TestCase):
             ),
             bounded_process.REPOSITORY_VARIABLES,
         )
+
+
+# Every name `git --list-cmds=builtins,main` printed on git 2.56.0.windows.2.
+GIT_2_56_COMMANDS = frozenset(
+    [
+        "add",
+        "am",
+        "annotate",
+        "apply",
+        "archive",
+        "backfill",
+        "bisect",
+        "blame",
+        "branch",
+        "bugreport",
+        "bundle",
+        "cat-file",
+        "check-attr",
+        "check-ignore",
+        "check-mailmap",
+        "check-ref-format",
+        "checkout",
+        "checkout--worker",
+        "checkout-index",
+        "cherry",
+        "cherry-pick",
+        "citool",
+        "clean",
+        "clone",
+        "column",
+        "commit",
+        "commit-graph",
+        "commit-tree",
+        "config",
+        "count-objects",
+        "credential",
+        "credential-cache",
+        "credential-cache--daemon",
+        "credential-store",
+        "credential-wincred",
+        "daemon",
+        "describe",
+        "diagnose",
+        "diff",
+        "diff-files",
+        "diff-index",
+        "diff-pairs",
+        "diff-tree",
+        "difftool",
+        "difftool--helper",
+        "fast-export",
+        "fast-import",
+        "fetch",
+        "fetch-pack",
+        "filter-branch",
+        "fmt-merge-msg",
+        "for-each-ref",
+        "for-each-repo",
+        "format-patch",
+        "format-rev",
+        "fsck",
+        "fsck-objects",
+        "fsmonitor--daemon",
+        "gc",
+        "get-tar-commit-id",
+        "grep",
+        "gui",
+        "gui--askpass",
+        "gui--askyesno",
+        "gui.tcl",
+        "hash-object",
+        "help",
+        "history",
+        "hook",
+        "http-backend",
+        "http-fetch",
+        "http-push",
+        "imap-send",
+        "index-pack",
+        "init",
+        "init-db",
+        "interpret-trailers",
+        "last-modified",
+        "log",
+        "ls-files",
+        "ls-remote",
+        "ls-tree",
+        "mailinfo",
+        "mailsplit",
+        "maintenance",
+        "merge",
+        "merge-base",
+        "merge-file",
+        "merge-index",
+        "merge-octopus",
+        "merge-one-file",
+        "merge-ours",
+        "merge-recursive",
+        "merge-recursive-ours",
+        "merge-recursive-theirs",
+        "merge-resolve",
+        "merge-subtree",
+        "merge-tree",
+        "mergetool",
+        "mktag",
+        "mktree",
+        "multi-pack-index",
+        "mv",
+        "name-rev",
+        "notes",
+        "pack-objects",
+        "pack-redundant",
+        "pack-refs",
+        "patch-id",
+        "pickaxe",
+        "prune",
+        "prune-packed",
+        "pull",
+        "push",
+        "quiltimport",
+        "range-diff",
+        "read-tree",
+        "rebase",
+        "receive-pack",
+        "reflog",
+        "refs",
+        "remote",
+        "remote-ext",
+        "remote-fd",
+        "remote-ftp",
+        "remote-ftps",
+        "remote-http",
+        "remote-https",
+        "repack",
+        "replace",
+        "replay",
+        "repo",
+        "request-pull",
+        "rerere",
+        "reset",
+        "restore",
+        "rev-list",
+        "rev-parse",
+        "revert",
+        "rm",
+        "send-email",
+        "send-pack",
+        "sh-i18n--envsubst",
+        "shortlog",
+        "show",
+        "show-branch",
+        "show-index",
+        "show-ref",
+        "sparse-checkout",
+        "stage",
+        "stash",
+        "status",
+        "stripspace",
+        "submodule",
+        "submodule--helper",
+        "subtree",
+        "survey",
+        "switch",
+        "symbolic-ref",
+        "tag",
+        "unpack-file",
+        "unpack-objects",
+        "update",
+        "update-index",
+        "update-ref",
+        "update-server-info",
+        "upload-archive",
+        "upload-archive--writer",
+        "upload-pack",
+        "url-parse",
+        "var",
+        "verify-commit",
+        "verify-pack",
+        "verify-tag",
+        "version",
+        "web--browse",
+        "whatchanged",
+        "worktree",
+        "write-tree",
+    ]
+)
+# The commands of that list git added after 2.31, from each release's notes, which an older git may lack, so an alias
+# or a `git-<name>` program there could take the name.
+COMMANDS_AFTER_2_31 = frozenset(
+    {"backfill", "diff-pairs", "history", "last-modified", "refs", "replay", "repo", "survey"}
+)
+# Every key of git 2.56's `git help --config` whose value is a command, a program, or names one, with a name for each
+# placeholder: a `<driver>`, `<tool>`, or `<name>` as `x`, a `<url>` as `https://example.invalid`.
+PROGRAM_SETTINGS_2_56 = (
+    "browser.x.cmd",
+    "browser.x.path",
+    "core.alternateRefsCommand",
+    "core.askPass",
+    "core.editor",
+    "core.fsmonitor",
+    "core.gitProxy",
+    "core.hooksPath",
+    "core.pager",
+    "core.sshCommand",
+    "credential.helper",
+    "credential.https://example.invalid.helper",
+    "diff.x.command",
+    "diff.x.textconv",
+    "diff.external",
+    "diff.guitool",
+    "diff.tool",
+    "difftool.x.cmd",
+    "difftool.x.path",
+    "filter.x.clean",
+    "filter.x.smudge",
+    "filter.x.process",
+    "gc.recentObjectsHook",
+    "gpg.program",
+    "gpg.x.program",
+    "gpg.ssh.defaultKeyCommand",
+    "guitool.x.cmd",
+    "help.browser",
+    "hook.x.command",
+    "hook.x.event",
+    "imap.tunnel",
+    "init.templateDir",
+    "instaweb.browser",
+    "instaweb.httpd",
+    "interactive.diffFilter",
+    "man.viewer",
+    "man.x.cmd",
+    "man.x.path",
+    "merge.x.driver",
+    "merge.guitool",
+    "merge.tool",
+    "mergetool.x.cmd",
+    "mergetool.x.path",
+    "pager.log",
+    "protocol.allow",
+    "protocol.ext.allow",
+    "pull.octopus",
+    "pull.twohead",
+    "remote.x.receivepack",
+    "remote.x.uploadpack",
+    "remote.x.vcs",
+    "sendemail.ccCmd",
+    "sendemail.headerCmd",
+    "sendemail.toCmd",
+    "sendemail.smtpServer",
+    "sequence.editor",
+    "submodule.x.update",
+    "tar.tgz.command",
+    "trailer.x.cmd",
+    "trailer.x.command",
+    "uploadpack.packObjectsHook",
+    "web.browser",
+)
 
 
 class IsolatedClientTests(unittest.TestCase):
@@ -1283,7 +1553,7 @@ class IsolatedClientTests(unittest.TestCase):
         allowed = (
             ["-c", "core.alias=x", "status"],
             ["-c", "aliases.s=grep", "status"],
-            ["--config-env=core.editor=EDITOR", "status"],
+            ["--config-env=core.quotepath=VALUE", "status"],
             ["grep", "-c", "-e", "alias.s=grep"],
             ["log", "-c", "alias.s=x"],
             ["--git-dir", "alias.s", "status"],
@@ -1298,6 +1568,194 @@ class IsolatedClientTests(unittest.TestCase):
                 runner, calls = scripted(GitResult(0, "", ""))
                 GitClient(runner).run(arguments)
                 self.assertEqual(["git", *arguments], calls[0][0])
+
+    def test_a_plain_client_refuses_every_carrier_of_another_command_in_every_spelling(self) -> None:
+        # Each carries a command or names a program git starts, whose own git calls the client never sees.
+        refused = {
+            "git submodule foreach": ["submodule", "foreach", "git grep --no-index -l needle"],
+            "git submodule foreach ": ["submodule", "--quiet", "foreach", "--recursive", "true"],
+            "git bisect run": ["bisect", "run", "git", "grep", "--no-index", "-l", "needle"],
+            "git bisect replay": ["bisect", "replay", "steps.log"],
+            "git bisect visualize": ["bisect", "visualize"],
+            "git rebase --exec": ["rebase", "--exec", "git grep --no-index -l needle", "HEAD~1"],
+            "git rebase --exec=": ["rebase", "--exec=true", "HEAD~1"],
+            "git rebase --ex": ["rebase", "--ex", "true", "HEAD~1"],
+            "git rebase --e": ["rebase", "--e=true", "HEAD~1"],
+            "git rebase -x": ["rebase", "-x", "true", "HEAD~1"],
+            "git rebase -xtrue": ["rebase", "-xtrue", "HEAD~1"],
+            "git rebase -ix": ["rebase", "-ix", "true", "HEAD~1"],
+            "git rebase -qvx": ["rebase", "-qvx", "true"],
+            "git grep --open-files-in-pager": ["grep", "--open-files-in-pager=sh", "-e", "x"],
+            "git grep --open": ["grep", "--open", "-e", "x"],
+            "git grep -O": ["grep", "-O", "-e", "x"],
+            "git grep -nOsh": ["grep", "-nOsh", "-e", "x"],
+            "git fetch --upload-pack": ["fetch", "--upload-pack", "sh -c x", "origin"],
+            "git fetch --upload": ["fetch", "--upload=x", "origin"],
+            "git pull --upload-pack=": ["pull", "--upload-pack=x"],
+            "git ls-remote --upload-pack=": ["ls-remote", "--upload-pack=x", "origin"],
+            "git ls-remote --exec=": ["ls-remote", "--exec=x", "origin"],
+            "git fetch-pack --exec=": ["fetch-pack", "--exec=x", "a"],
+            "git push --receive-pack=": ["push", "--receive-pack=x", "origin"],
+            "git push --exec=": ["push", "--exec=x", "origin"],
+            "git send-pack --receive=": ["send-pack", "--receive=x", "a"],
+            "git archive --exec": ["archive", "--remote", "r", "--exec", "x", "HEAD"],
+            "git clone -u": ["clone", "-u", "x", "url", "dir"],
+            "git clone -c": ["clone", "-c", "core.hooksPath=/hooks", "url"],
+            "git clone -qc": ["clone", "-qccore.fsmonitor=x", "url"],
+            "git clone --config": ["clone", "--config", "filter.a.smudge=x", "url"],
+            "git clone --template=": ["clone", "--template=/x", "url"],
+            "git init --template": ["init", "--template", "/x", "dir"],
+            "git difftool": ["difftool", "-x", "cat", "HEAD"],
+            "git mergetool": ["mergetool"],
+            "git filter-branch": ["filter-branch", "--tree-filter", "x"],
+            "git for-each-repo": ["for-each-repo", "--config=x", "--", "grep", "--no-index"],
+            "git merge-index": ["merge-index", "x", "-a"],
+            "git hook": ["hook", "run", "pre-commit"],
+            "git credential": ["credential", "fill"],
+            "git help": ["help", "--web", "log"],
+            "git maintenance": ["maintenance", "start"],
+            "git shell": ["shell", "-c", "x"],
+            "git upload-pack": ["upload-pack", "."],
+            "git send-email": ["send-email", "x.patch"],
+            "git lfs": ["lfs", "ls-files"],
+            "git s": ["s"],
+            "git log --help": ["log", "--help"],
+            "git --help": ["--help", "log"],
+            "git -h": ["-C", "d", "-h", "log"],
+            "git --help ": ["--no-pager", "--help"],
+            "git log --hel": ["log", "-p", "--hel"],
+            "git commit --help": ["commit", "-a", "--help"],
+            "git replay": ["replay", "--onto", "main", "topic"],
+            "the setting hook.x.command": [
+                "-c",
+                "hook.x.command=git grep --no-index -l needle",
+                "-c",
+                "hook.x.event=pre-commit",
+                "commit",
+                "-m",
+                "m",
+            ],
+            "git Status": ["Status"],
+            "the setting core.editor": ["-c", "core.editor=x", "commit"],
+            "the setting core.pager": ["-c", "Core.Pager=x", "log"],
+            "the setting core.sshcommand": ["-c", "core.sshCommand=x", "fetch"],
+            "the setting core.fsmonitor": ["--config-env=core.fsmonitor=V", "status"],
+            "the setting core.hookspath": ["-c", "core.hooksPath=/hooks", "commit", "-m", "x"],
+            "the setting core.hookspath ": ["-c", "core.hooksPath", "commit"],
+            "the setting core.hookspath  ": ["--config-env", f"core.hooksPath={os.devnull}", "commit"],
+            "the setting core.hookspath   ": ["-c", f"core.hooksPath={os.devnull}x", "commit"],
+            "the setting sequence.editor": ["-c", "sequence.editor=x", "rebase", "-i", "HEAD~1"],
+            "the setting diff.external": ["-c", "diff.external=x", "diff"],
+            "the setting diff.a.textconv": ["-c", "diff.a.textconv=x", "log", "-p"],
+            "the setting diff.a.b.command": ["-c", "diff.a.b.command=x", "diff"],
+            "the setting merge.a.driver": ["--config-env", "merge.a.driver=V", "merge", "x"],
+            "the setting remote.origin.uploadpack": ["-c", "remote.origin.uploadpack=x", "fetch"],
+            "the setting remote.origin.vcs": ["-c", "remote.origin.vcs=x", "fetch"],
+            "the setting submodule.a.update": ["-c", "submodule.a.update=!x", "submodule", "update"],
+            "the setting protocol.ext.allow": ["-c", "protocol.ext.allow=always", "fetch", "ext::x"],
+            "the setting protocol.allow": ["-c", "protocol.allow=always", "fetch"],
+            "the setting credential.helper": ["-c", "credential.helper=x", "fetch"],
+            "the setting filter.a.smudge": ["-c", "filter.a.smudge=x", "checkout"],
+            "the setting gpg.program": ["-c", "gpg.program=x", "verify-commit", "HEAD"],
+            "the setting pager.log": ["-c", "pager.log=x", "log"],
+            "the setting init.templatedir": ["-c", "init.templateDir=/x", "init"],
+            "the setting uploadpack.packobjectshook": ["-c", "uploadpack.packObjectsHook=x", "fetch"],
+        }
+        for what, arguments in refused.items():
+            with self.subTest(arguments=arguments):
+                runner, calls = scripted(GitResult(0, "", ""))
+                refusal = (
+                    rf"^{re.escape(what.strip())}\S* starts a command or a program whose git calls a plain GitClient "
+                    r"cannot read, so it refuses it$"
+                )
+                with self.assertRaisesRegex(ValueError, refusal):
+                    GitClient(runner).run(arguments)
+                with self.assertRaisesRegex(ValueError, refusal):
+                    GitClient(runner).stream(arguments).__enter__()
+                self.assertEqual([], calls, "refused before git starts")
+        allowed: tuple[list[str], ...] = (
+            ["rebase", "HEAD~1"],
+            ["rebase", "--onto", "main", "HEAD~1"],
+            ["rebase", "--empty=drop", "--no-exec", "-q", "HEAD~1"],
+            ["rebase", "-Xours", "-sort", "HEAD~1"],
+            ["rebase", "-r", "HEAD~1"],
+            ["submodule"],
+            ["submodule", "status", "--recursive"],
+            ["submodule", "--quiet", "update", "--init"],
+            ["bisect", "start", "HEAD", "HEAD~3"],
+            ["bisect", "reset"],
+            ["bisect"],
+            ["grep", "--or", "--only-matching", "-n", "-e", "x"],
+            ["grep", "-eO", "-n"],
+            ["fetch", "-u", "--update-shallow", "origin"],
+            ["push", "--repo=origin", "--no-exec"],
+            ["clone", "-b", "main", "-ojc", "url"],
+            ["init", "--quiet", "dir"],
+            ["archive", "--format=tar", "HEAD"],
+            ["log", "--exec=x"],
+            ["-c", f"core.hooksPath={os.devnull}", "commit", "-m", "x"],
+            ["-c", f"Core.HooksPath={os.devnull}", "init", "--quiet", "dir"],
+            ["-c", "protocol.file.allow=always", "submodule", "add", "url"],
+            ["-c", "core.quotePath=off", "-c", "diff.a=x", "-c", "remote.textconv=x", "status"],
+            ["--version"],
+            ["log", "-p", "--help-all"],
+            ["ls-remote", "--heads", "origin"],
+            ["grep", "-h", "-e", "x"],
+            ["--git-dir", "--help", "status"],
+            [],
+        )
+        for arguments in allowed:
+            with self.subTest(arguments=arguments):
+                runner, calls = scripted(GitResult(0, "", ""))
+                GitClient(runner).run(arguments)
+                self.assertEqual(["git", *arguments], calls[0][0])
+
+    def test_every_subcommand_a_plain_client_runs_is_one_of_git_s_own_since_2_31(self) -> None:
+        # Pinned rather than read from the git that runs the test, which may be older or newer.
+        self.assertEqual(set(), set(git_client.PLAIN_SUBCOMMANDS) - GIT_2_56_COMMANDS)
+        self.assertEqual(set(), set(git_client.PLAIN_SUBCOMMANDS) & COMMANDS_AFTER_2_31)
+        self.assertLessEqual(COMMANDS_AFTER_2_31, GIT_2_56_COMMANDS)
+        for name in sorted(COMMANDS_AFTER_2_31):
+            with self.subTest(name=name):
+                runner, calls = scripted(GitResult(0, "", ""))
+                with self.assertRaisesRegex(ValueError, rf"^git {name} starts a command or a program"):
+                    GitClient(runner).run([name])
+                self.assertEqual([], calls)
+
+    def test_every_setting_git_lists_that_names_a_program_is_refused(self) -> None:
+        # Each key of git 2.56's `git help --config` whose value is a command, a program, or a strategy that names
+        # one, with a name for each placeholder; and the two left out on purpose.
+        for key in PROGRAM_SETTINGS_2_56:
+            with self.subTest(key=key):
+                self.assertTrue(git_client.names_program(key.casefold()))
+                runner, calls = scripted(GitResult(0, "", ""))
+                with self.assertRaisesRegex(ValueError, rf"^the setting {re.escape(key.casefold())} starts"):
+                    GitClient(runner).run(["-c", f"{key}=x", "status"])
+                self.assertEqual([], calls)
+        for key in ("receive.procReceiveRefs", "core.fsmonitorHookVersion", "pull.rebase"):
+            with self.subTest(key=key):
+                self.assertFalse(git_client.names_program(key.casefold()))
+
+    def test_a_carried_command_never_runs_on_a_plain_client(self) -> None:
+        # Unrefused, the rebase runs its command after the commit it replays, outside the client.
+        marker = self.repository / "ran"
+        identity = ["-c", "user.name=t", "-c", "user.email=t@example.invalid"]
+        for message in ("one", "two"):
+            GitClient(timeout=60).output(
+                [*identity, "commit", "--quiet", "--allow-empty", "-m", message], directory=self.repository
+            )
+        carried = [
+            *identity,
+            "rebase",
+            "--quiet",
+            "--force-rebase",
+            "-x",
+            "git var GIT_COMMITTER_IDENT > ran",
+            "HEAD~1",
+        ]
+        with self.assertRaisesRegex(ValueError, r"^git rebase -x starts a command or a program"):
+            GitClient(timeout=60).run(carried, directory=self.repository)
+        self.assertFalse(marker.exists())
 
     def test_a_command_line_alias_runs_on_an_isolated_client(self) -> None:
         # The alias reaches grep --no-index, which an isolated client runs.
