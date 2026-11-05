@@ -51,6 +51,27 @@ class BodyEntriesTests(unittest.TestCase):
         )
         self.assertEqual({"skills/beta"}, entries[0].contract_items)
 
+    def test_a_wrapped_line_starts_a_block_only_where_markdown_reads_one(self) -> None:
+        # A list item is read as CommonMark reads one: one to nine ASCII digits, then a space or a tab, and below a
+        # paragraph's text only a bullet or an item numbered 1 starts a list. Only spaces and tabs are whitespace.
+        nbsp, em = chr(0xA0), chr(0x2003)
+        for continued in (
+            "2. more",
+            "1234567890. more",
+            f"{chr(0x663)}. more",
+            f"1.{nbsp}more",
+            f"{em}- more",
+            f"{em}# more",
+        ):
+            with self.subTest(continued=continued):
+                self.assertEqual([f"Some text {continued}"], release_notes.unwrapped(f"Some text\n{continued}"))
+        for started in ("1. more", "- more", "  * more", "# more", "> more"):
+            with self.subTest(started=started):
+                self.assertEqual(["Some text", started], release_notes.unwrapped(f"Some text\n{started}"))
+        # Below a list item, any item starts its own line, and a line of no-break spaces is text, not a blank line.
+        self.assertEqual(["1. first", "2. second"], release_notes.unwrapped("1. first\n2. second"))
+        self.assertEqual([f"Some text {nbsp} more"], release_notes.unwrapped(f"Some text\n{nbsp}\nmore"))
+
     def test_a_wrapped_heading_and_wrapped_fields_are_read_whole(self) -> None:
         # A squash merge may carry a body hard-wrapped, as git and GitHub wrap commit messages, so a heading or a
         # list item runs on over the following lines until a blank line or the next list item.

@@ -82,6 +82,11 @@ NEXT_HEADINGS = {
         for indent in range(4)
     },
     "setext heading over two lines": "The\nimplications\n---",
+    # Below a paragraph's text, an ordered line numbered other than 1, a digit outside ASCII, and a line of no-break
+    # spaces continue the paragraph, so the underline makes all of it the heading.
+    "setext heading over a line numbered 2": "The\n2. implications\n---",
+    "setext heading over a line numbered with an Arabic-Indic digit": f"The\n{chr(0x663)}. implications\n---",
+    "setext heading over a line of no-break spaces": f"The\n{chr(0xA0)}\nimplications\n---",
     "closed ATX heading": "## Implications ##",
     **{f"HTML heading {tag!r}": f"{tag}Implications</h2>" for tag in ("<h1>", "<h2>", "<H2 id='i'>", "  <h2>")},
 }

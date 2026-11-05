@@ -375,16 +375,54 @@ esac
 expect_not_deployed "major stop list git cannot read"
 
 # A short name git cannot give, of main before or after the fast-forward or of the deployed commit, ends the update
-# with a FAILED line naming it, never an UPDATED line with an empty end.
+# with a FAILED line naming it, never an UPDATED line with an empty end. Each is read before the checkout, so the clone
+# is left on the branch it was found on, with nothing merged, though origin/main is ahead of local main.
 begin_case 'short names git cannot give'
-for SITE in "rev-parse --short HEAD|1|main before the fast-forward" \
-  "rev-parse --short HEAD|2|main after the fast-forward" \
-  "rev-parse --short $V71|1|the deployed commit $V71"; do
-  IFS='|' read -r FORM NTH WHAT <<<"$SITE"
-  failing_git "$FORM" "$NTH" "$CLONE" release --cross-major
+publish "unreleased change"
+git_quiet -C "$CLONE" checkout -q -b names-aside
+LOCAL_MAIN=$(git -C "$CLONE" rev-parse refs/heads/main)
+for SITE in "rev-parse --short refs/heads/main|main before the fast-forward" \
+  "rev-parse --short refs/remotes/origin/main|main after the fast-forward" \
+  "rev-parse --short $V71|the deployed commit $V71"; do
+  IFS='|' read -r FORM WHAT <<<"$SITE"
+  failing_git "$FORM" 1 "$CLONE" release --cross-major
   expect_failed "FAILED cannot read the short name of $WHAT: $NOT_A_REPOSITORY" "short name of $WHAT"
   expect_not_deployed "short name of $WHAT"
+  [ "$(git -C "$CLONE" branch --show-current)" = "names-aside" ] || fail "short name of $WHAT: the clone left its branch"
+  [ "$(git -C "$CLONE" rev-parse refs/heads/main)" = "$LOCAL_MAIN" ] || fail "short name of $WHAT: main moved"
 done
+git_quiet -C "$CLONE" checkout -q main
+
+# A git that fails without a word, with a status other than the quiet no, is a FAILED line naming the status, never a
+# no; and one that answers with nothing where a branch or a commit is asked for is refused, never an empty branch to
+# return to. A stand-in for git answers each form in FAKE_GIT_SILENT, <form>=><status>, with that status and nothing on
+# either stream.
+SILENT_SHIM="$FIXTURE/silent shim"
+mkdir -p "$SILENT_SHIM"
+cat >"$SILENT_SHIM/git" <<'EOF'
+#!/usr/bin/env bash
+IFS='|' read -r -a entries <<<"${FAKE_GIT_SILENT:-}"
+for entry in "${entries[@]}"; do
+  if [[ " $* " == *" ${entry%%=>*} "* ]]; then
+    exit "${entry#*=>}"
+  fi
+done
+exec "$REAL_GIT" "$@"
+EOF
+chmod +x "$SILENT_SHIM/git"
+begin_case 'git silent with another status'
+PATH="$SILENT_SHIM:$PATH" FAKE_GIT_SILENT="rev-parse --verify --quiet refs/heads/main^{commit}=>3" \
+  run_subject "$CLONE" release --cross-major
+expect_failed "FAILED cannot look up refs/heads/main: git rev-parse exited 3 and printed nothing" \
+  "git silent with another status"
+expect_not_deployed "git silent with another status"
+begin_case 'git names no branch'
+git_quiet -C "$CLONE" checkout -q -b silent-aside
+PATH="$SILENT_SHIM:$PATH" FAKE_GIT_SILENT="symbolic-ref --quiet --short HEAD=>0" run_subject "$CLONE" release --cross-major
+expect_failed "FAILED cannot read the branch or the commit the clone is on: git named none" "git names no branch"
+[ "$(git -C "$CLONE" branch --show-current)" = "silent-aside" ] || fail "git names no branch: the clone left its branch"
+expect_not_deployed "git names no branch"
+git_quiet -C "$CLONE" checkout -q main
 
 # A clone whose branch or commit git cannot name stops before the checkout, on the branch it was found on, with git's
 # reason. symbolic-ref --quiet says HEAD is detached only by exiting 1 with nothing on stderr, so a branch lookup that

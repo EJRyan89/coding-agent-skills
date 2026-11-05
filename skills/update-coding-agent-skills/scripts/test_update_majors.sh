@@ -145,4 +145,31 @@ expect_status 0 "long minor"
 if grep -q "CROSSED" <<<"$OUTPUT"; then fail "long minor: crossing reported"; fi
 expect_deployed "long minor"
 
+# A comparison release_tags.py cannot answer, with neither RAISES nor WITHIN, stops the update with a FAILED line naming
+# both releases and what it printed, before anything is merged or deployed. A stand-in for Python, under both names
+# update.sh may run, answers --raises with an error and runs Python itself for everything else.
+begin_case 'comparison unanswered'
+new_clone
+BEFORE=$(head_of "$CLONE" HEAD)
+publish "unanswered release"
+tag_upstream "v$HUGE.8.0"
+PYTHON_SHIM="$FIXTURE/python shim"
+mkdir -p "$PYTHON_SHIM"
+for NAME in python python3; do
+  REAL_PYTHON=$(command -v "$NAME" || true)
+  [ -n "$REAL_PYTHON" ] || continue
+  cat >"$PYTHON_SHIM/$NAME" <<EOF
+#!/usr/bin/env bash
+case " \$* " in
+  *" --raises "*) echo "FAILED refused by the test"; exit 1 ;;
+esac
+exec "$REAL_PYTHON" "\$@"
+EOF
+  chmod +x "$PYTHON_SHIM/$NAME"
+done
+PATH="$PYTHON_SHIM:$PATH" run_subject "$CLONE" main
+expect_failed "FAILED cannot compare release v$HUGE.7.0 with v$HUGE.8.0: refused by the test" "comparison unanswered"
+[ "$(head_of "$CLONE" HEAD)" = "$BEFORE" ] || fail "comparison unanswered: main moved"
+expect_not_deployed "comparison unanswered"
+
 echo "update.sh release gate tests passed"

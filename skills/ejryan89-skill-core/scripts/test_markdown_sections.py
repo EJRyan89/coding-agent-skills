@@ -16,13 +16,75 @@ from markdown_sections import (
     COMMONMARK_CODE_SPAN,
     EXECUTABLE_FENCES,
     FENCE_LANGUAGES,
+    FENCE_OPENER,
     HTML_COMMENT,
     POWERSHELL_FENCES,
     SHELL_FENCES,
     find_fences,
+    is_blank,
+    list_item,
     markdown_section,
     prose_code_spans,
 )
+
+NBSP = chr(0xA0)
+EM_SPACE = chr(0x2003)
+ARABIC_THREE = chr(0x663)
+
+
+@pytest.mark.parametrize(
+    ("line", "text"),
+    [
+        ("- item", "item"),
+        ("+\titem", "item"),
+        ("   * item", "item"),
+        ("123456789. item", "item"),
+        ("7) item", "item"),
+        ("- ", ""),
+        # Ten digits, a digit outside ASCII, a Unicode space beside the marker, and no space are not list items.
+        ("1234567890. item", None),
+        (f"{ARABIC_THREE}. item", None),
+        (f"1.{NBSP}item", None),
+        (f"{EM_SPACE}1. item", None),
+        ("1.item", None),
+        ("-item", None),
+    ],
+)
+def test_a_list_item_is_read_as_commonmark_reads_one(line: str, text: str | None) -> None:
+    assert list_item(line) == text
+
+
+@pytest.mark.parametrize(
+    ("line", "text"),
+    [
+        ("- item", "item"),
+        ("1. item", "item"),
+        ("1) item", "item"),
+        ("001. item", "item"),
+        # An ordered item numbered other than 1, and an item with no text, continue the paragraph above.
+        ("2. item", None),
+        ("123456789. item", None),
+        ("0. item", None),
+        ("- ", None),
+        ("1.  \t", None),
+    ],
+)
+def test_only_a_bullet_or_an_item_numbered_one_with_text_interrupts_a_paragraph(line: str, text: str | None) -> None:
+    assert list_item(line, interrupting=True) == text
+
+
+def test_a_fence_inside_a_list_item_reads_the_marker_as_commonmark_does() -> None:
+    assert FENCE_OPENER.fullmatch("3. ```bash") is not None
+    assert FENCE_OPENER.fullmatch("123456789) ~~~") is not None
+    assert FENCE_OPENER.fullmatch(f"{ARABIC_THREE}. ```bash") is None
+    assert FENCE_OPENER.fullmatch("1234567890. ```bash") is None
+
+
+def test_only_spaces_and_tabs_make_a_line_blank() -> None:
+    assert is_blank("")
+    assert is_blank(" \t ")
+    assert not is_blank(NBSP)
+    assert not is_blank(EM_SPACE)
 
 
 class MarkdownSectionTests(unittest.TestCase):

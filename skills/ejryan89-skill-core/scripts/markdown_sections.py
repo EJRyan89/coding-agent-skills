@@ -1,12 +1,27 @@
 """The Markdown readers shared by skills, repository tools, the deployer, and validation: the second-level section
 reader, the fenced code block reader, the labels of a fence in an executable language, the inline code span
-patterns, and the HTML comment pattern."""
+patterns, the HTML comment pattern, and the block rules every reader of Markdown's structure reads as CommonMark does:
+the whitespace of block structure, list markers, and which list item may interrupt a paragraph."""
 
 from __future__ import annotations
 
 import re
 from dataclasses import dataclass
 
+# The whitespace of Markdown's block structure: CommonMark reads only the space and the tab as indentation, as the
+# separator after a list marker, and as what a blank line holds, so every other Unicode space is text. A reader of
+# block structure strips this, never everything `str.strip` takes.
+MARKDOWN_SPACE = " \t"
+# A list marker as CommonMark reads one: a bullet, or one to nine ASCII digits and `.` or `)`. `\d` would admit every
+# Unicode digit, and an unbounded count, so a line Markdown shows as prose would be read as a list item.
+BULLET_MARKER = r"[-*+]"
+ORDERED_MARKER = r"[0-9]{1,9}[.)]"
+LIST_MARKER = rf"(?:{BULLET_MARKER}|{ORDERED_MARKER})"
+# The list marker that may interrupt a paragraph: CommonMark lets a list's first item interrupt one only when it is a
+# bullet or an ordered marker numbered 1, and only with text after it; any other ordered line continues the paragraph.
+INTERRUPTING_LIST_MARKER = rf"(?:{BULLET_MARKER}|0{{0,8}}1[.)])"
+# A line that opens a list item: any indentation, the marker, then a space or a tab before its text.
+LIST_ITEM = re.compile(rf"[ \t]*(?P<marker>{LIST_MARKER})[ \t]+(?P<text>.*)")
 # An inline code span on one line, with its text as the first group, as a skill reads commands or cited paths from it.
 CODE_SPAN = re.compile(r"`([^`\n]+)`")
 # An inline code span as CommonMark reads one: a run of backticks, its text, and a run of the same length, with the run
@@ -19,7 +34,7 @@ HTML_COMMENT = re.compile(r"<!--.*?-->", re.DOTALL)
 # backticks or tildes, and its info string. Whitespace is read once, after each marker, so no run of it can be split
 # between two markers and the match stays linear.
 FENCE_OPENER = re.compile(
-    r"(?P<container>[ \t]*(?:(?:>|(?:[-+*]|\d{1,9}[.)])[ \t])[ \t]*)*)(?P<marker>`{3,}|~{3,})(?P<info>.*)"
+    rf"(?P<container>[ \t]*(?:(?:>|{LIST_MARKER}[ \t])[ \t]*)*)(?P<marker>`{{3,}}|~{{3,}})(?P<info>.*)"
 )
 QUOTE_MARKER = re.compile(r"[ \t]*>[ \t]?")
 # Every label a fence of commands or a program may carry, by the language it names: the POSIX shells, fish, and cmd,
@@ -69,6 +84,28 @@ class Fence:
                 break
             line = line[marker.end() :]
         return line
+
+
+def is_blank(line: str) -> bool:
+    """Whether Markdown reads the line as blank: nothing on it but spaces and tabs."""
+    return not line.strip(MARKDOWN_SPACE)
+
+
+def list_item(line: str, *, interrupting: bool = False) -> str | None:
+    """The text of the list item the line opens, or None when Markdown reads no list item there.
+
+    With `interrupting`, the line follows the text of a paragraph that is no list item's, where CommonMark starts a list
+    only at a bullet or an ordered marker numbered 1 with text after it, and reads any other line as the paragraph's
+    continuation.
+    """
+    match = LIST_ITEM.fullmatch(line)
+    if match is None:
+        return None
+    if interrupting and (
+        re.fullmatch(INTERRUPTING_LIST_MARKER, match.group("marker")) is None or is_blank(match.group("text"))
+    ):
+        return None
+    return match.group("text")
 
 
 def find_fences(lines: list[str]) -> list[Fence]:

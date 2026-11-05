@@ -91,21 +91,48 @@ class RuleTests(unittest.TestCase):
     def test_a_list_item_is_read_as_markdown_reads_one_and_any_other_line_as_prose(self) -> None:
         # CommonMark's ordered list marker is one to nine ASCII digits and `.` or `)`, and a space or a tab separates a
         # marker from its text. A line Markdown shows as prose continues the paragraph above it, so its rule starts
-        # on that paragraph's line; a list item starts its own.
-        paragraph = "Keep every function short and focused.\n"
+        # on that paragraph's line; a list item starts its own. Below a paragraph, only a bullet or an ordered item
+        # numbered 1 starts a list; after a blank line, or below another item, any marker does.
+        paragraph = "Keep every function short and focused."
         item = "Return early from each nested helper function."
         for marker, line in [
-            ("123456789. ", 2),
-            ("7)\t", 2),
+            ("1. ", 2),
+            ("1)\t", 2),
             ("  - ", 2),
+            ("123456789. ", 1),  # numbered other than 1, so the paragraph continues
+            ("7)\t", 1),
             (f"{chr(0x663)}. ", 1),  # an Arabic-Indic digit
             ("1234567890. ", 1),  # ten digits
             (f"1.{chr(0xA0)}", 1),  # a no-break space
             (f"{chr(0x2003)}1. ", 1),  # an em space before the marker
         ]:
             with self.subTest(marker=marker):
-                found = [(rule.line, rule.text) for rule in rg.rules("guide.md", f"{paragraph}{marker}{item}\n")]
-                self.assertEqual((line, item), found[-1])
+                found = [(rule.line, rule.text) for rule in rg.rules("guide.md", f"{paragraph}\n{marker}{item}\n")]
+                self.assertEqual(line, found[-1][0])
+                self.assertTrue(found[-1][1].endswith(item), found[-1][1])
+        for text, line in [
+            (f"{paragraph}\n\n123456789. {item}\n", 3),
+            (f"1. {paragraph}\n7) {item}\n", 2),
+        ]:
+            with self.subTest(text=text):
+                self.assertEqual((line, item), [(rule.line, rule.text) for rule in rg.rules("guide.md", text)][-1])
+
+    def test_only_spaces_and_tabs_are_markdown_whitespace_in_blank_lines_headings_and_fences(self) -> None:
+        paragraph = "Keep every function short and focused."
+        item = "Return early from each nested helper function."
+        nbsp, em = chr(0xA0), chr(0x2003)
+        # A line of no-break spaces is text, so the paragraph goes on through it.
+        self.assertEqual({1}, {rule.line for rule in rg.rules("guide.md", f"{paragraph}\n{nbsp}\n{item}\n")})
+        # An em space before `#` or a fence's backticks makes the line prose, neither a heading nor a fence.
+        self.assertEqual(
+            [(1, f"# {item}")], [(rule.line, rule.text) for rule in rg.rules("guide.md", f"{em}# {item}\n")]
+        )
+        self.assertEqual([1, 5], [rule.line for rule in rg.rules("guide.md", f"{paragraph}\n\n{em}```\n\n{item}\n")])
+
+    def test_a_link_destination_is_read_as_commonmark_reads_one(self) -> None:
+        self.assertEqual(["docs/x.md"], rg.LINK.findall("see [x]( docs/x.md#part\t)"))
+        self.assertEqual([f"{chr(0xA0)}docs/x.md"], rg.LINK.findall(f"see [x]({chr(0xA0)}docs/x.md)"))
+        self.assertEqual([], rg.LINK.findall("see [x](docs/a b.md)"))
 
     def test_a_planted_contradiction_is_a_conflict_naming_what_differs(self) -> None:
         first, second = rg.rules("a.md", CONVENTIONS)[0], rg.rules("b.md", CHECKLIST)[0]

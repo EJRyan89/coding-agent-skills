@@ -39,10 +39,12 @@
 #                    <commit> when the deployer refused to replace a deployment made with `deploy.py --at <ref>`,
 #                    which deployed <commit>, that check did not name: the clone was updated, and nothing was
 #                    deployed
-#   FAILED <reason>  alone: the clone is not a repository with deploy.py, no ejryan89-skill-core is deployed beside
-#                    this skill, `deploy.py check` printed nothing, printed only its error, or named the deployed
-#                    commit or the pin in a form the update cannot read, so whether the installation is pinned is
-#                    unknown, or a step failed outright, git's own reason following when git failed
+#   FAILED <reason>  alone, before anything is merged or deployed and with the clone on the branch it was found on:
+#                    the clone is not a repository with deploy.py, no ejryan89-skill-core is deployed beside this
+#                    skill, `deploy.py check` printed nothing, printed only its error, or named the deployed commit or
+#                    the pin in a form the update cannot read, so whether the installation is pinned is unknown, a git
+#                    lookup or comparison failed rather than answering, git's own reason following, or another step
+#                    failed outright
 # Each list of commits above that git cannot read, after any status line, is one UNLISTED <range> <reason> line in its
 # place, never an empty list.
 # A stop leaves the clone on the branch it was found on unless a "still on main:" line says otherwise; an update
@@ -491,12 +493,23 @@ if [ -z "$FOUND_ON" ]; then
   echo "FAILED cannot read the branch or the commit the clone is on: git named none"
   exit 1
 fi
+# Every short name the report prints is read before the checkout, so a FAILED line never follows a change to the clone:
+# main after the fast-forward is origin/main, main before it is origin/main too when the clone has no local main yet,
+# which the checkout then creates there, and the deployed commit is known already.
+AFTER=$(short_name "$ORIGIN_MAIN" "main after the fast-forward") || { echo "$AFTER"; exit 1; }
+BEFORE=$AFTER
+if [ "$HAS_MAIN" -eq 0 ]; then
+  BEFORE=$(short_name "$MAIN" "main before the fast-forward") || { echo "$BEFORE"; exit 1; }
+fi
+OLD=
+if [ -n "$KNOWN_COMMIT" ]; then
+  OLD=$(short_name "$KNOWN_COMMIT" "the deployed commit $KNOWN_COMMIT") || { echo "$OLD"; exit 1; }
+fi
 if ! OUTPUT=$(git -C "$CLONE" checkout --quiet main 2>&1); then
   echo "CHECKOUT_FAILED"
   printf '%s\n' "$OUTPUT" | tr -d '\r'
   exit 1
 fi
-BEFORE=$(short_name HEAD "main before the fast-forward") || { echo "$BEFORE"; exit 1; }
 if ! OUTPUT=$(git -C "$CLONE" merge --ff-only --quiet "$ORIGIN_MAIN" 2>&1); then
   echo "NOT_FAST_FORWARD"
   printf '%s\n' "$OUTPUT" | tr -d '\r'
@@ -506,7 +519,6 @@ if ! OUTPUT=$(git -C "$CLONE" merge --ff-only --quiet "$ORIGIN_MAIN" 2>&1); then
   fi
   exit 1
 fi
-AFTER=$(short_name HEAD "main after the fast-forward") || { echo "$AFTER"; exit 1; }
 
 # The main channel reports how local main moved. The release channel reports how the installation moves, from the
 # deployed commit to the release: the commits the release adds, and those the deployment had that the release does
@@ -527,7 +539,6 @@ elif [ -z "$KNOWN_COMMIT" ]; then
   [ -z "$NOT_IN_CLONE" ] || echo "$NOT_IN_CLONE"
   log_lines "$BEFORE..$RELEASE_REF"
 else
-  OLD=$(short_name "$KNOWN_COMMIT" "the deployed commit $KNOWN_COMMIT") || { echo "$OLD"; exit 1; }
   echo "UPDATED $OLD..$TARGET"
   log_lines "$KNOWN_COMMIT..$RELEASE_REF"
   if LEFT=$(log_lines "$RELEASE_REF..$KNOWN_COMMIT"); then
