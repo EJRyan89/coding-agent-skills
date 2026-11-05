@@ -37,6 +37,7 @@ from git_client import GitClient, GitError
 
 from deployer import discovery, platform_support
 from deployer import source as deploy_source
+from deployer.errors import DEBUG_HINT, DeployError
 from deployer.paths import Paths
 from tools import checkout_trust, runtime_canary
 from tools.runtime_canary import Completed
@@ -2602,6 +2603,19 @@ class ChangedSkillsTests(RuntimeCanaryTestCase):
             ],
             output.getvalue().splitlines(),
         )
+
+    def test_changed_since_whose_source_cannot_be_read_fails_with_one_quoted_line_and_no_debug_hint(self) -> None:
+        # The canary takes no --debug, so the deployer's hint to rerun with it is left out of the quoted line.
+        source = self.make_changing_source()
+        refused = DeployError("ERROR: x", "remedy", DEBUG_HINT)
+        output = io.StringIO()
+        with (
+            mock.patch.object(runtime_canary, "changed_paths", return_value=("abc123", ["deployer/render.py"])),
+            mock.patch.object(deploy_source, "discover", side_effect=refused),
+            contextlib.redirect_stdout(output),
+        ):
+            code = runtime_canary.changed_since("v1", root=source)
+        self.assertEqual((1, ['FAILED "ERROR: x remedy"']), (code, output.getvalue().splitlines()))
 
     def test_changed_since_reads_every_change_since_the_shared_commit_through_git(self) -> None:
         source = self.make_changing_source()

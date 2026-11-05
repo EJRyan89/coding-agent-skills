@@ -87,9 +87,6 @@ A title is printed as a JSON string, flattened to one line. A git or gh command 
 reason; a ref is reported as naming no commit only when git finds none, and a repository with no release reachable
 from HEAD only when git lists no release tag reaching it.
 
-Exit status 0 means the briefs were written, the entry or the reads recorded, the search run, or the directory
-deleted; 1 a last line FAILED <reason>; 2 a usage error.
-
 Exit status:
   0  the briefs were written, the entry or the reads recorded, the search run, or the directory deleted
   1  a last line FAILED <reason>

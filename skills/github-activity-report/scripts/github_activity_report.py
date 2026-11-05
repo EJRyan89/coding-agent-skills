@@ -1,9 +1,9 @@
 """Month-by-month GitHub contribution report for one user, a list of users, or a team in one organization.
 
 Prints the Markdown report on stdout and progress on stderr. A failure prints no table, only the line
-`FAILED <reason> [<kind>]` on stdout, and exits 1; an invalid argument exits 2. A group, or a history file the
-caller names, gets one comparison table of a metric instead of the per-user table; the history is written only once
-every user's searches have succeeded, so a failure leaves it as it was.
+`FAILED <reason> [<kind>]` on stdout. A group, or a history file the caller names, gets one comparison table of a
+metric instead of the per-user table; the history is written only once every user's searches have succeeded, so a
+failure leaves it as it was.
 
 Exit status:
   0  the Markdown report was printed

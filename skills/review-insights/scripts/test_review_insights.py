@@ -689,11 +689,28 @@ class ReportTests(InsightFixture):
             self.run_main("report", "--start", "2026-01-01", "--end", "2026-01-31"), f"Invalid review pair {earlier}: "
         )
         earlier.write_bytes(stored)
-        with mock.patch.object(ri, "list_versions", side_effect=PermissionError("Access is denied")):
+        with mock.patch.object(ri, "every_version", side_effect=PermissionError("Access is denied")):
             self.assertFailed(
                 self.run_main("report", "--start", "2026-01-01", "--end", "2026-01-31"),
                 f"FAILED {history}owner/repo#7: Access is denied",
             )
+
+    def test_a_review_record_missing_below_the_latest_fails_the_history_naming_it(self) -> None:
+        # The ledgers read every review of a pull request; a record gone from below the latest is refused, never read
+        # as a shorter history whose outcomes the report would compute from part of the chain.
+        for version in (1, 2, 3):
+            self.commit("owner/repo", 7, ["Correctness"], version=version)
+        directory = self.archive / "owner" / "repo" / "pulls" / "7"
+        (directory / "review.json").unlink()
+        self.assertEqual(
+            (
+                1,
+                f"FAILED Invalid review history for owner/repo#7: {directory} holds review version 3 but no"
+                " review.json: a review record is missing\n",
+                "",
+            ),
+            self.run_main("report", "--start", "2026-01-01", "--end", "2026-01-31"),
+        )
 
     def test_a_value_the_json_writer_refuses_fails_the_report_naming_it(self) -> None:
         # The synthesis stage writes the report's evidence and the run's paths, which may hold what no JSON file can.

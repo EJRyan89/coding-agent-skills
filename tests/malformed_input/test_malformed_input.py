@@ -192,10 +192,15 @@ def test_the_scan_credits_a_held_reader_with_the_functions_a_module_level_table_
         "PARSERS: dict = {'a.json': _tabled}\n"
         "def _untabled(text):\n    return json_reader.loads(text)\n"
         "OTHER = {'b.json': _untabled}\n"
+        "def _loaded(path):\n    return json_reader.read_file(path)\n"
+        "def also_held(name):\n    return DEFAULTS[name]\n"
+        "DEFAULTS = _loaded('defaults.json')\n"
     )
-    covered = reader_scan.reached("tools.example", source, {"tools.example.held"})
+    covered = reader_scan.reached("tools.example", source, {"tools.example.held", "tools.example.also_held"})
     assert "tools.example._tabled" in covered
     assert "tools.example._untabled" not in covered
+    # A loader a module-level value calls reads at import time, never through the value, so no reader of it is held.
+    assert "tools.example._loaded" not in covered
 
 
 def _refuse(path: Path) -> object:

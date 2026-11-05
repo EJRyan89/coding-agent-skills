@@ -18,7 +18,7 @@ Claude Code does not give a subagent that lists Bash on macOS, Linux, and WSL:
 The reviewer guard allows exactly these two commands for a reviewer's own run and role (see review_guard.py). The
 blob is read from the repository the run names in `run.json` as `source_repository`: the configured checkout, or the
 copy of a fixture's repository in the run; a run that names none has a whole snapshot. Each command prints one fact
-per line and exits 0, or 1 after `FAILED`.
+per line.
 
 Exit status:
   0  SOURCE_FILE, EXCLUDED, or the MATCH lines and MATCHES were printed

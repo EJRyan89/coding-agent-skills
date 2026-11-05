@@ -19,19 +19,17 @@ one at that path, and refuses a plan with a field missing or not of the kind a s
 force-delete, and remove-directory also refuse a plan whose repository root is no longer a Git repository or whose
 worktree areas are not the ones a sweep derives from it, so they delete only what a sweep offered.
 
-Every command prints one tab-separated fact per line. Exit status 0 means every repository was cleaned, or every
-confirmed deletion ran, was done already by the plan, or was preserved because what it named changed since the plan:
-it moved, or its commit left the default and remote branches. 1 means something needs the agent: a repository that
-stopped (DIRTY_MAIN, FETCH_FAILED) or was skipped with an ERROR line, a branch or path confirmed that the plan never
-offered, a deletion or removal Git refused, a confirmed worktree removal that did not happen because what the worktree
-holds kept it, a directory whose deletion failed, that no longer resolves inside its area, or in which Git now tracks a
-file, or a last line FAILED <reason> when the command could not run at all. report exits 0, or 1 with its FAILED
-line. 2 is a usage error.
+Every command prints one tab-separated fact per line.
 
 Exit status:
-  0  every repository was cleaned, or every confirmed deletion ran, was done already, or was preserved
-  1  something needs the agent: a repository that stopped or was skipped, a confirmation the plan never offered,
-     a deletion Git refused or that failed or did not happen, or a last line FAILED <reason>
+  0  every repository was cleaned, or every confirmed deletion ran, was done already by the plan, or was preserved
+     because what it named changed since the plan: it moved, or its commit left the default and remote branches;
+     or report printed its summaries and closing count
+  1  something needs the agent: a repository that stopped (DIRTY_MAIN, FETCH_FAILED) or was skipped with an ERROR
+     line, a branch or path confirmed that the plan never offered, a deletion or removal Git refused, a confirmed
+     worktree removal that did not happen because what the worktree holds kept it, a directory whose deletion
+     failed, that no longer resolves inside its area, or in which Git now tracks a file, or a last line FAILED
+     <reason> when the command could not run at all, report's only failure
   2  a usage error
 """
 

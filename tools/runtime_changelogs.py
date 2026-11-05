@@ -53,18 +53,17 @@ It prints one fact per line:
   UNREADABLE <page> "<reason>"                           the page answers another error or cannot be reached
   UNREADABLE_CHANGELOG <subject> "<reason>"              the changelog cannot be fetched or read, or does not name the
                                                          release its read_through records; the other changelogs and
-                                                         the pages are still listed, and the run exits 1
+                                                         the pages are still listed
   FAILED <reason>                                        the watch could not run: the record cannot be read, names no
                                                          changelog for a runtime the deployer supports, the code its
                                                          terms come from cannot be read, or the samples' provenance
-                                                         cannot be read; exit 1
+                                                         cannot be read
 
 GitHub's releases API is read thirty releases a page, its default: a hundred of Codex's long release bodies no longer
 fit in the API's response time, and that page answers 504.
 
 With --summary FILE it also appends the findings to FILE as Markdown, as the workflow does with its step summary. A
-finding is never a failure: the run exits 0 whatever it lists, and 1 only on FAILED or an UNREADABLE_CHANGELOG line.
-A usage error exits 2.
+finding is never a failure.
 
 Exit status:
   0  the watch ran, whatever it lists

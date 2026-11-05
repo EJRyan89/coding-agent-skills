@@ -90,6 +90,11 @@ def test_a_row_continues_on_lines_indented_further_and_130_may_be_named() -> Non
         ),
         ("def main():\n    print('x')\n", {0, 1}),
         ("import sys\ndef main() -> int:\n    helper()\n    return 0\ndef helper():\n    sys.exit(9)\n", {0, 1, 9}),
+        ("def main() -> int:\n    helper()\n    return 0\ndef helper():\n    raise SystemExit(15)\n", {0, 1, 15}),
+        (
+            "TABLE = {'a': first}\ndef main() -> int:\n    return TABLE.get(name)(x)\ndef first(x):\n    return 16\n",
+            {1, 16},
+        ),
         (
             "def main() -> int:\n    table = {'a': first, 'b': second}\n    return table[name](x)\n"
             "def first(x):\n    return 10\ndef second(x):\n    return 11\n",
@@ -152,6 +157,50 @@ def test_an_unread_return_fails_until_an_allowance_names_it_and_an_allowance_nam
     ]
 
 
-def test_suites_and_fixtures_are_no_entry_points() -> None:
+NO_ENTRY_POINT = (
+    "the exit-table policy found no entry point, no module whose __main__ block calls console.run_main, so it read "
+    "no exit table: the scan or the runner it looks for has moved"
+)
+
+
+def test_suites_and_fixtures_are_no_entry_points_and_a_run_that_finds_none_fails() -> None:
     entry = script("A suite.\n")
-    assert problems({"tools/test_tool.py": entry, "tests/fixtures/tool.py": entry}) == []
+    assert problems({"tools/test_tool.py": entry, "tests/fixtures/tool.py": entry}) == [NO_ENTRY_POINT]
+    assert problems({}) == [NO_ENTRY_POINT]
+
+
+def test_an_allowance_in_a_module_no_entry_point_reaches_fails_when_it_names_no_return() -> None:
+    found = problems(
+        {
+            "tools/tool.py": script(f"A tool.\n\n{TABLE}"),
+            "tools/unreached.py": "EXIT_CODES_ALLOWED = {'gone.code': 'its caller was removed'}\n",
+        }
+    )
+    assert found == [
+        "tools/unreached.py names 'gone.code' in EXIT_CODES_ALLOWED, which is no return the exit-table reader cannot "
+        "follow from an entry point; remove it"
+    ]
+
+
+def test_an_allowed_return_lets_the_table_name_a_code_the_reader_cannot_see() -> None:
+    # thing.code may be 3, which no path the reader follows exits with; the allowance's reason says where it comes from.
+    body = (
+        "EXIT_CODES_ALLOWED = {'thing.code': 'the thing exits 0 or 3'}\n"
+        "def main() -> int:\n    if flag:\n        return thing.code\n    return 0\n"
+        "if __name__ == '__main__':\n    run_main(main)\n"
+    )
+    table = "Exit status:\n  0  done\n  1  a last line FAILED <reason>\n  3  what the thing says\n"
+    assert problems({"tools/tool.py": script(f"A tool.\n\n{table}", body, "from console import run_main\n")}) == []
+
+
+def test_a_run_main_lambda_target_is_read_as_the_call_it_makes() -> None:
+    body = (
+        "import sys\ndef main(arguments: list[str]) -> int:\n    return 4 if arguments else 0\n"
+        "if __name__ == '__main__':\n    run_main(lambda: main(sys.argv[1:]))\n"
+    )
+    table = "Exit status:\n  0  done\n  1  a last line FAILED <reason>\n  4  given arguments\n"
+    assert problems({"tools/tool.py": script(f"A tool.\n\n{table}", body, "from console import run_main\n")}) == []
+    short = "Exit status:\n  0  done\n  1  a last line FAILED <reason>\n"
+    assert problems({"tools/tool.py": script(f"A tool.\n\n{short}", body, "from console import run_main\n")}) == [
+        'tools/tool.py can exit 4, which its exit table does not name; see "Script results" in docs/adding-a-skill.md'
+    ]

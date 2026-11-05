@@ -37,7 +37,7 @@ It prints one fact per line:
   SKILL <plugin> <skill>             a skill the plugin carries
   AGENT <plugin> <agent>             an agent the plugin carries
   LEFT_OUT <item> "<reason>"         a menu item no plugin carries, and why
-  FAILED <reason>                    the source cannot be read or the output cannot be written; exit 1
+  FAILED <reason>                    the source cannot be read or the output cannot be written
 
 Exit status:
   0  the plugins were written

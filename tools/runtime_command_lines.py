@@ -43,7 +43,7 @@ It prints one fact per line:
 
 A message is the runtime's own, with the throwaway home named <temp>, this checkout <source>, and the profile folder
 <home>. With --summary FILE it also appends a Markdown table of the same facts to FILE, as the workflow does with its
-step summary. A usage error exits 2.
+step summary.
 
 Exit status:
   0  every runtime command line was started and accepted

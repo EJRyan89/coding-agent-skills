@@ -37,9 +37,6 @@ Every line is one fact:
     READY                          check: nothing to fix
     PULL_REQUEST <url>             open: the pull request opened
 
-Exit status 0 means the body was drafted, the check found nothing, or the pull request opened; 1 one line per
-problem, and open opens nothing, or a last line FAILED <reason>; 2 a usage error.
-
 Exit status:
   0  the body was drafted, the check found nothing, or the pull request opened
   1  one line per problem, and open opens nothing, or a last line FAILED <reason>

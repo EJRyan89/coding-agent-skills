@@ -1,11 +1,11 @@
 """Keep a rendered sample of each prompt a skill's script writes for a subagent at runtime, for audit-skill.
 
 Usage:
-  python tools/runtime_prompts.py           report every missing, stale, or extra sample; exit 1 if there is one
+  python tools/runtime_prompts.py           report every missing, stale, or extra sample
   python tools/runtime_prompts.py --write   render every sample again and remove the extra ones
 
-Either exits 2, with a FAILED line naming the skill or the path, when a skill's prompts cannot be rendered, whatever
-its renderer raised, or a sample cannot be read or written; that is never reported as a stale sample.
+Either prints a FAILED line naming the skill or the path when a skill's prompts cannot be rendered, whatever its
+renderer raised, or a sample cannot be read or written; that is never reported as a stale sample.
 
 Exit status:
   0  every sample is current, or --write rendered them

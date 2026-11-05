@@ -22,7 +22,7 @@ since a failed or cancelled run leaves jobs out; so is a successful run whose lo
 name, one whose log lacks a platform or a leg, as a rerun of one failed leg can leave, and a run whose log gh cannot
 read, such as one past the retention period. One refused run refuses the record and the table is left alone. The
 release procedure in docs/releasing.md runs it before tagging, so the legs are rebalanced once a release and never by
-a pull request's live timings. It exits 0 when it wrote the table and 2 when it could not read the runs.
+a pull request's live timings.
 
 Exit status:
   0  the table was written

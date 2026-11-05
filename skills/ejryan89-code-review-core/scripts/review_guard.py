@@ -52,7 +52,8 @@ the plugin's reviewer, whose type Claude Code namespaces as `<plugin>:code-revie
 
 Exit status:
   0  the hook answered: a deny decision printed as JSON, or nothing, which lets the call through
-  1  a last line FAILED <reason>, which Claude Code reads as a hook error and lets the call through
+  1  a last line FAILED <reason>, a hook that failed: the reviewer agent's hook declares onFailure: block, so
+     Claude Code blocks the call, as it does when the hook cannot start or times out
 """
 
 from __future__ import annotations
@@ -78,7 +79,10 @@ from path_keys import path_key
 from skill_roots import plugin_name
 from typed_fields import FieldError, FieldReader
 
-EXIT_CONTRACT_EXEMPT = "Claude Code PreToolUse hook protocol: prints a JSON decision and always exits 0"
+EXIT_CONTRACT_EXEMPT = (
+    "Claude Code PreToolUse hook protocol: prints a JSON decision or nothing and exits 0, unless run_main reports a "
+    "failure, which exits 1 and which the hook's onFailure: block turns into a blocked call"
+)
 SCRIPT_DIRECTORY = Path(__file__).resolve().parent
 REFERENCES = SCRIPT_DIRECTORY.parent / "references"
 PIPELINE = SCRIPT_DIRECTORY / "review_pipeline.py"

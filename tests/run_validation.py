@@ -11,7 +11,7 @@ tests/validation/test_<module>.py, which run in the pool as regression suites. E
 split into shards, each its own pytest process that conftest.py's --suite-shard deals the suite's tests to, so no single
 suite sets the length of the run.
 -k selects the policy checks whose name, and the suites whose path, matches a pattern, and a pattern that matches
-none of either, alone or beside one that does, is a usage error, exit 2, rather than a run that passes without it. -k
+none of either, alone or beside one that does, is a usage error rather than a run that passes without it. -k
 selects by name, so --changed and --full, which select by the change, are usage errors beside it. VALIDATION_JOBS sets
 the number of workers.
 

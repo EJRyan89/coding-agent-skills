@@ -122,9 +122,8 @@ outcome, module, line, and mutation. The report, each module's changed lines, co
 module with no mutant, each surviving mutant by its line, the mutation, and the suites it ran against, each with the
 count of its tests that ran when not all of them did, and each mutant not reached by its line and the mutation, goes to
 stdout and to the step summary GITHUB_STEP_SUMMARY names. A pull request that changes no such module writes one line
-saying so. A run, or its join, exits 0 once the gate has run to its end, whatever survived, and 1 when the run was
-unfinished, on any leg, after its summary and an error annotation repeating its first line; `select` and `leg` exit 0
-once they wrote their file. Any step exits 1 when it cannot run: the join finds no selection, no outcomes from a leg
+saying so. A run, or its join, unfinished on any leg ends after its summary and an error annotation repeating its
+first line. A step cannot run when the join finds no selection, no outcomes from a leg
 that had mutants to run, or a record that is not as its step writes it, such as a leg's naming another leg or leaving
 out a module that leg had mutants for, or a local run's naming a place outside a module's mutants, a module the leg
 does not run, or a place whose leg outcome was a verdict, `unrun` finds no leg of this platform, a completed one, a

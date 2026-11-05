@@ -2043,6 +2043,23 @@ class OutputTests(DocumentTestCase):
         reason = "is not a fixture review-document built: it holds no pull.json file"
         self.assertEqual((1, [f"FAILED {self.root} {reason}"]), (code, lines))
 
+    def test_report_refuses_a_fixture_whose_pull_json_holds_no_json_object(self) -> None:
+        document = self.root / "plan.md"
+        document.write_bytes(b"# Plan\n")
+        self.build(document)
+        fixture = (self.output / "fixture").resolve()
+        recorded = self.root / "canary" / "review.md"
+        recorded.parent.mkdir()
+        recorded.write_text("# Code Review\n", encoding="utf-8")
+        recorded.with_suffix(".json").write_text("{}", encoding="utf-8")
+        reason = "is not a fixture review-document built: its pull.json holds no JSON object"
+        for name, content in (("a list", b"[]"), ("not JSON", b"{not json")):
+            with self.subTest(name):
+                (fixture / "pull.json").write_bytes(content)
+                code, lines = run_main("report", "--fixture", str(fixture), "--report", str(recorded))
+                self.assertEqual((1, [f"FAILED {fixture} {reason}"]), (code, lines))
+                self.assertFalse((self.output / "report.md").exists())
+
     def test_report_names_a_fixture_or_record_file_it_cannot_read_never_reading_it_as_absent(self) -> None:
         document = self.root / "plan.md"
         document.write_bytes(b"# Plan\n")

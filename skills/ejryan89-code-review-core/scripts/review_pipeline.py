@@ -20,9 +20,7 @@
     inspect-reviewer   say whether a repository's review skill runs as one reviewer or needs a manifest
     validate-reviewer  prove a repository reviewer's files, patterns, and routing without running a review
 
-Every command prints machine-readable lines on stdout. It exits 0 with its result, including a state to poll
-again (`RUNNING`), and 1 with findings to act on (`RETRY`, `INVALID`, `UNFINALIZED`) or an expected failure,
-printed as a `FAILED <reason>` line on stdout. Exit 2 is only argparse's usage error, before any work.
+Every command prints machine-readable lines on stdout, an expected failure as a `FAILED <reason>` line.
 `prepare` takes any number of pull requests, or a batch file, prepares them four at a time, and keeps the runs it
 publishes in a run list it names in a `RUNS <file> pending=<n>` line; `prepare --runs <file>` prepares the next four.
 `workflow`, `wait-reviewers`, `check`, `finalize`, and `unfinalized` take that list as `--runs <file>` in place of

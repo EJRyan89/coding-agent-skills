@@ -35,9 +35,7 @@ A snapshot it cannot read its evidence from, one that is not a directory or, whe
 the documents it searches, or whose manifest cannot be read, ends it with `FAILED MissingEvidence: <what is missing>`,
 so an absent snapshot never reads as a change no document names.
 
-Prints `PASSAGES <found> given=<n> excluded=<n>`. Exit status 0 means it wrote passages or excluded documents, which
-opens the route; 1 that every document it searches was read and none names what changed, which closes it; 2 a
-usage error or a last line FAILED <reason>, which fails the review.
+Prints `PASSAGES <found> given=<n> excluded=<n>`.
 
 Exit status:
   0  it wrote passages or excluded documents, which opens the route

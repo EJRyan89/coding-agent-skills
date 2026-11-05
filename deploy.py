@@ -4,7 +4,7 @@ Exit status:
   0    the command did its job, a dry run and --help included
   1    a last line FAILED <reason>, an ERROR the deployer printed, or a Python older than the floor below
   2    a usage error
-  130  Ctrl+C, or a recovery the user cancelled
+  130  cancelled, by Ctrl+C, during a recovery included, or by the end of input at a prompt
 """
 
 # Keep this module importable by a Python 3 older than the floor, so it reaches the version check below: nothing

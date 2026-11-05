@@ -162,7 +162,7 @@ def commit_record(
     lock_key = f"{repository.replace('/', '__')}#{pull_number}.lock"
     lock = root / ".locks" / lock_key
     with ResourceLock(lock):
-        versions = list_versions(directory)
+        versions = every_version(directory)
         current = versions[-1] if versions else None
         if current != expected_latest_version:
             raise ArchiveError(

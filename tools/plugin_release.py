@@ -22,10 +22,9 @@ compares the digests. It prints, for each plugin:
   PIN_DIFFERS <plugin> <tag> <pinned> <rebuilt>    it is not
   UNPINNED <plugin> "<reason>"                     the entry names no release asset with a digest
 
-and exits 1 unless every plugin's pin matches. Either command prints `FAILED <reason>` and exits 1 when the tag is
-not a release tag the checkout holds, its tree cannot be assembled, the marketplace lists no plugin, or a file cannot
-be read or written; `build` refuses before it writes anything, and a pin or an archive it cannot write removes the
-archives it wrote and an output folder it made.
+Either command prints `FAILED <reason>` when the tag is not a release tag the checkout holds, its tree cannot be
+assembled, the marketplace lists no plugin, or a file cannot be read or written; `build` refuses before it writes
+anything, and a pin or an archive it cannot write removes the archives it wrote and an output folder it made.
 
 Exit status:
   0  build pinned every archive, or check found every pin matching

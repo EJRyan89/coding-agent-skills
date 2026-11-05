@@ -230,7 +230,6 @@ markers. Every other skill's row is written back as it was. A row's Runs cell is
 more than one, each scenario's counts in By scenario end with the runs that passed every expectation, of the runs
 judged, as the citation's cells do; a run none of whose judged part ran, reviewers or a trigger scenario's sessions,
 is left out of both counts, as a scenario none of whose runs held a judgment is `not run`.
-It exits 1 on any FAIL, FAILED, or DEPLOY_FAILED line, 0 otherwise, and 2 on a usage error.
 
 Exit status:
   0  no FAIL, FAILED, or DEPLOY_FAILED line

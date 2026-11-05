@@ -53,10 +53,7 @@ A snapshot it cannot read its evidence from, one that is not a directory, whose 
 a changed script the diff leaves at the head with no exclusion recorded for it, ends it with `FAILED MissingEvidence:
 <what is missing>`, so an absent snapshot never reads as every changed definition tested.
 
-Prints `UNTESTED <found> given=<n>`, counting every entry. Exit status 0 means it wrote entries, which opens the
-route; 1 that every changed definition is named by a test and converts no call site, or none changed, which closes
-it; 2 a usage error or a last line
-FAILED <reason>, which fails the review.
+Prints `UNTESTED <found> given=<n>`, counting every entry.
 
 Exit status:
   0  it wrote entries, which opens the route

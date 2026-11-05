@@ -100,10 +100,6 @@ Every line is one fact:
 
 Every branch, path, state, leg, step, and check name that GitHub returned is flattened onto its line.
 
-Exit status 0 means the tick ran with nothing left for the shepherd's judgment; 1 that it printed a HUB line naming
-a hub it ran in and did not fast-forward, a NOT_ADMITTED, OUT_OF_STEP, CONFLICT, DEFECT, RERUN_SPENT, PR_FAILED, or
-MERGED_FAILED line, or a last line FAILED <reason>; 2 a usage error.
-
 Exit status:
   0  the tick ran with nothing left for the shepherd's judgment
   1  a HUB line naming a hub it ran in and did not fast-forward, a NOT_ADMITTED, OUT_OF_STEP, CONFLICT, DEFECT,

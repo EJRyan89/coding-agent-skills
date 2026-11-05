@@ -74,10 +74,15 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   `tests/deployer/test_state_files.py::ReaderTests::test_a_state_file_whose_stat_fails_is_refused_with_the_reason_not_read_as_absent`,
   `skills/ejryan89-code-review-core/scripts/test_review_source.py::SearchErrorTests`,
   `tests/malformed_input/test_faults_unreadable.py::test_each_command_refuses_a_file_it_reads_that_it_cannot_read`,
+  `tests/malformed_input/test_faults_directory.py::test_each_command_refuses_a_directory_in_a_file_s_place`,
+  `tests/malformed_input/test_faults_missing.py::test_each_command_refuses_a_missing_file_it_reads`,
   `tests/malformed_input/test_faults_stat.py::test_each_command_refuses_a_file_whose_stat_fails`, and
   `tests/malformed_input/test_faults_programs.py::test_each_command_refuses_a_git_or_gh_that_fails`,
-  which run every command of every entry point with a file it reads unreadable, a directory, missing, or unstatable,
-  and with git exiting 128, git timing out, and gh failing, and fail a run that exits 0 or never names what failed
+  which run every command each area's driver table drives, with a file it reads unreadable, a directory, missing, or
+  unstatable, and with git exiting 128, git timing out, and gh failing, and fail a run that exits 0 or never names
+  what failed; a command a table names in NOT_RUN, with its reason, is not run, and
+  `tests/malformed_input/test_faults.py::test_every_command_of_every_entry_point_is_driven_or_named_not_run` fails a
+  command neither driven nor named
 - **Search for:** `returncode == 0` or `returncode != 0` beside a `git` or `gh` command outside `git_client.py` and
   `github_client.py`, including a git the deployer runs through `platform_support.run_tool`, which reaches
   `GitClient` only through a runner over `run_tool`; `except GitError:` followed by `return None` or `return False`; `except OSError:` followed by
@@ -343,8 +348,8 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   which gives every key of each journal entry the deployer writes a list, an object, and a number, and
   `tests/malformed_input/test_malformed_input.py::test_every_function_that_calls_a_shared_reader_is_held_reached_pending_or_named_no_reader`,
   which fails a function calling a shared reader that no table holds, no held reader of its own module reaches, and
-  the pending list does not name, passes a helper a held reader reaches, and fails a pending name the scan no longer
-  finds unheld
+  neither the pending list nor NOT_READERS, the functions named as no reader with the reason, names, passes a helper
+  a held reader reaches, and fails a pending or NOT_READERS name the scan no longer finds unheld
 - **Search for:** `if not isinstance(` followed by `continue` in a loop over another program's entries; `.get(` with a
   default, or `["key"]`, on `json_reader` output with no `isinstance` or `FieldReader` check; a top-level value used
   without `isinstance(value, dict)`; a regular expression over another program's output with no branch for no match;

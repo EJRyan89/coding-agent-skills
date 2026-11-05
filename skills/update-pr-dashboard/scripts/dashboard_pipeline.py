@@ -18,9 +18,7 @@
              print the `review-prs` arguments for the candidates the user confirmed, read from that record and the
              configuration's overrides, or name the confirmed stale ones when the re-review scope is still to be asked
 
-Every command prints machine-readable lines and exits 0 on success. Expected failures, including a collection in
-which any repository failed and an update in which any pull request's comparison failed, print `FAILED <reason>` as the
-last line and exit 1; only a usage error exits 2.
+Every command prints machine-readable lines.
 
 Exit status:
   0  the command succeeded

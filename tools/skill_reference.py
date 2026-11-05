@@ -1,7 +1,7 @@
 """Keep docs/skills.md, the skill reference, in step with each skill's frontmatter and deploy metadata.
 
 Usage:
-  python tools/skill_reference.py           report every stale or missing part; exit 1 if there is one
+  python tools/skill_reference.py           report every stale or missing part
   python tools/skill_reference.py --write   regenerate the generated blocks and add a section for each new skill
 
 docs/skills.md holds a generated summary table, a generated runtime support table, and one section per selectable

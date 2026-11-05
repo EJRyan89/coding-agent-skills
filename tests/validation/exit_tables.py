@@ -22,9 +22,10 @@ that ends without a return returns None, which exits 0. Ctrl+C's 130 is run_main
 stated once in "Script results", so a table names it only where the code gives it a meaning of its own.
 
 A return whose code the reader cannot follow, such as an attribute of an object, is named with where its codes come
-from in a module-level `EXIT_CODES_ALLOWED = {"<expression as written>": "<reason>"}` in the module that holds it;
-an entry point that reaches one may name codes the reader does not see, and its table is held only to name each code
-the reader does see. An entry that sanctions no return fails.
+from in a module-level `EXIT_CODES_ALLOWED = {"<expression as written>": "<reason>"}` in the module that holds it
+or in the entry point; an entry point that reaches one may name codes the reader does not see, and its table is held
+only to name each code the reader does see. An entry that sanctions no return fails, read in every module, whether or
+not an entry point still reaches it. A run that finds no entry point fails, since it read no table.
 """
 
 from __future__ import annotations
@@ -46,6 +47,7 @@ from validation_support import (
     import_aliases,
     is_test_script,
     parse_python,
+    python_source,
     qualified_name,
     repository_files,
 )
@@ -90,22 +92,28 @@ def runs_the_runner(tree: ast.Module) -> bool:
     )
 
 
+def scanned_files(root: Path, files: list[Path] | None = None) -> list[Path]:
+    """The Python files the policy reads, among the repository's files or the files given: every one outside the
+    suites, the root conftest.py, and tests/fixtures/, in order of their path from the root."""
+    listed = repository_files(root) if files is None else files
+    return [
+        path
+        for path in sorted(listed, key=lambda each: each.relative_to(root).as_posix())
+        if path.suffix == ".py"
+        and not is_test_script(path)
+        and not within(path, root / NOT_SCANNED)
+        and path.name != "conftest.py"
+    ]
+
+
 def entry_points(
     root: Path = REPOSITORY_ROOT, problems: list[str] | None = None, files: list[Path] | None = None
 ) -> list[EntryPoint]:
     """Every entry point among the repository's files, or the files given, by its path from the root; a file no
     policy can read goes in problems."""
     found: list[EntryPoint] = []
-    listed = repository_files(root) if files is None else files
-    for path in sorted(listed, key=lambda each: each.relative_to(root).as_posix()):
+    for path in scanned_files(root, files):
         name = path.relative_to(root).as_posix()
-        if (
-            path.suffix != ".py"
-            or is_test_script(path)
-            or within(path, root / NOT_SCANNED)
-            or path.name == "conftest.py"
-        ):
-            continue
         try:
             tree = parse_python(path)
         except UnreadablePython as error:
@@ -556,11 +564,15 @@ def table_problems(root: Path = REPOSITORY_ROOT, files: list[Path] | None = None
     the codes its code can exit with; each return the reader cannot follow that no allowance names; and each
     allowance that names no such return."""
     problems: list[str] = []
-    sanctions: dict[Path, dict[str, str]] = {}
     met: set[tuple[Path, str]] = set()
-    for entry in entry_points(root, problems, files):
+    entries = entry_points(root, problems, files)
+    if not entries:
+        problems.append(
+            f"the exit-table policy found no entry point, no module whose __main__ block calls {RUNNER}, so it read no "
+            "exit table: the scan or the runner it looks for has moved"
+        )
+    for entry in entries:
         reader = read_codes(root, entry)
-        sanctions |= {path: module.allowed for path, module in reader.modules.items() if module.allowed}
         own = reader.modules[entry.path].allowed
         for path, line, expression in reader.reading.unread:
             if expression in reader.modules[path].allowed:
@@ -583,6 +595,8 @@ def table_problems(root: Path = REPOSITORY_ROOT, files: list[Path] | None = None
             f"{entry.name} can exit {code}, which its exit table does not name; see {RESULTS_DOC}"
             for code in sorted(expected - table.keys())
         ]
+        # An entry point that reaches a return the reader cannot follow, an allowed one included, may name codes the
+        # reader does not see, so its table is held only to name each code the reader does see.
         if not reader.reading.unread:
             problems += [
                 f"{entry.name} names exit {code} in its exit table, which no path of its code exits with; see "
@@ -592,11 +606,27 @@ def table_problems(root: Path = REPOSITORY_ROOT, files: list[Path] | None = None
     problems += [
         f"{path.relative_to(root).as_posix()} names {expression!r} in {ALLOWANCE}, which is no return the exit-table "
         "reader cannot follow from an entry point; remove it"
-        for path, allowed in sorted(sanctions.items())
+        for path, allowed in sorted(allowances(root, files).items())
         for expression in allowed
         if (path, expression) not in met
     ]
     return problems
+
+
+def allowances(root: Path, files: list[Path] | None = None) -> dict[Path, dict[str, str]]:
+    """Every module's EXIT_CODES_ALLOWED, read in each Python file the policy reads, whether or not an entry point
+    reaches it, so an allowance no return needs any longer fails wherever it is left."""
+    found: dict[Path, dict[str, str]] = {}
+    for path in scanned_files(root, files):
+        try:
+            if ALLOWANCE not in python_source(path):
+                continue
+            module = Module.read(path, parse_python(path))
+        except (UnreadablePython, OSError):
+            continue
+        if module.allowed:
+            found[path] = module.allowed
+    return found
 
 
 class ExitTablePolicies(unittest.TestCase):

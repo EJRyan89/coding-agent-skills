@@ -10,11 +10,11 @@ Usage:
 
 `verify` asks Codex CLI and Copilot CLI which skills they find, the way `python deploy.py verify` does, and judges
 each runtime: PASSED when it finds every adapter, SKIPPED when it refuses to list skills until someone signs in,
-FAILED otherwise, a runtime that is not installed included, because the workflow installed both. It exits 1 when any
-runtime FAILED, when every runtime was SKIPPED (nothing was checked), or when `deploy.py verify` failed for a reason
-no skip explains: a skip explains only a failure verify's saved output names for runtimes SKIPPED here. It appends the
-pass to the results file. `summary` renders the tool versions and every recorded pass as Markdown, appended to the
-step summary file (GITHUB_STEP_SUMMARY by default) and printed.
+FAILED otherwise, a runtime that is not installed included, because the workflow installed both. It judges a failure
+when any runtime FAILED, when every runtime was SKIPPED (nothing was checked), or when `deploy.py verify` failed for a
+reason no skip explains: a skip explains only a failure verify's saved output names for runtimes SKIPPED here. It
+appends the pass to the results file. `summary` renders the tool versions and every recorded pass as Markdown,
+appended to the step summary file (GITHUB_STEP_SUMMARY by default) and printed.
 
 `layout` is the Claude Code check. Claude Code reads ~/.claude/skills directly, with no adapter, and has no command
 that lists skills without a session, so this checks the files instead: Claude Code is installed, every skill the
@@ -22,22 +22,21 @@ manifest owns has a non-empty SKILL.md, and every agent it owns is in place. Tha
 discovery check, and the result says so. It joins the pass with the same label in the results file.
 
 `leftovers` is the uninstall check. After the uninstall, it names every entry, files and directories alike, in the
-directories items deploy to, and each item the manifest still records, and records them for the summary; it exits 1
-when it names any. It allows what the uninstall leaves by design: the manifest, which keeps the source's entry with no
-items, and each directory's retained backups. Every path the deployment owns is an entry of one of those directories,
-so the listing after the uninstall is the whole check and nothing is saved before it; the workflow's step before the
-uninstall is the layout check, which refuses a profile with nothing deployed. One of those directories that cannot be
-examined or listed, or a file in its place, is an `ERROR:` line naming it, and the command exits 2, since an empty
-listing would read as a clean uninstall.
+directories items deploy to, and each item the manifest still records, and records them for the summary. It allows
+what the uninstall leaves by design: the manifest, which keeps the source's entry with no items, and each directory's
+retained backups. Every path the deployment owns is an entry of one of those directories, so the listing after the
+uninstall is the whole check and nothing is saved before it; the workflow's step before the uninstall is the layout
+check, which refuses a profile with nothing deployed. One of those directories that cannot be examined or listed, or a
+file in its place, is an `ERROR:` line naming it, since an empty listing would read as a clean uninstall.
 
 `pin` checks that a runtime the workflow installed is the version it asked for. It prints `NAME --version: TEXT`,
-what the program reported, and exits 0 when VERSION is `latest` or the version in that text is VERSION, compared as
+what the program reported, and passes when VERSION is `latest` or the version in that text is VERSION, compared as
 numbers part by part, so `1.0.9` does not match `1.0.98`. Otherwise it prints a `::error::` line saying why, a
-program that is not on PATH, that fails, or that reports no or another version, and exits 1.
+program that is not on PATH, that fails, or that reports no or another version.
 
 An absent results file starts an empty record. A results file that cannot be read, is not JSON, or does not hold a
-JSON array, and a results file that cannot be written are each an `ERROR:` line naming the file, and the command exits
-2, leaving the file as it was.
+JSON array, and a results file that cannot be written are each an `ERROR:` line naming the file, leaving the file as
+it was.
 
 Nothing here starts a model.
 

@@ -21,7 +21,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts"))
 
 import json_writer
+from presence_denial import denied
 
+from deployer import source_ref
+from deployer.errors import DEBUG_HINT, DeployError
 from tools import plugin_release
 
 REPOSITORY = "https://github.com/owner/fixture-skills"
@@ -226,6 +229,32 @@ def test_build_whose_marketplace_cannot_be_written_leaves_its_output_as_it_found
     assert "marketplace.json" in lines[0]
     assert (checkout / ".claude-plugin" / "marketplace.json").read_bytes() == before
     assert (list(assets.iterdir()) == []) if given == "empty" else not assets.exists()
+
+
+def test_build_whose_tag_cannot_be_resolved_fails_with_the_error_and_its_remedy_and_no_debug_hint(
+    checkout: Path, tmp_path: Path
+) -> None:
+    # The tool takes no --debug, so the deployer's hint to rerun with it is left out of the one line.
+    before = (checkout / ".claude-plugin" / "marketplace.json").read_bytes()
+    refused = DeployError("ERROR: x", "remedy", DEBUG_HINT)
+    with mock.patch.object(source_ref, "resolve", side_effect=refused):
+        code, lines = run(["build", "v1.2.3", "--root", str(checkout), "--output", str(tmp_path / "assets")])
+    assert (code, lines) == (1, ["FAILED ERROR: x remedy"])
+    assert (checkout / ".claude-plugin" / "marketplace.json").read_bytes() == before
+    assert not (tmp_path / "assets").exists()
+
+
+def test_build_whose_output_cannot_be_examined_fails_naming_it_before_writing_anything(
+    checkout: Path, tmp_path: Path
+) -> None:
+    assets = tmp_path / "assets"
+    before = (checkout / ".claude-plugin" / "marketplace.json").read_bytes()
+    with denied(assets):
+        code, lines = run(["build", "v1.2.3", "--root", str(checkout), "--output", str(assets)])
+    reason = f"[Errno 13] Access is denied: {str(assets)!r}"
+    assert (code, lines) == (1, [f"FAILED --output {assets} cannot be examined: {reason}"])
+    assert (checkout / ".claude-plugin" / "marketplace.json").read_bytes() == before
+    assert not assets.exists()
 
 
 def test_check_of_a_marketplace_listing_no_plugin_fails_with_its_reason(checkout: Path) -> None:

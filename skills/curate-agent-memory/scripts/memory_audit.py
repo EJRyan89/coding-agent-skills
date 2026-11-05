@@ -1,13 +1,13 @@
 """Audit, reindex, and delete from a Claude Code memory directory, and find a skill's source.
 
-Every command prints one fact per line on stdout. An expected failure is a last line `FAILED <reason>`
-with exit code 1; a usage error exits 2. Text read from a settings file, the manifest, a memory file's
-name, or a memory reaches a line or a MEMORY.md entry only through ejryan89-skill-core's flat_text, and a path
-holding a line break, which no line can name for a later command, is refused rather than printed.
+Every command prints one fact per line on stdout. An expected failure is a last line `FAILED <reason>`.
+Text read from a settings file, the manifest, a memory file's name, or a memory reaches a line or a MEMORY.md entry
+only through ejryan89-skill-core's flat_text, and a path holding a line break, which no line can name for a later
+command, is refused rather than printed.
 
 A memory store is a directory holding MEMORY.md, outside the skills directory this script runs from,
 ~/.claude/skills, and ~/.agents/skills. audit, reindex, and delete take only a memory store: given any
-other directory, they print one `FAILED <dir> ...` line, read and change nothing, and exit 1. resolve
+other directory, they print one `FAILED <dir> ...` line and read and change nothing. resolve
 reports the same check as a `REFUSED` line, so the skill learns before any change that the later
 commands refuse the directory. A memory is a regular file named *.md directly in the store, other than
 MEMORY.md; any other entry so named, a directory, symbolic link, or junction, is reported unreadable with
@@ -53,7 +53,7 @@ the first line of the body; a description or a body line is collapsed to one lin
 characters, because Claude Code loads the index into every session and stops at its load limit.
 It prints `INDEX_LINE`, `ADDED`, and `DROPPED` lines, then
 `NEAR_LIMIT` or `OVER_LIMIT` when the index nears or passes Claude Code's load limit, then
-`UNCHANGED`, `WOULD_WRITE <path>`, or `WROTE <path>`. OVER_LIMIT is a finding: it exits 1.
+`UNCHANGED`, `WOULD_WRITE <path>`, or `WROTE <path>`. OVER_LIMIT is a finding.
 An entry whose target, after any leading `./`, is not a bare *.md name directly in the store (a `..`
 segment, an absolute path, a subfolder, or a link or junction on the way) is never read or followed,
 and neither is one whose file exists but is not a regular file: each stays as written, and it and each
@@ -67,7 +67,7 @@ directly inside the memory directory: not MEMORY.md, not a path (no separator, d
 `..`), holding no line break, not named twice, and an existing regular file, never a directory,
 symbolic link, or junction, and not read-only: Windows will not delete a read-only file, so one is refused on every
 platform alike. Every name is checked before any is deleted. When any name is refused it prints one
-`FAILED <name>: <reason>` line per refusal, deletes nothing, and exits 1; otherwise it prints one
+`FAILED <name>: <reason>` line per refusal and deletes nothing; otherwise it prints one
 `DELETED <name>` line per file. When a deletion fails part way, the files already printed as
 DELETED are gone, a last `FAILED <name>: <reason>` names the one that failed, and the rest remain.
 
@@ -77,7 +77,7 @@ skills/<name>/SKILL.md of the checkout the deployer's manifest records for it, a
 file inside a skills directory, the deployed copy among them, because the deployer stops updating a
 skill whose deployed copy changed, and prints a `NOTE` for each such file it passes over, and one
 when git cannot read the repository to look for a project skill. With no source left, it prints
-`FAILED <reason>` and exits 1.
+`FAILED <reason>`.
 
 Usage:
   python memory_audit.py resolve [--repo ROOT]

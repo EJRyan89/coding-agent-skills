@@ -4,8 +4,8 @@ Usage: python -B tests/known_failure_issues.py
 
 This is the one part of validation that reads GitHub, so it is a program of its own: it asks, through gh, whether each
 issue tests/malformed_input/known_failures.json or PENDING in tests/malformed_input/readers.py names is an open issue,
-prints a FAILED line for each that is not, is a pull request, or gh cannot answer about, and exits 1 when there is
-one; it asks nothing while both are empty. A list it cannot read, or a git that cannot read the checkout's origin, is
+prints a FAILED line for each that is not, is a pull request, or gh cannot answer about; it asks nothing while both
+are empty. A list it cannot read, or a git that cannot read the checkout's origin, is
 a FAILED line too, never an empty list. Its last line is `Known-failure issues: <count> not shown open.` It imports
 tests/validation/known_failures.py and what that imports, and none of the policy checks or suites
 tests/run_validation.py runs, so the token validate.yml gives the one step that runs it reaches this program and the

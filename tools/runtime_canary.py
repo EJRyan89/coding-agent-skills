@@ -6,7 +6,7 @@ Usage:
   python tools/runtime_canary.py --changed-since [REF]
   python tools/runtime_canary.py --remove-home DIR
 
-It first refuses, with FAILED "<reason>" and exit 1 before it makes a home, a checkout that follows another
+It first refuses, with FAILED "<reason>" before it makes a home, a checkout that follows another
 repository's pull request, as tools/checkout_trust.py reads it: a branch whose upstream is a pull request's ref
 (refs/pull/...) or a remote other than origin, or a HEAD detached at a commit no branch of origin holds, since the run
 deploys and runs the checkout's skills and fixture signed in as the user.
@@ -24,9 +24,9 @@ runtime-canary-probe, then each SKILL given. It prints one fact per line:
   SHADOWED <runtime> <skill> "<path>"           it also lists another enabled copy, such as an installed adapter
   PROJECT_COPY <runtime> <skill> "<path>"       it lists the canary home's own deployed skill as a project skill
   DISABLED <runtime> <skill> "<path>"           it lists this copy turned off in its settings
-  UNDISCOVERED <runtime> <skill> ["<reason>"]   it does not list the canary's copy enabled; the canary exits 1
+  UNDISCOVERED <runtime> <skill> ["<reason>"]   it does not list the canary's copy enabled
   DISCOVERY_NOT_ATTEMPTED <runtime> <skill> "<reason>"  the deployer gave the skill no adapter, so none is looked for
-  DISCOVERY_FAILED <runtime> "<reason>"         it cannot read the runtime's skill list; the canary exits 1
+  DISCOVERY_FAILED <runtime> "<reason>"         it cannot read the runtime's skill list
   SUPPLIED <runtime> "<key>=<value>"            a setting the canary passes in place of the configuration it ignores
   RUNTIME <runtime> <skill> RAN "<script>" "<cwd>" [exit=<n>] [timed-out] KEPT "<ambient>"
   RUNTIME <runtime> <skill> UNCOUNTED "<reason>" KEPT "<ambient>"  it ran the real profile's installed copy
@@ -37,22 +37,22 @@ runtime-canary-probe, then each SKILL given. It prints one fact per line:
   TRANSCRIPT <runtime> <skill> "<path>"         the runtime's output for that run
   MATRIX <runtime> <skill> AGREES <level>       what ran is what the skill's declared runtime support expects
   MATRIX <runtime> <skill> DISAGREES <level> "<what ran instead>"
-  NOTHING_CHECKED "<reason>"                    no runtime was listed or run, with why for each; the canary exits 1
+  NOTHING_CHECKED "<reason>"                    no runtime was listed or run, with why for each
   RECORD_BEGIN ... RECORD_END                   the lines a pull request records, below
   REMOVED "<dir>"                               the home, removed after a run that passed
   HOME_KEPT "<dir>" "<reason>"                  or kept, after a run that failed or with --keep-home
 
-A SKILL that no source names is a usage error, exit 2, before a home is made, while every source can be read; when
+A SKILL that no source names is a usage error before a home is made, while every source can be read; when
 one cannot, a SKILL is not judged by it, and the run's deployment reports the deployer's reason as DEPLOY_FAILED.
 
 The record between RECORD_BEGIN and RECORD_END is what a pull request's Validation section holds: a VERSION
 <runtime> <version> line for each runtime found, the version its --version prints or unknown, then each DEPLOY_FAILED,
 SKIPPED, discovery, SUPPLIED, RUNTIME, MATRIX, and NOTHING_CHECKED line, with every path rewritten so it names no
 machine: the throwaway home as <temp>, this checkout as <source>, and the profile folder the runtimes read as <home>.
-The home is removed after a run that exits 0; after one that fails, or with --keep-home, it stays with its transcripts,
-and --remove-home deletes it later. A home that cannot be removed is FAILED "<reason>" and exit 1.
+The home is removed after a run that passes; after one that fails, or with --keep-home, it stays with its transcripts,
+and --remove-home deletes it later. A home that cannot be removed is FAILED "<reason>".
 
-With --remove-home DIR it prints REMOVED "<dir>", or FAILED "<reason>" and exits 1.
+With --remove-home DIR it prints REMOVED "<dir>", or FAILED "<reason>".
 
 With --changed-since REF it starts nothing and makes no home: it reads, through git, every file changed since the commit
 REF and HEAD share, committed or not, untracked included, and prints SINCE <ref> <commit>, then CHANGED <skill> "<why>"
@@ -63,7 +63,7 @@ file under skills/<skill>/, its deploy-meta/<skill>.json, a shared asset under s
 or an agents/<agent>.md that it declares in agent_deps. A hidden dependency, which has no adapter and no run of its own,
 reaches instead the skills that declare it in skill_deps, directly or through another hidden one. A change to
 deployer/render.py, which writes every adapter, reaches one skill the model may start and one only the user may start, a
-changed one where it can. A git failure is FAILED "<reason>" and exit 1.
+changed one where it can. A git failure is FAILED "<reason>".
 
 The isolation is of configuration, not of credentials: each runtime keeps its real configuration folder and so
 its sign-in, and the canary switches off what each runtime lets it: Claude Code's user settings, skills, and MCP
@@ -101,8 +101,8 @@ nothing else: a runtime-canary- directory directly under the temporary directory
 Each skill's runtime_support in deploy-meta, the matrix docs/skills.md prints, says what to expect: `full` must be
 RAN, `partial` must be RAN or, when the runtime lacks user-only-start, UNSUPPORTED, since the limits of the other
 capabilities lie past the first script the canary asks for, and `none` is NOT_ATTEMPTED. After the runs, one MATRIX
-line per RUNTIME line compares the two, and the canary exits 1 when any disagrees or a skill declares nothing, so the
-matrix cannot claim more than a run shows. It also exits 1 on any UNDISCOVERED or DISCOVERY_FAILED line,
+line per RUNTIME line compares the two, and the run fails when any disagrees or a skill declares nothing, so the
+matrix cannot claim more than a run shows. It also fails on any UNDISCOVERED or DISCOVERY_FAILED line,
 --discovery-only included, since a runtime whose skill list cannot be read is one whose discovery shows nothing, and
 on NOTHING_CHECKED, which it prints when no runtime it was asked to check printed a DISCOVERED or UNDISCOVERED line
 or a RUNTIME line for a run it started: each runtime was SKIPPED, could not be listed, was asked for no skill it

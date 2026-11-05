@@ -4,7 +4,7 @@ Usage:
   python tools/plugin_canary.py [--discovery-only] [--timeout SECONDS] [--keep-home]
   python tools/plugin_canary.py --remove-home DIR
 
-It first refuses, with FAILED "<reason>" and exit 1 before it makes a home, a checkout that follows another
+It first refuses, with FAILED "<reason>" before it makes a home, a checkout that follows another
 repository's pull request, as tools/checkout_trust.py reads it and tools/runtime_canary.py refuses it, since the run
 builds and runs the checkout's plugins and fixture signed in as the user.
 
@@ -30,7 +30,7 @@ copies loaded through --plugin-dir for that session alone and project settings o
 Each check is judged from the session's stream, never from what the model reports. It prints one fact per line:
 
   HOME "<dir>"                                        the throwaway home
-  NOTHING_CHECKED "<reason>"                          Claude Code is not installed, so nothing ran; exit 1
+  NOTHING_CHECKED "<reason>"                          Claude Code is not installed, so nothing ran
   BUILT <plugin> "<path>"                             a plugin assembled into the home
   VALIDATED claude <plugin>                           or VALIDATION_FAILED claude <plugin> "<reason>"
   INSTALLED claude <plugin> <version>                 or INSTALL_FAILED claude <plugin> "<reason>"
@@ -48,9 +48,9 @@ Each check is judged from the session's stream, never from what the model report
                                                       built or a file of the home written
   REMOVED "<dir>" or HOME_KEPT "<dir>" "<reason>"     as tools/runtime_canary.py ends
 
-It exits 1 when nothing was checked, when any check fails (a FAILED or *_FAILED line, an UNDISCOVERED line, a
-RUNTIME line that did not run, a main-session GUARD line that did not pass or a reviewer's that was not denied, an
-UNGUARDED line that was not refused), or when the home cannot be removed, and 0 otherwise. This is a manual check,
+A check fails on a FAILED or *_FAILED line, an UNDISCOVERED line, a RUNTIME line that did not run, a main-session
+GUARD line that did not pass or a reviewer's that was not denied, or an UNGUARDED line that was not refused. This is a
+manual check,
 never part of tests/run_validation.py: each started session calls a model.
 
 Exit status:

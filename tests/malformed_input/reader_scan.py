@@ -109,8 +109,9 @@ def _definitions(tree: ast.Module) -> dict[str, ast.AST]:
 
 
 def _tables(tree: ast.Module, names: set[str]) -> dict[str, set[str]]:
-    """Each module-level name bound to a value that names the module's own functions, such as a table of parsers by
-    file name, with the functions it names."""
+    """Each module-level name bound to a value that holds the module's own functions in a container literal, such as
+    a table of parsers by file name, with the functions it holds. A function the value calls, such as a loader run at
+    import time, is no entry of a table: it reads at import, never through the table."""
     found: dict[str, set[str]] = {}
     for node in tree.body:
         if isinstance(node, ast.Assign):
@@ -119,7 +120,13 @@ def _tables(tree: ast.Module, names: set[str]) -> dict[str, set[str]]:
             targets, value = [node.target], node.value
         else:
             continue
-        named = {each.id for each in ast.walk(value) if isinstance(each, ast.Name) and each.id in names}
+        named = {
+            item.id
+            for container in ast.walk(value)
+            if isinstance(container, ast.Dict | ast.List | ast.Tuple | ast.Set)
+            for item in (container.values if isinstance(container, ast.Dict) else container.elts)
+            if isinstance(item, ast.Name) and item.id in names
+        }
         found |= {target.id: named for target in targets if isinstance(target, ast.Name) and named}
     return found
 

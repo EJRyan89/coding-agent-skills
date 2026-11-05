@@ -1,7 +1,7 @@
 """Keep each repository skill's .agents/skills shim in step with the skill under .claude/skills.
 
 Usage:
-  python tools/skill_shims.py           report every missing, stale, or stray shim file; exit 1 if there is one
+  python tools/skill_shims.py           report every missing, stale, or stray shim file
   python tools/skill_shims.py --write   write each missing or stale shim file from its skill's frontmatter
 
 Codex and Copilot CLI find this repository's own skills through .agents/skills/<name>/. A shim folder holds SKILL.md,
@@ -18,7 +18,7 @@ skill was renamed or removed, or a stray file; it reports them, and a person del
 --root DIR works on another checkout of this repository, as the regression suite does. It refuses, as a usage
 error, a directory that does not hold source.json and .claude/skills, or that lies in a skills directory, such as
 ~/.agents/skills, whose adapters the deployer owns. A file it cannot read or write, a skill's SKILL.md that is not
-UTF-8 included, ends the run with a FAILED line and exit 2.
+UTF-8 included, ends the run with a FAILED line.
 
 Exit status:
   0  every shim is current, or --write wrote them

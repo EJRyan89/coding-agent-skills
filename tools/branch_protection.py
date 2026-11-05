@@ -5,11 +5,11 @@ Usage:
 
 It reads main's branch protection, the repository's merge, Discussions, and security settings, the issue template
 configuration on main, private vulnerability reporting, and the default workflow token's permissions through
-`gh api`, for the repository the current checkout's remote names. It prints PROTECTED (exit 0) when every invariant
-holds, or DRIFTED and one line per invariant that no longer holds (exit 1), then each security setting as it found
-it. It exits 2 when `gh` cannot read them, such as without a sign-in or without admin rights on the repository. The
-absence of the issue template configuration counts as blank issues enabled, hence DRIFTED, not a read error. The
-release procedure in docs/releasing.md runs it before tagging.
+`gh api`, for the repository the current checkout's remote names. It prints PROTECTED when every invariant holds, or
+DRIFTED and one line per invariant that no longer holds, then each security setting as it found it. `gh` cannot read
+them without a sign-in or without admin rights on the repository. The absence of the issue template configuration
+counts as blank issues enabled, hence DRIFTED, not a read error. The release procedure in docs/releasing.md runs it
+before tagging.
 
 Exit status:
   0  PROTECTED: every invariant holds

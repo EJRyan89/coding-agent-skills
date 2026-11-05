@@ -13,7 +13,6 @@ Every command prints one fact per line:
   report  Copies the report `finalize` recorded into the output directory, never over a file already there, once its
           record names the review of the fixture's document, and prints REPORT <copy> and RECORD <the record JSON
           beside the original>.
-A failure prints `FAILED <reason>` and exits 1; a usage error exits 2.
 
 Exit status:
   0  the command printed its facts
