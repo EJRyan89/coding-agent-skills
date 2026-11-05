@@ -268,9 +268,9 @@ PLAIN_ACTIONS = {
 
 @dataclass(frozen=True)
 class CarrierOptions:
-    """A subcommand's options that start a command or a program the caller names: `long`, each of whose
-    abbreviations git accepts too, and `short`, alone or in a bundle of short options, where a letter of `valued`
-    takes the rest of the bundle as its value."""
+    """A subcommand's options that start a command or a program the caller names: `long`, each the name a long option
+    gives after its `--`, every abbreviation of which git accepts too, and `short`, alone or in a bundle of short
+    options, where a letter of `valued` takes the rest of the bundle as its value."""
 
     long: frozenset[str]
     short: frozenset[str] = frozenset()
@@ -278,19 +278,21 @@ class CarrierOptions:
 
 
 # The options a plain client refuses, of the subcommands that take one, with every letter that takes a value bundled.
+# Each long option is named without its `--`, as git's option tables name it.
 CARRIER_OPTIONS = {
-    "rebase": CarrierOptions(frozenset({"--exec"}), frozenset("x"), frozenset("sXCSr")),
-    "grep": CarrierOptions(frozenset({"--open-files-in-pager"}), frozenset("O"), frozenset("efABCm")),
-    "fetch": CarrierOptions(frozenset({"--upload-pack"})),
-    "pull": CarrierOptions(frozenset({"--upload-pack"})),
-    "ls-remote": CarrierOptions(frozenset({"--upload-pack", "--exec"})),
-    "fetch-pack": CarrierOptions(frozenset({"--upload-pack", "--exec"})),
-    "push": CarrierOptions(frozenset({"--receive-pack", "--exec"})),
-    "send-pack": CarrierOptions(frozenset({"--receive-pack", "--exec"})),
-    "archive": CarrierOptions(frozenset({"--exec"})),
-    # `--template` copies a folder's hooks into the new repository, and clone's `--config` sets them before checkout.
-    "clone": CarrierOptions(frozenset({"--upload-pack", "--template", "--config"}), frozenset("uc"), frozenset("obj")),
-    "init": CarrierOptions(frozenset({"--template"})),
+    "rebase": CarrierOptions(frozenset({"exec"}), frozenset("x"), frozenset("sXCSr")),
+    "grep": CarrierOptions(frozenset({"open-files-in-pager"}), frozenset("O"), frozenset("efABCm")),
+    "fetch": CarrierOptions(frozenset({"upload-pack"})),
+    "pull": CarrierOptions(frozenset({"upload-pack"})),
+    "ls-remote": CarrierOptions(frozenset({"upload-pack", "exec"})),
+    "fetch-pack": CarrierOptions(frozenset({"upload-pack", "exec"})),
+    "push": CarrierOptions(frozenset({"receive-pack", "exec"})),
+    "send-pack": CarrierOptions(frozenset({"receive-pack", "exec"})),
+    "archive": CarrierOptions(frozenset({"exec"})),
+    # The template option copies a folder's hooks into the new repository, and clone's config option sets them
+    # before checkout.
+    "clone": CarrierOptions(frozenset({"upload-pack", "template", "config"}), frozenset("uc"), frozenset("obj")),
+    "init": CarrierOptions(frozenset({"template"})),
 }
 
 # The settings on git's command line that name a program git starts, case-folded as git reads them: every key of a
@@ -651,8 +653,8 @@ def carried_option(words: Sequence[str], options: CarrierOptions) -> str | None:
     one is refused too."""
     for word in words:
         if word.startswith("--"):
-            name = word.partition("=")[0]
-            if len(name) > len("--") and any(option.startswith(name) for option in options.long):
+            name = word.partition("=")[0].removeprefix("--")
+            if name and any(option.startswith(name) for option in options.long):
                 return word
             continue
         if not word.startswith("-"):
