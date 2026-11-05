@@ -454,6 +454,7 @@ class ProgramBehindRunnerTests(unittest.TestCase):
                     with self.subTest(command=command):
                         self.assertEqual(expected, refused(command))
 
+    @mock.patch.object(platform_support, "SYSTEM_PROGRAMS_TAKE_SLASH_OPTIONS", False)
     def test_after_xargs_a_program_whose_options_end_at_a_double_dash_is_held_to_its_allow_list(self) -> None:
         for command, expected in (
             ("xargs rg -n -- x", False),
@@ -494,20 +495,34 @@ class WindowsBuildTests(unittest.TestCase):
                     reason = hub_guard.program_refusal(program, arguments, windows_build=True)
                     self.assertEqual(not safe, reason is not None)
                     # The program's GNU build reads the same words as operands.
-                    self.assertIsNone(hub_guard.program_refusal(program, arguments))
+                    self.assertIsNone(hub_guard.program_refusal(program, arguments, windows_build=False))
 
-    def test_a_system32_path_names_the_windows_build_where_the_platform_s_programs_take_slashes(self) -> None:
+    def test_on_windows_sort_and_find_are_read_as_the_windows_build_whatever_their_path(self) -> None:
         for flag in (True, False):
             with (
                 self.subTest(flag=flag),
                 mock.patch.object(platform_support, "SYSTEM_PROGRAMS_TAKE_SLASH_OPTIONS", flag),
             ):
-                self.assertEqual(flag, refused("/c/Windows/System32/sort.exe /o out.txt f"))
-                self.assertEqual(flag, refused("C:/Windows/System32/sort.exe /T d f"))
-                self.assertFalse(refused("/c/Windows/System32/sort.exe /r f"))
-                # Git Bash's own sort, and a path that is no option, stay GNU sort's.
-                self.assertFalse(refused("sort /o f"))
-                self.assertFalse(refused("find /tmp -name x"))
+                for command in (
+                    "/c/Windows/System32/sort.exe /o out.txt f",
+                    "C:/Windows/System32/sort.exe /T d f",
+                    "'C:\\Windows\\System32\\sort.exe' /o f",
+                    "'C:\\WINDOWS\\system32\\SORT.EXE' /O f",
+                    "'C:\\Windows\\SysWOW64\\sort.exe' /o f",
+                    "./sort.exe /o f",
+                    "sort /o f",
+                    "sort.exe -- /o out.txt f",
+                    "timeout 5 /c/Windows/System32/sort.exe /o f",
+                    "timeout 5 'C:\\Windows\\System32\\find.exe' /x y f",
+                    "env 'C:\\WINDOWS\\SYSTEM32\\FIND.EXE' /x y f",
+                    "echo x | xargs sort -u --",
+                ):
+                    with self.subTest(command=command):
+                        self.assertEqual(flag, refused(command))
+                # The Windows build's safe options, GNU sort's, and a path that is no slash option.
+                for command in ("/c/Windows/System32/sort.exe /r f", "sort -u f", "find /tmp/ -name x"):
+                    with self.subTest(command=command):
+                        self.assertFalse(refused(command))
         self.assertEqual(platform_support.WINDOWS, platform_support.SYSTEM_PROGRAMS_TAKE_SLASH_OPTIONS)
 
     def test_the_guard_s_slash_options_are_the_ones_this_suite_holds_safe(self) -> None:

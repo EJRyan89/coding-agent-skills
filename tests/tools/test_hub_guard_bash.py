@@ -404,13 +404,20 @@ class RunnerTests(unittest.TestCase):
             "env -u gh gh pr checkout 1",
             "sudo -u gh gh pr checkout 1",
             "sudo -g gh gh repo sync",
-            "echo x | xargs -E gh gh pr checkout 1",
             "timeout -s gh 60 gh pr checkout 1",
         ):
             with self.subTest(command=command):
                 read = reading(command)
                 self.assertEqual([], read.unread)
                 self.assertEqual(["gh"], [call.program for call in read.calls])
+        # xargs adds words from its input to gh's, which may make any subcommand a checkout.
+        for command in (
+            "echo checkout 1 | xargs gh pr",
+            "echo x | xargs -E gh gh pr checkout 1",
+            "xargs -0 gh pr view",
+        ):
+            with self.subTest(command=command):
+                self.assertIn("words from its input", " ".join(reading(command).unread))
         # gh among the command's own words is not the command.
         self.assertEqual([], reading("timeout 60 echo gh pr checkout 1").calls)
 

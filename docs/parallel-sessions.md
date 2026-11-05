@@ -313,7 +313,9 @@ a row decides it.
   on, `set`, `shopt -o`, or the environment's `SHELLOPTS`, and a command named
   after a function the environment hands the shell as `BASH_FUNC_<name>%%`.
 - **gh.** `gh pr checkout`, `gh pr co`, and `gh repo sync` check a branch out in the checkout gh runs in, and are
-  judged as a checkout git makes there, a runner's command among them, from Bash and PowerShell alike.
+  judged as a checkout git makes there, a runner's command among them, from Bash and PowerShell alike, read where
+  the runner's options end; gh after `xargs`, which adds words from its input to gh's, is refused, since they may make
+  any subcommand one of these.
 - **Redirections.** A redirection that writes a file at a path the text settles is refused when the file lies in a
   guarded hub's tracked files or anywhere in its git directory, as a file tool's edit is; a duplication such as
   `2>&1` and a device such as `/dev/null` write none. In PowerShell every command's file redirection is read so,
@@ -355,10 +357,11 @@ a row decides it.
   where, and its `-T`, whose list of names may hand it options, are refused, and so is an archive it names `host:path`, which it opens through a remote shell, unless
   `--force-local`, given as an option rather than as another option's value or after `--`, makes it a file. `tar`'s
   table holds only letters GNU tar and bsdtar, Windows' `tar.exe`, read alike, or that only one of them knows, so
-  `-H`, `-W`, and `-s`, which one of them reads with a value and the other without, are refused. Where the command
-  reaches a program's Windows build, from PowerShell on Windows or by a path in `System32`, `sort`'s and `find`'s
-  options written with a slash are read in any case by their own allow-lists, so Windows `sort`'s `/O`, which writes
-  a file, and `/T` are refused. A runner's command
+  `-H`, `-W`, and `-s`, which one of them reads with a value and the other without, are refused. On Windows, where no
+  name or path settles whether a command reaches GNU `sort` and `find` or Windows' own builds, each is read as both,
+  whatever its path and from both shells: its options written with a slash are read in any case by an allow-list of
+  their own, after `--` too, which the Windows build reads as an operand, so Windows `sort`'s `/O`, which writes a
+  file, and `/T` are refused, and so is such a program after `xargs`. A runner's command
   that is one of them is held to its allow-list too, and after `xargs`, which adds words from its input, it is refused
   unless its words hold a `--` that ends its options, which `find` has none of. A variable one of them reads options
   from, `PROGRAM_VARIABLES`: `RIPGREP_CONFIG_PATH`, `TAPE`, and `TAR_OPTIONS`, is refused where it is assigned

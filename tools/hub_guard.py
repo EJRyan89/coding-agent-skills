@@ -279,7 +279,7 @@ FIND_COMMANDS = frozenset({"-exec", "-execdir", "-ok", "-okdir"})
 # shell, is refused unless --force-local is given (remote_archive). tar's letters are the ones GNU tar and bsdtar,
 # Windows' tar.exe, either both read alike or only one of them knows: -H, -W, and -s, which one of them reads with a
 # value and the other without, are refused. sort's and find's Windows builds read options written with a slash, by
-# the slash allow-list each table holds, where the command reaches that build (option_refusal's windows_build).
+# the slash allow-list each table holds, on Windows whatever the command's path (system_program).
 PROGRAM_OPTIONS: dict[str, OptionTable] = {
     "find": option_table(
         "",
@@ -363,6 +363,8 @@ PROGRAM_VARIABLES: dict[str, frozenset[str]] = {
     "tar": frozenset({"TAR_OPTIONS", "TAPE"}),
     "rg": frozenset({"RIPGREP_CONFIG_PATH"}),
 }
+# The runners that add words from their input to the command they run, which the text does not settle.
+INPUT_RUNNERS = frozenset({"xargs"})
 # pwsh's options that change nothing the guard reads before -Command.
 PWSH_QUIET = frozenset({"-noprofile", "-noninteractive", "-nologo"})
 # The variables an assignment before git may give it, each with the values it may take, or none for any literal
@@ -2068,7 +2070,7 @@ class BashReader:
             read_gh(arguments, directory, self.reading)
         elif program in PROGRAM_OPTIONS:
             variables = {name for name, _ in prefixes} | set(self.reading.environment)
-            reason = program_refusal(program, arguments, variables, system_program(name))
+            reason = program_refusal(program, arguments, variables)
             if reason is not None:
                 self.reading.cannot_read(reason)
                 return certain(UNKNOWN)
@@ -2301,7 +2303,6 @@ def read_runner_words(
     reading: Reading,
     script: Callable[[], str | None],
     variables: Iterable[str] = (),
-    windows_build: bool = False,
 ) -> Outcome:
     """A runner, read the same from Bash and PowerShell: refused where runner_refusal or, for bash and pwsh, script
     refuses it, or where the command it starts is a program PROGRAM_OPTIONS names that runner_command_refusal refuses;
@@ -2323,7 +2324,7 @@ def read_runner_words(
             None,
         )
     if reason is None:
-        reason = runner_command_refusal(program, arguments, {*variables, *own, *reading.environment}, windows_build)
+        reason = runner_command_refusal(program, arguments, {*variables, *own, *reading.environment})
     if reason is not None:
         reading.cannot_read(f"runs {program}: {reason}")
         return certain(UNKNOWN)
@@ -2331,6 +2332,10 @@ def read_runner_words(
         # The runner's command is where its option reading stopped, so an option's value is never taken for gh.
         stop = option_refusal(RUNNER_OPTIONS[program], arguments).stop
         start = stop if stop < len(arguments) and command_name(arguments[stop] or "") == "gh" else None
+        if start is not None and program in INPUT_RUNNERS:
+            # Words from its input follow gh's own, and may make any subcommand of it one that checks a branch out.
+            reading.cannot_read(f"runs {program}: {program} runs gh with words from its input, which may check out")
+            return certain(UNKNOWN)
     else:
         start = next(
             (index for index, word in enumerate(arguments) if word is not None and command_name(word) == "gh"), None
@@ -2341,11 +2346,12 @@ def read_runner_words(
     return certain(directory)
 
 
-def system_program(name: str) -> bool:
-    """Whether a command word names a program in Windows' own System32 folder, whose builds of sort and find read slash
-    options, where the platform's system programs do (platform_support)."""
-    folded_name = name.replace("\\", "/").lower()
-    return platform_support.SYSTEM_PROGRAMS_TAKE_SLASH_OPTIONS and "/system32/" in folded_name
+def system_program(program: str) -> bool:
+    """Whether a program PROGRAM_OPTIONS names is judged as its Windows build too, which reads slash options: where the
+    platform's own programs take them (platform_support), whatever path or name the command spells, since no spelling
+    settles which build runs, and for a program whose table holds a Windows build's slash options."""
+    table = PROGRAM_OPTIONS.get(program)
+    return platform_support.SYSTEM_PROGRAMS_TAKE_SLASH_OPTIONS and table is not None and table.slash is not None
 
 
 def runner_assignments(program: str, arguments: list[Word]) -> list[tuple[str, str]]:
@@ -2356,9 +2362,7 @@ def runner_assignments(program: str, arguments: list[Word]) -> list[tuple[str, s
     return option_refusal(RUNNER_OPTIONS[program], arguments).assigned
 
 
-def runner_command_refusal(
-    program: str, arguments: list[Word], variables: Iterable[str], windows_build: bool = False
-) -> str | None:
+def runner_command_refusal(program: str, arguments: list[Word], variables: Iterable[str]) -> str | None:
     """Why the command a runner starts is refused where it is a program PROGRAM_OPTIONS names: judged as that program
     is (program_refusal), and refused after xargs, which adds words from its input, which may be any options, unless
     the program's words hold `--`, after which they are its operands."""
@@ -2369,23 +2373,26 @@ def runner_command_refusal(
     if command not in PROGRAM_OPTIONS:
         return None
     rest = arguments[start + 1 :]
-    if program == "xargs":
-        # After a `--` that ends the program's options every word xargs adds is an operand; find has no such `--`.
+    if program in INPUT_RUNNERS:
+        # After a `--` that ends the program's options every word xargs adds is an operand; find has no such `--`, and
+        # a Windows build, which reads a slash option after `--` too, none.
         stop = option_refusal(PROGRAM_OPTIONS[command], rest).stop
-        if stop >= len(rest) or rest[stop] != "--" or PROGRAM_OPTIONS[command].single_dash:
-            return f"xargs runs {command} with words from its input, which may be options that run a command"
-    windows_build = windows_build or system_program(arguments[start] or "")
-    return program_refusal(command, rest, variables, windows_build)
+        table = PROGRAM_OPTIONS[command]
+        if stop >= len(rest) or rest[stop] != "--" or table.single_dash or system_program(command):
+            return f"{program} runs {command} with words from its input, which may be options that run a command"
+    return program_refusal(command, rest, variables)
 
 
 def program_refusal(
-    program: str, arguments: list[Word], variables: Iterable[str] = (), windows_build: bool = False
+    program: str, arguments: list[Word], variables: Iterable[str] = (), windows_build: bool | None = None
 ) -> str | None:
     """Why a program PROGRAM_OPTIONS names is refused, read the same from Bash and PowerShell: an option it does not
     know to be safe, in any spelling (option_refusal), a word the text does not settle, which may be one, or a variable
     the program reads options from (PROGRAM_VARIABLES) among the names variables gives, those assigned before it and
-    those of the environment. windows_build says the command runs the program's Windows build, as System32's
-    sort.exe, which reads slash options (option_refusal)."""
+    those of the environment. windows_build says the program is read as its Windows build too, as System32's
+    sort.exe, which reads slash options (option_refusal); None leaves it to system_program."""
+    if windows_build is None:
+        windows_build = system_program(program)
     # Windows reads a variable's name in any case.
     handed = sorted(PROGRAM_VARIABLES.get(program, frozenset()) & {name.upper() for name in variables})
     if handed:
@@ -2452,8 +2459,10 @@ def option_refusal(table: OptionTable, arguments: list[Word], windows_build: boo
         word = arguments[index]
         if word is None:
             return reading(None, index)
+        slashes = windows_build and table.slash is not None
         if word == "--" and not ended and not table.single_dash:
-            if table.permutes:
+            # A Windows build reads `--` as an operand and its slash options after it.
+            if table.permutes and not slashes:
                 return reading(None, index)
             ended = True
             index += 1
@@ -2465,7 +2474,7 @@ def option_refusal(table: OptionTable, arguments: list[Word], windows_build: boo
             values += taking
             index += 1 + len(taking)
             continue
-        slash = windows_build and not ended and bool(SLASH_OPTION.fullmatch(word))
+        slash = slashes and bool(SLASH_OPTION.fullmatch(word))
         if not slash and (ended or len(word) < 2 or not word.startswith("-")):
             if table.assignments and "=" in word:
                 name, _, value = word.partition("=")
@@ -2983,18 +2992,9 @@ class PowerShellReader:
             return certain(UNKNOWN)
         elif program in RUNNERS:
             # The guard reads a bash or pwsh script only from Bash, so from PowerShell each is refused whatever it runs.
-            return read_runner_words(
-                program,
-                words[1:],
-                directory,
-                self.reading,
-                lambda: RUNNERS[program],
-                windows_build=platform_support.SYSTEM_PROGRAMS_TAKE_SLASH_OPTIONS,
-            )
+            return read_runner_words(program, words[1:], directory, self.reading, lambda: RUNNERS[program])
         elif program in PROGRAM_OPTIONS:
-            # From PowerShell a program's name reaches Windows' own build where there is one, as sort.exe and find.exe.
-            windows_build = platform_support.SYSTEM_PROGRAMS_TAKE_SLASH_OPTIONS
-            reason = program_refusal(program, words[1:], self.reading.environment, windows_build)
+            reason = program_refusal(program, words[1:], self.reading.environment)
             if reason is not None:
                 self.reading.cannot_read(reason)
                 return certain(UNKNOWN)

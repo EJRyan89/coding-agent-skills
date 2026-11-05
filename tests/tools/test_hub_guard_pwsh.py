@@ -373,6 +373,8 @@ class RunnerOptionTests(unittest.TestCase):
             (True, "find.exe /c x f", False),
             (True, "find.exe /x x f", True),
             (True, "timeout 5 sort.exe /o out.txt f", True),
+            (True, "sort.exe -- /o out.txt f", True),
+            (True, "C:\\WINDOWS\\SysWOW64\\SORT.EXE /O out.txt f", True),
             (False, "sort.exe /o out.txt f", False),
         ):
             with (
@@ -380,6 +382,11 @@ class RunnerOptionTests(unittest.TestCase):
                 mock.patch.object(platform_support, "SYSTEM_PROGRAMS_TAKE_SLASH_OPTIONS", windows),
             ):
                 self.assertEqual(refused, bool(powershell_reading(command).unread))
+
+    def test_gh_behind_xargs_is_refused(self) -> None:
+        for command in ("Write-Output checkout 1 | xargs gh pr", "Write-Output x | xargs -E gh gh pr checkout 1"):
+            with self.subTest(command=command):
+                self.assertIn("words from its input", " ".join(powershell_reading(command).unread))
 
     def test_bash_and_pwsh_are_refused_whatever_they_run(self) -> None:
         for command in ("bash -c 'ls'", "bash script.sh", "pwsh -NoProfile -Command 'Get-Date'", "pwsh -File x.ps1"):
@@ -401,7 +408,6 @@ class RunnerOptionTests(unittest.TestCase):
             # gh as an option's value first, then as the command.
             "env -u gh gh pr checkout 1",
             "sudo -u gh gh pr checkout 1",
-            "Write-Output x | xargs -E gh gh pr checkout 1",
         ):
             with self.subTest(command=command):
                 reading = powershell_reading(command)
