@@ -1,4 +1,4 @@
-"""Regression tests for the one writer of JSON for a file the skills, the deployer, and the tools share."""
+"""Regression tests for the one writer of JSON text the skills, the deployer, and the tools share."""
 
 from __future__ import annotations
 

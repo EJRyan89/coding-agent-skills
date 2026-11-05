@@ -25,9 +25,11 @@ from review_records import (
     ReviewRecord,
     build_record,
     calculate_verdict,
+    canonical_json,
     read_title,
     record_artifacts,
     render_markdown,
+    sha256_text,
     valid_analyzer,
     validate_adapter_result,
     validate_record,
@@ -105,6 +107,12 @@ def valid_adapter_result(repository: str = "example/one", number: int = 12) -> A
 
 
 class RecordTests(unittest.TestCase):
+    def test_canonical_json_is_this_text_and_its_digest_this_one(self) -> None:
+        # Stored digests hash this text, so a change of key order, separators, or escaping fails here.
+        text = canonical_json({"b": 1, "a": "é", "c": [1, {"z": None}]})
+        self.assertEqual('{"a":"é","b":1,"c":[1,{"z":null}]}', text)
+        self.assertEqual("0ac2f11fa3c121bad583a5115bd10500d532726acf5969be98db77911e21103c", sha256_text(text))
+
     def test_adapter_schema_matches_runtime_finding_contract(self) -> None:
         schema = json.loads(
             (SCRIPT_DIRECTORY.parent / "references" / "review-adapter.schema.json").read_text(encoding="utf-8")

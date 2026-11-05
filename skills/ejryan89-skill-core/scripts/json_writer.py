@@ -1,4 +1,4 @@
-"""The one writer of JSON for a file, refusing at the write what the strict reader would refuse on reading it back.
+"""The one writer of JSON text, refusing at the write what the strict reader would refuse on reading it back.
 
 The json module's writer writes `NaN`, `Infinity`, and `-Infinity`, which JSON does not define and `json_reader`
 refuses; a lone surrogate, which no UTF-8 file can hold; and a key twice, when a dictionary holds both `1` and `"1"`,
