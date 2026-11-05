@@ -3986,6 +3986,21 @@ class ProfileModelTests(PipelineFixture):
             out.splitlines(),
         )
 
+    def test_a_model_no_subagent_accepts_is_the_session_s_not_the_configured_one(self) -> None:
+        self.trusted_profile("model: claude-sonnet-5\n")
+        self.configure_model("opus")
+        code, out, err = self.run_main("prepare", "--pull", SELECTOR)
+        self.assertEqual(0, code, err)
+        lines = out.splitlines()
+        self.assertEqual(
+            [f"MODEL {SELECTOR} generic-review opus"], [line for line in lines if line.startswith("MODEL ")]
+        )
+        self.assertTrue(any(line.startswith(f"NOTE {SELECTOR} review/python.md asks for model") for line in lines), out)
+        code, out, err = self.run_main("validate-reviewer", "--repository", REPOSITORY, "--pull", "12")
+        self.assertEqual(0, code, err)
+        self.assertIn("ROUTE python-review files=1", out.splitlines())
+        self.assertIn("its reviewer uses the session's model", out)
+
     def test_validate_reviewer_shows_the_model_each_route_will_use(self) -> None:
         self.trusted_profile("model: haiku\n")
         code, out, err = self.run_main("validate-reviewer", "--repository", REPOSITORY, "--pull", "12")
@@ -4076,6 +4091,28 @@ class ReviewerSourceTests(PipelineFixture):
         self.assertIn("TOOLS Read, Grep, Glob", lines)
         self.assertIn("DELEGATES no its tool list grants neither Agent nor Task", lines)
         self.assertEqual("VERDICT entrypoint-ok", lines[-1])
+
+    def test_the_configured_model_reaches_an_entrypoint_reviewer(self) -> None:
+        self.configure(self.skill_reviewer("review/solo.md"))
+        config = json.loads(self.config_path.read_text(encoding="utf-8"))
+        for configured, expected in (("sonnet", "sonnet"), ("inherit", None), (None, None)):
+            with self.subTest(reviewer_model=configured):
+                write_config({**config, "reviewer_model": configured}, self.config_path)
+                code, out, err = self.run_main("prepare", "--pull", SELECTOR)
+                self.assertEqual(0, code, err)
+                lines = out.splitlines()
+                run = Path(lines[0].removeprefix(f"RUN {SELECTOR} "))
+                state = json.loads((run / review_run.RUN_FILE).read_text(encoding="utf-8"))
+                (role,) = state["roles"]
+                models = [line for line in lines if line.startswith("MODEL ")]
+                if expected is None:
+                    self.assertEqual([], models)
+                    self.assertNotIn("model", role, "an entrypoint role records a model only when it has one")
+                else:
+                    self.assertEqual([f"MODEL {SELECTOR} {role['id']} {expected}"], models)
+                    self.assertEqual(expected, role["model"])
+                    _, _, roles = workflow_output(self.run_main("workflow", "--run", str(run))[1])
+                    self.assertEqual([expected], [workflow_role["model"] for workflow_role in roles])
 
     def test_a_local_manifest_routes_specialists_with_profiles_from_the_trusted_base(self) -> None:
         default = default_manifest_path(self.config_path, REPOSITORY)

@@ -1148,7 +1148,8 @@ class SpecialistTests(PlanFixture):
             ],
             result["notes"],
         )
-        self.assertEqual([None, "sonnet", None], [value["model"] for value in result["roles"]])
+        # A profile model the suite cannot apply is `inherit`, so a configured `reviewer_model` does not reach it.
+        self.assertEqual(["inherit", "sonnet", None], [value["model"] for value in result["roles"]])
 
     def test_a_profile_without_a_model_and_a_manifest_inherit_both_use_the_session_model(self) -> None:
         self.snapshot({**SOURCE, "OPEN": ""})
@@ -1180,7 +1181,7 @@ class SpecialistTests(PlanFixture):
         files = {**REVIEWER_FILES, "agents/db.md": "---\nmodel: gpt-5\n---\n"}
         result = self.build(self.reviewer(manifest(uncovered="ignore"), files=files))
         roles = [role("db-review", ["db/Procs.sql"]), role("csharp-review", ["src/A.cs"])]
-        roles[0]["model"] = None
+        roles[0]["model"] = "inherit"  # a model the suite cannot apply is the session's, so no default reaches it
         notes = [
             "agents/db.md asks for model 'gpt-5', which is not one of fable, haiku, opus, sonnet; its reviewer "
             "uses the session's model",

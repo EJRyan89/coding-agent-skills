@@ -1257,7 +1257,9 @@ def profile_model(profile: str, text: str) -> tuple[str | None, str | None]:
         return "inherit", None
     if value.casefold() in MODEL_ALIASES:
         return value.casefold(), None
-    return None, (
+    # It asks for a model the suite cannot apply, so its reviewer uses the session's model, as its note says: `inherit`
+    # keeps the configuration's `reviewer_model` from reaching it.
+    return "inherit", (
         f"{profile} asks for model {value!r}, which is not one of "
         f"{', '.join(sorted(MODEL_ALIASES))}; its reviewer uses the session's model"
     )
