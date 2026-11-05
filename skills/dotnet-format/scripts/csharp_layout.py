@@ -118,6 +118,11 @@ GLOBAL_LEVEL = re.compile(r"([+-]?)([0-9]+)")
 INT32_LIMIT = 1 << 31
 # The characters below 128 that .NET reads as whitespace, in char.IsWhiteSpace and in a pattern's \s.
 ASCII_WHITESPACE = " \t\n\v\f\r"
+# An analyzer config's line, its terminator kept, as Roslyn's SourceText breaks lines: at CRLF, or at any of
+# TextUtilities.IsAnyLineBreakCharacter's carriage return, line feed, next line, line separator, and paragraph
+# separator.
+ANALYZER_CONFIG_BREAKS = "\r\n\x85\u2028\u2029"
+ANALYZER_CONFIG_LINE = re.compile(r"[^\r\n\x85\u2028\u2029]*(?:\r\n|[\r\n\x85\u2028\u2029])|[^\r\n\x85\u2028\u2029]+\Z")
 # An analyzer config's section header and property line, Roslyn's s_sectionMatcher and s_propertyMatcher in
 # AnalyzerConfig.cs, matched as ASCII against a line `compiler_classes` maps: a key holds word characters, `.`, `-`,
 # and `_`, `=` or `:` separates it from the value, and a `#` or `;` after a header or a value starts a comment.
@@ -866,10 +871,12 @@ def roslyn_lower(text: str) -> str:
 
 
 def _compiler_class(character: str) -> str:
-    """A character beyond ASCII as the class .NET reads it in: a space for whitespace, `a` for a word character, and
-    itself, which an ASCII pattern reads as neither, otherwise."""
+    """A character beyond ASCII, within an analyzer config's line, as the class .NET reads it in: a space for a space
+    separator, the whitespace a line holds, since the other characters .NET reads as whitespace beyond ASCII (next line
+    and the line and paragraph separators) end the line; `a` for a word character; and itself, which an ASCII pattern
+    reads as neither, otherwise."""
     category = unicodedata.category(character)
-    if character == "\x85" or category in ("Zs", "Zl", "Zp"):
+    if category == "Zs":
         return " "
     return "a" if category in WORD_CATEGORIES else character
 
@@ -882,20 +889,25 @@ def compiler_classes(line: str) -> str:
     return "".join(character if character.isascii() else _compiler_class(character) for character in line)
 
 
+def analyzer_config_lines(text: str) -> list[str]:
+    """The text's lines as the compiler breaks an analyzer config, each with its terminator."""
+    return ANALYZER_CONFIG_LINE.findall(text)
+
+
 def is_section_header(line: str) -> bool:
     """Whether the compiler reads the line, its terminator removed, as a section header."""
     return SECTION_LINE.match(compiler_classes(line)) is not None
 
 
 def read_analyzer_config(path: Path) -> AnalyzerConfig:
-    """The file's preamble and sections as Roslyn's AnalyzerConfig.Parse reads them: a line ends at a carriage return,
-    a line feed, or both; a blank line or one whose first other character is `#` or `;` is a comment; a section header
-    and a property line are read by the compiler's patterns, and any other line sets nothing."""
+    """The file's preamble and sections as Roslyn's AnalyzerConfig.Parse reads them: a line ends where
+    `analyzer_config_lines` ends it; a blank line or one whose first other character is `#` or `;` is a comment; a
+    section header and a property line are read by the compiler's patterns, and any other line sets nothing."""
     preamble: dict[str, str] = {}
     sections: list[tuple[str, dict[str, str]]] = []
     current = preamble
-    for terminated in LINE.findall(read_text(path)):
-        line = terminated.rstrip("\r\n")
+    for terminated in analyzer_config_lines(read_text(path)):
+        line = terminated.rstrip(ANALYZER_CONFIG_BREAKS)
         classes = compiler_classes(line)
         stripped = classes.lstrip(ASCII_WHITESPACE)
         if not stripped or stripped[0] in "#;":
@@ -1070,8 +1082,10 @@ def insert_settings(source: Source, settings: list[tuple[str, str]]) -> str:
     """
     newline = "\r\n" if "\r\n" in source.text else "\n"
     section = newline.join(["[*.cs]", *(f"{key} = {value}" for key, value in settings)]) + newline
-    lines = LINE.findall(source.text)
-    first = next((index for index, line in enumerate(lines) if is_section_header(line.rstrip("\r\n"))), None)
+    lines = analyzer_config_lines(source.text)
+    first = next(
+        (index for index, line in enumerate(lines) if is_section_header(line.rstrip(ANALYZER_CONFIG_BREAKS))), None
+    )
     if first is None:
         text = source.text
         if text and not text.endswith(("\r", "\n")):

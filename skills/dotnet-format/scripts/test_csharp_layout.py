@@ -1198,7 +1198,7 @@ class ConfigTests(unittest.TestCase):
 
     def test_a_property_line_is_read_by_the_compilers_pattern(self) -> None:
         # Roslyn's s_propertyMatcher: ^\s*([\w\.\-_]+)\s*[=:]\s*(.*?)\s*([#;].*)?$, with .NET's \w (letters, nonspacing
-        # marks, decimal digits, connector punctuation) and \s, on lines ended by a carriage return or a line feed.
+        # marks, decimal digits, connector punctuation) and \s, on lines ended as SourceText ends them.
         cases: tuple[tuple[str, dict[str, str]], ...] = (
             ("a : b", {"a": "b"}),
             ("a = b # c", {"a": "b"}),
@@ -1215,7 +1215,11 @@ class ConfigTests(unittest.TestCase):
             ("ke\u0301y = v", {"ke\u0301y": "v"}),
             ("key\u00b2 = v", {}),
             ("a\u00a0=\u00a0b\u00a0", {"a": "b"}),
-            ("a = b\u2028c", {"a": "b\u2028c"}),
+            # The compiler ends a line at a next line, a line separator, or a paragraph separator too.
+            ("a = b\u2028c = d", {"a": "b", "c": "d"}),
+            ("\x85a = b\x85", {"a": "b"}),
+            ("\u2028a = b\u2029", {"a": "b"}),
+            ("a = b\x85c = d\u2029e : f", {"a": "b", "c": "d", "e": "f"}),
             ("a = b\x1cc", {"a": "b\x1cc"}),
             ("a = b\x0bc", {"a": "b\x0bc"}),
             ("a = b\rc = d", {"a": "b", "c": "d"}),
@@ -1267,6 +1271,18 @@ class ConfigTests(unittest.TestCase):
         self.assertFalse({"dotnet_diagnostic.RCS0063.severity", "dotnet_diagnostic.RCS0041.severity"} & added)
         # The header with a comment is the first section, so the added one goes before it.
         self.assertTrue(editorconfig.read_text(encoding="utf-8").startswith("root = true\n\n[*.cs]\ninsert_final"))
+
+    def test_added_settings_go_before_the_first_line_the_compiler_reads_as_a_section_header(self) -> None:
+        # `[*.cs] x` starts with a bracket but is no header to the compiler, so it stays in the preamble above the
+        # section the apply adds, which goes before the first real header.
+        editorconfig = self.root / ".editorconfig"
+        tail = "[src/**.cs]\ndotnet_diagnostic.RCS0041.severity = none\n"
+        editorconfig.write_bytes(f"root = true\n[*.cs] x\n{tail}".encode())
+        self.config("--apply")
+        added = "".join(
+            f"{key} = {value}\n" for key, value in layout.SETTINGS if key != "dotnet_diagnostic.RCS0041.severity"
+        )
+        self.assertEqual(f"root = true\n[*.cs] x\n[*.cs]\n{added}\n{tail}", editorconfig.read_bytes().decode())
 
     def test_an_editorconfig_that_sets_is_global_to_any_value_is_a_global_config(self) -> None:
         # The compiler asks only whether the preamble holds the key, so `is_global = false` makes the file global too:
