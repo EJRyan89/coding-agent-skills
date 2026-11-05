@@ -15,13 +15,11 @@ import time
 from pathlib import Path
 from typing import TextIO, assert_never
 
-import file_presence
 import json_writer
 
 from . import (
     config,
     errors,
-    fsops,
     journal,
     lock,
     manifest,
@@ -80,13 +78,7 @@ def _apply(
     staging_dir = paths.staging_root / run_id
     staged.write(staging_dir)
     record = journal.Journal(staging_dir / "journal.jsonl", run_id)
-    for root in dict.fromkeys(kind.root for kind in KINDS):
-        fsops.make_directories(journal.root_directory(paths, root))
-    # A journal is only ever written beside a manifest, so one found beside none was moved or lost, never a first
-    # deployment's, and recovery stops rather than guess whether its run was committed. The first deployment saves the
-    # empty manifest a missing one reads as, which changes nothing the deployment reads.
-    if not file_presence.is_occupied(paths.manifest_file):
-        manifest.empty(paths.manifest_file).save()
+    journal.prepare_roots(paths)
     record.create()
     for entry in entries:
         plan.carry_out(record, paths, staging_dir, entry)

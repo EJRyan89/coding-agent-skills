@@ -275,6 +275,14 @@ def _not_writable(backups: Path, error: OSError) -> DeployError:
     )
 
 
+def prepare_roots(paths: Paths) -> None:
+    """Make every root a run writes, and save the empty manifest when there is none, before the run writes its
+    journal, so a journal is only ever written beside a manifest (manifest.save_if_missing)."""
+    for root in ROOT_PREFIXES:
+        fsops.make_directories(root_directory(paths, root))
+    manifest.save_if_missing(paths.manifest_file)
+
+
 def check_backup_roots(paths: Paths, run_id: str | None = None) -> None:
     """check_backup_root for every root a run writes."""
     for root in ROOT_PREFIXES:

@@ -893,7 +893,7 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   that evidence, so a missing record beside it can only mean the record was moved or lost.
 - **Why:** A missing record read as its default answers in its place, as a manifest moved aside once read as "no run
   committed" and rolled back a run it had committed.
-- **Use:** `deployer.manifest:empty`, which `deployer.pipeline:_apply` saves before a first deployment's journal;
+- **Use:** `deployer.manifest:save_if_missing`, which `deployer.journal:prepare_roots` runs before a run's journal;
   `deployer.journal:check_manifest_beside_runs`, which refuses a journal beside no manifest before recovery; and
   `deployer.journal:_committed_run_id`, which answers None, undecided, for a missing manifest.
 - **Guard:** `tests/deployer/test_state_files.py::StateFileTests::test_a_dry_run_refuses_each_state_the_deployment_refuses_before_recovery_pending_run_or_not`,
