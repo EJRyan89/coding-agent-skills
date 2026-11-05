@@ -24,7 +24,7 @@ from harness import REPOSITORY_ROOT, DeployerTestCase, backup_entry, make_direct
 
 from deployer import fsops, hashing, journal, pipeline
 from deployer.context import Context
-from deployer.names import transient_name
+from deployer.names import deletion_name, transient_name
 
 RUN = "20260101-000000-sett"
 PREVIOUS = "previous alpha\n"
@@ -38,9 +38,12 @@ class Row:
     retain: bool
     changed: bool = False
     # What goes wrong while settling it: "stat" for a hash that cannot be read, "occupied" for something already at
-    # the copy's place under .backups, "remove" for a deletion that fails.
+    # the copy's place under .backups, "hold" for a copy that cannot be renamed to its deletion name, as Windows refuses
+    # for a folder holding a file another program has open, "remove" for a deletion that fails partway, and "kill" for
+    # a process killed partway through the deletion, which the next deployment's recovery meets.
     fault: str = ""
-    # Where the copy ends: "kept" under .backups, "beside" its item, or "deleted".
+    # Where the copy ends: "kept" under .backups, "beside" its item, "deleting" for what is left of it at its deletion
+    # name, or "deleted".
     ends: str = "kept"
     # The start of each warning settling it gives, in order.
     warnings: tuple[str, ...] = ()
@@ -59,15 +62,28 @@ ROWS = {
         retain=True, fault="occupied", ends="beside", warnings=("alpha's previous copy is kept at",)
     ),
     "unkept unchanged, held open": Row(
-        retain=False, fault="remove", ends="beside", warnings=("alpha's previous copy could not be deleted",)
+        retain=False, fault="hold", ends="beside", warnings=("alpha's previous copy could not be deleted, so it stays",)
     ),
+    "unkept unchanged, deleted partway": Row(
+        retain=False,
+        fault="remove",
+        ends="deleting",
+        warnings=("alpha's previous copy could not be deleted, so what is left of it stays",),
+    ),
+    # The deployer's own deletion, stopped partway, is finished by recovery, never read as a change after the plan.
+    "unkept unchanged, killed partway through its deletion": Row(retain=False, fault="kill", ends="deleted"),
 }
+
+
+class Killed(BaseException):
+    """The process ending at a point, which nothing in the deployer catches."""
 
 
 class SettlementTests(DeployerTestCase):
     def setUp(self) -> None:
         super().setUp()
         self.transient = self.skills_dir / transient_name("alpha")
+        self.deletion = self.skills_dir / deletion_name("alpha")
         self.destination = self.skills_dir / ".backups" / RUN / "alpha"
 
     def backup(self, row: Row) -> dict[str, Any]:
@@ -75,6 +91,8 @@ class SettlementTests(DeployerTestCase):
         it."""
         self.write(self.skills_dir / "alpha" / "SKILL.md", "installed alpha\n")
         self.write(self.transient / "SKILL.md", PREVIOUS)
+        # A second file, so a deletion stopped after the first leaves part of the copy.
+        self.write(self.transient / "notes.md", PREVIOUS)
         entry = backup_entry("alpha", hashing.hash_path(self.transient), row.retain, RUN)
         if row.changed:
             self.write(self.transient / "SKILL.md", CHANGED)
@@ -86,20 +104,31 @@ class SettlementTests(DeployerTestCase):
     def faulted(self, row: Row) -> Iterator[list[str]]:
         """The row's fault in place, yielding the warnings settling gives."""
         warnings: list[str] = []
-        real_remove = fsops.remove
+        real_remove, real_move = fsops.remove, fsops.move
 
         def remove(path: Path) -> None:
-            if path == self.transient:
-                raise PermissionError(errno.EACCES, "Access is denied", str(path))
+            # The copy being deleted, under whichever name the deletion reads it: part of it goes, then the fault.
+            if path in (self.transient, self.deletion):
+                real_remove(path / "SKILL.md")
+                if row.fault == "kill":
+                    raise Killed
+                raise PermissionError(errno.EACCES, "Access is denied", str(path / "notes.md"))
             real_remove(path)
+
+        def move(source: Path, destination: Path) -> None:
+            if source == self.transient and destination == self.deletion:
+                raise PermissionError(errno.EACCES, "Access is denied", str(source))
+            real_move(source, destination)
 
         with ExitStack() as stack:
             stack.enter_context(mock.patch.object(journal, "_warn", side_effect=warnings.append))
             if row.fault == "stat":
                 failure = PermissionError(errno.EACCES, "Access is denied")
                 stack.enter_context(mock.patch.object(journal, "backup_unchanged", side_effect=failure))
-            if row.fault == "remove":
+            if row.fault in ("remove", "kill"):
                 stack.enter_context(mock.patch.object(fsops, "remove", side_effect=remove))
+            if row.fault == "hold":
+                stack.enter_context(mock.patch.object(fsops, "move", side_effect=move))
             yield warnings
 
     def finalize(self, entry: dict[str, Any]) -> None:
@@ -116,9 +145,21 @@ class SettlementTests(DeployerTestCase):
         entry = self.backup(row)
         try:
             with self.faulted(row) as warnings:
-                settle(entry)
+                if row.fault == "kill":
+                    with self.assertRaises(Killed):
+                        settle(entry)
+                else:
+                    settle(entry)
+            if row.fault == "kill":
+                # The next deployment's recovery meets the run the kill left.
+                with self.faulted(Row(retain=row.retain)) as recovered:
+                    self.recover(entry)
+                warnings += recovered
             if self.transient.exists():
                 ends = "beside"
+            elif self.deletion.exists():
+                ends = "deleting"
+                self.assertFalse((self.deletion / "SKILL.md").exists())
             elif self.destination.exists() and row.fault != "occupied":
                 ends = "kept"
                 content = CHANGED if row.changed else PREVIOUS
@@ -160,6 +201,28 @@ class SettlementTests(DeployerTestCase):
                             self.recover(entry)
                         self.assertEqual([], warnings)
                         self.assertTrue(self.destination.is_dir())
+                    finally:
+                        # Each row starts from an empty root, whether or not the one before it held.
+                        fsops.remove(self.skills_dir)
+                        fsops.remove(self.staging_run(RUN))
+
+    def test_a_retry_after_a_deletion_stopped_partway_finishes_it_with_no_warning(self) -> None:
+        # What a failed deletion leaves at the deletion name is the deployer's own: a later recovery of the run deletes
+        # it, as it does what a kill left there.
+        for case, row in ROWS.items():
+            if row.ends != "deleting":
+                continue
+            for path, settle in (("finalization", self.finalize), ("recovery", self.recover)):
+                with self.subTest(case=case, path=path):
+                    entry = self.backup(row)
+                    try:
+                        with self.faulted(row):
+                            settle(entry)
+                        self.assertTrue(self.deletion.is_dir())
+                        with self.faulted(Row(retain=row.retain)) as warnings:
+                            self.recover(entry)
+                        self.assertEqual([], warnings)
+                        self.assertEqual(["alpha"], sorted(child.name for child in self.skills_dir.iterdir()))
                     finally:
                         # Each row starts from an empty root, whether or not the one before it held.
                         fsops.remove(self.skills_dir)

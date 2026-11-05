@@ -60,6 +60,8 @@ A journal line that cannot be parsed stops recovery the same way, with `Malforme
 
 A transient backup, `<name>.deploying-bak`, exists only while a run is replacing or removing that item, and recovery resolves it. One left behind with no staging directory to explain it makes the next deployment of that item refuse. Compare it with the item beside it, keep whichever copy you want, move the other out of the root, and rerun.
 
+A copy the deployer deletes, a transient backup the run does not keep or a copy a rollback removes, is first renamed to `.<name>.deploying-del` and deleted there, so a deletion stopped partway leaves what is left of the copy under that name rather than beside its item, where it would read as a change you made. Recovery finishes such a deletion. One a warning names, because something held a file open, holds only what the deployer was deleting: delete it once nothing holds it open.
+
 A permanent backup, `.backups/<run-id>/<name>`, is the copy a forced replacement overwrote. The deployer never deletes these. To restore one, move the current item out of the root and copy the backup into its place. The next deployment reports the restored item as modified and leaves it until you replace it with `--force-item <name>`. A run refuses to write a permanent backup over one that already exists; move the existing one out of the root after checking it, and rerun. A `.backups` that is a symbolic link, a junction, or a file, in any root, and a `.backups/<run-id>` already there for the run's own ID, are refused the same way, by the dry run and the deployment, before anything changes: replace a link or file with a real directory after checking what it holds, and rerun. A `.backups` the deployment cannot create a folder or a file in, by its permissions or its owner, is refused by the deployment before anything changes, as `Backup path is not writable`; the dry run changes nothing, so it does not try. After a run has committed, nothing refuses: where its backup folder cannot be made, the move fails, or something is already there, the deployment, or the recovery that completes it, keeps the copy the run replaced beside its item as `<name>.deploying-bak`, with a `WARNING` naming it and the reason, and finishes the run; resolve it as a transient backup left behind.
 
 ## The deployment lock
@@ -98,7 +100,13 @@ If you deployed from the wrong clone, deploy from the recorded one instead. If t
 python deploy.py --all --take-over-source
 ```
 
-It prints the recorded checkout and how many items the source owns, then deploys as usual; when the deployment commits, the manifest records this checkout, and later deployments from it need no flag. `--take-over-source` also works with `--migrate-from`, and records this checkout even when there is nothing to migrate. It cannot be combined with `--dry-run`, which refuses a checkout other than the recorded one as the deployment does, before it reports a pending recovery or a plan, so a dry run from the replacing checkout is refused until the deployment with the flag records it; nor with `--canary-home`, whose throwaway home is empty or one an earlier canary deployment marked. A linked worktree is refused whatever the flag; deploy from the main checkout.
+It prints the recorded checkout and how many items the source owns, then deploys as usual; when the deployment commits, the manifest records this checkout, and later deployments from it need no flag. `--take-over-source` also works with `--migrate-from`, and records this checkout even when there is nothing to migrate. A dry run refuses a checkout other than the recorded one as the deployment does, before it reports a pending recovery or a plan, so preview the takeover with the flag:
+
+```bash
+python deploy.py --all --take-over-source --dry-run
+```
+
+It names the recorded checkout and the items the source owns, says this checkout would be recorded as their source, and plans as the deployment with the flag would, recording nothing. The flag cannot be combined with `--canary-home`, whose throwaway home is empty or one an earlier canary deployment marked. A linked worktree is refused whatever the flag, by the dry run with it too; deploy from the main checkout.
 
 ## Deploying an earlier commit
 

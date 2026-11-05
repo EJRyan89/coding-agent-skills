@@ -28,7 +28,7 @@ from harness import (
     tree_state,
 )
 
-from deployer import config, journal, manifest, names, platform_support, source
+from deployer import config, journal, manifest, names, platform_support, report, source
 from deployer.errors import DeployError
 
 # The step a source.json the deployer cannot read names, written out here rather than read from the deployer.
@@ -946,15 +946,57 @@ class OtherCheckoutTests(LinkedWorktreeTestCase):
         self.assertEqual(answers[0], answers[1])
         self.assertEqual(forward(self.source), self.recorded_source_dir())
 
-    def test_take_over_source_cannot_be_combined_with_a_dry_run(self) -> None:
-        self.deployed_clone()
-        self.deploy_fails(
-            "--all",
-            "--take-over-source",
-            "--dry-run",
-            code=2,
-            pattern="--take-over-source cannot be combined with --dry-run",
+    def test_a_dry_run_with_take_over_source_previews_the_takeover_and_changes_nothing(self) -> None:
+        clone = self.deployed_clone()
+        home = tree_state(self.home)
+        dry = self.deploy_from(clone, "--all", "--take-over-source", "--dry-run")
+        self.assertIn(
+            f"Would take over source 'test/skills' from {forward(self.source)}: 1 skill, 0 shared assets, "
+            "1 runtime adapter, 0 agents.\n"
+            f"This checkout, {forward(clone)}, would be recorded as their source if a deployment committed.\n",
+            dry.output,
         )
+        self.assertNotIn("Taking over", dry.output)
+        self.assertEqual(home, tree_state(self.home))
+        self.assertEqual(forward(self.source), self.recorded_source_dir())
+        # It plans as the deployment with the flag does: each item under the label of the action the deployment takes.
+        deployed = self.deploy_from(clone, "--all", "--take-over-source")
+        as_planned = {applied: planned for planned, applied in report.ACTION_LABELS.values()}
+        self.assertEqual(
+            self.listed(dry.output), [(as_planned[label], item) for label, item in self.listed(deployed.output)]
+        )
+        self.assertIn(("UPDATE", "alpha"), self.listed(dry.output))
+        self.assertEqual(forward(clone), self.recorded_source_dir())
+
+    @staticmethod
+    def listed(output: str) -> list[tuple[str, str]]:
+        """Each item a report lists, with the label it is listed under, as `UPDATE (1):` heads its items."""
+        rows: list[tuple[str, str]] = []
+        label = ""
+        for line in output.splitlines():
+            heading = re.fullmatch(r"([A-Z]+) \(\d+\):", line)
+            if heading is not None:
+                label = heading.group(1)
+            elif label and line.startswith("  ") and line.strip():
+                rows.append((label, line.split()[0]))
+            else:
+                label = ""
+        return rows
+
+    def test_a_dry_run_with_take_over_source_from_a_linked_worktree_is_refused_as_the_deployment_refuses_it(
+        self,
+    ) -> None:
+        linked = self.make_linked_worktree()
+        self.deploy_ok("--all")
+        recorded = self.manifest_file.read_bytes()
+        answers = []
+        for arguments in (("--all", "--take-over-source"), ("--all", "--take-over-source", "--dry-run")):
+            result = self.deploy_fails_from(linked, *arguments)
+            self.assertIn(f"ERROR: {forward(linked)} is a linked git worktree.", result.output)
+            self.assertNotIn("take over", result.output)
+            answers.append([line for line in result.output.splitlines() if line.startswith("ERROR: ")])
+        self.assertEqual(answers[0], answers[1])
+        self.assertEqual(recorded, self.manifest_file.read_bytes())
 
 
 class CanaryHomeTests(LinkedWorktreeTestCase):

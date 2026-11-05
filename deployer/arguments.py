@@ -188,7 +188,6 @@ def _parse(arguments: list[str]) -> argparse.Namespace:
 _EXCLUSIVE = (
     ("--migrate-from", ("--dry-run", "--all", "--include", "--force", "--force-item")),
     ("--uninstall", ("--all", "--include", "--force", "--force-item", "--migrate-from")),
-    ("--take-over-source", ("--dry-run",)),
     ("--canary-home", ("--dry-run", "--migrate-from", "--take-over-source")),
     ("--at", ("--migrate-from",)),
     ("--unpin", ("--migrate-from",)),
