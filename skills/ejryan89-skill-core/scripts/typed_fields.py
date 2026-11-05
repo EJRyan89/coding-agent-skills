@@ -6,9 +6,10 @@ or raises `FieldError`, naming the field's path, the kind expected, and what was
 `<path> must be <expected>, found <found>`. The validator then checks only the value, such as a pattern, a range, or
 a reference to another field; it never checks a field's type itself.
 
-The kinds are `string`, `integer`, `number`, `boolean`, `hex_digest`, `one_of`, `array`, and `json_object`;
-`optional` allows null in place of any of them, and `either` takes the first of several kinds that accepts a value.
-A string is non-empty, meaning not blank, unless `empty` allows it; an integer is never a boolean or a float; a
+The kinds are `string`, `repository_path`, `integer`, `number`, `boolean`, `hex_digest`, `one_of`, `array`, and
+`json_object`; `optional` allows null in place of any of them, and `either` takes the first of several kinds that
+accepts a value. A string is non-empty, meaning not blank, unless `empty` allows it, and a repository path is any
+string but an empty one, as git names a file, so a blank one is a path; an integer is never a boolean or a float; a
 number is finite and never a boolean; a hex digest is lowercase.
 
 A skill's own error type stays what its callers catch: the skill declares one class deriving from both `FieldError`
@@ -113,6 +114,14 @@ class FieldReader:
             raise self.fail(path, expected, "a string with whitespace around it")
         if maximum is not None and len(value) > maximum:
             raise self.fail(path, expected, _string_of(len(value)))
+        return value
+
+    def repository_path(self, value: object, path: str) -> str:
+        """A repository file's path as git names it: any string but an empty one, a blank one included, since git
+        takes a file named by Unicode whitespace alone, such as a no-break space. Every reader of a path a listing,
+        a tree, or a result names takes it through here, never through `string`, which refuses a blank one."""
+        if not isinstance(value, str) or not value:
+            raise self.fail(path, "a non-empty string", describe(value) if value != "" else "an empty string")
         return value
 
     def integer(self, value: object, path: str, *, minimum: int | None = None, maximum: int | None = None) -> int:

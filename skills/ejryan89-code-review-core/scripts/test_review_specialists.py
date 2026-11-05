@@ -1322,6 +1322,13 @@ class FindingCategoryTests(unittest.TestCase):
             ),
         )
 
+    def test_a_finding_on_a_file_named_by_whitespace_alone_is_accepted(self) -> None:
+        # Git takes a file named by a no-break space alone, and a specialist routed it anchors a finding there.
+        added = {"\u00a0": {"134": "x"}}
+        with tempfile.TemporaryDirectory() as temporary:
+            role = {**self.role(Path(temporary), "csharp-review", [self.finding(path="\u00a0")]), "files": ["\u00a0"]}
+            self.assertEqual(["\u00a0"], [item["path"] for item in rs.load_role_result(role, added)["findings"]])
+
     def test_a_finding_must_name_one_of_the_declared_categories(self) -> None:
         added = {"Sources/Q.cs": {"134": "x"}}
         with tempfile.TemporaryDirectory() as temporary:

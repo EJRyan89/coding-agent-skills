@@ -12,7 +12,7 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
 import file_presence
-from review_config import validate_repository_identity
+from review_config import repository_folders
 from review_io import PersistenceError, ResourceLock
 from review_records import (
     LedgerEntry,
@@ -38,7 +38,7 @@ READ = FieldReader(ArchiveFieldError)
 
 
 def pulls_directory(root: Path, repository: str) -> Path:
-    owner, name = validate_repository_identity(repository).split("/", 1)
+    owner, name = repository_folders(repository)
     return root / owner / name / "pulls"
 
 
@@ -159,7 +159,8 @@ def commit_record(
     """Archive the next review version. A re-review's report shows findings raised by earlier versions, so it is
     rendered from the records already archived here."""
     directory = pull_directory(root, repository, pull_number)
-    lock_key = f"{repository.replace('/', '__')}#{pull_number}.lock"
+    # From the folders the records live in, so every spelling of one identity takes one lock.
+    lock_key = "__".join(repository_folders(repository)) + f"#{pull_number}.lock"
     lock = root / ".locks" / lock_key
     with ResourceLock(lock):
         versions = every_version(directory)

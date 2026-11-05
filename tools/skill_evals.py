@@ -506,6 +506,14 @@ def parser() -> argparse.ArgumentParser:
     return result
 
 
+def given_options(argv: Sequence[str]) -> set[str]:
+    """The destination of each option `argv` gives, whatever its value: parsed with every default replaced by None,
+    so an option given at its default value is given as surely as one given at another."""
+    probe = parser()
+    probe.set_defaults(**dict.fromkeys(vars(probe.parse_args(argv)), None))
+    return {name for name, value in vars(probe.parse_args(argv)).items() if value is not None}
+
+
 def record_reading(skill: str, reading: str, results: Path) -> int:
     """Mark the skill's sampled transcript in the results file with the reader's reading."""
     try:
@@ -528,7 +536,7 @@ def main(argv: Sequence[str], root: Path = SCENARIO_ROOT, seams: Seams | None = 
     namespace = command.parse_args(argv)
     options = Options.parsed(namespace)
     if namespace.sample_read is not None:
-        if options != Options.parsed(command.parse_args([options.skill])):
+        if given_options(argv) - {"skill", "sample_read"}:
             command.error("--sample-read takes the skill alone and runs nothing")
         return record_reading(options.skill, namespace.sample_read, (seams or Seams()).results)
     if options.write and (options.records or options.scenarios or options.models):

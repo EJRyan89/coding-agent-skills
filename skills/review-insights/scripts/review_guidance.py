@@ -18,9 +18,11 @@ budget: each rule (a list item's or paragraph's sentence) is compared with the r
 by the words they share, leaving out the words that set a rule's force (must, should, may, never, a severity name)
 and its numbers. Two rules that share most of their words and differ in those are a candidate `conflict`; two that
 share nearly all of them and agree in those are a candidate `duplicate`. Only rules that share one of their rarer
-words are compared, which two rules that alike always do (see _prefix), and a repository's search visits at most
-CANDIDATE_BUDGET such pairs, so files near READ_BYTES cannot stall the report; past it, the remaining pairs are not
-compared, and the repository is named as one whose search stopped, so no candidate there is not read as no overlap.
+words are compared, which two rules that alike always do (see _prefix), and a repository's search compares at most
+CANDIDATE_BUDGET such pairs, so files near READ_BYTES cannot stall the report; a pair met again through another word
+they share is passed over, uncounted. Past the budget, the pairs left are not compared, and the repository is named as
+one whose search stopped, so a missing candidate there is not read as no overlap; a search that compared every pair
+is not named, however often it met them.
 A reference to a Markdown file a reviewer was not given is an `unsupplied` candidate. The synthesis judges each
 candidate; the script only finds them.
 """
@@ -53,8 +55,10 @@ RULE_TEXT = 300
 MIN_WORDS = 4
 CONFLICT_SIMILARITY = 0.6
 DUPLICATE_SIMILARITY = 0.75
-# The most rule pairs one repository's overlap search visits, a pair met again through another shared word included:
-# rules of near-identical words share every word, so without it two such files near READ_BYTES would stall the report.
+# The most rule pairs one repository's overlap search compares: rules of near-identical words share every word, so
+# without it two such files near READ_BYTES would stall the report. A pair met again is neither compared nor counted;
+# a pair is met at most once for each of its first rule's rarest words, so the search meets at most the budget times
+# that many pairs.
 CANDIDATE_BUDGET = 200_000
 STOPWORDS = frozenset(
     {
@@ -177,11 +181,13 @@ def is_prose(path: str) -> bool:
     return PurePosixPath(path).suffix.lower() in PROSE_SUFFIXES
 
 
-def _working_copy(root: Path, path: str) -> bytes | None:
-    """The working tree's copy of `path`, or None when it is no file inside the checkout, is reached through a link, or
-    is too large to read."""
-    if refusal(path, root) is not None:
-        return None
+def _working_copy(root: Path, path: str) -> bytes | str | None:
+    """The working tree's copy of `path`; why it is not read when a link lies on its path or it cannot be resolved,
+    such as a `CLAUDE.md` that links to `AGENTS.md`, since the checkout's links are never followed; or None when it is
+    no file there or is too large to read."""
+    refused = refusal(path, root)
+    if refused is not None:
+        return refused
     target = root.joinpath(*PurePosixPath(path).parts)
     if file_presence.is_present(target, other_is_absent=True) and target.stat().st_size <= READ_BYTES:
         return target.read_bytes()
@@ -189,14 +195,16 @@ def _working_copy(root: Path, path: str) -> bytes | None:
 
 
 def read_working_copy(checkout: Path, path: str) -> WorkingCopy:
-    """The working tree's copy of `path` with its SHA-256; None when it is no file inside the checkout, is too large,
-    or cannot be read, which the result says why."""
+    """The working tree's copy of `path` with its SHA-256; None when it is no file inside the checkout or is too
+    large, and when it is reached through a link or cannot be read, which the result says why."""
     if not safe_repository_path(path):
         return WorkingCopy(None)
     try:
         content = _working_copy(checkout.resolve(), path)
     except OSError as exc:
         return WorkingCopy(None, unreadable=flat_text(f"{type(exc).__name__}: {exc.strerror or exc}"))
+    if isinstance(content, str):
+        return WorkingCopy(None, unreadable=flat_text(content))
     return WorkingCopy(content, None if content is None else hashlib.sha256(content).hexdigest())
 
 
@@ -404,9 +412,9 @@ def _prefix(rule: Rule, order: Mapping[str, tuple[int, str]]) -> list[str]:
 
 def _visits(
     by_version: list[tuple[VersionKey, list[Rule]]], order: Mapping[str, tuple[int, str]]
-) -> Iterator[tuple[VersionKey, VersionKey, Rule, Rule | None]]:
-    """Each pair of rules from two files that share one of their rarest words, each time a word they share brings it
-    up, with None in place of the second rule for a pair already met."""
+) -> Iterator[tuple[VersionKey, VersionKey, Rule, Rule]]:
+    """Each pair of rules from two files that share one of their rarest words, once, however many of those words they
+    share."""
     prefixes = [[_prefix(rule, order) for rule in found] for _, found in by_version]
     for index, (first_key, first_rules) in enumerate(by_version):
         for later in range(index + 1, len(by_version)):
@@ -420,8 +428,9 @@ def _visits(
             for first, prefix in zip(first_rules, prefixes[index], strict=True):
                 seen: set[int] = set()
                 for position in (item for word in prefix for item in postings.get(word, ())):
-                    yield first_key, second_key, first, None if position in seen else second_rules[position]
-                    seen.add(position)
+                    if position not in seen:
+                        seen.add(position)
+                        yield first_key, second_key, first, second_rules[position]
 
 
 def overlaps(
@@ -429,8 +438,8 @@ def overlaps(
 ) -> tuple[list[dict[str, Any]], bool]:
     """Every candidate pair of rules from two of a repository's files, each file at every version read, with the
     reviewers given both versions; a candidate two versions share is one, naming every reviewer given it. Only rules
-    that share one of their rarest words are compared, at most CANDIDATE_BUDGET visits in all, and the second value
-    says whether the search stopped there with pairs left to visit."""
+    that share one of their rarest words are compared, at most CANDIDATE_BUDGET pairs in all, and the second value
+    says whether the search stopped there with pairs left to compare."""
     by_version = [(key, rules(key[0], texts[key])) for key in sorted(texts)]
     frequency = Counter(word for _, found in by_version for rule in found for word in rule.words)
     order = {word: (count, word) for word, count in frequency.items()}
@@ -438,7 +447,7 @@ def overlaps(
     shared: dict[tuple[VersionKey, VersionKey], set[str]] = {}
     visits = _visits(by_version, order)
     for first_key, second_key, first, second in islice(visits, CANDIDATE_BUDGET):
-        candidate = None if second is None else compare(first, second)
+        candidate = compare(first, second)
         if candidate is None:
             continue
         given = shared.setdefault(

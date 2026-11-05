@@ -2391,7 +2391,7 @@ def _listed_blobs(tree: Any) -> Counter[tuple[str, str, str]]:
         entry = READ.json_object(value, path)
         if READ.one_of(entry.get("type"), f"{path}.type", ("blob", "tree", "commit")) != "blob":
             continue
-        name = READ.string(entry.get("path"), f"{path}.path")
+        name = READ.repository_path(entry.get("path"), f"{path}.path")
         mode = READ.string(entry.get("mode"), f"{path}.mode", empty=True)
         blob = READ.hex_digest(entry.get("sha"), f"{path}.sha", 40, 64)
         blobs[(name, "symbolic-link" if mode == "120000" else "file", blob)] += 1

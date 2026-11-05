@@ -529,6 +529,8 @@ def decide(event: dict[str, Any], plugin: str | None = PLUGIN) -> str | None:
 def main(stream: str) -> int:
     try:
         try:
+            # An event holding a lone surrogate is refused, so the call is denied: Claude Code opens such a path with
+            # U+FFFD in its place, another path than the one the guard would judge.
             event = READ.json_object(json_reader.loads(stream), "hook event")
         except FieldError:
             event = None

@@ -4223,7 +4223,19 @@ def test_sample_read_of_a_results_file_that_is_not_utf8_fails_by_name_and_writes
     assert results.read_bytes() == held
 
 
-@pytest.mark.parametrize("extra", [["--write"], ["--model", "opus"], ["--scenario", "one"], ["--runs", "2"]])
+# Each other option, and each given at its default value, which is still an option the reading would ignore.
+@pytest.mark.parametrize(
+    "extra",
+    [
+        ["--write"],
+        ["--model", "opus"],
+        ["--scenario", "one"],
+        ["--runs", "2"],
+        ["--runs", "1"],
+        ["--jobs", str(skill_evals.DEFAULT_JOBS)],
+        ["--timeout", str(skill_evals.DEFAULT_TIMEOUT)],
+    ],
+)
 def test_sample_read_takes_the_skill_alone(extra: list[str], tmp_path: Path) -> None:
     error = io.StringIO()
     with pytest.raises(SystemExit) as raised, contextlib.redirect_stderr(error):
