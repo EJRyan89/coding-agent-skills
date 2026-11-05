@@ -43,8 +43,10 @@ Every line is one fact:
                                                     request
     OWED <count>                                    gates: the REGENERATE and GATE lines above
 
-Exit status 0 means the section or the gates were printed, "nothing owed" included; 1 a last line FAILED <reason>; 2 a
-usage error.
+Exit status:
+  0  the section or the gates were printed, "nothing owed" included
+  1  a last line FAILED <reason>
+  2  a usage error
 """
 
 from __future__ import annotations

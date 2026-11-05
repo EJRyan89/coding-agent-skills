@@ -22,9 +22,14 @@ compares the digests. It prints, for each plugin:
   PIN_DIFFERS <plugin> <tag> <pinned> <rebuilt>    it is not
   UNPINNED <plugin> "<reason>"                     the entry names no release asset with a digest
 
-and exits 1 unless every plugin's pin matches. Either command prints `FAILED <reason>` and exits 1 when the tag is
-not a release tag the checkout holds, its tree cannot be assembled, the marketplace lists no plugin, or a file cannot
-be read or written; `build` refuses before it writes anything.
+Either command prints `FAILED <reason>` when the tag is not a release tag the checkout holds, its tree cannot be
+assembled, the marketplace lists no plugin, or a file cannot be read or written; `build` refuses before it writes
+anything, and a pin or an archive it cannot write removes the archives it wrote and an output folder it made.
+
+Exit status:
+  0  build pinned every archive, or check found every pin matching
+  1  a pin that does not match (PIN_DIFFERS or UNPINNED), or a last line FAILED <reason>
+  2  a usage error
 """
 
 from __future__ import annotations
@@ -39,6 +44,7 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "ejryan89-skill-core" / "scripts"))
 
+import file_presence
 import json_reader
 import json_writer
 from console import run_main
@@ -71,7 +77,7 @@ def archives(root: Path, tag: str) -> dict[str, bytes]:
         pin = source_ref.resolve(root, tag)
         export = source_ref.export(root, pin.commit)
     except DeployError as exc:
-        raise ReleaseError(" ".join(exc.lines)) from exc
+        raise ReleaseError(exc.one_line()) from exc
     try:
         tree = export / "tree"
         source, catalogue = plugin_build.load_source(tree), plugin_build.load_catalogue(tree)
@@ -113,16 +119,31 @@ def build(root: Path, tag: str, output: Path | None) -> list[str]:
         json_writer.dumps(document)
     except json_writer.JsonWriteRefused as exc:
         raise ReleaseError(f"{plugin_build.MARKETPLACE.as_posix()} cannot be written: {exc}") from exc
+    try:
+        # A folder output_directory makes, rather than the empty one it was given, goes again when the build fails.
+        made = output is None or not file_presence.is_occupied(output)
+    except OSError as exc:
+        raise ReleaseError(f"--output {output} cannot be examined: {exc}") from exc
     folder = plugin_build.output_directory(output, root)
-    lines = []
-    for entry in entries:
-        name, repository = str(entry["name"]), str(entry["repository"])
-        digest = hashlib.sha256(built[name]).hexdigest()
-        path = folder / f"{name}.zip"
-        path.write_bytes(built[name])
-        entry["source"] = {"source": "archive", "url": asset_url(repository, tag, name), "sha256": digest}
-        lines += [f'ARCHIVE {name} "{path}" {digest}', f"PINNED {name} {tag} {digest}"]
-    json_writer.write(root / plugin_build.MARKETPLACE, document, indent=2, ensure_ascii=False, mode=0o644)
+    lines: list[str] = []
+    written: list[Path] = []
+    try:
+        for entry in entries:
+            name, repository = str(entry["name"]), str(entry["repository"])
+            digest = hashlib.sha256(built[name]).hexdigest()
+            path = folder / f"{name}.zip"
+            written.append(path)
+            path.write_bytes(built[name])
+            entry["source"] = {"source": "archive", "url": asset_url(repository, tag, name), "sha256": digest}
+            lines += [f'ARCHIVE {name} "{path}" {digest}', f"PINNED {name} {tag} {digest}"]
+        json_writer.write(root / plugin_build.MARKETPLACE, document, indent=2, ensure_ascii=False, mode=0o644)
+    except BaseException:
+        # A marketplace or an archive that cannot be written leaves no archive behind: the output is as it was.
+        for path in written:
+            path.unlink(missing_ok=True)
+        if made:
+            folder.rmdir()
+        raise
     return lines
 
 

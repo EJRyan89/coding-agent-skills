@@ -1,7 +1,7 @@
 """Keep docs/skills.md, the skill reference, in step with each skill's frontmatter and deploy metadata.
 
 Usage:
-  python tools/skill_reference.py           report every stale or missing part; exit 1 if there is one
+  python tools/skill_reference.py           report every stale or missing part
   python tools/skill_reference.py --write   regenerate the generated blocks and add a section for each new skill
 
 docs/skills.md holds a generated summary table, a generated runtime support table, and one section per selectable
@@ -12,6 +12,11 @@ adds missing sections; it never changes the prose or removes a section. Skill se
 
 --root DIR works on another checkout of this repository, as the regression suite does. It refuses, as a usage
 error, a directory that does not hold source.json and .claude/skills, or that lies in a skills directory.
+
+Exit status:
+  0  the reference is current, or --write regenerated it
+  1  a stale or missing part, or a last line FAILED <reason>
+  2  a usage error, or a FAILED line when a skill or the reference cannot be read or written
 """
 
 from __future__ import annotations
@@ -128,7 +133,8 @@ def load_source(root: Path) -> deploy_source.Source:
     try:
         return deploy_source.discover(paths, deploy_source.load_source_id(paths))
     except DeployError as exc:
-        raise SkillReferenceError(str(exc)) from exc
+        # The deployer's lines joined, so the run ends with one FAILED line, never with the remedy after it.
+        raise SkillReferenceError(exc.one_line()) from exc
 
 
 def entries(source: deploy_source.Source) -> list[Entry]:

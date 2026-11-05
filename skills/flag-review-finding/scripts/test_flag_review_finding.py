@@ -534,6 +534,26 @@ class FlagCliTests(unittest.TestCase):
     def test_a_flag_on_a_finding_of_an_unreviewed_pull_request_fails(self) -> None:
         self.assert_result(self.flag_finding("1", "F001"), 1, "FAILED example/one#12 has no review v1 in the archive\n")
 
+    def test_a_flag_on_a_review_gone_from_below_the_latest_names_the_missing_record(self) -> None:
+        review_fixture.commit_fixture(self.archive)
+        review = pull_directory(self.archive, "example/one", 12) / "review.json"
+        review.unlink()
+        printed = io.StringIO()
+        with contextlib.redirect_stdout(printed):
+            code = main(
+                [
+                    "--store",
+                    self.store,
+                    "--config",
+                    self.config,
+                    *("add", "guideline", "Clarify boundary", "--repository", "example/one", "--pull", "12"),
+                    *("--finding", "v1 F001"),
+                ]
+            )
+        self.assertEqual(1, code)
+        self.assertRegex(printed.getvalue(), r"^FAILED .* holds review version 3 but no review\.json: ")
+        self.assertFalse(Path(self.store).exists())
+
     def test_a_flag_on_a_finding_of_a_review_it_cannot_stat_names_the_review_unreadable_not_missing(self) -> None:
         review_fixture.commit_fixture(self.archive)
         review = pull_directory(self.archive, "example/one", 12) / "review.json"

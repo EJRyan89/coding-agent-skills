@@ -614,6 +614,7 @@ class ChangedSelectionFixtures(unittest.TestCase):
             "tests/deployer/test_check.py",
             "tests/validation/test_toolchain.py",
             "tests/validation/test_upgrade_notes.py",
+            "tests/malformed_input/test_faults.py",
         ]
         self.assertEqual([], change_reach_problems(files, suites))
         self.assertEqual(

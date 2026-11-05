@@ -72,7 +72,17 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   `skills/ejryan89-skill-core/scripts/test_file_presence.py::EveryHelperTests`,
   `tests/deployer/test_presence_reads.py::PresenceReadTests`,
   `tests/deployer/test_state_files.py::ReaderTests::test_a_state_file_whose_stat_fails_is_refused_with_the_reason_not_read_as_absent`,
-  `skills/ejryan89-code-review-core/scripts/test_review_source.py::SearchErrorTests`
+  `skills/ejryan89-code-review-core/scripts/test_review_source.py::SearchErrorTests`,
+  `tests/malformed_input/test_faults_unreadable.py::test_each_command_refuses_a_file_it_reads_that_it_cannot_read`,
+  `tests/malformed_input/test_faults_directory.py::test_each_command_refuses_a_directory_in_a_file_s_place`,
+  `tests/malformed_input/test_faults_missing.py::test_each_command_refuses_a_missing_file_it_reads`,
+  `tests/malformed_input/test_faults_stat.py::test_each_command_refuses_a_file_whose_stat_fails`, and
+  `tests/malformed_input/test_faults_programs.py::test_each_command_refuses_a_git_or_gh_that_fails`,
+  which run every command each area's driver table drives, with a file it reads unreadable, a directory, missing, or
+  unstatable, and with git exiting 128, git timing out, and gh failing, and fail a run that exits 0 or never names
+  what failed; a command a table names in NOT_RUN, with its reason, is not run, and
+  `tests/malformed_input/test_faults.py::test_every_command_of_every_entry_point_is_driven_or_named_not_run` fails a
+  command neither driven nor named
 - **Search for:** `returncode == 0` or `returncode != 0` beside a `git` or `gh` command outside `git_client.py` and
   `github_client.py`, including a git the deployer runs through `platform_support.run_tool`, which reaches
   `GitClient` only through a runner over `run_tool`; `except GitError:` followed by `return None` or `return False`; `except OSError:` followed by
@@ -144,19 +154,22 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   it, never a neighbour's message, a traceback, or a generic code.
 - **Why:** A failure reported as another one sends its reader to fix the wrong thing, and a caller that reads exit
   codes takes the wrong branch.
-- **Use:** `console:run_main`, `console:failed_line`, `skill_roots:MissingSibling`; holding each entry point's exit
-  codes to its docstring is the mechanism in #1910.
+- **Use:** `console:run_main`, `console:failed_line`, `skill_roots:MissingSibling`; an entry point states its codes
+  in its docstring's exit table, in the form "Script results" in the skill contract settles.
 - **Guard:** `tests/malformed_input/test_malformed_input.py::test_failure_names_a_write_before_a_refusal_an_escape_and_an_undocumented_acceptance`,
   `tests/validation/skill_grants.py::SkillGrantsPolicies::test_skill_markdown_names_every_status_line_its_scripts_print`,
   `tests/tools/test_mutation_gate.py::CoverageReachFixtures::test_no_data_is_read_as_reaching_nothing_only_from_coverage_json_exiting_1_with_that_message_alone`,
   `skills/repo-cleanup/scripts/test_repo_cleanup.py::SyncTests::test_each_stop_is_returned_as_the_state_it_stopped_in_never_read_back_from_the_lines`,
-  `skills/repo-cleanup/scripts/test_repo_cleanup_stops.py::StopAndRefusalTests::test_a_branch_a_stopped_apply_never_offered_is_refused_and_the_stop_outlasts_later_commands`
+  `skills/repo-cleanup/scripts/test_repo_cleanup_stops.py::StopAndRefusalTests::test_a_branch_a_stopped_apply_never_offered_is_refused_and_the_stop_outlasts_later_commands`,
+  `tests/validation/exit_tables.py::ExitTablePolicies::test_each_entry_point_s_exit_table_names_exactly_the_codes_it_can_exit_with`,
+  `tests/malformed_input/test_faults_programs.py::test_each_command_refuses_a_git_or_gh_that_fails`
 - **Search for:** `rg -nU "except (OSError|ValueError|UnicodeDecodeError)[^\n]*:\n\s+(print\([^\n]*\)\n\s+)?return 1\b"`,
   a handler that ends every failure in one code; two probes under one `except` that print one message; an `except`
   around a `git` or `gh` call that drops the exception's text; `FAILED KeyError`, `FAILED TypeError`, or
   `FAILED AttributeError` expected by a test; a state decided from the lines a step printed, such as
   `split("\t")[0] ==`, instead of a value the step returned; a recorded failure a later, different command clears;
-  a reader that returns None or `{}` for every fault, whose caller then refuses a field of it as missing.
+  a reader that returns None or `{}` for every fault, whose caller then refuses a field of it as missing; an entry
+  point's message about where it runs, such as "Run this inside the repository", printed after any git failure.
 - **Examples:** #1511, #1840, #1855, #1910, #2022, #2181, #2207, #2209
 
 ### A caller catches the whole error family its callee raises on content
@@ -333,10 +346,10 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   the same table for each check run in a rollup, and
   `tests/deployer/test_state_files.py::ReaderTests::test_a_journal_entry_with_any_key_of_another_type_is_malformed_never_an_error`,
   which gives every key of each journal entry the deployer writes a list, an object, and a number, and
-  `tests/malformed_input/test_malformed_input.py::test_every_function_that_calls_a_shared_reader_is_held_reached_or_pending`,
+  `tests/malformed_input/test_malformed_input.py::test_every_function_that_calls_a_shared_reader_is_held_reached_pending_or_named_no_reader`,
   which fails a function calling a shared reader that no table holds, no held reader of its own module reaches, and
-  the pending list does not name, passes a helper a held reader reaches, and fails a pending name the scan no longer
-  finds unheld
+  neither the pending list nor NOT_READERS, the functions named as no reader with the reason, names, passes a helper
+  a held reader reaches, and fails a pending or NOT_READERS name the scan no longer finds unheld
 - **Search for:** `if not isinstance(` followed by `continue` in a loop over another program's entries; `.get(` with a
   default, or `["key"]`, on `json_reader` output with no `isinstance` or `FieldReader` check; a top-level value used
   without `isinstance(value, dict)`; a regular expression over another program's output with no branch for no match;
@@ -461,13 +474,14 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
 
 - **Rule:** A step validates everything it can before it writes anything, and a refusal leaves nothing behind.
 - **Why:** A refusal after a write leaves a half-made output or a changed home the next run trips over.
-- **Use:** `atomic_file:replace_bytes`, `review_io:atomic_write_json`; the same check for each entry point under tools
-  that writes an output is the mechanism in #1911.
+- **Use:** `atomic_file:replace_bytes`, `review_io:atomic_write_json`.
 - **Guard:** `tests/deployer/test_invariants.py::RefusalBeforeMutationGuardTests::test_a_refusal_raised_after_the_deployment_changed_the_home_fails_the_test`,
   `tests/malformed_input/test_malformed_input.py::test_failure_names_a_write_before_a_refusal_an_escape_and_an_undocumented_acceptance`,
   `tests/deployer/test_invariants.py::RefusalBeforeTheFirstWriteTests::test_every_root_refuses_a_backups_folder_it_could_not_keep_a_copy_in`,
   `tests/deployer/test_rendering_locking.py::LockTests::test_a_read_only_manifest_is_refused_before_the_first_change_and_by_the_dry_run`,
-  `skills/curate-agent-memory/scripts/test_memory_audit.py::DeleteTests::test_a_read_only_memory_among_several_is_refused_before_any_is_deleted`
+  `skills/curate-agent-memory/scripts/test_memory_audit.py::DeleteTests::test_a_read_only_memory_among_several_is_refused_before_any_is_deleted`,
+  `tests/malformed_input/test_faults_directory.py::test_each_command_refuses_a_directory_in_a_file_s_place`, which
+  compares the home, the work folder, and each output a driver names before and after every refused run of every entry point
 - **Search for:** a `mkdir(parents=True` or `mkdtemp(` in `tools/` before the arguments are checked; a write before a
   `raise` of the step's refusal class; a check that runs only where the path is first used, after earlier writes, such
   as a destination judged in the step that creates it; a refusal added to a write the commit makes, such as

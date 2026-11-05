@@ -309,6 +309,7 @@ class OpenIssueTests(KnownFailureFixture):
         super().setUp()
         git(self.root, "init", "--quiet")
         git(self.root, "remote", "add", "origin", f"https://github.com/{REPOSITORY}.git")
+        self.write_pending("PENDING = {}\n")
         self.calls: list[list[str]] = []
         self.answer = CommandResult(0, ISSUE_ANSWER, "")
 
@@ -379,6 +380,29 @@ class OpenIssueTests(KnownFailureFixture):
                 self.answer = answer
                 [problem] = self.problems()
                 self.assertIn("#4242", problem)
+
+    def test_a_list_that_cannot_be_read_fails_and_asks_github_nothing(self) -> None:
+        # Read as empty, an unreadable list would ask about nothing and pass, so the check would say every issue it
+        # names is open without ever reading one.
+        for path in (KNOWN_FAILURES, PENDING_MODULE):
+            with self.subTest(path=path.as_posix()):
+                self.write([ENTRY])
+                self.write_pending('PENDING = {"other.reader": 7}\n')
+                (self.root / path).unlink()
+                (self.root / path).mkdir()
+                [problem] = self.problems()
+                self.assertIn(f"{path.as_posix()} cannot be read", problem)
+                self.assertIn("cannot ask whether its issues are open", problem)
+                self.assertEqual([], self.calls)
+                (self.root / path).rmdir()
+
+    def test_a_git_that_cannot_read_the_origin_fails_with_its_reason_never_as_no_repository(self) -> None:
+        self.write([ENTRY])
+        (self.root / ".git" / "config").write_text("[broken\n", encoding="utf-8")
+        [problem] = self.problems()
+        self.assertIn("git cannot read the checkout's origin", problem)
+        self.assertIn("bad config", problem)
+        self.assertEqual([], self.calls)
 
     def test_a_checkout_naming_no_github_repository_fails(self) -> None:
         self.write([ENTRY])

@@ -26,14 +26,19 @@ section was written is in the tag and in no section. It prints `CURRENT` when th
 otherwise `BEHIND <n> entries` and each entry the section lacks, ready to carry into it. An entry the section holds
 beyond the range's, such as an obligation the release's preparation issue records, is the releaser's own.
 
-It exits 0 on success, 1 when --write is refused because the file already has the version or --check finds entries the
-section lacks, and 2, with an `ERROR:` line naming what it could not read or write, when git cannot read the range or,
-without --from, no release reaches --to's parent, when docs/releasing.md or its documented levels or an entry's Level
-cannot be read, with --write when docs/upgrade-notes.md cannot be read as UTF-8 text or written, or with --check when
---to holds no `## VERSION` section. Git runs through ejryan89-skill-core's GitClient, which starts it without the
-repository-selecting variables that would read another repository. The release procedure in docs/releasing.md runs it
-before tagging and again at the tag, and the upgrade-notes check in tests/validation reads the same entries through the
-same git.
+--write is refused when the file already has the version. An `ERROR:` line names what it could not read or write:
+the range, when git cannot read it or, without --from, no release reaches --to's parent; docs/releasing.md, its
+documented levels, or an entry's Level; with --write, docs/upgrade-notes.md, when it cannot be read as UTF-8 text or
+written; or with --check, a `## VERSION` section --to does not hold. Git runs through ejryan89-skill-core's
+GitClient, which starts it without the repository-selecting variables that would read another repository. The
+release procedure in docs/releasing.md runs it before tagging and again at the tag, and the upgrade-notes check in
+tests/validation reads the same entries through the same git.
+
+Exit status:
+  0  the section was printed or written, or --check found it CURRENT
+  1  --write refused a version the file already has, --check found the section BEHIND, or a last line
+     FAILED <reason>
+  2  a usage error, or an ERROR: line naming what it could not read or write
 """
 
 from __future__ import annotations

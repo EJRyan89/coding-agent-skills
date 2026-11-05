@@ -325,11 +325,12 @@ def workflow_script(runs: list[Path]) -> tuple[Path, str, int]:
             raise _inline_only(state)
         if state["runtime"] == "copilot-cli":
             raise PipelineError(f"{state['selector']} runs on the Copilot CLI host; dispatch it instead")
-    for run, state in states:
+    # Every configuration is read before any run is marked, so one that cannot be read leaves every run as it was.
+    efforts = [load_config(Path(state["config_path"])).get("reviewer_effort") for _, state in states]
+    for (run, state), default_effort in zip(states, efforts, strict=True):
         # Every prepared run waited for the whole batch to be prepared; its reviewers start with this script.
         mark_dispatched(run)
         # A specialist's own effort from the manifest wins over the configured default for every reviewer.
-        default_effort = load_config(Path(state["config_path"])).get("reviewer_effort")
         roles = [
             [
                 role["id"],

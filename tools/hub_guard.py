@@ -12,6 +12,10 @@ shell publishes with every entry understood or in NOT_READ, and docs/parallel-se
 states the contract. Every decision is made here. It finds the checkout that holds a path, and runs git, through
 tools/worktrees.py, which owns the hub and its worktrees. It is inert unless `git config coding-agent-skills.hubGuard
 true` was set in this clone.
+
+Exit status:
+  0  the hook answered: a deny decision printed, or nothing, which allows the call
+  1  a last line FAILED <reason>
 """
 
 from __future__ import annotations

@@ -1686,10 +1686,10 @@ class SweepTests(SweepFixture):
         for plans in (self.root / "missing", self.root):
             with self.subTest(plans=plans):
                 code, lines = self.invoke("sweep", "--repos-root", str(self.repos), "--record", str(plans), "my repo")
-                self.assertEqual(
-                    (1, [f"FAILED\t{plans} holds no sweep record; name the directory a sweep printed as PLANS"]),
-                    (code, lines),
+                refusal = (
+                    f"FAILED\t{plans} holds no sweep record sweep.record; name the directory a sweep printed as PLANS"
                 )
+                self.assertEqual((1, [refusal]), (code, lines))
         self.assertEqual([], self.github.calls, "refused before anything ran")
         self.assertEqual(before, sorted(path.name for path in self.root.iterdir()), "nothing was created")
 
@@ -1699,7 +1699,7 @@ class SweepTests(SweepFixture):
                 code, lines = self.report(plans=plans)
                 self.assertEqual(1, code, lines)
                 self.assertEqual(
-                    [[f"{plans} holds no sweep record; name the directory a sweep printed as PLANS"]],
+                    [[f"{plans} holds no sweep record sweep.record; name the directory a sweep printed as PLANS"]],
                     facts(lines, "FAILED"),
                 )
         record = self.root / "plans" / rc.SWEEP_RECORD

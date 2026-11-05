@@ -1,4 +1,10 @@
-"""Versioned code-review configuration and repository-scope resolution."""
+"""Versioned code-review configuration and repository-scope resolution.
+
+Exit status:
+  0  VALID <path> or WROTE <path>
+  1  a last line FAILED <reason>
+  2  a usage error
+"""
 
 from __future__ import annotations
 

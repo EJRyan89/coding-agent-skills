@@ -35,6 +35,11 @@ sys.path, then a sibling_scripts call for each other dependency.
 
 --root DIR scaffolds into another checkout of this repository, as the regression suite does. It refuses, as a usage
 error, a directory that does not hold source.json and .claude/skills, or that lies in a skills directory.
+
+Exit status:
+  0  the skill was scaffolded, its REMAINING lines printed
+  1  a last line FAILED <reason> from a failure the scaffold does not catch
+  2  a usage error, or a FAILED line on stderr when the scaffold is refused or fails, changing nothing
 """
 
 from __future__ import annotations

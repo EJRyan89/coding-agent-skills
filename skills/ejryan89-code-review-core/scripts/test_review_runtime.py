@@ -907,6 +907,16 @@ class RuntimeContractTests(unittest.TestCase):
             checkout.rename(root / "moved")
             self.assertFalse(checkout.exists())
 
+    def test_a_blob_reader_whose_git_ends_before_answering_fails_with_git_s_reason(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            checkout, head = self._plumbing_repository(root, {b"a.txt": ("100644", b"a\n")})
+            blob = self._git(checkout, "rev-parse", f"{head}:a.txt")
+            with (checkout / ".git" / "config").open("a", encoding="utf-8") as config:
+                config.write("[broken\n")
+            with self.assertRaisesRegex(RuntimeContractError, r"ended before it answered .*bad config"):
+                list(review_runtime.git_blob_reader(checkout, [blob]))
+
     def test_source_snapshot_fails_closed_when_the_blob_reader_answers_short_or_wrong(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()

@@ -440,6 +440,19 @@ class SkillReferenceTestCase(unittest.TestCase):
                     self.assertIn(relative, stderr.getvalue().replace("\\", "/"))
                     self.assertEqual(kept + b"\xff\n", changed)
 
+    def test_a_source_file_the_deployer_cannot_read_ends_the_run_with_one_failed_line(self) -> None:
+        # The deployer's error names the file, then its remedy: the run joins them, so its last line is the FAILED one.
+        path = self.root / "deploy-meta" / "alpha.json"
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr), stat_denied(path):
+            code = skill_reference.main(["--write", "--root", str(self.root)])
+        self.assertEqual((2, ""), (code, stdout.getvalue()))
+        lines = stderr.getvalue().splitlines()
+        self.assertEqual(1, len(lines), lines)
+        self.assertTrue(lines[0].startswith("FAILED ERROR: "), lines)
+        self.assertIn("alpha.json", lines[0])
+        self.assertEqual(INITIAL_REFERENCE, self.reference.read_text(encoding="utf-8"))
+
 
 @pytest.mark.parametrize(
     ("description", "expected"),

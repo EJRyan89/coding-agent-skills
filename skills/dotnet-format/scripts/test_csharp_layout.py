@@ -1024,10 +1024,13 @@ class ConfigTests(unittest.TestCase):
             (Completed(-1, b"", timed_out=True), "timed out"),
             (Completed(0, b"Welcome to .NET!\nnot the items\n"), "not JSON"),
             (Completed(0, b'{"Items": [1]}'), "not the items"),
+            # An identity that is not text is no answer that the package is absent.
+            (Completed(0, b'{"Items": {"PackageReference": [{"Identity": {"name": "x"}}]}}'), "not text"),
         )
         reasons = (
             "MSBuild could not evaluate src/App/App.csproj: it exited with code 1",
             "MSBuild did not evaluate src/App/App.csproj within 120 seconds",
+            "MSBuild's evaluation of src/App/App.csproj is not the items it was asked for",
             "MSBuild's evaluation of src/App/App.csproj is not the items it was asked for",
             "MSBuild's evaluation of src/App/App.csproj is not the items it was asked for",
         )

@@ -132,6 +132,13 @@ class DeployableReportTests(unittest.TestCase):
             code = report.main(list(arguments))
         return code, output.getvalue()
 
+    def run_split(self, *arguments: str) -> tuple[int, str, str]:
+        """Run the report's command line, its exit code, stdout, and stderr."""
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = report.main(list(arguments))
+        return code, out.getvalue(), err.getvalue()
+
     def verify(
         self, deploy_exit: int = 0, label: str = "first deploy", verify_output: str | None = ""
     ) -> tuple[int, str]:
@@ -366,6 +373,45 @@ class DeployableReportTests(unittest.TestCase):
         self.assertIn("no skills are deployed", output.lower())
         self.assertIn(DEPLOY_FIRST, output)
 
+    def test_a_manifest_that_cannot_be_read_is_one_error_line_naming_it_without_a_debug_hint(self) -> None:
+        # The tool takes no --debug, and the line naming what failed is the last it prints.
+        self.paths.manifest_file.unlink()
+        self.paths.manifest_file.mkdir()
+        line = (
+            f"ERROR: The manifest at {self.paths.manifest_file.as_posix()} is not a file. Put back a copy you trust,"
+            ' or move it out of the skills folder and rerun with --dry-run. See "A state file that does not read" in'
+            " docs/recovery.md."
+        )
+        self.assertEqual((1, "", f"{line}\n"), self.run_split(*self.command_arguments("layout")))
+        self.assertFalse(self.results_file.exists())
+
+    def test_each_command_reports_its_error_as_one_line_with_its_remedy_and_no_debug_hint(self) -> None:
+        # Each command prints a DeployError as its ERROR line and its remedy joined by a space, never the hint to
+        # rerun with --debug, which the tool does not take. The manifest's stat fails for the commands that read it,
+        # whose refusal carries that hint; summary reads only the results file.
+        self.use_fake_runtimes()
+        manifest_file = self.paths.manifest_file
+        manifest_line = (
+            f"ERROR: Could not tell whether the manifest is there: {manifest_file.as_posix()}: Access is denied"
+            " Check that the path exists and that you can read it, then retry."
+        )
+        results_line = (
+            f"ERROR: Cannot read the results file: {self.results_file}: [Errno 13] Access is denied:"
+            f" {str(self.results_file)!r}"
+        )
+        cases = (
+            ("verify", manifest_file, 1, manifest_line),
+            ("layout", manifest_file, 1, manifest_line),
+            ("leftovers", manifest_file, 1, manifest_line),
+            ("summary", self.results_file, 2, results_line),
+        )
+        self.results_file.write_text("[]", encoding="utf-8")
+        for command, target, code, line in cases:
+            with self.subTest(command=command), denied(target):
+                self.assertEqual((code, "", f"{line}\n"), self.run_split(*self.command_arguments(command)))
+            self.assertEqual("[]", self.results_file.read_text(encoding="utf-8"))
+        self.assertFalse(self.summary_file.exists())
+
     def test_the_layout_result_joins_the_pass_with_the_same_label(self) -> None:
         self.results_file.write_text(
             json.dumps(
@@ -568,6 +614,10 @@ class DeployableReportTests(unittest.TestCase):
 
     def results_command(self, command: str) -> tuple[int, str]:
         """Run a command that reads the results file, with what else it needs."""
+        return self.run_main(*self.command_arguments(command))
+
+    def command_arguments(self, command: str) -> list[str]:
+        """A command that reads the results file, with what else it needs."""
         arguments = [command, "--results", str(self.results_file), "--home", str(self.home)]
         arguments += ["--source", str(self.paths.source_dir)]
         if command in ("verify", "layout"):
@@ -578,7 +628,7 @@ class DeployableReportTests(unittest.TestCase):
             arguments += ["--deploy-verify-exit", "0", "--deploy-verify-log", str(log)]
         elif command == "summary":
             arguments += ["--no-probe", "--summary", str(self.summary_file)]
-        return self.run_main(*arguments)
+        return arguments
 
     def test_a_results_file_that_is_not_a_json_array_exits_2_naming_it_and_is_kept(self) -> None:
         self.use_fake_runtimes()

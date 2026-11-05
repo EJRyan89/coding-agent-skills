@@ -334,6 +334,26 @@ class PlanSealTests(Fixture):
         self.assertEqual(1, len(lines), lines)
         self.assertTrue(lines[0].startswith(f"FAILED\t{self.plan_file.as_posix()} {CHANGED}"), lines)
 
+    def test_a_plan_whose_stat_fails_is_refused_as_unreadable_before_anything_is_deleted(self) -> None:
+        # The plan reads, but every stat of it fails, as the save each command ends with does.
+        real_stat = os.stat
+        plan = os.path.normcase(str(self.plan_file))
+
+        def stat(path: Any, *arguments: Any, **keywords: Any) -> os.stat_result:
+            if os.path.normcase(os.fsdecode(path)) == plan:
+                raise PermissionError(13, "Permission denied", os.fsdecode(path))
+            return real_stat(path, *arguments, **keywords)
+
+        with mock.patch("os.stat", stat):
+            runs = [*self.confirmations(self.plan_file), self.invoke("report", "--record", str(self.plan_file.parent))]
+        for code, lines in runs:
+            self.assertEqual(1, code, lines)
+            self.assertEqual(1, len(lines), lines)
+            self.assertTrue(lines[0].startswith("FAILED\tcannot read plan "), lines)
+            self.assertIn("Permission denied", lines[0])
+        self.assert_untouched()
+        self.assertEqual(self.swept, self.plan_file.read_bytes(), "no command saved the plan")
+
     def test_a_branch_named_only_by_unicode_whitespace_is_preserved_and_the_rest_cleaned(self) -> None:
         # Git accepts a name of a no-break space; its flattened form names nothing, so it is never offered.
         blank = "\u00a0"
@@ -749,7 +769,8 @@ class SealReadingTests(CleanupTestCase):
         with self.assertRaises(rc.CleanupError) as raised:
             rc.recorded_location(str(rc.SEALS))
         self.assertEqual(
-            f"{rc.SEALS} holds no sweep record; name the directory a sweep printed as PLANS", str(raised.exception)
+            f"{rc.SEALS} holds no sweep record sweep.record; name the directory a sweep printed as PLANS",
+            str(raised.exception),
         )
 
 

@@ -199,6 +199,16 @@ def pending_problems(root: Path) -> list[str]:
     return []
 
 
+def unreadable_lists(root: Path) -> list[str]:
+    """Why the known-failure list or the PENDING table cannot be read, or nothing; owed_issues reads either as empty,
+    which a check that asks GitHub about them must not."""
+    try:
+        read_known_failures(root / KNOWN_FAILURES)
+    except KnownFailuresUnreadable as error:
+        return [f"{KNOWN_FAILURES.as_posix()} {error}", *pending_problems(root)]
+    return pending_problems(root)
+
+
 def owed_issues(root: Path) -> list[OwedIssue]:
     """Each issue the known-failure list and the PENDING table name, with what each still lists under it; a list that
     cannot be read adds nothing, since known_failure_problems and pending_problems name it."""
@@ -262,13 +272,21 @@ def closed_known_failure_problems(root: Path, body: str | None, title: str | Non
 def open_issue_problems(root: Path, client: GitHubClient | None = None) -> list[str]:
     """Each issue the known-failure list or the PENDING table names that GitHub does not report as an open issue: one
     in another state, or a pull request, which gh's `issue view` answers for as well, and whose URL holds /pull/; none
-    while both are empty, which asks GitHub nothing. A gh that cannot answer, or a checkout whose origin names no
-    GitHub repository, is a problem, never an open issue. Only `tests/known_failure_issues.py` runs it, so the token gh
-    reads reaches no policy and no suite."""
+    while both are empty, which asks GitHub nothing. A list that cannot be read, a git that cannot read the checkout's
+    origin, a gh that cannot answer, or a checkout whose origin names no GitHub repository, is a problem, never an
+    empty list or an open issue. Only `tests/known_failure_issues.py` runs it, so the token gh reads reaches no policy
+    and no suite."""
+    unreadable = unreadable_lists(root)
+    if unreadable:
+        cannot = "so the known-failure check cannot ask whether its issues are open"
+        return [f"{problem}, {cannot}" for problem in unreadable]
     owed = owed_issues(root)
     if not owed:
         return []
-    repository = checkout_repository(root)
+    try:
+        repository = github_repository(git_output(root, "remote", "get-url", "origin"))
+    except ReleaseNotesError as error:
+        return [f"{owed[0].source} names issues, but git cannot read the checkout's origin: {error}"]
     if repository is None:
         return [
             f"{owed[0].source} names issues, but the checkout's origin names no GitHub repository, so the "

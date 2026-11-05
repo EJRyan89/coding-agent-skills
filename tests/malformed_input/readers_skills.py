@@ -15,9 +15,10 @@ import tempfile
 from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
+from typing import Any, cast
 from unittest import mock
 
-from reader_table import REPOSITORY, Reader, Refused, text_of
+from reader_table import REPOSITORY, NotText, Reader, Refused, text_of
 
 sys.path.insert(0, str(REPOSITORY / "skills" / "ejryan89-skill-core" / "scripts"))
 
@@ -43,15 +44,19 @@ import dashboard_pipeline
 import dotnet_format_targets
 import flag_review_finding
 import github_activity_report
+import mcp_handshake
 import memory_audit
 import msbuild_conditions
 import msbuild_reader
 import repo_cleanup
 import review_document
+import review_guard
 import review_insights
 import review_synthesis
+import run_dotnet_format
 import skill_inventory
 import update_pr_dashboard
+from github_client import CommandResult
 from pr_change import CHANGED, UNCHANGED
 from review_flags import FlagError
 from review_io import PersistenceError
@@ -271,6 +276,124 @@ HISTORY = (
 ).encode()
 
 
+# A skill an audit reads: its frontmatter and a body that names nothing the audit looks for.
+FRONTMATTER_DOCUMENT = b"---\nname: example\ndescription: An example. Use it when an example is wanted.\n---\n\nBody.\n"
+
+
+def _copilot_frontmatter(path: Path) -> object:
+    values, findings = audit_ai_config._frontmatter(path.parents[3], path)
+    _errors(findings)
+    return values
+
+
+def _skill_body(path: Path) -> object:
+    """The body of an audited SKILL.md: none for a frontmatter that never closes, which _validate_skill reports."""
+    text = text_of(path, "utf-8-sig")
+    body = audit_ai_config._skill_body(text)
+    if text.strip() and not body:
+        raise Refused("the frontmatter never closes")
+    return body
+
+
+def _manifest_signal(path: Path) -> object:
+    signal, data, findings = audit_ai_config._manifest_signal(path.parents[1])
+    if any(finding.severity != "INFO" for finding in findings):
+        raise Refused("; ".join(finding.message for finding in findings))
+    return signal, data
+
+
+def _codex_hooks(path: Path) -> object:
+    findings = audit_ai_config._codex_hooks(path.parents[1])
+    _errors(findings)
+    return findings
+
+
+class _ServerOutput:
+    """An MCP server's stdout as the session reads it, a line at a time, from the case's bytes; an exited server."""
+
+    def __init__(self, output: bytes) -> None:
+        self.lines = output.splitlines(keepends=True)
+
+    def readline(self) -> bytes:
+        return self.lines.pop(0) if self.lines else b""
+
+    def wait(self) -> int:
+        return 0
+
+    def errors(self) -> bytes:
+        return b""
+
+
+def _mcp_response(path: Path) -> object:
+    try:
+        output = path.read_bytes()
+    except OSError as error:
+        raise NotText(f"{type(error).__name__}: {error}") from error
+    return mcp_handshake.Session(cast(Any, _ServerOutput(output))).response(1)
+
+
+def _skill_tools(path: Path) -> object:
+    return skill_inventory.tools(path)
+
+
+def _deployed_skill_files(path: Path) -> object:
+    return memory_audit.manifest_skill_files(path.parents[2], "example")
+
+
+# MSBuild's evaluation of a project with -getItem, as `dotnet msbuild` prints it.
+MSBUILD_ITEMS = json.dumps({"Items": {"PackageReference": [{"Identity": csharp_layout.PACKAGE, "Version": "4.0.0"}]}})
+
+
+def _evaluated_reference(path: Path) -> object:
+    try:
+        output = path.read_bytes()
+    except OSError as error:
+        raise NotText(f"{type(error).__name__}: {error}") from error
+    services = run_dotnet_format.Services(run=lambda arguments, cwd, timeout: run_dotnet_format.Completed(0, output))
+    found = csharp_layout.evaluated_reference(path.parent, path.parent / "Example.csproj", services)
+    if isinstance(found, str):
+        raise Refused(found)
+    return found
+
+
+def _pull_request_base(path: Path) -> object:
+    output = text_of(path)
+    services = dotnet_format_targets.Services(gh=lambda directory: lambda arguments: CommandResult(0, output, ""))
+    found = dotnet_format_targets.pull_request_base(services, path.parent)
+    if found is None:
+        raise Refused("gh reports no base")
+    return found
+
+
+def _sdk_style(path: Path) -> object:
+    if not dotnet_format_targets.is_sdk_style(path):
+        raise Refused("the project does not read as SDK-style")
+    return True
+
+
+class _SynthesisPrompt(str):
+    """The synthesis's prompt path, equal also to SYNTHESIS_PROMPT, which stands in the run's record for it, since no
+    fixed document can name the case's folder."""
+
+    __hash__ = str.__hash__
+
+    def __eq__(self, other: object) -> bool:
+        return other == SYNTHESIS_PROMPT or str.__eq__(self, other)
+
+
+SYNTHESIS_PROMPT = "<the synthesis prompt>"
+
+
+def _synthesis_run(path: Path) -> object:
+    """Whether remove_run removed the run the case's run.json describes; a run it leaves is its refusal."""
+    run = path.parent
+    with mock.patch.object(tempfile, "gettempdir", return_value=str(run.parent)):
+        review_synthesis.remove_run({"prompt": _SynthesisPrompt(run / "prompt.md")})
+    if run.exists():
+        raise Refused("the run is not one stage_run made")
+    return True
+
+
 READERS = [
     Reader(
         "audit_ai_config._claude_settings",
@@ -433,7 +556,8 @@ READERS = [
         "json",
         b'{"permissions": {"blockReadsOutsideWorkingDirectories": false}}',
         _memory_settings,
-        (memory_audit.UnreadableSettings,),
+        # A file it cannot read, or anything else in the file's place, is the read's OSError naming it, a FAILED line.
+        (memory_audit.UnreadableSettings, OSError),
         filename="settings.json",
         accepts={
             "bom": UTF8_SIG,
@@ -488,7 +612,8 @@ READERS = [
         "json",
         b'{"number": 1}',
         _document_json,
-        (Refused,),
+        # A file it cannot read, a directory in its place included, is the read's OSError, which names it.
+        (Refused, OSError),
         filename="pull.json",
         open_fields="it returns the object whole, and its caller compares each field with the record's, so a field of "
         "another type fails as the review of another fixture",
@@ -591,5 +716,130 @@ READERS = [
             "top_level_list": "the input is a list of pull requests, and an empty one holds none",
         },
         prepare=_dashboard,
+    ),
+    Reader(
+        "audit_ai_config._frontmatter",
+        "frontmatter",
+        b"---\nname: example\ndescription: >-\n  An example.\nallowed-tools: [Read, Grep]\n---\n\nBody.\n",
+        _copilot_frontmatter,
+        (Refused,),
+        filename=".github/skills/example/SKILL.md",
+        accepts={
+            "bom": UTF8_SIG,
+            "nul_bytes": "the body after the frontmatter's closing line is never read",
+            "deep_nesting": "a nested mapping is accepted without reading its entries, as the audit reads one",
+        },
+    ),
+    Reader(
+        "audit_ai_config._skill_body",
+        "frontmatter",
+        FRONTMATTER_DOCUMENT,
+        _skill_body,
+        (Refused, NotText),
+        accepts={
+            "bom": UTF8_SIG,
+            "empty": "an empty skill has no body",
+            "no_frontmatter": "a skill with no frontmatter is all body",
+            "nul_bytes": "NUL bytes after the closing line are body text, searched as the rest is",
+        },
+    ),
+    Reader(
+        "audit_ai_config._manifest_signal",
+        "json",
+        b'{"generatedBy": "example", "canonicalSource": "AGENTS.md"}',
+        _manifest_signal,
+        (Refused,),
+        filename=".github/ai-config-manifest.json",
+        accepts={"bom": UTF8_SIG},
+    ),
+    Reader(
+        "audit_ai_config._codex_hooks",
+        "json",
+        json.dumps(PLUGIN_HOOKS).encode(),
+        _codex_hooks,
+        (Refused,),
+        filename=".codex/hooks.json",
+        accepts={"bom": UTF8_SIG},
+    ),
+    Reader(
+        "mcp_handshake.Session.response",
+        "json-lines",
+        b'{"jsonrpc": "2.0", "id": 1, "result": {"protocolVersion": "2025-06-18"}}\n',
+        _mcp_response,
+        (RuntimeError,),
+        accepts={
+            "torn_line": "a line cut off part way is no message, and the response is read from the complete line "
+            "before it",
+            "blank_lines": "a blank line holds no message and is passed over",
+        },
+        open_fields="it reads a message's id, error, and result alone and returns the result whole, which "
+        "initialize_result and each listing's reader read by kind",
+    ),
+    Reader(
+        "skill_inventory.tools",
+        "frontmatter",
+        FRONTMATTER_DOCUMENT,
+        _skill_tools,
+        (skill_inventory.InputError,),
+        filename="skills/example/SKILL.md",
+        accepts={
+            "bom": UTF8_SIG,
+            **dict.fromkeys(
+                ("empty", "no_frontmatter"),
+                "a skill with no frontmatter grants nothing and names no model, which the inventory reports",
+            ),
+            **dict.fromkeys(
+                ("deep_nesting", "duplicate_keys"),
+                "the shared reader refuses a key nested or given twice when that key is read, and the inventory reads "
+                "the model, the grants, and the listing's keys, never name",
+            ),
+        },
+    ),
+    Reader(
+        "memory_audit.manifest_skill_files",
+        "json",
+        json.dumps({"sources": {"example/source": {"source_dir": "/source", "skills": {"example": {}}}}}).encode(),
+        _deployed_skill_files,
+        (OSError, ValueError),
+        filename=".claude/skills/.deploy-manifest.json",
+        accepts={"wrong_type:sources.example/source.skills.example": "a skill's entry is looked up by its name alone"},
+    ),
+    Reader(
+        "csharp_layout.evaluated_reference",
+        "json",
+        MSBUILD_ITEMS.encode(),
+        _evaluated_reference,
+        (Refused,),
+        accepts={
+            "not_utf8": "MSBuild's output is decoded with each byte that is not UTF-8 replaced, and the items are read "
+            "from its first brace",
+            "bom": "the items are read from the output's first brace, past anything MSBuild printed before them",
+            "nul_bytes": "the items end at their closing brace, and anything MSBuild printed after them is passed over",
+            "wrong_type:Items.PackageReference.0.Version": "it reads each item's Identity or Filename alone",
+        },
+    ),
+    Reader(
+        "dotnet_format_targets.pull_request_base",
+        "json",
+        b'{"baseRefName": "main"}',
+        _pull_request_base,
+        (Refused,),
+    ),
+    Reader(
+        "dotnet_format_targets.is_sdk_style",
+        "xml",
+        b'<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup /></Project>',
+        _sdk_style,
+        (Refused,),
+        filename="Example.csproj",
+        accepts={"bom": "a project file is decoded by its byte-order mark, as MSBuild reads one"},
+    ),
+    Reader(
+        "review_synthesis.remove_run",
+        "json",
+        json.dumps({"roles": [{"id": review_synthesis.SYNTHESIS_ROLE, "prompt_file": SYNTHESIS_PROMPT}]}).encode(),
+        _synthesis_run,
+        (Refused,),
+        filename=f"{review_guard.RUN_PREFIX}example/{review_guard.RUN_FILE}",
     ),
 ]

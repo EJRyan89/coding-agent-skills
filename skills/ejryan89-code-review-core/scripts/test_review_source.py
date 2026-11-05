@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import copy
+import errno
 import hashlib
 import io
 import json
@@ -771,10 +772,62 @@ class CommandTests(LazySnapshotFixture):
         )
         self.state["source_repository"] = str(self.root / "gone")
         self.write_state()
-        gone = f"FAILED the run's source repository {self.root / 'gone'} is not a directory"
+        gone = f"FAILED the run's source repository {self.root / 'gone'} does not exist"
         self.assertEqual(
             (1, [gone]), self.main("source-search", "--run", run, "--role", "generic-review", "--pattern=helper")
         )
+
+    def test_a_source_repository_it_cannot_stat_or_that_is_no_folder_is_named_never_read_as_missing(self) -> None:
+        run = str(self.run_directory)
+        arguments = ("source-search", "--run", run, "--role", "generic-review", "--pattern=helper")
+        repository = self.root / "repository-file"
+        repository.write_text("not a folder\n", encoding="utf-8")
+        self.state["source_repository"] = str(repository)
+        self.write_state()
+        # A file where the repository should be is no folder, which the line names.
+        self.assertEqual(
+            (1, [f"FAILED the run's source repository {repository} is not a directory"]), self.main(*arguments)
+        )
+        real_stat, denied_path = os.stat, os.path.normcase(repository.absolute())
+
+        def looping(path: Any, *args: Any, **kwargs: Any) -> os.stat_result:
+            if not isinstance(path, int) and os.path.normcase(Path(path).absolute()) == denied_path:
+                raise OSError(errno.ELOOP, "Too many levels of symbolic links", os.fspath(path))
+            return real_stat(path, *args, **kwargs)
+
+        # Every stat of the repository raises an error Path.is_dir() reads as no folder on every Python: the failure
+        # names the stat's own reason, never a repository that is not there or not a directory.
+        with mock.patch.object(os, "stat", looping):
+            code, lines = self.main(*arguments)
+        self.assertEqual(1, code)
+        self.assertEqual(1, len(lines))
+        self.assertTrue(lines[0].startswith("FAILED ") and "Too many levels of symbolic links" in lines[0], lines)
+        self.assertNotIn("does not exist", lines[0])
+        self.assertNotIn("is not a directory", lines[0])
+
+    def test_a_run_file_it_cannot_stat_or_that_is_no_file_is_named_never_read_as_no_run(self) -> None:
+        run, state = str(self.run_directory), self.run_directory / review_guard.RUN_FILE
+        arguments = ("source-file", "--run", run, "--role", "generic-review", "--path=src/unchanged.py")
+        real_stat, denied_path = os.stat, os.path.normcase(state.resolve())
+
+        def denied(path: Any, *args: Any, **kwargs: Any) -> os.stat_result:
+            if not isinstance(path, int) and os.path.normcase(Path(path).absolute()) == denied_path:
+                raise PermissionError(13, "Permission denied", os.fspath(path))
+            return real_stat(path, *args, **kwargs)
+
+        # Every stat of run.json raises: the failure names the file and the reason, never a folder that holds no run.
+        with mock.patch.object(os, "stat", denied):
+            code, lines = self.main(*arguments)
+        self.assertEqual(1, code)
+        self.assertEqual(1, len(lines))
+        self.assertTrue(lines[0].startswith("FAILED ") and "Permission denied" in lines[0], lines)
+        self.assertIn("run.json", lines[0])
+        # A run.json removed, or a folder in its place, is a folder that holds no run, which the line names.
+        no_run = (1, [f"FAILED {self.run_directory.resolve()} is not a review run: it holds no run.json file"])
+        state.unlink()
+        self.assertEqual(no_run, self.main(*arguments))
+        state.mkdir()
+        self.assertEqual(no_run, self.main(*arguments))
 
     def test_source_search_on_a_run_with_no_source_repository_searches_the_snapshot_s_files(self) -> None:
         # The run names no repository, as a whole snapshot's run does, so only the files the snapshot's manifest

@@ -132,6 +132,30 @@ class PullRequestBodyOption(unittest.TestCase):
         self.assertIn(f"--pr-title is not a file: {missing}", error.getvalue())
         versions.assert_not_called()
 
+    def test_a_title_or_body_whose_stat_fails_is_a_usage_error_naming_the_failure_never_a_traceback(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "title.txt"
+            path.write_text("fix: a title\n", encoding="utf-8")
+            real_stat = os.stat
+
+            def stat(target: Any, *arguments: Any, **keywords: Any) -> Any:
+                if Path(target) == path:
+                    raise PermissionError(13, "Permission denied", str(path))
+                return real_stat(target, *arguments, **keywords)
+
+            for option in ("--pr-title", "--pr-body"):
+                error = io.StringIO()
+                with (
+                    self.subTest(option=option),
+                    mock.patch.object(run_validation, "tool_versions") as versions,
+                    mock.patch.object(os, "stat", stat),
+                    self.assertRaises(SystemExit) as raised,
+                ):
+                    main([option, str(path)], errors=error)
+                self.assertEqual(2, raised.exception.code)
+                self.assertIn(f"{option} cannot be examined: {path}: Permission denied", error.getvalue())
+                versions.assert_not_called()
+
     def test_the_body_and_the_title_reach_each_check_that_judges_the_pull_request(self) -> None:
         body, title = REPOSITORY_ROOT / "tests" / "run_validation.py", REPOSITORY_ROOT / "conftest.py"
         loaded: list[unittest.TestSuite] = []

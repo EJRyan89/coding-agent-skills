@@ -87,6 +87,18 @@ def list_versions(directory: Path) -> list[int]:
     return sorted(set(versions))
 
 
+def every_version(directory: Path) -> list[int]:
+    """A pull request folder's review versions, as list_versions lists them, for a reader of every record: versions
+    are archived one after another from 1, so a version missing below the latest is a record gone from the archive,
+    the ArchiveError naming its file, never an archive that starts later."""
+    versions = list_versions(directory)
+    missing = [version for version in range(1, len(versions) + 1) if version not in versions]
+    if missing:
+        name = record_paths(directory, missing[0])[0].name
+        raise ArchiveError(f"{directory} holds review version {versions[-1]} but no {name}: a review record is missing")
+    return versions
+
+
 def record_paths(directory: Path, version: int) -> tuple[Path, Path]:
     if version == 1:
         return directory / "review.json", directory / "review.md"
@@ -105,19 +117,20 @@ def latest_record(root: Path, repository: str, pull_number: int) -> ReviewRecord
 
 
 def pull_records(root: Path, repository: str, pull_number: int) -> list[ReviewRecord]:
-    """Every validated review record of a pull request, oldest first."""
+    """Every validated review record of a pull request, oldest first; the ArchiveError every_version raises when one
+    is missing below the latest."""
     directory = pull_directory(root, repository, pull_number)
-    return [validate_record_pair(*record_paths(directory, version)) for version in list_versions(directory)]
+    return [validate_record_pair(*record_paths(directory, version)) for version in every_version(directory)]
 
 
 def archive_head(root: Path, repository: str, pull_number: int) -> tuple[int | None, list[LedgerEntry]]:
     """A pull request's latest review version (None without one) and that version's finding ledger, from one read.
 
     The ledger is computed from the earlier records when the latest was written before ledgers, and is empty when the
-    pull request has no review.
+    pull request has no review, and a record missing below the latest is the ArchiveError every_version raises.
     """
     directory = pull_directory(root, repository, pull_number)
-    versions = list_versions(directory)
+    versions = every_version(directory)
     history = ledger_history(validate_record_pair(*record_paths(directory, version)) for version in versions)
     return (versions[-1] if versions else None), (history[max(history)] if history else [])
 
@@ -149,7 +162,7 @@ def commit_record(
     lock_key = f"{repository.replace('/', '__')}#{pull_number}.lock"
     lock = root / ".locks" / lock_key
     with ResourceLock(lock):
-        versions = list_versions(directory)
+        versions = every_version(directory)
         current = versions[-1] if versions else None
         if current != expected_latest_version:
             raise ArchiveError(

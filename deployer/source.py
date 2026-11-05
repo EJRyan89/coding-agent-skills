@@ -308,6 +308,17 @@ def _discover_directories(paths: Paths, metadata: set[str]) -> dict[str, Path]:
     return directories
 
 
+def _skill_directory(paths: Paths, name: str, directories: dict[str, Path]) -> Path:
+    """The skill directory discovery found for a metadata file's name. A skill's folder whose SKILL.md is gone, or is
+    no file, is refused as that, never as a folder that is not there."""
+    directory = directories.get(name)
+    if directory is not None:
+        return directory
+    if file_presence.is_directory(paths.skills_src / name, other_is_absent=True):
+        raise DeployError(f"ERROR: Skill '{name}' has no {SKILL_FILE} file in skills/{name}")
+    raise DeployError(f"ERROR: deploy-meta/{name}.json has no matching skill directory")
+
+
 def _load_skill(paths: Paths, name: str, directories: dict[str, Path]) -> Skill:
     if len(name) > MAX_NAME:
         raise DeployError(f"ERROR: Skill name '{name}' exceeds {MAX_NAME} characters", NAME_RULES)
@@ -320,9 +331,7 @@ def _load_skill(paths: Paths, name: str, directories: dict[str, Path]) -> Skill:
         raise DeployError(
             f"ERROR: Skill name '{name}' contains the reserved word '{word}', {AGENT_SKILLS_RULE}", NAME_RULES
         )
-    directory = directories.get(name)
-    if directory is None:
-        raise DeployError(f"ERROR: deploy-meta/{name}.json has no matching skill directory")
+    directory = _skill_directory(paths, name, directories)
     declared = frontmatter_name(directory / "SKILL.md", f"Skill '{name}'")
     if declared != name:
         raise DeployError(f"ERROR: Skill '{name}' frontmatter name '{declared}' does not match directory")

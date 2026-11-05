@@ -141,6 +141,23 @@ class AuthorityClassificationTests(unittest.TestCase):
         cls, _, _ = audit.classify_authority(self.root)
         self.assertEqual("conforming", cls)
 
+    def test_a_manifest_naming_its_generator_or_source_in_no_text_is_a_warning_never_an_alternative(self) -> None:
+        manifest = self.root / ".github/ai-config-manifest.json"
+        manifest.parent.mkdir(parents=True)
+        for document in (
+            {"generatedBy": "x", "canonicalSource": {"path": "AGENTS.md"}},
+            {"generatedBy": ["x"], "canonicalSource": "AGENTS.md"},
+        ):
+            with self.subTest(document=document):
+                manifest.write_text(json.dumps(document), encoding="utf-8")
+                cls, data, findings = audit.classify_authority(self.root)
+                self.assertEqual("unconfigured", cls)
+                self.assertEqual({}, data)
+                self.assertEqual(
+                    [("WARNING", "Manifest names its generator or source in no text")],
+                    [(finding.severity, finding.message) for finding in findings if finding.severity != "INFO"],
+                )
+
     def test_conforming_without_manifest_two_signals(self) -> None:
         (self.root / ".github/scripts").mkdir(parents=True)
         (self.root / "CLAUDE.md").write_text(
@@ -3674,6 +3691,7 @@ INVENTORY_SCENARIOS: dict[str, dict[str, str | bytes]] = {
         MANIFEST_PATH: "x",
     },
     "fixed_file_is_a_directory": {"CLAUDE.md": DIRECTORY},
+    "root_instruction_files_are_directories": {"AGENTS.md": DIRECTORY, "AGENTS.override.md": DIRECTORY},
     "claude_code_files": {
         ".claude/CLAUDE.md": "x",
         "CLAUDE.local.md": "x",
@@ -3773,6 +3791,10 @@ INVENTORY_EXPECTED: dict[str, list[tuple[str, str, str | None, str]]] = {
     ],
     "fixed_file_is_a_directory": [
         ("ERROR", "inventory", "CLAUDE.md", f"{UNREAD} [Errno {errno.EISDIR}] not a file: <path>"),
+    ],
+    "root_instruction_files_are_directories": [
+        ("ERROR", "inventory", "AGENTS.md", f"{UNREAD} [Errno {errno.EISDIR}] not a file: <path>"),
+        ("ERROR", "inventory", "AGENTS.override.md", f"{UNREAD} [Errno {errno.EISDIR}] not a file: <path>"),
     ],
     "claude_code_files": [
         ("INFO", "inventory", ".claude/CLAUDE.md", "Found .claude/CLAUDE.md"),
@@ -4753,6 +4775,10 @@ class ClaudeCodeConfigurationTests(unittest.TestCase):
             "hooks not an object": (
                 {"hooks": ["PreToolUse"]},
                 [("ERROR", "'hooks' must be an object mapping event names to matcher groups")],
+            ),
+            "a matcher that is not text": (
+                {"hooks": {"PreToolUse": [{"matcher": {"tool": "Bash"}, "hooks": []}, {"matcher": "", "hooks": []}]}},
+                [("ERROR", "Hook event 'PreToolUse': a matcher must be text naming the tools it matches")],
             ),
         }
         for name, (settings, expected) in cases.items():
