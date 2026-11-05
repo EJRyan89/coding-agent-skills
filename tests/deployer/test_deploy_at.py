@@ -966,6 +966,69 @@ class DeployAtTests(DeployerTestCase):
         self.assertFalse(exported.exists())
         self.assertEqual({index / "index"}, {index_file for _, _, index_file in calls if index_file is not None})
 
+    def test_a_submodule_is_asked_for_its_attributes_with_a_slash_as_git_archive_asks(self) -> None:
+        # A pattern for a folder, which only a path ending in a slash matches, reaches a submodule's entry too.
+        git(self.source, "switch", "-q", "-c", "submodule")
+        self.write(self.source / ".gitattributes", "* -text\nvendor/sub/ export-ignore\n")
+        head = git(self.source, "rev-parse", "HEAD")
+        git(self.source, "update-index", "--add", "--cacheinfo", f"160000,{head},vendor/sub")
+        git(self.source, "add", ".gitattributes")
+        git(self.source, "commit", "-q", "-m", "A submodule")
+        git(self.source, "switch", "-q", "main")
+        commit = git(self.source, "rev-parse", "submodule")
+        paths = source_ref._tree_paths(self.source, commit)
+        self.assertIn("vendor/sub/", paths)
+        self.assertNotIn("vendor/sub", paths)
+        self.assertEqual([("vendor/sub/", "export-ignore")], source_ref.archive_attributes(self.source, commit))
+
+    def test_an_index_folder_that_cannot_be_removed_is_warned_of_and_leaves_the_answer_as_it_was(self) -> None:
+        real = fsops.remove
+
+        def remove(path: Path) -> None:
+            if path.name.startswith(ATTRIBUTE_INDEX_PREFIX):
+                raise OSError("access is denied")
+            real(path)
+
+        # An answer that holds a path, so one lost in the removal's failure cannot pass as none set.
+        self.commit_attributes("kept-answer", "skills/alpha/SKILL.md export-ignore\n")
+        commit = git(self.source, "rev-parse", "kept-answer")
+        patch, made = recorded_temporary_directories()
+        errors = io.StringIO()
+        with patch, mock.patch.object(fsops, "remove", remove), mock.patch.object(sys, "stderr", errors):
+            found = source_ref.archive_attributes(self.source, commit)
+        self.assertEqual([("skills/alpha/SKILL.md", "export-ignore")], found)
+        self.assertEqual(1, len(made))
+        self.addCleanup(real, made[0])
+        self.assertTrue(made[0].exists())
+        shown = platform_support.normalize(made[0])
+        self.assertEqual(
+            f"WARNING: Could not remove the attributes index {shown}: access is denied. Delete it by hand.\n",
+            errors.getvalue(),
+        )
+        # A refusal git raises inside the index's reading still comes through, the warning after it.
+        failing = mock.Mock()
+        failing.output.side_effect = GitError("fatal: read-tree failed")
+        patch, made = recorded_temporary_directories()
+        errors = io.StringIO()
+        with (
+            patch,
+            mock.patch.object(fsops, "remove", remove),
+            mock.patch.object(sys, "stderr", errors),
+            mock.patch.object(source_ref, "_client", side_effect=[source_ref._client(), failing]),
+            self.assertRaises(DeployError) as raised,
+        ):
+            source_ref.archive_attributes(self.source, commit)
+        self.assertEqual(
+            f"ERROR: Git could not read the attributes of the tree of {commit}: fatal: read-tree failed",
+            raised.exception.lines[0],
+        )
+        self.addCleanup(real, made[0])
+        shown = platform_support.normalize(made[0])
+        self.assertEqual(
+            f"WARNING: Could not remove the attributes index {shown}: access is denied. Delete it by hand.\n",
+            errors.getvalue(),
+        )
+
     def test_an_answer_check_attr_did_not_give_for_each_path_and_attribute_is_refused(self) -> None:
         answers = {
             "missing an attribute": ["README.md", "export-ignore", "unspecified"],

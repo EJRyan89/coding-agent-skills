@@ -374,6 +374,7 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   `tools.hub_guard:expansion_form`
 - **Guard:** `tests/tools/test_bash_syntax.py::ArrayAssignmentTests::test_an_array_assignment_to_a_subscript_is_read_where_bash_reads_an_array`,
   `skills/ejryan89-skill-core/scripts/test_git_client.py::IsolatedClientTests::test_a_plain_client_refuses_a_command_line_setting_that_can_define_an_alias`,
+  `skills/ejryan89-skill-core/scripts/test_git_client.py::IsolatedClientTests::test_a_plain_client_refuses_every_carrier_of_another_command_in_every_spelling`,
   `tests/tools/test_hub_guard_bash.py::BuiltinTests::test_every_builtin_bash_lists_is_understood_or_not_read_and_never_both`,
   `tests/tools/test_hub_guard_bash.py::ShellOptionTests::test_each_set_option_is_read_by_its_table_from_every_source`,
   `tests/tools/test_hub_guard_bash.py::ExpansionTests::test_every_expansion_form_is_understood_or_not_read_and_has_a_sample`,
@@ -406,9 +407,12 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   rename, a `-c help.autocorrect` can turn a misspelled name into, or an `--exec-path=<folder>` can replace; a list
   of the subcommands that take an option, read against `git <command> -h` for every command git lists, that leaves
   one out, as `difftool --no-index` was; a git option table that leaves out one git.c reads a value after, as
-  `--shallow-file` was; a failure labelled with `arguments[0]` rather than `git_client.command_name`.
+  `--shallow-file` was; a failure labelled with `arguments[0]` rather than `git_client.command_name`; a refusal that
+  reads the subcommand a client runs but not the command a carrier starts for it, such as `submodule foreach`,
+  `rebase --exec` or `-x`, `bisect run`, a transport's `--upload-pack`, or a `-c` setting that names a program, rather
+  than an allow-list of the subcommands, actions, and settings that start none.
 - **Examples:** #1412, #1429, #1430, #1592, #1606, #1843, #1851, #1865, #2032, #2088, #2089, #2134, #2135, #2136,
-  #2137, #2138, #2139, #2140, #2188, #2225, #2232, #2233, #2234, #2251, #2262, #2274, #2276
+  #2137, #2138, #2139, #2140, #2188, #2225, #2232, #2233, #2234, #2251, #2262, #2274, #2276, #2316
 
 ### A recursive parser of input has a depth bound
 
