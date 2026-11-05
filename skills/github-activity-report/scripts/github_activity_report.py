@@ -24,7 +24,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
-from typing import Any, TypeVar
+from typing import Any, Generic, TypeVar
 from urllib.parse import quote
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
@@ -50,8 +50,12 @@ from skill_roots import skills_directory_holding
 from typed_fields import FieldError, FieldReader, describe
 
 T = TypeVar("T")
+Page = TypeVar("Page")
 SEARCH_PAGE_SIZE = 100
 SEARCH_RESULT_CAP = 1000
+# The nominal low end of the second date a single day over the cap is sliced by, from before GitHub held any pull
+# request or search result. The outermost slices are open-ended, so a date outside the nominal range still falls in one.
+SLICE_START = date(2008, 1, 1)
 SEARCH_INTERVAL = 2.1
 MAX_INTERVAL = 8.0
 INTERVAL_GROWTH = 1.5
@@ -207,6 +211,81 @@ def _next_cursor(page_info: Any, path: str, followed: set[str]) -> str | None:
     return cursor
 
 
+@dataclass(frozen=True)
+class RangedSearch:
+    """A search over a range of days: `template` with `{span}` set to the range, and `slice_by`, a second date
+    qualifier that splits a single day still over the cap into parts, halving SLICE_START through `today`."""
+
+    template: str
+    slice_by: str
+    today: date
+
+    def query(self, start: date, end: date) -> str:
+        return self.template.replace("{span}", f"{start}..{end}")
+
+    def slice_query(self, query: str, low: date, high: date) -> str:
+        """`query` limited to the part low..high of `slice_by`, open at SLICE_START and at `today`."""
+        first = "*" if low == SLICE_START else str(low)
+        last = "*" if high == self.today else str(high)
+        return f"{query} {self.slice_by}:{first}..{last}"
+
+
+@dataclass(frozen=True)
+class _Searcher(Generic[Page]):
+    """How one kind of search reads a query's first page and its count, fetches every result given that page and
+    reports whether the cap truncated them, and drops results that repeat across parts."""
+
+    probe: Callable[[str], tuple[Page, int]]
+    fetch: Callable[[str, Page], tuple[list[Any], bool]]
+    distinct: Callable[[list[Any]], list[Any]]
+
+
+def _search_range(
+    searcher: _Searcher[Page], search: RangedSearch, start: date, end: date
+) -> tuple[list[Any], list[str]]:
+    """Search start..end, halving the range until each part fits under the cap, and slicing a single day still over it
+    by `search.slice_by`. Returns the results and each day a part still exceeded the cap after slicing."""
+    query = search.query(start, end)
+    page, total = searcher.probe(query)
+    if total > SEARCH_RESULT_CAP and start < end:
+        middle = start + (end - start) // 2
+        left, left_capped = _search_range(searcher, search, start, middle)
+        right, right_capped = _search_range(searcher, search, middle + timedelta(days=1), end)
+        return left + right, left_capped + right_capped
+    if total > SEARCH_RESULT_CAP:
+        print(
+            f"{start} matches {total} results, over the search cap; searching it again in parts by {search.slice_by}.",
+            file=sys.stderr,
+        )
+        items, capped = _slices(searcher, search, query, SLICE_START, search.today)
+        return searcher.distinct(items), [str(start)] if capped else []
+    items, capped = searcher.fetch(query, page)
+    return items, [str(start)] if capped else []
+
+
+def _slices(
+    searcher: _Searcher[Page], search: RangedSearch, query: str, low: date, high: date
+) -> tuple[list[Any], bool]:
+    """The results of `query`, a single day over the cap, in the two halves of low..high of `search.slice_by`, each
+    halved again while it is over the cap. Reports whether a part that is a single day of it still exceeded the cap.
+
+    Parts are searched oldest first, so a result whose second date moves to today while they are searched, as an
+    `updated` date does, is found again in the last part rather than missed, and the caller drops the repeat."""
+    middle = low + (high - low) // 2
+    items: list[Any] = []
+    capped = False
+    for part_low, part_high in ((low, middle), (middle + timedelta(days=1), high)):
+        part = search.slice_query(query, part_low, part_high)
+        page, total = searcher.probe(part)
+        if total > SEARCH_RESULT_CAP and part_low < part_high:
+            found, part_capped = _slices(searcher, search, query, part_low, part_high)
+        else:
+            found, part_capped = searcher.fetch(part, page)
+        items += found
+        capped = capped or part_capped
+    return items, capped
+
+
 class GitHubSearchClient:
     """The REST and GraphQL searches the report makes, over ejryan89-skill-core's GitHub CLI client.
 
@@ -268,21 +347,19 @@ class GitHubSearchClient:
         raise GitHubError(_shortfall(query, found, expected), kind="incomplete")
 
     def search_range(
-        self, endpoint: str, template: str, start: date, end: date, key: tuple[str, ...]
+        self, endpoint: str, search: RangedSearch, start: date, end: date, key: tuple[str, ...]
     ) -> tuple[list[dict[str, Any]], list[str]]:
-        """Search `template` with `{span}` set to start..end, halving the range until each part fits under the cap.
+        """Search start..end, halving the range until each part fits under the cap and slicing a single day still over
+        it by a second date. Returns the items and each day a part still exceeded the cap after slicing."""
 
-        Returns the items and the spans that still exceeded the cap because they were a single day.
-        """
-        query = template.replace("{span}", f"{start}..{end}")
-        first = self._search_page(endpoint, query, 1, SEARCH_PAGE_SIZE)
-        if first["total_count"] > SEARCH_RESULT_CAP and start < end:
-            middle = start + (end - start) // 2
-            left, left_capped = self.search_range(endpoint, template, start, middle, key)
-            right, right_capped = self.search_range(endpoint, template, middle + timedelta(days=1), end, key)
-            return left + right, left_capped + right_capped
-        items, capped = self.search_all(endpoint, query, key, first)
-        return items, [str(start)] if capped else []
+        def probe(query: str) -> tuple[dict[str, Any], int]:
+            first = self._search_page(endpoint, query, 1, SEARCH_PAGE_SIZE)
+            return first, first["total_count"]
+
+        def fetch(query: str, first: dict[str, Any]) -> tuple[list[Any], bool]:
+            return self.search_all(endpoint, query, key, first)
+
+        return _search_range(_Searcher(probe, fetch, lambda items: _unique(items, key, "Search")), search, start, end)
 
     def token_scopes(self) -> frozenset[str] | None:
         """The classic OAuth scopes of gh's token, or None when GitHub names none, as for a fine-grained token."""
@@ -353,15 +430,23 @@ class GitHubSearchClient:
             READ.json_object(search.get("pageInfo"), "data.search.pageInfo")
         return search
 
-    def graphql_search_range(self, template: str, user: str, start: date, end: date) -> tuple[list[Any], list[str]]:
+    def graphql_search_range(
+        self, search: RangedSearch, user: str, start: date, end: date
+    ) -> tuple[list[Any], list[str]]:
         """GraphQL counterpart of `search_range`, returning pull request nodes with the user's reviews inline."""
-        query = template.replace("{span}", f"{start}..{end}")
-        page = self._graphql_search_page(query, user, None)
-        if page["issueCount"] > SEARCH_RESULT_CAP and start < end:
-            middle = start + (end - start) // 2
-            left, left_capped = self.graphql_search_range(template, user, start, middle)
-            right, right_capped = self.graphql_search_range(template, user, middle + timedelta(days=1), end)
-            return left + right, left_capped + right_capped
+
+        def probe(query: str) -> tuple[dict[str, Any], int]:
+            page = self._graphql_search_page(query, user, None)
+            return page, page["issueCount"]
+
+        def fetch(query: str, page: dict[str, Any]) -> tuple[list[Any], bool]:
+            return self._graphql_search_all(query, user, page)
+
+        return _search_range(_Searcher(probe, fetch, _distinct_pull_requests), search, start, end)
+
+    def _graphql_search_all(self, query: str, user: str, page: dict[str, Any]) -> tuple[list[Any], bool]:
+        """Every distinct pull request of a GraphQL search up to the cap, given its first page; reports whether the cap
+        truncated them. A pass that comes out short is repeated from the first page, as `search_all` repeats one."""
         unique: list[Any] = []
         expected = 0
         for attempt in range(PAGINATION_PASSES):
@@ -379,7 +464,7 @@ class GitHubSearchClient:
             expected = min(page["issueCount"], SEARCH_RESULT_CAP)
             unique = _distinct_pull_requests(nodes)
             if len(unique) >= expected:
-                return unique[:SEARCH_RESULT_CAP], [str(start)] if page["issueCount"] > SEARCH_RESULT_CAP else []
+                return unique[:SEARCH_RESULT_CAP], page["issueCount"] > SEARCH_RESULT_CAP
         raise GitHubError(_shortfall(query, len(unique), expected), kind="incomplete")
 
 
@@ -492,7 +577,7 @@ def _unique(items: list[dict[str, Any]], key: tuple[str, ...], context: str) -> 
 def _monthly(
     client: GitHubSearchClient,
     endpoint: str,
-    template: str,
+    search: RangedSearch,
     spans: list[tuple[date, date]],
     labels: list[str],
     date_path: tuple[str, ...],
@@ -504,7 +589,7 @@ def _monthly(
     counts = dict.fromkeys(labels, 0)
     items: list[dict[str, Any]] = []
     for start, end in spans:
-        found, truncated = client.search_range(endpoint, template, start, end, key)
+        found, truncated = client.search_range(endpoint, search, start, end, key)
         items += found
         if truncated:
             capped.setdefault(column, []).extend(truncated)
@@ -553,8 +638,8 @@ def _review_dates(
 ) -> dict[str, list[date]]:
     """Submission dates of the user's non-pending reviews, per pull request someone else authored and updated from
     `start` through `today`."""
-    template = f"org:{org} reviewed-by:{user} -author:{user} is:pr updated:{{span}}"
-    nodes, truncated = client.graphql_search_range(template, user, start, today)
+    search = RangedSearch(f"org:{org} reviewed-by:{user} -author:{user} is:pr updated:{{span}}", "created", today)
+    nodes, truncated = client.graphql_search_range(search, user, start, today)
     if truncated:
         capped.setdefault("Reviews", []).extend(truncated)
     dates: dict[str, list[date]] = {}
@@ -607,7 +692,7 @@ def collect_activity(
     authored = _monthly(
         client,
         "search/issues",
-        f"org:{org} author:{user} is:pr created:{{span}}",
+        RangedSearch(f"org:{org} author:{user} is:pr created:{{span}}", "updated", today),
         spans,
         labels,
         ("created_at",),
@@ -618,7 +703,7 @@ def collect_activity(
     merged = _monthly(
         client,
         "search/issues",
-        f"org:{org} author:{user} is:pr is:merged merged:{{span}}",
+        RangedSearch(f"org:{org} author:{user} is:pr is:merged merged:{{span}}", "created", today),
         spans,
         labels,
         ("pull_request", "merged_at"),
@@ -629,7 +714,7 @@ def collect_activity(
     commits = _monthly(
         client,
         "search/commits",
-        f"org:{org} author:{user} author-date:{{span}}",
+        RangedSearch(f"org:{org} author:{user} author-date:{{span}}", "committer-date", today),
         spans,
         labels,
         ("commit", "author", "date"),

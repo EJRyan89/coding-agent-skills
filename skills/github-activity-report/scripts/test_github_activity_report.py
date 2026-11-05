@@ -29,6 +29,7 @@ from github_activity_report import (
     SEARCH_INTERVAL,
     Activity,
     GitHubSearchClient,
+    RangedSearch,
     collect_activity,
     main,
     months_window,
@@ -38,6 +39,11 @@ from github_client import BACKOFF, CommandResult, GitHubError, subprocess_runner
 from skill_roots import SKILLS_ROOT
 
 SPAN = re.compile(r"(\d{4}-\d{2}-\d{2})\.\.(\d{4}-\d{2}-\d{2})")
+# Any date range, open-ended or not, and the slice a single day over the cap ends its query with.
+RANGE = re.compile(r"(\*|\d{4}-\d{2}-\d{2})\.\.(\*|\d{4}-\d{2}-\d{2})")
+SLICE = re.compile(r" ([a-z-]+):(\*|\d{4}-\d{2}-\d{2})\.\.(\*|\d{4}-\d{2}-\d{2})$")
+# The key of a fake result's second date, which a slice selects by; a result without one has its own day.
+SLICED_ON = "_sliced_on"
 SECONDARY_LIMIT = "gh: You have exceeded a secondary rate limit. (HTTP 403)"
 TODAY = date(2026, 5, 20)
 
@@ -101,6 +107,10 @@ def rows(count: int, start: int = 0) -> list[dict[str, str]]:
     return [{"id": f"i{index}"} for index in range(start, start + count)]
 
 
+def ranged(template: str = "q {span}", slice_by: str = "created", today: date = date(2026, 1, 31)) -> RangedSearch:
+    return RangedSearch(template, slice_by, today)
+
+
 def fetch(client: GitHubSearchClient) -> int:
     return len(client.search_all("search/issues", "q", KEY)[0])
 
@@ -152,7 +162,7 @@ class SearchTests(unittest.TestCase):
     def test_range_under_the_cap_is_fetched_with_one_query(self) -> None:
         github = DatedSearch({"q": [(date(2026, 1, day), {"id": str(day)}) for day in range(1, 31)]})
         client, _ = client_for(github)
-        items, capped = client.search_range("search/issues", "q {span}", date(2026, 1, 1), date(2026, 1, 31), KEY)
+        items, capped = client.search_range("search/issues", ranged(), date(2026, 1, 1), date(2026, 1, 31), KEY)
         self.assertEqual((30, []), (len(items), capped))
         self.assertEqual(["q 2026-01-01..2026-01-31"], github.queries)
 
@@ -160,19 +170,52 @@ class SearchTests(unittest.TestCase):
         dated = [(date(2026, 1, 1) + timedelta(days=index % 60), {"id": str(index)}) for index in range(1500)]
         github = DatedSearch({"q": dated})
         client, _ = client_for(github)
-        items, capped = client.search_range("search/issues", "q {span}", date(2026, 1, 1), date(2026, 3, 1), KEY)
+        items, capped = client.search_range("search/issues", ranged(), date(2026, 1, 1), date(2026, 3, 1), KEY)
         self.assertEqual(1500, len(items))
         self.assertEqual([], capped)
         self.assertEqual("q 2026-01-01..2026-03-01", github.queries[0])
         self.assertIn("q 2026-01-01..2026-01-30", github.queries)
         self.assertIn("q 2026-01-31..2026-03-01", github.queries)
 
-    def test_a_single_day_over_the_cap_is_reported_as_capped(self) -> None:
-        github = DatedSearch({"q": [(date(2026, 1, 5), {"id": str(index)}) for index in range(1200)]})
+    def test_a_single_day_over_the_cap_is_sliced_by_its_second_date(self) -> None:
+        day = date(2026, 1, 5)
+        dated = [
+            (day, {"id": str(index), SLICED_ON: date(2010, 1, 1) + timedelta(days=2 * index)}) for index in range(2500)
+        ]
+        # A result whose second date moved while the day was searched is listed in two parts and counted once.
+        dated.append((day, {"id": "0", SLICED_ON: date(2025, 12, 31)}))
+        github = DatedSearch({"q": dated})
         client, _ = client_for(github)
-        items, capped = client.search_range("search/issues", "q {span}", date(2026, 1, 1), date(2026, 1, 8), KEY)
-        self.assertEqual(1000, len(items))
+        items, capped = client.search_range("search/issues", ranged(), date(2026, 1, 1), date(2026, 1, 8), KEY)
+        self.assertEqual((2500, []), (len({item["id"] for item in items}), capped))
+        self.assertEqual(2500, len(items), "a result found in two parts is kept once")
+        sliced = [query for query in github.queries if len(RANGE.findall(query)) == 2]
+        self.assertEqual("q 2026-01-05..2026-01-05 created:*..2017-01-15", sliced[0])
+        self.assertIn("q 2026-01-05..2026-01-05 created:2017-01-16..*", sliced)
+        self.assertTrue(sliced[-1].endswith("..*"), "the last part stays open-ended")
+        self.assertGreater(len(sliced), 2, "a half over the cap is halved again")
+        self.assertTrue(all(query.startswith("q 2026-01-05..2026-01-05 created:") for query in sliced))
+
+    def test_a_part_still_over_the_cap_reports_its_day_as_capped(self) -> None:
+        day = date(2026, 1, 5)
+        crowded = [(day, {"id": f"c{index}"}) for index in range(1200)]
+        spread = [
+            (day, {"id": f"s{index}", SLICED_ON: date(2020, 1, 1) + timedelta(days=index)}) for index in range(300)
+        ]
+        github = DatedSearch({"q": crowded + spread})
+        client, _ = client_for(github)
+        items, capped = client.search_range("search/issues", ranged(), date(2026, 1, 1), date(2026, 1, 8), KEY)
         self.assertEqual(["2026-01-05"], capped)
+        self.assertEqual(1300, len(items), "the parts under the cap are kept whole, the one over it to the cap")
+        self.assertIn("q 2026-01-05..2026-01-05 created:2026-01-05..2026-01-05", github.queries)
+
+    def test_a_multi_day_part_under_the_cap_is_not_sliced(self) -> None:
+        dated = [(date(2026, 1, 1) + timedelta(days=index % 8), {"id": str(index)}) for index in range(1500)]
+        github = DatedSearch({"q": dated})
+        client, _ = client_for(github)
+        items, capped = client.search_range("search/issues", ranged(), date(2026, 1, 1), date(2026, 1, 8), KEY)
+        self.assertEqual((1500, []), (len(items), capped))
+        self.assertTrue(all(len(RANGE.findall(query)) == 1 for query in github.queries), github.queries)
 
     def test_rate_limits_widen_the_spacing_between_searches(self) -> None:
         run, _ = scripted(
@@ -218,9 +261,9 @@ class SearchTests(unittest.TestCase):
         search = {"data": {"search": {"issueCount": 0, "pageInfo": {"hasNextPage": False}, "nodes": []}}}
         run, _ = scripted(ok(search), ok({"data": {"node": {}}}), ok(search))
         client, sleeper = client_for(run)
-        client.graphql_search_range("q {span}", "octo", date(2026, 1, 1), date(2026, 1, 31))
+        client.graphql_search_range(ranged(), "octo", date(2026, 1, 1), date(2026, 1, 31))
         client.graphql("query", {"id": "PR_1"})
-        client.graphql_search_range("q {span}", "octo", date(2026, 1, 1), date(2026, 1, 31))
+        client.graphql_search_range(ranged(), "octo", date(2026, 1, 1), date(2026, 1, 31))
         self.assertEqual([SEARCH_INTERVAL], sleeper.waits)
 
     def test_underfilled_search_is_repeated_until_complete(self) -> None:
@@ -270,12 +313,12 @@ class SearchTests(unittest.TestCase):
 
         run, calls = scripted(page(2, 3), page(3, 3))
         client, _ = client_for(run)
-        nodes, capped = client.graphql_search_range("q {span}", "octo", date(2026, 1, 1), date(2026, 1, 31))
+        nodes, capped = client.graphql_search_range(ranged(), "octo", date(2026, 1, 1), date(2026, 1, 31))
         self.assertEqual((3, [], 2), (len(nodes), capped, len(calls)))
         run, calls = scripted(*[page(2, 3)] * 3)
         client, _ = client_for(run)
         with self.assertRaises(GitHubError) as context:
-            client.graphql_search_range("q {span}", "octo", date(2026, 1, 1), date(2026, 1, 31))
+            client.graphql_search_range(ranged(), "octo", date(2026, 1, 1), date(2026, 1, 31))
         self.assertEqual("incomplete", context.exception.kind)
         self.assertEqual(3, len(calls))
 
@@ -303,7 +346,7 @@ class SearchTests(unittest.TestCase):
             run, calls = bounded(page(page_info))
             client, _ = client_for(run)
             with self.subTest(message=message), self.assertRaises(GitHubError) as context:
-                client.graphql_search_range("q {span}", "octo", date(2026, 1, 1), date(2026, 1, 31))
+                client.graphql_search_range(ranged(), "octo", date(2026, 1, 1), date(2026, 1, 31))
             self.assertEqual("malformed", context.exception.kind)
             self.assertIn(message, str(context.exception))
             self.assertLessEqual(len(calls), 2)
@@ -390,6 +433,25 @@ class RetryTests(unittest.TestCase):
         self.assertEqual("prerequisite", context.exception.kind)
 
 
+def selected(dated: dict[str, list[tuple[date, dict[str, Any]]]], query: str) -> list[dict[str, Any]]:
+    """The results of `dated` that `query` selects: those of its template on a day in its span and, when it ends with
+    a slice, whose SLICED_ON date, or their own day without one, falls in the slice."""
+    sliced = SLICE.search(query) if len(RANGE.findall(query)) == 2 else None
+    if sliced is not None:
+        query = query[: sliced.start()]
+    match = SPAN.search(query)
+    if match is None:
+        raise AssertionError(query)
+    key = (query[: match.start()] + query[match.end() :]).strip()
+    first, last = date.fromisoformat(match[1]), date.fromisoformat(match[2])
+    found = [(day, item) for day, item in dated.get(key, []) if first <= day <= last]
+    if sliced is not None:
+        low = date.min if sliced[2] == "*" else date.fromisoformat(sliced[2])
+        high = date.max if sliced[3] == "*" else date.fromisoformat(sliced[3])
+        found = [(day, item) for day, item in found if low <= item.get(SLICED_ON, day) <= high]
+    return [{name: value for name, value in item.items() if name != SLICED_ON} for _, item in found]
+
+
 class DatedSearch:
     """Answers searches by filtering dated items to the query's date range, then paginating."""
 
@@ -403,12 +465,7 @@ class DatedSearch:
         parameters = parse_qs(urlsplit(arguments[3]).query)
         query = parameters["q"][0]
         self.queries.append(query)
-        match = SPAN.search(query)
-        if match is None:
-            raise AssertionError(query)
-        key = (query[: match.start()] + query[match.end() :]).strip()
-        first, last = date.fromisoformat(match[1]), date.fromisoformat(match[2])
-        items = [item for day, item in self.dated.get(key, []) if first <= day <= last]
+        items = selected(self.dated, query)
         page, size = int(parameters["page"][0]), int(parameters["per_page"][0])
         return ok(search_page(items[(page - 1) * size : page * size], len(items)))
 
@@ -441,12 +498,7 @@ class FakeGitHub(DatedSearch):
     def search(self, query: str, offset: int) -> CommandResult:
         """GraphQL search: pull request nodes carry the user's first page of reviews; `after` is an offset."""
         self.queries.append(query)
-        match = SPAN.search(query)
-        if match is None:
-            raise AssertionError(query)
-        key = (query[: match.start()] + query[match.end() :]).strip()
-        first, last = date.fromisoformat(match[1]), date.fromisoformat(match[2])
-        matches = [node for day, node in self.dated.get(key, []) if first <= day <= last]
+        matches = selected(self.dated, query)
         nodes = []
         for node in matches[offset : offset + 100]:
             pages = self.reviews.get(node.get("id", ""), [{"nodes": []}])
@@ -615,6 +667,50 @@ class CollectTests(unittest.TestCase):
         self.assertIn("pull requests last updated on 2026-05-20", text)
         self.assertIn("PRs reviewed and Reviews submitted may be undercounted in every month and in both totals", text)
         self.assertNotIn("Reviews for 2026-05-20", text)
+
+    def test_a_review_day_over_the_cap_is_sliced_by_creation_date_and_counted_whole(self) -> None:
+        github = self.fake()
+        github.dated[REVIEWED] = [
+            (
+                date(2026, 5, 20),
+                {
+                    "id": f"PR_{index}",
+                    "author": {"login": "someone"},
+                    SLICED_ON: date(2019, 1, 1) + timedelta(days=index),
+                },
+            )
+            for index in range(1200)
+        ]
+        for index in range(1200):
+            github.reviews[f"PR_{index}"] = [{"nodes": [review("APPROVED", "2026-03-15T09:00:00Z")]}]
+        activity = self.collect(github)
+        self.assertEqual({}, activity.capped)
+        self.assertEqual((1200, 1200), (activity.reviews_submitted["2026-03"], activity.prs_reviewed_total))
+        self.assertIn(f"{REVIEWED}2026-05-20..2026-05-20 created:*..2017-03-11", github.queries)
+        self.assertNotIn("WARNING", render_report(activity, "acme", "octo", TODAY))
+
+    def test_each_search_slices_a_day_over_the_cap_by_its_own_second_date(self) -> None:
+        day = date(2026, 4, 2)
+        searches: dict[str, tuple[str, Callable[[int], dict[str, Any]]]] = {
+            AUTHORED: ("updated", lambda index: {"node_id": f"PR_{index}", "created_at": f"{day}T10:00:00Z"}),
+            MERGED: (
+                "created",
+                lambda index: {"node_id": f"PR_{index}", "pull_request": {"merged_at": f"{day}T10:00:00Z"}},
+            ),
+            COMMITS: ("committer-date", lambda index: commit(f"{index:040x}", f"{day}T10:00:00Z")),
+        }
+        for prefix, (qualifier, result) in searches.items():
+            github = self.fake()
+            github.dated[prefix] = [
+                (day, {**result(index), SLICED_ON: date(2018, 1, 1) + timedelta(days=index)}) for index in range(1001)
+            ]
+            with self.subTest(qualifier=qualifier):
+                activity = self.collect(github)
+                self.assertEqual({}, activity.capped)
+                self.assertIn(f"{prefix}{day}..{day} {qualifier}:*..2017-03-11", github.queries)
+                self.assertIn(f"{prefix}{day}..{day} {qualifier}:2017-03-12..*", github.queries)
+                counts = {AUTHORED: activity.authored, MERGED: activity.merged, COMMITS: activity.commits}[prefix]
+                self.assertEqual(1001, counts["2026-04"])
 
     def test_review_search_splits_and_pages_past_the_cap(self) -> None:
         github = self.fake()
@@ -829,14 +925,14 @@ def graphql_count_page(count: object) -> CommandResult:
 def test_a_graphql_search_count_must_be_a_non_negative_integer(count: object) -> None:
     client, _ = client_for(scripted(graphql_count_page(count))[0])
     with pytest.raises(GitHubError) as context:
-        client.graphql_search_range("q {span}", "octo", date(2026, 1, 1), date(2026, 1, 31))
+        client.graphql_search_range(ranged(), "octo", date(2026, 1, 1), date(2026, 1, 31))
     assert context.value.kind == "malformed"
     assert "data.search.issueCount must be an integer of at least 0" in str(context.value)
 
 
 def test_a_graphql_search_count_that_is_a_non_negative_integer_is_read() -> None:
     client, _ = client_for(scripted(graphql_count_page(1))[0])
-    nodes, capped = client.graphql_search_range("q {span}", "octo", date(2026, 1, 1), date(2026, 1, 31))
+    nodes, capped = client.graphql_search_range(ranged(), "octo", date(2026, 1, 1), date(2026, 1, 31))
     assert (len(nodes), capped) == (1, [])
 
 
@@ -853,7 +949,7 @@ def test_a_graphql_search_count_that_is_a_non_negative_integer_is_read() -> None
 def test_malformed_graphql_search_responses_fail_closed(search: object) -> None:
     client, _ = client_for(scripted(ok({"data": {"search": search}}))[0])
     with pytest.raises(GitHubError) as context:
-        client.graphql_search_range("q {span}", "octo", date(2026, 1, 1), date(2026, 1, 31))
+        client.graphql_search_range(ranged(), "octo", date(2026, 1, 1), date(2026, 1, 31))
     assert context.value.kind == "malformed"
 
 
@@ -1212,6 +1308,25 @@ def test_a_review_cap_is_recorded_for_every_month_up_to_the_capped_day(tmp_path:
     assert code == 0, stdout
     assert "for octo, 2026-03 is read from the history file" in stdout
     assert "truncated its PRs reviewed, Reviews submitted when it was captured" in stdout
+
+
+def test_a_review_day_sliced_under_the_cap_is_recorded_uncapped(tmp_path: Path) -> None:
+    history = tmp_path / "activity.csv"
+    github = group_github()
+    github.dated[REVIEWED] = [
+        (
+            date(2026, 4, 20),
+            {"id": f"PR_{index}", "author": {"login": "someone"}, SLICED_ON: date(2016, 1, 1) + timedelta(days=index)},
+        )
+        for index in range(1001)
+    ]
+    code, stdout, _ = run_group([*GROUP, "--history", str(history)], github, at(TODAY))
+    assert code == 0, stdout
+    assert "WARNING" not in stdout
+    rows = history_lines(history)
+    for month in ("2026-03", "2026-04"):
+        assert rows[f"{month},octo"].endswith(",false,2026-05-20T08:00:00Z,"), "a sliced day records no cap"
+    assert f"{REVIEWED}2026-04-20..2026-04-20 created:*..2017-03-11" in github.queries
 
 
 def old_format(text: str) -> str:
