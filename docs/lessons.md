@@ -370,7 +370,8 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
 - **Why:** A hand-written reader that misses a construct the program reads lets a command or an entry pass unjudged.
   The hub guard's modelling reader closed one spelling per fix and every review found the next, until it was rebuilt
   to refuse what it does not understand.
-- **Use:** `tools.hub_guard:read_powershell`, `tools.hub_guard:runner_refusal`, and `tools.hub_guard:expansion_form`
+- **Use:** `tools.hub_guard:read_powershell`, `tools.hub_guard:runner_refusal`, `tools.hub_guard:option_refusal`, and
+  `tools.hub_guard:expansion_form`
 - **Guard:** `tests/tools/test_bash_syntax.py::ArrayAssignmentTests::test_an_array_assignment_to_a_subscript_is_read_where_bash_reads_an_array`,
   `skills/ejryan89-skill-core/scripts/test_git_client.py::IsolatedClientTests::test_a_plain_client_refuses_a_command_line_setting_that_can_define_an_alias`,
   `tests/tools/test_hub_guard_bash.py::BuiltinTests::test_every_builtin_bash_lists_is_understood_or_not_read_and_never_both`,

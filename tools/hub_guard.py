@@ -151,9 +151,10 @@ EXPORTED_FUNCTION = re.compile(r"^BASH_FUNC_(.+)%%$")
 # `compgen -v` from Bash and the AST node types by reflection from PowerShell, and fail on an entry neither table holds.
 
 # The programs that run another command their words name, by the catalogue the guard refuses. While a hub is guarded,
-# each is refused where the command it runs is or may be git (runner_refusal); a runner around any other command is
-# understood. Every other program a literal name starts is understood: what it does inside itself, in its own
-# language (a Python script, an awk program, a test suite), the guard does not see.
+# each is refused where the command it runs is or may be git, or where it is given an option RUNNER_OPTIONS does not
+# know to be safe (runner_refusal); a runner around any other command is understood. Every other program a literal
+# name starts is understood: what it does inside itself, in its own language (a Python script, an awk program, a test
+# suite), the guard does not see.
 RUNNERS: dict[str, str] = {
     "bash": "a shell, whose script is read only as `-c` with a literal script, and refused where it runs git",
     "sh": "Bash in POSIX mode, or dash, either of which keeps an assignment made before a special builtin after it, "
@@ -186,27 +187,184 @@ RUNNERS_ALWAYS_REFUSED = frozenset(
         *("su", "runuser", "ssh", "script", "watch", "parallel", "flock"),
     }
 )
-# The options of a runner that build its command from text, refused whatever it runs: xargs's replacement, which puts
-# its input in the command's words, and env's split string, which makes a command of one word.
-RUNNER_BUILDING_OPTIONS = {
-    "xargs": frozenset({"-I", "-i", "--replace"}),
-    "env": frozenset({"-S", "--split-string"}),
-}
-# The options that make a program the guard understands run a command its words name, refused in every spelling the
-# program takes, an attached value, an abbreviation, or a bundle (command_option): find's -exec family whatever it
-# runs, and so is any word of such a program that the text does not settle.
-FIND_COMMANDS = frozenset({"-exec", "-execdir", "-ok", "-okdir"})
-COMMAND_OPTIONS: dict[str, frozenset[str]] = {
-    "find": FIND_COMMANDS,
-    "rg": frozenset({"--pre"}),
-    "sort": frozenset({"--compress-program"}),
-    "tar": frozenset(
-        {
-            *("--to-command", "--use-compress-program", "-I", "--checkpoint-action", "--info-script", "-F"),
-            *("--new-volume-script", "--rsh-command", "--rmt-command"),
+# How an option takes its value: none, the rest of its word or the next word, or only the rest of its word.
+NO_VALUE, VALUE, OPTIONAL_VALUE = "none", "value", "optional"
+
+
+@dataclass(frozen=True)
+class OptionTable:
+    """The options of a program known to be safe, which neither run a command nor change where one runs, each with how
+    it takes its value; every other option word is refused while a hub is guarded (option_refusal).
+
+    short maps a short option's letter, and long a long option's name with its dashes, to how it takes a value.
+    operands counts the words a runner takes after its options and before its command, as timeout's duration;
+    permutes says the program reads an option after an operand, as GNU sort and tar do, so every word is read until
+    `--`; first_letters says a first word without a dash is a bundle of short options whose values follow it in order,
+    tar's old style; single_dash says each option is a word of its own read exactly, as find's are; numbered is a
+    pattern of a word that is an option of its own, as nice's `-5`; assignments says NAME=VALUE words and a lone
+    `-` stand among the options, as env's do; and slash maps the safe options of the program's Windows build, which
+    reads an option written with a slash in any case, as System32's sort.exe does, by its upper-case name, `+` standing
+    for `/+n`, or is None for a program with no such build."""
+
+    short: Mapping[str, str] = field(default_factory=dict)
+    long: Mapping[str, str] = field(default_factory=dict)
+    operands: int = 0
+    permutes: bool = False
+    first_letters: bool = False
+    single_dash: bool = False
+    numbered: re.Pattern[str] | None = None
+    assignments: bool = False
+    slash: Mapping[str, str] | None = None
+
+
+def option_table(short: str = "", long: str = "", **form: Any) -> OptionTable:
+    """An OptionTable from getopt's spelling: short letters, each followed by `:` for a value or `::` for an optional
+    one, and long names separated by spaces, each followed by `=` for a value or `=?` for an optional one; a slash
+    spelling, given, names the Windows build's slash options as long names are named, without their slash."""
+    if isinstance(form.get("slash"), str):
+        form["slash"] = {
+            spec.removesuffix("="): VALUE if spec.endswith("=") else NO_VALUE for spec in form["slash"].split()
         }
+    shorts: dict[str, str] = {}
+    for match in re.finditer(r"(.)(::?)?", short):
+        shorts[match[1]] = {None: NO_VALUE, ":": VALUE, "::": OPTIONAL_VALUE}[match[2]]
+    longs: dict[str, str] = {}
+    for spec in long.split():
+        name = spec.removesuffix("=?").removesuffix("=")
+        prefix = "-" if form.get("single_dash") else "--"
+        longs[prefix + name] = OPTIONAL_VALUE if spec.endswith("=?") else VALUE if spec.endswith("=") else NO_VALUE
+    return OptionTable(shorts, longs, **form)
+
+
+# The options of each runner the guard reads, by an allow-list: the ones known neither to build its command from text,
+# as xargs's -I and env's -S do, nor to change where it runs, as env's -C does, nor to write a file or run another
+# program. While a hub is guarded every other option word of a runner is refused, in any spelling: exactly, with its
+# value attached, abbreviated, or inside a bundle (option_refusal). A long option is understood only spelled in full,
+# since an abbreviation of a safe option may be one of another option too. env's NAME=VALUE words are read as
+# assignments for its command (runner_assignments); one before any other runner's command, as sudo takes, is refused,
+# since it may set a variable the guard does not judge. bash and pwsh are read by their scripts
+# (shell_script), and the runners RUNNERS_ALWAYS_REFUSED names are refused whatever their options.
+RUNNER_OPTIONS: dict[str, OptionTable] = {
+    "env": option_table("i0u:v", "ignore-environment null unset= debug", assignments=True),
+    "xargs": option_table(
+        "0a:d:E:L:n:P:rs:tx",
+        "null arg-file= delimiter= max-args= max-procs= no-run-if-empty max-chars= verbose exit",
+    ),
+    "timeout": option_table("k:s:v", "kill-after= signal= verbose preserve-status foreground", operands=1),
+    "nice": option_table("n:", "adjustment=", numbered=re.compile(r"-[+-]?[0-9]+")),
+    "nohup": option_table(),
+    "stdbuf": option_table("i:o:e:", "input= output= error="),
+    "ionice": option_table("c:n:t", "class= classdata= ignore"),
+    "chrt": option_table("bdfiorRv", "batch deadline fifo idle other rr reset-on-fork verbose", operands=1),
+    "taskset": option_table("c", "cpu-list", operands=1),
+    "setsid": option_table("cfw", "ctty fork wait"),
+    "unbuffer": option_table("p"),
+    "chronic": option_table("ev"),
+    "strace": option_table("cfq"),
+    "ltrace": option_table("cf"),
+    "time": option_table("f:pqv", "format= portability quiet verbose"),
+    "chroot": option_table(operands=1),
+    "sudo": option_table("nu:g:HEk", "non-interactive user= group= set-home reset-timestamp"),
+    "doas": option_table("nu:"),
+}
+# find's actions that run a program, which no allow-list of find's admits; tests/validation/skill_scripts.py reads it.
+FIND_COMMANDS = frozenset({"-exec", "-execdir", "-ok", "-okdir"})
+# The options of the programs the guard understands that have options which run a command, write a file the command
+# does not name, or change where the program acts, by an allow-list as RUNNER_OPTIONS's: find's -exec family and its
+# -delete and -fprint family, rg's --pre and --hostname-bin, sort's --compress-program and --output, and tar's options
+# that run a program, its extraction (-x, --extract, --get, and what only overwrites on extraction), and its -C, which
+# writes the files an archive names in a directory the option chooses, and its -T, whose list of names may hand it
+# options, are among the ones refused, and so is any word
+# of such a program that the text does not settle. tar's archive named host:path, which tar opens through a remote
+# shell, is refused unless --force-local is given (remote_archive). tar's letters are the ones GNU tar and bsdtar,
+# Windows' tar.exe, either both read alike or only one of them knows: -H, -W, and -s, which one of them reads with a
+# value and the other without, are refused. sort's and find's Windows builds read options written with a slash, by
+# the slash allow-list each table holds, on Windows whatever the command's path (system_program).
+PROGRAM_OPTIONS: dict[str, OptionTable] = {
+    "find": option_table(
+        "",
+        " ".join(
+            (
+                "H L P not a and o or daystart follow nowarn warn regextype= depth mount noleaf xdev",
+                "ignore_readdir_race noignore_readdir_race maxdepth= mindepth= files0-from=",
+                "amin= anewer= atime= cmin= cnewer= context= ctime= empty false fstype= gid= group= ilname= iname=",
+                "inum= ipath= iwholename= iregex= links= lname= mmin= mtime= name= newer= nouser nogroup path= perm=",
+                "regex= readable writable executable samefile= wholename= size= true type= uid= used= user= xtype=",
+                "print print0 printf= ls prune quit",
+                *(f"newer{x}{y}=" for x in "aBcm" for y in "aBcmt"),
+            )
+        ),
+        permutes=True,
+        single_dash=True,
+        # Windows' find.exe reads its lines and counts them; none of its options writes or runs anything.
+        slash="V C N I OFF OFFLINE",
+    ),
+    "rg": option_table(
+        "A:B:C:cd:e:E:f:Fg:HiIj:lLm:M:nNopPqr:sSt:T:uUvVwx0ab.",
+        " ".join(
+            (
+                "after-context= before-context= context= count count-matches case-sensitive color= colors= column",
+                "no-column context-separator= regexp= encoding= file= fixed-strings files files-with-matches",
+                "files-without-match follow glob= iglob= glob-case-insensitive hidden no-hidden heading no-heading",
+                "ignore-case ignore-file= json line-number no-line-number line-regexp max-columns= max-count=",
+                "max-depth= max-filesize= multiline multiline-dotall no-config no-ignore no-ignore-vcs no-ignore-dot",
+                "no-ignore-global no-ignore-parent no-ignore-exclude no-ignore-files no-messages null null-data",
+                "only-matching passthru pcre2 pretty quiet replace= smart-case sort= sortr= stats text threads= trim",
+                "type= type-not= type-list unrestricted vimgrep with-filename no-filename word-regexp invert-match",
+                "byte-offset binary no-binary crlf",
+            )
+        ),
+        permutes=True,
+    ),
+    "sort": option_table(
+        "bdfgiMhnRrVcCk:msS:t:uz",
+        " ".join(
+            (
+                "ignore-leading-blanks dictionary-order ignore-case general-numeric-sort ignore-nonprinting",
+                "month-sort human-numeric-sort numeric-sort random-sort random-source= reverse sort= version-sort",
+                "batch-size= check=? debug files0-from= key= merge stable buffer-size= field-separator= parallel=",
+                "unique zero-terminated",
+            )
+        ),
+        permutes=True,
+        # Windows' sort.exe: /O writes its output to a file and /T keeps its working files in a directory, so neither.
+        slash="R REVERSE + L= LOCALE= M= MEMORY= REC= RECORD_MAXIMUM=",
+    ),
+    "tar": option_table(
+        "AcdrtuvzjJZakmOpPhSBilnRof:X:b:K:N:V:",
+        " ".join(
+            (
+                "catenate concatenate create diff compare append list update delete file= force-local",
+                "exclude-from= exclude= verbose gzip gunzip ungzip bzip2 xz lzip lzma lzop zstd compress",
+                "uncompress auto-compress no-auto-compress keep-old-files skip-old-files keep-newer-files",
+                "no-overwrite-dir touch to-stdout preserve-permissions same-permissions",
+                "no-same-permissions same-owner no-same-owner numeric-owner absolute-names dereference",
+                "hard-dereference strip-components= wildcards no-wildcards wildcards-match-slash",
+                "no-wildcards-match-slash anchored no-anchored ignore-case no-ignore-case exclude-vcs",
+                "exclude-vcs-ignores exclude-backups exclude-caches exclude-caches-all exclude-caches-under recursion",
+                "no-recursion null no-null unquote no-unquote verbatim-files-from no-verbatim-files-from format=",
+                "posix old-archive portability owner= group= mode= mtime= sort= transform= xform= one-file-system",
+                "ignore-zeros ignore-failed-read blocking-factor= record-size= read-full-records sparse full-time",
+                "utc show-transformed-names show-stored-names show-omitted-dirs warning= quoting-style=",
+                "check-links block-number label= newer= after-date= newer-mtime= starting-file= clamp-mtime",
+                "delay-directory-restore no-delay-directory-restore acls no-acls xattrs no-xattrs selinux",
+                "no-selinux verify exclude-tag= exclude-tag-all= exclude-tag-under= seek no-seek",
+            )
+        ),
+        permutes=True,
+        first_letters=True,
     ),
 }
+# The variables a program PROGRAM_OPTIONS names reads options from, as its words, or a file of them: tar's
+# TAR_OPTIONS and TAPE, its default archive, which may name a remote one, and rg's configuration file. One assigned
+# before the program, or in the environment, is refused, since it may hand the program an option its allow-list
+# refuses.
+PROGRAM_VARIABLES: dict[str, frozenset[str]] = {
+    "tar": frozenset({"TAR_OPTIONS", "TAPE"}),
+    "rg": frozenset({"RIPGREP_CONFIG_PATH"}),
+}
+# The runners that add words from their input to the command they run, which the text does not settle.
+INPUT_RUNNERS = frozenset({"xargs"})
 # pwsh's options that change nothing the guard reads before -Command.
 PWSH_QUIET = frozenset({"-noprofile", "-noninteractive", "-nologo"})
 # The variables an assignment before git may give it, each with the values it may take, or none for any literal
@@ -1038,8 +1196,12 @@ def moved(directory: Path | None, target: Word) -> Path | None:
 
 
 def command_name(word: Word) -> str | None:
-    """The lower-cased name a command is called by, without its directory or .exe; None when it is computed."""
-    return None if word is None else platform_support.program_name(Path(word).name).lower()
+    """The lower-cased name a command is called by, without its directory, after either separator on every platform, or
+    .exe; None when it is computed. The host's own path type would leave a Windows path whole on Linux, where a guard
+    reading a command meant for Windows must still name its program."""
+    if word is None:
+        return None
+    return platform_support.program_name(word.replace("\\", "/").rpartition("/")[2]).lower()
 
 
 def folded(name: str) -> str:
@@ -1910,8 +2072,12 @@ class BashReader:
             read_git(arguments, directory.cwd, self.reading)
         elif program == "gh":
             read_gh(arguments, directory, self.reading)
-        elif program in COMMAND_OPTIONS:
-            return self.read_program(program, arguments, directory, prefixes)
+        elif program in PROGRAM_OPTIONS:
+            variables = {name for name, _ in prefixes} | set(self.reading.environment)
+            reason = program_refusal(program, arguments, variables)
+            if reason is not None:
+                self.reading.cannot_read(reason)
+                return certain(UNKNOWN)
         return certain(directory)
 
     def read_runner(
@@ -1920,28 +2086,16 @@ class BashReader:
         """A program that runs another command: refused where that command is or may be git (runner_refusal), and,
         for bash -c and pwsh -Command, where the literal script it runs holds a git call; around any other command it
         is understood, its assignments judged as ones before that command."""
-        if program == "env":
-            # env's own assignments are ones before the command it runs, as those before env are.
-            for word in arguments:
-                if word is None or (not word.startswith("-") and "=" not in word):
-                    break
-                name, assigns, value = word.partition("=")
-                if assigns and bash_syntax.NAME.fullmatch(name):
-                    prefixes = [*prefixes, (name, value)]
+        # env's own assignments are judged with the runner, by the reading both shells share (read_runner_words).
         self.read_prefixes(prefixes, git=False)
-        reason = runner_refusal(program, arguments)
-        if reason is None and program in {"bash", "pwsh"}:
-            reason = self.script_refusal(program, arguments, directory)
-        if reason is not None:
-            self.reading.cannot_read(f"runs {program}: {reason}")
-            return certain(UNKNOWN)
-        # gh runs git itself for the subcommands GH_CHECKOUTS names, wherever a runner starts it.
-        start = next(
-            (index for index, word in enumerate(arguments) if word is not None and command_name(word) == "gh"), None
+        return read_runner_words(
+            program,
+            arguments,
+            directory,
+            self.reading,
+            lambda: self.script_refusal(program, arguments, directory),
+            [name for name, _ in prefixes],
         )
-        if start is not None:
-            read_gh(arguments[start + 1 :], directory, self.reading)
-        return certain(directory)
 
     def script_refusal(self, program: str, arguments: list[Word], directory: Directory) -> str | None:
         """Why a shell's script is refused: a form the guard does not read, or a literal script that runs git, read
@@ -1958,24 +2112,6 @@ class BashReader:
         if len(self.reading.calls) > before:
             return "its script runs git, which a runner's command may not be while a hub is guarded"
         return None
-
-    def read_program(
-        self, program: str, arguments: list[Word], directory: Directory, prefixes: list[tuple[str, Word]]
-    ) -> Outcome:
-        """A program with options that run a command, refused on any of them in any spelling it takes
-        (command_option), find's -exec family whatever it runs, and on a word the text does not settle, which may be
-        one."""
-        del prefixes  # judged before this, as ones before a program that is not git
-        for index, word in enumerate(arguments):
-            if word is None:
-                self.reading.cannot_read(
-                    f"{program} may run a command its words name (a word the text does not settle)"
-                )
-                return certain(UNKNOWN)
-            if command_option(program, word, first=index == 0):
-                self.reading.cannot_read(f"{program} runs a command its words name ({word})")
-                return certain(UNKNOWN)
-        return certain(directory)
 
     def read_builtin(self, name: str, arguments: list[Word], directory: Directory) -> Outcome:
         if name == "cd":
@@ -2137,39 +2273,276 @@ QUOTED_PART = re.compile(r"""["']([^"']+)["']""")
 
 
 def runner_refusal(program: str, arguments: list[Word]) -> str | None:
-    """Why a runner is refused: one RUNNERS_ALWAYS_REFUSED names; an option that builds its command from text
-    (RUNNER_BUILDING_OPTIONS), in any spelling; or a word that is or may be git: one that names git or another runner,
-    or one the text does not settle, which may be either. None for a runner around any other command, and for bash and
-    pwsh, whose scripts script_refusal reads."""
+    """Why a runner is refused: one RUNNERS_ALWAYS_REFUSED names; an option RUNNER_OPTIONS does not know to be safe,
+    in any spelling (option_refusal); or a word that is or may be git: one that names git or another runner, or one
+    the text does not settle, which may be either. None for a runner around any other command, and for bash and pwsh,
+    whose scripts script_refusal reads."""
     if program in RUNNERS_ALWAYS_REFUSED:
         return RUNNERS[program]
-    building = RUNNER_BUILDING_OPTIONS.get(program, frozenset())
+    if program in RUNNER_OPTIONS:
+        table = RUNNER_OPTIONS[program]
+        reading = option_refusal(table, arguments)
+        if reading.refused is not None:
+            return f"{RUNNERS[program]}, and {reading.refused} is not one of its options the guard knows to be safe"
+        command = next_word(arguments, reading.stop)
+        variable, assigns, _ = (command or "").partition("=")
+        if assigns and not table.assignments and bash_syntax.NAME.fullmatch(variable):
+            # sudo, among others, sets a variable a NAME=VALUE word before its command names.
+            return (
+                f"{RUNNERS[program]}, and {command} may set a variable for its command, which the guard does not read"
+            )
     for word in arguments:
         if word is None:
             return f"{RUNNERS[program]}, and a word the text does not settle may be git"
-        option = word.partition("=")[0]
-        if option in building or any(len(each) == 2 and word.startswith(each) for each in building):
-            return f"{RUNNERS[program]} ({word})"
         name = command_name(word)
         if program not in {"bash", "pwsh"} and (name in GIT_NAMES or name in RUNNERS):
             return f"{RUNNERS[program]}, and {word} names git or another runner, which may run git"
     return None
 
 
-def command_option(program: str, word: str, first: bool) -> bool:
-    """Whether a word of a program COMMAND_OPTIONS names is one of its options that run a command, in any spelling the
-    program takes: find's exactly, as find reads them; a long option abbreviated or with its value attached; or a
-    short option's letter in a bundle, tar's first word without its dash included."""
-    options = COMMAND_OPTIONS[program]
-    if program == "find":
-        return word in options
-    if word.startswith("--"):
-        name = word.partition("=")[0]
-        return len(name) > 2 and any(option.startswith(name) for option in options if option.startswith("--"))
-    letters = {option[1] for option in options if len(option) == 2}
-    if word.startswith("-") or (program == "tar" and first):
-        return any(letter in letters for letter in word.lstrip("-"))
-    return False
+def read_runner_words(
+    program: str,
+    arguments: list[Word],
+    directory: Directory,
+    reading: Reading,
+    script: Callable[[], str | None],
+    variables: Iterable[str] = (),
+) -> Outcome:
+    """A runner, read the same from Bash and PowerShell: refused where runner_refusal or, for bash and pwsh, script
+    refuses it, or where the command it starts is a program PROGRAM_OPTIONS names that runner_command_refusal refuses;
+    otherwise understood, with gh read where the runner starts it, since gh runs git itself for the subcommands
+    GH_CHECKOUTS names. variables are the names assigned before the runner; env's own assignments
+    (runner_assignments) and the environment's are added here, for both shells."""
+    reason = runner_refusal(program, arguments)
+    if reason is None and program in {"bash", "pwsh"}:
+        reason = script()
+    own = [name for name, _ in runner_assignments(program, arguments)] if reason is None else []
+    if reason is None:
+        # env's own assignments are ones before the command it runs, as those before env are.
+        reason = next(
+            (
+                f"{program} assigns {name} before a command, which Bash or git reads"
+                for name in own
+                if not harmless_name(name)
+            ),
+            None,
+        )
+    if reason is None:
+        reason = runner_command_refusal(program, arguments, {*variables, *own, *reading.environment})
+    if reason is not None:
+        reading.cannot_read(f"runs {program}: {reason}")
+        return certain(UNKNOWN)
+    if program in RUNNER_OPTIONS:
+        # The runner's command is where its option reading stopped, so an option's value is never taken for gh.
+        stop = option_refusal(RUNNER_OPTIONS[program], arguments).stop
+        start = stop if stop < len(arguments) and command_name(arguments[stop] or "") == "gh" else None
+        if start is not None and program in INPUT_RUNNERS:
+            # Words from its input follow gh's own, and may make any subcommand of it one that checks a branch out.
+            reading.cannot_read(f"runs {program}: {program} runs gh with words from its input, which may check out")
+            return certain(UNKNOWN)
+    else:
+        start = next(
+            (index for index, word in enumerate(arguments) if word is not None and command_name(word) == "gh"), None
+        )
+    if start is not None:
+        # chroot runs its command at the root of another tree, which the text does not place.
+        read_gh(arguments[start + 1 :], UNKNOWN if program == "chroot" else directory, reading)
+    return certain(directory)
+
+
+def system_program(program: str) -> bool:
+    """Whether a program PROGRAM_OPTIONS names is judged as its Windows build too, which reads slash options: where the
+    platform's own programs take them (platform_support), whatever path or name the command spells, since no spelling
+    settles which build runs, and for a program whose table holds a Windows build's slash options."""
+    table = PROGRAM_OPTIONS.get(program)
+    return platform_support.SYSTEM_PROGRAMS_TAKE_SLASH_OPTIONS and table is not None and table.slash is not None
+
+
+def runner_assignments(program: str, arguments: list[Word]) -> list[tuple[str, str]]:
+    """The NAME=VALUE words a runner reads among its options as assignments for its command, as env does, read as
+    option_refusal reads its words, so a value-taking option's value never ends them; none for any other runner."""
+    if program not in RUNNER_OPTIONS:
+        return []
+    return option_refusal(RUNNER_OPTIONS[program], arguments).assigned
+
+
+def runner_command_refusal(program: str, arguments: list[Word], variables: Iterable[str]) -> str | None:
+    """Why the command a runner starts is refused where it is a program PROGRAM_OPTIONS names: judged as that program
+    is (program_refusal), and refused after xargs, which adds words from its input, which may be any options, unless
+    the program's words hold `--`, after which they are its operands."""
+    if program not in RUNNER_OPTIONS:
+        return None
+    start = option_refusal(RUNNER_OPTIONS[program], arguments).stop
+    command = command_name(arguments[start] or "") if start < len(arguments) else None
+    if command not in PROGRAM_OPTIONS:
+        return None
+    rest = arguments[start + 1 :]
+    if program in INPUT_RUNNERS:
+        # After a `--` that ends the program's options every word xargs adds is an operand; find has no such `--`, and
+        # a Windows build, which reads a slash option after `--` too, none.
+        stop = option_refusal(PROGRAM_OPTIONS[command], rest).stop
+        table = PROGRAM_OPTIONS[command]
+        if stop >= len(rest) or rest[stop] != "--" or table.single_dash or system_program(command):
+            return f"{program} runs {command} with words from its input, which may be options that run a command"
+    return program_refusal(command, rest, variables)
+
+
+def program_refusal(
+    program: str, arguments: list[Word], variables: Iterable[str] = (), windows_build: bool | None = None
+) -> str | None:
+    """Why a program PROGRAM_OPTIONS names is refused, read the same from Bash and PowerShell: an option it does not
+    know to be safe, in any spelling (option_refusal), a word the text does not settle, which may be one, or a variable
+    the program reads options from (PROGRAM_VARIABLES) among the names variables gives, those assigned before it and
+    those of the environment. windows_build says the program is read as its Windows build too, as System32's
+    sort.exe, which reads slash options (option_refusal); None leaves it to system_program."""
+    if windows_build is None:
+        windows_build = system_program(program)
+    # Windows reads a variable's name in any case.
+    handed = sorted(PROGRAM_VARIABLES.get(program, frozenset()) & {name.upper() for name in variables})
+    if handed:
+        return f"{program} reads options or its archive from {handed[0]}, which may hold one that runs a command"
+    if any(word is None for word in arguments):
+        return f"{program} may run a command its words name (a word the text does not settle)"
+    reading = option_refusal(PROGRAM_OPTIONS[program], arguments, windows_build)
+    if reading.refused is not None:
+        return f"{program} is given {reading.refused}, not one of its options the guard knows to be safe"
+    return remote_archive(program, arguments, reading)
+
+
+def remote_archive(program: str, arguments: list[Word], reading: OptionReading) -> str | None:
+    """Why tar is refused for an archive it reaches through a remote shell: one named host:path, with a colon before
+    any slash, which tar opens by running rsh or ssh, unless --force-local, read as an option rather than another
+    option's value or a word after `--`, makes it a local file."""
+    if program != "tar" or "--force-local" in reading.longs:
+        return None
+    for option, value in reading.values:
+        if option in {"-f", "--file"} and value is not None and ":" in value.partition("/")[0]:
+            return f"tar opens {value} through a remote shell, which runs a command; --force-local makes it a file"
+    return None
+
+
+@dataclass(frozen=True)
+class OptionReading:
+    """What option_refusal found: the first option word not known to be safe, or None; the index its reading stopped
+    at; the NAME=VALUE words a table that takes assignments read, as env's; each value-taking option with the value
+    it took, a short option by its dash and letter; and each long option read as an option, never one that is another
+    option's value or follows `--`."""
+
+    refused: str | None
+    stop: int
+    assigned: list[tuple[str, str]]
+    values: list[tuple[str, Word]]
+    longs: list[str]
+
+
+# A word the Windows build of a program reads as a slash option: a slash, then a letter, `+`, or `?`, and no other
+# separator, so a path such as `/c/x` or `C:/x` is none.
+SLASH_OPTION = re.compile(r"/[A-Za-z+?][^/\\]*")
+
+
+def option_refusal(table: OptionTable, arguments: list[Word], windows_build: bool = False) -> OptionReading:
+    """A program's or runner's words read as getopt reads them. The reading stops at a runner's command, after its
+    options and the operands it takes, at a program's `--`, or at the end of its words: a runner's options end at its
+    command or at `--`, after which its operands and its command follow, and a program that permutes its arguments is
+    read to the end, or to `--`. Every spelling getopt reads is read: a long option with its value attached by `=` or
+    after it, which is safe only spelled in full, and short options bundled in one word, each letter judged, a
+    value-taking one ending the bundle with the rest of its word or the next word as its value. Where windows_build
+    says the program is its Windows build, a slash option is read by the table's slash options, and refused where the
+    table has none. A word the text does not settle ends the reading, and the caller refuses it."""
+    operands = table.operands
+    index = 0
+    ended = False  # past `--`, where no word is an option
+    assigned: list[tuple[str, str]] = []
+    values: list[tuple[str, Word]] = []
+    longs: list[str] = []
+
+    def reading(refused: str | None, stop: int) -> OptionReading:
+        return OptionReading(refused, stop, assigned, values, longs)
+
+    while index < len(arguments):
+        word = arguments[index]
+        if word is None:
+            return reading(None, index)
+        slashes = windows_build and table.slash is not None
+        if word == "--" and not ended and not table.single_dash:
+            # A Windows build reads `--` as an operand and its slash options after it.
+            if table.permutes and not slashes:
+                return reading(None, index)
+            ended = True
+            index += 1
+            continue
+        if index == 0 and table.first_letters and not word.startswith("-"):
+            taking = old_style(table, arguments)
+            if taking is None:
+                return reading(word, index)
+            values += taking
+            index += 1 + len(taking)
+            continue
+        slash = slashes and bool(SLASH_OPTION.fullmatch(word))
+        if not slash and (ended or len(word) < 2 or not word.startswith("-")):
+            if table.assignments and "=" in word:
+                name, _, value = word.partition("=")
+                assigned.append((name, value))
+            elif not (table.assignments and word == "-" and not ended) and not table.permutes:
+                if operands == 0:
+                    return reading(None, index)
+                operands -= 1
+            index += 1
+            continue
+        read = option_word(table, word)
+        if read is None:
+            return reading(word, index)
+        taken, valued, attached = read
+        if word.startswith("--"):
+            longs.append(word.partition("=")[0])
+        if valued is not None:
+            values.append((valued, next_word(arguments, index + 1) if taken else attached))
+        index += 1 + taken
+    return reading(None, len(arguments))
+
+
+def old_style(table: OptionTable, arguments: list[Word]) -> list[tuple[str, Word]] | None:
+    """tar's old-style first word read: a bundle of letters, each that takes a value taking the next word, in order,
+    with the value each takes; None where a letter is not one the table knows to be safe."""
+    word = arguments[0] or ""
+    if any(letter not in table.short for letter in word):
+        return None
+    taking = [letter for letter in word if table.short[letter] == VALUE]
+    return [(f"-{letter}", next_word(arguments, 1 + k)) for k, letter in enumerate(taking)]
+
+
+def next_word(arguments: list[Word], index: int) -> Word:
+    return arguments[index] if index < len(arguments) else ""
+
+
+def option_word(table: OptionTable, word: str) -> tuple[int, str | None, str | None] | None:
+    """An option word read: how many of the following words it takes as its values, the value-taking option it holds,
+    if any, and the value attached to it; or None for a word that is or may hold an option the table does not know
+    to be safe, a value given to an option that takes none among them."""
+    if table.numbered is not None and table.numbered.fullmatch(word):
+        return 0, None, None
+    if word.startswith("/"):
+        # A Windows build's slash option, in any case, by the table's slash options.
+        name = word[1:].upper()
+        kind = (table.slash or {}).get("+" if re.fullmatch(r"\+[0-9]+", name) else name)
+        return None if kind is None else (int(kind == VALUE), None, None)
+    if table.single_dash or word.startswith("--"):
+        name, attached, value = word.partition("=")
+        kind = table.long.get(name)
+        if kind is None or (attached and (kind == NO_VALUE or table.single_dash)):
+            return None
+        if kind == NO_VALUE:
+            return 0, None, None
+        return int(kind == VALUE and not attached), name, value if attached else None
+    letters = word[1:]
+    for position, letter in enumerate(letters):
+        kind = table.short.get(letter)
+        if kind is None:
+            return None
+        if kind != NO_VALUE:
+            rest = letters[position + 1 :]
+            return int(kind == VALUE and not rest), f"-{letter}", rest or None
+    return 0, None, None
 
 
 def shell_script(program: str, arguments: list[Word]) -> str | None:
@@ -2598,7 +2971,10 @@ class PowerShellReader:
                 "a command name the text does not settle, which may be any command, git among them"
             )
             return certain(UNKNOWN)
-        if name.lower() in POWERSHELL_COMMANDS:
+        # A name both a cmdlet's alias and a program PROGRAM_OPTIONS reads, as sort, is the program where pwsh gives it
+        # no alias, off Windows.
+        unaliased = command_name(name) in PROGRAM_OPTIONS and not platform_support.POWERSHELL_ALIASES_SHADOW_PROGRAMS
+        if name.lower() in POWERSHELL_COMMANDS and not unaliased:
             elements = command.get("elements") or []
             if POWERSHELL_COMMANDS[name.lower()] == "foreach-object" and any(
                 not isinstance(element, dict) or element.get("kind") not in {"block", "parameter"}
@@ -2615,19 +2991,17 @@ class PowerShellReader:
             read_git(arguments, directory.cwd, self.reading)
         elif program == "gh":
             read_gh(words[1:], directory, self.reading)
-        elif powershell_command(name):
+        elif powershell_command(name) and not unaliased:
             self.reading.cannot_read(f"runs {name}, a PowerShell command the guard does not read, which may run git")
             return certain(UNKNOWN)
         elif program in RUNNERS:
-            reason = RUNNERS[program] if program in {"bash", "pwsh"} else runner_refusal(program, words[1:])
+            # The guard reads a bash or pwsh script only from Bash, so from PowerShell each is refused whatever it runs.
+            return read_runner_words(program, words[1:], directory, self.reading, lambda: RUNNERS[program])
+        elif program in PROGRAM_OPTIONS:
+            reason = program_refusal(program, words[1:], self.reading.environment)
             if reason is not None:
-                self.reading.cannot_read(f"runs {program} from PowerShell: {reason}")
+                self.reading.cannot_read(reason)
                 return certain(UNKNOWN)
-        elif program in COMMAND_OPTIONS and any(
-            word is None or word.partition("=")[0] in COMMAND_OPTIONS[program] for word in words[1:]
-        ):
-            self.reading.cannot_read(f"{program} may run a command its words name")
-            return certain(UNKNOWN)
         return certain(directory)
 
     def read_cmdlet(self, name: str, arguments: list[Word], directory: Directory, values: list[Word]) -> Outcome:
