@@ -321,6 +321,24 @@ class ConfigurationTests(unittest.TestCase):
             default_manifest_path(Path("C:/Config/config.json"), "Example/One"),
         )
 
+    def test_a_default_manifest_folder_windows_would_share_or_open_as_a_device_is_refused_by_name(self) -> None:
+        # The folder an earlier release found a hand-written manifest in is named, never read.
+        reviewers = Path("C:/Config/reviewers")
+        for identity, folder, reason in (
+            ("Owner/a.", reviewers / "owner" / "a.", "trims the trailing dots of 'a.'"),
+            ("owner./a", reviewers / "owner." / "a", "trims the trailing dots of 'owner.'"),
+            ("owner/NUL.js", reviewers / "owner" / "nul.js", "opens as a device 'nul.js'"),
+            ("con/a", reviewers / "con" / "a", "opens as a device 'con'"),
+        ):
+            with self.subTest(identity=identity):
+                with self.assertRaises(ConfigurationError) as refused:
+                    default_manifest_path(Path("C:/Config/config.json"), identity)
+                self.assertEqual(
+                    f"Repository {identity.lower()} cannot have a folder of its own: Windows {reason}, so it is "
+                    f"refused on every platform; {folder} is neither read nor written",
+                    str(refused.exception),
+                )
+
     def test_unread_source_lines_defaults_to_200_and_takes_a_positive_integer(self) -> None:
         self.assertEqual(200, validate_config(valid_config())["unread_source_lines"])
         self.assertEqual(1, validate_config({**valid_config(), "unread_source_lines": 1})["unread_source_lines"])
