@@ -44,6 +44,8 @@
     {
       "id": "deployer",
       "category": "Deployer",
+      "model": "sonnet",
+      "effort": "medium",
       "profile": ".claude/skills/review-repository/references/deployer.md",
       "include": ["(?i)^deployer/", "(?i)^deploy\\.py$"],
       "exclude": [],
@@ -53,6 +55,8 @@
     {
       "id": "skill-contract",
       "category": "Skill contract",
+      "model": "sonnet",
+      "effort": "medium",
       "profile": ".claude/skills/review-repository/references/skill-contract.md",
       "include": [
         "(?i)^skills/[^/]+/SKILL\\.md$",
@@ -69,6 +73,8 @@
     {
       "id": "skill-scripts",
       "category": "Skill contract",
+      "model": "sonnet",
+      "effort": "medium",
       "profile": ".claude/skills/review-repository/references/skill-contract.md",
       "include": ["(?i)^skills/[^/]+/scripts/", "(?i)^\\.claude/skills/[^/]+/scripts/"],
       "exclude": ["(?i)/(?:test_[^/]*|test-[^/]*|[^/]*_test(?:\\.[^/]*)?|[^/]*-test(?:\\.[^/]*)?|[^/]*\\.test\\.[^/]*)$"],
@@ -79,6 +85,8 @@
     {
       "id": "validation-policy",
       "category": "Validation",
+      "model": "sonnet",
+      "effort": "medium",
       "profile": ".claude/skills/review-repository/references/validation-policy.md",
       "include": [
         "(?i)^tests/validation/",
@@ -93,6 +101,8 @@
     {
       "id": "trust-boundary",
       "category": "Trust boundary",
+      "model": "opus",
+      "effort": "medium",
       "profile": ".claude/skills/review-repository/references/trust-boundary.md",
       "include": [
         "(?i)^docs/code-review-operations-contract\\.md$",
@@ -119,6 +129,8 @@
     {
       "id": "documentation",
       "category": "Documentation",
+      "model": "sonnet",
+      "effort": "medium",
       "profile": ".claude/skills/review-repository/references/documentation.md",
       "include": [
         "(?i)^docs/.+\\.md$",
@@ -133,6 +145,8 @@
     {
       "id": "documentation-drift",
       "category": "Documentation",
+      "model": "sonnet",
+      "effort": "medium",
       "profile": ".claude/skills/review-repository/references/documentation-drift.md",
       "include": ["(?i)\\.(?:py|ps1|sh)$"],
       "exclude": [],
@@ -143,6 +157,8 @@
     {
       "id": "untested-changes",
       "category": "Test coverage",
+      "model": "sonnet",
+      "effort": "medium",
       "profile": ".claude/skills/review-repository/references/untested-changes.md",
       "include": ["(?i)\\.(?:py|ps1|sh)$"],
       "exclude": [],
@@ -153,6 +169,8 @@
     {
       "id": "sibling-search",
       "category": "Sibling search",
+      "model": "sonnet",
+      "effort": "medium",
       "profile": ".claude/skills/review-repository/references/sibling-search.md",
       "include": ["(?i)\\.(?:py|ps1|sh)$"],
       "exclude": [],
@@ -163,6 +181,8 @@
     {
       "id": "sibling-spellings",
       "category": "Sibling spellings",
+      "model": "sonnet",
+      "effort": "medium",
       "profile": ".claude/skills/review-repository/references/sibling-spellings.md",
       "include": [
         "(?i)^docs/code-review-operations-contract\\.md$",
@@ -201,6 +221,8 @@
     {
       "id": "upgrade-notes",
       "category": "Upgrade notes",
+      "model": "sonnet",
+      "effort": "medium",
       "profile": ".claude/skills/review-repository/references/upgrade-notes.md",
       "include": [
         "(?i)^deployer/(?:manifest|tools|arguments)\\.py$",
