@@ -399,6 +399,21 @@ class RunnerTests(unittest.TestCase):
         tar = hub_guard.option_refusal(hub_guard.PROGRAM_OPTIONS["tar"], ["-tf", "a", "--force-local", "--", "-x"])
         self.assertEqual((None, [("-f", "a")], ["--force-local"]), (tar.refused, tar.values, tar.longs))
 
+    def test_gh_a_runner_starts_is_read_where_the_runner_s_options_end(self) -> None:
+        for command in (
+            "env -u gh gh pr checkout 1",
+            "sudo -u gh gh pr checkout 1",
+            "sudo -g gh gh repo sync",
+            "echo x | xargs -E gh gh pr checkout 1",
+            "timeout -s gh 60 gh pr checkout 1",
+        ):
+            with self.subTest(command=command):
+                read = reading(command)
+                self.assertEqual([], read.unread)
+                self.assertEqual(["gh"], [call.program for call in read.calls])
+        # gh among the command's own words is not the command.
+        self.assertEqual([], reading("timeout 60 echo gh pr checkout 1").calls)
+
     def test_gh_behind_chroot_is_read_where_the_text_does_not_settle_and_behind_timeout_where_it_runs(self) -> None:
         unsettled = reading("chroot /srv gh pr checkout 1")
         self.assertEqual([("gh", None)], [(call.program, call.place.start) for call in unsettled.calls])

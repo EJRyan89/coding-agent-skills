@@ -618,7 +618,7 @@
    },
    {
     "short": "-I",
-    "long": null,
+    "long": "--interruptible",
     "value": "value"
    },
    {
@@ -805,6 +805,41 @@
     "short": null,
     "long": "--fault",
     "value": "value"
+   },
+   {
+    "short": null,
+    "long": "--abbrev",
+    "value": "value"
+   },
+   {
+    "short": null,
+    "long": "--verbose",
+    "value": "value"
+   },
+   {
+    "short": null,
+    "long": "--raw",
+    "value": "value"
+   },
+   {
+    "short": null,
+    "long": "--read",
+    "value": "value"
+   },
+   {
+    "short": null,
+    "long": "--write",
+    "value": "value"
+   },
+   {
+    "short": null,
+    "long": "--kvm",
+    "value": "value"
+   },
+   {
+    "short": null,
+    "long": "--secontext",
+    "value": "optional"
    },
    {
     "short": null,
@@ -1011,7 +1046,7 @@
    },
    {
     "short": "-a",
-    "long": null,
+    "long": "--auth-type",
     "value": "value"
    },
    {
@@ -1067,12 +1102,17 @@
    {
     "short": "-h",
     "long": null,
+    "value": "optional"
+   },
+   {
+    "short": null,
+    "long": "--help",
     "value": "none"
    },
    {
     "short": null,
     "long": "--host",
-    "value": "optional"
+    "value": "value"
    },
    {
     "short": "-i",

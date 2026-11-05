@@ -356,7 +356,15 @@ class RunnerOptionTests(unittest.TestCase):
         self.assertEqual([("gh", Path.cwd())], [(call.program, call.place.start) for call in placed.calls])
 
     def test_gh_after_a_runner_is_read_as_the_checkout_it_makes(self) -> None:
-        for command in ("timeout 60 gh pr checkout 1", "nice gh repo sync", "gh pr checkout 1"):
+        for command in (
+            "timeout 60 gh pr checkout 1",
+            "nice gh repo sync",
+            "gh pr checkout 1",
+            # gh as an option's value first, then as the command.
+            "env -u gh gh pr checkout 1",
+            "sudo -u gh gh pr checkout 1",
+            "Write-Output x | xargs -E gh gh pr checkout 1",
+        ):
             with self.subTest(command=command):
                 reading = powershell_reading(command)
                 self.assertEqual([], reading.unread)

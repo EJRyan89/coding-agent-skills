@@ -2312,9 +2312,14 @@ def read_runner_words(
     if reason is not None:
         reading.cannot_read(f"runs {program}: {reason}")
         return certain(UNKNOWN)
-    start = next(
-        (index for index, word in enumerate(arguments) if word is not None and command_name(word) == "gh"), None
-    )
+    if program in RUNNER_OPTIONS:
+        # The runner's command is where its option reading stopped, so an option's value is never taken for gh.
+        stop = option_refusal(RUNNER_OPTIONS[program], arguments).stop
+        start = stop if stop < len(arguments) and command_name(arguments[stop] or "") == "gh" else None
+    else:
+        start = next(
+            (index for index, word in enumerate(arguments) if word is not None and command_name(word) == "gh"), None
+        )
     if start is not None:
         # chroot runs its command at the root of another tree, which the text does not place.
         read_gh(arguments[start + 1 :], UNKNOWN if program == "chroot" else directory, reading)
