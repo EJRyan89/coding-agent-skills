@@ -989,14 +989,40 @@ class DeployAtTests(DeployerTestCase):
                 raise OSError("access is denied")
             real(path)
 
+        # An answer that holds a path, so one lost in the removal's failure cannot pass as none set.
+        self.commit_attributes("kept-answer", "skills/alpha/SKILL.md export-ignore\n")
+        commit = git(self.source, "rev-parse", "kept-answer")
         patch, made = recorded_temporary_directories()
         errors = io.StringIO()
         with patch, mock.patch.object(fsops, "remove", remove), mock.patch.object(sys, "stderr", errors):
-            found = source_ref.archive_attributes(self.source, self.release)
-        self.assertEqual([], found)
+            found = source_ref.archive_attributes(self.source, commit)
+        self.assertEqual([("skills/alpha/SKILL.md", "export-ignore")], found)
         self.assertEqual(1, len(made))
         self.addCleanup(real, made[0])
         self.assertTrue(made[0].exists())
+        shown = platform_support.normalize(made[0])
+        self.assertEqual(
+            f"WARNING: Could not remove the attributes index {shown}: access is denied. Delete it by hand.\n",
+            errors.getvalue(),
+        )
+        # A refusal git raises inside the index's reading still comes through, the warning after it.
+        failing = mock.Mock()
+        failing.output.side_effect = GitError("fatal: read-tree failed")
+        patch, made = recorded_temporary_directories()
+        errors = io.StringIO()
+        with (
+            patch,
+            mock.patch.object(fsops, "remove", remove),
+            mock.patch.object(sys, "stderr", errors),
+            mock.patch.object(source_ref, "_client", side_effect=[source_ref._client(), failing]),
+            self.assertRaises(DeployError) as raised,
+        ):
+            source_ref.archive_attributes(self.source, commit)
+        self.assertEqual(
+            f"ERROR: Git could not read the attributes of the tree of {commit}: fatal: read-tree failed",
+            raised.exception.lines[0],
+        )
+        self.addCleanup(real, made[0])
         shown = platform_support.normalize(made[0])
         self.assertEqual(
             f"WARNING: Could not remove the attributes index {shown}: access is denied. Delete it by hand.\n",

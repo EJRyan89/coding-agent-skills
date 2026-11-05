@@ -43,18 +43,20 @@ a `git-<name>` program from that folder under a name the client cannot read.
 A command git starts on a carrier's behalf runs outside the client, so a plain client refuses every form that starts a
 command or a program a caller gives (`starts_unread_program`), since a `grep --no-index` inside it would read the
 surrounding repository's configuration and the user's: it runs only a subcommand of `PLAIN_SUBCOMMANDS`, git's own
-commands but the carriers, so `difftool`, `mergetool`, `filter-branch`, an alias, and a `git-<name>` program on PATH
-never run under a name it reads; of `submodule` and `bisect` only an action of `PLAIN_ACTIONS`, so not `submodule
-foreach` or `bisect run`; none of the options of `CARRIER_OPTIONS`, such as `rebase --exec` or `-x` and a transport's
-`--upload-pack`, in any abbreviation or bundle of short options git takes; and no setting on its command line that
-names a program git starts (`names_program`), such as `core.editor`, `sequence.editor`, `core.sshCommand`, or a diff,
-merge, or filter driver's. The subcommands and actions are allow-lists, so a name it has not read is refused rather
-than run; the options and the settings are catalogues read from git's documentation. It still cannot see a hook, an
-editor, a driver, or a helper that git's configuration files or the environment name, nor a `git-merge-<strategy>` or
-`git-remote-<transport>` program a strategy or an address names; a caller over content it did not write asks for an
-isolated client. An alias or an autocorrection that git's configuration files or the environment's
-`GIT_CONFIG_PARAMETERS` and `GIT_CONFIG_COUNT` define never runs on it either, since git lets neither take the name of
-one of its own commands. It cannot tell a folder of content it did not write from a repository, so a command that reads
+commands but the carriers, each one of git's own since 2.31, the oldest git `rev_parse_paths` works on, so `difftool`,
+`mergetool`, `filter-branch`, an alias, and a `git-<name>` program on PATH never run under a name it reads; no
+`--help` or `-h` that git reads as `git help` (`help_spelling`), which starts a viewer or a browser; of `submodule` and
+`bisect` only an action of `PLAIN_ACTIONS`, so not `submodule foreach` or `bisect run`; none of the options of
+`CARRIER_OPTIONS`, such as `rebase --exec` or `-x` and a transport's `--upload-pack`, in any abbreviation or bundle of
+short options git takes; and no setting on its command line that names a program git starts (`names_program`), such as
+`core.editor`, `sequence.editor`, `core.sshCommand`, a `hook.<name>.command`, or a diff, merge, or filter driver's.
+The subcommands and actions are allow-lists, so a name it has not read is refused rather than run; the options and the
+settings are catalogues read from git's documentation. It still cannot see a hook, an editor, a driver, or a helper
+that git's configuration files or the environment name, nor a `git-merge-<strategy>` or `git-remote-<transport>`
+program a strategy or an address names; a caller over content it did not write asks for an isolated client. An alias
+or an autocorrection that git's configuration files or the environment's `GIT_CONFIG_PARAMETERS` and
+`GIT_CONFIG_COUNT` define never runs on it either, on git 2.31 or later, since git lets neither take the name of one
+of its own commands. It cannot tell a folder of content it did not write from a repository, so a command that reads
 the surrounding repository by design, such as `ls-files --others`, `grep --untracked`, or `check-ignore --no-index`,
 runs on a plain client, and so does a `diff` run outside any repository, which git reads as `--no-index` without the
 option; a caller over such content asks for an isolated client. Of git's commands, `grep`, `diff`, `difftool`, and
@@ -121,17 +123,26 @@ NO_INDEX_SPELLINGS = frozenset("--no-index"[:length] for length in range(len("--
 # name meant. Every other setting leaves the subcommand as named; one that names a program git starts, such as
 # `diff.external`, is refused apart (`names_program`).
 CONFIGURATION_OPTIONS = frozenset({"-c", "--config-env"})
+# git's own options that run `git help`, as git.c's handle_options reads them before the subcommand.
+HELP_OPTIONS = frozenset({"--help", "-h"})
+# The spellings of `--help` after the subcommand: the option and its one abbreviation no other option shares.
+HELP_SPELLINGS = frozenset({"--help", "--hel"})
 ALIAS_SECTIONS = frozenset({"alias", "include", "includeif"})
 SUBCOMMAND_KEYS = frozenset({"help.autocorrect"})
 
 # The subcommands a plain client runs: git's own commands, as git 2.56 lists them, but those that start a command or a
-# program a caller or the configuration gives them, whose own git calls the client cannot read. Left out: `bisect run`
-# aside, `difftool` and `mergetool` (a tool program for each file), `filter-branch` (shell filters), `for-each-repo`
-# (git commands in each repository a setting lists), `merge-index` and `merge-one-file` (a merge program), `hook` (a
-# hook by name), `credential` and its helpers, `help`, `instaweb`, and `web--browse` (a viewer or a browser),
-# `maintenance` (the system scheduler), `daemon`, `http-backend`, `shell`, `upload-pack`, `receive-pack`, and
-# `upload-archive` (a server side), `send-email` and `imap-send` (a mail program or tunnel), the bridges to other
-# version control systems, the graphical tools, `scalar`, and every `git-<name>` program or alias that is not git's.
+# program a caller or the configuration gives them, whose own git calls the client cannot read, and those git added
+# after 2.31. Every name here has been one of git's own commands since 2.31, the oldest git whose
+# `rev-parse --path-format` `rev_parse_paths` relies on, so on any git the client works with no alias or
+# `git-<name>` program can take one; the later ones (`replay`, `refs`, `backfill`, `diff-pairs`, `repo`,
+# `last-modified`, `history`, `survey`) could be an alias or a program on an older git, so they are refused. Left out
+# as well: `bisect run` aside, `difftool` and `mergetool` (a tool program for each file), `filter-branch` (shell
+# filters), `for-each-repo` (git commands in each repository a setting lists), `merge-index` and `merge-one-file` (a
+# merge program), `hook` (a hook by name), `credential` and its helpers, `help`, `instaweb`, and `web--browse` (a
+# viewer or a browser), `maintenance` (the system scheduler), `daemon`, `http-backend`, `shell`, `upload-pack`,
+# `receive-pack`, and `upload-archive` (a server side), `send-email` and `imap-send` (a mail program or tunnel), the
+# bridges to other version control systems, the graphical tools, `scalar`, and every `git-<name>` program or alias
+# that is not git's.
 # A name a caller writes outside this list is refused, so an alias or a program on PATH never runs under a plain name.
 PLAIN_SUBCOMMANDS = frozenset(
     {
@@ -140,7 +151,6 @@ PLAIN_SUBCOMMANDS = frozenset(
         "annotate",
         "apply",
         "archive",
-        "backfill",
         "bisect",
         "blame",
         "branch",
@@ -166,7 +176,6 @@ PLAIN_SUBCOMMANDS = frozenset(
         "diff",
         "diff-files",
         "diff-index",
-        "diff-pairs",
         "diff-tree",
         "fast-export",
         "fast-import",
@@ -183,7 +192,6 @@ PLAIN_SUBCOMMANDS = frozenset(
         "index-pack",
         "init",
         "interpret-trailers",
-        "last-modified",
         "log",
         "ls-files",
         "ls-remote",
@@ -212,12 +220,9 @@ PLAIN_SUBCOMMANDS = frozenset(
         "read-tree",
         "rebase",
         "reflog",
-        "refs",
         "remote",
         "repack",
         "replace",
-        "replay",
-        "repo",
         "rerere",
         "reset",
         "restore",
@@ -297,10 +302,13 @@ CARRIER_OPTIONS = {
 
 # The settings on git's command line that name a program git starts, case-folded as git reads them: every key of a
 # section in `PROGRAM_SECTIONS`, a whole key of `PROGRAM_KEYS`, such as `protocol.ext.allow`, which lets an `ext::`
-# address run a command, and a variable of `PROGRAM_VARIABLES` in
-# any subsection of its section, such as `diff.<driver>.textconv`. `core.hooksPath` is not one: a repository's own
-# hooks folder already runs hooks on a plain client unseen, so naming another adds none the client could have read,
-# and a caller points it at an empty folder to run none.
+# address run a command, and a variable of `PROGRAM_VARIABLES` in any subsection of its section, such as
+# `diff.<driver>.textconv`. Read against every key `git help --config` lists on git 2.56: a `hook.<name>.command` runs
+# its command as a hook does, and `pull.twohead` and `pull.octopus` name a `git-merge-<strategy>` program. Left out,
+# with the reason: `core.hooksPath`, since a repository's own hooks folder already runs hooks on a plain client unseen,
+# so naming another adds none the client could have read, and a caller points it at an empty folder to run none; and
+# `receive.procReceiveRefs`, which runs only the hooks folder's `proc-receive` and only in `receive-pack`, which a plain
+# client refuses.
 PROGRAM_SECTIONS = frozenset(
     {
         "browser",
@@ -309,6 +317,7 @@ PROGRAM_SECTIONS = frozenset(
         "filter",
         "gpg",
         "guitool",
+        "hook",
         "instaweb",
         "man",
         "mergetool",
@@ -331,6 +340,7 @@ PROGRAM_KEYS = frozenset(
         "diff.external",
         "diff.guitool",
         "diff.tool",
+        "gc.recentobjectshook",
         "help.browser",
         "imap.tunnel",
         "init.templatedir",
@@ -339,6 +349,8 @@ PROGRAM_KEYS = frozenset(
         "merge.tool",
         "protocol.allow",
         "protocol.ext.allow",
+        "pull.octopus",
+        "pull.twohead",
         "sequence.editor",
         "uploadpack.packobjectshook",
     }
@@ -667,14 +679,36 @@ def carried_option(words: Sequence[str], options: CarrierOptions) -> str | None:
     return None
 
 
+def help_spelling(arguments: Sequence[str], index: int | None) -> str | None:
+    """The spelling in `arguments`, whose subcommand stands at `index`, that git turns into `git help`, which starts a
+    viewer or a browser, or None: `--help` or `-h` among git's own options, before the subcommand, and `--help`, or
+    its abbreviation `--hel`, anywhere after it. git.c reads one right after the subcommand as `git help <subcommand>`,
+    and a command that parses its own options may do the same further on, so every one is refused. A `-h` after the
+    subcommand is the subcommand's own option, such as `grep -h`, or prints its usage, and starts nothing."""
+    position = 0
+    while position < (len(arguments) if index is None else index):
+        if arguments[position] in HELP_OPTIONS:
+            return f"git {arguments[position]}"
+        position += 2 if arguments[position] in GLOBAL_VALUE_OPTIONS else 1
+    if index is not None:
+        word = next((word for word in arguments[index + 1 :] if word in HELP_SPELLINGS), None)
+        if word is not None:
+            return f"git {arguments[index]} {word}"
+    return None
+
+
 def starts_unread_program(arguments: Sequence[str]) -> str | None:
     """What in `arguments` makes git start a command or a program whose git calls a plain client cannot read, or
-    None: a setting on git's own command line that names one (`names_program`), a subcommand outside
-    `PLAIN_SUBCOMMANDS`, an action outside `PLAIN_ACTIONS`, or an option of `CARRIER_OPTIONS`."""
+    None: a setting on git's own command line that names one (`names_program`), a spelling git reads as `git help`
+    (`help_spelling`), a subcommand outside `PLAIN_SUBCOMMANDS`, an action outside `PLAIN_ACTIONS`, or an option of
+    `CARRIER_OPTIONS`."""
     key = next((key for key in configured_keys(arguments) if names_program(key)), None)
     if key is not None:
         return f"the setting {key}"
     index = subcommand_index(arguments)
+    helped = help_spelling(arguments, index)
+    if helped is not None:
+        return helped
     if index is None:
         return None
     name, rest = arguments[index], arguments[index + 1 :]
