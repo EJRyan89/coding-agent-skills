@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import contextlib
 import dataclasses
+import inspect
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -1087,6 +1089,17 @@ class RepositoryVariableTests(unittest.TestCase):
             self.assertEqual("named\n", self.client.output(config, directory=self.named))
             self.assertEqual(b"other\n", self.plain_git(config))
 
+    def test_no_client_call_takes_an_index_file(self) -> None:
+        # run_bounded's index_file is the one way to set GIT_INDEX_FILE; a client takes no keyword that reaches it, so
+        # a caller that needs another index builds the client on its own runner, as deploy.py --at does.
+        for name in ("__init__", "run", "output", "names", "quiet_output", "stream"):
+            with self.subTest(call=name):
+                self.assertNotIn("index_file", inspect.signature(getattr(GitClient, name)).parameters)
+        runner, calls = scripted(GitResult(0, "", ""))
+        with self.assertRaises(TypeError):
+            GitClient(runner).run(["status"], index_file=self.other / "index")  # type: ignore[call-arg]  # the keyword it refuses
+        self.assertEqual([], calls)
+
     def test_each_repository_selecting_variable_given_in_an_environment_reaches_no_git(self) -> None:
         # The real runner, given an environment holding one variable that points at the other repository, reads the
         # named one: an environment may come from another process, such as a hook's, so none of them, GIT_INDEX_FILE
@@ -1283,7 +1296,7 @@ class IsolatedClientTests(unittest.TestCase):
         allowed = (
             ["-c", "core.alias=x", "status"],
             ["-c", "aliases.s=grep", "status"],
-            ["--config-env=core.editor=EDITOR", "status"],
+            ["--config-env=core.quotepath=VALUE", "status"],
             ["grep", "-c", "-e", "alias.s=grep"],
             ["log", "-c", "alias.s=x"],
             ["--git-dir", "alias.s", "status"],
@@ -1298,6 +1311,150 @@ class IsolatedClientTests(unittest.TestCase):
                 runner, calls = scripted(GitResult(0, "", ""))
                 GitClient(runner).run(arguments)
                 self.assertEqual(["git", *arguments], calls[0][0])
+
+    def test_a_plain_client_refuses_every_carrier_of_another_command_in_every_spelling(self) -> None:
+        # Each carries a command or names a program git starts, whose own git calls the client never sees.
+        refused = {
+            "git submodule foreach": ["submodule", "foreach", "git grep --no-index -l needle"],
+            "git submodule foreach ": ["submodule", "--quiet", "foreach", "--recursive", "true"],
+            "git bisect run": ["bisect", "run", "git", "grep", "--no-index", "-l", "needle"],
+            "git bisect replay": ["bisect", "replay", "steps.log"],
+            "git bisect visualize": ["bisect", "visualize"],
+            "git rebase --exec": ["rebase", "--exec", "git grep --no-index -l needle", "HEAD~1"],
+            "git rebase --exec=": ["rebase", "--exec=true", "HEAD~1"],
+            "git rebase --ex": ["rebase", "--ex", "true", "HEAD~1"],
+            "git rebase --e": ["rebase", "--e=true", "HEAD~1"],
+            "git rebase -x": ["rebase", "-x", "true", "HEAD~1"],
+            "git rebase -xtrue": ["rebase", "-xtrue", "HEAD~1"],
+            "git rebase -ix": ["rebase", "-ix", "true", "HEAD~1"],
+            "git rebase -qvx": ["rebase", "-qvx", "true"],
+            "git grep --open-files-in-pager": ["grep", "--open-files-in-pager=sh", "-e", "x"],
+            "git grep --open": ["grep", "--open", "-e", "x"],
+            "git grep -O": ["grep", "-O", "-e", "x"],
+            "git grep -nOsh": ["grep", "-nOsh", "-e", "x"],
+            "git fetch --upload-pack": ["fetch", "--upload-pack", "sh -c x", "origin"],
+            "git fetch --upload": ["fetch", "--upload=x", "origin"],
+            "git pull --upload-pack=": ["pull", "--upload-pack=x"],
+            "git ls-remote --upload-pack=": ["ls-remote", "--upload-pack=x", "origin"],
+            "git ls-remote --exec=": ["ls-remote", "--exec=x", "origin"],
+            "git fetch-pack --exec=": ["fetch-pack", "--exec=x", "a"],
+            "git push --receive-pack=": ["push", "--receive-pack=x", "origin"],
+            "git push --exec=": ["push", "--exec=x", "origin"],
+            "git send-pack --receive=": ["send-pack", "--receive=x", "a"],
+            "git archive --exec": ["archive", "--remote", "r", "--exec", "x", "HEAD"],
+            "git clone -u": ["clone", "-u", "x", "url", "dir"],
+            "git clone -c": ["clone", "-c", "core.hooksPath=/hooks", "url"],
+            "git clone -qc": ["clone", "-qccore.fsmonitor=x", "url"],
+            "git clone --config": ["clone", "--config", "filter.a.smudge=x", "url"],
+            "git clone --template=": ["clone", "--template=/x", "url"],
+            "git init --template": ["init", "--template", "/x", "dir"],
+            "git difftool": ["difftool", "-x", "cat", "HEAD"],
+            "git mergetool": ["mergetool"],
+            "git filter-branch": ["filter-branch", "--tree-filter", "x"],
+            "git for-each-repo": ["for-each-repo", "--config=x", "--", "grep", "--no-index"],
+            "git merge-index": ["merge-index", "x", "-a"],
+            "git hook": ["hook", "run", "pre-commit"],
+            "git credential": ["credential", "fill"],
+            "git help": ["help", "--web", "log"],
+            "git maintenance": ["maintenance", "start"],
+            "git shell": ["shell", "-c", "x"],
+            "git upload-pack": ["upload-pack", "."],
+            "git send-email": ["send-email", "x.patch"],
+            "git lfs": ["lfs", "ls-files"],
+            "git s": ["s"],
+            "git Status": ["Status"],
+            "the setting core.editor": ["-c", "core.editor=x", "commit"],
+            "the setting core.pager": ["-c", "Core.Pager=x", "log"],
+            "the setting core.sshcommand": ["-c", "core.sshCommand=x", "fetch"],
+            "the setting core.fsmonitor": ["--config-env=core.fsmonitor=V", "status"],
+            "the setting sequence.editor": ["-c", "sequence.editor=x", "rebase", "-i", "HEAD~1"],
+            "the setting diff.external": ["-c", "diff.external=x", "diff"],
+            "the setting diff.a.textconv": ["-c", "diff.a.textconv=x", "log", "-p"],
+            "the setting diff.a.b.command": ["-c", "diff.a.b.command=x", "diff"],
+            "the setting merge.a.driver": ["--config-env", "merge.a.driver=V", "merge", "x"],
+            "the setting remote.origin.uploadpack": ["-c", "remote.origin.uploadpack=x", "fetch"],
+            "the setting remote.origin.vcs": ["-c", "remote.origin.vcs=x", "fetch"],
+            "the setting submodule.a.update": ["-c", "submodule.a.update=!x", "submodule", "update"],
+            "the setting protocol.ext.allow": ["-c", "protocol.ext.allow=always", "fetch", "ext::x"],
+            "the setting protocol.allow": ["-c", "protocol.allow=always", "fetch"],
+            "the setting credential.helper": ["-c", "credential.helper=x", "fetch"],
+            "the setting filter.a.smudge": ["-c", "filter.a.smudge=x", "checkout"],
+            "the setting gpg.program": ["-c", "gpg.program=x", "verify-commit", "HEAD"],
+            "the setting pager.log": ["-c", "pager.log=x", "log"],
+            "the setting init.templatedir": ["-c", "init.templateDir=/x", "init"],
+            "the setting uploadpack.packobjectshook": ["-c", "uploadpack.packObjectsHook=x", "fetch"],
+        }
+        for what, arguments in refused.items():
+            with self.subTest(arguments=arguments):
+                runner, calls = scripted(GitResult(0, "", ""))
+                refusal = (
+                    rf"^{re.escape(what.strip())}\S* starts a command or a program whose git calls a plain GitClient "
+                    r"cannot read, so it refuses it$"
+                )
+                with self.assertRaisesRegex(ValueError, refusal):
+                    GitClient(runner).run(arguments)
+                with self.assertRaisesRegex(ValueError, refusal):
+                    GitClient(runner).stream(arguments).__enter__()
+                self.assertEqual([], calls, "refused before git starts")
+        allowed: tuple[list[str], ...] = (
+            ["rebase", "HEAD~1"],
+            ["rebase", "--onto", "main", "HEAD~1"],
+            ["rebase", "--empty=drop", "--no-exec", "-q", "HEAD~1"],
+            ["rebase", "-Xours", "-sort", "HEAD~1"],
+            ["rebase", "-r", "HEAD~1"],
+            ["submodule"],
+            ["submodule", "status", "--recursive"],
+            ["submodule", "--quiet", "update", "--init"],
+            ["bisect", "start", "HEAD", "HEAD~3"],
+            ["bisect", "reset"],
+            ["bisect"],
+            ["grep", "--or", "--only-matching", "-n", "-e", "x"],
+            ["grep", "-eO", "-n"],
+            ["fetch", "-u", "--update-shallow", "origin"],
+            ["push", "--repo=origin", "--no-exec"],
+            ["clone", "-b", "main", "-ojc", "url"],
+            ["init", "--quiet", "dir"],
+            ["archive", "--format=tar", "HEAD"],
+            ["log", "--exec=x"],
+            ["-c", "core.hooksPath=/empty", "commit", "-m", "x"],
+            ["-c", "protocol.file.allow=always", "submodule", "add", "url"],
+            ["-c", "core.quotePath=off", "-c", "diff.a=x", "-c", "remote.textconv=x", "status"],
+            ["--version"],
+            [],
+        )
+        for arguments in allowed:
+            with self.subTest(arguments=arguments):
+                runner, calls = scripted(GitResult(0, "", ""))
+                GitClient(runner).run(arguments)
+                self.assertEqual(["git", *arguments], calls[0][0])
+
+    def test_every_subcommand_a_plain_client_runs_is_one_of_git_s_own(self) -> None:
+        listed = set(GitClient(timeout=60).output(["--list-cmds=builtins,main"]).split())
+        self.assertEqual(set(), set(git_client.PLAIN_SUBCOMMANDS) - listed)
+        for refused in ("bisect run", "submodule foreach", "difftool", "mergetool", "filter-branch", "for-each-repo"):
+            with self.subTest(refused=refused):
+                self.assertIn(refused.partition(" ")[0], listed)
+
+    def test_a_carried_command_never_runs_on_a_plain_client(self) -> None:
+        # Unrefused, the rebase runs its command after the commit it replays, outside the client.
+        marker = self.repository / "ran"
+        identity = ["-c", "user.name=t", "-c", "user.email=t@example.invalid"]
+        for message in ("one", "two"):
+            GitClient(timeout=60).output(
+                [*identity, "commit", "--quiet", "--allow-empty", "-m", message], directory=self.repository
+            )
+        carried = [
+            *identity,
+            "rebase",
+            "--quiet",
+            "--force-rebase",
+            "-x",
+            "git var GIT_COMMITTER_IDENT > ran",
+            "HEAD~1",
+        ]
+        with self.assertRaisesRegex(ValueError, r"^git rebase -x starts a command or a program"):
+            GitClient(timeout=60).run(carried, directory=self.repository)
+        self.assertFalse(marker.exists())
 
     def test_a_command_line_alias_runs_on_an_isolated_client(self) -> None:
         # The alias reaches grep --no-index, which an isolated client runs.
