@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any, ClassVar, get_args
 from unittest import mock
 
+import file_presence
 from harness import (
     DEPLOY_COMMAND,
     FAILS_PARTWAY,
@@ -33,13 +34,18 @@ from harness import (
     tree_state,
 )
 
-from deployer import fsops, hashing, journal, manifest, pipeline, platform_support, render
+from deployer import fsops, hashing, journal, manifest, pipeline, plan, platform_support, render
 from deployer.errors import RECOVERY_STOPPED, RUN_COMMITTED, RUN_NOT_COMMITTED, DeployError
 from deployer.kinds import KINDS
 from deployer.names import deletion_name, transient_name
 from deployer.paths import CANARY_MARKER, CANARY_MARKER_TEXT
 
 SEE_RECOVERY_BACKUPS = 'See "Backups" in docs/recovery.md.'
+# Recovery's stop at a run beside a manifest it cannot read or cannot find, written out here rather than read from the
+# deployer, so a changed line fails a test.
+MANIFEST_UNDECIDED = (
+    "  ERROR: The manifest is missing or cannot be read, so recovery cannot tell whether run {run_id} was committed."
+)
 
 
 class Killed(BaseException):
@@ -339,6 +345,8 @@ class RecoveryTests(RecoveryTestCase):
         self.make_source_json()
         self.make_skill("alpha", "Alpha content")
         self.make_config()
+        # A first deployment saves the empty manifest before its journal.
+        self.write_manifest(dict(manifest.empty(self.manifest_file).data))
         journal = self.staging_run("20260101-000000-gone") / "journal.jsonl"
         self.write(
             journal,
@@ -2558,9 +2566,127 @@ class ManifestStateTests(RecoveryTestCase):
         with contextlib.redirect_stdout(captured), contextlib.redirect_stderr(captured):
             recovered = journal.recover_incomplete(self.paths)
         self.assertFalse(recovered, captured.getvalue())
-        self.assertIn("ERROR: Cannot read manifest during recovery.", captured.getvalue())
+        self.assert_lines(captured.getvalue(), MANIFEST_UNDECIDED.format(run_id="20260101-000000-fake"))
         self.assertTrue((self.skills_dir / "alpha.deploying-bak").is_dir(), "an unreadable manifest decides nothing")
         self.assertTrue((self.staging_run("20260101-000000-fake") / "journal.jsonl").is_file())
+
+    def test_recovery_stops_at_a_run_whose_manifest_is_missing_and_rolls_nothing_back(self) -> None:
+        # A run saves the manifest before its journal, so a journal beside no manifest means the manifest was moved
+        # or lost: the run may have been committed, so recovery keeps it, as it does beside an unreadable manifest.
+        self.deployed(("alpha", "Alpha content"))
+        self.write(self.skills_dir / "alpha.deploying-bak" / "SKILL.md", "previous alpha\n")
+        backup_hash = hashing.hash_path(self.skills_dir / "alpha.deploying-bak")
+        installed = hashing.hash_path(self.skills_dir / "alpha")
+        self.commit("20260101-000000-kept")
+        self.write_journal(
+            "20260101-000000-kept",
+            backup_entry("alpha", backup_hash, False, "20260101-000000-kept"),
+            install_entry("alpha", installed),
+        )
+        self.manifest_file.rename(self.root / "moved-manifest.json")
+        captured = io.StringIO()
+        with contextlib.redirect_stdout(captured), contextlib.redirect_stderr(captured):
+            recovered = journal.recover_incomplete(self.paths)
+        self.assertFalse(recovered, captured.getvalue())
+        self.assert_lines(captured.getvalue(), MANIFEST_UNDECIDED.format(run_id="20260101-000000-kept"))
+        self.assertNotIn("rolling back", captured.getvalue())
+        self.assertEqual(installed, hashing.hash_path(self.skills_dir / "alpha"))
+        self.assertTrue((self.skills_dir / "alpha.deploying-bak").is_dir())
+        self.assertEqual([("20260101-000000-kept", False)], journal.pending_runs(self.paths))
+        self.assertIsNone(journal.journaled_runs(self.paths))
+
+    def test_a_failure_beside_a_missing_manifest_gives_manual_steps_that_decide_no_commit(self) -> None:
+        # The journal's stat fails before the run reads the manifest, so recover_incomplete prints the manual steps:
+        # beside no manifest they say the run's state cannot be told, never that it was not committed.
+        self.deployed(("alpha", "Alpha content"))
+        run = "20260101-000000-held"
+        journal_file = self.write_journal(run, install_entry("alpha", ZERO_HASH))
+        self.manifest_file.unlink()
+        real_is_occupied = file_presence.is_occupied
+
+        def unreadable_journal(path: Path, *rest: Any) -> bool:
+            if path == journal_file:
+                raise PermissionError(13, "Access is denied", str(path))
+            return bool(real_is_occupied(path, *rest))
+
+        captured = io.StringIO()
+        with (
+            mock.patch("deployer.journal.file_presence.is_occupied", side_effect=unreadable_journal),
+            contextlib.redirect_stdout(captured),
+            contextlib.redirect_stderr(captured),
+        ):
+            recovered = journal.recover_incomplete(self.paths)
+        self.assertFalse(recovered, captured.getvalue())
+        self.assert_lines(
+            captured.getvalue(),
+            f"  Whether run {run} was committed cannot be told, since the manifest is missing or cannot be read: put "
+            "the manifest back and rerun, or, if you know the run was committed, keep the copies it installed, and if "
+            "it was not, put back the copies it replaced. A replaced copy sits beside its item as "
+            f"<name>.deploying-bak; a retained backup is under .backups/{run}/ in the same root.",
+        )
+        self.assertNotIn("was not committed", captured.getvalue())
+
+    def test_a_committed_run_whose_manifest_was_moved_aside_is_refused_alike_and_never_rolled_back(self) -> None:
+        # A run killed after its commit, then the manifest moved out of the skills folder, as "A state file that does
+        # not read" suggests for a manifest the user does not trust: recovery once read that as no run committed.
+        self.deployed(("alpha", "Alpha content"))
+        run = "20260101-000000-kept"
+        self.write(self.skills_dir / "alpha.deploying-bak" / "SKILL.md", "previous alpha\n")
+        backup_hash = hashing.hash_path(self.skills_dir / "alpha.deploying-bak")
+        installed = hashing.hash_path(self.skills_dir / "alpha")
+        self.commit(run)
+        self.write_journal(run, backup_entry("alpha", backup_hash, False, run), install_entry("alpha", installed))
+        moved = self.root / "moved-manifest.json"
+        self.manifest_file.rename(moved)
+        refusal = [
+            f"ERROR: The manifest {forward(self.manifest_file)} is missing, but run {run}'s journal remains, so "
+            "whether that run was committed cannot be told.",
+            "Put back the manifest you moved, if you did. Otherwise reconcile the run by hand, then rerun with "
+            "--dry-run: a run an earlier release left unfinished on a first deployment was not committed.",
+            SEE_RECOVERY_FAILED,
+        ]
+        for arguments in (("--all", "--dry-run"), ("--all",)):
+            with self.subTest(arguments=arguments):
+                result = self.deploy_fails(*arguments, pattern="is missing, but run")
+                printed = result.output.splitlines()
+                at = printed.index(refusal[0])
+                self.assertEqual(refusal, printed[at : at + len(refusal)], result.output)
+                self.assertNotIn("Recovering", result.output)
+                self.assertNotIn("Pending recovery", result.output)
+        # The manifest put back decides: the committed run is completed, never rolled back.
+        moved.rename(self.manifest_file)
+        result = self.deploy_ok("--all")
+        self.assertIn(f"Recovering committed run {run} (completing finalization)...", result.output)
+        self.assertEqual(installed, hashing.hash_path(self.skills_dir / "alpha"))
+        self.assertFalse((self.skills_dir / "alpha.deploying-bak").exists())
+
+    def test_a_first_deployment_saves_the_empty_manifest_before_its_journal_and_a_kill_then_rolls_back(self) -> None:
+        # A first deployment journals beside a manifest too, so a run killed before its commit is told from one whose
+        # manifest was moved: the next deployment rolls it back, as it does any run the manifest does not record.
+        self.make_source_json()
+        self.make_skill("alpha", "Alpha content")
+        self.make_config()
+        real_carry_out = plan.carry_out
+        manifests: list[dict[str, Any]] = []
+
+        def killed_after_the_first_change(*arguments: Any) -> None:
+            manifests.append(json.loads(self.manifest_file.read_text(encoding="utf-8")))
+            real_carry_out(*arguments)
+            raise Killed
+
+        with (
+            mock.patch("deployer.plan.carry_out", side_effect=killed_after_the_first_change),
+            self.assertRaises(Killed),
+        ):
+            self.deploy("--all", changes_home=FAILS_PARTWAY)
+        # The manifest stood, empty, before the journal recorded the first change.
+        self.assertEqual([{"manifest_version": manifest.MANIFEST_VERSION, "sources": {}}], manifests)
+        self.assertEqual(1, len(journal.pending_runs(self.paths)))
+        result = self.deploy_ok("--all")
+        self.assert_lines(result.output, "  Recovery complete.")
+        self.assertRegex(result.output, r"Recovering uncommitted run \S+ \(rolling back\)\.\.\.")
+        self.assertIn("Alpha content", self.skill_text("alpha"))
+        self.assertEqual([], journal.pending_runs(self.paths))
 
     def test_a_manifest_with_the_old_selected_skills_key_loads_and_loses_it_on_commit(self) -> None:
         self.deployed(("alpha", "Alpha content"))

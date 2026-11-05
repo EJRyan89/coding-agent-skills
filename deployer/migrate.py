@@ -107,7 +107,8 @@ def _carry_requests(
 def migrate(context: Context, old: str) -> None:
     paths, data = context.paths, context.manifest
     # A manifest whose stat fails is refused here as missing: the migration stops before it changes anything either way.
-    if not paths.manifest_file.is_file():
+    # So is the empty one a failed first deployment leaves, which records no source, as a missing one reads.
+    if not paths.manifest_file.is_file() or not data.sources:
         raise DeployError(
             "ERROR: Cannot migrate without an existing manifest.",
             "Nothing is deployed in this home, so there is nothing to take over: deploy without --migrate-from.",

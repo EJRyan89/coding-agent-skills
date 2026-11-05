@@ -412,9 +412,25 @@ def _upgrade_dependencies(data: ManifestData) -> None:
             details.setdefault(SKILL.dependency_key, sorted(set(skills) - {name}))
 
 
+def empty(path: Path) -> Manifest:
+    """The manifest of a home no source has deployed to, which load reads a missing file as."""
+    return Manifest(path, {"manifest_version": MANIFEST_VERSION, "sources": {}})
+
+
+def save_if_missing(path: Path) -> None:
+    """Save the empty manifest a missing one reads as, which a run does before it writes its journal.
+
+    A journal is then only ever written beside a manifest, so one found beside none was moved or lost, never a first
+    deployment's, and recovery refuses it rather than guess whether its run was committed. The empty manifest changes
+    nothing the deployment reads, and stays if the run fails.
+    """
+    if not state_files.is_present(path, "The manifest", *MANIFEST_REMEDY):
+        empty(path).save()
+
+
 def load(path: Path) -> Manifest:
     if not state_files.is_present(path, "The manifest", *MANIFEST_REMEDY):
-        return Manifest(path, {"manifest_version": MANIFEST_VERSION, "sources": {}})
+        return empty(path)
     text: str | None
     try:
         text = path.read_text(encoding="utf-8")

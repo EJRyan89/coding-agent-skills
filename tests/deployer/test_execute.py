@@ -129,6 +129,7 @@ class ExecuteTests(unittest.TestCase):
             (lock, "acquire"): held,
             (lock, "check_holder"): None,
             (pipeline, "_reject_other_checkout"): None,
+            (journal, "check_manifest_beside_runs"): None,
             (journal, "recover_incomplete"): True,
             # A list outcome is a sequence of returns, so the one return, a list of runs, is wrapped.
             (journal, "journaled_runs"): [[]],
@@ -167,6 +168,7 @@ class ExecuteTests(unittest.TestCase):
         return [
             "check_holder(paths(home), probe)",
             f"_reject_other_checkout(paths(home), '{SOURCE_ID}', False, dry_run=True)",
+            "check_manifest_beside_runs(paths(home))",
         ]
 
     def prepared(self, home: str = "home") -> list[str]:
@@ -197,6 +199,7 @@ class ExecuteTests(unittest.TestCase):
             "reject_linked_worktree(paths(home))",
             "acquire(paths(home), probe)",
             f"_reject_other_checkout(paths(home), '{SOURCE_ID}', {take_over}, dry_run=False)",
+            "check_manifest_beside_runs(paths(home))",
         ]
 
     def test_a_deployment_returns_what_it_deployed_with_and_releases_the_lock(self) -> None:
@@ -228,6 +231,7 @@ class ExecuteTests(unittest.TestCase):
                     "reject_linked_worktree(paths(home))",
                     "check_holder(paths(home), probe)",
                     f"_reject_other_checkout(paths(home), '{SOURCE_ID}', True, dry_run=True)",
+                    "check_manifest_beside_runs(paths(home))",
                     "_stop_for_pending_recovery(paths(home))",
                     "_deploy(paths(home), options, src, {'VALUE': 'configured'}, stdin, None, None)",
                 ],
@@ -255,6 +259,7 @@ class ExecuteTests(unittest.TestCase):
                 "claim_canary_home(canary)",
                 "acquire(paths(canary), probe)",
                 f"_reject_other_checkout(paths(canary), '{SOURCE_ID}', False, dry_run=False)",
+                "check_manifest_beside_runs(paths(canary))",
                 "recover_incomplete(paths(canary))",
                 f"_deploy(paths(canary), options, src, {{'VALUE': 'canary'}}, stdin, '{RUN_ID}', None)",
                 "release",
@@ -442,26 +447,47 @@ class ExecuteTests(unittest.TestCase):
                     self.execute(options, stdin=self.stdin, **self.failing(name, failure)),
                 )
 
-    def test_another_checkout_releases_the_lock_with_its_own_exit_code(self) -> None:
-        refused = DeployError("ERROR: another checkout", "Take it over.", exit_code=4)
-        self.assertEqual(
-            (4, [*self.prepared(), *self.held(), "release"], ["", "ERROR: another checkout", "Take it over.", ""]),
-            self.execute(Options(), stdin=self.stdin, _reject_other_checkout=refused),
-        )
+    # The checks the deployment makes under its lock before it recovers, each ending the run where it refuses.
+    PRE_RECOVERY_CHECKS = ("_reject_other_checkout", "check_manifest_beside_runs")
 
-    def test_any_failure_of_the_checkout_check_is_reported_and_releases_the_lock(self) -> None:
-        denied = OSError(5, "Access is denied", "skills")
-        cases: list[tuple[BaseException, int, list[str]]] = [
-            (denied, 1, ["", "ERROR: Could not check the source checkout: skills: Access is denied", CHECK, HINT, ""]),
-            (KeyboardInterrupt(), 130, ["", "Cancelled; nothing was changed.", ""]),
-        ]
-        for failure, code, lines in cases:
+    def checked_until(self, check: str) -> list[str]:
+        """The calls of a run whose pre-recovery check named check is the last it makes."""
+        held = self.held()
+        return held[: next(index for index, call in enumerate(held) if call.startswith(check)) + 1]
+
+    def test_a_refused_pre_recovery_check_releases_the_lock_with_its_own_exit_code(self) -> None:
+        refused = DeployError("ERROR: another checkout", "Take it over.", exit_code=4)
+        for check in self.PRE_RECOVERY_CHECKS:
             self.calls = []
-            with self.subTest(failure=failure):
+            with self.subTest(check=check):
                 self.assertEqual(
-                    (code, [*self.prepared(), *self.held(), "release"], lines),
-                    self.execute(Options(), stdin=self.stdin, _reject_other_checkout=failure),
+                    (
+                        4,
+                        [*self.prepared(), *self.checked_until(check), "release"],
+                        ["", "ERROR: another checkout", "Take it over.", ""],
+                    ),
+                    self.execute(Options(), stdin=self.stdin, **self.failing(check, refused)),
                 )
+
+    def test_any_failure_of_a_pre_recovery_check_is_reported_and_releases_the_lock(self) -> None:
+        denied = OSError(5, "Access is denied", "skills")
+        # Each check names its own step: the manifest check reads the staging runs, not the source checkout.
+        steps = {
+            "_reject_other_checkout": "check the source checkout",
+            "check_manifest_beside_runs": "check the staging runs",
+        }
+        for check in self.PRE_RECOVERY_CHECKS:
+            cases: list[tuple[BaseException, int, list[str]]] = [
+                (denied, 1, ["", f"ERROR: Could not {steps[check]}: skills: Access is denied", CHECK, HINT, ""]),
+                (KeyboardInterrupt(), 130, ["", "Cancelled; nothing was changed.", ""]),
+            ]
+            for failure, code, lines in cases:
+                self.calls = []
+                with self.subTest(check=check, failure=failure):
+                    self.assertEqual(
+                        (code, [*self.prepared(), *self.checked_until(check), "release"], lines),
+                        self.execute(Options(), stdin=self.stdin, **self.failing(check, failure)),
+                    )
 
     def test_a_failed_recovery_releases_the_lock_and_deploys_nothing(self) -> None:
         self.assertEqual(

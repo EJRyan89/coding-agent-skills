@@ -20,7 +20,6 @@ import json_writer
 from . import (
     config,
     errors,
-    fsops,
     journal,
     lock,
     manifest,
@@ -79,9 +78,8 @@ def _apply(
     staging_dir = paths.staging_root / run_id
     staged.write(staging_dir)
     record = journal.Journal(staging_dir / "journal.jsonl", run_id)
+    journal.prepare_roots(paths)
     record.create()
-    for root in dict.fromkeys(kind.root for kind in KINDS):
-        fsops.make_directories(journal.root_directory(paths, root))
     for entry in entries:
         plan.carry_out(record, paths, staging_dir, entry)
     _commit_manifest(context, entries, run_id, context.commit)
@@ -417,10 +415,13 @@ def _execute(
         return fail(exc, debug, "prepare the deployment")
     # The one release point: every way out of this block releases the lock unless a failed recovery retained it.
     with held:
+        step = "check the source checkout"
         try:
             _reject_other_checkout(paths, source_id, options.take_over_source, dry_run=False)
+            step = "check the staging runs"
+            journal.check_manifest_beside_runs(paths)
         except (DeployError, OSError, KeyboardInterrupt) as exc:
-            return fail(exc, debug, "check the source checkout")
+            return fail(exc, debug, step)
         try:
             recovered = journal.recover_incomplete(paths)
         except (Exception, KeyboardInterrupt) as exc:  # noqa: BLE001 - any failure while recovering ends in the one stopped-recovery report
@@ -501,6 +502,7 @@ def _dry_run(
             source.reject_linked_worktree(paths)
         lock.check_holder(paths, probe)
         _reject_other_checkout(paths, src.source_id, options.take_over_source, dry_run=True)
+        journal.check_manifest_beside_runs(paths)
         if _stop_for_pending_recovery(paths):
             return 0
         return _deploy(paths, options, src, values, stdin, None, pin)

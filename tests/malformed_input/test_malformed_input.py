@@ -99,6 +99,21 @@ def test_each_reader_reads_its_own_well_formed_document(reader: readers.Reader) 
         reader.read(path)
 
 
+def test_the_journal_survey_stops_at_a_well_formed_run_beside_no_manifest() -> None:
+    # A run saves the manifest before it writes its journal, so a journal beside none means the manifest was moved or
+    # lost: whether the run was committed cannot be told, and the survey stops at it as recovery does, however well
+    # formed its journal. Every other journal case is read beside the manifest the reader's prepare writes.
+    journal_readers = [reader for reader in readers.READERS if reader.name.startswith("deployer.journal.pending_runs")]
+    assert journal_readers
+    for reader in journal_readers:
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / reader.filename
+            path.parent.mkdir(parents=True)
+            path.write_bytes(reader.valid)
+            with pytest.raises(reader.refusals, match=r"the run needs the user: \[\('run', False\)\]"):
+                reader.read(path)
+
+
 @pytest.mark.parametrize(("reader", "case"), PAIRS, ids=[f"{reader.name}-{case.name}" for reader, case in PAIRS])
 def test_each_reader_refuses_or_documents_accepting_each_case(reader: readers.Reader, case: corpus.Case) -> None:
     with tempfile.TemporaryDirectory() as temporary:
