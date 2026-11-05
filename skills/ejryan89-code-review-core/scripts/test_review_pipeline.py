@@ -3758,6 +3758,88 @@ class ProfileModelTests(PipelineFixture):
             [(role["label"], role["model"], role["effort"]) for role in roles],
         )
 
+    def configure_model(self, reviewer_model: str | None) -> None:
+        config = json.loads(self.config_path.read_text(encoding="utf-8"))
+        write_config({**config, "reviewer_model": reviewer_model}, self.config_path)
+
+    def test_the_configured_model_reaches_every_reviewer_whose_specialist_names_none(self) -> None:
+        # Only the generic reviewer and a specialist with no model of its own, in its manifest or its profile, get it.
+        self.trusted_profile("", model=None, effort=None)
+        self.configure_model("sonnet")
+        code, out, err = self.run_main("prepare", "--pull", SELECTOR)
+        self.assertEqual(0, code, err)
+        lines = out.splitlines()
+        self.assertIn(f"MODEL {SELECTOR} python-review sonnet", lines)
+        self.assertIn(f"MODEL {SELECTOR} generic-review sonnet", lines)
+        run = Path(lines[0].removeprefix(f"RUN {SELECTOR} "))
+        state = json.loads((run / review_run.RUN_FILE).read_text(encoding="utf-8"))
+        self.assertEqual(["sonnet", "sonnet"], [role["model"] for role in state["roles"]])
+        _, _, roles = workflow_output(self.run_main("workflow", "--run", str(run))[1])
+        self.assertEqual(
+            [(f"{SELECTOR} python-review", "sonnet"), (f"{SELECTOR} generic-review", "sonnet")],
+            [(role["label"], role["model"]) for role in roles],
+        )
+        code, out, err = self.run_main("validate-reviewer", "--repository", REPOSITORY, "--pull", "12")
+        self.assertEqual(0, code, err)
+        self.assertIn("ROUTE python-review files=1 model=sonnet", out.splitlines())
+
+    def assert_python_review_model(self, expected: str) -> None:
+        """The specialist runs on `expected` and the generic reviewer on the configured opus, in prepare and in the
+        route validate-reviewer shows."""
+        code, out, err = self.run_main("prepare", "--pull", SELECTOR)
+        self.assertEqual(0, code, err)
+        lines = out.splitlines()
+        self.assertIn(f"MODEL {SELECTOR} python-review {expected}", lines)
+        self.assertIn(f"MODEL {SELECTOR} generic-review opus", lines)
+        code, out, err = self.run_main("validate-reviewer", "--repository", REPOSITORY, "--pull", "12")
+        self.assertEqual(0, code, err)
+        self.assertIn(f"ROUTE python-review files=1 model={expected}", out.splitlines())
+
+    def test_a_manifest_model_wins_over_the_profile_s_and_the_configured_one(self) -> None:
+        self.trusted_profile("model: sonnet\n", model="haiku", effort=None)
+        self.configure_model("opus")
+        self.assert_python_review_model("haiku")
+
+    def test_a_profile_model_wins_over_the_configured_one(self) -> None:
+        self.trusted_profile("model: haiku\n", model=None, effort=None)
+        self.configure_model("opus")
+        self.assert_python_review_model("haiku")
+
+    def test_a_manifest_inherit_is_a_model_the_configured_default_does_not_reach(self) -> None:
+        self.trusted_profile("model: haiku\n", model="inherit", effort=None)
+        self.configure_model("opus")
+        code, out, err = self.run_main("prepare", "--pull", SELECTOR)
+        self.assertEqual(0, code, err)
+        lines = out.splitlines()
+        self.assertEqual(
+            [f"MODEL {SELECTOR} generic-review opus"], [line for line in lines if line.startswith("MODEL ")]
+        )
+        run = Path(lines[0].removeprefix(f"RUN {SELECTOR} "))
+        state = json.loads((run / review_run.RUN_FILE).read_text(encoding="utf-8"))
+        self.assertEqual([None, "opus"], [role["model"] for role in state["roles"]])
+        code, out, err = self.run_main("validate-reviewer", "--repository", REPOSITORY, "--pull", "12")
+        self.assertEqual(0, code, err)
+        self.assertIn("ROUTE python-review files=1", out.splitlines())
+
+    def test_a_configured_inherit_names_no_model(self) -> None:
+        self.trusted_profile("", model=None, effort=None)
+        self.configure_model("inherit")
+        code, out, err = self.run_main("prepare", "--pull", SELECTOR)
+        self.assertEqual(0, code, err)
+        self.assertNotIn("MODEL ", out)
+        run = Path(out.splitlines()[0].removeprefix(f"RUN {SELECTOR} "))
+        state = json.loads((run / review_run.RUN_FILE).read_text(encoding="utf-8"))
+        self.assertEqual([None, None], [role["model"] for role in state["roles"]])
+
+    def test_a_codex_session_notes_the_configured_model_it_cannot_apply(self) -> None:
+        self.services.resolve_runtime = lambda configured, host: "codex"
+        self.trusted_profile("", model=None, effort=None)
+        self.configure_model("sonnet")
+        code, out, err = self.run_main("prepare", "--pull", SELECTOR)
+        self.assertEqual(0, code, err)
+        self.assertNotIn("MODEL ", out)
+        self.assertIn("generic-review asks for model sonnet; codex starts every reviewer on this session's model", out)
+
     def test_invalid_manifest_model_or_effort_is_rejected(self) -> None:
         specialist = SPECIALIST_MANIFEST["specialists"][0]
         field = "specialists-manifest.specialists[0]"
@@ -3904,6 +3986,21 @@ class ProfileModelTests(PipelineFixture):
             out.splitlines(),
         )
 
+    def test_a_model_no_subagent_accepts_is_the_session_s_not_the_configured_one(self) -> None:
+        self.trusted_profile("model: claude-sonnet-5\n")
+        self.configure_model("opus")
+        code, out, err = self.run_main("prepare", "--pull", SELECTOR)
+        self.assertEqual(0, code, err)
+        lines = out.splitlines()
+        self.assertEqual(
+            [f"MODEL {SELECTOR} generic-review opus"], [line for line in lines if line.startswith("MODEL ")]
+        )
+        self.assertTrue(any(line.startswith(f"NOTE {SELECTOR} review/python.md asks for model") for line in lines), out)
+        code, out, err = self.run_main("validate-reviewer", "--repository", REPOSITORY, "--pull", "12")
+        self.assertEqual(0, code, err)
+        self.assertIn("ROUTE python-review files=1", out.splitlines())
+        self.assertIn("its reviewer uses the session's model", out)
+
     def test_validate_reviewer_shows_the_model_each_route_will_use(self) -> None:
         self.trusted_profile("model: haiku\n")
         code, out, err = self.run_main("validate-reviewer", "--repository", REPOSITORY, "--pull", "12")
@@ -3994,6 +4091,28 @@ class ReviewerSourceTests(PipelineFixture):
         self.assertIn("TOOLS Read, Grep, Glob", lines)
         self.assertIn("DELEGATES no its tool list grants neither Agent nor Task", lines)
         self.assertEqual("VERDICT entrypoint-ok", lines[-1])
+
+    def test_the_configured_model_reaches_an_entrypoint_reviewer(self) -> None:
+        self.configure(self.skill_reviewer("review/solo.md"))
+        config = json.loads(self.config_path.read_text(encoding="utf-8"))
+        for configured, expected in (("sonnet", "sonnet"), ("inherit", None), (None, None)):
+            with self.subTest(reviewer_model=configured):
+                write_config({**config, "reviewer_model": configured}, self.config_path)
+                code, out, err = self.run_main("prepare", "--pull", SELECTOR)
+                self.assertEqual(0, code, err)
+                lines = out.splitlines()
+                run = Path(lines[0].removeprefix(f"RUN {SELECTOR} "))
+                state = json.loads((run / review_run.RUN_FILE).read_text(encoding="utf-8"))
+                (role,) = state["roles"]
+                models = [line for line in lines if line.startswith("MODEL ")]
+                if expected is None:
+                    self.assertEqual([], models)
+                    self.assertNotIn("model", role, "an entrypoint role records a model only when it has one")
+                else:
+                    self.assertEqual([f"MODEL {SELECTOR} {role['id']} {expected}"], models)
+                    self.assertEqual(expected, role["model"])
+                    _, _, roles = workflow_output(self.run_main("workflow", "--run", str(run))[1])
+                    self.assertEqual([expected], [workflow_role["model"] for workflow_role in roles])
 
     def test_a_local_manifest_routes_specialists_with_profiles_from_the_trusted_base(self) -> None:
         default = default_manifest_path(self.config_path, REPOSITORY)

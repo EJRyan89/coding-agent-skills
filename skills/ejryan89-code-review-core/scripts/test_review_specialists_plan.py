@@ -244,7 +244,8 @@ TOOLS: dict[str, Any] = {
 SPECIALISTS = {
     "db-review": ("Database", "agents/db.md", "opus", None),
     "csharp-review": ("C#", "agents/cs.md", "sonnet", "high"),
-    "compat-review": ("Compatibility", "agents/compat.md", None, "low"),
+    # Its manifest says `inherit`, which the plan keeps so that prepare's configured default does not reach it.
+    "compat-review": ("Compatibility", "agents/compat.md", "inherit", "low"),
     "tools-review": ("Tooling", "agents/tools.md", None, None),
 }
 
@@ -1147,14 +1148,16 @@ class SpecialistTests(PlanFixture):
             ],
             result["notes"],
         )
-        self.assertEqual([None, "sonnet", None], [value["model"] for value in result["roles"]])
+        # A profile model the suite cannot apply is `inherit`, so a configured `reviewer_model` does not reach it.
+        self.assertEqual(["inherit", "sonnet", None], [value["model"] for value in result["roles"]])
 
     def test_a_profile_without_a_model_and_a_manifest_inherit_both_use_the_session_model(self) -> None:
         self.snapshot({**SOURCE, "OPEN": ""})
         files = {**REVIEWER_FILES, "agents/db.md": "DB rules\n", "agents/compat.md": "---\nmodel: opus\n---\n"}
         result = self.build(self.reviewer(files=files))
         self.assertEqual(
-            [("db-review", None), ("csharp-review", "sonnet"), ("compat-review", None), ("generic-review", None)],
+            # The plan keeps `inherit`, so prepare gives that role the session's model, not the configured default.
+            [("db-review", None), ("csharp-review", "sonnet"), ("compat-review", "inherit"), ("generic-review", None)],
             [(value["id"], value["model"]) for value in result["roles"]],
         )
         self.assertEqual([], result["notes"])
@@ -1178,7 +1181,7 @@ class SpecialistTests(PlanFixture):
         files = {**REVIEWER_FILES, "agents/db.md": "---\nmodel: gpt-5\n---\n"}
         result = self.build(self.reviewer(manifest(uncovered="ignore"), files=files))
         roles = [role("db-review", ["db/Procs.sql"]), role("csharp-review", ["src/A.cs"])]
-        roles[0]["model"] = None
+        roles[0]["model"] = "inherit"  # a model the suite cannot apply is the session's, so no default reaches it
         notes = [
             "agents/db.md asks for model 'gpt-5', which is not one of fable, haiku, opus, sonnet; its reviewer "
             "uses the session's model",

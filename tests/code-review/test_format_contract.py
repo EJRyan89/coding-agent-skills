@@ -768,6 +768,7 @@ def config_fixtures() -> list[dict[str, Any]]:
         "verdict_policy": {"request_changes_for": ["MUST_FIX", "SHOULD_FIX"], "should_fix_threshold": 3},
         "operation_repository_sets": {"update-pr-dashboard": "tracked"},
         "reviewer_effort": "high",
+        "reviewer_model": "sonnet",
         "re_review_scope": {"full_share": 0.5, "full_lines": 1000},
         "unread_source_lines": 200,
         "model_names": {"arn:aws:bedrock:us-east-1:111122223333:application-inference-profile/abc": "Opus 5.5"},

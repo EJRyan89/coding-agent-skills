@@ -264,6 +264,17 @@ def _inside(path: Path, root: Path) -> bool:
         return False
 
 
+def apply_default_model(roles: list[RunRole], configured: str | None) -> None:
+    """Give each role whose specialist names no model the configuration's `reviewer_model`. A specialist's `inherit`
+    asks for the session's model, so it keeps the default from reaching it, and the configuration's own `inherit`
+    is the session's model too: neither is recorded. An entrypoint role records a model only when it has one."""
+    for role in roles:
+        model = role.get("model") or configured
+        model = None if model == "inherit" else model
+        if model is not None or "model" in role:
+            role["model"] = model
+
+
 def _write_run(run: Path, state: RunState) -> None:
     """Write a prepared run's run.json. A run that cannot start a role on the model it asks for first notes that model
     in place of its `MODEL` line, so the role runs on the session's model; a run whose reviewers start at an effort

@@ -63,6 +63,7 @@ TOP_LEVEL_KEYS = {
     "dashboard",
     "operation_repository_sets",
     "reviewer_effort",
+    "reviewer_model",
     "re_review_scope",
     "model_names",
     "unread_source_lines",
@@ -72,6 +73,11 @@ MODEL_IDENTIFIER_MAXIMUM_LENGTH = 200
 MODEL_NAME_MAXIMUM_LENGTH = 100
 # Reasoning effort for reviewers the Workflow tool starts; null keeps the session's effort.
 REVIEWER_EFFORTS = {"low", "medium", "high", "xhigh", "max"}
+# The model aliases every way of starting a Claude subagent accepts (the Agent tool takes no other value; on Bedrock
+# a bare model name can be silently ignored). The configuration's `reviewer_model` and a specialist's `model` also
+# take `inherit` for the session's model.
+MODEL_ALIASES = frozenset({"sonnet", "opus", "haiku", "fable"})
+REVIEWER_MODELS = MODEL_ALIASES | {"inherit"}
 # When an `auto` re-review reviews the whole pull request instead of only what changed since the last review:
 # at least this share of its changed lines changed again, or at least this many lines did.
 RE_REVIEW_SCOPE_DEFAULTS = {"full_share": 0.5, "full_lines": 1000}
@@ -257,6 +263,7 @@ def validate_config(value: Any) -> dict[str, Any]:
     _check_configured_repositories(normalized_sets, normalized_repositories)
     runtime = READ.one_of(config.get("runtime", "auto"), "config.runtime", RUNTIME_HOSTS)
     effort = READ.optional(READ.one_of, config.get("reviewer_effort"), "config.reviewer_effort", REVIEWER_EFFORTS)
+    model = READ.optional(READ.one_of, config.get("reviewer_model"), "config.reviewer_model", REVIEWER_MODELS)
     scope = _validate_re_review_scope(config.get("re_review_scope", {}))
     verdict_policy = _validate_verdict_policy(config.get("verdict_policy", {}))
     operation_sets = _validate_operation_sets(config.get("operation_repository_sets", {}), normalized_sets)
@@ -267,6 +274,7 @@ def validate_config(value: Any) -> dict[str, Any]:
     normalized["repositories"] = normalized_repositories
     normalized["runtime"] = runtime
     normalized["reviewer_effort"] = effort
+    normalized["reviewer_model"] = model
     normalized["re_review_scope"] = scope
     normalized["model_names"] = normalize_model_names(config.get("model_names", {}))
     normalized["unread_source_lines"] = READ.integer(

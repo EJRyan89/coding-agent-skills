@@ -442,7 +442,8 @@ def validate_reviewer(
     services = services or Services()
     config_path, repository, entry, checkout, runtime = _repository_reviewer(repository, config_path, services)
     reviewer, exclude, suffixes = entry["reviewer"], entry["snapshot_exclude"], entry["unreviewed_suffixes"]
-    default_effort = load_config(config_path)["reviewer_effort"]
+    configuration = load_config(config_path)
+    default_effort, default_model = configuration["reviewer_effort"], configuration["reviewer_model"]
     targets = _validation_targets(repository, checkout, reviewer, pulls, ref, config_path, services)
     lines: list[str] = []
     checked: set[str] = set()
@@ -511,6 +512,7 @@ def validate_reviewer(
                 services,
                 exclude,
                 default_effort,
+                default_model,
                 pull["title"],
             )
             lines.extend(_routing_lines(manifest, changed, renamed, routing))
@@ -558,6 +560,7 @@ class _Routing(NamedTuple):
     services: Services
     exclude: Sequence[str]
     default_effort: str | None  # the configuration's reviewer_effort, which a specialist without its own effort gets
+    default_model: str | None  # the configuration's reviewer_model, which a specialist naming no model gets
     title: str  # the pull request's title, whose type a specialist's title_types are held to
 
 
@@ -594,6 +597,9 @@ def _routing_lines(
     specialists = {specialist["id"]: specialist for specialist in manifest["specialists"]}
     for identity, files in routes.items():
         model, note = specialist_model(specialists[identity], routing.reviewer_root)
+        # A specialist naming no model gets the configuration's; `inherit`, either one's, is the session's.
+        model = routing.default_model if model is None else model
+        model = None if model == "inherit" else model
         # The effort a Workflow agent would start on, as `workflow` resolves it; null leaves the session's.
         effort = specialists[identity].get("effort") or routing.default_effort
         lines.append(

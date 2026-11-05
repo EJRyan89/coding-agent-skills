@@ -33,7 +33,12 @@ from github_client import GitHubClient, GitHubError, replace_undecodable
 from github_remote import github_repository
 from link_probe import is_link_or_junction
 from path_containment import posix_within, within
-from review_config import REVIEWER_EFFORTS, validate_glob_patterns, validate_repository_identity
+from review_config import (
+    REVIEWER_EFFORTS,
+    REVIEWER_MODELS,
+    validate_glob_patterns,
+    validate_repository_identity,
+)
 from review_documents import DOCUMENT_FORMATS, EXTRACTED_WHEN_TEXT, ExtractionRefused, document_format, extract
 from review_guard import ROLE_ID as SLUG
 from review_io import CONTENT_ERRORS, PersistenceError, atomic_write_json, parse_json, read_diff
@@ -165,7 +170,6 @@ SPECIALIST_KEYS = {"id", "category", "profile", "include", "exclude", "resources
 OPTIONAL_SPECIALIST_KEYS = {"model", "effort", "shares_files", "title_types", "inputs"}
 PULL_REQUEST_INPUTS = ("description", "comments", "closing-issues")
 DEFAULT_PULL_REQUEST_INPUTS = ("description", "comments")
-MODEL_ALIASES = frozenset({"sonnet", "opus", "haiku", "fable"})
 # The runtimes whose native delegation starts a subagent on one of MODEL_ALIASES. Codex's takes only its own model
 # identifiers, so there a reviewer starts on the session's model.
 MODEL_ALIAS_RUNTIMES = frozenset({"claude-code"})
@@ -541,7 +545,7 @@ def _validate_specialists(value: dict[str, Any]) -> dict[str, Any]:
     for index, specialist in enumerate(specialists):
         path = f"{root}.specialists[{index}]"
         READ.json_object(specialist, path, required=SPECIALIST_KEYS, optional=OPTIONAL_SPECIALIST_KEYS)
-        model = READ.optional(READ.one_of, specialist.get("model"), f"{path}.model", MODEL_ALIASES | {"inherit"})
+        model = READ.optional(READ.one_of, specialist.get("model"), f"{path}.model", REVIEWER_MODELS)
         effort = READ.optional(READ.one_of, specialist.get("effort"), f"{path}.effort", REVIEWER_EFFORTS)
         shares = READ.optional(READ.boolean, specialist.get("shares_files"), f"{path}.shares_files")
         identity = READ.string(specialist["id"], f"{path}.id")
