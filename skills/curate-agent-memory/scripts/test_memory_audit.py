@@ -356,6 +356,37 @@ class MemoryAuditTests(unittest.TestCase):
         }
         self.assertEqual({"docs/guide.md": (True, None), "docs/removed.md": (False, None)}, cited)
 
+    def test_a_cited_home_path_is_checked_under_the_absolute_home(self) -> None:
+        home = self.root / "home"
+        write(home / "notes" / "rule.md", "Rule.\n")
+        write(self.memory_dir / "paths.md", memory("paths", "Read `~/notes/rule.md`, not `~/notes/gone.md`."))
+        with mock.patch.object(Path, "home", return_value=home):
+            report = self.run_audit()
+        cited = {
+            item["path"]: (item["exists"], item["unreadable"])
+            for item in self.by_file(report)["paths.md"]["cited_paths"]
+        }
+        self.assertEqual({"~/notes/rule.md": (True, None), "~/notes/gone.md": (False, None)}, cited)
+
+    def test_an_output_inside_the_home_derived_projects_folder_is_refused_before_writing(self) -> None:
+        write(self.memory_dir / "MEMORY.md", "")
+        home = self.root / "home"
+        projects = home / ".claude" / "projects"
+        target = projects / "C--other" / "memory" / "report.json"
+        target.parent.mkdir(parents=True)
+        environment = {name: value for name, value in os.environ.items() if name != "CLAUDE_CONFIG_DIR"}
+        with mock.patch.dict(os.environ, environment, clear=True), mock.patch.object(Path, "home", return_value=home):
+            self.assertEqual(
+                (
+                    1,
+                    f"FAILED {target} is inside Claude Code's projects folder {projects}; omit --output to write a "
+                    "new temporary file\n",
+                    "",
+                ),
+                run_main("audit", "--memory-dir", str(self.memory_dir), "--output", str(target)),
+            )
+        self.assertFalse(target.exists())
+
     def test_a_cited_path_it_cannot_stat_is_unreadable_never_not_found(self) -> None:
         write(self.repo / "tools" / "run.py", "print()\n")
         write(self.memory_dir / "paths.md", memory("paths", "Run `tools/run.py`."))
@@ -2403,6 +2434,15 @@ class SkillSourceTests(unittest.TestCase):
         project = write(self.repo / ".claude" / "skills" / "demo" / "SKILL.md", "---\nname: demo\n---\n")
         write(self.home / ".claude" / "skills" / "demo" / "SKILL.md", "---\nname: demo\n---\n")
         self.assertEqual([f"SKILL_FILE {self.source_file}", f"SKILL_FILE {project}"], self.source("demo"))
+
+    def test_without_home_the_home_folder_is_read(self) -> None:
+        self.manifest(main=str(self.checkout))
+        with (
+            mock.patch.object(Path, "home", return_value=self.home),
+            mock.patch.object(skill_roots, "SKILLS_ROOT", self.skills_root),
+        ):
+            code, stdout, stderr = run_main("skill-source", "demo", "--repo", str(self.repo))
+        self.assertEqual((0, f"SKILL_FILE {self.source_file}\n", ""), (code, stdout, stderr))
 
     def test_a_skill_with_no_source_is_a_failed_line(self) -> None:
         missing = (

@@ -4532,6 +4532,46 @@ class FileDerivedScopeTests(unittest.TestCase):
             [(f.severity, f.path, f.message) for f in result.findings if f.check == "scope"],
         )
 
+    def test_a_claude_local_md_keeps_claude_code_from_reading_agents_md(self) -> None:
+        # Claude Code reads AGENTS.md in place of a CLAUDE.md only while no CLAUDE.local.md is present, so beside one
+        # AGENTS.md brings in Codex alone, and no scope INFO says Claude Code reads it; a CLAUDE.md still brings it in.
+        cases: dict[str, tuple[dict[str, str | bytes], dict[str, list[str]]]] = {
+            "AGENTS.md beside CLAUDE.local.md": (
+                {"AGENTS.md": "x", "CLAUDE.local.md": "x"},
+                {"runtimes": ["codex"], "surfaces": []},
+            ),
+            "AGENTS.md alone": ({"AGENTS.md": "x"}, {"runtimes": ["claude", "codex"], "surfaces": []}),
+            "CLAUDE.local.md alone": ({"CLAUDE.local.md": "x"}, {}),
+            "CLAUDE.md beside CLAUDE.local.md and AGENTS.md": (
+                {"CLAUDE.md": "x", "CLAUDE.local.md": "x", "AGENTS.md": "x"},
+                {"runtimes": ["claude", "codex"], "surfaces": []},
+            ),
+        }
+        for name, (files, expected) in cases.items():
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as temporary:
+                _write_fixture(Path(temporary), files)
+                self.assertEqual(expected, audit.derive_file_scope(Path(temporary)))
+        result = self._audit(
+            {
+                "AGENTS.md": PLAIN_AGENTS,
+                "CLAUDE.local.md": "# Personal\n",
+                "scripts/ai_config.py": GENERATOR_NAMING_CLAUDE,
+                ".github/workflows/parity.yml": PARITY_WORKFLOW,
+            }
+        )
+        self.assertEqual(
+            [
+                (
+                    "INFO",
+                    None,
+                    "No AI-config manifest or recognized generator declares target runtimes or surfaces; the layering "
+                    "checks cover what the repository's files show it serves: runtimes codex; surfaces copilot_cli, "
+                    "code_review",
+                )
+            ],
+            [(f.severity, f.path, f.message) for f in result.findings if f.check == "scope"],
+        )
+
     def test_a_scope_no_file_shows_names_no_runtime(self) -> None:
         status, findings = audit.check_scope_and_roles(self.root, {})
         self.assertEqual(("no-declared-scope", ["scope"]), (status, [f.check for f in findings]))
@@ -5281,6 +5321,43 @@ class CodexConfigurationTests(unittest.TestCase):
                             }
                         )
                     ],
+                )
+
+    def test_a_config_toml_hook_timeout_is_a_positive_finite_number_of_seconds(self) -> None:
+        # TOML writes an infinity and a not-a-number as bare words, which tomllib reads as floats, and an integer of any
+        # length; a timeout is a positive finite number, as the JSON readers hold it.
+        refused = [
+            (
+                "ERROR",
+                "codex-hook",
+                ".codex/config.toml",
+                None,
+                "Hook on 'Stop': timeout must be a positive number of seconds",
+            )
+        ]
+        cases = {
+            "5": [],
+            "0.5": [],
+            "inf": refused,
+            "+inf": refused,
+            "-inf": refused,
+            "nan": refused,
+            "-nan": refused,
+            "0": refused,
+            "-1": refused,
+            "true": refused,
+            "1" + "0" * 400: refused,
+        }
+        for timeout, expected in cases.items():
+            with self.subTest(timeout=timeout[:8]):
+                self.assertEqual(
+                    expected,
+                    codex_rows(
+                        {
+                            ".codex/config.toml": "[[hooks.Stop]]\n[[hooks.Stop.hooks]]\n"
+                            f'type = "command"\ncommand = "x"\ntimeout = {timeout}\n'
+                        }
+                    ),
                 )
 
     def test_a_config_toml_hook_whose_type_is_a_list_is_an_error_never_a_crash(self) -> None:

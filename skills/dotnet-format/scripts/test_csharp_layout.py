@@ -1196,6 +1196,78 @@ class ConfigTests(unittest.TestCase):
             with self.subTest(text=text):
                 self.assertEqual(lowered, layout.roslyn_lower(text))
 
+    def test_a_property_line_is_read_by_the_compilers_pattern(self) -> None:
+        # Roslyn's s_propertyMatcher: ^\s*([\w\.\-_]+)\s*[=:]\s*(.*?)\s*([#;].*)?$, with .NET's \w (letters, nonspacing
+        # marks, decimal digits, connector punctuation) and \s, on lines ended by a carriage return or a line feed.
+        cases: tuple[tuple[str, dict[str, str]], ...] = (
+            ("a : b", {"a": "b"}),
+            ("a = b # c", {"a": "b"}),
+            ("a = b ; c", {"a": "b"}),
+            ("a=b#c", {"a": "b"}),
+            ("a:b = c", {"a": "b = c"}),
+            ("a =", {"a": ""}),
+            ("a = # c", {"a": ""}),
+            ("A.b-c_D = V", {"a.b-c_d": "v"}),
+            ("a! = b", {}),
+            ("a b = c", {}),
+            ("= b", {}),
+            ("a", {}),
+            ("ke\u0301y = v", {"ke\u0301y": "v"}),
+            ("key\u00b2 = v", {}),
+            ("a\u00a0=\u00a0b\u00a0", {"a": "b"}),
+            ("a = b\u2028c", {"a": "b\u2028c"}),
+            ("a = b\x1cc", {"a": "b\x1cc"}),
+            ("a = b\x0bc", {"a": "b\x0bc"}),
+            ("a = b\rc = d", {"a": "b", "c": "d"}),
+            ("  # a = b", {}),
+            (" ; a = b", {}),
+            ("\u00a0# a = b", {}),
+        )
+        path = self.root / ".editorconfig"
+        for text, preamble in cases:
+            with self.subTest(text=text):
+                path.write_bytes(text.encode("utf-8"))
+                config = layout.read_analyzer_config(path)
+                self.assertEqual((preamble, []), (config.preamble, config.sections))
+
+    def test_a_section_header_is_read_by_the_compilers_pattern(self) -> None:
+        # Roslyn's s_sectionMatcher: ^\s*\[(([^#;]|\\#|\\;)+)\]\s*([#;].*)?$; a line it does not match starts no
+        # section, so the property after it stays in the section before.
+        cases: tuple[tuple[str, dict[str, str], list[tuple[str, dict[str, str]]]], ...] = (
+            ("[*.cs]", {}, [("*.cs", {"x": "y"})]),
+            ("  [*.cs]  # layout", {}, [("*.cs", {"x": "y"})]),
+            ("[*.cs] ; layout", {}, [("*.cs", {"x": "y"})]),
+            ("[a\\#b]", {}, [("a\\#b", {"x": "y"})]),
+            ("[a]b]", {}, [("a]b", {"x": "y"})]),
+            ("[a#b]", {"x": "y"}, []),
+            ("[*.cs] x", {"x": "y"}, []),
+            ("[]", {"x": "y"}, []),
+        )
+        path = self.root / ".editorconfig"
+        for header, preamble, sections in cases:
+            with self.subTest(header=header):
+                path.write_bytes(f"{header}\nx = y\n".encode())
+                config = layout.read_analyzer_config(path)
+                self.assertEqual((preamble, sections), (config.preamble, config.sections))
+
+    def test_a_colon_separator_and_an_inline_comment_are_read_as_the_compiler_reads_them(self) -> None:
+        editorconfig = self.root / ".editorconfig"
+        editorconfig.write_text(
+            "root = true\n\n[*.cs] # layout\n"
+            "dotnet_diagnostic.RCS0063.severity : none\n"
+            "dotnet_diagnostic.RCS0041.severity = none # kept off for now\n",
+            encoding="utf-8",
+        )
+        states = self.states(self.config())
+        self.assertEqual(
+            ("other:none", "other:none"),
+            (states["dotnet_diagnostic.RCS0063.severity"], states["dotnet_diagnostic.RCS0041.severity"]),
+        )
+        added = {key for _, key, _ in self.added()}
+        self.assertFalse({"dotnet_diagnostic.RCS0063.severity", "dotnet_diagnostic.RCS0041.severity"} & added)
+        # The header with a comment is the first section, so the added one goes before it.
+        self.assertTrue(editorconfig.read_text(encoding="utf-8").startswith("root = true\n\n[*.cs]\ninsert_final"))
+
     def test_an_editorconfig_that_sets_is_global_to_any_value_is_a_global_config(self) -> None:
         # The compiler asks only whether the preamble holds the key, so `is_global = false` makes the file global too:
         # its preamble then reaches every file, as a global config's does, and it ends no .editorconfig chain.

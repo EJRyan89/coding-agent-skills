@@ -77,6 +77,7 @@ import os
 import re
 import stat
 import sys
+import unicodedata
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -115,6 +116,16 @@ NAMED_GLOBAL_LEVEL = 100
 # sets no level.
 GLOBAL_LEVEL = re.compile(r"([+-]?)([0-9]+)")
 INT32_LIMIT = 1 << 31
+# The characters below 128 that .NET reads as whitespace, in char.IsWhiteSpace and in a pattern's \s.
+ASCII_WHITESPACE = " \t\n\v\f\r"
+# An analyzer config's section header and property line, Roslyn's s_sectionMatcher and s_propertyMatcher in
+# AnalyzerConfig.cs, matched as ASCII against a line `compiler_classes` maps: a key holds word characters, `.`, `-`,
+# and `_`, `=` or `:` separates it from the value, and a `#` or `;` after a header or a value starts a comment.
+SECTION_LINE = re.compile(r"^\s*\[(([^#;]|\\#|\\;)+)\]\s*([#;].*)?$", re.ASCII)
+PROPERTY_LINE = re.compile(r"^\s*([\w\.\-_]+)\s*[=:]\s*(.*?)\s*([#;].*)?$", re.ASCII)
+# The general categories .NET's regular expressions read as a word character: letters, nonspacing marks, decimal
+# digits, and connector punctuation.
+WORD_CATEGORIES = frozenset({"Lu", "Ll", "Lt", "Lm", "Lo", "Mn", "Nd", "Pc"})
 # The layout rules the analyzers enforce; the dotnet-format section of docs/skills.md says which rule each covers.
 SETTINGS = (
     ("insert_final_newline", "true"),
@@ -854,19 +865,46 @@ def roslyn_lower(text: str) -> str:
     return text.lower() if text.isascii() else "".join(_roslyn_lower(character) for character in text)
 
 
+def _compiler_class(character: str) -> str:
+    """A character beyond ASCII as the class .NET reads it in: a space for whitespace, `a` for a word character, and
+    itself, which an ASCII pattern reads as neither, otherwise."""
+    category = unicodedata.category(character)
+    if character == "\x85" or category in ("Zs", "Zl", "Zp"):
+        return " "
+    return "a" if category in WORD_CATEGORIES else character
+
+
+def compiler_classes(line: str) -> str:
+    """The line with each character beyond ASCII replaced, one for one, by `_compiler_class`, so an ASCII pattern
+    matches it as .NET matches the line and a match's spans index the line itself."""
+    if line.isascii():
+        return line
+    return "".join(character if character.isascii() else _compiler_class(character) for character in line)
+
+
+def is_section_header(line: str) -> bool:
+    """Whether the compiler reads the line, its terminator removed, as a section header."""
+    return SECTION_LINE.match(compiler_classes(line)) is not None
+
+
 def read_analyzer_config(path: Path) -> AnalyzerConfig:
+    """The file's preamble and sections as Roslyn's AnalyzerConfig.Parse reads them: a line ends at a carriage return,
+    a line feed, or both; a blank line or one whose first other character is `#` or `;` is a comment; a section header
+    and a property line are read by the compiler's patterns, and any other line sets nothing."""
     preamble: dict[str, str] = {}
     sections: list[tuple[str, dict[str, str]]] = []
     current = preamble
-    for raw in read_text(path).splitlines():
-        line = raw.strip()
-        if not line or line[0] in "#;":
+    for terminated in LINE.findall(read_text(path)):
+        line = terminated.rstrip("\r\n")
+        classes = compiler_classes(line)
+        stripped = classes.lstrip(ASCII_WHITESPACE)
+        if not stripped or stripped[0] in "#;":
             continue
-        if line.startswith("[") and line.endswith("]"):
+        if section := SECTION_LINE.match(classes):
             current = {}
-            sections.append((line[1:-1], current))
-        elif "=" in line:
-            key, value = (part.strip() for part in line.split("=", 1))
+            sections.append((line[section.start(1) : section.end(1)], current))
+        elif found := PROPERTY_LINE.match(classes):
+            key, value = (line[found.start(group) : found.end(group)] for group in (1, 2))
             current[roslyn_lower(key)] = roslyn_lower(value)
     return AnalyzerConfig(path, preamble, sections)
 
@@ -1032,8 +1070,8 @@ def insert_settings(source: Source, settings: list[tuple[str, str]]) -> str:
     """
     newline = "\r\n" if "\r\n" in source.text else "\n"
     section = newline.join(["[*.cs]", *(f"{key} = {value}" for key, value in settings)]) + newline
-    lines = source.text.splitlines(keepends=True)
-    first = next((index for index, line in enumerate(lines) if line.strip().startswith("[")), None)
+    lines = LINE.findall(source.text)
+    first = next((index for index, line in enumerate(lines) if is_section_header(line.rstrip("\r\n"))), None)
     if first is None:
         text = source.text
         if text and not text.endswith(("\r", "\n")):
