@@ -1089,6 +1089,16 @@ def specialist(identity: str) -> dict[str, Any]:
     return next(item for item in MANIFEST["specialists"] if item["id"] == identity)
 
 
+class ReviewerSettingsTests(unittest.TestCase):
+    """Sonnet at medium effort is every route's setting but one; Opus is the exception, held by literals."""
+
+    def test_every_route_runs_sonnet_at_medium_effort_except_the_trust_boundary_on_opus(self) -> None:
+        settings = {item["id"]: (item.get("model"), item.get("effort")) for item in MANIFEST["specialists"]}
+        expected = dict.fromkeys(settings, ("sonnet", "medium"))
+        expected["trust-boundary"] = ("opus", "medium")
+        self.assertEqual(expected, settings)
+
+
 class SiblingSpellingsTests(unittest.TestCase):
     """A fix to the trust boundary or a validation policy reaches a reviewer given only its closing issue, which asks
     what the issue's reasoning implies that the fix leaves open."""
@@ -1106,6 +1116,8 @@ class SiblingSpellingsTests(unittest.TestCase):
             {
                 "category": "Sibling spellings",
                 "profile": f"{SKILL}/references/sibling-spellings.md",
+                "model": "sonnet",
+                "effort": "medium",
                 "exclude": [],
                 "resources": [
                     "docs/lessons.md",
