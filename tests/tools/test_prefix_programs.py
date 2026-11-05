@@ -516,14 +516,60 @@ class WindowsBuildTests(unittest.TestCase):
                     "timeout 5 'C:\\Windows\\System32\\find.exe' /x y f",
                     "env 'C:\\WINDOWS\\SYSTEM32\\FIND.EXE' /x y f",
                     "echo x | xargs sort -u --",
+                    # A path that starts with a slash is a word the Windows build may read as a slash option.
+                    "find /tmp/ -name x",
+                    "sort /c/x/f",
+                    # A joined pair, an attached value, and a slash word another option takes as its value.
+                    "sort /r/o out.txt f",
+                    "sort /L C /O out.txt f",
+                    "sort /L /O out.txt f",
+                    "sort /Oout.txt f",
+                    "sort /O:out.txt f",
+                    "sort /Tdir f",
+                    "sort -t /O out.txt f",
+                    "find /c/v x f",
                 ):
                     with self.subTest(command=command):
                         self.assertEqual(flag, refused(command))
-                # The Windows build's safe options, GNU sort's, and a path that is no slash option.
-                for command in ("/c/Windows/System32/sort.exe /r f", "sort -u f", "find /tmp/ -name x"):
+                # The Windows build's safe options, GNU sort's, and paths that start with no slash.
+                for command in ("/c/Windows/System32/sort.exe /r f", "sort -u f", "find tmp/ -name x", "sort ./f"):
                     with self.subTest(command=command):
                         self.assertFalse(refused(command))
         self.assertEqual(platform_support.WINDOWS, platform_support.SYSTEM_PROGRAMS_TAKE_SLASH_OPTIONS)
+
+    def test_a_slash_word_that_is_not_exactly_a_safe_option_is_refused_wherever_it_stands(self) -> None:
+        # How sort.exe reads a joined pair, an attached value, or a slash word another option takes as its value is not
+        # documented, so each is refused unless it is exactly one of SAFE_SLASH's options.
+        for program, words, safe in (
+            ("sort", "/r/o out.txt f", False),
+            ("sort", "/R/R f", False),
+            ("sort", "/r/+3 f", False),
+            ("sort", "/L C /O out.txt f", False),
+            ("sort", "/L /O out.txt f", False),
+            ("sort", "/REC /T d f", False),
+            ("sort", "/Oout.txt f", False),
+            ("sort", "/O:out.txt f", False),
+            ("sort", "/o:out.txt f", False),
+            ("sort", "/Tdir f", False),
+            ("sort", "/R:x f", False),
+            ("sort", "-t /O out.txt f", False),
+            ("sort", "-k /O out.txt f", False),
+            ("sort", "-- /tmp/x", False),
+            ("sort", "f /", False),
+            ("find", "/c/v x f", False),
+            ("find", "/Cx f", False),
+            ("find", "-name /O x", False),
+            ("sort", "/r f", True),
+            ("sort", "/REVERSE /L C f", True),
+            ("sort", "/l c /m 100 /rec 10 f", True),
+            ("sort", "/+3 f", True),
+            ("sort", "-t x -u f", True),
+            ("find", "/c /i /OFFLINE x f", True),
+        ):
+            with self.subTest(program=program, words=words):
+                arguments: list[hub_guard.Word] = list(words.split())
+                reason = hub_guard.program_refusal(program, arguments, windows_build=True)
+                self.assertEqual(not safe, reason is not None)
 
     def test_the_guard_s_slash_options_are_the_ones_this_suite_holds_safe(self) -> None:
         for build, program in WINDOWS_BUILDS.items():

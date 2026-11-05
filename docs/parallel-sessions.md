@@ -361,7 +361,10 @@ a row decides it.
   name or path settles whether a command reaches GNU `sort` and `find` or Windows' own builds, each is read as both,
   whatever its path and from both shells: its options written with a slash are read in any case by an allow-list of
   their own, after `--` too, which the Windows build reads as an operand, so Windows `sort`'s `/O`, which writes a
-  file, and `/T` are refused, and so is such a program after `xargs`. A runner's command
+  file, and `/T` are refused, and so is such a program after `xargs`. Every word of such a program that starts with a
+  slash must be exactly one of those options, wherever it stands, since how the Windows build reads any other is not
+  documented: a joined pair such as `/r/o`, a value attached as in `/Oout.txt` or `/O:out.txt`, a slash word another
+  option takes as its value, as `/O` after `/L` or after `-t`, and a path such as `/tmp/x` are refused. A runner's command
   that is one of them is held to its allow-list too, and after `xargs`, which adds words from its input, it is refused
   unless its words hold a `--` that ends its options, which `find` has none of. A variable one of them reads options
   from, `PROGRAM_VARIABLES`: `RIPGREP_CONFIG_PATH`, `TAPE`, and `TAR_OPTIONS`, is refused where it is assigned

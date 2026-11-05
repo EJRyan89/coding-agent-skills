@@ -2394,7 +2394,8 @@ def program_refusal(
     know to be safe, in any spelling (option_refusal), a word the text does not settle, which may be one, or a variable
     the program reads options from (PROGRAM_VARIABLES) among the names variables gives, those assigned before it and
     those of the environment. windows_build says the program is read as its Windows build too, as System32's
-    sort.exe, which reads slash options (option_refusal); None leaves it to system_program."""
+    sort.exe, which reads slash options, each word that starts with a slash refused unless it is exactly a safe one
+    (option_refusal, slash_refusal); None leaves it to system_program."""
     if windows_build is None:
         windows_build = system_program(program)
     # Windows reads a variable's name in any case.
@@ -2403,9 +2404,11 @@ def program_refusal(
         return f"{program} reads options or its archive from {handed[0]}, which may hold one that runs a command"
     if any(word is None for word in arguments):
         return f"{program} may run a command its words name (a word the text does not settle)"
-    reading = option_refusal(PROGRAM_OPTIONS[program], arguments, windows_build)
-    if reading.refused is not None:
-        return f"{program} is given {reading.refused}, not one of its options the guard knows to be safe"
+    table = PROGRAM_OPTIONS[program]
+    reading = option_refusal(table, arguments, windows_build)
+    refused = slash_refusal(table, arguments, windows_build) or reading.refused
+    if refused is not None:
+        return f"{program} is given {refused}, not one of its options the guard knows to be safe"
     return remote_archive(program, arguments, reading)
 
 
@@ -2435,9 +2438,23 @@ class OptionReading:
     longs: list[str]
 
 
-# A word the Windows build of a program reads as a slash option: a slash, then a letter, `+`, or `?`, and no other
-# separator, so a path such as `/c/x` or `C:/x` is none.
-SLASH_OPTION = re.compile(r"/[A-Za-z+?][^/\\]*")
+def slash_refusal(table: OptionTable, arguments: list[Word], windows_build: bool) -> str | None:
+    """Where windows_build says the program is its Windows build, which reads slash options, the first word it may read
+    as one that is not exactly one of the table's slash options, in any case: every word that starts with a slash,
+    wherever it stands, since how such a build reads one is not documented. A joined pair such as `/r/o`, a value
+    attached as in `/Oout.txt` or `/O:out.txt`, a path such as `/tmp/x`, and a word another option would take as its
+    value, as `/O` after `/L` or after GNU sort's `-t`, may each be read as an option that writes, so each is refused;
+    None where every such word is a safe option, and for a program with no slash options."""
+    if not windows_build or table.slash is None:
+        return None
+    return next((word for word in arguments if word and word.startswith("/") and slash_kind(table, word) is None), None)
+
+
+def slash_kind(table: OptionTable, word: str) -> str | None:
+    """How a Windows build's slash option takes its value, read in any case, `+` standing for `/+n`; None for a word
+    that is not exactly one of the table's slash options."""
+    name = word[1:].upper()
+    return (table.slash or {}).get("+" if re.fullmatch(r"\+[0-9]+", name) else name)
 
 
 def option_refusal(table: OptionTable, arguments: list[Word], windows_build: bool = False) -> OptionReading:
@@ -2448,7 +2465,8 @@ def option_refusal(table: OptionTable, arguments: list[Word], windows_build: boo
     after it, which is safe only spelled in full, and short options bundled in one word, each letter judged, a
     value-taking one ending the bundle with the rest of its word or the next word as its value. Where windows_build
     says the program is its Windows build, a slash option is read by the table's slash options, and refused where the
-    table has none. A word the text does not settle ends the reading, and the caller refuses it."""
+    table has none; program_refusal also refuses every other word that starts with a slash (slash_refusal). A word the
+    text does not settle ends the reading, and the caller refuses it."""
     operands = table.operands
     index = 0
     ended = False  # past `--`, where no word is an option
@@ -2459,11 +2477,11 @@ def option_refusal(table: OptionTable, arguments: list[Word], windows_build: boo
     def reading(refused: str | None, stop: int) -> OptionReading:
         return OptionReading(refused, stop, assigned, values, longs)
 
+    slashes = windows_build and table.slash is not None
     while index < len(arguments):
         word = arguments[index]
         if word is None:
             return reading(None, index)
-        slashes = windows_build and table.slash is not None
         if word == "--" and not ended and not table.single_dash:
             # A Windows build reads `--` as an operand and its slash options after it.
             if table.permutes and not slashes:
@@ -2478,7 +2496,7 @@ def option_refusal(table: OptionTable, arguments: list[Word], windows_build: boo
             values += taking
             index += 1 + len(taking)
             continue
-        slash = slashes and bool(SLASH_OPTION.fullmatch(word))
+        slash = slashes and word.startswith("/")
         if not slash and (ended or len(word) < 2 or not word.startswith("-")):
             if table.assignments and "=" in word:
                 name, _, value = word.partition("=")
@@ -2523,8 +2541,7 @@ def option_word(table: OptionTable, word: str) -> tuple[int, str | None, str | N
         return 0, None, None
     if word.startswith("/"):
         # A Windows build's slash option, in any case, by the table's slash options.
-        name = word[1:].upper()
-        kind = (table.slash or {}).get("+" if re.fullmatch(r"\+[0-9]+", name) else name)
+        kind = slash_kind(table, word)
         return None if kind is None else (int(kind == VALUE), None, None)
     if table.single_dash or word.startswith("--"):
         name, attached, value = word.partition("=")

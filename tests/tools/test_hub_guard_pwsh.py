@@ -375,6 +375,16 @@ class RunnerOptionTests(unittest.TestCase):
             (True, "timeout 5 sort.exe /o out.txt f", True),
             (True, "sort.exe -- /o out.txt f", True),
             (True, "C:\\WINDOWS\\SysWOW64\\SORT.EXE /O out.txt f", True),
+            # A joined pair, an attached value, and a slash word another option takes as its value.
+            (True, "sort.exe /r/o out.txt f", True),
+            (True, "sort.exe /L C /O out.txt f", True),
+            (True, "sort.exe /L /O out.txt f", True),
+            (True, "sort.exe /Oout.txt f", True),
+            (True, "sort.exe /O:out.txt f", True),
+            (True, "sort.exe /Tdir f", True),
+            (True, "sort.exe -t /O out.txt f", True),
+            (True, "find.exe /c/v x f", True),
+            (True, "sort.exe /L C /r f", False),
             (False, "sort.exe /o out.txt f", False),
         ):
             with (
