@@ -1196,8 +1196,12 @@ def moved(directory: Path | None, target: Word) -> Path | None:
 
 
 def command_name(word: Word) -> str | None:
-    """The lower-cased name a command is called by, without its directory or .exe; None when it is computed."""
-    return None if word is None else platform_support.program_name(Path(word).name).lower()
+    """The lower-cased name a command is called by, without its directory, after either separator on every platform, or
+    .exe; None when it is computed. The host's own path type would leave a Windows path whole on Linux, where a guard
+    reading a command meant for Windows must still name its program."""
+    if word is None:
+        return None
+    return platform_support.program_name(word.replace("\\", "/").rpartition("/")[2]).lower()
 
 
 def folded(name: str) -> str:

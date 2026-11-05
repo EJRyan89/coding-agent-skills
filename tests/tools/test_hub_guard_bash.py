@@ -5,9 +5,11 @@ and the rows below are generated from those tables, so an entry a later Bash add
 from __future__ import annotations
 
 import os
+import pathlib
 import sys
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts"))
@@ -388,6 +390,21 @@ class RunnerTests(unittest.TestCase):
                 self.assertEqual([], reading(f"OTHER=x {program} -v y").unread)
                 self.assertEqual([], reading(f"env OTHER=x {program} -v y").unread)
         self.assertEqual({"tar": {"TAR_OPTIONS", "TAPE"}, "rg": {"RIPGREP_CONFIG_PATH"}}, hub_guard.PROGRAM_VARIABLES)
+
+    def test_a_command_s_name_is_read_after_either_separator_whatever_the_host_s_paths(self) -> None:
+        rows = {
+            "C:\\WINDOWS\\SysWOW64\\SORT.EXE": "sort",
+            "C:/Windows/System32/find.exe": "find",
+            "/usr/bin/git": "git",
+            "..\\tools\\gh.exe": "gh",
+            "timeout": "timeout",
+        }
+        # PurePosixPath reads a path as a Linux host does, where a backslash separates nothing.
+        for host in (pathlib.PurePosixPath, pathlib.PureWindowsPath):
+            with mock.patch.object(hub_guard, "Path", host):
+                for word, name in rows.items():
+                    with self.subTest(host=host.__name__, word=word):
+                        self.assertEqual(name, hub_guard.command_name(word))
 
     def test_option_refusal_is_the_one_reading_of_a_program_s_words(self) -> None:
         xargs = hub_guard.RUNNER_OPTIONS["xargs"]
