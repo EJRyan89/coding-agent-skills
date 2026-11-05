@@ -140,6 +140,7 @@ from review_run import (
     _inside,
     _sha256,
     _write_run,
+    apply_default_model,
     command_script,
     load_run,
     mark_dispatched,
@@ -354,6 +355,7 @@ def _write_roles(
     lazy: bool = False,
     document_stage: str | None = None,
     guarded: bool,
+    default_model: str | None = None,
 ) -> tuple[list[RunRole], list[str], dict[str, list[str]]]:
     """Each reviewer role with its prompt written: an entrypoint's one, or the specialists plan's. Returns the roles,
     the changed files the plan leaves unreviewed, and the run's restricted paths, each with the roles that may read it.
@@ -381,7 +383,11 @@ def _write_roles(
                 source_commands=_source_commands(run, adapter["name"], script, lazy),
             ),
         )
-        return [{"id": adapter["name"], "prompt_file": str(prompt_path), "result_file": str(result_path)}], [], {}
+        entrypoint_roles: list[RunRole] = [
+            {"id": adapter["name"], "prompt_file": str(prompt_path), "result_file": str(result_path)}
+        ]
+        apply_default_model(entrypoint_roles, default_model)
+        return entrypoint_roles, [], {}
     plan = build_plan(
         request_path,
         reviewer_root,
@@ -418,6 +424,7 @@ def _write_roles(
             "keep it from the other reviewers."
         )
     notes.extend(plan["notes"])
+    apply_default_model(roles, default_model)
     return roles, plan["uncovered_files"], restricted
 
 
@@ -744,6 +751,7 @@ def _prepare_run(
             lazy=lazy,
             document_stage=review.document_stage,
             guarded=guard_runs(runtime, dispatch),
+            default_model=config["reviewer_model"],
         )
         snapshot["seconds"] = snapshot_seconds({**snapshot["seconds"], "prompts": services.timer() - writing})
         state: RunState = {
