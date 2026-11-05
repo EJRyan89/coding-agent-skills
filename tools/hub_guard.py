@@ -265,7 +265,8 @@ FIND_COMMANDS = frozenset({"-exec", "-execdir", "-ok", "-okdir"})
 # does not name, or change where the program acts, by an allow-list as RUNNER_OPTIONS's: find's -exec family and its
 # -delete and -fprint family, rg's --pre and --hostname-bin, sort's --compress-program and --output, and tar's options
 # that run a program, its extraction (-x, --extract, --get, and what only overwrites on extraction), and its -C, which
-# writes the files an archive names in a directory the option chooses, are among the ones refused, and so is any word
+# writes the files an archive names in a directory the option chooses, and its -T, whose list of names may hand it
+# options, are among the ones refused, and so is any word
 # of such a program that the text does not settle. tar's archive named host:path, which tar opens through a remote
 # shell, is refused unless --force-local is given (remote_archive). tar's letters are the ones GNU tar and bsdtar,
 # Windows' tar.exe, either both read alike or one does not know: -H, -W, and -s, which one of them reads with a value
@@ -317,11 +318,11 @@ PROGRAM_OPTIONS: dict[str, OptionTable] = {
         permutes=True,
     ),
     "tar": option_table(
-        "AcdrtuvzjJZakmOpPhSBilnRof:T:X:b:K:N:V:",
+        "AcdrtuvzjJZakmOpPhSBilnRof:X:b:K:N:V:",
         " ".join(
             (
                 "catenate concatenate create diff compare append list update delete file= force-local",
-                "files-from= exclude-from= exclude= verbose gzip gunzip ungzip bzip2 xz lzip lzma lzop zstd compress",
+                "exclude-from= exclude= verbose gzip gunzip ungzip bzip2 xz lzip lzma lzop zstd compress",
                 "uncompress auto-compress no-auto-compress keep-old-files skip-old-files keep-newer-files",
                 "no-overwrite-dir touch to-stdout preserve-permissions same-permissions",
                 "no-same-permissions same-owner no-same-owner numeric-owner absolute-names dereference",
@@ -2909,7 +2910,10 @@ class PowerShellReader:
                 "a command name the text does not settle, which may be any command, git among them"
             )
             return certain(UNKNOWN)
-        if name.lower() in POWERSHELL_COMMANDS:
+        # A name both a cmdlet's alias and a program PROGRAM_OPTIONS reads, as sort, is the program where pwsh gives it
+        # no alias, off Windows.
+        unaliased = command_name(name) in PROGRAM_OPTIONS and not platform_support.POWERSHELL_ALIASES_SHADOW_PROGRAMS
+        if name.lower() in POWERSHELL_COMMANDS and not unaliased:
             elements = command.get("elements") or []
             if POWERSHELL_COMMANDS[name.lower()] == "foreach-object" and any(
                 not isinstance(element, dict) or element.get("kind") not in {"block", "parameter"}
@@ -2926,7 +2930,7 @@ class PowerShellReader:
             read_git(arguments, directory.cwd, self.reading)
         elif program == "gh":
             read_gh(words[1:], directory, self.reading)
-        elif powershell_command(name):
+        elif powershell_command(name) and not unaliased:
             self.reading.cannot_read(f"runs {name}, a PowerShell command the guard does not read, which may run git")
             return certain(UNKNOWN)
         elif program in RUNNERS:

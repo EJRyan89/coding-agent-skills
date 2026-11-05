@@ -33,6 +33,9 @@ WINDOWS = sys.platform == "win32"
 # Whether a process's environment matches a variable's name in any case, as Windows does, so git there takes git_dir
 # as GIT_DIR; elsewhere each spelling is a variable of its own and git reads only the upper-case one.
 ENVIRONMENT_NAMES_FOLD_CASE = WINDOWS
+# Whether pwsh gives its cmdlets aliases a program of the system also holds, as sort for Sort-Object; off Windows it
+# gives none, so `sort` there runs the program.
+POWERSHELL_ALIASES_SHADOW_PROGRAMS = WINDOWS
 # This platform's name as a person knows it, which a report names it by.
 PLATFORM_NAME = SUPPORTED_PLATFORMS.get(sys.platform, sys.platform)
 WINDOWS_ABSOLUTE = re.compile(r"^[A-Za-z]:/")

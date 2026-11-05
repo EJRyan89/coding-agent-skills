@@ -106,8 +106,8 @@ SAFE: dict[str, set[str]] = {
         *("--no-seek", "-n", "--seek", "-S", "--sparse", "--exclude", "--exclude-backups"),
         *("--exclude-caches", "--exclude-caches-all", "--exclude-caches-under", "--exclude-tag"),
         *("--exclude-tag-all", "--exclude-tag-under", "--exclude-vcs", "--exclude-vcs-ignores", "--no-null"),
-        *("--no-recursion", "--no-unquote", "--no-verbatim-files-from", "--null", "--recursion", "-T"),
-        *("--files-from", "--unquote", "--verbatim-files-from", "-X", "--exclude-from", "--anchored"),
+        *("--no-recursion", "--no-unquote", "--no-verbatim-files-from", "--null", "--recursion"),
+        *("--unquote", "--verbatim-files-from", "-X", "--exclude-from", "--anchored"),
         *("--ignore-case", "--no-anchored", "--no-ignore-case", "--no-wildcards", "--no-wildcards-match-slash"),
         *("--wildcards", "--wildcards-match-slash", "--keep-newer-files", "-k", "--keep-old-files"),
         *("--no-overwrite-dir", "--skip-old-files"),
@@ -164,6 +164,9 @@ EXTRA_FORMS: dict[str, list[tuple[list[str], bool]]] = {
         # A value given to an option that takes none.
         (["--verbose=1", "-tf", "a.tar"], False),
         (["--verbose", "-tf", "a.tar"], True),
+        # A list of names, which tar reads for options too unless --verbatim-files-from is given.
+        (["-cf", "a.tar", "-T", "list"], False),
+        (["-cf", "a.tar", "--files-from=list"], False),
         (["xIf", "a.tar"], False),
         (["-xIgit", "-f", "a.tar"], False),
         (["--to-com=git", "-xf", "a.tar"], False),

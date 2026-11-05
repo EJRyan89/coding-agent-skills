@@ -351,8 +351,8 @@ a row decides it.
   git. The programs that have options which run a command, write a file the command does not name, or change where
   the program acts, `PROGRAM_OPTIONS`: `find`, `rg`, `sort`, and `tar`, are read by an allow-list the same way, from
   Bash and PowerShell alike, its safe options ones that do none of these, and so is refused any word of theirs that
-  the text does not settle. `tar`'s extraction, which writes the files an archive names, and its `-C`, which chooses
-  where, are refused, and so is an archive it names `host:path`, which it opens through a remote shell, unless
+  the text does not settle. `tar`'s extraction, which writes the files an archive names, its `-C`, which chooses
+  where, and its `-T`, whose list of names may hand it options, are refused, and so is an archive it names `host:path`, which it opens through a remote shell, unless
   `--force-local`, given as an option rather than as another option's value or after `--`, makes it a file. `tar`'s
   table holds only letters GNU tar and bsdtar, Windows' `tar.exe`, read alike, so `-H`, `-W`, and `-s`, which one of
   them reads with a value and the other without, are refused. A runner's command
@@ -379,7 +379,8 @@ a row decides it.
   call, a static member such as `[IO.File]::Delete`, a member the text does not name, a cast to another type, a
   script block handed to any other command, and `ForEach-Object` given a member's name are not read. A command is
   understood when it is a program, judged by the runner rule above, `bash` and `pwsh` refused whatever they
-  run since the guard reads their scripts only from Bash, but for a name PowerShell keeps for its own commands, an
+  run since the guard reads their scripts only from Bash, and `sort`, which off Windows pwsh gives no alias, read
+  there as the program by its allow-list, but for a name PowerShell keeps for its own commands, an
   alias, a function of its own, or a verb-noun name (held to `Get-Alias`, `Get-Command`, and `Get-Verb`), which is understood only for one of these cmdlets, by
   its name or an alias PowerShell gives it: `Set-Location`, `Push-Location`, `Pop-Location`,
   `Get-ChildItem`, `Get-Content`, `Select-String`, `Select-Object`, `Sort-Object`, `Measure-Object`, `Write-Output`,

@@ -272,8 +272,11 @@ class CommandNameTests(unittest.TestCase):
                     self.assertEqual(hub_guard.POWERSHELL_COMMANDS[name], definition.lower())
                 else:
                     # Where PowerShell gives the name no alias, as ls and cat on Linux, it runs the program, one the
-                    # guard reads as harmless either way: none of them runs another command.
+                    # guard reads as harmless either way: none of them runs another command. One whose options
+                    # may, as sort's, is judged by its catalogue there.
                     self.assertNotIn(name, hub_guard.RUNNERS)
+                    if name in hub_guard.PROGRAM_OPTIONS:
+                        self.assertFalse(platform_support.POWERSHELL_ALIASES_SHADOW_PROGRAMS)
 
 
 def powershell_reading(command: str) -> hub_guard.Reading:
@@ -342,6 +345,24 @@ class RunnerOptionTests(unittest.TestCase):
                 reading = hub_guard.Reading({"PATH": os.environ.get("PATH", ""), "TAR_OPTIONS": "x"}, command)
                 hub_guard.read_powershell(command, Path.cwd(), reading)
                 self.assertIn("TAR_OPTIONS", " ".join(reading.unread))
+
+    def test_sort_is_read_as_the_program_where_pwsh_gives_it_no_alias(self) -> None:
+        self.assertEqual(platform_support.WINDOWS, platform_support.POWERSHELL_ALIASES_SHADOW_PROGRAMS)
+        for aliased, command, refused in (
+            (False, "sort --compress=x f", True),
+            (False, "sort -o out.txt f", True),
+            (False, "sort -u f", False),
+            # On Windows sort is Sort-Object, whose parameters run nothing.
+            (True, "sort --compress=x f", False),
+            (True, "sort -Descending", False),
+        ):
+            with (
+                self.subTest(aliased=aliased, command=command),
+                mock.patch.object(platform_support, "POWERSHELL_ALIASES_SHADOW_PROGRAMS", aliased),
+            ):
+                self.assertEqual(refused, bool(powershell_reading(command).unread))
+        here = powershell_reading("sort --compress=x f")
+        self.assertEqual(not platform_support.WINDOWS, bool(here.unread), "this platform's own reading")
 
     def test_bash_and_pwsh_are_refused_whatever_they_run(self) -> None:
         for command in ("bash -c 'ls'", "bash script.sh", "pwsh -NoProfile -Command 'Get-Date'", "pwsh -File x.ps1"):
