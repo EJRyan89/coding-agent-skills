@@ -6,6 +6,7 @@ here until a row decides it."""
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 import unittest
@@ -125,7 +126,7 @@ UNSAMPLED = {
 def pwsh(script: str, stdin: str = "") -> str:
     found = platform_support.find_pwsh("")
     if found is None:
-        found = platform_support.find_pwsh(__import__("os").environ.get("PATH", ""))
+        found = platform_support.find_pwsh(os.environ.get("PATH", ""))
     if found is None:
         raise AssertionError("pwsh is not installed, and PowerShell lists the catalogue the guard is held to")
     result = subprocess.run(
@@ -273,3 +274,87 @@ class CommandNameTests(unittest.TestCase):
                     # Where PowerShell gives the name no alias, as ls and cat on Linux, it runs the program, one the
                     # guard reads as harmless either way: none of them runs another command.
                     self.assertNotIn(name, hub_guard.RUNNERS)
+
+
+def powershell_reading(command: str) -> hub_guard.Reading:
+    """The guard's reading of a PowerShell command, as data: pwsh only parses it."""
+    reading = hub_guard.Reading({"PATH": os.environ.get("PATH", "")}, command)
+    hub_guard.read_powershell(command, Path.cwd(), reading)
+    return reading
+
+
+def bash_reading(command: str) -> hub_guard.Reading:
+    """The guard's reading of a Bash command, as data: nothing is run."""
+    reading = hub_guard.Reading({}, command)
+    hub_guard.read_bash(command, Path.cwd(), reading)
+    return reading
+
+
+class RunnerOptionTests(unittest.TestCase):
+    """The PowerShell reader judges a runner's and a program's options by the allow-lists the Bash reader does, and
+    reads gh after a runner; tests/tools/test_prefix_programs.py holds the allow-lists themselves to each catalogue."""
+
+    def test_a_runner_s_or_a_program_s_option_not_known_to_be_safe_is_refused_in_every_spelling(self) -> None:
+        for command, refused in (
+            ("tar --to-com=git -xf a.tar", True),
+            ("tar -xIgit -f a.tar", True),
+            ("tar xIf a.tar", True),
+            # sort alone is PowerShell's alias of Sort-Object; sort.exe is the program.
+            ("sort.exe --compress=x f", True),
+            ("sort.exe -o out.txt f", True),
+            ("sort.exe -u f", False),
+            ("rg --pre x y", True),
+            ("find . -exec ls '{}' ';'", True),
+            ("find . -delete", True),
+            ("tar $x a.tar", True),
+            ("Write-Output git | xargs --replac=X X status", True),
+            ("Write-Output git | xargs -0IX X status", True),
+            ("env --split='git status'", True),
+            ("env -C d ls", True),
+            ("timeout 5 tar --to-command=git -xf a.tar", True),
+            ("Write-Output a | xargs rg x", True),
+            ("timeout 5 tar -xf a.tar", False),
+            ("tar -czf a.tar d", False),
+            ("sort -u -k 2 f", False),
+            ("find . -name x -mtime -1", False),
+            ("rg -n --glob '*.py' x", False),
+            ("timeout -s TERM 60 ls -la", False),
+            ("Write-Output x | xargs -0 grep -n x", False),
+        ):
+            with self.subTest(command=command):
+                self.assertEqual(refused, bool(powershell_reading(command).unread))
+
+    def test_a_variable_a_program_reads_options_from_is_refused_from_the_environment(self) -> None:
+        for command in ("tar -xf a.tar", "nice tar -xf a.tar"):
+            with self.subTest(command=command):
+                reading = hub_guard.Reading({"PATH": os.environ.get("PATH", ""), "TAR_OPTIONS": "x"}, command)
+                hub_guard.read_powershell(command, Path.cwd(), reading)
+                self.assertIn("TAR_OPTIONS", " ".join(reading.unread))
+
+    def test_bash_and_pwsh_are_refused_whatever_they_run(self) -> None:
+        for command in ("bash -c 'ls'", "bash script.sh", "pwsh -NoProfile -Command 'Get-Date'", "pwsh -File x.ps1"):
+            with self.subTest(command=command):
+                program = command.split()[0]
+                self.assertIn(hub_guard.RUNNERS[program], " ".join(powershell_reading(command).unread))
+
+    def test_gh_after_a_runner_is_read_as_the_checkout_it_makes(self) -> None:
+        for command in ("timeout 60 gh pr checkout 1", "nice gh repo sync", "gh pr checkout 1"):
+            with self.subTest(command=command):
+                reading = powershell_reading(command)
+                self.assertEqual([], reading.unread)
+                self.assertEqual(["gh"], [call.program for call in reading.calls])
+        self.assertEqual([], powershell_reading("timeout 60 gh pr view 1").calls)
+
+    def test_both_readers_judge_options_through_one_helper(self) -> None:
+        for command, read in (
+            ("timeout -s TERM 60 ls", powershell_reading),
+            ("tar -czf a.tar d", powershell_reading),
+            ("timeout -s TERM 60 ls", bash_reading),
+            ("tar -czf a.tar d", bash_reading),
+        ):
+            with (
+                self.subTest(command=command, reader=read.__name__),
+                mock.patch.object(hub_guard, "option_refusal", wraps=hub_guard.option_refusal) as helper,
+            ):
+                self.assertEqual([], read(command).unread)
+                helper.assert_called_once()

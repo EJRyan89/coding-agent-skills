@@ -1621,6 +1621,12 @@ class UnderstoodSetTests(GuardTestCase):
             (f'cd "{self.hub}" & git commit -m x', self.tree, None),
             (f'pushd "{self.hub}" && popd && git commit -m x', self.tree, None),
             (f'pushd "{self.tree}" && popd && git commit -m x', self.hub, "deny"),
+            # popd on an empty stack fails and stays put; one given an argument leaves the directory unknown.
+            ("popd; git commit -m x", self.tree, None),
+            ("popd; git commit -m x", self.hub, "deny"),
+            (f'pushd "{self.tree}" && popd && git commit -m x', self.tree, None),
+            (f'pushd "{self.tree}" && popd +1 && git commit -m x', self.tree, "deny"),
+            (f'pushd "{self.tree}" && popd -n && git commit -m x', self.tree, "deny"),
             (f'cd -- "{self.hub}" && git commit -m x', self.tree, "deny"),
             # A directory that is no directory now fails, unless an earlier command makes it one.
             (f'cd "{missing}"; git commit -m x', self.hub, "deny"),
@@ -1929,6 +1935,11 @@ class PowerShellUnderstoodSetTests(GuardTestCase):
             (f"cd '{self.hub}' && git commit -m x", self.tree, "deny"),
             (f"Set-Location -LiteralPath '{self.tree}'; git commit -m x", self.hub, None),
             (f"Push-Location '{self.hub}'; Pop-Location; git commit -m x", self.tree, None),
+            # Pop-Location on an empty stack stays put; one given an argument leaves the location unknown.
+            ("Pop-Location; git commit -m x", self.tree, None),
+            ("Pop-Location; git commit -m x", self.hub, "deny"),
+            (f"Push-Location '{self.tree}'; Pop-Location -StackName x; git commit -m x", self.tree, "deny"),
+            (f"pushd '{self.tree}'; popd -StackName x; git commit -m x", self.tree, "deny"),
             ("Get-ChildItem | Select-Object -First 3", self.hub, None),
             ("git status 2>&1 | Out-String", self.hub, None),
             ("git com'mit' -m x", self.hub, "deny"),
@@ -2227,9 +2238,14 @@ class ContractListTests(unittest.TestCase):
         self.assertEqual(sorted(hub_guard.RUNNERS), sorted(named))
         always = contract_names("`RUNNERS_ALWAYS_REFUSED`:", "Of these")
         self.assertEqual(sorted(hub_guard.RUNNERS_ALWAYS_REFUSED), sorted(always))
-        building = contract_names("build a runner's command from text,", "in every spelling")
-        expected = {f"{option}" for options in hub_guard.RUNNER_BUILDING_OPTIONS.values() for option in options}
-        self.assertEqual(sorted(expected | {"env", "xargs"}), sorted(building))
+        reading_options = contract_names("`RUNNER_OPTIONS`, which names for each of", "the options known to be safe")
+        self.assertEqual(sorted(hub_guard.RUNNER_OPTIONS), sorted(reading_options))
+        programs = contract_names("`PROGRAM_OPTIONS`:", "are read by an allow-list")
+        self.assertEqual(sorted(hub_guard.PROGRAM_OPTIONS), sorted(programs))
+        variables = contract_names("`PROGRAM_VARIABLES`:", ", is refused where")
+        self.assertEqual(
+            sorted(name for names in hub_guard.PROGRAM_VARIABLES.values() for name in names), sorted(variables)
+        )
 
     def test_the_powershell_commands_the_guard_reads_are_the_ones_its_contract_names(self) -> None:
         named = contract_names("these cmdlets, by its name or an alias PowerShell gives it:", "Every other node")

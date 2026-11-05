@@ -313,7 +313,7 @@ a row decides it.
   on, `set`, `shopt -o`, or the environment's `SHELLOPTS`, and a command named
   after a function the environment hands the shell as `BASH_FUNC_<name>%%`.
 - **gh.** `gh pr checkout`, `gh pr co`, and `gh repo sync` check a branch out in the checkout gh runs in, and are
-  judged as a checkout git makes there.
+  judged as a checkout git makes there, a runner's command among them, from Bash and PowerShell alike.
 - **Redirections.** A redirection that writes a file at a path the text settles is refused when the file lies in a
   guarded hub's tracked files or anywhere in its git directory, as a file tool's edit is; a duplication such as
   `2>&1` and a device such as `/dev/null` write none. In PowerShell every command's file redirection is read so,
@@ -329,21 +329,34 @@ a row decides it.
   `unbuffer`, `watch`, `wsl`, `xargs`, and `zsh`. While a hub is guarded, a runner whose command is or may be git is
   refused, and a runner around a command that is not git is understood. Its command may be git where one of its words
   names git, by its name or a path, or names another runner, which may run git in turn, or is a word the text does
-  not settle, which may be either; the guard reads none of a runner's own options to place its command, since no
-  option makes git of a command that is not. `bash -c` with a literal script is read as Bash, and `pwsh -Command` or
+  not settle, which may be either. A runner's own options are read by an allow-list, `RUNNER_OPTIONS`, which names
+  for each of `chronic`, `chroot`, `chrt`, `doas`, `env`, `ionice`, `ltrace`, `nice`, `nohup`, `setsid`, `stdbuf`,
+  `strace`, `sudo`, `taskset`, `time`, `timeout`, `unbuffer`, and `xargs` the options known to be safe: ones that
+  neither build its command from text, as `xargs`'s `-I` and `env`'s `-S` do, nor change where it runs, as `env`'s
+  `-C` does, nor write a file or run another program. Every other option word of a runner is refused, in every
+  spelling getopt reads: exactly, with its value attached by `=` or directly, abbreviated, or as a letter in a
+  bundle, as `-0IX` is. A long option is understood only spelled in full, since an abbreviation of a safe option may
+  be one of another option too. `bash -c` with a literal script is read as Bash, and `pwsh -Command` or
   `-c` with one literal script, after `-NoProfile`, `-NonInteractive`, or `-NoLogo`, as PowerShell, each refused
   where the script runs git and in every other form, a script file among them. Some are refused whatever they run,
   `RUNNERS_ALWAYS_REFUSED`: `busybox`, `cmd`, `csh`, `dash`, `fish`, `flock`, `ksh`, `mksh`, `parallel`,
   `powershell`, `runuser`, `script`, `sh`, `ssh`, `su`, `tcsh`, `watch`, `wsl`, and `zsh`. Of these, the shells are
   ones whose scripts the guard does not read, `sh` among them since it runs Bash in POSIX mode, or dash, either of
   which keeps an assignment made before a special builtin after it, and the rest run a command line handed to them as
-  one string. So are the options that build a runner's command from text, `xargs`'s `-I`, `-i`, and `--replace` and
-  `env`'s `-S` and `--split-string`, in every spelling. The assignments before a runner, and `env`'s own, are judged
-  as ones before a command that is not git. `tests/tools/test_prefix_programs.py` holds the rule to every option form
-  the `--help` of `env`, `nice`, `nohup`, `stdbuf`, `timeout`, and `xargs` lists. The options that make another
-  program run a command are refused in every spelling the program takes, and so is any word of such a program's that
-  the text does not settle: `find`'s `-exec`, `-execdir`, `-ok`, and `-okdir`, whatever they run, `rg`'s `--pre`,
-  `sort`'s `--compress-program`, and `tar`'s options that run a program. git keeps its own subcommands' judgment.
+  one string. The assignments before a runner, and `env`'s own, are judged as ones before a command that is not
+  git. The programs that have options which run a command, write a file the command does not name, or change where
+  the program acts, `PROGRAM_OPTIONS`: `find`, `rg`, `sort`, and `tar`, are read by an allow-list the same way, from
+  Bash and PowerShell alike, and so is refused any word of theirs that the text does not settle. A runner's command
+  that is one of them is held to its allow-list too, and after `xargs`, which adds words from its input, it is refused
+  unless its words hold a `--` that ends its options, which `find` has none of. A variable one of them reads options
+  from, `PROGRAM_VARIABLES`: `RIPGREP_CONFIG_PATH` and `TAR_OPTIONS`, is refused where it is assigned before the
+  program or a runner, where `env` sets it, and where the environment holds it. Among the options
+  refused are `find`'s `-exec`, `-execdir`, `-ok`, `-okdir`, `-delete`, and `-fprint` family, `rg`'s `--pre` and
+  `--hostname-bin`, `sort`'s `--compress-program` and `--output`, and `tar`'s options that run a program.
+  `tests/tools/test_prefix_programs.py` holds each allow-list to every option the program's `--help` or getopt table
+  lists, pinned in `tests/fixtures/hub-guard/option-catalogues.json`, in each spelling, and holds that fixture to the
+  `--help` of each of `env`, `nice`, `nohup`, `stdbuf`, `timeout`, and `xargs` the system installs. git keeps its
+  own subcommands' judgment.
 - **PowerShell.** A PowerShell command is read by PowerShell's own parser, not by a second hand-written grammar,
   and is understood when every node type in its tree is one `POWERSHELL_UNDERSTOOD` names, in the forms that invoke
   nothing: pipelines of commands joined by `&&` and `||`, with redirections, whose elements are constants, strings,
@@ -386,7 +399,8 @@ refuses:
   each entry of `NOT_READ`, among them a nested shell, `eval`, `source` and `.`, `exec`, `alias`, a function
   definition, `export` and the other declarations, `trap`, `hash`, `enable`, arithmetic of every kind, a subscript,
   an indirection, Bash 5.3's `${ command; }`, a command name the text does not settle, a runner whose command is or
-  may be git, one `RUNNERS_ALWAYS_REFUSED` names, and an option that builds a runner's command from text, a redirection to a target the text does not settle, an
+  may be git, one `RUNNERS_ALWAYS_REFUSED` names, and an option of a runner or of a program `PROGRAM_OPTIONS` names
+  that its allow-list does not know to be safe, a redirection to a target the text does not settle, an
   assignment the rules above do not understand, an option the tables refuse, Bash its grammar cannot read (the lines
   before a syntax error do run, unlike PowerShell's), substitutions nested more than four deep, and in PowerShell
   every node type outside `POWERSHELL_UNDERSTOOD` and each form above that invokes something, method calls, static
