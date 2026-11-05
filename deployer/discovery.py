@@ -36,6 +36,14 @@ COMMANDS_ALLOWED = {
 }
 
 
+OWNER_ONLY_ALLOWED = {
+    "_start": "starts a runtime's app server with its stdin and stdout pipes held open for a conversation, which "
+    "run_bounded's bounded run cannot hold",
+}
+POLICED_CALL_ALLOWED = {
+    "_start": "takes its process tree's start options, creationflags on Windows and start_new_session elsewhere, which "
+    "job_tree builds for each platform",
+}
 KINDS_ALLOWED = {
     "parse_copilot": "reads Copilot CLI's skill listing, whose field is named skills",
     "parse_codex": "reads the Codex app server's skills/list answer, whose field is named skills",

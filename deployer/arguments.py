@@ -10,6 +10,12 @@ from typing import Any, NoReturn
 from .errors import DEBUG_VARIABLE, DeployError, print_error
 from .platform_support import PYTHON
 
+INDIRECTION_ALLOWED = {
+    "_parse": "argparse keeps each option under its dest, so a deploy option given beside a command is read by the "
+    "dest its action names",
+    "_check_deploy_options": "argparse keeps each option under its dest, so each deploy option given is read by the "
+    "dest its action names",
+}
 # deploy.py run by the command that runs Python here, so every command line the deployer prints is one the platform
 # runs: python on Windows, and python3 on Linux, where a distribution may install no python command.
 PROG = f"{PYTHON} deploy.py"

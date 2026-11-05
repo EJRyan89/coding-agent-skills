@@ -725,12 +725,24 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
 ### A check reaches its whole rule
 
 - **Rule:** A policy, an audit brief, or a gate reaches every place its rule covers, in every language the fact is
-  written in and through every indirection that carries it, never a narrower set its author swept by area.
-- **Why:** A rule held only where a sweep reached keeps failing in the places it missed, and passes them as checked.
-- **Use:** `tests.validation.validation_support:scope_problems`, which holds a policy's scope, named as data, to every
+  written in and through every indirection that carries it, never a narrower set its author swept by area. Where the
+  indirection is a language's open set of spellings, as Python's ways of reaching a name by a value are, the first
+  remedy is to restrict the language: refuse the indirect forms at the source, so the check reads only direct ones,
+  rather than widen its reader to the next spelling an issue names.
+- **Why:** A rule held only where a sweep reached keeps failing in the places it missed, and passes them as checked,
+  and a reader widened one spelling at a time never reaches the end of an open set.
+- **Use:** `tests.validation.python_checks:indirection_problems`, `tests.validation.python_checks:owner_only_problems`,
+  and `tests.validation.python_checks:policed_call_problems`, which refuse dynamic name lookup, an owner-only callable
+  referenced outside its owners, and an argument a policed call takes that its readers cannot follow, over the one
+  catalogue of lookups by name, `tests.validation.validation_support:NAME_LOOKUPS`;
+  `tests.validation.validation_support:scope_problems`, which holds a policy's scope, named as data, to every
   non-test module ruff checks, each part it leaves out stated with its reason, as
   `tests.validation.python_checks:claim_omissions` and `tests.validation.duplication:duplication_omissions` state them.
-- **Guard:** `tests/validation/python_checks.py::PythonChecksPolicies::test_claim_policies_read_every_module_their_rules_speak_of`,
+- **Guard:** `tests/validation/python_checks.py::PythonChecksPolicies::test_no_name_is_looked_up_dynamically`,
+  `tests/validation/python_checks.py::PythonChecksPolicies::test_owner_only_names_are_referenced_only_by_their_owners`,
+  `tests/validation/python_checks.py::PythonChecksPolicies::test_policed_calls_take_literal_arguments`,
+  `tests/validation/test_python_checks.py::test_each_spelling_the_resolver_did_not_follow_is_refused_at_the_source`,
+  `tests/validation/python_checks.py::PythonChecksPolicies::test_claim_policies_read_every_module_their_rules_speak_of`,
   `tests/validation/duplication.py::DuplicationPolicies::test_the_duplication_policy_reads_every_module_its_rule_speaks_of`,
   `tests/validation/test_python_checks.py::test_a_policy_scope_fails_for_each_module_it_skips_and_each_stale_omission`,
   `tests/validation/test_skill_layout.py::SkillLayoutFixtures::test_an_install_path_is_refused_under_every_spelling_of_the_home`,
@@ -738,7 +750,10 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   `tests/tools/test_mutation_gate.py::test_a_mutant_on_a_continuation_line_runs_against_the_suite_that_executed_its_statement`,
   `.claude/skills/audit-repository/scripts/test_audit_repository.py::ReleaseTests::test_every_brief_carries_the_kinds_of_drift_and_the_report_template`,
   `.claude/skills/review-repository/scripts/test_review_repository.py::ManifestTests::test_every_file_the_design_trust_model_names_reaches_the_trust_boundary_reviewer`
-- **Search for:** a review route whose `include` patterns name files by hand where a document owns the list, such as
+- **Search for:** a policy fix that adds one more spelling of a lookup, a binding, or an unpacking to a reader, where
+  an indirection policy could refuse the construct instead; a `*_ALLOWED` entry in `INDIRECTION_ALLOWED`,
+  `OWNER_ONLY_ALLOWED`, or `POLICED_CALL_ALLOWED` whose site a direct form could replace;
+  a review route whose `include` patterns name files by hand where a document owns the list, such as
   the boundaries of the trust model in `docs/design.md`, and a row of that list naming only a suite or a document, not
   the code that holds it; a policy whose file list is a hand-kept tuple of directories, such as a `*_ROOTS`, that no
   `scope_problems` test holds, or a `glob(`
@@ -747,8 +762,8 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   policy that refuses a sentence as an exact substring, which a capital, a reflowed line, or an optional word walks
   past; an audit brief that asks only for drift; a `scope_problems` call whose modules are filtered by the roots it
   is held to, which compares a list with itself.
-- **Examples:** #1366, #1598, #1678, #1722, #2260, #2352, and #1884, which adds the check that holds a policy's scope
-  to its rule
+- **Examples:** #1366, #1598, #1678, #1722, #2260, #2352, #1884, which adds the check that holds a policy's scope
+  to its rule, and #2315, whose resolver spellings the indirection policies refuse at the source
 
 ### A check reads its subject through its consumer's reader
 

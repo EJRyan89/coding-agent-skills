@@ -126,6 +126,11 @@ from validation_support import REPOSITORY_ROOT, PullRequest, PullRequestChecks
 from deployer import tools
 from tools.release_notes import ReleaseNotesError
 
+INDIRECTION_ALLOWED = {
+    "POLICY_MODULES": "lists the policy modules whose checks the runner runs in this process, each read as a whole",
+    "PULL_REQUEST_POLICIES": "finds each policy module's own PullRequestChecks classes, so a pull request check added "
+    "to a policy module runs without a second list of them",
+}
 # The modules whose policy checks run in this process while the pool runs the suites. Each policy module's fixture
 # tests run in the pool as the regression suite beside it.
 POLICY_MODULES = (

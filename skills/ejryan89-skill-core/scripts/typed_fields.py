@@ -27,6 +27,12 @@ P = ParamSpec("P")
 
 # The longest string or integer quoted in what an error found; a longer one is described by its length.
 QUOTED_CHARACTERS = 40
+OWNER_ONLY_ALLOWED = {
+    "describe": "quotes, for a refusal, a string a reader that keeps lone surrogates may hand it, which json_writer "
+    "would refuse in place of the message",
+    "_names": "quotes, for a refusal, the values a reader that keeps lone surrogates may hand it, which json_writer "
+    "would refuse in place of the message",
+}
 
 
 class FieldError(ValueError):

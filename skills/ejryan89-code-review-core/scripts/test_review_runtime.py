@@ -797,6 +797,20 @@ class RuntimeContractTests(unittest.TestCase):
                     sorted(gaps + ([] if configured else ["models/net.onnx"])), coverage["unavailable_sources"]
                 )
 
+    def test_a_tarball_file_entry_tarfile_cannot_open_is_refused_by_its_quoted_name(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            archive = Path(folder) / "archive.tar.gz"
+            with tarfile.open(archive, mode="w:gz") as tar:
+                info = tarfile.TarInfo("example-one-0123456/docs/a é.txt")
+                info.size = 1
+                tar.addfile(info, io.BytesIO(b"x"))
+            with (
+                mock.patch.object(tarfile.TarFile, "extractfile", return_value=None),
+                self.assertRaises(RuntimeContractError) as caught,
+            ):
+                review_runtime._tarball_blobs(archive, "sha1")
+        self.assertEqual('Cannot read tarball entry "docs/a \\u00e9.txt"', str(caught.exception))
+
     def test_a_changed_listed_file_over_the_limit_is_probed_from_the_tarball_and_only_its_first_bytes_read(
         self,
     ) -> None:

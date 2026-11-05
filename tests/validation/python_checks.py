@@ -1,8 +1,10 @@
 """The Python static checks: ruff format and lint, mypy and its mypy_path, the noqa and type: ignore rules, the rule
 against issue numbers in comments and docstrings, and the policies that hold the code's universal claims: every process
 starts without git's repository-selecting variables, link_probe is the one link test, every ctypes foreign function a
-module calls is declared, no process runner's result is discarded unchecked, and a handler around a shared reader
-catches the whole family of errors the reader raises on content."""
+module calls is declared, no process runner's result is discarded unchecked, a handler around a shared reader
+catches the whole family of errors the reader raises on content, and no name is reached by a value: no dynamic lookup,
+no owner-only callable referenced outside its owners, and no policed call given an argument its readers cannot
+follow."""
 
 from __future__ import annotations
 
@@ -46,9 +48,17 @@ from path_containment import posix_within, relative_within, within
 from runtime_support import names_git
 from toolchain import find_mypy, find_ruff, mypy_job, ruff_job
 from validation_support import (
+    ATTRIBUTE_GETTERS,
     ATTRIBUTE_LOOKUPS,
+    ATTRIBUTE_READERS,
+    BUILTIN_NAMES,
+    COMMON_PATH_FUNCTIONS,
     DEFINITIONS,
+    INDIRECTION_ATTRIBUTES,
+    INDIRECTION_CALLABLES,
+    LOOKUP_HOOKS,
     MODULE_SCOPE,
+    NAME_LOOKUPS,
     PARTIAL_CALLS,
     REPOSITORY_ROOT,
     CallableResolver,
@@ -58,6 +68,7 @@ from validation_support import (
     call_argument,
     import_aliases,
     is_test_script,
+    listed,
     module_allowance,
     module_imports,
     parse_source,
@@ -82,6 +93,10 @@ from deployer import platform_support
 # Commands whose program the commands reader cannot read, by the scope that starts them, and why.
 COMMANDS_ALLOWED = {
     "_standard_class": "looks a standard-library class up by its name for the policy reading it, and starts nothing",
+}
+INDIRECTION_ALLOWED = {
+    "_standard_class": "looks the built-in or standard-library class a policy reads up by the qualified name the code "
+    "under check gives it, and imports only a standard-library module",
 }
 
 
@@ -1774,7 +1789,8 @@ class _JsonModel:
             return False
         if isinstance(node, ast.Name) and (scope, node.id) not in self.augmented:
             return False
-        return place_key(node, scope, self.class_names) in getattr(self.names(scope), kind)
+        names = self.names(scope)
+        return place_key(node, scope, self.class_names) in (names.text if kind == "text" else names.encoders)
 
     def encoder(self, node: ast.AST, scope: str) -> bool:
         """Whether an expression may be a JSONEncoder: a call of one, or of a subclass the module defines, or a place
@@ -2195,6 +2211,17 @@ def _assignment_targets(node: ast.Assign | ast.AnnAssign) -> Iterator[ast.expr]:
             yield target
 
 
+def _read_where_bound(node: ast.Attribute, scope: str, libraries: _ForeignLibraries) -> bool:
+    """Whether an attribute read names the library its own class binds: a plain `self`, `cls`, or class name as the
+    receiver, and that class's binding of the attribute. A read off ctypes's own namespaces, as
+    `ctypes.windll.kernel32`, loads the library by its name, which the policy keys itself, so it is no class's read."""
+    receiver = node.value
+    if any(reference.name in LIBRARY_NAMESPACES for reference in resolved_references(receiver, libraries.resolver)):
+        return True
+    plain = isinstance(receiver, ast.Name) and (receiver.id in ("self", "cls") or receiver.id in libraries.class_names)
+    return plain and place_key(node, scope, libraries.class_names) in libraries.places
+
+
 def ctypes_declaration_problems(root: Path, files: list[Path]) -> list[str]:
     """Each call of a ctypes foreign function whose module does not assign that library's function both argtypes and
     restype, argtypes excepted for a function every call gives no arguments, that no CTYPES_ALLOWED entry
@@ -2213,7 +2240,36 @@ def ctypes_declaration_problems(root: Path, files: list[Path]) -> list[str]:
                     calls.append((node, scope, function))
                     if arguments:
                         given.add(function)
-        found: list[tuple[int, str, str]] = []
+        # A library also hands out a foreign function by item lookup, which reads its name as a value; it is refused,
+        # so every foreign function a module calls is an attribute this reader keys and checks.
+        found: list[tuple[int, str, str]] = [
+            (
+                node.lineno,
+                scope,
+                f"reaches a foreign function of a ctypes library by subscript; name it as an attribute of the library, "
+                f"or state why in {CTYPES_ALLOWANCE}",
+            )
+            for node, scope in scoped_nodes(tree.body)
+            if isinstance(node, ast.Subscript) and libraries.libraries(node.value)
+        ]
+        # A library a class binds to `self.x`, or in its body, is read only through that class. A read of the
+        # attribute is accepted only when its receiver is a plain `self`, `cls`, or a class's name and that class
+        # binds it; any other read, through a subclass, `super()`, `type(self)`, `self.__class__`, or any other
+        # receiver, is refused rather than followed through the class's bases.
+        held = {key.rpartition(".")[2] for key in libraries.places if key.partition(".")[0] in libraries.class_names}
+        found += [
+            (
+                node.lineno,
+                scope,
+                f"reads the ctypes library {ast.unparse(node)} other than through the class that binds it; read it "
+                f"as self, cls, or that class's name in the class that binds it, or state why in {CTYPES_ALLOWANCE}",
+            )
+            for node, scope in scoped_nodes(tree.body)
+            if isinstance(node, ast.Attribute)
+            and isinstance(node.ctx, ast.Load)
+            and node.attr in held
+            and not _read_where_bound(node, scope, libraries)
+        ]
         for call, scope, function in calls:
             missing = [
                 declaration
@@ -2414,18 +2470,6 @@ def discarded_result_problems(root: Path, files: list[Path]) -> list[str]:
 GIT_STATUS_OWNER = "skills/ejryan89-skill-core/scripts/git_client.py"
 GIT_RESULT = "git_client.GitResult"
 GIT_STATUS_ALLOWANCE = "GIT_STATUS_ALLOWED"
-# The calls that read an object's attribute by its name, given the object and the name.
-ATTRIBUTE_READERS = frozenset(
-    {
-        "getattr",
-        "builtins.getattr",
-        "inspect.getattr_static",
-        "object.__getattribute__",
-        "builtins.object.__getattribute__",
-    }
-)
-# The call that builds a reader of the attributes it names, applied to the object after.
-ATTRIBUTE_GETTER = "operator.attrgetter"
 # The calls and the attributes that reach a dataclass instance's fields as a whole, returncode among them.
 RESULT_FIELD_READERS = frozenset({"vars", "builtins.vars", "dataclasses.asdict", "dataclasses.astuple"})
 RESULT_FIELD_ATTRIBUTES = frozenset({"__dict__", "__getstate__"})
@@ -2707,7 +2751,7 @@ class _GitResults:
         getter = node.func
         return (
             isinstance(getter, ast.Call)
-            and self.resolver.name(getter.func) == ATTRIBUTE_GETTER
+            and self.resolver.name(getter.func) in ATTRIBUTE_GETTERS
             and any(_may_name_status(name) for name in getter.args)
             and bool(node.args)
             and self.holds(node.args[0])
@@ -3940,6 +3984,499 @@ def type_check_jobs() -> list[Job]:
     return jobs
 
 
+# Restrict indirection rather than model it. A policy that reads a call by its name holds only while the source spells
+# the name, and Python reaches a name by a value in an open set of ways: a lookup by a computed name, a namespace, a
+# rebinding, a parameter's default, a class attribute, or a `**` of a mapping. A policy widened to each spelling an
+# issue named left the next one open, so the policies below refuse the ways at the source, in every module the
+# claim policies read, and the policies that read a call read only its direct forms. Each names a module it cannot
+# read, and refuses a listing that holds no module, rather than pass having checked nothing.
+#
+# 1. No dynamic name lookup. A NAME_LOOKUPS call is read only given a string literal for the name, and any other
+#    reference to one is refused; so is a reference to any INDIRECTION_CALLABLES entry, an INDIRECTION_ATTRIBUTES
+#    attribute on any receiver, a definition of a LOOKUP_HOOKS method, and a module an import statement binds held as a
+#    value rather than as the receiver of an attribute or of a literal lookup. A class pattern's keyword is a binding
+#    form (class_pattern_reads): one that binds such an attribute or callable from a match's subject is refused as
+#    well. A site that must stay states why in a module-level INDIRECTION_ALLOWED = {scope: reason}.
+# 2. Owner-only names. Each OWNER_ONLY_NAMES callable is referenced at all, called, bound, passed, defaulted, returned,
+#    stored, bound by a class pattern's keyword, or reached by a literal lookup, only in the modules that own it, so a
+#    rebinding, a default, a dictionary
+#    value, or a class attribute holding one is refused without being followed. JSON is written by json_writer and
+#    read by json_reader alone, so a direct call of json.dumps or json.loads elsewhere is refused too. An event loop's
+#    process start is matched by its method's name on any receiver. A reference that must stay states why in a
+#    module-level OWNER_ONLY_ALLOWED.
+# 3. Policed calls spell their arguments. An add_argument, a json.dump or json.dumps, and a process start unpack
+#    nothing into their arguments with `*` or `**`; an add_argument's option strings, `dest`, and `metavar` are string
+#    literals; and its `type`, the `default` of one that names a time, and a JSON write's `cls` and `default` spell
+#    their value where it is read (_direct): a literal, a builtin, a name the top level binds only by imports, only by
+#    definitions, or once to a literal, an attribute of an imported module, or a call of such a callable given such
+#    arguments. Nothing is followed: a parameter, a local, `self.x`, a class attribute, a module-level name bound any
+#    other way, a lambda, and a lookup by name are refused. An add_argument is only called, never bound or passed. A
+#    call that must stay states why in a module-level POLICED_CALL_ALLOWED.
+INDIRECTION_ALLOWANCE = "INDIRECTION_ALLOWED"
+OWNER_ONLY_ALLOWANCE = "OWNER_ONLY_ALLOWED"
+POLICED_CALL_ALLOWANCE = "POLICED_CALL_ALLOWED"
+# The modules that load a foreign library with ctypes, each declaring every function it calls.
+CTYPES_OWNERS = frozenset(
+    {
+        "skills/ejryan89-skill-core/scripts/job_tree.py",
+        "skills/ejryan89-skill-core/scripts/process_identity.py",
+        "skills/ejryan89-code-review-core/scripts/review_io.py",
+        "skills/ejryan89-code-review-core/scripts/review_runtime.py",
+    }
+)
+# Each owner-only callable, by the name the module's imports resolve it to, with the modules that own it.
+OWNER_ONLY_NAMES: dict[str, frozenset[str]] = {
+    **{name: frozenset({JSON_WRITER}) for name in (JSON_DUMP, JSON_DUMPS, *JSON_ENCODERS)},
+    **dict.fromkeys(JSON_PARSERS, frozenset({JSON_READER})),
+    **dict.fromkeys(LIBRARY_LOADERS | LIBRARY_NAMESPACES | LIBRARY_OBJECTS, CTYPES_OWNERS),
+    **{name: frozenset({"skills/ejryan89-skill-core/scripts/path_containment.py"}) for name in COMMON_PATH_FUNCTIONS},
+    # bounded_process's own runners are the way every other module starts a process, so they are no owner's alone;
+    # an event loop's starts are matched by their method's name, on any receiver (_event_loop_start).
+    **{name: frozenset({PROCESS_RUNNER}) for name in PROCESS_STARTS if not name.startswith("bounded_process.")},
+}
+# The method each add_argument call is, on any receiver, and the functions whose calls rule 3 polices.
+ADD_ARGUMENT = "add_argument"
+POLICED_FUNCTIONS = frozenset({JSON_DUMP, JSON_DUMPS, *PROCESS_STARTS})
+# The keywords of a policed call that take a string literal, and those that take a value spelled where it is read
+# (_direct); an add_argument that names a time takes its default so too.
+LITERAL_KEYWORDS = {ADD_ARGUMENT: frozenset({"dest", "metavar"})}
+DIRECT_KEYWORDS = {
+    ADD_ARGUMENT: frozenset({"type"}),
+    JSON_DUMP: frozenset({"cls", "default"}),
+    JSON_DUMPS: frozenset({"cls", "default"}),
+}
+
+
+def _parents(tree: ast.AST) -> dict[int, ast.AST]:
+    """Each node's parent, by the child's id."""
+    return {id(child): node for node in ast.walk(tree) for child in ast.iter_child_nodes(node)}
+
+
+def _annotation_ids(tree: ast.AST) -> set[int]:
+    """The id of every node inside an annotation: a parameter's, a return's, or an annotated assignment's."""
+    roots: list[ast.expr] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.arg) and node.annotation is not None:
+            roots.append(node.annotation)
+        elif isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef) and node.returns is not None:
+            roots.append(node.returns)
+        elif isinstance(node, ast.AnnAssign):
+            roots.append(node.annotation)
+    return {id(part) for root in roots for part in ast.walk(root)}
+
+
+def _called(node: ast.AST, parents: dict[int, ast.AST]) -> bool:
+    """Whether a node is the function of the call that holds it."""
+    parent = parents.get(id(node))
+    return isinstance(parent, ast.Call) and parent.func is node
+
+
+def _literal_lookup(call: ast.Call) -> str | None:
+    """The attribute a NAME_LOOKUPS call names by a string literal second argument, unpacking nothing, or None."""
+    if len(call.args) < 2 or call.keywords or any(isinstance(argument, ast.Starred) for argument in call.args):
+        return None
+    name = call.args[1]
+    return name.value if isinstance(name, ast.Constant) and isinstance(name.value, str) else None
+
+
+def _reference(node: ast.AST, resolver: CallableResolver, aliases: dict[str, str]) -> str:
+    """The dotted name a node refers to through the module's imports: a name or an attribute read, or a lookup of a
+    literal name, as getattr(json, "dumps") refers to json.dumps; "" for any other node. A name the resolver cannot
+    settle, as one two import statements bind, is read through the module's imports, and a name no scope binds is
+    the builtin of that name."""
+    if isinstance(node, ast.Name | ast.Attribute) and isinstance(node.ctx, ast.Load):
+        if name := resolver.name(node):
+            return name
+        root: ast.expr = node
+        while isinstance(root, ast.Attribute):
+            root = root.value
+        if not isinstance(root, ast.Name):
+            return ""
+        if root.id in aliases:
+            return qualified_name(node, aliases)
+        return root.id if node is root and resolver.scopes[id(root)].owner(root.id) is None else ""
+    if isinstance(node, ast.Call) and _reference(node.func, resolver, aliases) in NAME_LOOKUPS and node.args:
+        attribute = _literal_lookup(node)
+        owner = _reference(node.args[0], resolver, aliases)
+        return f"{owner}.{attribute}" if owner and attribute else ""
+    return ""
+
+
+def _imported_modules(tree: ast.AST) -> set[str]:
+    """The module each import statement binds a name to, as `import a.b` binds a and `import a.b as c` binds a.b."""
+    return {
+        target
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Import)
+        for found in module_imports(node)
+        for _, target in found.bindings
+    }
+
+
+def _receives(node: ast.Name, parents: dict[int, ast.AST], resolver: CallableResolver, aliases: dict[str, str]) -> bool:
+    """Whether a name is read as a receiver: of an attribute, or of a lookup of a literal name."""
+    parent = parents.get(id(node))
+    if isinstance(parent, ast.Attribute) and parent.value is node:
+        return True
+    return (
+        isinstance(parent, ast.Call)
+        and _reference(parent.func, resolver, aliases) in NAME_LOOKUPS
+        and bool(parent.args)
+        and parent.args[0] is node
+        and _literal_lookup(parent) is not None
+    )
+
+
+def _indirection(
+    node: ast.AST, parents: dict[int, ast.AST], resolver: CallableResolver, aliases: dict[str, str], modules: set[str]
+) -> str:
+    """Why a node looks a name up dynamically, or ""."""
+    if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef) and node.name in LOOKUP_HOOKS:
+        return f"defines {node.name}, which answers an attribute read by a name it is given"
+    if isinstance(node, ast.Attribute) and node.attr in INDIRECTION_ATTRIBUTES:
+        return f"reaches {node.attr}, which reads a namespace or a lookup by a name it is given"
+    name = _reference(node, resolver, aliases) if isinstance(node, ast.Name | ast.Attribute) else ""
+    if name in INDIRECTION_CALLABLES:
+        return f"refers to {name}, which reaches a name, a namespace, or a module by a value"
+    if name in NAME_LOOKUPS:
+        call = parents.get(id(node))
+        if not isinstance(call, ast.Call) or call.func is not node:
+            return f"refers to {name} other than calling it"
+        if _literal_lookup(call) is None:
+            return f"calls {name} with a name that is not one string literal"
+    if isinstance(node, ast.Name) and name in modules and not _receives(node, parents, resolver, aliases):
+        return f"holds the module {name} as a value; name what it uses from it as an attribute instead"
+    return ""
+
+
+def _pattern_reads(pattern: ast.pattern, base: str) -> Iterator[tuple[ast.MatchClass, str, str]]:
+    """Each keyword of a class pattern below `pattern`, with the dotted name it reads, the attribute of what `base`
+    names, "" when the base names nothing, and the attribute's name. A keyword's own pattern reads that attribute's
+    attributes in turn; an alternative or a capture keeps its subject, and a sequence's or a mapping's items do not."""
+    if isinstance(pattern, ast.MatchClass):
+        for attribute, inner in zip(pattern.kwd_attrs, pattern.kwd_patterns, strict=True):
+            name = f"{base}.{attribute}" if base else ""
+            yield pattern, name, attribute
+            yield from _pattern_reads(inner, name)
+        for inner in pattern.patterns:
+            yield from _pattern_reads(inner, "")
+    elif isinstance(pattern, ast.MatchAs) and pattern.pattern is not None:
+        yield from _pattern_reads(pattern.pattern, base)
+    elif isinstance(pattern, ast.MatchOr):
+        for inner in pattern.patterns:
+            yield from _pattern_reads(inner, base)
+    elif isinstance(pattern, ast.MatchSequence | ast.MatchMapping):
+        for inner in pattern.patterns:
+            yield from _pattern_reads(inner, "")
+
+
+def class_pattern_reads(
+    tree: ast.Module, resolver: CallableResolver, aliases: dict[str, str]
+) -> Iterator[tuple[ast.MatchClass, str, str]]:
+    """Each attribute a class pattern's keyword reads from a match's subject and binds, as `case object(commonpath=c)`
+    on `os.path` reads and binds os.path.commonpath, with the dotted name it reads through the module's imports ("" for
+    a subject that names nothing) and the attribute's name: a binding form, as `c = os.path.commonpath` is."""
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Match):
+            subject = _reference(node.subject, resolver, aliases)
+            for case in node.cases:
+                yield from _pattern_reads(case.pattern, subject)
+
+
+def _reads_by_pattern(
+    tree: ast.Module, resolver: CallableResolver, aliases: dict[str, str]
+) -> dict[int, list[tuple[str, str]]]:
+    """Each class pattern's keyword reads (class_pattern_reads), by the pattern's id."""
+    reads: dict[int, list[tuple[str, str]]] = {}
+    for pattern, read, attribute in class_pattern_reads(tree, resolver, aliases):
+        reads.setdefault(id(pattern), []).append((read, attribute))
+    return reads
+
+
+def _policy_trees(root: Path, files: list[Path], problems: list[str]) -> Iterator[tuple[str, ast.Module]]:
+    """Each module the claim policies read, as its repository path and its tree. A module that is not valid Python or
+    not UTF-8 is reported by its name, and a listing that holds no module to read is reported too, since a policy
+    that read nothing has checked nothing."""
+    claimed = claim_files(root, files)
+    if not claimed:
+        problems.append(f"{root.as_posix()}: the listing holds no module the claim policies read, so none was checked")
+    for _, name, tree in python_trees(claimed, root, problems):
+        yield name, tree
+
+
+def indirection_problems(root: Path, files: list[Path]) -> list[str]:
+    """Each dynamic name lookup in a module the claim policies read that no INDIRECTION_ALLOWED entry sanctions."""
+    problems: list[str] = []
+    for name, tree in _policy_trees(root, files, problems):
+        resolver = CallableResolver(tree)
+        parents = _parents(tree)
+        modules = _imported_modules(tree)
+        aliases = import_aliases(tree)
+        reads = _reads_by_pattern(tree, resolver, aliases)
+        found: list[tuple[int, str, str]] = []
+        for node, scope in scoped_nodes(tree.body):
+            refusals = [_indirection(node, parents, resolver, aliases, modules)]
+            refusals += [
+                f"binds {read or attribute} by a class pattern's keyword, which reaches a namespace or a name by a "
+                "value"
+                for read, attribute in reads.get(id(node), [])
+                if attribute in INDIRECTION_ATTRIBUTES or read in INDIRECTION_CALLABLES | NAME_LOOKUPS
+            ]
+            found += [
+                (
+                    getattr(node, "lineno", 0),
+                    scope,
+                    f"{refusal}, which no policy reading the code can follow; spell the name, or state why in "
+                    f"{INDIRECTION_ALLOWANCE}",
+                )
+                for refusal in refusals
+                if refusal
+            ]
+        problems += sanctioned_problems(name, tree, INDIRECTION_ALLOWANCE, found)
+    return problems
+
+
+def owner_only_problems(root: Path, files: list[Path]) -> list[str]:
+    """Each reference to an OWNER_ONLY_NAMES callable outside its owners that no OWNER_ONLY_ALLOWED entry
+    sanctions."""
+    problems: list[str] = []
+    for name, tree in _policy_trees(root, files, problems):
+        resolver = CallableResolver(tree)
+        annotations = _annotation_ids(tree)
+        aliases = import_aliases(tree)
+        reads = _reads_by_pattern(tree, resolver, aliases)
+        found: list[tuple[int, str, str]] = []
+        for node, scope in scoped_nodes(tree.body):
+            reference = (
+                "" if id(node) in annotations else _event_loop_start(node) or _reference(node, resolver, aliases)
+            )
+            # A class pattern's keyword binds the subject's attribute it names, as an assignment would.
+            for candidate in [reference, *(read for read, _ in reads.get(id(node), []))]:
+                owners = OWNER_ONLY_NAMES.get(candidate)
+                if owners is None or name in owners:
+                    continue
+                refusal = f"refers to {candidate} outside {listed(sorted(owners), 'and')}, which own it"
+                found.append(
+                    (
+                        getattr(node, "lineno", 0),
+                        scope,
+                        f"{refusal}; reach it through its owner, or state why in {OWNER_ONLY_ALLOWANCE}",
+                    )
+                )
+        problems += sanctioned_problems(name, tree, OWNER_ONLY_ALLOWANCE, found)
+    return problems
+
+
+def _is_literal(node: ast.expr) -> bool:
+    """Whether an expression is a literal: a constant, a sign or an operation on literals, or a tuple, list, set, or
+    dict of them."""
+    if isinstance(node, ast.Constant):
+        return True
+    if isinstance(node, ast.UnaryOp):
+        return _is_literal(node.operand)
+    if isinstance(node, ast.BinOp):
+        return _is_literal(node.left) and _is_literal(node.right)
+    if isinstance(node, ast.Tuple | ast.List | ast.Set):
+        return all(not isinstance(item, ast.Starred) and _is_literal(item) for item in node.elts)
+    if isinstance(node, ast.Dict):
+        return all(key is not None and _is_literal(key) for key in node.keys) and all(map(_is_literal, node.values))
+    return False
+
+
+# How a module's top level binds a name a policed argument reads: by an import, by a def or a class, or once to a
+# literal. A name bound any other way, or more than once to a literal, is neither.
+IMPORTED, DEFINED, CONSTANT = "import", "definition", "constant"
+
+
+def _stored_names(target: ast.expr | None) -> list[str]:
+    """Each name an assignment target stores to, through a tuple, a list, or a starred item."""
+    if target is None:
+        return []
+    return [node.id for node in ast.walk(target) if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store)]
+
+
+def _top_level_bindings(node: ast.stmt) -> list[tuple[str, str]]:
+    """Each name one top-level statement binds, with how: IMPORTED, DEFINED, CONSTANT, or "" for any other way."""
+    if isinstance(node, ast.Import | ast.ImportFrom):
+        return [(alias.asname or alias.name.split(".")[0], IMPORTED) for alias in node.names]
+    if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef):
+        return [(node.name, DEFINED)]
+    if isinstance(node, ast.Assign | ast.AnnAssign):
+        kind = CONSTANT if node.value is not None and _is_literal(node.value) else ""
+        targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+        return [(name, kind) for target in targets for name in _stored_names(target)]
+    if isinstance(node, ast.AugAssign | ast.For | ast.AsyncFor):
+        return [(name, "") for name in _stored_names(node.target)]
+    if isinstance(node, ast.With | ast.AsyncWith):
+        return [(name, "") for item in node.items for name in _stored_names(item.optional_vars)]
+    return []
+
+
+def _spelled_names(tree: ast.Module) -> dict[str, str]:
+    """Each name the module's top level binds only by imports, only by definitions, or once to a literal, with how;
+    a name a function rebinds through `global`, or an assignment expression binds, is none of them."""
+    kinds: dict[str, list[str]] = {}
+    for node in _top_level(tree.body):
+        for name, kind in _top_level_bindings(node):
+            kinds.setdefault(name, []).append(kind)
+    for walked in ast.walk(tree):
+        names = list(walked.names) if isinstance(walked, ast.Global) else []
+        names += _stored_names(walked.target) if isinstance(walked, ast.NamedExpr) else []
+        for name in names:
+            kinds.setdefault(name, []).append("")
+    spelled: dict[str, str] = {}
+    for name, found in kinds.items():
+        if found == [CONSTANT]:
+            spelled[name] = CONSTANT
+        elif len(set(found)) == 1 and found[0] in (IMPORTED, DEFINED):
+            spelled[name] = found[0]
+    return spelled
+
+
+@dataclass(frozen=True)
+class _ModuleNames:
+    """What rule 3 reads a module's names by: its resolver, its import aliases, which _reference falls back to,
+    and the names its top level spells (_spelled_names)."""
+
+    resolver: CallableResolver
+    aliases: dict[str, str]
+    spelled: dict[str, str]
+
+
+def _direct(node: ast.expr, names: _ModuleNames) -> bool:
+    """Whether an expression spells its value where it is read: a literal, a builtin, a name the module's top level
+    binds by an import or a definition or once to a literal, an attribute of an imported module, an operation on such
+    values, or a call of an imported, defined, or builtin callable given such arguments. A parameter, a local, a class
+    attribute, a module-level name bound to anything else, a lambda, and a lookup by name are refused, never
+    followed. A callee is named through _reference, the lookup rules 1 and 2 use, so a name two import statements
+    bind is read through the module's imports here too."""
+    resolver, spelled = names.resolver, names.spelled
+    if _is_literal(node):
+        return True
+    if isinstance(node, ast.Name):
+        owner = resolver.scopes[id(node)].owner(node.id)
+        if owner is None:
+            return node.id in BUILTIN_NAMES
+        return owner.parent is None and node.id in spelled
+    if isinstance(node, ast.Attribute):
+        root: ast.expr = node
+        while isinstance(root, ast.Attribute):
+            root = root.value
+        if not isinstance(root, ast.Name):
+            return False
+        held = resolver.scopes[id(root)].owner(root.id)
+        return held is not None and held.parent is None and spelled.get(root.id) == IMPORTED
+    if isinstance(node, ast.UnaryOp):
+        return _direct(node.operand, names)
+    if isinstance(node, ast.BinOp):
+        return _direct(node.left, names) and _direct(node.right, names)
+    if isinstance(node, ast.Tuple | ast.List | ast.Set):
+        return all(not isinstance(item, ast.Starred) and _direct(item, names) for item in node.elts)
+    if isinstance(node, ast.Call):
+        callee = node.func
+        constant = isinstance(callee, ast.Name) and spelled.get(callee.id) == CONSTANT
+        return (
+            _reference(callee, resolver, names.aliases) not in NAME_LOOKUPS | INDIRECTION_CALLABLES
+            and not constant
+            and _direct(callee, names)
+            and all(not isinstance(item, ast.Starred) and _direct(item, names) for item in node.args)
+            and all(keyword.arg is not None and _direct(keyword.value, names) for keyword in node.keywords)
+        )
+    return False
+
+
+def _names_add_argument(node: ast.AST, resolver: CallableResolver, aliases: dict[str, str]) -> bool:
+    """Whether a node reads an add_argument: as an attribute, or by a lookup of its literal name."""
+    if isinstance(node, ast.Attribute):
+        return node.attr == ADD_ARGUMENT and isinstance(node.ctx, ast.Load)
+    return (
+        isinstance(node, ast.Call)
+        and _reference(node.func, resolver, aliases) in NAME_LOOKUPS
+        and _literal_lookup(node) == ADD_ARGUMENT
+    )
+
+
+def _event_loop_start(node: ast.AST) -> str:
+    """The event loop's process start a node reads as an attribute, on any receiver, as PROCESS_STARTS names it, or
+    "": no receiver names the loop, so the method's name is what marks it."""
+    if isinstance(node, ast.Attribute) and isinstance(node.ctx, ast.Load) and node.attr in EVENT_LOOP_STARTS:
+        return f"{EVENT_LOOP}.{node.attr}"
+    return ""
+
+
+def _policed(call: ast.Call, resolver: CallableResolver, aliases: dict[str, str]) -> str:
+    """The policed call a call is, ADD_ARGUMENT on any receiver, an event loop's process start on any receiver, or a
+    POLICED_FUNCTIONS name, or ""."""
+    if _names_add_argument(call.func, resolver, aliases):
+        return ADD_ARGUMENT
+    if started := _event_loop_start(call.func):
+        return started
+    name = _reference(call.func, resolver, aliases)
+    return name if name in POLICED_FUNCTIONS else ""
+
+
+def _names_a_time(call: ast.Call) -> bool:
+    """Whether an add_argument names a time, by one of TIME_WORDS, in an option string, its dest, or its metavar."""
+    names = [*call.args, *(keyword.value for keyword in call.keywords if keyword.arg in ("dest", "metavar"))]
+    return any(
+        isinstance(name, ast.Constant) and isinstance(name.value, str) and TIME_WORDS & _time_words(name.value)
+        for name in names
+    )
+
+
+def _policed_refusals(call: ast.Call, policed: str, names: _ModuleNames) -> Iterator[str]:
+    """Why a policed call does not spell its arguments as rule 3 asks."""
+    if any(isinstance(item, ast.Starred) for item in call.args) or any(item.arg is None for item in call.keywords):
+        yield f"unpacks arguments into {policed} with * or **"
+    if policed == ADD_ARGUMENT and not all(
+        isinstance(item, ast.Constant) and isinstance(item.value, str) for item in call.args
+    ):
+        yield f"gives {ADD_ARGUMENT} an option string that is not a string literal"
+    direct = set(DIRECT_KEYWORDS.get(policed, ()))
+    if policed == ADD_ARGUMENT and _names_a_time(call):
+        direct.add("default")
+    for keyword in call.keywords:
+        value = keyword.value
+        if keyword.arg in LITERAL_KEYWORDS.get(policed, ()):
+            if not (isinstance(value, ast.Constant) and isinstance(value.value, str)):
+                yield f"gives {policed} a {keyword.arg}= that is not a string literal"
+        elif keyword.arg in direct and not _direct(value, names):
+            yield (
+                f"gives {policed} a {keyword.arg}= that is neither a literal nor an imported, defined, builtin, or "
+                "literal-bound name"
+            )
+
+
+def policed_call_problems(root: Path, files: list[Path]) -> list[str]:
+    """Each policed call, an add_argument, a json.dump or json.dumps, or a process start, that unpacks its arguments or
+    gives a policed argument anything but a literal or a module-bound name, and each add_argument read other than as
+    the function of a call, that no POLICED_CALL_ALLOWED entry sanctions."""
+    problems: list[str] = []
+    for name, tree in _policy_trees(root, files, problems):
+        resolver = CallableResolver(tree)
+        parents = _parents(tree)
+        aliases = import_aliases(tree)
+        names = _ModuleNames(resolver, aliases, _spelled_names(tree))
+        found: list[tuple[int, str, str]] = []
+        for node, scope in scoped_nodes(tree.body):
+            if _names_add_argument(node, resolver, aliases) and not _called(node, parents):
+                found.append((getattr(node, "lineno", 0), scope, f"refers to {ADD_ARGUMENT} other than calling it"))
+            elif isinstance(node, ast.Call) and (policed := _policed(node, resolver, aliases)):
+                refusals = _policed_refusals(node, policed, names)
+                found += [(node.lineno, scope, refusal) for refusal in refusals]
+        found = [
+            (
+                line,
+                scope,
+                f"{refusal}, which the policies reading it cannot follow; spell it, or state why in "
+                f"{POLICED_CALL_ALLOWANCE}",
+            )
+            for line, scope, refusal in found
+        ]
+        problems += sanctioned_problems(name, tree, POLICED_CALL_ALLOWANCE, found)
+    return problems
+
+
 def static_format_check() -> None:
     ruff_format_check(REPOSITORY_ROOT, list(FORMAT_ROOTS))
 
@@ -4094,6 +4631,15 @@ class PythonChecksPolicies(unittest.TestCase):
 
     def test_whether_git_answered_is_read_through_git_error_answered(self) -> None:
         self.assertEqual([], git_answered_problems(REPOSITORY_ROOT, repository_files(REPOSITORY_ROOT)))
+
+    def test_no_name_is_looked_up_dynamically(self) -> None:
+        self.assertEqual([], indirection_problems(REPOSITORY_ROOT, repository_files(REPOSITORY_ROOT)))
+
+    def test_owner_only_names_are_referenced_only_by_their_owners(self) -> None:
+        self.assertEqual([], owner_only_problems(REPOSITORY_ROOT, repository_files(REPOSITORY_ROOT)))
+
+    def test_policed_calls_take_literal_arguments(self) -> None:
+        self.assertEqual([], policed_call_problems(REPOSITORY_ROOT, repository_files(REPOSITORY_ROOT)))
 
     def test_every_time_option_refuses_what_is_no_limit(self) -> None:
         self.assertEqual([], time_option_problems(REPOSITORY_ROOT, repository_files(REPOSITORY_ROOT)))

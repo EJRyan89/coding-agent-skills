@@ -671,6 +671,21 @@ def sample_activity(capped: dict[str, list[str]] | None = None) -> Activity:
 
 
 class RenderTests(unittest.TestCase):
+    def test_counts_gives_each_metric_field_its_monthly_counts(self) -> None:
+        activity = sample_activity()
+        self.assertEqual(
+            {
+                "authored": {"2026-04": 2, "2026-05": 1},
+                "merged": {"2026-04": 1, "2026-05": 1},
+                "commits": {"2026-04": 10, "2026-05": 0},
+                "prs_reviewed": {"2026-04": 3, "2026-05": 2},
+                "reviews_submitted": {"2026-04": 4, "2026-05": 2},
+            },
+            {field: activity.counts(field) for field, _ in report.METRICS.values()},
+        )
+        with self.assertRaises(KeyError):
+            activity.counts("months")
+
     def test_table_has_a_row_per_month_and_a_total_row(self) -> None:
         text = render_report(sample_activity(), "acme", "octo", TODAY)
         self.assertIn("| Month | PRs authored | PRs merged | Commits | PRs reviewed | Reviews submitted |", text)

@@ -143,6 +143,42 @@ def test_a_missing_or_unreadable_record_fails_with_the_reason(tmp_path: Path) ->
         guidance_record.read(tmp_path / "broken.json", ["alpha"])
 
 
+@pytest.mark.parametrize(
+    ("document", "message"),
+    [
+        pytest.param(
+            {
+                "pages": [page("https://example.com/a")],
+                "changelogs": [changelog("alpha", url="https://example.com/a é")],
+            },
+            '$.changelogs[0].url must be a URL starting https:// without whitespace, found "https://example.com/a '
+            '\\u00e9"',
+            id="url-whitespace",
+        ),
+        pytest.param(
+            {"pages": [page("https://[example.com/é")]},
+            '$.pages[0].url must be a URL urllib can split, found "https://[example.com/\\u00e9"',
+            id="url-split",
+        ),
+        pytest.param(
+            {"pages": [page("https://example.com/a")], "changelogs": [changelog("alpha", read_through="v1.2.é")]},
+            '$.changelogs[0].read_through must be a release of numbers joined by dots, found "v1.2.\\u00e9"',
+            id="read-through",
+        ),
+        pytest.param(
+            {"pages": [{**page("https://example.com/a"), "read": ["v1é"]}]},
+            '$.pages[0].read[0] must be a release tag vX.Y.Z, found "v1\\u00e9"',
+            id="tag",
+        ),
+    ],
+)
+def test_a_refused_value_is_quoted_whole_in_the_message(tmp_path: Path, document: object, message: str) -> None:
+    path = write(tmp_path, document)
+    with pytest.raises(GuidanceRecordError) as caught:
+        guidance_record.read(path, ["alpha"])
+    assert str(caught.value) == f"{path.as_posix()}: {message}"
+
+
 def test_the_family_is_the_record_error() -> None:
     assert (GuidanceRecordError,) == guidance_record.CONTENT_ERRORS
 

@@ -54,6 +54,9 @@ DUPLICATION_ALLOWED = {
         "this module, which needs the deployer"
     ),
 }
+INDIRECTION_ALLOWED = {
+    "BUILTIN_NAMES": "lists the names the builtins module binds, reading no value by any of them",
+}
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 
@@ -72,8 +75,153 @@ VALIDATION_DOC = f'"Validation" in {SKILL_GUIDE}'
 OPERATIONS_CONTRACT = "docs/code-review-operations-contract.md"
 # The calls that look an attribute up by its name, as getattr(os, "environ") looks up os.environ.
 ATTRIBUTE_LOOKUPS = frozenset({"getattr", "builtins.getattr"})
+# Every call that reads an object's attribute given the object and the name, the one catalogue each policy reading an
+# attribute by name takes.
+ATTRIBUTE_READERS = ATTRIBUTE_LOOKUPS | {
+    "inspect.getattr_static",
+    "object.__getattribute__",
+    "builtins.object.__getattribute__",
+}
 # The calls that import a module by its name, as the module's imports resolve them.
 MODULE_LOADERS = frozenset({"importlib.import_module", "__import__", "builtins.__import__"})
+# The one catalogue of dynamic name lookup, which the indirection policy refuses at the source rather than each policy
+# modelling it. NAME_LOOKUPS take an attribute's name as a value: a call of one given a string literal reads as the
+# attribute it names, and any other reference to one is refused.
+NAME_LOOKUPS = frozenset(
+    f"{prefix}{name}" for prefix in ("", "builtins.") for name in ("getattr", "setattr", "delattr", "hasattr")
+)
+# The callables and names that reach an attribute, a namespace, a module, a frame, or code by a value rather than by a
+# name the source spells, each refused wherever a module refers to it.
+INDIRECTION_CALLABLES = frozenset(
+    {
+        *(f"{prefix}{name}" for prefix in ("", "builtins.") for name in ("vars", "globals", "locals", "eval", "exec")),
+        *MODULE_LOADERS,
+        "__builtins__",
+        "importlib.__import__",
+        "importlib.reload",
+        "importlib.util.spec_from_file_location",
+        "importlib.util.module_from_spec",
+        "importlib.machinery.SourceFileLoader",
+        "runpy.run_path",
+        "runpy.run_module",
+        "pkgutil.resolve_name",
+        "operator.attrgetter",
+        "operator.methodcaller",
+        "inspect.getattr_static",
+        "inspect.getmembers",
+        "inspect.getmembers_static",
+        "inspect.currentframe",
+        "sys._getframe",
+        "sys.modules",
+        # The standard library's resolvers of an object from a dotted name or a string given as a value.
+        "pydoc.locate",
+        "pydoc.resolve",
+        "pkgutil.find_loader",
+        "pkgutil.get_loader",
+        "pkgutil.get_importer",
+        "pkgutil.walk_packages",
+        "logging.config.dictConfig",
+        "logging.config.fileConfig",
+        "logging.config.listen",
+        "logging.config.BaseConfigurator",
+        "logging.config.DictConfigurator",
+        "unittest.mock.patch",
+        "unittest.mock._importer",
+        "unittest.mock._get_target",
+        "typing.ForwardRef",
+        "annotationlib.ForwardRef",
+        "annotationlib.call_evaluate_function",
+        # The import system's own finders and loaders, which load a module by a name or a path given as a value.
+        "importlib.find_loader",
+        "importlib.util.find_spec",
+        "importlib.util.spec_from_loader",
+        "importlib.util.LazyLoader",
+        "importlib.machinery.SourcelessFileLoader",
+        "importlib.machinery.ExtensionFileLoader",
+        "importlib.machinery.PathFinder",
+        "importlib.machinery.FileFinder",
+        "importlib.metadata.entry_points",
+        "importlib.metadata.EntryPoint",
+        "importlib.metadata.EntryPoints",
+        "zipimport.zipimporter",
+        "imp.find_module",
+        "imp.load_module",
+        "imp.load_source",
+        "imp.load_compiled",
+        "imp.load_dynamic",
+        "sys.meta_path",
+        "sys.path_hooks",
+        "sys.path_importer_cache",
+        # The unpicklers, which resolve each global a pickle names by its module and name.
+        "pickle.load",
+        "pickle.loads",
+        "pickle.Unpickler",
+        "shelve.open",
+        "shelve.Shelf",
+        "shelve.DbfilenameShelf",
+        "shelve.BsdDbShelf",
+        # The runners of code given as a string, as eval and exec run it.
+        "timeit.timeit",
+        "timeit.repeat",
+        "timeit.Timer",
+        "profile.run",
+        "profile.runctx",
+        "profile.Profile",
+        "cProfile.run",
+        "cProfile.runctx",
+        "cProfile.Profile",
+        "pdb.run",
+        "pdb.runeval",
+        "pdb.runctx",
+        "pdb.Pdb",
+        "code.interact",
+        "code.InteractiveInterpreter",
+        "code.InteractiveConsole",
+        "trace.Trace",
+        "doctest.testmod",
+        "doctest.testfile",
+        "doctest.run_docstring_examples",
+        "doctest.DocTestRunner",
+        # The walks that hand out every live object, a module's functions among them, or a frame.
+        "gc.get_objects",
+        "gc.get_referrers",
+        "gc.get_referents",
+        "sys._current_frames",
+        "inspect.stack",
+        "inspect.trace",
+        "inspect.getouterframes",
+        "inspect.getinnerframes",
+    }
+)
+# The attributes that reach a namespace or a lookup hook, refused on any receiver.
+INDIRECTION_ATTRIBUTES = frozenset(
+    {
+        "__dict__",
+        "__getattribute__",
+        "__getattr__",
+        "__setattr__",
+        "__delattr__",
+        "__globals__",
+        "__builtins__",
+        "f_globals",
+        "f_locals",
+        "f_builtins",
+        # A class's every subclass, Popen and the loaders among them, handed out by enumeration.
+        "__subclasses__",
+        # A distribution's entry points, each of which loads an object its metadata names.
+        "entry_points",
+    }
+)
+# The methods whose definition makes a class's or a module's attributes answer by a computed name.
+LOOKUP_HOOKS = frozenset({"__getattr__", "__getattribute__"})
+# The names the builtins module binds, which a name no scope binds stands for.
+BUILTIN_NAMES = frozenset(dir(builtins))
+# os.path is ntpath or posixpath, and each takes commonprefix from genericpath, so a path module's function is read
+# under every name.
+PATH_MODULES = ("os.path", "ntpath", "posixpath", "genericpath")
+COMMON_PATH_FUNCTIONS = frozenset(
+    f"{module}.{name}" for module in PATH_MODULES for name in ("commonpath", "commonprefix")
+)
 # What stands for a part of a dotted name a module looks up by a name it computes, such as the module in
 # importlib.import_module(name).run, which no policy can settle.
 COMPUTED_NAME = "?"
@@ -424,9 +572,9 @@ class _BindingReader(ast.NodeVisitor):
                 self.visit(variadic.annotation)
 
     def _parameters(self, arguments: ast.arguments) -> None:
-        """Bind each parameter as a local value, or to its default when the default is a name or an attribute, as an
+        """Bind each parameter as a local value, or to its default, whatever expression the default is, as an
         assignment binds it: what a caller passes is never resolved, so a call through the parameter is read as a call
-        of its default."""
+        of its default, a default that is itself a call, as `lib=ctypes.WinDLL("kernel32")`, included."""
         positional = [*arguments.posonlyargs, *arguments.args]
         defaults: dict[int, ast.expr | None] = {
             id(argument): default
@@ -440,8 +588,7 @@ class _BindingReader(ast.NodeVisitor):
                 continue
             self.scopes[id(argument)] = self.scope
             default = defaults.get(id(argument))
-            named = isinstance(default, (ast.Name, ast.Attribute))
-            self.scope.bind(argument.arg, default if named else f"<local>.{argument.arg}")
+            self.scope.bind(argument.arg, default if default is not None else f"<local>.{argument.arg}")
 
     def visit_Import(self, node: ast.Import) -> None:
         for found in module_imports(node):
@@ -599,7 +746,7 @@ class CallableResolver:
     def _bound_name(self, name: str, scope: _NameScope, seen: frozenset[tuple[int, str]]) -> str:
         owner = scope.owner(name)
         if owner is None:
-            return name if name in vars(builtins) else ""
+            return name if name in BUILTIN_NAMES else ""
         key = (id(owner), name)
         values = owner.bindings[name]
         if key in seen or len(values) != 1:

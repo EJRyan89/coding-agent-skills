@@ -49,6 +49,10 @@ KINDS_ALLOWED = {
     "them, their runtime adapters, and the agents they need), and plan.build plans each kind its own way",
 }
 
+INDIRECTION_ALLOWED = {
+    "parse_arguments": "builds Options from every dest argparse parsed, so an option deployer/arguments.py adds "
+    "reaches Options without a second list of its names",
+}
 TAKE_OVER_SOURCE = "--take-over-source"
 
 

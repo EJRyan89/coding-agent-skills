@@ -19,8 +19,10 @@ from path_containment import posix_within
 from python_checks import claim_files, formatted_modules, sanctioned_problems
 from skill_roots import SKILL_CORE
 from validation_support import (
+    COMMON_PATH_FUNCTIONS,
     DEFINITIONS,
     MODULE_LOADERS,
+    PATH_MODULES,
     REPOSITORY_ROOT,
     VALIDATION_DOC,
     CallableResolver,
@@ -40,6 +42,10 @@ from validation_support import (
     skill_dependency_closure,
 )
 
+INDIRECTION_ALLOWED = {
+    "_flags": "reads the value of the re flag a pattern's call names, a member of re.RegexFlag, and runs no code by "
+    "its name",
+}
 # A module sanctions a copy beside the code it excuses, as a module-level DUPLICATION_ALLOWED = {name: reason}, and
 # every module holding the copy states it under its own name for the copy. Nothing sanctions a whole module: shared
 # code lives in ejryan89-skill-core. An allowance the module no longer needs is reported.
@@ -699,13 +705,8 @@ def skill_script_import_problems(root: Path) -> list[str]:
 # module-level CONTAINMENT_ALLOWED = {scope: reason}.
 PATH_CONTAINMENT = "skills/ejryan89-skill-core/scripts/path_containment.py"
 CONTAINMENT_ALLOWANCE = "CONTAINMENT_ALLOWED"
-# os.path is ntpath or posixpath, and each takes commonprefix from genericpath, so a test is read under every name.
 # The exceptions whose handler catches the ValueError relative_to raises, by the names a module reads them under.
 VALUE_ERROR_CATCHERS = frozenset({"ValueError", "Exception", "BaseException"})
-PATH_MODULES = ("os.path", "ntpath", "posixpath", "genericpath")
-COMMON_PATH_FUNCTIONS = frozenset(
-    f"{module}.{name}" for module in PATH_MODULES for name in ("commonpath", "commonprefix")
-)
 PATH_JOINS = frozenset(f"{module}.join" for module in PATH_MODULES)
 RELATIVE_PATHS = frozenset(f"{module}.relpath" for module in PATH_MODULES)
 SEPARATOR_NAMES = frozenset(f"{module}.{name}" for module in ("os", *PATH_MODULES) for name in ("sep", "altsep"))

@@ -35,7 +35,9 @@ import github_client
 import pdf_tool
 import python_checks
 import review_vocabularies
+import skill_scripts
 import toolchain
+import validation_support
 from call_tables import TEXT_OPENERS, TextOpener
 from job_selection import all_jobs
 from python_checks import (
@@ -5050,3 +5052,771 @@ class PrefixedCacheTests(unittest.TestCase):
             prefixed = Path("\\\\?\\" + str(REPOSITORY_ROOT / "skills" / "x"))
             found = python_checks.mypy_cache_directory(root, prefixed, ["a.py"], strict=False)
             self.assertEqual(_cache_key(root, "skills/x"), found)
+
+
+# The indirection policies: each row is a module body after RESTRICTED_IMPORTS, whose lines marked `# read` are those
+# the policy refuses and no others.
+RESTRICTED_IMPORTS = (
+    "import builtins\nimport ctypes\nimport functools\nimport importlib\nimport importlib.util\nimport inspect\n"
+    "import json\nimport operator\nimport os\nimport runpy\nimport subprocess\nimport sys\n\n"
+    "import seconds_option\nimport whole_number\n\n\n"
+)
+
+
+def restricted_rows(
+    policy: Callable[[Path, list[Path]], list[str]], body: str, path: str = "skills/alpha/scripts/alpha.py"
+) -> tuple[list[str], list[str]]:
+    """The lines a policy refuses in the module at `path` holding body after RESTRICTED_IMPORTS, and the lines the
+    body marks `# read`, both by their numbers."""
+    source = RESTRICTED_IMPORTS + body
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        write_fixture_tree(root, {path: source})
+        found = policy(root, sorted(root.rglob("*.py")))
+    refused = sorted({problem.split(" ", 1)[0].rpartition(":")[2] for problem in found})
+    marked = sorted(str(number) for number, line in enumerate(source.splitlines(), 1) if line.endswith("# read"))
+    return refused, marked
+
+
+# Each construct of the dynamic-lookup catalogue, refused, and each direct form, read.
+INDIRECTION_ROWS = {
+    "getattr given a computed name": "def f(t, name):\n    return getattr(t, name)  # read\n",
+    "getattr given a concatenation": "def f(t):\n    return getattr(t, 'ru' + 'n')  # read\n",
+    "getattr given an unpacked name": "def f(t, names):\n    return getattr(t, *names)  # read\n",
+    "builtins.getattr given a computed name": "def f(t, name):\n    return builtins.getattr(t, name)  # read\n",
+    "setattr given a computed name": "def f(t, name):\n    setattr(t, name, 1)  # read\n",
+    "delattr given a computed name": "def f(t, name):\n    delattr(t, name)  # read\n",
+    "hasattr given a computed name": "def f(t, name):\n    return hasattr(t, name)  # read\n",
+    "getattr bound to a name": "def f(t):\n    look = getattr  # read\n    return look(t, 'x')\n",
+    "getattr passed as a value": "def f(t):\n    return map(getattr, t)  # read\n",
+    "vars": "def f(t):\n    return vars(t)  # read\n",
+    "globals": "def f():\n    return globals()  # read\n",
+    "locals": "def f():\n    return locals()  # read\n",
+    "eval": "def f(t):\n    return eval(t)  # read\n",
+    "exec": "def f(t):\n    exec(t)  # read\n",
+    "__import__": "def f():\n    return __import__('os')  # read\n",
+    "__builtins__": "def f():\n    return __builtins__  # read\n",
+    "importlib.import_module of a literal": "def f():\n    return importlib.import_module('os')  # read\n",
+    "importlib.import_module of a name": "def f(t):\n    return importlib.import_module(t)  # read\n",
+    "importlib.util.spec_from_file_location": (
+        "def f(t):\n    return importlib.util.spec_from_file_location('m', t)  # read\n"
+    ),
+    "runpy.run_path": "def f(t):\n    runpy.run_path(t)  # read\n",
+    "sys.modules indexed": "def f():\n    return sys.modules['os']  # read\n",
+    "sys.modules read by get": "def f():\n    return sys.modules.get('os')  # read\n",
+    "sys._getframe": "def f():\n    return sys._getframe()  # read\n",
+    "inspect.currentframe": "def f():\n    return inspect.currentframe()  # read\n",
+    "inspect.getattr_static": "def f(t):\n    return inspect.getattr_static(t, 'x')  # read\n",
+    "operator.attrgetter applied": "def f(t):\n    return operator.attrgetter('x')(t)  # read\n",
+    "operator.methodcaller applied": "def f(t):\n    return operator.methodcaller('x')(t)  # read\n",
+    "an imported attrgetter": "from operator import attrgetter as ag\n\n\ndef f(t):\n    return ag('x')(t)  # read\n",
+    "a namespace's __dict__": "def f(t):\n    return t.__dict__['x']  # read\n",
+    "object.__getattribute__": "def f(t):\n    return object.__getattribute__(t, 'x')  # read\n",
+    "a bound __getattribute__": "def f(t):\n    return t.__getattribute__('x')  # read\n",
+    "a function's __globals__": "def f(t):\n    return t.__globals__  # read\n",
+    "a frame's f_locals": "def f(t):\n    return t.f_locals  # read\n",
+    "a module __getattr__": "def __getattr__(name):  # read\n    return name\n",
+    "a class __getattribute__": "class A:\n    def __getattribute__(self, name):  # read\n        return name\n",
+    "a module bound to a name": "def f(t):\n    m = json  # read\n    return m.loads(t)\n",
+    "a module passed as a value": "def f(t):\n    return t(json)  # read\n",
+    "a module twice imported": (
+        "import importlib.machinery\n\n\ndef f(t):\n    return importlib.import_module(t)  # read\n"
+    ),
+    "getattr given a literal name": "def f(t):\n    return getattr(t, 'x', None), hasattr(t, 'x')\n",
+    "setattr given a literal name": "def f(t):\n    setattr(t, 'x', 1)\n",
+    "a literal lookup on a module": "def f(t):\n    return getattr(json, 'loads')(t)\n",
+    "an attribute of a module": "def f(t):\n    return json.loads(t), os.path.join(t, 'x')\n",
+    "a local of a catalogued name": "def f(t):\n    vars = t\n    return vars\n",
+}
+
+
+@pytest.mark.parametrize("body", INDIRECTION_ROWS.values(), ids=INDIRECTION_ROWS.keys())
+def test_indirection_policy_refuses_each_dynamic_lookup(body: str) -> None:
+    refused, marked = restricted_rows(python_checks.indirection_problems, body)
+    assert refused == marked
+
+
+# Each standard-library callable or name that resolves an object from a dotted name or a string given as a value,
+# loads a module by a name or a path, unpickles, runs code given as a string, or hands out every live object or a
+# frame, which the indirection policy refuses wherever a module refers to it.
+STANDARD_RESOLVERS = (
+    "pydoc.locate",
+    "pydoc.resolve",
+    "pkgutil.find_loader",
+    "pkgutil.get_loader",
+    "pkgutil.get_importer",
+    "pkgutil.walk_packages",
+    "logging.config.dictConfig",
+    "logging.config.fileConfig",
+    "logging.config.listen",
+    "logging.config.BaseConfigurator",
+    "logging.config.DictConfigurator",
+    "unittest.mock.patch",
+    "unittest.mock._importer",
+    "unittest.mock._get_target",
+    "typing.ForwardRef",
+    "annotationlib.ForwardRef",
+    "annotationlib.call_evaluate_function",
+    "importlib.find_loader",
+    "importlib.util.find_spec",
+    "importlib.util.spec_from_loader",
+    "importlib.util.LazyLoader",
+    "importlib.machinery.SourcelessFileLoader",
+    "importlib.machinery.ExtensionFileLoader",
+    "importlib.machinery.PathFinder",
+    "importlib.machinery.FileFinder",
+    "importlib.metadata.entry_points",
+    "importlib.metadata.EntryPoint",
+    "importlib.metadata.EntryPoints",
+    "zipimport.zipimporter",
+    "imp.find_module",
+    "imp.load_module",
+    "imp.load_source",
+    "imp.load_compiled",
+    "imp.load_dynamic",
+    "sys.meta_path",
+    "sys.path_hooks",
+    "sys.path_importer_cache",
+    "pickle.load",
+    "pickle.loads",
+    "pickle.Unpickler",
+    "shelve.open",
+    "shelve.Shelf",
+    "shelve.DbfilenameShelf",
+    "shelve.BsdDbShelf",
+    "timeit.timeit",
+    "timeit.repeat",
+    "timeit.Timer",
+    "profile.run",
+    "profile.runctx",
+    "profile.Profile",
+    "cProfile.run",
+    "cProfile.runctx",
+    "cProfile.Profile",
+    "pdb.run",
+    "pdb.runeval",
+    "pdb.runctx",
+    "pdb.Pdb",
+    "code.interact",
+    "code.InteractiveInterpreter",
+    "code.InteractiveConsole",
+    "trace.Trace",
+    "doctest.testmod",
+    "doctest.testfile",
+    "doctest.run_docstring_examples",
+    "doctest.DocTestRunner",
+    "gc.get_objects",
+    "gc.get_referrers",
+    "gc.get_referents",
+    "sys._current_frames",
+    "inspect.stack",
+    "inspect.trace",
+    "inspect.getouterframes",
+    "inspect.getinnerframes",
+)
+
+
+@pytest.mark.parametrize("name", STANDARD_RESOLVERS)
+def test_indirection_policy_refuses_each_standard_resolver(name: str) -> None:
+    module = name.rpartition(".")[0]
+    body = f"import {module}\n\n\ndef f():\n    return {name}  # read\n"
+    refused, marked = restricted_rows(python_checks.indirection_problems, body)
+    assert refused == marked
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        pytest.param("def f(t):\n    return t.__subclasses__()  # read\n", id="__subclasses__"),
+        pytest.param("def f(t):\n    return t.entry_points(group='x')  # read\n", id="a distribution's entry_points"),
+    ],
+)
+def test_indirection_policy_refuses_each_enumerating_attribute(body: str) -> None:
+    refused, marked = restricted_rows(python_checks.indirection_problems, body)
+    assert refused == marked
+
+
+# Each owner-only callable referenced outside its owners, refused, and each form the rule leaves alone, read.
+OWNER_ONLY_ROWS = {
+    "json.dumps bound to a name": "def f(t):\n    write = json.dumps  # read\n    return write(t)  # read\n",
+    "json.dumps as a parameter's default": "def f(t, dumps=json.dumps):  # read\n    return dumps(t)  # read\n",
+    "json.dumps as a lambda's default": "WRITE = lambda t, dumps=json.dumps: dumps(t)  # read\n",
+    "json.dumps returned": "def f():\n    return json.dumps  # read\n",
+    "json.dumps as a dict value": "WRITERS = {'json': json.dumps}  # read\n",
+    "json.dumps as a class attribute": "class A:\n    TEXT = json.dumps  # read\n",
+    "json.dump passed as a value": "def f(t):\n    return map(json.dump, t)  # read\n",
+    "json.dumps by a literal lookup": "def f(t):\n    return getattr(json, 'dumps')(t)  # read\n",
+    "json.dumps imported and bound": "from json import dumps\n\nWRITE = dumps  # read\n",
+    "a JSONEncoder called": "def f(t):\n    return json.JSONEncoder().iterencode(t)  # read\n",
+    "a JSONEncoder subclassed": "class E(json.JSONEncoder):  # read\n    pass\n",
+    "a ctypes loader": "def f():\n    return ctypes.WinDLL('kernel32')  # read\n",
+    "a ctypes namespace": "def f():\n    return ctypes.windll.kernel32  # read\n",
+    "ctypes.pythonapi": "def f():\n    return ctypes.pythonapi  # read\n",
+    "a subprocess runner called": "def f():\n    return subprocess.run(['git'])  # read\n",
+    "a subprocess runner imported": "from subprocess import Popen\n\n\ndef f():\n    return Popen(['git'])  # read\n",
+    "an os start": "def f(t):\n    return os.system(t)  # read\n",
+    "a commonpath": "def f(t):\n    return os.path.commonpath(t)  # read\n",
+    "json.dumps called directly": "def f(t):\n    return json.dumps(t, indent=2)  # read\n",
+    "json.dumps imported and called": "from json import dumps\n\n\ndef f(t):\n    return dumps(t)  # read\n",
+    "json.loads called": "def f(t):\n    return json.loads(t)  # read\n",
+    "json.load as a default": "def f(t, load=json.load):  # read\n    return load(t)  # read\n",
+    "a JSONDecoder subclassed": "class D(json.JSONDecoder):  # read\n    pass\n",
+    "json_writer and json_reader called": (
+        "import json_reader\nimport json_writer\n\n\ndef f(t):\n    return json_reader.loads(json_writer.dumps(t))\n"
+    ),
+    "a runner's class in an annotation": "def f(t: subprocess.Popen[str]) -> subprocess.Popen[str]:\n    return t\n",
+    "a runner's class in an annotated assignment": (
+        "PROCESS: subprocess.Popen[str] | None = None\n\n\ndef f():\n"
+        "    local: subprocess.Popen[bytes] | None = None\n    return local\n"
+    ),
+}
+
+
+@pytest.mark.parametrize("body", OWNER_ONLY_ROWS.values(), ids=OWNER_ONLY_ROWS.keys())
+def test_owner_only_policy_refuses_each_reference_outside_its_owners(body: str) -> None:
+    refused, marked = restricted_rows(python_checks.owner_only_problems, body)
+    assert refused == marked
+
+
+@pytest.mark.parametrize(
+    ("path", "body"),
+    [
+        pytest.param("skills/ejryan89-skill-core/scripts/json_writer.py", "WRITE = json.dumps\n", id="json_writer"),
+        pytest.param("skills/ejryan89-skill-core/scripts/json_reader.py", "READ = json.loads\n", id="json_reader"),
+        pytest.param(
+            "skills/ejryan89-skill-core/scripts/job_tree.py", "LIB = ctypes.WinDLL('kernel32')\n", id="a ctypes owner"
+        ),
+        pytest.param(
+            "skills/ejryan89-skill-core/scripts/bounded_process.py", "RUN = subprocess.Popen\n", id="bounded_process"
+        ),
+        pytest.param(
+            "skills/ejryan89-skill-core/scripts/path_containment.py", "COMMON = os.path.commonpath\n", id="containment"
+        ),
+    ],
+)
+def test_owner_only_policy_reads_each_owner_as_free_to_reference_its_names(path: str, body: str) -> None:
+    refused, marked = restricted_rows(python_checks.owner_only_problems, body, path)
+    assert refused == marked == []
+
+
+# Each policed call given an argument its readers cannot follow, refused, and each spelled form, read.
+POLICED_CALL_ROWS = {
+    "a ** of a mapping": "def f(p, options):\n    p.add_argument('--timeout', **options)  # read\n",
+    "a ** of a mapping updated": (
+        "def f(p, cfg):\n    options = {}\n    options.update(cfg)\n"
+        "    p.add_argument('--timeout', **options)  # read\n"
+    ),
+    "a ** of a literal": "def f(p):\n    p.add_argument('--timeout', **{'type': float})  # read\n",
+    "a * of option strings": "def f(p, names):\n    p.add_argument(*names, type=float)  # read\n",
+    "an option string held in a name": (
+        "OPTION = '--timeout'\n\n\ndef f(p):\n    p.add_argument(OPTION, type=float)  # read\n"
+    ),
+    "a type given by a parameter's default": (
+        "def f(p, kind=float):\n    p.add_argument('--timeout', type=kind)  # read\n"
+    ),
+    "a type held by a base class": (
+        "class A:\n    kind = float\n\n\nclass B(A):\n    def f(self, p):\n"
+        "        p.add_argument('--timeout', type=self.kind)  # read\n"
+    ),
+    "a type by a lookup of a builtin": (
+        "def f(p):\n    p.add_argument('--timeout', type=getattr(builtins, 'float'))  # read\n"
+    ),
+    "a type given by a lambda": "def f(p):\n    p.add_argument('--count', type=lambda t: int(t))  # read\n",
+    "a default given by a parameter": "def f(p, wait):\n    p.add_argument('--wait', default=wait)  # read\n",
+    "a dest held in a name": "def f(p, name):\n    p.add_argument('--x', dest=name)  # read\n",
+    "a metavar held in a name": "def f(p, name):\n    p.add_argument('--x', metavar=name)  # read\n",
+    "add_argument bound to a name": "def f(p):\n    add = p.add_argument  # read\n    add('--timeout', type=float)\n",
+    "add_argument in a partial": "def f(p):\n    return functools.partial(p.add_argument, type=float)  # read\n",
+    "add_argument by a literal lookup and bound": "def f(p):\n    return getattr(p, 'add_argument')  # read\n",
+    "a ** into json.dumps": "def f(t, options):\n    return json.dumps(t, **options)  # read\n",
+    "an encoder class given by a parameter": "def f(t, encoder):\n    return json.dumps(t, cls=encoder)  # read\n",
+    "a ** into a process start": "def f(options):\n    return subprocess.run(['git'], **options)  # read\n",
+    "a * into a process start": "def f(command):\n    return subprocess.run(*command)  # read\n",
+    "each policed argument spelled": (
+        "DEFAULT = 30.0\n\n\ndef f(p):\n    p.add_argument('--timeout', '-t', type=seconds_option.positive_seconds, "
+        "default=DEFAULT, dest='timeout', metavar='SECONDS')\n"
+        "    p.add_argument('--count', type=whole_number.argument(1, 10), default=-1)\n"
+        "    p.add_argument('--name', type=str, default=('a', 'b'), choices=['a', 'b'])\n"
+    ),
+    "a json write given a module's default": "def f(t):\n    return json.dumps(t, default=str, sort_keys=True)\n",
+    "a constant an augmented assignment rebinds": (
+        "WAIT = 30\nWAIT += 1\n\n\ndef f(p):\n"
+        "    p.add_argument('--wait', type=seconds_option.positive_seconds, default=WAIT)  # read\n"
+    ),
+    "a type a loop binds": (
+        "for KIND in (float,):\n    pass\n\n\ndef f(p):\n    p.add_argument('--timeout', type=KIND)  # read\n"
+    ),
+    "a type a with binds": (
+        "with open('x') as KIND:\n    pass\n\n\ndef f(p):\n    p.add_argument('--timeout', type=KIND)  # read\n"
+    ),
+    "a constant a function rebinds through global": (
+        "WAIT = 30\n\n\ndef g(wait):\n    global WAIT\n    WAIT = wait\n\n\ndef f(p):\n"
+        "    p.add_argument('--wait', type=seconds_option.positive_seconds, default=WAIT)  # read\n"
+    ),
+    "a constant an assignment expression binds": (
+        "if (WAIT := 30):\n    pass\n\n\ndef f(p):\n"
+        "    p.add_argument('--wait', type=seconds_option.positive_seconds, default=WAIT)  # read\n"
+    ),
+    "a constant bound to an operation on literals": (
+        "WAIT = 30 * 2\n\n\ndef f(p):\n"
+        "    p.add_argument('--wait', type=seconds_option.positive_seconds, default=WAIT)\n"
+    ),
+    "a constant bound to a dict of literals": (
+        "WAIT = {'a': 1, 'b': (2, 3)}\n\n\ndef f(p):\n"
+        "    p.add_argument('--wait', type=seconds_option.positive_seconds, default=WAIT)\n"
+    ),
+    "a constant bound to a dict that spreads another": (
+        "OTHER = {'a': 1}\nWAIT = {**OTHER}\n\n\ndef f(p):\n"
+        "    p.add_argument('--wait', type=seconds_option.positive_seconds, default=WAIT)  # read\n"
+    ),
+    "a constant bound to a literal twice": (
+        "WAIT = 30\nWAIT = 60\n\n\ndef f(p):\n"
+        "    p.add_argument('--wait', type=seconds_option.positive_seconds, default=WAIT)  # read\n"
+    ),
+}
+
+
+@pytest.mark.parametrize("body", POLICED_CALL_ROWS.values(), ids=POLICED_CALL_ROWS.keys())
+def test_policed_call_policy_refuses_each_argument_its_readers_cannot_follow(body: str) -> None:
+    refused, marked = restricted_rows(python_checks.policed_call_problems, body)
+    assert refused == marked
+
+
+# The policies a spelling can cross, by the label a fixture line marks it with: `# refused: policed, time-option`
+# marks a line those two refuse, and every other policy here must refuse nothing on it.
+CROSSED_POLICIES: dict[str, Callable[[Path, list[Path]], list[str]]] = {
+    "indirection": python_checks.indirection_problems,
+    "owner-only": python_checks.owner_only_problems,
+    "policed": python_checks.policed_call_problems,
+    "time-option": python_checks.time_option_problems,
+    "ctypes": python_checks.ctypes_declaration_problems,
+    "console": lambda root, _files: skill_scripts.console_setup_problems(root),
+}
+CROSSED_MARK = "# refused:"
+
+
+def crossed_rows(body: str, path: str) -> dict[str, tuple[list[str], list[str]]]:
+    """For each policy CROSSED_POLICIES names, the lines it refuses in the module at `path` holding body after
+    RESTRICTED_IMPORTS, and the lines the body marks with its label, both by their numbers."""
+    source = RESTRICTED_IMPORTS + body
+    lines = source.splitlines()
+    marks = {
+        label: sorted(
+            str(number)
+            for number, line in enumerate(lines, 1)
+            if CROSSED_MARK in line and label in {part.strip() for part in line.rpartition(CROSSED_MARK)[2].split(",")}
+        )
+        for label in CROSSED_POLICIES
+    }
+    found: dict[str, tuple[list[str], list[str]]] = {}
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        write_fixture_tree(root, {path: source})
+        files = sorted(root.rglob("*.py"))
+        for label, policy in CROSSED_POLICIES.items():
+            refused = sorted({problem.split(" ", 1)[0].rpartition(":")[2] for problem in policy(root, files)})
+            found[label] = (refused, marks[label])
+    return found
+
+
+SCRIPT = "skills/alpha/scripts/alpha.py"
+CTYPES_OWNER = "skills/ejryan89-skill-core/scripts/job_tree.py"
+# Each spelling found that the shared resolver did not follow, and each form the review of its fix found,
+# through every policy it crosses, so no policy reading the call needs to follow it: each is refused at the source by
+# the policy its line names, and passes every other.
+SUPERSEDED_RESOLVER_ROWS = [
+    pytest.param(
+        "def f(t):\n    get = operator.attrgetter('x')  # refused: indirection\n    return get(t)\n",
+        SCRIPT,
+        id="a bound attrgetter",
+    ),
+    pytest.param(
+        "def f(p, kind=float):\n    p.add_argument('--timeout', type=kind)  # refused: policed, time-option\n",
+        SCRIPT,
+        id="a parameter's default as a type",
+    ),
+    pytest.param(
+        "WRITE = lambda t, dumps=json.dumps: dumps(t)  # refused: owner-only\n",
+        SCRIPT,
+        id="a lambda's default as a writer",
+    ),
+    pytest.param(
+        "class A:\n    TEXT = json.dumps  # refused: owner-only\n\n\nclass B(A):\n    def f(self, t):\n"
+        "        return self.TEXT(t)\n",
+        SCRIPT,
+        id="a base class attribute holding a writer",
+    ),
+    pytest.param(
+        "class A:\n    kind = float\n\n\nclass B(A):\n    def f(self, p):\n"
+        "        p.add_argument('--timeout', type=self.kind)  # refused: policed\n",
+        SCRIPT,
+        id="a base class attribute holding a type, read through self",
+    ),
+    pytest.param(
+        "class A:\n    kind = float\n\n\nclass B(A):\n    pass\n\n\ndef f(p):\n"
+        "    p.add_argument('--timeout', type=B.kind)  # refused: policed\n",
+        SCRIPT,
+        id="a base class attribute holding a type, read through the subclass's name",
+    ),
+    pytest.param(
+        "class A:\n    def __init__(self):\n        self.lib = ctypes.WinDLL('kernel32')  # refused: owner-only\n",
+        SCRIPT,
+        id="a base class attribute holding a library, outside the ctypes owners",
+    ),
+    pytest.param(
+        "class A:\n    def __init__(self):\n        self.lib = ctypes.WinDLL('kernel32')\n\n\nclass B(A):\n"
+        "    def close(self, handle):\n        return self.lib.CloseHandle(handle)  # refused: ctypes\n",
+        CTYPES_OWNER,
+        id="a base class attribute holding a library, inside a ctypes owner",
+    ),
+    pytest.param(
+        "class A:\n    lib = ctypes.WinDLL('kernel32')\n\n\nclass B(A):\n    def close(self, handle):\n"
+        "        return B.lib.CloseHandle(handle)  # refused: ctypes\n",
+        CTYPES_OWNER,
+        id="a base class's library read through the subclass's name, inside a ctypes owner",
+    ),
+    pytest.param(
+        "class A:\n    lib = ctypes.WinDLL('kernel32')\n\n\nclass B(A):\n    def close(self, handle):\n"
+        "        return super().lib.CloseHandle(handle)  # refused: ctypes\n",
+        CTYPES_OWNER,
+        id="a base class's library read through super()",
+    ),
+    pytest.param(
+        "class A:\n    lib = ctypes.WinDLL('kernel32')\n\n\nclass B(A):\n    def close(self, handle):\n"
+        "        return type(self).lib.CloseHandle(handle)  # refused: ctypes\n",
+        CTYPES_OWNER,
+        id="a base class's library read through type(self)",
+    ),
+    pytest.param(
+        "class A:\n    lib = ctypes.WinDLL('kernel32')\n\n\nclass B(A):\n    def close(self, handle):\n"
+        "        return self.__class__.lib.CloseHandle(handle)  # refused: ctypes\n",
+        CTYPES_OWNER,
+        id="a base class's library read through self.__class__",
+    ),
+    pytest.param(
+        "class A:\n    lib = ctypes.WinDLL('kernel32')\n\n\nclass B(A):\n    def close(self, handle):\n"
+        "        return [self][0].lib.CloseHandle(handle)  # refused: ctypes\n",
+        CTYPES_OWNER,
+        id="a base class's library read through a receiver no list names",
+    ),
+    pytest.param(
+        "class A:\n    lib = ctypes.WinDLL('kernel32')\n\n    def close(self, handle):\n"
+        "        A.lib.CloseHandle.argtypes = [ctypes.c_void_p]\n        A.lib.CloseHandle.restype = ctypes.c_int\n"
+        "        return self.lib.CloseHandle(handle), cls_read(A.lib)\n\n\ndef cls_read(lib):\n    return lib\n",
+        CTYPES_OWNER,
+        id="a library read through self and its own class's name, read",
+    ),
+    pytest.param(
+        "def f(p):\n    p.add_argument('--x', type=importlib.import_module('m'))  # refused: indirection, policed\n",
+        SCRIPT,
+        id="a module loaded by name as a type, in a module that imports importlib twice",
+    ),
+    pytest.param(
+        "def f(t):\n    match os.path:\n"
+        "        case object(commonpath=common) | object(commonprefix=common):  # refused: owner-only\n"
+        "            return common(t)\n",
+        SCRIPT,
+        id="an owner-only callable an alternative of a class pattern binds",
+    ),
+    pytest.param(
+        "def f(t):\n    match t:\n        case [object(commonpath=common)]:\n            return common\n"
+        "        case {'k': object(commonpath=common)}:\n            return common\n"
+        "        case object(object(commonpath=common)):\n            return common\n",
+        SCRIPT,
+        id="a sequence's, a mapping's, and a positional pattern's keyword, which read no subject's attribute",
+    ),
+    pytest.param(
+        "def f(fix=getattr(sys.stdout, 'reconfigure')):\n    fix(encoding='cp1252')  # refused: console\n",
+        # A tool, which the console policy reads whatever its folder holds, as it reads a skill's scripts beside its
+        # SKILL.md.
+        "tools/alpha.py",
+        id="a stream's reconfigure as a parameter's default",
+    ),
+    pytest.param(
+        "def close(handle, lib=ctypes.WinDLL('kernel32')):\n    return lib.CloseHandle(handle)  # refused: ctypes\n",
+        CTYPES_OWNER,
+        id="a library loaded as a parameter's default, inside a ctypes owner",
+    ),
+    pytest.param(
+        "def f(t):\n    match os.path:\n        case object(commonpath=common) as p:  # refused: owner-only\n"
+        "            return common(t), p\n",
+        SCRIPT,
+        id="an owner-only callable a captured class pattern binds",
+    ),
+    pytest.param(
+        "KIND = 'x'\n\n\ndef f(p):\n    p.add_argument('--x', type=KIND())  # refused: policed\n",
+        SCRIPT,
+        id="a literal-bound constant called as a type",
+    ),
+    pytest.param(
+        "def f(t):\n    match os.path:\n        case object(commonpath=common):  # refused: owner-only\n"
+        "            return common(t)\n",
+        SCRIPT,
+        id="an owner-only callable a class pattern binds",
+    ),
+    pytest.param(
+        "def f(t):\n    match builtins:  # refused: indirection\n"
+        "        case object(getattr=look):  # refused: indirection\n            return look(t, 'x')\n",
+        SCRIPT,
+        id="a name lookup a class pattern binds",
+    ),
+    pytest.param(
+        "def f(t):\n    match t:\n        case object(__dict__=namespace):  # refused: indirection\n"
+        "            return namespace\n",
+        SCRIPT,
+        id="a namespace a class pattern binds",
+    ),
+    pytest.param(
+        "def f(t):\n    match os:  # refused: indirection\n"
+        "        case object(path=object(commonpath=common)):  # refused: owner-only\n"
+        "            return common(t)\n",
+        SCRIPT,
+        id="an owner-only callable a nested class pattern binds",
+    ),
+    pytest.param(
+        "def f(p, cfg):\n    options = {}\n    options.update(cfg)\n"
+        "    p.add_argument('--timeout', **options)  # refused: policed\n",
+        SCRIPT,
+        id="an update a ** cannot read",
+    ),
+    pytest.param(
+        "def f(p, cfg):\n    p.add_argument('--timeout', **{**cfg})  # refused: policed\n",
+        SCRIPT,
+        id="a ** of a spread",
+    ),
+    pytest.param(
+        "def f(p, cfg):\n    p.add_argument('--timeout', **(cfg | {}))  # refused: policed\n",
+        SCRIPT,
+        id="a ** of a union",
+    ),
+    pytest.param(
+        "def f(t, s):\n    for chunk in json.JSONEncoder().iterencode(t):  # refused: owner-only\n"
+        "        s.write(chunk)\n",
+        SCRIPT,
+        id="encoder text a loop takes",
+    ),
+    pytest.param(
+        "OPTION = '--timeout'\n\n\ndef f(p):\n    p.add_argument(OPTION, type=float)  # refused: policed\n",
+        SCRIPT,
+        id="an option string held in a name",
+    ),
+    pytest.param(
+        "def f(t):\n    m = json  # refused: indirection\n    return m.loads(t)  # refused: owner-only\n",
+        SCRIPT,
+        id="a module bound to a local name",
+    ),
+    pytest.param(
+        "def f(t):\n    return operator.attrgetter('loads')(json)(t)  # refused: indirection\n",
+        SCRIPT,
+        id="an attrgetter of a parser",
+    ),
+    pytest.param(
+        "def f():\n    object.__getattribute__(sys.stdout, 'reconfigure')(encoding='utf-8')  # refused: indirection\n",
+        SCRIPT,
+        id="a stream reconfigured through __getattribute__",
+    ),
+    pytest.param(
+        "def f(name):\n    operator.attrgetter(name)(sys.stdout)(encoding='utf-8')  # refused: indirection\n",
+        SCRIPT,
+        id="a stream reconfigured through a computed attrgetter",
+    ),
+    pytest.param(
+        "def f(p):\n    p.add_argument('--timeout', type=getattr(builtins, 'float'))  # refused: policed\n",
+        SCRIPT,
+        id="a getattr of a builtin as a type",
+    ),
+    pytest.param(
+        "KIND = getattr(builtins, 'float')\n\n\ndef f(p):\n"
+        "    p.add_argument('--timeout', type=KIND)  # refused: policed\n",
+        SCRIPT,
+        id="a module-level getattr of a builtin as a type",
+    ),
+    pytest.param(
+        "KIND = float\n\n\ndef f(p):\n    p.add_argument('--timeout', type=KIND)  # refused: policed, time-option\n",
+        SCRIPT,
+        id="a module-level alias of a builtin as a type",
+    ),
+    pytest.param(
+        "WAIT = float('inf')\n\n\ndef f(p):\n"
+        "    p.add_argument('--wait', type=seconds_option.positive_seconds, default=WAIT)  # refused: policed\n",
+        SCRIPT,
+        id="a time option's default bound to a call",
+    ),
+    pytest.param(
+        "WAIT = 30\n\n\ndef f(p):\n"
+        "    p.add_argument('--wait', type=seconds_option.positive_seconds, default=WAIT)\n"
+        "    p.add_argument('--count', type=whole_number.argument(1, WAIT), default=WAIT)\n",
+        SCRIPT,
+        id="a literal-bound constant, read",
+    ),
+    pytest.param(
+        "async def f(loop):\n    return await loop.subprocess_exec('git')  # refused: owner-only\n",
+        SCRIPT,
+        id="an event loop's subprocess_exec",
+    ),
+    pytest.param(
+        "async def f(loop, options):\n"
+        "    return await loop.subprocess_shell('git', **options)  # refused: owner-only, policed\n",
+        SCRIPT,
+        id="a ** into an event loop's subprocess_shell",
+    ),
+]
+
+
+@pytest.mark.parametrize(("body", "path"), SUPERSEDED_RESOLVER_ROWS)
+def test_each_spelling_the_resolver_did_not_follow_is_refused_at_the_source(body: str, path: str) -> None:
+    for label, (refused, marked) in crossed_rows(body, path).items():
+        assert (label, refused) == (label, marked)
+
+
+RESTRICTING_POLICIES = [
+    pytest.param(python_checks.indirection_problems, id="rule 1"),
+    pytest.param(python_checks.owner_only_problems, id="rule 2"),
+    pytest.param(python_checks.policed_call_problems, id="rule 3"),
+]
+
+
+@pytest.mark.parametrize("policy", RESTRICTING_POLICIES)
+@pytest.mark.parametrize(
+    "content",
+    [pytest.param(b"def f(:\n", id="not Python"), pytest.param(b"x = '\xff\xfe'\n", id="not UTF-8")],
+)
+def test_each_restricting_policy_names_a_module_it_cannot_read(
+    policy: Callable[[Path, list[Path]], list[str]], content: bytes
+) -> None:
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        module = root / "skills" / "alpha" / "scripts" / "alpha.py"
+        module.parent.mkdir(parents=True)
+        module.write_bytes(content)
+        problems = policy(root, [module])
+    assert len(problems) == 1, problems
+    assert problems[0].startswith("skills/alpha/scripts/alpha.py "), problems
+
+
+@pytest.mark.parametrize("policy", RESTRICTING_POLICIES)
+def test_each_restricting_policy_refuses_a_listing_with_no_module_to_read(
+    policy: Callable[[Path, list[Path]], list[str]],
+) -> None:
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        assert policy(root, []) == [
+            f"{root.as_posix()}: the listing holds no module the claim policies read, so none was checked"
+        ]
+
+
+# The foreign function a ctypes library hands out by item lookup is refused, inside the owners too.
+def test_ctypes_policy_refuses_a_foreign_function_reached_by_subscript() -> None:
+    body = (
+        "from ctypes import wintypes\n\n\ndef f(t):\n    kernel32 = ctypes.WinDLL('kernel32')\n"
+        "    function = kernel32.OpenProcess\n    function.argtypes = [wintypes.DWORD]\n"
+        "    function.restype = wintypes.HANDLE\n    return kernel32['OpenProcess'](t)  # read\n"
+    )
+    refused, marked = restricted_rows(
+        python_checks.ctypes_declaration_problems, body, "skills/ejryan89-skill-core/scripts/job_tree.py"
+    )
+    assert refused == marked
+
+
+@pytest.mark.parametrize(
+    ("policy", "allowance", "body"),
+    [
+        pytest.param(python_checks.indirection_problems, "INDIRECTION_ALLOWED", "    return vars(t)\n", id="rule 1"),
+        pytest.param(python_checks.owner_only_problems, "OWNER_ONLY_ALLOWED", "    return json.dumps\n", id="rule 2"),
+        pytest.param(
+            python_checks.policed_call_problems, "POLICED_CALL_ALLOWED", "    t.add_argument('--x', **t)\n", id="rule 3"
+        ),
+    ],
+)
+def test_indirection_policies_take_a_sanction_and_report_a_stale_one(
+    policy: Callable[[Path, list[Path]], list[str]], allowance: str, body: str
+) -> None:
+    source = (
+        f"{allowance} = {{'kept': 'a reason', 'stale': 'a reason'}}\n\n\ndef kept(t):\n{body}\n\n\ndef bare(t):\n{body}"
+    )
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        write_fixture_tree(root, {"skills/alpha/scripts/alpha.py": RESTRICTED_IMPORTS + source})
+        found = policy(root, sorted(root.rglob("*.py")))
+    bare = (RESTRICTED_IMPORTS + source).splitlines().index("def bare(t):") + 2
+    assert [problem.split(" ", 1)[0] for problem in found] == [
+        f"skills/alpha/scripts/alpha.py:{bare}",
+        "skills/alpha/scripts/alpha.py:",
+    ]
+    assert f"{allowance} allows stale" in found[1]
+
+
+def test_indirection_catalogues_hold_each_construct() -> None:
+    # Pinned against literals, not the constants under test.
+    assert {
+        "getattr",
+        "setattr",
+        "delattr",
+        "hasattr",
+        "builtins.getattr",
+        "builtins.setattr",
+        "builtins.delattr",
+        "builtins.hasattr",
+    } == set(validation_support.NAME_LOOKUPS)
+    assert {
+        "vars",
+        "globals",
+        "locals",
+        "eval",
+        "exec",
+        "builtins.vars",
+        "builtins.globals",
+        "builtins.locals",
+        "builtins.eval",
+        "builtins.exec",
+        "__import__",
+        "builtins.__import__",
+        "__builtins__",
+        "importlib.import_module",
+        "importlib.__import__",
+        "importlib.reload",
+        "importlib.util.spec_from_file_location",
+        "importlib.util.module_from_spec",
+        "importlib.machinery.SourceFileLoader",
+        "runpy.run_path",
+        "runpy.run_module",
+        "pkgutil.resolve_name",
+        "operator.attrgetter",
+        "operator.methodcaller",
+        "inspect.getattr_static",
+        "inspect.getmembers",
+        "inspect.getmembers_static",
+        "inspect.currentframe",
+        "sys._getframe",
+        "sys.modules",
+        *STANDARD_RESOLVERS,
+    } == set(validation_support.INDIRECTION_CALLABLES)
+    assert {
+        "__dict__",
+        "__getattribute__",
+        "__getattr__",
+        "__setattr__",
+        "__delattr__",
+        "__globals__",
+        "__builtins__",
+        "f_globals",
+        "f_locals",
+        "f_builtins",
+        "__subclasses__",
+        "entry_points",
+    } == set(validation_support.INDIRECTION_ATTRIBUTES)
+    assert {"__getattr__", "__getattribute__"} == set(validation_support.LOOKUP_HOOKS)
+    assert {
+        "skills/ejryan89-skill-core/scripts/job_tree.py",
+        "skills/ejryan89-skill-core/scripts/process_identity.py",
+        "skills/ejryan89-code-review-core/scripts/review_io.py",
+        "skills/ejryan89-code-review-core/scripts/review_runtime.py",
+    } == set(python_checks.CTYPES_OWNERS)
+    owners = python_checks.OWNER_ONLY_NAMES
+    assert (
+        {"skills/ejryan89-skill-core/scripts/json_writer.py"} == set(owners["json.dumps"]) == set(owners["json.dump"])
+    )
+    assert {"skills/ejryan89-skill-core/scripts/bounded_process.py"} == set(owners["subprocess.run"])
+    assert {"skills/ejryan89-skill-core/scripts/path_containment.py"} == set(owners["os.path.commonpath"])
+    reader = {"skills/ejryan89-skill-core/scripts/json_reader.py"}
+    assert reader == set(owners["json.loads"]) == set(owners["json.load"]) == set(owners["json.JSONDecoder"])
