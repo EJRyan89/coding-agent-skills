@@ -94,6 +94,7 @@ GOOD = {"versions": {"codex": "0.163.0"}, "captured": "2026-10-24", "how": "code
             id="unknown-runtime",
         ),
         pytest.param({"samples": {"a": {**GOOD, "versions": {"codex": "0.163"}}}}, "not codex", id="short-version"),
+        pytest.param({"samples": {"a": {**GOOD, "versions": {"codex": "0.1.2.3"}}}}, "not codex", id="long-version"),
         # A digit class matched an Arabic-Indic digit, and a part past the digit limit then read as no version at all.
         pytest.param(
             {"samples": {"a": {**GOOD, "versions": {"codex": "0.\u0661\u0666\u0663.0"}}}},

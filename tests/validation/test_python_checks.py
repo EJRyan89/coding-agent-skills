@@ -5288,6 +5288,8 @@ OWNER_ONLY_ROWS = {
     "Path.home called": "from pathlib import Path\n\n\ndef f():\n    return Path.home() / 'x'  # read\n",
     "pathlib.Path.home as a default": "import pathlib\n\n\ndef f(home=pathlib.Path.home()):  # read\n    return home\n",
     "os.path.expanduser called": "def f():\n    return os.path.expanduser('~/x')  # read\n",
+    "Path.expanduser unbound": "from pathlib import Path\n\n\ndef f(p):\n    return Path.expanduser(p)  # read\n",
+    "Path.expanduser bound": "import pathlib\n\nEXPAND = pathlib.Path.expanduser  # read\n",
     "absolute_home called": (
         "from executable_locator import absolute_home\n\n\ndef f():\n    return absolute_home() / 'x'\n"
     ),

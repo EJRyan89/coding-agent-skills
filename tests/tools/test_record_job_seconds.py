@@ -215,10 +215,17 @@ class ParseTests(unittest.TestCase):
             [
                 f"{LEG_1}ok   {'9' * 400}s tests/a.py",
                 f"{LEG_1}ok   \u0663.0s tests/a.py",
+                f"{LEG_1}ok   1.{'9' * 400}s tests/a.py",
+                f"{LEG_1}ok   {'1' * 10}s tests/a.py",
+                f"{LEG_1}ok   1.{'1' * 10}s tests/a.py",
                 f"{LEG_1}ok   1.0s tests/b.py",
             ]
         )
         self.assertEqual({"Windows": {"tests/b.py": 1.0}}, record_job_seconds.job_seconds_from_log(log))
+
+    def test_seconds_of_nine_digits_on_each_side_of_the_point_are_read(self) -> None:
+        log = f"{LEG_1}ok   {'1' * 9}.{'0' * 8}5s tests/a.py"
+        self.assertEqual({"Windows": {"tests/a.py": 111111111.0}}, record_job_seconds.job_seconds_from_log(log))
 
     def test_seconds_keep_one_decimal_and_a_job_that_rounds_to_zero_is_dropped(self) -> None:
         log = "\n".join(
