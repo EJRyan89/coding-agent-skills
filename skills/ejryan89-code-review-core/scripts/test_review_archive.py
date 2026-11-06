@@ -133,7 +133,7 @@ class ArchiveTests(unittest.TestCase):
         # their own. A trailing space never reaches a folder, since the identity rule refuses a space.
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            kept = ["owner/a", "owner/.a", "owner/a.b", "owner/a..b", "owner/console", "owner/.con", "a.b/a"]
+            kept = ["owner/a", "owner/.a", "owner/a.b", "owner/a..b", "owner/console", "owner/.con", "a_b/a"]
             self.assertEqual(
                 [root.joinpath(*identity.split("/"), "pulls", "1") for identity in kept],
                 [pull_directory(root, identity, 1) for identity in kept],
@@ -145,7 +145,6 @@ class ArchiveTests(unittest.TestCase):
                 ("owner/NUL.js", "opens as a device 'nul.js'"),
                 ("owner/com1", "opens as a device 'com1'"),
                 ("con/a", "opens as a device 'con'"),
-                ("owner./a", "trims the trailing dots of 'owner.'"),
             ):
                 with self.subTest(identity=identity):
                     with self.assertRaises(ConfigurationError) as refused:
@@ -158,8 +157,10 @@ class ArchiveTests(unittest.TestCase):
                         commit_record(
                             root, identity, 1, self._record("example/one", 1, 1), expected_latest_version=None
                         )
-            with self.assertRaisesRegex(ConfigurationError, "^Invalid repository identity"):
-                pull_directory(root, "owner/a ", 1)
+            # A trailing space, and an owner no login spells, such as one ending in a dot, never reach a folder.
+            for identity in ("owner/a ", "owner./a", "a.b/a"):
+                with self.subTest(identity=identity), self.assertRaisesRegex(ConfigurationError, "^Invalid repository"):
+                    pull_directory(root, identity, 1)
             self.assertEqual([], list(root.iterdir()), "nothing is written for a refused repository")
 
     def test_every_spelling_of_one_repository_takes_one_lock(self) -> None:

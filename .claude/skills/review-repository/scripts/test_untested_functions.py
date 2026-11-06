@@ -104,6 +104,31 @@ class ConditionTests(unittest.TestCase):
             written,
         )
 
+    def test_an_untested_entry_names_the_suites_the_snapshot_leaves_out_which_may_test_it(self) -> None:
+        # A suite the snapshot leaves out, as it leaves out every one under .claude/skills/*/scripts, is never read, so
+        # the entry says it may test the definition (#2199); a suite outside every suite root, a fixture, and a script
+        # that is no suite are not named.
+        excluded = {
+            ".claude/skills/tool/scripts/helper.py": "agent-instruction",
+            ".claude/skills/tool/scripts/test_other.py": "agent-instruction",
+            ".claude/skills/tool/scripts/test_service.py": "agent-instruction",
+            "app/test_big.py": "file-size-limit",
+            "tests/fixtures/repo/test_x.py": "fixture",
+            "tests/test_huge.py": "file-size-limit",
+        }
+        manifest = json.dumps({"excluded_paths": excluded})
+        before = {"app/service.py": SERVICE, "source-snapshot.json": manifest}
+        after = {**before, "app/service.py": SERVICE.replace("sum(values)", "sum(values) or 0")}
+        code, out, written = self.run_condition(before, after)
+        self.assertEqual((0, "UNTESTED 1 given=1\n"), (code, out))
+        self.assertEqual(
+            "UNTESTED app/service.py:4 function total, added lines 5, hunk @@ -2,7 +2,7 @@, tests of its file none, "
+            "suites the snapshot leaves out 3 (agent-instruction, file-size-limit), such as "
+            ".claude/skills/tool/scripts/test_service.py, .claude/skills/tool/scripts/test_other.py, "
+            "tests/test_huge.py",
+            written.split("\n", 1)[0],
+        )
+
     def test_a_changed_function_a_test_names_through_its_module_closes_the_route(self) -> None:
         after = {
             "app/service.py": SERVICE.replace("sum(values)", "sum(values) or 0"),

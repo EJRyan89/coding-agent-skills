@@ -503,14 +503,14 @@ ACCEPTED: list[tuple[str, Mutation, Mutation]] = [
     (
         "longest identity parts and punctuation",
         _chain(
-            _set(("repository_sets", "main"), ["a" * 100 + "/" + "b" * 100, "my.org/my_repo-2"]),
-            _set(("repositories", "a" * 100 + "/" + "b" * 100), _generic_entry()),
-            _set(("repositories", "my.org/my_repo-2"), _generic_entry()),
+            _set(("repository_sets", "main"), ["a" * 39 + "/" + "b" * 100, "my-org_ent/my.repo_-2"]),
+            _set(("repositories", "a" * 39 + "/" + "b" * 100), _generic_entry()),
+            _set(("repositories", "my-org_ent/my.repo_-2"), _generic_entry()),
         ),
         _chain(
-            _set(("repository_sets", "main"), ["a" * 100 + "/" + "b" * 100, "my.org/my_repo-2"]),
-            _set(("repositories", "a" * 100 + "/" + "b" * 100), _expected()["repositories"]["owner/repo"]),
-            _set(("repositories", "my.org/my_repo-2"), _expected()["repositories"]["owner/repo"]),
+            _set(("repository_sets", "main"), ["a" * 39 + "/" + "b" * 100, "my-org_ent/my.repo_-2"]),
+            _set(("repositories", "a" * 39 + "/" + "b" * 100), _expected()["repositories"]["owner/repo"]),
+            _set(("repositories", "my-org_ent/my.repo_-2"), _expected()["repositories"]["owner/repo"]),
         ),
     ),
     (
