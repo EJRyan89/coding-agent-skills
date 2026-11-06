@@ -451,16 +451,14 @@ class ConditionTests(unittest.TestCase):
     def test_a_python_file_ast_cannot_read_is_listed_as_unparsed(self) -> None:
         code, out, written = self.run_condition({"app/broken.py": "x = 1\n"}, {"app/broken.py": "def x(:\n"})
         self.assertEqual((0, "UNTESTED 1 given=1\n"), (code, out))
-        self.assertTrue(written.startswith("UNPARSED app/broken.py: SyntaxError: "), written)
+        self.assertTrue(written.startswith("UNPARSED app/broken.py: PythonRefused: "), written)
 
     def test_python_nested_past_the_parsers_stack_is_unparsed_or_unreadable_rather_than_a_failure(self) -> None:
-        # ast raises MemoryError for a unary chain this long, which the condition reads as source it cannot parse.
+        # ast raises MemoryError for a unary chain this long, which python_reader refuses as source it cannot parse.
         nested = "x = " + "-" * 100_000 + "1\n"
         code, out, written = self.run_condition({"app/deep.py": "x = 1\n"}, {"app/deep.py": nested})
         self.assertEqual((0, "UNTESTED 1 given=1\n"), (code, out))
-        self.assertEqual(
-            "UNPARSED app/deep.py: SyntaxError: the source nests deeper than the parser reads (MemoryError)\n", written
-        )
+        self.assertEqual("UNPARSED app/deep.py: PythonRefused: nests deeper than the Python parser can read\n", written)
         service = {"app/service.py": SERVICE}
         changed = {"app/service.py": SERVICE.replace("sum(values)", "sum(values) or 0")}
         deep_test = {"tests/test_service.py": "import service\n\n" + nested}
@@ -468,7 +466,7 @@ class ConditionTests(unittest.TestCase):
         self.assertEqual(0, code)
         self.assertTrue(
             out.startswith(
-                'UNREADABLE "tests/test_service.py": SyntaxError: the source nests deeper than the parser reads'
+                'UNREADABLE "tests/test_service.py": PythonRefused: nests deeper than the Python parser can read'
             ),
             out,
         )
@@ -494,7 +492,7 @@ class ConditionTests(unittest.TestCase):
         broken = {"tests/test_service.py": "import service\n\nassert service.total([]) == 0\ndef x(:\n"}
         code, out, written = self.run_condition({**service, **broken}, {**changed, **broken})
         self.assertEqual(0, code)
-        self.assertTrue(out.startswith('UNREADABLE "tests/test_service.py": SyntaxError: '), out)
+        self.assertTrue(out.startswith('UNREADABLE "tests/test_service.py": PythonRefused: '), out)
         self.assertTrue(out.endswith("\nUNTESTED 1 given=1\n"), out)
         self.assertTrue(written.startswith("UNTESTED app/service.py:4 function total, "), written)
 

@@ -24,12 +24,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts"))
 
 import bash_agreement
+import executable_locator
 import git_client
 import git_worktrees
 from bounded_process import Finished, run_bounded
 from guard_limits import PROCESS_SECONDS, process_limits_held
 from markdown_sections import CODE_SPAN, markdown_section
-from worktree_fixture import GUARD_SCRIPT, HUB, REPOSITORY_ROOT, HubTestCase, isolated_environment
+from worktree_fixture import GUARD_SCRIPT, HUB, REPOSITORY_ROOT, TREE, HubTestCase, isolated_environment
 
 from deployer import platform_support
 from tools import bash_syntax, hub_guard, worktrees
@@ -2084,6 +2085,41 @@ class PowerShellUnderstoodSetTests(GuardTestCase):
         self.assertIn(UNPLACED.format("commit"), self.reason)
         home = {**self.environment, "HOME": str(self.root)}
         self.assertEqual("deny", self.powershell(f"Set-Location '~/{self.hub.name}'; git commit -m x", self.tree, home))
+
+    def test_the_home_is_the_one_the_environment_names_and_unknown_where_it_is_not_absolute(self) -> None:
+        # The guard once fell back on Path.home(), the guard process's own home, which reads a relative profile
+        # folder as given, so ~ was read relative to the guard's working directory.
+        bare = {name: value for name, value in self.environment.items() if name not in {"HOME", "USERPROFILE"}}
+        profile = {**bare, executable_locator.HOME_VARIABLE: str(self.root)}
+        relative = {**bare, executable_locator.HOME_VARIABLE: "relative home"}
+        for command, environment in (
+            (f"cd ~/'{self.hub.name}' && git commit -m x", profile),
+            ("cd ~ && git commit -m x", relative),
+            ("cd && git commit -m x", relative),
+            ("git -C ~ commit -m x", relative),
+        ):
+            with self.subTest(command=command, home=environment[executable_locator.HOME_VARIABLE]):
+                self.assertEqual("deny", self.bash(command, self.tree, environment))
+        for command, environment in (
+            (f"Set-Location '~/{self.hub.name}'; git commit -m x", profile),
+            ("Set-Location ~; git commit -m x", relative),
+            ("Set-Location; git commit -m x", relative),
+        ):
+            with self.subTest(command=command, home=environment[executable_locator.HOME_VARIABLE]):
+                self.assertEqual("deny", self.powershell(command, self.tree, environment))
+
+    def test_the_home_is_read_from_the_environment_the_shell_is_given_and_no_other(self) -> None:
+        # A denial reads alike for a hub and for a place left unknown, so the commands above cannot tell a home read
+        # from the guard's own environment, or a relative one taken as given, from the one the shell is given.
+        given = self.root / "given home"
+        self.assertEqual(given, hub_guard.home({"HOME": str(given)}))
+        self.assertEqual(given, hub_guard.home({executable_locator.HOME_VARIABLE: str(given)}))
+        self.assertIsNone(hub_guard.home({"HOME": "relative home", "USERPROFILE": str(given)}))
+        self.assertIsNone(hub_guard.home({executable_locator.HOME_VARIABLE: "relative home"}))
+        self.assertIsNone(hub_guard.home({}))
+        # A known home settles ~, so a commit that reaches a worktree only through it is read there and allowed.
+        at_hub = {**self.environment, "HOME": str(self.hub)}
+        self.assertIsNone(self.bash(f"cd ~/'{TREE.as_posix()}' && git commit -m x", self.hub, at_hub))
 
     def test_with_a_part_it_does_not_read_each_git_call_is_still_read_from_a_place_left_unknown(self) -> None:
         outside = self.root / "not-a-repository"

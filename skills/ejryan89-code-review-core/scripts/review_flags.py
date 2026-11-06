@@ -12,6 +12,7 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
 import json_writer
+from executable_locator import absolute_home
 from review_config import validate_repository_identity
 from review_io import ResourceLock, atomic_write_json, read_json, record_present
 from review_records import FINDING_ID
@@ -65,7 +66,7 @@ def default_flags_path() -> Path:
     override = os.environ.get("CODE_REVIEW_FLAGS")
     if override:
         return Path(override)
-    return Path.home() / ".coding-agent-skills" / "code-review" / "flags.json"
+    return absolute_home() / ".coding-agent-skills" / "code-review" / "flags.json"
 
 
 def empty_store() -> dict[str, Any]:

@@ -1379,6 +1379,21 @@ DOCUMENTED_FORMS: dict[str, tuple[Any, ...]] = {
         )
         for place in PLACES
     },
+    # "a one-argument `int()` or `float()`": float() reads every Unicode digit, nan, and inf, and past a float's
+    # range gives an infinity, so it converts no group and no value a digit test admitted either.
+    **{
+        f"float() of {form}": _form(int_parse_problems, f"import re\n\n\ndef f(t, headers):\n    {body}\n")
+        for form, body in (
+            ("a group", "return float(re.match('([0-9]+)', t).group(1))"),
+            ("a value isdigit() admitted", "if t.isdigit():\n        return float(t)"),
+            (
+                "a header isdigit() admitted",
+                "if headers.get('a', '').isdigit():\n        return float(headers.get('a', ''))",
+            ),
+            ("findall's items mapped through float", "return list(map(float, re.findall('[0-9]+', t)))"),
+        )
+    },
+    "float() of text no test admitted": _form(int_parse_problems, "def f(t):\n    return float(t)\n", refused=False),
     # A module-level binding is read by a function that reads the module's name.
     "int() in a function of a module-level findall list": _form(
         int_parse_problems, "import re\n\nITEMS = re.findall('[0-9]+', T)\n\n\ndef f():\n    return int(ITEMS[0])\n"
@@ -5261,6 +5276,26 @@ OWNER_ONLY_ROWS = {
     "json.loads called": "def f(t):\n    return json.loads(t)  # read\n",
     "json.load as a default": "def f(t, load=json.load):  # read\n    return load(t)  # read\n",
     "a JSONDecoder subclassed": "class D(json.JSONDecoder):  # read\n    pass\n",
+    # ast.parse and ast.literal_eval raise MemoryError and RecursionError past the parser's limits, which a handler
+    # naming SyntaxError alone lets escape, so python_reader is the one parse of Python source.
+    "ast.parse called": "import ast\n\n\ndef f(t):\n    return ast.parse(t)  # read\n",
+    "ast.literal_eval imported and called": (
+        "from ast import literal_eval\n\n\ndef f(t):\n    return literal_eval(t)  # read\n"
+    ),
+    "ast.parse by a literal lookup": "import ast\n\n\ndef f(t):\n    return getattr(ast, 'parse')(t)  # read\n",
+    # Path.home() and expanduser read a relative profile folder as given, a folder under the working directory, so
+    # executable_locator.absolute_home is the one home lookup outside the deployer's platform seam.
+    "Path.home called": "from pathlib import Path\n\n\ndef f():\n    return Path.home() / 'x'  # read\n",
+    "pathlib.Path.home as a default": "import pathlib\n\n\ndef f(home=pathlib.Path.home()):  # read\n    return home\n",
+    "os.path.expanduser called": "def f():\n    return os.path.expanduser('~/x')  # read\n",
+    "Path.expanduser unbound": "from pathlib import Path\n\n\ndef f(p):\n    return Path.expanduser(p)  # read\n",
+    "Path.expanduser bound": "import pathlib\n\nEXPAND = pathlib.Path.expanduser  # read\n",
+    "absolute_home called": (
+        "from executable_locator import absolute_home\n\n\ndef f():\n    return absolute_home() / 'x'\n"
+    ),
+    "python_reader called": (
+        "import python_reader\n\n\ndef f(t):\n    return python_reader.literal(python_reader.parse(t).body[0])\n"
+    ),
     "json_writer and json_reader called": (
         "import json_reader\nimport json_writer\n\n\ndef f(t):\n    return json_reader.loads(json_writer.dumps(t))\n"
     ),
@@ -5283,6 +5318,19 @@ def test_owner_only_policy_refuses_each_reference_outside_its_owners(body: str) 
     [
         pytest.param("skills/ejryan89-skill-core/scripts/json_writer.py", "WRITE = json.dumps\n", id="json_writer"),
         pytest.param("skills/ejryan89-skill-core/scripts/json_reader.py", "READ = json.loads\n", id="json_reader"),
+        pytest.param(
+            "skills/ejryan89-skill-core/scripts/python_reader.py",
+            "import ast\n\nPARSE = ast.parse\n",
+            id="python_reader",
+        ),
+        pytest.param(
+            "skills/ejryan89-skill-core/scripts/executable_locator.py",
+            "from pathlib import Path\n\nHOME = Path.home\n",
+            id="executable_locator",
+        ),
+        pytest.param(
+            "deployer/platform_support.py", "from pathlib import Path\n\nHOME = Path.home\n", id="platform seam"
+        ),
         pytest.param(
             "skills/ejryan89-skill-core/scripts/job_tree.py", "LIB = ctypes.WinDLL('kernel32')\n", id="a ctypes owner"
         ),

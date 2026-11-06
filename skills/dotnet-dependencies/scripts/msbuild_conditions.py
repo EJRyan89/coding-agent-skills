@@ -384,6 +384,11 @@ def boolean(text: str | None) -> bool | None:
     return True if word in TRUE_WORDS else False if word in FALSE_WORDS else None
 
 
+INT_PARSE_ALLOWED = {
+    "number": "DECIMAL admits ASCII digits alone, and the isfinite test refuses the infinity past a float's range",
+}
+
+
 def number(text: str) -> float | None:
     """A string read as a number, as MSBuild reads one in a comparison; None when it is not one."""
     if DECIMAL.fullmatch(text):

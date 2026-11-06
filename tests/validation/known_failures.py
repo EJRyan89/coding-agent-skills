@@ -22,6 +22,7 @@ from functools import partial
 from pathlib import Path
 
 import json_reader
+import python_reader
 from closing_references import pull_request_references
 from github_client import GitHubClient, GitHubError, subprocess_runner
 from github_remote import github_repository
@@ -177,10 +178,8 @@ def read_pending(path: Path) -> dict[str, int]:
             f"{', '.join(str(line) for line in lines)}"
         )
     try:
-        table = ast.literal_eval(value)
-    # A value that is not a literal raises ValueError, a literal set or dictionary of an unhashable key TypeError, and
-    # one nested past the parser's depth MemoryError or RecursionError, as validation_support.module_allowance reads.
-    except (ValueError, TypeError, MemoryError, RecursionError) as error:
+        table = python_reader.literal(value)
+    except python_reader.CONTENT_ERRORS as error:
         raise KnownFailuresUnreadable(f"must assign {PENDING} a literal dict") from error
     if not isinstance(table, dict) or not all(
         isinstance(name, str) and isinstance(issue, int) and not isinstance(issue, bool) and issue > 0

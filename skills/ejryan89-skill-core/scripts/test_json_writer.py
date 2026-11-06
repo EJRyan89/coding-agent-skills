@@ -56,6 +56,11 @@ class RefusalTests(unittest.TestCase):
             self.refusal({1: "a", "1": "b"}),
         )
 
+    def test_an_integer_past_the_digit_limit_is_refused_by_name_not_a_plain_value_error(self) -> None:
+        self.assertEqual(
+            "the value holds an integer of more digits than the reader takes", self.refusal({"n": 10**5000})
+        )
+
     def test_nesting_past_the_recursion_limit_is_refused(self) -> None:
         self.assertEqual("the value nests deeper than the writer can write", self.refusal(nested(100_000)))
 

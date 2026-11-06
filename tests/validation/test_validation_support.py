@@ -600,6 +600,17 @@ class PythonFileReaderFixtures(unittest.TestCase):
             with self.assertRaisesRegex(UnreadablePython, "byte-order mark"):
                 parse_python(root / "a_mark.py")
 
+    def test_source_nested_past_the_parser_is_named_by_file_not_raised(self) -> None:
+        # A long run of unary operators overflows the parser's stack as a MemoryError, or a RecursionError on another
+        # release, rather than a SyntaxError.
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self.write(root, {"a_deep.py": b"x = " + b"-" * 100_000 + b"1\n", "b_good.py": b"x = 1\n"})
+            problems: list[str] = []
+            read = [name for _, name, _ in python_trees(sorted(root.glob("*.py")), root, problems)]
+            self.assertEqual(["b_good.py"], read)
+            self.assertEqual(["a_deep.py does not parse: nests deeper than the Python parser can read"], problems)
+
     def test_every_policy_that_reads_a_skill_script_names_an_unreadable_one_and_reads_the_next(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

@@ -16,6 +16,7 @@ from pathlib import Path, PurePosixPath
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts"))
 
 import json_reader
+import python_reader
 from git_client import GitError, output_line
 from release_levels import RELEASING_DOC, VERSION, VERSIONING_HEADING, level_word, versioning_levels
 from validation_support import (
@@ -152,14 +153,18 @@ def _assigned_sources(tree: ast.Module, names: tuple[str, ...]) -> dict[str, str
 
 def _manifest_versions(snapshot: Snapshot) -> dict[str, object]:
     source = snapshot.text(MANIFEST_MODULE)
-    return {} if source is None else {MANIFEST_MODULE: _assigned_sources(ast.parse(source), MANIFEST_CONTRACT_NAMES)}
+    return (
+        {}
+        if source is None
+        else {MANIFEST_MODULE: _assigned_sources(python_reader.parse(source), MANIFEST_CONTRACT_NAMES)}
+    )
 
 
 def _tool_floors(snapshot: Snapshot) -> dict[str, object]:
     source = snapshot.text(TOOLS_MODULE)
     if source is None:
         return {}
-    tree = ast.parse(source)
+    tree = python_reader.parse(source)
     values = _module_values(tree)
     floors: dict[str, object] = dict(_assigned_sources(tree, ("MINIMUM_PYTHON",)))
     fields = _tool_fields(tree)
@@ -198,7 +203,7 @@ def _checkout_tools() -> ast.Module:
 
 def _pdf_provider_floors(snapshot: Snapshot) -> dict[str, object]:
     source = snapshot.text(PDF_POLICY_MODULE)
-    return {} if source is None else {PDF_POLICY_MODULE: _assigned_sources(ast.parse(source), ("MINIMUMS",))}
+    return {} if source is None else {PDF_POLICY_MODULE: _assigned_sources(python_reader.parse(source), ("MINIMUMS",))}
 
 
 def _required_variables(snapshot: Snapshot) -> dict[str, object]:
@@ -208,9 +213,9 @@ def _required_variables(snapshot: Snapshot) -> dict[str, object]:
     for name in sorted(filter(DEPLOY_META.fullmatch, snapshot.names)):
         try:
             variables = json_reader.loads(snapshot.text(name) or "").get("required_vars")
-        # ValueError covers a decode error and an over-long integer; AttributeError, a document that is no object;
-        # RecursionError, nesting too deep
-        except (ValueError, AttributeError, RecursionError):
+        # ValueError covers json_reader's whole family, nesting too deep and an over-long integer included;
+        # AttributeError, a document that is no object.
+        except (ValueError, AttributeError):
             variables = "unreadable"
         if variables:
             # A list of names compares in any order; any other value, a mixed list included, compares as it is.

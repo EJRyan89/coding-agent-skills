@@ -174,6 +174,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "ejryan8
 import file_presence
 import json_reader
 import json_writer
+import python_reader
 import whole_number
 from bounded_process import run_bounded
 from console import run_main
@@ -570,7 +571,7 @@ def runs_on_windows(module: str, source: str) -> bool:
     branches_on_platform reads it. Its behavior then differs on Windows by design, as a path compared by its text, a
     name NTFS folds, an 8.3 name, a junction, or a process tree, so a mutant whose effect shows only there survives
     Linux however well it is tested."""
-    tree = ast.parse(source)
+    tree = python_reader.parse(source)
     return (
         PurePosixPath(module).stem in PLATFORM_MODULES
         or any(sanction_table(statement) == PLATFORM_ALLOWANCE for statement in tree.body)
@@ -674,7 +675,7 @@ def policy_tables(tree: Path) -> dict[str, str]:
     for path in file_presence.matching(tree / POLICY_FOLDER, "*.py"):
         if is_suite_name(path.name):
             continue
-        for statement in ast.parse(path.read_bytes().decode("utf-8"), str(path)).body:
+        for statement in python_reader.parse(path.read_bytes().decode("utf-8"), str(path)).body:
             if (
                 isinstance(statement, ast.Assign)
                 and isinstance(statement.value, ast.Constant)
@@ -789,7 +790,7 @@ def module_mutants(
     owns it, which the gate does not run, fails an entry that does not match what the module holds."""
     if not changed:
         return []
-    tree = ast.parse(source)
+    tree = python_reader.parse(source)
     bodies = function_body_lines(tree)
     # Each statement's readers, by its first line, since every mutant of a table shares them.
     readers: dict[int, frozenset[int] | None] = {}
@@ -2085,7 +2086,7 @@ class Gate:
             )
             lines = frozenset(changed_lines(diff))
             source = (tree / module).read_bytes().decode("utf-8")
-            tables = changed_tables(ast.parse(source), lines)
+            tables = changed_tables(python_reader.parse(source), lines)
             problem = unread_tables(module, tables, policies)
             if problem:
                 raise RuntimeError(problem)

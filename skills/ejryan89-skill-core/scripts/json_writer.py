@@ -20,6 +20,8 @@ from atomic_file import replace_text
 
 # How the json module's writer words a non-finite number it was told to refuse.
 NON_FINITE = "Out of range float values are not JSON compliant"
+# How the interpreter words an integer past its integer-string limit, which the json module's writer meets writing it.
+INTEGER_LIMIT = "Exceeds the limit"
 
 
 class JsonWriteRefused(ValueError):
@@ -42,7 +44,8 @@ def dumps(
     ensure_ascii: bool = True,
 ) -> str:
     """`value` as `json.dumps` writes it with these options, or `JsonWriteRefused` when it holds `NaN`, `Infinity`, or
-    `-Infinity`, a lone surrogate, a key twice in one object, or nesting past the recursion limit. Whatever else
+    `-Infinity`, an integer of more digits than `json_reader` reads, a lone surrogate, a key twice in one object, or
+    nesting past the recursion limit. Whatever else
     `json.dumps` raises, such as a `TypeError` for a value of no JSON type, it raises."""
     try:
         text = json.dumps(
@@ -51,6 +54,8 @@ def dumps(
     except ValueError as error:
         if str(error).startswith(NON_FINITE):
             raise JsonWriteRefused("the value holds NaN or an infinity, which JSON does not define") from error
+        if str(error).startswith(INTEGER_LIMIT):
+            raise JsonWriteRefused("the value holds an integer of more digits than the reader takes") from error
         raise
     except RecursionError as error:
         raise JsonWriteRefused("the value nests deeper than the writer can write") from error

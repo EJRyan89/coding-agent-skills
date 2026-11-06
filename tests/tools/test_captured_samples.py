@@ -94,6 +94,16 @@ GOOD = {"versions": {"codex": "0.163.0"}, "captured": "2026-10-24", "how": "code
             id="unknown-runtime",
         ),
         pytest.param({"samples": {"a": {**GOOD, "versions": {"codex": "0.163"}}}}, "not codex", id="short-version"),
+        pytest.param({"samples": {"a": {**GOOD, "versions": {"codex": "0.1.2.3"}}}}, "not codex", id="long-version"),
+        # A digit class matched an Arabic-Indic digit, and a part past the digit limit then read as no version at all.
+        pytest.param(
+            {"samples": {"a": {**GOOD, "versions": {"codex": "0.\u0661\u0666\u0663.0"}}}},
+            "not codex",
+            id="other-digits",
+        ),
+        pytest.param(
+            {"samples": {"a": {**GOOD, "versions": {"codex": "0." + "1" * 4301 + ".0"}}}}, "not codex", id="past-limit"
+        ),
         pytest.param({"samples": {"a": {**GOOD, "captured": "October"}}}, "captured is a date", id="not-a-date"),
         pytest.param({"samples": {"a": {**GOOD, "captured": "2026-02-30"}}}, "captured is a date", id="no-such-day"),
         pytest.param({"samples": {"a": {**GOOD, "captured": "20261024"}}}, "captured is a date", id="basic-format"),
@@ -136,10 +146,10 @@ def test_a_sample_older_than_its_runtimes_version_is_behind_and_one_at_it_is_not
 
 
 def test_the_module_imports_on_its_own_from_any_folder(tmp_path: Path) -> None:
-    # Isolated, so nothing but what the module puts on sys.path finds the checkout: the repository root, then
-    # ejryan89-skill-core's scripts above it, as the deployer package puts them again when it is imported.
+    # Isolated, so nothing but what the module puts on sys.path finds the checkout: ejryan89-skill-core's scripts,
+    # whose versions and json_reader are all it imports.
     module = REPOSITORY / "tools" / "captured_samples.py"
-    program = f"import json, runpy, sys; runpy.run_path({str(module)!r}); print(json.dumps(sys.path[:3]))"
+    program = f"import json, runpy, sys; runpy.run_path({str(module)!r}); print(json.dumps(sys.path[:1]))"
     done = subprocess.run(
         [sys.executable, "-I", "-c", program],
         cwd=tmp_path,
@@ -151,4 +161,4 @@ def test_the_module_imports_on_its_own_from_any_folder(tmp_path: Path) -> None:
     assert done.returncode == 0, done.stderr
     core = REPOSITORY / "skills" / "ejryan89-skill-core" / "scripts"
     found = [os.path.normcase(entry) for entry in json.loads(done.stdout)]
-    assert found == [os.path.normcase(str(path)) for path in (core, core, REPOSITORY)]
+    assert found == [os.path.normcase(str(core))]
