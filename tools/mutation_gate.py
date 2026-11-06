@@ -2478,7 +2478,7 @@ class Gate:
     def carry(self, selected: Selected, path: Path) -> Carried | None:
         """The earlier verdict at `path` when carry_problem finds nothing against carrying it, saying in the log
         which run it came from, or why the mutants run instead; a missing or unreadable verdict carries nothing."""
-        if not path.is_file():
+        if not file_presence.is_present(path):
             print("No earlier finished verdict of this pull request was found, so the mutants run", flush=True)
             return None
         try:
@@ -2577,10 +2577,14 @@ def run_files(folder: Path) -> dict[str, Path]:
     """The files a run's steps wrote, by name, in `folder` or in a folder directly inside it, as `gh run download`
     puts each artifact in a folder of its own; a name found twice stops it, since either could be the run's."""
     found: dict[str, Path] = {}
-    places = [folder, *sorted(path for path in folder.iterdir() if path.is_dir())] if folder.is_dir() else []
+    places = (
+        [folder, *sorted(path for path in folder.iterdir() if file_presence.is_directory(path, other_is_absent=True))]
+        if file_presence.is_directory(folder)
+        else []
+    )
     for place in places:
         for path in sorted(place.iterdir()):
-            if path.is_file() and is_run_file(path.name):
+            if is_run_file(path.name) and file_presence.is_present(path, other_is_absent=True):
                 if path.name in found:
                     raise RuntimeError(f"{folder} holds {path.name} twice, at {found[path.name]} and {path}")
                 found[path.name] = path
