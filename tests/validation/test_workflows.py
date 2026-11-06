@@ -1449,19 +1449,34 @@ MUTATION_SHELLCHECK_VERIFY = (
 )
 
 
+MUTATION_RESTORE = (
+    "      - uses: actions/cache/restore@abc\n        with:\n          path: mutation/verdict\n"
+    "          key: mutation-verdict-${{ github.ref }}\n          restore-keys: mutation-verdict-${{ github.ref }}-\n"
+)
+MUTATION_SAVE = (
+    "      - if: steps.join.outputs.verdict != ''\n        uses: actions/cache/save@abc\n        with:\n"
+    "          path: mutation/verdict\n          key: ${{ steps.join.outputs.verdict }}\n"
+)
+
+
 def mutation_leg(leg: str, runner: str, shellcheck: str) -> str:
     return (
         f"  {leg.casefold()}:\n    name: Mutation gate on {leg}\n    needs: select\n"
-        f"    if: needs.select.outputs.{leg.casefold()} == 'true'\n    runs-on: {runner}\n    timeout-minutes: 60\n"
+        f"    if: needs.select.outputs.{leg.casefold()} != '[]'\n"
+        "    strategy:\n      fail-fast: false\n      matrix:\n"
+        f"        shard: ${{{{ fromJSON(needs.select.outputs.{leg.casefold()}) }}}}\n"
+        f"    runs-on: {runner}\n    timeout-minutes: 60\n"
         "    steps:\n      - uses: actions/checkout@abc\n        with:\n          persist-credentials: false\n"
         "          fetch-depth: 0\n"
         f"{MUTATION_SETUP}{shellcheck}{MUTATION_SHELLCHECK_VERIFY}"
         f"      - name: Install\n        run: |\n{MUTATION_INSTALL_STEP}"
         "      - uses: actions/download-artifact@abc\n        with:\n          name: mutation-mutants\n"
         "          path: mutation\n"
-        "      - name: Leg\n        run: python -B tools/mutation_gate.py leg mutation\n"
-        f"      - uses: actions/upload-artifact@abc\n        with:\n          name: mutation-{leg.casefold()}\n"
-        f"          path: mutation/outcomes-{leg.casefold()}.json\n          if-no-files-found: error\n"
+        "      - name: Leg\n        run: python -B tools/mutation_gate.py leg mutation --shard ${{ matrix.shard }}\n"
+        "      - uses: actions/upload-artifact@abc\n        with:\n"
+        f"          name: mutation-{leg.casefold()}-${{{{ matrix.shard }}}}\n"
+        f"          path: mutation/outcomes-{leg.casefold()}-${{{{ matrix.shard }}}}.json\n"
+        "          if-no-files-found: error\n"
     )
 
 
@@ -1473,6 +1488,7 @@ MUTATION = (
     "      - uses: actions/checkout@abc\n        with:\n          persist-credentials: false\n"
     "          fetch-depth: 0\n"
     f"{MUTATION_SETUP}      - name: Install\n        run: |\n{MUTATION_INSTALL_STEP}"
+    f"{MUTATION_RESTORE}"
     "      - name: Select\n        id: select\n        run: python -B tools/mutation_gate.py select mutation\n"
     "      - uses: actions/upload-artifact@abc\n        with:\n          name: mutation-mutants\n"
     "          path: mutation/mutants.json\n          if-no-files-found: error\n"
@@ -1484,7 +1500,8 @@ MUTATION = (
     "      - uses: actions/setup-python@abc\n        with:\n          python-version: '3.11'\n"
     "      - uses: actions/download-artifact@abc\n        with:\n          pattern: mutation-*\n"
     "          path: mutation\n          merge-multiple: true\n"
-    "      - name: Join\n        run: python -B tools/mutation_gate.py join mutation\n"
+    "      - name: Join\n        id: join\n        run: python -B tools/mutation_gate.py join mutation\n"
+    f"{MUTATION_SAVE}"
 )
 
 
@@ -1564,12 +1581,51 @@ def test_the_mutation_jobs_make_the_mutants_on_linux_run_both_legs_and_join_them
             MUTATION.replace("    if: ${{ !cancelled() }}\n", ""), "mutation job's if", id="a join skipped by a leg"
         ),
         pytest.param(
-            MUTATION.replace("outputs.windows == 'true'", "outputs.linux == 'true'"),
+            MUTATION.replace("outputs.windows != '[]'", "outputs.linux != '[]'"),
             "windows job's if",
             id="a leg on the other leg's output",
         ),
         pytest.param(
-            MUTATION.replace("name: mutation-windows\n", "name: mutation-linux\n"),
+            MUTATION.replace("fromJSON(needs.select.outputs.windows)", "fromJSON(needs.select.outputs.linux)"),
+            "windows job's strategy",
+            id="a leg dealt the other leg's shards",
+        ),
+        pytest.param(
+            MUTATION.replace("      fail-fast: false\n", "", 1),
+            "linux job's strategy",
+            id="a shard's failure cancelling the others",
+        ),
+        pytest.param(
+            MUTATION.replace("leg mutation --shard ${{ matrix.shard }}", "leg mutation", 1),
+            "linux job's scripts",
+            id="every shard running the whole leg",
+        ),
+        pytest.param(
+            MUTATION.replace("mutation/outcomes-linux-${{ matrix.shard }}.json", "mutation/outcomes-linux.json"),
+            "linux job's artifacts",
+            id="shards uploading one name",
+        ),
+        pytest.param(
+            MUTATION.replace(MUTATION_RESTORE, "").replace("select mutation\n", "select mutation\n" + MUTATION_RESTORE),
+            "select job's order",
+            id="a verdict restored after the select step",
+        ),
+        pytest.param(MUTATION.replace(MUTATION_RESTORE, ""), "select job's caches", id="no verdict restored"),
+        pytest.param(
+            MUTATION.replace("      - if: steps.join.outputs.verdict != ''\n        uses", "      - uses"),
+            "mutation job's caches",
+            id="a verdict saved whatever the join found",
+        ),
+        pytest.param(
+            MUTATION.replace("        id: join\n", ""), "mutation job's ids", id="a join whose output no step reads"
+        ),
+        pytest.param(
+            MUTATION.replace(MUTATION_SAVE, "").replace("      - name: Join\n", MUTATION_SAVE + "      - name: Join\n"),
+            "mutation job's order",
+            id="a verdict saved before the join",
+        ),
+        pytest.param(
+            MUTATION.replace("name: mutation-windows-", "name: mutation-linux-"),
             "windows job's artifacts",
             id="an outcome artifact named for the other leg",
         ),

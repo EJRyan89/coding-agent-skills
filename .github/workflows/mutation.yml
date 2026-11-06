@@ -7,8 +7,13 @@ name: Mutation
 #
 # mutmut refuses Windows, so one Linux job makes the mutants and hands them on as an artifact. The Linux leg runs every
 # module's mutants, and the Windows leg, which never runs mutmut, those of the modules whose behavior differs on Windows,
-# as tools/mutation_gate.py's rule selects them. The `Mutation gate` job joins the legs' outcomes: a mutant either leg
-# killed is killed, and the summary names the legs that ran each module.
+# as tools/mutation_gate.py's rule selects them. The select job deals each leg's mutants into shards, one job each, as
+# its outputs list them, so a large change gets its verdict in a shard's share of the time. The `Mutation gate` job
+# joins the shards' outcomes: a mutant either leg killed is killed, and the summary names the legs that ran each module.
+#
+# A finished run that made mutants leaves its verdict in the cache, under the pull request's ref, and the next run's
+# select job carries it, running no mutant, when it makes the same mutants and nothing changed since reaches a suite
+# that reaches them or the gate; the summary names the run the verdict came from.
 on:
   pull_request:
     types: [opened, synchronize, reopened]
@@ -23,7 +28,8 @@ env:
   SHELLCHECK_VERSION: '0.9.0'
   SHELLCHECK_LINUX_SHA256: '700324c6dd0ebea0117591c6cc9d7350d9c7c5c287acbad7630fa17b1d4d9e2f'
 
-# A newer push to a pull request cancels its older run.
+# A newer push to a pull request cancels its older run: whether the newer one can carry a verdict is known only once
+# its select job has run, and a run cancelled before its join leaves none to carry.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -56,6 +62,15 @@ jobs:
         run: |
           python -m pip install --require-hashes --only-binary :all: -r requirements-mutation.txt
 
+      # The newest verdict a finished run of this pull request left, if one is cached: each run saves its own under its
+      # number and attempt, so the prefix restores the latest.
+      - name: Restore the last verdict
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: mutation/verdict
+          key: mutation-verdict-${{ github.ref }}
+          restore-keys: mutation-verdict-${{ github.ref }}-
+
       # It calls no model and reads no secret; GITHUB_BASE_REF names the base it diffs against.
       - name: Make the mutants
         id: select
@@ -71,7 +86,12 @@ jobs:
   linux:
     name: Mutation gate on Linux
     needs: select
-    if: needs.select.outputs.linux == 'true'
+    if: needs.select.outputs.linux != '[]'
+    # One job for each shard the select job dealt, each run to its end whatever another does, so the join names each.
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ${{ fromJSON(needs.select.outputs.linux) }}
     runs-on: ubuntu-latest
     # tools/mutation_gate.py stops starting mutants at its own 40-minute cap; this leaves room for the setup and for the
     # suites still running when the cap is reached.
@@ -125,19 +145,24 @@ jobs:
           path: mutation
 
       - name: Run the mutants
-        run: python -B tools/mutation_gate.py leg mutation
+        run: python -B tools/mutation_gate.py leg mutation --shard ${{ matrix.shard }}
 
       - name: Upload the outcomes
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: mutation-linux
-          path: mutation/outcomes-linux.json
+          name: mutation-linux-${{ matrix.shard }}
+          path: mutation/outcomes-linux-${{ matrix.shard }}.json
           if-no-files-found: error
 
   windows:
     name: Mutation gate on Windows
     needs: select
-    if: needs.select.outputs.windows == 'true'
+    if: needs.select.outputs.windows != '[]'
+    # The same shards as the Linux leg's, dealt from the Windows leg's mutants.
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ${{ fromJSON(needs.select.outputs.windows) }}
     runs-on: windows-latest
     # The same room around the gate's cap as the Linux leg.
     timeout-minutes: 60
@@ -183,13 +208,13 @@ jobs:
           path: mutation
 
       - name: Run the mutants
-        run: python -B tools/mutation_gate.py leg mutation
+        run: python -B tools/mutation_gate.py leg mutation --shard ${{ matrix.shard }}
 
       - name: Upload the outcomes
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: mutation-windows
-          path: mutation/outcomes-windows.json
+          name: mutation-windows-${{ matrix.shard }}
+          path: mutation/outcomes-windows-${{ matrix.shard }}.json
           if-no-files-found: error
 
   mutation:
@@ -218,6 +243,15 @@ jobs:
           path: mutation
           merge-multiple: true
 
-      # The join reads only the files and the standard library, so it installs nothing.
+      # The join reads only the files, the standard library, and git, so it installs nothing. A finished run that made
+      # mutants names, as its `verdict` output, the cache key it leaves its verdict under.
       - name: Join the legs
+        id: join
         run: python -B tools/mutation_gate.py join mutation
+
+      - name: Save the verdict
+        if: steps.join.outputs.verdict != ''
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: mutation/verdict
+          key: ${{ steps.join.outputs.verdict }}

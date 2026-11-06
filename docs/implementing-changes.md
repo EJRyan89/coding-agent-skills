@@ -144,8 +144,13 @@ the table, and a policy that does not check an entry's reason would leave that m
 summary gives each module's changed lines and kill ratio, names each changed module whose changed lines yield no mutant,
 names each surviving mutant by its line, the mutation, and the suites it passed, with how many of a suite's tests
 ran when not all did, and names each mutant no suite reached by its line and the mutation, as the run log does beside
-each mutant killed and each that survived; a pull request that changes no such module gets one line saying so. The mutants run from one queue
-that takes one from each module in turn, and the run is capped by `DEFAULT_MINUTES` in the gate. A run the cap cuts
+each mutant killed and each that survived; a pull request that changes no such module gets one line saying so. Each
+leg's mutants are dealt into shards, each a job of its own: one for each `SHARD_MUTANTS` of them, at most `MAX_SHARDS`,
+each module's mutants kept in as few shards as an even deal allows, so a small change runs in one job and a large one
+gets its verdict in a shard's share of the time. The join reads each shard's outcomes as it would a whole leg's, and a
+shard whose record is missing, names another leg or shard, or holds another share stops it. Within a shard the mutants
+run from one queue that takes one from each module in turn, and each shard is capped by `DEFAULT_MINUTES` in the gate.
+A run the cap cuts
 short, leaving a mutant not run, or a suite's reach unmeasured on a leg where a mutant it ran survived or went
 unreached, is unfinished: its summary's first line says so, naming each module's mutants not run and how many lie on
 lines that run at import, and the job fails. A suite left unmeasured beside only mutants killed on either leg opens no
@@ -156,18 +161,27 @@ modules to move into pull requests of their own and each whose change alone need
 repeats the advice. A fix the gate cannot finish is split, as that advice names, or its module-level tables moved into
 the functions that use them, until its gate finishes: it is not judged by hand. Where a split cannot help, as for a
 change that must land in one piece, run the mutants left without a verdict on your machine with the gate's own step,
-never by applying them by hand. Download the run's mutants and every leg's outcomes into one folder, with
-`gh run download <run> --name mutation-mutants --dir '<folder>'` and the same for `mutation-linux` and
-`mutation-windows`. Check out the commit the run tested, which the selection records as its `head` (the merge commit
+never by applying them by hand. Download the run's mutants and every shard's outcomes into one folder, with
+`gh run download <run> --pattern 'mutation-*' --dir '<folder>'`, which puts each artifact in a folder of its own
+there, where the step reads it. Check out the commit the run tested, which the selection records as its `head` (the merge commit
 of a pull request's run, fetched with `git fetch origin '<head>'`), since its suites judged every other mutant, and run
 `python -B tools/mutation_gate.py --minutes <cap> unrun '<folder>'` on the platform of each leg that left mutants
 without a verdict, on a machine with nothing else heavy running, since a timeout it records is taken as confirmed. It
 runs those mutants alone, keeps every outcome CI gave the others, refuses any other HEAD and a module whose text is not
-the one the mutants were made from, writes its outcomes beside the leg's, and prints the join's summary, naming the
+the one the mutants were made from, writes its outcomes to `local-<leg>.json` beside the leg's, and prints the join's
+summary, naming the
 local run beside the leg, which the pull request's "Mutation survivors" comment then rules on as it would a CI run's.
 A CI leg's timeout judges nothing until such a run confirms it: a runner's load can stretch a suite past its limit as
 surely as a mutant that makes a loop endless, so a run with one is unfinished, its summary counts confirmed and
-unconfirmed timeouts apart, and `unrun` runs each again, counting it as timed out only when it times out there too. The summary of a finished run is the record: read it, and for a
+unconfirmed timeouts apart, and `unrun` runs each again, counting it as timed out only when it times out there too.
+A finished run that made mutants leaves its verdict in the workflow's cache, and the next run of the pull request
+carries it instead of running any mutant when it makes the same mutants of the same module texts, reached by the same
+suites, and no file that changed since the tree that verdict tested reaches one of those suites, the gate's own module
+or one it imports, its lock, its workflow, or `pyproject.toml`; the summary's first line then names the run the
+verdict came from, followed by that run's summary. So a merge of the base, or a change to documents or to suites that
+cannot reach the mutants, keeps the verdict, while a kill commit, which changes a suite that reaches them, runs the gate
+again, as it must to show the kill. The summary of a finished run, or of the run a carried verdict names, is the
+record: read it, and for a
 surviving mutant on a line the pull request changed that alters behavior a caller relies on, such as a refusal or a line
 a document or test treats as a contract, add the test that kills it, or name it in the pull request with why it is
 equivalent. A mutant that only changes text no reader depends on needs neither, and no kill ratio is copied anywhere.

@@ -1,14 +1,18 @@
 """Mutate the lines a pull request changes in its Python modules and report the mutants its suites leave alive.
 
 Usage:
-  python -B tools/mutation_gate.py [--base REF] [--minutes N] [select FOLDER | leg FOLDER | join FOLDER | unrun FOLDER]
+  python -B tools/mutation_gate.py [--base REF] [--minutes N]
+      [select FOLDER | leg FOLDER [--shard N] | join FOLDER | unrun FOLDER]
 
 The `Mutation` workflow runs it on every pull request, where requirements-mutation.txt installs mutmut and coverage.py;
 it is not a required check, and it calls no model and reads no secret. Without a step it runs a whole run in one
 process, as one leg on this platform. The workflow splits the run across jobs, each step handing on files in FOLDER:
 `select`, on Linux, since mutmut refuses Windows, makes the mutants and writes them to mutants.json, with step outputs
-naming the legs that have mutants to run; `leg`, on Linux and on Windows, runs that platform's leg of them, never
-running mutmut, and writes its outcomes to outcomes-<platform>.json; and `join` reports them. The Linux leg runs every
+listing, as a JSON list of their numbers, the shards each leg's mutants are dealt into: one for each SHARD_MUTANTS of
+them, at most MAX_SHARDS, each a run of the leg's mutants, module after module, as shard_places cuts them; `leg`, on
+Linux and on Windows, runs that platform's leg of them, or with --shard that shard's share, never running mutmut, and
+writes its outcomes to outcomes-<platform>.json, or outcomes-<platform>-<shard>.json; and `join` reports them, reading
+each leg's whole record, or each shard the selection deals and no other, joined into the leg's. The Linux leg runs every
 module's mutants, and the Windows leg those of each module whose behavior differs on Windows by design, as
 runs_on_windows selects it: one of PLATFORM_MODULES, one holding a PLATFORM_ALLOWED table, one importing one of
 PLATFORM_MODULES, or one whose code reads the platform in any expression: a token of any kind the platform policy's
@@ -104,17 +108,32 @@ each whose changed lines alone need more, whose change is split; the leg's recor
 run's summary repeats the advice under its first line. A finished run's summary leaves it out, since the estimate was
 then wrong.
 
+A finished run that made mutants leaves its verdict for the next run of its pull request: its join, given the run's
+address and ref by GitHub Actions' variables and at the commit the select step made the mutants at, writes the run's
+address, its selection, the git object name of each file of the tree it tested, and its summary to
+VERDICT_FOLDER/VERDICT_FILE in FOLDER, and names the cache key the workflow saves it under as the step output
+`verdict`. The select step reads the one the workflow restored there and carries it, making mutants it then does not
+run, when carry_problem finds nothing against it: the same base, mutmut release, module texts, changed lines,
+mutants, tables, and legs, the same suites reaching the mutated modules, and no file changed since the verdict's tree
+that is one of GATE_FILES, the gate's own module or one it imports, directly or through others, or that reaches one of
+those suites, as `job_selection.reached_suites` selects them. A test change that reaches such a suite, as a kill
+commit does, runs the mutants, since it can change which die; one that reaches none cannot change what the gate would
+run. A run that carries a verdict deals no shard, and its join reports the verdict's summary under a first line naming
+the run it came from; it leaves no verdict of its own, so the next run is held to the tree the verdict tested. A
+missing or unreadable verdict carries nothing, and the log says why the mutants run.
+
 `unrun`, on a contributor's machine, completes a CI run's leg of this platform from FOLDER, which holds the run's
-mutants.json and every needed leg's outcomes, as the run's artifacts hold them: it runs again, in worktrees of HEAD,
+mutants.json and every needed leg's or shard's outcomes, as the run's artifacts hold them, in FOLDER or in a folder
+directly inside it, as `gh run download` puts each artifact in one of its own: it runs again, in worktrees of HEAD,
 each mutant no leg killed or confirmed timing out that the leg left not run, errored, or timed out, and, while suites
 of the leg's reach went unmeasured, each it left surviving or unreached. HEAD must be the commit the select step's
 checkout held, as the selection records it, since that commit's suites judged the leg's other mutants, and each module
 it runs must be the text the mutants were made from, as the selection's SHA-256 of it records, or it stops. The leg's
-own outcomes stay as it wrote them; the leg's record, written back over the leg's file, adds the local run, its
+own outcomes stay as it wrote them; the local run's record, written to local-<platform>.json in FOLDER, holds its
 places, its own failed and unmeasured suites, and its outcome of each mutant it ran, which the report reads in place
 of the leg's at those places and no other, so a mutant it leaves untested is still not run. read_local holds each
 place to one the leg's own outcome left without a verdict, and each local outcome to the local run's suites. It then
-reports as the join does, and exits as the join does. A leg's record a local run already completed stops it, and so
+reports as the join does, and exits as the join does. A local run's record already beside the leg's stops it, and so
 does a leg of another platform.
 
 While the mutants run, the log gets a line for each one a suite ran against and each one no suite reached, with its
@@ -123,10 +142,12 @@ module with no mutant, each surviving mutant by its line, the mutation, and the 
 count of its tests that ran when not all of them did, and each mutant not reached by its line and the mutation, goes to
 stdout and to the step summary GITHUB_STEP_SUMMARY names. A pull request that changes no such module writes one line
 saying so. A run, or its join, unfinished on any leg ends after its summary and an error annotation repeating its
-first line. A step cannot run when the join finds no selection, no outcomes from a leg
-that had mutants to run, or a record that is not as its step writes it, such as a leg's naming another leg or leaving
-out a module that leg had mutants for, or a local run's naming a place outside a module's mutants, a module the leg
-does not run, or a place whose leg outcome was a verdict, `unrun` finds no leg of this platform, a completed one, a
+first line. A step cannot run when the join finds no selection, no outcomes from a leg or a shard that had mutants
+to run, a run file twice, a leg's whole record beside its shards', a shard the selection does not deal, or a record
+that is not as its step writes it, such as a leg's or a shard's naming another leg or shard, another deal, or leaving
+out a module it had mutants for, or a local run's naming another leg, a leg that ran no mutant, a place outside a
+module's mutants, a module the leg does not run, or a place whose leg outcome was a verdict, the leg step is given a
+shard the selection does not deal, `unrun` finds no leg of this platform, a completed one, a
 HEAD that is not the commit the run tested, or a module whose text is not the selection's,
 mutmut no longer makes the mutant its
 canary expects on the canary's line alone, the reach run no longer measures its canary suite's own process and the
@@ -183,12 +204,12 @@ from flat_text import flat_text
 from fsops_platform import ATTRIBUTE_BY_NAME, PLATFORM_ALLOWANCE, platform_tokens_named
 from git_client import GitClient, output_line
 from job_pool import append_step_summary, worker_count
-from job_selection import host_job_seconds, imported_names, reached_suites
+from job_selection import host_job_seconds, imported_names, importers, python_imports, reached_suites
 from path_containment import relative_within
 from suite_discovery import pytest_command
 from suite_names import is_suite_name
 from typed_fields import FieldError, FieldReader
-from validation_support import import_aliases, qualified_name
+from validation_support import import_aliases, qualified_name, repository_files
 
 from deployer import platform_support
 
@@ -304,10 +325,25 @@ PLATFORM_VALUES = frozenset(
         *(f"os.path.{name}" for name in ("sep", "altsep", "pathsep", "devnull")),
     }
 )
-# The files the steps of a run split across jobs hand on, in the folder each step is given.
+# The files the steps of a run split across jobs hand on, in the folder each step is given: the selection, a whole
+# leg's outcomes, one shard's, and a local run's that completed a leg.
 MUTANTS_FILE = "mutants.json"
 OUTCOMES_FILE = "outcomes-{leg}.json"
+SHARD_FILE = "outcomes-{leg}-{shard}.json"
+LOCAL_FILE = "local-{leg}.json"
 STATUSES = (KILLED, TIMED_OUT, SURVIVED, NOT_REACHED, NOT_RUN, ERRORED)
+# A leg's mutants are dealt into shards, each a job of its own with its own cap: one shard for each SHARD_MUTANTS of
+# them, at most MAX_SHARDS, so a small change runs as one job and a large one in a shard's share of the time.
+SHARD_MUTANTS = 40
+MAX_SHARDS = 6
+# Where a finished run's join leaves its verdict for the next run of the pull request, under the folder it was given,
+# and where the select step finds the one the workflow restored.
+VERDICT_FOLDER = "verdict"
+VERDICT_FILE = "verdict.json"
+# The gate's own module, and the files whose change runs the gate again whatever suite they reach: its lock, its
+# workflow, and pytest's configuration, which every suite reads and no import or name shows.
+GATE_MODULE = "tools/mutation_gate.py"
+GATE_FILES = ("requirements-mutation.txt", ".github/workflows/mutation.yml", "pyproject.toml")
 
 
 # Commands whose program the commands reader cannot read, by the scope that starts them, and why.
@@ -384,14 +420,28 @@ class SelectedModule:
 
 
 @dataclass(frozen=True)
+class Carried:
+    """An earlier run's finished verdict a run carries instead of running its mutants: the run, the commit it tested,
+    and its summary."""
+
+    run: str
+    head: str
+    summary: str
+
+
+@dataclass(frozen=True)
 class Selected:
-    """What a run mutates: the base it diffs against, the mutmut release that made the mutants, each module, and the
-    commit the select step's checkout held, whose suites the legs run, which a local run must run at too."""
+    """What a run mutates: the base it diffs against, the mutmut release that made the mutants, each module, the
+    commit the select step's checkout held, whose suites the legs run, which a local run must run at too, the suites
+    that reach a module with a mutant, as reaching_suites selects them, and the earlier verdict the run carries, if it
+    carries one."""
 
     base: str
     mutmut: str
     modules: tuple[SelectedModule, ...]
     head: str = ""
+    suites: tuple[str, ...] = ()
+    carried: Carried | None = None
 
 
 @dataclass(frozen=True)
@@ -416,7 +466,10 @@ class LegRun:
     suites that failed unmutated or whose reach its cap left unmeasured, each module's estimated worker-seconds of
     mutant runs and the worker-seconds the cap left for them once the reach pass ended, the local run that
     completed it, if one did, and whether the leg is itself a run on this machine, the whole gate in one process,
-    whose timeouts confirm themselves. Every leg the leg step writes is a CI leg's, and no record holds the flag."""
+    whose timeouts confirm themselves. Every leg the leg step writes is a CI leg's, and no record holds the flag. A
+    shard's run holds the outcomes of its share of the leg's mutants alone, `shard` numbering it from 1 of `shards`; a
+    whole leg's, or one joined from its shards, has `shard` 0, and its workers and estimates are its shards' summed,
+    its seconds the longest shard's, and its suites each shard's."""
 
     name: str
     minutes: int
@@ -429,6 +482,8 @@ class LegRun:
     available: float = 0.0
     local: LocalRun | None = None
     confirms: bool = False
+    shard: int = 0
+    shards: int = 1
 
     @property
     def open_suites(self) -> list[str]:
@@ -1592,8 +1647,14 @@ def legs_leaving(module: ModuleReport, indices: Iterable[int], status: str = NOT
 
 
 def leg_line(leg: LegRun) -> str:
-    """A leg's workers and time, and those of the local run that completed it, if one did."""
-    line = f"{leg.name}, {leg.workers} workers ran for {leg.seconds / 60:.0f} of its {leg.minutes} minutes"
+    """A leg's workers and time, its shards' when it ran in more than one, and those of the local run that completed
+    it, if one did."""
+    line = (
+        f"{leg.name}, {leg.workers} workers ran for {leg.seconds / 60:.0f} of its {leg.minutes} minutes"
+        if leg.shards == 1
+        else f"{leg.name}, {leg.shards} shards of {leg.workers} workers in all ran for at most "
+        f"{leg.seconds / 60:.0f} of each one's {leg.minutes} minutes"
+    )
     if leg.local is None:
         return line
     local = leg.local
@@ -1719,12 +1780,76 @@ def leg_modules(leg: str, selected: Selected) -> list[SelectedModule]:
 
 
 def needed_legs(selected: Selected) -> list[str]:
-    """The legs with a mutant to run, in LEGS order."""
-    return [leg for leg in LEGS if leg_modules(leg, selected)]
+    """The legs with a mutant to run, in LEGS order; none when the run carries an earlier verdict."""
+    return [] if selected.carried else [leg for leg in LEGS if leg_modules(leg, selected)]
+
+
+def leg_shards(leg: str, selected: Selected) -> int:
+    """How many shards a leg's mutants are dealt into: one for each SHARD_MUTANTS of them, at most MAX_SHARDS, and none
+    when the leg has none."""
+    count = sum(len(chosen.mutants) for chosen in leg_modules(leg, selected))
+    return min(MAX_SHARDS, -(-count // SHARD_MUTANTS))
+
+
+def shard_places(leg: str, selected: Selected, shard: int) -> dict[str, list[int]]:
+    """The places of each module's mutants that shard `shard`, from 1, of a leg runs: the leg's mutants, module after
+    module in the selection's order, each module's in its own, cut into leg_shards runs whose lengths differ by one at
+    most, so a module's mutants and the suites that reach them stay in as few shards as they can."""
+    places = [(chosen.module, place) for chosen in leg_modules(leg, selected) for place in range(len(chosen.mutants))]
+    count = leg_shards(leg, selected)
+    found: dict[str, list[int]] = {}
+    for module, place in places[(shard - 1) * len(places) // count : shard * len(places) // count]:
+        found.setdefault(module, []).append(place)
+    return found
+
+
+def shard_modules(leg: str, selected: Selected, shard: int) -> list[SelectedModule]:
+    """The modules a shard runs, each holding only its share of the module's mutants."""
+    places = shard_places(leg, selected, shard)
+    return [
+        replace(chosen, mutants=tuple(chosen.mutants[place] for place in places[chosen.module]))
+        for chosen in leg_modules(leg, selected)
+        if chosen.module in places
+    ]
 
 
 def outcomes_name(leg: str) -> str:
     return OUTCOMES_FILE.format(leg=leg.casefold())
+
+
+def shard_name(leg: str, shard: int) -> str:
+    return SHARD_FILE.format(leg=leg.casefold(), shard=shard)
+
+
+def local_name(leg: str) -> str:
+    return LOCAL_FILE.format(leg=leg.casefold())
+
+
+def joined_shards(leg: str, selected: Selected, shards: Sequence[LegRun]) -> LegRun:
+    """A leg's run from each of its shards' runs, in shard order: each module's outcomes at the places of its
+    mutants, the shards' workers and estimates summed, their longest time, and each one's suites, a suite one shard
+    left unmeasured counted as the leg's, since a mutant that shard ran survived without it."""
+    placed: dict[str, dict[int, Outcome]] = {chosen.module: {} for chosen in leg_modules(leg, selected)}
+    for index, run in enumerate(shards, start=1):
+        for module, places in shard_places(leg, selected, index).items():
+            placed[module].update(zip(places, run.outcomes[module], strict=True))
+    needed: dict[str, float] = {}
+    for run in shards:
+        for module, seconds in run.needed.items():
+            needed[module] = needed.get(module, 0.0) + seconds
+    return LegRun(
+        leg,
+        max(run.minutes for run in shards),
+        max(run.seconds for run in shards),
+        sum(run.workers for run in shards),
+        # The shards' places cover each module's mutants once each, so every place holds an outcome.
+        {module: [found[place] for place in range(len(found))] for module, found in placed.items()},
+        {suite: reason for run in shards for suite, reason in run.failed_suites.items()},
+        sorted({suite for run in shards for suite in run.unmeasured_suites}),
+        needed,
+        sum(run.available for run in shards),
+        shards=len(shards),
+    )
 
 
 def joined(selected: Selected, legs: Sequence[LegRun]) -> Report:
@@ -1762,6 +1887,8 @@ def selection_record(selected: Selected) -> dict[str, Any]:
         "base": selected.base,
         "mutmut": selected.mutmut,
         "head": selected.head,
+        "suites": list(selected.suites),
+        "carried": None if selected.carried is None else carried_record(selected.carried),
         "modules": [
             {
                 "module": chosen.module,
@@ -1776,8 +1903,22 @@ def selection_record(selected: Selected) -> dict[str, Any]:
     }
 
 
-def read_record(path: Path, fields: Sequence[str]) -> dict[str, Any]:
-    """The object a step wrote to `path`, holding exactly `fields`; a file that cannot be read as one stops the join."""
+def carried_record(carried: Carried) -> dict[str, Any]:
+    return {"run": carried.run, "head": carried.head, "summary": carried.summary}
+
+
+def read_carried(value: object, where: str) -> Carried:
+    found = READ.json_object(value, where, required=("run", "head", "summary"))
+    return Carried(
+        READ.string(found["run"], f"{where}.run"),
+        READ.hex_digest(found["head"], f"{where}.head", 40, 64),
+        READ.string(found["summary"], f"{where}.summary"),
+    )
+
+
+def read_record(path: Path, fields: Sequence[str] | None = None) -> dict[str, Any]:
+    """The object a step wrote to `path`, holding exactly `fields` when they are given; a file that cannot be read as
+    one stops the join."""
     try:
         record = json_reader.read_file(path)
     except (OSError, ValueError) as error:
@@ -1830,23 +1971,117 @@ def read_selected_module(value: object, where: str) -> SelectedModule:
 
 def read_selection(path: Path) -> Selected:
     """The selection the select step wrote; a field of a kind the step does not write stops the join."""
-    record = read_record(path, ("base", "mutmut", "head", "modules"))
-    modules = tuple(READ.array(record["modules"], f"{path.name}.modules", read_selected_module))
+    return read_selected(read_record(path), path.name)
+
+
+def read_selected(value: object, where: str) -> Selected:
+    """A selection as selection_record writes it, read at `where`."""
+    record = READ.json_object(value, where, required=("base", "mutmut", "head", "suites", "carried", "modules"))
+    modules = tuple(READ.array(record["modules"], f"{where}.modules", read_selected_module))
     # The select step records the commit it ran at; a selection made without one reads back as empty, which a local
     # run refuses. Git names a commit by SHA-1, or by SHA-256 in a repository that uses it.
-    head = "" if record["head"] == "" else READ.hex_digest(record["head"], f"{path.name}.head", 40, 64)
+    head = "" if record["head"] == "" else READ.hex_digest(record["head"], f"{where}.head", 40, 64)
     seen: set[str] = set()
     for index, chosen in enumerate(modules):
         # A leg's outcomes are keyed by module, so a module listed twice would give both entries one list.
         if chosen.module in seen:
-            raise READ.fail(f"{path.name}.modules[{index}].module", "a module no earlier entry names", chosen.module)
+            raise READ.fail(f"{where}.modules[{index}].module", "a module no earlier entry names", chosen.module)
         seen.add(chosen.module)
     return Selected(
-        READ.string(record["base"], f"{path.name}.base"),
-        READ.string(record["mutmut"], f"{path.name}.mutmut"),
+        READ.string(record["base"], f"{where}.base"),
+        READ.string(record["mutmut"], f"{where}.mutmut"),
         modules,
         head,
+        tuple(READ.array(record["suites"], f"{where}.suites", READ.string)),
+        READ.optional(read_carried, record["carried"], f"{where}.carried"),
     )
+
+
+@dataclass(frozen=True)
+class Verdict:
+    """A finished run's verdict as its join leaves it for the next run of the pull request: the run, the selection it
+    judged, whose head is the commit it tested, the git object name of each file of that commit's tree, and the
+    run's summary."""
+
+    run: str
+    selected: Selected
+    files: Mapping[str, str]
+    summary: str
+
+
+def verdict_record(verdict: Verdict) -> dict[str, Any]:
+    return {
+        "run": verdict.run,
+        "selection": selection_record(verdict.selected),
+        "files": dict(verdict.files),
+        "summary": verdict.summary,
+    }
+
+
+def read_verdict(path: Path) -> Verdict:
+    """The verdict an earlier run's join left; one that is not as verdict_record writes it, or whose selection records
+    no commit or carried a verdict itself, stops the read, which carries nothing."""
+    record = read_record(path, ("run", "selection", "files", "summary"))
+    selected = read_selected(record["selection"], f"{path.name}.selection")
+    if not selected.head or selected.carried:
+        raise RecordError(f"{path.name}.selection is not one a run tested at a recorded commit")
+    files = READ.json_object(record["files"], f"{path.name}.files")
+    return Verdict(
+        READ.string(record["run"], f"{path.name}.run"),
+        selected,
+        {name: READ.hex_digest(entry, f"{path.name}.files.{name}", 40, 64) for name, entry in files.items()},
+        READ.string(record["summary"], f"{path.name}.summary"),
+    )
+
+
+def tree_files(root: Path, git: GitClient) -> dict[str, str]:
+    """Each file of HEAD's tree, by its path from the root, with the git object name of its content."""
+    listing = git.output(["ls-tree", "-r", "-z", "--full-tree", "HEAD"], directory=root)
+    files = {}
+    for entry in filter(None, listing.split("\0")):
+        about, _, path = entry.partition("\t")
+        files[path] = about.split()[2]
+    return files
+
+
+def selection_difference(earlier: Selected, selected: Selected) -> str | None:
+    """What a selection makes otherwise than the one an earlier run judged, other than the commit it is made at: its
+    base, its mutmut release, a module's text, changed lines, mutants, tables, or legs, or the suites that reach the
+    modules with a mutant; None when it makes the same."""
+    if (earlier.base, earlier.mutmut) != (selected.base, selected.mutmut):
+        return f"its base and mutmut release were `{earlier.base}` and {earlier.mutmut}"
+    before = {chosen.module: chosen for chosen in earlier.modules}
+    now = {chosen.module: chosen for chosen in selected.modules}
+    differing = sorted(module for module in before.keys() | now.keys() if before.get(module) != now.get(module))
+    if differing:
+        return f"the mutants of {', '.join(f'`{module}`' for module in differing)} are not the ones it judged"
+    if earlier.suites != selected.suites:
+        return "the suites that reach the mutated modules are not the ones it ran"
+    return None
+
+
+def carry_problem(verdict: Verdict, selected: Selected, files: Mapping[str, str], root: Path) -> str | None:
+    """Why a run cannot carry an earlier run's verdict, or None when it can: it can when it makes the same mutants of
+    the same module texts, reached by the same suites, as selection_difference compares them, and no file that changed
+    between the tree the verdict tested and this one is one of GATE_FILES, the gate's own module or one it imports,
+    directly or through others, or reaches a suite that reaches a mutated module, as `job_selection.reached_suites`
+    selects the suites a change reaches, the selection the gate trusts to choose the suites it runs."""
+    difference = selection_difference(verdict.selected, selected)
+    if difference:
+        return difference
+    changed = sorted(path for path in verdict.files.keys() | files.keys() if verdict.files.get(path) != files.get(path))
+    if not changed:
+        return None
+    named = [path for path in changed if path in GATE_FILES]
+    if named:
+        return f"{', '.join(f'`{path}`' for path in named)} changed, which the gate runs by"
+    listed = [path.relative_to(root).as_posix() for path in repository_files(root)]
+    if GATE_MODULE in importers(changed, python_imports(root, listed)):
+        return f"`{GATE_MODULE}` or a module it imports changed"
+    reached = sorted(set(reaching_suites(root, changed)) & set(selected.suites))
+    if reached:
+        return f"a change since reaches {', '.join(f'`{suite}`' for suite in reached)}, which reach the mutants"
+    return None
 
 
 def outcome_record(outcome: Outcome) -> dict[str, Any]:
@@ -1857,6 +2092,8 @@ def leg_record(leg: LegRun) -> dict[str, Any]:
     """A leg's run as the leg step hands it to the join, each outcome by its mutant's place in the selection."""
     return {
         "leg": leg.name,
+        "shard": leg.shard,
+        "shards": leg.shards,
         "minutes": leg.minutes,
         "seconds": leg.seconds,
         "workers": leg.workers,
@@ -1864,14 +2101,14 @@ def leg_record(leg: LegRun) -> dict[str, Any]:
         "unmeasured_suites": leg.unmeasured_suites,
         "needed": leg.needed,
         "available": leg.available,
-        "local": None if leg.local is None else local_record(leg.local),
         "outcomes": {module: [outcome_record(outcome) for outcome in found] for module, found in leg.outcomes.items()},
     }
 
 
-def local_record(local: LocalRun) -> dict[str, Any]:
-    """A local run as the unrun step writes it into the leg's record it completed."""
+def local_record(leg: str, local: LocalRun) -> dict[str, Any]:
+    """A local run as the unrun step writes it beside the record of the leg it completed."""
     return {
+        "leg": leg,
         "minutes": local.minutes,
         "seconds": local.seconds,
         "workers": local.workers,
@@ -1906,10 +2143,11 @@ def read_outcome(mutant: Mutant, value: object, where: str) -> Outcome:
 
 
 def read_outcomes(
-    path: Path, value: object, mutants: Mapping[str, Sequence[Mutant]], leg: str
+    path: Path, value: object, mutants: Mapping[str, Sequence[Mutant]], who: str
 ) -> dict[str, list[Outcome]]:
-    """Each module's outcomes, given the mutants at their places; a record that leaves out a module the leg runs,
-    holds one it does not, or holds a count of outcomes that is not the module's count of mutants stops the join."""
+    """Each module's outcomes, given the mutants at their places; a record that leaves out a module the leg or the
+    shard `who` names runs, holds one it does not, or holds a count of outcomes that is not the module's count of
+    mutants stops the join."""
     found = READ.json_object(value, f"{path.name}.outcomes")
     missing = [module for module in mutants if module not in found]
     if missing:
@@ -1917,7 +2155,7 @@ def read_outcomes(
     outcomes: dict[str, list[Outcome]] = {}
     for module, entries in found.items():
         if module not in mutants:
-            raise RecordError(f"{path.name} holds outcomes of {module}, whose mutants the {leg} leg does not run")
+            raise RecordError(f"{path.name} holds outcomes of {module}, whose mutants the {who} does not run")
         where = f"{path.name}.outcomes.{module}"
         listed = READ.array(entries, where)
         if len(listed) != len(mutants[module]):
@@ -1929,14 +2167,16 @@ def read_outcomes(
     return outcomes
 
 
-def read_leg(path: Path, selected: Selected, leg: str) -> LegRun:
-    """The run the leg step of `leg` wrote, each outcome given the mutant at its place in the selection; a record that
-    names another leg, whose outcomes are not one for each mutant of each module the leg runs, or one of whose
-    outcomes names a suite the same record lists as failed unmutated or left unmeasured, which ran against no mutant,
-    stops the join. A local run's record, which read_local reads, is held to the leg's outcomes and to its own
-    suites."""
+def read_leg(path: Path, selected: Selected, leg: str, shard: int = 0) -> LegRun:
+    """The run the leg step of `leg` wrote, the whole leg's or, when `shard` names one, that shard's, each outcome given
+    the mutant at its place in the selection; a record that names another leg or another shard, or a deal of the leg
+    into another count of shards than the selection's, whose outcomes are not one for each mutant of each module the
+    leg or the shard runs, or one of whose outcomes names a suite the same record lists as failed unmutated or left
+    unmeasured, which ran against no mutant, stops the join."""
     fields = (
         "leg",
+        "shard",
+        "shards",
         "minutes",
         "seconds",
         "workers",
@@ -1944,14 +2184,22 @@ def read_leg(path: Path, selected: Selected, leg: str) -> LegRun:
         "unmeasured_suites",
         "needed",
         "available",
-        "local",
         "outcomes",
     )
     record = read_record(path, fields)
     name = READ.one_of(record["leg"], f"{path.name}.leg", LEGS)
     if name != leg:
         raise RecordError(f"{path.name} holds the {name} leg's run, not the {leg} leg's")
-    mutants = {chosen.module: chosen.mutants for chosen in leg_modules(leg, selected)}
+    number = READ.integer(record["shard"], f"{path.name}.shard", minimum=0)
+    if number != shard:
+        held, wanted = (f"shard {value} of the leg" if value else "the whole leg" for value in (number, shard))
+        raise RecordError(f"{path.name} holds the {leg} leg's run of {held}, not of {wanted}")
+    count = READ.integer(record["shards"], f"{path.name}.shards", minimum=1)
+    dealt = leg_shards(leg, selected) if shard else 1
+    if count != dealt:
+        raise RecordError(f"{path.name} deals the {leg} leg into {count} shards, not the {dealt} its selection deals")
+    modules = shard_modules(leg, selected, shard) if shard else leg_modules(leg, selected)
+    mutants = {chosen.module: chosen.mutants for chosen in modules}
     needed = READ.json_object(record["needed"], f"{path.name}.needed")
     run = LegRun(
         name,
@@ -1959,14 +2207,15 @@ def read_leg(path: Path, selected: Selected, leg: str) -> LegRun:
         READ.integer(record["minutes"], f"{path.name}.minutes", minimum=1),
         READ.number(record["seconds"], f"{path.name}.seconds"),
         READ.integer(record["workers"], f"{path.name}.workers", minimum=0),
-        read_outcomes(path, record["outcomes"], mutants, leg),
+        read_outcomes(path, record["outcomes"], mutants, f"{leg} leg's shard {shard}" if shard else f"{leg} leg"),
         read_failed(record["failed_suites"], f"{path.name}.failed_suites"),
         READ.array(record["unmeasured_suites"], f"{path.name}.unmeasured_suites", READ.string),
         {module: READ.number(seconds, f"{path.name}.needed.{module}") for module, seconds in needed.items()},
         READ.number(record["available"], f"{path.name}.available"),
+        shard=shard,
+        shards=count,
     )
     refuse_unjudged_suites(path.name, "leg", run.outcomes, run.failed_suites, run.unmeasured_suites)
-    run.local = READ.optional(read_local, record["local"], f"{path.name}.local", run)
     return run
 
 
@@ -2004,13 +2253,17 @@ def read_failed(value: object, where: str) -> dict[str, str]:
 
 
 def read_local(value: object, where: str, leg: LegRun) -> LocalRun:
-    """The local run a leg's record holds, with its outcome of each mutant it ran. A module the leg holds no outcomes
+    """The local run the unrun step wrote beside a leg's record, with its outcome of each mutant it ran. A record
+    naming another leg, a module the leg holds no outcomes
     of, a place past the end of a module's outcomes, a place named twice, a place whose CI outcome left_without_verdict
     does not let a local run replace, a count of outcomes that is not the count of places, or an outcome naming a
     suite the local run judged nothing with stops the join, so a local outcome stands only where the CI leg left no
     verdict."""
-    fields = ("minutes", "seconds", "workers", "mutants", "failed_suites", "unmeasured_suites", "outcomes")
+    fields = ("leg", "minutes", "seconds", "workers", "mutants", "failed_suites", "unmeasured_suites", "outcomes")
     found = READ.json_object(value, where, required=fields)
+    name = READ.one_of(found["leg"], f"{where}.leg", LEGS)
+    if name != leg.name:
+        raise RecordError(f"{where} holds a local run of the {name} leg, not of the {leg.name} leg")
     places = READ.json_object(found["mutants"], f"{where}.mutants")
     listed = READ.json_object(found["outcomes"], f"{where}.outcomes")
     if set(listed) != set(places):
@@ -2050,6 +2303,16 @@ def read_local(value: object, where: str, leg: LegRun) -> LocalRun:
     )
     refuse_unjudged_suites(where, "local run", local.outcomes, local.failed_suites, local.unmeasured_suites)
     return local
+
+
+def reaching_suites(root: Path, modules: Sequence[str]) -> list[str]:
+    """The Python suites that reach the modules, as `job_selection.reached_suites` selects them for --changed, each by
+    its path from the root; the Bash and PowerShell suites run no Python module."""
+    return [
+        suite.relative_to(root).as_posix()
+        for suite in reached_suites(root, list(modules))
+        if suite.suffix.casefold() == ".py"
+    ]
 
 
 @dataclass(frozen=True)
@@ -2113,7 +2376,9 @@ class Gate:
             windows = runs_on_windows(module, text.decode("utf-8"))
             digest = hashlib.sha256(text).hexdigest()
             chosen.append(SelectedModule(module, lines, tuple(mutants), tables, windows, digest))
-        return Selected(self.base, self.version(), tuple(chosen))
+        mutated = [entry.module for entry in chosen if entry.mutants]
+        suites = tuple(reaching_suites(self.root, mutated)) if mutated else ()
+        return Selected(self.base, self.version(), tuple(chosen), suites=suites)
 
     def mutate(self, trees: Sequence[Path], modules: Sequence[str], started: float) -> Report:
         """Select the mutants of the changed lines, then run every module's mutants as one leg, this platform's."""
@@ -2135,11 +2400,7 @@ class Gate:
             problem = self.measure(self.reach)
             if problem:
                 raise RuntimeError(problem)
-            suites = [
-                suite.relative_to(self.root).as_posix()
-                for suite in reached_suites(self.root, mutated)
-                if suite.suffix.casefold() == ".py"
-            ]
+            suites = reaching_suites(self.root, mutated)
             reach, failed, unmeasured = measure_reach(
                 workers, suites, mutated, reach_deadline(started, deadline), self.reach
             )
@@ -2170,11 +2431,15 @@ class Gate:
         head = output_line(self.git.output(["rev-parse", "HEAD"], directory=self.root))
         return replace(self.choose(self.root, modules), head=head)
 
-    def leg(self, selected: Selected) -> LegRun:
-        """The leg step: this platform's leg of the mutants the select step made, run in worktrees of HEAD, which must
-        be the commit the select step's checkout held, as every job of the workflow checks out the same one."""
+    def leg(self, selected: Selected, shard: int = 0) -> LegRun:
+        """The leg step: this platform's leg of the mutants the select step made, or the share of them that shard
+        `shard`, from 1, runs when it names one, run in worktrees of HEAD, which must be the commit the select step's
+        checkout held, as every job of the workflow checks out the same one."""
         name = platform_support.PLATFORM_NAME
-        modules = leg_modules(name, selected)
+        count = leg_shards(name, selected)
+        if shard > count:
+            raise RuntimeError(f"the selection deals the {name} leg into {count} shards, so it has no shard {shard}")
+        modules = shard_modules(name, selected, shard) if shard else leg_modules(name, selected)
         started = self.clock()
         if not modules:
             return LegRun(name, self.minutes, 0.0, 0, {}, {}, [])
@@ -2190,7 +2455,8 @@ class Gate:
             tempfile.TemporaryDirectory(prefix="mutation-gate-") as temporary,
             worktrees(self.root, self.workers, Path(temporary), self.git) as trees,
         ):
-            return self.run_leg(name, trees, modules, started)
+            ran = self.run_leg(name, trees, modules, started)
+        return replace(ran, shard=shard, shards=count if shard else 1)
 
     def report(self) -> Result:
         """The summary of one run, one line when no module changed, else every module's mutants tested, and whether
@@ -2209,6 +2475,24 @@ class Gate:
             report = self.mutate(trees, modules, started)
         return Result(summary(report), unfinished_line(report) is None)
 
+    def carry(self, selected: Selected, path: Path) -> Carried | None:
+        """The earlier verdict at `path` when carry_problem finds nothing against carrying it, saying in the log
+        which run it came from, or why the mutants run instead; a missing or unreadable verdict carries nothing."""
+        if not path.is_file():
+            print("No earlier finished verdict of this pull request was found, so the mutants run", flush=True)
+            return None
+        try:
+            verdict = read_verdict(path)
+        except RecordError as error:
+            print(f"The earlier verdict cannot be read, so the mutants run: {error}", flush=True)
+            return None
+        problem = carry_problem(verdict, selected, tree_files(self.root, self.git), self.root)
+        if problem:
+            print(f"The mutants run, rather than carry {verdict.run}'s verdict, since {problem}", flush=True)
+            return None
+        print(f"Carried forward the verdict of {verdict.run}, which judged these mutants", flush=True)
+        return Carried(verdict.run, verdict.selected.head, verdict.summary)
+
     def unrun(self, folder: Path) -> LegRun:
         """The unrun step: this platform's leg of a CI run, as `folder` holds the run's selection and every leg's
         outcomes, completed by running here each mutant `unjudged` finds the leg left without a verdict, in worktrees
@@ -2223,8 +2507,7 @@ class Gate:
             raise RuntimeError(f"the {name} leg ran no mutant of this run, so none is left to run here: {others} did")
         if leg.local is not None:
             raise RuntimeError(
-                f"{outcomes_name(name)} was already completed by a local run: download the leg's outcomes again to "
-                "run its mutants anew"
+                f"{local_name(name)} already completes the {name} leg: remove it to run the leg's mutants anew"
             )
         if not selected.head:
             raise RuntimeError(f"{MUTANTS_FILE} records no commit the run tested, so its suites cannot be matched")
@@ -2284,31 +2567,121 @@ def unjudged(report: Report, leg: LegRun) -> dict[str, list[int]]:
     return found
 
 
+def is_run_file(name: str) -> bool:
+    """Whether a file name is one a step of a run writes: the selection, a leg's or a shard's outcomes, or a local
+    run's."""
+    return name == MUTANTS_FILE or (name.endswith(".json") and name.startswith(("outcomes-", "local-")))
+
+
+def run_files(folder: Path) -> dict[str, Path]:
+    """The files a run's steps wrote, by name, in `folder` or in a folder directly inside it, as `gh run download`
+    puts each artifact in a folder of its own; a name found twice stops it, since either could be the run's."""
+    found: dict[str, Path] = {}
+    places = [folder, *sorted(path for path in folder.iterdir() if path.is_dir())] if folder.is_dir() else []
+    for place in places:
+        for path in sorted(place.iterdir()):
+            if path.is_file() and is_run_file(path.name):
+                if path.name in found:
+                    raise RuntimeError(f"{folder} holds {path.name} twice, at {found[path.name]} and {path}")
+                found[path.name] = path
+    return found
+
+
+def read_leg_files(files: Mapping[str, Path], selected: Selected, name: str) -> LegRun:
+    """A needed leg's run: its whole record when the leg ran in one job, else each of its shards' records joined, every
+    shard the selection deals named and no other; a missing record, a whole record beside a shard's, or a shard's
+    record the selection does not deal stops it, since a mutant would then have no verdict, or two."""
+    prefix = shard_name(name, 0).removesuffix("0.json")
+    shards = sorted(found for found in files if found.startswith(prefix))
+    whole = files.get(outcomes_name(name))
+    if whole and shards:
+        raise RecordError(f"{whole.name} holds the whole {name} leg's run beside its shards' {', '.join(shards)}")
+    if whole:
+        return read_leg(whole, selected, name)
+    dealt = [shard_name(name, shard) for shard in range(1, leg_shards(name, selected) + 1)]
+    stray = sorted(set(shards) - set(dealt))
+    if stray:
+        raise RecordError(f"{', '.join(stray)} names a shard of the {name} leg its selection does not deal")
+    missing = [found for found in dealt if found not in files]
+    if missing:
+        written = " or ".join(missing) if len(dealt) > 1 else outcomes_name(name)
+        raise RuntimeError(f"the {name} leg wrote no {written}, so its mutants have no verdict: read its log")
+    runs = [read_leg(files[found], selected, name, shard) for shard, found in enumerate(dealt, start=1)]
+    return joined_shards(name, selected, runs)
+
+
 def read_run(folder: Path) -> tuple[Selected, list[LegRun]]:
-    """The select step's mutants and each needed leg's outcomes in `folder`. A missing file, the selection's or a
+    """The select step's mutants, each needed leg's outcomes, as read_leg_files reads them, in `folder` or the folders
+    directly inside it, and the local run that completed a leg, if one did. A missing file, the selection's or a
     leg's that had mutants to run, stops it, since that leg's mutants then have no verdict, and so does a leg's file
-    that read_leg refuses, such as one naming another leg or leaving out a module."""
-    mutants = folder / MUTANTS_FILE
-    if not mutants.is_file():
+    that read_leg refuses, such as one naming another leg or leaving out a module, and a local run's of a leg that ran
+    no mutant."""
+    files = run_files(folder)
+    if MUTANTS_FILE not in files:
         raise RuntimeError(f"the select job wrote no {MUTANTS_FILE}, so no leg ran: read that job's log")
-    selected = read_selection(mutants)
+    selected = read_selection(files[MUTANTS_FILE])
     legs = []
-    for name in needed_legs(selected):
-        path = folder / outcomes_name(name)
-        if not path.is_file():
-            raise RuntimeError(f"the {name} leg wrote no {path.name}, so its mutants have no verdict: read its log")
-        legs.append(read_leg(path, selected, name))
+    needed = needed_legs(selected)
+    for name in needed:
+        leg = read_leg_files(files, selected, name)
+        local = files.get(local_name(name))
+        if local:
+            leg.local = read_local(read_record(local), local.name, leg)
+        legs.append(leg)
+    stray = sorted(found for found in files if found.startswith("local-") and found not in map(local_name, needed))
+    if stray:
+        raise RecordError(f"{', '.join(stray)} holds a local run of a leg that ran no mutant of this run")
     return selected, legs
 
 
 def join(folder: Path) -> Result:
     """The join step: the summary of the select step's mutants and each leg's outcomes in `folder`, as read_run reads
-    them, and whether the run finished."""
+    them, and whether the run finished, or, for a run that carries an earlier verdict, that verdict's summary under a
+    line naming the run it came from."""
     selected, legs = read_run(folder)
+    if selected.carried:
+        return Result(carried_line(selected.carried) + "\n" + selected.carried.summary)
     if not selected.modules:
         return Result(no_module_line(selected.base))
     report = joined(selected, legs)
     return Result(summary(report), unfinished_line(report) is None)
+
+
+def carried_line(carried: Carried) -> str:
+    """The line that leads a carried verdict's summary, naming the run that judged the mutants."""
+    return (
+        f"**Carried forward from {carried.run}:** no mutant ran, since this run makes the same mutants of the same "
+        f"module texts as that run judged at `{carried.head}`, and nothing changed since reaches a suite that reaches "
+        "them, or the gate. That run's summary follows.\n"
+    )
+
+
+def run_address(environment: Mapping[str, str]) -> str | None:
+    """The address of the workflow run, attempt included, from the variables GitHub Actions sets; None outside one."""
+    names = ("GITHUB_SERVER_URL", "GITHUB_REPOSITORY", "GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT")
+    server, repository, run, attempt = (environment.get(name, "") for name in names)
+    if not all((server, repository, run, attempt)):
+        return None
+    return f"{server}/{repository}/actions/runs/{run}/attempts/{attempt}"
+
+
+def save_verdict(gate: Gate, folder: Path, result: Result, environment: Mapping[str, str]) -> None:
+    """After a finished join, leave the run's verdict in `folder`'s VERDICT_FOLDER for the next run of the pull request
+    to carry, and name its cache key as the step output `verdict`; a run that carried a verdict, made no mutant, ran
+    outside GitHub Actions, or whose checkout is not the commit the select step made the mutants at leaves none."""
+    selected, _ = read_run(folder)
+    address = run_address(environment)
+    ref = environment.get("GITHUB_REF", "")
+    if not result.finished or selected.carried or not needed_legs(selected) or not address or not ref:
+        return
+    head = output_line(gate.git.output(["rev-parse", "HEAD"], directory=gate.root))
+    if head != selected.head:
+        print(f"No verdict is left for the next run: HEAD is {head}, not {selected.head}, which the run tested")
+        return
+    verdict = Verdict(address, selected, tree_files(gate.root, gate.git), result.text)
+    json_writer.write(folder / VERDICT_FOLDER / VERDICT_FILE, verdict_record(verdict))
+    key = f"mutation-verdict-{ref}-{environment['GITHUB_RUN_ID']}-{environment['GITHUB_RUN_ATTEMPT']}"
+    append_step_outputs(environment, {"verdict": key})
 
 
 def append_step_outputs(environment: Mapping[str, str], outputs: Mapping[str, str]) -> None:
@@ -2320,15 +2693,23 @@ def append_step_outputs(environment: Mapping[str, str], outputs: Mapping[str, st
 
 
 def select_step(gate: Gate, folder: Path, environment: Mapping[str, str]) -> None:
-    """Write the selection to `folder`, and, as step outputs, which legs have mutants to run."""
+    """Write the selection to `folder`, carrying the earlier verdict `folder`'s VERDICT_FOLDER holds when carry_problem
+    finds nothing against it, and, as step outputs, the shards of each leg, as a JSON list of their numbers, empty for
+    a leg with no mutant to run."""
     selected = gate.selection()
+    if needed_legs(selected):
+        selected = replace(selected, carried=gate.carry(selected, folder / VERDICT_FOLDER / VERDICT_FILE))
     folder.mkdir(parents=True, exist_ok=True)
     json_writer.write(folder / MUTANTS_FILE, selection_record(selected))
     legs = needed_legs(selected)
-    append_step_outputs(environment, {leg.casefold(): str(leg in legs).casefold() for leg in LEGS})
+    shards = {leg: list(range(1, leg_shards(leg, selected) + 1)) if leg in legs else [] for leg in LEGS}
+    append_step_outputs(environment, {leg.casefold(): f"[{', '.join(map(str, shards[leg]))}]" for leg in LEGS})
     for chosen in selected.modules:
         ran = [leg for leg in legs if chosen in leg_modules(leg, selected)]
         print(f"{chosen.module}: {len(chosen.mutants)} mutants, run on {', '.join(ran) or 'no leg'}", flush=True)
+    for leg in legs:
+        count = len(shards[leg])
+        print(f"The {leg} leg runs in {count} {'shard' if count == 1 else 'shards'}", flush=True)
 
 
 def parse_arguments(argv: Sequence[str] | None, environment: Mapping[str, str]) -> argparse.Namespace:
@@ -2356,7 +2737,15 @@ def parse_arguments(argv: Sequence[str] | None, environment: Mapping[str, str]) 
             "file, and report as the join does",
         ),
     ):
-        steps.add_parser(name, help=text).add_argument("folder", type=Path, help="the folder the steps hand on")
+        step = steps.add_parser(name, help=text)
+        step.add_argument("folder", type=Path, help="the folder the steps hand on")
+        if name == "leg":
+            step.add_argument(
+                "--shard",
+                type=whole_number.argument(1),
+                default=0,
+                help="run only this shard, from 1, of the leg, as the select step deals it (default: the whole leg)",
+            )
     return parser.parse_args(argv)
 
 
@@ -2367,15 +2756,21 @@ def main(argv: Sequence[str] | None = None, environment: Mapping[str, str] = os.
         select_step(gate, arguments.folder, environment)
         return 0
     if arguments.step == "leg":
-        leg = gate.leg(read_selection(arguments.folder / MUTANTS_FILE))
-        json_writer.write(arguments.folder / outcomes_name(leg.name), leg_record(leg))
+        leg = gate.leg(read_selection(arguments.folder / MUTANTS_FILE), arguments.shard)
+        written = shard_name(leg.name, leg.shard) if leg.shard else outcomes_name(leg.name)
+        json_writer.write(arguments.folder / written, leg_record(leg))
         return 0
     if arguments.step == "unrun":
         completed = gate.unrun(arguments.folder)
-        json_writer.write(arguments.folder / outcomes_name(completed.name), leg_record(completed))
+        if completed.local:
+            json_writer.write(
+                arguments.folder / local_name(completed.name), local_record(completed.name, completed.local)
+            )
     result = join(arguments.folder) if arguments.step in ("join", "unrun") else gate.report()
     print(result.text, end="", flush=True)
     append_step_summary(environment, result.text)
+    if arguments.step == "join":
+        save_verdict(gate, arguments.folder, result, environment)
     if result.finished:
         return 0
     # A workflow command, which puts the summary's first line on the run's annotations.
