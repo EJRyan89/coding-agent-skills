@@ -5922,7 +5922,7 @@ def test_ctypes_policy_names_a_module_it_cannot_read() -> None:
         root = Path(temporary)
         write_fixture_tree(root, {"skills/alpha/scripts/alpha.py": "def broken(:\n"})
         found = python_checks.ctypes_declaration_problems(root, sorted(root.rglob("*.py")))
-    assert len(found) == 1 and found[0].startswith("skills/alpha/scripts/alpha.py"), found
+    assert [problem.startswith("skills/alpha/scripts/alpha.py") for problem in found] == [True], found
 
 
 @pytest.mark.parametrize(
