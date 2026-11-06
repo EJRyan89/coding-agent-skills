@@ -12,9 +12,15 @@ from __future__ import annotations
 import re
 
 MAXIMUM_LENGTH = 39
-_LOGIN = re.compile(r"[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*(?:_[A-Za-z0-9]+)?")
+# The rule above as a pattern another may embed, such as a repository identity's owner before its `/`: the lookahead
+# holds the length, since the run of a login's characters it measures ends where the login does.
+LOGIN = (
+    rf"(?=[A-Za-z0-9_-]{{1,{MAXIMUM_LENGTH}}}(?![A-Za-z0-9_-]))"
+    r"[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*(?:_[A-Za-z0-9]+)?(?![A-Za-z0-9_-])"
+)
+_LOGIN = re.compile(LOGIN)
 
 
 def is_login(text: str) -> bool:
     """Whether `text` is a GitHub login by the rule above."""
-    return len(text) <= MAXIMUM_LENGTH and _LOGIN.fullmatch(text) is not None
+    return _LOGIN.fullmatch(text) is not None

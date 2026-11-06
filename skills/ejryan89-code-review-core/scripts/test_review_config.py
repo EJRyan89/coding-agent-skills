@@ -326,7 +326,6 @@ class ConfigurationTests(unittest.TestCase):
         reviewers = Path("C:/Config/reviewers")
         for identity, folder, reason in (
             ("Owner/a.", reviewers / "owner" / "a.", "trims the trailing dots of 'a.'"),
-            ("owner./a", reviewers / "owner." / "a", "trims the trailing dots of 'owner.'"),
             ("owner/NUL.js", reviewers / "owner" / "nul.js", "opens as a device 'nul.js'"),
             ("con/a", reviewers / "con" / "a", "opens as a device 'con'"),
         ):
@@ -473,8 +472,9 @@ class ConfigurationTests(unittest.TestCase):
     def test_a_repository_identity_holds_githubs_name_rule_and_every_reader_built_on_it_agrees(self) -> None:
         # GitHub's repository name rule: up to 100 letters, digits, `_`, `.`, and `-`, any of them first, as in an
         # organization's `.github`, except a name made only of dots: GitHub refuses `.` and `..`, and the rule
-        # refuses every longer run, which a Windows archive path would not name as written. The owner is a login and
-        # starts with a letter or a digit.
+        # refuses every longer run, which a Windows archive path would not name as written. The owner is a login by
+        # github_logins' rule, letters and digits with single hyphens inside, at most one `_` before a managed user's
+        # short code, and at most 39 characters, or review_config.LOCAL_OWNER, which no login can be.
         accepted = [
             "owner/.github",
             "owner/a.b",
@@ -485,9 +485,22 @@ class ConfigurationTests(unittest.TestCase):
             "owner/_repo",
             "Owner/.GitHub",
             "o/" + "n" * 100,
-            "o" * 100 + "/n",
+            "o" * 39 + "/n",
+            "a_b/n",
+            "a-b-c/n",
+            "review-document.local/n",
         ]
         refused = [
+            "a.b/n",
+            "a_b_c/n",
+            "a--b/n",
+            "a-/n",
+            "_a/n",
+            "o" * 40 + "/n",
+            "review-document.locals/n",
+            "x.review-document.local/n",
+            # An owner ending in a dot, which Windows would trim, is no login, so no archive folder is built from one.
+            "owner./a",
             "owner/.",
             "owner/..",
             "owner/...",

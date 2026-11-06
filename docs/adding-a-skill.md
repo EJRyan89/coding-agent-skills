@@ -207,10 +207,14 @@ each caller instead.
 
 A command that runs another reads as both. In Bash, validation reads the program each command substitution, quoted
 or not, runs, and the program a wrapper runs: `xargs`, `env`, `command`, `exec`, `nohup`, `timeout`, `nice`,
-`stdbuf`, and `find`'s `-exec`, and every command of the script `eval` or a shell's `-c` runs; `command -v` only looks
-one up. In PowerShell it reads what `Start-Process` starts, what `& (Get-Command <name>)` runs, and every command of
-the string `Invoke-Expression` runs. In Python it reads every program of a command a runner gives a shell, such as
-`os.system` or `shell=True`, and of the script a list such as `["bash", "-c", "<script>"]` runs. A wrapper's program,
+`stdbuf`, and `find`'s `-exec`, and every command of the script `eval` or a shell's `-c` runs, with `-c` read as the
+shell reads it, alone or in a bundle such as `-lc`, before or after the shell's other options; `command -v` only looks
+one up. A wrapper's options are read as getopt reads them, a long one only spelled in full, so a program behind an
+abbreviated option or one the wrapper's table does not list is a program the policy cannot read. In PowerShell it
+reads what `Start-Process` starts, what `& (Get-Command <name>)` runs, and every command of the string
+`Invoke-Expression` runs. In Python it reads every program of a command a runner gives a shell, such as `os.system`
+or `shell=True`, and of the script a list such as `["bash", "-e", "-c", "<script>"]` runs, its `-c` read as in Bash
+up to the list's first item that is not a literal string. A wrapper's program,
 or what `&` runs, held in a variable is a program the policy cannot read, and fails the declared-tool policy.
 
 Reach for these substitutes instead:

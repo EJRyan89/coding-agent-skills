@@ -679,6 +679,15 @@ def test_each_bash_form_the_policy_refuses_fails_under_pipefail_in_bash(script: 
         pytest.param("seq 1 200000 | sudo -u someone VAR=1 head -n 1", "3 pipes into head -n", id="sudo's options"),
         pytest.param("seq 1 200000 | doas -u someone head -n 1", "3 pipes into head -n", id="doas"),
         pytest.param("seq 1 200000 | setsid head -n 1", "3 pipes into head -n", id="setsid"),
+        pytest.param("seq 1 200000 | sudo --user=a -E head -n 1", "3 pipes into head -n", id="sudo's long options"),
+        pytest.param("seq 1 200000 | ionice -c2 -n 7 head -n 1", "3 pipes into head -n", id="ionice"),
+        pytest.param("seq 1 200000 | env -vS'head -n 1'", "3 pipes into head -n", id="env -S in a bundle"),
+        pytest.param("seq 1 200000 | bash -c -e 'head -n 1'", "3 pipes into head -n", id="bash -c before -e"),
+        # A wrapper option the reader cannot place may hide a reader, so the pipe is named by it.
+        pytest.param("seq 1 200000 | sudo --us root head -n 1", "3 pipes into sudo --us", id="sudo abbreviated"),
+        pytest.param("seq 1 200000 | ionice --cl 2 head -n 1", "3 pipes into ionice --cl", id="ionice abbreviated"),
+        pytest.param("seq 1 200000 | env --split='head -n 1'", "3 pipes into env --split=head -n 1", id="env --split"),
+        pytest.param("seq 1 200000 | timeout --sig TERM 5 head", "3 pipes into timeout --sig", id="timeout --sig"),
         pytest.param("seq 1 200000 | builtin eval 'head -n 1'", "3 pipes into head -n", id="eval behind builtin"),
         # A race inside a script a shell runs is the suite's too.
         pytest.param("bash -c 'seq 1 200000 | head -n 1'", "3 pipes into head -n", id="a pipe in bash -c"),
