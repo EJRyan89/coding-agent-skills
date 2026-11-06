@@ -161,6 +161,38 @@ class BackoffTests(unittest.TestCase):
         client.run(["api", "search/issues?q=x"], headers=True)
         self.assertEqual([42.0], sleeper.waits)
 
+    def test_a_retry_after_that_is_no_ascii_whole_number_is_no_wait(self) -> None:
+        # isdigit() passed a superscript two, which float() then refused with a ValueError naming no header.
+        for value in ("\u00b2", "\u0663", "1_0", "-1", "4.5", "+4"):
+            with self.subTest(value=ascii(value)):
+                head = f"HTTP/2.0 403 Forbidden\r\nRetry-After: {value}\r\n\r\n{{}}"
+                client, sleeper = client_for(scripted(failed(SECONDARY_LIMIT, head), ok("{}"))[0])
+                client.run(["api", "user"], headers=True)
+                self.assertEqual([Backoff().base], sleeper.waits)
+
+    def test_a_retry_after_or_reset_too_large_for_a_float_fails_as_too_long(self) -> None:
+        for header in ("Retry-After: " + "9" * 400, "X-Ratelimit-Remaining: 0\r\nX-Ratelimit-Reset: " + "9" * 400):
+            with self.subTest(header=header[:20]):
+                head = f"HTTP/2.0 403 Forbidden\r\n{header}\r\n\r\n{{}}"
+                client, sleeper = client_for(scripted(failed(SECONDARY_LIMIT, head))[0])
+                with self.assertRaises(GitHubError) as context:
+                    client.run(["api", "user"], headers=True)
+                self.assertEqual("rate_limit", context.exception.kind)
+                self.assertEqual(
+                    "GitHub asked to wait longer than 300s before retrying; rerun later", str(context.exception)
+                )
+                self.assertEqual([], sleeper.waits)
+
+    def test_a_wait_is_read_as_a_float_up_to_two_to_the_fifty_third_seconds_and_as_too_long_past_it(self) -> None:
+        # The boundary is the last whole number a float holds exactly, so the wait printed is the one asked for.
+        for seconds, message in (
+            ("9007199254740992", "GitHub asked to wait 9007199254740992s before retrying; rerun later"),
+            ("9007199254740993", "GitHub asked to wait longer than 300s before retrying; rerun later"),
+        ):
+            with self.subTest(seconds=seconds), self.assertRaises(GitHubError) as context:
+                Backoff().wait(0, {"retry-after": seconds}, 0.0)
+            self.assertEqual(message, str(context.exception))
+
     def test_exhausted_quota_waits_until_the_reset_time(self) -> None:
         head = "HTTP/2.0 403 Forbidden\r\nX-Ratelimit-Remaining: 0\r\nX-Ratelimit-Reset: 1030\r\n\r\n{}"
         client, sleeper = client_for(scripted(failed("gh: HTTP 403", head), ok("{}"))[0], now=1000.0)

@@ -2953,6 +2953,27 @@ class PresenceReadTests(Fixture):
                 dependency_graph.nuget_cache()
         self.assertEqual((configured, "Access is denied"), (raised.exception.file, raised.exception.reason))
 
+    def test_a_relative_cache_or_home_is_never_read_under_the_working_directory(self) -> None:
+        # NUGET_PACKAGES and the home were read as given, so a relative one named a folder under the working
+        # directory: the variable is passed over, and the home is refused by its variable's name.
+        home = self.root / "home"
+        (home / ".nuget" / "packages").mkdir(parents=True)
+        (self.root / "configured").mkdir()
+        with (
+            contextlib.chdir(self.root),
+            mock.patch.object(Path, "home", return_value=home),
+            mock.patch.dict(os.environ, {"NUGET_PACKAGES": "configured"}),
+        ):
+            self.assertEqual([home / ".nuget" / "packages"], dependency_graph.nuget_cache())
+        with (
+            contextlib.chdir(self.root),
+            mock.patch.object(Path, "home", return_value=Path("home")),
+            mock.patch.dict(os.environ, {"NUGET_PACKAGES": ""}),
+            self.assertRaises(dependency_graph.Failed) as raised,
+        ):
+            dependency_graph.nuget_cache()
+        self.assertIn("'home', which is not an absolute path", str(raised.exception))
+
     def test_the_packages_folder_passes_over_a_file_and_refuses_one_it_cannot_stat(self) -> None:
         project = self.root / "src" / "App"
         project.mkdir(parents=True)

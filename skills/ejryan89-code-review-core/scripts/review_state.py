@@ -13,6 +13,7 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
+from executable_locator import absolute_home
 from review_config import validate_repository_identity
 from review_io import ResourceLock, atomic_write_json, read_json, record_present
 from typed_fields import FieldError, FieldReader
@@ -37,7 +38,7 @@ def default_state_path() -> Path:
     override = os.environ.get("CODE_REVIEW_STATE")
     if override:
         return Path(override)
-    return Path.home() / ".coding-agent-skills" / "code-review" / "state.json"
+    return absolute_home() / ".coding-agent-skills" / "code-review" / "state.json"
 
 
 def utc_today() -> date:

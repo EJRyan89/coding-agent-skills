@@ -12,22 +12,18 @@ and tools/runtime_command_lines.py against the version the installed runtime pri
 from __future__ import annotations
 
 import datetime
-import re
 import sys
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "ejryan89-skill-core" / "scripts"))
 
 import json_reader
-
-from deployer.tools import format_version, parse_version
+import versions
 
 CAPTURED = Path("tests") / "fixtures" / "captured-output"
 PROVENANCE = CAPTURED / "provenance.json"
-VERSION = re.compile(r"\d+\.\d+\.\d+")
 
 
 class SampleError(Exception):
@@ -54,7 +50,8 @@ def read(top: Path, runtimes: tuple[str, ...]) -> list[Sample]:
     """Every sample the record at `top` names, each with a version of one or more of `runtimes`, or SampleError."""
     try:
         record = json_reader.read_file(top / PROVENANCE)
-    except (OSError, UnicodeDecodeError, ValueError, RecursionError) as exc:
+    # ValueError covers json_reader's whole family: its refusals, nesting too deep included, and the decode errors
+    except (OSError, ValueError) as exc:
         raise SampleError(f"cannot read {PROVENANCE.as_posix()}: {exc}") from exc
     samples = record.get("samples") if isinstance(record, dict) else None
     if not isinstance(samples, dict) or not samples:
@@ -65,17 +62,20 @@ def read(top: Path, runtimes: tuple[str, ...]) -> list[Sample]:
 def sample(path: str, entry: object, runtimes: tuple[str, ...]) -> Sample:
     if not isinstance(entry, dict) or set(entry) != {"versions", "captured", "how"}:
         raise SampleError(f"{path}: an entry holds exactly versions, captured, and how")
-    versions, captured, how = entry["versions"], entry["captured"], entry["how"]
-    if not isinstance(versions, dict) or not versions:
+    recorded, captured, how = entry["versions"], entry["captured"], entry["how"]
+    if not isinstance(recorded, dict) or not recorded:
         raise SampleError(f"{path}: versions names no runtime")
-    for runtime, version in versions.items():
-        if runtime not in runtimes or not isinstance(version, str) or not VERSION.fullmatch(version):
+    read: dict[str, versions.Version] = {}
+    for runtime, version in recorded.items():
+        number = versions.read(version, least=3, most=3) if isinstance(version, str) else None
+        if runtime not in runtimes or number is None:
             raise SampleError(f"{path}: versions maps a runtime of {', '.join(runtimes)} to a version, not {runtime}")
+        read[runtime] = number
     if not isinstance(captured, str) or not is_date(captured):
         raise SampleError(f"{path}: captured is a date, YYYY-MM-DD")
     if not isinstance(how, str) or not how.strip():
         raise SampleError(f"{path}: how says how the sample was captured")
-    return Sample(path, {runtime: parse_version(text) or () for runtime, text in versions.items()}, captured, how)
+    return Sample(path, read, captured, how)
 
 
 def behind(samples: list[Sample], runtime: str, version: tuple[int, ...], label: str | None = None) -> list[str]:
@@ -86,6 +86,6 @@ def behind(samples: list[Sample], runtime: str, version: tuple[int, ...], label:
         recorded = item.versions.get(runtime)
         if recorded is not None and recorded < version:
             lines.append(
-                f"SAMPLE_BEHIND {label or runtime} {item.path} {format_version(recorded)} {format_version(version)}"
+                f"SAMPLE_BEHIND {label or runtime} {item.path} {versions.text(recorded)} {versions.text(version)}"
             )
     return lines

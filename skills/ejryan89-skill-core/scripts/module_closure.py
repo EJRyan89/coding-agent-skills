@@ -14,6 +14,7 @@ import shutil
 from pathlib import Path
 
 import file_presence
+import python_reader
 
 # This module's own directory: ejryan89-skill-core's scripts, in the checkout or wherever it was deployed.
 SCRIPTS = Path(__file__).resolve().parent
@@ -25,7 +26,7 @@ def imported_names(source: str) -> set[str]:
     """The top-level name of every module `source` imports: by a statement, wherever it stands, or by an
     import_module or __import__ call given one string literal."""
     names: set[str] = set()
-    for node in ast.walk(ast.parse(source)):
+    for node in ast.walk(python_reader.parse(source)):
         if isinstance(node, ast.Import):
             names.update(alias.name.split(".")[0] for alias in node.names)
         elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:

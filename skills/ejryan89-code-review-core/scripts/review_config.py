@@ -26,6 +26,7 @@ import json_reader
 import json_writer
 from console import run_main
 from device_names import is_reserved_device_name
+from executable_locator import absolute_home
 from flat_text import LINE_UNSAFE
 from github_logins import LOGIN, is_login
 from review_io import CONTENT_ERRORS, PersistenceError, atomic_write_json, read_json
@@ -185,7 +186,7 @@ def default_config_path() -> Path:
     override = os.environ.get("CODE_REVIEW_CONFIG")
     if override:
         return Path(override)
-    return Path.home() / ".coding-agent-skills" / "code-review" / DEFAULT_CONFIG_NAME
+    return absolute_home() / ".coding-agent-skills" / "code-review" / DEFAULT_CONFIG_NAME
 
 
 def validate_repository_identity(value: object, field: str = "repository") -> str:

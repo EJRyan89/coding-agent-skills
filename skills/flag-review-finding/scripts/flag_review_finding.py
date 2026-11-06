@@ -41,6 +41,7 @@ import file_presence
 import json_writer
 import whole_number
 from console import run_main
+from executable_locator import RelativeEnvironmentPath
 from flat_text import flat_text
 from review_archive import ArchiveError, every_version, pull_directory, pull_records, record_paths
 from review_config import ConfigurationError, load_config
@@ -67,7 +68,6 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--store",
         type=Path,
-        default=default_flags_path(),
         help="defaults to CODE_REVIEW_FLAGS or the standard flag store",
     )
     parser.add_argument(
@@ -197,8 +197,12 @@ def run(args: argparse.Namespace) -> list[str]:
 def main(arguments: list[str] | None = None) -> int:
     args = build_parser().parse_args(arguments)
     try:
+        # The standard store is found only when no --store names one, so a store given by path needs no home.
+        if args.store is None:
+            args.store = default_flags_path()
         lines = run(args)
     except (
+        RelativeEnvironmentPath,
         FlagError,
         ConfigurationError,
         PersistenceError,

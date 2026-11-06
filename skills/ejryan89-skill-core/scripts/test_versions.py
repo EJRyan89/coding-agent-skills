@@ -45,6 +45,11 @@ class FindTests(unittest.TestCase):
         self.assertEqual((10 ** (whole_number.DIGIT_LIMIT - 1), 0), versions.find(f"{longest}.0"))
         self.assertIsNone(versions.find(f"{longest}0.0"))
 
+    def test_a_version_after_one_past_the_digit_limit_is_still_found(self) -> None:
+        # The search once stopped at the first match, so a tool printing an over-long number first read as none.
+        past = "1" * (whole_number.DIGIT_LIMIT + 1)
+        self.assertEqual((1, 2, 3), versions.find(f"tool {past}.0 then 1.2.3"))
+
     def test_a_long_run_of_digits_is_searched_in_linear_time(self) -> None:
         # A search from each digit of the run once backtracked over the rest of it: about ten seconds at 30,000.
         run = "1" * 100_000

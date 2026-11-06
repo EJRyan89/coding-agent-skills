@@ -300,7 +300,20 @@ class VersionTests(AuditTestCase):
         self.assertEqual((1, 0, 0), audit.version_of("1.0.0"))
         # Past the digit limit in each part in turn, the others valid.
         past = "1" * 5000
-        for name in (None, "", "v1.2", "v1.2.3-rc", "v1.2.\u00b3", f"v{past}.0.0", f"v1.{past}.3", f"v1.2.{past}"):
+        for name in (
+            None,
+            "",
+            "v1.2",
+            "1.2",
+            "v1.2.3.4",
+            "1.2.3.4",
+            "vv1.2.3",
+            "v1.2.3-rc",
+            "v1.2.\u00b3",
+            f"v{past}.0.0",
+            f"v1.{past}.3",
+            f"v1.2.{past}",
+        ):
             with self.subTest(name=(name or "")[:12]):
                 self.assertIsNone(audit.version_of(name))
 
@@ -1626,6 +1639,16 @@ class GuidanceTests(Fixture):
         with self.assertRaises(audit.AuditError) as raised:
             audit.supported_runtimes(self.root)
         self.assertIn("cannot read the runtime catalogue", str(raised.exception))
+
+    def test_a_catalogue_value_python_reader_refuses_as_no_literal_fails_as_no_literal(self) -> None:
+        # A run of unary operators short enough for every supported parser, which python_reader.literal refuses as no
+        # literal; a run past the parser's own limits is the unreadable catalogue above, and where that limit falls
+        # differs between Python releases.
+        deep = "RUNTIMES = " + "-" * 200 + "1\nRUNTIME_TITLES = {}\n"
+        write(self.root, {"skills/ejryan89-skill-core/scripts/runtime_support.py": deep})
+        with self.assertRaises(audit.AuditError) as raised:
+            audit.supported_runtimes(self.root)
+        self.assertIn("must assign RUNTIMES a literal", str(raised.exception))
 
     def test_a_catalogue_that_may_change_its_runtimes_after_their_literal_fails_by_line(self) -> None:
         # Each form that may leave the module running with other runtimes or titles than its one literal says, after

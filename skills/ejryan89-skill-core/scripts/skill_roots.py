@@ -15,6 +15,7 @@ from pathlib import Path
 
 import json_reader
 from console import failed_line, use_utf8_output
+from executable_locator import absolute_home
 from file_presence import is_present
 from path_containment import within
 
@@ -100,8 +101,10 @@ def plugin_name() -> str | None:
 
 
 def deployed_skill_roots() -> tuple[Path, ...]:
-    """The directories the deployer owns, whatever skills directory this script runs from."""
-    home = Path.home()
+    """The directories the deployer owns, whatever skills directory this script runs from; RelativeEnvironmentPath
+    where the home is not an absolute path, so a script refuses to write rather than judge a folder relative to the
+    working directory as outside them."""
+    home = absolute_home()
     return home / ".claude" / "skills", home / ".agents" / "skills"
 
 

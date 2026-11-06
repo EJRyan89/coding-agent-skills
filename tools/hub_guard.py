@@ -38,6 +38,7 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "ejryan89-skill-core" / "scripts"))
 
+import executable_locator
 import hook_decision
 import json_reader
 import json_writer
@@ -1758,9 +1759,15 @@ def moved_to(directory: Directory, target: Path, stack: tuple[Path | None, ...])
     return certain(arrived) if path.is_dir() else Outcome(arrived, directory)
 
 
-def home(environment: Mapping[str, str]) -> Path:
+def home(environment: Mapping[str, str]) -> Path | None:
+    """The home a shell started with `environment` takes `~` and a bare cd to: its HOME, else the variable Python's
+    home lookup reads, or None where neither names an absolute path, so the place is left unknown rather than read
+    relative to the guard's own working directory."""
     value = environment.get("HOME")
-    return Path(platform_support.from_shell_path(value)) if value else Path.home()
+    if value:
+        path = Path(platform_support.from_shell_path(value))
+        return path if path.is_absolute() else None
+    return executable_locator.environment_path(executable_locator.HOME_VARIABLE, environment)
 
 
 def free_name(name: str, environment: Mapping[str, str]) -> bool:
@@ -1790,7 +1797,7 @@ class BashStart:
     """What a bash takes from the environment it starts with that the reader needs: its home, whether it searches
     CDPATH, the functions it is handed by name, and whether xtrace may run what PS4 holds."""
 
-    home: Path
+    home: Path | None  # None where the home is not known, so a word or a directory holding it is unsettled
     cdpath: bool
     functions: frozenset[str]
     expanding_ps4: bool
@@ -1949,9 +1956,9 @@ class BashReader:
                 if not part.quoted and (GLOB.search(part.text) or BRACE.search(part.text)):
                     settled = False
                 pieces.append(part.text)
-            elif part.kind == "home":
+            elif part.kind == "home" and self.start.home is not None:
                 pieces.append(str(self.start.home))
-            elif part.kind == "parameter":
+            elif part.kind in ("home", "parameter"):
                 settled = False
             else:
                 settled = False
@@ -2004,7 +2011,7 @@ class BashReader:
         for part in word.parts:
             if part.kind == "text" and (part.quoted or not (GLOB.search(part.text) or BRACE.search(part.text))):
                 pieces.append(part.text)
-            elif part.kind == "home":
+            elif part.kind == "home" and self.start.home is not None:
                 pieces.append(str(self.start.home))
             elif (
                 part.kind == "parameter"
@@ -2170,6 +2177,8 @@ class BashReader:
         if not arguments:
             if push:
                 return certain(Directory(None, (None, *directory.stack[1:])))
+            if self.start.home is None:
+                return certain(Directory(None, stack))
             return moved_to(directory, self.start.home, stack)
         if len(arguments) > 1:
             return certain(directory)  # Bash refuses more than one directory, and stays
@@ -3075,8 +3084,9 @@ class PowerShellReader:
         if arguments and arguments[0] is not None and arguments[0].lower() in {"-path", "-literalpath"}:
             arguments = arguments[1:]
         stack = (directory.cwd, *directory.stack) if push else directory.stack
+        start = home(self.reading.environment)
         if not arguments:
-            return moved_to(directory, home(self.reading.environment), stack)
+            return certain(Directory(None, stack)) if start is None else moved_to(directory, start, stack)
         target = arguments[0]
         if target is not None and target.startswith("-") and target != "-":
             self.reading.cannot_read(f"Set-Location's parameter {target}, which the guard does not read")
@@ -3084,7 +3094,9 @@ class PowerShellReader:
         if len(arguments) > 1 or target is None or target in {"-", "+"}:
             return certain(Directory(None, stack))
         if target == "~" or target.startswith(("~/", "~\\")):
-            path = home(self.reading.environment) / target[2:]
+            if start is None:
+                return certain(Directory(None, stack))
+            path = start / target[2:]
         else:
             path = Path(target)
         if not path.is_absolute():

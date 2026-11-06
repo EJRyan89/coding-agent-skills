@@ -21,6 +21,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan8
 
 import file_presence
 import json_reader
+import python_reader
 from markdown_sections import CODE_SPAN as CODE_SPAN
 from markdown_sections import COMMONMARK_CODE_SPAN as COMMONMARK_CODE_SPAN
 from markdown_sections import Fence as Fence
@@ -250,11 +251,12 @@ def python_source(path: Path) -> str:
 
 
 def parse_source(source: str, name: str) -> ast.Module:
-    """The syntax tree of Python source, or UnreadablePython when it does not parse."""
+    """The syntax tree of Python source, or UnreadablePython when it does not parse or nests past the parser's limits,
+    as ejryan89-skill-core's python_reader refuses it."""
     try:
-        return ast.parse(source, filename=name)
-    except SyntaxError as error:
-        raise UnreadablePython(f"does not parse: {error.msg} at line {error.lineno}") from None
+        return python_reader.parse(source, name)
+    except python_reader.CONTENT_ERRORS as error:
+        raise UnreadablePython(f"does not parse: {error}") from None
 
 
 def parse_python(path: Path) -> ast.Module:
@@ -1519,10 +1521,8 @@ def module_allowance(tree: ast.Module, name: str) -> dict[str, str] | None:
         targets = node.targets if isinstance(node, ast.Assign) else [node.target]
         if any(isinstance(target, ast.Name) and target.id == name for target in targets):
             try:
-                allowance = ast.literal_eval(node.value)
-            # A value that is not a literal raises ValueError, a literal set or dictionary of an unhashable key
-            # TypeError, and one nested past the parser's depth MemoryError or RecursionError.
-            except (ValueError, TypeError, MemoryError, RecursionError):
+                allowance = python_reader.literal(node.value)
+            except python_reader.CONTENT_ERRORS:
                 return None
             valid = isinstance(allowance, dict) and all(
                 isinstance(token, str) and isinstance(reason, str) and reason.strip()
