@@ -2081,6 +2081,21 @@ def test_script_contract_policy_reads_each_report_through_the_module_s_names(
         "timeout -s KILL 5 rg foo",
         'eval "rg foo"',
         'bash -c "rg foo"',
+        # A shell's -c in a bundle, before or after its other options, as the shell reads it.
+        "bash -lc 'rg foo'",
+        "bash -e -c 'rg foo'",
+        "bash -c -e 'rg foo'",
+        "bash -o pipefail -ec 'rg foo'",
+        "sh --norc -c -- 'rg foo'",
+        # A wrapper option in every spelling getopt reads it.
+        "timeout --signal TERM 5 rg foo",
+        "timeout --signal=TERM -k1 5 rg foo",
+        "xargs -0n 1 rg foo",
+        "xargs --max-procs 2 --max-chars=9 rg foo",
+        "env --chdir d -u X rg foo",
+        "env -vS'rg foo'",
+        "env --split-string='-i rg' foo",
+        "nice -5 rg foo",
     ],
 )
 def test_shell_command_extraction_reads_the_program_every_wrapper_and_substitution_runs(script: str) -> None:
@@ -2122,10 +2137,45 @@ def test_substitution_spans_name_each_substitution_where_its_text_begins(
         pytest.param(["command", "-v", "head"], [], id="a lookup"),
         pytest.param(["env"], [], id="no program"),
         pytest.param(["head", "-n", "1"], [], id="no wrapper"),
+        pytest.param(["timeout", "--signal", "TERM", "5", "gh", "pr"], ["gh", "pr"], id="a long option in full"),
+        pytest.param(["xargs", "-0n", "1", "gh", "pr"], ["gh", "pr"], id="a bundle ending in a valued letter"),
+        pytest.param(["xargs", "--max-procs", "2", "gh"], ["gh"], id="every valued long option"),
+        pytest.param(["env", "-S", "gh api", "x"], ["gh", "api", "x"], id="env's split line"),
+        pytest.param(["env", "-iS", "A=1 gh", "x"], ["gh", "x"], id="env's split line in a bundle"),
+        pytest.param(["env", "--split-string=-u B gh api"], ["gh", "api"], id="env's split line read again"),
     ],
 )
 def test_unwrapped_reads_past_a_wrapper_to_the_command_it_runs(words: list[str], program: list[str]) -> None:
     assert skill_scripts.unwrapped(words) == program
+
+
+# An option the wrapper's table does not settle, an abbreviation or one it does not list, never gives the program.
+@pytest.mark.parametrize(
+    ("words", "unread"),
+    [
+        (["timeout", "--sig", "TERM", "5", "gh", "pr", "list"], "timeout --sig"),
+        (["xargs", "--max-a", "1", "gh", "pr", "view"], "xargs --max-a"),
+        (["env", "--unse", "X", "gh", "api"], "env --unse"),
+        (["env", "-W", "gh"], "env -W"),
+        (["nice", "--adj=5", "gh"], "nice --adj=5"),
+    ],
+)
+def test_unwrapped_leaves_the_program_unread_behind_an_option_it_cannot_place(words: list[str], unread: str) -> None:
+    assert skill_scripts.unwrapped(words) == [f"{UNREAD_PROGRAM}{unread}"]
+    assert f"{UNREAD_PROGRAM}{unread}" in shell_commands(" ".join(words))
+    assert "gh" not in shell_commands(" ".join(words))
+
+
+# A shell started without -c runs a file or its standard input, and -o's value is no option.
+@pytest.mark.parametrize("words", [["-o", "c", "script.sh"], ["script.sh", "-c", "x"], ["-e"], ["--rcfile", "-c"]])
+def test_shell_script_index_finds_no_script_where_the_shell_runs_none(words: list[str]) -> None:
+    assert skill_scripts.shell_script_index(words) is None
+
+
+def test_the_command_policy_reads_a_python_list_s_shell_script_among_its_options() -> None:
+    for command in ('["bash", "-e", "-c", "jq ."]', '("sh", "-lc", "jq .")', '["bash", "-c", "-e", "jq .", "x"]'):
+        source = f"import subprocess\nsubprocess.run({command})\n"
+        assert "jq" in CommandReader(ast.parse(source)).commands(set()), command
 
 
 @pytest.mark.parametrize("label", ["zsh", "console", "dash", "fish", "cmd", "bat"])

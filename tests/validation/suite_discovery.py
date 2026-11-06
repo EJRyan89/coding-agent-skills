@@ -31,6 +31,8 @@ from skill_scripts import (
     COMMAND_WRAPPERS,
     SCRIPT_SHELLS,
     STANDARD_STREAMS,
+    UNREAD_PROGRAM,
+    shell_script_index,
     split_operators,
     substitution_spans,
     unwrapped,
@@ -68,6 +70,7 @@ from validation_support import (
 )
 
 from deployer.platform_support import program_name
+from tools.hub_guard import OptionTable, option_table
 
 CONFTEST = "conftest.py"
 # A Python suite is split into one shard per this many tests, up to MAXIMUM_SHARDS. Smaller shards spread a long
@@ -463,20 +466,26 @@ HEAD_COUNT_LETTERS = frozenset("nc")
 HEAD_COUNT_LONG_OPTIONS = frozenset({"--lines", "--bytes"})
 # Every long option GNU head takes, so a prefix is read as the one it names.
 HEAD_LONG_OPTIONS = HEAD_COUNT_LONG_OPTIONS | {"--quiet", "--silent", "--verbose", "--zero-terminated"}
-# The commands besides COMMAND_WRAPPERS that run the program a later word names, with their options that take the next
-# word as their value: sudo and doas also take assignments before it.
-READER_WRAPPERS: dict[str, frozenset[str]] = {
-    "sudo": frozenset({"-u", "--user", "-g", "--group", "-C", "-D", "-h", "-p", "-r", "-t", "-T", "-U", "-R"}),
-    "doas": frozenset({"-u", "-C"}),
-    "setsid": frozenset(),
-    "ionice": frozenset({"-c", "--class", "-n", "--classdata"}),
+# The commands besides COMMAND_WRAPPERS that run the program a later word names, each with every option it takes, read
+# as COMMAND_WRAPPERS's are (`unwrapped`): sudo also takes assignments before it.
+READER_WRAPPERS: dict[str, OptionTable] = {
+    "sudo": option_table(
+        "Aa:BbC:c:D:E::eg:Hh::iKklNnPp:R:r:SsT:t:U:u:Vv",
+        " ".join(
+            (
+                "askpass bell background close-from= login-class= chdir= preserve-env=? edit group= set-home help",
+                "host= login remove-timestamp reset-timestamp list no-update non-interactive preserve-groups prompt=",
+                "chroot= role= stdin shell command-timeout= type= other-user= user= version validate",
+            )
+        ),
+        assignments=True,
+    ),
+    "doas": option_table("a:C:Lnsu:"),
+    "setsid": option_table("cfw", "ctty fork wait help version"),
+    "ionice": option_table("c:n:p:P:tu:", "class= classdata= pid= pgid= ignore uid= help version"),
 }
-# env's option whose value is a command line, split into the words it runs.
-ENV_SPLIT_OPTIONS = ("-S", "--split-string")
-# A shell's option letters that take the next word: -o and +o a set option's name, -O and +O a shopt option's. Its
-# long options that do are BASH_LONG_OPTIONS_WITH_VALUE.
-SHELL_ARGUMENT_LETTERS = frozenset("oO")
-BASH_LONG_OPTIONS_WITH_VALUE = frozenset({"--rcfile", "--init-file"})
+# Every wrapper `_command_words` reads past.
+WRAPPERS: dict[str, OptionTable] = {**COMMAND_WRAPPERS, **READER_WRAPPERS}
 # The option set and shopt -o name, and the variable whose value lists it for a shell that starts with it.
 PIPEFAIL = "pipefail"
 OPTION_SETTERS = frozenset({"set", "shopt"})
@@ -496,45 +505,17 @@ def _long_option(word: str, options: frozenset[str]) -> str | None:
     return next((full for full in sorted(options) if len(option) > 2 and full.startswith(option)), None)
 
 
-def _env_split(words: list[str]) -> list[str]:
-    """An env command's words with its -S or --split-string value split into the words it stands for, as env splits
-    it, read among env's own options and assignments up to the program; a value shlex cannot split stays one word."""
-    options = COMMAND_WRAPPERS["env"] - set(ENV_SPLIT_OPTIONS)
-    index = 1
-    while index < len(words) and (words[index].startswith("-") or ASSIGNMENT.match(words[index])):
-        word = words[index]
-        option = next((option for option in ENV_SPLIT_OPTIONS if word.partition("=")[0] == option), None)
-        option = option or ("-S" if word.startswith("-S") else None)
-        if option is None:
-            index += 2 if word in options else 1
-            continue
-        value = word[len(option) :].removeprefix("=")
-        rest = index + 1
-        if not value and rest < len(words):
-            value, rest = words[rest], rest + 1
-        try:
-            split = shlex.split(value)
-        except ValueError:
-            split = [value]
-        return [*words[:index], *split, *words[rest:]]
-    return words
-
-
 def _command_words(words: list[str]) -> list[str]:
     """A command's words from the program it runs: past the reserved words that may stand before it, assignments,
-    and each wrapper, whether named by a path or not, such as `env`, `exec`, `timeout`, `command`, `sudo`, or
-    `/usr/bin/env`; env's -S value is split into the words it runs. xargs runs its command on no pipe, so it stays."""
+    and each wrapper of WRAPPERS, whether named by a path or not, such as `env`, `exec`, `timeout`, `command`, `sudo`,
+    or `/usr/bin/env`, as `unwrapped` reads it, env's -S value split into the words it runs, and a wrapper option it
+    cannot place giving UNREAD_PROGRAM. xargs runs its command on no pipe, so it stays."""
     while words:
         program = _program(words[0])
         if words[0] in COMMAND_LEADERS or ASSIGNMENT.match(words[0]):
             words = words[1:]
-        elif program in READER_WRAPPERS:
-            options, index = READER_WRAPPERS[program], 1
-            while index < len(words) and (words[index].startswith("-") or ASSIGNMENT.match(words[index])):
-                index += 2 if words[index] in options else 1
-            words = words[index:]
-        elif program != "xargs" and program in COMMAND_WRAPPERS:
-            words = unwrapped(_env_split([program, *words[1:]]) if program == "env" else [program, *words[1:]])
+        elif program != "xargs" and program in WRAPPERS:
+            words = unwrapped([program, *words[1:]], WRAPPERS)
         else:
             break
     return words
@@ -542,31 +523,23 @@ def _command_words(words: list[str]) -> list[str]:
 
 def _shell_script(words: list[str]) -> str | None:
     """The script a command runs in a shell of its own or in this one: a shell's -c script, among its other options,
-    and eval's arguments, joined as eval joins them; None for any other command."""
+    as shell_script_index reads it, and eval's arguments, joined as eval joins them; None for any other command."""
     program = _program(words[0]) if words else ""
     if program == "eval":
         return " ".join(words[1:])
     if program not in SCRIPT_SHELLS:
         return None
-    runs_script, argument_next, options_over = False, False, False
-    for word in words[1:]:
-        if argument_next:
-            argument_next = False
-        elif options_over or not word.startswith(("-", "+")) or word in {"-", "+"}:
-            return word if runs_script else None
-        elif word == "--":
-            options_over = True
-        elif word.startswith("--"):
-            argument_next = word in BASH_LONG_OPTIONS_WITH_VALUE
-        else:
-            runs_script = runs_script or "c" in word[1:]
-            argument_next = any(letter in SHELL_ARGUMENT_LETTERS for letter in word[1:])
-    return None
+    index = shell_script_index(words[1:])
+    return None if index is None else words[index + 1]
 
 
 def _early_exit_program(words: list[str]) -> str:
     """A command whose program may exit before what writes into it has written everything, as its program and the
-    option that makes it, such as `grep -q` or `head -n`, or an empty string for a command that reads to the end."""
+    option that makes it, such as `grep -q` or `head -n`, or an empty string for a command that reads to the end. A
+    program behind a wrapper option `unwrapped` cannot place may be such a reader, so it is one, named by the wrapper
+    and that option."""
+    if words and words[0].startswith(UNREAD_PROGRAM):
+        return words[0].removeprefix(UNREAD_PROGRAM)
     program = _program(words[0]) if words else ""
     if program in GREP_PROGRAMS:
         return _early_exit_grep([program, *words[1:]])

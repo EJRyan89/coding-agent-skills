@@ -1710,6 +1710,75 @@ class IsolatedClientTests(unittest.TestCase):
                 GitClient(runner).run(arguments)
                 self.assertEqual(["git", *arguments], calls[0][0])
 
+    def test_a_plain_client_refuses_a_strategy_or_a_transport_that_runs_a_program_from_path(self) -> None:
+        # A strategy outside git's own runs git-merge-<name>, and a foreign transport git-remote-<name>, from PATH.
+        refused = {
+            "git merge -s": ["merge", "-s", "x", "topic"],
+            "git merge -sx": ["merge", "-sx", "topic"],
+            "git merge -ns": ["merge", "-ns", "x", "topic"],
+            "git merge --strategy=": ["merge", "--strategy=x", "topic"],
+            "git merge --str": ["merge", "--str", "x", "topic"],
+            "git merge -s ": ["merge", "--no-ff", "-s"],
+            "git rebase --strategy=": ["rebase", "--strategy=x", "main"],
+            "git rebase -is": ["rebase", "-is", "x", "main"],
+            "git pull -s": ["pull", "-s", "x", "origin"],
+            "git pull --strategy": ["pull", "--strategy", "x"],
+            "git cherry-pick --strategy=": ["cherry-pick", "--strategy=x", "HEAD"],
+            "git cherry-pick --strat": ["cherry-pick", "--strat", "x", "HEAD"],
+            "git revert --strategy": ["revert", "--strategy", "Ours", "HEAD"],
+            "git fetch x::": ["fetch", "x::anything"],
+            "git fetch ext::": ["fetch", "ext::x"],
+            "git fetch https::": ["fetch", "https::example.invalid/r"],
+            "git fetch x://": ["fetch", "x://host/r"],
+            "git fetch HTTPS://": ["fetch", "HTTPS://host/r"],
+            "git pull x::": ["pull", "x::a", "main"],
+            "git push x::": ["push", "x::a", "main"],
+            "git push --repo=": ["push", "--repo=x::a"],
+            "git ls-remote x::": ["ls-remote", "x::a"],
+            "git clone x::": ["clone", "x::a", "dir"],
+            "git remote x::": ["remote", "add", "o", "x::a"],
+            "git archive --remote=": ["archive", "--remote=x::a", "HEAD"],
+            "git archive x::": ["archive", "--remote", "x::a", "HEAD"],
+            "git submodule x::": ["submodule", "add", "x::a"],
+            "the setting url.x::a.insteadof": ["-c", "url.x::a.insteadOf=origin", "fetch"],
+            "the setting url.a.pushinsteadof": ["-c", "url.a.pushInsteadOf=b", "push"],
+            "the setting remote.origin.url": ["-c", "remote.origin.url=x::a", "fetch"],
+            "the setting remote.origin.pushurl": ["-c", "remote.origin.pushUrl=x::a", "push"],
+            "the setting submodule.a.url": ["-c", "submodule.a.url=x::a", "submodule", "update"],
+            "the setting branch.main.mergeoptions": ["-c", "branch.main.mergeOptions=-s x", "pull"],
+        }
+        for what, arguments in refused.items():
+            with self.subTest(arguments=arguments):
+                runner, calls = scripted(GitResult(0, "", ""))
+                refusal = rf"^{re.escape(what.strip())}\S* starts a command or a program whose git calls a plain"
+                with self.assertRaisesRegex(ValueError, refusal):
+                    GitClient(runner).run(arguments)
+                self.assertEqual([], calls, "refused before git starts")
+        allowed: tuple[list[str], ...] = tuple(
+            [subcommand, option, strategy, "topic"]
+            for subcommand in ("merge", "rebase", "pull")
+            for option in ("-s", "--strategy", "--strat")
+            for strategy in ("ort", "recursive", "resolve", "octopus", "ours", "subtree")
+        ) + (
+            ["merge", "-sours", "topic"],
+            ["merge", "--strategy=ort", "-Xours", "--strategy-option=theirs", "topic"],
+            ["merge", "-ms", "topic"],
+            ["rebase", "-Xs", "main"],
+            ["cherry-pick", "-s", "x"],
+            ["revert", "-s", "HEAD"],
+            ["log", "--strategy=x", "x::a"],
+            ["fetch", "https://example.invalid/r", "main:topic"],
+            ["clone", "ssh://git@[::1]/r", "git@host:r", "file:///c:/r", "C:\\r", "dir"],
+            ["push", "git+ssh://host/r", "HEAD:refs/heads/a"],
+            ["ls-remote", "git://host/r", "ftps://host/r"],
+            ["remote", "add", "o", "../r"],
+        )
+        for arguments in allowed:
+            with self.subTest(arguments=arguments):
+                runner, calls = scripted(GitResult(0, "", ""))
+                GitClient(runner).run(arguments)
+                self.assertEqual(["git", *arguments], calls[0][0])
+
     def test_every_subcommand_a_plain_client_runs_is_one_of_git_s_own_since_2_31(self) -> None:
         # Pinned rather than read from the git that runs the test, which may be older or newer.
         self.assertEqual(set(), set(git_client.PLAIN_SUBCOMMANDS) - GIT_2_56_COMMANDS)

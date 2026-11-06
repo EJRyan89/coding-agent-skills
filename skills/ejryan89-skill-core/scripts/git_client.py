@@ -48,14 +48,18 @@ commands but the carriers, each one of git's own since 2.31, the oldest git `rev
 `--help` or `-h` that git reads as `git help` (`help_spelling`), which starts a viewer or a browser; of `submodule` and
 `bisect` only an action of `PLAIN_ACTIONS`, so not `submodule foreach` or `bisect run`; none of the options of
 `CARRIER_OPTIONS`, such as `rebase --exec` or `-x` and a transport's `--upload-pack`, in any abbreviation or bundle of
-short options git takes; and no setting on its command line that names a program git starts, or a folder of hooks
+short options git takes; no strategy option, read the same way, that names a strategy outside git's own
+(`GIT_STRATEGIES`), which runs a `git-merge-<strategy>` program from PATH; no address, on a subcommand of
+`ADDRESS_SUBCOMMANDS`, spelled `<transport>::<address>` or with a scheme outside `GIT_TRANSPORTS`, which runs a
+`git-remote-<transport>` program from PATH; and no setting on its command line that names a program git starts, or a
+folder of hooks
 (`starts_configured_program`), such as `core.editor`, `sequence.editor`, `core.sshCommand`, `core.hooksPath`, a
-`hook.<name>.command`, or a diff, merge, or filter driver's, but a `core.hooksPath` of the null device, which runs none.
-The subcommands and actions are allow-lists, so a name it has not read is refused rather than run; the options and the
-settings are catalogues read from git's documentation. It still cannot see a hook in the repository's own hooks
-folder, nor a hook, an editor, a driver, or a helper that git's configuration files or the environment name, nor a
-`git-merge-<strategy>` or `git-remote-<transport>` program a strategy or an address names; a caller over content it
-did not write asks for an isolated client. An alias
+`hook.<name>.command`, a diff, merge, or filter driver's, or a remote's `url`, but a `core.hooksPath` of the null
+device, which runs none. The subcommands, actions, strategies, and transports are allow-lists, so a name it has not
+read is refused rather than run; the options and the settings are catalogues read from git's documentation. It still
+cannot see a hook in the repository's own hooks folder, nor a hook, an editor, a driver, a helper, a strategy, or an
+address that git's configuration files or the environment name, as a remote named in place of an address does; a
+caller over content it did not write asks for an isolated client. An alias
 or an autocorrection that git's configuration files or the environment's `GIT_CONFIG_PARAMETERS` and
 `GIT_CONFIG_COUNT` define never runs on it either, on git 2.31 or later, since git lets neither take the name of one
 of its own commands. It cannot tell a folder of content it did not write from a repository, so a command that reads
@@ -302,12 +306,41 @@ CARRIER_OPTIONS = {
     "init": CarrierOptions(frozenset({"template"})),
 }
 
+# git's own merge strategies. Any other name a strategy option gives makes git run `git-merge-<name>`, a program on
+# PATH, so a plain client runs a strategy option only when it names one of these.
+GIT_STRATEGIES = frozenset({"ort", "recursive", "resolve", "octopus", "ours", "subtree"})
+# The subcommands that take a strategy option, read as CARRIER_OPTIONS are: the long `--strategy`, every abbreviation
+# of it, and the short `-s` where the subcommand has one (cherry-pick's and revert's `-s` is `--signoff`), each
+# letter of `valued` taking the rest of its bundle as its value, so an `s` after it is no strategy.
+STRATEGY_OPTIONS = {
+    "merge": CarrierOptions(frozenset({"strategy"}), frozenset("s"), frozenset("mFXS")),
+    "pull": CarrierOptions(frozenset({"strategy"}), frozenset("s"), frozenset("XSrjo")),
+    "rebase": CarrierOptions(frozenset({"strategy"}), frozenset("s"), frozenset("XCSrx")),
+    "cherry-pick": CarrierOptions(frozenset({"strategy"})),
+    "revert": CarrierOptions(frozenset({"strategy"})),
+}
+# The subcommands that take a remote's address, or store one that a later fetch or push uses. An address that starts
+# `<transport>::`, or `<scheme>://` with a scheme outside GIT_TRANSPORTS, makes git run `git-remote-<transport>` or
+# `git-remote-<scheme>`, a program on PATH, so a plain client refuses every word of these that spells one.
+ADDRESS_SUBCOMMANDS = frozenset(
+    {"archive", "clone", "fetch", "fetch-pack", "ls-remote", "pull", "push", "remote", "send-pack", "submodule"}
+)
+# The schemes git reads itself, or through a `git-remote-<scheme>` program of its own, as transport.c's transport_get
+# does: every other one goes to an external helper.
+GIT_TRANSPORTS = frozenset({"file", "git", "ssh", "git+ssh", "ssh+git", "http", "https", "ftp", "ftps"})
+# An address's transport, as transport.c reads it: a letter, then letters, digits, `+`, `.`, and `-`, then `::` or
+# `://`.
+TRANSPORT_PREFIX = re.compile(r"([A-Za-z][A-Za-z0-9+.-]*)(::|://)")
+
 # The settings on git's command line that name a program git starts, case-folded as git reads them: every key of a
 # section in `PROGRAM_SECTIONS`, a whole key of `PROGRAM_KEYS`, such as `protocol.ext.allow`, which lets an `ext::`
 # address run a command, and a variable of `PROGRAM_VARIABLES` in any subsection of its section, such as
 # `diff.<driver>.textconv`. Read against every key `git help --config` lists on git 2.56: a `hook.<name>.command` runs
 # its command as a hook does, `core.hooksPath` and `init.templateDir` name a folder whose hooks git runs, and
-# `pull.twohead` and `pull.octopus` name a `git-merge-<strategy>` program. A `core.hooksPath` of exactly the null
+# `pull.twohead` and `pull.octopus` name a `git-merge-<strategy>` program, and so may a `branch.<name>.mergeOptions`
+# that holds a strategy option; a remote's or a submodule's `url` and `pushurl`, and a `url.<base>.insteadOf` or
+# `pushInsteadOf` that rewrites an address, may name a `git-remote-<transport>` program (TRANSPORT_PREFIX), so each is
+# refused whatever its value. A `core.hooksPath` of exactly the null
 # device (`NO_HOOKS`) names no folder, so it runs no hook, and a caller that must keep the user's hooks from running
 # sets it so. Left out, with the reason: `receive.procReceiveRefs`, which runs only the hooks folder's `proc-receive`
 # and only in `receive-pack`, which a plain client refuses.
@@ -364,11 +397,17 @@ PROGRAM_VARIABLES = frozenset(
     {
         ("diff", "command"),
         ("diff", "textconv"),
+        ("branch", "mergeoptions"),
         ("merge", "driver"),
+        ("remote", "pushurl"),
         ("remote", "receivepack"),
         ("remote", "uploadpack"),
+        ("remote", "url"),
         ("remote", "vcs"),
         ("submodule", "update"),
+        ("submodule", "url"),
+        ("url", "insteadof"),
+        ("url", "pushinsteadof"),
     }
 )
 # A full object name, SHA-1 or SHA-256, as `rev-parse --verify` prints it.
@@ -699,6 +738,51 @@ def carried_option(words: Sequence[str], options: CarrierOptions) -> str | None:
     return None
 
 
+def strategy_value(words: Sequence[str], index: int, options: CarrierOptions) -> tuple[bool, str | None]:
+    """Whether `words[index]` spells one of the strategy `options`, as `carried_option` reads a carrier, and the
+    strategy it gives: attached after `=` or after the letter, or the next word, None where there is none."""
+    word = words[index]
+    following = words[index + 1] if index + 1 < len(words) else None
+    if word.startswith("--"):
+        name, attached, given = word.removeprefix("--").partition("=")
+        if name and any(option.startswith(name) for option in options.long):
+            return True, given if attached else following
+        return False, None
+    if not word.startswith("-"):
+        return False, None
+    for position, letter in enumerate(word[1:], start=2):
+        if letter in options.short:
+            return True, word[position:] or following
+        if letter in options.valued:
+            break
+    return False, None
+
+
+def foreign_strategy(words: Sequence[str], options: CarrierOptions) -> str | None:
+    """The first of `words` that spells a strategy option of `options` naming no strategy of `GIT_STRATEGIES`, or
+    None. Every word is read, wherever it stands, as `carried_option` reads them, so a value spelled like one is
+    refused too, and so is an option with no strategy after it."""
+    for index, word in enumerate(words):
+        spelled, strategy = strategy_value(words, index, options)
+        if spelled and strategy not in GIT_STRATEGIES:
+            return word
+    return None
+
+
+def foreign_address(words: Sequence[str]) -> str | None:
+    """The first of `words` that is, or attaches after a long option's `=`, an address whose transport git hands to a
+    `git-remote-<transport>` program (`TRANSPORT_PREFIX`): any `<transport>::` address, and a `<scheme>://` one whose
+    scheme is outside `GIT_TRANSPORTS`; None where there is none. Every word is read, so a refspec, a path, or a value
+    spelled like one is refused too."""
+    for word in words:
+        spellings = [word, word.partition("=")[2]] if word.startswith("--") else [word]
+        for spelling in spellings:
+            match = TRANSPORT_PREFIX.match(spelling)
+            if match and (match[2] == "::" or match[1] not in GIT_TRANSPORTS):
+                return word
+    return None
+
+
 def help_spelling(arguments: Sequence[str], index: int | None) -> str | None:
     """The spelling in `arguments`, whose subcommand stands at `index`, that git turns into `git help`, which starts a
     viewer or a browser, or None: `--help` or `-h` among git's own options, before the subcommand, and `--help`, or
@@ -720,8 +804,9 @@ def help_spelling(arguments: Sequence[str], index: int | None) -> str | None:
 def starts_unread_program(arguments: Sequence[str]) -> str | None:
     """What in `arguments` makes git start a command or a program whose git calls a plain client cannot read, or
     None: a setting on git's own command line that names one (`names_program`), a spelling git reads as `git help`
-    (`help_spelling`), a subcommand outside `PLAIN_SUBCOMMANDS`, an action outside `PLAIN_ACTIONS`, or an option of
-    `CARRIER_OPTIONS`."""
+    (`help_spelling`), a subcommand outside `PLAIN_SUBCOMMANDS`, an action outside `PLAIN_ACTIONS`, an option of
+    `CARRIER_OPTIONS`, a strategy option naming no strategy of git's own (`foreign_strategy`), or an address whose
+    transport runs a `git-remote-<transport>` program (`foreign_address`)."""
     key = next((key for key, value in configured_settings(arguments) if starts_configured_program(key, value)), None)
     if key is not None:
         return f"the setting {key}"
@@ -738,6 +823,10 @@ def starts_unread_program(arguments: Sequence[str]) -> str | None:
     if name in PLAIN_ACTIONS and action is not None and action not in PLAIN_ACTIONS[name]:
         return f"git {name} {action}"
     option = carried_option(rest, CARRIER_OPTIONS[name]) if name in CARRIER_OPTIONS else None
+    if option is None and name in STRATEGY_OPTIONS:
+        option = foreign_strategy(rest, STRATEGY_OPTIONS[name])
+    if option is None and name in ADDRESS_SUBCOMMANDS:
+        option = foreign_address(rest)
     return None if option is None else f"git {name} {option}"
 
 
