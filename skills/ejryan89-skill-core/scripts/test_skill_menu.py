@@ -140,6 +140,16 @@ def test_read_menu_reads_the_source_document_and_each_skills_metadata(tmp_path: 
         ({"id": "owner/repo", "bundles": {"pair": []}}, {}, "source.json bundle pair is not a JSON object"),
         ({"id": "owner/repo", "bundles": {"pair": {"members": "alpha"}}}, {"alpha": {}}, "pair members is not a list"),
         ({"id": "owner/repo", "bundles": {"pair": {}}}, {}, "source.json bundle pair members is not a list of names"),
+        # A setting that is not true or false is not its default: the deployer refuses it too.
+        ({"id": "owner/repo"}, {"alpha": {"opt_in": "true"}}, "alpha.json opt_in is not true or false"),
+        ({"id": "owner/repo"}, {"alpha": {"opt_in": 1}}, "alpha.json opt_in is not true or false"),
+        ({"id": "owner/repo"}, {"alpha": {"selectable": "false"}}, "alpha.json selectable is not true or false"),
+        ({"id": "owner/repo"}, {"alpha": {"selectable": None}}, "alpha.json selectable is not true or false"),
+        (
+            {"id": "owner/repo", "bundles": {"pair": {"members": ["alpha"], "opt_in": "true"}}},
+            {"alpha": {}},
+            "source.json bundle pair opt_in is not true or false",
+        ),
     ],
 )
 def test_read_menu_refuses_a_source_it_cannot_read(

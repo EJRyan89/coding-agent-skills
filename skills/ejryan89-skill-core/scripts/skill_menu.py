@@ -230,13 +230,21 @@ def _names(value: object, where: str) -> tuple[str, ...]:
     return tuple(value)
 
 
+def _flag(value: object, where: str) -> bool:
+    """A true-or-false setting as the deployer's loader takes one; any other value, such as the text "true", is a
+    MenuError, since read as its default it would plan a selection the deployer refuses."""
+    if not isinstance(value, bool):
+        raise MenuError(f"{where} is not true or false")
+    return value
+
+
 def _entry(path: Path, metadata: dict[str, object]) -> MenuEntry:
     where = path.as_posix()
     return MenuEntry(
         skill_deps=_names(metadata.get("skill_deps", []), f"{where} skill_deps"),
         required_vars=_names(metadata.get("required_vars", []), f"{where} required_vars"),
-        selectable=metadata.get("selectable", True) is not False,
-        opt_in=metadata.get("opt_in", False) is True,
+        selectable=_flag(metadata.get("selectable", True), f"{where} selectable"),
+        opt_in=_flag(metadata.get("opt_in", False), f"{where} opt_in"),
     )
 
 
@@ -249,7 +257,7 @@ def _read_bundles(menu: SourceMenu, path: Path, value: object) -> None:
         found = _names(definition.get("members"), f"{path.as_posix()} bundle {bundle} members")
         menu.bundles[str(bundle)] = list(found)
         menu.skill_bundle.update({member: str(bundle) for member in found})
-        if definition.get("opt_in") is True:
+        if _flag(definition.get("opt_in", False), f"{path.as_posix()} bundle {bundle} opt_in"):
             menu.opt_in_bundles.add(bundle)
 
 
