@@ -1580,14 +1580,16 @@ class DocumentStagingTests(unittest.TestCase):
             hook.write_text(f"#!/bin/sh\nprintf '%s\\n' '{name}' >> '../hook-effects'\n", encoding="utf-8")
             hook.chmod(0o755)
         # The global configuration conftest.py gives the test, its empty hooks folder replaced by the hooks and
-        # signing a user may have.
+        # signing a user may have. A plain client refuses to write a setting that names a program, so the test
+        # plants them through an isolated client, which reads no configuration and runs nothing they name.
         config = self.git_home.config
-        self.git.output(["config", "--file", str(config), "--unset", "core.hooksPath"])
-        self.git.output(
+        planter = GitClient(isolated=True)
+        planter.output(["config", "--file", str(config), "--unset", "core.hooksPath"])
+        planter.output(
             ["config", "--file", str(config), setting, str(hooks if setting == "core.hooksPath" else template)]
         )
-        self.git.output(["config", "--file", str(config), "commit.gpgsign", "true"])
-        self.git.output(["config", "--file", str(config), "gpg.program", str(self.root / "missing-signer")])
+        planter.output(["config", "--file", str(config), "commit.gpgsign", "true"])
+        planter.output(["config", "--file", str(config), "gpg.program", str(self.root / "missing-signer")])
         scenario = self.scenarios["committed-edit"]
         sources = (document_of(scenario), base_of(scenario), config, *hooks.iterdir())
         before = {path: path.read_bytes() for path in sources}
