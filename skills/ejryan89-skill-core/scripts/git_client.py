@@ -340,6 +340,10 @@ TRANSPORT_PREFIX = re.compile(r"([A-Za-z0-9][A-Za-z0-9+.-]*)(::|://)")
 # includes another file (CONFIG_INCLUDE_SECTIONS) is refused, and so is every edit, which starts an editor, and every
 # section rename, which can make a setting of one section another's. Skipping by prefix can only take a read for a
 # write, which refuses more, never less.
+# The settings, case-folded, whose value git takes as a remote's name, and, where no remote has that name, as an
+# address (`foreign_address` reads it), so a value spelled as a foreign transport runs its helper.
+REMOTE_KEYS = frozenset({"remote.pushdefault", "checkout.defaultremote"})
+REMOTE_VARIABLES = frozenset({("branch", "remote"), ("branch", "pushremote")})
 CONFIG_READ_ACTIONS = frozenset({"get", "list"})
 CONFIG_READ_OPTIONS = frozenset(
     {"--get", "--get-all", "--get-regexp", "--get-urlmatch", "--get-color", "--get-colorbool", "--list", "-l"}
@@ -709,8 +713,19 @@ def configured_keys(arguments: Sequence[str]) -> list[str]:
 def starts_configured_program(key: str, value: str | None) -> bool:
     """Whether the setting `key`, case-folded, set to `value` (None when the command line does not hold it), names a
     program git starts: `names_program`, but a `core.hooksPath` of exactly the null device (`NO_HOOKS`), which names
-    no folder of hooks and so runs none."""
+    no folder of hooks and so runs none, and a setting `names_remote` reads whose value `foreign_address` reads as an
+    address, or that the command line does not hold, since git takes a remote name no remote has as an address."""
+    if names_remote(key) and (value is None or foreign_address([value]) is not None):
+        return True
     return names_program(key) and not (key == HOOKS_PATH and value == NO_HOOKS)
+
+
+def names_remote(key: str) -> bool:
+    """Whether the case-folded setting `key` names a remote: one of REMOTE_KEYS, or a variable of
+    REMOTE_VARIABLES in any subsection of its section, such as `branch.<name>.remote`."""
+    section, _, rest = key.partition(".")
+    variable = rest.rpartition(".")[2]
+    return key in REMOTE_KEYS or (rest != variable and (section, variable) in REMOTE_VARIABLES)
 
 
 def defines_alias(arguments: Sequence[str]) -> bool:
@@ -826,12 +841,13 @@ def config_refusal(words: Sequence[str]) -> str | None:
     """What in `git config`'s words after the subcommand makes it start a program or write a setting a later command
     would start one by, or None: an edit or a section rename in any spelling (CONFIG_REFUSED_ACTIONS,
     CONFIG_REFUSED_OPTIONS), or a write, as CONFIG_READ_ACTIONS says one is told from a read, of a word naming a setting
-    `names_program` reads as one, or one in CONFIG_INCLUDE_SECTIONS. Every word that is no option is read as a setting's
-    name, so a value spelled like one is refused too."""
+    `names_program` reads as one, or one in CONFIG_INCLUDE_SECTIONS, or of a setting `names_remote` reads with no word
+    after it or one `foreign_address` reads as an address. Every word that is no option is read as a setting's name,
+    so a value spelled like one is refused too."""
     options, others = config_words(words)
     for option in options:
         name = option.removeprefix("--").partition("=")[0]
-        if option.startswith("--") and len(name) >= 2 and any(o.startswith(name) for o in CONFIG_REFUSED_OPTIONS):
+        if option.startswith("--") and bool(name) and any(o.startswith(name) for o in CONFIG_REFUSED_OPTIONS):
             return option
         if not option.startswith("--") and "e" in option[1:]:
             return option
@@ -839,9 +855,12 @@ def config_refusal(words: Sequence[str]) -> str | None:
         return others[0]
     if (others and others[0] in CONFIG_READ_ACTIONS) or any(option in CONFIG_READ_OPTIONS for option in options):
         return None
-    for word in others:
+    for position, word in enumerate(others):
         key = word.partition("=")[0].casefold()
         if names_program(key) or key.partition(".")[0] in CONFIG_INCLUDE_SECTIONS:
+            return word
+        values = others[position + 1 :]
+        if names_remote(key) and (not values or foreign_address(values) is not None):
             return word
     return None
 

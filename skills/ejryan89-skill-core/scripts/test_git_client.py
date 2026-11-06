@@ -1746,6 +1746,10 @@ class IsolatedClientTests(unittest.TestCase):
             "the setting remote.origin.pushurl": ["-c", "remote.origin.pushUrl=x::a", "push"],
             "the setting submodule.a.url": ["-c", "submodule.a.url=x::a", "submodule", "update"],
             "the setting branch.main.mergeoptions": ["-c", "branch.main.mergeOptions=-s x", "pull"],
+            "the setting branch.main.remote": ["-c", "branch.main.remote=x::foo", "pull"],
+            "the setting branch.main.pushremote": ["-c", "branch.main.pushRemote=1::foo", "push"],
+            "the setting remote.pushdefault": ["-c", "remote.pushDefault=x://h/r", "push"],
+            "the setting checkout.defaultremote": ["--config-env", "checkout.defaultRemote=V", "checkout", "a"],
         }
         # git's is_urlschemechar takes a digit first, so a digit-first transport runs a helper on every subcommand.
         for subcommand in sorted(git_client.ADDRESS_SUBCOMMANDS):
@@ -1778,6 +1782,7 @@ class IsolatedClientTests(unittest.TestCase):
             ["push", "git+ssh://host/r", "HEAD:refs/heads/a"],
             ["ls-remote", "git://host/r", "ftps://host/r"],
             ["remote", "add", "o", "../r"],
+            ["-c", "branch.main.remote=origin", "-c", "remote.pushDefault=https://h/r", "pull"],
         )
         for arguments in allowed:
             with self.subTest(arguments=arguments):
@@ -1806,6 +1811,13 @@ class IsolatedClientTests(unittest.TestCase):
             "core.askpass": ["config", "--fi", "get", "core.askpass", "x"],
             "--edit": ["config", "--edit"],
             "--ed": ["config", "--global", "--ed"],
+            "--e": ["config", "--e"],
+            # git takes a remote name no remote has as an address, so a foreign transport there runs its helper.
+            "branch.main.remote": ["config", "branch.main.remote", "x::foo"],
+            "branch.main.pushRemote": ["config", "set", "branch.main.pushRemote", "1x://h/r"],
+            "remote.pushDefault": ["config", "--add", "remote.pushDefault", "x::foo"],
+            "checkout.defaultRemote": ["config", "--global", "checkout.defaultRemote", "x::foo"],
+            "branch.a.remote": ["config", "--unset", "branch.a.remote"],
             "-e": ["config", "-e"],
             "-le": ["config", "-le"],
             "edit": ["config", "edit"],
@@ -1830,6 +1842,8 @@ class IsolatedClientTests(unittest.TestCase):
             ["config", "user.name", "t"],
             ["config", "--add", "remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*"],
             ["config", "set", "core.quotePath", "off"],
+            ["config", "branch.main.remote", "origin"],
+            ["config", "remote.pushDefault", "https://example.invalid/r"],
         )
         for arguments in allowed:
             with self.subTest(arguments=arguments):
