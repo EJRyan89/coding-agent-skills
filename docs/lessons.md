@@ -188,14 +188,17 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   `tests/malformed_input/test_malformed_input.py::test_each_reader_refuses_or_documents_accepting_each_case`,
   `tests/validation/python_checks.py::PythonChecksPolicies::test_json_reader_is_the_one_parse_of_json`,
   `tests/validation/test_python_checks.py::test_content_errors_policy_reads_read_json_as_raising_persistence_error`,
+  `tests/validation/test_python_checks.py::test_content_errors_policy_reads_the_family_named_for_a_core_reader`,
   `tests/deployer/test_recovery_migration.py::RecoveryFailureTests::test_each_failure_other_than_an_os_error_a_rerun_repeats_sends_a_committed_run_to_the_manual_steps`,
   `tests/deployer/test_recovery_migration.py::RecoveryFailureTests::test_each_failure_recovery_expects_outside_a_step_fails_its_run_and_the_next_still_recovers`
 - **Search for:** `except json.JSONDecodeError`, `except UnicodeDecodeError:`, or `except tomllib.TOMLDecodeError:`
   around a reader that raises more; `except ValueError` near an `xml_reader`, `tomllib`, or `csv.` call; an `except X`
   around a helper that raises a class outside `X`; an `except (`, `OSError`, or `ValueError` around a
   `validate_record_pair` or `read_json` call with no `PersistenceError` beside it; `.encode("utf-8")` of a name read
-  from disk with no handler, which raises `UnicodeEncodeError` for a lone surrogate or a surrogate escape.
-- **Examples:** #1634, #1816, #1874, #2221, #2294, #2351
+  from disk with no handler, which raises `UnicodeEncodeError` for a lone surrogate or a surrogate escape; in the
+  content-errors policy, a table merged into `self.families[` that a second reader fills too, replacing a family
+  without a problem, or an entry stored with no class.
+- **Examples:** #1634, #1816, #1874, #2221, #2294, #2351, #2358
 
 ### A result cut short says it was cut
 
@@ -758,11 +761,14 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   catalogue of lookups by name, `tests.validation.validation_support:NAME_LOOKUPS`;
   `tests.validation.validation_support:scope_problems`, which holds a policy's scope, named as data, to every
   non-test module ruff checks, each part it leaves out stated with its reason, as
-  `tests.validation.python_checks:claim_omissions` and `tests.validation.duplication:duplication_omissions` state them.
+  `tests.validation.python_checks:claim_omissions` and `tests.validation.duplication:duplication_omissions` state them;
+  `powershell_startup:startup_command`, the one reading of PowerShell's start-up parameters, through which the
+  commands policy reads the script pwsh or Windows PowerShell is started to run as it reads a shell's -c script.
 - **Guard:** `tests/validation/python_checks.py::PythonChecksPolicies::test_no_name_is_looked_up_dynamically`,
   `tests/validation/python_checks.py::PythonChecksPolicies::test_owner_only_names_are_referenced_only_by_their_owners`,
   `tests/validation/python_checks.py::PythonChecksPolicies::test_policed_calls_take_literal_arguments`,
   `tests/validation/test_python_checks.py::test_each_spelling_the_resolver_did_not_follow_is_refused_at_the_source`,
+  `tests/validation/test_shell_readers.py::test_the_command_policy_reads_the_script_a_powershell_start_up_runs`,
   `tests/validation/python_checks.py::PythonChecksPolicies::test_claim_policies_read_every_module_their_rules_speak_of`,
   `tests/validation/duplication.py::DuplicationPolicies::test_the_duplication_policy_reads_every_module_its_rule_speaks_of`,
   `tests/validation/test_python_checks.py::test_a_policy_scope_fails_for_each_module_it_skips_and_each_stale_omission`,
@@ -779,12 +785,12 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   the code that holds it; a policy whose file list is a hand-kept tuple of directories, such as a `*_ROOTS`, that no
   `scope_problems` test holds, or a `glob(`
   narrower than the rule's statement in `CLAUDE.md` or `docs/`; `rg -n "glob\(\"\*\.sh\"\)|suffix == \"\.sh\"" tests/validation/`,
-  a policy that reads one shell; a fixture suite whose violating inputs cover one of the forms the rule names; a
+  a policy that reads one shell, or a shell's `-c` script but not PowerShell's `-Command`; a fixture suite whose violating inputs cover one of the forms the rule names; a
   policy that refuses a sentence as an exact substring, which a capital, a reflowed line, or an optional word walks
   past; an audit brief that asks only for drift; a `scope_problems` call whose modules are filtered by the roots it
   is held to, which compares a list with itself.
 - **Examples:** #1366, #1598, #1678, #1722, #2260, #2352, #1884, which adds the check that holds a policy's scope
-  to its rule, and #2315, whose resolver spellings the indirection policies refuse at the source
+  to its rule, #2315, whose resolver spellings the indirection policies refuse at the source, and #2388
 
 ### A check reads its subject through its consumer's reader
 
@@ -837,10 +843,12 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
 
 - **Rule:** Every foreign function a module calls through `ctypes` has its `argtypes` and `restype` set in that module.
 - **Why:** An undeclared function passes and returns a C `int`, which truncates a handle on a 64-bit process.
-- **Guard:** `tests/validation/python_checks.py::PythonChecksPolicies::test_every_ctypes_foreign_function_called_is_declared`
+- **Guard:** `tests/validation/python_checks.py::PythonChecksPolicies::test_every_ctypes_foreign_function_called_is_declared`,
+  `tests/validation/test_python_checks.py::test_ctypes_policy_refuses_a_library_a_base_class_binds_in_another_module`
 - **Search for:** `ctypes.windll.` or `WinDLL(` in a module, with a function of it called and no `.argtypes =` or
-  `.restype =` for that function.
-- **Examples:** #1363, #1600
+  `.restype =` for that function; a `self.` or `cls.` read in a class whose base is imported from a module that binds
+  a library, which the policy reads in its own module only unless the base is followed.
+- **Examples:** #1363, #1600, #2369
 
 ### A pipe's reader never ends before its writer under `pipefail`
 

@@ -858,6 +858,17 @@ def test_resolved_calls_read_a_setdefault_and_an_update_of_a_literal_dict() -> N
     assert [view.unread for view in _resolved_calls(source)[5]] == [[]]
 
 
+# A method that only reads the dict leaves its literal keys read, so the spread keeps them and nothing is unread.
+@pytest.mark.parametrize("read", ["get", "keys", "values", "items", "copy"])
+def test_resolved_calls_keep_a_dict_a_reading_method_leaves_unchanged(read: str) -> None:
+    arguments = "'type'" if read == "get" else ""
+    source = (
+        f"def f(parser):\n    extra = {{'type': float}}\n    extra.{read}({arguments})\n"
+        "    parser.add_argument('--x', **extra)\n"
+    )
+    assert [(view.keywords, view.unread) for view in _resolved_calls(source)[4]] == [({"type": ["float"]}, [])]
+
+
 @pytest.mark.parametrize(
     "change",
     [

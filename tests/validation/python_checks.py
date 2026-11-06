@@ -2118,6 +2118,7 @@ class _ForeignLibraries:
         nodes = list(scoped_nodes(tree.body))
         self.scopes = {id(node): scope for node, scope in nodes}
         self.class_names = {scope for node, scope in nodes if isinstance(node, ast.ClassDef)}
+        self.bases = {scope: node.bases for node, scope in nodes if isinstance(node, ast.ClassDef)}
         self.places: dict[str, list[str]] = {}
         self.loaders: dict[str, list[str]] = {}
         self.functions: dict[str, list[ForeignFunction]] = {}
@@ -2246,13 +2247,81 @@ def _read_where_bound(node: ast.Attribute, scope: str, libraries: _ForeignLibrar
     return plain and place_key(node, scope, libraries.class_names) in libraries.places
 
 
+class _InheritedLibraries:
+    """The attributes each class binds to a ctypes library, in its own module and through every base it has, followed
+    through the modules' imports into the module that defines the base, so a class that reads a library its base
+    binds in another module is found. A module is reached by the last part of the name its import gives, among the
+    modules read, a package's `__init__.py` by its directory's name; every module of that name counts. A name a module
+    only binds at its top level, as a re-export does, is followed to what it binds."""
+
+    def __init__(self, models: list[tuple[str, ast.Module, _ForeignLibraries]]) -> None:
+        self.modules: dict[str, list[_ForeignLibraries]] = {}
+        self.bindings: dict[int, dict[str, str]] = {}
+        for name, tree, libraries in models:
+            path = PurePosixPath(name)
+            self.modules.setdefault(path.parent.name if path.stem == "__init__" else path.stem, []).append(libraries)
+            self.bindings[id(libraries)] = dict(_module_bindings(tree, libraries.resolver))
+
+    def bound(
+        self, libraries: _ForeignLibraries, class_name: str, seen: frozenset[tuple[int, str]] = frozenset()
+    ) -> set[str]:
+        """The attributes a class of `libraries`, and each of its bases, binds to a library; a class `seen` names, one
+        a cycle of bases reaches again, adds none."""
+        key = (id(libraries), class_name)
+        if key in seen:
+            return set()
+        seen = seen | {key}
+        found = {
+            attribute
+            for place in libraries.places
+            for owner, _, attribute in [place.rpartition(".")]
+            if owner == class_name
+        }
+        for base in libraries.bases[class_name]:
+            for owner, name in self.base_classes(libraries, libraries.resolver.name(base)):
+                found |= self.bound(owner, name, seen)
+        return found
+
+    def base_classes(
+        self, libraries: _ForeignLibraries, dotted: str, seen: frozenset[tuple[int, str]] = frozenset()
+    ) -> list[tuple[_ForeignLibraries, str]]:
+        """Each class a base's dotted name, as the resolver gives it, may be: a class of this module, named after
+        `<local>`, or a class of a module read, named after the part that names that module, a nested class's
+        qualified name included, or what a name that module binds without defining it, as a re-export, is, followed
+        until a module defines it; a name `seen` holds, one a cycle of re-exports reaches again, is none."""
+        key = (id(libraries), dotted)
+        if key in seen:
+            return []
+        seen = seen | {key}
+        parts = dotted.split(".")
+        found: list[tuple[_ForeignLibraries, str]] = []
+        for index in range(1, len(parts)):
+            module, name = parts[:index], parts[index:]
+            for owner in [libraries] if module == ["<local>"] else self.modules.get(module[-1], []):
+                bound = self.bindings[id(owner)].get(name[0])
+                if ".".join(name) in owner.class_names:
+                    found.append((owner, ".".join(name)))
+                elif bound is not None:
+                    found += self.base_classes(owner, ".".join([bound, *name[1:]]), seen)
+        return found
+
+    def held(self, libraries: _ForeignLibraries) -> set[str]:
+        """The attributes the module's classes bind to a library or inherit as one from a base, this module's or
+        another's."""
+        return {attribute for class_name in libraries.class_names for attribute in self.bound(libraries, class_name)}
+
+
 def ctypes_declaration_problems(root: Path, files: list[Path]) -> list[str]:
     """Each call of a ctypes foreign function whose module does not assign that library's function both argtypes and
     restype, argtypes excepted for a function every call gives no arguments, that no CTYPES_ALLOWED entry
     sanctions."""
     problems: list[str] = []
-    for _, name, tree in python_trees(claim_files(root, files), root, problems):
-        libraries = _ForeignLibraries(tree, CallableResolver(tree))
+    models = [
+        (name, tree, _ForeignLibraries(tree, CallableResolver(tree)))
+        for _, name, tree in python_trees(claim_files(root, files), root, problems)
+    ]
+    inherited = _InheritedLibraries(models)
+    for name, tree, libraries in models:
         declared: dict[ForeignFunction, set[str]] = {}
         calls: list[tuple[ast.Call, str, ForeignFunction]] = []
         given: set[ForeignFunction] = set()
@@ -2279,8 +2348,9 @@ def ctypes_declaration_problems(root: Path, files: list[Path]) -> list[str]:
         # A library a class binds to `self.x`, or in its body, is read only through that class. A read of the
         # attribute is accepted only when its receiver is a plain `self`, `cls`, or a class's name and that class
         # binds it; any other read, through a subclass, `super()`, `type(self)`, `self.__class__`, or any other
-        # receiver, is refused rather than followed through the class's bases.
-        held = {key.rpartition(".")[2] for key in libraries.places if key.partition(".")[0] in libraries.class_names}
+        # receiver, is refused rather than followed through the class's bases. A base another module defines counts:
+        # an attribute it binds to a library is held here too, so a subclass's read of it is refused.
+        held = inherited.held(libraries)
         found += [
             (
                 node.lineno,
@@ -3698,6 +3768,14 @@ class _ContentModel:
             problems.append(
                 f"{CONTENT_POLICY}: core_reader_families names {reader} with {family}, but each must name a "
                 "module-level function of either core and the class, or the tuple of classes, it raises"
+            )
+            return
+        if reader in self.families:
+            # Its module's CONTENT_READERS gave it that module's CONTENT_ERRORS, which this entry would replace, so a
+            # handler catching this family but part of that one would pass.
+            problems.append(
+                f"{CONTENT_POLICY}: core_reader_families names {reader}, which its module's {CONTENT_READERS} "
+                f"already gives that module's {CONTENT_ERRORS}; name it in one of the two"
             )
             return
         self.families[reader] = dict.fromkeys(classes, family)
