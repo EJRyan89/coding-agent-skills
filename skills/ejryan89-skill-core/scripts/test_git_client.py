@@ -1747,6 +1747,10 @@ class IsolatedClientTests(unittest.TestCase):
             "the setting submodule.a.url": ["-c", "submodule.a.url=x::a", "submodule", "update"],
             "the setting branch.main.mergeoptions": ["-c", "branch.main.mergeOptions=-s x", "pull"],
         }
+        # git's is_urlschemechar takes a digit first, so a digit-first transport runs a helper on every subcommand.
+        for subcommand in sorted(git_client.ADDRESS_SUBCOMMANDS):
+            for address in ("1::x", "1x://host/r", "9+a.b-c::x"):
+                refused[f"git {subcommand} {address}"] = [subcommand, address]
         for what, arguments in refused.items():
             with self.subTest(arguments=arguments):
                 runner, calls = scripted(GitResult(0, "", ""))
@@ -1754,12 +1758,14 @@ class IsolatedClientTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, refusal):
                     GitClient(runner).run(arguments)
                 self.assertEqual([], calls, "refused before git starts")
-        allowed: tuple[list[str], ...] = tuple(
+        builtin = [
             [subcommand, option, strategy, "topic"]
             for subcommand in ("merge", "rebase", "pull")
             for option in ("-s", "--strategy", "--strat")
             for strategy in ("ort", "recursive", "resolve", "octopus", "ours", "subtree")
-        ) + (
+        ]
+        allowed: tuple[list[str], ...] = (
+            *builtin,
             ["merge", "-sours", "topic"],
             ["merge", "--strategy=ort", "-Xours", "--strategy-option=theirs", "topic"],
             ["merge", "-ms", "topic"],
@@ -1772,6 +1778,58 @@ class IsolatedClientTests(unittest.TestCase):
             ["push", "git+ssh://host/r", "HEAD:refs/heads/a"],
             ["ls-remote", "git://host/r", "ftps://host/r"],
             ["remote", "add", "o", "../r"],
+        )
+        for arguments in allowed:
+            with self.subTest(arguments=arguments):
+                runner, calls = scripted(GitResult(0, "", ""))
+                GitClient(runner).run(arguments)
+                self.assertEqual(["git", *arguments], calls[0][0])
+
+    def test_a_plain_client_refuses_a_config_write_of_a_setting_a_later_command_runs_a_program_by(self) -> None:
+        # Written to a file, each setting makes a later plain fetch, pull, or commit start a program the client never
+        # reads; an edit starts the editor, and a section rename can make one section's settings another's.
+        refused = {
+            "remote.origin.url": ["config", "remote.origin.url", "x::a"],
+            "remote.origin.pushurl": ["config", "--add", "remote.origin.pushurl", "x::a"],
+            "url.x::a.insteadOf": ["config", "--global", "url.x::a.insteadOf", "origin"],
+            "Url.a.PushInsteadOf": ["config", "--replace-all", "Url.a.PushInsteadOf", "b"],
+            "submodule.a.url": ["config", "--file", ".gitmodules", "submodule.a.url", "x::a"],
+            "branch.main.mergeOptions": ["config", "set", "branch.main.mergeOptions", "-s x"],
+            "pull.twohead": ["config", "--local", "pull.twohead", "x"],
+            "core.editor": ["config", "-f", "c", "core.editor", "vim"],
+            "core.sshCommand=": ["config", "set", "--value=x", "core.sshCommand=x"],
+            "include.path": ["config", "include.path", "/x"],
+            "includeIf.gitdir:/a.path": ["config", "includeIf.gitdir:/a.path", "/x"],
+            "core.hooksPath": ["config", "--unset", "core.hooksPath"],
+            # A read option given as another option's value is no read.
+            "core.pager": ["config", "--comment", "--get", "core.pager", "x"],
+            "core.askpass": ["config", "--fi", "get", "core.askpass", "x"],
+            "--edit": ["config", "--edit"],
+            "--ed": ["config", "--global", "--ed"],
+            "-e": ["config", "-e"],
+            "-le": ["config", "-le"],
+            "edit": ["config", "edit"],
+            "--rename-section": ["config", "--rename-section", "a", "remote.x"],
+            "rename-section": ["config", "rename-section", "a", "url.x::a"],
+        }
+        for what, arguments in refused.items():
+            with self.subTest(arguments=arguments):
+                runner, calls = scripted(GitResult(0, "", ""))
+                refusal = rf"^git config {re.escape(what)}\S* starts a command or a program whose git calls a plain"
+                with self.assertRaisesRegex(ValueError, refusal):
+                    GitClient(runner).run(arguments)
+                self.assertEqual([], calls, "refused before git starts")
+        allowed: tuple[list[str], ...] = (
+            ["config", "--get", "remote.origin.url"],
+            ["config", "--file", "c", "--get", "core.worktree"],
+            ["config", "--local", "--type=bool", "--get", "x.y"],
+            ["config", "get", "remote.origin.url"],
+            ["config", "--get-regexp", "url\\..*\\.insteadof"],
+            ["config", "-l"],
+            ["config", "list", "--show-origin"],
+            ["config", "user.name", "t"],
+            ["config", "--add", "remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*"],
+            ["config", "set", "core.quotePath", "off"],
         )
         for arguments in allowed:
             with self.subTest(arguments=arguments):

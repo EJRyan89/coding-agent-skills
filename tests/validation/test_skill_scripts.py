@@ -2143,6 +2143,9 @@ def test_substitution_spans_name_each_substitution_where_its_text_begins(
         pytest.param(["env", "-S", "gh api", "x"], ["gh", "api", "x"], id="env's split line"),
         pytest.param(["env", "-iS", "A=1 gh", "x"], ["gh", "x"], id="env's split line in a bundle"),
         pytest.param(["env", "--split-string=-u B gh api"], ["gh", "api"], id="env's split line read again"),
+        pytest.param(
+            ["env", "-S", "gh 'api", "x"], ["gh 'api", "x"], id="a split line shlex cannot split stays one word"
+        ),
     ],
 )
 def test_unwrapped_reads_past_a_wrapper_to_the_command_it_runs(words: list[str], program: list[str]) -> None:
