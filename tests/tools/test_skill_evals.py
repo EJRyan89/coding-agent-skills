@@ -3539,7 +3539,13 @@ class EvaluateTests(unittest.TestCase):
         unread = StubTrigger(self, {"Audit the audit-skill skill.": "audit-skill"})
         unread.unread = True
         cases = {
-            "unread stream": (unread, "run", f"request 1: {skill_evals_runs.UNREAD_STARTS}"),
+            # Pinned as the line reads, not through the constant that writes it.
+            "unread stream": (
+                unread,
+                "run",
+                "request 1: the session's stream holds a message or a Skill call in a shape the evaluation does not "
+                "read",
+            ),
             "unlisted": (
                 StubTrigger(self, {}, listed=False),
                 "run",

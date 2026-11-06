@@ -35,6 +35,7 @@ class ReleaseLevelTests(unittest.TestCase):
     [
         "0.5.0",
         "v1.2",
+        "v1.2.3.4",
         "v1.2.3rc1",
         pytest.param("v1.2.3\n", id="v1.2.3-newline"),
         pytest.param("v\u0663.0.0", id="arabic-indic-major"),

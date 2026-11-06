@@ -1219,9 +1219,9 @@ class RunTests(RuntimeCanaryTestCase):
         runner.actions["claude"] = lambda *_: Completed(0, init + "\n", "")
         lines = self.canary(runner, runtimes=("claude",))
         self.assertFalse([line for line in lines if "DISCOVERED claude" in line], lines)
-        self.assertIn(
-            f'RUNTIME claude {FIXTURE} FAILED "{runtime_canary.UNREAD_DISCOVERY}" {self.kept("claude")}', lines
-        )
+        # The reason is pinned as the line reads, not through the constant that writes it.
+        unread = "Claude Code's init event lists its skills as something other than a list of names"
+        self.assertIn(f'RUNTIME claude {FIXTURE} FAILED "{unread}" {self.kept("claude")}', lines)
 
     def test_a_line_holding_a_line_break_other_than_newline_is_read_whole(self) -> None:
         # JSON holds U+2028, U+0085, and the other characters str.splitlines() breaks on as they are, and a log line
