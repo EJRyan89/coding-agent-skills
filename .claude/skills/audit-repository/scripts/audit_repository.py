@@ -112,6 +112,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[4] / "skills" / "ejryan8
 import guidance_record
 import json_reader
 import json_writer
+import python_reader
+import versions
 import whole_number
 from atomic_file import UnfinishedCopyError
 from console import run_main
@@ -128,8 +130,6 @@ from suite_names import is_suite_name
 # The rotation record, relative to the top of the repository it describes.
 RECORD_PATH = ".claude/skills/audit-repository/references/rotation.json"
 DATE_FORMAT = re.compile(r"\d{4}-\d{2}-\d{2}")
-# A release tag or milestone title: vMAJOR.MINOR.PATCH.
-VERSION = re.compile(r"v?(\d+)\.(\d+)\.(\d+)")
 # The most files one reader is given; a larger area is split between readers by directory.
 MAX_FILES_PER_READER = 60
 # Every briefs directory starts with this, directly in the temporary directory; remove-briefs deletes no other.
@@ -554,11 +554,8 @@ def issues_of(payload: Any, what: str) -> list[Issue]:
 def version_of(name: str | None) -> tuple[int, int, int] | None:
     """The version a milestone or tag name gives, or None when it names none, a part past the digit limit
     included."""
-    match = VERSION.fullmatch(name or "")
-    parts = [] if match is None else [whole_number.parse(part) for part in match.groups()]
-    if len(parts) != 3 or parts[0] is None or parts[1] is None or parts[2] is None:
-        return None
-    return parts[0], parts[1], parts[2]
+    version = versions.read((name or "").removeprefix("v"), least=3, most=3)
+    return None if version is None else (version[0], version[1], version[2])
 
 
 def open_milestones_after(github: GitHubClient, released: str | None) -> list[str]:
@@ -779,10 +776,8 @@ def catalogue_value(tree: ast.Module, name: str, path: str) -> object:
         getattr(node, "lineno", 0) for node in ast.walk(tree) if node is not target and _changes(node, name, exported)
     }
     try:
-        literal = ast.literal_eval(value)
-    # ValueError for a node that is no literal, TypeError for an unhashable key, and the rest for nesting past what
-    # literal_eval recurses through
-    except (ValueError, TypeError, MemoryError, RecursionError) as exc:
+        literal = python_reader.literal(value)
+    except python_reader.CONTENT_ERRORS as exc:
         raise AuditError(f"{path} must assign {name} a literal") from exc
     if isinstance(literal, (dict, list, set)):
         lines.update(_hands_on(tree, name))
@@ -800,9 +795,8 @@ def supported_runtimes(top: Path) -> dict[str, str]:
     assignment is passed over."""
     path = top / RUNTIME_CATALOGUE
     try:
-        tree = ast.parse(path.read_text(encoding="utf-8"))
-    # MemoryError and RecursionError, source nested past the parser's limits
-    except (OSError, UnicodeDecodeError, SyntaxError, ValueError, MemoryError, RecursionError) as exc:
+        tree = python_reader.parse(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, python_reader.PythonRefused) as exc:
         raise AuditError(f"cannot read the runtime catalogue {path.as_posix()}: {exc}") from exc
     runtimes, titles = (catalogue_value(tree, name, path.as_posix()) for name in CATALOGUE_NAMES)
     if (

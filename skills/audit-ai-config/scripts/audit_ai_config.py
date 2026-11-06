@@ -49,6 +49,7 @@ import check_provenance
 import folder_walk
 import json_reader
 import json_writer
+import python_reader
 from agent_skills import CODEX_METADATA, MAX_DESCRIPTION, MAX_NAME, RESERVED_WORDS, XML_TAG_PATTERN
 from check_provenance import Source
 from console import run_main
@@ -1434,10 +1435,8 @@ def derive_generator_scope(root: Path) -> tuple[dict[str, list[str]] | None, str
         try:
             if not is_present(path):
                 continue
-            tree = ast.parse(read_text(root, path), filename=candidate)
-        # ValueError covers UnicodeError and, before 3.12, a null byte; MemoryError and RecursionError, source nested
-        # past the parser's limits
-        except (SyntaxError, ValueError, OSError, MemoryError, RecursionError):
+            tree = python_reader.parse(read_text(root, path), candidate)
+        except (UnicodeError, OSError, python_reader.PythonRefused):
             return None, "generator-scope-unreadable"
         values: dict[str, list[str]] = {}
         for node in tree.body:
@@ -1454,8 +1453,8 @@ def derive_generator_scope(root: Path) -> tuple[dict[str, list[str]] | None, str
                     if value is None:  # an annotation without a value
                         return None, "generator-scope-not-literal"
                     try:
-                        literal = ast.literal_eval(value)
-                    except (ValueError, TypeError, MemoryError, RecursionError):
+                        literal = python_reader.literal(value)
+                    except python_reader.CONTENT_ERRORS:
                         return None, "generator-scope-not-literal"
                     if not isinstance(literal, list) or not all(isinstance(item, str) for item in literal):
                         return None, "generator-scope-invalid"
@@ -3455,10 +3454,8 @@ def _codex_rules(root: Path) -> list[Finding]:
     for path in listing.paths:
         rel = path.relative_to(root).as_posix()
         try:
-            tree = ast.parse(read_text(root, path), filename=rel)
-        # ValueError covers UnicodeError and, before 3.12, a null byte; MemoryError and RecursionError, source nested
-        # past the parser's limits
-        except (OSError, SyntaxError, ValueError, MemoryError, RecursionError) as error:
+            tree = python_reader.parse(read_text(root, path), rel)
+        except (OSError, UnicodeError, python_reader.PythonRefused) as error:
             findings.append(Finding("ERROR", "codex-rule", rel, message=f"Could not read or parse: {error}"))
             continue
         for node in ast.walk(tree):
@@ -3475,8 +3472,8 @@ def _literal(node: ast.expr | None) -> Any:
     if node is None:
         return None
     try:
-        return ast.literal_eval(node)
-    except (ValueError, TypeError, SyntaxError, MemoryError, RecursionError):
+        return python_reader.literal(node)
+    except python_reader.CONTENT_ERRORS:
         return node
 
 

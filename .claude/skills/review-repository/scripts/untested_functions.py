@@ -80,6 +80,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[4] / "skills" / "ejryan8
 
 import file_presence
 import json_writer
+import python_reader
 from conditions import (
     DIFF_VARIABLE,
     FAILURE_STATUS,
@@ -258,12 +259,9 @@ def _declares_only(node: ast.ClassDef) -> bool:
 
 
 def parse_python(text: str) -> ast.Module:
-    """The module `text` holds, or SyntaxError, which the parser also raises here for source nested past its own
-    stack, where it would otherwise raise MemoryError or RecursionError."""
-    try:
-        return ast.parse(text)
-    except (MemoryError, RecursionError) as error:
-        raise SyntaxError(f"the source nests deeper than the parser reads ({type(error).__name__})") from error
+    """The module `text` holds, or ejryan89-skill-core's python_reader.PythonRefused, a ValueError, for source that
+    does not parse or nests past the parser's own stack."""
+    return python_reader.parse(text)
 
 
 def python_definitions(path: str, text: str) -> list[Definition]:

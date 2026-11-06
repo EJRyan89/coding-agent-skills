@@ -77,7 +77,6 @@ Exit status:
 from __future__ import annotations
 
 import argparse
-import os
 import shutil
 import stat
 import sys
@@ -95,6 +94,7 @@ import file_presence
 from atomic_file import replace_text
 from console import run_main
 from dotnet_solution import SEARCH_SKIPPED_FOLDERS, is_solution, lexical_absolute, project_path, refusal, same_path
+from executable_locator import RelativeEnvironmentPath, absolute_home, environment_path
 from flat_text import fact_line, flat_text
 from folder_walk import walk_files
 from folders_up import folders_up
@@ -363,13 +363,17 @@ def read_configs(graph: Graph, project: Project) -> None:
 
 
 def nuget_cache() -> list[Path]:
-    """The folders the NuGet cache may be in: NUGET_PACKAGES, and ~/.nuget/packages; `Unreadable` naming one whose
-    stat fails."""
+    """The folders the NuGet cache may be in: NUGET_PACKAGES where it names an absolute path, and ~/.nuget/packages;
+    `Unreadable` naming one whose stat fails, and `Failed` naming the home's variable where the home is not an
+    absolute path, so no cache is looked for under the working directory."""
     folders: list[Path] = []
-    configured = os.environ.get("NUGET_PACKAGES")
-    if configured:
-        folders.append(Path(configured))
-    folders.append(Path.home() / ".nuget" / "packages")
+    configured = environment_path("NUGET_PACKAGES")
+    if configured is not None:
+        folders.append(configured)
+    try:
+        folders.append(absolute_home() / ".nuget" / "packages")
+    except RelativeEnvironmentPath as error:
+        raise Failed(f"{error}, so the NuGet cache under the home folder is not known") from None
     try:
         return [folder for folder in folders if file_presence.is_directory(folder, other_is_absent=True)]
     except OSError as error:

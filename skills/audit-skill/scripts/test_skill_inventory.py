@@ -84,6 +84,18 @@ class LocateTests(TemporaryTestCase):
             lines,
         )
 
+    def test_the_default_home_is_the_users_and_a_relative_one_fails_by_its_variable(self) -> None:
+        # The default was Path.home(), which reads a relative profile folder as given, so a skill was looked for
+        # under the working directory (#2325).
+        skill = write(self.user_skills / "alpha" / "SKILL.md", "x")
+        with mock.patch.object(Path, "home", return_value=self.home):
+            code, lines, _ = run("locate", "alpha", "--repo", str(self.repo))
+        self.assertEqual((0, f"SKILL_FILE {skill.as_posix()}"), (code, lines[1]))
+        with mock.patch.object(Path, "home", return_value=Path("relative home")):
+            code, lines, _ = run("locate", "alpha", "--repo", str(self.repo))
+        self.assertEqual(1, code)
+        self.assertRegex(lines[-1], r"^FAILED [A-Z]+ is 'relative home', which is not an absolute path; pass --home$")
+
     def test_project_skill_found_through_the_current_git_root(self) -> None:
         git("init", "-q", str(self.repo))
         skill = write(self.repo / ".agents" / "skills" / "alpha" / "SKILL.md", "x")

@@ -29,6 +29,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 import file_presence
+import python_reader
 from bounded_process import REPOSITORY_VARIABLES
 from call_tables import (
     EVENT_LOOP,
@@ -1281,6 +1282,16 @@ def presence_problems(root: Path, files: list[Path]) -> list[str]:
 JSON_PARSERS = frozenset({"json.loads", "json.load", "json.JSONDecoder", "json.decoder.JSONDecoder"})
 JSON_READER = "skills/ejryan89-skill-core/scripts/json_reader.py"
 JSON_PARSE_ALLOWANCE = "JSON_PARSE_ALLOWED"
+# ejryan89-skill-core's python_reader is the one parse of Python source and of a Python literal, raising what the
+# parser raises on bad content, a SyntaxError, a MemoryError or RecursionError past its limits, a ValueError, or a
+# TypeError, as one family; the owner-only rule refuses either parser anywhere else.
+PYTHON_PARSERS = frozenset({"ast.parse", "ast.literal_eval"})
+PYTHON_READER = "skills/ejryan89-skill-core/scripts/python_reader.py"
+# Python's home lookups read the profile folder's variable as given, so a relative one names a folder under the working
+# directory. ejryan89-skill-core's executable_locator.absolute_home refuses one by name, and the deployer's platform
+# seam reads the home its own way; the owner-only rule refuses either lookup anywhere else.
+HOME_LOOKUPS = frozenset({"pathlib.Path.home", "os.path.expanduser", "pathlib.Path.expanduser"})
+HOME_READERS = frozenset({"skills/ejryan89-skill-core/scripts/executable_locator.py", "deployer/platform_support.py"})
 
 
 def _looked_up(node: ast.AST, aliases: dict[str, str]) -> str:
@@ -1319,9 +1330,10 @@ def json_parse_problems(root: Path, files: list[Path]) -> list[str]:
 
 # ejryan89-skill-core's whole_number is the one reader of a whole number from text, taking ASCII digits alone up to a
 # cap and raising its caller's named error, where int() reads every Unicode digit, a sign, spaces, and underscores, and
-# past the interpreter's digit limit raises a ValueError that names no input. So int() never converts a
-# regular-expression group, an item of a findall() list or of one of its tuples among them, or a value an isdigit(),
-# isdecimal(), or isnumeric() test admitted, which passes a digit such as a superscript two that int() then refuses.
+# past the interpreter's digit limit raises a ValueError that names no input. So neither int() nor float(), which
+# reads the same and nan and inf too and gives an infinity past a float's range, converts a regular-expression group,
+# an item of a findall() list or of one of its tuples among them, or a value an isdigit(), isdecimal(), or isnumeric()
+# test admitted, which passes a digit such as a superscript two that either then refuses.
 # Nor does an argparse option read its number with int() or float(): an add_argument's type is never int or float,
 # through an alias, a getattr, a functools.partial, or a `**` literal (resolved_calls), and a function or lambda the
 # module gives an add_argument as its type never converts its own parameter's text, through a method call on it, an
@@ -1341,8 +1353,14 @@ ARGUMENT_NUMBER_TYPES = {
 # The objects whose functions and methods a call may name through the re module: a call on either names its pattern or
 # its match first, as re.fullmatch(pattern, text) and re.Pattern.fullmatch(pattern, text) do.
 REGEX_OWNERS = frozenset({"re", "re.Pattern", "re.Match"})
-# The callables int() is reached by, through the module's imports.
+# The callables int() and float() are reached by, through the module's imports, each by the builtin it is.
 INT_CALLABLES = frozenset({"int", "builtins.int"})
+CONVERSION_CALLABLES = {**dict.fromkeys(INT_CALLABLES, "int"), "float": "float", "builtins.float": "float"}
+# What each conversion does with text that is no bounded run of ASCII digits, as the policy words it.
+CONVERSION_FAULTS = {
+    "int": "reads more than ASCII digits and past the digit limit raises a ValueError naming no input",
+    "float": "reads more than ASCII digits, nan and inf among them, and gives an infinity past a float's range",
+}
 MAP_CALLABLES = frozenset({"map", "builtins.map"})
 
 
@@ -1501,19 +1519,24 @@ class _ModuleNumbers:
         if len(node.args) > index:
             self.tested.setdefault(self._place(node.args[index]), f"a regular-expression {method}()")
 
-    def refusal(self, call: ast.Call) -> str | None:
-        """What a one-argument int() call converts that it must not, or a map(int, ...) over groups, or None. A
-        strip() leaves a group's digits as they were, so a stripped group is one too."""
+    def refusal(self, call: ast.Call) -> tuple[str, str] | None:
+        """What a one-argument int() or float() call converts that it must not, or a map(int, ...) or map(float, ...)
+        over groups, with the builtin, or None. A strip() leaves a group's digits as they were, so a stripped group is
+        one too."""
         called = self.resolver.name(call.func)
-        if called in MAP_CALLABLES and len(call.args) >= 2 and self.resolver.name(call.args[0]) in INT_CALLABLES:
-            return "regular-expression groups" if any(self._lists_groups(item) for item in call.args[1:]) else None
-        if called not in INT_CALLABLES or len(call.args) != 1 or call.keywords:
+        if called in MAP_CALLABLES and len(call.args) >= 2:
+            mapped = CONVERSION_CALLABLES.get(self.resolver.name(call.args[0]))
+            if mapped and any(self._lists_groups(item) for item in call.args[1:]):
+                return "regular-expression groups", mapped
+            return None
+        builtin = CONVERSION_CALLABLES.get(called)
+        if builtin is None or len(call.args) != 1 or call.keywords:
             return None
         argument = call.args[0]
         if self.is_group(_unstripped(argument)):
-            return "a regular-expression group"
+            return "a regular-expression group", builtin
         test = self.tested.get(self._place(argument))
-        return f"a value {test} admitted" if test else None
+        return (f"a value {test} admitted", builtin) if test else None
 
 
 def _number_types(given: ast.expr, resolver: CallableResolver) -> set[str]:
@@ -1647,12 +1670,13 @@ def int_parse_problems(root: Path, files: list[Path]) -> list[str]:
             (
                 node.lineno,
                 scope,
-                f"converts {what} with int(), which reads more than ASCII digits and past the digit limit raises a "
-                "ValueError naming no input; call ejryan89-skill-core's whole_number.read, the one reader of a whole "
-                f"number from text, or state why in {INT_PARSE_ALLOWANCE}",
+                f"converts {what} with {builtin}(), which {CONVERSION_FAULTS[builtin]}; call ejryan89-skill-core's "
+                "whole_number.read, the one reader of a whole number from text, or state why in "
+                f"{INT_PARSE_ALLOWANCE}",
             )
             for node, scope in scoped_nodes(tree.body)
-            if isinstance(node, ast.Call) and id(node) not in converted and (what := numbers.refusal(node))
+            if isinstance(node, ast.Call) and id(node) not in converted and (refused := numbers.refusal(node))
+            for what, builtin in [refused]
         ]
         found += [
             (
@@ -2488,8 +2512,8 @@ def _annotation_names(annotation: ast.expr, resolver: CallableResolver) -> Itera
             yield resolver.name(part)
         elif isinstance(part, ast.Constant) and isinstance(part.value, str):
             try:
-                quoted = ast.parse(part.value.strip(), mode="eval")
-            except SyntaxError:
+                quoted = python_reader.parse_expression(part.value.strip())
+            except python_reader.CONTENT_ERRORS:
                 continue
             aliases = resolver.aliases(part)
             yield from (
@@ -4028,6 +4052,8 @@ CTYPES_OWNERS = frozenset(
 OWNER_ONLY_NAMES: dict[str, frozenset[str]] = {
     **{name: frozenset({JSON_WRITER}) for name in (JSON_DUMP, JSON_DUMPS, *JSON_ENCODERS)},
     **dict.fromkeys(JSON_PARSERS, frozenset({JSON_READER})),
+    **dict.fromkeys(PYTHON_PARSERS, frozenset({PYTHON_READER})),
+    **dict.fromkeys(HOME_LOOKUPS, HOME_READERS),
     **dict.fromkeys(LIBRARY_LOADERS | LIBRARY_NAMESPACES | LIBRARY_OBJECTS, CTYPES_OWNERS),
     **{name: frozenset({"skills/ejryan89-skill-core/scripts/path_containment.py"}) for name in COMMON_PATH_FUNCTIONS},
     # bounded_process's own runners are the way every other module starts a process, so they are no owner's alone;

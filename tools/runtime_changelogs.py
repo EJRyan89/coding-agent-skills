@@ -97,6 +97,7 @@ import file_presence
 import frontmatter
 import guidance_record
 import json_reader
+import python_reader
 import versions
 from agent_skills import CODEX_METADATA
 from console import run_main
@@ -308,8 +309,8 @@ def variable_terms(top: Path) -> list[Term]:
     trees: list[ast.Module] = []
     for path in python_files(top):
         try:
-            trees.append(ast.parse(path.read_text(encoding="utf-8"), filename=str(path)))
-        except (OSError, UnicodeDecodeError, SyntaxError, ValueError) as exc:
+            trees.append(python_reader.parse(path.read_text(encoding="utf-8"), str(path)))
+        except (OSError, UnicodeDecodeError, python_reader.PythonRefused) as exc:
             raise WatchError(f"cannot read {path.relative_to(top).as_posix()}: {exc}") from exc
     constants: dict[str, str] = {}
     for tree in trees:

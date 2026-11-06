@@ -35,9 +35,13 @@ def _numbers(text: str) -> Version | None:
 
 def find(text: str, *, least: int = 2, most: int | None = 3) -> Version | None:
     """The first version of `least` to `most` numbers in `text`, as a version command prints it, or None when it holds
-    none. A longer version is read up to `most` numbers, so `1.2.3.4` is `(1, 2, 3)` when `most` is 3."""
-    match = re.search(_pattern(least, most), text)
-    return _numbers(match.group(0)) if match else None
+    none. A longer version is read up to `most` numbers, so `1.2.3.4` is `(1, 2, 3)` when `most` is 3. A run of digits
+    shaped like a version whose number is past the digit limit is no version, so the search goes on past it."""
+    for match in re.finditer(_pattern(least, most), text):
+        version = _numbers(match.group(0))
+        if version is not None:
+            return version
+    return None
 
 
 def read(text: str, *, least: int = 2, most: int | None = None) -> Version | None:
