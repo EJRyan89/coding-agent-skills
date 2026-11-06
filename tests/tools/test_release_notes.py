@@ -558,6 +558,11 @@ class InsertSectionTests(unittest.TestCase):
     def test_a_file_with_no_version_gets_the_section_at_its_end(self) -> None:
         self.assertEqual(f"{INTRO}\n## v0.1.0\n", release_notes.insert_section(INTRO, "v0.1.0", "## v0.1.0\n"))
 
+    def test_a_heading_in_other_unicode_digits_is_no_versions_section(self) -> None:
+        # Arabic-Indic three is a digit to `\d` but not to release_tags, so the section goes at the end, not above it.
+        notes = f"{INTRO}\n## v\u0663.0.0\n"
+        self.assertEqual(f"{notes}\n## v0.1.0\n", release_notes.insert_section(notes, "v0.1.0", "## v0.1.0\n"))
+
 
 class ReleaseProcedureTests(unittest.TestCase):
     def test_the_release_procedure_writes_the_section_before_tagging(self) -> None:

@@ -5,11 +5,14 @@ from __future__ import annotations
 import re
 from collections.abc import Iterable
 
+import versions
 from markdown_sections import markdown_section
 
 RELEASING_DOC = "docs/releasing.md"
 VERSIONING_HEADING = "## Versioning"
-VERSION = re.compile(r"v\d+\.\d+\.\d+")
+# A release version as release_tags reads one: `v` and three numbers of ASCII digits, built from `versions`, since `\d`
+# would admit every Unicode digit and take a heading such as `## v٣.0.0` for a release's section.
+VERSION = re.compile(f"v{versions.pattern(3, 3)}")
 LEVEL_ITEM = re.compile(r"- \*\*([A-Za-z]+)\.\*\*")
 LEADING_LEVEL = re.compile(r"[A-Za-z]+\b|\S+")
 

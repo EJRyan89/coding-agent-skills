@@ -1206,8 +1206,22 @@ class RunTests(RuntimeCanaryTestCase):
             with self.subTest(listed=listed):
                 stream = json.dumps({"type": "result", "permission_denials": listed})
                 self.assertEqual((None, denials), runtime_canary.claude_stream(stream))
+
+    def test_skills_listed_in_another_shape_are_unknown_never_none_discovered(self) -> None:
+        # A list of another kind cannot say which skills were found: neither "none discovered" nor UNDISCOVERED.
+        for skills in (5, "alpha", None, [FIXTURE, 3], {"name": FIXTURE}):
+            with self.subTest(skills=skills):
+                init = json.dumps({"type": "system", "subtype": "init", "skills": skills})
+                self.assertEqual((None, []), runtime_canary.claude_stream(init))
+                self.assertEqual(runtime_canary.UNREAD_DISCOVERY, runtime_canary.discovery_failure(init))
+        runner = FakeRuntimes()
         init = json.dumps({"type": "system", "subtype": "init", "skills": 5})
-        self.assertEqual((set(), []), runtime_canary.claude_stream(init))
+        runner.actions["claude"] = lambda *_: Completed(0, init + "\n", "")
+        lines = self.canary(runner, runtimes=("claude",))
+        self.assertFalse([line for line in lines if "DISCOVERED claude" in line], lines)
+        self.assertIn(
+            f'RUNTIME claude {FIXTURE} FAILED "{runtime_canary.UNREAD_DISCOVERY}" {self.kept("claude")}', lines
+        )
 
     def test_a_line_holding_a_line_break_other_than_newline_is_read_whole(self) -> None:
         # JSON holds U+2028, U+0085, and the other characters str.splitlines() breaks on as they are, and a log line

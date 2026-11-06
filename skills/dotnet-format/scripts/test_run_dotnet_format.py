@@ -5,6 +5,7 @@ import io
 import json
 import os
 import signal
+import stat
 import subprocess
 import sys
 import tempfile
@@ -485,6 +486,48 @@ class MainTests(unittest.TestCase):
                     prefix = f"FAILED the solution {solution} is refused: {expected}"
                     self.assertTrue("\t".join(lines[0]).startswith(prefix), lines)
                     self.assertEqual([], runner.calls)
+
+    def test_a_fix_refuses_a_read_only_or_linked_file_before_the_formatter_writes_any(self) -> None:
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        inside = self.root / "src" / "Real"
+        inside.mkdir(parents=True)
+        (inside / "Linked.cs").write_text("class A {}\n", encoding="utf-8")
+        if sys.platform == "win32":  # a junction needs no privilege
+            import _winapi
+
+            _winapi.CreateJunction(str(inside), str(self.root / "Linked"))
+        else:
+            (self.root / "Linked").symlink_to(inside, target_is_directory=True)
+        locked = self.root / "src" / "Locked.cs"
+        locked.write_text("class B {}\n", encoding="utf-8")
+        locked.chmod(stat.S_IREAD)
+        self.addCleanup(locked.chmod, stat.S_IREAD | stat.S_IWRITE)
+        entries = {
+            "Linked/Linked.cs": "its folder Linked is a symbolic link or junction",
+            "src/Locked.cs": "the file is read-only; make it writable to fix it",
+        }
+        self.file_list.write_text("".join(f"{name}\0" for name in [*entries, *self.files]), encoding="utf-8")
+        runner = FakeRunner(0, "  Format complete in 10ms.\n")
+        status, lines, errors = self.run_formatter("fix", runner)
+        self.assertEqual((1, ""), (status, errors), "a refused file is a finding, since it went unfixed")
+        self.assertEqual([["REFUSED", name] for name in entries], [fields[:2] for fields in lines[:2]])
+        for fields, reason in zip(lines[:2], entries.values(), strict=True):
+            self.assertTrue(fields[2].startswith(reason), fields)
+        ((arguments, _, _),) = runner.calls
+        self.assertEqual(self.files, arguments[arguments.index("--include") + 1 :])
+        # A check judges nothing it would not write: both files are still passed to it.
+        runner = FakeRunner(0, "  Format complete in 10ms.\n")
+        self.run_formatter("check", runner)
+        ((arguments, _, _),) = runner.calls
+        self.assertEqual([*entries, *self.files], arguments[arguments.index("--include") + 1 :])
+
+    def test_the_skill_reports_no_issues_only_when_no_file_was_refused(self) -> None:
+        # A list every entry of which is refused prints `SUMMARY 0 0 -`, as below, so a zero count alone is not a clean
+        # result: the step that reports one must also see that nothing was REFUSED or UNREADABLE.
+        skill = (Path(__file__).resolve().parents[1] / "SKILL.md").read_text(encoding="utf-8")
+        (step,) = [line for line in skill.splitlines() if "no formatting issues found" in line]
+        self.assertIn("neither command printed a `REFUSED` or `UNREADABLE` line", step)
 
     def test_a_list_every_entry_of_which_is_refused_runs_nothing(self) -> None:
         self.file_list.write_text("../Outside.cs\0", encoding="utf-8")

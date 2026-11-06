@@ -15,12 +15,12 @@ named for the source's repository, the part of its ID after the slash; each opt-
 
 The deployer reads a source through its own loader, which refuses a malformed menu. read_menu is the reader for code
 that cannot import the deployer: it reads source.json and deploy-meta/ as that loader does, takes what a well-formed
-source says, and fails only on what names no skill or cannot be read at all.
+source says, and fails on what names no skill or cannot be read at all, a list of names of another kind included.
 """
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from collections.abc import Set as AbstractSet
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -126,23 +126,28 @@ class SourceMenu:
     opt_in_bundles: set[str] = field(default_factory=set)
 
 
+def closure(roots: Iterable[str], skill_deps: Callable[[str], Iterable[str]]) -> list[str]:
+    """The roots and every skill their skill_deps reach, in depth-first preorder: each skill once, where it is first
+    reached. It is the one walk of skill dependencies, which the deployer's selection, audit-skill's declared
+    dependencies, and change-skill's owed gates share; `skill_deps` gives a skill's dependencies however its caller
+    reads them. The walk keeps its own stack, so a long chain of dependencies cannot exhaust Python's recursion."""
+    ordered: list[str] = []
+    seen: set[str] = set()
+    stack = list(reversed(list(roots)))
+    while stack:
+        name = stack.pop()
+        if name in seen:
+            continue
+        seen.add(name)
+        ordered.append(name)
+        stack.extend(reversed(list(skill_deps(name))))
+    return ordered
+
+
 def expand(menu: Menu, bundles: Sequence[str], skills: Sequence[str]) -> list[str]:
     """Depth-first preorder expansion of bundle members, then skills, through dependencies."""
-    ordered: list[str] = []
-
-    def visit(name: str) -> None:
-        if name in ordered:
-            return
-        ordered.append(name)
-        for dependency in menu.skills[name].skill_deps:
-            visit(dependency)
-
-    for bundle in bundles:
-        for member in menu.bundles[bundle]:
-            visit(member)
-    for skill in skills:
-        visit(skill)
-    return ordered
+    roots = [*(member for bundle in bundles for member in menu.bundles[bundle]), *skills]
+    return closure(roots, lambda name: menu.skills[name].skill_deps)
 
 
 def root_names(menu: Menu) -> list[str]:
@@ -216,25 +221,35 @@ def _json_object(path: Path) -> dict[str, object]:
     return document
 
 
-def _names(value: object) -> tuple[str, ...]:
-    return tuple(name for name in value if isinstance(name, str)) if isinstance(value, list) else ()
+def _names(value: object, where: str) -> tuple[str, ...]:
+    """A list of names as the deployer's loader takes one; any other kind, or a list holding anything but names, is a
+    MenuError, since the names it was meant to hold cannot be known and reading it as none would plan a menu the
+    deployer refuses."""
+    if not isinstance(value, list) or not all(isinstance(name, str) for name in value):
+        raise MenuError(f"{where} is not a list of names")
+    return tuple(value)
 
 
-def _entry(metadata: dict[str, object]) -> MenuEntry:
+def _entry(path: Path, metadata: dict[str, object]) -> MenuEntry:
+    where = path.as_posix()
     return MenuEntry(
-        skill_deps=_names(metadata.get("skill_deps")),
-        required_vars=_names(metadata.get("required_vars")),
+        skill_deps=_names(metadata.get("skill_deps", []), f"{where} skill_deps"),
+        required_vars=_names(metadata.get("required_vars", []), f"{where} required_vars"),
         selectable=metadata.get("selectable", True) is not False,
         opt_in=metadata.get("opt_in", False) is True,
     )
 
 
-def _read_bundles(menu: SourceMenu, value: object) -> None:
-    for bundle, definition in sorted(value.items()) if isinstance(value, dict) else []:
-        found = _names(definition.get("members")) if isinstance(definition, dict) else ()
+def _read_bundles(menu: SourceMenu, path: Path, value: object) -> None:
+    if not isinstance(value, dict):
+        raise MenuError(f"{path.as_posix()} bundles is not a JSON object")
+    for bundle, definition in sorted(value.items()):
+        if not isinstance(definition, dict):
+            raise MenuError(f"{path.as_posix()} bundle {bundle} is not a JSON object")
+        found = _names(definition.get("members"), f"{path.as_posix()} bundle {bundle} members")
         menu.bundles[str(bundle)] = list(found)
         menu.skill_bundle.update({member: str(bundle) for member in found})
-        if isinstance(definition, dict) and definition.get("opt_in") is True:
+        if definition.get("opt_in") is True:
             menu.opt_in_bundles.add(bundle)
 
 
@@ -246,8 +261,8 @@ def read_menu(root: Path) -> SourceMenu:
         raise MenuError(f"{(root / SOURCE_FILE).as_posix()} names no source ID of the form <owner>/<repository>")
     menu = SourceMenu(source_id)
     for path in file_presence.matching(root / METADATA_FOLDER, "*.json"):
-        menu.skills[path.stem] = _entry(_json_object(path))
-    _read_bundles(menu, document.get("bundles"))
+        menu.skills[path.stem] = _entry(path, _json_object(path))
+    _read_bundles(menu, root / SOURCE_FILE, document.get("bundles", {}))
     named = [*(name for entry in menu.skills.values() for name in entry.skill_deps), *menu.skill_bundle]
     unknown = sorted({name for name in named if name not in menu.skills})
     if unknown:

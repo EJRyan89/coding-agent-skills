@@ -1562,6 +1562,31 @@ def test_month_spans_join_consecutive_months_and_end_the_current_one_today() -> 
             id="a-captured-at-without-an-offset",
         ),
         pytest.param(
+            FIRST_HISTORY.replace("2026-03,mona,", "2026-" + "3" * 5000 + ",mona,", 1),
+            "has month of 5005 characters, not YYYY-MM",
+            id="a-long-month",
+        ),
+        pytest.param(
+            FIRST_HISTORY.replace("2026-03,mona,", "2026-03," + "-" * 5000 + ",", 1),
+            "has user of 5000 characters, not a GitHub login",
+            id="a-long-user",
+        ),
+        pytest.param(
+            FIRST_HISTORY.replace(",0,false,2026-05-20T08:00:00Z,", ",0," + "f" * 5000 + ",2026-05-20T08:00:00Z,", 1),
+            "has is_partial of 5000 characters, not true or false",
+            id="a-long-is-partial",
+        ),
+        pytest.param(
+            FIRST_HISTORY.replace(",2026-05-20T08:00:00Z,", "," + "2" * 5000 + ",", 1),
+            "has captured_at of 5000 characters, not a timestamp with a UTC offset",
+            id="a-long-captured-at",
+        ),
+        pytest.param(
+            FIRST_HISTORY.replace("2026-05-20T08:00:00Z,\n", "2026-05-20T08:00:00Z," + "c" * 5000 + "\n", 1),
+            "has capped of 5000 characters, not",
+            id="a-long-capped",
+        ),
+        pytest.param(
             FIRST_HISTORY + '2026-03,octo,"' + "x" * (csv.field_size_limit() + 1) + '"\n',
             "is not CSV the report wrote: field larger than field limit",
             id="not-csv",

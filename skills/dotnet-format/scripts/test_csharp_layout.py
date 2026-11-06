@@ -23,6 +23,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-cor
 
 import atomic_file
 import csharp_layout as layout
+import dotnet_format_targets as targets
 import dotnet_solution
 import whole_number
 from flat_text import flat_text
@@ -606,7 +607,7 @@ class FileTests(unittest.TestCase):
         file_list = self.file_list("Linked.cs", "Linked/Inner.cs", "Fixable.cs")
         # Links stand in through the stubbed test on every platform; the real-link test below makes one.
         with mock.patch.object(
-            layout, "is_link_or_junction", side_effect=lambda path: path.name in {"Linked.cs", "Linked"}
+            targets, "is_link_or_junction", side_effect=lambda path: path.name in {"Linked.cs", "Linked"}
         ):
             status, lines = self.main("check", "--repo-root", str(self.root), "--file-list", str(file_list), "--fix")
         self.assertEqual(1, status, "the violations a refused file keeps remain")
@@ -627,7 +628,7 @@ class FileTests(unittest.TestCase):
 
     def test_check_without_fix_reads_through_a_link_and_never_asks(self) -> None:
         (self.root / "Linked.cs").write_bytes(b"#region A\n\n#endregion A\n")
-        with mock.patch.object(layout, "is_link_or_junction", side_effect=AssertionError("asked without --fix")):
+        with mock.patch.object(targets, "is_link_or_junction", side_effect=AssertionError("asked without --fix")):
             status, lines = self.main(
                 "check", "--repo-root", str(self.root), "--file-list", str(self.file_list("Linked.cs"))
             )
@@ -699,7 +700,7 @@ class FileTests(unittest.TestCase):
     def test_a_path_whose_link_state_cannot_be_read_is_not_written(self) -> None:
         (self.root / "Fixable.cs").write_bytes(b"#region A\n\n#endregion A\n")
         denied = PermissionError(13, "Permission denied")
-        with mock.patch.object(layout, "is_link_or_junction", side_effect=denied):
+        with mock.patch.object(targets, "is_link_or_junction", side_effect=denied):
             status, lines = self.main(
                 "check", "--repo-root", str(self.root), "--file-list", str(self.file_list("Fixable.cs")), "--fix"
             )
@@ -1435,7 +1436,7 @@ class ConfigTests(unittest.TestCase):
     def test_apply_never_writes_an_editorconfig_that_is_or_lies_below_a_link(self) -> None:
         editorconfig = self.root / ".editorconfig"
         editorconfig.write_text("# shared\n", encoding="utf-8")
-        with mock.patch.object(layout, "is_link_or_junction", side_effect=lambda path: path.name == ".editorconfig"):
+        with mock.patch.object(targets, "is_link_or_junction", side_effect=lambda path: path.name == ".editorconfig"):
             status, grouped = self.run_config("--apply")
         self.assertEqual(1, status, "the settings it did not add are still missing")
         self.assertEqual([[".editorconfig", LINKED_FILE]], grouped["REFUSED"])

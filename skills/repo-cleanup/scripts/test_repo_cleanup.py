@@ -1013,7 +1013,9 @@ class PlanApplyTests(Fixture):
         self.assertIsNone(self.tip("local-work"))
         code, lines = self.confirm("delete-local", "local-merged")
         self.assertEqual(0, code, "a branch the plan already deleted needs nothing more")
-        self.assertEqual([["local-merged", "already deleted by this plan"]], facts(lines, "PRESERVED"))
+        # The branch is gone, not kept: PRESERVED names what stays, and the summary's Preserved list stays empty.
+        self.assertEqual(([["local-merged"]], []), (facts(lines, "ALREADY_DELETED"), facts(lines, "PRESERVED")))
+        self.assertNotIn("already deleted", "\n".join(lines))
         self.assertIsNotNone(self.tip("local-open"))
 
     def test_apply_runs_once_and_confirmations_need_an_applied_plan(self) -> None:

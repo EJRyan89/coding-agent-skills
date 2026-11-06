@@ -28,6 +28,10 @@ LIST_MARKER = rf"(?:{BULLET_MARKER}|{ORDERED_MARKER})"
 INTERRUPTING_LIST_MARKER = rf"(?:{BULLET_MARKER}|0{{0,8}}1[.)])"
 # A line that opens a list item: any indentation, the marker, then a space or a tab before its text.
 LIST_ITEM = re.compile(rf"[ \t]*(?P<marker>{LIST_MARKER})[ \t]+(?P<text>.*)")
+# A line that is an ATX heading with text, as CommonMark reads one: up to three spaces of indentation, one to six `#`
+# as its level, a space or a tab, then its text, less a closing run of `#` after a space or a tab. `\s` would admit
+# every Unicode space, so a line Markdown shows as prose, such as `#` and a no-break space, would be read as a heading.
+ATX_HEADING = re.compile(r" {0,3}(?P<marks>#{1,6})[ \t]+(?P<text>.*?)(?:[ \t]+#+)?[ \t]*$")
 # An inline code span on one line, with its text as the first group, as a skill reads commands or cited paths from it.
 CODE_SPAN = re.compile(r"`([^`\n]+)`")
 # An inline code span as CommonMark reads one: a run of backticks, its text, and a run of the same length, with the run
