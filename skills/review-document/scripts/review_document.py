@@ -77,6 +77,7 @@ from flat_text import flat_text
 from git_client import GitClient, GitError, output_line
 from github_client import GitHubError
 from path_containment import within
+from review_config import LOCAL_OWNER
 from review_documents import ExtractionRefused, document_format, extract, unlabeled
 from review_github import GitHubClient, NotOneFile
 from review_io import PersistenceError, working_path
@@ -103,9 +104,7 @@ PULL_URL_FORM = "https://github.com/<owner>/<repo>/pull/<number>"
 # Where the fixture keeps its specialists manifest, in both trees, so the manifest is never part of the change.
 MANIFEST_PATH = ".review-document/specialists.json"
 FINDING_CATEGORIES = ["requirement-gap", "alternative-unstated", "risk", "open-question", "inconsistency", "rollout"]
-# The fixture's owner. No GitHub account name holds a dot, so the pull request URL a report shows names nobody's
-# repository.
-LOCAL_OWNER = "review-document.local"
+# The fixture's repository for a file outside a checkout, under the local owner review_config owns.
 LOOSE_REPOSITORY = f"{LOCAL_OWNER}/document"
 REPORT_NAME = "report.md"
 # What a double-quoted argument does not keep as it is in Bash or PowerShell, so an output directory whose path holds
