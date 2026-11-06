@@ -433,6 +433,23 @@ class ParsingTests(unittest.TestCase):
                         found,
                     )
 
+    def test_a_codex_catalog_description_holding_its_skills_heading_is_read_whole(self) -> None:
+        # Only the first "### Available skills" starts the list, so the heading's text inside a description is part
+        # of that description's line, and the skills after it are read too.
+        text = (
+            "### Skill roots\n- `r0` = `/skills`\n### Available skills\n"
+            f"- one: Lists the {discovery.CODEX_CATALOG_SKILLS} of a catalog. (file: r0/one/SKILL.md)\n"
+            "- two: Another skill. (file: r0/two/SKILL.md)\n</skills_instructions>"
+        )
+        found = discovery.parse_codex_catalog([json.dumps([{"text": text}])])
+        self.assertEqual(
+            {
+                "one": [Listed(forward(Path("/skills/one")), True)],
+                "two": [Listed(forward(Path("/skills/two")), True)],
+            },
+            found,
+        )
+
     def test_a_codex_catalog_whose_lines_end_with_a_carriage_return_is_read_as_one_ending_with_a_newline(self) -> None:
         text = (
             "### Skill roots\r\n- `r0` = `/skills`\r\n### Available skills\r\n"
@@ -706,6 +723,17 @@ class ConverseTests(DeployerTestCase):
         expected = r"^it exited before answering with exit code 3: Error: sign in first$"
         with self.assertRaisesRegex(ListingError, expected):
             self.talk(arguments, ['{"id": 0}'], answered=discovery.codex_answered)
+
+    def test_a_refusal_names_the_last_of_several_error_lines(self) -> None:
+        arguments = self.program("""
+            import sys
+            for line in ("first", "second", "third", "Error: the last"):
+                print(line, file=sys.stderr)
+            sys.exit(3)
+        """)
+        with self.assertRaises(ListingError) as caught:
+            self.talk(arguments)
+        self.assertEqual("it failed with exit code 3: Error: the last", str(caught.exception))
 
     def test_a_last_error_line_holding_a_line_break_other_than_newline_is_named_whole(self) -> None:
         # A runtime's message may hold U+2028, U+0085, or another character str.splitlines() breaks on, and on Windows
