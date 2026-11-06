@@ -41,6 +41,7 @@ from typing import Any
 import file_presence
 from flat_text import flat_text
 from git_client import GitClient, GitError
+from markdown_sections import MARKDOWN_SPACE, list_item
 from path_containment import refusal
 from review_config import safe_repository_path
 from review_records import is_suite_profile
@@ -92,10 +93,11 @@ FORCE_WORDS = {
     "blocking": "blocking",
     "critical": "critical",
 }
-LIST_ITEM = re.compile(r"\s*(?:[-*+]|\d+[.)])\s+(.*)")
 SENTENCE_END = re.compile(r"(?<=[.!?])\s+(?=[A-Z`*_(\"'])")
 WORD = re.compile(r"[a-z0-9_]+")
-LINK = re.compile(r"\]\(\s*<?([^)\s>#]+\.md)(?:#[^)\s]*)?>?\s*\)")
+# A link to a Markdown file on one line: CommonMark lets spaces and tabs surround the destination, which holds no
+# space or control character; every other Unicode space is part of it.
+LINK = re.compile(r"\]\([ \t]*<?([^)\x00-\x20>#]+\.md)(?:#[^)\x00-\x20]*)?>?[ \t]*\)")
 CODE_REFERENCE = re.compile(r"`([A-Za-z0-9_./-]+\.md)`")
 
 
@@ -342,19 +344,21 @@ def _status(text: str | None, budget: int) -> str:
 
 def _statements(text: str) -> list[tuple[int, str]]:
     """Each list item and paragraph of Markdown, with the line it starts on; headings, tables, and code are left
-    out."""
+    out. Lines are read as markdown_sections reads Markdown's blocks: only spaces and tabs are its whitespace, and a
+    list item interrupts a paragraph only where CommonMark lets it, so a line Markdown shows as a paragraph's
+    continuation joins that paragraph. A paragraph inside a list item is continued by any further item."""
     found: list[tuple[int, str]] = []
-    continued = fenced = False
+    continued = fenced = in_item = False
     for number, raw in enumerate(text.splitlines(), start=1):
-        stripped = raw.strip()
+        stripped = raw.strip(MARKDOWN_SPACE)
         if stripped.startswith(("```", "~~~")):
             fenced = not fenced
-        item = LIST_ITEM.fullmatch(raw)
+        item = list_item(raw, interrupting=continued and not in_item)
         if fenced or not stripped or stripped.startswith(("```", "~~~", "#", "|")):
-            continued = False
+            continued = in_item = False
         elif item is not None or not continued:
-            found.append((number, item.group(1) if item else stripped))
-            continued = True
+            found.append((number, item if item is not None else stripped))
+            continued, in_item = True, item is not None
         else:
             found[-1] = (found[-1][0], f"{found[-1][1]} {stripped}")
     return found

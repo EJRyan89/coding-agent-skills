@@ -39,11 +39,12 @@
 #                    <commit> when the deployer refused to replace a deployment made with `deploy.py --at <ref>`,
 #                    which deployed <commit>, that check did not name: the clone was updated, and nothing was
 #                    deployed
-#   FAILED <reason>  alone: the clone is not a repository with deploy.py, no ejryan89-skill-core is deployed beside
-#                    this skill, `deploy.py check` printed nothing, printed only its error, or named the deployed
-#                    commit or the pin in a form the update cannot read, so whether the installation is pinned is
-#                    unknown, a step failed outright, or a release tag the stop compares has a version component too
-#                    long to compare
+#   FAILED <reason>  alone, before anything is merged or deployed and with the clone on the branch it was found on:
+#                    the clone is not a repository with deploy.py, no ejryan89-skill-core is deployed beside this
+#                    skill, `deploy.py check` printed nothing, printed only its error, or named the deployed commit or
+#                    the pin in a form the update cannot read, so whether the installation is pinned is unknown, a git
+#                    lookup or comparison failed rather than answering, git's own reason following, or another step
+#                    failed outright
 # Each list of commits above that git cannot read, after any status line, is one UNLISTED <range> <reason> line in its
 # place, never an empty list.
 # A stop leaves the clone on the branch it was found on unless a "still on main:" line says otherwise; an update
@@ -114,7 +115,8 @@ if [ "${UPDATE_SKILLS_COPY:-}" != "$0" ]; then
   UPDATE_SKILLS_COPY=$COPY UPDATE_SKILLS_SCRIPTS=$(dirname -- "$0") exec bash "$COPY" "$@"
 fi
 DEPLOY_ERRORS=
-trap 'rm -f -- "$0" ${DEPLOY_ERRORS:+"$DEPLOY_ERRORS"}' EXIT
+GIT_ERRORS=
+trap 'rm -f -- "$0" ${DEPLOY_ERRORS:+"$DEPLOY_ERRORS"} ${GIT_ERRORS:+"$GIT_ERRORS"}' EXIT
 SCRIPTS=$UPDATE_SKILLS_SCRIPTS
 unset UPDATE_SKILLS_COPY UPDATE_SKILLS_SCRIPTS
 
@@ -122,6 +124,12 @@ unset UPDATE_SKILLS_COPY UPDATE_SKILLS_SCRIPTS
 if ! DEPLOY_ERRORS=$(mktemp 2>&1); then
   echo "FAILED cannot create a temporary file for the deployer's errors: $(one_line "$DEPLOY_ERRORS")"
   DEPLOY_ERRORS=
+  exit 1
+fi
+# git's stderr is kept apart from its output, so git_quiet below can tell git's "no" from its failure.
+if ! GIT_ERRORS=$(mktemp 2>&1); then
+  echo "FAILED cannot create a temporary file for git's errors: $(one_line "$GIT_ERRORS")"
+  GIT_ERRORS=
   exit 1
 fi
 
@@ -162,8 +170,30 @@ if [ ! -f "$CLONE/deploy.py" ]; then
   echo "FAILED no deploy.py in $CLONE"
   exit 1
 fi
-if ! git -C "$CLONE" rev-parse --git-dir >/dev/null 2>&1; then
-  echo "FAILED not a git repository: $CLONE"
+
+# A git command in the clone, read as ejryan89-skill-core's git_client.py reads git's exit status: status 0 when git
+# succeeded, GIT_OUT then its output; 1 when git said no, which a --quiet command, merge-base --is-ancestor, and
+# symbolic-ref --quiet say only by exiting 1 with nothing on stderr; and 2 for any other failure, such as a clone git
+# refuses as of dubious ownership, a broken config, or a warning before exit 1, GIT_REASON then git's error as one line,
+# or its exit status when it printed none. So a git that cannot answer is never read as git's no.
+GIT_OUT=
+GIT_REASON=
+git_quiet() {
+  local code=0
+  GIT_OUT=$(git -C "$CLONE" "$@" 2>"$GIT_ERRORS") || code=$?
+  GIT_OUT=$(printf '%s' "$GIT_OUT" | tr -d '\r')
+  GIT_REASON=$(one_line "$(cat -- "$GIT_ERRORS")")
+  if [ "$code" -eq 0 ]; then
+    return 0
+  elif [ "$code" -eq 1 ] && [ -z "$GIT_REASON" ]; then
+    return 1
+  fi
+  [ -n "$GIT_REASON" ] || GIT_REASON="git $1 exited $code and printed nothing"
+  return 2
+}
+
+if ! git_quiet rev-parse --git-dir; then
+  echo "FAILED cannot read $CLONE as a git repository: $GIT_REASON"
   exit 1
 fi
 
@@ -210,28 +240,18 @@ short_name() {
   fi
   printf '%s\n' "$named" | tr -d '\r'
 }
-# A version component is compared as a number without its leading zeros, of at most MAX_DIGITS digits, so Bash's
-# 64-bit integers hold it exactly.
-MAX_DIGITS=18
-# The component a release may not raise without acceptance, as "<major> <minor>": the major and 0, or 0 and the minor
-# while the major is 0. A component longer than MAX_DIGITS is a FAILED line naming the tag, and status 1.
-breaking_component() {
-  local version=${1#v} part major minor
-  for part in major minor; do
-    local digits=${version%%.*}
-    version=${version#*.}
-    digits=${digits#"${digits%%[!0]*}"}
-    if [ "${#digits}" -gt "$MAX_DIGITS" ]; then
-      echo "FAILED cannot compare release tag $1: its $part version has more than $MAX_DIGITS digits"
-      return 1
-    fi
-    printf -v "$part" '%s' "${digits:-0}"
-  done
-  if [ "$major" -gt 0 ]; then
-    echo "$major 0"
-  else
-    echo "0 $minor"
-  fi
+# Whether the release $2 raises the breaking component (the major, or the minor while the major is 0) above the
+# release $1, or untagged: release_tags.py compares them, as the one reader of a version, which holds a number of any
+# length exactly. Status 0 when it does, 1 when it does not, and 2 with a FAILED line when the two cannot be compared.
+raises_breaking() {
+  local answer
+  answer=$("$PYTHON" "$RELEASE_TAGS" --raises "$1" "$2" </dev/null 2>&1 | tr -d '\r')
+  case "$answer" in
+    RAISES) return 0 ;;
+    WITHIN) return 1 ;;
+  esac
+  echo "FAILED cannot compare release $1 with $2: $(one_line "${answer#FAILED }")"
+  return 2
 }
 
 # check names the deployed commit as "<name> (<commit>)", the commit alone, or unknown, followed by the pin when the
@@ -378,13 +398,13 @@ KNOWN_COMMIT=
 NOT_IN_CLONE=
 if [ -n "$DEPLOYED_COMMIT" ]; then
   VERIFIED=0
-  OUTPUT=$(git -C "$CLONE" rev-parse --verify --quiet "$DEPLOYED_COMMIT^{commit}" 2>&1) || VERIFIED=$?
+  git_quiet rev-parse --verify --quiet "$DEPLOYED_COMMIT^{commit}" || VERIFIED=$?
   if [ "$VERIFIED" -eq 0 ]; then
     KNOWN_COMMIT=$DEPLOYED_COMMIT
-  elif [ "$VERIFIED" -eq 1 ] && [ -z "$OUTPUT" ]; then
+  elif [ "$VERIFIED" -eq 1 ]; then
     NOT_IN_CLONE="NOT_IN_CLONE $DEPLOYED_COMMIT"
   else
-    echo "FAILED cannot look up the deployed commit $DEPLOYED_COMMIT: $(one_line "$OUTPUT")"
+    echo "FAILED cannot look up the deployed commit $DEPLOYED_COMMIT: $GIT_REASON"
     exit 1
   fi
 fi
@@ -400,14 +420,16 @@ if [ -n "$TARGET" ]; then
   fi
 fi
 if [ -n "$TARGET" ] && [ "$CURRENT" != "$TARGET" ]; then
-  TARGET_BREAKING=$(breaking_component "$TARGET") || { echo "$TARGET_BREAKING"; exit 1; }
   RAISED=1
   if [ "$CURRENT" != unknown ]; then
-    CURRENT_BREAKING=$(breaking_component "${CURRENT:-v0.0.0}") || { echo "$CURRENT_BREAKING"; exit 1; }
     CURRENT=${CURRENT:-untagged}
-    if [ "${CURRENT_BREAKING% *}" -gt "${TARGET_BREAKING% *}" ] ||
-      { [ "${CURRENT_BREAKING% *}" -eq "${TARGET_BREAKING% *}" ] && [ "${CURRENT_BREAKING#* }" -ge "${TARGET_BREAKING#* }" ]; }; then
+    COMPARED=0
+    ANSWER=$(raises_breaking "$CURRENT" "$TARGET") || COMPARED=$?
+    if [ "$COMPARED" -eq 1 ]; then
       RAISED=
+    elif [ "$COMPARED" -ne 0 ]; then
+      echo "$ANSWER"
+      exit 1
     fi
   fi
   if [ -n "$RAISED" ]; then
@@ -419,11 +441,11 @@ if [ -n "$TARGET" ] && [ "$CURRENT" != "$TARGET" ]; then
       # list from; any other answer of the lookup is an UNLISTED line, never an empty list.
       LISTED_FROM=${KNOWN_COMMIT:-$MAIN}
       VERIFIED=0
-      OUTPUT=$(git -C "$CLONE" rev-parse --verify --quiet "$LISTED_FROM^{commit}" 2>&1) || VERIFIED=$?
+      git_quiet rev-parse --verify --quiet "$LISTED_FROM^{commit}" || VERIFIED=$?
       if [ "$VERIFIED" -eq 0 ]; then
         log_lines "$LISTED_FROM..$DEPLOY_END"
-      elif [ "$VERIFIED" -ne 1 ] || [ -n "$OUTPUT" ]; then
-        echo "UNLISTED $LISTED_FROM..$DEPLOY_END $(one_line "$OUTPUT")"
+      elif [ "$VERIFIED" -ne 1 ]; then
+        echo "UNLISTED $LISTED_FROM..$DEPLOY_END $GIT_REASON"
       fi
       exit 1
     fi
@@ -431,31 +453,63 @@ if [ -n "$TARGET" ] && [ "$CURRENT" != "$TARGET" ]; then
   fi
 fi
 
-# A diverged main stops before the checkout, so the clone stays on the branch it was found on. Any other answer,
-# such as no local main yet, leaves the decision to the checkout and the fast-forward below.
-ANCESTOR=0
-git -C "$CLONE" merge-base --is-ancestor "$MAIN" "$ORIGIN_MAIN" >/dev/null 2>&1 || ANCESTOR=$?
-if [ "$ANCESTOR" -eq 1 ]; then
-  echo "NOT_FAST_FORWARD"
-  log_lines "$ORIGIN_MAIN..$MAIN"
+# A diverged main stops before the checkout, so the clone stays on the branch it was found on. A clone with no local
+# main yet, which git's quiet no to the lookup alone says, leaves the decision to the checkout, which creates main from
+# origin/main, and to the fast-forward below; a lookup or a comparison git cannot answer is a FAILED line with git's
+# reason, never a diverged main.
+HAS_MAIN=0
+git_quiet rev-parse --verify --quiet "$MAIN^{commit}" || HAS_MAIN=$?
+if [ "$HAS_MAIN" -eq 2 ]; then
+  echo "FAILED cannot look up $MAIN: $GIT_REASON"
   exit 1
+elif [ "$HAS_MAIN" -eq 0 ]; then
+  ANCESTOR=0
+  git_quiet merge-base --is-ancestor "$MAIN" "$ORIGIN_MAIN" || ANCESTOR=$?
+  if [ "$ANCESTOR" -eq 1 ]; then
+    echo "NOT_FAST_FORWARD"
+    log_lines "$ORIGIN_MAIN..$MAIN"
+    exit 1
+  elif [ "$ANCESTOR" -eq 2 ]; then
+    echo "FAILED cannot tell whether $MAIN is an ancestor of $ORIGIN_MAIN: $GIT_REASON"
+    exit 1
+  fi
 fi
 
 # The branch or, when HEAD is detached, the commit the clone was found on, to return to if the fast-forward fails.
-# Neither answering leaves nothing to return to, so the update stops before it switches branches, with the error of
-# the commit lookup, which runs without --quiet so git names why it cannot resolve HEAD.
-if ! FOUND_ON=$(git -C "$CLONE" symbolic-ref --quiet --short HEAD 2>/dev/null ||
-  git -C "$CLONE" rev-parse --verify HEAD 2>&1); then
-  echo "FAILED cannot read the branch or the commit the clone is on: $(one_line "$FOUND_ON")"
+# symbolic-ref --quiet says HEAD is detached only by its quiet no; any other failure of it, or of the commit lookup,
+# which runs without --quiet so git names why it cannot resolve HEAD, leaves nothing to return to, so the update stops
+# before it switches branches, with git's reason. An answer naming nothing is refused too.
+SYMBOLIC=0
+git_quiet symbolic-ref --quiet --short HEAD || SYMBOLIC=$?
+if [ "$SYMBOLIC" -eq 2 ]; then
+  echo "FAILED cannot read the branch the clone is on: $GIT_REASON"
+  exit 1
+elif [ "$SYMBOLIC" -eq 1 ] && ! git_quiet rev-parse --verify HEAD; then
+  echo "FAILED cannot read the commit the clone is on: ${GIT_REASON:-git answered no}"
   exit 1
 fi
-FOUND_ON=$(printf '%s' "$FOUND_ON" | tr -d '\r')
+FOUND_ON=$GIT_OUT
+if [ -z "$FOUND_ON" ]; then
+  echo "FAILED cannot read the branch or the commit the clone is on: git named none"
+  exit 1
+fi
+# Every short name the report prints is read before the checkout, so a FAILED line never follows a change to the clone:
+# main after the fast-forward is origin/main, main before it is origin/main too when the clone has no local main yet,
+# which the checkout then creates there, and the deployed commit is known already.
+AFTER=$(short_name "$ORIGIN_MAIN" "main after the fast-forward") || { echo "$AFTER"; exit 1; }
+BEFORE=$AFTER
+if [ "$HAS_MAIN" -eq 0 ]; then
+  BEFORE=$(short_name "$MAIN" "main before the fast-forward") || { echo "$BEFORE"; exit 1; }
+fi
+OLD=
+if [ -n "$KNOWN_COMMIT" ]; then
+  OLD=$(short_name "$KNOWN_COMMIT" "the deployed commit $KNOWN_COMMIT") || { echo "$OLD"; exit 1; }
+fi
 if ! OUTPUT=$(git -C "$CLONE" checkout --quiet main 2>&1); then
   echo "CHECKOUT_FAILED"
   printf '%s\n' "$OUTPUT" | tr -d '\r'
   exit 1
 fi
-BEFORE=$(short_name HEAD "main before the fast-forward") || { echo "$BEFORE"; exit 1; }
 if ! OUTPUT=$(git -C "$CLONE" merge --ff-only --quiet "$ORIGIN_MAIN" 2>&1); then
   echo "NOT_FAST_FORWARD"
   printf '%s\n' "$OUTPUT" | tr -d '\r'
@@ -465,7 +519,6 @@ if ! OUTPUT=$(git -C "$CLONE" merge --ff-only --quiet "$ORIGIN_MAIN" 2>&1); then
   fi
   exit 1
 fi
-AFTER=$(short_name HEAD "main after the fast-forward") || { echo "$AFTER"; exit 1; }
 
 # The main channel reports how local main moved. The release channel reports how the installation moves, from the
 # deployed commit to the release: the commits the release adds, and those the deployment had that the release does
@@ -486,7 +539,6 @@ elif [ -z "$KNOWN_COMMIT" ]; then
   [ -z "$NOT_IN_CLONE" ] || echo "$NOT_IN_CLONE"
   log_lines "$BEFORE..$RELEASE_REF"
 else
-  OLD=$(short_name "$KNOWN_COMMIT" "the deployed commit $KNOWN_COMMIT") || { echo "$OLD"; exit 1; }
   echo "UPDATED $OLD..$TARGET"
   log_lines "$KNOWN_COMMIT..$RELEASE_REF"
   if LEFT=$(log_lines "$RELEASE_REF..$KNOWN_COMMIT"); then

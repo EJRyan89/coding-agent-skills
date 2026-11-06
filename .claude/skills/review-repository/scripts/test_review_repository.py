@@ -169,6 +169,9 @@ OUTSIDE_THE_BOUNDARY = {
     f"{SKILL_CORE}/console.py": "sets each entry point's output encoding; its FAILED line flattens through flat_text",
     f"{SKILL_CORE}/folder_walk.py": "dotnet_solution takes only its skipped folder names; the inventory walks none",
     f"{SKILL_CORE}/frontmatter.py": "reads the frontmatter of a reviewer skill from the trusted commit",
+    f"{SKILL_CORE}/markdown_sections.py": (
+        "splits guidance text it is given into blocks, opening and starting nothing; the files go to synthesis whole"
+    ),
     f"{SKILL_CORE}/pull_carried.py": "judges from commits alone whether a merged pull request carried a worktree's tip",
     f"{SKILL_CORE}/seconds_option.py": "reads the user's own time option as a positive finite number of seconds",
     f"{SKILL_CORE}/skill_roots.py": "finds a sibling skill's scripts folder in the checkout or the deployed home",

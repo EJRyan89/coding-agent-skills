@@ -54,7 +54,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "ejryan8
 
 from console import run_main
 from git_client import GitClient, GitError, GitResult, output_lines
-from markdown_sections import HTML_COMMENT, markdown_section
+from markdown_sections import HTML_COMMENT, MARKDOWN_SPACE, list_item, markdown_section
 from release_levels import RELEASING_DOC, VERSION, largest_level, versioning_levels
 from release_tags import is_release_tag, last_release
 
@@ -66,11 +66,12 @@ RELEASE_BRANCH = "origin/main"
 VERSION_HEADING = re.compile(rf"^## {VERSION.pattern}[ \t]*$", re.MULTILINE)
 NOTES_FIELD = re.compile(r"^- (Level|Contract|User action|Pull request):[ \t]*(.*?)[ \t]*$", re.MULTILINE)
 NOTES_ENTRY_START = re.compile(r"^(?=#{1,3} )", re.MULTILINE)
-# A line that starts a Markdown block of its own, which no wrapped line continues: a heading, a list item, a quote, a
-# table row, or a fence.
-BLOCK_START = re.compile(r"^\s*(?:#{1,6}\s|[-*+]\s|\d+[.)]\s|>|\|)")
-FENCE = re.compile(r"^\s*(?:`{3,}|~{3,})")
-SQUASH_TITLE_NUMBER = re.compile(r"\(#(\d+)\)\s*$")
+# A line that starts a Markdown block of its own, which no wrapped line continues: a heading, a quote, or a table row;
+# a list item and a fence are read by markdown_sections' rules and FENCE. Only spaces and tabs are Markdown's
+# whitespace, as markdown_sections reads it.
+BLOCK_START = re.compile(r"^[ \t]*(?:#{1,6}[ \t]|>|\|)")
+FENCE = re.compile(r"^[ \t]*(?:`{3,}|~{3,})")
+SQUASH_TITLE_NUMBER = re.compile(r"\(#([0-9]+)\)[ \t]*$")
 # What git log -z writes after each of a commit's name, subject, and message: NUL, which git refuses in a commit message
 # and cuts a message at, so no message text can end a field early.
 FIELD_END = "\0"
@@ -125,14 +126,20 @@ def unwrapped(block: str) -> list[str]:
     """The block's lines with each hard-wrapped heading, list item, or paragraph joined back into one line.
 
     A squash merge may carry a body wrapped as git and GitHub wrap commit messages, so a line that starts no block
-    of its own continues the line above it, unless that line is blank or the two are inside a code fence.
+    of its own continues the line above it, unless that line is blank or the two are inside a code fence. A list item
+    starts its own line below another, and below any other text only where CommonMark lets a list interrupt a
+    paragraph: at a bullet or an item numbered 1.
     """
     lines: list[str] = []
     fenced = False
-    for line in (line.rstrip() for line in block.strip().split("\n")):
+    for line in (line.rstrip(MARKDOWN_SPACE + "\r") for line in block.strip(MARKDOWN_SPACE + "\r\n").split("\n")):
         starts_fence = bool(FENCE.match(line))
-        if lines and lines[-1] and line and not fenced and not starts_fence and not BLOCK_START.match(line):
-            lines[-1] = f"{lines[-1]} {line.strip()}"
+        previous = lines[-1] if lines else ""
+        starts_block = BLOCK_START.match(line) is not None or (
+            list_item(line, interrupting=list_item(previous) is None) is not None
+        )
+        if previous and line and not fenced and not starts_fence and not starts_block:
+            lines[-1] = f"{previous} {line.strip(MARKDOWN_SPACE)}"
         else:
             lines.append(line)
         fenced ^= starts_fence
@@ -146,7 +153,7 @@ def notes_entries(text: str | None) -> list[NotesEntry]:
         if block.startswith("### "):
             heading, *body = unwrapped(block)
             fields = {match.group(1): match.group(2) for match in NOTES_FIELD.finditer("\n".join(body))}
-            entries.append(NotesEntry(heading[4:].strip(), fields, "\n".join([heading, *body])))
+            entries.append(NotesEntry(heading[4:].strip(MARKDOWN_SPACE), fields, "\n".join([heading, *body])))
     return entries
 
 

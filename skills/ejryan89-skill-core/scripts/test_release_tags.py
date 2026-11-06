@@ -15,7 +15,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from git_client import GitClient
-from release_tags import highest_release, is_release_tag, last_release, main
+from release_tags import breaking_component, highest_release, is_release_tag, last_release, main
 
 
 class ReleaseTagTests(unittest.TestCase):
@@ -31,6 +31,38 @@ class ReleaseTagTests(unittest.TestCase):
         self.assertEqual("v1.0.0", highest_release(["v2.0.0-rc.1", "v1.0.0", "nightly", "v3"]))
         self.assertIsNone(highest_release(["v2.0.0-rc.1", "nightly"]))
         self.assertIsNone(highest_release([]))
+
+
+class RaisesTests(unittest.TestCase):
+    def run_main(self, *arguments: str) -> tuple[int, str]:
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            code = main(["--raises", *arguments])
+        return code, output.getvalue()
+
+    def test_the_breaking_component_is_the_major_or_the_minor_while_the_major_is_zero(self) -> None:
+        self.assertEqual((0, 13), breaking_component((0, 13, 2)))
+        self.assertEqual((2, 0), breaking_component((2, 7, 1)))
+
+    def test_a_release_raises_only_the_breaking_component(self) -> None:
+        self.assertEqual((0, "RAISES\n"), self.run_main("untagged", "v0.1.0"))
+        self.assertEqual((0, "WITHIN\n"), self.run_main("untagged", "v0.0.4"))
+        self.assertEqual((0, "RAISES\n"), self.run_main("v0.9.0", "v0.10.0"))
+        self.assertEqual((0, "WITHIN\n"), self.run_main("v0.2.3", "v0.2.9"))
+        self.assertEqual((0, "RAISES\n"), self.run_main("v0.2.3", "v1.0.0"))
+        self.assertEqual((0, "WITHIN\n"), self.run_main("v1.5.0", "v1.99.0"))
+        self.assertEqual((0, "WITHIN\n"), self.run_main("v2.0.0", "v1.0.0"))
+
+    def test_a_number_past_a_machine_integer_compares_exactly(self) -> None:
+        # Nineteen digits and more overflow Bash's integers, which update.sh once compared these with.
+        huge = "1" + "0" * 40
+        self.assertEqual((0, "RAISES\n"), self.run_main(f"v{huge[:-1]}.0.0", f"v{huge}.0.0"))
+        self.assertEqual((0, "WITHIN\n"), self.run_main(f"v{huge}.0.0", f"v{huge}.9.0"))
+        self.assertEqual((0, "RAISES\n"), self.run_main(f"v0.{huge[:-1]}.0", f"v0.{huge}.0"))
+
+    def test_a_name_that_is_not_a_release_is_a_failed_line(self) -> None:
+        self.assertEqual((1, "FAILED not a release tag: v1.0.0-rc.1\n"), self.run_main("v1.0.0-rc.1", "v2.0.0"))
+        self.assertEqual((1, "FAILED not a release tag: untagged\n"), self.run_main("v1.0.0", "untagged"))
 
 
 class LastReleaseTests(unittest.TestCase):

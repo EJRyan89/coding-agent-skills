@@ -23,7 +23,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts"))
 
 from agent_skills import XML_TAG_PATTERN
-from markdown_sections import find_fences
+from markdown_sections import INTERRUPTING_LIST_MARKER, ORDERED_MARKER, find_fences
 from pull_request_title import TITLE, head_branch
 from upgrade_notes import PROFILE_DOC
 from validation_support import REPOSITORY_ROOT, PullRequestChecks, markdown_section
@@ -38,12 +38,21 @@ PROFILE_HEADING = "## Pull requests"
 FORMS_LINE = re.compile(r" {0,3}## +Forms considered(?: +#*)?[ \t]*")
 # A heading of the first or second level ends the section; a third-level one, such as a table's caption, is inside it.
 # Each is a line indented up to three spaces: an ATX heading, an HTML h1 or h2 block, or, below a paragraph, a setext
-# underline, which makes the whole paragraph the heading.
-SECTION_END = re.compile(r" {0,3}(?:#{1,2}(?:[ \t]|$)|<h[12](?:[\s>/]|$))", re.IGNORECASE)
+# underline, which makes the whole paragraph the heading. CommonMark starts an HTML block only where the tag name is
+# followed by a space, a tab, the line's end, `>`, or `/>`, so any other Unicode space leaves the line text.
+SECTION_END = re.compile(r" {0,3}(?:#{1,2}(?:[ \t]|$)|<h[12](?:[ \t>]|/>|$))", re.IGNORECASE)
 SETEXT_UNDERLINE = re.compile(r" {0,3}(?:=+|-+)[ \t]*")
-# A line that is no paragraph's text: blank, a heading, a list item, a quote, a fence, or a rule.
+# A line that is no paragraph's text: blank, a heading, a list item, a quote, a fence, or a rule. Markdown's whitespace
+# is the space and the tab, and its list markers are read by markdown_sections' rules, so a digit outside ASCII or a
+# line of no-break spaces is text.
 NOT_PARAGRAPH = re.compile(
-    r"\s*$| {0,3}(?:#{1,6}(?:[ \t]|$)|[-*+](?:[ \t]|$)|\d{1,9}[.)](?:[ \t]|$)|>|`{3,}|~{3,}"
+    rf"[ \t]*$| {{0,3}}(?:#{{1,6}}(?:[ \t]|$)|[-*+](?:[ \t]|$)|{ORDERED_MARKER}(?:[ \t]|$)|>|`{{3,}}|~{{3,}}"
+    r"|([-*_])(?:[ \t]*\1){2,}[ \t]*$)"
+)
+# A line that ends the paragraph above it: as NOT_PARAGRAPH, but a list item only where CommonMark lets one interrupt a
+# paragraph, a bullet or an item numbered 1 with text after it; any other ordered line continues the paragraph.
+ENDS_PARAGRAPH = re.compile(
+    rf"[ \t]*$| {{0,3}}(?:#{{1,6}}(?:[ \t]|$)|{INTERRUPTING_LIST_MARKER}[ \t]+[^ \t]|>|`{{3,}}|~{{3,}}"
     r"|([-*_])(?:[ \t]*\1){2,}[ \t]*$)"
 )
 # An HTML comment as GitHub hides it: the empty forms `<!-->` and `<!--->`, or up to `-->`, or, left unclosed, to the
@@ -52,8 +61,10 @@ HIDDEN_COMMENT = re.compile(r"<!--(?:-?>|.*?(?:-->|\Z))", re.DOTALL)
 # Characters that render as nothing but are neither whitespace nor a format character, which are dropped by their
 # category: the Hangul fillers and the blank braille pattern.
 INVISIBLE = frozenset("ᅟᅠㅤﾠ⠀")
-# What a line holds that is no text of the author's: list, quote, and table markers, rules, and punctuation.
-MARKUP = re.compile(r"[\s\-*+>|#:.,;_=~`'\"()\[\]]+|\d+[.)](?=\s|$)")
+# What a line holds that is no text of the author's: list, quote, and table markers, rules, and punctuation. A list
+# marker is read by markdown_sections' rule, followed by a space, a tab, or the line's end. The class's `\s` is not a
+# block rule: every Unicode space renders blank, so it is no text of the author's either.
+MARKUP = re.compile(rf"[\s\-*+>|#:.,;_=~`'\"()\[\]]+|{ORDERED_MARKER}(?=[ \t]|$)")
 # A filler word that stands in for an answer rather than giving one; the comparison ignores case.
 FILLERS = frozenset({"none", "n/a", "na", "tbd", "todo", "nothing", "same", "see above", "see below"})
 
@@ -98,7 +109,7 @@ def _ends_section(lines: list[str], index: int, start: int, fenced: set[int]) ->
             return False
         if SETEXT_UNDERLINE.fullmatch(lines[later]):
             return True
-        if NOT_PARAGRAPH.match(lines[later]):
+        if ENDS_PARAGRAPH.match(lines[later]):
             return False
     return False
 

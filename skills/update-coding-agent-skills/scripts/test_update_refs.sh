@@ -44,18 +44,19 @@ expect_first_line "UP_TO_DATE $(head_of "$SEED" HEAD)" "no local main"
 expect_no_stderr "no local main"
 expect_deployed "no local main"
 
-# A release whose major or minor is longer than Bash's integers hold is refused, even with --cross-major, and the tag
-# is then removed so the cases below follow the releases above.
+# A release whose major or minor is longer than Bash's integers hold is compared exactly, as release_tags.py reads it,
+# so a raised major stops the update as any other does; the tag is then removed so the cases below follow the releases
+# above.
 begin_case 'oversized tag'
 new_clone
 publish "oversized release"
 for TAG in v99999999999999999999.0.0 v5.99999999999999999999.0; do
   tag_upstream "$TAG"
-  for OPTION in "" --cross-major; do
-    run_subject "$CLONE" main ${OPTION:+"$OPTION"}
-    expect_failed "FAILED cannot compare release tag $TAG: " "oversized tag $TAG $OPTION"
-    expect_not_deployed "oversized tag $TAG $OPTION"
-  done
+  run_subject "$CLONE" main
+  expect_status 1 "oversized tag $TAG"
+  expect_first_line "MAJOR_UPDATE v4.0.0..$TAG" "oversized tag $TAG"
+  expect_no_stderr "oversized tag $TAG"
+  expect_not_deployed "oversized tag $TAG"
   git_quiet -C "$SEED" push origin ":refs/tags/$TAG"
   git_quiet -C "$SEED" tag -d "$TAG"
   git_quiet -C "$CLONE" tag -d "$TAG"

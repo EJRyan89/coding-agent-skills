@@ -37,7 +37,7 @@ cp "$SEED/deploy.py" "$PLAIN/deploy.py"
 export GIT_CEILING_DIRECTORIES="$FIXTURE"
 run_subject "$PLAIN" main
 unset GIT_CEILING_DIRECTORIES
-expect_failed "FAILED not a git repository: $PLAIN" "not a repository"
+expect_failed "FAILED cannot read $PLAIN as a git repository: fatal: not a git repository" "not a repository"
 expect_not_deployed "not a repository"
 
 # An up-to-date clone deploys without moving, even when untracked files are present.
@@ -237,6 +237,30 @@ expect_failed "FAILED cannot create a temporary file for the deployer's errors: 
 expect_nothing_run "no file for the errors"
 [ -z "$(ls -A "$FIXTURE/tmp for the errors")" ] ||
   fail "no file for the errors: temporary copy left behind: $(ls -A "$FIXTURE/tmp for the errors")"
+
+# The same holds for the file that keeps git's errors, which update.sh makes after the deployer's: a mktemp wrapper
+# makes the copy and the deployer's file and refuses the third call, and both files made are removed.
+begin_case 'no file for git errors'
+GIT_MKTEMP_WRAPPER="$FIXTURE/git mktemp wrapper"
+mkdir -p "$GIT_MKTEMP_WRAPPER" "$FIXTURE/tmp for git errors"
+cat >"$GIT_MKTEMP_WRAPPER/mktemp" <<EOF
+#!/usr/bin/env bash
+made=\$(cat "$GIT_MKTEMP_WRAPPER/made" 2>/dev/null || echo 0)
+if [ "\$made" -ge 2 ]; then
+  echo "mktemp: refused by the test" >&2
+  exit 1
+fi
+echo \$((made + 1)) >"$GIT_MKTEMP_WRAPPER/made"
+exec "$(command -v mktemp)" "\$@"
+EOF
+chmod +x "$GIT_MKTEMP_WRAPPER/mktemp"
+TMPDIR="$FIXTURE/tmp for git errors" PATH="$GIT_MKTEMP_WRAPPER:$PATH" run_subject "$CLONE" main
+expect_failed "FAILED cannot create a temporary file for git's errors: mktemp: refused by the test" \
+  "no file for git errors"
+expect_nothing_run "no file for git errors"
+[ "$(cat "$GIT_MKTEMP_WRAPPER/made")" = "2" ] || fail "no file for git errors: the first two files were not made"
+[ -z "$(ls -A "$FIXTURE/tmp for git errors")" ] ||
+  fail "no file for git errors: temporary files left behind: $(ls -A "$FIXTURE/tmp for git errors")"
 
 # A failing deploy is reported with its exit code.
 begin_case 'deploy failed'
