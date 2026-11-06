@@ -412,6 +412,25 @@ class MemoryAuditTests(unittest.TestCase):
         self.assertEqual(1, len(overlaps))
         self.assertTrue(overlaps[0]["file"].endswith("guidelines.md"))
         self.assertEqual(3, overlaps[0]["line"])
+        self.assertEqual(0, self.by_file(self.run_audit())["sut.md"]["overlaps_omitted"])
+
+    def test_overlaps_past_the_limit_are_counted_as_left_out(self) -> None:
+        rule = "- Name the object under test after its class, never the generic sut variable name.\n\n"
+        write(self.repo / "docs" / "guidelines.md", "# Tests\n\n" + rule * (memory_audit.OVERLAP_LIMIT + 1))
+        write(
+            self.memory_dir / "sut.md",
+            memory("sut", "Never name the object under test sut; derive the variable name from its class."),
+        )
+        entry = self.by_file(self.run_audit())["sut.md"]
+        self.assertEqual(memory_audit.OVERLAP_LIMIT, len(entry["overlaps"]))
+        self.assertEqual(1, entry["overlaps_omitted"])
+
+    def test_a_memory_too_short_to_overlap_leaves_no_overlap_out(self) -> None:
+        rule = "- Name the object under test after its class, never the generic sut variable name.\n\n"
+        write(self.repo / "docs" / "guidelines.md", "# Tests\n\n" + rule * (memory_audit.OVERLAP_LIMIT + 1))
+        write(self.memory_dir / "short.md", memory("short", "Sut naming."))
+        entry = self.by_file(self.run_audit())["short.md"]
+        self.assertEqual(([], 0), (entry["overlaps"], entry["overlaps_omitted"]))
 
     def test_large_unrelated_blocks_do_not_register_as_overlaps(self) -> None:
         glossary = " ".join(f"term{n} means something specific here" for n in range(200))
@@ -926,6 +945,32 @@ class ReindexTests(unittest.TestCase):
         )
         self.assertEqual(before, self.snapshot(), "memory files must never change")
         self.assertEqual(["UNCHANGED"], self.reindex("--write")[-1:])
+
+    def test_a_dot_prefixed_target_is_read_by_the_name_it_was_judged_by(self) -> None:
+        # POSIX reads `.\` as part of a file name, so the file read must be the stripped name on every platform.
+        write(self.memory_dir / "kept.md", memory("kept", "Body."))
+        write(self.index, "- [Kept](.\\kept.md) — hook\n")
+        # Windows reads `.\` as the current folder, so the names joined to the store are what show the defect there.
+        joined: list[object] = []
+        original = Path.__truediv__
+
+        def recording(path: Path, key: str) -> Path:
+            joined.append(key)
+            return original(path, key)
+
+        with mock.patch.object(Path, "__truediv__", autospec=True, side_effect=recording):
+            lines = self.reindex()
+        self.assertEqual(["INDEX_LINE .\\kept.md", f"WOULD_WRITE {self.index.as_posix()}"], lines)
+        self.assertIn("kept.md", joined)
+        self.assertNotIn(".\\kept.md", joined)
+        self.assertEqual("kept.md", memory_audit.store_name(".\\kept.md"))
+        self.assertEqual("kept.md", memory_audit.store_name("./.\\kept.md"))
+
+    def test_an_entry_with_no_title_takes_the_file_name_it_was_judged_by(self) -> None:
+        # With no title and no name, the title is the stem of the stripped name, never of `.\\kept`.
+        write(self.memory_dir / "kept.md", "---\ndescription: kept description\n---\n\nBody.\n")
+        write(self.index, "- [](.\\kept.md) — hook\n")
+        self.assertEqual("- [kept](.\\kept.md) — kept description\n", memory_audit.reindex(self.memory_dir)["content"])
 
     def test_without_write_nothing_changes(self) -> None:
         write(self.memory_dir / "one.md", memory("one", "Body."))
@@ -2517,18 +2562,32 @@ class SkillSourceTests(unittest.TestCase):
         cases = {
             "it is not a JSON object": [],
             "its sources is not an object": {"sources": ["main"]},
-            "its source 'main' does not name its source_dir and skills": {"sources": {"main": "checkout"}},
-            "its source 'other' does not name its source_dir and skills": {
+            "its source 'main' is not an object whose skills is an object": {"sources": {"main": "checkout"}},
+            "its source 'other' deploys demo but records no source_dir": {
                 "sources": {"other": {"source_dir": 7, "skills": {"demo": {}}}}
             },
-            "its source 'third' does not name its source_dir and skills": {
+            "its source 'third' is not an object whose skills is an object": {
                 "sources": {"third": {"source_dir": str(self.checkout), "skills": ["demo"]}}
+            },
+            "its source 'fourth' deploys demo but records no source_dir": {
+                "sources": {"fourth": {"skills": {"demo": {}}}}
             },
         }
         for reason, document in cases.items():
             with self.subTest(reason=reason):
                 write(manifest, json.dumps(document))
                 self.assertEqual([f"FAILED cannot read the deployer manifest: {reason}"], self.source("demo", code=1))
+
+    def test_a_source_entry_the_deployer_accepts_without_skills_or_source_dir_names_no_source(self) -> None:
+        # The deployer reads a missing skills as none and never needs source_dir, so neither fails another source.
+        manifest = self.home / ".claude" / "skills" / ".deploy-manifest.json"
+        sources = {
+            "bare": {},
+            "unrooted": {"skills": {"other": {"hash": "0" * 64}}},
+            "main": {"source_dir": str(self.checkout), "skills": {"demo": {"hash": "0" * 64}}},
+        }
+        write(manifest, json.dumps({"sources": sources}))
+        self.assertEqual([f"SKILL_FILE {self.source_file}"], self.source("demo"))
 
     def test_a_git_failure_is_a_note_and_the_manifest_source_is_still_named(self) -> None:
         self.manifest(main=str(self.checkout))

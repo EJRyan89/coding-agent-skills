@@ -12,6 +12,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from markdown_sections import (
+    ATX_HEADING,
     CODE_SPAN,
     COMMONMARK_CODE_SPAN,
     EXECUTABLE_FENCES,
@@ -224,3 +225,21 @@ def test_a_fence_closes_only_on_its_own_run_inside_what_holds_it(
     text: str, expected: list[tuple[int, int | None, str, int, list[str]]]
 ) -> None:
     assert expected == fences(text)
+
+
+@pytest.mark.parametrize(
+    ("line", "expected"),
+    [
+        ("## Contents", ("##", "Contents")),
+        ("   ###\tContents ##  ", ("###", "Contents")),
+        ("# Contents#", ("#", "Contents#")),
+        pytest.param("#\u00a0Contents", None, id="no-break-space"),
+        pytest.param("#\u2003Contents", None, id="em-space"),
+        ("#Contents", None),
+        ("    # Indented", None),
+        ("####### Seven", None),
+    ],
+)
+def test_an_atx_heading_is_read_as_commonmark_reads_one(line: str, expected: tuple[str, str] | None) -> None:
+    heading = ATX_HEADING.match(line)
+    assert expected == (None if heading is None else (heading.group("marks"), heading.group("text")))

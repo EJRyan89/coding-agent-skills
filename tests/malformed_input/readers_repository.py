@@ -785,14 +785,7 @@ READERS = [
         b'{"type": "system", "subtype": "init", "skills": ["example"]}\n',
         _claude_stream,
         (Refused,),
-        accepts={
-            **STREAM_PASSES_OVER,
-            **dict.fromkeys(
-                ("wrong_type:skills", "wrong_type:skills.0"),
-                "the canary compares the init event's skills by name with the skills it expects, so a list of another "
-                "type, or an entry of another type, finds none of them and fails each as unfound",
-            ),
-        },
+        accepts=STREAM_PASSES_OVER,
     ),
     Reader(
         "tools.skill_evals_runs.skills_in_stream",
@@ -805,7 +798,7 @@ READERS = [
         ).encode()
         + b"\n",
         _skills_in_stream,
-        (Refused,),
+        (Refused, skill_evals_runs.StreamShapeError),
         accepts=STREAM_PASSES_OVER,
     ),
     Reader(

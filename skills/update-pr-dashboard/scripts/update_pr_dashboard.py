@@ -32,6 +32,7 @@ from review_config import (
     DASHBOARD_SECTION_DRAFTS,
     DASHBOARD_SECTION_MINE,
     DASHBOARD_SECTION_TO_REVIEW,
+    PULL_NUMBER,
     REPOSITORY,
     ConfigurationError,
     dashboard_status_heading,
@@ -91,8 +92,8 @@ TRACKER_SCHEMA_VERSIONS = (1, TRACKER_SCHEMA_VERSION)
 CANDIDATE_STATES = frozenset({DASHBOARD_AI_REVIEW_MISSING, DASHBOARD_AI_REVIEW_STALE})
 # A new file the tracker writes is readable by its owner alone; a file it replaces keeps the mode it had.
 NEW_FILE_MODE = 0o600
-# A pull request's number has at most ten digits, as GitHub's 32-bit numbers do, so int() never meets the digit limit.
-PULL_KEY_PATTERN = re.compile(rf"({REPOSITORY})#([1-9][0-9]{{0,9}})")
+# A pull request's number is review_config's PULL_NUMBER, the bound its status override keys are held to.
+PULL_KEY_PATTERN = re.compile(rf"({REPOSITORY})#({PULL_NUMBER})")
 
 
 class TrackerError(ValueError):
@@ -369,12 +370,12 @@ def _record_reviews(rows: list[Row]) -> dict[str, dict[str, Any]]:
     }
 
 
-def replacement(path: Path) -> tuple[Path, int]:
+def replacement(path: Path, writer: str = "the update") -> tuple[Path, int]:
     """Where a replacement of `path` is written and the mode it takes: the file the path leads to, through any
     symbolic link, so a link stays a link and its target is what changes, with the mode that file has, or
     `NEW_FILE_MODE` for a file not yet written. A file with another hard link is refused, since a replacement would
     leave that name with the old content, and so is a read-only file, which ejryan89-skill-core's `atomic_file` would
-    refuse only once GitHub had been asked."""
+    refuse only once GitHub had been asked; the refusal names `writer`, the command that would replace it."""
     target = path.resolve()
     try:
         status = target.stat()
@@ -387,7 +388,7 @@ def replacement(path: Path) -> tuple[Path, int]:
             f"{path} has another hard link, which a replacement would leave with the old content; give it one name"
         )
     if not status.st_mode & stat.S_IWUSR:
-        raise TrackerError(f"{path} is read-only; make it writable for the update to replace it")
+        raise TrackerError(f"{path} is read-only; make it writable for {writer} to replace it")
     return target, stat.S_IMODE(status.st_mode)
 
 

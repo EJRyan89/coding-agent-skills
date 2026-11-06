@@ -7,7 +7,8 @@ Both run whitespace formatting plus the code-style (IDE*) and analyzer (CA*, Sty
 diagnostics the repository configures at --severity or above (default warn). The full detailed log goes to a
 temporary file; standard output gets one fact per line, tab separated:
 
-    REFUSED     <entry> <reason> a FILE_LIST entry outside the repository root, never passed to the formatter
+    REFUSED     <entry> <reason> a FILE_LIST entry outside the repository root, or, for fix, a file that is a link,
+                                 lies below one, or is read-only; never passed to the formatter
     DIAGNOSTIC  <file> <line> <column> <severity> <rule>
     SUMMARY     <diagnostic count> <file count> <comma-separated rules, or ->
     SAVED       <file>          a failed fix only: a run that finished found this file's fixes and saved them
@@ -31,11 +32,15 @@ passed to the formatter as `./<name>`, since either formatter would read the bar
 Files too many for one command line, which Windows limits to 32,767 characters, are formatted in several runs within
 the one time limit, and the log holds every run's output in order.
 
-`fix`'s DIAGNOSTIC lines are what it found to fix, not findings, because its log does not say which of them it could
-not fix, so rerun `check` to see what remains. A failure, such as the formatter not being installed, exiting with an
-unexpected code, or not finishing in time, prints `FAILED <reason>` as the last line, after the LOG line when the
-formatter ran. A `fix` that fails tells its runs apart first: each run saves its fixes when it finishes, so SAVED names
-the files the runs before the failed one changed, and UNFINISHED every file of the failed run and of the runs after it.
+`fix` judges every file it would pass before the formatter writes any, as the layout fixer does through
+dotnet_format_targets' `write_refusal`: a file that is a symbolic link or junction, lies below one inside the root, or
+is read-only, as most are in a TFVC or Perforce workspace, is REFUSED and never passed, and the other files are fixed;
+`check` still checks it. `fix`'s DIAGNOSTIC lines are what it found to fix, not findings, because its log does not say
+which of them it could not fix, so rerun `check` to see what remains. A failure, such as the formatter not being
+installed, exiting with an unexpected code, or not finishing in time, prints `FAILED <reason>` as the last line, after
+the LOG line when the formatter ran. A `fix` that fails tells its runs apart first: each run saves its fixes when it
+finishes, so SAVED names the files the runs before the failed one changed, and UNFINISHED every file of the failed run
+and of the runs after it.
 
 Exit status:
   0  check printed no DIAGNOSTIC or REFUSED line; fix printed no REFUSED line and the formatter succeeded
@@ -69,6 +74,7 @@ from dotnet_format_targets import (
     inside_root,
     read_file_list,
     solution_refusal,
+    write_refusal,
 )
 from executable_locator import find_executable, located_command
 from flat_text import fact_line, flat_text
@@ -316,6 +322,18 @@ def unfinished_fix_lines(runs: Runs, root: Path) -> list[str]:
     return lines
 
 
+def unwritable_refused(root: Path, files: list[str], emit: Callable[[str], None]) -> list[str]:
+    """The files `write_refusal` lets a fix rewrite, in order; each other prints `REFUSED <file> <reason>`."""
+    kept: list[str] = []
+    for name in files:
+        refused = write_refusal(root, root / name)
+        if refused:
+            emit(fact_line("REFUSED", name, refused))
+        else:
+            kept.append(name)
+    return kept
+
+
 def run(
     mode: str,
     root: Path,
@@ -346,6 +364,12 @@ def run(
     refused = len(inside) < len(listed)
     skipped = formatter_skips(root, formatter, inside)
     files = [name for name in inside if name not in skipped]
+    if mode == "fix":
+        # Every file the fix may rewrite is judged before the formatter writes any, as the layout fixer judges its
+        # own: a link, a file below one, or a read-only file is REFUSED and never passed, and the rest are fixed.
+        writable = unwritable_refused(root, files, emit)
+        refused = refused or len(writable) < len(files)
+        files = writable
     if not files:
         emit(fact_line("SUMMARY", 0, 0, "-"))
         return refused

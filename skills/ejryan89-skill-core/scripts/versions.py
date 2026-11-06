@@ -3,8 +3,9 @@
 A version is read as a tuple of whole numbers, so tuples order versions as their programs do: `1.10` follows `1.9`,
 and `1.0.98` is not `1.0.9`. Each number is ASCII digits read through `whole_number`, so a number past its digit limit
 is no version. `find` reads the first version in a program's output, `read` a text that is a version and nothing
-else, and `latest` the highest of a list of names, such as release tags, by the version each holds. The deployer's tool
-floors, the release tags, and the code-review host's Copilot CLI check read versions here.
+else, `latest` the highest of a list of names, such as release tags, by the version each holds, and `pattern` the
+regular expression of a version that a reader finding one inside a larger pattern, such as a release heading, builds
+from. The deployer's tool floors, the release tags, and the code-review host's Copilot CLI check read versions here.
 """
 
 from __future__ import annotations
@@ -20,7 +21,7 @@ Version = tuple[int, ...]
 SEPARATOR = "."
 
 
-def _pattern(least: int, most: int | None) -> str:
+def pattern(least: int, most: int | None) -> str:
     """A version of `least` to `most` numbers, or at least `least` when `most` is None, as a regular expression. It
     starts only where a run of digits starts, so a search tries each run once, in time linear in the text, rather than
     from each of its digits; any match from inside a run starts at the run's start too, so none is lost."""
@@ -37,7 +38,7 @@ def find(text: str, *, least: int = 2, most: int | None = 3) -> Version | None:
     """The first version of `least` to `most` numbers in `text`, as a version command prints it, or None when it holds
     none. A longer version is read up to `most` numbers, so `1.2.3.4` is `(1, 2, 3)` when `most` is 3. A run of digits
     shaped like a version whose number is past the digit limit is no version, so the search goes on past it."""
-    for match in re.finditer(_pattern(least, most), text):
+    for match in re.finditer(pattern(least, most), text):
         version = _numbers(match.group(0))
         if version is not None:
             return version
@@ -46,7 +47,7 @@ def find(text: str, *, least: int = 2, most: int | None = 3) -> Version | None:
 
 def read(text: str, *, least: int = 2, most: int | None = None) -> Version | None:
     """The version `text` is, with nothing before or after it, or None when it is not one."""
-    return _numbers(text) if re.fullmatch(_pattern(least, most), text) else None
+    return _numbers(text) if re.fullmatch(pattern(least, most), text) else None
 
 
 def latest(names: Iterable[str], version_of: Callable[[str], Version | None]) -> str | None:

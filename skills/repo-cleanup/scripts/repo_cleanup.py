@@ -19,7 +19,9 @@ one at that path, and refuses a plan with a field missing or not of the kind a s
 force-delete, and remove-directory also refuse a plan whose repository root is no longer a Git repository or whose
 worktree areas are not the ones a sweep derives from it, so they delete only what a sweep offered.
 
-Every command prints one tab-separated fact per line.
+Every command prints one tab-separated fact per line. A confirmation that names a branch or path the plan already
+deleted or removed prints `ALREADY_DELETED <branch>` or `ALREADY_REMOVED <path>`, never PRESERVED, which names what
+stays.
 
 Exit status:
   0  every repository was cleaned, or every confirmed deletion ran, was done already by the plan, or was preserved
@@ -1871,7 +1873,8 @@ def remove_directories(plan_path: str, paths: list[str], services: Services) -> 
                 succeeded = False
                 continue
             if any(same_path(offered, gone) for gone in done):
-                record(plan, "PRESERVED", path, "already removed by this plan")
+                # Printed, never recorded: the plan's REMOVED or DELETED_DIR fact already counts it, and nothing stays.
+                emit("ALREADY_REMOVED", path)
                 finished = True
             elif offered in detached:
                 finished = remove_detached(services, plan, offered, detached[offered])
@@ -1920,7 +1923,8 @@ def confirm(plan_path: str, names: list[str], services: Services, force: bool) -
                 continue
             finished = True
             if name in deleted(plan):
-                record(plan, "PRESERVED", name, "already deleted by this plan")
+                # Printed, never recorded: the plan's DELETED fact already counts it, and nothing stays.
+                emit("ALREADY_DELETED", name)
             elif not unchanged(services, plan, name, eligible[name], located, worktrees.get(name)):
                 pass  # it moved: nothing is left to do, as its PRESERVED fact says
             elif force:

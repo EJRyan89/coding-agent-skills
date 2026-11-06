@@ -390,6 +390,15 @@ class InventoryTests(TemporaryTestCase):
         write(self.root / "fenced.md", "```markdown\n## Contents\n```\n" + "line\n" * 100)
         self.assertEqual(["DOC_NO_TOC 103 fenced.md", "DOC_NO_TOC 104 late.md"], self.structure_flags())
 
+    def test_a_contents_heading_is_one_markdown_reads_as_a_heading(self) -> None:
+        # A no-break space after the marks is text to CommonMark, so that line is prose and the doc has no contents;
+        # a tab after the marks and a closing run of marks still make a heading.
+        write(self.root / "SKILL.md", "x\n")
+        write(self.root / "spaced.md", "## \u00a0Contents\n" + "line\n" * 100)
+        write(self.root / "unspaced.md", "##\u00a0Contents\n" + "line\n" * 100)
+        write(self.root / "tabbed.md", "##\tContents ##\n" + "line\n" * 100)
+        self.assertEqual(["DOC_NO_TOC 101 spaced.md", "DOC_NO_TOC 101 unspaced.md"], self.structure_flags())
+
     def test_a_doc_reached_only_through_another_doc_is_a_nested_reference(self) -> None:
         write(self.root / "SKILL.md", "---\nname: demo\n---\nRead [a](references/a.md).\n")
         write(
@@ -1012,6 +1021,14 @@ class ToolsTests(TemporaryTestCase):
         self.assertEqual([], self.idle(f"{hidden}\nallowed-tools: []", "Imported by other skills.\n"))
         user_only = 'disable-model-invocation: true\nallowed-tools: ["Read"]'
         self.assertEqual([], self.idle(user_only, "Use `Read`.\n"))
+
+    def test_a_retired_tool_is_no_tool_the_body_uses(self) -> None:
+        # Claude Code no longer has MultiEdit, so naming it is prose, never a use the grants must cover.
+        lines = self.tools("Use MultiEdit for several edits, or the `Read` tool.\n")
+        self.assertEqual(
+            ["MODEL none", "DESCRIPTION 0 0", "INVOCATION model", "NO_ALLOWED_TOOLS", "USED Read 1"], lines
+        )
+        self.assertNotIn("MultiEdit", skill_inventory.KNOWN_TOOLS)
 
     def test_without_allowed_tools_nothing_is_missing_or_unused(self) -> None:
         lines = self.tools("Use the `Read` tool.\n")
@@ -3041,6 +3058,18 @@ class SourcePluginTests(SourceTreeTestCase):
         lines = self.plugins(skill)
         self.assertEqual(1, len(lines), lines)
         self.assertTrue(lines[0].startswith("PLUGINS_UNREADABLE ") and "names no source ID" in lines[0], lines)
+
+    def test_a_dependency_list_of_another_kind_makes_the_plugins_unreadable_as_the_metadata_is(self) -> None:
+        # The metadata says DECLARED_UNREADABLE, so the plugins cannot be planned either: never a CARRIED_BY that
+        # reads the dependencies as none.
+        self.source()
+        skill = self.skill("Alpha.\n", {"skill_deps": "core"})
+        declared = self.lines("inventory", skill.parent, ("DECLARED_UNREADABLE",))
+        self.assertEqual(1, len(declared), declared)
+        self.assertTrue(declared[0].endswith("deploy-meta/alpha.json"), declared)
+        lines = self.plugins(skill)
+        self.assertEqual(1, len(lines), lines)
+        self.assertTrue(lines[0].startswith("PLUGINS_UNREADABLE ") and "skill_deps is not a list" in lines[0], lines)
 
 
 class JsonFileDecodingTests(TemporaryTestCase):

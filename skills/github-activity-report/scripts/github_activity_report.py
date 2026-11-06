@@ -844,9 +844,9 @@ def _history_row(fields: list[str], line: int, path: Path, columns: tuple[str, .
     capped_text = fields[-1] if columns == HISTORY_COLUMNS else CAP_UNKNOWN
     month, user, *counts, partial, captured_at = fields[: len(FIRST_HISTORY_COLUMNS)]
     if not MONTH_LABEL.fullmatch(month):
-        raise refuse(f"has month {month!r}, not YYYY-MM")
+        raise refuse(f"has month {_quoted(month)}, not YYYY-MM")
     if not is_login(user):
-        raise refuse(f"has user {user!r}, not a GitHub login")
+        raise refuse(f"has user {_quoted(user)}, not a GitHub login")
     counted: dict[str, int] = {}
     for metric, count in zip(METRICS, counts, strict=True):
         not_a_count = refuse(f"has {metric} {_quoted(count)}, not a count")
@@ -854,15 +854,15 @@ def _history_row(fields: list[str], line: int, path: Path, columns: tuple[str, .
             raise not_a_count
         counted[metric] = whole_number.read(count, not_a_count)
     if partial not in PARTIAL:
-        raise refuse(f"has is_partial {partial!r}, not true or false")
+        raise refuse(f"has is_partial {_quoted(partial)}, not true or false")
     try:
         _utc_date(captured_at, "captured_at")
     except FieldError:
-        raise refuse(f"has captured_at {captured_at!r}, not a timestamp with a UTC offset") from None
+        raise refuse(f"has captured_at {_quoted(captured_at)}, not a timestamp with a UTC offset") from None
     try:
         capped = _capped_field(capped_text)
     except ValueError:
-        raise refuse(f"has capped {capped_text!r}, not {CAP_UNKNOWN} or metrics in the header's order") from None
+        raise refuse(f"has capped {_quoted(capped_text)}, not {CAP_UNKNOWN} or metrics in the header's order") from None
     return HistoryRow(month, user, counted, PARTIAL[partial], captured_at, capped)
 
 

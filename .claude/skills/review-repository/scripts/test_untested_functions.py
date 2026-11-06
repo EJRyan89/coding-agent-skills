@@ -348,6 +348,18 @@ class ConditionTests(unittest.TestCase):
         self.assertTrue(written.startswith("UNTESTED app/service.py:4 function summed, added lines 4, "), written)
         self.assertIn(", tests of its file tests/test_service.py\n", written)
 
+    def test_related_tests_past_the_bound_are_counted_as_cut(self) -> None:
+        shown = "tests/test_service_0.py, tests/test_service_1.py, tests/test_service_2.py"
+        # The bound is three: three suites are shown whole, and one past it is already a cut.
+        for count, ending in ((3, ""), (4, ", and 1 more"), (5, ", and 2 more")):
+            with self.subTest(count=count):
+                others = {f"tests/test_service_{index}.py": "import service\n" for index in range(count)}
+                before = {"app/service.py": SERVICE, **others}
+                after = {"app/service.py": SERVICE.replace("def total(", "def summed("), **others}
+                code, out, written = self.run_condition(before, after)
+                self.assertEqual((0, "UNTESTED 1 given=1\n"), (code, out))
+                self.assertIn(f", tests of its file {shown}{ending}\n", written)
+
     def test_a_common_name_counts_only_as_its_own_module_s_and_never_in_a_string_or_comment(self) -> None:
         before = {"app/service.py": SERVICE}
         after = {"app/service.py": SERVICE.replace("check=False", "check=True")}
