@@ -28,8 +28,9 @@ PowerShell or Bash function when it names the script's file name and, outside a 
 
 It writes each unnamed definition as `UNTESTED <file>:<line> <kind> <name>, added lines <lines>, hunk <header>, tests
 of its file <tests>`, the tests that import its module or name its file, where a reviewer looks for one that reaches
-it through a caller, followed by that hunk, cut at MAX_HUNK_CHARACTERS; at most MAX_ENTRIES of them, with an
-`OMITTED <n>` line for the rest; and `UNPARSED <file>: <reason>` for a changed Python file `ast` cannot read.
+it through a caller, at most MAX_RELATED_TESTS of them and then `and <n> more`, followed by that hunk, cut at
+MAX_HUNK_CHARACTERS; at most MAX_ENTRIES of them, with an `OMITTED <n>` line for the rest; and `UNPARSED <file>:
+<reason>` for a changed Python file `ast` cannot read.
 
 A changed Python definition a test names is still written when its change converts a call site: an added line that
 directly replaces removed lines and calls, through a name the module's imports bind, a callee the replacing lines call
@@ -483,16 +484,20 @@ class Tests:
         name = file_name(script)
         return any(name.search(self.files[path]) and name.search(self.code(path)) for path in self.files)
 
-    def of_file(self, definition: Definition) -> list[str]:
+    def of_file(self, definition: Definition) -> str:
         """The tests that import the definition's module or name its file, those named after the file first, then
-        those beside it, at most MAX_RELATED_TESTS: where a reviewer looks for one that reaches it through a caller."""
+        those beside it, at most MAX_RELATED_TESTS and then `and <n> more` for the rest, or `none`: where a reviewer
+        looks for one that reaches it through a caller."""
         script = definition.path.rpartition("/")[2]
         module = script.removesuffix(".py") if script.endswith(".py") else ""
         name = file_name(script)
         found = [
             path for path in self.files if name.search(self.files[path]) or (module and self.imports(path, module))
         ]
-        return _nearest_first(definition, found)[:MAX_RELATED_TESTS]
+        nearest = _nearest_first(definition, found)
+        shown = ", ".join(nearest[:MAX_RELATED_TESTS]) or "none"
+        rest = len(nearest) - MAX_RELATED_TESTS
+        return f"{shown}, and {rest} more" if rest > 0 else shown
 
     def _names_python(self, definition: Definition) -> bool:
         script = definition.path.rpartition("/")[2]
@@ -630,9 +635,7 @@ def replacing_runs(change: FileChange) -> list[list[int]]:
     return runs
 
 
-def converted_entry(
-    change: FileChange, definition: Definition, calls: list[tuple[int, str]], related: list[str]
-) -> str:
+def converted_entry(change: FileChange, definition: Definition, calls: list[tuple[int, str]], related: str) -> str:
     """The block for a changed definition a test names whose change converts a call site, which the reviewer checks
     a test pins."""
     sites = ", ".join(f"{callee} at line {line}" for line, callee in calls)
@@ -640,7 +643,7 @@ def converted_entry(
     return (
         f"CONVERTED {change.path}:{definition.line} {definition.kind} "
         f"{f'{definition.owner}.' if definition.owner else ''}{definition.name}, a test names it, converted calls "
-        f"{sites}, hunk {hunk.header}, tests of its file {', '.join(related) or 'none'}\n{_excerpt(hunk.text)}\n"
+        f"{sites}, hunk {hunk.header}, tests of its file {related}\n{_excerpt(hunk.text)}\n"
     )
 
 
@@ -725,7 +728,7 @@ def entries(root: Path, files: list[FileChange], unreadable: dict[str, str] | No
                 f"UNTESTED {change.path}:{definition.line} {definition.kind} "
                 f"{f'{definition.owner}.' if definition.owner else ''}{definition.name}, added lines "
                 f"{_line_ranges(found.added)}, hunk {found.hunk.header}, tests of its file "
-                f"{', '.join(related) or 'none'}{unread_part(definition, unread)}\n{_excerpt(found.hunk.text)}\n"
+                f"{related}{unread_part(definition, unread)}\n{_excerpt(found.hunk.text)}\n"
             )
     return blocks
 

@@ -88,14 +88,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import json_reader
 import nesting_depth
 import whole_number
-from atomic_file import is_read_only, replace_bytes
+from atomic_file import replace_bytes
 from console import run_main
-from dotnet_format_targets import inside_root, owning_projects, read_file_list, solution_refusal
+from dotnet_format_targets import inside_root, owning_projects, read_file_list, solution_refusal, write_refusal
 from dotnet_solution import project_path, read_listed_projects, read_text, refusal, same_path
 from file_presence import is_present
 from flat_text import fact_line, flat_text
 from folders_up import folders_up
-from link_probe import is_link_or_junction
 from run_dotnet_format import Services
 from xml_reader import XmlRefused
 
@@ -571,35 +570,8 @@ def write_source(path: Path, source: Source, text: str) -> None:
     replace_bytes(path, source.bom + text.encode(source.encoding, errors="surrogatepass"), mode=mode)
 
 
-def link_refusal(root: Path, path: Path) -> str | None:
-    """Why `path`, a file under `root` the script would write, is not written, or None: it, or a folder between it
-    and `root`, is a link, so the write would land wherever the link points. A path that does not exist yet, such
-    as an .editorconfig the script adds, is judged by the folders that do."""
-    current = root
-    for part in path.relative_to(root).parts:
-        current = current / part
-        try:
-            if is_link_or_junction(current):
-                where = "the file" if current == path else f"its folder {current.relative_to(root).as_posix()}"
-                return f"{where} is a symbolic link or junction, which the script does not write through"
-        except FileNotFoundError:
-            return None
-        except OSError as error:
-            return f"{current.relative_to(root).as_posix()} cannot be examined: {error.strerror or error}"
-    return None
-
-
 class Failed(Exception):
     pass
-
-
-def write_refusal(root: Path, path: Path) -> str | None:
-    """Why `path`, a file under `root` that a fix would rewrite, is not written, or None: `link_refusal`'s reason, or
-    the file is read-only, which `atomic_file` refuses to replace."""
-    refused = link_refusal(root, path)
-    if refused is None and is_read_only(path):
-        refused = "the file is read-only; make it writable to fix it"
-    return refused
 
 
 def check_files(root: Path, listed: list[str], fix: bool, emit: Callable[[str], None]) -> bool:

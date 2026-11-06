@@ -529,7 +529,8 @@ class UpgradeNotesPolicy(unittest.TestCase):
 
     def test_a_notes_section_that_is_not_a_version_fails(self) -> None:
         self.release()
-        for heading in ("Unreleased", "Pending"):
+        # A version in other Unicode digits is no release tag, so its heading is no release's section either.
+        for heading in ("Unreleased", "Pending", "v\u0663.0.0"):
             with self.subTest(heading=heading):
                 notes = self.NOTES.replace(
                     "## v0.1.0", f"## {heading}\n{self.entry('none', pull_request='#7')}\n## v0.1.0"

@@ -544,12 +544,23 @@ class ConfigurationTests(unittest.TestCase):
             "owner/.#1",
             "owner/..#1",
             "o/" + "n" * 101 + "#1",
+            "owner/repo#1234567890",
         ):
             with self.subTest(key=key):
                 config = valid_config()
                 config["dashboard"] = {"status_overrides": {key: "On hold"}}
                 validate_config(config)
-        for key in ("owner/repo", "owner#1", "owner/repo/x#1", "owner/re po#1", "owner/repo#0", "/repo#1"):
+        # A number past ten digits is no pull request update-pr-dashboard reads, so `update` and `override --clear`
+        # would refuse the key the configuration accepted.
+        for key in (
+            "owner/repo",
+            "owner#1",
+            "owner/repo/x#1",
+            "owner/re po#1",
+            "owner/repo#0",
+            "/repo#1",
+            "owner/repo#12345678901",
+        ):
             with self.subTest(key=key):
                 config = valid_config()
                 config["dashboard"] = {"status_overrides": {key: "On hold"}}

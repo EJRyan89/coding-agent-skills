@@ -178,7 +178,7 @@ from console import run_main
 from file_presence import NotAFile, is_directory, is_occupied, is_present, matching
 from flat_text import flat_text, single_line
 from git_client import GitClient, GitError
-from markdown_sections import CODE_SPAN, POWERSHELL_FENCES, SHELL_FENCES, find_fences, prose_code_spans
+from markdown_sections import ATX_HEADING, CODE_SPAN, POWERSHELL_FENCES, SHELL_FENCES, find_fences, prose_code_spans
 from path_containment import within
 from path_keys import path_key
 from powershell_startup import POWERSHELL_PROGRAMS, StartupCommand, startup_command
@@ -218,7 +218,6 @@ KNOWN_TOOLS = (
     "KillShell",
     "LS",
     "Monitor",
-    "MultiEdit",
     "NotebookEdit",
     "NotebookRead",
     "PowerShell",
@@ -240,7 +239,6 @@ CONTEXT_FREE_TOOLS = frozenset(
         "ExitPlanMode",
         "ExitWorktree",
         "KillShell",
-        "MultiEdit",
         "NotebookEdit",
         "NotebookRead",
         "SlashCommand",
@@ -602,7 +600,6 @@ GIT_COMMAND = re.compile(
 OUTSIDE_REFERENCE = re.compile(r"(?<![\w./-])(\$\{CLAUDE_SKILL_DIR\}/)?((?:\.\./)+[\w./-]+\.md)\b")
 # A relative Markdown path that stays in the skill folder, such as `references/a.md` or `a.md`.
 INSIDE_REFERENCE = re.compile(r"(?<![\w./$}-])(\$\{CLAUDE_SKILL_DIR\}/)?((?:\./)?[\w-][\w./-]*\.md)\b")
-HEADING = re.compile(r"^ {0,3}(#{1,6})\s+(.*?)\s*#*\s*$")
 CONTENTS_HEADING = re.compile(r"(?i)(?:table of )?contents")
 FENCE_SHELL_COMMAND = re.compile(rf"(?:^|[|;&(]|\$\()\s*({SHELL_FILE_COMMAND})\b")
 SPAN_SHELL_COMMAND = re.compile(rf"^{SHELL_FILE_COMMAND}(?:\s|$)")
@@ -1257,9 +1254,9 @@ def structure_flags(kind: str, text: str, relative: str) -> list[str]:
         return []
     languages, _ = parse_fences(lines)
     for line, language in zip(lines, languages, strict=True):
-        heading = HEADING.match(line) if language is None else None
-        if heading and len(heading.group(1)) >= 2:
-            if CONTENTS_HEADING.fullmatch(heading.group(2)):
+        heading = ATX_HEADING.match(line) if language is None else None
+        if heading and len(heading.group("marks")) >= 2:
+            if CONTENTS_HEADING.fullmatch(heading.group("text")):
                 return []
             break
     return [f"DOC_NO_TOC {len(lines)} {relative}"]
@@ -1396,15 +1393,9 @@ def unreadable_metadata(root: Path, name: str) -> bool:
 
 
 def skill_closure(root: Path, name: str) -> list[str]:
-    """The skill and every skill its metadata's skill_deps reach, in the order they are first reached."""
-    reached: list[str] = []
-    queue = [name]
-    while queue:
-        current = queue.pop(0)
-        if current not in reached:
-            reached.append(current)
-            queue += names(read_metadata(root, current), "skill_deps")
-    return reached
+    """The skill and every skill its metadata's skill_deps reach, in the order the deployer's selection reaches them,
+    through skill_menu's one walk of skill dependencies."""
+    return skill_menu.closure([name], lambda current: names(read_metadata(root, current), "skill_deps"))
 
 
 def declared_agents(directory: Path) -> dict[str, str] | None:

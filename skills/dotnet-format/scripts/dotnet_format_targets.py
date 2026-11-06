@@ -64,6 +64,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-cor
 
 import json_reader
 import msbuild_xml
+from atomic_file import is_read_only
 from console import run_main
 from dotnet_solution import (
     SEARCH_SKIPPED_FOLDERS,
@@ -84,6 +85,7 @@ from folders_up import folders_up
 from git_client import GitClient, GitError, GitResult, output_line
 from github_client import GitHubClient, GitHubError, subprocess_runner
 from github_client import Runner as GhRunner
+from link_probe import is_link_or_junction
 from xml_reader import XmlRefused, read_xml
 
 # An ASP.NET project, whose files the dotnet-format global tool is not run on. The skill has skipped them since its
@@ -219,6 +221,33 @@ def inside_root(root: Path, names: list[str], emit: Callable[[str], None]) -> li
         else:
             kept.append(name)
     return kept
+
+
+def link_refusal(root: Path, path: Path) -> str | None:
+    """Why `path`, a file under `root` the script would write, is not written, or None: it, or a folder between it
+    and `root`, is a link, so the write would land wherever the link points. A path that does not exist yet, such
+    as an .editorconfig the script adds, is judged by the folders that do."""
+    current = root
+    for part in path.relative_to(root).parts:
+        current = current / part
+        try:
+            if is_link_or_junction(current):
+                where = "the file" if current == path else f"its folder {current.relative_to(root).as_posix()}"
+                return f"{where} is a symbolic link or junction, which the script does not write through"
+        except FileNotFoundError:
+            return None
+        except OSError as error:
+            return f"{current.relative_to(root).as_posix()} cannot be examined: {error.strerror or error}"
+    return None
+
+
+def write_refusal(root: Path, path: Path) -> str | None:
+    """Why `path`, a file under `root` that a fix would rewrite, is not written, or None: `link_refusal`'s reason, or
+    the file is read-only, which `atomic_file` refuses to replace."""
+    refused = link_refusal(root, path)
+    if refused is None and is_read_only(path):
+        refused = "the file is read-only; make it writable to fix it"
+    return refused
 
 
 def relative(path: Path, root: Path) -> str:

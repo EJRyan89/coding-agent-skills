@@ -719,18 +719,32 @@ def run_command(
 # -p, and no option keeps discovery yet, so a session whose init event lists no skill fails with this reason rather than
 # counting as a result.
 NOTHING_DISCOVERED = "Claude Code discovered no skill, as a session in bare mode does"
+# An init event whose skills are not a list of names lists skills that cannot be known, which is neither none
+# discovered nor the skill missing, so the session counts for nothing with this reason.
+UNREAD_DISCOVERY = "Claude Code's init event lists its skills as something other than a list of names"
 
 
 def discovery_failure(output: str) -> str | None:
-    """Why a Claude Code session counts for nothing because it discovered no skill, or None. A session that printed no
-    init event has its own failure to report."""
-    skills, _ = claude_stream(output)
+    """Why a Claude Code session counts for nothing because it discovered no skill, or listed its skills in a shape
+    this does not read, or None. A session that printed no init event has its own failure to report."""
+    skills, _, unread = _claude_events(output)
+    if unread:
+        return UNREAD_DISCOVERY
     return NOTHING_DISCOVERED if skills is not None and not skills else None
 
 
 def claude_stream(output: str) -> tuple[set[str] | None, list[str]]:
-    """The skills Claude Code's init event lists, if it printed one, and the permissions its result denied."""
+    """The skills Claude Code's init event lists, if it printed one that lists them as names, and the permissions its
+    result denied."""
+    skills, denials, _ = _claude_events(output)
+    return skills, denials
+
+
+def _claude_events(output: str) -> tuple[set[str] | None, list[str], bool]:
+    """The init event's skills, the result's denials, and whether the last init event listed its skills in a shape
+    other than a list of names, whose skills are then None."""
     skills: set[str] | None = None
+    unread = False
     denials: list[str] = []
     for line in discovery.output_lines(output):
         with contextlib.suppress(ValueError):
@@ -739,11 +753,13 @@ def claude_stream(output: str) -> tuple[set[str] | None, list[str]]:
                 continue
             if event.get("type") == "system" and event.get("subtype") == "init":
                 names = event.get("skills")
-                skills = {str(name).lstrip("/") for name in names} if isinstance(names, list) else set()
+                named = [name for name in names if isinstance(name, str)] if isinstance(names, list) else []
+                unread = not isinstance(names, list) or len(named) != len(names)
+                skills = None if unread else {name.lstrip("/") for name in named}
             if event.get("type") == "result":
                 listed = event.get("permission_denials")
                 denials += [denied(entry) for entry in listed] if isinstance(listed, list) else []
-    return skills, denials
+    return skills, denials, unread
 
 
 def denied(entry: object) -> str:

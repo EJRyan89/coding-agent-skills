@@ -321,7 +321,10 @@ class LeftoverTests(Fixture):
         self.assertIn(" (detached)", self.summary(lines))
         code, lines = self.invoke("remove-directory", "--plan", str(self.plan_file), "--path", str(trees["on-main"]))
         self.assertEqual(0, code, "a path the plan already removed needs nothing more")
-        self.preserved(lines, (trees["on-main"], "already removed by this plan"))
+        # The path is gone, not kept: PRESERVED names what stays.
+        self.preserved(lines)
+        self.assertEqual(1, len(facts(lines, "ALREADY_REMOVED")), lines)
+        self.same(trees["on-main"], facts(lines, "ALREADY_REMOVED")[0][0])
 
     def test_a_worktree_or_branch_that_moves_after_planning_is_preserved_as_moved_and_never_offered(self) -> None:
         main = git(self.clone, "rev-parse", "main")

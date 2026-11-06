@@ -131,6 +131,25 @@ def test_read_menu_reads_the_source_document_and_each_skills_metadata(tmp_path: 
         ({"id": "owner/repo"}, {"alpha": []}, "alpha.json is not a JSON object"),
         ({"id": "owner/repo"}, {"alpha": {"skill_deps": ["ghost"]}}, "has no metadata for: ghost"),
         ({"id": "owner/repo", "bundles": {"pair": {"members": ["ghost"]}}}, {}, "has no metadata for: ghost"),
+        # A list of names of another kind is not none: the deployer refuses it, so the menu cannot be planned.
+        ({"id": "owner/repo"}, {"alpha": {"skill_deps": "beta"}}, "alpha.json skill_deps is not a list of names"),
+        ({"id": "owner/repo"}, {"alpha": {"skill_deps": [1]}}, "alpha.json skill_deps is not a list of names"),
+        ({"id": "owner/repo"}, {"alpha": {"skill_deps": None}}, "alpha.json skill_deps is not a list of names"),
+        ({"id": "owner/repo"}, {"alpha": {"required_vars": "X"}}, "alpha.json required_vars is not a list of names"),
+        ({"id": "owner/repo", "bundles": []}, {}, "source.json bundles is not a JSON object"),
+        ({"id": "owner/repo", "bundles": {"pair": []}}, {}, "source.json bundle pair is not a JSON object"),
+        ({"id": "owner/repo", "bundles": {"pair": {"members": "alpha"}}}, {"alpha": {}}, "pair members is not a list"),
+        ({"id": "owner/repo", "bundles": {"pair": {}}}, {}, "source.json bundle pair members is not a list of names"),
+        # A setting that is not true or false is not its default: the deployer refuses it too.
+        ({"id": "owner/repo"}, {"alpha": {"opt_in": "true"}}, "alpha.json opt_in is not true or false"),
+        ({"id": "owner/repo"}, {"alpha": {"opt_in": 1}}, "alpha.json opt_in is not true or false"),
+        ({"id": "owner/repo"}, {"alpha": {"selectable": "false"}}, "alpha.json selectable is not true or false"),
+        ({"id": "owner/repo"}, {"alpha": {"selectable": None}}, "alpha.json selectable is not true or false"),
+        (
+            {"id": "owner/repo", "bundles": {"pair": {"members": ["alpha"], "opt_in": "true"}}},
+            {"alpha": {}},
+            "source.json bundle pair opt_in is not true or false",
+        ),
     ],
 )
 def test_read_menu_refuses_a_source_it_cannot_read(
@@ -141,3 +160,15 @@ def test_read_menu_refuses_a_source_it_cannot_read(
         (root / "source.json").unlink()
     with pytest.raises(skill_menu.MenuError, match=problem):
         skill_menu.read_menu(root)
+
+
+def test_closure_walks_skill_deps_depth_first_once_each_past_a_cycle() -> None:
+    deps = {"alpha": ["beta", "delta"], "beta": ["gamma", "alpha"], "gamma": [], "delta": ["gamma"]}
+    assert skill_menu.closure(["alpha"], deps.__getitem__) == ["alpha", "beta", "gamma", "delta"]
+    assert skill_menu.closure(["delta", "alpha"], deps.__getitem__) == ["delta", "gamma", "alpha", "beta"]
+
+
+def test_closure_walks_a_chain_longer_than_the_recursion_limit() -> None:
+    length = sys.getrecursionlimit() * 2
+    chain = skill_menu.closure(["0"], lambda name: [str(int(name) + 1)] if int(name) < length else [])
+    assert [str(number) for number in range(length + 1)] == chain
