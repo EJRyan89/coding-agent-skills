@@ -5855,6 +5855,63 @@ class Handles:
         ),
         pytest.param(
             {
+                "skills/alpha/scripts/middle.py": "from job_tree import Handles\n",
+                "skills/alpha/scripts/alpha.py": "from middle import Handles\n\n\nclass B(Handles):\n"
+                "    def open(self, pid):\n        return self.lib.OpenProcess(pid)\n",
+            },
+            ["skills/alpha/scripts/alpha.py:6"],
+            id="a base a third module only re-exports",
+        ),
+        pytest.param(
+            {
+                "skills/alpha/scripts/middle.py": "import job_tree\n\nRenamed = job_tree.Handles\n",
+                "skills/alpha/scripts/alpha.py": "import middle\n\n\nclass B(middle.Renamed):\n"
+                "    def open(self, pid):\n        return self.lib.OpenProcess(pid)\n",
+            },
+            ["skills/alpha/scripts/alpha.py:6"],
+            id="a base a third module binds to another name",
+        ),
+        pytest.param(
+            {
+                "skills/alpha/scripts/nested.py": "import ctypes\n\n\nclass Outer:\n    class Handles:\n"
+                "        def __init__(self):\n            self.lib = ctypes.WinDLL('kernel32')\n",
+                "skills/alpha/scripts/middle.py": "from nested import Outer\n",
+                "skills/alpha/scripts/alpha.py": "import middle\n\n\nclass B(middle.Outer.Handles):\n"
+                "    def open(self, pid):\n        return self.lib.OpenProcess(pid)\n",
+            },
+            ["skills/alpha/scripts/alpha.py:6"],
+            id="a nested class of a re-exported class",
+        ),
+        pytest.param(
+            {
+                "tools/kit/__init__.py": CTYPES_BASE_OWNER,
+                "skills/alpha/scripts/alpha.py": "from kit import Handles\n\n\nclass B(Handles):\n"
+                "    def open(self, pid):\n        return self.lib.OpenProcess(pid)\n",
+            },
+            ["skills/alpha/scripts/alpha.py:6"],
+            id="a base a package's __init__ defines",
+        ),
+        pytest.param(
+            {
+                "skills/alpha/scripts/first.py": "from second import Thing\n",
+                "skills/alpha/scripts/second.py": "from first import Thing\n",
+                "skills/alpha/scripts/alpha.py": "from first import Thing\n\n\nclass B(Thing):\n"
+                "    def open(self, pid):\n        return self.lib\n",
+            },
+            [],
+            id="a cycle of re-exports",
+        ),
+        pytest.param(
+            {
+                "skills/alpha/scripts/middle.py": "from job_tree import close\n",
+                "skills/alpha/scripts/alpha.py": "from middle import close\n\n\nclass B(close):\n"
+                "    def open(self, pid):\n        return self.lib\n",
+            },
+            [],
+            id="a re-export of a name no module defines as a class",
+        ),
+        pytest.param(
+            {
                 "skills/alpha/scripts/nested.py": "import ctypes\n\n\nclass Outer:\n    class Handles:\n"
                 "        def __init__(self):\n            self.lib = ctypes.WinDLL('kernel32')\n",
                 "skills/alpha/scripts/alpha.py": "from nested import Outer\n\n\nclass B(Outer.Handles):\n"

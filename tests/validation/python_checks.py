@@ -2227,12 +2227,16 @@ class _InheritedLibraries:
     """The attributes each class binds to a ctypes library, in its own module and through every base it has, followed
     through the modules' imports into the module that defines the base, so a class that reads a library its base
     binds in another module is found. A module is reached by the last part of the name its import gives, among the
-    modules read; every module of that name counts."""
+    modules read, a package's `__init__.py` by its directory's name; every module of that name counts. A name a module
+    only binds at its top level, as a re-export does, is followed to what it binds."""
 
-    def __init__(self, models: list[tuple[str, _ForeignLibraries]]) -> None:
+    def __init__(self, models: list[tuple[str, ast.Module, _ForeignLibraries]]) -> None:
         self.modules: dict[str, list[_ForeignLibraries]] = {}
-        for name, libraries in models:
-            self.modules.setdefault(PurePosixPath(name).stem, []).append(libraries)
+        self.bindings: dict[int, dict[str, str]] = {}
+        for name, tree, libraries in models:
+            path = PurePosixPath(name)
+            self.modules.setdefault(path.parent.name if path.stem == "__init__" else path.stem, []).append(libraries)
+            self.bindings[id(libraries)] = dict(_module_bindings(tree, libraries.resolver))
 
     def bound(
         self, libraries: _ForeignLibraries, class_name: str, seen: frozenset[tuple[int, str]] = frozenset()
@@ -2254,16 +2258,27 @@ class _InheritedLibraries:
                 found |= self.bound(owner, name, seen)
         return found
 
-    def base_classes(self, libraries: _ForeignLibraries, dotted: str) -> list[tuple[_ForeignLibraries, str]]:
+    def base_classes(
+        self, libraries: _ForeignLibraries, dotted: str, seen: frozenset[tuple[int, str]] = frozenset()
+    ) -> list[tuple[_ForeignLibraries, str]]:
         """Each class a base's dotted name, as the resolver gives it, may be: a class of this module, named after
         `<local>`, or a class of a module read, named after the part that names that module, a nested class's
-        qualified name included."""
+        qualified name included, or what a name that module binds without defining it, as a re-export, is, followed
+        until a module defines it; a name `seen` holds, one a cycle of re-exports reaches again, is none."""
+        key = (id(libraries), dotted)
+        if key in seen:
+            return []
+        seen = seen | {key}
         parts = dotted.split(".")
         found: list[tuple[_ForeignLibraries, str]] = []
         for index in range(1, len(parts)):
-            module, name = parts[:index], ".".join(parts[index:])
-            owners = [libraries] if module == ["<local>"] else self.modules.get(module[-1], [])
-            found += [(owner, name) for owner in owners if name in owner.class_names]
+            module, name = parts[:index], parts[index:]
+            for owner in [libraries] if module == ["<local>"] else self.modules.get(module[-1], []):
+                bound = self.bindings[id(owner)].get(name[0])
+                if ".".join(name) in owner.class_names:
+                    found.append((owner, ".".join(name)))
+                elif bound is not None:
+                    found += self.base_classes(owner, ".".join([bound, *name[1:]]), seen)
         return found
 
     def held(self, libraries: _ForeignLibraries) -> set[str]:
@@ -2281,7 +2296,7 @@ def ctypes_declaration_problems(root: Path, files: list[Path]) -> list[str]:
         (name, tree, _ForeignLibraries(tree, CallableResolver(tree)))
         for _, name, tree in python_trees(claim_files(root, files), root, problems)
     ]
-    inherited = _InheritedLibraries([(name, libraries) for name, _, libraries in models])
+    inherited = _InheritedLibraries(models)
     for name, tree, libraries in models:
         declared: dict[ForeignFunction, set[str]] = {}
         calls: list[tuple[ast.Call, str, ForeignFunction]] = []
