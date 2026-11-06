@@ -128,9 +128,6 @@ COMMANDS_DOC = '"Commands skills may run" in docs/adding-a-skill.md'
 # takes. A long option is placed only spelled in full, and a word the table does not settle, an abbreviation or an
 # option the table does not list, leaves the program unread (UNREAD_PROGRAM) rather than taken for the program.
 # command -v and -V only look a program up.
-GH_LIMIT_ALLOWED = {
-    "COMMAND_WRAPPERS": "xargs's own -L, the count of lines each command it starts takes, which no gh call passes",
-}
 COMMAND_WRAPPERS: dict[str, OptionTable] = {
     "command": option_table("pvV"),
     "builtin": option_table(),
