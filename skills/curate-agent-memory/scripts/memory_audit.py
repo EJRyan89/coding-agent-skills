@@ -253,6 +253,8 @@ class Memory:
     broken_links: list[str] = field(default_factory=list)
     cited_paths: list[CitedPath] = field(default_factory=list)
     overlaps: list[Overlap] = field(default_factory=list)
+    # How many overlaps past OVERLAP_LIMIT the report leaves out, so a cut list says it was cut.
+    overlaps_omitted: int = 0
 
 
 def holds_line_break(text: str) -> bool:
@@ -381,7 +383,13 @@ def parse_index(path: Path) -> tuple[list[dict[str, str]], list[str]]:
 
 def target_identity(memory_dir: Path, file: str) -> str:
     """Compare targets relative to the store, resolving ./ prefixes and normalizing case on Windows."""
-    return path_key(memory_dir / file, resolve=True)
+    return path_key(memory_dir / store_name(file), resolve=True)
+
+
+def store_name(target: str) -> str:
+    """An index entry's target as a name in the store: without any leading `./` or `.\\`, which POSIX reads as part of
+    the name, so the file judged, compared, and read is the one the entry names on every platform."""
+    return CURRENT_FOLDER.sub("", target)
 
 
 # What entry_problem gives for a path that names nothing, such as an index entry whose file is gone.
@@ -419,7 +427,7 @@ def index_target_problem(memory_dir: Path, target: str) -> str | None:
     The target is judged by its text before any file is touched: after any leading `./`, it must be a bare *.md name,
     so a `..` segment, an absolute path, or a path through a subfolder, symbolic link, or junction is never followed.
     """
-    name = CURRENT_FOLDER.sub("", target)
+    name = store_name(target)
     if not bare_name(name):
         return NOT_IN_STORE
     if not name.lower().endswith(".md"):
@@ -517,10 +525,11 @@ def destination_blocks(files: list[Path]) -> list[tuple[str, int, str, set[str]]
     return blocks
 
 
-def overlaps_for(body: str, blocks: list[tuple[str, int, str, set[str]]]) -> list[Overlap]:
+def overlaps_for(body: str, blocks: list[tuple[str, int, str, set[str]]]) -> tuple[list[Overlap], int]:
+    """The memory's highest-scoring overlaps, at most OVERLAP_LIMIT, and how many more scored but were left out."""
     memory_words = words(body)
     if len(memory_words) < 4:
-        return []
+        return [], 0
     scored = []
     for file, line, text, block_words in blocks:
         if len(block_words) < 4:
@@ -531,7 +540,7 @@ def overlaps_for(body: str, blocks: list[tuple[str, int, str, set[str]]]) -> lis
         if score >= OVERLAP_THRESHOLD and len(shared) >= 4:
             scored.append(Overlap(file, line, round(score, 2), text[:240]))
     scored.sort(key=lambda overlap: overlap.score, reverse=True)
-    return scored[:OVERLAP_LIMIT]
+    return scored[:OVERLAP_LIMIT], max(len(scored) - OVERLAP_LIMIT, 0)
 
 
 def destination_files(repo: Path | None, instructions: list[Path], user_dir: Path | None = None) -> list[Path]:
@@ -595,6 +604,7 @@ def audit(
     for path in files:
         meta, body = parsed[path]
         links = sorted(set(WIKI_LINK.findall(body)))
+        overlaps, omitted = overlaps_for(body, blocks)
         memories.append(
             Memory(
                 file=path.name,
@@ -606,7 +616,8 @@ def audit(
                 links=links,
                 broken_links=[link for link in links if link not in known_names],
                 cited_paths=cited_paths(body, bases),
-                overlaps=overlaps_for(body, blocks),
+                overlaps=overlaps,
+                overlaps_omitted=omitted,
             )
         )
     return {
@@ -687,10 +698,11 @@ def reindex(memory_dir: Path) -> dict[str, Any]:
             lines.append(line)
             entries.append(entry["file"])
             continue
-        meta, body = frontmatter(file)
+        name = store_name(file)
+        meta, body = frontmatter(name)
         hook = one_line(meta["description"]) if meta.get("description") else entry["hook"] or derived_hook(body)
         lines.append(
-            index_line(entry["title"].strip() or derived_title(meta, file), file, hook, original_target=entry["file"])
+            index_line(entry["title"].strip() or derived_title(meta, name), name, hook, original_target=entry["file"])
         )
         entries.append(entry["file"])
     files, others = memory_entries(memory_dir)
@@ -1158,7 +1170,9 @@ def manifest_skill_files(home: Path, name: str) -> list[Path]:
     """The skills/<name>/SKILL.md of each source checkout the deployer's manifest records as deploying `name`.
 
     Raises OSError or ValueError when the manifest exists but cannot be read as JSON, as when a directory stands in its
-    place, or holds a source entry of another shape than the deployer records, whose skills cannot then be known.
+    place, or holds a source entry of another shape than the deployer accepts, whose skills cannot then be known. An
+    entry the deployer accepts may lack its skills, which then are none, and its source_dir, which only matters for an
+    entry that deploys `name`: that one is refused, since the checkout holding the skill is then unknown.
     """
     manifest = home / ".claude" / "skills" / MANIFEST_NAME
     if not is_present(manifest):
@@ -1171,14 +1185,15 @@ def manifest_skill_files(home: Path, name: str) -> list[Path]:
         raise ValueError("its sources is not an object")
     found: list[Path] = []
     for source, entry in sources.items():
-        if not (
-            isinstance(entry, dict)
-            and isinstance(entry.get("source_dir"), str)
-            and isinstance(entry.get("skills"), dict)
-        ):
-            raise ValueError(f"its source {source!r} does not name its source_dir and skills")
-        if name in entry["skills"]:
-            found.append(Path(entry["source_dir"]) / "skills" / name / "SKILL.md")
+        skills = entry.get("skills", {}) if isinstance(entry, dict) else None
+        if not isinstance(skills, dict):
+            raise ValueError(f"its source {source!r} is not an object whose skills is an object")
+        if name not in skills:
+            continue
+        source_dir = entry.get("source_dir")
+        if not isinstance(source_dir, str):
+            raise ValueError(f"its source {source!r} deploys {name} but records no source_dir")
+        found.append(Path(source_dir) / "skills" / name / "SKILL.md")
     return found
 
 

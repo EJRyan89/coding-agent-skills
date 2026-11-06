@@ -1072,6 +1072,32 @@ class UpdateTests(TrackerPipelineFixture):
                 finally:
                     target.chmod(stat.S_IREAD | stat.S_IWRITE)
 
+    def test_a_read_only_configuration_is_refused_as_the_configuration_change_s_file(self) -> None:
+        self.configure(overrides={"example/one#2": "waiting"})
+        self.track("example/one#3")
+        commands = {
+            "override": ("override", "--set", "example/one#3=on hold"),
+            "override --clear": ("override", "--clear", "example/one#2"),
+            "repository": ("repository", "--add", "other/three"),
+        }
+        before = self.config_path.read_bytes()
+        self.config_path.chmod(stat.S_IREAD)
+        try:
+            for name, arguments in commands.items():
+                with self.subTest(command=name):
+                    code, out, err = self.run_main(*arguments)
+                    self.assertEqual((1, ""), (code, err))
+                    self.assertEqual(
+                        [
+                            f"FAILED {self.config_path} is read-only; make it writable for the configuration change "
+                            "to replace it"
+                        ],
+                        out.splitlines(),
+                    )
+                    self.assertEqual(before, self.config_path.read_bytes())
+        finally:
+            self.config_path.chmod(stat.S_IREAD | stat.S_IWRITE)
+
     def test_the_default_configuration_keeps_the_plain_tracker_record_name(self) -> None:
         # Independent literals: review_config names the default file config.json, and its record is tracker.json.
         with mock.patch.dict(os.environ, {"CODE_REVIEW_CONFIG": ""}):
@@ -1749,6 +1775,14 @@ class RepositoryTests(TrackerPipelineFixture):
         expected["dashboard"]["ignored_repositories"] = ["sandbox/*"]
         self.assertEqual(expected, self.written())
         self.assertEqual([], self.github.calls)
+
+    def test_change_ignored_takes_one_direction_as_the_command_line_gives_it(self) -> None:
+        # The command line takes --ignore or --unignore, never both, so the change names one direction for its entries.
+        path, changes = tp.change_ignored(["Other/Three", "sandbox/*"], added=True, config_path=self.config_path)
+        self.assertEqual((self.config_path, [("other/three", True), ("sandbox/*", True)]), (path, changes))
+        _, changes = tp.change_ignored(["OTHER/three"], added=False, config_path=self.config_path)
+        self.assertEqual([("other/three", False)], changes)
+        self.assertEqual(["sandbox/*"], self.written()["dashboard"]["ignored_repositories"])
 
     def test_collect_mutes_ignored_repositories_and_counts_them_without_changing_the_input(self) -> None:
         self.serve_default_pages()

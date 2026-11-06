@@ -68,6 +68,7 @@ from flat_text import flat_text
 from git_client import GitClient, GitError, output_line
 from markdown_sections import find_fences
 from path_containment import within
+from skill_menu import closure
 
 # The paths and commands validation and the tools also name: this script runs from the checkout without the
 # deployer, which tests/validation and tools/skill_shims.py import.
@@ -322,14 +323,9 @@ def _names(value: object) -> set[str]:
 
 
 def reach(name: str, meta: dict[str, dict[str, object] | None]) -> set[str]:
-    """The skill and every skill its skill_deps reach, by the working tree's metadata. The walk visits each skill of
-    a list that grows only by skills not yet in it, so it ends."""
-    reached = [name]
-    for current in reached:
-        reached += [
-            found for found in sorted(_names((meta.get(current) or {}).get("skill_deps"))) if found not in reached
-        ]
-    return set(reached)
+    """The skill and every skill its skill_deps reach, by the working tree's metadata, through skill_menu's one walk
+    of skill dependencies."""
+    return set(closure([name], lambda current: sorted(_names((meta.get(current) or {}).get("skill_deps")))))
 
 
 def unreadable_in(names: Iterable[str], meta: dict[str, dict[str, object] | None]) -> bool:

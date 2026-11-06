@@ -533,7 +533,7 @@ def rewrite_config(edit: Callable[[dict[str, Any], dict[str, Any]], None], confi
     is not written either. The write replaces the file the configuration path leads to, through any symbolic link, and
     keeps that file's mode."""
     path = config_path or default_config_path()
-    target, mode = replacement(path)
+    target, mode = replacement(path, "the configuration change")
     raw = read_json(path)
     edit(raw, validate_config(raw))
     atomic_write_json(target, raw, validator=validate_config, mode=mode)
@@ -599,34 +599,30 @@ def add_repositories(
 
 
 def change_ignored(
-    ignores: list[str], unignores: list[str], *, config_path: Path | None = None
+    entries: list[str], *, added: bool, config_path: Path | None = None
 ) -> tuple[Path, list[tuple[str, bool]]]:
-    """Add each of `ignores` to `dashboard.ignored_repositories` and remove each of `unignores` from it, in one
+    """Add each entry to `dashboard.ignored_repositories`, or with `added` false remove each from it, in one
     `rewrite_config` write, and return the configuration and each entry, lowercase as the configuration holds it, with
-    whether it was added. A malformed entry, one named twice, adding one already there, removing one that is not, and
-    an entry a tracked repository matches are refused, writing nothing."""
-    changes = [
-        (normalize_ignored_repository(value, "ignored repository"), added)
-        for values, added in ((ignores, True), (unignores, False))
-        for value in values
-    ]
-    names = [entry for entry, _ in changes]
+    `added`. The command line takes --ignore or --unignore, never both, so one call changes the list one way. A
+    malformed entry, one named twice, adding one already there, removing one that is not, and an entry a tracked
+    repository matches are refused, writing nothing."""
+    names = [normalize_ignored_repository(value, "ignored repository") for value in entries]
     for index, entry in enumerate(names):
         if entry in names[:index]:
             raise ConfigurationError(f"Ignored repository {entry} is named more than once")
 
     def edit(raw: dict[str, Any], config: dict[str, Any]) -> None:
         current = config["dashboard"]["ignored_repositories"]
-        for entry, added in changes:
+        for entry in names:
             if added and entry in current:
                 raise ConfigurationError(f"Repository {entry} is already ignored")
             if not added and entry not in current:
                 raise ConfigurationError(f"Repository {entry} is not ignored")
         dashboard = raw.setdefault("dashboard", {})
         kept = [value for value in dashboard.get("ignored_repositories", []) if value.lower() not in names]
-        dashboard["ignored_repositories"] = kept + [entry for entry, added in changes if added]
+        dashboard["ignored_repositories"] = kept + (names if added else [])
 
-    return rewrite_config(edit, config_path), changes
+    return rewrite_config(edit, config_path), [(entry, added) for entry in names]
 
 
 def _refuse_untracked(keys: list[str], config_path: Path) -> None:
@@ -833,7 +829,7 @@ def _repository(additions: list[str], repository_set: str | None, config_path: P
 
 
 def _ignore(ignores: list[str], unignores: list[str], config_path: Path | None) -> int:
-    path, changes = change_ignored(ignores, unignores, config_path=config_path)
+    path, changes = change_ignored(ignores or unignores, added=bool(ignores), config_path=config_path)
     for entry, added in changes:
         print(f"{'IGNORED' if added else 'UNIGNORED'} {entry}")
     print(f"WROTE {path}")
