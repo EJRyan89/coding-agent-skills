@@ -1207,6 +1207,10 @@ class RunTests(RuntimeCanaryTestCase):
                 stream = json.dumps({"type": "result", "permission_denials": listed})
                 self.assertEqual((None, denials), runtime_canary.claude_stream(stream))
 
+    def test_a_listed_skill_loses_only_its_leading_slash(self) -> None:
+        init = json.dumps({"type": "system", "subtype": "init", "skills": ["/alpha", "Xenon", "beta/"]})
+        self.assertEqual(({"alpha", "Xenon", "beta/"}, []), runtime_canary.claude_stream(init))
+
     def test_skills_listed_in_another_shape_are_unknown_never_none_discovered(self) -> None:
         # A list of another kind cannot say which skills were found: neither "none discovered" nor UNDISCOVERED.
         for skills in (5, "alpha", None, [FIXTURE, 3], {"name": FIXTURE}):

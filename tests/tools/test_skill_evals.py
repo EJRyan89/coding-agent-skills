@@ -4526,6 +4526,45 @@ def test_a_trigger_scenario_is_checked(changes: dict[str, Any], message: str, tm
         trigger_scenario(tmp_path, spec, demo_checkout(tmp_path))
 
 
+# A session that lists the skill and runs on the model, whose one message holds text rather than a list of blocks.
+UNREAD_MESSAGE = "\n".join(
+    json.dumps(event)
+    for event in (
+        {"type": "system", "subtype": "init", "skills": ["demo"]},
+        {"type": "assistant", "message": {"model": "claude-haiku-5-5", "content": "On it."}},
+    )
+)
+
+
+@pytest.mark.parametrize(
+    ("completed", "reason"),
+    [
+        pytest.param(
+            runtime_canary.Completed(0, UNREAD_MESSAGE, ""),
+            "the session's stream holds a message or a Skill call in a shape the evaluation does not read",
+            id="unread-stream",
+        ),
+        pytest.param(
+            runtime_canary.Completed(-1, "", "", timed_out=True), "timed out after 60 seconds", id="timed-out"
+        ),
+    ],
+)
+def test_a_trigger_session_that_counts_for_nothing_is_reported_and_recorded_in_the_same_words(
+    completed: runtime_canary.Completed, reason: str, tmp_path: Path
+) -> None:
+    # The FAIL lines and the results file each carry the reason, pinned as they read.
+    scenario = trigger_scenario(tmp_path, TRIGGER_SPEC, demo_checkout(tmp_path))
+    session = skill_evals_runs.Session("claude", {}, lambda *_: completed, 60, mock.Mock())
+    run = tmp_path / "run"
+    run.mkdir()
+    result, _ = skill_evals_runs.run_trigger(scenario, "haiku", tmp_path / "home", session, run)
+    assert (result.failure, result.recorded, result.kind) == (
+        f"request 1: {reason}",
+        f"request 1: {reason}",
+        "run",
+    )
+
+
 def test_a_trigger_scenario_s_skill_is_a_shipped_one_the_model_may_start(tmp_path: Path) -> None:
     with pytest.raises(ScenarioError, match="the checkout has no skills/demo"):
         trigger_scenario(tmp_path, TRIGGER_SPEC, tmp_path / "empty")

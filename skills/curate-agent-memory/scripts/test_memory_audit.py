@@ -425,6 +425,13 @@ class MemoryAuditTests(unittest.TestCase):
         self.assertEqual(memory_audit.OVERLAP_LIMIT, len(entry["overlaps"]))
         self.assertEqual(1, entry["overlaps_omitted"])
 
+    def test_a_memory_too_short_to_overlap_leaves_no_overlap_out(self) -> None:
+        rule = "- Name the object under test after its class, never the generic sut variable name.\n\n"
+        write(self.repo / "docs" / "guidelines.md", "# Tests\n\n" + rule * (memory_audit.OVERLAP_LIMIT + 1))
+        write(self.memory_dir / "short.md", memory("short", "Sut naming."))
+        entry = self.by_file(self.run_audit())["short.md"]
+        self.assertEqual(([], 0), (entry["overlaps"], entry["overlaps_omitted"]))
+
     def test_large_unrelated_blocks_do_not_register_as_overlaps(self) -> None:
         glossary = " ".join(f"term{n} means something specific here" for n in range(200))
         write(self.repo / "docs" / "glossary.md", f"{glossary} object test class variable name\n")
@@ -958,6 +965,12 @@ class ReindexTests(unittest.TestCase):
         self.assertNotIn(".\\kept.md", joined)
         self.assertEqual("kept.md", memory_audit.store_name(".\\kept.md"))
         self.assertEqual("kept.md", memory_audit.store_name("./.\\kept.md"))
+
+    def test_an_entry_with_no_title_takes_the_file_name_it_was_judged_by(self) -> None:
+        # With no title and no name, the title is the stem of the stripped name, never of `.\\kept`.
+        write(self.memory_dir / "kept.md", "---\ndescription: kept description\n---\n\nBody.\n")
+        write(self.index, "- [](.\\kept.md) — hook\n")
+        self.assertEqual("- [kept](.\\kept.md) — kept description\n", memory_audit.reindex(self.memory_dir)["content"])
 
     def test_without_write_nothing_changes(self) -> None:
         write(self.memory_dir / "one.md", memory("one", "Body."))
