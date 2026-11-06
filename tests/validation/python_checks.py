@@ -2094,6 +2094,7 @@ class _ForeignLibraries:
         nodes = list(scoped_nodes(tree.body))
         self.scopes = {id(node): scope for node, scope in nodes}
         self.class_names = {scope for node, scope in nodes if isinstance(node, ast.ClassDef)}
+        self.bases = {scope: node.bases for node, scope in nodes if isinstance(node, ast.ClassDef)}
         self.places: dict[str, list[str]] = {}
         self.loaders: dict[str, list[str]] = {}
         self.functions: dict[str, list[ForeignFunction]] = {}
@@ -2222,13 +2223,53 @@ def _read_where_bound(node: ast.Attribute, scope: str, libraries: _ForeignLibrar
     return plain and place_key(node, scope, libraries.class_names) in libraries.places
 
 
+class _InheritedLibraries:
+    """The attributes each class binds to a ctypes library, in its own module and through every base it has, followed
+    through the modules' imports into the module that defines the base, so a class that reads a library its base
+    binds in another module is found. A module is reached by the last part of the name its import gives, among the
+    modules read; every module of that name counts."""
+
+    def __init__(self, models: list[tuple[str, _ForeignLibraries]]) -> None:
+        self.modules: dict[str, list[_ForeignLibraries]] = {}
+        for name, libraries in models:
+            self.modules.setdefault(PurePosixPath(name).stem, []).append(libraries)
+
+    def bound(self, libraries: _ForeignLibraries, class_name: str, seen: frozenset[tuple[int, str]]) -> set[str]:
+        """The attributes a class of `libraries`, and each of its bases, binds to a library."""
+        found = {
+            attribute
+            for key in libraries.places
+            for owner, _, attribute in [key.rpartition(".")]
+            if owner == class_name
+        }
+        for base in libraries.bases.get(class_name, []):
+            module, _, base_name = libraries.resolver.name(base).rpartition(".")
+            owners = [libraries] if module == "<local>" else self.modules.get(module.rpartition(".")[2], [])
+            for owner in owners:
+                if base_name in owner.class_names and (id(owner), base_name) not in seen:
+                    found |= self.bound(owner, base_name, seen | {(id(owner), base_name)})
+        return found
+
+    def held(self, libraries: _ForeignLibraries) -> set[str]:
+        """The attributes the module's classes bind to a library or inherit as one from a base, this module's or
+        another's."""
+        found: set[str] = set()
+        for class_name in libraries.class_names:
+            found |= self.bound(libraries, class_name, frozenset({(id(libraries), class_name)}))
+        return found
+
+
 def ctypes_declaration_problems(root: Path, files: list[Path]) -> list[str]:
     """Each call of a ctypes foreign function whose module does not assign that library's function both argtypes and
     restype, argtypes excepted for a function every call gives no arguments, that no CTYPES_ALLOWED entry
     sanctions."""
     problems: list[str] = []
-    for _, name, tree in python_trees(claim_files(root, files), root, problems):
-        libraries = _ForeignLibraries(tree, CallableResolver(tree))
+    models = [
+        (name, tree, _ForeignLibraries(tree, CallableResolver(tree)))
+        for _, name, tree in python_trees(claim_files(root, files), root, problems)
+    ]
+    inherited = _InheritedLibraries([(name, libraries) for name, _, libraries in models])
+    for name, tree, libraries in models:
         declared: dict[ForeignFunction, set[str]] = {}
         calls: list[tuple[ast.Call, str, ForeignFunction]] = []
         given: set[ForeignFunction] = set()
@@ -2255,8 +2296,10 @@ def ctypes_declaration_problems(root: Path, files: list[Path]) -> list[str]:
         # A library a class binds to `self.x`, or in its body, is read only through that class. A read of the
         # attribute is accepted only when its receiver is a plain `self`, `cls`, or a class's name and that class
         # binds it; any other read, through a subclass, `super()`, `type(self)`, `self.__class__`, or any other
-        # receiver, is refused rather than followed through the class's bases.
+        # receiver, is refused rather than followed through the class's bases. A base another module defines counts:
+        # an attribute it binds to a library is held here too, so a subclass's read of it is refused.
         held = {key.rpartition(".")[2] for key in libraries.places if key.partition(".")[0] in libraries.class_names}
+        held |= inherited.held(libraries)
         found += [
             (
                 node.lineno,
@@ -3674,6 +3717,14 @@ class _ContentModel:
             problems.append(
                 f"{CONTENT_POLICY}: core_reader_families names {reader} with {family}, but each must name a "
                 "module-level function of either core and the class, or the tuple of classes, it raises"
+            )
+            return
+        if reader in self.families:
+            # Its module's CONTENT_READERS gave it that module's CONTENT_ERRORS, which this entry would replace, so a
+            # handler catching this family but part of that one would pass.
+            problems.append(
+                f"{CONTENT_POLICY}: core_reader_families names {reader}, which its module's {CONTENT_READERS} "
+                f"already gives that module's {CONTENT_ERRORS}; name it in one of the two"
             )
             return
         self.families[reader] = dict.fromkeys(classes, family)

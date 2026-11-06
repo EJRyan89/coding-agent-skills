@@ -2181,6 +2181,82 @@ def test_the_command_policy_reads_a_python_list_s_shell_script_among_its_options
         assert "jq" in CommandReader(ast.parse(source)).commands(set()), command
 
 
+# A start-up of pwsh or Windows PowerShell runs the script its -Command, -CommandWithArgs, or Windows PowerShell's
+# first positional word holds; the policy reads that script's commands as PowerShell's parser reads them.
+@pytest.mark.parametrize(
+    "script",
+    [
+        "pwsh -Command 'jq .'",
+        "pwsh -NoProfile -c 'jq .'",
+        "powershell 'jq .'",
+        "powershell.exe -ExecutionPolicy Bypass jq .",
+        "pwsh -cwa 'jq $args' .",
+        "env pwsh -c 'jq .'",
+        "pwsh -c 'Invoke-Expression \"jq .\"'",
+    ],
+)
+def test_the_command_policy_reads_the_script_a_powershell_start_up_runs(script: str) -> None:
+    assert "jq" in shell_commands(script)
+
+
+@pytest.mark.parametrize(
+    ("script", "unread"),
+    [
+        ("pwsh -EncodedCommand agBxACAALgA=", "pwsh -EncodedCommand agBxACAALgA="),
+        ("pwsh -NoProfile -Command -", "pwsh -NoProfile -Command -"),
+        ("powershell -NoProfile -Command", "powershell -NoProfile -Command"),
+    ],
+)
+def test_the_command_policy_refuses_a_powershell_start_up_whose_script_it_cannot_read(script: str, unread: str) -> None:
+    assert shell_commands(script) == {script.split()[0], f"{UNREAD_PROGRAM}{unread}"}
+
+
+@pytest.mark.parametrize("script", ["pwsh -File run.ps1 -Command 'jq .'", "pwsh run.ps1 'jq .'", "pwsh -NoProfile"])
+def test_a_powershell_start_up_that_runs_a_file_or_nothing_runs_only_powershell(script: str) -> None:
+    assert shell_commands(script) == {"pwsh"}
+
+
+def test_the_command_policy_reads_the_script_a_python_list_starts_powershell_to_run() -> None:
+    for command in (
+        '["pwsh", "-NoProfile", "-Command", "jq ."]',
+        '("powershell.exe", "jq .")',
+        '["C:/Program Files/PowerShell/7/pwsh.exe", "-c", "jq", "."]',
+    ):
+        source = f"import subprocess\nsubprocess.run({command})\n"
+        assert "jq" in CommandReader(ast.parse(source)).commands(set()), command
+    # A word it cannot read where the start-up's parameters or script stand leaves the script unread.
+    for command, unread in (
+        ('["pwsh", flag, "jq ."]', "pwsh <value> jq ."),
+        ('["pwsh", "-c", script]', "pwsh -c <value>"),
+    ):
+        source = f"import subprocess\nsubprocess.run({command})\n"
+        assert f"{UNREAD_PROGRAM}{unread}" in CommandReader(ast.parse(source)).commands(set()), command
+    source = 'import subprocess\nsubprocess.run(["pwsh", "-File", path, "-c", "jq ."])\n'
+    assert "jq" not in CommandReader(ast.parse(source)).commands(set())
+
+
+def test_the_command_policy_reads_the_script_a_powershell_source_starts_powershell_to_run() -> None:
+    sources = [
+        "pwsh -NoProfile -Command 'jq .'",
+        "powershell.exe jq .",
+        "pwsh -c $script",
+        "pwsh -File ./run.ps1",
+        # Its twin: a Bash shell a PowerShell source starts with -c.
+        "bash -e -c 'jq .'",
+        "bash -c $script",
+        "bash ./run.sh $argument",
+    ]
+    assert skill_scripts.powershell_commands(sources) == [
+        {"pwsh", "jq"},
+        {"powershell", "jq"},
+        {"pwsh", f"{UNREAD_PROGRAM}pwsh -c <value>"},
+        {"pwsh"},
+        {"bash", "jq"},
+        {"bash", f"{UNREAD_PROGRAM}bash -c <value>"},
+        {"bash"},
+    ]
+
+
 @pytest.mark.parametrize("label", ["zsh", "console", "dash", "fish", "cmd", "bat"])
 def test_skill_command_policy_reads_every_command_shell_fence(tmp_path: Path, label: str) -> None:
     write_fixture_tree(

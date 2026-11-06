@@ -2533,6 +2533,51 @@ def through_name(text):
 """
 
 
+# A family's class defined under a top-level try, its CONTENT_ERRORS tuple bound under an if, and a caller's lambda
+# and tuple of classes bound under an if are each read too.
+CONTENT_BLOCK_FAMILY_SOURCE = """import json
+import sys
+
+try:
+
+    class Mangled(ValueError):
+        pass
+
+except NameError:
+    pass
+
+if sys.platform:
+    CONTENT_ERRORS = (Mangled, json.JSONDecodeError)
+CONTENT_READERS = ("parse",)
+
+
+def parse(text):
+    return text
+"""
+CONTENT_BLOCK_FAMILY_CALLER_SOURCE = """import sys
+
+from blocks import Mangled, parse
+
+if sys.platform:
+    PARSE = lambda text: parse(text)
+    NARROW = (Mangled,)
+
+
+def through_lambda(text):
+    try:
+        return PARSE(text)
+    except Mangled:
+        return None
+
+
+def through_tuple(text):
+    try:
+        return parse(text)
+    except NARROW:
+        return None
+"""
+
+
 def test_content_errors_policy_reads_what_a_module_binds_under_a_top_level_block() -> None:
     with tempfile.TemporaryDirectory() as temporary:
         root = Path(temporary)
@@ -2541,14 +2586,22 @@ def test_content_errors_policy_reads_what_a_module_binds_under_a_top_level_block
             {
                 "skills/ejryan89-skill-core/scripts/reader.py": CONTENT_BLOCK_READER_SOURCE,
                 "skills/alpha/scripts/alpha.py": CONTENT_BLOCK_CALLER_SOURCE,
+                "skills/ejryan89-skill-core/scripts/blocks.py": CONTENT_BLOCK_FAMILY_SOURCE,
+                "skills/gamma/scripts/gamma.py": CONTENT_BLOCK_FAMILY_CALLER_SOURCE,
             },
         )
         found = python_checks.content_error_problems(root, sorted(root.rglob("*.py")), {})
-    remedy = (
-        "catches part of what a reader it calls raises, or its OSError, but not json.decoder.JSONDecodeError; catch "
-        "the whole family, reader.CONTENT_ERRORS, or state why in CONTENT_ERRORS_ALLOWED"
-    )
-    assert found == [f"skills/alpha/scripts/alpha.py:{line} {remedy}" for line in (17, 24)]
+
+    def remedy(family: str) -> str:
+        return (
+            "catches part of what a reader it calls raises, or its OSError, but not json.decoder.JSONDecodeError; "
+            f"catch the whole family, {family}, or state why in CONTENT_ERRORS_ALLOWED"
+        )
+
+    assert found == [
+        *(f"skills/alpha/scripts/alpha.py:{line} {remedy('reader.CONTENT_ERRORS')}" for line in (17, 24)),
+        *(f"skills/gamma/scripts/gamma.py:{line} {remedy('blocks.CONTENT_ERRORS')}" for line in (11, 18)),
+    ]
 
 
 # A core module's reader whose family on content is its own class, or its own tuple of classes, as review_io's
@@ -2580,6 +2633,10 @@ def fetch(path):
 class Holder:
     def get(self, path):
         return path
+
+
+def peek(path):
+    return path
 """
 CONTENT_FAMILY_CALLER_SOURCE = """\
 import kept
@@ -2659,13 +2716,17 @@ def test_content_errors_policy_reads_the_family_named_for_a_core_reader() -> Non
             "store.load": "store.StoreError",
             "store.fetch": "store.BOTH",
             "kept.keep": "kept.Kept",
-            # A reader the module does not define, a family that is no class or tuple, a method, a reader outside
-            # both cores, and a module the tree does not hold.
+            # A reader the module does not define, a family that is no class or tuple, for a reader it does define
+            # too, a method, a reader outside both cores, and a module the tree does not hold.
             "store.read": "store.Known",
             "store.fetch_all": "store.Missing",
+            "store.peek": "store.Missing",
             "store.Holder.get": "store.Known",
             "elsewhere.load": "elsewhere.Lost",
             "gone.load": "gone.Lost",
+            # A reader its module's CONTENT_READERS already gives that module's CONTENT_ERRORS, which this entry
+            # would replace.
+            "reader.read": "reader.Refused",
         }
         found = python_checks.content_error_problems(root, sorted(root.rglob("*.py")), families)
 
@@ -2683,8 +2744,13 @@ def test_content_errors_policy_reads_the_family_named_for_a_core_reader() -> Non
 
     alpha = "skills/alpha/scripts/alpha.py"
     assert found == [
-        *(refused(reader) for reader in ("store.read", "store.fetch_all", "store.Holder.get", "elsewhere.load")),
+        *(
+            refused(reader)
+            for reader in ("store.read", "store.fetch_all", "store.peek", "store.Holder.get", "elsewhere.load")
+        ),
         refused("gone.load"),
+        "tests/validation/python_checks.py: core_reader_families names reader.read, which its module's CONTENT_READERS "
+        "already gives that module's CONTENT_ERRORS; name it in one of the two",
         f"{alpha}:8 {remedy('store.StoreError', 'store.StoreError')}",
         f"{alpha}:15 {remedy('store.StoreError', 'store.StoreError')}",
         f"{alpha}:29 {remedy('store.StoreError', 'store.BOTH')}",
@@ -5716,6 +5782,83 @@ def test_ctypes_policy_refuses_a_foreign_function_reached_by_subscript() -> None
         python_checks.ctypes_declaration_problems, body, "skills/ejryan89-skill-core/scripts/job_tree.py"
     )
     assert refused == marked
+
+
+# A library a base class binds in another module is held in the module that subclasses it, through one import or
+# through a base of a base, so a subclass's read of it is refused as a same-module one is.
+CTYPES_BASE_OWNER = """import ctypes
+from ctypes import wintypes
+
+
+class Handles:
+    def __init__(self):
+        self.lib = ctypes.WinDLL("kernel32")
+        self.lib.CloseHandle.argtypes = [wintypes.HANDLE]
+        self.lib.CloseHandle.restype = wintypes.BOOL
+        self.name = "kernel32"
+
+    def close(self, handle):
+        return self.lib.CloseHandle(handle)
+"""
+
+
+@pytest.mark.parametrize(
+    ("modules", "refused"),
+    [
+        pytest.param(
+            {
+                "skills/alpha/scripts/alpha.py": "from job_tree import Handles\n\n\nclass B(Handles):\n"
+                "    def open(self, pid):\n        return self.lib.OpenProcess(pid)\n"
+            },
+            ["skills/alpha/scripts/alpha.py:6"],
+            id="a base imported by name",
+        ),
+        pytest.param(
+            {
+                "skills/alpha/scripts/alpha.py": "import job_tree\n\n\nclass B(job_tree.Handles):\n"
+                "    def open(self, pid):\n        return self.lib.OpenProcess(pid)\n"
+            },
+            ["skills/alpha/scripts/alpha.py:6"],
+            id="a base read off its imported module",
+        ),
+        pytest.param(
+            {
+                "skills/alpha/scripts/middle.py": (
+                    "from job_tree import Handles\n\n\nclass Middle(Handles):\n    pass\n"
+                ),
+                "skills/alpha/scripts/alpha.py": "from middle import Middle\n\n\nclass B(Middle):\n"
+                "    def open(self, pid):\n        return self.lib.OpenProcess(pid)\n",
+            },
+            ["skills/alpha/scripts/alpha.py:6"],
+            id="a base of a base, each in its own module",
+        ),
+        pytest.param(
+            {
+                "skills/alpha/scripts/alpha.py": "from job_tree import Handles\n\n\nclass B(Handles):\n"
+                "    def label(self):\n        return self.name\n"
+            },
+            [],
+            id="an attribute the base binds to no library",
+        ),
+        pytest.param(
+            {
+                "skills/alpha/scripts/alpha.py": "from job_tree import Other\n\n\nclass B(Other):\n"
+                "    def open(self, pid):\n        return self.lib\n"
+            },
+            [],
+            id="a base the other module does not define",
+        ),
+    ],
+)
+def test_ctypes_policy_refuses_a_library_a_base_class_binds_in_another_module(
+    modules: dict[str, str], refused: list[str]
+) -> None:
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        write_fixture_tree(root, {"skills/ejryan89-skill-core/scripts/job_tree.py": CTYPES_BASE_OWNER, **modules})
+        found = python_checks.ctypes_declaration_problems(root, sorted(root.rglob("*.py")))
+    assert [problem.split(" ", 1)[0] for problem in found] == refused
+    assert all("other than through the class that binds it" in problem for problem in found), found
 
 
 @pytest.mark.parametrize(

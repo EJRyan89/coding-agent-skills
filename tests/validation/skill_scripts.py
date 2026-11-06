@@ -12,7 +12,7 @@ import re
 import shlex
 import unittest
 from collections import defaultdict
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
@@ -27,6 +27,7 @@ from duplication import SKILL_CORE_SCRIPTS
 from markdown_sections import SHELL_FENCES
 from module_closure import MODULE_LOADERS
 from path_containment import posix_within
+from powershell_startup import POWERSHELL_PROGRAMS, UnknownWord, startup_command
 from skill_roots import SKILL_CORE
 from toolchain import powershell_json
 from validation_support import (
@@ -290,9 +291,13 @@ def _program_word(word: str) -> set[str]:
 
 def _wrapped_programs(words: list[str]) -> set[str]:
     """The programs a simple command runs through its first word: what a wrapper such as xargs or env runs, what find's
-    -exec runs, and what eval or a shell's -c script runs, followed through a wrapper of a wrapper."""
+    -exec runs, what eval or a shell's -c script runs, and what the script pwsh or Windows PowerShell is started to run
+    runs, followed through a wrapper of a wrapper."""
     found: set[str] = set()
     while words:
+        started = powershell_startup_programs(words)
+        if started is not None:
+            return found | started
         head, rest = words[0], words[1:]
         if head == "eval":
             return found | shell_commands(" ".join(rest))
@@ -312,6 +317,35 @@ def _wrapped_programs(words: list[str]) -> set[str]:
         found |= _program_word(wrapped[0])
         words = wrapped
     return found
+
+
+def powershell_startup_programs(words: Sequence[str | None]) -> set[str] | None:
+    """What a command that starts Windows PowerShell or pwsh runs: every program the script its -Command,
+    -CommandWithArgs, or Windows PowerShell's positional command holds runs, as powershell_commands reads it, with its
+    parameters read as ejryan89-skill-core's powershell_startup reads them. A script the policy cannot read gives
+    UNREAD_PROGRAM: an -EncodedCommand's, one read from standard input, a missing one, and one a word given as None,
+    whose text the caller cannot read, holds or may name. None for a command that starts neither program."""
+    if not words or words[0] is None:
+        return None
+    program = platform_support.program_name(PureWindowsPath(words[0]).name).casefold()
+    if program not in POWERSHELL_PROGRAMS:
+        return None
+    rest = list(words[1:])
+    command = startup_command(rest, positional_command=program == "powershell", positional_file=program == "pwsh")
+    if command is None:
+        return set()
+    script: list[str | None] = []
+    if not isinstance(command, UnknownWord) and not command.encoded:
+        script = rest[command.start : command.start + 1] if command.with_arguments else rest[command.start :]
+    if not script or script == ["-"] or None in script:
+        return {f"{UNREAD_PROGRAM}{' '.join(word if word is not None else '<value>' for word in words)}"}
+    return set(_powershell_script_programs(" ".join(word for word in script if word is not None)))
+
+
+@functools.cache
+def _powershell_script_programs(script: str) -> frozenset[str]:
+    """The programs one PowerShell script a start-up runs, read once for each text in a validation run."""
+    return frozenset(powershell_commands([script])[0])
 
 
 def shell_script_index(arguments: list[str]) -> int | None:
@@ -367,7 +401,8 @@ def _split_line(value: str) -> list[str]:
 
 def shell_commands(script: str, commands: list[list[str]] | None = None) -> set[str]:
     """Literal command names a Bash script runs, ignoring keywords, case patterns, and its own functions: each command
-    word, each program a wrapper, find's -exec, eval, or a shell's -c script runs, and every command of a command
+    word, each program a wrapper, find's -exec, eval, a shell's -c script, or a PowerShell start-up's script runs, and
+    every command of a command
     substitution, quoted or not. A program a wrapper runs that no literal names is recorded as UNREAD_PROGRAM. Given
     `commands`, it also appends the words of each simple command it reads there, a substitution's included."""
     lexer = shlex.shlex(script.replace("\\\n", " "), posix=True, punctuation_chars=";&|()<>\n")
@@ -1067,12 +1102,16 @@ class CommandReader:
     def _shell_scripts(self, call: ast.Call) -> list[tuple[int, str]]:
         """The line and program of each command a script runs that a runner's list starts a shell with -c to run, the
         -c read among the shell's other options as shell_script_index reads it, up to the list's first item that is
-        not a literal string."""
+        not a literal string, or starts pwsh or Windows PowerShell to run, as powershell_startup_programs reads it."""
         found: list[tuple[int, str]] = []
         for argument in self._command_arguments(call):
             items = argument.elts if isinstance(argument, (ast.List, ast.Tuple)) else []
             texts = [_text_constant(item).value if isinstance(item, ast.Constant) else None for item in items]
             literal = list(itertools.takewhile(lambda text: isinstance(text, str), texts))
+            started = powershell_startup_programs([text if isinstance(text, str) else None for text in texts])
+            if started is not None:
+                found += [(call.lineno, name) for name in sorted(started)]
+                continue
             words = [text for text in literal if isinstance(text, str)]
             if not words or platform_support.program_name(PureWindowsPath(words[0]).name) not in SCRIPT_SHELLS:
                 continue
@@ -1203,7 +1242,8 @@ def command_reader(path: Path) -> CommandReader:
 # PSScriptAnalyzer, is not standard. What Start-Process starts, by -FilePath or its first positional argument, what
 # `& (Get-Command name)` runs, and every command of a string Invoke-Expression runs are read as commands too; a program
 # any of these, or `&` or `.`, names other than by a literal is unread, but for a .ps1 script a path names, whose own
-# commands the policy reads in its file.
+# commands the policy reads in its file. Each external command carries its words after its name, a literal's text or
+# null for any other, so powershell_startup_programs reads the script a pwsh or Windows PowerShell start-up runs.
 POWERSHELL_COMMANDS_RUN = (
     "$ErrorActionPreference = 'Stop'; "
     "[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false); "
@@ -1254,7 +1294,10 @@ POWERSHELL_COMMANDS_RUN = (
     "if ($null -eq $text) { $found.Add([ordered]@{ source = $index; unread = $command.Extent.Text }) } "
     "else { $queue.Enqueue(@($index, $text)) }; continue }; "
     "if ($functions -contains $name -or $own.Contains($name)) { continue }; "
-    "$found.Add([ordered]@{ source = $index; name = $name }) } }; "
+    "$words = @(for ($at = 1; $at -lt $elements.Count; $at++) { $element = $elements[$at]; "
+    "if ($element -isnot [Management.Automation.Language.CommandParameterAst]) { Get-Literal $element } "
+    "elseif ($element.Argument) { $null } else { $element.Extent.Text } }); "
+    "$found.Add([ordered]@{ source = $index; name = $name; words = $words }) } }; "
     "[Console]::Out.WriteLine((ConvertTo-Json -InputObject $found.ToArray() -Compress -Depth 3))"
 )
 
@@ -1272,7 +1315,28 @@ def powershell_commands(sources: list[str]) -> list[set[str]]:
             commands[item["source"]].add(f"{UNREAD_PROGRAM}{item['unread']}")
         elif name := _program_name(item["name"]):
             commands[item["source"]].add(name)
+            commands[item["source"]] |= _started_shell_programs(name, item["words"])
     return commands
+
+
+def _started_shell_programs(name: str, words: list[str | None]) -> set[str]:
+    """What a command a PowerShell source runs starts as a shell, given its words after its name, each a literal's
+    text or None: the script a pwsh or Windows PowerShell start-up runs, as powershell_startup_programs reads it, and
+    the script a Bash shell's -c runs, as shell_script_index reads it up to the first word that is no literal, which
+    leaves the script unread when it stands among the shell's options."""
+    started = powershell_startup_programs([name, *words])
+    if started is not None:
+        return started
+    if name not in SCRIPT_SHELLS:
+        return set()
+    literal = [word for word in itertools.takewhile(lambda word: word is not None, words) if word is not None]
+    index = shell_script_index(literal)
+    if index is not None:
+        return shell_commands(literal[index])
+    if len(literal) < len(words) and all(word.startswith(("-", "+")) for word in literal):
+        # The shell's options run on into a word the source does not spell, which may be its -c script.
+        return {f"{UNREAD_PROGRAM}{' '.join(word if word is not None else '<value>' for word in [name, *words])}"}
+    return set()
 
 
 def _powershell_sources(path: Path) -> list[str]:

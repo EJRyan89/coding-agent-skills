@@ -1254,6 +1254,8 @@ class ScanTests(TemporaryTestCase):
             "node --eval='1'",
             "pwsh -Command '1'",
             "pwsh -NoProfile -c '1'",
+            "pwsh -cwa 'Get-Item $args' x",
+            "pwsh -NoProfile -CommandWithArgs 'Get-Item $args' x",
             "powershell.exe -ExecutionPolicy Bypass -EncodedCommand ZQBjAGgAbwA=",
             # Windows PowerShell runs its first word that is no parameter as -Command's.
             "powershell 'Remove-Item x'",
