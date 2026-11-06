@@ -10,6 +10,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import python_reader
 import runtime_support
 
 PARTIAL = {"level": "partial", "needs": ["sandbox-network"], "reason": "Its gh calls need the network."}
@@ -74,7 +75,7 @@ def test_a_python_git_call_names_its_subcommand(line: str, expected: set[str]) -
 
 
 def test_a_python_script_that_does_not_parse_raises() -> None:
-    with pytest.raises(SyntaxError):
+    with pytest.raises(python_reader.PythonRefused):
         runtime_support.python_git_subcommands("git(")
 
 

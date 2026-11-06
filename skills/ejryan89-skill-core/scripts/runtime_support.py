@@ -18,6 +18,7 @@ from collections.abc import Callable, Collection
 from dataclasses import dataclass, field
 
 import git_client
+import python_reader
 
 RUNTIMES = ("claude-code", "codex", "copilot-cli")
 RUNTIME_TITLES = {"claude-code": "Claude Code", "codex": "Codex CLI", "copilot-cli": "Copilot CLI"}
@@ -176,10 +177,10 @@ def python_git_subcommands(source: str) -> set[str]:
     A git call is one `names_git` reads as one, a function whose dotted name has a part with the word git in it. Its
     words are the string literals among its positional arguments and among the items of a list or tuple literal there,
     in order, any other value after the first literal standing as a placeholder, and
-    git_client.subcommand reads past git's own options to the subcommand. A script that does not parse raises what
-    ast.parse raises.
+    git_client.subcommand reads past git's own options to the subcommand. A script that does not parse, or nests past
+    the parser's limits, raises python_reader's PythonRefused.
     """
-    tree = ast.parse(source)
+    tree = python_reader.parse(source)
     found: set[str] = set()
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call) or not names_git(node.func):

@@ -26,6 +26,7 @@ import json_reader
 import json_writer
 from console import run_main
 from device_names import is_reserved_device_name
+from executable_locator import absolute_home
 from flat_text import LINE_UNSAFE
 from github_logins import LOGIN, is_login
 from review_io import CONTENT_ERRORS, PersistenceError, atomic_write_json, read_json
@@ -50,6 +51,9 @@ REPOSITORY_OWNER = rf"(?:{LOGIN}|{re.escape(LOCAL_OWNER)})"
 REPOSITORY_NAME = rf"(?!\.+(?![{REPOSITORY_CHARACTERS}]))[{REPOSITORY_CHARACTERS}]{{1,100}}"
 REPOSITORY = rf"{REPOSITORY_OWNER}/{REPOSITORY_NAME}"
 REPOSITORY_PATTERN = re.compile(REPOSITORY)
+# A pull request's number: at most ten digits, as GitHub's 32-bit numbers have, so int() never meets the digit
+# limit, and every key a status override is accepted with names a pull request update-pr-dashboard can read.
+PULL_NUMBER = r"[1-9][0-9]{0,9}"
 RUNTIME_HOSTS = {"auto", "claude-code", "codex", "copilot-cli"}
 TOP_LEVEL_KEYS = {
     "schema_version",
@@ -182,7 +186,7 @@ def default_config_path() -> Path:
     override = os.environ.get("CODE_REVIEW_CONFIG")
     if override:
         return Path(override)
-    return Path.home() / ".coding-agent-skills" / "code-review" / DEFAULT_CONFIG_NAME
+    return absolute_home() / ".coding-agent-skills" / "code-review" / DEFAULT_CONFIG_NAME
 
 
 def validate_repository_identity(value: object, field: str = "repository") -> str:
@@ -633,7 +637,7 @@ def _validate_status_overrides(value: Any) -> None:
         # Looser than REPOSITORY, so every key an earlier release wrote still loads: a configuration every code-review
         # skill reads is never refused for an override only update-pr-dashboard reads, which refuses a key whose
         # repository is not an identity when it reads the overrides.
-        if not re.fullmatch(rf"[{REPOSITORY_CHARACTERS}]+/[{REPOSITORY_CHARACTERS}]+#[1-9][0-9]*", key):
+        if not re.fullmatch(rf"[{REPOSITORY_CHARACTERS}]+/[{REPOSITORY_CHARACTERS}]+#{PULL_NUMBER}", key):
             raise ConfigurationError(f"Invalid dashboard status override key: {key!r}")
         status = READ.string(raw_status, f"config.dashboard.status_overrides.{key}")
         if dashboard_status_key(status) in COMPUTED_DASHBOARD_STATES:

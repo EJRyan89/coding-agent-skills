@@ -30,7 +30,18 @@ class ReleaseLevelTests(unittest.TestCase):
         self.assertEqual([], versioning_levels("## Versioning\nNo list.\n"))
 
 
-@pytest.mark.parametrize("value", ["0.5.0", "v1.2", "v1.2.3rc1", pytest.param("v1.2.3\n", id="v1.2.3-newline")])
+@pytest.mark.parametrize(
+    "value",
+    [
+        "0.5.0",
+        "v1.2",
+        "v1.2.3.4",
+        "v1.2.3rc1",
+        pytest.param("v1.2.3\n", id="v1.2.3-newline"),
+        pytest.param("v\u0663.0.0", id="arabic-indic-major"),
+        pytest.param("v1.2.\uff13", id="fullwidth-patch"),
+    ],
+)
 def test_version_matches_only_the_complete_tag_shape(value: str) -> None:
     assert VERSION.fullmatch(value) is None
 

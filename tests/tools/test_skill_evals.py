@@ -3536,7 +3536,16 @@ class EvaluateTests(unittest.TestCase):
     def test_a_trigger_session_that_does_not_count_makes_its_run_count_for_nothing(self) -> None:
         bare = StubTrigger(self, {"Audit the audit-skill skill.": "audit-skill"})
         bare.bare = True
+        unread = StubTrigger(self, {"Audit the audit-skill skill.": "audit-skill"})
+        unread.unread = True
         cases = {
+            # Pinned as the line reads, not through the constant that writes it.
+            "unread stream": (
+                unread,
+                "run",
+                "request 1: the session's stream holds a message or a Skill call in a shape the evaluation does not "
+                "read",
+            ),
             "unlisted": (
                 StubTrigger(self, {}, listed=False),
                 "run",
@@ -4391,6 +4400,8 @@ class StubTrigger:
     ) -> None:
         self.test, self.starts, self.listed, self.session = test, starts, listed, session
         self.bare = False
+        # A message whose content is text rather than a list of blocks, a shape the evaluation does not read.
+        self.unread = False
         self.calls: list[tuple[list[str], Path, dict[str, str]]] = []
 
     def __call__(self, arguments: list[str], cwd: Path, environment: dict[str, str], timeout: float) -> Any:
@@ -4409,7 +4420,7 @@ class StubTrigger:
             {"type": "system", "subtype": "init", "skills": skills},
             {
                 "type": "assistant",
-                "message": {"model": self.session or model, "content": content},
+                "message": {"model": self.session or model, "content": "On it." if self.unread else content},
                 "parent_tool_use_id": None,
             },
         ]
@@ -4515,6 +4526,45 @@ def test_a_trigger_scenario_is_checked(changes: dict[str, Any], message: str, tm
         trigger_scenario(tmp_path, spec, demo_checkout(tmp_path))
 
 
+# A session that lists the skill and runs on the model, whose one message holds text rather than a list of blocks.
+UNREAD_MESSAGE = "\n".join(
+    json.dumps(event)
+    for event in (
+        {"type": "system", "subtype": "init", "skills": ["demo"]},
+        {"type": "assistant", "message": {"model": "claude-haiku-5-5", "content": "On it."}},
+    )
+)
+
+
+@pytest.mark.parametrize(
+    ("completed", "reason"),
+    [
+        pytest.param(
+            runtime_canary.Completed(0, UNREAD_MESSAGE, ""),
+            "the session's stream holds a message or a Skill call in a shape the evaluation does not read",
+            id="unread-stream",
+        ),
+        pytest.param(
+            runtime_canary.Completed(-1, "", "", timed_out=True), "timed out after 60 seconds", id="timed-out"
+        ),
+    ],
+)
+def test_a_trigger_session_that_counts_for_nothing_is_reported_and_recorded_in_the_same_words(
+    completed: runtime_canary.Completed, reason: str, tmp_path: Path
+) -> None:
+    # The FAIL lines and the results file each carry the reason, pinned as they read.
+    scenario = trigger_scenario(tmp_path, TRIGGER_SPEC, demo_checkout(tmp_path))
+    session = skill_evals_runs.Session("claude", {}, lambda *_: completed, 60, mock.Mock())
+    run = tmp_path / "run"
+    run.mkdir()
+    result, _ = skill_evals_runs.run_trigger(scenario, "haiku", tmp_path / "home", session, run)
+    assert (result.failure, result.recorded, result.kind) == (
+        f"request 1: {reason}",
+        f"request 1: {reason}",
+        "run",
+    )
+
+
 def test_a_trigger_scenario_s_skill_is_a_shipped_one_the_model_may_start(tmp_path: Path) -> None:
     with pytest.raises(ScenarioError, match="the checkout has no skills/demo"):
         trigger_scenario(tmp_path, TRIGGER_SPEC, tmp_path / "empty")
@@ -4613,11 +4663,29 @@ def test_only_the_session_s_own_skill_tool_call_is_a_start() -> None:
             "not json",
             assistant_with([{"type": "tool_use", "name": "Read", "input": {"skill": "read"}}]),
             assistant_with([{**skill, "input": {"skill": "from-subagent"}}], subagent=True),
-            assistant_with([{**skill, "input": "demo"}, {**skill, "input": {"skill": " "}}]),
+            assistant_with([{**skill, "input": {"skill": " "}}]),
             assistant_with([skill, {**skill, "input": {"skill": "/other"}}, skill]),
         ]
     )
     assert skill_evals_runs.skills_in_stream(output) == ["demo", "other"]
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        pytest.param(None, id="no-message"),
+        pytest.param({"content": "Skill demo"}, id="text-content"),
+        pytest.param({"content": ["demo"]}, id="text-block"),
+        pytest.param({"content": [{"type": "tool_use", "name": "Skill", "input": "demo"}]}, id="text-input"),
+        pytest.param({"content": [{"type": "tool_use", "name": "Skill", "input": {"skill": 3}}]}, id="number-skill"),
+        pytest.param({"content": [{"type": "tool_use", "name": "Skill", "input": {}}]}, id="no-skill"),
+    ],
+)
+def test_a_session_message_in_another_shape_is_unread_never_no_skill_started(message: object) -> None:
+    # Read as none, the record would say the session started no skill, which the stream does not show.
+    output = json.dumps({"type": "assistant", "message": message, "parent_tool_use_id": None})
+    with pytest.raises(skill_evals_runs.StreamShapeError, match="shape the evaluation does not read"):
+        skill_evals_runs.skills_in_stream(output)
 
 
 def test_a_trigger_session_runs_on_the_judged_model_with_a_turn_limit_and_no_grant() -> None:

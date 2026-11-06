@@ -17,6 +17,7 @@ it keeps and reports in `Listing.cut` whether GitHub held more.
 
 from __future__ import annotations
 
+import math
 import re
 import subprocess
 import threading
@@ -28,6 +29,7 @@ from pathlib import Path
 from typing import IO, Any, Literal, NamedTuple, Protocol, TypeVar
 
 import json_reader
+import whole_number
 from bounded_process import Finished, run_bounded
 from executable_locator import located_command
 from flat_text import flat_text
@@ -365,6 +367,10 @@ class Response(NamedTuple):
     body: str
 
 
+# The whole number past which a float holds no exact count of seconds; a header asking for longer is past any wait.
+FLOAT_EXACT = 2**53
+
+
 INT_PARSE_ALLOWED = {
     "split_response": "gh writes the HTTP status line's code",
 }
@@ -410,18 +416,29 @@ class Backoff:
     def wait(self, attempt: int, headers: Mapping[str, str], now: float) -> float:
         """GitHub's Retry-After, else the quota's reset time when it is spent, else exponential from `base`.
 
-        A wait over `longest` fails as a rate limit instead, so no command sleeps for long.
+        A wait over `longest` fails as a rate limit instead, so no command sleeps for long. Each header's seconds are
+        ASCII digits read through `whole_number`, and a header holding anything else is no wait.
         """
-        retry_after = headers.get("retry-after", "")
-        if retry_after.isdigit():
-            wait = float(retry_after)
-        elif headers.get("x-ratelimit-remaining") == "0" and headers.get("x-ratelimit-reset", "").isdigit():
-            wait = max(1.0, float(headers["x-ratelimit-reset"]) - now + 1.0)
+        retry_after = whole_number.parse(headers.get("retry-after", ""))
+        reset = whole_number.parse(headers.get("x-ratelimit-reset", ""))
+        if retry_after is not None:
+            wait = self.asked(retry_after, 0.0)
+        elif headers.get("x-ratelimit-remaining") == "0" and reset is not None:
+            wait = max(1.0, self.asked(reset, now) + 1.0)
         else:
             wait = self.base * 2**attempt
+        if math.isinf(wait):
+            raise GitHubError(
+                f"GitHub asked to wait longer than {self.longest:.0f}s before retrying; rerun later", kind="rate_limit"
+            )
         if wait > self.longest:
             raise GitHubError(f"GitHub asked to wait {wait:.0f}s before retrying; rerun later", kind="rate_limit")
         return wait
+
+    def asked(self, seconds: int, since: float) -> float:
+        """`seconds` less `since`, or an infinity where that is past FLOAT_EXACT: the whole number is compared before it
+        becomes a float, so a number too large for one never does."""
+        return math.inf if seconds > since + FLOAT_EXACT else seconds - since
 
 
 BACKOFF = Backoff()

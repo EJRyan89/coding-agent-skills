@@ -56,7 +56,7 @@ Ask only these questions, and only when the sweep or a later command printed the
 {{PYTHON}} -B "${CLAUDE_SKILL_DIR}/scripts/repo_cleanup.py" force-delete --plan "<plan file>" --branch "<branch>"
 ```
 
-Both print `DELETED`, `UNMERGED`, or `PRESERVED <branch> <reason>` for a branch that stays, `REMOVED` for a worktree removed with its branch, and `PRUNED_DIR <dir>` for each empty parent directory its removal left and the command removed, or a last line `FAILED <reason>`; `SUMMARY` lines before it say what was done.
+Both print `DELETED`, `UNMERGED`, `PRESERVED <branch> <reason>` for a branch that stays, or `ALREADY_DELETED <branch>` for one this plan already deleted, `REMOVED` for a worktree removed with its branch, and `PRUNED_DIR <dir>` for each empty parent directory its removal left and the command removed, or a last line `FAILED <reason>`; `SUMMARY` lines before it say what was done.
 
 **Detached worktrees and leftover directories.** For `CONFIRM_DETACHED <path> <sha>` lines, call `AskUserQuestion` with question `"<REPO_NAME>: These worktrees have no branch checked out and no changes, and their commit is on <DEFAULT_BRANCH> or a remote branch. Remove or keep each?"` and header `"Detached"`. For `ORPHAN <path>` lines, call it with question `"<REPO_NAME>: These directories in the worktree area are no longer Git worktrees, and Git tracks none of their files. They cannot be recovered once deleted. Delete or keep each?"` and header `"Leftovers"`. Offer each list's options as for local branches. Then remove the chosen paths of both:
 
@@ -64,7 +64,7 @@ Both print `DELETED`, `UNMERGED`, or `PRESERVED <branch> <reason>` for a branch 
 {{PYTHON}} -B "${CLAUDE_SKILL_DIR}/scripts/repo_cleanup.py" remove-directory --plan "<plan file>" --path "<path>" --path "<path>"
 ```
 
-It prints `REMOVED` for a worktree, `DELETED_DIR` for a directory, `PRUNED_DIR <dir>` for each empty parent directory either left and the command removed, or `PRESERVED <path> <reason>` for one that stays, or a last line `FAILED <reason>`; `SUMMARY` lines before it say what was done.
+It prints `REMOVED` for a worktree, `DELETED_DIR` for a directory, `PRUNED_DIR <dir>` for each empty parent directory either left and the command removed, `PRESERVED <path> <reason>` for one that stays, or `ALREADY_REMOVED <path>` for one this plan already removed, or a last line `FAILED <reason>`; `SUMMARY` lines before it say what was done.
 
 ## 5. Summary
 

@@ -18,6 +18,8 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import review_config
+import review_flags
+from executable_locator import RelativeEnvironmentPath
 from review_config import (
     ConfigurationError,
     ConfigurationFieldError,
@@ -27,6 +29,7 @@ from review_config import (
     write_config,
 )
 from review_io import PersistenceError
+from review_state import default_state_path
 from test_review_config_validation import ABSOLUTE_PATH, CONTAINER_CASES, _config, native
 from test_review_io import UNPARSEABLE_JSON
 from test_review_records import field_pattern
@@ -544,12 +547,23 @@ class ConfigurationTests(unittest.TestCase):
             "owner/.#1",
             "owner/..#1",
             "o/" + "n" * 101 + "#1",
+            "owner/repo#1234567890",
         ):
             with self.subTest(key=key):
                 config = valid_config()
                 config["dashboard"] = {"status_overrides": {key: "On hold"}}
                 validate_config(config)
-        for key in ("owner/repo", "owner#1", "owner/repo/x#1", "owner/re po#1", "owner/repo#0", "/repo#1"):
+        # A number past ten digits is no pull request update-pr-dashboard reads, so `update` and `override --clear`
+        # would refuse the key the configuration accepted.
+        for key in (
+            "owner/repo",
+            "owner#1",
+            "owner/repo/x#1",
+            "owner/re po#1",
+            "owner/repo#0",
+            "/repo#1",
+            "owner/repo#12345678901",
+        ):
             with self.subTest(key=key):
                 config = valid_config()
                 config["dashboard"] = {"status_overrides": {key: "On hold"}}
@@ -591,6 +605,36 @@ class ConfigurationTests(unittest.TestCase):
             with mock.patch.object(Path, "home", return_value=Path(home)):
                 path = review_config.default_config_path()
             self.assertEqual(".coding-agent-skills/code-review/config.json", path.relative_to(home).as_posix())
+
+    def test_each_default_store_lies_under_the_home_s_code_review_folder(self) -> None:
+        # The stores move with these names, so a user's configuration, flags, and state would be left behind.
+        overrides = {"CODE_REVIEW_CONFIG": "", "CODE_REVIEW_FLAGS": "", "CODE_REVIEW_STATE": ""}
+        for default, name in (
+            (review_config.default_config_path, "config.json"),
+            (review_flags.default_flags_path, "flags.json"),
+            (default_state_path, "state.json"),
+        ):
+            with (
+                self.subTest(default=default.__name__),
+                tempfile.TemporaryDirectory() as home,
+                mock.patch.dict(os.environ, overrides),
+                mock.patch.object(Path, "home", return_value=Path(home)),
+            ):
+                path = default()
+                self.assertEqual(f".coding-agent-skills/code-review/{name}", path.relative_to(home).as_posix())
+
+    def test_each_default_store_refuses_a_relative_home_rather_than_read_under_the_working_directory(self) -> None:
+        # Path.home() reads a relative profile folder as given, so each default store named a file under the working
+        # directory.
+        overrides = {"CODE_REVIEW_CONFIG": "", "CODE_REVIEW_FLAGS": "", "CODE_REVIEW_STATE": ""}
+        for default in (review_config.default_config_path, review_flags.default_flags_path, default_state_path):
+            with (
+                self.subTest(default=default.__name__),
+                mock.patch.dict(os.environ, overrides),
+                mock.patch.object(Path, "home", return_value=Path("relative home")),
+                self.assertRaises(RelativeEnvironmentPath),
+            ):
+                default()
 
     def test_dashboard_author_names_are_validated(self) -> None:
         for names, message in (

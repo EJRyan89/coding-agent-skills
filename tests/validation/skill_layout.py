@@ -588,8 +588,8 @@ def fixture_source_problems(root: Path) -> list[str]:
         label = fixture.relative_to(root).as_posix()
         try:
             source = json_reader.loads(source_file.read_text(encoding="utf-8"))
-        # ValueError covers the decode errors, UnicodeError, and an over-long integer; RecursionError, nesting too deep
-        except (OSError, ValueError, RecursionError) as exc:
+        # ValueError covers the decode errors, UnicodeError, and json_reader's refusals, nesting too deep included
+        except (OSError, ValueError) as exc:
             found.append(f"{label}/source.json cannot be read: {exc}")
         else:
             if not isinstance(source, dict):
@@ -858,8 +858,8 @@ def trigger_scenario_problems(root: Path) -> list[str]:
         label = spec_file.parent.relative_to(root).as_posix()
         try:
             spec = json_reader.loads(spec_file.read_text(encoding="utf-8"))
-        # ValueError covers the decode errors, UnicodeError, and an over-long integer; RecursionError, nesting too deep
-        except (OSError, ValueError, RecursionError) as exc:
+        # ValueError covers the decode errors, UnicodeError, and json_reader's refusals, nesting too deep included
+        except (OSError, ValueError) as exc:
             problems.append(f"{label}/scenario.json cannot be read: {exc}")
             continue
         if not isinstance(spec, dict) or spec.get("mode") != TRIGGER_MODE:

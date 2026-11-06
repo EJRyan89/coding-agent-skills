@@ -354,6 +354,22 @@ class FlagCliTests(unittest.TestCase):
                 self.assert_result(self.store_cli("resolve", "RF-000001", " \t"), 1, "FAILED Resolution is required\n")
                 self.assertEqual(before, Path(self.store).read_bytes())
 
+    def test_a_store_given_by_path_needs_no_home_and_the_standard_one_refuses_a_relative_home(self) -> None:
+        # The standard store was found while the parser was built, so a relative home failed a run that named its
+        # store, and without one the refusal escaped as a traceback rather than a FAILED line.
+        with (
+            mock.patch.object(Path, "home", return_value=Path("relative home")),
+            mock.patch.dict(os.environ, {"CODE_REVIEW_FLAGS": ""}),
+        ):
+            given, standard = io.StringIO(), io.StringIO()
+            with contextlib.redirect_stdout(given):
+                given_code = main(["--store", self.store, "list"])
+            with contextlib.redirect_stdout(standard):
+                standard_code = main(["list"])
+        self.assertEqual((0, "COUNT 0\n"), (given_code, given.getvalue()))
+        self.assertEqual(1, standard_code)
+        self.assertRegex(standard.getvalue(), r"^FAILED [A-Z]+ is 'relative home', which is not an absolute path\n$")
+
     def test_resolve_store_failures_are_not_classified_as_already_resolved(self) -> None:
         self.store_cli("add", "guideline", "Body")
         before = Path(self.store).read_bytes()

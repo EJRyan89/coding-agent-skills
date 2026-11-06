@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import file_presence
+from markdown_sections import ATX_HEADING
 from validation_support import (
     COMMONMARK_CODE_SPAN,
     OPERATIONS_CONTRACT,
@@ -24,7 +25,6 @@ from validation_support import (
     repository_files,
 )
 
-MARKDOWN_HEADING = re.compile(r"^ {0,3}#{1,6}[ \t]+(.*?)(?:[ \t]+#+)?[ \t]*$")
 MARKDOWN_LINK = re.compile(r"\]\(\s*(?:<([^>\n]+)>|([^\s()<>]+))")
 MARKDOWN_REFERENCE = re.compile(r"^ {0,3}\[[^\]]+\]:\s*(?:<([^>\n]+)>|(\S+))")
 URL_SCHEME = re.compile(r"^(?:[A-Za-z][A-Za-z0-9+.-]*:|//)")
@@ -43,9 +43,9 @@ def heading_slugs(text: str) -> set[str]:
     slugs: set[str] = set()
     seen: dict[str, int] = {}
     for line in _outside_fences(text):
-        heading = MARKDOWN_HEADING.match(line)
+        heading = ATX_HEADING.match(line)
         if heading:
-            slug = SLUG_REMOVED.sub("", heading.group(1).strip().lower()).replace(" ", "-")
+            slug = SLUG_REMOVED.sub("", heading.group("text").strip().lower()).replace(" ", "-")
             slugs.add(f"{slug}-{seen[slug]}" if slug in seen else slug)
             seen[slug] = seen.get(slug, 0) + 1
     return slugs

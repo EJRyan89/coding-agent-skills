@@ -5466,8 +5466,9 @@ class CodexConfigurationTests(unittest.TestCase):
             root = Path(temp)
             _write_fixture(root, {".codex/rules/broken.rules": "prefix_rule(\n"})
             (finding,) = audit.check_codex(root)
-        # Python names the file by its path where the separator is \, and by its last part where it is /.
-        self.assertRegex(finding.message, r"^Could not read or parse: .+ \((?:\.codex/rules/)?broken\.rules, line 1\)$")
+        # The finding names the file; python_reader's refusal names the parser's reason and its line.
+        self.assertEqual(".codex/rules/broken.rules", finding.path)
+        self.assertRegex(finding.message, r"^Could not read or parse: .+ at line 1$")
 
 
 def markdown_row(path: str, message: str) -> str:

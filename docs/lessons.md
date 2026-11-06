@@ -248,10 +248,12 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   number in any other text, both capped at `whole_number:DIGIT_LIMIT`; `whole_number:argument`, the argparse type
   of every option that takes one; `json_reader:loads` for a JSON number, which refuses one past the same cap, and
   `typed_fields:FieldReader.integer` for its bounds; `process_identity:read_pid` for a PID, bounded by the
-  platform's range so none is truncated to another process's.
+  platform's range so none is truncated to another process's; `versions:find` and `versions:read` for a version, each
+  number read through `whole_number:parse`; and `json_writer:dumps`, which refuses an integer past the same cap by name.
 - **Guard:** `tests/validation/python_checks.py::PythonChecksPolicies::test_whole_number_is_the_one_reader_of_a_number_from_text`,
   `tests/validation/test_python_checks.py::test_int_parse_policy_refuses_a_group_or_a_digit_tested_value_outside_whole_number`,
   `tests/validation/test_python_checks.py::test_int_parse_policy_refuses_an_option_read_with_int_or_float`,
+  `tests/validation/test_python_checks.py::test_each_policy_refuses_every_form_its_documentation_names`,
   `skills/ejryan89-skill-core/scripts/test_whole_number.py::ReadTests`,
   `skills/ejryan89-skill-core/scripts/test_whole_number.py::ArgumentTests`,
   `skills/ejryan89-skill-core/scripts/test_json_reader.py::RefusalTests::test_an_integer_past_the_shared_digit_cap_is_refused_whatever_its_sign`,
@@ -265,7 +267,7 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   which also admits digits that are not ASCII; `type=int` or `type=float` in an `add_argument`, and an argparse type
   function that returns `int(value)`, which read `1_0` as 10 and an Arabic-Indic three as 3; an integer read from a
   file and handed to a `ctypes` call, whose declared type holds the kind and truncates the range.
-- **Examples:** #1611, #1729, #1879, #1886, #1895, #1897, #2215, #2217
+- **Examples:** #1611, #1729, #1879, #1886, #1895, #1897, #2189, #2215, #2217
 
 ### One fact has one owner
 
@@ -424,11 +426,15 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   `nesting_depth:DEPTH_LIMIT`; `json_reader:loads` and `xml_reader:read_xml`, which refuse a value nested past the
   same limit, so a walk over what they return, such as MSBuild's Choose evaluation, needs no bound of its own;
   `csharp_layout:_brace_level` and `msbuild_conditions:Parser.nested`, a hand-written parser's own check; and
-  `untested_functions:parse_python`, which reads the Python parser's overflow as the syntax error its callers handle.
+  `python_reader:parse`, `python_reader:parse_expression`, and `python_reader:literal`, the one parse of Python source
+  and of a literal, which refuse the parser's overflow, a memory or recursion error, as the
+  `python_reader:PythonRefused` their callers handle.
 - **Guard:** `skills/ejryan89-skill-core/scripts/test_nesting_depth.py::DeeperTests`,
   `skills/ejryan89-skill-core/scripts/test_json_reader.py::RefusalTests::test_nesting_one_level_past_the_shared_limit_is_refused_though_the_scanner_reads_it`,
   `skills/ejryan89-skill-core/scripts/test_json_reader.py::RefusalTests::test_a_scalar_is_no_level_so_one_at_the_limit_reads_as_an_empty_container_does`,
   `skills/ejryan89-skill-core/scripts/test_xml_reader.py::DepthTests`,
+  `skills/ejryan89-skill-core/scripts/test_python_reader.py::ParseTests`,
+  `tests/validation/test_python_checks.py::test_owner_only_policy_refuses_each_reference_outside_its_owners`,
   `skills/dotnet-format/scripts/test_csharp_layout.py::test_braces_nested_past_the_shared_depth_limit_fail_by_name`,
   `skills/dotnet-dependencies/scripts/test_msbuild_conditions.py::ConditionTests::test_negations_and_parentheses_nested_past_the_shared_depth_limit_are_not_settled`,
   `skills/ejryan89-skill-core/scripts/test_json_reader.py::RefusalTests::test_nesting_past_the_recursion_limit_is_refused`,
@@ -437,9 +443,9 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   `tests/malformed_input/test_malformed_input.py::test_each_reader_refuses_or_documents_accepting_each_case`, whose
   table holds each parser of text by its own grammar's deep nesting
 - **Search for:** a function that calls itself on a child of its input with no depth parameter and no
-  `except RecursionError`; `literal_eval(` or `ast.parse(` on text from a file or another program, whose handler
-  must name `MemoryError` and `RecursionError` beside `SyntaxError`; `json.loads(` outside `json_reader.py`.
-- **Examples:** #1613, #1617, #1729, #1886, #1893
+  `except RecursionError`; `literal_eval(` or `ast.parse(` outside `python_reader.py`, whose handler would have to
+  name `MemoryError` and `RecursionError` beside `SyntaxError`; `json.loads(` outside `json_reader.py`.
+- **Examples:** #1613, #1617, #1729, #1886, #1893, #2170, #2190
 
 ### A path taken from input is judged inside its tree before anything opens it
 

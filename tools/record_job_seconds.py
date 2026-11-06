@@ -60,8 +60,11 @@ WORKFLOW_NAME = "Validation"
 # readings of a job (a contended runner, a cold cache) while the runs stay recent enough that their logs are still held
 # and their jobs are the ones the next release runs.
 DEFAULT_RUN_COUNT = 5
-# What job_pool.py prints for each job that passed, after the timestamp gh puts before every log line.
-OK_LINE = re.compile(r"^\S+ ok +(\d+(?:\.\d+)?)s (.+?)\s*$")
+# What job_pool.py prints for each job that passed, after the timestamp gh puts before every log line: its seconds in
+# ASCII digits, at most SECONDS_DIGITS before the point, since a regular expression's digit class also matches every
+# Unicode decimal digit and a float of more digits than that is an infinity no JSON file can hold.
+SECONDS_DIGITS = 9
+OK_LINE = re.compile(rf"^\S+ ok +([0-9]{{1,{SECONDS_DIGITS}}}(?:\.[0-9]{{1,{SECONDS_DIGITS}}})?)s (.+?)\s*$")
 # The note job_pool.py puts after the label of a job it started once more after a termination, as in
 # `ok 12.0s tests/a.py [shard 1/3] (retried after status 0x80000004)`: no part of the job's name.
 RETRY_NOTE = re.compile(r" \(retried after status [^()]+\)$")
@@ -90,6 +93,7 @@ PLATFORMS = tuple(sorted(platform_support.SUPPORTED_PLATFORMS.values()))
 
 INT_PARSE_ALLOWED = {
     "leg_of": "the validate workflow names each job with its shard and their count",
+    "job_seconds_from_log": "OK_LINE admits ASCII digits alone, at most SECONDS_DIGITS on each side of the point",
 }
 
 

@@ -171,14 +171,16 @@ import check_provenance
 import frontmatter
 import git_client
 import json_reader
+import python_reader
 import runtime_support
 import skill_menu
 import whole_number
 from console import run_main
+from executable_locator import RelativeEnvironmentPath, absolute_home
 from file_presence import NotAFile, is_directory, is_occupied, is_present, matching
 from flat_text import flat_text, single_line
 from git_client import GitClient, GitError
-from markdown_sections import CODE_SPAN, POWERSHELL_FENCES, SHELL_FENCES, find_fences, prose_code_spans
+from markdown_sections import ATX_HEADING, CODE_SPAN, POWERSHELL_FENCES, SHELL_FENCES, find_fences, prose_code_spans
 from path_containment import within
 from path_keys import path_key
 from suite_names import is_suite_name
@@ -217,7 +219,6 @@ KNOWN_TOOLS = (
     "KillShell",
     "LS",
     "Monitor",
-    "MultiEdit",
     "NotebookEdit",
     "NotebookRead",
     "PowerShell",
@@ -239,7 +240,6 @@ CONTEXT_FREE_TOOLS = frozenset(
         "ExitPlanMode",
         "ExitWorktree",
         "KillShell",
-        "MultiEdit",
         "NotebookEdit",
         "NotebookRead",
         "SlashCommand",
@@ -630,7 +630,6 @@ GIT_COMMAND = re.compile(
 OUTSIDE_REFERENCE = re.compile(r"(?<![\w./-])(\$\{CLAUDE_SKILL_DIR\}/)?((?:\.\./)+[\w./-]+\.md)\b")
 # A relative Markdown path that stays in the skill folder, such as `references/a.md` or `a.md`.
 INSIDE_REFERENCE = re.compile(r"(?<![\w./$}-])(\$\{CLAUDE_SKILL_DIR\}/)?((?:\./)?[\w-][\w./-]*\.md)\b")
-HEADING = re.compile(r"^ {0,3}(#{1,6})\s+(.*?)\s*#*\s*$")
 CONTENTS_HEADING = re.compile(r"(?i)(?:table of )?contents")
 FENCE_SHELL_COMMAND = re.compile(rf"(?:^|[|;&(]|\$\()\s*({SHELL_FILE_COMMAND})\b")
 SPAN_SHELL_COMMAND = re.compile(rf"^{SHELL_FILE_COMMAND}(?:\s|$)")
@@ -798,10 +797,8 @@ def runs_repository_code(script: Path) -> bool:
     """Whether a Python script declares, as a module-level non-empty string, that it starts repository code."""
     text = read_text(script) if script_is_present(script) else None
     try:
-        tree = ast.parse(text or "")
-    # ValueError covers, before 3.12, a null byte; MemoryError and RecursionError, source nested past the parser's
-    # limits
-    except (SyntaxError, ValueError, MemoryError, RecursionError):
+        tree = python_reader.parse(text or "")
+    except python_reader.CONTENT_ERRORS:
         return False
     for node in tree.body:
         targets = (
@@ -1285,9 +1282,9 @@ def structure_flags(kind: str, text: str, relative: str) -> list[str]:
         return []
     languages, _ = parse_fences(lines)
     for line, language in zip(lines, languages, strict=True):
-        heading = HEADING.match(line) if language is None else None
-        if heading and len(heading.group(1)) >= 2:
-            if CONTENTS_HEADING.fullmatch(heading.group(2)):
+        heading = ATX_HEADING.match(line) if language is None else None
+        if heading and len(heading.group("marks")) >= 2:
+            if CONTENTS_HEADING.fullmatch(heading.group("text")):
                 return []
             break
     return [f"DOC_NO_TOC {len(lines)} {relative}"]
@@ -1424,15 +1421,9 @@ def unreadable_metadata(root: Path, name: str) -> bool:
 
 
 def skill_closure(root: Path, name: str) -> list[str]:
-    """The skill and every skill its metadata's skill_deps reach, in the order they are first reached."""
-    reached: list[str] = []
-    queue = [name]
-    while queue:
-        current = queue.pop(0)
-        if current not in reached:
-            reached.append(current)
-            queue += names(read_metadata(root, current), "skill_deps")
-    return reached
+    """The skill and every skill its metadata's skill_deps reach, in the order the deployer's selection reaches them,
+    through skill_menu's one walk of skill dependencies."""
+    return skill_menu.closure([name], lambda current: names(read_metadata(root, current), "skill_deps"))
 
 
 def declared_agents(directory: Path) -> dict[str, str] | None:
@@ -2100,7 +2091,7 @@ def exit_codes(tree: ast.Module) -> set[int]:
 
 
 def python_facts(text: str) -> ScriptFacts:
-    tree = ast.parse(text)
+    tree = python_reader.parse(text)
     facts = ScriptFacts()
     docstrings = docstring_ids(tree)
     parents = {id(child): node for node in ast.walk(tree) for child in ast.iter_child_nodes(node)}
@@ -2143,9 +2134,7 @@ def script_facts(path: Path) -> ScriptFacts:
         return shell_facts(text)
     try:
         return python_facts(text)
-    # ValueError covers, before 3.12, a null byte; MemoryError and RecursionError, source nested past the parser's
-    # limits
-    except (SyntaxError, ValueError, MemoryError, RecursionError) as exc:
+    except python_reader.CONTENT_ERRORS as exc:
         raise InputError(f"cannot read {posix(path)}: not valid Python") from exc
 
 
@@ -2685,10 +2674,8 @@ def json_settings(path: Path, text: str) -> list[tuple[str, Path, int, str]]:
 def python_settings(path: Path, text: str) -> list[tuple[str, Path, int, str]]:
     """Each model or effort a script sets as a literal: a dict entry or a keyword argument named for one."""
     try:
-        tree = ast.parse(text)
-    # ValueError covers, before 3.12, a null byte; MemoryError and RecursionError, source nested past the parser's
-    # limits
-    except (SyntaxError, ValueError, MemoryError, RecursionError):
+        tree = python_reader.parse(text)
+    except python_reader.CONTENT_ERRORS:
         return []
     pairs: list[tuple[str, ast.expr, int]] = []
     for node in ast.walk(tree):
@@ -2812,9 +2799,7 @@ def script_git_subcommands(script: Path) -> set[str]:
         return set()
     try:
         return runtime_support.python_git_subcommands(text)
-    # ValueError covers, before 3.12, a null byte; MemoryError and RecursionError, source nested past the parser's
-    # limits
-    except (SyntaxError, ValueError, MemoryError, RecursionError) as exc:
+    except python_reader.CONTENT_ERRORS as exc:
         raise InputError(f"cannot read {posix(script)}: not valid Python") from exc
 
 
@@ -2927,13 +2912,22 @@ def provenance(names: list[str], path: Path | None = None) -> list[str]:
     ]
 
 
+def user_home() -> Path:
+    """The user's home folder, or InputError naming its variable where it is not an absolute path, so no skill is
+    looked for under the working directory."""
+    try:
+        return absolute_home()
+    except RelativeEnvironmentPath as error:
+        raise InputError(f"{error}; pass --home") from None
+
+
 def main(arguments: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     commands = parser.add_subparsers(dest="command", required=True)
     find = commands.add_parser("locate", help="find a skill's main file")
     find.add_argument("name", nargs="?", default="", help="[<plugin>:]<skill>, then optionally a plugin folder")
     find.add_argument("--repo", type=Path, help="project root; default: the Git root of the current directory")
-    find.add_argument("--home", type=Path, default=Path.home())
+    find.add_argument("--home", type=Path, help="the home folder to search; default: the user's own")
     commands.add_parser("inventory", help="size every file of a skill").add_argument("directory", type=Path)
     commands.add_parser("tools", help="compare referenced tools with allowed-tools").add_argument("file", type=Path)
     commands.add_parser("scan", help="list cost cues").add_argument("paths", type=Path, nargs="+")
@@ -2944,7 +2938,8 @@ def main(arguments: list[str] | None = None) -> int:
             repo = args.repo if args.repo is not None else git_toplevel(Path.cwd())
             # The argument as the user gave it: a name, then a plugin folder after the first space.
             name, _, folder = args.name.strip().partition(" ")
-            output = locate(name, args.home, repo, Path(folder.strip()) if folder.strip() else None)
+            home = args.home if args.home is not None else user_home()
+            output = locate(name, home, repo, Path(folder.strip()) if folder.strip() else None)
         elif args.command == "inventory":
             output = inventory(args.directory)
         elif args.command == "tools":

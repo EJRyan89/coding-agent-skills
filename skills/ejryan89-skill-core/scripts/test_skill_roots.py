@@ -15,15 +15,22 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import skill_roots
+from executable_locator import RelativeEnvironmentPath
 from module_closure import copy_with_imports
 from skill_roots import MissingSibling, deployed_skill_roots, plugin_name, sibling_scripts, skills_directory_holding
 
 
 class DeployedSkillRootsTests(unittest.TestCase):
     def test_the_two_roots_the_deployer_owns_under_the_home(self) -> None:
-        home = Path("a home") / "with spaces"
+        home = Path(tempfile.gettempdir()).resolve() / "a home" / "with spaces"
         with mock.patch("pathlib.Path.home", return_value=home):
             self.assertEqual((home / ".claude" / "skills", home / ".agents" / "skills"), deployed_skill_roots())
+
+    def test_a_relative_home_is_refused_by_its_variable_rather_than_read_under_the_working_directory(self) -> None:
+        # Path.home() reads a relative profile folder as given, so a script judged a folder under its working
+        # directory as the deployer's own.
+        with mock.patch("pathlib.Path.home", return_value=Path("a home")), self.assertRaises(RelativeEnvironmentPath):
+            deployed_skill_roots()
 
     def test_the_core_is_named_for_the_folder_it_is_deployed_in(self) -> None:
         self.assertEqual("ejryan89-skill-core", skill_roots.SKILL_CORE)

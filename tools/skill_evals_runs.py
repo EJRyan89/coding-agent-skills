@@ -214,9 +214,19 @@ def trigger_command(executable: str, request: str, model: str) -> list[str]:
     ]
 
 
+# A session's own message, or a Skill call in it, in a shape the evaluation does not read, whose starts cannot then be
+# known: reading it as none would record that the session started no skill.
+UNREAD_STARTS = "the session's stream holds a message or a Skill call in a shape the evaluation does not read"
+
+
+class StreamShapeError(ValueError):
+    """A session's stream whose skill starts cannot be read."""
+
+
 def skills_in_stream(output: str) -> list[str]:
     """The skills the session's own messages started with the Skill tool, each once, in the order first started; a
-    subagent's start is not the session's."""
+    subagent's start is not the session's. A message of the session's whose content is not a list of blocks, or a Skill
+    call whose input names no skill as text, raises StreamShapeError."""
     found: list[str] = []
     for line in output.splitlines():
         try:
@@ -227,10 +237,15 @@ def skills_in_stream(output: str) -> list[str]:
             continue
         message = event.get("message")
         content = message.get("content") if isinstance(message, dict) else None
-        for block in content if isinstance(content, list) else []:
-            if isinstance(block, dict) and block.get("type") == "tool_use" and block.get("name") == "Skill":
-                name = block.get("input", {}).get("skill") if isinstance(block.get("input"), dict) else None
-                if isinstance(name, str) and name.strip():
+        if not isinstance(content, list) or not all(isinstance(block, dict) for block in content):
+            raise StreamShapeError(UNREAD_STARTS)
+        for block in content:
+            if block.get("type") == "tool_use" and block.get("name") == "Skill":
+                tool_input = block.get("input")
+                name = tool_input.get("skill") if isinstance(tool_input, dict) else None
+                if not isinstance(name, str):
+                    raise StreamShapeError(UNREAD_STARTS)
+                if name.strip():
                     found.append(name.strip().removeprefix("/"))
     return list(dict.fromkeys(found))
 
@@ -515,8 +530,13 @@ def run_trigger(scenario: Scenario, model: str, home: Path, session: Session, ru
             transcript.with_suffix(".stderr.txt").write_text(completed.stderr, encoding="utf-8")
         transcripts.append(transcript)
         models |= stream_models(completed.stdout)[0]
-        entries.append({"request": request, "started": skills_in_stream(completed.stdout)})
-        problem = trigger_failure(model, completed, session.timeout, scenario.skill)
+        unread: tuple[str, str, str] | None = None
+        try:
+            started = skills_in_stream(completed.stdout)
+        except StreamShapeError as exc:
+            started, unread = [], (str(exc), str(exc), RUN)
+        entries.append({"request": request, "started": started})
+        problem = trigger_failure(model, completed, session.timeout, scenario.skill) or unread
         if failure is None and problem is not None:
             failure = (f"request {number}: {problem[0]}", f"request {number}: {problem[1]}", problem[2])
     record = {"requests": entries, "models": sorted(models)}
