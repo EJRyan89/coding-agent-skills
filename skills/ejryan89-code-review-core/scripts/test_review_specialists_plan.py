@@ -1538,7 +1538,7 @@ class WorkDirectoryStatTests(unittest.TestCase):
 
 class RepeatRuleTests(unittest.TestCase):
     """No script tells two defects of one category in the same code apart, so every reviewer's instructions say that
-    only the same defect, with the same cause, is a repeat (#1999)."""
+    only the same defect, with the same cause, is a repeat: a link between two would close the second with the first."""
 
     def test_every_reviewer_instruction_says_another_defect_in_the_same_code_is_no_repeat(self) -> None:
         generic = (Path(__file__).resolve().parents[1] / "references" / "generic-reviewer.md").read_text(
@@ -1556,6 +1556,6 @@ class RepeatRuleTests(unittest.TestCase):
                 self.assertIn(
                     "Another defect in the same code, even in the same method, is a finding of its own with no "
                     "`repeats`, and a link to a finding of another category is dropped, so that finding counts on "
-                    "its own.",
+                    "its own",
                     flat,
                 )

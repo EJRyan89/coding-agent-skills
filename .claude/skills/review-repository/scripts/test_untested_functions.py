@@ -106,7 +106,8 @@ class ConditionTests(unittest.TestCase):
 
     def test_an_untested_entry_names_the_suites_the_snapshot_leaves_out_which_may_test_it(self) -> None:
         # A suite the snapshot leaves out, as it leaves out every one under .claude/skills/*/scripts, is never read, so
-        # the entry says it may test the definition (#2199); a suite outside every suite root, a fixture, and a script
+        # the entry says it may test the definition, or a definition only it tests reads as untested with no word that
+        # its tests went unread; a suite outside every suite root, a fixture, and a script
         # that is no suite are not named.
         excluded = {
             ".claude/skills/tool/scripts/helper.py": "agent-instruction",
