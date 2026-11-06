@@ -701,6 +701,11 @@ DISPOSITION_RULE = """`findings` may be empty. `prior_dispositions` must contain
 finding listed above, and `comment_dispositions` exactly one for every open review comment listed
 above; each must be empty when none are listed. A review comment is a request from a person: decide
 from the current code whether it was addressed, not whether you agree with it."""
+# What a repeat is not, which no script can tell: the record builder drops a link across categories, but a link
+# between two defects of one category in the same code joins them, so the second one's ledger entry never opens.
+REPEAT_SCOPE = """Another defect in the same code, even in the same method,
+is a finding of its own with no `repeats`, and a link to a finding of another category is dropped,
+so that finding counts on its own."""
 REPLY = "After writing RESULT_FILE, reply with exactly: WROTE {result_file}"
 
 OUTPUT = (
@@ -723,10 +728,13 @@ Write exactly one JSON object to RESULT_FILE and nothing else:
     + DISPOSITION_RULE
     + """
 
-Give a finding `repeats` only when it reports the same problem as another finding, so the problem
-counts once: the 0-based index of that finding in your `findings`, or the `id` of a prior finding
-listed above that you marked `still_present` or `partially_addressed`. The finding it names must be
-at least as severe and must not have `repeats` itself.
+Give a finding `repeats` only when it reports the same defect, with the same cause, as another
+finding, raised again or found at another place, so the problem counts once: the 0-based index of
+that finding in your `findings`, or the `id` of a prior finding listed above that you marked
+`still_present` or `partially_addressed`. The finding it names must be at least as severe and must
+not have `repeats` itself. """
+    + REPEAT_SCOPE
+    + """
 
 Give a finding `analyzer` only when a diagnostic analyzer could catch that kind of issue without
 a reviewer; leave it out when finding it needs judgment about intent or behavior. ANALYZERS_FILE
@@ -1160,10 +1168,13 @@ and `repeats` are optional, every other field above is required, and no other fi
     + DISPOSITION_RULE
     + """
 
-Give a finding `repeats` only when it reports the same problem as another finding, so the problem
-counts once: that finding's `candidate_key`, or the `id` of a prior finding listed above that you
-marked `still_present` or `partially_addressed`. The finding it names must be at least as severe
-and must not have `repeats` itself.
+Give a finding `repeats` only when it reports the same defect, with the same cause, as another
+finding, raised again or found at another place, so the problem counts once: that finding's
+`candidate_key`, or the `id` of a prior finding listed above that you marked `still_present` or
+`partially_addressed`. The finding it names must be at least as severe and must not have `repeats`
+itself. """
+    + REPEAT_SCOPE
+    + """
 
 Give a finding `analyzer` only when a diagnostic analyzer could catch that kind of issue without
 a reviewer: `available` for a rule of an analyzer the repository has but leaves unenforced,

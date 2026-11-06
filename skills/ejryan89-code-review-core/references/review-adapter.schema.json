@@ -17,9 +17,9 @@
   "properties": {
     "protocol_version": { "type": "integer", "const": 1 },
     "repository": {
-      "description": "The request's repository, as owner/name in any case.",
+      "description": "The request's repository, as owner/name in any case, whose owner is a GitHub login or review-document.local.",
       "type": "string",
-      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,99}/(?!\\.+$)[A-Za-z0-9_.-]{1,100}$"
+      "pattern": "^(?:(?=[A-Za-z0-9_-]{1,39}/)[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*(?:_[A-Za-z0-9]+)?|review-document\\.local)/(?!\\.+$)[A-Za-z0-9_.-]{1,100}$"
     },
     "pull_number": { "type": "integer", "minimum": 1 },
     "head_sha": { "type": "string", "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$" },

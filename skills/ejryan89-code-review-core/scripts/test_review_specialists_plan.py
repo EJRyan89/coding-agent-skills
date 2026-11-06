@@ -348,10 +348,13 @@ OUTPUT_RULES = (
     "above; each must be empty when none are listed. A review comment is a request from a person: decide\n"
     "from the current code whether it was addressed, not whether you agree with it.\n"
     "\n"
-    "Give a finding `repeats` only when it reports the same problem as another finding, so the problem\n"
-    "counts once: the 0-based index of that finding in your `findings`, or the `id` of a prior finding\n"
-    "listed above that you marked `still_present` or `partially_addressed`. The finding it names must be\n"
-    "at least as severe and must not have `repeats` itself.\n"
+    "Give a finding `repeats` only when it reports the same defect, with the same cause, as another\n"
+    "finding, raised again or found at another place, so the problem counts once: the 0-based index of\n"
+    "that finding in your `findings`, or the `id` of a prior finding listed above that you marked\n"
+    "`still_present` or `partially_addressed`. The finding it names must be at least as severe and must\n"
+    "not have `repeats` itself. Another defect in the same code, even in the same method,\n"
+    "is a finding of its own with no `repeats`, and a link to a finding of another category is dropped,\n"
+    "so that finding counts on its own.\n"
     "\n"
     "Give a finding `analyzer` only when a diagnostic analyzer could catch that kind of issue without\n"
     "a reviewer; leave it out when finding it needs judgment about intent or behavior. ANALYZERS_FILE\n"
@@ -1531,3 +1534,28 @@ class WorkDirectoryStatTests(unittest.TestCase):
             with unstatable(result), self.assertRaises(PermissionError) as raised:
                 rs.load_role_result({"id": "tools-review", "result_file": str(result)}, {})
             self.assertEqual(str(result), raised.exception.filename)
+
+
+class RepeatRuleTests(unittest.TestCase):
+    """No script tells two defects of one category in the same code apart, so every reviewer's instructions say that
+    only the same defect, with the same cause, is a repeat: a link between two would close the second with the first."""
+
+    def test_every_reviewer_instruction_says_another_defect_in_the_same_code_is_no_repeat(self) -> None:
+        generic = (Path(__file__).resolve().parents[1] / "references" / "generic-reviewer.md").read_text(
+            encoding="utf-8"
+        )
+        for name, text in (
+            ("specialist contract", rs.OUTPUT),
+            ("entrypoint contract", rs.ENTRYPOINT_OUTPUT),
+            ("generic reviewer", generic),
+        ):
+            with self.subTest(name):
+                flat = " ".join(text.split())
+                self.assertIn("the same defect", flat)
+                self.assertIn("with the same cause", flat)
+                self.assertIn(
+                    "Another defect in the same code, even in the same method, is a finding of its own with no "
+                    "`repeats`, and a link to a finding of another category is dropped, so that finding counts on "
+                    "its own",
+                    flat,
+                )

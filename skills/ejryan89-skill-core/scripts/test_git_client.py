@@ -1710,6 +1710,147 @@ class IsolatedClientTests(unittest.TestCase):
                 GitClient(runner).run(arguments)
                 self.assertEqual(["git", *arguments], calls[0][0])
 
+    def test_a_plain_client_refuses_a_strategy_or_a_transport_that_runs_a_program_from_path(self) -> None:
+        # A strategy outside git's own runs git-merge-<name>, and a foreign transport git-remote-<name>, from PATH.
+        refused = {
+            "git merge -s": ["merge", "-s", "x", "topic"],
+            "git merge -sx": ["merge", "-sx", "topic"],
+            "git merge -ns": ["merge", "-ns", "x", "topic"],
+            "git merge --strategy=": ["merge", "--strategy=x", "topic"],
+            "git merge --str": ["merge", "--str", "x", "topic"],
+            "git merge -s ": ["merge", "--no-ff", "-s"],
+            "git rebase --strategy=": ["rebase", "--strategy=x", "main"],
+            "git rebase -is": ["rebase", "-is", "x", "main"],
+            "git pull -s": ["pull", "-s", "x", "origin"],
+            "git pull --strategy": ["pull", "--strategy", "x"],
+            "git cherry-pick --strategy=": ["cherry-pick", "--strategy=x", "HEAD"],
+            "git cherry-pick --strat": ["cherry-pick", "--strat", "x", "HEAD"],
+            "git revert --strategy": ["revert", "--strategy", "Ours", "HEAD"],
+            "git fetch x::": ["fetch", "x::anything"],
+            "git fetch ext::": ["fetch", "ext::x"],
+            "git fetch https::": ["fetch", "https::example.invalid/r"],
+            "git fetch x://": ["fetch", "x://host/r"],
+            "git fetch HTTPS://": ["fetch", "HTTPS://host/r"],
+            "git pull x::": ["pull", "x::a", "main"],
+            "git push x::": ["push", "x::a", "main"],
+            "git push --repo=": ["push", "--repo=x::a"],
+            "git ls-remote x::": ["ls-remote", "x::a"],
+            "git clone x::": ["clone", "x::a", "dir"],
+            "git remote x::": ["remote", "add", "o", "x::a"],
+            "git archive --remote=": ["archive", "--remote=x::a", "HEAD"],
+            "git archive x::": ["archive", "--remote", "x::a", "HEAD"],
+            "git submodule x::": ["submodule", "add", "x::a"],
+            "the setting url.x::a.insteadof": ["-c", "url.x::a.insteadOf=origin", "fetch"],
+            "the setting url.a.pushinsteadof": ["-c", "url.a.pushInsteadOf=b", "push"],
+            "the setting remote.origin.url": ["-c", "remote.origin.url=x::a", "fetch"],
+            "the setting remote.origin.pushurl": ["-c", "remote.origin.pushUrl=x::a", "push"],
+            "the setting submodule.a.url": ["-c", "submodule.a.url=x::a", "submodule", "update"],
+            "the setting branch.main.mergeoptions": ["-c", "branch.main.mergeOptions=-s x", "pull"],
+            "the setting branch.main.remote": ["-c", "branch.main.remote=x::foo", "pull"],
+            "the setting branch.main.pushremote": ["-c", "branch.main.pushRemote=1::foo", "push"],
+            "the setting remote.pushdefault": ["-c", "remote.pushDefault=x://h/r", "push"],
+            "the setting checkout.defaultremote": ["--config-env", "checkout.defaultRemote=V", "checkout", "a"],
+        }
+        # git's is_urlschemechar takes a digit first, so a digit-first transport runs a helper on every subcommand.
+        for subcommand in sorted(git_client.ADDRESS_SUBCOMMANDS):
+            for address in ("1::x", "1x://host/r", "9+a.b-c::x"):
+                refused[f"git {subcommand} {address}"] = [subcommand, address]
+        for what, arguments in refused.items():
+            with self.subTest(arguments=arguments):
+                runner, calls = scripted(GitResult(0, "", ""))
+                refusal = rf"^{re.escape(what.strip())}\S* starts a command or a program whose git calls a plain"
+                with self.assertRaisesRegex(ValueError, refusal):
+                    GitClient(runner).run(arguments)
+                self.assertEqual([], calls, "refused before git starts")
+        builtin = [
+            [subcommand, option, strategy, "topic"]
+            for subcommand in ("merge", "rebase", "pull")
+            for option in ("-s", "--strategy", "--strat")
+            for strategy in ("ort", "recursive", "resolve", "octopus", "ours", "subtree")
+        ]
+        allowed: tuple[list[str], ...] = (
+            *builtin,
+            ["merge", "-sours", "topic"],
+            ["merge", "--strategy=ort", "-Xours", "--strategy-option=theirs", "topic"],
+            ["merge", "-ms", "topic"],
+            ["rebase", "-Xs", "main"],
+            ["cherry-pick", "-s", "x"],
+            ["revert", "-s", "HEAD"],
+            ["log", "--strategy=x", "x::a"],
+            ["fetch", "https://example.invalid/r", "main:topic"],
+            ["clone", "ssh://git@[::1]/r", "git@host:r", "file:///c:/r", "C:\\r", "dir"],
+            ["push", "git+ssh://host/r", "HEAD:refs/heads/a"],
+            ["ls-remote", "git://host/r", "ftps://host/r"],
+            ["remote", "add", "o", "../r"],
+            ["-c", "branch.main.remote=origin", "-c", "remote.pushDefault=https://h/r", "pull"],
+        )
+        for arguments in allowed:
+            with self.subTest(arguments=arguments):
+                runner, calls = scripted(GitResult(0, "", ""))
+                GitClient(runner).run(arguments)
+                self.assertEqual(["git", *arguments], calls[0][0])
+
+    def test_a_plain_client_refuses_a_config_write_of_a_setting_a_later_command_runs_a_program_by(self) -> None:
+        # Written to a file, each setting makes a later plain fetch, pull, or commit start a program the client never
+        # reads; an edit starts the editor, and a section rename can make one section's settings another's.
+        refused = {
+            "remote.origin.url": ["config", "remote.origin.url", "x::a"],
+            "remote.origin.pushurl": ["config", "--add", "remote.origin.pushurl", "x::a"],
+            "url.x::a.insteadOf": ["config", "--global", "url.x::a.insteadOf", "origin"],
+            "Url.a.PushInsteadOf": ["config", "--replace-all", "Url.a.PushInsteadOf", "b"],
+            "submodule.a.url": ["config", "--file", ".gitmodules", "submodule.a.url", "x::a"],
+            "branch.main.mergeOptions": ["config", "set", "branch.main.mergeOptions", "-s x"],
+            "pull.twohead": ["config", "--local", "pull.twohead", "x"],
+            "core.editor": ["config", "-f", "c", "core.editor", "vim"],
+            "core.sshCommand=": ["config", "set", "--value=x", "core.sshCommand=x"],
+            "include.path": ["config", "include.path", "/x"],
+            "includeIf.gitdir:/a.path": ["config", "includeIf.gitdir:/a.path", "/x"],
+            "core.hooksPath": ["config", "--unset", "core.hooksPath"],
+            # A read option given as another option's value is no read.
+            "core.pager": ["config", "--comment", "--get", "core.pager", "x"],
+            "core.askpass": ["config", "--fi", "get", "core.askpass", "x"],
+            "--edit": ["config", "--edit"],
+            "--ed": ["config", "--global", "--ed"],
+            "--e": ["config", "--e"],
+            # git takes a remote name no remote has as an address, so a foreign transport there runs its helper.
+            "branch.main.remote": ["config", "branch.main.remote", "x::foo"],
+            "branch.main.pushRemote": ["config", "set", "branch.main.pushRemote", "1x://h/r"],
+            "remote.pushDefault": ["config", "--add", "remote.pushDefault", "x::foo"],
+            "checkout.defaultRemote": ["config", "--global", "checkout.defaultRemote", "x::foo"],
+            "branch.a.remote": ["config", "--unset", "branch.a.remote"],
+            "-e": ["config", "-e"],
+            "-le": ["config", "-le"],
+            "edit": ["config", "edit"],
+            "--rename-section": ["config", "--rename-section", "a", "remote.x"],
+            "rename-section": ["config", "rename-section", "a", "url.x::a"],
+        }
+        for what, arguments in refused.items():
+            with self.subTest(arguments=arguments):
+                runner, calls = scripted(GitResult(0, "", ""))
+                refusal = rf"^git config {re.escape(what)}\S* starts a command or a program whose git calls a plain"
+                with self.assertRaisesRegex(ValueError, refusal):
+                    GitClient(runner).run(arguments)
+                self.assertEqual([], calls, "refused before git starts")
+        allowed: tuple[list[str], ...] = (
+            ["config", "--get", "remote.origin.url"],
+            ["config", "--file", "c", "--get", "core.worktree"],
+            ["config", "--local", "--type=bool", "--get", "x.y"],
+            ["config", "get", "remote.origin.url"],
+            ["config", "--get-regexp", "url\\..*\\.insteadof"],
+            ["config", "-l"],
+            ["config", "list", "--show-origin"],
+            ["config", "user.name", "t"],
+            ["config", "--add", "remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*"],
+            ["config", "set", "core.quotePath", "off"],
+            ["config", "branch.main.remote", "origin"],
+            ["config", "remote.pushDefault", "https://example.invalid/r"],
+        )
+        for arguments in allowed:
+            with self.subTest(arguments=arguments):
+                runner, calls = scripted(GitResult(0, "", ""))
+                GitClient(runner).run(arguments)
+                self.assertEqual(["git", *arguments], calls[0][0])
+
     def test_every_subcommand_a_plain_client_runs_is_one_of_git_s_own_since_2_31(self) -> None:
         # Pinned rather than read from the git that runs the test, which may be older or newer.
         self.assertEqual(set(), set(git_client.PLAIN_SUBCOMMANDS) - GIT_2_56_COMMANDS)

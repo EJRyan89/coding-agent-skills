@@ -28,23 +28,26 @@ from console import run_main
 from device_names import is_reserved_device_name
 from executable_locator import absolute_home
 from flat_text import LINE_UNSAFE
-from github_logins import is_login
+from github_logins import LOGIN, is_login
 from review_io import CONTENT_ERRORS, PersistenceError, atomic_write_json, read_json
 from review_vocabularies import SEVERITIES, Severity
 from typed_fields import FieldError, FieldReader, describe
 
 SCHEMA_VERSION = 1
-# A GitHub repository identity, `owner/name`, the one rule every reader of one here builds on. Each part is at most
-# 100 of the characters GitHub allows, letters, digits, `_`, `.`, and `-`. The owner, a login, starts with a letter or
-# a digit. The name may start with any of them, as an organization's `.github` starts with a dot, but is never made
-# only of dots: GitHub refuses `.` and `..`, which would name the archive's folder or the one above it, and a longer
-# run of dots is refused too, since Windows trims a name's trailing dots and an archive path built from one would
-# not be the folder it names. repository_folders refuses the other names a folder cannot hold as written where an
-# identity becomes folders.
+# A GitHub repository identity, `owner/name`, the one rule every reader of one here builds on. The owner is a user's
+# or an organization's login, read by github_logins' rule, or LOCAL_OWNER. The name is at most 100 of the characters
+# GitHub allows, letters, digits, `_`, `.`, and `-`. It may start with any of them, as an organization's `.github`
+# starts with a dot, but is never made only of dots: GitHub refuses `.` and `..`, which would name the archive's
+# folder or the one above it, and a longer run of dots is refused too, since Windows trims a name's trailing dots and
+# an archive path built from one would not be the folder it names. repository_folders refuses the other names a
+# folder cannot hold as written where an identity becomes folders.
 # references/review-adapter.schema.json spells the same rule for an adapter's author, and the format-contract
 # suite's repository probes hold the two in agreement.
 REPOSITORY_CHARACTERS = "A-Za-z0-9_.-"
-REPOSITORY_OWNER = rf"[A-Za-z0-9][{REPOSITORY_CHARACTERS}]{{0,99}}"
+# The owner of a review of something not on GitHub, as review-document's fixture of a local file is: no login holds a
+# dot, so an identity it owns, and the pull request URL a record of it carries, names nobody's repository.
+LOCAL_OWNER = "review-document.local"
+REPOSITORY_OWNER = rf"(?:{LOGIN}|{re.escape(LOCAL_OWNER)})"
 REPOSITORY_NAME = rf"(?!\.+(?![{REPOSITORY_CHARACTERS}]))[{REPOSITORY_CHARACTERS}]{{1,100}}"
 REPOSITORY = rf"{REPOSITORY_OWNER}/{REPOSITORY_NAME}"
 REPOSITORY_PATTERN = re.compile(REPOSITORY)

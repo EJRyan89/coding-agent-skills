@@ -339,6 +339,35 @@ LAUNCHER_VERSION = re.compile(r"-(?:\d[\w.-]*|V:\S+)")
 # Node's options that run code from the command line, and those that take the next word as a value.
 NODE_INLINE_OPTIONS = frozenset({"--eval", "--print"})
 NODE_VALUE_OPTIONS = frozenset({"-r", "--require", "--import", "--input-type"})
+# The start-up parameters of Windows PowerShell and pwsh that take the next word as their value, besides -Command,
+# -EncodedCommand, and -File, case-folded; the aliases of some; and the switches, which take none, so a prefix that
+# one of them shares names no value-taking parameter.
+POWERSHELL_VALUE_PARAMETERS = (
+    "configurationfile",
+    "configurationname",
+    "custompipename",
+    "executionpolicy",
+    "inputformat",
+    "outputformat",
+    "psconsolefile",
+    "settingsfile",
+    "version",
+    "windowstyle",
+    "workingdirectory",
+)
+POWERSHELL_VALUE_ALIASES = frozenset({"ep", "if", "of", "wd", "cfn"})
+POWERSHELL_SWITCHES = (
+    "help",
+    "interactive",
+    "login",
+    "mta",
+    "noexit",
+    "nologo",
+    "noninteractive",
+    "noprofile",
+    "noprofileloadtime",
+    "sta",
+)
 CUES = (
     ("wide-glob", re.compile(r"\*\*/\*|\*\*[\\/]")),
     (
@@ -1690,10 +1719,12 @@ def description_lead(text: str) -> str:
 # --- scan -----------------------------------------------------------------------------------------
 
 
-def inline_code(line: str) -> bool:
+def inline_code(line: str, code_line: bool = True) -> bool:
     """Whether a line runs an interpreter on code written in the command rather than a script file: Python told -c or
     - (the program read from a pipe or a here-document), Node told -e or -p, or PowerShell told -Command or
-    -EncodedCommand, each read by the options its program takes before the code."""
+    -EncodedCommand, or Windows PowerShell given a command as its first word that is no parameter, each read by the
+    options its program takes before the code. On a prose line, `code_line` False, that first word is not read, since
+    prose names Windows PowerShell before ordinary words; the scan reads each code span of the line again as code."""
     for match in INTERPRETER.finditer(line):
         words: list[str] = []
         for word in INTERPRETER_WORD.findall(line, match.end()):
@@ -1704,12 +1735,20 @@ def inline_code(line: str) -> bool:
         if program == "node":
             found = node_inline_code(words)
         elif program in ("pwsh", "powershell"):
-            found = powershell_inline_code(words)
+            found = powershell_inline_code(words, positional_command=code_line and program == "powershell")
         else:
             found = python_inline_code(list(dropwhile(LAUNCHER_VERSION.fullmatch, words)) if program == "py" else words)
         if found:
             return True
     return False
+
+
+def generated_code(line: str, code_line: bool) -> bool:
+    """Whether a line runs an interpreter on code it holds (inline_code): a code line read whole, a prose line read
+    whole and then each of its code spans read as code."""
+    return inline_code(line, code_line) or (
+        not code_line and any(inline_code(span) for span in CODE_SPAN.findall(line))
+    )
 
 
 def python_inline_code(words: list[str]) -> bool:
@@ -1751,18 +1790,40 @@ def node_inline_code(words: list[str]) -> bool:
     return False
 
 
-def powershell_inline_code(words: list[str]) -> bool:
+def powershell_inline_code(words: list[str], positional_command: bool = False) -> bool:
     """Whether PowerShell's parameters run a command they hold: -Command or -EncodedCommand, by any prefix PowerShell
-    reads as one, before any -File."""
-    for word in words:
-        name = word.casefold()[1:] if word.startswith("-") else ""
+    reads as one, before any -File, or, given `positional_command`, as Windows PowerShell reads its first word that is
+    neither a parameter nor a parameter's value, which it runs as -Command's (pwsh reads that word as -File's). A
+    parameter is taken to hold the next word only where it names one of POWERSHELL_VALUE_PARAMETERS and no switch, so
+    a word after a parameter this reader does not know is read as the command."""
+    rest = iter(words)
+    for word in rest:
+        if not word.startswith("-"):
+            if positional_command:
+                return True
+            continue
+        name = word.casefold()[1:]
         if name == "f" or (len(name) >= 2 and "file".startswith(name)):
             return False
         if name in ("c", "e", "ec") or (len(name) >= 3 and "command".startswith(name)):
             return True
         if len(name) >= 2 and "encodedcommand".startswith(name):
             return True
+        if takes_powershell_value(name):
+            next(rest, None)
     return False
+
+
+def takes_powershell_value(name: str) -> bool:
+    """Whether a PowerShell start-up parameter, by its case-folded name without the dash, takes the next word as its
+    value: a prefix of one of POWERSHELL_VALUE_PARAMETERS and of no switch of POWERSHELL_SWITCHES, or its alias."""
+    if name in POWERSHELL_VALUE_ALIASES:
+        return True
+    return (
+        bool(name)
+        and any(parameter.startswith(name) for parameter in POWERSHELL_VALUE_PARAMETERS)
+        and not any(switch.startswith(name) for switch in POWERSHELL_SWITCHES)
+    )
 
 
 def decomposes_a_value(line: str) -> bool:
@@ -1807,7 +1868,7 @@ def scan(given: list[Path]) -> list[str]:
             cues = [
                 name
                 for name, pattern in CUES
-                if pattern.search(line) or (name == "generated-code" and inline_code(line))
+                if pattern.search(line) or (name == "generated-code" and generated_code(line, language is not None))
             ]
             cues += [
                 name

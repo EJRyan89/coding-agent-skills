@@ -49,6 +49,11 @@ A changed script the snapshot leaves out by an exclusion its manifest records, a
 (<reason>), so no definition in it was read; review its hunks from the diff, hunks <headers>` entry followed by its
 first hunk, cut at MAX_HUNK_CHARACTERS, which opens the route for the reviewer to judge it from the diff.
 
+A suite the snapshot leaves out the same way, as it leaves out every suite under `.claude/skills/*/scripts`, names
+nothing, since its text cannot be read, so a definition only it tests is listed too. Each `UNTESTED` entry then adds
+`, suites the snapshot leaves out <n> (<reasons>), such as <suites>`, at most MAX_RELATED_TESTS of them, those named
+after the definition's file first, then those beside it, so the reviewer judges from the diff whether one covers it.
+
 A snapshot it cannot read its evidence from, one that is not a directory, whose manifest cannot be read, or that lacks
 a changed script the diff leaves at the head with no exclusion recorded for it, ends it with `FAILED MissingEvidence:
 <what is missing>`, so an absent snapshot never reads as every changed definition tested.
@@ -87,6 +92,7 @@ from conditions import (
     OUTPUT_VARIABLE,
     SCRIPT_SUFFIXES,
     MissingEvidence,
+    glob_matcher,
     is_suite,
     read_files,
     refusal_line,
@@ -478,15 +484,13 @@ class Tests:
     def of_file(self, definition: Definition) -> list[str]:
         """The tests that import the definition's module or name its file, those named after the file first, then
         those beside it, at most MAX_RELATED_TESTS: where a reviewer looks for one that reaches it through a caller."""
-        folder, _, script = definition.path.rpartition("/")
+        script = definition.path.rpartition("/")[2]
         module = script.removesuffix(".py") if script.endswith(".py") else ""
         name = file_name(script)
         found = [
             path for path in self.files if name.search(self.files[path]) or (module and self.imports(path, module))
         ]
-        stem = script.rpartition(".")[0].casefold()
-        found.sort(key=lambda path: (stem not in path.rpartition("/")[2].casefold(), path.rpartition("/")[0] != folder))
-        return found[:MAX_RELATED_TESTS]
+        return _nearest_first(definition, found)[:MAX_RELATED_TESTS]
 
     def _names_python(self, definition: Definition) -> bool:
         script = definition.path.rpartition("/")[2]
@@ -512,6 +516,35 @@ class Tests:
         word = re.compile(rf"(?<![\w-]){re.escape(definition.name)}(?![\w-])", flags)
         name = file_name(script)
         return any(name.search(text) and word.search(self.code(path)) for path, text in self.files.items())
+
+
+def _nearest_first(definition: Definition, paths: Iterable[str]) -> list[str]:
+    """`paths` with the suites named after the definition's file first, then those beside it."""
+    folder, _, script = definition.path.rpartition("/")
+    stem = script.rpartition(".")[0].casefold()
+    return sorted(
+        paths, key=lambda path: (stem not in path.rpartition("/")[2].casefold(), path.rpartition("/")[0] != folder)
+    )
+
+
+def unread_suites(excluded: dict[str, str]) -> dict[str, str]:
+    """Each suite under a suite root the snapshot leaves out, by its repository path, and the reason it records:
+    no test in one is read, so a definition only it tests is listed as untested."""
+    roots = [glob_matcher(f"{suite_root}/**/*") for suite_root in SUITE_ROOTS]
+    return {
+        path: reason
+        for path, reason in sorted(excluded.items())
+        if not path.startswith(FIXTURES) and is_suite(path) and any(root(path) for root in roots)
+    }
+
+
+def unread_part(definition: Definition, unread: dict[str, str]) -> str:
+    """What an `UNTESTED` entry adds when the snapshot leaves suites out, which may test the definition."""
+    if not unread:
+        return ""
+    reasons = ", ".join(sorted(set(unread.values())))
+    shown = ", ".join(_nearest_first(definition, unread)[:MAX_RELATED_TESTS])
+    return f", suites the snapshot leaves out {len(unread)} ({reasons}), such as {shown}"
 
 
 def suites(root: Path) -> dict[str, str]:
@@ -666,6 +699,7 @@ def entries(root: Path, files: list[FileChange], unreadable: dict[str, str] | No
             f"the snapshot holds no {json_writer.dumps(absent[0])}, which the diff leaves at the head"
         )
     blocks = [excluded_entry(change, excluded[change.path]) for change in withheld]
+    unread = unread_suites(excluded)
     changes = [change for change in changes if change not in withheld]
     tests = Tests(suites(root), {} if unreadable is None else unreadable)
     for change in changes:
@@ -689,7 +723,7 @@ def entries(root: Path, files: list[FileChange], unreadable: dict[str, str] | No
                 f"UNTESTED {change.path}:{definition.line} {definition.kind} "
                 f"{f'{definition.owner}.' if definition.owner else ''}{definition.name}, added lines "
                 f"{_line_ranges(found.added)}, hunk {found.hunk.header}, tests of its file "
-                f"{', '.join(related) or 'none'}\n{_excerpt(found.hunk.text)}\n"
+                f"{', '.join(related) or 'none'}{unread_part(definition, unread)}\n{_excerpt(found.hunk.text)}\n"
             )
     return blocks
 
