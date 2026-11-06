@@ -595,6 +595,23 @@ class ConfigurationTests(unittest.TestCase):
                 path = review_config.default_config_path()
             self.assertEqual(".coding-agent-skills/code-review/config.json", path.relative_to(home).as_posix())
 
+    def test_each_default_store_lies_under_the_home_s_code_review_folder(self) -> None:
+        # The stores move with these names, so a user's configuration, flags, and state would be left behind.
+        overrides = {"CODE_REVIEW_CONFIG": "", "CODE_REVIEW_FLAGS": "", "CODE_REVIEW_STATE": ""}
+        for default, name in (
+            (review_config.default_config_path, "config.json"),
+            (review_flags.default_flags_path, "flags.json"),
+            (default_state_path, "state.json"),
+        ):
+            with (
+                self.subTest(default=default.__name__),
+                tempfile.TemporaryDirectory() as home,
+                mock.patch.dict(os.environ, overrides),
+                mock.patch.object(Path, "home", return_value=Path(home)),
+            ):
+                path = default()
+                self.assertEqual(f".coding-agent-skills/code-review/{name}", path.relative_to(home).as_posix())
+
     def test_each_default_store_refuses_a_relative_home_rather_than_read_under_the_working_directory(self) -> None:
         # Path.home() reads a relative profile folder as given, so each default store named a file under the working
         # directory.

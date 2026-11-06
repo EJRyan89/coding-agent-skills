@@ -9,7 +9,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from python_reader import CONTENT_ERRORS, PythonRefused, literal, parse, parse_expression
+from python_reader import CONTENT_ERRORS, CONTENT_READERS, PythonRefused, literal, parse, parse_expression
 
 # A run of unary operators past the parser's stack, which ast.parse raises as a MemoryError on some releases and a
 # RecursionError on others, rather than a SyntaxError.
@@ -61,3 +61,8 @@ class LiteralTests(unittest.TestCase):
     def test_the_family_is_one_value_error_class(self) -> None:
         self.assertEqual((PythonRefused,), CONTENT_ERRORS)
         self.assertTrue(issubclass(PythonRefused, ValueError))
+
+    def test_the_readers_that_raise_the_family_are_named(self) -> None:
+        # The content-errors policy holds each caller of a reader this names to the family, so a name left out is a
+        # caller left unheld.
+        self.assertEqual(("parse", "parse_expression", "literal"), CONTENT_READERS)
