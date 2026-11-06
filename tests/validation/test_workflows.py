@@ -1612,6 +1612,36 @@ def test_the_mutation_jobs_make_the_mutants_on_linux_run_both_legs_and_join_them
         ),
         pytest.param(MUTATION.replace(MUTATION_RESTORE, ""), "select job's caches", id="no verdict restored"),
         pytest.param(
+            MUTATION.replace(
+                "          key: mutation-verdict-${{ github.ref }}\n", "          key: mutation-verdict-main\n"
+            ),
+            "select job's caches",
+            id="a verdict restored from another ref",
+        ),
+        pytest.param(
+            MUTATION.replace("restore-keys: mutation-verdict-${{ github.ref }}-", "restore-keys: mutation-verdict-"),
+            "select job's caches",
+            id="restore keys that match another pull request's verdict",
+        ),
+        pytest.param(
+            MUTATION.replace("key: ${{ steps.join.outputs.verdict }}", "key: mutation-verdict-${{ github.ref }}"),
+            "mutation job's caches",
+            id="a verdict saved under a key the join did not name",
+        ),
+        pytest.param(
+            MUTATION.replace("          path: mutation/verdict\n", "          path: verdict\n", 1),
+            "select job's caches",
+            id="a verdict restored to another folder",
+        ),
+        pytest.param(
+            MUTATION.replace(
+                "          path: mutation/verdict\n          key: ${{ steps.join",
+                "          path: verdict\n          key: ${{ steps.join",
+            ),
+            "mutation job's caches",
+            id="a verdict saved from another folder",
+        ),
+        pytest.param(
             MUTATION.replace("      - if: steps.join.outputs.verdict != ''\n        uses", "      - uses"),
             "mutation job's caches",
             id="a verdict saved whatever the join found",
