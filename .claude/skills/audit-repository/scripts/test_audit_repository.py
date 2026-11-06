@@ -1640,9 +1640,11 @@ class GuidanceTests(Fixture):
             audit.supported_runtimes(self.root)
         self.assertIn("cannot read the runtime catalogue", str(raised.exception))
 
-    def test_a_catalogue_value_nested_past_what_literal_eval_reads_fails_as_no_literal(self) -> None:
-        # Parsed whole, but a run of unary operators deeper than python_reader.literal reads is refused as no literal.
-        deep = "RUNTIMES = " + "-" * 5000 + "1\nRUNTIME_TITLES = {}\n"
+    def test_a_catalogue_value_python_reader_refuses_as_no_literal_fails_as_no_literal(self) -> None:
+        # A run of unary operators short enough for every supported parser, which python_reader.literal refuses as no
+        # literal; a run past the parser's own limits is the unreadable catalogue above, and where that limit falls
+        # differs between Python releases.
+        deep = "RUNTIMES = " + "-" * 200 + "1\nRUNTIME_TITLES = {}\n"
         write(self.root, {"skills/ejryan89-skill-core/scripts/runtime_support.py": deep})
         with self.assertRaises(audit.AuditError) as raised:
             audit.supported_runtimes(self.root)

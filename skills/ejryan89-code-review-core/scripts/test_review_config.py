@@ -584,7 +584,7 @@ class ConfigurationTests(unittest.TestCase):
 
     def test_each_default_store_refuses_a_relative_home_rather_than_read_under_the_working_directory(self) -> None:
         # Path.home() reads a relative profile folder as given, so each default store named a file under the working
-        # directory (#2325).
+        # directory.
         overrides = {"CODE_REVIEW_CONFIG": "", "CODE_REVIEW_FLAGS": "", "CODE_REVIEW_STATE": ""}
         for default in (review_config.default_config_path, review_flags.default_flags_path, default_state_path):
             with (

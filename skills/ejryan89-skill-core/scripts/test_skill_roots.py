@@ -28,7 +28,7 @@ class DeployedSkillRootsTests(unittest.TestCase):
 
     def test_a_relative_home_is_refused_by_its_variable_rather_than_read_under_the_working_directory(self) -> None:
         # Path.home() reads a relative profile folder as given, so a script judged a folder under its working
-        # directory as the deployer's own (#2325).
+        # directory as the deployer's own.
         with mock.patch("pathlib.Path.home", return_value=Path("a home")), self.assertRaises(RelativeEnvironmentPath):
             deployed_skill_roots()
 

@@ -2955,7 +2955,7 @@ class PresenceReadTests(Fixture):
 
     def test_a_relative_cache_or_home_is_never_read_under_the_working_directory(self) -> None:
         # NUGET_PACKAGES and the home were read as given, so a relative one named a folder under the working
-        # directory (#2325): the variable is passed over, and the home is refused by its variable's name.
+        # directory: the variable is passed over, and the home is refused by its variable's name.
         home = self.root / "home"
         (home / ".nuget" / "packages").mkdir(parents=True)
         (self.root / "configured").mkdir()

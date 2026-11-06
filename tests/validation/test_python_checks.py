@@ -1380,7 +1380,7 @@ DOCUMENTED_FORMS: dict[str, tuple[Any, ...]] = {
         for place in PLACES
     },
     # "a one-argument `int()` or `float()`": float() reads every Unicode digit, nan, and inf, and past a float's
-    # range gives an infinity, so it converts no group and no value a digit test admitted either (#2189).
+    # range gives an infinity, so it converts no group and no value a digit test admitted either.
     **{
         f"float() of {form}": _form(int_parse_problems, f"import re\n\n\ndef f(t, headers):\n    {body}\n")
         for form, body in (
@@ -5277,14 +5277,14 @@ OWNER_ONLY_ROWS = {
     "json.load as a default": "def f(t, load=json.load):  # read\n    return load(t)  # read\n",
     "a JSONDecoder subclassed": "class D(json.JSONDecoder):  # read\n    pass\n",
     # ast.parse and ast.literal_eval raise MemoryError and RecursionError past the parser's limits, which a handler
-    # naming SyntaxError alone lets escape, so python_reader is the one parse of Python source (#2190).
+    # naming SyntaxError alone lets escape, so python_reader is the one parse of Python source.
     "ast.parse called": "import ast\n\n\ndef f(t):\n    return ast.parse(t)  # read\n",
     "ast.literal_eval imported and called": (
         "from ast import literal_eval\n\n\ndef f(t):\n    return literal_eval(t)  # read\n"
     ),
     "ast.parse by a literal lookup": "import ast\n\n\ndef f(t):\n    return getattr(ast, 'parse')(t)  # read\n",
     # Path.home() and expanduser read a relative profile folder as given, a folder under the working directory, so
-    # executable_locator.absolute_home is the one home lookup outside the deployer's platform seam (#2325).
+    # executable_locator.absolute_home is the one home lookup outside the deployer's platform seam.
     "Path.home called": "from pathlib import Path\n\n\ndef f():\n    return Path.home() / 'x'  # read\n",
     "pathlib.Path.home as a default": "import pathlib\n\n\ndef f(home=pathlib.Path.home()):  # read\n    return home\n",
     "os.path.expanduser called": "def f():\n    return os.path.expanduser('~/x')  # read\n",

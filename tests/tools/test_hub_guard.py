@@ -2088,7 +2088,7 @@ class PowerShellUnderstoodSetTests(GuardTestCase):
 
     def test_the_home_is_the_one_the_environment_names_and_unknown_where_it_is_not_absolute(self) -> None:
         # The guard once fell back on Path.home(), the guard process's own home, which reads a relative profile
-        # folder as given, so ~ was read relative to the guard's working directory (#2325).
+        # folder as given, so ~ was read relative to the guard's working directory.
         bare = {name: value for name, value in self.environment.items() if name not in {"HOME", "USERPROFILE"}}
         profile = {**bare, executable_locator.HOME_VARIABLE: str(self.root)}
         relative = {**bare, executable_locator.HOME_VARIABLE: "relative home"}

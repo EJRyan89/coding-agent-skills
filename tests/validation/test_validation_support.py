@@ -602,7 +602,7 @@ class PythonFileReaderFixtures(unittest.TestCase):
 
     def test_source_nested_past_the_parser_is_named_by_file_not_raised(self) -> None:
         # A long run of unary operators overflows the parser's stack as a MemoryError, or a RecursionError on another
-        # release, rather than a SyntaxError (#2170).
+        # release, rather than a SyntaxError.
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             self.write(root, {"a_deep.py": b"x = " + b"-" * 100_000 + b"1\n", "b_good.py": b"x = 1\n"})

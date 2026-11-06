@@ -249,7 +249,7 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   of every option that takes one; `json_reader:loads` for a JSON number, which refuses one past the same cap, and
   `typed_fields:FieldReader.integer` for its bounds; `process_identity:read_pid` for a PID, bounded by the
   platform's range so none is truncated to another process's; `versions:find` and `versions:read` for a version, each
-  number read through `whole_number`; and `json_writer:dumps`, which refuses an integer past the same cap by name.
+  number read through `whole_number:parse`; and `json_writer:dumps`, which refuses an integer past the same cap by name.
 - **Guard:** `tests/validation/python_checks.py::PythonChecksPolicies::test_whole_number_is_the_one_reader_of_a_number_from_text`,
   `tests/validation/test_python_checks.py::test_int_parse_policy_refuses_a_group_or_a_digit_tested_value_outside_whole_number`,
   `tests/validation/test_python_checks.py::test_int_parse_policy_refuses_an_option_read_with_int_or_float`,
@@ -427,8 +427,8 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   same limit, so a walk over what they return, such as MSBuild's Choose evaluation, needs no bound of its own;
   `csharp_layout:_brace_level` and `msbuild_conditions:Parser.nested`, a hand-written parser's own check; and
   `python_reader:parse`, `python_reader:parse_expression`, and `python_reader:literal`, the one parse of Python source
-  and of a literal, which refuse the parser's overflow, a `MemoryError` or a `RecursionError`, as the `PythonRefused`
-  their callers handle.
+  and of a literal, which refuse the parser's overflow, a memory or recursion error, as the
+  `python_reader:PythonRefused` their callers handle.
 - **Guard:** `skills/ejryan89-skill-core/scripts/test_nesting_depth.py::DeeperTests`,
   `skills/ejryan89-skill-core/scripts/test_json_reader.py::RefusalTests::test_nesting_one_level_past_the_shared_limit_is_refused_though_the_scanner_reads_it`,
   `skills/ejryan89-skill-core/scripts/test_json_reader.py::RefusalTests::test_a_scalar_is_no_level_so_one_at_the_limit_reads_as_an_empty_container_does`,

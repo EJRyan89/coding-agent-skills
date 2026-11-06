@@ -86,7 +86,7 @@ class LocateTests(TemporaryTestCase):
 
     def test_the_default_home_is_the_users_and_a_relative_one_fails_by_its_variable(self) -> None:
         # The default was Path.home(), which reads a relative profile folder as given, so a skill was looked for
-        # under the working directory (#2325).
+        # under the working directory.
         skill = write(self.user_skills / "alpha" / "SKILL.md", "x")
         with mock.patch.object(Path, "home", return_value=self.home):
             code, lines, _ = run("locate", "alpha", "--repo", str(self.repo))
