@@ -76,9 +76,8 @@ def startup_command(
     runs no command the words hold. A parameter is taken to hold the next word only where it names one of
     POWERSHELL_VALUE_PARAMETERS and no switch, so a word after a parameter this reader does not know is read as the
     command. A word given as None, one whose text the caller cannot read, gives UnknownWord where it is reached."""
-    index = 0
-    while index < len(words):
-        word = words[index]
+    rest = iter(enumerate(words))
+    for index, word in rest:
         if word is None:
             return UnknownWord(index)
         if not word.startswith("-"):
@@ -86,7 +85,6 @@ def startup_command(
                 return StartupCommand(index)
             if positional_file:
                 return None
-            index += 1
             continue
         name = word.casefold()[1:]
         if name == "f" or (len(name) >= 2 and "file".startswith(name)):
@@ -97,7 +95,8 @@ def startup_command(
             return StartupCommand(index + 1)
         if name in ("e", "ec") or (len(name) >= 2 and "encodedcommand".startswith(name)):
             return StartupCommand(index + 1, encoded=True)
-        index += 2 if takes_powershell_value(name) else 1
+        if takes_powershell_value(name):
+            next(rest, None)
     return None
 
 

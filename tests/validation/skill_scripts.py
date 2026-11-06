@@ -334,12 +334,19 @@ def powershell_startup_programs(words: Sequence[str | None]) -> set[str] | None:
     command = startup_command(rest, positional_command=program == "powershell", positional_file=program == "pwsh")
     if command is None:
         return set()
-    script: list[str | None] = []
-    if not isinstance(command, UnknownWord) and not command.encoded:
-        script = rest[command.start : command.start + 1] if command.with_arguments else rest[command.start :]
-    if not script or script == ["-"] or None in script:
-        return {f"{UNREAD_PROGRAM}{' '.join(word if word is not None else '<value>' for word in words)}"}
-    return set(_powershell_script_programs(" ".join(word for word in script if word is not None)))
+    if isinstance(command, UnknownWord) or command.encoded:
+        return _unread_start(words)
+    script = rest[command.start : command.start + 1 if command.with_arguments else len(rest)]
+    texts = [word for word in script if word is not None]
+    if not texts or texts == ["-"] or len(texts) < len(script):
+        return _unread_start(words)
+    return set(_powershell_script_programs(" ".join(texts)))
+
+
+def _unread_start(words: Sequence[str | None]) -> set[str]:
+    """The UNREAD_PROGRAM a start-up whose script the policy cannot read gives: its words, `<value>` for each it
+    cannot read."""
+    return {f"{UNREAD_PROGRAM}{' '.join(word if word is not None else '<value>' for word in words)}"}
 
 
 @functools.cache
@@ -1335,7 +1342,7 @@ def _started_shell_programs(name: str, words: list[str | None]) -> set[str]:
         return shell_commands(literal[index])
     if len(literal) < len(words) and all(word.startswith(("-", "+")) for word in literal):
         # The shell's options run on into a word the source does not spell, which may be its -c script.
-        return {f"{UNREAD_PROGRAM}{' '.join(word if word is not None else '<value>' for word in [name, *words])}"}
+        return _unread_start([name, *words])
     return set()
 
 

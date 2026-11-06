@@ -5834,11 +5834,67 @@ class Handles:
         ),
         pytest.param(
             {
+                "skills/alpha/scripts/layers.py": (
+                    "from job_tree import Handles\n\n\nclass Base(Handles):\n    pass\n\n\n"
+                    "class Middle(Base):\n    pass\n"
+                ),
+                "skills/alpha/scripts/alpha.py": "from layers import Middle\n\n\nclass B(Middle):\n"
+                "    def open(self, pid):\n        return self.lib.OpenProcess(pid)\n",
+            },
+            ["skills/alpha/scripts/alpha.py:6"],
+            id="a chain of bases inside the other module",
+        ),
+        pytest.param(
+            {
+                "tools/owner.py": CTYPES_BASE_OWNER,
+                "skills/alpha/scripts/alpha.py": "from tools.owner import Handles\n\n\nclass B(Handles):\n"
+                "    def open(self, pid):\n        return self.lib.OpenProcess(pid)\n",
+            },
+            ["skills/alpha/scripts/alpha.py:6"],
+            id="a base imported from a package's module",
+        ),
+        pytest.param(
+            {
+                "skills/alpha/scripts/nested.py": "import ctypes\n\n\nclass Outer:\n    class Handles:\n"
+                "        def __init__(self):\n            self.lib = ctypes.WinDLL('kernel32')\n",
+                "skills/alpha/scripts/alpha.py": "from nested import Outer\n\n\nclass B(Outer.Handles):\n"
+                "    def open(self, pid):\n        return self.lib.OpenProcess(pid)\n",
+            },
+            ["skills/alpha/scripts/alpha.py:6"],
+            id="a nested class as the base",
+        ),
+        pytest.param(
+            {
+                "skills/alpha/scripts/alpha.py": "from job_tree import Handles\n\n\nclass Other:\n    pass\n\n\n"
+                "class B(Handles, Other):\n    def open(self, pid):\n        return self.lib.OpenProcess(pid)\n"
+            },
+            ["skills/alpha/scripts/alpha.py:10"],
+            id="the library's base before another",
+        ),
+        pytest.param(
+            {
                 "skills/alpha/scripts/alpha.py": "from job_tree import Handles\n\n\nclass B(Handles):\n"
                 "    def label(self):\n        return self.name\n"
             },
             [],
             id="an attribute the base binds to no library",
+        ),
+        pytest.param(
+            {
+                "skills/alpha/scripts/alpha.py": "from elsewhere import Thing\n\n\nclass B(Thing):\n"
+                "    def open(self, pid):\n        return self.lib\n"
+            },
+            [],
+            id="a base from a module the policy does not read",
+        ),
+        pytest.param(
+            {
+                "skills/alpha/scripts/first.py": "from second import B\n\n\nclass A(B):\n    pass\n",
+                "skills/alpha/scripts/second.py": "from first import A\n\n\nclass B(A):\n    def f(self):\n"
+                "        return self.lib\n",
+            },
+            [],
+            id="a cycle of bases across modules",
         ),
         pytest.param(
             {
@@ -5859,6 +5915,14 @@ def test_ctypes_policy_refuses_a_library_a_base_class_binds_in_another_module(
         found = python_checks.ctypes_declaration_problems(root, sorted(root.rglob("*.py")))
     assert [problem.split(" ", 1)[0] for problem in found] == refused
     assert all("other than through the class that binds it" in problem for problem in found), found
+
+
+def test_ctypes_policy_names_a_module_it_cannot_read() -> None:
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        write_fixture_tree(root, {"skills/alpha/scripts/alpha.py": "def broken(:\n"})
+        found = python_checks.ctypes_declaration_problems(root, sorted(root.rglob("*.py")))
+    assert [problem.split(":", 1)[0] for problem in found] == ["skills/alpha/scripts/alpha.py"]
 
 
 @pytest.mark.parametrize(

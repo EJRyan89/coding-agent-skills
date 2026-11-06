@@ -2234,29 +2234,42 @@ class _InheritedLibraries:
         for name, libraries in models:
             self.modules.setdefault(PurePosixPath(name).stem, []).append(libraries)
 
-    def bound(self, libraries: _ForeignLibraries, class_name: str, seen: frozenset[tuple[int, str]]) -> set[str]:
-        """The attributes a class of `libraries`, and each of its bases, binds to a library."""
+    def bound(
+        self, libraries: _ForeignLibraries, class_name: str, seen: frozenset[tuple[int, str]] = frozenset()
+    ) -> set[str]:
+        """The attributes a class of `libraries`, and each of its bases, binds to a library; a class `seen` names, one
+        a cycle of bases reaches again, adds none."""
+        key = (id(libraries), class_name)
+        if key in seen:
+            return set()
+        seen = seen | {key}
         found = {
             attribute
-            for key in libraries.places
-            for owner, _, attribute in [key.rpartition(".")]
+            for place in libraries.places
+            for owner, _, attribute in [place.rpartition(".")]
             if owner == class_name
         }
-        for base in libraries.bases.get(class_name, []):
-            module, _, base_name = libraries.resolver.name(base).rpartition(".")
-            owners = [libraries] if module == "<local>" else self.modules.get(module.rpartition(".")[2], [])
-            for owner in owners:
-                if base_name in owner.class_names and (id(owner), base_name) not in seen:
-                    found |= self.bound(owner, base_name, seen | {(id(owner), base_name)})
+        for base in libraries.bases[class_name]:
+            for owner, name in self.base_classes(libraries, libraries.resolver.name(base)):
+                found |= self.bound(owner, name, seen)
+        return found
+
+    def base_classes(self, libraries: _ForeignLibraries, dotted: str) -> list[tuple[_ForeignLibraries, str]]:
+        """Each class a base's dotted name, as the resolver gives it, may be: a class of this module, named after
+        `<local>`, or a class of a module read, named after the part that names that module, a nested class's
+        qualified name included."""
+        parts = dotted.split(".")
+        found: list[tuple[_ForeignLibraries, str]] = []
+        for index in range(1, len(parts)):
+            module, name = parts[:index], ".".join(parts[index:])
+            owners = [libraries] if module == ["<local>"] else self.modules.get(module[-1], [])
+            found += [(owner, name) for owner in owners if name in owner.class_names]
         return found
 
     def held(self, libraries: _ForeignLibraries) -> set[str]:
         """The attributes the module's classes bind to a library or inherit as one from a base, this module's or
         another's."""
-        found: set[str] = set()
-        for class_name in libraries.class_names:
-            found |= self.bound(libraries, class_name, frozenset({(id(libraries), class_name)}))
-        return found
+        return {attribute for class_name in libraries.class_names for attribute in self.bound(libraries, class_name)}
 
 
 def ctypes_declaration_problems(root: Path, files: list[Path]) -> list[str]:
@@ -2298,8 +2311,7 @@ def ctypes_declaration_problems(root: Path, files: list[Path]) -> list[str]:
         # binds it; any other read, through a subclass, `super()`, `type(self)`, `self.__class__`, or any other
         # receiver, is refused rather than followed through the class's bases. A base another module defines counts:
         # an attribute it binds to a library is held here too, so a subclass's read of it is refused.
-        held = {key.rpartition(".")[2] for key in libraries.places if key.partition(".")[0] in libraries.class_names}
-        held |= inherited.held(libraries)
+        held = inherited.held(libraries)
         found += [
             (
                 node.lineno,

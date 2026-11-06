@@ -30,12 +30,54 @@ from powershell_startup import StartupCommand, UnknownWord, startup_command, tak
         (["-Command"], StartupCommand(1)),
         (["-File", "a.ps1", "-Command", "jq ."], None),
         (["-f", "a.ps1"], None),
+        # -f and every prefix of -File from -fi end the reading, so a later -Command is the script's argument.
+        (["-f", "a.ps1", "-c", "jq ."], None),
+        (["-fi", "a.ps1", "-c", "jq ."], None),
+        (["-FIL", "a.ps1", "-c", "jq ."], None),
         (["-NoProfile"], None),
+        # A value parameter given as the last word, with no value after it, runs nothing.
+        (["-ExecutionPolicy"], None),
         ([], None),
     ],
 )
 def test_a_start_up_runs_the_command_its_parameters_name(words: list[str], expected: object) -> None:
     assert startup_command(words) == expected
+
+
+def test_a_command_is_plain_unless_its_parameter_says_it_is_encoded_or_takes_arguments() -> None:
+    # Each field read itself, so a default that changed would not pass by changing the expected value with it.
+    assert [
+        (found.start, found.encoded, found.with_arguments)
+        for words in (["-c", "x"], ["-e", "x"], ["-cwa", "x"])
+        if isinstance(found := startup_command(words), StartupCommand)
+    ] == [(1, False, False), (1, True, False), (1, False, True)]
+
+
+# Every start-up parameter of pwsh and Windows PowerShell that takes a value, by its full name and by its alias, as
+# `pwsh -?` and Windows PowerShell's start-up help list them; each takes the next word, so the command comes after it.
+@pytest.mark.parametrize(
+    "parameter",
+    [
+        "-ConfigurationFile",
+        "-ConfigurationName",
+        "-cfn",
+        "-CustomPipeName",
+        "-ExecutionPolicy",
+        "-ep",
+        "-InputFormat",
+        "-if",
+        "-OutputFormat",
+        "-of",
+        "-PSConsoleFile",
+        "-SettingsFile",
+        "-Version",
+        "-WindowStyle",
+        "-WorkingDirectory",
+        "-wd",
+    ],
+)
+def test_each_value_parameter_takes_the_next_word(parameter: str) -> None:
+    assert startup_command([parameter, "value", "jq ."], positional_command=True) == StartupCommand(2)
 
 
 def test_a_first_positional_word_is_the_command_the_file_or_passed_over_as_the_caller_asks() -> None:
@@ -64,6 +106,9 @@ def test_a_word_the_caller_cannot_read_is_named_where_the_reading_needs_it() -> 
         ("noprofile", False),
         ("no", False),
         ("i", False),
+        # -s may be -sta or -SettingsFile, so it names no value parameter; -se is -SettingsFile's.
+        ("s", False),
+        ("se", True),
         ("", False),
         ("zzz", False),
     ],

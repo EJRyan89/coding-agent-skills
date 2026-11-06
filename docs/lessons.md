@@ -762,7 +762,7 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   `tests/validation/python_checks.py::PythonChecksPolicies::test_owner_only_names_are_referenced_only_by_their_owners`,
   `tests/validation/python_checks.py::PythonChecksPolicies::test_policed_calls_take_literal_arguments`,
   `tests/validation/test_python_checks.py::test_each_spelling_the_resolver_did_not_follow_is_refused_at_the_source`,
-  `tests/validation/test_skill_scripts.py::test_the_command_policy_reads_the_script_a_powershell_start_up_runs`,
+  `tests/validation/test_shell_readers.py::test_the_command_policy_reads_the_script_a_powershell_start_up_runs`,
   `tests/validation/python_checks.py::PythonChecksPolicies::test_claim_policies_read_every_module_their_rules_speak_of`,
   `tests/validation/duplication.py::DuplicationPolicies::test_the_duplication_policy_reads_every_module_its_rule_speaks_of`,
   `tests/validation/test_python_checks.py::test_a_policy_scope_fails_for_each_module_it_skips_and_each_stale_omission`,
