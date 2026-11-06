@@ -1255,6 +1255,14 @@ class ScanTests(TemporaryTestCase):
             "pwsh -Command '1'",
             "pwsh -NoProfile -c '1'",
             "powershell.exe -ExecutionPolicy Bypass -EncodedCommand ZQBjAGgAbwA=",
+            # Windows PowerShell runs its first word that is no parameter as -Command's.
+            "powershell 'Remove-Item x'",
+            "powershell -NoProfile Get-Date",
+            "powershell.exe -ExecutionPolicy Bypass Get-Date",
+            "powershell -ep Bypass -WindowStyle Hidden -NonInteractive 'Get-Date'",
+            "powershell -Version 5.1 -NoLogo Get-Date",
+            "powershell -NoLogo -Unknown Get-Date",
+            "PowerShell.exe Get-Date",
         ):
             for place, content in (
                 ("fence", f"```bash\n{command}\n```\n"),
@@ -1280,6 +1288,10 @@ class ScanTests(TemporaryTestCase):
             "node -r ./setup.js scripts/count.js -e",
             "pwsh -File scripts/count.ps1 -Command x",
             "pwsh -NoProfile -ExecutionPolicy Bypass -File x.ps1",
+            "pwsh x.ps1",
+            "pwsh -NoProfile x.ps1",
+            "powershell -File x.ps1 Get-Date",
+            "powershell -NoProfile -ExecutionPolicy Bypass -File x.ps1",
             "the .py file and py.typed -c",
         ):
             for place, content in (
@@ -1291,6 +1303,18 @@ class ScanTests(TemporaryTestCase):
                     code, lines, error = run("scan", str(skill))
                     self.assertEqual(0, code, error)
                     self.assertEqual([], [line for line in lines if line])
+
+    def test_prose_naming_windows_powershell_is_not_generated_code_outside_a_code_span(self) -> None:
+        for line, cued in (
+            ("Windows PowerShell reads the profile first.\n", False),
+            ("On Windows, powershell reads the profile first.\n", False),
+            ("Run `powershell Get-Date` once.\n", True),
+        ):
+            with self.subTest(line=line):
+                skill = write(self.root / "SKILL.md", line)
+                code, lines, error = run("scan", str(skill))
+                self.assertEqual(0, code, error)
+                self.assertEqual(["generated-code"] if cued else [], [entry.split()[3] for entry in lines if entry])
 
     def test_per_item_commands_relayed_output_replies_and_runtime_prompts(self) -> None:
         delegation = "Start one subagent per role with this prompt: `Read <prompt file> and follow it.`\n"
