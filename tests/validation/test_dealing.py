@@ -24,7 +24,7 @@ class ShardTests(unittest.TestCase):
         self.assertEqual((1, 1), shard_of("1/1"))
         self.assertEqual((2, 4), shard_of("2/4"))
         self.assertEqual((4, 4), shard_of("4/4"))
-        # The last is a count past the interpreter's digit limit for converting text.
+        # The last two are an index and a count past the interpreter's digit limit for converting text.
         # int() read a one and an Arabic-Indic zero as 10, and a regular expression's digit class matches the zero.
         unicode_digits = (f"1{chr(0x0660)}/2{chr(0x0660)}", f"{chr(0x0661)}/{chr(0x0661)}", f"1/{chr(0xFF12)}")
         for text in (
@@ -39,6 +39,7 @@ class ShardTests(unittest.TestCase):
             "02/4",
             "1_0/20",
             *unicode_digits,
+            f"{'9' * 5000}/1",
             f"1/{'9' * 5000}",
         ):
             with self.subTest(text=text[:20]), self.assertRaises(ValueError) as raised:

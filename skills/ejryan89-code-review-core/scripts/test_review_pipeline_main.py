@@ -1623,6 +1623,7 @@ class UsageTests(MainCase):
             (["host", "--run", "run a"], "the following arguments are required: --token"),
             (["workflow"], "one of the arguments --run --runs is required"),
             (["wait-reviewers", "--timeout", "5"], "one of the arguments --run --runs is required"),
+            (["wait-reviewers", "--run", "run a"], "the following arguments are required: --timeout"),
             (["validate-result", "--run", "run a"], "the following arguments are required: --role"),
             (["check"], "one of the arguments --run --runs is required"),
             (["finalize"], "one of the arguments --run --runs is required"),

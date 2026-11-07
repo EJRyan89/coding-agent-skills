@@ -297,6 +297,9 @@ class DeployableReportTests(unittest.TestCase):
         # PowerShell's $LASTEXITCODE is a signed 32-bit integer, negative for a process a Windows error ended.
         self.assertEqual(0, self.verify(deploy_exit=-1073741819, verify_output=COPILOT_FAILED)[0])
         self.assertEqual(1, self.verify(deploy_exit=-1073741819, verify_output=CODEX_FAILED)[0])
+        # The bounds of a signed 32-bit integer are read.
+        self.assertEqual(0, self.verify(deploy_exit=2147483647, verify_output=COPILOT_FAILED)[0])
+        self.assertEqual(0, self.verify(deploy_exit=-2147483648, verify_output=COPILOT_FAILED)[0])
         log = self.results_file.parent / "verify.log"
         # int() read "1_0" as exit 10 and an Arabic-Indic zero as 0, a pass.
         for value in ("1_0", " 0", "+0", chr(0x0660), "2147483648", "-2147483649", ""):
@@ -305,6 +308,21 @@ class DeployableReportTests(unittest.TestCase):
             with self.subTest(value=ascii(value)), self.assertRaises(SystemExit) as raised:
                 self.run_main(*arguments, "--home", str(self.home), "--source", str(self.paths.source_dir))
             self.assertEqual(2, raised.exception.code)
+
+    def test_verify_without_the_deploy_verify_exit_is_a_usage_error(self) -> None:
+        log = self.results_file.parent / "verify.log"
+        log.write_text("", encoding="utf-8")
+        arguments = ["verify", "--label", "first deploy", "--deploy-verify-log", str(log), "--results"]
+        arguments += [str(self.results_file), "--home", str(self.home), "--source", str(self.paths.source_dir)]
+        errors = io.StringIO()
+        with (
+            contextlib.redirect_stdout(io.StringIO()),
+            contextlib.redirect_stderr(errors),
+            self.assertRaises(SystemExit) as raised,
+        ):
+            report.main(arguments)
+        self.assertEqual(2, raised.exception.code)
+        self.assertIn("the following arguments are required: --deploy-verify-exit", errors.getvalue())
 
     def test_a_second_pass_is_appended_to_the_results(self) -> None:
         self.results_file.write_text(json.dumps([{"label": "first deploy", "results": []}]), encoding="utf-8")
