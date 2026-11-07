@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import ast
 import sys
+import unittest
 from pathlib import Path
 
 import pytest
@@ -16,6 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts"))
 
 import skill_scripts
+import toolchain
 from skill_scripts import UNREAD_PROGRAM, CommandReader, shell_commands
 
 
@@ -33,6 +35,7 @@ from skill_scripts import UNREAD_PROGRAM, CommandReader, shell_commands
         "xargs rg foo",
         "xargs -I {} rg {}",
         "find . -exec rg foo {} \\;",
+        "find . -exec rg foo {} + -exec jq . {} +",
         "env A=1 rg foo",
         "command rg foo",
         "exec rg foo",
@@ -229,3 +232,163 @@ def test_the_command_policy_reads_the_script_a_powershell_source_starts_powershe
         {"bash"},
         {"bash", f"{UNREAD_PROGRAM}bash +e <value>"},
     ]
+
+
+# A git command inside a script a command starts is read for its subcommand too: eval's, a shell's -c, the script a
+# pwsh or Windows PowerShell start-up runs, and what that script starts in turn.
+@pytest.mark.parametrize(
+    "script",
+    [
+        "bash -c 'git push'",
+        "sh -ec 'git -C dir push'",
+        "eval 'git push'",
+        "eval git push",
+        "env bash -c 'git push'",
+        "find . -exec bash -c 'git push' {} ';'",
+        "x=$(bash -c 'git push')",
+        "pwsh -c 'git push'",
+        "powershell -NoProfile -Command 'git -C $directory push'",
+        "pwsh -c 'bash -c \"git push\"'",
+        "pwsh -c 'Start-Process git -ArgumentList push'",
+        "pwsh -c \"pwsh -c 'git push'\"",
+    ],
+)
+def test_the_git_subcommand_reader_reads_the_git_command_a_started_script_runs(script: str) -> None:
+    assert skill_scripts.shell_git_subcommands(script) == {"push"}
+
+
+# A started script that runs no git command gives no subcommand, though a word of it is one.
+@pytest.mark.parametrize(
+    "script",
+    [
+        "bash -c 'echo push'",
+        "bash ./push.sh",
+        "eval 'echo git push'",
+        "pwsh -c 'Write-Output push'",
+        "pwsh -File push.ps1 git push",
+    ],
+)
+def test_the_git_subcommand_reader_finds_none_where_a_started_script_runs_no_git(script: str) -> None:
+    assert skill_scripts.shell_git_subcommands(script) == set()
+
+
+# A subcommand no literal names is recorded as its word: the Bash text, or UNREAD_WORD for PowerShell's.
+@pytest.mark.parametrize(
+    ("script", "subcommand"),
+    [
+        ("bash -c 'git \"$sub\"'", "$sub"),
+        ("pwsh -c 'git $sub'", skill_scripts.UNREAD_WORD),
+        ("pwsh -c 'Start-Process git -ArgumentList $arguments'", skill_scripts.UNREAD_WORD),
+    ],
+)
+def test_the_git_subcommand_reader_records_a_subcommand_no_literal_names_as_its_word(
+    script: str, subcommand: str
+) -> None:
+    assert skill_scripts.shell_git_subcommands(script) == {subcommand}
+
+
+# Start-Process starts pwsh or Windows PowerShell with the script its -ArgumentList holds, in any spelling of the
+# parameters PowerShell binds, as a list, an array, or one string; and its twin, a Bash shell started with -c.
+@pytest.mark.parametrize(
+    ("source", "programs"),
+    [
+        ("Start-Process pwsh -ArgumentList '-Command','jq .'", {"pwsh", "jq"}),
+        ("Start-Process pwsh -ArgumentList '-NoProfile -Command jq .'", {"pwsh", "jq"}),
+        ("Start-Process -FilePath powershell -ArgumentList @('-NoProfile', '-Command', 'jq .')", {"powershell", "jq"}),
+        ("Start-Process pwsh '-c', 'jq .'", {"pwsh", "jq"}),
+        ("Start-Process -FilePath pwsh '-c', 'jq .'", {"pwsh", "jq"}),
+        ("Start-Process -Fi pwsh -Args ('-c jq .')", {"pwsh", "jq"}),
+        ("Start-Process pwsh -Wait -Arg '-c jq .'", {"pwsh", "jq"}),
+        ("Start-Process pwsh -ArgumentList:'-c jq .'", {"pwsh", "jq"}),
+        ("Start-Process -Verb RunAs pwsh '-c jq .'", {"pwsh", "jq"}),
+        ("Start-Process -Verbose pwsh '-c jq .'", {"pwsh", "jq"}),
+        ("saps pwsh -ArgumentList '-Command \"jq .\"'", {"pwsh", "jq"}),
+        # A switch by its alias takes no value, so the program after it is still the program.
+        ("Start-Process -vb pwsh '-c jq .'", {"pwsh", "jq"}),
+        ("Start-Process -db pwsh '-c jq .'", {"pwsh", "jq"}),
+        ("Start-Process -wi pwsh '-c jq .'", {"pwsh", "jq"}),
+        ("Start-Process -cf pwsh '-c jq .'", {"pwsh", "jq"}),
+        ("Start-Process -nnw -Lup pwsh '-c jq .'", {"pwsh", "jq"}),
+        ("Start-Process -ea Stop pwsh '-c jq .'", {"pwsh", "jq"}),
+        ("Start-Process bash -ArgumentList '-c', '\"jq .\"'", {"bash", "jq"}),
+    ],
+)
+def test_the_command_policy_reads_the_script_start_process_starts_powershell_to_run(
+    source: str, programs: set[str]
+) -> None:
+    assert skill_scripts.powershell_commands([source]) == [programs]
+
+
+# An argument list that is no literal, or holds an item that is not one where the script stands, is refused, as an
+# -EncodedCommand is.
+@pytest.mark.parametrize(
+    ("source", "program", "unread"),
+    [
+        ("Start-Process pwsh -ArgumentList $arguments", "pwsh", "pwsh <value>"),
+        ("Start-Process pwsh -ArgumentList '-c', $script", "pwsh", "pwsh -c <value>"),
+        ("Start-Process -FilePath powershell -ArgumentList @($arguments)", "powershell", "powershell <value>"),
+        ("Start-Process pwsh @options", "pwsh", "pwsh <value>"),
+        ("Start-Process pwsh -ArgumentList '-c \"jq .'", "pwsh", "pwsh <value>"),
+    ],
+)
+def test_the_command_policy_refuses_a_start_process_argument_list_it_cannot_read(
+    source: str, program: str, unread: str
+) -> None:
+    assert skill_scripts.powershell_commands([source]) == [{program, f"{UNREAD_PROGRAM}{unread}"}]
+
+
+# A parameter Start-Process does not have, or a prefix of more than one, leaves its program unread rather than guessed.
+@pytest.mark.parametrize(
+    "source", ["Start-Process -Bogus x pwsh '-c jq .'", "Start-Process -W pwsh '-c jq .'", "start -Re x rg foo"]
+)
+def test_the_command_policy_refuses_a_start_process_parameter_it_cannot_place(source: str) -> None:
+    assert skill_scripts.powershell_commands([source]) == [{f"{UNREAD_PROGRAM}{source}"}]
+
+
+START_PROCESS_LISTING = (
+    "$ErrorActionPreference = 'Stop'; "
+    "$rows = @(foreach ($parameter in (Get-Command Start-Process).Parameters.Values) { "
+    "[ordered]@{ name = $parameter.Name; switch = [bool]$parameter.SwitchParameter; "
+    "aliases = @($parameter.Aliases) } }); "
+    "[Console]::Out.WriteLine((ConvertTo-Json -InputObject $rows -Compress -Depth 3))"
+)
+
+
+class StartProcessTable(unittest.TestCase):
+    @unittest.skipUnless(sys.platform == "win32", "the table is Start-Process's parameters on Windows")
+    def test_the_start_process_table_is_what_powershell_lists(self) -> None:
+        listed = toolchain.powershell_json(
+            START_PROCESS_LISTING, [], "UNUSED", "PowerShell could not list Start-Process"
+        )
+        self.assertEqual(
+            skill_scripts.START_PROCESS_PARAMETERS,
+            {row["name"]: (row["switch"], tuple(row["aliases"])) for row in listed},
+        )
+
+
+# Start-Process with no argument list, or one that runs a file, starts PowerShell running no script the source holds.
+# The policy reads a -File's script in its own file, as it does for `pwsh -File`, never as a script here.
+@pytest.mark.parametrize(
+    "source", ["Start-Process pwsh", "Start-Process pwsh -ArgumentList '-File', './run.ps1', '-c', 'jq .'"]
+)
+def test_start_process_starting_powershell_on_a_file_or_nothing_runs_only_powershell(source: str) -> None:
+    assert skill_scripts.powershell_commands([source]) == [{"pwsh"}]
+
+
+@pytest.mark.parametrize(
+    ("arguments", "words"),
+    [
+        pytest.param(["-c", "jq ."], ["-c", "jq", "."], id="items joined, then split at spaces"),
+        pytest.param(['-c "jq ."'], ["-c", "jq ."], id="double quotes hold a space"),
+        pytest.param(["-c 'jq .'"], ["-c", "'jq", ".'"], id="single quotes hold none"),
+        pytest.param(["-c", "# noXte"], ["-c", "#", "noXte"], id="no other character quotes, escapes, or comments"),
+        pytest.param(["C:\\a\\b.ps1"], ["C:\\a\\b.ps1"], id="a backslash is no escape"),
+        pytest.param(["-c", None, "x"], ["-c", None], id="no literal"),
+        pytest.param(['-c "jq'], [None], id="an unclosed quote"),
+        pytest.param([], [], id="no items"),
+    ],
+)
+def test_start_process_words_are_its_argument_list_joined_and_split_as_windows_does(
+    arguments: list[str | None], words: list[str | None]
+) -> None:
+    assert skill_scripts.started_process_words(arguments) == words
