@@ -378,6 +378,7 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
 - **Use:** `tools.hub_guard:read_powershell`, `tools.hub_guard:runner_refusal`, `tools.hub_guard:option_refusal`, and
   `tools.hub_guard:expansion_form`
 - **Guard:** `tests/tools/test_bash_syntax.py::ArrayAssignmentTests::test_an_array_assignment_to_a_subscript_is_read_where_bash_reads_an_array`,
+  `tests/validation/test_skill_scripts.py::SkillScriptsFixtures::test_shell_command_extraction_runs_a_program_a_quoted_function_name_never_defined`,
   `skills/ejryan89-skill-core/scripts/test_git_client.py::IsolatedClientTests::test_a_plain_client_refuses_a_command_line_setting_that_can_define_an_alias`,
   `skills/ejryan89-skill-core/scripts/test_git_client.py::IsolatedClientTests::test_a_plain_client_refuses_every_carrier_of_another_command_in_every_spelling`,
   `tests/tools/test_hub_guard_bash.py::BuiltinTests::test_every_builtin_bash_lists_is_understood_or_not_read_and_never_both`,
@@ -400,7 +401,8 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   checked against that program's own reading of it, as MSBuild reads a number with .NET's invariant `Double.TryParse`
   and compares text with .NET's ordinal comparison ignoring case; a POSIX `shlex` lexer over shell text whose
   words are compared with an operator or keyword, which reads a quoted `';'` or an escaped `\;` as the separator it
-  spells, rather than `ShellLexer` in `tests/validation/skill_scripts.py`; in `tools/hub_guard.py`, a construct a
+  spells, rather than `ShellLexer` in `tests/validation/skill_scripts.py`, or a function name read from such a word
+  rather than from its syntax, which is None for a quoted or escaped name Bash refuses; in `tools/hub_guard.py`, a construct a
   table neither understands nor lists in `NOT_READ`, a table whose test types its rows rather than taking them from the shell's own
   catalogue, a word settled from what an earlier command assigns rather than the assignment refused, a program added
   to `RUNNERS` with no row, a program that runs a command its words name left out of it, a runner allowed around a command that may be git, a cmdlet added to
@@ -419,7 +421,8 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   `rebase --exec` or `-x`, `bisect run`, a transport's `--upload-pack`, or a `-c` setting that names a program, rather
   than an allow-list of the subcommands, actions, and settings that start none.
 - **Examples:** #1412, #1429, #1430, #1592, #1606, #1843, #1851, #1865, #2032, #2088, #2089, #2134, #2135, #2136,
-  #2137, #2138, #2139, #2140, #2188, #2225, #2232, #2233, #2234, #2251, #2262, #2274, #2276, #2316, #2411
+  #2137, #2138, #2139, #2140, #2188, #2225, #2232, #2233, #2234, #2251, #2262, #2274, #2276, #2316, #2411,
+  #2418
 
 ### A recursive parser of input has a depth bound
 
