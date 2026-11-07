@@ -432,7 +432,7 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   `python_reader:parse`, `python_reader:parse_expression`, and `python_reader:literal`, the one parse of Python source
   and of a literal, which refuse the parser's overflow, a memory or recursion error, as the
   `python_reader:PythonRefused` their callers handle. A handler around such a reader alone names its family and no
-  `RecursionError`; one that also guards a parser that recurses, such as `tomllib`, keeps it and says which call
+  RecursionError; one that also guards a parser that recurses, such as tomllib, keeps it and says which call
   raises it.
 - **Guard:** `skills/ejryan89-skill-core/scripts/test_nesting_depth.py::DeeperTests`,
   `tests/validation/test_python_checks.py::test_content_errors_policy_refuses_a_recursion_handler_around_readers_that_never_raise_it`,

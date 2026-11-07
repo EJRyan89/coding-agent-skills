@@ -4102,7 +4102,7 @@ class _Recursion:
             return set(callees)
         func = call.func
         if isinstance(func, ast.Name):
-            unread = qualified == func.id and not hasattr(builtins, qualified)
+            unread = qualified == func.id and qualified not in BUILTIN_NAMES
         elif isinstance(func, ast.Attribute):
             unread = not self.imported(func.value, module) and func.attr not in PLAIN_METHODS
         else:
