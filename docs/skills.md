@@ -430,6 +430,8 @@ Without arguments it also stops, reporting `MAJOR_UPDATE <current>..<target>` an
 - `--cross-major`: apply an update across such a release boundary. The output names the crossing as `CROSSED <current>..<target>`.
 - `--unpin`: update and deploy over a pin you made, passing `--unpin` to the deployer on either channel. The deployer's report then prints `Replaced the deployment pinned with --at <ref> ...` before its Run ID and Manifest lines, which the skill reports.
 
+In a clone that guards its hub (`git config coding-agent-skills.hubGuard true`, [The guard](parallel-sessions.md#the-guard)), a Claude Code session started in the clone or one of its worktrees refuses the update, since its script runs git in the clone and the guard trusts no script by its path ([The guard's contract](parallel-sessions.md#the-guards-contract)). Start the skill from a session in a folder outside the clone, which loads none of the clone's hooks, or run its script from a terminal: `bash '<skills>/update-coding-agent-skills/scripts/update.sh' '<clone>' '<channel>'` from Git Bash, or the same with `& "$env:ProgramFiles\Git\bin\bash.exe"` in place of `bash` from PowerShell, where `bash` may be missing from `PATH` or be WSL's.
+
 In Copilot CLI, start it from an interactive session: a headless `copilot -p` session cannot start a user-only skill ([Headless sessions](copilot-support.md#headless-sessions)). It runs fully in Claude Code. In Codex, its tag check and fetch on the source checkout's remote need network access, which Codex's default sandbox turns off ([Network access](codex-support.md#network-access)).
 
 ```text

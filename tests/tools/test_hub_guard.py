@@ -1340,6 +1340,27 @@ class CommandGuardTests(GuardTestCase):
         self.assertEqual("main\n", self.git(self.hub, "branch", "--show-current"))
         self.assertEqual("", self.git(self.hub, "status", "--porcelain"))
 
+    def test_the_update_skills_command_is_refused_at_its_deployed_path_wherever_a_guarded_hub_is_in_view(self) -> None:
+        # update-coding-agent-skills runs its script with bash on the clone it deploys from, the hub. The guard trusts
+        # no script by its path, the deployed update script's exact path under the skills directory included, since a
+        # session's file tools may write there; so the skill runs outside a session whose project is the clone, where
+        # Claude Code loads no hook of the clone's, and its text says so.
+        skill = REPOSITORY_ROOT / "skills" / "update-coding-agent-skills"
+        script = self.root / "home dir" / ".claude" / "skills" / skill.name / "scripts" / "update.sh"
+        script.parent.mkdir(parents=True)
+        script.write_bytes((skill / "scripts" / "update.sh").read_bytes())
+        command = f"bash '{script.as_posix()}' '{self.hub.as_posix()}' 'release'"
+        outside = self.root / "outside"
+        outside.mkdir()
+        for cwd in (self.hub, self.tree, outside):
+            with self.subTest(cwd=cwd.name):
+                self.assertEqual("deny", self.bash(command, cwd))
+                self.assertIn("runs bash", self.reason)
+        self.assertEqual("deny", self.powershell(command, self.hub))
+        text = (skill / "SKILL.md").read_text(encoding="utf-8")
+        self.assertIn("`git config coding-agent-skills.hubGuard true`", text)
+        self.assertIn("outside the clone", text)
+
     def test_a_monitor_command_is_read_as_bash_in_the_hub(self) -> None:
         # Monitor runs its command in the shell the Bash tool uses, so a refused git call through it is refused too.
         def monitor(command: str, cwd: Path) -> str | None:
