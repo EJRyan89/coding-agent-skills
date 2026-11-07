@@ -200,16 +200,12 @@ class ShellLexer(shlex.shlex):
         self.whitespace = " \t\r"
         self.whitespace_split = True
 
-    @property  # type: ignore[override]  # shlex declares state a plain attribute; its setter records quoting too
-    def state(self) -> str | None:
-        return self._state
-
-    @state.setter
-    def state(self, value: str | None) -> None:
+    def __setattr__(self, name: str, value: object) -> None:
         # Besides a word's (a), an operator's (c), and between words ( ), shlex's states are the quote or escape
-        # character it is inside.
-        self.literal = self.literal or value not in {" ", "a", "c", None}
-        self._state = value
+        # character it is inside, so a word that enters one is a literal.
+        if name == "state" and value not in {" ", "a", "c", None}:
+            super().__setattr__("literal", True)
+        super().__setattr__(name, value)
 
     def read_token(self) -> str | None:
         self.literal = False

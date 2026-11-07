@@ -94,6 +94,29 @@ def test_shell_command_extraction_reads_a_quoted_or_escaped_separator_as_a_word(
     assert shell_commands(f"echo a {separator} rg foo") == {"echo"}
 
 
+# A quoted or escaped reserved word is a plain word: at a command's start it is the program Bash runs, and it opens,
+# closes, or ends no case, loop, or function.
+@pytest.mark.parametrize(
+    ("script", "programs"),
+    [
+        ("'if' rg foo", {"if"}),
+        ('"do" rg foo', {"do"}),
+        ("\\fi rg foo", {"fi"}),
+        ("\\! rg foo", set()),
+        ("'for' x in rg", {"for"}),
+        ("'case' x", {"case"}),
+        ("'function' rg", {"function"}),
+        ("f '()'; f", {"f"}),
+        ("case x in 'esac') rg foo;; esac", {"rg"}),
+        ("case x in \\)|a) rg foo;; esac", {"rg"}),
+    ],
+)
+def test_shell_command_extraction_reads_a_quoted_or_escaped_reserved_word_as_a_word(
+    script: str, programs: set[str]
+) -> None:
+    assert shell_commands(script) == programs
+
+
 # An unquoted separator still ends the command, so the word after it is the next command's program.
 @pytest.mark.parametrize("separator", [";", "&", "&&", "|", "||", "|&", "\n"])
 def test_shell_command_extraction_reads_the_program_after_an_unquoted_separator(separator: str) -> None:

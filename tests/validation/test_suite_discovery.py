@@ -603,6 +603,15 @@ def test_the_pipe_race_policy_finds_the_reader_in_every_shape_and_spelling(
         pytest.param('printf a "|" head -n 1', id="a double-quoted pipe, a word"),
         pytest.param("printf a \\| head -n 1", id="an escaped pipe, a word"),
         pytest.param("printf a \\|\\& head -n 1", id="an escaped |&, a word"),
+        # A quoted or escaped reserved word is the program Bash runs, never a leader before the reader.
+        pytest.param("printf a | 'do' head -n 1", id="a quoted do, a program"),
+        pytest.param("printf a | \\! head -n 1", id="an escaped !, a program"),
+        pytest.param('printf a | "if" head -n 1', id="a quoted if, a program"),
+        pytest.param("printf a | 'then' head -n 1", id="a quoted then, a program"),
+        # A quoted or escaped ) or esac is a case pattern, so the | after it separates patterns, never pipes.
+        pytest.param("printf a | case x in ')'|head) cat;; esac", id="a quoted ) pattern"),
+        pytest.param("printf a | case x in \\)|head) cat;; esac", id="an escaped ) pattern"),
+        pytest.param("printf a | case x in 'esac'|head) cat;; esac", id="a quoted esac pattern"),
     ],
 )
 def test_the_pipe_race_policy_passes_a_reader_that_reads_to_the_end(tmp_path: Path, script: str) -> None:
@@ -630,6 +639,17 @@ BASH_RACES = [
     pytest.param("seq 1 200000 | if true; then if true; then head -n 1; fi; fi", "head -n", id="nested ifs"),
     pytest.param("seq 1 200000 | { echo ';' '}'; head -n 1; }", "head -n", id="a group past a quoted ; and }"),
     pytest.param("seq 1 200000 | { echo \\; \\}; head -n 1; }", "head -n", id="a group past an escaped ; and }"),
+    pytest.param("seq 1 200000 | case a in 'esac'|a) head -n 1;; esac", "head -n", id="case past a quoted esac"),
+    pytest.param("seq 1 200000 | { echo '>' & head -n 1; }", "head -n", id="a group past a quoted >, then &"),
+    pytest.param("seq 1 200000 | { echo '()' { ; head -n 1; }", "head -n", id="a group past a quoted (), then {"),
+    pytest.param(
+        "seq 1 200000 | if true; then\n  'fi' 2>/dev/null\n  head -n 1\nfi", "head -n", id="if's body past a quoted fi"
+    ),
+    pytest.param(
+        "seq 1 200000 | while true; do\n  \\done 2>/dev/null\n  head -n 1\n  break\ndone",
+        "head -n",
+        id="while's body past an escaped done",
+    ),
     pytest.param("f() { head -n 1; }; seq 1 200000 | f", "head -n", id="a function"),
     pytest.param("function g { head -n 1; }; seq 1 200000 | g", "head -n", id="a function keyword"),
     pytest.param("function g() ( head -n 1 ); seq 1 200000 | g", "head -n", id="a subshell function"),

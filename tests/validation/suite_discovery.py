@@ -505,13 +505,14 @@ def _long_option(word: str, options: frozenset[str]) -> str | None:
 
 
 def _command_words(words: list[str]) -> list[str]:
-    """A command's words from the program it runs: past the reserved words that may stand before it, assignments,
-    and each wrapper of WRAPPERS, whether named by a path or not, such as `env`, `exec`, `timeout`, `command`, `sudo`,
-    or `/usr/bin/env`, as `unwrapped` reads it, env's -S value split into the words it runs, and a wrapper option it
-    cannot place giving UNREAD_PROGRAM. xargs runs its command on no pipe, so it stays."""
+    """A command's words from the program it runs: past assignments, and each wrapper of WRAPPERS, whether named
+    by a path or not, such as `env`, `exec`, `timeout`, `command`, `sudo`, or `/usr/bin/env`, as `unwrapped` reads
+    it, env's -S value split into the words it runs, and a wrapper option it cannot place giving UNREAD_PROGRAM.
+    xargs runs its command on no pipe, so it stays. _BashReader has already read past the reserved words that lead a
+    command, so a word here that spells one is a literal, the program Bash runs."""
     while words:
         program = _program(words[0])
-        if words[0] in COMMAND_LEADERS or ASSIGNMENT.match(words[0]):
+        if ASSIGNMENT.match(words[0]):
             words = words[1:]
         elif program != "xargs" and program in WRAPPERS:
             words = unwrapped([program, *words[1:]], WRAPPERS)
@@ -562,7 +563,7 @@ def _early_exit_reader(
     program and the option that makes it, such as `grep -q` or `head -n`, or an empty string for a command that reads
     to the end. It reads past each wrapper `_command_words` reads, into the body of a function the script defines,
     and into the script a shell's -c or eval runs, since each command there reads the same pipe."""
-    if not words or words[0] in COMPOUND_HEADERS or len(expanding) > NESTING_LIMIT:
+    if not words or len(expanding) > NESTING_LIMIT:
         return ""
     words = _command_words(words)
     if not words:
@@ -667,12 +668,13 @@ class _Frame:
         self.case_word = closer == "esac"
 
 
-def _function_header(words: list[str]) -> str | None:
-    """The function a command's words define, as `name ()`, `function name`, or `function name ()`, or None."""
-    if len(words) == 2 and words[1] == "()" and words[0] != "function":
-        return words[0]
-    if words[:1] == ["function"] and len(words) in (2, 3) and words[2:] in ([], ["()"]):
-        return words[1]
+def _function_header(syntax: list[str | None]) -> str | None:
+    """The function a command's words define, as `name ()`, `function name`, or `function name ()`, or None, read from
+    each word's syntax, None for a literal, so a quoted `()` or `function` defines none."""
+    if len(syntax) == 2 and syntax[1] == "()" and syntax[0] != "function":
+        return syntax[0]
+    if syntax[:1] == ["function"] and len(syntax) in (2, 3) and syntax[2:] in ([], ["()"]):
+        return syntax[1]
     return None
 
 
@@ -685,7 +687,8 @@ class _BashReader:
         self.commands: list[tuple[str, int, list[str]]] = []
         self.functions: dict[str, list[list[str]]] = {}
         self.before, self.line, self.offset = "\n", 0, 0
-        self.words: list[str] = []
+        # The command read so far: each word beside its syntax, as ShellLexer gives them, None for a literal.
+        self.words: list[tuple[str, str | None]] = []
         # Each group and compound command open here, innermost last. A parenthesis after a word, as in an unquoted
         # `$(`, opens one too, fed when the one around it is, so each closing one has its own to close.
         self.frames: list[_Frame] = []
@@ -693,13 +696,23 @@ class _BashReader:
     def fed(self) -> bool:
         return bool(self.frames) and self.frames[-1].fed
 
+    def syntax(self) -> list[str | None]:
+        return [keyword for _, keyword in self.words]
+
     def emit(self) -> None:
-        """Record the command read so far, unless it stands inside a substitution, whose own reading records it."""
-        if self.words and not any(start <= self.offset <= end for start, end in self.substitutions):
-            self.commands.append(("|" if self.fed() else self.before, self.line, self.words))
+        """Record the command read so far from its program, past the unquoted reserved words that lead it, unless it is
+        a compound command's header, whose words are no command, or stands inside a substitution, whose own reading
+        records it."""
+        leaders = len(list(itertools.takewhile(lambda keyword: keyword in COMMAND_LEADERS, self.syntax())))
+        words = self.words[leaders:]
+        if not words or words[0][1] in COMPOUND_HEADERS:
+            return
+        if not any(start <= self.offset <= end for start, end in self.substitutions):
+            command = [word for word, _ in words]
+            self.commands.append(("|" if self.fed() else self.before, self.line, command))
             function = next((frame.function for frame in reversed(self.frames) if frame.function), None)
             if function is not None:
-                self.functions[function].append(self.words)
+                self.functions[function].append(command)
 
     def close(self, closer: str) -> None:
         """End the innermost frame the word closes, and every frame left open inside it."""
@@ -707,31 +720,31 @@ class _BashReader:
         if index is not None:
             del self.frames[index:]
 
-    def case_part(self, part: str | None) -> bool:
-        """Read a part of a case's word or patterns, which are no commands, and where `|` separates patterns, as its
+    def case_part(self, keyword: str | None) -> bool:
+        """Read a part of a case's word or patterns, which are no commands, and where `|` separates patterns, by its
         syntax, None for a literal; False when no case is reading them."""
         case = self.frames[-1] if self.frames and self.frames[-1].closer == "esac" else None
         if case is None or not (case.patterns or case.case_word):
             return False
-        if case.case_word and part == "in":
+        if case.case_word and keyword == "in":
             case.case_word, case.patterns, self.words = False, True, []
-        elif case.patterns and part == "esac":
+        elif case.patterns and keyword == "esac":
             self.close("esac")
-        elif case.patterns and part == ")":
+        elif case.patterns and keyword == ")":
             case.patterns, self.before = False, "\n"
         return True
 
-    def word(self, part: str, at_command: bool, literal: bool = False) -> None:
-        """Read a word: the first of a command sets its line, and a reserved word, unless the word is a literal,
-        opens or closes a compound."""
+    def word(self, part: str, keyword: str | None, at_command: bool) -> None:
+        """Read a word beside its syntax: the first of a command sets its line, and an unquoted reserved word opens or
+        closes a compound."""
         if not self.words:
             self.offset = max(self.stream.tell() - 1, 0)
             self.line = self.script.count("\n", 0, self.offset) + 1
-        if at_command and part in COMPOUND_CLOSERS:
-            self.frames.append(_Frame(COMPOUND_CLOSERS[part], self.before in PIPES or self.fed()))
-        elif not literal and not self.words and part in COMPOUND_CLOSERS.values():
-            self.close(part)
-        self.words.append(part)
+        if at_command and keyword in COMPOUND_CLOSERS:
+            self.frames.append(_Frame(COMPOUND_CLOSERS[keyword], self.before in PIPES or self.fed()))
+        elif not self.words and keyword is not None and keyword in COMPOUND_CLOSERS.values():
+            self.close(keyword)
+        self.words.append((part, keyword))
 
     def ends_case_item(self, part: str) -> bool:
         """Read `;;`, `;&`, or `;;&` in a case's commands, after which its patterns follow; False for any other part."""
@@ -746,7 +759,7 @@ class _BashReader:
 
     def operator(self, part: str, at_command: bool) -> None:
         """Read an operator: it ends the command before it, and opens or closes a group, or a function's body."""
-        function = _function_header(self.words)
+        function = _function_header(self.syntax())
         opens = part == "(" or (part == "{" and (at_command or function is not None))
         closes = part == ")" or (part == "}" and not self.words)
         feeds = (at_command and self.before in PIPES) or self.fed()
@@ -764,14 +777,13 @@ class _BashReader:
 
     def part(self, part: str, keyword: str | None) -> None:
         """Read a part as ShellLexer gives it, beside its syntax: a literal's, quoted or escaped, is None, and reads as
-        a word that breaks, opens, and closes nothing."""
+        a word that breaks, opens, closes, and leads nothing."""
         if self.case_part(keyword):
             return
-        at_command = all(word in COMMAND_LEADERS for word in self.words)
-        if keyword is None:
-            self.word(part, at_command=False, literal=True)
-        elif keyword not in COMMAND_BREAKS or (keyword == "&" and self.words[-1:] in (["<"], [">"])):
-            self.word(part, at_command)
+        syntax = self.syntax()
+        at_command = all(word in COMMAND_LEADERS for word in syntax)
+        if keyword is None or keyword not in COMMAND_BREAKS or (keyword == "&" and syntax[-1:] in (["<"], [">"])):
+            self.word(part, keyword, at_command)
         elif not self.ends_case_item(part):
             self.operator(part, at_command)
 
