@@ -88,10 +88,10 @@ A guard, gate, verdict, count, or measurement has a test in which its evidence n
 A defect or drift found after its change merged is an instance of a pattern in the [lessons catalogue](lessons.md).
 The pull request that fixes it cites the pattern it violated and runs that pattern's **Search for** forms across the
 repository, fixing each hit or filing it, which is the sibling search the fix names; when no pattern covers the
-defect, the pull request adds one, with its rule, the mechanism that applies it or the guard that refuses it, or the
-reason no guard can yet, and the forms to search for. A fix that adds a mechanism or a guard adds it to its pattern.
-Validation fails a pattern with no search, one with neither a mechanism, a guard, nor a reason, and each mechanism or
-guard that does not resolve.
+defect, the pull request adds one, with its rule, any mechanism that applies it, the guard that refuses it or the reason
+no guard can yet, and the forms to search for. A fix that adds a mechanism or a guard adds it to its pattern.
+Validation fails a pattern with no search, one with neither a guard nor the reason no guard can yet, whatever
+mechanism it names, and each mechanism or guard that does not resolve.
 
 A test that holds a document's promise, such as a status line, an error line, or a listed construct, takes its
 expected wording from that document, or from the one constant the code and the document both use, never from a copy

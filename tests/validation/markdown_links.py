@@ -405,10 +405,10 @@ def _entry_problems(root: Path, index: _TestIndex, entry: list[tuple[int, str]])
     reasons = [text for _, text in fields.get("No guard", []) if text]
     if guards and reasons:
         return [*problems, f"{at(heading_number)} names both a guard and the reason no guard is possible"]
-    if not guards and not uses and not reasons:
+    if not guards and not reasons:
         return [
             *problems,
-            f"{at(heading_number)} names neither its mechanism, a guard, nor the reason no guard is possible",
+            f"{at(heading_number)} names neither a Guard nor, under No guard, the reason no guard is possible",
         ]
     resolvers: tuple[tuple[str, list[tuple[int, list[str]]], Callable[[str], str | None]], ...] = (
         ("guard", guards, lambda span: _guard_problem(root, index, document, span)),
@@ -424,13 +424,14 @@ def _entry_problems(root: Path, index: _TestIndex, entry: list[tuple[int, str]])
 
 def lessons_ledger_problems(root: Path) -> list[str]:
     """Report each pattern of docs/lessons.md, a `###` heading under its `## Patterns` section, that states no Rule or
-    Why, names no form a violation takes under Search for in a code span, names neither the mechanism it uses, a guard
-    that refuses a violation, nor the reason no guard is possible, or names both a guard and that reason, or names a
-    field a pattern does not have or one field twice; and each guard and mechanism it names that does not resolve. A
-    guard is a test ID, `<path>::<test>`, `<path>::<class>`, or `<path>::<class>::<test>`, that names a test or a test
-    class of that file, a skill's step, `<path>/SKILL.md#<fragment>`, that names a heading of that SKILL.md, or a
-    workflow, `.github/workflows/<file>`, that exists. A mechanism is a module importable from exactly one of the
-    repository root and the skills' scripts, and a name it binds, `<module>:<name>` or `<module>:<class>.<name>`."""
+    Why, names no form a violation takes under Search for in a code span, names neither a guard that refuses a
+    violation nor, under No guard, the reason no guard is possible, whatever mechanism it uses, or names both a guard
+    and that reason, or names a field a pattern does not have or one field twice; and each guard and mechanism it
+    names that does not resolve. A guard is a test ID, `<path>::<test>`, `<path>::<class>`, or
+    `<path>::<class>::<test>`, that names a test or a test class of that file, a skill's step,
+    `<path>/SKILL.md#<fragment>`, that names a heading of that SKILL.md, or a workflow, `.github/workflows/<file>`,
+    that exists. A mechanism is a module importable from exactly one of the repository root and the skills' scripts,
+    and a name it binds, `<module>:<name>` or `<module>:<class>.<name>`."""
     document = "docs/lessons.md"
     path = root / document
     # A path whose stat fails raises, never reported as one that is not there.
