@@ -468,8 +468,11 @@ def shell_commands(script: str, commands: list[list[str]] | None = None) -> set[
     substitution, quoted or not. A program a wrapper runs that no literal names is recorded as UNREAD_PROGRAM. Given
     `commands`, it also appends the words of each simple command it reads there, a substitution's included."""
     tokens = list(ShellLexer(script.replace("\\\n", " ")).words())
-    functions = {tokens[i][0] for i in range(len(tokens) - 1) if tokens[i + 1][1] == "()"}
-    functions |= {tokens[i + 1][0] for i in range(len(tokens) - 1) if tokens[i][1] == "function"}
+    # A function's name is read from its syntax, None for a quoted or escaped word, which Bash refuses as a name and
+    # defines no function for, as _function_header in suite_discovery.py reads it.
+    names = [tokens[i][1] for i in range(len(tokens) - 1) if tokens[i + 1][1] == "()"]
+    names += [tokens[i + 1][1] for i in range(len(tokens) - 1) if tokens[i][1] == "function"]
+    functions = {name for name in names if name is not None}
     found: set[str] = {name for inner in _substitutions(script) for name in shell_commands(inner, commands)}
     state = "command"
     words: list[str] = []
