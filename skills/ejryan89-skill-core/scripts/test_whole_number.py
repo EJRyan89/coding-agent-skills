@@ -149,8 +149,9 @@ class ArgumentTests(unittest.TestCase):
         self.refused(whole_number.argument(0), "-0", "must be a whole number of at least 0 in ASCII digits, not '-0'")
 
     def test_a_maximum_below_the_minimum_is_a_programming_error(self) -> None:
-        with self.assertRaises(ValueError):
+        with self.assertRaises(ValueError) as raised:
             whole_number.argument(2, 1)
+        self.assertEqual("a whole number argument's maximum 1 is below its minimum 2", str(raised.exception))
         self.assertEqual(3, whole_number.argument(3, 3)("3"))
 
     def test_argparse_ends_a_refused_value_with_a_usage_error(self) -> None:
