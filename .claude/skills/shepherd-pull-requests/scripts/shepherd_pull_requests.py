@@ -86,7 +86,7 @@ Every line is one fact:
                                        a failure for the session that owns the pull request: the leg and the first
                                        failing check
     PR_FAILED #<number> <step> <reason>
-                                       a step for one pull request that failed: arm, judge, update, or rerun
+                                       a step for one pull request that failed: arm, disarm, judge, update, or rerun
     REVIEWED, REVIEW_DUE, REVIEW_ARGUMENTS, REVIEW_UNREAD
                                        the pre-merge review of each head, after the PR lines (premerge_review.py)
     MERGED #<number> worktree "<path>" branch <branch> [branch <branch>]

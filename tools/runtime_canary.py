@@ -101,8 +101,9 @@ nothing else: a runtime-canary- directory directly under the temporary directory
 Each skill's runtime_support in deploy-meta, the matrix docs/skills.md prints, says what to expect: `full` must be
 RAN, `partial` must be RAN or, when the runtime lacks user-only-start, UNSUPPORTED, since the limits of the other
 capabilities lie past the first script the canary asks for, and `none` is NOT_ATTEMPTED. After the runs, one MATRIX
-line per RUNTIME line compares the two, and the run fails when any disagrees or a skill declares nothing, so the
-matrix cannot claim more than a run shows. It also fails on any UNDISCOVERED or DISCOVERY_FAILED line,
+line per runtime and skill compares the declaration with that skill's last RUNTIME line, and the run fails when any
+disagrees or a skill declares nothing, so the matrix cannot claim more than a run shows. It also fails on any
+UNDISCOVERED or DISCOVERY_FAILED line,
 --discovery-only included, since a runtime whose skill list cannot be read is one whose discovery shows nothing, and
 on NOTHING_CHECKED, which it prints when no runtime it was asked to check printed a DISCOVERED or UNDISCOVERED line
 or a RUNTIME line for a run it started: each runtime was SKIPPED, could not be listed, was asked for no skill it

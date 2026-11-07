@@ -15,9 +15,10 @@ Exit status:
   2  a usage error
 
 The hub guard, the Claude Code PreToolUse hook .claude/settings.json runs, is tools/hub_guard.py. It imports from here
-only what both share: MAIN, same_path, Checkout, checkout_of, and git with its client, and it wraps checkout_of and git
-so that each git call keeps to its reading time. This module imports nothing from it, and its guard subcommand only
-runs it as a program.
+only what both share: MAIN, same_path, Checkout, checkout_of, existing_directory, is_folder, and git with its client,
+CLIENT, and the time one git call of the guard may take, GUARD_GIT_TIMEOUT_SECONDS, and it wraps checkout_of and
+git so that each git call keeps to its reading time. This module imports nothing from it, and its guard subcommand
+only runs it as a program.
 """
 
 from __future__ import annotations
