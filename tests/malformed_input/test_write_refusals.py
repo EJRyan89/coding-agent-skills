@@ -46,6 +46,7 @@ sys.path.insert(0, str(sibling_scripts("review-document")))
 sys.path.insert(0, str(sibling_scripts("review-insights")))
 sys.path.insert(0, str(sibling_scripts("update-pr-dashboard")))
 
+import audit_ai_config
 import flag_review_finding
 import hook_decision
 import json_writer
@@ -185,6 +186,12 @@ def _new_skill(*extra: str) -> Callable[[Path], object]:
         return ended(lambda: new_skill.main(["alpha", "--description", "Alpha.", "--root", str(REPOSITORY), *extra]))
 
     return drive
+
+
+def _audit_ai_config(folder: Path) -> object:
+    (folder / ".git").mkdir()
+    with mock.patch.object(sys, "argv", ["audit_ai_config.py", "--json", "--root", str(folder)]):
+        return ended(audit_ai_config.main)
 
 
 def _plugin_canary(folder: Path) -> object:
@@ -474,6 +481,12 @@ REFUSALS: tuple[Row, ...] = (
         "deployer.verify._verify",
         deploy_run("verify", deploy_first=True),
         (1, printed((f"ERROR: Could not finish verifying the adapters: {REASON}", DEBUG_HINT))),
+    ),
+    Row(
+        "audit_ai_config.main",
+        "audit_ai_config.format_json",
+        _audit_ai_config,
+        (1, f"FAILED the JSON report cannot hold a value the audit found: {REASON}\n", ""),
     ),
     Row(
         "mcp_handshake.Session.send",

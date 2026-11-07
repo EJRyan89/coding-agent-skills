@@ -22,7 +22,8 @@ The Markdown report states its result on one line, before the SUMMARY lines:
 Exit status:
   0  RESULT COMPLIANT
   1  RESULT ERRORS or RESULT INCONCLUSIVE, or a last line FAILED <reason>
-     (the root is not a Git repository, or --provenance could not read the provenance file)
+     (the root is not a Git repository, --provenance could not read the provenance file, or the --json report
+     cannot hold a value the audit found)
   2  a usage error
 """
 
@@ -3929,7 +3930,14 @@ def main() -> int:
         # The JSON report is the report the user asked for in another form, for CI, not data a later step of the
         # skill reads, so the skill contract's "A script prints no JSON" leaves it as the report it is. The script
         # declares no EXIT_CONTRACT_EXEMPT, which would also lift the exit-code checks it keeps to.
-        print(format_json(result, sources), end="")
+        try:
+            report = format_json(result, sources)
+        except json_writer.JsonWriteRefused as exc:
+            # A name the repository holds may hold what no JSON text can, such as one that is not UTF-8 on Linux,
+            # which Python reads as a lone surrogate.
+            print(f"FAILED the JSON report cannot hold a value the audit found: {exc}")
+            return 1
+        print(report, end="")
     else:
         print(format_markdown(result, sources), end="")
 
