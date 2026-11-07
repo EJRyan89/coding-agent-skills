@@ -32,8 +32,9 @@ of its own:
 - **Examples:** optional, issues or pull requests that show the pattern. They illustrate it; nothing counts them.
 
 `lessons_ledger_problems` in `tests/validation/markdown_links.py` fails a pattern that states no **Rule** or **Why**,
-names no **Search for** form, names neither a mechanism, a guard, nor a reason, or names both a guard and a reason, and
-each mechanism or guard that does not resolve, so one renamed or removed fails validation until its pattern follows it.
+names no **Search for** form, names neither a **Guard** nor a **No guard** reason, even when it names a mechanism under
+**Use**, or names both a guard and a reason, and each mechanism or guard that does not resolve, so one renamed or
+removed fails validation until its pattern follows it.
 
 ## Patterns
 
