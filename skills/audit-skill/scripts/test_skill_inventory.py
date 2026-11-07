@@ -2461,6 +2461,15 @@ class AgentTests(SourceTreeTestCase):
 
 
 class SubagentSettingTests(SourceTreeTestCase):
+    def test_a_json_data_file_the_reader_refuses_sets_nothing(self) -> None:
+        path = self.root / "settings.json"
+        self.assertEqual([("model", path, 1, "sonnet")], skill_inventory.json_settings(path, '{"model": "sonnet"}'))
+        for shape, text in UNPARSEABLE_JSON.items():
+            with self.subTest(shape=shape):
+                # Nesting past the recursion limit included: json_reader refuses it as a ValueError, never a
+                # RecursionError, so the file reads as one that sets nothing.
+                self.assertEqual([], skill_inventory.json_settings(path, '{"model": "sonnet", "x": ' + text + "}"))
+
     def test_a_relayed_line_is_where_a_role_takes_its_model_and_effort(self) -> None:
         skill = self.skill(
             "When a `MODEL` line names that role, start its subagent on that model.\n"  # 4

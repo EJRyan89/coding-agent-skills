@@ -1024,8 +1024,8 @@ def manifest_name(root: Path) -> str | None:
     """A plugin's name, from its manifest, or None when the manifest names none."""
     try:
         document = json_reader.read_file(root / skill_menu.PLUGIN_MANIFEST)
-    # ValueError covers a decode error, UnicodeError, and an over-long integer; RecursionError, nesting too deep
-    except (OSError, ValueError, RecursionError):
+    # ValueError covers a decode error, UnicodeError, an over-long integer, and nesting json_reader refuses
+    except (OSError, ValueError):
         return None
     name = document.get("name") if isinstance(document, dict) else None
     return name if isinstance(name, str) and SKILL_NAME.fullmatch(name) else None
@@ -1360,8 +1360,8 @@ def read_metadata(root: Path, name: str) -> dict[str, object] | None:
     a name list of another kind than a list of names, whose names cannot then be known."""
     try:
         metadata = json_reader.read_file(root / "deploy-meta" / f"{name}.json")
-    # ValueError covers a decode error, UnicodeError, and an over-long integer; RecursionError, nesting too deep
-    except (OSError, ValueError, RecursionError):
+    # ValueError covers a decode error, UnicodeError, an over-long integer, and nesting json_reader refuses
+    except (OSError, ValueError):
         return None
     if not isinstance(metadata, dict):
         return None
@@ -1489,8 +1489,8 @@ def trigger_scenario_lines(directory: Path, invocation: str) -> list[str]:
         except OSError as exc:
             output.append(f"TRIGGER_SCENARIO_UNREADABLE {posix(spec_file)} {exc.strerror or exc}")
             continue
-        # ValueError covers a decode error, UnicodeError, and an over-long integer; RecursionError, nesting too deep
-        except (ValueError, RecursionError) as exc:
+        # ValueError covers a decode error, UnicodeError, an over-long integer, and nesting json_reader refuses
+        except ValueError as exc:
             output.append(f"TRIGGER_SCENARIO_UNREADABLE {posix(spec_file)} not JSON: {exc}")
             continue
         if not isinstance(spec, dict):
@@ -2489,8 +2489,8 @@ def plugin_hooks(folder: Path) -> list[tuple[Hook, str]]:
         raise InputError(f"cannot read {posix(path)}: {exc.strerror or exc}") from exc
     try:
         document = json_reader.loads(require_text(path))
-    # ValueError covers a decode error, UnicodeError, and an over-long integer; RecursionError, nesting too deep
-    except (ValueError, RecursionError) as exc:
+    # ValueError covers a decode error, UnicodeError, an over-long integer, and nesting json_reader refuses
+    except ValueError as exc:
         raise InputError(f"{posix(path)} is not JSON: {exc}") from exc
     if not isinstance(document, dict):
         raise InputError(f"{posix(path)} is not a JSON object")
@@ -2596,8 +2596,8 @@ def json_settings(path: Path, text: str) -> list[tuple[str, Path, int, str]]:
     """Each model or effort a JSON data file sets, such as a manifest's per-role model or a configured effort."""
     try:
         data = json_reader.loads(text)
-    # ValueError covers a decode error, UnicodeError, and an over-long integer; RecursionError, nesting too deep
-    except (ValueError, RecursionError):
+    # ValueError covers a decode error, UnicodeError, an over-long integer, and nesting json_reader refuses
+    except ValueError:
         return []
     found: list[tuple[str, Path, int, str]] = []
     stack: list[object] = [data]

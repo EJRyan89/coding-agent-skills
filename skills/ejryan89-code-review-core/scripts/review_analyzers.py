@@ -39,9 +39,10 @@ INVENTORY_SCHEMA_VERSION = 1
 MAX_SETTINGS = 400
 MAX_FILES_PER_TOOL = 10
 UNREAD = "(present, but could not be parsed; read the file for its settings)"
-# What a parser here raises on content it cannot read: what json and tomllib raise, `XmlRefused` among the ValueErrors,
-# and configparser's own errors.
-PARSE_ERRORS = (*CONTENT_ERRORS, configparser.Error)
+# What a parser here raises on content it cannot read: what json_reader and tomllib raise, `XmlRefused` among the
+# ValueErrors, tomllib's RecursionError for nesting past the interpreter's recursion limit, since it recurses once per
+# level, and configparser's own errors.
+PARSE_ERRORS = (*CONTENT_ERRORS, RecursionError, configparser.Error)
 
 SDK_ANALYZERS = "Microsoft.CodeAnalysis.NetAnalyzers"
 CODE_STYLE_ANALYZERS = {
