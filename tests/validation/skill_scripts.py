@@ -15,7 +15,7 @@ from collections import defaultdict
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath, PureWindowsPath
-from typing import TextIO
+from typing import TextIO, overload
 
 import file_presence
 import git_client
@@ -189,23 +189,35 @@ def split_operators(token: str) -> list[str]:
     return parts
 
 
+class _ShellLexerState:
+    """ShellLexer's shlex state, watched as shlex sets it. Besides a word's (a), an operator's (c), and between words
+    ( ), shlex's states are the quote or escape character it is inside, so a word that enters one is a literal."""
+
+    @overload
+    def __get__(self, lexer: None, owner: type[ShellLexer]) -> _ShellLexerState: ...
+    @overload
+    def __get__(self, lexer: ShellLexer, owner: type[ShellLexer]) -> str | None: ...
+    def __get__(self, lexer: ShellLexer | None, owner: type[ShellLexer]) -> str | _ShellLexerState | None:
+        return self if lexer is None else lexer.lexer_state
+
+    def __set__(self, lexer: ShellLexer, value: str | None) -> None:
+        lexer.literal = lexer.literal or value not in {" ", "a", "c", None}
+        lexer.lexer_state = value
+
+
 class ShellLexer(shlex.shlex):
     """shlex's POSIX lexer over a Bash script, or a stream of one, which drops each word's quoting, noting whether the
     word it last read was quoted or escaped anywhere: such a word is a literal, never an operator or a keyword, as Bash
     reads it."""
 
+    state = _ShellLexerState()
+
     def __init__(self, script: str | TextIO) -> None:
         self.literal = False
+        self.lexer_state: str | None = None
         super().__init__(script, posix=True, punctuation_chars=";&|()<>\n")
         self.whitespace = " \t\r"
         self.whitespace_split = True
-
-    def __setattr__(self, name: str, value: object) -> None:
-        # Besides a word's (a), an operator's (c), and between words ( ), shlex's states are the quote or escape
-        # character it is inside, so a word that enters one is a literal.
-        if name == "state" and value not in {" ", "a", "c", None}:
-            super().__setattr__("literal", True)
-        super().__setattr__(name, value)
 
     def read_token(self) -> str | None:
         self.literal = False
