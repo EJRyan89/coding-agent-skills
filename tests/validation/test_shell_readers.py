@@ -64,6 +64,91 @@ def test_shell_command_extraction_reads_the_program_every_wrapper_and_substituti
     assert "rg" in shell_commands(script)
 
 
+# find runs every action's program whichever terminator, quoted, escaped, or +, ends the action before it.
+@pytest.mark.parametrize(
+    "script",
+    [
+        "find . -exec jq . {} + -exec rg foo {} +",
+        "find . -exec jq . {} \\; -exec rg foo {} \\;",
+        "find . -exec jq . {} ';' -exec rg foo {} ';'",
+        'find . -exec jq . {} ";" -exec rg foo {} ";"',
+    ],
+)
+def test_shell_command_extraction_reads_each_find_action_past_its_terminator(script: str) -> None:
+    assert shell_commands(script) == {"find", "jq", "rg"}
+
+
+# A command separator quoted or escaped is a word of the command, so the word after it is not a program.
+@pytest.mark.parametrize(
+    "separator",
+    [
+        *(f"\\{op}" for op in (";", "&", "|", "(", "{")),
+        "\\&\\&",
+        "\\|\\|",
+        "\\|\\&",
+        *(f"{quote}{op}{quote}" for quote in "'\"" for op in (";", "&", "&&", "|", "||", "|&", "(", "\n", "{")),
+        "a';'b",
+    ],
+)
+def test_shell_command_extraction_reads_a_quoted_or_escaped_separator_as_a_word(separator: str) -> None:
+    assert shell_commands(f"echo a {separator} rg foo") == {"echo"}
+
+
+# A quoted or escaped reserved word is a plain word: at a command's start it is the program Bash runs, and it opens,
+# closes, or ends no case, loop, or function.
+@pytest.mark.parametrize(
+    ("script", "programs"),
+    [
+        ("'if' rg foo", {"if"}),
+        ('"do" rg foo', {"do"}),
+        ("\\fi rg foo", {"fi"}),
+        ("\\! rg foo", set()),
+        ("'for' x in rg", {"for"}),
+        ("'case' x", {"case"}),
+        ("'function' rg", {"function"}),
+        ("f '()'; f", {"f"}),
+        ("case x in 'esac') rg foo;; esac", {"rg"}),
+        ("case x in \\)|a) rg foo;; esac", {"rg"}),
+    ],
+)
+def test_shell_command_extraction_reads_a_quoted_or_escaped_reserved_word_as_a_word(
+    script: str, programs: set[str]
+) -> None:
+    assert shell_commands(script) == programs
+
+
+# The unquoted reserved words and functions, read as Bash reads them: a function runs no program of its name, a case
+# word runs nothing until its `in`, each case item and the item that ends at `esac` runs its commands.
+@pytest.mark.parametrize(
+    ("script", "programs"),
+    [
+        ("echo a; function f { jq .; }; f", {"echo", "jq"}),
+        ("echo a; f () { jq .; }; f", {"echo", "jq"}),
+        ("case $(echo a) in a) jq .;; esac", {"echo", "jq"}),
+        ("case x in a) jq .;; b) rg foo;; esac", {"jq", "rg"}),
+        ("case x in a) jq .\nesac", {"jq"}),
+    ],
+)
+def test_shell_command_extraction_reads_unquoted_reserved_words_and_functions(script: str, programs: set[str]) -> None:
+    assert shell_commands(script) == programs
+
+
+def test_the_shell_lexer_gives_each_word_beside_its_syntax() -> None:
+    words = list(skill_scripts.ShellLexer("echo aX'|'b \\; c && d").words())
+    assert words == [("echo", "echo"), ("aX|b", None), (";", None), ("c", "c"), ("&&", "&&"), ("d", "d")]
+
+
+# A line continuation joins its lines, so the word after it is the git command's subcommand.
+def test_the_git_subcommand_reader_reads_past_a_line_continuation() -> None:
+    assert skill_scripts.shell_git_subcommands("git \\\n  push") == {"push"}
+
+
+# An unquoted separator still ends the command, so the word after it is the next command's program.
+@pytest.mark.parametrize("separator", [";", "&", "&&", "|", "||", "|&", "\n"])
+def test_shell_command_extraction_reads_the_program_after_an_unquoted_separator(separator: str) -> None:
+    assert shell_commands(f"echo a {separator} rg foo") == {"echo", "rg"}
+
+
 # A lookup, a substitution in single quotes or a comment, and arithmetic run nothing.
 @pytest.mark.parametrize("script", ["command -v rg", "echo '$(rg foo)'", "# run `rg foo` here", "echo $((1 + 2))"])
 def test_shell_command_extraction_finds_no_program_where_nothing_runs(script: str) -> None:
@@ -270,6 +355,20 @@ def test_the_git_subcommand_reader_reads_the_git_command_a_started_script_runs(s
 )
 def test_the_git_subcommand_reader_finds_none_where_a_started_script_runs_no_git(script: str) -> None:
     assert skill_scripts.shell_git_subcommands(script) == set()
+
+
+# A quoted or escaped ; is a word of the command before it, which runs no git; find's second action, past one, does.
+@pytest.mark.parametrize(
+    ("script", "subcommands"),
+    [
+        ("echo a \\; git push", set()),
+        ("echo a ';' git push", set()),
+        ("find . -exec true {} \\; -exec bash -c 'git push' \\;", {"push"}),
+        ("find . -exec true {} ';' -exec bash -c 'git push' ';'", {"push"}),
+    ],
+)
+def test_the_git_subcommand_reader_reads_past_a_quoted_or_escaped_semicolon(script: str, subcommands: set[str]) -> None:
+    assert skill_scripts.shell_git_subcommands(script) == subcommands
 
 
 # A subcommand no literal names is recorded as its word: the Bash text, or UNREAD_WORD for PowerShell's.

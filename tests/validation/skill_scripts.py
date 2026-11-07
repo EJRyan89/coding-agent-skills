@@ -12,9 +12,10 @@ import re
 import shlex
 import unittest
 from collections import defaultdict
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath, PureWindowsPath
+from typing import TextIO, overload
 
 import file_presence
 import git_client
@@ -186,6 +187,51 @@ def split_operators(token: str) -> list[str]:
         parts.append(operator)
         token = token[len(operator) :]
     return parts
+
+
+class _ShellLexerState:
+    """ShellLexer's shlex state, watched as shlex sets it. Besides a word's (a), an operator's (c), and between words
+    ( ), shlex's states are the quote or escape character it is inside, so a word that enters one is a literal."""
+
+    @overload
+    def __get__(self, lexer: None, owner: type[ShellLexer]) -> _ShellLexerState: ...
+    @overload
+    def __get__(self, lexer: ShellLexer, owner: type[ShellLexer]) -> str | None: ...
+    def __get__(self, lexer: ShellLexer | None, owner: type[ShellLexer]) -> str | _ShellLexerState | None:
+        return self if lexer is None else lexer.lexer_state
+
+    def __set__(self, lexer: ShellLexer, value: str | None) -> None:
+        lexer.literal = lexer.literal or value not in {" ", "a", "c", None}
+        lexer.lexer_state = value
+
+
+class ShellLexer(shlex.shlex):
+    """shlex's POSIX lexer over a Bash script, or a stream of one, which drops each word's quoting, noting whether the
+    word it last read was quoted or escaped anywhere: such a word is a literal, never an operator or a keyword, as Bash
+    reads it."""
+
+    state = _ShellLexerState()
+
+    def __init__(self, script: str | TextIO) -> None:
+        self.literal = False
+        self.lexer_state: str | None = None
+        super().__init__(script, posix=True, punctuation_chars=";&|()<>\n")
+        self.whitespace = " \t\r"
+        self.whitespace_split = True
+
+    def read_token(self) -> str | None:
+        self.literal = False
+        return super().read_token()
+
+    def words(self) -> Iterator[tuple[str, str | None]]:
+        """Each word the script holds, a run of operators split into its operators, beside the word as syntax: itself,
+        or None for a literal, which no operator or keyword compares equal to. Each is read as it is asked for, so the
+        stream stands just past it."""
+        while (token := self.get_token()) is not None:
+            if self.literal:
+                yield token, None
+            else:
+                yield from ((part, part) for part in split_operators(token))
 
 
 def _backtick_end(script: str, start: int) -> int:
@@ -421,32 +467,29 @@ def shell_commands(script: str, commands: list[list[str]] | None = None) -> set[
     every command of a command
     substitution, quoted or not. A program a wrapper runs that no literal names is recorded as UNREAD_PROGRAM. Given
     `commands`, it also appends the words of each simple command it reads there, a substitution's included."""
-    lexer = shlex.shlex(script.replace("\\\n", " "), posix=True, punctuation_chars=";&|()<>\n")
-    lexer.whitespace = " \t\r"
-    lexer.whitespace_split = True
-    tokens = [part for token in lexer for part in split_operators(token)]
-    functions = {tokens[i] for i in range(len(tokens) - 1) if tokens[i + 1] == "()"}
-    functions |= {tokens[i + 1] for i in range(len(tokens) - 1) if tokens[i] == "function"}
+    tokens = list(ShellLexer(script.replace("\\\n", " ")).words())
+    functions = {tokens[i][0] for i in range(len(tokens) - 1) if tokens[i + 1][1] == "()"}
+    functions |= {tokens[i + 1][0] for i in range(len(tokens) - 1) if tokens[i][1] == "function"}
     found: set[str] = {name for inner in _substitutions(script) for name in shell_commands(inner, commands)}
     state = "command"
     words: list[str] = []
-    for word in [*tokens, "\n"]:
+    for word, keyword in [*tokens, ("\n", "\n")]:
         if state == "case-word":
-            state = "patterns" if word == "in" else state
+            state = "patterns" if keyword == "in" else state
         elif state == "patterns":
-            state = "command" if word == ")" else "arguments" if word == "esac" else state
-        elif word == ";;":
+            state = "command" if keyword == ")" else "arguments" if keyword == "esac" else state
+        elif keyword == ";;":
             state = "patterns"
-        elif word == "esac":
+        elif keyword == "esac":
             state = "arguments"
         elif state == "command":
-            if word in COMMAND_SEPARATORS or word in LEADING_KEYWORDS or ASSIGNMENT.match(word):
+            if keyword in COMMAND_SEPARATORS or keyword in LEADING_KEYWORDS or ASSIGNMENT.match(word):
                 continue
-            state = "case-word" if word == "case" else "arguments"
-            words = [word] if word not in HEADER_KEYWORDS and word not in functions else []
+            state = "case-word" if keyword == "case" else "arguments"
+            words = [word] if keyword not in HEADER_KEYWORDS and word not in functions else []
             if words and COMMAND_NAME.fullmatch(word):
                 found.add(word)
-        elif word in COMMAND_SEPARATORS:
+        elif keyword in COMMAND_SEPARATORS:
             found |= _wrapped_programs(words, commands)
             if commands is not None and words:
                 commands.append(words)

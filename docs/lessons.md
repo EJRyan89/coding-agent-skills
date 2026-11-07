@@ -398,8 +398,10 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
 - **Search for:** a Python parser or folding, `float(`, `int(` with or without a base, `casefold()`, `lower()`,
   `strip()`, or a pattern with `re.IGNORECASE` and no `re.ASCII`, applied to a value another program reads, each
   checked against that program's own reading of it, as MSBuild reads a number with .NET's invariant `Double.TryParse`
-  and compares text with .NET's ordinal comparison ignoring case; in `tools/hub_guard.py`, a construct a table neither
-  understands nor lists in `NOT_READ`, a table whose test types its rows rather than taking them from the shell's own
+  and compares text with .NET's ordinal comparison ignoring case; a POSIX `shlex` lexer over shell text whose
+  words are compared with an operator or keyword, which reads a quoted `';'` or an escaped `\;` as the separator it
+  spells, rather than `ShellLexer` in `tests/validation/skill_scripts.py`; in `tools/hub_guard.py`, a construct a
+  table neither understands nor lists in `NOT_READ`, a table whose test types its rows rather than taking them from the shell's own
   catalogue, a word settled from what an earlier command assigns rather than the assignment refused, a program added
   to `RUNNERS` with no row, a program that runs a command its words name left out of it, a runner allowed around a command that may be git, a cmdlet added to
   `POWERSHELL_COMMANDS` that starts a command its words name, and a refusal that waits
@@ -417,7 +419,7 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   `rebase --exec` or `-x`, `bisect run`, a transport's `--upload-pack`, or a `-c` setting that names a program, rather
   than an allow-list of the subcommands, actions, and settings that start none.
 - **Examples:** #1412, #1429, #1430, #1592, #1606, #1843, #1851, #1865, #2032, #2088, #2089, #2134, #2135, #2136,
-  #2137, #2138, #2139, #2140, #2188, #2225, #2232, #2233, #2234, #2251, #2262, #2274, #2276, #2316
+  #2137, #2138, #2139, #2140, #2188, #2225, #2232, #2233, #2234, #2251, #2262, #2274, #2276, #2316, #2411
 
 ### A recursive parser of input has a depth bound
 
