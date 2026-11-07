@@ -682,6 +682,21 @@ BASH_RACES = [
     pytest.param('seq 1 200000 | env -S"head -n 1"', "head -n", id="env -S glued"),
     pytest.param("seq 1 200000 | env --split-string='head -n 1'", "head -n", id="env --split-string"),
     pytest.param("seq 1 200000 | env -u HOME -S 'LC_ALL=C head -n 1'", "head -n", id="env -S after an option"),
+    # A substitution reads its command's standard input, so a pipe that feeds the command feeds the reader in it.
+    pytest.param("seq 1 200000 | echo $(head -n 1)", "head -n", id="a substitution in a fed command"),
+    pytest.param("seq 1 200000 | { echo $(head -n 1); }", "head -n", id="a substitution in a fed group"),
+    pytest.param("seq 1 200000 | ( echo $(head -n 1) )", "head -n", id="a substitution in a fed subshell"),
+    pytest.param("seq 1 200000 | echo `head -n 1`", "head -n", id="backticks in a fed command"),
+    pytest.param('seq 1 200000 | echo "$(head -n 1)"', "head -n", id="a quoted substitution in a fed command"),
+    pytest.param('seq 1 200000 | echo "`head -n 1`"', "head -n", id="quoted backticks in a fed command"),
+    pytest.param("seq 1 200000 | x=$(head -n 1)", "head -n", id="a fed assignment"),
+    pytest.param("seq 1 200000 | { x=$(head -n 1); }", "head -n", id="an assignment in a fed group"),
+    pytest.param("seq 1 200000 | printf '%s' a \"$(head -n 1)\"", "head -n", id="a later argument"),
+    pytest.param("seq 1 200000 | echo $(true; head -n 1)", "head -n", id="a later command of the substitution"),
+    pytest.param('seq 1 200000 | echo "$(echo $(head -n 1))"', "head -n", id="a nested substitution"),
+    pytest.param("seq 1 200000 | if true; then echo $(head -n 1); fi", "head -n", id="a substitution in a fed if"),
+    pytest.param("seq 1 200000 | {\n  true\n  echo $(head -n 1)\n}", "head -n", id="a fed group over lines"),
+    pytest.param("seq 1 200000 |\n  echo $(head -n 1)", "head -n", id="a pipe at the end of a line"),
 ]
 
 
@@ -794,6 +809,13 @@ def test_a_suite_that_never_turns_pipefail_on_is_not_examined(tmp_path: Path) ->
         pytest.param("printf a | bash -c 'cat'", id="a shell reading to the end"),
         pytest.param("printf a | env -S 'cat -u'", id="env -S reading to the end"),
         pytest.param("f() { f; }; printf a | f", id="a function calling itself"),
+        # A substitution reads the standard input of its own command, which no pipe feeds here.
+        pytest.param("printf a | cat; echo $(head -n 1 file)", id="a substitution after the pipeline"),
+        pytest.param("echo $(head -n 1 file) | cat", id="a substitution in the writer"),
+        pytest.param("printf a | cat && x=$(head -n 1 file)", id="a substitution after &&"),
+        pytest.param('printf a | { cat; }; echo "`head -n 1 file`"', id="quoted backticks after a fed group"),
+        pytest.param("printf a | cat\necho $(head -n 1 file)", id="a substitution on the next line"),
+        pytest.param("printf a | cat |\n  cat; echo $(head -n 1 file)", id="a substitution after a continued pipe"),
     ],
 )
 def test_the_pipe_race_policy_passes_each_bash_form_that_reads_to_the_end(tmp_path: Path, script: str) -> None:
