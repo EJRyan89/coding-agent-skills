@@ -2160,6 +2160,82 @@ def test_json_write_policy_follows_an_encoder_another_module_defines(
     assert all("writes JSON text to a file or a stream" in problem for problem in found), found
 
 
+# An encoder subclass the writing module defines itself, at its top level, in a function, or in a class, is reached
+# from that module by its own name, and a module-level alias of one is followed from a module that imports it.
+@pytest.mark.parametrize(
+    ("modules", "refused"),
+    [
+        pytest.param(
+            {
+                "skills/alpha/scripts/alpha.py": "import json\n\n\nclass Base(json.JSONEncoder):\n    pass\n\n\n"
+                "class Sub(Base):\n    pass\n\n\ndef save(path, data):\n    path.write_text(Sub().encode(data))\n"
+            },
+            "skills/alpha/scripts/alpha.py:13",
+            id="a subclass of a subclass its module defines",
+        ),
+        pytest.param(
+            {
+                "skills/alpha/scripts/alpha.py": "import json\n\n\ndef save(path, data):\n"
+                "    class Base(json.JSONEncoder):\n        pass\n\n    class Sub(Base):\n        pass\n\n"
+                "    path.write_text(Sub().encode(data))\n"
+            },
+            "skills/alpha/scripts/alpha.py:11",
+            id="a subclass of a subclass its function defines",
+        ),
+        pytest.param(
+            {
+                "skills/alpha/scripts/alpha.py": "import json\n\nBase = dict\n\n\ndef save(path, data):\n"
+                "    class Base(json.JSONEncoder):\n        pass\n\n    class Sub(Base):\n        pass\n\n"
+                "    path.write_text(Sub().encode(data))\n"
+            },
+            "skills/alpha/scripts/alpha.py:13",
+            id="a subclass of a function's encoder that a module-level name of its name does not hide",
+        ),
+        pytest.param(
+            {
+                "skills/alpha/scripts/alpha.py": "import json\n\n\nclass Sub(json.JSONEncoder):\n    pass\n\n\n"
+                "def save(path, data):\n    path.write_text(Sub.encode(Sub(), data))\n"
+            },
+            "skills/alpha/scripts/alpha.py:9",
+            id="an encode called on its module's encoder class with the encoder first",
+        ),
+        pytest.param(
+            {
+                "skills/alpha/scripts/middle.py": "import json\n\n\nclass _Hidden(json.JSONEncoder):\n    pass\n\n\n"
+                "Encoder = _Hidden\n",
+                "skills/alpha/scripts/alpha.py": "from middle import Encoder\n\n\nclass Sub(Encoder):\n    pass\n\n\n"
+                "def save(path, data):\n    path.write_text(Sub().encode(data))\n",
+            },
+            "skills/alpha/scripts/alpha.py:9",
+            id="a subclass of an encoder another module binds to a name of its own",
+        ),
+    ],
+)
+def test_json_write_policy_follows_an_encoder_its_own_module_defines(modules: dict[str, str], refused: str) -> None:
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        write_fixture_tree(root, modules)
+        found = python_checks.json_write_problems(root, sorted(root.rglob("*.py")))
+    assert [problem.split(" ", 1)[0] for problem in found] == [refused]
+    assert "writes JSON text to a file or a stream" in found[0], found
+
+
+def test_json_write_policy_names_a_module_it_cannot_parse_and_reads_the_rest() -> None:
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        write_fixture_tree(
+            root,
+            {
+                "skills/alpha/scripts/alpha.py": "def broken(:\n",
+                "skills/alpha/scripts/beta.py": "import json\n\n\ndef save(path, data):\n"
+                "    path.write_text(json.dumps(data))\n",
+            },
+        )
+        found = python_checks.json_write_problems(root, sorted(root.rglob("*.py")))
+    assert found[0] == "skills/alpha/scripts/alpha.py does not parse: invalid syntax at line 1"
+    assert [problem.split(" ", 1)[0] for problem in found[1:]] == ["skills/alpha/scripts/beta.py:5"]
+
+
 def test_json_write_policy_with_no_module_to_read_could_not_measure() -> None:
     # Only the writer itself, a suite, and a file outside the claim roots: nothing the policy reads.
     with tempfile.TemporaryDirectory() as temporary:

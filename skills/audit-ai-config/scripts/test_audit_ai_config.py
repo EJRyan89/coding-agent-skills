@@ -334,6 +334,18 @@ class CommandLineTests(unittest.TestCase):
         self.assertEqual(("unconfigured", 1), (data["authority"], data["exitCode"]))
         self.assertEqual({"repository", "authority", "scopeStatus", "exitCode", "findings"}, set(data))
 
+    def test_a_json_report_is_printed_as_format_json_writes_it_with_nothing_after(self) -> None:
+        (self.root / ".git").mkdir()
+        found = audit.audit(self.root)
+        output = io.StringIO()
+        with (
+            contextlib.redirect_stdout(output),
+            mock.patch.object(audit, "audit", return_value=found),
+            mock.patch.object(sys, "argv", ["audit_ai_config.py", "--root", str(self.root), "--json"]),
+        ):
+            audit.main()
+        self.assertEqual(audit.format_json(found), output.getvalue())
+
     def test_a_compliant_audit_prints_its_result_line_and_exits_0(self) -> None:
         (self.root / ".git").mkdir()
         _setup_conforming_repo(self.root)
