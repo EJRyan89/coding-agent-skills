@@ -6,19 +6,26 @@ Each policy fails on a violating input and passes on a conforming one.
 from __future__ import annotations
 
 import ast
+import contextlib
+import functools
+import os
 import subprocess
 import sys
 import tempfile
 import unittest
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from pathlib import Path
 from typing import ClassVar
+from unittest import mock
 
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts"))
 
+import job_pool
+import suite_discovery
+import validation_support
 from job_selection import name_patterns
 from suite_discovery import (
     MAXIMUM_SHARDS,
@@ -1374,3 +1381,61 @@ class PoolSharedStatePolicy(unittest.TestCase):
             "    first |= second\n"
         )
         self.assertEqual([], self.problems({"tests/validation/alpha.py": alpha}))
+
+
+# A suite with a test each leak below leaves out, which leaves a file behind when it runs, and a plugin that keeps only
+# the test that leaves none.
+LEAKED_SUITE = (
+    "import unittest\nfrom pathlib import Path\n\n\ndef test_kept():\n    pass\n\n\n"
+    "def test_dropped():\n    Path('dropped.ran').touch()\n\n\n"
+    "class Case(unittest.TestCase):\n    def test_unittest(self):\n        Path('unittest.ran').touch()\n"
+)
+HIDING_PLUGIN = "def pytest_collection_modifyitems(items):\n    items[:] = [i for i in items if i.name == 'test_kept']"
+# Each way the user's environment reaches pytest: the variables it sets, whether an installed package registers the
+# hiding plugin, and the test the leak would leave out.
+LEAKS = {
+    "a deselection in PYTEST_ADDOPTS": ({"PYTEST_ADDOPTS": "--deselect=test_leak.py::test_dropped"}, False, "dropped"),
+    "a disabled plugin in PYTEST_ADDOPTS": ({"PYTEST_ADDOPTS": "-p no:unittest"}, False, "unittest"),
+    "a plugin in PYTEST_PLUGINS": ({"PYTEST_PLUGINS": "hiding"}, False, "dropped"),
+    "a plugin an installed package registers": ({}, True, "dropped"),
+}
+
+
+@contextlib.contextmanager
+def leaked_environment(variables: Mapping[str, str], registered: bool) -> Iterator[Path]:
+    """A folder holding LEAKED_SUITE and the hiding plugin, which a dist-info folder registers as an installed
+    package's pytest plugin when `registered`, with this process's environment holding only `variables` of pytest's."""
+    with tempfile.TemporaryDirectory() as temporary, mock.patch.dict(os.environ, variables):
+        root = Path(temporary)
+        for name in {"PYTEST_ADDOPTS", "PYTEST_PLUGINS", "PYTEST_DISABLE_PLUGIN_AUTOLOAD"} - set(variables):
+            os.environ.pop(name, None)
+        files = {"pytest.ini": "[pytest]\n", "test_leak.py": LEAKED_SUITE, "hiding.py": HIDING_PLUGIN}
+        if registered:
+            files["hiding-1.0.dist-info/METADATA"] = "Metadata-Version: 2.1\nName: hiding\nVersion: 1.0\n"
+            files["hiding-1.0.dist-info/entry_points.txt"] = "[pytest11]\nhiding = hiding\n"
+        write_fixture_tree(root, files)
+        yield root
+
+
+class PytestEnvironmentFixtures(unittest.TestCase):
+    """The runner starts pytest with none of the user's PYTEST_ADDOPTS, PYTEST_PLUGINS, or autoloaded plugins, so a
+    test the environment would leave out still runs."""
+
+    def test_a_suite_runs_every_test_whatever_the_environment_leaves_out(self) -> None:
+        for name, (variables, registered, left_out) in LEAKS.items():
+            with self.subTest(name), leaked_environment(variables, registered) as root:
+                with (
+                    mock.patch.object(validation_support, "REPOSITORY_ROOT", root),
+                    mock.patch.object(
+                        suite_discovery, "run_process", functools.partial(job_pool.run_process, cwd=root)
+                    ),
+                ):
+                    suite_discovery.run_test_script(root / "test_leak.py")
+                self.assertTrue((root / f"{left_out}.ran").is_file())
+
+    def test_a_shard_starts_pytest_with_the_same_environment_as_a_whole_suite(self) -> None:
+        with mock.patch.object(suite_discovery, "run_process") as run:
+            suite_discovery.run_shard(REPOSITORY_ROOT / "tests" / "test_a.py", 0, 2, {})
+            suite_discovery.run_test_script(REPOSITORY_ROOT / "tests" / "test_a.py")
+        expected = {"PYTEST_ADDOPTS": "", "PYTEST_PLUGINS": "", "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1"}
+        self.assertEqual([expected, expected], [call.args[1] for call in run.call_args_list])

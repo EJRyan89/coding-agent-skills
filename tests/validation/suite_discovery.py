@@ -164,15 +164,24 @@ def suite_discovery_documentation_problems(root: Path) -> list[str]:
 
 
 def pytest_command(target: str, *options: str) -> list[str]:
-    """How the runner starts a Python suite: pytest on the one file, from the repository root, with no bytecode."""
+    """How the runner starts a Python suite: pytest on the one file, from the repository root, with no bytecode. Its
+    environment holds PYTEST_ENVIRONMENT over the one it inherits."""
     return [sys.executable, "-B", "-m", "pytest", target, *options]
+
+
+# What every pytest the runner and the mutation gate start holds over the environment it inherits, so a suite is judged
+# by the repository's pytest configuration and the suite alone: no options from the user's PYTEST_ADDOPTS, no plugin
+# from PYTEST_PLUGINS, and no plugin an installed package registers, each of which can deselect or hide a test and
+# leave the suite passing. Turning plugin autoloading off is safe because no package requirements-dev.txt or
+# requirements-mutation.txt pins registers a pytest plugin.
+PYTEST_ENVIRONMENT = {"PYTEST_ADDOPTS": "", "PYTEST_PLUGINS": "", "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1"}
 
 
 def run_test_script(path: Path) -> None:
     target = relative(path)
     suffix = path.suffix.casefold()
     if suffix == ".py":
-        run_process(pytest_command(target))
+        run_process(pytest_command(target), PYTEST_ENVIRONMENT)
     elif suffix == ".sh":
         run_bash_suite(target)
     elif suffix == ".ps1":
@@ -232,7 +241,7 @@ def shard_options(index: int, count: int, recorded: Mapping[str, float]) -> list
 
 
 def run_shard(suite: Path, index: int, count: int, recorded: Mapping[str, float]) -> None:
-    run_process(pytest_command(relative(suite), *shard_options(index, count, recorded)))
+    run_process(pytest_command(relative(suite), *shard_options(index, count, recorded)), PYTEST_ENVIRONMENT)
 
 
 def suite_jobs(

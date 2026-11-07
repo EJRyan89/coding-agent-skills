@@ -208,7 +208,7 @@ from git_client import GitClient, output_line
 from job_pool import append_step_summary, worker_count
 from job_selection import host_job_seconds, imported_names, importers, python_imports, reached_suites
 from path_containment import relative_within
-from suite_discovery import pytest_command
+from suite_discovery import PYTEST_ENVIRONMENT, pytest_command
 from suite_names import is_suite_name
 from typed_fields import FieldError, FieldReader
 from validation_support import import_aliases, qualified_name, repository_files
@@ -914,9 +914,10 @@ def suite_environment() -> dict[str, str]:
     """This process's environment for a suite or a coverage step: no bytecode written, so a mutant the same size as the
     module and written within the same second is never read from a stale cache, and no coverage measurement, which a
     process inheriting coverage.py's subprocess setting starts from coverage.py's .pth file, importing the installed
-    coverage.py before `-m coverage` is resolved."""
+    coverage.py before `-m coverage` is resolved. pytest runs as the runner starts it, with PYTEST_ENVIRONMENT, so no
+    option or plugin of the user's environment deselects or hides a test and leaves a mutant surviving."""
     environment = {key: value for key, value in os.environ.items() if not key.startswith("COVERAGE_PROCESS_")}
-    return {**environment, "PYTHONDONTWRITEBYTECODE": "1"}
+    return {**environment, **PYTEST_ENVIRONMENT, "PYTHONDONTWRITEBYTECODE": "1"}
 
 
 def run_suite(tree: Path, suite: str, timeout: float, tests: Sequence[str] = ()) -> str:
