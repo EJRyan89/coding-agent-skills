@@ -140,7 +140,8 @@ def parser() -> _Parser:
         CONFIGURE_COMMAND,
         "set the values skills need; see its --help",
         "Set or change the configuration values skills need.\n"
-        "At each prompt, Enter keeps the current value and Ctrl+C cancels.",
+        "At each prompt, Enter keeps the current value, a lone - clears an optional\n"
+        "one, and Ctrl+C cancels.",
     )
     configure.add_argument("--reset", action="store_true", help="start from an empty configuration")
     _add_command(

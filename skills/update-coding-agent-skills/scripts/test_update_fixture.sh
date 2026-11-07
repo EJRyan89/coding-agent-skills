@@ -288,8 +288,9 @@ tag_upstream() {
   git_quiet -C "$SEED" push origin "$1"
 }
 
-# The releases test_update_majors.sh's cases publish, in order, each a commit's message and, after a bar, its tag. A
-# suite whose cases start from a later release publishes them through that release first, with one push.
+# The release history the update suites share, in order, each a commit's message and, after a bar, its tag:
+# test_update_majors.sh's cases publish it one release at a time through its third major, and test_update_refs.sh's
+# the fourth. A suite whose cases start from a later release publishes them through that release first, with one push.
 RELEASE_HISTORY=("first release|v0.1.0" "breaking change|v0.2.0" "patch change|v0.2.3" "first stable|v1.0.0"
   "after first stable|v2x.0.0" "minor stable|v1.5.0" "second major|v2.0.0" "third major candidate|v3.0.0-rc.1"
   "third major|v3.0.0" "fourth major|v4.0.0")
