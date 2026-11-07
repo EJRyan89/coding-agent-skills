@@ -1487,6 +1487,31 @@ DOCUMENTED_FORMS: dict[str, tuple[Any, ...]] = {
                 "def build(p):\n    def count(value):\n        return int(value)\n\n"
                 "    p.add_argument('--n', type=count)",
             ),
+            (
+                "through builtins",
+                "import builtins\n\n\ndef count(value):\n    return builtins.int(value)\n\n\n"
+                "P.add_argument('--n', type=count)",
+            ),
+            # Each function a name may be bound to is read, not only the last binding's.
+            (
+                "and is one of two a name is bound to",
+                "def count(value):\n    return int(value)\n\n\ndef name(value):\n    return value\n\n\n"
+                "if X:\n    KIND = count\nelse:\n    KIND = name\nP.add_argument('--n', type=KIND)",
+            ),
+        )
+    },
+    # Each binding of an option's type, and of the call that reads it, is read, not only the last.
+    **{
+        f"an option read with {form}": _form(int_parse_problems, f"import argparse\nimport functools\n\n{body}\n")
+        for form, body in (
+            (
+                "a name bound to int and to a partial of str",
+                "if X:\n    KIND = int\nelse:\n    KIND = functools.partial(str)\nP.add_argument('--n', type=KIND)",
+            ),
+            (
+                "a call bound to print and to add_argument",
+                "if X:\n    add = print\nelse:\n    add = P.add_argument\nadd('--n', type=int)",
+            ),
         )
     },
     **{
@@ -1529,6 +1554,21 @@ DOCUMENTED_FORMS: dict[str, tuple[Any, ...]] = {
                 "type function whose inner function converts its own name",
                 "def count(value):\n    def inner():\n        value = '1'\n        return int(value)\n\n"
                 "    return inner()\n\n\nP.add_argument('--n', type=count)",
+            ),
+            ("read with no type", "P.add_argument('--name')"),
+            # The type is the function the scope owning its name defines, not one of that name another scope defines.
+            (
+                "type function whose name another scope's converting function shares",
+                "def count(value):\n    return whole_number.read(value, ValueError(value))\n\n\n"
+                "def build():\n    def count(value):\n        return int(value)\n\n    return count\n\n\n"
+                "P.add_argument('--n', type=count)",
+            ),
+            # Nor is it any other function of that scope.
+            (
+                "type function beside a converting function given to no add_argument",
+                "def other(value):\n    return int(value)\n\n\n"
+                "def count(value):\n    return whole_number.read(value, ValueError(value))\n\n\n"
+                "P.add_argument('--n', type=count)",
             ),
         )
     },
