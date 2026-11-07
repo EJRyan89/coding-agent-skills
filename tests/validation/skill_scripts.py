@@ -1252,18 +1252,65 @@ def command_reader(path: Path) -> CommandReader:
     return _read_commands(python_source(path))
 
 
+# Start-Process's parameters, by name, each with whether it is a switch, which takes no value, and the aliases
+# PowerShell binds, as `(Get-Command Start-Process).Parameters` lists them; test_shell_readers.py holds the table to
+# that listing.
+START_PROCESS_PARAMETERS: dict[str, tuple[bool, tuple[str, ...]]] = {
+    "FilePath": (False, ("PSPath", "Path")),
+    "ArgumentList": (False, ("Args",)),
+    "Credential": (False, ("RunAs",)),
+    "WorkingDirectory": (False, ()),
+    "LoadUserProfile": (True, ("Lup",)),
+    "NoNewWindow": (True, ("nnw",)),
+    "PassThru": (True, ()),
+    "RedirectStandardError": (False, ("RSE",)),
+    "RedirectStandardInput": (False, ("RSI",)),
+    "RedirectStandardOutput": (False, ("RSO",)),
+    "Verb": (False, ()),
+    "WindowStyle": (False, ()),
+    "Wait": (True, ()),
+    "UseNewEnvironment": (True, ()),
+    "Environment": (False, ()),
+    "Verbose": (True, ("vb",)),
+    "Debug": (True, ("db",)),
+    "ErrorAction": (False, ("ea",)),
+    "WarningAction": (False, ("wa",)),
+    "InformationAction": (False, ("infa",)),
+    "ProgressAction": (False, ("proga",)),
+    "ErrorVariable": (False, ("ev",)),
+    "WarningVariable": (False, ("wv",)),
+    "InformationVariable": (False, ("iv",)),
+    "OutVariable": (False, ("ov",)),
+    "OutBuffer": (False, ("ob",)),
+    "PipelineVariable": (False, ("pv",)),
+    "WhatIf": (True, ("wi",)),
+    "Confirm": (True, ("cf",)),
+}
+
+
+def _start_process_table() -> str:
+    """START_PROCESS_PARAMETERS as a PowerShell array of entries, each its name, whether it is a switch, and an array
+    of its aliases."""
+    entries = []
+    for name, (switch, aliases) in START_PROCESS_PARAMETERS.items():
+        quoted = ", ".join(f"'{alias}'" for alias in aliases)
+        entries.append(f"@('{name}', ${'true' if switch else 'false'}, @({quoted}))")
+    return f"@({', '.join(entries)})"
+
+
 # Prints one JSON array of {source, name} for each external command run by the PowerShell sources in the JSON file
 # COMMAND_SOURCES names, as PowerShell's own parser reads them, and {source, unread} for each program it cannot read. A
 # function a source defines is its own, and so is what PowerShell ships: its aliases and the commands of its core and
 # of the modules under its home, such as Get-ChildItem and ForEach-Object. A module installed elsewhere, such as
-# PSScriptAnalyzer, is not standard. What Start-Process starts, by -FilePath, any prefix of it, or an alias, or by its
-# first positional argument, what `& (Get-Command name)` runs, and every command of a string Invoke-Expression runs are
-# read as commands too; a program any of these, or `&` or `.`, names other than by a literal is unread, but for a .ps1
-# script a path names, whose own commands the policy reads in its file. Each external command carries its words after
-# its name, a literal's text or null for any other, and one Start-Process starts carries instead the items of its
-# -ArgumentList, by any prefix, its alias, or its place after the program, each a literal's text or null for any
-# other, a list or array of them read item by item, so powershell_startup_programs reads the script a pwsh or Windows
-# PowerShell start-up runs.
+# PSScriptAnalyzer, is not standard. What Start-Process starts, by -FilePath or by its first positional argument, what
+# `& (Get-Command name)` runs, and every command of a string Invoke-Expression runs are read as commands too; a
+# program any of these, or `&` or `.`, names other than by a literal is unread, but for a .ps1 script a path names,
+# whose own commands the policy reads in its file. Start-Process's parameters are bound as PowerShell binds them, by
+# START_PROCESS_PARAMETERS: a name, an alias, or a prefix of one name alone, a switch taking no value; one it does not
+# place leaves the program unread. Each external command carries its words after its name, a literal's text or null for
+# any other, and one Start-Process starts carries instead the items of its -ArgumentList, or of the positional argument
+# after the program, each a literal's text or null for any other, a list or array of them read item by item, so
+# powershell_startup_programs reads the script a pwsh or Windows PowerShell start-up runs.
 POWERSHELL_COMMANDS_RUN = (
     "$ErrorActionPreference = 'Stop'; "
     "[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false); "
@@ -1287,23 +1334,23 @@ POWERSHELL_COMMANDS_RUN = (
     "if (-not ($switches -contains $element.ParameterName) -and -not $element.Argument) { $at++ }; continue }; "
     "return $element }; "
     "return $null }; "
-    "function Test-Prefix($parameter, $names) { "
-    "foreach ($full in $names) { if ($full.StartsWith($parameter, [StringComparison]::OrdinalIgnoreCase)) { "
-    "return $true } }; return $false }; "
+    "function Find-StartParameter($parameter) { "
+    "foreach ($entry in $startParameters) { "
+    "if ($entry[0] -eq $parameter -or $entry[2] -contains $parameter) { return ,$entry } }; "
+    "$prefixed = @(foreach ($entry in $startParameters) { "
+    "if ($entry[0].StartsWith($parameter, [StringComparison]::OrdinalIgnoreCase)) { ,$entry } }); "
+    "if ($prefixed.Count -eq 1) { return ,$prefixed[0] }; return $null }; "
     "function Get-Started($elements) { "
     "$bound = @{}; $positional = [Collections.Generic.List[object]]::new(); "
     "for ($at = 1; $at -lt $elements.Count; $at++) { $element = $elements[$at]; "
     "if ($element -isnot [Management.Automation.Language.CommandParameterAst]) { "
     "$positional.Add($element); continue }; "
-    "$parameter = $element.ParameterName; "
-    "$switch = ($startSwitches -contains $parameter) -or "
-    "((Test-Prefix $parameter $startSwitches) -and -not (Test-Prefix $parameter $startValues)); "
-    "$value = if ($element.Argument) { $element.Argument } elseif ($switch) { $null } "
+    "$entry = Find-StartParameter $element.ParameterName; "
+    "if ($null -eq $entry) { $bound.unread = $true; return $bound }; "
+    "$value = if ($element.Argument) { $element.Argument } elseif ($entry[1]) { $null } "
     "else { $at++; $elements[$at] }; "
-    "if (@('PSPath', 'Path') -contains $parameter -or (Test-Prefix $parameter @('FilePath'))) { "
-    "$bound.program = $value } "
-    "elseif ($parameter -eq 'Args' -or (Test-Prefix $parameter @('ArgumentList'))) { "
-    "$bound.arguments = $value } }; "
+    "if ($entry[0] -eq 'FilePath') { $bound.program = $value } "
+    "elseif ($entry[0] -eq 'ArgumentList') { $bound.arguments = $value } }; "
     "foreach ($key in @('program', 'arguments')) { "
     "if (-not $bound.ContainsKey($key) -and $positional.Count) { "
     "$bound[$key] = $positional[0]; $positional.RemoveAt(0) } }; "
@@ -1324,12 +1371,7 @@ POWERSHELL_COMMANDS_RUN = (
     "$items = if ($element -is [Management.Automation.Language.ArrayLiteralAst]) { @($element.Elements) } "
     "else { @($element) }; "
     "return ,@(foreach ($item in $items) { Get-Literal $item }) }; "
-    "$startSwitches = @('Wait', 'NoNewWindow', 'PassThru', 'UseNewEnvironment', 'LoadUserProfile', 'Verbose', "
-    "'Debug', 'nnw', 'Lup'); "
-    "$startValues = @('FilePath', 'ArgumentList', 'Credential', 'WorkingDirectory', 'RedirectStandardError', "
-    "'RedirectStandardInput', 'RedirectStandardOutput', 'Verb', 'WindowStyle', 'Environment', 'ErrorAction', "
-    "'WarningAction', 'InformationAction', 'ProgressAction', 'ErrorVariable', 'WarningVariable', "
-    "'InformationVariable', 'OutVariable', 'OutBuffer', 'PipelineVariable'); "
+    f"$startParameters = {_start_process_table()}; "
     "$found = [Collections.Generic.List[object]]::new(); "
     "$queue = [Collections.Generic.Queue[object]]::new(); "
     "for ($index = 0; $index -lt $sources.Count; $index++) { $queue.Enqueue(@($index, $sources[$index])) }; "
@@ -1349,7 +1391,7 @@ POWERSHELL_COMMANDS_RUN = (
     "if (-not $name) { $found.Add([ordered]@{ source = $index; unread = $first.Extent.Text }); continue } }; "
     "$arguments = $null; "
     "if (@('Start-Process', 'saps', 'start') -contains $name) { $started = Get-Started $elements; "
-    "$name = if ($started.program) { Get-Literal $started.program } else { $null }; "
+    "$name = if ($started.program -and -not $started.unread) { Get-Literal $started.program } else { $null }; "
     "if (-not $name) { $found.Add([ordered]@{ source = $index; unread = $command.Extent.Text }); continue }; "
     "$arguments = Get-Literals $started.arguments }; "
     "if (@('Invoke-Expression', 'iex') -contains $name) { "

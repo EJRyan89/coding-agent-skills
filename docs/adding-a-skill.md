@@ -214,7 +214,8 @@ abbreviated option or one the wrapper's table does not list is a program the pol
 reads what `Start-Process` starts, by `-FilePath` in any spelling PowerShell binds or by position, with the words its
 `-ArgumentList` gives it, a literal string or a list of them joined with spaces and split as the started program
 splits its command line, what `& (Get-Command <name>)` runs, and every command of the string `Invoke-Expression`
-runs; an argument list that is not literal where a script would stand is a program it cannot read. In Python it reads every program of a command a runner gives a shell, such as `os.system`
+runs; an argument list that is not literal where a script would stand, and a `Start-Process` parameter the cmdlet
+does not have or a prefix of more than one, are programs it cannot read. In Python it reads every program of a command a runner gives a shell, such as `os.system`
 or `shell=True`, and of the script a list such as `["bash", "-e", "-c", "<script>"]` runs, its `-c` read as in Bash
 up to the list's first item that is not a literal string. In all three, a start-up of `pwsh` or Windows PowerShell
 reads every command of the script its `-Command`, `-CommandWithArgs`, or Windows PowerShell's first positional word
