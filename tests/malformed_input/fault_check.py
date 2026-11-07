@@ -241,16 +241,20 @@ def run_entry(
     fixture: Fixture,
     variables: dict[str, str],
     repository: Path = REPOSITORY,
+    writable: Path | None = None,
 ) -> tuple[subprocess.CompletedProcess[str], dict[str, Any]]:
     """Run an entry point through fault_runner.py under the fault, in the fixture's work folder, and return how it
-    ended and the runner's record."""
+    ended and the runner's record. The run may write in `writable`, the temporary folder unless a caller names another,
+    and never in this checkout, which lies under the temporary folder when the mutation gate runs the suite in a
+    throwaway worktree."""
     record_file = fixture.root / "record.json"
     spec = {
         "entry": str(entry),
         "arguments": arguments,
         "fault": fault,
         "target": str(target) if target else None,
-        "writable": [tempfile.gettempdir()],
+        "writable": [str(writable or tempfile.gettempdir())],
+        "protected": [str(REPOSITORY)],
         "path": [str(repository / SKILL_CORE)],
         "repository": str(repository),
         "record": str(record_file),

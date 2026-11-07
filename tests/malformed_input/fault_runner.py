@@ -1,7 +1,8 @@
 """Run one entry point as its own program under one environment fault, for test_faults.py.
 
 The suite starts this file with Python and a run file: a JSON object naming the entry point's path, its arguments,
-the fault, the path the fault is placed at when it is a file's, the folders the run may write in, and the record file.
+the fault, the path the fault is placed at when it is a file's, the folders the run may write in, the folders it may
+not write in even where those hold them, and the record file.
 It runs the entry point's `__main__` block as `python <entry point>` would, with the entry point's folder first on
 sys.path and its arguments in sys.argv, after it has:
 
@@ -13,7 +14,8 @@ sys.path and its arguments in sys.argv, after it has:
   that fault;
 - installed an audit hook that stops the run, past any handler the entry point has, when it starts a program other
   than git, opens a network connection, or writes, makes, moves, or removes anything outside the folders the run may
-  write in, so a run never reaches the real home, a model, or the network;
+  write in or inside one it may not, so a run never reaches the real home, the source checkout, a model, or the
+  network;
 - noted each time the run opens, lists, or stats the fault's path, or calls the replaced runner, so the suite knows
   the fault was reached.
 
@@ -117,6 +119,9 @@ class Run:
         self.targets = forms(spec.get("target"))
         # The run's folders, and the null device, which a program it starts takes as its stdin or stdout.
         self.writable = [found for folder in spec["writable"] for found in forms(folder)]
+        # The folders no run writes in even where a writable folder holds them: the source checkout, which lies under
+        # the temporary folder when the mutation gate runs the suite in a throwaway worktree.
+        self.protected = [found for folder in spec["protected"] for found in forms(folder)]
         self.null = key(os.devnull)
         self.allow_git = not self.fault.startswith("git_")
         self.reached = False
@@ -126,6 +131,11 @@ class Run:
         if self.stopped is None:
             self.stopped = reason
         raise Stopped(reason)
+
+    def may_write(self, found: str) -> bool:
+        """Whether the run may write at a path as the hook compares it: inside its folders and outside every protected
+        one."""
+        return within(found, self.writable) and not within(found, self.protected)
 
     def touches(self, path: object) -> None:
         """Note a run that opens, lists, or stats the fault's path; a stat fault is reached only by a stat, which
@@ -154,7 +164,7 @@ class Run:
                 mode is None and isinstance(flags, int) and flags & WRITE_FLAGS
             )
             found = key(path)
-            if writes and found is not None and found != self.null and not within(found, self.writable):
+            if writes and found is not None and found != self.null and not self.may_write(found):
                 self.stop(f"wrote outside the run's folders: {found}")
         elif event in READS:
             self.touches(arguments[0] if arguments else None)
@@ -165,7 +175,7 @@ class Run:
         elif event in WRITES:
             for index in WRITES[event]:
                 found = key(arguments[index]) if index < len(arguments) else None
-                if found is not None and not within(found, self.writable):
+                if found is not None and not self.may_write(found):
                     self.stop(f"changed a path outside the run's folders ({event}): {found}")
 
 
