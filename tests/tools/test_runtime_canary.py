@@ -1558,6 +1558,33 @@ class BashTests(RuntimeCanaryTestCase):
             ),
         )
 
+    def test_the_bash_recorder_writes_a_record_read_records_reads_for_a_path_holding_a_tab_or_a_newline(self) -> None:
+        self.canary(
+            FakeRuntimes(), ["gamma"], discovery_only=True, sources=[runtime_canary.FIXTURE_SOURCE, self.make_source()]
+        )
+        log = self.home / ".runtime-canary" / "scripts" / "direct.jsonl"
+        log.write_text("", encoding="utf-8")
+        # Git Bash stores a control character of a file name as a private-use character Windows allows, and shows
+        # it in $PWD as the control character; with a cygpath that fails, the recorder writes $PWD as Bash gives it,
+        # as it does on Linux, which has no cygpath. Git's bin/bash.exe is a launcher that puts its own folders,
+        # cygpath's among them, before PATH, so on Windows the test starts the Bash it launches.
+        bash = Path(git_bash())
+        if sys.platform == "win32":
+            bash = bash.parents[1] / "usr" / "bin" / "bash.exe"
+        folder = self.home / ("tabandline" if sys.platform == "win32" else "tab\tand\nline")
+        folder.mkdir()
+        (folder / "tool.sh").write_bytes(b"exit 3\n")
+        stub = self.home / "stub"
+        stub.mkdir()
+        (stub / "cygpath").write_bytes(b"#!/bin/sh\nexit 1\n")
+        (stub / "cygpath").chmod(0o755)
+        environment = {**runtime_canary.environment(dict(os.environ), log, self.home), "PATH": str(stub)}
+        process = subprocess.run([bash, "tool.sh"], cwd=folder, env=environment, capture_output=True, check=False)
+        self.assertEqual(3, process.returncode, process.stderr)
+        started = runtime_canary.read_records(log)
+        self.assertEqual([None, 3], [record.get("exit") for record in started])
+        self.assertTrue(all(record["cwd"].endswith("/tab\tand\nline") for record in started), started)
+
 
 class CopilotVersionTests(RuntimeCanaryTestCase):
     def test_every_copilot_start_turns_auto_update_off_so_the_recorded_version_is_the_one_that_ran(self) -> None:
@@ -2423,6 +2450,19 @@ class RecordRefusalTests(RuntimeCanaryTestCase):
         # A byte that is not UTF-8 is replaced, never a reason to lose the record.
         records.write_bytes(b'{"run": "kept \xff"}\n')
         self.assertEqual([{"run": "kept �"}], runtime_canary.read_records(records))
+
+    def test_a_python_recorder_line_for_a_path_that_is_not_utf8_is_refused_by_name_not_skipped(self) -> None:
+        # The Python recorder writes with json.dumps, as RECORDER's _write does, so a working folder that is not
+        # UTF-8 on Linux, held as a lone surrogate, is written as its escape: a path the canary cannot compare.
+        self.assertIn("log.write(json.dumps(record)", runtime_canary.RECORDER)
+        records = self.root / "direct.jsonl"
+        line = json.dumps({"argv": ["tool.py"], "cwd": "/home/folder\udcff", "pid": 1})
+        records.write_text(line + "\n", encoding="utf-8")
+        with self.assertRaises(runtime_canary.RecordRefused) as raised:
+            runtime_canary.read_records(records)
+        self.assertEqual(
+            "line 1: the JSON holds a lone surrogate U+DCFF, which UTF-8 cannot encode", raised.exception.reason
+        )
 
     def test_a_record_that_cannot_be_read_is_named_by_the_file_the_error_names_or_else_the_marker_file(self) -> None:
         probe, script_log = self.root / "probe.jsonl", self.root / "scripts" / "codex-alpha.jsonl"
