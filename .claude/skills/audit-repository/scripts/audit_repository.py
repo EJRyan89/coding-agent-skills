@@ -37,8 +37,9 @@ part above that size, and a directory split only when it alone holds more than a
 FIXES_PER_READER fixes, in the order they merged, and more each when that would need more than MAX_TWIN_READERS
 readers, so the readers stay bounded and every fix is still read. A removed line is searched for when it is at least
 MIN_CONSTRUCT_CHARS long once stripped, holds a letter or digit, is no Python import, and is not added back elsewhere
-in the fix; a brief lists at most MAX_CONSTRUCT_LINES of them and MAX_HITS places. A release, rotation, or twins run
-reads the open milestones and, for rotation, the next milestone's open issues through gh, from the checkout audited.
+in the fix; a brief lists at most MAX_CONSTRUCT_LINES of them and MAX_HITS places. A release, rotation, guidance, or
+twins run reads the open milestones and, for rotation, the next milestone's open issues through gh, from the checkout
+audited.
 
 Every line is one fact:
 

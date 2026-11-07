@@ -5,8 +5,9 @@ does not.
 The review is report-only: nothing here arms, holds, or blocks a pull request, and no line it prints changes the
 tick's exit status. A head is covered when the archive's latest record of the pull request reviewed it, or reviewed an
 earlier head of the same branch from which every commit since is a merge, as when main was merged in: the branch's own
-change is what was reviewed. A conflict a merge resolved is not reviewed again. Every other head is due, once: the
-record review-prs writes covers it on the next tick, so no tick asks for a second review of a head.
+change is what was reviewed. A conflict a merge resolved is not reviewed again. Every other head is due on each tick
+until a record covers it: the record review-prs writes covers it from the next tick on, and a head whose review
+failed stays due.
 
 Its lines, printed after the PR lines:
 

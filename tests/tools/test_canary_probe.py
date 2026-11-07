@@ -92,7 +92,7 @@ def test_with_no_run_identifier_it_writes_nothing_and_exits_1(tmp_path: Path) ->
         assert not (home / STATE / "probe.jsonl").exists()
 
 
-def test_a_canary_run_whose_probe_found_no_identifier_is_never_a_denied_write(tmp_path: Path) -> None:
+def test_a_run_whose_probe_found_no_identifier_reads_as_its_exit_where_the_recorder_sees_it(tmp_path: Path) -> None:
     home = tmp_path / "home"
     home.mkdir()
     script = deployed_probe(home)

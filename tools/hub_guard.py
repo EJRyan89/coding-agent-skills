@@ -1185,7 +1185,9 @@ def lookups_within(deadline: float) -> Iterator[None]:
 
 
 def git(cwd: Path, *arguments: str) -> GitResult:
-    """Every git call the guard makes, run as tools/worktrees.py runs one, within what lookup_timeout leaves it."""
+    """A git call the guard makes, run as tools/worktrees.py runs one, within what lookup_timeout leaves it; the two
+    lookups of a git directory, git_directory_holding and guarded_hub_of_repository, call CLIENT.output themselves,
+    within the same limit."""
     return worktrees.git(cwd, *arguments, timeout=lookup_timeout())
 
 
