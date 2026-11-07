@@ -81,6 +81,7 @@ from tools.mutation_gate import (
     kill_ratio,
     leg_modules,
     leg_record,
+    local_record,
     module_mutants,
     modules_to_split,
     named_in,
@@ -2215,6 +2216,7 @@ def set_field(record: dict[str, Any], path: Sequence[str | int], value: object) 
 
 
 MUTANT_AT = ("modules", 0, "mutants", 0)
+CARRIED_RECORD = {"run": "r", "head": "ab" * 20, "summary": "s"}
 OUTCOME_AT = ("outcomes", PATH_MODULE, 0)
 
 
@@ -2223,6 +2225,35 @@ OUTCOME_AT = ("outcomes", PATH_MODULE, 0)
     [
         (("base",), 1, "record.json.base must be a non-empty string, found integer 1"),
         (("mutmut",), 1, "record.json.mutmut must be a non-empty string, found integer 1"),
+        (("suites",), 1, "record.json.suites must be an array, found integer 1"),
+        (("suites",), [1], "record.json.suites[0] must be a non-empty string, found integer 1"),
+        (("carried",), 1, "record.json.carried must be an object or null, found integer 1"),
+        (
+            ("carried",),
+            {"run": "r", "head": "ab" * 20},
+            "record.json.carried must be an object with field summary, found an object without it",
+        ),
+        (
+            ("carried",),
+            {**CARRIED_RECORD, "x": 1},
+            'record.json.carried must be an object of known fields, found unknown field "x"',
+        ),
+        (
+            ("carried",),
+            {**CARRIED_RECORD, "run": 1},
+            "record.json.carried.run must be a non-empty string, found integer 1",
+        ),
+        (
+            ("carried",),
+            {**CARRIED_RECORD, "head": "x"},
+            "record.json.carried.head must be a lowercase hexadecimal digest of 40 or 64 characters, found a string of "
+            "1 character",
+        ),
+        (
+            ("carried",),
+            {**CARRIED_RECORD, "summary": 1},
+            "record.json.carried.summary must be a non-empty string, found integer 1",
+        ),
         (("modules", 0), 1, "record.json.modules[0] must be an object, found integer 1"),
         (("modules", 0, "module"), 1, "record.json.modules[0].module must be a non-empty string, found integer 1"),
         (
@@ -2786,7 +2817,12 @@ class SplitRunFixtures(unittest.TestCase):
             gate = Gate(root, "main", 5, 2, GitClient(), stub_generator, refuse_reach)
             with mock.patch("sys.stdout", io.StringIO()) as printed:
                 mutation_gate.select_step(gate, folder, {"GITHUB_OUTPUT": str(outputs)})
-            self.assertEqual("tools/calc.py: 2 mutants, run on Linux, Windows\n", printed.getvalue())
+            self.assertEqual(
+                "No earlier finished verdict of this pull request was found, so the mutants run\n"
+                "tools/calc.py: 2 mutants, run on Linux, Windows\n"
+                "The Linux leg runs in 1 shard\nThe Windows leg runs in 1 shard\n",
+                printed.getvalue(),
+            )
             asked: list[str] = []
 
             def windows(tree: Path, suite: str, timeout: float, tests: Sequence[str]) -> str:
@@ -2796,7 +2832,7 @@ class SplitRunFixtures(unittest.TestCase):
             self.legs(root, folder, windows)
             result = mutation_gate.join(folder)
             step_outputs = outputs.read_text(encoding="utf-8")
-        self.assertEqual("linux=true\nwindows=true\n", step_outputs)
+        self.assertEqual("linux=[1]\nwindows=[1]\n", step_outputs)
         self.assertTrue(result.finished)
         self.assertIn(
             "| `tools/calc.py` | Linux, Windows | 10 | 2 | 2 | 0 | 0 | 0 | 0 | 0 | 0 | 100% (2 of 2) |", result.text
@@ -2829,7 +2865,7 @@ class SplitRunFixtures(unittest.TestCase):
             (folder / "outcomes-linux.json").write_text(json.dumps(leg_record(found)), encoding="utf-8")
             text = mutation_gate.join(folder).text
             step_outputs = outputs.read_text(encoding="utf-8")
-        self.assertEqual("linux=true\nwindows=false\n", step_outputs)
+        self.assertEqual("linux=[1]\nwindows=[]\n", step_outputs)
         self.assertEqual(LegRun(WINDOWS_LEG, 5, 0.0, 0, {}, {}, []), nothing)
         self.assertIn("| `tools/calc.py` | Linux | 6 | 2 | 1 | 0 | 0 | 1 | 0 | 0 | 0 | 50% (1 of 2) |", text)
 
@@ -2911,11 +2947,15 @@ class SplitRunFixtures(unittest.TestCase):
             folder = Path(temporary) / "folder"
             with mock.patch.object(Gate, "selection", return_value=selected), mock.patch("sys.stdout", log):
                 self.assertEqual(0, mutation_gate.main(["select", str(folder)], {}))
-            # Each module's line names only the legs that run it, and reaches the log as it is written.
+            # Each module's line names only the legs that run it, each leg's its shards, and each reaches the log as it
+            # is written.
             lines = [
+                "No earlier finished verdict of this pull request was found, so the mutants run\n",
                 "tools/paths.py: 1 mutants, run on Linux, Windows\n",
                 "tools/calc.py: 1 mutants, run on Linux\n",
                 "tools/none.py: 0 mutants, run on no leg\n",
+                "The Linux leg runs in 1 shard\n",
+                "The Windows leg runs in 1 shard\n",
             ]
             self.assertEqual(["".join(lines[: index + 1]) for index in range(len(lines))], log.flushed)
             self.assertEqual(selected, read_selection(folder / "mutants.json"))
@@ -2924,7 +2964,7 @@ class SplitRunFixtures(unittest.TestCase):
                 mock.patch("sys.stdout", io.StringIO()),
             ):
                 self.assertEqual(0, mutation_gate.main(["leg", str(folder)], {}))
-            leg.assert_called_once_with(selected)
+            leg.assert_called_once_with(selected, 0)
             self.assertEqual(unfinished, read_leg(folder / "outcomes-windows.json", selected, WINDOWS_LEG))
             linux_outcomes = {
                 PATH_MODULE: [Outcome(TEXTUAL, SURVIVED, ("t",))],
@@ -3388,6 +3428,8 @@ def ci_run(
     (chosen,) = read_selection(folder / "mutants.json").modules
     record = LegRun(LINUX_LEG, 40, 2400.0, 4, {"tools/calc.py": outcomes(chosen.mutants)}, {}, list(unmeasured))
     (folder / "outcomes-linux.json").write_text(json.dumps(leg_record(record)), encoding="utf-8")
+    # A run's artifacts downloaded afresh hold no local run.
+    (folder / "local-linux.json").unlink(missing_ok=True)
 
 
 class UnrunFixtures(unittest.TestCase):
@@ -3417,7 +3459,9 @@ class UnrunFixtures(unittest.TestCase):
     def unrun(self, gate: Gate | None = None) -> LegRun:
         with mock.patch("sys.stdout", io.StringIO()):
             completed = (gate or self.gate()).unrun(self.folder)
-        (self.folder / "outcomes-linux.json").write_text(json.dumps(leg_record(completed)), encoding="utf-8")
+        if completed.local:
+            record = local_record(LINUX_LEG, completed.local)
+            (self.folder / "local-linux.json").write_text(json.dumps(record), encoding="utf-8")
         return completed
 
     def test_only_the_mutant_the_leg_left_not_run_runs_and_the_kill_the_leg_made_is_kept(self) -> None:
@@ -3558,8 +3602,7 @@ class UnrunFixtures(unittest.TestCase):
         self.unrun()
         with self.assertRaisesRegex(
             RuntimeError,
-            r"^outcomes-linux.json was already completed by a local run: download the leg's outcomes again to run "
-            r"its mutants anew$",
+            r"^local-linux.json already completes the Linux leg: remove it to run the leg's mutants anew$",
         ):
             self.unrun()
         with (
@@ -3642,7 +3685,15 @@ class UnrunFixtures(unittest.TestCase):
             code = mutation_gate.main(["unrun", str(self.folder)], {"GITHUB_STEP_SUMMARY": str(summary_file)})
         unrun.assert_called_once_with(self.folder)
         self.assertEqual(1, code)
-        self.assertEqual(completed, read_leg(self.folder / "outcomes-linux.json", selected, LINUX_LEG))
+        # The local run is written beside the leg's record, which stays as the leg wrote it.
+        self.assertEqual(
+            local_record(LINUX_LEG, completed.local) if completed.local else None,
+            json.loads((self.folder / "local-linux.json").read_text(encoding="utf-8")),
+        )
+        self.assertEqual(
+            LegRun(LINUX_LEG, 40, 2400.0, 4, completed.outcomes, {}, []),
+            read_leg(self.folder / "outcomes-linux.json", selected, LINUX_LEG),
+        )
         written = summary_file.read_text(encoding="utf-8")
         self.assertEqual(mutation_gate.join(self.folder).text, written)
         self.assertIn("::error title=Mutation gate unfinished::", printed.getvalue())
@@ -3699,7 +3750,6 @@ def test_a_selection_records_its_head_and_each_modules_digest_and_a_leg_its_esti
         [],
         {PATH_MODULE: 12.5},
         30.0,
-        local,
     )
     with tempfile.TemporaryDirectory() as temporary:
         mutants, outcomes = Path(temporary) / "mutants.json", Path(temporary) / "outcomes.json"
@@ -3707,12 +3757,13 @@ def test_a_selection_records_its_head_and_each_modules_digest_and_a_leg_its_esti
         outcomes.write_text(json.dumps(leg_record(leg)), encoding="utf-8")
         assert read_selection(mutants) == selected
         assert read_leg(outcomes, selected, WINDOWS_LEG) == leg
+    assert read_local_file(local_record(WINDOWS_LEG, local), leg).local == local
 
 
 # A CI leg that left its one mutant not run, which a local run may complete.
 LOCAL_LEG = LegRun(WINDOWS_LEG, 40, 1.5, 2, {PATH_MODULE: [Outcome(READ_MUTANT, NOT_RUN)]}, {"u": "v"}, [])
-LOCAL_AT = ("local",)
 LOCAL_RECORD = {
+    "leg": WINDOWS_LEG,
     "minutes": 60,
     "seconds": 1.0,
     "workers": 2,
@@ -3723,9 +3774,13 @@ LOCAL_RECORD = {
 }
 
 
-def local_leg_record(local: dict[str, Any], ci: LegRun = LOCAL_LEG) -> dict[str, Any]:
-    """A CI leg's record holding `local` as the local run that completed it."""
-    return set_field(leg_record(ci), LOCAL_AT, local)
+def read_local_file(local: object, ci: LegRun = LOCAL_LEG) -> LegRun:
+    """The CI leg `ci` completed by the local run `local`, as read_run reads the file the unrun step writes beside the
+    leg's record."""
+    with tempfile.TemporaryDirectory() as temporary:
+        path = Path(temporary) / "local-windows.json"
+        path.write_text(json.dumps(local), encoding="utf-8")
+        return replace(ci, local=mutation_gate.read_local(mutation_gate.read_record(path), path.name, ci))
 
 
 def read_record_file(record: dict[str, Any]) -> LegRun:
@@ -3774,49 +3829,11 @@ def test_a_selections_head_of_either_hash_length_reads_back() -> None:
             'record.json.needed.tools/paths.py must be a finite number, found string "1"',
         ),
         (("available",), None, "record.json.available must be a finite number, found null"),
-        (LOCAL_AT, 1, "record.json.local must be an object or null, found integer 1"),
-        (LOCAL_AT, {**LOCAL_RECORD, "minutes": 0}, "record.json.local.minutes must be an integer of at least 1"),
-        (LOCAL_AT, {**LOCAL_RECORD, "workers": 0}, "record.json.local.workers must be an integer of at least 1"),
-        (LOCAL_AT, {**LOCAL_RECORD, "mutants": []}, "record.json.local.mutants must be an object, found an array"),
-        (
-            LOCAL_AT,
-            {**LOCAL_RECORD, "mutants": {PATH_MODULE: [-1]}},
-            "record.json.local.mutants.tools/paths.py[0] must be an integer of at least 0",
-        ),
-        (
-            LOCAL_AT,
-            {**LOCAL_RECORD, "unmeasured_suites": 1},
-            "record.json.local.unmeasured_suites must be an array, found integer 1",
-        ),
-        (
-            LOCAL_AT,
-            {**LOCAL_RECORD, "seconds": "1"},
-            'record.json.local.seconds must be a finite number, found string "1"',
-        ),
-        (
-            LOCAL_AT,
-            {**LOCAL_RECORD, "failed_suites": 1},
-            "record.json.local.failed_suites must be an object, found integer 1",
-        ),
-        (
-            LOCAL_AT,
-            {**LOCAL_RECORD, "failed_suites": {"t": 1}},
-            "record.json.local.failed_suites.t must be a non-empty string, found integer 1",
-        ),
-        (LOCAL_AT, {**LOCAL_RECORD, "outcomes": []}, "record.json.local.outcomes must be an object, found an array"),
-        (
-            LOCAL_AT,
-            {**LOCAL_RECORD, "outcomes": {PATH_MODULE: 1}},
-            "record.json.local.outcomes.tools/paths.py must be an array, found integer 1",
-        ),
-        (
-            LOCAL_AT,
-            {**LOCAL_RECORD, "outcomes": {PATH_MODULE: [{"status": KILLED, "suites": [], "tests": []}]}},
-            "record.json.local.outcomes.tools/paths.py[0].suites must be the suites a killed mutant ran",
-        ),
+        (("shard",), -1, "record.json.shard must be an integer of at least 0"),
+        (("shards",), 0, "record.json.shards must be an integer of at least 1"),
     ],
 )
-def test_a_legs_estimate_or_local_run_of_another_kind_is_refused_by_its_path(
+def test_a_legs_estimate_of_another_kind_is_refused_by_its_path(
     path: Sequence[str | int], value: object, message: str
 ) -> None:
     with pytest.raises(RecordFieldError) as refused:
@@ -3827,25 +3844,71 @@ def test_a_legs_estimate_or_local_run_of_another_kind_is_refused_by_its_path(
 @pytest.mark.parametrize(
     ("local", "message"),
     [
+        (1, "local-windows.json must be an object, found integer 1"),
+        ({**LOCAL_RECORD, "leg": "Mac"}, "local-windows.json.leg must be one of"),
+        ({**LOCAL_RECORD, "minutes": 0}, "local-windows.json.minutes must be an integer of at least 1"),
+        ({**LOCAL_RECORD, "workers": 0}, "local-windows.json.workers must be an integer of at least 1"),
+        ({**LOCAL_RECORD, "x": 1}, 'local-windows.json must be an object of known fields, found unknown field "x"'),
+        ({**LOCAL_RECORD, "mutants": []}, "local-windows.json.mutants must be an object, found an array"),
+        (
+            {**LOCAL_RECORD, "mutants": {PATH_MODULE: [-1]}},
+            "local-windows.json.mutants.tools/paths.py[0] must be an integer of at least 0",
+        ),
+        (
+            {**LOCAL_RECORD, "unmeasured_suites": 1},
+            "local-windows.json.unmeasured_suites must be an array, found integer 1",
+        ),
+        ({**LOCAL_RECORD, "seconds": "1"}, 'local-windows.json.seconds must be a finite number, found string "1"'),
+        ({**LOCAL_RECORD, "failed_suites": 1}, "local-windows.json.failed_suites must be an object, found integer 1"),
+        (
+            {**LOCAL_RECORD, "failed_suites": {"t": 1}},
+            "local-windows.json.failed_suites.t must be a non-empty string, found integer 1",
+        ),
+        ({**LOCAL_RECORD, "outcomes": []}, "local-windows.json.outcomes must be an object, found an array"),
+        (
+            {**LOCAL_RECORD, "outcomes": {PATH_MODULE: 1}},
+            "local-windows.json.outcomes.tools/paths.py must be an array, found integer 1",
+        ),
+        (
+            {**LOCAL_RECORD, "outcomes": {PATH_MODULE: [{"status": KILLED, "suites": [], "tests": []}]}},
+            "local-windows.json.outcomes.tools/paths.py[0].suites must be the suites a killed mutant ran",
+        ),
+    ],
+)
+def test_a_local_run_of_another_kind_is_refused_by_its_path(local: object, message: str) -> None:
+    with pytest.raises(RecordFieldError) as refused:
+        read_local_file(local)
+    assert str(refused.value).startswith(message)
+
+
+def test_a_local_run_of_another_leg_is_refused() -> None:
+    with pytest.raises(RecordError) as refused:
+        read_local_file({**LOCAL_RECORD, "leg": LINUX_LEG})
+    assert str(refused.value) == "local-windows.json holds a local run of the Linux leg, not of the Windows leg"
+
+
+@pytest.mark.parametrize(
+    ("local", "message"),
+    [
         (
             {"mutants": {"tools/other.py": [0]}, "outcomes": {"tools/other.py": []}},
-            "record.json.local.mutants names tools/other.py, whose mutants the leg does not run",
+            "local-windows.json.mutants names tools/other.py, whose mutants the leg does not run",
         ),
         (
             {"mutants": {PATH_MODULE: [1]}},
-            "record.json.local.mutants.tools/paths.py names [1], not distinct places among its 1",
+            "local-windows.json.mutants.tools/paths.py names [1], not distinct places among its 1",
         ),
         (
             {"mutants": {PATH_MODULE: [0, 0]}},
-            "record.json.local.mutants.tools/paths.py names [0, 0], not distinct places among",
+            "local-windows.json.mutants.tools/paths.py names [0, 0], not distinct places among",
         ),
         (
             {"outcomes": {}},
-            "record.json.local.outcomes holds [], not the modules record.json.local.mutants names",
+            "local-windows.json.outcomes holds [], not the modules local-windows.json.mutants names",
         ),
         (
             {"outcomes": {PATH_MODULE: []}},
-            "record.json.local.outcomes.tools/paths.py holds 0 outcomes, not one for each place",
+            "local-windows.json.outcomes.tools/paths.py holds 0 outcomes, not one for each place",
         ),
     ],
 )
@@ -3853,7 +3916,7 @@ def test_a_local_run_naming_a_place_that_holds_no_outcome_of_its_own_stops_the_j
     local: dict[str, Any], message: str
 ) -> None:
     with pytest.raises(RecordError) as refused:
-        read_record_file(local_leg_record({**LOCAL_RECORD, **local}))
+        read_local_file({**LOCAL_RECORD, **local})
     assert str(refused.value).startswith(message)
 
 
@@ -3867,13 +3930,11 @@ def test_a_local_run_naming_two_judged_places_names_each_ci_outcome() -> None:
     ci = LegRun(WINDOWS_LEG, 40, 1.5, 2, {PATH_MODULE: [ci_outcome(KILLED), ci_outcome(SURVIVED)]}, {}, [])
     outcome = {"status": KILLED, "suites": ["t"], "tests": []}
     local = {**LOCAL_RECORD, "mutants": {PATH_MODULE: [0, 1]}, "outcomes": {PATH_MODULE: [outcome, outcome]}}
-    with tempfile.TemporaryDirectory() as temporary:
-        path = Path(temporary) / "record.json"
-        path.write_text(json.dumps(local_leg_record(local, ci)), encoding="utf-8")
-        with pytest.raises(RecordError) as refused:
-            read_leg(path, selected, WINDOWS_LEG)
+    assert len(selected.modules[0].mutants) == len(ci.outcomes[PATH_MODULE])
+    with pytest.raises(RecordError) as refused:
+        read_local_file(local, ci)
     assert str(refused.value) == (
-        "record.json.local.mutants.tools/paths.py names [0, 1], whose CI outcomes (killed, survived) left no mutant "
+        "local-windows.json.mutants.tools/paths.py names [0, 1], whose CI outcomes (killed, survived) left no mutant "
         "without a verdict"
     )
 
@@ -3882,14 +3943,13 @@ def test_a_local_run_naming_two_judged_places_names_each_ci_outcome() -> None:
 def test_a_local_outcome_stands_only_where_the_ci_leg_left_no_verdict(status: str, unmeasured: bool) -> None:
     ci = LegRun(WINDOWS_LEG, 40, 1.5, 2, {PATH_MODULE: [ci_outcome(status)]}, {}, ["u"] if unmeasured else [])
     left = status in (NOT_RUN, ERRORED, TIMED_OUT) or (unmeasured and status in (SURVIVED, NOT_REACHED))
-    record = local_leg_record(LOCAL_RECORD, ci)
     if left:
-        assert read_record_file(record).local is not None
+        assert read_local_file(LOCAL_RECORD, ci).local is not None
         return
     with pytest.raises(RecordError) as refused:
-        read_record_file(record)
+        read_local_file(LOCAL_RECORD, ci)
     assert str(refused.value) == (
-        f"record.json.local.mutants.tools/paths.py names [0], whose CI outcomes ({status}) left no mutant without a "
+        f"local-windows.json.mutants.tools/paths.py names [0], whose CI outcomes ({status}) left no mutant without a "
         "verdict"
     )
 
@@ -3899,10 +3959,10 @@ def test_a_local_outcome_naming_a_suite_the_local_run_judged_nothing_with_is_ref
     suites: dict[str, Any] = {"failed_suites": {}, "unmeasured_suites": []}
     suites[listed] = {"t": "failed unmutated"} if listed == "failed_suites" else ["t"]
     with pytest.raises(RecordFieldError) as error:
-        read_record_file(local_leg_record({**LOCAL_RECORD, **suites}))
+        read_local_file({**LOCAL_RECORD, **suites})
     assert str(error.value) == (
-        f"record.json.local.outcomes.tools/paths.py[0].suites must be suites the local run ran, none of them in its "
-        f"{listed}, found t, which record.json.local.{listed} lists"
+        f"local-windows.json.outcomes.tools/paths.py[0].suites must be suites the local run ran, none of them in its "
+        f"{listed}, found t, which local-windows.json.{listed} lists"
     )
 
 
@@ -3913,7 +3973,7 @@ def test_a_ci_outcome_is_held_to_the_ci_legs_suites_and_not_the_local_runs(liste
     suites: dict[str, Any] = {"failed_suites": {}, "unmeasured_suites": []}
     suites[listed] = {"t": "failed unmutated"} if listed == "failed_suites" else ["t"]
     outcomes = {PATH_MODULE: [{"status": KILLED, "suites": ["u"], "tests": []}]}
-    leg = read_record_file(local_leg_record({**LOCAL_RECORD, **suites, "outcomes": outcomes}, ci))
+    leg = read_local_file({**LOCAL_RECORD, **suites, "outcomes": outcomes}, ci)
     assert leg.outcomes[PATH_MODULE][0].status == TIMED_OUT
     assert mutation_gate.judged_outcomes(leg)[PATH_MODULE][0].status == KILLED
 
@@ -3949,3 +4009,795 @@ def test_a_coverage_report_measured_without_contexts_is_read(tmp_path: Path) -> 
     plain = {"files": {"module.py": {"executed_lines": [1], "missing_lines": [2], "excluded_lines": []}}}
     report.write_text(json.dumps(plain), encoding="utf-8")
     assert mutation_gate.read_report(report) == plain
+
+
+def many(count: int, module: str = "tools/calc.py", windows: bool = False) -> SelectedModule:
+    """A module with `count` mutants, one on each of its first lines."""
+    return SelectedModule(module, count, tuple(mutant(line, module) for line in range(1, count + 1)), (), windows)
+
+
+@pytest.mark.parametrize(
+    ("count", "shards"),
+    [(0, 0), (1, 1), (40, 1), (41, 2), (80, 2), (81, 3), (240, 6), (241, 7), (320, 8), (321, 8), (1000, 8)],
+)
+def test_a_legs_mutants_are_dealt_one_shard_for_each_forty_and_eight_at_most(count: int, shards: int) -> None:
+    # Pinned contract values: one shard for each 40 mutants, at most 8, which the workflow's matrix runs.
+    selected = Selected("origin/main", "3.8.0", (many(count),))
+    assert mutation_gate.leg_shards(LINUX_LEG, selected) == shards
+    assert mutation_gate.leg_shards(WINDOWS_LEG, selected) == 0
+
+
+def test_the_shards_deal_each_mutant_of_the_leg_once_in_runs_of_near_equal_length() -> None:
+    selected = Selected(
+        "origin/main",
+        "3.8.0",
+        (many(50, "tools/a.py"), many(37, "tools/b.py", windows=True), many(0, "tools/c.py")),
+    )
+    dealt = [
+        [
+            (module, place)
+            for module, places in mutation_gate.shard_places(LINUX_LEG, selected, shard).items()
+            for place in places
+        ]
+        for shard in (1, 2, 3)
+    ]
+    assert [len(places) for places in dealt] == [29, 29, 29]
+    every = [("tools/a.py", place) for place in range(50)] + [("tools/b.py", place) for place in range(37)]
+    assert [place for places in dealt for place in places] == every
+    # The Windows leg deals only the modules it runs.
+    assert mutation_gate.leg_shards(WINDOWS_LEG, selected) == 1
+    assert mutation_gate.shard_places(WINDOWS_LEG, selected, 1) == {"tools/b.py": list(range(37))}
+    second = mutation_gate.shard_modules(LINUX_LEG, selected, 2)
+    assert [(chosen.module, [found.line for found in chosen.mutants]) for chosen in second] == [
+        ("tools/a.py", list(range(30, 51))),
+        ("tools/b.py", list(range(1, 9))),
+    ]
+
+
+SHARDED = Selected("origin/main", "3.8.0", (many(45),), "cd" * 20)
+
+
+def shard_run(shard: int, statuses: Callable[[Mutant], str], **fields: Any) -> LegRun:
+    """Shard `shard` of SHARDED's Linux leg, each of its mutants given the status `statuses` names."""
+    (chosen,) = mutation_gate.shard_modules(LINUX_LEG, SHARDED, shard)
+    outcomes = [
+        Outcome(found, status, () if status == NOT_RUN else ("t",))
+        for found in chosen.mutants
+        for status in [statuses(found)]
+    ]
+    return LegRun(LINUX_LEG, 40, 60.0 * shard, 4, {chosen.module: outcomes}, {}, [], shard=shard, shards=2, **fields)
+
+
+def write_sharded(folder: Path, *runs: LegRun, names: Sequence[str] = ()) -> None:
+    """The selection SHARDED and each shard's run, each in the file of its shard or of `names` at its place."""
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / "mutants.json").write_text(json.dumps(selection_record(SHARDED)), encoding="utf-8")
+    for index, run in enumerate(runs):
+        name = names[index] if index < len(names) else f"outcomes-linux-{run.shard}.json"
+        (folder / name).write_text(json.dumps(leg_record(run)), encoding="utf-8")
+
+
+def test_a_legs_shards_join_into_the_leg_each_mutant_at_its_place() -> None:
+    first = shard_run(1, lambda found: KILLED, needed={"tools/calc.py": 10.0}, available=100.0)
+    second = shard_run(2, lambda found: SURVIVED if found.line == 45 else KILLED, needed={"tools/calc.py": 5.0})
+    second = replace(second, unmeasured_suites=["tests/u.py"], failed_suites={"tests/f.py": "failed unmutated"})
+    with tempfile.TemporaryDirectory() as temporary:
+        folder = Path(temporary)
+        write_sharded(folder, first, second)
+        _, (leg,) = mutation_gate.read_run(folder)
+        result = mutation_gate.join(folder)
+    assert [found.mutant.line for found in leg.outcomes["tools/calc.py"]] == list(range(1, 46))
+    assert [found.status for found in leg.outcomes["tools/calc.py"]] == [KILLED] * 44 + [SURVIVED]
+    assert (leg.shard, leg.shards, leg.workers, leg.seconds, leg.minutes) == (0, 2, 8, 120.0, 40)
+    assert (leg.needed, leg.available) == ({"tools/calc.py": 15.0}, 100.0)
+    assert (leg.unmeasured_suites, leg.failed_suites) == (["tests/u.py"], {"tests/f.py": "failed unmutated"})
+    # A suite one shard left unmeasured beside a survivor leaves the run unfinished, as a whole leg's would.
+    assert not result.finished
+    assert "- On Linux, 2 shards of 8 workers in all ran for at most 2 of each one's 40 minutes;" in result.text
+    assert "| `tools/calc.py` | Linux | 45 | 45 | 44 | 0 | 0 | 1 | 0 | 0 | 0 | 98% (44 of 45) |" in result.text
+
+
+@pytest.mark.parametrize(
+    ("runs", "names", "error", "message"),
+    [
+        (
+            [1],
+            [],
+            RuntimeError,
+            "the Linux leg wrote no outcomes-linux-2.json, so its mutants have no verdict: read its log",
+        ),
+        (
+            [],
+            [],
+            RuntimeError,
+            "the Linux leg wrote no outcomes-linux-1.json or outcomes-linux-2.json, so its mutants have no verdict: "
+            "read its log",
+        ),
+        (
+            [1, 2, 2, 2],
+            ["outcomes-linux-1.json", "outcomes-linux-2.json", "outcomes-linux-3.json", "outcomes-linux-4.json"],
+            RecordError,
+            "outcomes-linux-3.json, outcomes-linux-4.json names a shard of the Linux leg its selection does not deal",
+        ),
+        (
+            [1, 1],
+            ["outcomes-linux-1.json", "outcomes-linux-2.json"],
+            RecordError,
+            "outcomes-linux-2.json holds the Linux leg's run of shard 1 of the leg, not of shard 2 of the leg",
+        ),
+        (
+            [1, 2, 2],
+            ["outcomes-linux-1.json", "outcomes-linux-2.json", "outcomes-linux-3.json"],
+            RecordError,
+            "outcomes-linux-3.json names a shard of the Linux leg its selection does not deal",
+        ),
+        (
+            [1, 2, 2],
+            ["outcomes-linux-1.json", "outcomes-linux-2.json", "outcomes-linux.json"],
+            RecordError,
+            "outcomes-linux.json holds the whole Linux leg's run beside its shards' outcomes-linux-1.json, "
+            "outcomes-linux-2.json",
+        ),
+    ],
+)
+def test_a_missing_misnamed_stray_or_doubled_shard_stops_the_join(
+    runs: Sequence[int], names: Sequence[str], error: type[Exception], message: str
+) -> None:
+    with tempfile.TemporaryDirectory() as temporary:
+        folder = Path(temporary)
+        write_sharded(folder, *(shard_run(shard, lambda found: KILLED) for shard in runs), names=names)
+        with pytest.raises(error) as stopped:
+            mutation_gate.join(folder)
+    assert str(stopped.value) == message
+
+
+def test_a_shard_record_of_the_whole_leg_another_deal_or_another_shards_mutants_stops_the_join() -> None:
+    whole = replace(shard_run(2, lambda found: KILLED), shard=0, shards=1)
+    deal = replace(shard_run(2, lambda found: KILLED), shards=3)
+    every = replace(shard_run(2, lambda found: KILLED), outcomes=shard_run(1, lambda found: KILLED).outcomes)
+    elsewhere = replace(shard_run(2, lambda found: KILLED), outcomes={"tools/other.py": []})
+    for run, message in (
+        (whole, "outcomes-linux-2.json holds the Linux leg's run of the whole leg, not of shard 2 of the leg"),
+        (deal, "outcomes-linux-2.json deals the Linux leg into 3 shards, not the 2 its selection deals"),
+        (every, "outcomes-linux-2.json holds 22 outcomes of tools/calc.py, not one for each of its mutants"),
+        (elsewhere, "outcomes-linux-2.json holds no outcomes of tools/calc.py, so its mutants have no verdict"),
+    ):
+        with tempfile.TemporaryDirectory() as temporary:
+            folder = Path(temporary)
+            write_sharded(folder, shard_run(1, lambda found: KILLED))
+            (folder / "outcomes-linux-2.json").write_text(json.dumps(leg_record(run)), encoding="utf-8")
+            with pytest.raises(RecordError) as stopped:
+                mutation_gate.join(folder)
+        assert str(stopped.value) == message
+
+
+def test_a_shard_holding_a_module_only_another_shard_runs_names_the_shard() -> None:
+    selected = Selected("origin/main", "3.8.0", (many(41, "tools/a.py"), many(1, "tools/b.py")), "cd" * 20)
+    (first,) = mutation_gate.shard_modules(LINUX_LEG, selected, 1)
+    outcomes = {
+        "tools/a.py": [Outcome(found, KILLED, ("t",)) for found in first.mutants],
+        "tools/b.py": [Outcome(mutant(1, "tools/b.py"), KILLED, ("t",))],
+    }
+    run = LegRun(LINUX_LEG, 40, 1.0, 1, outcomes, {}, [], shard=1, shards=2)
+    with tempfile.TemporaryDirectory() as temporary:
+        path = Path(temporary) / "outcomes-linux-1.json"
+        path.write_text(json.dumps(leg_record(run)), encoding="utf-8")
+        with pytest.raises(RecordError) as stopped:
+            read_leg(path, selected, LINUX_LEG, 1)
+    assert str(stopped.value) == (
+        "outcomes-linux-1.json holds outcomes of tools/b.py, whose mutants the Linux leg's shard 1 does not run"
+    )
+
+
+def test_artifacts_downloaded_into_folders_of_their_own_are_read_and_a_name_found_twice_stops_the_join() -> None:
+    with tempfile.TemporaryDirectory() as temporary:
+        folder = Path(temporary)
+        write_sharded(folder / "mutation-mutants")
+        for shard in (1, 2):
+            write_sharded(folder / f"mutation-linux-{shard}", shard_run(shard, lambda found: KILLED))
+            (folder / f"mutation-linux-{shard}" / "mutants.json").unlink()
+        assert mutation_gate.join(folder).finished
+        write_sharded(folder)
+        with pytest.raises(RuntimeError) as stopped:
+            mutation_gate.join(folder)
+    assert str(stopped.value).startswith(f"{folder} holds mutants.json twice, at ")
+
+
+def test_a_local_run_of_a_leg_that_ran_no_mutant_stops_the_join() -> None:
+    with tempfile.TemporaryDirectory() as temporary:
+        folder = Path(temporary)
+        write_sharded(folder, shard_run(1, lambda found: KILLED), shard_run(2, lambda found: KILLED))
+        (folder / "local-windows.json").write_text("{}", encoding="utf-8")
+        with pytest.raises(RecordError) as stopped:
+            mutation_gate.join(folder)
+    assert str(stopped.value) == "local-windows.json holds a local run of a leg that ran no mutant of this run"
+
+
+def test_a_local_run_completes_a_sharded_leg_from_its_own_file() -> None:
+    first = shard_run(1, lambda found: KILLED)
+    second = shard_run(2, lambda found: NOT_RUN if found.line == 45 else KILLED)
+    with tempfile.TemporaryDirectory() as temporary:
+        folder = Path(temporary)
+        write_sharded(folder, first, second)
+        assert not mutation_gate.join(folder).finished
+        local = mutation_gate.LocalRun(
+            5, 1.0, 1, {"tools/calc.py": [44]}, {}, [], {"tools/calc.py": [Outcome(mutant(45), KILLED, ("t",))]}
+        )
+        (folder / "local-linux.json").write_text(json.dumps(local_record(LINUX_LEG, local)), encoding="utf-8")
+        _, (leg,) = mutation_gate.read_run(folder)
+        result = mutation_gate.join(folder)
+    assert leg.local == local
+    assert result.finished
+
+
+class ShardStepFixtures(unittest.TestCase):
+    """The leg step of one shard, with the worktrees and the leg's run replaced, so only what it is handed shows."""
+
+    def test_a_shard_runs_only_its_share_and_a_shard_the_selection_does_not_deal_stops_it(self) -> None:
+        git_client = mock.create_autospec(GitClient, instance=True)
+        git_client.output.return_value = SHARDED.head + "\n"
+        gate = Gate(Path(), "main", 40, 4, git_client)
+        handed: list[list[SelectedModule]] = []
+
+        def run_leg(name: str, trees: object, modules: list[SelectedModule], started: float) -> LegRun:
+            handed.append(modules)
+            return LegRun(name, 40, 1.0, 4, {}, {}, [])
+
+        with (
+            mock.patch.object(platform_support, "PLATFORM_NAME", LINUX_LEG),
+            mock.patch.object(mutation_gate, "worktrees", return_value=contextlib.nullcontext([Path()])),
+            mock.patch.object(Gate, "run_leg", side_effect=run_leg),
+        ):
+            ran = gate.leg(SHARDED, 2)
+            whole = gate.leg(SHARDED)
+            with self.assertRaisesRegex(
+                RuntimeError, r"^the selection deals the Linux leg into 2 shards, so it has no shard 3$"
+            ):
+                gate.leg(SHARDED, 3)
+        self.assertEqual((2, 2), (ran.shard, ran.shards))
+        self.assertEqual((0, 1), (whole.shard, whole.shards))
+        self.assertEqual(
+            [list(range(23, 46)), list(range(1, 46))],
+            [[found.line for found in modules[0].mutants] for modules in handed],
+        )
+
+    def test_the_leg_step_writes_its_shards_file_and_the_select_step_names_each_legs_shards(self) -> None:
+        shard = shard_run(2, lambda found: KILLED)
+        with tempfile.TemporaryDirectory() as temporary:
+            folder = Path(temporary)
+            outputs = folder / "outputs.txt"
+            with (
+                mock.patch.object(Gate, "selection", return_value=SHARDED),
+                mock.patch("sys.stdout", io.StringIO()) as printed,
+            ):
+                self.assertEqual(0, mutation_gate.main(["select", str(folder)], {"GITHUB_OUTPUT": str(outputs)}))
+            self.assertEqual("linux=[1, 2]\nwindows=[]\n", outputs.read_text(encoding="utf-8"))
+            self.assertIn("The Linux leg runs in 2 shards\n", printed.getvalue())
+            with (
+                mock.patch.object(Gate, "leg", return_value=shard) as leg,
+                mock.patch("sys.stdout", io.StringIO()),
+            ):
+                self.assertEqual(0, mutation_gate.main(["leg", str(folder), "--shard", "2"], {}))
+            leg.assert_called_once_with(SHARDED, 2)
+            with (
+                mock.patch.object(Gate, "leg", return_value=shard_run(1, lambda found: KILLED)) as first,
+                mock.patch("sys.stdout", io.StringIO()),
+            ):
+                self.assertEqual(0, mutation_gate.main(["leg", str(folder), "--shard", "1"], {}))
+            first.assert_called_once_with(SHARDED, 1)
+            self.assertEqual(shard, read_leg(folder / "outcomes-linux-2.json", SHARDED, LINUX_LEG, 2))
+            self.assertFalse((folder / "outcomes-linux.json").exists())
+            with mock.patch("sys.stderr", io.StringIO()), self.assertRaises(SystemExit):
+                mutation_gate.main(["leg", str(folder), "--shard", "0"], {})
+
+
+VERDICT_RUN = "https://github.example/owner/repository/actions/runs/7/attempts/1"
+VERDICT_SUMMARY = "## Mutation gate\n\nthe earlier run's table\n"
+HELPER = "def help():\n    return 1\n"
+
+
+class CarryFixtures(unittest.TestCase):
+    """A run of the fixture repository's pull request after an earlier run of it finished, which left its verdict
+    for the select step to carry, with the generator stubbed and no reach measured."""
+
+    def setUp(self) -> None:
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name) / "repository"
+        self.folder = Path(temporary.name) / "handed on"
+        fixture_repository(self.root)
+        self.gate = Gate(self.root, "main", 5, 2, GitClient(), stub_generator, refuse_reach)
+
+    def commit(self, files: dict[str, str], message: str = "later") -> None:
+        for name, text in files.items():
+            (self.root / name).parent.mkdir(parents=True, exist_ok=True)
+            (self.root / name).write_text(text, encoding="utf-8")
+        git(self.root, "add", ".")
+        git(self.root, "commit", "--quiet", "-m", message)
+
+    def judge(self) -> None:
+        """Leave the verdict of a finished run at HEAD where the workflow restores it for the select step."""
+        verdict = mutation_gate.Verdict(
+            VERDICT_RUN, self.gate.selection(), mutation_gate.tree_files(self.root, GitClient()), VERDICT_SUMMARY
+        )
+        path = self.folder / "verdict" / "verdict.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(mutation_gate.verdict_record(verdict)), encoding="utf-8")
+
+    def select(self) -> tuple[Selected, str, str]:
+        """The select step's selection, its log, and its step outputs."""
+        outputs = self.folder / "outputs.txt"
+        outputs.unlink(missing_ok=True)
+        with mock.patch("sys.stdout", io.StringIO()) as printed:
+            mutation_gate.select_step(self.gate, self.folder, {"GITHUB_OUTPUT": str(outputs)})
+        return read_selection(self.folder / "mutants.json"), printed.getvalue(), outputs.read_text(encoding="utf-8")
+
+    def assert_runs(self, reason: str) -> None:
+        selected, printed, outputs = self.select()
+        self.assertIsNone(selected.carried)
+        self.assertEqual("linux=[1]\nwindows=[]\n", outputs)
+        self.assertIn(f"The mutants run, rather than carry {VERDICT_RUN}'s verdict, since {reason}\n", printed)
+
+    def test_a_run_of_the_tree_the_verdict_tested_carries_it_and_the_join_names_its_run(self) -> None:
+        self.judge()
+        tested = git(self.root, "rev-parse", "HEAD").strip()
+        selected, printed, outputs = self.select()
+        result = mutation_gate.join(self.folder)
+        self.assertEqual(mutation_gate.Carried(VERDICT_RUN, tested, VERDICT_SUMMARY), selected.carried)
+        self.assertEqual(("tests/tools/test_calc.py",), selected.suites)
+        self.assertEqual("linux=[]\nwindows=[]\n", outputs)
+        self.assertIn(f"Carried forward the verdict of {VERDICT_RUN}, which judged these mutants\n", printed)
+        self.assertTrue(result.finished)
+        self.assertEqual(
+            f"**Carried forward from {VERDICT_RUN}:** no mutant ran, since this run makes the same mutants of the "
+            f"same module texts as that run judged at `{tested}`, and nothing changed since reaches a suite that "
+            f"reaches them, or the gate. That run's summary follows.\n\n{VERDICT_SUMMARY}",
+            result.text,
+        )
+
+    def test_a_change_no_suite_reaching_the_mutants_reads_carries_the_verdict(self) -> None:
+        self.judge()
+        # A document, and a suite that neither imports nor names the mutated module.
+        self.commit({"docs.md": "changed\n", "tests/tools/test_other.py": "def test_other() -> None:\n    pass\n"})
+        selected, _, _ = self.select()
+        self.assertIsNotNone(selected.carried)
+
+    def test_a_merge_of_the_base_that_reaches_no_suite_of_the_mutants_carries_the_verdict(self) -> None:
+        self.judge()
+        git(self.root, "switch", "--quiet", "main")
+        self.commit({"README.md": "the base moved on\n"}, "base")
+        git(self.root, "switch", "--quiet", "feature")
+        git(self.root, "merge", "--quiet", "--no-edit", "main")
+        selected, _, _ = self.select()
+        self.assertIsNotNone(selected.carried)
+
+    def test_a_merge_of_the_base_whose_resolution_changes_a_module_line_runs_the_mutants(self) -> None:
+        self.judge()
+        git(self.root, "switch", "--quiet", "main")
+        self.commit({"tools/calc.py": "def add(a, b):\n    return b + a\n"}, "base")
+        git(self.root, "switch", "--quiet", "feature")
+        merged = subprocess.run(
+            ["git", "-C", str(self.root), "merge", "--quiet", "--no-edit", "main"], capture_output=True, check=False
+        )
+        self.assertNotEqual(0, merged.returncode)
+        # The resolution keeps the branch's text but changes a line the pull request changed.
+        self.commit({"tools/calc.py": CALC.replace("a * 2", "a * 4")}, "resolve")
+        self.assert_runs("the mutants of `tools/calc.py` are not the ones it judged")
+
+    def test_a_change_to_a_suite_that_reaches_the_mutants_runs_them(self) -> None:
+        self.judge()
+        # A kill commit: a test added to the suite that reached the survivor.
+        self.commit({"tests/tools/test_calc.py": SUITE + "\n    def test_double(self) -> None:\n        pass\n"})
+        self.assert_runs("a change since reaches `tests/tools/test_calc.py`, which reach the mutants")
+
+    def test_a_change_to_a_helper_a_reaching_suite_imports_runs_the_mutants(self) -> None:
+        self.commit({"tests/tools/calc_helper.py": HELPER, "tests/tools/test_calc.py": "import calc_helper\n" + SUITE})
+        self.judge()
+        self.commit({"tests/tools/calc_helper.py": HELPER.replace("1", "2")})
+        self.assert_runs("a change since reaches `tests/tools/test_calc.py`, which reach the mutants")
+
+    def test_a_change_reaching_several_suites_of_the_mutants_names_each(self) -> None:
+        self.commit({"tests/tools/test_calc_more.py": SUITE})
+        self.judge()
+        self.commit(
+            dict.fromkeys(("tests/tools/test_calc.py", "tests/tools/test_calc_more.py"), SUITE + "\n# changed\n")
+        )
+        self.assert_runs(
+            "a change since reaches `tests/tools/test_calc.py`, `tests/tools/test_calc_more.py`, "
+            "which reach the mutants"
+        )
+
+    def test_each_line_saying_whether_the_verdict_carries_is_flushed_as_it_is_written(self) -> None:
+        # The select step's own lines follow, and in CI the log interleaves them with what the step's children write.
+        def flushed() -> list[str]:
+            recorder = FlushRecorder()
+            with mock.patch("sys.stdout", recorder):
+                mutation_gate.select_step(self.gate, self.folder, {})
+            return recorder.flushed
+
+        self.judge()
+        carried = f"Carried forward the verdict of {VERDICT_RUN}, which judged these mutants\n"
+        self.assertTrue(any(entry.endswith(carried) for entry in flushed()))
+        (self.folder / "verdict" / "verdict.json").write_text("not JSON", encoding="utf-8")
+        unreadable = "The earlier verdict cannot be read, so the mutants run: verdict.json cannot be read"
+        self.assertTrue(any(unreadable in entry.rsplit("\n", 2)[-2] for entry in flushed() if entry.endswith("\n")))
+        self.judge()
+        change_calc(self.root, CALC.replace("a * 2", "a * 4"))
+        runs = "The mutants run, rather than carry"
+        self.assertTrue(any(entry.rsplit("\n", 2)[-2].startswith(runs) for entry in flushed() if entry.endswith("\n")))
+
+    def test_a_new_suite_that_reaches_the_mutated_module_runs_the_mutants(self) -> None:
+        self.judge()
+        self.commit({"tests/tools/test_calc_more.py": SUITE})
+        self.assert_runs("the suites that reach the mutated modules are not the ones it ran")
+
+    def test_a_change_to_the_module_runs_the_mutants(self) -> None:
+        self.judge()
+        change_calc(self.root, CALC.replace("a * 2", "a * 4"))
+        self.assert_runs("the mutants of `tools/calc.py` are not the ones it judged")
+
+    def test_a_change_to_the_gates_own_files_or_a_module_the_gate_imports_runs_the_mutants(self) -> None:
+        for name in ("pyproject.toml", "requirements-mutation.txt", ".github/workflows/mutation.yml"):
+            with self.subTest(name=name):
+                self.judge()
+                self.commit({name: f"changed {name}\n"})
+                self.assert_runs(f"`{name}` changed, which the gate runs by")
+        # A module outside the gate's own folders, which the gate imports.
+        self.commit({"tools/mutation_gate.py": "import gate_helper\n", "lib/gate_helper.py": HELPER})
+        self.judge()
+        self.commit({"lib/gate_helper.py": HELPER.replace("1", "2")})
+        self.assert_runs("`tools/mutation_gate.py` or a module it imports changed")
+
+    def test_another_base_runs_the_mutants(self) -> None:
+        self.judge()
+        self.gate = Gate(self.root, "feature~1", 5, 2, GitClient(), stub_generator, refuse_reach)
+        self.assert_runs("its base and mutmut release were `main` and (a test's generator)")
+
+    def test_no_verdict_an_unreadable_one_or_one_that_carried_carries_nothing(self) -> None:
+        _, printed, _ = self.select()
+        self.assertIn("No earlier finished verdict of this pull request was found, so the mutants run\n", printed)
+        self.judge()
+        path = self.folder / "verdict" / "verdict.json"
+        record = json.loads(path.read_text(encoding="utf-8"))
+        for broken in (
+            {**record, "run": 1},
+            {**record, "files": {"README.md": "not a hash"}},
+            set_field(record, ("selection", "head"), ""),
+            set_field(record, ("selection", "carried"), {"run": "r", "head": "ab" * 20, "summary": "s"}),
+        ):
+            path.write_text(json.dumps(broken), encoding="utf-8")
+            selected, printed, _ = self.select()
+            self.assertIsNone(selected.carried)
+            self.assertIn("The earlier verdict cannot be read, so the mutants run: verdict.json", printed)
+        path.write_text("not JSON", encoding="utf-8")
+        _, printed, _ = self.select()
+        self.assertIn("The earlier verdict cannot be read, so the mutants run: verdict.json cannot be read", printed)
+
+    def test_a_selection_with_no_mutant_looks_for_no_verdict(self) -> None:
+        git(self.root, "switch", "--quiet", "-c", "documentation", "main")
+        self.commit({"docs.md": "only documentation\n"})
+        selected, printed, outputs = self.select()
+        self.assertEqual(("", None), (printed, selected.carried))
+        self.assertEqual("linux=[]\nwindows=[]\n", outputs)
+
+
+SAVE_ENVIRONMENT = {
+    "GITHUB_SERVER_URL": "https://github.example",
+    "GITHUB_REPOSITORY": "owner/repository",
+    "GITHUB_RUN_ID": "7",
+    "GITHUB_RUN_ATTEMPT": "1",
+    "GITHUB_REF": "refs/pull/3/merge",
+}
+
+
+class SaveVerdictFixtures(unittest.TestCase):
+    """The join of a run of the fixture repository, which leaves a finished run's verdict for the next run."""
+
+    def setUp(self) -> None:
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name) / "repository"
+        self.folder = Path(temporary.name) / "handed on"
+        self.outputs = Path(temporary.name) / "outputs.txt"
+        fixture_repository(self.root)
+        self.gate = Gate(self.root, "main", 5, 2, GitClient(), stub_generator, refuse_reach)
+        with mock.patch("sys.stdout", io.StringIO()):
+            mutation_gate.select_step(self.gate, self.folder, {})
+
+    def leg(self, status: str) -> None:
+        (chosen,) = read_selection(self.folder / "mutants.json").modules
+        outcomes = {
+            chosen.module: [Outcome(found, status, () if status == NOT_RUN else ("t",)) for found in chosen.mutants]
+        }
+        record = LegRun(LINUX_LEG, 40, 60.0, 4, outcomes, {}, [])
+        (self.folder / "outcomes-linux.json").write_text(json.dumps(leg_record(record)), encoding="utf-8")
+
+    def save(self, environment: dict[str, str] | None = None) -> Path:
+        result = mutation_gate.join(self.folder)
+        given = {**(SAVE_ENVIRONMENT if environment is None else environment), "GITHUB_OUTPUT": str(self.outputs)}
+        mutation_gate.save_verdict(self.gate, self.folder, result, given)
+        return self.folder / "verdict" / "verdict.json"
+
+    def test_a_finished_run_leaves_its_verdict_which_the_next_run_of_the_same_tree_carries(self) -> None:
+        self.leg(SURVIVED)
+        path = self.save()
+        verdict = mutation_gate.read_verdict(path)
+        self.assertEqual("verdict=mutation-verdict-refs/pull/3/merge-7-1\n", self.outputs.read_text(encoding="utf-8"))
+        self.assertEqual("https://github.example/owner/repository/actions/runs/7/attempts/1", verdict.run)
+        self.assertEqual(read_selection(self.folder / "mutants.json"), verdict.selected)
+        self.assertEqual(mutation_gate.tree_files(self.root, GitClient()), verdict.files)
+        self.assertEqual(mutation_gate.join(self.folder).text, verdict.summary)
+        self.assertIn("tools/calc.py", verdict.files)
+        with mock.patch("sys.stdout", io.StringIO()):
+            mutation_gate.select_step(self.gate, self.folder, {})
+        tested = git(self.root, "rev-parse", "HEAD").strip()
+        self.assertEqual(
+            mutation_gate.Carried(verdict.run, tested, verdict.summary),
+            read_selection(self.folder / "mutants.json").carried,
+        )
+
+    def test_an_unfinished_or_carried_run_one_outside_actions_or_at_another_commit_leaves_none(self) -> None:
+        self.leg(NOT_RUN)
+        self.assertFalse(self.save().exists())
+        self.leg(KILLED)
+        for name in SAVE_ENVIRONMENT:
+            with self.subTest(without=name):
+                self.assertFalse(
+                    self.save({key: value for key, value in SAVE_ENVIRONMENT.items() if key != name}).exists()
+                )
+        change_calc(self.root, CALC + "\n")
+        with mock.patch("sys.stdout", io.StringIO()) as printed:
+            self.assertFalse(self.save().exists())
+        self.assertIn("No verdict is left for the next run: HEAD is ", printed.getvalue())
+        self.assertFalse(self.outputs.exists())
+
+    def test_a_run_that_carried_a_verdict_leaves_none_of_its_own(self) -> None:
+        record = json.loads((self.folder / "mutants.json").read_text(encoding="utf-8"))
+        record["carried"] = {"run": "earlier", "head": "ab" * 20, "summary": "s\n"}
+        (self.folder / "mutants.json").write_text(json.dumps(record), encoding="utf-8")
+        self.assertFalse(self.save().exists())
+
+    def test_the_join_step_saves_its_verdict_and_no_other_step_does(self) -> None:
+        self.leg(KILLED)
+        with (
+            mock.patch.object(mutation_gate, "save_verdict") as save,
+            mock.patch("sys.stdout", io.StringIO()),
+        ):
+            self.assertEqual(0, mutation_gate.main(["join", str(self.folder)], SAVE_ENVIRONMENT))
+        ((gate, folder, result, environment),) = [call.args for call in save.call_args_list]
+        self.assertEqual((self.folder, True, SAVE_ENVIRONMENT), (folder, result.finished, environment))
+        self.assertIsInstance(gate, Gate)
+        self.assertEqual(mutation_gate.REPOSITORY_ROOT, gate.root)
+
+    def test_a_finished_run_with_no_mutant_to_run_leaves_no_verdict(self) -> None:
+        path = self.folder / "mutants.json"
+        record = json.loads(path.read_text(encoding="utf-8"))
+        for module in record["modules"]:
+            module["mutants"] = []
+        path.write_text(json.dumps(record), encoding="utf-8")
+        self.assertTrue(mutation_gate.join(self.folder).finished)
+        self.assertFalse(self.save().exists())
+        self.assertFalse(self.outputs.exists())
+
+
+def test_a_sharded_legs_line_gives_its_longest_shards_minutes() -> None:
+    leg = LegRun(LINUX_LEG, 40, 3000.0, 8, {}, {}, [], shards=2)
+    assert (
+        mutation_gate.leg_line(leg) == "Linux, 2 shards of 8 workers in all ran for at most 50 of each one's 40 minutes"
+    )
+
+
+# A Linux-only module and one both legs run, so the Windows leg deals only the second's mutants: 2 shards, not 3.
+MIXED = Selected("origin/main", "3.8.0", (many(41, "tools/a.py"), many(41, "tools/b.py", windows=True)), "cd" * 20)
+
+
+def mixed_shard(leg: str, shard: int) -> LegRun:
+    """Shard `shard` of MIXED's leg `leg`, every mutant killed."""
+    outcomes = {
+        chosen.module: [Outcome(found, KILLED, ("t",)) for found in chosen.mutants]
+        for chosen in mutation_gate.shard_modules(leg, MIXED, shard)
+    }
+    shards = mutation_gate.leg_shards(leg, MIXED)
+    return LegRun(leg, 40, 1.0, 1, outcomes, {}, [], shard=shard, shards=shards)
+
+
+def test_the_windows_leg_deals_and_joins_only_the_modules_it_runs() -> None:
+    assert (mutation_gate.leg_shards(LINUX_LEG, MIXED), mutation_gate.leg_shards(WINDOWS_LEG, MIXED)) == (3, 2)
+    assert [
+        [
+            (chosen.module, [found.line for found in chosen.mutants])
+            for chosen in mutation_gate.shard_modules(WINDOWS_LEG, MIXED, shard)
+        ]
+        for shard in (1, 2)
+    ] == [[("tools/b.py", list(range(1, 21)))], [("tools/b.py", list(range(21, 42)))]]
+    with tempfile.TemporaryDirectory() as temporary:
+        folder = Path(temporary)
+        (folder / "mutants.json").write_text(json.dumps(selection_record(MIXED)), encoding="utf-8")
+        for leg, count in ((LINUX_LEG, 3), (WINDOWS_LEG, 2)):
+            for shard in range(1, count + 1):
+                (folder / mutation_gate.shard_name(leg, shard)).write_text(
+                    json.dumps(leg_record(mixed_shard(leg, shard))), encoding="utf-8"
+                )
+        _, (linux, windows) = mutation_gate.read_run(folder)
+        assert mutation_gate.join(folder).finished
+    assert {module: len(found) for module, found in linux.outcomes.items()} == {"tools/a.py": 41, "tools/b.py": 41}
+    assert {module: len(found) for module, found in windows.outcomes.items()} == {"tools/b.py": 41}
+    assert (linux.shards, windows.shards) == (3, 2)
+
+
+def test_the_windows_legs_step_runs_its_own_shards_and_the_select_step_names_them() -> None:
+    git_client = mock.create_autospec(GitClient, instance=True)
+    git_client.output.return_value = MIXED.head + "\n"
+    gate = Gate(Path(), "main", 40, 4, git_client)
+    handed: list[list[SelectedModule]] = []
+
+    def run_leg(name: str, trees: object, modules: list[SelectedModule], started: float) -> LegRun:
+        handed.append(modules)
+        return LegRun(name, 40, 1.0, 4, {}, {}, [])
+
+    with (
+        mock.patch.object(platform_support, "PLATFORM_NAME", WINDOWS_LEG),
+        mock.patch.object(mutation_gate, "worktrees", return_value=contextlib.nullcontext([Path()])),
+        mock.patch.object(Gate, "run_leg", side_effect=run_leg),
+    ):
+        ran = gate.leg(MIXED, 2)
+        with pytest.raises(RuntimeError) as refused:
+            gate.leg(MIXED, 3)
+    assert str(refused.value) == "the selection deals the Windows leg into 2 shards, so it has no shard 3"
+    assert (ran.shard, ran.shards) == (2, 2)
+    assert [(chosen.module, [found.line for found in chosen.mutants]) for chosen in handed[0]] == [
+        ("tools/b.py", list(range(21, 42)))
+    ]
+    with tempfile.TemporaryDirectory() as temporary:
+        outputs = Path(temporary) / "outputs.txt"
+        with mock.patch.object(Gate, "selection", return_value=MIXED), mock.patch("sys.stdout", io.StringIO()):
+            mutation_gate.main(["select", str(Path(temporary) / "handed on")], {"GITHUB_OUTPUT": str(outputs)})
+        assert outputs.read_text(encoding="utf-8") == "linux=[1, 2, 3]\nwindows=[1, 2]\n"
+
+
+def test_a_whole_legs_record_of_a_selection_dealt_into_shards_reads_as_one_shard() -> None:
+    # The leg step without --shard, as a local run of the whole leg writes it.
+    (chosen,) = SHARDED.modules
+    whole = LegRun(
+        LINUX_LEG, 40, 1.0, 4, {chosen.module: [Outcome(found, KILLED, ("t",)) for found in chosen.mutants]}, {}, []
+    )
+    elsewhere = replace(whole, outcomes={**whole.outcomes, "tools/other.py": []})
+    with tempfile.TemporaryDirectory() as temporary:
+        path = Path(temporary) / "outcomes-linux.json"
+        path.write_text(json.dumps(leg_record(whole)), encoding="utf-8")
+        assert read_leg(path, SHARDED, LINUX_LEG) == whole
+        path.write_text(json.dumps(leg_record(elsewhere)), encoding="utf-8")
+        with pytest.raises(RecordError) as refused:
+            read_leg(path, SHARDED, LINUX_LEG)
+    assert str(refused.value) == (
+        "outcomes-linux.json holds outcomes of tools/other.py, whose mutants the Linux leg does not run"
+    )
+
+
+def test_the_tested_trees_files_are_read_whole_when_a_path_holds_a_tab() -> None:
+    git_client = mock.create_autospec(GitClient, instance=True)
+    git_client.output.return_value = f"100644 blob {'ab' * 20}\tdocs/a\tb.md\x00100755 blob {'cd' * 32}\ttools/x.py\x00"
+    assert mutation_gate.tree_files(Path(), git_client) == {"docs/a\tb.md": "ab" * 20, "tools/x.py": "cd" * 32}
+
+
+def test_a_selection_that_adds_drops_or_changes_a_module_names_each_module_that_differs() -> None:
+    one = Selected("origin/main", "3.8.0", (many(1, "tools/a.py"),), "cd" * 20)
+    two = Selected("origin/main", "3.8.0", (many(1, "tools/a.py"), many(1, "tools/b.py")), "ef" * 20)
+    changed = Selected("origin/main", "3.8.0", (many(2, "tools/a.py"), many(1, "tools/b.py")), "ef" * 20)
+    judged = "are not the ones it judged"
+    assert mutation_gate.selection_difference(one, two) == f"the mutants of `tools/b.py` {judged}"
+    assert mutation_gate.selection_difference(two, one) == f"the mutants of `tools/b.py` {judged}"
+    assert mutation_gate.selection_difference(one, changed) == f"the mutants of `tools/a.py`, `tools/b.py` {judged}"
+    assert mutation_gate.selection_difference(one, replace(one, head="ef" * 20)) is None
+
+
+def test_a_carry_names_each_gate_file_that_changed() -> None:
+    selected = Selected("origin/main", "3.8.0", (many(1),), "cd" * 20)
+    tested = {".github/workflows/mutation.yml": "aa" * 20, "pyproject.toml": "bb" * 20, "README.md": "cc" * 20}
+    verdict = mutation_gate.Verdict(VERDICT_RUN, selected, tested, VERDICT_SUMMARY)
+    now = {**tested, ".github/workflows/mutation.yml": "dd" * 20, "pyproject.toml": "ee" * 20}
+    assert mutation_gate.carry_problem(verdict, selected, now, Path()) == (
+        "`.github/workflows/mutation.yml`, `pyproject.toml` changed, which the gate runs by"
+    )
+
+
+VERDICT_RECORD = mutation_gate.verdict_record(
+    mutation_gate.Verdict(VERDICT_RUN, replace(READ_SELECTED, head="cd" * 20), {"a.py": "ef" * 20}, VERDICT_SUMMARY)
+)
+
+
+@pytest.mark.parametrize(
+    ("record", "error", "message"),
+    [
+        (
+            {**VERDICT_RECORD, "x": 1},
+            RecordFieldError,
+            'verdict.json must be an object of known fields, found unknown field "x"',
+        ),
+        (
+            set_field(json.loads(json.dumps(VERDICT_RECORD)), ("selection", "base"), 1),
+            RecordFieldError,
+            "verdict.json.selection.base must be a non-empty string, found integer 1",
+        ),
+        (
+            set_field(json.loads(json.dumps(VERDICT_RECORD)), ("selection", "head"), ""),
+            RecordError,
+            "verdict.json.selection is not one a run tested at a recorded commit",
+        ),
+        (
+            set_field(json.loads(json.dumps(VERDICT_RECORD)), ("selection", "carried"), CARRIED_RECORD),
+            RecordError,
+            "verdict.json.selection is not one a run tested at a recorded commit",
+        ),
+        ({**VERDICT_RECORD, "files": 1}, RecordFieldError, "verdict.json.files must be an object, found integer 1"),
+        (
+            {**VERDICT_RECORD, "files": {"a.py": "x"}},
+            RecordFieldError,
+            "verdict.json.files.a.py must be a lowercase hexadecimal digest of 40 or 64 characters, "
+            "found a string of 1 character",
+        ),
+        (
+            {**VERDICT_RECORD, "run": 1},
+            RecordFieldError,
+            "verdict.json.run must be a non-empty string, found integer 1",
+        ),
+        (
+            {**VERDICT_RECORD, "summary": 1},
+            RecordFieldError,
+            "verdict.json.summary must be a non-empty string, found integer 1",
+        ),
+    ],
+)
+def test_a_verdict_not_as_the_join_writes_it_is_refused_by_its_path(
+    record: dict[str, Any], error: type[Exception], message: str
+) -> None:
+    with tempfile.TemporaryDirectory() as temporary:
+        path = Path(temporary) / "verdict.json"
+        path.write_text(json.dumps(record), encoding="utf-8")
+        with pytest.raises(error) as refused:
+            mutation_gate.read_verdict(path)
+    assert str(refused.value) == message
+
+
+def test_a_verdict_and_a_carried_run_of_a_sha_256_repository_read_back() -> None:
+    selected = replace(READ_SELECTED, head="cd" * 32, carried=mutation_gate.Carried("r", "ab" * 32, "s"))
+    record = {**VERDICT_RECORD, "files": {"a.py": "ef" * 32}}
+    with tempfile.TemporaryDirectory() as temporary:
+        path = Path(temporary) / "verdict.json"
+        path.write_text(json.dumps(record), encoding="utf-8")
+        assert mutation_gate.read_verdict(path).files == {"a.py": "ef" * 32}
+        path.write_text(json.dumps(selection_record(selected)), encoding="utf-8")
+        assert read_selection(path) == selected
+
+
+def test_a_runs_files_are_only_the_records_its_steps_write() -> None:
+    with tempfile.TemporaryDirectory() as temporary:
+        folder = Path(temporary)
+        assert mutation_gate.run_files(folder / "absent") == {}
+        for name in ("mutants.json", "outcomes-linux-1.json", "local-linux.json", "notes.json", "outcomes-linux.txt"):
+            (folder / name).write_text("{}", encoding="utf-8")
+        (folder / "verdict").mkdir()
+        (folder / "verdict" / "verdict.json").write_text("{}", encoding="utf-8")
+        # A folder named as a record is an artifact's folder, not a record.
+        (folder / "outcomes-windows.json").mkdir()
+        assert sorted(mutation_gate.run_files(folder)) == ["local-linux.json", "mutants.json", "outcomes-linux-1.json"]
+
+
+def test_a_local_run_is_read_by_its_own_files_name() -> None:
+    with tempfile.TemporaryDirectory() as temporary:
+        folder = Path(temporary)
+        write_sharded(folder, shard_run(1, lambda found: KILLED), shard_run(2, lambda found: KILLED))
+        local = {**json.loads(json.dumps(LOCAL_RECORD)), "leg": WINDOWS_LEG}
+        (folder / "local-linux.json").write_text(json.dumps(local), encoding="utf-8")
+        with pytest.raises(RecordError) as other_leg:
+            mutation_gate.join(folder)
+        (folder / "local-linux.json").unlink()
+        for name in ("local-mac.json", "local-windows.json"):
+            (folder / name).write_text("{}", encoding="utf-8")
+        with pytest.raises(RecordError) as strays:
+            mutation_gate.join(folder)
+    assert str(other_leg.value) == "local-linux.json holds a local run of the Windows leg, not of the Linux leg"
+    assert (
+        str(strays.value)
+        == "local-mac.json, local-windows.json holds a local run of a leg that ran no mutant of this run"
+    )

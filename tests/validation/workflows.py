@@ -201,6 +201,29 @@ def action_pins(workflow: str) -> list[tuple[str, str, str]]:
     return re.findall(r"(?m)^\s*-?\s*uses:\s*(\S+)@(\S+)(.*)$", workflow)
 
 
+def shared_pin_problems(reviewed: str, workflow: str) -> list[str]:
+    """Report each action of a workflow that validate.yml's text `reviewed` also uses, or that comes from the
+    repository of one it uses, such as actions/cache/restore beside actions/cache, pinned to another commit and version
+    than validate.yml's, which Dependabot reviews, and a workflow that shares no action with it."""
+    reviewed_actions = set(re.findall(r"uses:\s*(\S+)@", reviewed))
+    shared = sorted(
+        {
+            (action, repository)
+            for action, _, _ in action_pins(workflow)
+            if (repository := "/".join(action.split("/")[:2])) in reviewed_actions
+        }
+    )
+    if not shared:
+        return ["the workflow shares no action with validate.yml, whose pins it is held to"]
+    problems = []
+    for action, repository in shared:
+        wanted = required_match(rf"{re.escape(repository)}@(\S+ +# v\S+)", reviewed).group(1)
+        found = required_match(rf"{re.escape(action)}@(\S+ +# v\S+)", workflow).group(1)
+        if found != wanted:
+            problems.append(f"{action} is pinned to {found}, not to validate.yml's pin of {repository}, {wanted}")
+    return problems
+
+
 EXPRESSION = re.compile(r"\$\{\{(.*?)\}\}", re.DOTALL)
 # Context names are case-insensitive in an expression, so SECRETS.X reads a secret as secrets.x does.
 SECRET_REFERENCE = re.compile(r"\bsecrets\b", re.IGNORECASE)
@@ -490,7 +513,14 @@ WORKFLOW_GUARDS: dict[str, tuple[list[str], set[str], tuple[str, ...]]] = {
     ),
     "mutation.yml": (
         ["pull_request"],
-        {"actions/checkout", "actions/setup-python", "actions/upload-artifact", "actions/download-artifact"},
+        {
+            "actions/checkout",
+            "actions/setup-python",
+            "actions/upload-artifact",
+            "actions/download-artifact",
+            "actions/cache/restore",
+            "actions/cache/save",
+        },
         (),
     ),
     "runtime-command-lines.yml": (
@@ -1619,15 +1649,18 @@ def uninstall_check_problems(workflow: str) -> list[str]:
 
 
 # What mutation.yml's jobs run. mutmut refuses Windows, so the select job, on Linux, installs the lock, which holds the
-# development dependencies and the mutation tools, with hash checking and wheels only, makes the mutants, and hands
-# them on as an artifact, with step outputs naming the legs that have mutants to run. Each leg checks out what its
-# platform's validation job does, since a suite run unmutated there reads main's history and tags, installs the same
-# lock, and ShellCheck at validate.yml's pin, which the deployer's suites run: the Linux leg from the release's archive
-# checked against its pinned digest, the Windows leg through Chocolatey, each refusing another version on PATH. Each
-# runs its platform's leg of the mutants, never mutmut, within its own cap (DEFAULT_MINUTES in tools/mutation_gate.py),
-# which sits well inside the job's time limit, and hands on its outcomes. The join, named as the gate and never as the
-# required check, runs whatever the legs did, reads the files and the standard library alone, and fails an unfinished
-# run.
+# development dependencies and the mutation tools, with hash checking and wheels only, restores the newest verdict a
+# finished run of the pull request cached under its ref, makes the mutants, carrying that verdict when the gate finds
+# nothing against it, and hands them on as an artifact, with step outputs listing the shards each leg's mutants are
+# dealt into. Each leg runs one job for each of its shards, none stopping another, and checks out what its platform's
+# validation job does, since a suite run unmutated there reads main's history and tags, installs the same lock, and
+# ShellCheck at validate.yml's pin, which the deployer's suites run: the Linux leg from the release's archive checked
+# against its pinned digest, the Windows leg through Chocolatey, each refusing another version on PATH. Each shard runs
+# its share of its platform's leg of the mutants, never mutmut, within its own cap (DEFAULT_MINUTES in
+# tools/mutation_gate.py), which sits well inside the job's time limit, and hands on its outcomes under its shard's
+# name. The join, named as the gate and never as the required check, runs whatever the legs did, reads the files, the
+# standard library, and git alone, fails an unfinished run, and caches a finished run's verdict under the key its
+# `verdict` output names.
 MUTATION_INSTALL = "python -m pip install --require-hashes --only-binary :all: -r requirements-mutation.txt"
 MUTATION_GATE = "python -B tools/mutation_gate.py"
 # The pins mutation.yml's env repeats from validate.yml's, since a workflow cannot read another's.
@@ -1659,28 +1692,48 @@ MUTATION_MUTANTS = {"name": "mutation-mutants", "path": "mutation"}
 MUTATION_OUTPUTS = {leg: f"${{{{ steps.select.outputs.{leg} }}}}" for leg in ("linux", "windows")}
 
 
+MUTATION_SHARD = "${{ matrix.shard }}"
+MUTATION_VERDICT_PATH = "mutation/verdict"
+# The order of a job's steps: each action by its name after actions/, and each script as `run`.
+MUTATION_LEG_ORDER = ["checkout", "setup-python", "run", "run", "run", "download-artifact", "run", "upload-artifact"]
+
+
 def _mutation_leg(platform: str, runner: str, shellcheck: tuple[str, list[str]]) -> dict[str, object]:
-    """The job of one leg: after the select job, only when it named the leg, on the platform's runner, installing
-    ShellCheck in the shell `shellcheck` names and verifying it in pwsh before the lock."""
+    """The job of one leg: after the select job, only when it dealt the leg a shard, one job for each shard it lists,
+    none cancelling another, on the platform's runner, installing ShellCheck in the shell `shellcheck` names and
+    verifying it in pwsh before the lock, and running and handing on its own shard."""
     leg = platform.casefold()
     shell, install = shellcheck
     return {
         "name": f"Mutation gate on {platform}",
         "needs": "select",
-        "if": f"needs.select.outputs.{leg} == 'true'",
+        "if": f"needs.select.outputs.{leg} != '[]'",
+        "strategy": {"fail-fast": "false", "matrix": {"shard": f"${{{{ fromJSON(needs.select.outputs.{leg}) }}}}"}},
         "runs-on": runner,
         "timeout-minutes": "60",
         "checkout": {"fetch-depth": "0", **NO_STORED_CREDENTIAL},
         "python": MUTATION_LOCKED_PYTHON,
-        "scripts": [install, MUTATION_SHELLCHECK_VERIFY, [MUTATION_INSTALL], [f"{MUTATION_GATE} leg mutation"]],
+        "scripts": [
+            install,
+            MUTATION_SHELLCHECK_VERIFY,
+            [MUTATION_INSTALL],
+            [f"{MUTATION_GATE} leg mutation --shard {MUTATION_SHARD}"],
+        ],
         "shells": [shell, "pwsh", None, None],
+        "ids": [],
+        "order": MUTATION_LEG_ORDER,
         "artifacts": [
             ["download-artifact", MUTATION_MUTANTS],
             [
                 "upload-artifact",
-                {"name": f"mutation-{leg}", "path": f"mutation/outcomes-{leg}.json", "if-no-files-found": "error"},
+                {
+                    "name": f"mutation-{leg}-{MUTATION_SHARD}",
+                    "path": f"mutation/outcomes-{leg}-{MUTATION_SHARD}.json",
+                    "if-no-files-found": "error",
+                },
             ],
         ],
+        "caches": [],
     }
 
 
@@ -1691,15 +1744,30 @@ MUTATION_JOBS: dict[str, dict[str, object]] = {
         "needs": None,
         "if": None,
         "runs-on": "ubuntu-latest",
+        "strategy": None,
         "timeout-minutes": "15",
         "checkout": {"fetch-depth": "0", **NO_STORED_CREDENTIAL},
         "python": MUTATION_LOCKED_PYTHON,
         "scripts": [[MUTATION_INSTALL], [f"{MUTATION_GATE} select mutation"]],
         "shells": [None, None],
+        "ids": ["select"],
+        # The verdict is restored before the select step reads it.
+        "order": ["checkout", "setup-python", "run", "cache/restore", "run", "upload-artifact"],
         "artifacts": [
             [
                 "upload-artifact",
                 {"name": "mutation-mutants", "path": "mutation/mutants.json", "if-no-files-found": "error"},
+            ]
+        ],
+        "caches": [
+            [
+                "cache/restore",
+                {
+                    "path": MUTATION_VERDICT_PATH,
+                    "key": "mutation-verdict-${{ github.ref }}",
+                    "restore-keys": "mutation-verdict-${{ github.ref }}-",
+                },
+                None,
             ]
         ],
     },
@@ -1709,13 +1777,24 @@ MUTATION_JOBS: dict[str, dict[str, object]] = {
         "name": "Mutation gate",
         "needs": ["select", "linux", "windows"],
         "if": "${{ !cancelled() }}",
+        "strategy": None,
         "runs-on": "ubuntu-latest",
         "timeout-minutes": "15",
         "checkout": NO_STORED_CREDENTIAL,
         "python": {"python-version": "3.11"},
         "scripts": [[f"{MUTATION_GATE} join mutation"]],
         "shells": [None],
+        "ids": ["join"],
+        # The verdict is saved after the join writes it, and only when the join names its key.
+        "order": ["checkout", "setup-python", "download-artifact", "run", "cache/save"],
         "artifacts": [["download-artifact", {"pattern": "mutation-*", "path": "mutation", "merge-multiple": "true"}]],
+        "caches": [
+            [
+                "cache/save",
+                {"path": MUTATION_VERDICT_PATH, "key": "${{ steps.join.outputs.verdict }}"},
+                "steps.join.outputs.verdict != ''",
+            ]
+        ],
     },
 }
 
@@ -1725,8 +1804,9 @@ def _uses(step: dict[str, Node], action: str) -> bool:
 
 
 def _mutation_job_shape(job: dict[str, Node]) -> dict[str, object]:
-    """A job of mutation.yml read into the fields MUTATION_JOBS gives each: its checkout's and Python's inputs, its
-    scripts and the shell each names, and each artifact step with its inputs."""
+    """A job of mutation.yml read into the fields MUTATION_JOBS gives each: its matrix, its checkout's and Python's
+    inputs, its scripts, the shell each names, and the ids they take, the order of its steps, each artifact step with
+    its inputs, and each cache step with its inputs and condition."""
     steps = _steps(job)
     checkouts: list[object] = [_mapping(step, "with") for step in steps if _uses(step, "checkout")]
     pythons: list[object] = [_mapping(step, "with") for step in steps if _uses(step, "setup-python")]
@@ -1736,21 +1816,33 @@ def _mutation_job_shape(job: dict[str, Node]) -> dict[str, object]:
         for action in ("upload-artifact", "download-artifact")
         if _uses(step, action)
     ]
+    caches: list[object] = [
+        [action, _mapping(step, "with"), step.get("if")]
+        for step in steps
+        for action in ("cache/restore", "cache/save")
+        if _uses(step, action)
+    ]
     return {
-        **{key: job.get(key) for key in ("name", "needs", "if", "runs-on", "timeout-minutes")},
+        **{key: job.get(key) for key in ("name", "needs", "if", "strategy", "runs-on", "timeout-minutes")},
         "checkout": checkouts[0] if len(checkouts) == 1 else checkouts,
         "python": pythons[0] if len(pythons) == 1 else pythons,
         "scripts": [_script_lines(step) for step in steps if "run" in step],
         "shells": [step.get("shell") for step in steps if "run" in step],
+        "ids": [step.get("id") for step in steps if "id" in step],
+        "order": [
+            "run" if "run" in step else str(step.get("uses", "")).split("@")[0].removeprefix("actions/")
+            for step in steps
+        ],
         "artifacts": artifacts,
+        "caches": caches,
     }
 
 
 def mutation_job_problems(workflow: str) -> list[str]:
     """Report how mutation.yml departs from the mutation gate: run on a pull request's opening, pushes, and reopening
     but not an edit of its text, as the jobs MUTATION_JOBS gives, in its order, each with its name, none the required
-    check's, its dependencies and condition, runner, time limit, checkout, Python, scripts, and artifact steps, and the
-    select job's outputs naming the legs."""
+    check's, its dependencies and condition, matrix, runner, time limit, checkout, Python, scripts, step ids, the order
+    of its steps, and its artifact and cache steps, and the select job's outputs listing each leg's shards."""
     tree = read_workflow(workflow)
     problems: list[str] = []
     types = _mapping(tree, "on", "pull_request").get("types")
@@ -1863,16 +1955,9 @@ class WorkflowsPolicies(unittest.TestCase):
         workflows = REPOSITORY_ROOT / WORKFLOWS_DIRECTORY
         reviewed = (workflows / "validate.yml").read_text(encoding="utf-8")
         for name in sorted(set(WORKFLOW_GUARDS) - {"validate.yml"}):
-            workflow = (workflows / name).read_text(encoding="utf-8")
-            # An action both workflows use is pinned to the commit Dependabot reviews in validate.yml.
-            shared = {action for action, _, _ in action_pins(workflow)} & set(re.findall(r"uses:\s*(\S+)@", reviewed))
-            self.assertTrue(shared)
-            for action in shared:
-                with self.subTest(workflow=name, shared=action):
-                    self.assertEqual(
-                        required_match(rf"{re.escape(action)}@(\S+ +# v\S+)", reviewed).group(1),
-                        required_match(rf"{re.escape(action)}@(\S+ +# v\S+)", workflow).group(1),
-                    )
+            with self.subTest(workflow=name):
+                workflow = (workflows / name).read_text(encoding="utf-8")
+                self.assertEqual([], shared_pin_problems(reviewed, workflow))
 
     def test_the_dependency_document_names_every_workflow_that_shares_validates_action_pins(self) -> None:
         document = (REPOSITORY_ROOT / "docs" / "dependency-updates.md").read_text(encoding="utf-8")

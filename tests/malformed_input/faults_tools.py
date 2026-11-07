@@ -62,7 +62,14 @@ def gate_folder(fixture: Fixture) -> None:
     """A mutation gate folder whose select step chose no module, which the join reports as such."""
     folder = fixture.work / "gate"
     folder.mkdir()
-    record = {"base": "origin/main", "mutmut": "3.0.0", "head": "", "modules": []}
+    record: dict[str, object] = {
+        "base": "origin/main",
+        "mutmut": "3.0.0",
+        "head": "",
+        "suites": [],
+        "carried": None,
+        "modules": [],
+    }
     (folder / "mutants.json").write_text(json.dumps(record), encoding="utf-8")
 
 

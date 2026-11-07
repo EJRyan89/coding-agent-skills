@@ -95,6 +95,8 @@ MUTATION_SELECTION = {
     "base": "origin/main",
     "mutmut": "3.8.0",
     "head": "cd" * 20,
+    "suites": ["tests/c.py"],
+    "carried": None,
     "modules": [
         {
             "module": "tools/paths.py",
@@ -108,6 +110,8 @@ MUTATION_SELECTION = {
 }
 MUTATION_LEG = {
     "leg": mutation_gate.WINDOWS_LEG,
+    "shard": 0,
+    "shards": 1,
     "minutes": 40,
     "seconds": 1.5,
     "workers": 2,
@@ -115,17 +119,25 @@ MUTATION_LEG = {
     "unmeasured_suites": ["tests/b.py"],
     "needed": {"tools/paths.py": 12.5},
     "available": 30.0,
-    "local": {
-        "minutes": 60,
-        "seconds": 12.0,
-        "workers": 2,
-        "mutants": {"tools/paths.py": [0]},
-        "failed_suites": {"tests/d.py": "failed unmutated with exit code 1"},
-        "unmeasured_suites": ["tests/e.py"],
-        "outcomes": {"tools/paths.py": [{"status": mutation_gate.KILLED, "suites": ["tests/c.py"], "tests": [1]}]},
-    },
     # The CI leg timed out on the mutant, which the local run then killed.
     "outcomes": {"tools/paths.py": [{"status": mutation_gate.TIMED_OUT, "suites": ["tests/c.py"], "tests": [1]}]},
+}
+MUTATION_LOCAL = {
+    "leg": mutation_gate.WINDOWS_LEG,
+    "minutes": 60,
+    "seconds": 12.0,
+    "workers": 2,
+    "mutants": {"tools/paths.py": [0]},
+    "failed_suites": {"tests/d.py": "failed unmutated with exit code 1"},
+    "unmeasured_suites": ["tests/e.py"],
+    "outcomes": {"tools/paths.py": [{"status": mutation_gate.KILLED, "suites": ["tests/c.py"], "tests": [1]}]},
+}
+# The verdict a finished run of the selection left, with the object name of its one tested file.
+MUTATION_VERDICT = {
+    "run": "https://github.com/example/repository/actions/runs/1/attempts/1",
+    "selection": MUTATION_SELECTION,
+    "files": {"tools/paths.py": "ef" * 20},
+    "summary": "## Mutation gate\n\nEvery mutant on a changed line was killed.\n",
 }
 
 
@@ -136,6 +148,21 @@ def _mutation_leg(path: Path) -> object:
 
 def _mutation_selection(path: Path) -> None:
     path.with_name(mutation_gate.MUTANTS_FILE).write_text(json.dumps(MUTATION_SELECTION), encoding="utf-8")
+
+
+def _mutation_local(path: Path) -> object:
+    selected = mutation_gate.read_selection(path.with_name(mutation_gate.MUTANTS_FILE))
+    leg = mutation_gate.read_leg(
+        path.with_name(mutation_gate.outcomes_name(mutation_gate.WINDOWS_LEG)), selected, mutation_gate.WINDOWS_LEG
+    )
+    return mutation_gate.read_local(mutation_gate.read_record(path), path.name, leg)
+
+
+def _mutation_leg_record(path: Path) -> None:
+    _mutation_selection(path)
+    path.with_name(mutation_gate.outcomes_name(mutation_gate.WINDOWS_LEG)).write_text(
+        json.dumps(MUTATION_LEG), encoding="utf-8"
+    )
 
 
 def _catalogue(path: Path) -> object:
@@ -643,6 +670,23 @@ READERS = [
         (mutation_gate.RecordError,),
         filename="outcomes-windows.json",
         prepare=_mutation_selection,
+    ),
+    Reader(
+        "tools.mutation_gate.read_local",
+        "json",
+        json.dumps(MUTATION_LOCAL).encode(),
+        _mutation_local,
+        (mutation_gate.RecordError,),
+        filename=mutation_gate.local_name(mutation_gate.WINDOWS_LEG),
+        prepare=_mutation_leg_record,
+    ),
+    Reader(
+        "tools.mutation_gate.read_verdict",
+        "json",
+        json.dumps(MUTATION_VERDICT).encode(),
+        mutation_gate.read_verdict,
+        (mutation_gate.RecordError,),
+        filename=mutation_gate.VERDICT_FILE,
     ),
     Reader(
         "tools.mutation_gate.read_selection",

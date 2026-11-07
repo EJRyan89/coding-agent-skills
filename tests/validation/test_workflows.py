@@ -27,7 +27,9 @@ from workflows import (
     SAME_REPOSITORY_STATEMENT,
     TOKEN_CLAIM_OMISSIONS,
     TOKEN_CLAIM_SPANS,
+    WORKFLOW_GUARDS,
     WorkflowSyntaxError,
+    action_pins,
     changelog_job_problems,
     codex_settings_problems,
     command_line_job_problems,
@@ -46,6 +48,7 @@ from workflows import (
     pinned_tool_problems,
     read_workflow,
     required_check_problems,
+    shared_pin_problems,
     token_claim_problems,
     token_claim_read_problems,
     token_claim_texts,
@@ -1449,19 +1452,34 @@ MUTATION_SHELLCHECK_VERIFY = (
 )
 
 
+MUTATION_RESTORE = (
+    "      - uses: actions/cache/restore@abc\n        with:\n          path: mutation/verdict\n"
+    "          key: mutation-verdict-${{ github.ref }}\n          restore-keys: mutation-verdict-${{ github.ref }}-\n"
+)
+MUTATION_SAVE = (
+    "      - if: steps.join.outputs.verdict != ''\n        uses: actions/cache/save@abc\n        with:\n"
+    "          path: mutation/verdict\n          key: ${{ steps.join.outputs.verdict }}\n"
+)
+
+
 def mutation_leg(leg: str, runner: str, shellcheck: str) -> str:
     return (
         f"  {leg.casefold()}:\n    name: Mutation gate on {leg}\n    needs: select\n"
-        f"    if: needs.select.outputs.{leg.casefold()} == 'true'\n    runs-on: {runner}\n    timeout-minutes: 60\n"
+        f"    if: needs.select.outputs.{leg.casefold()} != '[]'\n"
+        "    strategy:\n      fail-fast: false\n      matrix:\n"
+        f"        shard: ${{{{ fromJSON(needs.select.outputs.{leg.casefold()}) }}}}\n"
+        f"    runs-on: {runner}\n    timeout-minutes: 60\n"
         "    steps:\n      - uses: actions/checkout@abc\n        with:\n          persist-credentials: false\n"
         "          fetch-depth: 0\n"
         f"{MUTATION_SETUP}{shellcheck}{MUTATION_SHELLCHECK_VERIFY}"
         f"      - name: Install\n        run: |\n{MUTATION_INSTALL_STEP}"
         "      - uses: actions/download-artifact@abc\n        with:\n          name: mutation-mutants\n"
         "          path: mutation\n"
-        "      - name: Leg\n        run: python -B tools/mutation_gate.py leg mutation\n"
-        f"      - uses: actions/upload-artifact@abc\n        with:\n          name: mutation-{leg.casefold()}\n"
-        f"          path: mutation/outcomes-{leg.casefold()}.json\n          if-no-files-found: error\n"
+        "      - name: Leg\n        run: python -B tools/mutation_gate.py leg mutation --shard ${{ matrix.shard }}\n"
+        "      - uses: actions/upload-artifact@abc\n        with:\n"
+        f"          name: mutation-{leg.casefold()}-${{{{ matrix.shard }}}}\n"
+        f"          path: mutation/outcomes-{leg.casefold()}-${{{{ matrix.shard }}}}.json\n"
+        "          if-no-files-found: error\n"
     )
 
 
@@ -1473,6 +1491,7 @@ MUTATION = (
     "      - uses: actions/checkout@abc\n        with:\n          persist-credentials: false\n"
     "          fetch-depth: 0\n"
     f"{MUTATION_SETUP}      - name: Install\n        run: |\n{MUTATION_INSTALL_STEP}"
+    f"{MUTATION_RESTORE}"
     "      - name: Select\n        id: select\n        run: python -B tools/mutation_gate.py select mutation\n"
     "      - uses: actions/upload-artifact@abc\n        with:\n          name: mutation-mutants\n"
     "          path: mutation/mutants.json\n          if-no-files-found: error\n"
@@ -1484,7 +1503,8 @@ MUTATION = (
     "      - uses: actions/setup-python@abc\n        with:\n          python-version: '3.11'\n"
     "      - uses: actions/download-artifact@abc\n        with:\n          pattern: mutation-*\n"
     "          path: mutation\n          merge-multiple: true\n"
-    "      - name: Join\n        run: python -B tools/mutation_gate.py join mutation\n"
+    "      - name: Join\n        id: join\n        run: python -B tools/mutation_gate.py join mutation\n"
+    f"{MUTATION_SAVE}"
 )
 
 
@@ -1564,12 +1584,81 @@ def test_the_mutation_jobs_make_the_mutants_on_linux_run_both_legs_and_join_them
             MUTATION.replace("    if: ${{ !cancelled() }}\n", ""), "mutation job's if", id="a join skipped by a leg"
         ),
         pytest.param(
-            MUTATION.replace("outputs.windows == 'true'", "outputs.linux == 'true'"),
+            MUTATION.replace("outputs.windows != '[]'", "outputs.linux != '[]'"),
             "windows job's if",
             id="a leg on the other leg's output",
         ),
         pytest.param(
-            MUTATION.replace("name: mutation-windows\n", "name: mutation-linux\n"),
+            MUTATION.replace("fromJSON(needs.select.outputs.windows)", "fromJSON(needs.select.outputs.linux)"),
+            "windows job's strategy",
+            id="a leg dealt the other leg's shards",
+        ),
+        pytest.param(
+            MUTATION.replace("      fail-fast: false\n", "", 1),
+            "linux job's strategy",
+            id="a shard's failure cancelling the others",
+        ),
+        pytest.param(
+            MUTATION.replace("leg mutation --shard ${{ matrix.shard }}", "leg mutation", 1),
+            "linux job's scripts",
+            id="every shard running the whole leg",
+        ),
+        pytest.param(
+            MUTATION.replace("mutation/outcomes-linux-${{ matrix.shard }}.json", "mutation/outcomes-linux.json"),
+            "linux job's artifacts",
+            id="shards uploading one name",
+        ),
+        pytest.param(
+            MUTATION.replace(MUTATION_RESTORE, "").replace("select mutation\n", "select mutation\n" + MUTATION_RESTORE),
+            "select job's order",
+            id="a verdict restored after the select step",
+        ),
+        pytest.param(MUTATION.replace(MUTATION_RESTORE, ""), "select job's caches", id="no verdict restored"),
+        pytest.param(
+            MUTATION.replace(
+                "          key: mutation-verdict-${{ github.ref }}\n", "          key: mutation-verdict-main\n"
+            ),
+            "select job's caches",
+            id="a verdict restored from another ref",
+        ),
+        pytest.param(
+            MUTATION.replace("restore-keys: mutation-verdict-${{ github.ref }}-", "restore-keys: mutation-verdict-"),
+            "select job's caches",
+            id="restore keys that match another pull request's verdict",
+        ),
+        pytest.param(
+            MUTATION.replace("key: ${{ steps.join.outputs.verdict }}", "key: mutation-verdict-${{ github.ref }}"),
+            "mutation job's caches",
+            id="a verdict saved under a key the join did not name",
+        ),
+        pytest.param(
+            MUTATION.replace("          path: mutation/verdict\n", "          path: verdict\n", 1),
+            "select job's caches",
+            id="a verdict restored to another folder",
+        ),
+        pytest.param(
+            MUTATION.replace(
+                "          path: mutation/verdict\n          key: ${{ steps.join",
+                "          path: verdict\n          key: ${{ steps.join",
+            ),
+            "mutation job's caches",
+            id="a verdict saved from another folder",
+        ),
+        pytest.param(
+            MUTATION.replace("      - if: steps.join.outputs.verdict != ''\n        uses", "      - uses"),
+            "mutation job's caches",
+            id="a verdict saved whatever the join found",
+        ),
+        pytest.param(
+            MUTATION.replace("        id: join\n", ""), "mutation job's ids", id="a join whose output no step reads"
+        ),
+        pytest.param(
+            MUTATION.replace(MUTATION_SAVE, "").replace("      - name: Join\n", MUTATION_SAVE + "      - name: Join\n"),
+            "mutation job's order",
+            id="a verdict saved before the join",
+        ),
+        pytest.param(
+            MUTATION.replace("name: mutation-windows-", "name: mutation-linux-"),
             "windows job's artifacts",
             id="an outcome artifact named for the other leg",
         ),
@@ -2331,3 +2420,55 @@ def test_a_row_silent_on_the_actions_default_input_fails() -> None:
     assert token_claim_problems({}, REACH_DESIGN.replace(ACTIONS, "nothing else")) == [
         f"docs/design.md's row {CREDENTIALS_ROW!r} does not say {ACTIONS!r}"
     ]
+
+
+def test_the_mutation_workflows_guard_allows_each_action_its_jobs_use_and_no_other() -> None:
+    # MUTATION is the shape mutation_job_problems holds mutation.yml to, so an action the gate's jobs need that the
+    # guard refuses, or one the guard allows that no job uses, fails here.
+    assert mutation_job_problems(MUTATION) == []
+    _, allowed, _ = WORKFLOW_GUARDS["mutation.yml"]
+    assert {action for action, _, _ in action_pins(MUTATION)} == allowed
+
+
+PIN_REVIEWED = f"      - uses: actions/checkout@{'a' * 40} # v7.0.1\n      - uses: actions/cache@{'b' * 40} # v6.1.0\n"
+
+
+@pytest.mark.parametrize(
+    ("workflow", "problems"),
+    [
+        pytest.param(
+            f"      - uses: actions/checkout@{'a' * 40} # v7.0.1\n"
+            f"      - uses: actions/cache/restore@{'b' * 40} # v6.1.0\n"
+            f"      - uses: actions/cache/save@{'b' * 40} # v6.1.0\n"
+            f"      - uses: other/action@{'c' * 40} # v1.0.0\n",
+            [],
+            id="each shared action and each action of a shared repository at validate.yml's pin",
+        ),
+        pytest.param(
+            f"      - uses: actions/checkout@{'c' * 40} # v7.0.2\n",
+            [
+                f"actions/checkout is pinned to {'c' * 40} # v7.0.2, not to validate.yml's pin of actions/checkout, "
+                f"{'a' * 40} # v7.0.1"
+            ],
+            id="a shared action at another pin",
+        ),
+        pytest.param(
+            f"      - uses: actions/cache/restore@{'b' * 40} # v6.1.0\n"
+            f"      - uses: actions/cache/save@{'c' * 40} # v6.0.0\n",
+            [
+                f"actions/cache/save is pinned to {'c' * 40} # v6.0.0, not to validate.yml's pin of actions/cache, "
+                f"{'b' * 40} # v6.1.0"
+            ],
+            id="an action of a shared repository at another pin",
+        ),
+        pytest.param(
+            f"      - uses: other/action@{'c' * 40} # v1.0.0\n",
+            ["the workflow shares no action with validate.yml, whose pins it is held to"],
+            id="no shared action",
+        ),
+    ],
+)
+def test_a_workflow_is_held_to_validates_pin_of_each_action_or_repository_it_shares(
+    workflow: str, problems: list[str]
+) -> None:
+    assert shared_pin_problems(PIN_REVIEWED, workflow) == problems
