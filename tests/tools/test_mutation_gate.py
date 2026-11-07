@@ -4018,10 +4018,10 @@ def many(count: int, module: str = "tools/calc.py", windows: bool = False) -> Se
 
 @pytest.mark.parametrize(
     ("count", "shards"),
-    [(0, 0), (1, 1), (40, 1), (41, 2), (80, 2), (81, 3), (240, 6), (241, 6), (1000, 6)],
+    [(0, 0), (1, 1), (40, 1), (41, 2), (80, 2), (81, 3), (240, 6), (241, 7), (320, 8), (321, 8), (1000, 8)],
 )
-def test_a_legs_mutants_are_dealt_one_shard_for_each_forty_and_six_at_most(count: int, shards: int) -> None:
-    # Pinned contract values: one shard for each 40 mutants, at most 6, which the workflow's matrix runs.
+def test_a_legs_mutants_are_dealt_one_shard_for_each_forty_and_eight_at_most(count: int, shards: int) -> None:
+    # Pinned contract values: one shard for each 40 mutants, at most 8, which the workflow's matrix runs.
     selected = Selected("origin/main", "3.8.0", (many(count),))
     assert mutation_gate.leg_shards(LINUX_LEG, selected) == shards
     assert mutation_gate.leg_shards(WINDOWS_LEG, selected) == 0

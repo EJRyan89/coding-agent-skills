@@ -335,7 +335,7 @@ STATUSES = (KILLED, TIMED_OUT, SURVIVED, NOT_REACHED, NOT_RUN, ERRORED)
 # A leg's mutants are dealt into shards, each a job of its own with its own cap: one shard for each SHARD_MUTANTS of
 # them, at most MAX_SHARDS, so a small change runs as one job and a large one in a shard's share of the time.
 SHARD_MUTANTS = 40
-MAX_SHARDS = 6
+MAX_SHARDS = 8
 # Where a finished run's join leaves its verdict for the next run of the pull request, under the folder it was given,
 # and where the select step finds the one the workflow restored.
 VERDICT_FOLDER = "verdict"
