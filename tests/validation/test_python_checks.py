@@ -2811,12 +2811,15 @@ def test_content_errors_policy_refuses_a_tree_whose_skill_core_names_no_reader()
 
 
 # A handler naming RecursionError around the fixture reader, which refuses nesting as its own family: refused when the
-# reader is all it reaches, directly, through a function, by a tuple, or in a suppress, and passed when it also calls
-# what recurses (a standard-library parser, a callable it cannot read, a function calling itself, or one that calls
-# either), when it reaches no reader, or when its scope is sanctioned.
+# reader is all it reaches, directly, through a function, by a tuple, in a suppress, or beside plain methods of a value
+# and a call an import resolves outside the catalogue, and passed when it also calls what recurses (a standard-library
+# parser or pattern compile, a callable it cannot read, a method of a parameter or of what a call gave, a function
+# calling itself, or one that calls either), when it reaches no reader, or when its scope is sanctioned.
 CONTENT_RECURSION_CALLER_SOURCE = """\
 import contextlib
 import json
+import os
+import re
 import tomllib
 
 from reader import read
@@ -2908,6 +2911,34 @@ def beside_a_parse(text):
         return None
 
 
+def beside_a_method(text, parser):
+    try:
+        return read(text), parser.parse(text)
+    except (ValueError, RecursionError):
+        return None
+
+
+def beside_a_decoder(text):
+    try:
+        return read(text), json.JSONDecoder().decode(text)
+    except (ValueError, RecursionError):
+        return None
+
+
+def beside_a_pattern(text):
+    try:
+        return read(text), re.compile(text)
+    except (ValueError, RecursionError):
+        return None
+
+
+def around_plain_methods(path):
+    try:
+        return read(path.read_text().strip()), os.path.join("a", "b")
+    except (ValueError, RecursionError):
+        return None
+
+
 def without_a_reader(text):
     try:
         return int(text)
@@ -2945,7 +2976,7 @@ def test_content_errors_policy_refuses_a_recursion_handler_around_readers_that_n
         "catches RecursionError around readers that refuse nesting as their own family, and calls nothing that "
         "recurses; remove RecursionError, or state which call raises it in CONTENT_ERRORS_ALLOWED"
     )
-    assert found == [f"skills/alpha/scripts/alpha.py:{line} {remedy}" for line in (31, 38, 45, 50, 60)]
+    assert found == [f"skills/alpha/scripts/alpha.py:{line} {remedy}" for line in (33, 40, 47, 52, 62, 120)]
 
 
 def test_a_standard_class_is_found_only_through_a_module_that_imports_and_defines_it() -> None:

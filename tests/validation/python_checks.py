@@ -3966,10 +3966,14 @@ class _ContentEscapes:
 
 
 # The standard-library calls that recurse once per level of the text or value they are given, so nesting past the
-# interpreter's limit ends them in a RecursionError. A reader of either core bounds its own nesting and raises its
-# family instead, so a handler naming RecursionError around such a reader alone catches nothing.
+# interpreter's limit ends them in a RecursionError: the parsers and serializers of nested data, `re`'s compile of a
+# pattern's nested groups, which each function taking a pattern makes, and the formatters of a nested value. A reader
+# of either core bounds its own nesting and raises its family instead, so a handler naming RecursionError around such
+# a reader alone catches nothing. The list is closed for a call an import resolves: any other such call is read as
+# one that does not recurse, and a scope that holds one that does states it in CONTENT_ERRORS_ALLOWED.
 RECURSIVE_CALLS = frozenset(
     {
+        "ast.dump",
         "ast.literal_eval",
         "ast.parse",
         "ast.unparse",
@@ -3987,8 +3991,66 @@ RECURSIVE_CALLS = frozenset(
         "pickle.dumps",
         "pickle.load",
         "pickle.loads",
+        "pprint.pformat",
+        "pprint.pprint",
+        "re.compile",
+        "re.findall",
+        "re.finditer",
+        "re.fullmatch",
+        "re.match",
+        "re.search",
+        "re.split",
+        "re.sub",
+        "re.subn",
+        "repr",
         "tomllib.load",
         "tomllib.loads",
+    }
+)
+# The methods of text, bytes, a path, a mapping, a list, or a set that never recurse into what they hold. A method
+# called on a receiver no import resolves, such as a parameter or a value a call returned, is read as a callable the
+# policy cannot read unless it names one of these, since the receiver may be a parser.
+PLAIN_METHODS = frozenset(
+    {
+        "add",
+        "append",
+        "as_posix",
+        "casefold",
+        "count",
+        "endswith",
+        "exists",
+        "extend",
+        "find",
+        "get",
+        "is_dir",
+        "is_file",
+        "items",
+        "join",
+        "joinpath",
+        "keys",
+        "lower",
+        "lstrip",
+        "partition",
+        "pop",
+        "read_bytes",
+        "read_text",
+        "relative_to",
+        "removeprefix",
+        "removesuffix",
+        "replace",
+        "rfind",
+        "rpartition",
+        "rsplit",
+        "rstrip",
+        "setdefault",
+        "split",
+        "splitlines",
+        "startswith",
+        "stat",
+        "strip",
+        "unlink",
+        "upper",
+        "values",
     }
 )
 UNREAD_CALL = "<a call the policy cannot read>"
@@ -3997,7 +4059,8 @@ UNREAD_CALL = "<a call the policy cannot read>"
 class _Recursion:
     """Which repository functions may end in a RecursionError, and each handler naming RecursionError around readers
     that never raise one. A function may when it calls one of RECURSIVE_CALLS, a callable the policy cannot read, such
-    as a parameter, itself, or another function that may; a reader with a family raises that family alone."""
+    as a parameter or a method other than PLAIN_METHODS of a value no import resolves, itself, or another function that
+    may; a reader with a family raises that family alone."""
 
     def __init__(self, model: _ContentModel, escapes: _ContentEscapes) -> None:
         self.model = model
@@ -4037,8 +4100,20 @@ class _Recursion:
         callees = self.model.callees(call, module)
         if callees:
             return set(callees)
-        unread = isinstance(call.func, ast.Name) and qualified == call.func.id and not hasattr(builtins, qualified)
+        func = call.func
+        if isinstance(func, ast.Name):
+            unread = qualified == func.id and not hasattr(builtins, qualified)
+        elif isinstance(func, ast.Attribute):
+            unread = not self.imported(func.value, module) and func.attr not in PLAIN_METHODS
+        else:
+            unread = True  # a call of what another call or a subscript gave
         return {UNREAD_CALL} if unread else set()
+
+    def imported(self, receiver: ast.expr, module: str) -> bool:
+        """Whether a method's receiver is a name the module's imports or top level bind, or an attribute of one."""
+        while isinstance(receiver, ast.Attribute):
+            receiver = receiver.value
+        return isinstance(receiver, ast.Name) and receiver.id in self.model.aliases[module]
 
     def catches_recursion(self, classes: list[ClassKey] | None) -> bool:
         return classes is not None and any(RecursionError in self.model.ancestors(key) for key in classes)
