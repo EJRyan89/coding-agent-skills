@@ -209,7 +209,8 @@ A command that runs another reads as both. In Bash, validation reads the program
 or not, runs, and the program a wrapper runs: `xargs`, `env`, `command`, `exec`, `nohup`, `timeout`, `nice`,
 `stdbuf`, and `find`'s `-exec`, and every command of the script `eval` or a shell's `-c` runs, with `-c` read as the
 shell reads it, alone or in a bundle such as `-lc`, before or after the shell's other options; `command -v` only looks
-one up. A wrapper's options are read as getopt reads them, a long one only spelled in full, so a program behind an
+one up. Only an unquoted operator or keyword is syntax: a quoted or escaped `;`, `&`, `|`, `(`, or `{`, such as the
+`\;` or `';'` that ends a `find -exec` action, is a word of the command it stands in. A wrapper's options are read as getopt reads them, a long one only spelled in full, so a program behind an
 abbreviated option or one the wrapper's table does not list is a program the policy cannot read. In PowerShell it
 reads what `Start-Process` starts, by `-FilePath` in any spelling PowerShell binds or by position, with the words its
 `-ArgumentList` gives it, a literal string or a list of them joined with spaces and split as the started program

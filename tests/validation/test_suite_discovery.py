@@ -599,6 +599,10 @@ def test_the_pipe_race_policy_finds_the_reader_in_every_shape_and_spelling(
         pytest.param("echo hi # $(printf a | head)", id="a substitution in a comment"),
         pytest.param("printf a | command -v head", id="a lookup"),
         pytest.param("printf a | xargs head -n 1", id="xargs, which reads to the end"),
+        pytest.param("printf a '|' head -n 1", id="a single-quoted pipe, a word"),
+        pytest.param('printf a "|" head -n 1', id="a double-quoted pipe, a word"),
+        pytest.param("printf a \\| head -n 1", id="an escaped pipe, a word"),
+        pytest.param("printf a \\|\\& head -n 1", id="an escaped |&, a word"),
     ],
 )
 def test_the_pipe_race_policy_passes_a_reader_that_reads_to_the_end(tmp_path: Path, script: str) -> None:
@@ -624,6 +628,8 @@ BASH_RACES = [
     pytest.param("seq 1 200000 | { if true; then head -n 1; fi; }", "head -n", id="a compound in a group"),
     pytest.param("seq 1 200000 | if true; then { head -n 1; }; fi", "head -n", id="a group in a compound"),
     pytest.param("seq 1 200000 | if true; then if true; then head -n 1; fi; fi", "head -n", id="nested ifs"),
+    pytest.param("seq 1 200000 | { echo ';' '}'; head -n 1; }", "head -n", id="a group past a quoted ; and }"),
+    pytest.param("seq 1 200000 | { echo \\; \\}; head -n 1; }", "head -n", id="a group past an escaped ; and }"),
     pytest.param("f() { head -n 1; }; seq 1 200000 | f", "head -n", id="a function"),
     pytest.param("function g { head -n 1; }; seq 1 200000 | g", "head -n", id="a function keyword"),
     pytest.param("function g() ( head -n 1 ); seq 1 200000 | g", "head -n", id="a subshell function"),

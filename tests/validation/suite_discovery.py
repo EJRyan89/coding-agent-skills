@@ -12,7 +12,6 @@ import functools
 import io
 import itertools
 import re
-import shlex
 import sys
 import tomllib
 import unittest
@@ -32,8 +31,8 @@ from skill_scripts import (
     SCRIPT_SHELLS,
     STANDARD_STREAMS,
     UNREAD_PROGRAM,
+    ShellLexer,
     shell_script_index,
-    split_operators,
     substitution_spans,
     unwrapped,
 )
@@ -708,9 +707,9 @@ class _BashReader:
         if index is not None:
             del self.frames[index:]
 
-    def case_part(self, part: str) -> bool:
-        """Read a part of a case's word or patterns, which are no commands, and where `|` separates patterns; False
-        when no case is reading them."""
+    def case_part(self, part: str | None) -> bool:
+        """Read a part of a case's word or patterns, which are no commands, and where `|` separates patterns, as its
+        syntax, None for a literal; False when no case is reading them."""
         case = self.frames[-1] if self.frames and self.frames[-1].closer == "esac" else None
         if case is None or not (case.patterns or case.case_word):
             return False
@@ -722,14 +721,15 @@ class _BashReader:
             case.patterns, self.before = False, "\n"
         return True
 
-    def word(self, part: str, at_command: bool) -> None:
-        """Read a word: the first of a command sets its line, and a reserved word opens or closes a compound."""
+    def word(self, part: str, at_command: bool, literal: bool = False) -> None:
+        """Read a word: the first of a command sets its line, and a reserved word, unless the word is a literal,
+        opens or closes a compound."""
         if not self.words:
             self.offset = max(self.stream.tell() - 1, 0)
             self.line = self.script.count("\n", 0, self.offset) + 1
         if at_command and part in COMPOUND_CLOSERS:
             self.frames.append(_Frame(COMPOUND_CLOSERS[part], self.before in PIPES or self.fed()))
-        elif not self.words and part in COMPOUND_CLOSERS.values():
+        elif not literal and not self.words and part in COMPOUND_CLOSERS.values():
             self.close(part)
         self.words.append(part)
 
@@ -762,11 +762,15 @@ class _BashReader:
         elif closes:
             self.close(part)
 
-    def part(self, part: str) -> None:
-        if self.case_part(part):
+    def part(self, part: str, keyword: str | None) -> None:
+        """Read a part as ShellLexer gives it, beside its syntax: a literal's, quoted or escaped, is None, and reads as
+        a word that breaks, opens, and closes nothing."""
+        if self.case_part(keyword):
             return
         at_command = all(word in COMMAND_LEADERS for word in self.words)
-        if part not in COMMAND_BREAKS or (part == "&" and self.words[-1:] in (["<"], [">"])):
+        if keyword is None:
+            self.word(part, at_command=False, literal=True)
+        elif keyword not in COMMAND_BREAKS or (keyword == "&" and self.words[-1:] in (["<"], [">"])):
             self.word(part, at_command)
         elif not self.ends_case_item(part):
             self.operator(part, at_command)
@@ -784,13 +788,9 @@ def _read_bash(script: str) -> tuple[list[tuple[str, int, list[str]]], dict[str,
     # plain single-quoted string of the same length and lines, so each offset still names its line as written.
     plain = ANSI_C_STRING.sub(lambda match: "x'" + re.sub(r"[^\n]", "x", match[0][2:-1]) + "'", script)
     stream = _ShellText(plain.replace("\\\n", "  "))
-    lexer = shlex.shlex(stream, posix=True, punctuation_chars=";&|()<>\n")
-    lexer.whitespace = " \t\r"
-    lexer.whitespace_split = True
     reader = _BashReader(script, stream)
-    for token in lexer:
-        for part in split_operators(token):
-            reader.part(part)
+    for part, keyword in ShellLexer(stream).words():
+        reader.part(part, keyword)
     reader.emit()
     return reader.commands, reader.functions
 

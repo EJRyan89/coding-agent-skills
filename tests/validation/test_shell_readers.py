@@ -64,6 +64,42 @@ def test_shell_command_extraction_reads_the_program_every_wrapper_and_substituti
     assert "rg" in shell_commands(script)
 
 
+# find runs every action's program whichever terminator, quoted, escaped, or +, ends the action before it.
+@pytest.mark.parametrize(
+    "script",
+    [
+        "find . -exec jq . {} + -exec rg foo {} +",
+        "find . -exec jq . {} \\; -exec rg foo {} \\;",
+        "find . -exec jq . {} ';' -exec rg foo {} ';'",
+        'find . -exec jq . {} ";" -exec rg foo {} ";"',
+    ],
+)
+def test_shell_command_extraction_reads_each_find_action_past_its_terminator(script: str) -> None:
+    assert shell_commands(script) == {"find", "jq", "rg"}
+
+
+# A command separator quoted or escaped is a word of the command, so the word after it is not a program.
+@pytest.mark.parametrize(
+    "separator",
+    [
+        *(f"\\{op}" for op in (";", "&", "|", "(", "{")),
+        "\\&\\&",
+        "\\|\\|",
+        "\\|\\&",
+        *(f"{quote}{op}{quote}" for quote in "'\"" for op in (";", "&", "&&", "|", "||", "|&", "(", "\n", "{")),
+        "a';'b",
+    ],
+)
+def test_shell_command_extraction_reads_a_quoted_or_escaped_separator_as_a_word(separator: str) -> None:
+    assert shell_commands(f"echo a {separator} rg foo") == {"echo"}
+
+
+# An unquoted separator still ends the command, so the word after it is the next command's program.
+@pytest.mark.parametrize("separator", [";", "&", "&&", "|", "||", "|&", "\n"])
+def test_shell_command_extraction_reads_the_program_after_an_unquoted_separator(separator: str) -> None:
+    assert shell_commands(f"echo a {separator} rg foo") == {"echo", "rg"}
+
+
 # A lookup, a substitution in single quotes or a comment, and arithmetic run nothing.
 @pytest.mark.parametrize("script", ["command -v rg", "echo '$(rg foo)'", "# run `rg foo` here", "echo $((1 + 2))"])
 def test_shell_command_extraction_finds_no_program_where_nothing_runs(script: str) -> None:
@@ -270,6 +306,20 @@ def test_the_git_subcommand_reader_reads_the_git_command_a_started_script_runs(s
 )
 def test_the_git_subcommand_reader_finds_none_where_a_started_script_runs_no_git(script: str) -> None:
     assert skill_scripts.shell_git_subcommands(script) == set()
+
+
+# A quoted or escaped ; is a word of the command before it, which runs no git; find's second action, past one, does.
+@pytest.mark.parametrize(
+    ("script", "subcommands"),
+    [
+        ("echo a \\; git push", set()),
+        ("echo a ';' git push", set()),
+        ("find . -exec true {} \\; -exec bash -c 'git push' \\;", {"push"}),
+        ("find . -exec true {} ';' -exec bash -c 'git push' ';'", {"push"}),
+    ],
+)
+def test_the_git_subcommand_reader_reads_past_a_quoted_or_escaped_semicolon(script: str, subcommands: set[str]) -> None:
+    assert skill_scripts.shell_git_subcommands(script) == subcommands
 
 
 # A subcommand no literal names is recorded as its word: the Bash text, or UNREAD_WORD for PowerShell's.
