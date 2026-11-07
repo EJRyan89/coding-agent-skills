@@ -4051,9 +4051,8 @@ def test_the_shards_deal_each_mutant_of_the_leg_once_in_shares_of_near_equal_len
 
 
 def test_a_modules_mutants_are_spread_across_its_shards_rather_than_cut_into_runs() -> None:
-    # A module's slow lines sit together, so a run of them would fill one shard's cap: #2402's own Windows shards
-    # each held 132 of one module's mutants and ran from 14 to 40 of their 40 minutes. Taken in turn, each shard
-    # holds every stretch of the module alike.
+    # A module's slow lines sit together, so a run of them would fill one shard's cap while shards of the same reach
+    # and the same count idle. Taken in turn, each shard holds every stretch of the module alike.
     selected = Selected("origin/main", "3.8.0", (many(80),))
     assert mutation_gate.shard_places(LINUX_LEG, selected, 1) == {"tools/calc.py": list(range(0, 80, 2))}
     assert mutation_gate.shard_places(LINUX_LEG, selected, 2) == {"tools/calc.py": list(range(1, 80, 2))}
@@ -4069,7 +4068,7 @@ def test_a_modules_mutants_are_spread_across_its_shards_rather_than_cut_into_run
 
 
 def test_the_spread_keeps_each_shards_modules_so_no_reach_pass_grows() -> None:
-    # #2406's Windows leg: two modules every suite reaches, with 5 mutants, beside 286 of a module 38 suites reach.
+    # Two modules nearly every suite reaches, with 5 mutants, beside 286 of a module fewer suites reach.
     # Its shards' reach passes measure the suites that reach their modules, so the widely reached modules stay in the
     # one shard the cut puts them in, and only the large module's mutants spread across the other seven.
     selected = Selected(
