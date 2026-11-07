@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import ast
 import sys
+import unittest
 from pathlib import Path
 
 import pytest
@@ -344,16 +345,20 @@ START_PROCESS_LISTING = (
 )
 
 
-@pytest.mark.skipif(sys.platform != "win32", reason="the table is Start-Process's parameters on Windows")
-def test_the_start_process_table_is_what_powershell_lists() -> None:
-    listed = toolchain.powershell_json(START_PROCESS_LISTING, [], "UNUSED", "PowerShell could not list Start-Process")
-    assert {row["name"]: (row["switch"], tuple(row["aliases"])) for row in listed} == (
-        skill_scripts.START_PROCESS_PARAMETERS
-    )
+class StartProcessTable(unittest.TestCase):
+    @unittest.skipUnless(sys.platform == "win32", "the table is Start-Process's parameters on Windows")
+    def test_the_start_process_table_is_what_powershell_lists(self) -> None:
+        listed = toolchain.powershell_json(
+            START_PROCESS_LISTING, [], "UNUSED", "PowerShell could not list Start-Process"
+        )
+        self.assertEqual(
+            skill_scripts.START_PROCESS_PARAMETERS,
+            {row["name"]: (row["switch"], tuple(row["aliases"])) for row in listed},
+        )
 
 
 # Start-Process with no argument list, or one that runs a file, starts PowerShell running no script the source holds.
-# The policy reads a -File's script in its own file, as it does for `pwsh -File` (#2396), never as a script here.
+# The policy reads a -File's script in its own file, as it does for `pwsh -File`, never as a script here.
 @pytest.mark.parametrize(
     "source", ["Start-Process pwsh", "Start-Process pwsh -ArgumentList '-File', './run.ps1', '-c', 'jq .'"]
 )
