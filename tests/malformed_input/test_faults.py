@@ -194,10 +194,11 @@ FIXTURE_HEADER = (
 
 
 def fixture_run(
-    body: str, fault: str, target: str | None = None
+    body: str, fault: str, target: str | None = None, writable: Path | None = None
 ) -> tuple[subprocess.CompletedProcess[str], dict[str, Any]]:
     """Run a fixture entry point whose main holds body under the fault, in a throwaway fixture; target names a file
-    below the work folder, which exists."""
+    below the work folder, which exists, and writable the folder the run may write in, the temporary folder unless
+    given."""
     with tempfile.TemporaryDirectory(prefix="fault fixture ") as temporary:
         root = Path(temporary).resolve()
         fixture = Fixture(root, root / "home", root / "work", root)
@@ -214,7 +215,8 @@ def fixture_run(
         if path is not None:
             path.write_text("text\n", encoding="utf-8")
         with placed(fault, path):
-            return run_entry(entry, [], fault, path, fixture, environment(fixture, Driver("entry.py", "", ())))
+            variables = environment(fixture, Driver("entry.py", "", ()))
+            return run_entry(entry, [], fault, path, fixture, variables, writable=writable)
 
 
 @pytest.mark.parametrize(
@@ -235,6 +237,30 @@ def test_the_runner_stops_a_program_a_connection_and_a_write_outside_the_tempora
     assert record["stopped"].startswith(stopped)
     assert not (REPOSITORY / "never-written.txt").exists()
     assert not (REPOSITORY / "never-made").exists()
+
+
+@pytest.mark.parametrize(
+    ("body", "stopped", "name"),
+    [
+        ("Path({path!r}).write_text('x')", "wrote outside the run's folders", "never-written-nested.txt"),
+        ("Path({path!r}).mkdir()", "changed a path outside the run's folders", "never-made-nested"),
+    ],
+)
+def test_the_runner_stops_a_write_in_the_checkout_where_a_folder_the_run_may_write_in_holds_it(
+    body: str, stopped: str, name: str
+) -> None:
+    # The mutation gate runs this suite in a throwaway worktree under the temporary folder, the folder a run may write
+    # in; the checkout's parent, which holds it, stands in for that folder here.
+    path = REPOSITORY / name
+    try:
+        finished, record = fixture_run(body.format(path=str(path)), GIT_EXIT, writable=REPOSITORY.parent)
+        assert record["stopped"] is not None, finished
+        assert record["stopped"].startswith(stopped)
+        assert not path.exists()
+    finally:
+        if path.is_dir():
+            path.rmdir()
+        path.unlink(missing_ok=True)
 
 
 @pytest.mark.parametrize(

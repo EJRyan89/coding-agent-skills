@@ -2,7 +2,8 @@
 fault in a throwaway fixture, and judged.
 
 fault_runner.py runs the command under the fault and stops it, past any handler, if it starts a program other than
-git, opens a network connection, or writes outside the temporary folder. A run must reach its fault and end with a
+git, opens a network connection, or writes outside the temporary folder or inside this checkout, even where the
+temporary folder holds it. A run must reach its fault and end with a
 nonzero exit its docstring's exit table names, output that names what failed, a refusal line, no traceback, and the
 home, the work folder, and the outputs the driver names as it found them. The suites test_faults_<group>.py run every
 driver's runs of their group of faults, so the runner deals each group to a leg of its own; test_faults.py holds the
@@ -241,16 +242,20 @@ def run_entry(
     fixture: Fixture,
     variables: dict[str, str],
     repository: Path = REPOSITORY,
+    writable: Path | None = None,
 ) -> tuple[subprocess.CompletedProcess[str], dict[str, Any]]:
     """Run an entry point through fault_runner.py under the fault, in the fixture's work folder, and return how it
-    ended and the runner's record."""
+    ended and the runner's record. The run may write in `writable`, the temporary folder unless a caller names another,
+    and never in this checkout, which lies under the temporary folder when the mutation gate runs the suite in a
+    throwaway worktree."""
     record_file = fixture.root / "record.json"
     spec = {
         "entry": str(entry),
         "arguments": arguments,
         "fault": fault,
         "target": str(target) if target else None,
-        "writable": [tempfile.gettempdir()],
+        "writable": [str(writable or tempfile.gettempdir())],
+        "protected": [str(REPOSITORY)],
         "path": [str(repository / SKILL_CORE)],
         "repository": str(repository),
         "record": str(record_file),
