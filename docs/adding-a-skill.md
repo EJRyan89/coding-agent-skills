@@ -225,7 +225,9 @@ read from standard input, and one a word the policy cannot read holds are progra
 reads a Bash shell's `-c` script too, as in Bash, up to the first word that is not a literal. The git subcommand a
 Bash script runs, which a skill's runtime support is held to, is read the same way, in the command a wrapper or
 `find`'s `-exec` family runs, up to the `;` or `{} +` that ends the action, and in the script `eval`, a shell's
-`-c`, or a PowerShell start-up runs as well as at the script's own level. A wrapper's program,
+`-c`, or a PowerShell start-up runs as well as at the script's own level. audit-skill's runtime-support reader finds
+such a git command only after `command`, `exec`, or `find`'s `-exec`, a limit
+`tests/audit-skill/test_audit_skill_runtime_needs.py` names until it reads the same wrappers. A wrapper's program,
 or what `&` runs, held in a variable is a program the policy cannot read, and fails the declared-tool policy.
 
 Reach for these substitutes instead:

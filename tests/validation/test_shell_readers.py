@@ -344,35 +344,38 @@ def test_the_git_subcommand_reader_reads_the_git_command_a_started_script_runs(s
 
 # A git command a wrapper of COMMAND_WRAPPERS or find's -exec family runs directly is read past the wrapper's options,
 # and a wrapper of a wrapper, to the git command's own words; find's action ends at its `;` or `{} +`. A bare `time` is
-# Bash's keyword, not the time program, so its row reaches the program through env.
-@pytest.mark.parametrize(
-    "script",
-    [
-        "xargs git push",
-        "env git push",
-        "timeout 5 git push",
-        "find . -exec git push {} +",
-        "find . -exec git push \\;",
-        "command git push",
-        "builtin git push",
-        "exec git push",
-        "nohup git push",
-        "env time -p git push",
-        "nice -n 5 git push",
-        "env -i A=1 git push",
-        "env -S 'git push'",
-        "stdbuf -o L git push",
-        "xargs -n 1 git push",
-        "timeout --signal TERM 5 git push",
-        "find . -execdir git push ';'",
-        "find . -ok git push {} \\;",
-        "find . -okdir git push {} +",
-        "nohup env timeout 5 git push",
-        "find . -exec env git push {} +",
-        "x=$(xargs git push)",
-        "bash -c 'xargs git push'",
-    ],
+# Bash's keyword, not the time program, so its row reaches the program through env. An action with no terminator runs
+# to the end of the command. tests/audit-skill/test_audit_skill_runtime_needs.py holds audit-skill's reader to these
+# rows.
+WRAPPED_GIT_PUSH_SCRIPTS = (
+    "xargs git push",
+    "env git push",
+    "timeout 5 git push",
+    "find . -exec git push {} +",
+    "find . -exec git push \\;",
+    "find . -exec git push",
+    "command git push",
+    "builtin git push",
+    "exec git push",
+    "nohup git push",
+    "env time -p git push",
+    "nice -n 5 git push",
+    "env -i A=1 git push",
+    "env -S 'git push'",
+    "stdbuf -o L git push",
+    "xargs -n 1 git push",
+    "timeout --signal TERM 5 git push",
+    "find . -execdir git push ';'",
+    "find . -ok git push {} \\;",
+    "find . -okdir git push {} +",
+    "nohup env timeout 5 git push",
+    "find . -exec env git push {} +",
+    "x=$(xargs git push)",
+    "bash -c 'xargs git push'",
 )
+
+
+@pytest.mark.parametrize("script", WRAPPED_GIT_PUSH_SCRIPTS)
 def test_the_git_subcommand_reader_reads_the_git_command_a_wrapper_runs(script: str) -> None:
     assert skill_scripts.shell_git_subcommands(script) == {"push"}
 
