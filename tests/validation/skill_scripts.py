@@ -338,9 +338,9 @@ def _program_word(word: str) -> set[str]:
 def _wrapped_programs(words: list[str], commands: list[list[str]] | None = None) -> set[str]:
     """The programs a simple command runs through its first word: what a wrapper such as xargs or env runs, what find's
     -exec runs, what eval or a shell's -c script runs, and what the script pwsh or Windows PowerShell is started to run
-    runs, followed through a wrapper of a wrapper. Given `commands`, it also appends the words of each command the
-    script eval, a shell's -c, or a PowerShell start-up runs holds, as shell_commands and powershell_startup_programs
-    read them."""
+    runs, followed through a wrapper of a wrapper. Given `commands`, it also appends the words of each command a
+    wrapper or find's action runs, from its program on, and of each command the script eval, a shell's -c, or a
+    PowerShell start-up runs holds, as shell_commands and powershell_startup_programs read them."""
     found: set[str] = set()
     while words:
         started = powershell_startup_programs(words, commands)
@@ -355,7 +355,10 @@ def _wrapped_programs(words: list[str], commands: list[list[str]] | None = None)
         if head == "find":
             actions = [index for index, word in enumerate(rest) if word in FIND_ACTIONS and index + 1 < len(rest)]
             for index in actions:
-                found |= _program_word(rest[index + 1]) | _wrapped_programs(rest[index + 1 :], commands)
+                action = _find_action(rest[index + 1 :])
+                if commands is not None:
+                    commands.append(action)
+                found |= _program_word(action[0]) | _wrapped_programs(action, commands)
             return found
         wrapped = unwrapped(words)
         if not wrapped:
@@ -363,8 +366,19 @@ def _wrapped_programs(words: list[str], commands: list[list[str]] | None = None)
         if wrapped[0].startswith(UNREAD_PROGRAM):
             return found | {wrapped[0]}
         found |= _program_word(wrapped[0])
+        if commands is not None:
+            commands.append(wrapped)
         words = wrapped
     return found
+
+
+def _find_action(words: list[str]) -> list[str]:
+    """The words of the command one of find's -exec family runs, given the words after the action: up to the `;` that
+    ends it or the `+` after `{}` that does, or to the end when neither does."""
+    for index, word in enumerate(words[1:], start=1):
+        if word == ";" or (word == "+" and words[index - 1] == "{}"):
+            return words[:index]
+    return words
 
 
 def powershell_startup_programs(

@@ -342,6 +342,58 @@ def test_the_git_subcommand_reader_reads_the_git_command_a_started_script_runs(s
     assert skill_scripts.shell_git_subcommands(script) == {"push"}
 
 
+# A git command a wrapper of COMMAND_WRAPPERS or find's -exec family runs directly is read past the wrapper's options,
+# and a wrapper of a wrapper, to the git command's own words; find's action ends at its `;` or `{} +`. A bare `time` is
+# Bash's keyword, not the time program, so its row reaches the program through env.
+@pytest.mark.parametrize(
+    "script",
+    [
+        "xargs git push",
+        "env git push",
+        "timeout 5 git push",
+        "find . -exec git push {} +",
+        "find . -exec git push \\;",
+        "command git push",
+        "builtin git push",
+        "exec git push",
+        "nohup git push",
+        "env time -p git push",
+        "nice -n 5 git push",
+        "env -i A=1 git push",
+        "env -S 'git push'",
+        "stdbuf -o L git push",
+        "xargs -n 1 git push",
+        "timeout --signal TERM 5 git push",
+        "find . -execdir git push ';'",
+        "find . -ok git push {} \\;",
+        "find . -okdir git push {} +",
+        "nohup env timeout 5 git push",
+        "find . -exec env git push {} +",
+        "x=$(xargs git push)",
+        "bash -c 'xargs git push'",
+    ],
+)
+def test_the_git_subcommand_reader_reads_the_git_command_a_wrapper_runs(script: str) -> None:
+    assert skill_scripts.shell_git_subcommands(script) == {"push"}
+
+
+# A wrapper that runs no git command, or only looks git up, gives no subcommand; find's second action is read apart
+# from its first.
+@pytest.mark.parametrize(
+    ("script", "subcommands"),
+    [
+        ("command -v git push", set()),
+        ("xargs echo git push", set()),
+        ("find . -exec git status {} \\; -exec echo push \\;", {"status"}),
+        ("find . -exec git \\; -exec echo push \\;", set()),
+        ("find . -exec git -C {} + -exec echo push {} +", set()),
+        ("find . -exec echo {} + -exec git push {} +", {"push"}),
+    ],
+)
+def test_the_git_subcommand_reader_reads_only_the_command_a_wrapper_runs(script: str, subcommands: set[str]) -> None:
+    assert skill_scripts.shell_git_subcommands(script) == subcommands
+
+
 # A started script that runs no git command gives no subcommand, though a word of it is one.
 @pytest.mark.parametrize(
     "script",
