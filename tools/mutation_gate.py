@@ -9,7 +9,8 @@ it is not a required check, and it calls no model and reads no secret. Without a
 process, as one leg on this platform. The workflow splits the run across jobs, each step handing on files in FOLDER:
 `select`, on Linux, since mutmut refuses Windows, makes the mutants and writes them to mutants.json, with step outputs
 listing, as a JSON list of their numbers, the shards each leg's mutants are dealt into: one for each SHARD_MUTANTS of
-them, at most MAX_SHARDS, each a run of the leg's mutants, module after module, as shard_places cuts them; `leg`, on
+them, at most MAX_SHARDS, each holding as few modules as an even deal allows and each module's mutants spread across
+the shards that hold it, as dealt_shards deals them; `leg`, on
 Linux and on Windows, runs that platform's leg of them, or with --shard that shard's share, never running mutmut, and
 writes its outcomes to outcomes-<platform>.json, or outcomes-<platform>-<shard>.json; and `join` reports them, reading
 each leg's whole record, or each shard the selection deals and no other, joined into the leg's. The Linux leg runs every
@@ -185,6 +186,7 @@ from collections import Counter
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field, replace
+from fractions import Fraction
 from pathlib import Path, PurePosixPath
 from typing import Any, TypeVar
 
@@ -1791,15 +1793,42 @@ def leg_shards(leg: str, selected: Selected) -> int:
     return min(MAX_SHARDS, -(-count // SHARD_MUTANTS))
 
 
-def shard_places(leg: str, selected: Selected, shard: int) -> dict[str, list[int]]:
-    """The places of each module's mutants that shard `shard`, from 1, of a leg runs: the leg's mutants, module after
-    module in the selection's order, each module's in its own, cut into leg_shards runs whose lengths differ by one at
-    most, so a module's mutants and the suites that reach them stay in as few shards as they can."""
-    places = [(chosen.module, place) for chosen in leg_modules(leg, selected) for place in range(len(chosen.mutants))]
+def dealt_shards(leg: str, selected: Selected) -> dict[str, list[int]]:
+    """The shard, from 1, that runs each of a module's mutants, in the order of its places.
+
+    How many of each module's mutants a shard runs comes from cutting the leg's mutants, module after module in the
+    selection's order, into leg_shards runs whose lengths differ by one at most, so a module and the suites that reach
+    it stay in as few shards as they can, and each shard's reach pass measures as few suites as it can. Which of them
+    it runs is spread, not cut: a module's places go to the shards that hold it in turn, each in proportion to its
+    count, since the slow lines of a module, those only slow suites reach and the survivors that run every reaching
+    suite, sit together, and a run of them would fill one shard's cap while the others stay idle."""
+    modules = leg_modules(leg, selected)
     count = leg_shards(leg, selected)
+    order = [chosen.module for chosen in modules for _ in chosen.mutants]
+    held: dict[str, Counter[int]] = {chosen.module: Counter() for chosen in modules}
+    for shard in range(1, count + 1):
+        held_by_shard = Counter(order[(shard - 1) * len(order) // count : shard * len(order) // count])
+        for module, share in held_by_shard.items():
+            held[module][shard] = share
+    # The j-th of a shard's n places sits at (2j + 1) / 2n of the module, so each shard's places spread across it.
+    return {
+        module: [
+            shard
+            for _, shard in sorted(
+                (Fraction(2 * index + 1, 2 * share), shard) for shard, share in shares.items() for index in range(share)
+            )
+        ]
+        for module, shares in held.items()
+    }
+
+
+def shard_places(leg: str, selected: Selected, shard: int) -> dict[str, list[int]]:
+    """The places of each module's mutants that shard `shard`, from 1, of a leg runs, as dealt_shards deals them."""
     found: dict[str, list[int]] = {}
-    for module, place in places[(shard - 1) * len(places) // count : shard * len(places) // count]:
-        found.setdefault(module, []).append(place)
+    for module, shards in dealt_shards(leg, selected).items():
+        places = [place for place, dealt in enumerate(shards) if dealt == shard]
+        if places:
+            found[module] = places
     return found
 
 
