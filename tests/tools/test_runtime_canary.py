@@ -2451,6 +2451,19 @@ class RecordRefusalTests(RuntimeCanaryTestCase):
         records.write_bytes(b'{"run": "kept \xff"}\n')
         self.assertEqual([{"run": "kept �"}], runtime_canary.read_records(records))
 
+    def test_a_python_recorder_line_for_a_path_that_is_not_utf8_is_refused_by_name_not_skipped(self) -> None:
+        # The Python recorder writes with json.dumps, as RECORDER's _write does, so a working folder that is not
+        # UTF-8 on Linux, held as a lone surrogate, is written as its escape: a path the canary cannot compare.
+        self.assertIn("log.write(json.dumps(record)", runtime_canary.RECORDER)
+        records = self.root / "direct.jsonl"
+        line = json.dumps({"argv": ["tool.py"], "cwd": "/home/folder\udcff", "pid": 1})
+        records.write_text(line + "\n", encoding="utf-8")
+        with self.assertRaises(runtime_canary.RecordRefused) as raised:
+            runtime_canary.read_records(records)
+        self.assertEqual(
+            "line 1: the JSON holds a lone surrogate U+DCFF, which UTF-8 cannot encode", raised.exception.reason
+        )
+
     def test_a_record_that_cannot_be_read_is_named_by_the_file_the_error_names_or_else_the_marker_file(self) -> None:
         probe, script_log = self.root / "probe.jsonl", self.root / "scripts" / "codex-alpha.jsonl"
         self.assertEqual(

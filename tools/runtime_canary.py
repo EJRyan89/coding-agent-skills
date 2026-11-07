@@ -353,7 +353,10 @@ PLATFORM_ALLOWED = {
 # the status the script exits with, unless the script replaces the trap with its own; a subshell inherits no EXIT
 # trap. Each record is a JSON line read_records reads: a backslash and a quote in a path are escaped, and so is each
 # control character, as a tab or a newline a Linux path may hold, written as its \u escape, where a raw one would make
-# a line read_records skips as one a crashed writer left. Python's own json module escapes them in RECORDER.
+# a line read_records skips as one a crashed writer left. Python's own json module escapes them in RECORDER, which
+# cannot import json_writer in the runtime's interpreter; a path that is not UTF-8 on Linux, which it holds as a lone
+# surrogate, it writes as that surrogate's escape, and read_records refuses the line by name as RecordRefused, since
+# the canary cannot compare such a path.
 BASH_RECORDER = r"""# Written by tools/runtime_canary.py: record each Bash script a runtime starts and how it exited.
 if [ -z "${BASH_EXECUTION_STRING+set}" ] && [ -n "${RUNTIME_CANARY_SCRIPT_LOG-}" ] && [ -f "$0" ] && [ -r "$0" ]
 then
