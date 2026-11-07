@@ -117,6 +117,32 @@ def test_shell_command_extraction_reads_a_quoted_or_escaped_reserved_word_as_a_w
     assert shell_commands(script) == programs
 
 
+# The unquoted reserved words and functions, read as Bash reads them: a function runs no program of its name, a case
+# word runs nothing until its `in`, each case item and the item that ends at `esac` runs its commands.
+@pytest.mark.parametrize(
+    ("script", "programs"),
+    [
+        ("echo a; function f { jq .; }; f", {"echo", "jq"}),
+        ("echo a; f () { jq .; }; f", {"echo", "jq"}),
+        ("case $(echo a) in a) jq .;; esac", {"echo", "jq"}),
+        ("case x in a) jq .;; b) rg foo;; esac", {"jq", "rg"}),
+        ("case x in a) jq .\nesac", {"jq"}),
+    ],
+)
+def test_shell_command_extraction_reads_unquoted_reserved_words_and_functions(script: str, programs: set[str]) -> None:
+    assert shell_commands(script) == programs
+
+
+def test_the_shell_lexer_gives_each_word_beside_its_syntax() -> None:
+    words = list(skill_scripts.ShellLexer("echo aX'|'b \\; c && d").words())
+    assert words == [("echo", "echo"), ("aX|b", None), (";", None), ("c", "c"), ("&&", "&&"), ("d", "d")]
+
+
+# A line continuation joins its lines, so the word after it is the git command's subcommand.
+def test_the_git_subcommand_reader_reads_past_a_line_continuation() -> None:
+    assert skill_scripts.shell_git_subcommands("git \\\n  push") == {"push"}
+
+
 # An unquoted separator still ends the command, so the word after it is the next command's program.
 @pytest.mark.parametrize("separator", [";", "&", "&&", "|", "||", "|&", "\n"])
 def test_shell_command_extraction_reads_the_program_after_an_unquoted_separator(separator: str) -> None:

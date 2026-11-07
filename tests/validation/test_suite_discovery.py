@@ -608,6 +608,10 @@ def test_the_pipe_race_policy_finds_the_reader_in_every_shape_and_spelling(
         pytest.param("printf a | \\! head -n 1", id="an escaped !, a program"),
         pytest.param('printf a | "if" head -n 1', id="a quoted if, a program"),
         pytest.param("printf a | 'then' head -n 1", id="a quoted then, a program"),
+        # A reserved word after a command's program is its argument, which opens no compound the pipe feeds.
+        pytest.param("printf a | echo while; head -n 1 file", id="while as an argument"),
+        # A case word is one word to its `in`, a substitution and what follows it included, so no part of it runs.
+        pytest.param("printf a | case $(echo a)head in ahead) cat;; esac", id="a case word past a substitution"),
         # A quoted or escaped ) or esac is a case pattern, so the | after it separates patterns, never pipes.
         pytest.param("printf a | case x in ')'|head) cat;; esac", id="a quoted ) pattern"),
         pytest.param("printf a | case x in \\)|head) cat;; esac", id="an escaped ) pattern"),
@@ -649,6 +653,16 @@ BASH_RACES = [
         "seq 1 200000 | while true; do\n  \\done 2>/dev/null\n  head -n 1\n  break\ndone",
         "head -n",
         id="while's body past an escaped done",
+    ),
+    pytest.param("seq 1 200000 | if true; then echo fi; head -n 1; fi", "head -n", id="if's body past fi as a word"),
+    pytest.param("case a in a) :;; esac; seq 1 200000 | head -n 1", "head -n", id="a pipe after a case"),
+    pytest.param("seq 1 200000 | case $(echo a) in a) head -n 1;; esac", "head -n", id="case on a substitution"),
+    pytest.param("seq 1 200000 | { echo a { ; head -n 1; }", "head -n", id="a group past an argument {"),
+    pytest.param(
+        " ".join(f"f{index}() {{ f{index + 1}; }};" for index in range(1, 16))
+        + " f16() { head -n 1; }; seq 1 200000 | f1",
+        "head -n",
+        id="sixteen functions deep, the nesting limit",
     ),
     pytest.param("f() { head -n 1; }; seq 1 200000 | f", "head -n", id="a function"),
     pytest.param("function g { head -n 1; }; seq 1 200000 | g", "head -n", id="a function keyword"),
@@ -746,6 +760,9 @@ def test_a_race_in_unquoted_backticks_is_named_once(tmp_path: Path) -> None:
         pytest.param("command set -o pipefail", id="command set"),
         pytest.param("eval 'set -o pipefail'", id="eval"),
         pytest.param("if true; then set -o pipefail; fi", id="in a compound"),
+        # The & of a redirection's >& or <& stays in its command, so the option after it is still set's.
+        pytest.param("set 2>&1 -o pipefail", id="after a >& redirection"),
+        pytest.param("set 0<&0 -o pipefail", id="after a <& redirection"),
         pytest.param("x=$(set -o pipefail)", id="in a substitution"),
         pytest.param("bash -o pipefail -c 'printf a | head -n 1'", id="a shell started with it"),
         pytest.param("env SHELLOPTS=pipefail bash -c 'printf a | head -n 1'", id="SHELLOPTS"),
