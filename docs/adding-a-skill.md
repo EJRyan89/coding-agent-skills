@@ -211,14 +211,18 @@ or not, runs, and the program a wrapper runs: `xargs`, `env`, `command`, `exec`,
 shell reads it, alone or in a bundle such as `-lc`, before or after the shell's other options; `command -v` only looks
 one up. A wrapper's options are read as getopt reads them, a long one only spelled in full, so a program behind an
 abbreviated option or one the wrapper's table does not list is a program the policy cannot read. In PowerShell it
-reads what `Start-Process` starts, what `& (Get-Command <name>)` runs, and every command of the string
-`Invoke-Expression` runs. In Python it reads every program of a command a runner gives a shell, such as `os.system`
+reads what `Start-Process` starts, by `-FilePath` in any spelling PowerShell binds or by position, with the words its
+`-ArgumentList` gives it, a literal string or a list of them joined with spaces and split as the started program
+splits its command line, what `& (Get-Command <name>)` runs, and every command of the string `Invoke-Expression`
+runs; an argument list that is not literal where a script would stand is a program it cannot read. In Python it reads every program of a command a runner gives a shell, such as `os.system`
 or `shell=True`, and of the script a list such as `["bash", "-e", "-c", "<script>"]` runs, its `-c` read as in Bash
 up to the list's first item that is not a literal string. In all three, a start-up of `pwsh` or Windows PowerShell
 reads every command of the script its `-Command`, `-CommandWithArgs`, or Windows PowerShell's first positional word
 runs, its parameters read as ejryan89-skill-core's `powershell_startup.py` reads them; an `-EncodedCommand`, a script
 read from standard input, and one a word the policy cannot read holds are programs it cannot read. In PowerShell it
-reads a Bash shell's `-c` script too, as in Bash, up to the first word that is not a literal. A wrapper's program,
+reads a Bash shell's `-c` script too, as in Bash, up to the first word that is not a literal. The git subcommand a
+Bash script runs, which a skill's runtime support is held to, is read the same way, in the script `eval`, a shell's
+`-c`, or a PowerShell start-up runs as well as at the script's own level. A wrapper's program,
 or what `&` runs, held in a variable is a program the policy cannot read, and fails the declared-tool policy.
 
 Reach for these substitutes instead:
