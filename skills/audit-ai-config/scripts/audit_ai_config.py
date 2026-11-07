@@ -1756,8 +1756,8 @@ def _manifest_signal(root: Path) -> tuple[str | None, dict[str, Any], list[Findi
         if not is_present(manifest_path):
             return None, {}, []
         return _judge_manifest(root, json_reader.loads(read_text(root, manifest_path)))
-    # ValueError covers the decode errors, UnicodeError, and an over-long integer; RecursionError, nesting too deep
-    except (KeyError, OSError, ValueError, RecursionError):
+    # ValueError covers the decode errors, UnicodeError, an over-long integer, and nesting json_reader refuses
+    except (KeyError, OSError, ValueError):
         return None, {}, [_manifest_authority_finding("WARNING", "Manifest exists but is malformed")]
 
 
@@ -2168,8 +2168,8 @@ def read_mcp_json(root: Path, rel_path: str) -> tuple[dict[str, Any], list[Findi
         if not is_present(path):
             return {}, findings
         data = json_reader.loads(read_text(root, path))
-    # ValueError covers the decode errors, UnicodeError, and an over-long integer; RecursionError, nesting too deep
-    except (OSError, ValueError, RecursionError) as e:
+    # ValueError covers the decode errors, UnicodeError, an over-long integer, and nesting json_reader refuses
+    except (OSError, ValueError) as e:
         findings.append(
             Finding(
                 severity="ERROR",
@@ -2298,7 +2298,7 @@ def _read_codex_mcp(root: Path) -> tuple[dict[str, dict[str, Any]], list[Finding
         if not is_present(path):
             return {}, []
         config = tomllib.loads(read_bytes(root, path).decode())
-    # ValueError covers the decode errors, UnicodeError, and an over-long integer; RecursionError, nesting too deep
+    # ValueError covers the decode errors, UnicodeError, and an over-long integer; RecursionError, deep TOML
     except (ValueError, RecursionError) as e:
         message = f"Invalid TOML: {e}"
     except OSError as e:
@@ -2518,7 +2518,7 @@ def _codex_config(root: Path) -> dict[str, Any]:
     """The repository's .codex/config.toml, or nothing when it cannot be read; check_mcp reports that."""
     try:
         return tomllib.loads(read_bytes(root, root / CODEX_CONFIG).decode())
-    # ValueError covers the decode errors, UnicodeError, and an over-long integer; RecursionError, nesting too deep
+    # ValueError covers the decode errors, UnicodeError, and an over-long integer; RecursionError, deep TOML
     except (OSError, ValueError, RecursionError):
         return {}
 
@@ -3044,8 +3044,8 @@ def _claude_settings(root: Path) -> list[Finding]:
         if not is_present(path):
             return []
         data = json_reader.loads(read_text(root, path))
-    # ValueError covers the decode errors, UnicodeError, and an over-long integer; RecursionError, nesting too deep
-    except (OSError, ValueError, RecursionError) as error:
+    # ValueError covers the decode errors, UnicodeError, an over-long integer, and nesting json_reader refuses
+    except (OSError, ValueError) as error:
         return [Finding("ERROR", "claude-settings", CLAUDE_SETTINGS, message=f"Could not read or parse: {error}")]
     if not isinstance(data, dict):
         return [Finding("ERROR", "claude-settings", CLAUDE_SETTINGS, message="Top-level value must be an object")]
@@ -3372,8 +3372,8 @@ def _codex_hooks(root: Path) -> list[Finding]:
     try:
         present = is_present(path)
         data = json_reader.loads(read_text(root, path)) if present else None
-    # ValueError covers the decode errors, UnicodeError, and an over-long integer; RecursionError, nesting too deep
-    except (OSError, ValueError, RecursionError) as error:
+    # ValueError covers the decode errors, UnicodeError, an over-long integer, and nesting json_reader refuses
+    except (OSError, ValueError) as error:
         return [Finding("ERROR", "codex-hook", CODEX_HOOKS_FILE, message=f"Could not read or parse: {error}")]
     if present:
         if not isinstance(data, dict):
@@ -3422,7 +3422,7 @@ def _codex_agents(root: Path) -> list[Finding]:
         rel = path.relative_to(root).as_posix()
         try:
             agent = tomllib.loads(read_bytes(root, path).decode())
-        # ValueError covers the decode errors, UnicodeError, and an over-long integer; RecursionError, nesting too deep
+        # ValueError covers the decode errors, UnicodeError, and an over-long integer; RecursionError, deep TOML
         except (OSError, ValueError, RecursionError) as error:
             findings.append(Finding("ERROR", "codex-agent", rel, message=f"Could not read or parse: {error}"))
             continue

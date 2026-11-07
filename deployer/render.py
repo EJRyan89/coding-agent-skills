@@ -218,12 +218,12 @@ def render_file(logical: str, content: bytes, values: dict[str, str]) -> bytes:
     if rendered != text and context == "json":
         try:
             json_reader.loads(rendered)
-        except (ValueError, RecursionError) as exc:  # a decoding error or the digit limit, or nesting too deep
+        except ValueError as exc:  # a decoding error, the digit limit, or nesting json_reader refuses
             raise DeployError(f"ERROR: Rendered JSON validation failed: {logical}: {exc}") from exc
     if rendered != text and context == "toml":
         try:
             tomllib.loads(rendered)
-        except (ValueError, RecursionError) as exc:  # TOMLDecodeError is a ValueError; nesting too deep
+        except (ValueError, RecursionError) as exc:  # TOMLDecodeError is a ValueError; tomllib recurses per level
             raise DeployError(f"ERROR: Rendered TOML validation failed: {logical}: {exc}") from exc
     return rendered.encode("utf-8")
 

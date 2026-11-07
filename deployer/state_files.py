@@ -20,12 +20,12 @@ def parse_json(text: str) -> object | None:
     """The JSON text's value, or None when it is not JSON the deployer can read.
 
     ValueError covers a decoding error, an integer past Python's digit limit, and the repeated key or undefined
-    constant `json_reader` refuses; RecursionError, nesting too deep.
+    constant or the nesting past its limit that `json_reader` refuses.
     """
     value: object
     try:
         value = json_reader.loads(text)
-    except (ValueError, RecursionError):
+    except ValueError:
         return None
     return value
 
@@ -39,13 +39,13 @@ def holds_lone_surrogate(text: str) -> bool:
     """
     try:
         json_reader.loads(text)
-    except (ValueError, RecursionError):
+    except ValueError:
         pass
     else:
         return False
     try:
         json_reader.loads(text, surrogates=True)
-    except (ValueError, RecursionError):
+    except ValueError:
         return False
     return True
 

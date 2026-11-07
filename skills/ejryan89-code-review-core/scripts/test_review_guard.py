@@ -326,6 +326,16 @@ class WithheldInputTests(GuardFixture):
         self.assertIsNone(self.decide("Read", file_path=str(run / "pull-request-body.md")))
         self.assertIsNone(self.decide("Grep", pattern="class", path=str(run / "source")))
 
+    def test_a_run_the_parser_refuses_denies_its_restricted_paths_as_unreadable(self) -> None:
+        # The claim's own read of run.json refuses such a run first, so the restriction's reader is held here alone:
+        # json_reader refuses nesting past the recursion limit as a ValueError, which it turns into its denial.
+        for reason, content in UNPARSEABLE_JSON.items():
+            with self.subTest(reason=reason):
+                (self.run_directory / "run.json").write_bytes(content)
+                with self.assertRaises(guard.Denied) as caught:
+                    guard._restricted(self.run_directory)
+                self.assertEqual(f"the review run {self.run_directory} could not be read", str(caught.exception))
+
     def test_a_malformed_restriction_denies_every_read(self) -> None:
         self.claim("csharp-review")
         malformed: list[Any] = [[], {"x": "csharp-review"}, {"x": [5]}]

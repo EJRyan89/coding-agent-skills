@@ -22,8 +22,8 @@ from deployer import discovery, fsops, manifest, platform_support, render, state
 from deployer.errors import DeployError
 from deployer.journal import Journal, valid_entry
 
-# An integer past the digit limit, which json.loads raises ValueError for, and lists nested past the recursion limit,
-# which it raises RecursionError for.
+# An integer past the digit limit and lists nested past the recursion limit, each of which json_reader refuses as a
+# ValueError, and tomllib raises ValueError and RecursionError for.
 UNREADABLE = {
     "digits": '{"manifest_version": ' + "1" * 5000 + "}",
     "nesting": "[" * 100000 + "]" * 100000,
@@ -418,8 +418,9 @@ class StateFileTests(DeployerTestCase):
 
 class RenderedAndListedTests(DeployerTestCase):
     def test_rendered_json_and_toml_past_the_limits_fail_their_validation_by_name(self) -> None:
-        with self.assertRaisesRegex(DeployError, "Rendered JSON validation failed: s/config.json"):
-            render.render_file("s/config.json", b'{"root": {{X}}}', {"X": "1" * 5000})
+        for value in ("1" * 5000, UNREADABLE["nesting"]):
+            with self.assertRaisesRegex(DeployError, "Rendered JSON validation failed: s/config.json"):
+                render.render_file("s/config.json", b'{"root": {{X}}}', {"X": value})
         with self.assertRaisesRegex(DeployError, "Rendered TOML validation failed: s/config.toml"):
             render.render_file("s/config.toml", b"root = {{X}}\n", {"X": UNREADABLE["nesting"]})
 
@@ -430,3 +431,7 @@ class RenderedAndListedTests(DeployerTestCase):
                     discovery.parse_copilot(text)
                 with self.assertRaisesRegex(discovery.ListingError, "its prompt input is not JSON"):
                     discovery.parse_codex_catalog([text])
+                # A line of the app server's output the reader refuses is no answer, so it is passed over.
+                self.assertFalse(discovery.codex_answered(text))
+                with self.assertRaisesRegex(discovery.ListingError, "it did not answer the skills/list request"):
+                    discovery.parse_codex([text])
