@@ -952,6 +952,24 @@ class SkillScriptsFixtures(unittest.TestCase):
             {"basename", "echo", "git", "grep", "jq", "printf", "read", "sed", "set", "tr"}, shell_commands(script)
         )
 
+    def test_shell_command_extraction_runs_a_program_a_quoted_function_name_never_defined(self) -> None:
+        # Bash refuses a quoted or escaped function name as not a valid identifier and defines no function, so the
+        # later command of that name runs a program; an unquoted name still defines one, in each header form.
+        for script, expected in (
+            ("'f' () { jq .; }; f", {"f", "jq"}),
+            ('"f" () { jq .; }; f', {"f", "jq"}),
+            ("\\f () { jq .; }; f", {"f", "jq"}),
+            ("function 'g' { jq .; }; g", {"g", "jq"}),
+            ("function 'g' () { jq .; }; g", {"g", "jq"}),
+            ('function "g" { jq .; }; g', {"g", "jq"}),
+            ("function \\g { jq .; }; g", {"g", "jq"}),
+            ("f () { jq .; }; f", {"jq"}),
+            ("function g { jq .; }; g", {"jq"}),
+            ("function g () { jq .; }; g", {"jq"}),
+        ):
+            with self.subTest(script=script):
+                self.assertEqual(expected, shell_commands(script))
+
     def test_skill_command_policy_reads_the_commands_of_an_unclosed_fence(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
