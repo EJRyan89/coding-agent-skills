@@ -643,7 +643,8 @@ removed fails validation until its pattern follows it.
   `tools.mutation_gate:suite_environment`, a checker's one runner: `deployer.render:run_shellcheck`,
   `deployer.render:run_bash_syntax_check`, `tests.validation.toolchain:shellcheck_job`,
   `tests.validation.toolchain:bash_syntax_job`, `tests.validation.toolchain:ruff_job`, and
-  `tests.validation.toolchain:mypy_job`, and for a git that reads content it did not write,
+  `tests.validation.toolchain:mypy_job`, `tests.validation.suite_discovery:PYTEST_ENVIRONMENT` for every pytest the
+  runner and the mutation gate start, and for a git that reads content it did not write,
   `bounded_process:isolated_git_environment` with `git_client:NO_REPOSITORY`, which a client its caller makes
   isolated starts every command with, taking no runner that could leave the environment out, so no repository around
   the content and no configuration shapes what git prints; a client that is not isolated refuses a search or
@@ -653,14 +654,17 @@ removed fails validation until its pattern follows it.
   `tests/validation/skill_scripts.py::SkillScriptsPolicies::test_each_checker_starts_only_from_its_runner_and_every_repository_command_is_read`,
   which reads a process start, a mypy or ruff import, and the names it is written with, so a name built at run time
   from pieces is outside what it reads; `skills/ejryan89-skill-core/scripts/test_git_client.py::IsolatedClientTests`,
-  `skills/ejryan89-code-review-core/scripts/test_review_source.py::SnapshotIsolationTests`
+  `skills/ejryan89-code-review-core/scripts/test_review_source.py::SnapshotIsolationTests`,
+  `tests/validation/test_suite_discovery.py::PytestEnvironmentFixtures`,
+  `tests/tools/test_mutation_gate.py::RunSuiteFixtures::test_a_test_the_users_environment_would_leave_out_still_kills_the_mutant`
 - **Search for:** `{**os.environ`, `os.environ.copy()`, or `dict(os.environ)` passed as `env=`; a measured or
   sandboxed child started with no `env=`; a checker started anywhere but its runner, or run with no option that stops
   it reading settings outside the repository: ShellCheck without `--norc` and an empty `SHELLCHECK_OPTS`,
-  `Invoke-ScriptAnalyzer` without `-Settings`, ruff given a folder without `--no-respect-gitignore`, and mypy with
-  `MYPYPATH` left set; a git command run with its working directory, or `-C`, inside content a pull request or a
+  `Invoke-ScriptAnalyzer` without `-Settings`, ruff given a folder without `--no-respect-gitignore`, mypy with
+  `MYPYPATH` left set, and a `pytest_command` started without `PYTEST_ENVIRONMENT`, which leaves `PYTEST_ADDOPTS`,
+  `PYTEST_PLUGINS`, and plugin autoloading to the user; a git command run with its working directory, or `-C`, inside content a pull request or a
   reviewer wrote, such as a review snapshot, through a client that is not isolated.
-- **Examples:** #1366, #1396, #1598, #1777, #1861, #2208, #2241
+- **Examples:** #1366, #1396, #1598, #1777, #1861, #2208, #2241, #2246
 
 ### An action on something not proven ours stops
 
