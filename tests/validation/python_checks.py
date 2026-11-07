@@ -4073,10 +4073,11 @@ class _Recursion:
         self.recursing = {
             qualified for qualified, called in calls.items() if UNREAD_CALL in called or qualified in called
         }
-        changed = True
-        while changed:
+        # Each pass that changes the set adds a function, so there are never more passes than functions.
+        for _ in calls:
             grown = {qualified for qualified, called in calls.items() if called & self.recursing}
-            changed = not grown <= self.recursing
+            if grown <= self.recursing:
+                break
             self.recursing |= grown
 
     def calls(self, body: Sequence[ast.AST], module: str) -> set[str]:

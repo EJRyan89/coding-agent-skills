@@ -2811,10 +2811,12 @@ def test_content_errors_policy_refuses_a_tree_whose_skill_core_names_no_reader()
 
 
 # A handler naming RecursionError around the fixture reader, which refuses nesting as its own family: refused when the
-# reader is all it reaches, directly, through a function, by a tuple, in a suppress, or beside plain methods of a value
-# and a call an import resolves outside the catalogue, and passed when it also calls what recurses (a standard-library
-# parser or pattern compile, a callable it cannot read, a method of a parameter or of what a call gave, a function
-# calling itself, or one that calls either), when it reaches no reader, or when its scope is sanctioned.
+# reader is all it reaches, directly, through a function, by a tuple, in a suppress, beside plain methods of a value
+# and a call an import resolves outside the catalogue, around or before a nested function, and in each of two handlers
+# of one function, and passed when it also calls what recurses (a standard-library parser or pattern compile, a
+# callable it cannot read, a method of a parameter or of what a call gave, a call of a subscript, a function calling
+# itself, or one that calls one, however many calls away), when it reaches no reader, when its scope is sanctioned, or
+# when the statement is a `with` of something other than a suppress.
 CONTENT_RECURSION_CALLER_SOURCE = """\
 import contextlib
 import json
@@ -2838,6 +2840,10 @@ def walk(value):
 
 def walked(text):
     return walk(read(text))
+
+
+def walked_twice(text):
+    return walked(text)
 
 
 def parse(text):
@@ -2932,11 +2938,66 @@ def beside_a_pattern(text):
         return None
 
 
-def around_plain_methods(path):
+def beside_a_deeper_walk(text):
     try:
-        return read(path.read_text().strip()), os.path.join("a", "b")
+        return walked_twice(text)
     except (ValueError, RecursionError):
         return None
+
+
+def beside_a_table(text, handlers, kind):
+    try:
+        return read(text), handlers[kind](text)
+    except (ValueError, RecursionError):
+        return None
+
+
+def around_plain_methods(path):
+    try:
+        return read(path.read_text().strip()), os.path.basename(path)
+    except (ValueError, RecursionError):
+        return None
+
+
+def around_a_helper(text):
+    try:
+        value = read(text)
+
+        def helper():
+            return value
+
+    except (ValueError, RecursionError):
+        return None
+    return helper
+
+
+def before_a_helper(text):
+    try:
+        value = read(text)
+    except (ValueError, RecursionError):
+        value = None
+
+    def helper():
+        return value
+
+    return helper
+
+
+def twice(text):
+    try:
+        first = read(text)
+    except (ValueError, RecursionError):
+        first = None
+    try:
+        second = read(text)
+    except (ValueError, RecursionError):
+        second = None
+    return first, second
+
+
+def under_a_lock(text, lock):
+    with lock:
+        return read(text)
 
 
 def without_a_reader(text):
@@ -2976,7 +3037,116 @@ def test_content_errors_policy_refuses_a_recursion_handler_around_readers_that_n
         "catches RecursionError around readers that refuse nesting as their own family, and calls nothing that "
         "recurses; remove RecursionError, or state which call raises it in CONTENT_ERRORS_ALLOWED"
     )
-    assert found == [f"skills/alpha/scripts/alpha.py:{line} {remedy}" for line in (33, 40, 47, 52, 62, 120)]
+    assert found == [
+        f"skills/alpha/scripts/alpha.py:{line} {remedy}" for line in (37, 44, 51, 56, 66, 138, 149, 157, 173, 169)
+    ]
+
+
+# The standard-library calls that recurse per level, and the plain methods that never do, spelled here apart from the
+# policy's own tables, so an entry dropped or misspelled there fails.
+RECURSING_CALLS = (
+    "ast.dump",
+    "ast.literal_eval",
+    "ast.parse",
+    "ast.unparse",
+    "compile",
+    "copy.deepcopy",
+    "eval",
+    "exec",
+    "json.dump",
+    "json.dumps",
+    "json.load",
+    "json.loads",
+    "marshal.dumps",
+    "marshal.loads",
+    "pickle.dump",
+    "pickle.dumps",
+    "pickle.load",
+    "pickle.loads",
+    "pprint.pformat",
+    "pprint.pprint",
+    "re.compile",
+    "re.findall",
+    "re.finditer",
+    "re.fullmatch",
+    "re.match",
+    "re.search",
+    "re.split",
+    "re.sub",
+    "re.subn",
+    "repr",
+    "tomllib.load",
+    "tomllib.loads",
+)
+NON_RECURSING_METHODS = (
+    "add",
+    "append",
+    "as_posix",
+    "casefold",
+    "count",
+    "endswith",
+    "exists",
+    "extend",
+    "find",
+    "get",
+    "is_dir",
+    "is_file",
+    "items",
+    "join",
+    "joinpath",
+    "keys",
+    "lower",
+    "lstrip",
+    "partition",
+    "pop",
+    "read_bytes",
+    "read_text",
+    "relative_to",
+    "removeprefix",
+    "removesuffix",
+    "replace",
+    "rfind",
+    "rpartition",
+    "rsplit",
+    "rstrip",
+    "setdefault",
+    "split",
+    "splitlines",
+    "startswith",
+    "stat",
+    "strip",
+    "unlink",
+    "upper",
+    "values",
+)
+
+
+def test_content_errors_policy_reads_each_catalogued_call_as_recursing_and_each_plain_method_as_not() -> None:
+    modules = sorted({name.partition(".")[0] for name in RECURSING_CALLS if "." in name})
+    lines = [*(f"import {module}" for module in modules), "", "from reader import read", ""]
+    refused = []
+    for index, (call, plain) in enumerate(
+        [
+            *((f"{name}(text)", False) for name in RECURSING_CALLS),
+            *((f"value.{name}()", True) for name in NON_RECURSING_METHODS),
+        ]
+    ):
+        lines += ["", f"def beside_{index}(text, value):", "    try:", f"        return read(text), {call}"]
+        lines += ["    except (ValueError, RecursionError):", "        return None", ""]
+        if plain:
+            refused.append(len(lines) - 2)
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        write_fixture_tree(
+            root,
+            {
+                "skills/ejryan89-skill-core/scripts/reader.py": CONTENT_READER_SOURCE,
+                "skills/alpha/scripts/alpha.py": "\n".join(lines),
+            },
+        )
+        found = python_checks.content_error_problems(root, sorted(root.rglob("*.py")), {})
+    lines_found = sorted(int(problem.split(" ", 1)[0].rpartition(":")[2]) for problem in found)
+    assert lines_found == refused
 
 
 def test_a_standard_class_is_found_only_through_a_module_that_imports_and_defines_it() -> None:
