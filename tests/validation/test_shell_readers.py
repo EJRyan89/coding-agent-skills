@@ -35,6 +35,7 @@ from skill_scripts import UNREAD_PROGRAM, CommandReader, shell_commands
         "xargs rg foo",
         "xargs -I {} rg {}",
         "find . -exec rg foo {} \\;",
+        "find . -exec rg foo {} + -exec jq . {} +",
         "env A=1 rg foo",
         "command rg foo",
         "exec rg foo",
@@ -241,6 +242,7 @@ def test_the_command_policy_reads_the_script_a_powershell_source_starts_powershe
         "bash -c 'git push'",
         "sh -ec 'git -C dir push'",
         "eval 'git push'",
+        "eval git push",
         "env bash -c 'git push'",
         "find . -exec bash -c 'git push' {} ';'",
         "x=$(bash -c 'git push')",
@@ -248,6 +250,7 @@ def test_the_command_policy_reads_the_script_a_powershell_source_starts_powershe
         "powershell -NoProfile -Command 'git -C $directory push'",
         "pwsh -c 'bash -c \"git push\"'",
         "pwsh -c 'Start-Process git -ArgumentList push'",
+        "pwsh -c \"pwsh -c 'git push'\"",
     ],
 )
 def test_the_git_subcommand_reader_reads_the_git_command_a_started_script_runs(script: str) -> None:
@@ -257,7 +260,13 @@ def test_the_git_subcommand_reader_reads_the_git_command_a_started_script_runs(s
 # A started script that runs no git command gives no subcommand, though a word of it is one.
 @pytest.mark.parametrize(
     "script",
-    ["bash -c 'echo push'", "eval 'echo git push'", "pwsh -c 'Write-Output push'", "pwsh -File push.ps1 git push"],
+    [
+        "bash -c 'echo push'",
+        "bash ./push.sh",
+        "eval 'echo git push'",
+        "pwsh -c 'Write-Output push'",
+        "pwsh -File push.ps1 git push",
+    ],
 )
 def test_the_git_subcommand_reader_finds_none_where_a_started_script_runs_no_git(script: str) -> None:
     assert skill_scripts.shell_git_subcommands(script) == set()
@@ -372,6 +381,7 @@ def test_start_process_starting_powershell_on_a_file_or_nothing_runs_only_powers
         pytest.param(["-c", "jq ."], ["-c", "jq", "."], id="items joined, then split at spaces"),
         pytest.param(['-c "jq ."'], ["-c", "jq ."], id="double quotes hold a space"),
         pytest.param(["-c 'jq .'"], ["-c", "'jq", ".'"], id="single quotes hold none"),
+        pytest.param(["-c", "# noXte"], ["-c", "#", "noXte"], id="no other character quotes, escapes, or comments"),
         pytest.param(["C:\\a\\b.ps1"], ["C:\\a\\b.ps1"], id="a backslash is no escape"),
         pytest.param(["-c", None, "x"], ["-c", None], id="no literal"),
         pytest.param(['-c "jq'], [None], id="an unclosed quote"),
