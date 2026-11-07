@@ -47,7 +47,7 @@ def test_audit_skill_derives_the_needs_validation_holds_each_skill_to(name: str)
 
 # The wrapper rows audit-skill's GIT_COMMAND pattern reads as validation's reader does. It finds git only where a
 # command starts or after `command`, `exec`, or find's `-exec`, so every other row of WRAPPED_GIT_PUSH_SCRIPTS is a
-# limit of audit-skill's reader until #2423 reads it through the same wrapper catalogue.
+# limit of audit-skill's reader until it reads through the same wrapper catalogue.
 AUDIT_SKILL_READS = frozenset(
     {
         "find . -exec git push {} +",
