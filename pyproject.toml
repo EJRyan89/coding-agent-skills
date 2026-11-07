@@ -114,9 +114,9 @@ max-complexity = 15
 max-args = 17
 max-statements = 50
 
-# Validation runs mypy once per root: deployer/, tools/, deploy.py, tests/, and conftest.py together from the
-# repository root, and
-# each skill's scripts/ directory from inside it. Default strictness; no module, suite, or import is exempt.
+# Validation runs mypy on deployer/, tools/, deploy.py, tests/, and conftest.py together from the repository root at
+# default strictness, then on each of them alone and on each skill's scripts/ directory from inside it, each of those
+# in strict mode as [tool.validation] mypy-strict below lists. No module, suite, or import is exempt.
 [tool.mypy]
 python_version = "3.11"
 # The optional error codes beyond --strict that every root passes, so a name a path leaves unbound, a condition that is

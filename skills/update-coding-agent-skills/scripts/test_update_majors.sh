@@ -2,7 +2,8 @@
 set -Eeuo pipefail
 
 # The release gate on the main channel: a release that raises the breaking component stops the update until
-# --cross-major, and the releases these cases publish are RELEASE_HISTORY's.
+# --cross-major. These cases publish RELEASE_HISTORY's releases in order through its third major, then releases of
+# their own whose versions are past the digit limit.
 # test_update_fixture.sh makes the fixture and the helpers every update.sh suite shares.
 # shellcheck source=skills/update-coding-agent-skills/scripts/test_update_fixture.sh
 source "$(dirname "$0")/test_update_fixture.sh"
