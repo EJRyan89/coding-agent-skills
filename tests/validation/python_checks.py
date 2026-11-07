@@ -26,7 +26,7 @@ from collections import Counter
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path, PurePosixPath
-from typing import Any
+from typing import Any, NamedTuple
 
 import file_presence
 import python_reader
@@ -1750,29 +1750,64 @@ class _JsonNames:
     encoders: set[str]
 
 
+class _JsonEncoders:
+    """The JSONEncoder subclasses the modules read define, at any depth, with each base followed across modules by
+    _ClassBases, a re-export and a package's `__init__.py` included, so a module that subclasses an encoder another
+    module defines, or calls one, writes through a JSONEncoder as one that subclasses JSONEncoder itself does. A class
+    a function or another class defines is also reached by its own name, as `<local>.<name>`, from its module."""
+
+    def __init__(self, models: list[tuple[str, ast.Module, CallableResolver]]) -> None:
+        self.classes = _ClassBases(models)
+        self.defined: set[tuple[str, str]] = set()
+        self.local: dict[str, set[str]] = {}
+        definitions = [
+            (name, scope, node, resolver)
+            for name, tree, resolver in models
+            for node, scope in scoped_nodes(tree.body)
+            if isinstance(node, ast.ClassDef)
+        ]
+        while added := {
+            (name, scope, node.name)
+            for name, scope, node, resolver in definitions
+            if (name, scope) not in self.defined
+            and any(
+                self.encoder(name, reference.name)
+                for base in node.bases
+                for reference in resolved_references(base, resolver)
+            )
+        }:
+            for name, scope, own in added:
+                self.defined.add((name, scope))
+                self.local.setdefault(name, set()).add(f"<local>.{own}")
+
+    def encoder(self, module: str, dotted: str) -> bool:
+        """Whether a dotted name `module` reads may be a JSONEncoder class: JSONEncoder itself, or a subclass of it a
+        module read defines, reached through imports and re-exports."""
+        return any(
+            (reached.module, reached.name) in self.defined
+            if reached.defined
+            else reached.name in JSON_ENCODERS or reached.name in self.local.get(reached.module, set())
+            for reached in self.classes.reached(module, dotted)
+        )
+
+
 class _JsonModel:
     """What a module binds to JSON text or a JSONEncoder, scope by scope, with a module-level binding, and an attribute
-    or a subscript, read in every scope; and its JSONEncoder subclasses."""
+    or a subscript, read in every scope; a JSONEncoder class is any _JsonEncoders finds, this module's or another's."""
 
-    def __init__(self, tree: ast.Module, nodes: list[tuple[ast.AST, str]], resolver: CallableResolver) -> None:
+    def __init__(
+        self,
+        tree: ast.Module,
+        nodes: list[tuple[ast.AST, str]],
+        resolver: CallableResolver,
+        encoders: _JsonEncoders,
+        module: str,
+    ) -> None:
         self.resolver = resolver
         self.scopes = {id(node): scope for node, scope in nodes}
         self.class_names = {scope for node, scope in nodes if isinstance(node, ast.ClassDef)}
-        self.encoder_classes = set(JSON_ENCODERS)
-        while True:
-            added = {
-                f"<local>.{node.name}"
-                for node, _ in nodes
-                if isinstance(node, ast.ClassDef)
-                and any(
-                    reference.name in self.encoder_classes
-                    for base in node.bases
-                    for reference in resolved_references(base, resolver)
-                )
-            } - self.encoder_classes
-            if not added:
-                break
-            self.encoder_classes |= added
+        self.encoders = encoders
+        self.module = module
         module_level = {id(node) for node in _module_level_nodes(tree)}
         self.augmented: set[tuple[str, str]] = set()
         bindings = []
@@ -1820,7 +1855,7 @@ class _JsonModel:
         """Whether an expression may be a JSONEncoder: a call of one, or of a subclass the module defines, or a place
         its scope binds to one."""
         if isinstance(node, ast.Call):
-            return any(read.name in self.encoder_classes for read in resolved_calls(node, self.resolver))
+            return any(self.encoders.encoder(self.module, read.name) for read in resolved_calls(node, self.resolver))
         if isinstance(node, ast.expr):
             return any(
                 self.held(value, scope, "encoders")
@@ -1843,7 +1878,7 @@ class _JsonModel:
                 and (
                     self.encoder(read.receiver, scope)
                     or any(
-                        reference.name in self.encoder_classes
+                        self.encoders.encoder(self.module, reference.name)
                         for reference in resolved_references(read.receiver, self.resolver)
                     )
                 )
@@ -1928,10 +1963,11 @@ def json_write_problems(root: Path, files: list[Path]) -> list[str]:
         "; call ejryan89-skill-core's json_writer, the one writer of JSON, which refuses NaN and a lone surrogate at "
         f"the write, or state why in {JSON_WRITE_ALLOWANCE}"
     )
-    for _, name, tree in python_trees(paths, root, problems):
-        resolver = CallableResolver(tree)
+    models = [(name, tree, CallableResolver(tree)) for _, name, tree in python_trees(paths, root, problems)]
+    encoders = _JsonEncoders(models)
+    for name, tree, resolver in models:
         nodes = list(scoped_nodes(tree.body))
-        model = _JsonModel(tree, nodes, resolver)
+        model = _JsonModel(tree, nodes, resolver, encoders, name)
         found: list[tuple[int, str, str]] = []
         for node, scope in nodes:
             if not isinstance(node, ast.expr):
@@ -2247,30 +2283,70 @@ def _read_where_bound(node: ast.Attribute, scope: str, libraries: _ForeignLibrar
     return plain and place_key(node, scope, libraries.class_names) in libraries.places
 
 
+class _Reached(NamedTuple):
+    """What a dotted name a module reads may be: a class a module read defines, by its qualified name there
+    (`defined`), or the name as that module reads it, one a policy may know, as json.JSONEncoder."""
+
+    module: str
+    name: str
+    defined: bool
+
+
+class _ClassBases:
+    """The classes and top-level bindings of the modules a policy reads, so a base class's dotted name, as a module's
+    resolver gives it, is followed through the modules' imports into the module that defines it. A module is reached by
+    the last part of the name its import gives, among the modules read, a package's `__init__.py` by its directory's
+    name; every module of that name counts. A name a module only binds at its top level, as a re-export does, is
+    followed to what it binds. Every policy that follows a class's bases across modules by name reads them here."""
+
+    def __init__(self, models: list[tuple[str, ast.Module, CallableResolver]]) -> None:
+        self.classes: dict[str, set[str]] = {}
+        self.bindings: dict[str, dict[str, str]] = {}
+        self.modules: dict[str, list[str]] = {}
+        for name, tree, resolver in models:
+            path = PurePosixPath(name)
+            self.modules.setdefault(path.parent.name if path.stem == "__init__" else path.stem, []).append(name)
+            self.classes[name] = {scope for node, scope in scoped_nodes(tree.body) if isinstance(node, ast.ClassDef)}
+            self.bindings[name] = dict(_module_bindings(tree, resolver))
+
+    def reached(self, module: str, dotted: str, seen: frozenset[tuple[str, str]] = frozenset()) -> list[_Reached]:
+        """Each thing a dotted name `module` reads may be: the name itself, and each class of this module, named after
+        `<local>`, or of a module read, named after the part that names that module, a nested class's qualified name
+        included, or what a name that module binds without defining it, as a re-export, is, followed until a module
+        defines it; a name `seen` holds, one a cycle of re-exports reaches again, is nothing more."""
+        key = (module, dotted)
+        if key in seen:
+            return []
+        seen = seen | {key}
+        found = [_Reached(module, dotted, defined=False)]
+        parts = dotted.split(".")
+        for index in range(1, len(parts)):
+            prefix, name = parts[:index], parts[index:]
+            for owner in [module] if prefix == ["<local>"] else self.modules.get(prefix[-1], []):
+                bound = self.bindings[owner].get(name[0])
+                if ".".join(name) in self.classes[owner]:
+                    found.append(_Reached(owner, ".".join(name), defined=True))
+                elif bound is not None:
+                    found += self.reached(owner, ".".join([bound, *name[1:]]), seen)
+        return found
+
+
 class _InheritedLibraries:
     """The attributes each class binds to a ctypes library, in its own module and through every base it has, followed
-    through the modules' imports into the module that defines the base, so a class that reads a library its base
-    binds in another module is found. A module is reached by the last part of the name its import gives, among the
-    modules read, a package's `__init__.py` by its directory's name; every module of that name counts. A name a module
-    only binds at its top level, as a re-export does, is followed to what it binds."""
+    across modules by _ClassBases, so a class that reads a library its base binds in another module is found."""
 
     def __init__(self, models: list[tuple[str, ast.Module, _ForeignLibraries]]) -> None:
-        self.modules: dict[str, list[_ForeignLibraries]] = {}
-        self.bindings: dict[int, dict[str, str]] = {}
-        for name, tree, libraries in models:
-            path = PurePosixPath(name)
-            self.modules.setdefault(path.parent.name if path.stem == "__init__" else path.stem, []).append(libraries)
-            self.bindings[id(libraries)] = dict(_module_bindings(tree, libraries.resolver))
+        self.classes = _ClassBases([(name, tree, libraries.resolver) for name, tree, libraries in models])
+        self.libraries = {name: libraries for name, _, libraries in models}
 
-    def bound(
-        self, libraries: _ForeignLibraries, class_name: str, seen: frozenset[tuple[int, str]] = frozenset()
-    ) -> set[str]:
-        """The attributes a class of `libraries`, and each of its bases, binds to a library; a class `seen` names, one
-        a cycle of bases reaches again, adds none."""
-        key = (id(libraries), class_name)
+    def bound(self, module: str, class_name: str, seen: frozenset[tuple[str, str]] = frozenset()) -> set[str]:
+        """The attributes a class of `module`, and each of its bases, binds to a library; a class `seen` names, one a
+        cycle of bases reaches again, adds none."""
+        key = (module, class_name)
         if key in seen:
             return set()
         seen = seen | {key}
+        libraries = self.libraries[module]
         found = {
             attribute
             for place in libraries.places
@@ -2278,37 +2354,19 @@ class _InheritedLibraries:
             if owner == class_name
         }
         for base in libraries.bases[class_name]:
-            for owner, name in self.base_classes(libraries, libraries.resolver.name(base)):
-                found |= self.bound(owner, name, seen)
+            for reached in self.classes.reached(module, libraries.resolver.name(base)):
+                if reached.defined:
+                    found |= self.bound(reached.module, reached.name, seen)
         return found
 
-    def base_classes(
-        self, libraries: _ForeignLibraries, dotted: str, seen: frozenset[tuple[int, str]] = frozenset()
-    ) -> list[tuple[_ForeignLibraries, str]]:
-        """Each class a base's dotted name, as the resolver gives it, may be: a class of this module, named after
-        `<local>`, or a class of a module read, named after the part that names that module, a nested class's
-        qualified name included, or what a name that module binds without defining it, as a re-export, is, followed
-        until a module defines it; a name `seen` holds, one a cycle of re-exports reaches again, is none."""
-        key = (id(libraries), dotted)
-        if key in seen:
-            return []
-        seen = seen | {key}
-        parts = dotted.split(".")
-        found: list[tuple[_ForeignLibraries, str]] = []
-        for index in range(1, len(parts)):
-            module, name = parts[:index], parts[index:]
-            for owner in [libraries] if module == ["<local>"] else self.modules.get(module[-1], []):
-                bound = self.bindings[id(owner)].get(name[0])
-                if ".".join(name) in owner.class_names:
-                    found.append((owner, ".".join(name)))
-                elif bound is not None:
-                    found += self.base_classes(owner, ".".join([bound, *name[1:]]), seen)
-        return found
-
-    def held(self, libraries: _ForeignLibraries) -> set[str]:
+    def held(self, module: str) -> set[str]:
         """The attributes the module's classes bind to a library or inherit as one from a base, this module's or
         another's."""
-        return {attribute for class_name in libraries.class_names for attribute in self.bound(libraries, class_name)}
+        return {
+            attribute
+            for class_name in self.libraries[module].class_names
+            for attribute in self.bound(module, class_name)
+        }
 
 
 def ctypes_declaration_problems(root: Path, files: list[Path]) -> list[str]:
@@ -2350,7 +2408,7 @@ def ctypes_declaration_problems(root: Path, files: list[Path]) -> list[str]:
         # binds it; any other read, through a subclass, `super()`, `type(self)`, `self.__class__`, or any other
         # receiver, is refused rather than followed through the class's bases. A base another module defines counts:
         # an attribute it binds to a library is held here too, so a subclass's read of it is refused.
-        held = inherited.held(libraries)
+        held = inherited.held(name)
         found += [
             (
                 node.lineno,
