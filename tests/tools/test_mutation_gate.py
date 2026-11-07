@@ -789,6 +789,42 @@ class RunSuiteFixtures(unittest.TestCase):
             failing = run_suite(tree, "tests/test_x.py", 60.0, ["tests/test_x.py::test_fails"])
         self.assertEqual((PASSED, PASSED, KILLED, KILLED), (alone, both, whole, failing))
 
+    def test_a_test_the_users_environment_would_leave_out_still_kills_the_mutant(self) -> None:
+        # The failing test stands for one a mutant breaks; each leak would leave only it out, and the mutant surviving.
+        kept = "import unittest\n\n\ndef test_kept():\n    pass\n\n\n"
+        function = {"tests/test_x.py": f"{kept}def test_dropped():\n    raise AssertionError\n"}
+        case = "class Case(unittest.TestCase):\n    def test_it(self):\n        raise AssertionError\n"
+        unittest_case = {"tests/test_x.py": f"{kept}{case}"}
+        keep = "items[:] = [i for i in items if i.name == 'test_kept']"
+        hiding = {"hiding.py": f"def pytest_collection_modifyitems(items):\n    {keep}\n"}
+        registered = {
+            "hiding-1.0.dist-info/METADATA": "Metadata-Version: 2.1\nName: hiding\nVersion: 1.0\n",
+            "hiding-1.0.dist-info/entry_points.txt": "[pytest11]\nhiding = hiding\n",
+        }
+        leaks = {
+            "a deselection in PYTEST_ADDOPTS": (
+                {"PYTEST_ADDOPTS": "--deselect=tests/test_x.py::test_dropped"},
+                function,
+            ),
+            "a disabled plugin in PYTEST_ADDOPTS": ({"PYTEST_ADDOPTS": "-p no:unittest"}, unittest_case),
+            "a plugin in PYTEST_PLUGINS": ({"PYTEST_PLUGINS": "hiding"}, {**function, **hiding}),
+            "a plugin an installed package registers": ({}, {**function, **hiding, **registered}),
+        }
+        for name, (variables, files) in leaks.items():
+            with self.subTest(name), mock.patch.dict(os.environ, variables):
+                for variable in {"PYTEST_ADDOPTS", "PYTEST_PLUGINS", "PYTEST_DISABLE_PLUGIN_AUTOLOAD"} - set(variables):
+                    os.environ.pop(variable, None)
+                self.assertEqual(KILLED, self.run_tree(files))
+
+    def test_every_step_starts_without_the_users_pytest_options_or_plugins(self) -> None:
+        leaked = {"PYTEST_ADDOPTS": "-p no:unittest", "PYTEST_PLUGINS": "hiding", "PYTEST_DISABLE_PLUGIN_AUTOLOAD": ""}
+        with mock.patch.dict(os.environ, leaked):
+            environment = mutation_gate.suite_environment()
+        self.assertEqual(
+            {"PYTEST_ADDOPTS": "", "PYTEST_PLUGINS": "", "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1"},
+            {name: environment[name] for name in leaked},
+        )
+
     def run_tree(self, files: dict[str, str], tests: Sequence[str] = ()) -> str:
         with tempfile.TemporaryDirectory() as temporary:
             tree = Path(temporary) / "tree with spaces"
