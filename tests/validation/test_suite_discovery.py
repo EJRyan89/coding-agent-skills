@@ -697,6 +697,17 @@ BASH_RACES = [
     pytest.param("seq 1 200000 | if true; then echo $(head -n 1); fi", "head -n", id="a substitution in a fed if"),
     pytest.param("seq 1 200000 | {\n  true\n  echo $(head -n 1)\n}", "head -n", id="a fed group over lines"),
     pytest.param("seq 1 200000 |\n  echo $(head -n 1)", "head -n", id="a pipe at the end of a line"),
+    # A function, a shell's -c script, and eval read the pipe, so each substitution they hold reads it too.
+    pytest.param("f() { echo $(head -n 1); }; seq 1 200000 | f", "head -n", id="a substitution in a fed function"),
+    pytest.param('function g { x="$(head -n 1)"; }; seq 1 200000 | g', "head -n", id="a quoted one in a function"),
+    pytest.param("f() ( echo `head -n 1` ); seq 1 200000 | f", "head -n", id="backticks in a subshell function"),
+    pytest.param("f() { echo $(echo $(head -n 1)); }; seq 1 200000 | f", "head -n", id="nested in a function"),
+    pytest.param("f() { echo $(head -n 1); }; g() { f; }; seq 1 200000 | g", "head -n", id="a function's callee"),
+    pytest.param("seq 1 200000 | bash -c 'echo $(head -n 1)'", "head -n", id="a substitution in bash -c"),
+    pytest.param("seq 1 200000 | bash -c 'echo `head -n 1`'", "head -n", id="backticks in bash -c"),
+    pytest.param("seq 1 200000 | eval 'echo $(head -n 1)'", "head -n", id="a substitution in eval"),
+    pytest.param("seq 1 200000 | bash -c 'f() { echo $(head -n 1); }; f'", "head -n", id="a function in bash -c"),
+    pytest.param("eval 'seq 1 200000 | echo $(head -n 1)'", "head -n", id="a fed substitution inside eval"),
 ]
 
 
@@ -747,6 +758,9 @@ def test_each_bash_form_the_policy_refuses_fails_under_pipefail_in_bash(script: 
         # A race inside a script a shell runs is the suite's too.
         pytest.param("bash -c 'seq 1 200000 | head -n 1'", "3 pipes into head -n", id="a pipe in bash -c"),
         pytest.param("eval 'seq 1 200000 | head -n 1'", "3 pipes into head -n", id="a pipe in eval"),
+        pytest.param(
+            "bash -c 'seq 1 200000 | echo $(head -n 1)'", "3 pipes into head -n", id="a fed substitution in bash -c"
+        ),
     ],
 )
 def test_the_pipe_race_policy_finds_a_reader_by_its_documented_options_and_wrappers(
@@ -816,6 +830,14 @@ def test_a_suite_that_never_turns_pipefail_on_is_not_examined(tmp_path: Path) ->
         pytest.param('printf a | { cat; }; echo "`head -n 1 file`"', id="quoted backticks after a fed group"),
         pytest.param("printf a | cat\necho $(head -n 1 file)", id="a substitution on the next line"),
         pytest.param("printf a | cat |\n  cat; echo $(head -n 1 file)", id="a substitution after a continued pipe"),
+        pytest.param("f() { echo $(head -n 1 file); }; printf a | cat; f", id="a function no pipe runs"),
+        pytest.param("f() { :; }; g() { echo $(head -n 1 file); }; printf a | f", id="another function's substitution"),
+        pytest.param("bash -c 'echo $(head -n 1 file)'; printf a | cat", id="a shell no pipe feeds"),
+        pytest.param("printf a | eval 'cat; echo' ; eval 'echo $(head -n 1 file)'", id="an eval no pipe feeds"),
+        # A substitution shlex cannot read, in a suite it can, runs nothing the reader can see, fed or not.
+        pytest.param('seq 1 200000 | echo "$(head -n \'x)"', id="an unreadable substitution"),
+        pytest.param('seq 1 200000 | echo "`head -n \'x`"', id="unreadable backticks"),
+        pytest.param('f() { echo "$(head -n \'x)"; }; seq 1 200000 | f', id="an unreadable one in a function"),
     ],
 )
 def test_the_pipe_race_policy_passes_each_bash_form_that_reads_to_the_end(tmp_path: Path, script: str) -> None:

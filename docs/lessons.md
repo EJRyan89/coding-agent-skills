@@ -867,8 +867,8 @@ each mechanism or guard that does not resolve, so one renamed or removed fails v
   `-1`, or alone, in a `.sh` file that turns `pipefail` on by `set`, `shopt -so`, `builtin set`, `bash -o pipefail`, or
   `SHELLOPTS`; the reader also in a `{ ...; }` or `( ... )` group or an `if`, `while`, `until`, `for`, `select`, or
   `case` after the pipe, in a function the pipe runs, in a `bash -c` or `eval` script, in a `$(...)` or backtick
-  substitution, whether the pipe stands inside it or feeds the command that holds it, as in `seq 9 | echo $(head -n 1)`,
-  by a path such as `/usr/bin/head`, or behind `env` (and `env -S`), `exec`, `timeout`, `command`, or `sudo`, each by a
+  substitution, whether the pipe stands inside it or feeds the command, function, or `bash -c` or `eval` script that
+  holds it, as in `seq 9 | echo $(head -n 1)` or `f() { echo $(head -n 1); }; seq 9 | f`, by a path such as `/usr/bin/head`, or behind `env` (and `env -S`), `exec`, `timeout`, `command`, or `sudo`, each by a
   path or not, and `head` whose last count is positive, as in `head -n -1 -n 1`.
 - **Examples:** #1557, #1602, #2151, #2417
 
