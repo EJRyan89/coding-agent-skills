@@ -267,7 +267,7 @@ def parse_copilot(output: str) -> Listing:
     """The skills in `copilot skill list --json` output, whose paths are skill directories."""
     try:
         entries = json_reader.loads(output)
-    except (ValueError, RecursionError) as exc:  # a decoding error or the digit limit, or nesting too deep
+    except ValueError as exc:  # a decoding error, the digit limit, or nesting json_reader refuses
         raise ListingError(f"its skill list is not JSON: {exc}") from None
     if isinstance(entries, dict):
         entries = entries.get("skills")
@@ -315,7 +315,7 @@ def codex_requests(cwd: Path) -> list[str]:
 def _codex_message(line: str) -> dict[str, object] | None:
     try:
         message = json_reader.loads(line)
-    except (ValueError, RecursionError):  # a decoding error or the digit limit, or nesting too deep
+    except ValueError:  # a decoding error, the digit limit, or nesting json_reader refuses
         return None
     return message if isinstance(message, dict) else None
 
@@ -397,7 +397,8 @@ def parse_codex_catalog(lines: list[str]) -> Listing:
     try:
         messages = json_reader.loads("\n".join(lines))
         texts = _strings(messages)
-    except (ValueError, RecursionError) as exc:  # a decoding error or the digit limit, or nesting too deep
+    # json_reader refuses nesting past its limit, so _strings walks what it gave well inside the recursion limit.
+    except ValueError as exc:  # a decoding error, the digit limit, or nesting json_reader refuses
         raise ListingError(f"its prompt input is not JSON: {exc}") from None
     skills = [text for text in texts if CODEX_CATALOG_SKILLS in text]
     if not skills:

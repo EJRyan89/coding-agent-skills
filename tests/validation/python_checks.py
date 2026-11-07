@@ -3965,21 +3965,142 @@ class _ContentEscapes:
         return found
 
 
+# The standard-library calls that recurse once per level of the text or value they are given, so nesting past the
+# interpreter's limit ends them in a RecursionError. A reader of either core bounds its own nesting and raises its
+# family instead, so a handler naming RecursionError around such a reader alone catches nothing.
+RECURSIVE_CALLS = frozenset(
+    {
+        "ast.literal_eval",
+        "ast.parse",
+        "ast.unparse",
+        "compile",
+        "copy.deepcopy",
+        "eval",
+        "exec",
+        "json.dump",
+        "json.dumps",
+        "json.load",
+        "json.loads",
+        "marshal.dumps",
+        "marshal.loads",
+        "pickle.dump",
+        "pickle.dumps",
+        "pickle.load",
+        "pickle.loads",
+        "tomllib.load",
+        "tomllib.loads",
+    }
+)
+UNREAD_CALL = "<a call the policy cannot read>"
+
+
+class _Recursion:
+    """Which repository functions may end in a RecursionError, and each handler naming RecursionError around readers
+    that never raise one. A function may when it calls one of RECURSIVE_CALLS, a callable the policy cannot read, such
+    as a parameter, itself, or another function that may; a reader with a family raises that family alone."""
+
+    def __init__(self, model: _ContentModel, escapes: _ContentEscapes) -> None:
+        self.model = model
+        self.escapes = escapes
+        calls = {
+            qualified: self.calls(body, module)
+            for qualified, (module, _, body) in model.functions.items()
+            if qualified not in model.families
+        }
+        self.recursing = {
+            qualified for qualified, called in calls.items() if UNREAD_CALL in called or qualified in called
+        }
+        changed = True
+        while changed:
+            grown = {qualified for qualified, called in calls.items() if called & self.recursing}
+            changed = not grown <= self.recursing
+            self.recursing |= grown
+
+    def calls(self, body: Sequence[ast.AST], module: str) -> set[str]:
+        """The repository functions and readers `body` calls outside any nested definition, with UNREAD_CALL for one
+        of RECURSIVE_CALLS or a callable the policy cannot read."""
+        found: set[str] = set()
+        pending = list(body)
+        while pending:
+            node = pending.pop()
+            if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda | ast.ClassDef):
+                continue
+            if isinstance(node, ast.Call):
+                found |= self.called(node, module)
+            pending += ast.iter_child_nodes(node)
+        return found
+
+    def called(self, call: ast.Call, module: str) -> set[str]:
+        qualified = qualified_name(call.func, self.model.aliases[module])
+        if qualified in RECURSIVE_CALLS:
+            return {UNREAD_CALL}
+        callees = self.model.callees(call, module)
+        if callees:
+            return set(callees)
+        unread = isinstance(call.func, ast.Name) and qualified == call.func.id and not hasattr(builtins, qualified)
+        return {UNREAD_CALL} if unread else set()
+
+    def catches_recursion(self, classes: list[ClassKey] | None) -> bool:
+        return classes is not None and any(RecursionError in self.model.ancestors(key) for key in classes)
+
+    def dead_handlers(self, function: ast.AST, module: str, scope: str) -> list[tuple[int, str, str]]:
+        """Each handler in `function`, outside a nested definition, that names RecursionError around a call of a reader
+        and calls nothing that may raise one."""
+        found: list[tuple[int, str, str]] = []
+        pending = list(ast.iter_child_nodes(function))
+        while pending:
+            node = pending.pop()
+            if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda | ast.ClassDef):
+                continue
+            pending += ast.iter_child_nodes(node)
+            if isinstance(node, ast.Try | ast.TryStar):
+                guarded = [
+                    (handler.lineno, self.model.expression_classes(handler.type, module)) for handler in node.handlers
+                ]
+            elif isinstance(node, ast.With | ast.AsyncWith):
+                guarded = [
+                    (node.lineno, self.model.expression_classes(ast.Tuple(elts=list(item.args)), module))
+                    for item in (item.context_expr for item in node.items)
+                    if isinstance(item, ast.Call) and qualified_name(item.func, self.model.aliases[module]) == SUPPRESS
+                ]
+            else:
+                continue
+            lines = [line for line, classes in guarded if self.catches_recursion(classes)]
+            if lines and self.reads_without_recursion(node.body, module):
+                found += [(line, scope, RECURSION_REMEDY) for line in lines]
+        return found
+
+    def reads_without_recursion(self, body: Sequence[ast.AST], module: str) -> bool:
+        called = self.calls(body, module)
+        if UNREAD_CALL in called or called & self.recursing:
+            return False
+        return any(callee in self.model.families or self.escapes.escapes.get(callee) for callee in called)
+
+
+RECURSION_REMEDY = (
+    "catches RecursionError around readers that refuse nesting as their own family, and calls nothing that recurses; "
+    f"remove RecursionError, or state which call raises it in {CONTENT_ERRORS_ALLOWANCE}"
+)
+
+
 def content_error_problems(root: Path, files: list[Path], families: Mapping[str, str] | None = None) -> list[str]:
     """Each handler around a reader that exports CONTENT_ERRORS, called directly or through a repository function,
-    that catches part of the reader's family, or the call's OSError, without the rest, and no CONTENT_ERRORS_ALLOWED
-    entry sanctions; then each entry that sanctions nothing."""
+    that catches part of the reader's family, or the call's OSError, without the rest, or that catches RecursionError
+    though nothing it calls raises one, and no CONTENT_ERRORS_ALLOWED entry sanctions; then each entry that sanctions
+    nothing."""
     problems: list[str] = []
     model = _ContentModel(root, files, problems, core_reader_families() if families is None else families)
     escapes = _ContentEscapes(model)
+    recursion = _Recursion(model, escapes)
     for module, (name, tree) in model.trees.items():
         sites: list[tuple[int, str, str]] = []
         for scope, node, shape in escapes.scoped[module]:
+            held = recursion.dead_handlers(node, module, scope)
             if scope not in escapes.allowed[module]:
                 escapes.escaping(shape, sites, scope)
+                sites += held
                 continue
             # A sanctioned function is used when it holds a handler the policy would report or lets a family escape.
-            held: list[tuple[int, str, str]] = []
             if escapes.escaping(shape, held, scope) or held:
                 sites.append((node.lineno, scope, "is sanctioned"))
         problems += sanctioned_problems(name, tree, CONTENT_ERRORS_ALLOWANCE, sites)

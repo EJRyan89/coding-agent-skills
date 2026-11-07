@@ -28,11 +28,11 @@ from review_process import same_process
 from skill_roots import skills_directory_holding
 from typed_fields import FieldError, FieldReader
 
-# What a standard-library parser (json, tomllib) raises on content it refuses: ValueError covers its decode error,
-# a decoding fault, and an integer past the int-to-string digit limit, and RecursionError nesting past the
-# interpreter's recursion limit. A reader of a file it did not just write catches all of them around the parse alone,
-# since most of this package's own errors are ValueErrors too.
-CONTENT_ERRORS = (ValueError, RecursionError)
+# What json_reader raises on content it refuses: ValueError covers its decode error, a decoding fault, an integer past
+# its digit limit, and nesting past its depth limit, which it refuses rather than letting the parser's RecursionError
+# escape. A reader of a file it did not just write catches all of them around the parse alone, since most of this
+# package's own errors are ValueErrors too; a parser that recurses per level, such as tomllib, adds RecursionError.
+CONTENT_ERRORS = (ValueError,)
 CONTENT_ERRORS_ALLOWED = {
     "atomic_write_json": (
         "its one read reads back the text json_writer.dumps just wrote and read back itself, which cannot fail, and "

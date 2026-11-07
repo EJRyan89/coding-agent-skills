@@ -183,8 +183,8 @@ class Session:
                 raise RuntimeError(self.exited() or "server exited before responding")
             try:
                 message = json_reader.loads(line.decode("utf-8", "replace"))
-            # ValueError covers a decode error and an over-long integer; RecursionError, nesting too deep
-            except (ValueError, RecursionError):
+            # ValueError covers a decode error, an over-long integer, and nesting json_reader refuses
+            except ValueError:
                 continue
             if isinstance(message, dict) and message.get("id") == request_id:
                 if "error" in message:

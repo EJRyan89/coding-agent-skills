@@ -2810,6 +2810,144 @@ def test_content_errors_policy_refuses_a_tree_whose_skill_core_names_no_reader()
     )
 
 
+# A handler naming RecursionError around the fixture reader, which refuses nesting as its own family: refused when the
+# reader is all it reaches, directly, through a function, by a tuple, or in a suppress, and passed when it also calls
+# what recurses (a standard-library parser, a callable it cannot read, a function calling itself, or one that calls
+# either), when it reaches no reader, or when its scope is sanctioned.
+CONTENT_RECURSION_CALLER_SOURCE = """\
+import contextlib
+import json
+import tomllib
+
+from reader import read
+
+CAUGHT = (ValueError, RecursionError)
+CONTENT_ERRORS_ALLOWED = {"sanctioned": "a reason"}
+
+
+def load(text):
+    return read(text)
+
+
+def walk(value):
+    return [walk(item) for item in value] if isinstance(value, list) else [value]
+
+
+def walked(text):
+    return walk(read(text))
+
+
+def parse(text):
+    return json.loads(text)
+
+
+def direct(text):
+    try:
+        value = read(text)
+        return value if isinstance(value, list) else None
+    except (ValueError, RecursionError):
+        return None
+
+
+def through_function(text):
+    try:
+        return load(text)
+    except (ValueError, RecursionError):
+        return None
+
+
+def through_tuple(text):
+    try:
+        return read(text)
+    except CAUGHT:
+        return None
+
+
+def suppressed(text):
+    with contextlib.suppress(ValueError, RecursionError):
+        read(text)
+
+
+def outer(text):
+    def inner():
+        try:
+            return read(text)
+        except ValueError:
+            return None
+        except RecursionError:
+            return None
+
+    return inner
+
+
+def beside_toml(text):
+    try:
+        return read(text), tomllib.loads(text)
+    except (ValueError, RecursionError):
+        return None
+
+
+def beside_a_callable(text, convert):
+    try:
+        return convert(read(text))
+    except (ValueError, RecursionError):
+        return None
+
+
+def beside_a_walk(text):
+    try:
+        return walked(text)
+    except (ValueError, RecursionError):
+        return None
+
+
+def beside_a_parse(text):
+    try:
+        return read(text), parse(text)
+    except (ValueError, RecursionError):
+        return None
+
+
+def without_a_reader(text):
+    try:
+        return int(text)
+    except (ValueError, RecursionError):
+        return None
+
+
+def broad(text):
+    try:
+        return read(text)
+    except Exception:
+        return None
+
+
+def sanctioned(text):
+    try:
+        return read(text)
+    except (ValueError, RecursionError):
+        return None
+"""
+
+
+def test_content_errors_policy_refuses_a_recursion_handler_around_readers_that_never_raise_it() -> None:
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        write_fixture_tree(
+            root,
+            {
+                "skills/ejryan89-skill-core/scripts/reader.py": CONTENT_READER_SOURCE,
+                "skills/alpha/scripts/alpha.py": CONTENT_RECURSION_CALLER_SOURCE,
+            },
+        )
+        found = python_checks.content_error_problems(root, sorted(root.rglob("*.py")), {})
+    remedy = (
+        "catches RecursionError around readers that refuse nesting as their own family, and calls nothing that "
+        "recurses; remove RecursionError, or state which call raises it in CONTENT_ERRORS_ALLOWED"
+    )
+    assert found == [f"skills/alpha/scripts/alpha.py:{line} {remedy}" for line in (31, 38, 45, 50, 60)]
+
+
 def test_a_standard_class_is_found_only_through_a_module_that_imports_and_defines_it() -> None:
     assert python_checks._standard_class("ValueError") is ValueError
     assert python_checks._standard_class("json.JSONDecodeError") is json.JSONDecodeError
