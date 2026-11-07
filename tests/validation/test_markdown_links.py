@@ -240,7 +240,8 @@ class LessonsLedgerPolicy(unittest.TestCase):
             "- **Examples:** #12, and no number at all.\n\n"
             f"### Every mechanism resolves\n\n{self.ENTRY}"
             "- **Use:** `tests.test_a:helper`, `tests.test_a:LIMIT`, `core_a:LIMIT_NOTE`, `core_a:GuardTests`,\n"
-            "  `core_a:GuardTests.WAIT`, `tests.test_a:GuardTests.test_held`, `core_b:LIMIT`, and `package:LIMIT`.\n\n"
+            "  `core_a:GuardTests.WAIT`, `tests.test_a:GuardTests.test_held`, `core_b:LIMIT`, and `package:LIMIT`.\n"
+            "- **Guard:** `.github/workflows/watch.yml`.\n\n"
             f"### A mechanism no check can hold\n\n{self.ENTRY}- **Use:** `core_a:helper`.\n"
             "- **No guard:** A reader cannot tell it from the code.\n\n"
             f"### No check can tell\n\n{self.ENTRY}- **No guard:** The mechanism is in #12.\n\n"
@@ -248,22 +249,25 @@ class LessonsLedgerPolicy(unittest.TestCase):
         )
         self.assertEqual([], self.problems(ledger))
 
-    def test_a_pattern_with_neither_a_mechanism_a_guard_nor_a_reason_fails(self) -> None:
+    def test_a_pattern_with_neither_a_guard_nor_a_reason_fails(self) -> None:
         ledger = (
             f"# Lessons\n\n## Patterns\n\n### Nothing holds it\n\n{self.ENTRY}\n"
             f"### An empty reason\n\n{self.ENTRY}- **No guard:**\n\n"
             f"### No reference\n\n{self.ENTRY}- **Guard:** the review\n- **Use:** the helper\n\n"
-            f"### Both\n\n{self.ENTRY}- **Guard:** `.github/workflows/watch.yml`\n- **No guard:** None is possible.\n"
+            f"### Both\n\n{self.ENTRY}- **Guard:** `.github/workflows/watch.yml`\n- **No guard:** None is possible.\n\n"
+            f"### A mechanism alone\n\n{self.ENTRY}- **Use:** `core_a:helper`.\n"
         )
         self.assertEqual(
             [
-                "docs/lessons.md:5 the pattern 'Nothing holds it' names neither its mechanism, a guard, nor the "
+                "docs/lessons.md:5 the pattern 'Nothing holds it' names neither a Guard nor, under No guard, the "
                 "reason no guard is possible",
-                "docs/lessons.md:11 the pattern 'An empty reason' names neither its mechanism, a guard, nor the "
+                "docs/lessons.md:11 the pattern 'An empty reason' names neither a Guard nor, under No guard, the "
                 "reason no guard is possible",
                 "docs/lessons.md:23 the pattern 'No reference' names no guard in a code span",
                 "docs/lessons.md:24 the pattern 'No reference' names no mechanism in a code span",
                 "docs/lessons.md:26 the pattern 'Both' names both a guard and the reason no guard is possible",
+                "docs/lessons.md:34 the pattern 'A mechanism alone' names neither a Guard nor, under No guard, the "
+                "reason no guard is possible",
             ],
             self.problems(ledger),
         )
@@ -307,6 +311,7 @@ class LessonsLedgerPolicy(unittest.TestCase):
             " `tests.test_a:gone`, `core_a:inner`, `core_a:GuardTests.gone`, `core_a:helper.inner`, `tests.gone:x`,"
             " `test_a:helper`, `twin:LIMIT`,\n"
             "  `broken:broken`, `tests/test_a.py::helper`, `core_a:GuardTests.WAIT.real`, `core_a`, and `helper`.\n"
+            "- **No guard:** A reader cannot tell it from the code.\n"
         )
         prefix = "docs/lessons.md:10 the pattern 'Gone'"
         scripts = "skills/ejryan89-skill-core/scripts"
