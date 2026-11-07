@@ -186,15 +186,21 @@ class CrossSkillContractTests(unittest.TestCase):
                 self.assertNotIn(unused, contract)
 
     def test_only_skills_no_other_skill_invokes_leave_the_model_skill_list(self) -> None:
-        def flag(name: str, key: str) -> str | None:
-            return skill_frontmatter.read(REPOSITORY_ROOT / "skills" / name / "SKILL.md").string(key)
+        # Shipped skills and this repository's own skills both invoke skills by name, and either may be invoked.
+        skills = {
+            path.parent.name: path
+            for tree in ("skills", ".claude/skills")
+            for path in sorted((REPOSITORY_ROOT / tree).glob("*/SKILL.md"))
+        }
+        self.assertIn("shepherd-pull-requests", skills)
 
-        skills = sorted((REPOSITORY_ROOT / "skills").glob("*/SKILL.md"))
-        names = {path.parent.name for path in skills}
+        def flag(name: str, key: str) -> str | None:
+            return skill_frontmatter.read(skills[name]).string(key)
+
         invoked = {
             name
-            for path in skills
-            for name in runtime_support.invoked_skills(path.read_text(encoding="utf-8-sig"), names)
+            for path in skills.values()
+            for name in runtime_support.invoked_skills(path.read_text(encoding="utf-8-sig"), skills)
         }
         self.assertEqual({"review-prs", "flag-review-finding"}, invoked)
         for name in sorted(invoked):
