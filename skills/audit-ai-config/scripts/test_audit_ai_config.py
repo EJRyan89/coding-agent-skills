@@ -306,6 +306,18 @@ class CommandLineTests(unittest.TestCase):
                 self.assertEqual([f"FAILED {self.root} is not a Git repository (no .git found)"], lines)
                 self.assertEqual("", errors)
 
+    def test_a_json_report_that_cannot_hold_a_value_fails_by_name_with_exit_1(self) -> None:
+        # A root whose name is not UTF-8 on Linux reads as a lone surrogate, which no JSON text holds.
+        (self.root / ".git").mkdir()
+        found = audit.audit(self.root)
+        found.repository = "repo\udcff"
+        with mock.patch.object(audit, "audit", return_value=found):
+            code, lines, errors = self._main("--root", str(self.root), "--json")
+        self.assertEqual(1, code)
+        self.assertEqual(1, len(lines), lines)
+        self.assertTrue(lines[0].startswith("FAILED the JSON report cannot hold a value the audit found: "), lines)
+        self.assertEqual("", errors)
+
     def test_an_inconclusive_audit_prints_its_result_line_and_exits_1(self) -> None:
         (self.root / ".git").mkdir()
         code, lines, errors = self._main("--root", str(self.root))

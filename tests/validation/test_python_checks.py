@@ -2048,6 +2048,118 @@ def test_json_write_policy_refuses_a_json_write_outside_json_writer() -> None:
     ]
 
 
+# An encoder a sanctioned module defines, as an OWNER_ONLY_ALLOWED entry lets one, is followed into each module that
+# subclasses or calls it, through an import, a re-export, and a package's __init__, as the ctypes policy follows a base.
+JSON_ENCODER_OWNER = """import json
+
+
+class Encoder(json.JSONEncoder):
+    pass
+
+
+class Outer:
+    class Inner(json.JSONEncoder):
+        pass
+
+
+class Plain:
+    pass
+"""
+JSON_ENCODER_WRITE = "\n\ndef save(path, data):\n    path.write_text({}.encode(data))\n"
+
+
+@pytest.mark.parametrize(
+    ("modules", "refused"),
+    [
+        pytest.param(
+            {"skills/alpha/scripts/alpha.py": "from owner import Encoder\n\n\nclass Sub(Encoder):\n    pass\n"},
+            ["skills/alpha/scripts/alpha.py:9"],
+            id="a subclass of an encoder imported by name",
+        ),
+        pytest.param(
+            {"skills/alpha/scripts/alpha.py": "import owner\n\n\nclass Sub(owner.Encoder):\n    pass\n"},
+            ["skills/alpha/scripts/alpha.py:9"],
+            id="a subclass of an encoder read off its module",
+        ),
+        pytest.param(
+            {
+                "skills/alpha/scripts/middle.py": "from owner import Encoder\n\n\nclass Middle(Encoder):\n    pass\n",
+                "skills/alpha/scripts/alpha.py": "from middle import Middle\n\n\nclass Sub(Middle):\n    pass\n",
+            },
+            ["skills/alpha/scripts/alpha.py:9"],
+            id="a subclass of a subclass in a third module",
+        ),
+        pytest.param(
+            {
+                "skills/alpha/scripts/middle.py": "from owner import Encoder as Renamed\n",
+                "skills/alpha/scripts/alpha.py": "import middle\n\n\nclass Sub(middle.Renamed):\n    pass\n",
+            },
+            ["skills/alpha/scripts/alpha.py:9"],
+            id="a subclass of an encoder a third module re-exports",
+        ),
+        pytest.param(
+            {
+                "tools/kit/__init__.py": JSON_ENCODER_OWNER,
+                "skills/alpha/scripts/alpha.py": "from kit import Encoder\n\n\nclass Sub(Encoder):\n    pass\n",
+            },
+            ["skills/alpha/scripts/alpha.py:9"],
+            id="a subclass of an encoder a package's __init__ defines",
+        ),
+        pytest.param(
+            {"skills/alpha/scripts/alpha.py": "from owner import Outer\n\n\nclass Sub(Outer.Inner):\n    pass\n"},
+            ["skills/alpha/scripts/alpha.py:9"],
+            id="a subclass of a nested encoder",
+        ),
+        pytest.param(
+            {
+                "skills/alpha/scripts/middle.py": "from json import JSONEncoder\n",
+                "skills/alpha/scripts/alpha.py": "from middle import JSONEncoder\n\n\nclass Sub(JSONEncoder):\n"
+                "    pass\n",
+            },
+            ["skills/alpha/scripts/alpha.py:9"],
+            id="a subclass of JSONEncoder a third module re-exports",
+        ),
+        pytest.param(
+            {"skills/alpha/scripts/alpha.py": "from owner import Encoder as Sub\n"},
+            ["skills/alpha/scripts/alpha.py:5"],
+            id="a call of an encoder another module defines",
+        ),
+        pytest.param(
+            {"skills/alpha/scripts/alpha.py": "from owner import Plain\n\n\nclass Sub(Plain):\n    pass\n"},
+            [],
+            id="a subclass of a class that is no encoder",
+        ),
+        pytest.param(
+            {"skills/alpha/scripts/alpha.py": "from elsewhere import Encoder\n\n\nclass Sub(Encoder):\n    pass\n"},
+            [],
+            id="a base from a module the policy does not read",
+        ),
+        pytest.param(
+            {
+                "skills/alpha/scripts/first.py": "from second import Sub\n",
+                "skills/alpha/scripts/second.py": "from first import Sub\n",
+                "skills/alpha/scripts/alpha.py": "from first import Sub\n",
+            },
+            [],
+            id="a cycle of re-exports",
+        ),
+    ],
+)
+def test_json_write_policy_follows_an_encoder_another_module_defines(
+    modules: dict[str, str], refused: list[str]
+) -> None:
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        modules = {
+            path: source + JSON_ENCODER_WRITE.format("Sub()") if path.endswith("alpha.py") else source
+            for path, source in modules.items()
+        }
+        write_fixture_tree(root, {"skills/ejryan89-skill-core/scripts/owner.py": JSON_ENCODER_OWNER, **modules})
+        found = python_checks.json_write_problems(root, sorted(root.rglob("*.py")))
+    assert [problem.split(" ", 1)[0] for problem in found] == refused
+    assert all("writes JSON text to a file or a stream" in problem for problem in found), found
+
+
 def test_json_write_policy_with_no_module_to_read_could_not_measure() -> None:
     # Only the writer itself, a suite, and a file outside the claim roots: nothing the policy reads.
     with tempfile.TemporaryDirectory() as temporary:

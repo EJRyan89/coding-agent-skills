@@ -1558,6 +1558,33 @@ class BashTests(RuntimeCanaryTestCase):
             ),
         )
 
+    def test_the_bash_recorder_writes_a_record_read_records_reads_for_a_path_holding_a_tab_or_a_newline(self) -> None:
+        self.canary(
+            FakeRuntimes(), ["gamma"], discovery_only=True, sources=[runtime_canary.FIXTURE_SOURCE, self.make_source()]
+        )
+        log = self.home / ".runtime-canary" / "scripts" / "direct.jsonl"
+        log.write_text("", encoding="utf-8")
+        # Git Bash stores a control character of a file name as a private-use character Windows allows, and shows
+        # it in $PWD as the control character; with a cygpath that fails, the recorder writes $PWD as Bash gives it,
+        # as it does on Linux, which has no cygpath. Git's bin/bash.exe is a launcher that puts its own folders,
+        # cygpath's among them, before PATH, so on Windows the test starts the Bash it launches.
+        bash = Path(git_bash())
+        if sys.platform == "win32":
+            bash = bash.parents[1] / "usr" / "bin" / "bash.exe"
+        folder = self.home / ("tabandline" if sys.platform == "win32" else "tab\tand\nline")
+        folder.mkdir()
+        (folder / "tool.sh").write_bytes(b"exit 3\n")
+        stub = self.home / "stub"
+        stub.mkdir()
+        (stub / "cygpath").write_bytes(b"#!/bin/sh\nexit 1\n")
+        (stub / "cygpath").chmod(0o755)
+        environment = {**runtime_canary.environment(dict(os.environ), log, self.home), "PATH": str(stub)}
+        process = subprocess.run([bash, "tool.sh"], cwd=folder, env=environment, capture_output=True, check=False)
+        self.assertEqual(3, process.returncode, process.stderr)
+        started = runtime_canary.read_records(log)
+        self.assertEqual([None, 3], [record.get("exit") for record in started])
+        self.assertTrue(all(record["cwd"].endswith("/tab\tand\nline") for record in started), started)
+
 
 class CopilotVersionTests(RuntimeCanaryTestCase):
     def test_every_copilot_start_turns_auto_update_off_so_the_recorded_version_is_the_one_that_ran(self) -> None:
