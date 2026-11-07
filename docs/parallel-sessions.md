@@ -440,6 +440,15 @@ refuses:
   hubs the places it names reach, each git call of theirs given no more than the time left; a PowerShell command when
   `pwsh` cannot be found or started; and a command either reader fails on with an error of its own.
 
+No script is trusted by its path, the deployed `update-coding-agent-skills` script under the skills directory
+included, though updating and deploying are what the hub is for: a script is a file, and the guard refuses an edit
+only in a hub, so a session's own file tools may rewrite a script under the skills directory, and a path the guard
+allowed would run whatever that file holds, through whatever link or junction stands on the way to it. The guard
+therefore reads `bash <script>` as it reads every script file, a part it does not understand, and
+`update-coding-agent-skills` runs outside a session started in the clone: from a session in a folder outside it,
+which loads none of the clone's hooks, or from a terminal, as its section in [Skills](skills.md#update-coding-agent-skills)
+says.
+
 The refusal names the first part it did not understand, or what it could not place, and asks for the command to be
 written as plain commands, or for the directory to be written out, as `git -C <dir>` or `cd <dir> &&`. With no guarded
 hub in view, the same is allowed with a note on stderr, unless the command holds a part the guard does not read and
