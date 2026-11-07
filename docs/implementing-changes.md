@@ -146,8 +146,9 @@ names each surviving mutant by its line, the mutation, and the suites it passed,
 ran when not all did, and names each mutant no suite reached by its line and the mutation, as the run log does beside
 each mutant killed and each that survived; a pull request that changes no such module gets one line saying so. Each
 leg's mutants are dealt into shards, each a job of its own: one for each `SHARD_MUTANTS` of them, at most `MAX_SHARDS`,
-each module's mutants kept in as few shards as an even deal allows, so a small change runs in one job and a large one
-gets its verdict in a shard's share of the time. The join reads each shard's outcomes as it would a whole leg's, and a
+each module's mutants kept in as few shards as an even deal allows and spread across them in turn, so a small change
+runs in one job and a large one gets its verdict in a shard's share of the time, with no shard holding a module's slow
+stretch alone. The join reads each shard's outcomes as it would a whole leg's, and a
 shard whose record is missing, names another leg or shard, or holds another share stops it. Within a shard the mutants
 run from one queue that takes one from each module in turn, and each shard is capped by `DEFAULT_MINUTES` in the gate.
 A run the cap cuts
