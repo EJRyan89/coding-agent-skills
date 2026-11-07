@@ -27,7 +27,9 @@ from workflows import (
     SAME_REPOSITORY_STATEMENT,
     TOKEN_CLAIM_OMISSIONS,
     TOKEN_CLAIM_SPANS,
+    WORKFLOW_GUARDS,
     WorkflowSyntaxError,
+    action_pins,
     changelog_job_problems,
     codex_settings_problems,
     command_line_job_problems,
@@ -46,6 +48,7 @@ from workflows import (
     pinned_tool_problems,
     read_workflow,
     required_check_problems,
+    shared_pin_problems,
     token_claim_problems,
     token_claim_read_problems,
     token_claim_texts,
@@ -2417,3 +2420,55 @@ def test_a_row_silent_on_the_actions_default_input_fails() -> None:
     assert token_claim_problems({}, REACH_DESIGN.replace(ACTIONS, "nothing else")) == [
         f"docs/design.md's row {CREDENTIALS_ROW!r} does not say {ACTIONS!r}"
     ]
+
+
+def test_the_mutation_workflows_guard_allows_each_action_its_jobs_use_and_no_other() -> None:
+    # MUTATION is the shape mutation_job_problems holds mutation.yml to, so an action the gate's jobs need that the
+    # guard refuses, or one the guard allows that no job uses, fails here.
+    assert mutation_job_problems(MUTATION) == []
+    _, allowed, _ = WORKFLOW_GUARDS["mutation.yml"]
+    assert {action for action, _, _ in action_pins(MUTATION)} == allowed
+
+
+PIN_REVIEWED = f"      - uses: actions/checkout@{'a' * 40} # v7.0.1\n      - uses: actions/cache@{'b' * 40} # v6.1.0\n"
+
+
+@pytest.mark.parametrize(
+    ("workflow", "problems"),
+    [
+        pytest.param(
+            f"      - uses: actions/checkout@{'a' * 40} # v7.0.1\n"
+            f"      - uses: actions/cache/restore@{'b' * 40} # v6.1.0\n"
+            f"      - uses: actions/cache/save@{'b' * 40} # v6.1.0\n"
+            f"      - uses: other/action@{'c' * 40} # v1.0.0\n",
+            [],
+            id="each shared action and each action of a shared repository at validate.yml's pin",
+        ),
+        pytest.param(
+            f"      - uses: actions/checkout@{'c' * 40} # v7.0.2\n",
+            [
+                f"actions/checkout is pinned to {'c' * 40} # v7.0.2, not to validate.yml's pin of actions/checkout, "
+                f"{'a' * 40} # v7.0.1"
+            ],
+            id="a shared action at another pin",
+        ),
+        pytest.param(
+            f"      - uses: actions/cache/restore@{'b' * 40} # v6.1.0\n"
+            f"      - uses: actions/cache/save@{'c' * 40} # v6.0.0\n",
+            [
+                f"actions/cache/save is pinned to {'c' * 40} # v6.0.0, not to validate.yml's pin of actions/cache, "
+                f"{'b' * 40} # v6.1.0"
+            ],
+            id="an action of a shared repository at another pin",
+        ),
+        pytest.param(
+            f"      - uses: other/action@{'c' * 40} # v1.0.0\n",
+            ["the workflow shares no action with validate.yml, whose pins it is held to"],
+            id="no shared action",
+        ),
+    ],
+)
+def test_a_workflow_is_held_to_validates_pin_of_each_action_or_repository_it_shares(
+    workflow: str, problems: list[str]
+) -> None:
+    assert shared_pin_problems(PIN_REVIEWED, workflow) == problems

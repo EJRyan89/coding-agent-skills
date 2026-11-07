@@ -201,6 +201,29 @@ def action_pins(workflow: str) -> list[tuple[str, str, str]]:
     return re.findall(r"(?m)^\s*-?\s*uses:\s*(\S+)@(\S+)(.*)$", workflow)
 
 
+def shared_pin_problems(reviewed: str, workflow: str) -> list[str]:
+    """Report each action of a workflow that validate.yml's text `reviewed` also uses, or that comes from the
+    repository of one it uses, such as actions/cache/restore beside actions/cache, pinned to another commit and version
+    than validate.yml's, which Dependabot reviews, and a workflow that shares no action with it."""
+    reviewed_actions = set(re.findall(r"uses:\s*(\S+)@", reviewed))
+    shared = sorted(
+        {
+            (action, repository)
+            for action, _, _ in action_pins(workflow)
+            if (repository := "/".join(action.split("/")[:2])) in reviewed_actions
+        }
+    )
+    if not shared:
+        return ["the workflow shares no action with validate.yml, whose pins it is held to"]
+    problems = []
+    for action, repository in shared:
+        wanted = required_match(rf"{re.escape(repository)}@(\S+ +# v\S+)", reviewed).group(1)
+        found = required_match(rf"{re.escape(action)}@(\S+ +# v\S+)", workflow).group(1)
+        if found != wanted:
+            problems.append(f"{action} is pinned to {found}, not to validate.yml's pin of {repository}, {wanted}")
+    return problems
+
+
 EXPRESSION = re.compile(r"\$\{\{(.*?)\}\}", re.DOTALL)
 # Context names are case-insensitive in an expression, so SECRETS.X reads a secret as secrets.x does.
 SECRET_REFERENCE = re.compile(r"\bsecrets\b", re.IGNORECASE)
@@ -1932,22 +1955,9 @@ class WorkflowsPolicies(unittest.TestCase):
         workflows = REPOSITORY_ROOT / WORKFLOWS_DIRECTORY
         reviewed = (workflows / "validate.yml").read_text(encoding="utf-8")
         for name in sorted(set(WORKFLOW_GUARDS) - {"validate.yml"}):
-            workflow = (workflows / name).read_text(encoding="utf-8")
-            # An action both workflows use, or one of its repository's actions such as actions/cache/restore, is
-            # pinned to the commit Dependabot reviews in validate.yml.
-            reviewed_actions = set(re.findall(r"uses:\s*(\S+)@", reviewed))
-            shared = {
-                (action, repository)
-                for action, _, _ in action_pins(workflow)
-                if (repository := "/".join(action.split("/")[:2])) in reviewed_actions
-            }
-            self.assertTrue(shared)
-            for action, repository in shared:
-                with self.subTest(workflow=name, shared=action):
-                    self.assertEqual(
-                        required_match(rf"{re.escape(repository)}@(\S+ +# v\S+)", reviewed).group(1),
-                        required_match(rf"{re.escape(action)}@(\S+ +# v\S+)", workflow).group(1),
-                    )
+            with self.subTest(workflow=name):
+                workflow = (workflows / name).read_text(encoding="utf-8")
+                self.assertEqual([], shared_pin_problems(reviewed, workflow))
 
     def test_the_dependency_document_names_every_workflow_that_shares_validates_action_pins(self) -> None:
         document = (REPOSITORY_ROOT / "docs" / "dependency-updates.md").read_text(encoding="utf-8")
