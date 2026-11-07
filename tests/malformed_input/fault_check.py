@@ -2,7 +2,8 @@
 fault in a throwaway fixture, and judged.
 
 fault_runner.py runs the command under the fault and stops it, past any handler, if it starts a program other than
-git, opens a network connection, or writes outside the temporary folder. A run must reach its fault and end with a
+git, opens a network connection, or writes outside the temporary folder or inside this checkout, even where the
+temporary folder holds it. A run must reach its fault and end with a
 nonzero exit its docstring's exit table names, output that names what failed, a refusal line, no traceback, and the
 home, the work folder, and the outputs the driver names as it found them. The suites test_faults_<group>.py run every
 driver's runs of their group of faults, so the runner deals each group to a leg of its own; test_faults.py holds the
