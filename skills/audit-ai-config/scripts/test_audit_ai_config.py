@@ -6968,6 +6968,12 @@ class ProvenanceTests(unittest.TestCase):
         described = {name for heading in headings for name in re.findall(r"`([a-z-]+)`", heading)}
         self.assertEqual(sorted(audit.CHECKS), sorted(described))
 
+    def test_a_provenance_failure_holding_a_line_break_is_one_failed_line(self) -> None:
+        # The provenance error names a source the reference file holds, whose text may span lines.
+        refusal = check_provenance.ProvenanceError("no source for\nSKIPPED x\u2028y")
+        with mock.patch.object(audit, "reported_sources", side_effect=refusal):
+            self.assertEqual((1, "FAILED no source for SKIPPED x y\n"), self._main("--provenance"))
+
     def test_the_markdown_report_names_the_sources_of_the_checks_it_reports_only_when_asked(self) -> None:
         code, plain = self._main()
         self.assertEqual(1, code)

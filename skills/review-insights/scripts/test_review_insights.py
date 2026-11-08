@@ -1952,6 +1952,12 @@ class ScopeTests(InsightFixture):
         config["repositories"]["owner/other"]["checkout_path"] = str(self.checkouts / "repo" / "vendor" / "other")
         write_config(config, self.config_path)
 
+    def test_a_failure_holding_a_line_break_is_one_failed_line(self) -> None:
+        # A synthesis, guidance, or OSError's text may carry a path or a result's own text across lines.
+        refusal = ri.InsightError("Cannot read the scope:\nSCOPE_ARGUMENTS x\u2028y")
+        with mock.patch.object(ri, "working_scope", side_effect=refusal):
+            self.assertEqual((1, "FAILED Cannot read the scope: SCOPE_ARGUMENTS x y\n", ""), self.run_main("scope"))
+
     def scope(self, cwd: Path, common: Path | None = None) -> list[str]:
         self.services = dataclasses.replace(self.services, cwd=lambda: cwd, git_common_dir=lambda _: common)
         code, out, err = self.run_main("scope")

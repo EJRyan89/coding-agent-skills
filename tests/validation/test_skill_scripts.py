@@ -884,6 +884,102 @@ class SkillScriptsFixtures(unittest.TestCase):
             )
             self.assertEqual([], script_contract_problems(mark_skills(root)))
 
+    def test_print_choke_point_policy_refuses_a_stdout_line_that_may_hold_a_break(self) -> None:
+        # Each print here carries a value that may hold a line break straight to stdout.
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            write_fixture_tree(
+                root,
+                {
+                    "skills/alpha/scripts/run.py": "import sys\n"
+                    "from flat_text import flat_text\n"
+                    "def main(exc, line, lines, count, separator):\n"
+                    "    print(f'FAILED {exc}')\n"
+                    "    print(line)\n"
+                    "    sys.stdout.write(line)\n"
+                    "    print('KEY', line)\n"
+                    "    print(f'COUNT {len(lines)} {flat_text(line)}')\n"
+                    "    print('\\n'.join(lines))\n"
+                    "    print('A\\nB')\n"
+                    "    print(flat_text(line), sep=separator)\n"
+                    "    print(f'KEY {line}', file=sys.stdout)\n"
+                    "    print(f'KEY {flat_text(line)}' if count else line)\n"
+                    "    sys.__stdout__.writelines(lines)\n",
+                },
+            )
+            refusal = (
+                "prints text that may hold a line break; pass each outside value through flat_text, fact_line, or "
+                'single_line, or state why in PRINT_ALLOWED; see "Script results" in docs/adding-a-skill.md'
+            )
+            self.assertEqual(
+                [f"skills/alpha/scripts/run.py:{line} {refusal}" for line in range(4, 15)],
+                skill_scripts.print_choke_point_problems(mark_skills(root)),
+            )
+
+    def test_print_choke_point_policy_accepts_each_choke_point_and_what_is_no_fact_line(self) -> None:
+        # Literals, a module's one-line constant, each choke point under any name its import gives it, an f-string or
+        # either-or of them, and a join of flattened lines pass; stderr, a file, a test, a module under another
+        # protocol, and a repository skill are not read.
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            write_fixture_tree(
+                root,
+                {
+                    "skills/alpha/scripts/run.py": "import sys\n"
+                    "import flat_text\n"
+                    "from flat_text import fact_line, single_line as one\n"
+                    "from console import failed_line\n"
+                    "DONE = 'DONE all'\n"
+                    "def main(exc, line, lines, count, handle):\n"
+                    "    print()\n"
+                    "    print('VALID', 3)\n"
+                    "    print(DONE)\n"
+                    "    print(f'FAILED {flat_text.flat_text(str(exc))}')\n"
+                    "    print(fact_line('KEY', line, count))\n"
+                    "    print(one(f'COUNT {len(lines)} {line}'), end='')\n"
+                    "    print(failed_line(exc), flush=True)\n"
+                    "    print(f'KEY {one(line)}' if count else 'NONE')\n"
+                    "    print('\\n'.join(one(item) for item in lines))\n"
+                    "    sys.stdout.write(one(line))\n"
+                    "    print(line, file=sys.stderr)\n"
+                    "    print(line, file=handle)\n"
+                    "    sys.stderr.write(line)\n",
+                    "skills/alpha/scripts/test_run.py": "def test(line):\n    print(line)\n",
+                    "skills/alpha/scripts/hook.py": "EXIT_CONTRACT_EXEMPT = 'answers a hook protocol'\n"
+                    "def main(line):\n    print(line)\n",
+                    ".claude/skills/beta/SKILL.md": "# beta\n",
+                    ".claude/skills/beta/scripts/run.py": "def main(line):\n    print(line)\n",
+                },
+            )
+            self.assertEqual([], skill_scripts.print_choke_point_problems(mark_skills(root)))
+
+    def test_print_choke_point_policy_takes_a_reason_beside_the_code_and_reports_one_no_longer_needed(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            write_fixture_tree(
+                root,
+                {
+                    "skills/alpha/scripts/run.py": "PRINT_ALLOWED = {\n"
+                    "    'print_report': 'prints the Markdown report as it is',\n"
+                    "    'gone': 'printed once',\n"
+                    "}\n"
+                    "def print_report(report):\n    print(report, end='')\n",
+                    "skills/alpha/scripts/vague.py": "PRINT_ALLOWED = {'main': ''}\ndef main(line):\n    print(line)\n",
+                },
+            )
+            self.assertEqual(
+                [
+                    "skills/alpha/scripts/run.py: PRINT_ALLOWED allows gone, which holds nothing it sanctions; remove "
+                    "the entry",
+                    "skills/alpha/scripts/vague.py: PRINT_ALLOWED must map each function, class, or assignment to its "
+                    "reason",
+                    "skills/alpha/scripts/vague.py:3 prints text that may hold a line break; pass each outside value "
+                    'through flat_text, fact_line, or single_line, or state why in PRINT_ALLOWED; see "Script '
+                    'results" in docs/adding-a-skill.md',
+                ],
+                skill_scripts.print_choke_point_problems(mark_skills(root)),
+            )
+
     def test_secret_named_function_policy_flags_trusted_but_not_untrusted_or_tests(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

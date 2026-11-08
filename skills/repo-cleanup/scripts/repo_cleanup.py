@@ -90,6 +90,10 @@ OWNER_ONLY_ALLOWED = {
     "save_plan": "writes a plan holding a branch name git gave as bytes that are not UTF-8 as its surrogate escapes, "
     "as its JSON_WRITE_ALLOWED entry states",
 }
+PRINT_ALLOWED = {
+    "print_line": "prints a line fields_line built, whose every field one_line flattened; a single_line pass over the "
+    "whole line would make the tabs between its fields spaces",
+}
 JSON_WRITE_ALLOWED = {
     "save_plan": "a plan or a sweep record holds a branch name git gave as bytes that are not UTF-8 as its surrogate "
     "escapes, which json_writer refuses and parse_saved, the one reader of both, restores, so the later commands name "
@@ -261,11 +265,21 @@ def one_line(value: Any) -> str:
 _capture = threading.local()
 
 
+def fields_line(kind: str, *fields: Any) -> str:
+    """`kind`, then each field as `one_line` gives it, or `-` for an empty one, joined by tabs: one fact on one line."""
+    return "\t".join([kind, *(one_line(field) if str(field).strip() else "-" for field in fields)])
+
+
+def print_line(line: str) -> None:
+    """Print a line `fields_line` built, now or in a sweep record a later command reads."""
+    print(line)
+
+
 def emit(kind: str, *fields: Any) -> None:
-    line = "\t".join([kind, *(one_line(field) if str(field).strip() else "-" for field in fields)])
+    line = fields_line(kind, *fields)
     captured = getattr(_capture, "lines", None)
     if captured is None:
-        print(line)
+        print_line(line)
     else:
         captured.append(line)  # a sweep worker: printed with its repository once every repository is done
 
@@ -2181,10 +2195,10 @@ def policy_lines(policy: Policy) -> list[str]:
     file, then ADDED for each addition used and REFUSED_ENTRY for each refused one, with its reason."""
     regenerable, protected = policy.added_regenerable(), list(policy.added_protected)
     lists = "defaults+additions" if regenerable or protected else "defaults"
-    lines = [f"POLICY\t{lists}\t{cleanup_policy.POLICY_FILE.as_posix()}"]
-    lines += [f"ADDED\tregenerable\t{one_line(entry)}" for entry in regenerable]
-    lines += [f"ADDED\tprotected\t{one_line(prefix)}" for prefix in protected]
-    lines += [f"REFUSED_ENTRY\tregenerable\t{one_line(entry.entry)}\t{entry.reason}" for entry in policy.refused]
+    lines = [fields_line("POLICY", lists, cleanup_policy.POLICY_FILE.as_posix())]
+    lines += [fields_line("ADDED", "regenerable", entry) for entry in regenerable]
+    lines += [fields_line("ADDED", "protected", prefix) for prefix in protected]
+    lines += [fields_line("REFUSED_ENTRY", "regenerable", entry.entry, entry.reason) for entry in policy.refused]
     return lines
 
 
@@ -2212,7 +2226,7 @@ def sweep(
     emit("PLANS", directory.as_posix())
     used = policy_lines(policy)
     for line in used:
-        print(line)
+        print_line(line)
     with ThreadPoolExecutor(max_workers=max(1, min(SWEEP_WORKERS, len(repositories)))) as pool:
         results = list(
             pool.map(
@@ -2228,7 +2242,7 @@ def sweep(
             emit("PLAN", result["plan"])
         for line in result["lines"]:
             if passed_on(line, result):
-                print(line)
+                print_line(line)
     emit(
         "SWEPT",
         len(results),
@@ -2350,7 +2364,7 @@ def report(directory: Path, aborted: list[str]) -> int:
     dropped = aborted_entries(entries, aborted)
     plans = {entry["root"]: load_plan(entry["plan"]) for entry in entries if entry["plan"]}
     for line in policy:
-        print(line)
+        print_line(line)
     quiet: list[str] = []
     failed = 0
     for entry in entries:
@@ -2368,7 +2382,7 @@ def report(directory: Path, aborted: list[str]) -> int:
         if plan is not None:
             print_summary(plan)
         for line in entry["lines"]:
-            print(line)
+            print_line(line)
     if quiet:
         emit("QUIET", *quiet)
     fetch_failed = sum(entry["state"] == "fetch-failed" for entry in entries)

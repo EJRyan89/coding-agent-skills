@@ -39,6 +39,7 @@ import file_presence
 import json_writer
 from console import run_main
 from executable_locator import PYTHON
+from flat_text import single_line
 from review_guard import ROLE_ID, RUN_FILE, RUN_PREFIX, read_log, search_entry
 from review_io import PersistenceError, read_json
 from review_runtime import RuntimeContractError, fetch_source_file, search_source
@@ -161,10 +162,10 @@ def main(arguments: list[str] | None = None) -> int:
         else:
             lines = source_search(args.run, args.role, args.pattern)
     except (SourceError, RuntimeContractError, OSError, json_writer.JsonWriteRefused) as exc:
-        print(f"FAILED {exc}")
+        print(single_line(f"FAILED {exc}"))
         return 1
     for line in lines:
-        print(line)
+        print(single_line(line))
     return 0
 
 

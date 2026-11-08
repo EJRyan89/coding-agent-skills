@@ -32,7 +32,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-cor
 import whole_number
 from atomic_file import replace_text
 from console import run_main
-from flat_text import flat_text
+from flat_text import flat_text, single_line
 from github_client import (
     Clock,
     CommandResult,
@@ -51,6 +51,9 @@ from typed_fields import FieldError, FieldReader, describe
 
 T = TypeVar("T")
 Page = TypeVar("Page")
+PRINT_ALLOWED = {
+    "write_report": "writes the Markdown report the skill shows the user as it is, over many lines",
+}
 SEARCH_PAGE_SIZE = 100
 SEARCH_RESULT_CAP = 1000
 # The nominal low end of a second date that falls on or before the day sliced, from before GitHub held any pull request
@@ -1129,6 +1132,11 @@ def _distinct(logins: list[str]) -> list[str]:
     return distinct
 
 
+def write_report(report: str) -> None:
+    """Write the Markdown report the skill shows the user as it is."""
+    sys.stdout.write(report)
+
+
 def main(
     arguments: list[str] | None = None,
     client: GitHubSearchClient | None = None,
@@ -1151,7 +1159,7 @@ def main(
     try:
         if not group and options.history is None:
             activity = collect_activity(search, options.org, users[0], options.months, current)
-            sys.stdout.write(render_report(activity, options.org, users[0], current))
+            write_report(render_report(activity, options.org, users[0], current))
             return 0
         history = read_history(options.history) if options.history is not None else {}
         if options.team is not None:
@@ -1164,9 +1172,9 @@ def main(
         )
     except (GitHubError, ReportFailure) as exc:
         # The reason can carry gh's multi-line stderr; the FAILED line stays one line.
-        print(f"FAILED {flat_text(str(exc))} [{exc.kind}]")
+        print(single_line(f"FAILED {flat_text(str(exc))} [{exc.kind}]"))
         return 1
-    sys.stdout.write(render_comparison(comparison, current))
+    write_report(render_comparison(comparison, current))
     return 0
 
 

@@ -2209,3 +2209,10 @@ def test_an_unborn_branch_is_looked_up_by_its_whole_name() -> None:
 
     assert review_document.unborn(Path("r"), GitClient(run))
     assert asked[-1][-1] == "refs/heads/draft\u00a0^{commit}"
+
+
+def test_a_document_line_holding_a_line_break_prints_on_one_line() -> None:
+    # A pull request's or a local document's path is filtered only for C0, so a U+2028 in it split the DOCUMENT line.
+    lines = ["DOCUMENT docs/a\u2028FIXTURE elsewhere.md", "ROUTE generic"]
+    with mock.patch.object(review_document, "build_command", return_value=lines):
+        assert run_main("build", "docs/a.md") == (0, ["DOCUMENT docs/a FIXTURE elsewhere.md", "ROUTE generic"])

@@ -40,7 +40,7 @@ from pathlib import Path
 
 import versions
 from console import run_main
-from flat_text import flat_text
+from flat_text import flat_text, single_line
 from git_client import GitClient, GitError, output_lines
 
 TAGS = "refs/tags/"
@@ -116,7 +116,7 @@ def main(argv: list[str]) -> int:
     except GitError as error:
         print(f"FAILED git for-each-ref: {flat_text(str(error))}")
         return 1
-    print(f"RELEASE {found}" if found is not None else "NO_RELEASE")
+    print(single_line(f"RELEASE {found}" if found is not None else "NO_RELEASE"))
     return 0
 
 

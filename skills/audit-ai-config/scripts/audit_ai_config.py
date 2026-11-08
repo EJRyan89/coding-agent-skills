@@ -55,7 +55,7 @@ from agent_skills import CODEX_METADATA, MAX_DESCRIPTION, MAX_NAME, RESERVED_WOR
 from check_provenance import Source
 from console import run_main
 from file_presence import NotAFile, is_directory, is_occupied, is_present
-from flat_text import flat_text
+from flat_text import flat_text, single_line
 from folder_walk import LINKED, SKIPPED_FOLDERS, UNEXAMINED, UNLISTABLE
 from frontmatter import (
     COMMENT,
@@ -76,6 +76,9 @@ from typed_fields import FieldError, FieldReader
 # Finding model
 # ---------------------------------------------------------------------------
 
+PRINT_ALLOWED = {
+    "print_report": "prints the Markdown or JSON report the user asked for, as it is, over many lines",
+}
 SEVERITY_ORDER = {"ERROR": 0, "WARNING": 1, "INFO": 2}
 
 # Every check a finding can name, each with an entry in references/provenance.json naming the guidance it derives from.
@@ -3887,6 +3890,11 @@ def format_json(result: AuditResult, sources: dict[str, tuple[Source, ...]] | No
 # ---------------------------------------------------------------------------
 
 
+def print_report(report: str) -> None:
+    """Print the report the user asked for, Markdown or JSON, as it is."""
+    print(report, end="")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Read-only audit of AI agent configuration")
     parser.add_argument(
@@ -3911,10 +3919,10 @@ def main() -> int:
     try:
         checkout = is_occupied(git_marker)
     except OSError as error:
-        print(f"FAILED {args.root} could not be examined for a .git: {error}")
+        print(single_line(f"FAILED {args.root} could not be examined for a .git: {error}"))
         return 1
     if not checkout:
-        print(f"FAILED {args.root} is not a Git repository (no .git found)")
+        print(single_line(f"FAILED {args.root} is not a Git repository (no .git found)"))
         return 1
 
     result = audit(args.root)
@@ -3923,7 +3931,7 @@ def main() -> int:
         try:
             sources = reported_sources(result)
         except check_provenance.ProvenanceError as exc:
-            print(f"FAILED {exc}")
+            print(single_line(f"FAILED {exc}"))
             return 1
 
     if args.json:
@@ -3935,11 +3943,11 @@ def main() -> int:
         except json_writer.JsonWriteRefused as exc:
             # A name the repository holds may hold what no JSON text can, such as one that is not UTF-8 on Linux,
             # which Python reads as a lone surrogate.
-            print(f"FAILED the JSON report cannot hold a value the audit found: {exc}")
+            print(single_line(f"FAILED the JSON report cannot hold a value the audit found: {exc}"))
             return 1
-        print(report, end="")
+        print_report(report)
     else:
-        print(format_markdown(result, sources), end="")
+        print_report(format_markdown(result, sources))
 
     return result.exit_code
 

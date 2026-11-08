@@ -73,7 +73,7 @@ import file_presence
 import json_reader
 import json_writer
 from console import run_main
-from flat_text import flat_text
+from flat_text import flat_text, single_line
 from git_client import GitClient, GitError, output_line
 from github_client import GitHubError
 from path_containment import within
@@ -847,7 +847,7 @@ def main(arguments: list[str] | None = None, git: GitClient | None = None, githu
     except (DocumentError, PersistenceError, GitError, GitHubError, OSError) as exc:
         print(f"FAILED {flat_text(str(exc))}")
         return 1
-    print("\n".join(lines))
+    print("\n".join(single_line(line) for line in lines))
     return 0
 
 

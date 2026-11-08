@@ -2886,3 +2886,9 @@ def test_a_destination_folder_it_cannot_list_outside_a_skipped_one_fails_the_aud
     with listing_refused(tmp_path / "docs" / "notes"), pytest.raises(PermissionError) as raised:
         memory_audit.destination_files(tmp_path, [])
     assert raised.value.filename == str(tmp_path / "docs" / "notes")
+
+
+def test_a_skill_file_holding_a_line_break_prints_on_one_line() -> None:
+    # A skill's source_dir is read from the deployer manifest, so a break in it split the SKILL_FILE line.
+    with mock.patch.object(memory_audit, "run", return_value=(0, ["SKILL_FILE /src/a\nNOTE b\u2029c/SKILL.md"])):
+        assert run_main("skill-source", "a") == (0, "SKILL_FILE /src/a NOTE b c/SKILL.md\n", "")

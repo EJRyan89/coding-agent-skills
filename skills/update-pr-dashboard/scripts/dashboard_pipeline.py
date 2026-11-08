@@ -46,7 +46,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import json_writer
 from console import run_main
-from flat_text import flat_text
+from flat_text import flat_text, single_line
 from github_client import GitHubError
 from pr_change import FATAL_ERROR_KINDS, ChangeDetector, at_or_before
 from review_archive import ArchiveError, pull_records
@@ -744,17 +744,17 @@ def main(arguments: list[str] | None = None, services: Services | None = None) -
             return _collect(args, services)
         calls = services.github.call_count
         dashboard, rows, stale = update(args.input, removals=args.remove, config_path=args.config, services=services)
-        print(f"UPDATED {dashboard} rows={len(rows)}")
-        print(f"GITHUB_CALLS {services.github.call_count - calls}")
+        print(single_line(f"UPDATED {dashboard} rows={len(rows)}"))
+        print(single_line(f"GITHUB_CALLS {services.github.call_count - calls}"))
         for key in stale:
-            print(f"STALE_SINCE_LAST_UPDATE {key}")
+            print(single_line(f"STALE_SINCE_LAST_UPDATE {key}"))
         if args.candidates:
             for candidate in review_candidates(rows):
-                print(f"CANDIDATE {candidate['status']} {candidate['repository']}#{candidate['number']}")
+                print(single_line(f"CANDIDATE {candidate['status']} {candidate['repository']}#{candidate['number']}"))
         return 0
     except ComparisonFailures as exc:
         for failure in exc.failures:
-            print(f"PULL_FAILED {failure.pull} {flat_text(failure.reason)}")
+            print(single_line(f"PULL_FAILED {failure.pull} {flat_text(failure.reason)}"))
         print(f"FAILED {flat_text(str(exc))}")
         return 1
     except EXPECTED_ERRORS as exc:
@@ -774,33 +774,37 @@ def _collect(args: argparse.Namespace, services: Services) -> int:
     results = collection.results
     for repository, result in results.items():
         print(
-            f"REPOSITORY {repository} pulls={result}"
-            if isinstance(result, int)
-            else f"REPOSITORY_FAILED {repository} {flat_text(result)}"
+            single_line(
+                f"REPOSITORY {repository} pulls={result}"
+                if isinstance(result, int)
+                else f"REPOSITORY_FAILED {repository} {flat_text(result)}"
+            )
         )
     for repository in collection.untracked or []:
-        print(f"UNTRACKED_REPOSITORY {repository}")
+        print(single_line(f"UNTRACKED_REPOSITORY {repository}"))
     if collection.ignored:
-        print(f"UNTRACKED_IGNORED {collection.ignored}")
+        print(single_line(f"UNTRACKED_IGNORED {collection.ignored}"))
     if collection.untracked_error is not None:
         print(f"UNTRACKED_CHECK_FAILED {flat_text(collection.untracked_error)}")
     failed = sum(1 for result in results.values() if not isinstance(result, int))
     if failed:
         print(
-            f"FAILED {failed} of {len(results)} repositories could not be collected; no input was written "
-            "and the dashboard keeps its previous rows"
+            single_line(
+                f"FAILED {failed} of {len(results)} repositories could not be collected; no input was written "
+                "and the dashboard keeps its previous rows"
+            )
         )
         return 1
-    print(f"INPUT {output}")
+    print(single_line(f"INPUT {output}"))
     return 0
 
 
 def _review_arguments(confirmed: list[str], scope: str | None, config_path: Path | None) -> int:
     review_prs, needs_scope = review_arguments(confirmed, scope, config_path=config_path)
     for key in needs_scope:
-        print(f"SCOPE_NEEDED {key}")
+        print(single_line(f"SCOPE_NEEDED {key}"))
     if review_prs:
-        print(f"REVIEW_ARGUMENTS {' '.join(review_prs)}")
+        print(single_line(f"REVIEW_ARGUMENTS {' '.join(review_prs)}"))
     return 0
 
 
@@ -808,13 +812,13 @@ def _override(sets: list[str], clears: list[str], config_path: Path | None) -> i
     if not sets and not clears:
         overrides = list_overrides(config_path)
         for key, status, held in overrides:
-            print(f"{'OVERRIDE' if held else 'OVERRIDE_UNTRACKED'} {key} {status}")
-        print(f"OVERRIDES {len(overrides)}")
+            print(single_line(f"{'OVERRIDE' if held else 'OVERRIDE_UNTRACKED'} {key} {status}"))
+        print(single_line(f"OVERRIDES {len(overrides)}"))
         return 0
     path, changes = change_overrides(sets, clears, config_path=config_path)
     for key, change in changes.items():
-        print(f"CLEARED {key}" if change is None else f"SET {key} {change}")
-    print(f"WROTE {path}")
+        print(single_line(f"CLEARED {key}" if change is None else f"SET {key} {change}"))
+    print(single_line(f"WROTE {path}"))
     return 0
 
 
@@ -822,17 +826,17 @@ def _repository(additions: list[str], repository_set: str | None, config_path: P
     path, chosen, added = add_repositories(additions, repository_set=repository_set, config_path=config_path)
     for repository, entry in added:
         if entry:
-            print(f"ADDED_REPOSITORY {repository} reviewer=generic")
-        print(f"ADDED_TO_SET {chosen} {repository}")
-    print(f"WROTE {path}")
+            print(single_line(f"ADDED_REPOSITORY {repository} reviewer=generic"))
+        print(single_line(f"ADDED_TO_SET {chosen} {repository}"))
+    print(single_line(f"WROTE {path}"))
     return 0
 
 
 def _ignore(ignores: list[str], unignores: list[str], config_path: Path | None) -> int:
     path, changes = change_ignored(ignores or unignores, added=bool(ignores), config_path=config_path)
     for entry, added in changes:
-        print(f"{'IGNORED' if added else 'UNIGNORED'} {entry}")
-    print(f"WROTE {path}")
+        print(single_line(f"{'IGNORED' if added else 'UNIGNORED'} {entry}"))
+    print(single_line(f"WROTE {path}"))
     return 0
 
 

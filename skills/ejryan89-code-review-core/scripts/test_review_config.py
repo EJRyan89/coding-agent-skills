@@ -98,6 +98,15 @@ class ConfigCommandTests(unittest.TestCase):
             (1, "FAILED Unsupported future config schema version: 2\n", ""), self.run_main("validate", str(path))
         )
 
+    def test_a_failure_holding_a_line_break_is_one_failed_line(self) -> None:
+        # An OSError's text names the path it could not read, which may hold a line break of its own.
+        path = self.write_json("config.json", valid_config())
+        refusal = ConfigurationError("Cannot read\nVALID elsewhere\u2028at\tall")
+        with mock.patch.object(review_config, "load_config", side_effect=refusal):
+            self.assertEqual(
+                (1, "FAILED Cannot read VALID elsewhere at all\n", ""), self.run_main("validate", str(path))
+            )
+
     def test_a_missing_config_is_a_failed_line_on_stdout(self) -> None:
         path = self.root / "absent.json"
         code, out, err = self.run_main("validate", str(path))

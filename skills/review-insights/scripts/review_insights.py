@@ -76,7 +76,7 @@ import review_signals
 import review_synthesis as synthesis_stage
 import whole_number
 from console import run_main
-from flat_text import flat_text
+from flat_text import flat_text, single_line
 from git_client import GitClient, GitError
 from path_containment import within
 from review_archive import ArchiveError, every_version, pull_directory, record_files, record_paths
@@ -1298,10 +1298,10 @@ def _print_synthesis(report: dict[str, Any]) -> None:
         print("SYNTHESIS skipped")
         return
     if synthesis["status"] == "pending":
-        print(f"SYNTHESIS_PROMPT {synthesis['prompt']}")
-        print(f"SYNTHESIS_RESULT {synthesis['result']}")
+        print(single_line(f"SYNTHESIS_PROMPT {synthesis['prompt']}"))
+        print(single_line(f"SYNTHESIS_RESULT {synthesis['result']}"))
         return
-    print(f"SYNTHESIS recorded {synthesis['recorded_at']}")
+    print(single_line(f"SYNTHESIS recorded {synthesis['recorded_at']}"))
     items = [item for item in report["recommendations"] if item["kind"] == "synthesized"]
     for item in synthesis_stage.presented(items):
         _print_synthesized(item)
@@ -1311,16 +1311,18 @@ def _print_synthesized(item: dict[str, Any]) -> None:
     flags = ",".join(item["linked_flags"]) or "none"
     target = synthesis_stage.describe_target(item["target"])
     print(
-        f"SYNTHESIZED {item['id']} type={item['type']} priority={item['priority']} decision={item['decision']} "
-        f"flags={flags}"
+        single_line(
+            f"SYNTHESIZED {item['id']} type={item['type']} priority={item['priority']} decision={item['decision']} "
+            f"flags={flags}"
+        )
     )
-    print(f"TITLE {item['id']} {item['title']}")
-    print(f"TARGET {item['id']} {target}")
-    print(f"CHANGE {item['id']} {flat_text(item['change'])}")
-    print(f"RATIONALE {item['id']} {flat_text(item['rationale'])}")
+    print(single_line(f"TITLE {item['id']} {item['title']}"))
+    print(single_line(f"TARGET {item['id']} {target}"))
+    print(single_line(f"CHANGE {item['id']} {flat_text(item['change'])}"))
+    print(single_line(f"RATIONALE {item['id']} {flat_text(item['rationale'])}"))
     for ref in item["evidence"][:EXAMPLES_PRINTED]:
-        print(f"EXAMPLE {item['id']} {flat_text(ref)}")
-    print(f"DECIDE {decide_arguments(item)}")
+        print(single_line(f"EXAMPLE {item['id']} {flat_text(ref)}"))
+    print(single_line(f"DECIDE {decide_arguments(item)}"))
 
 
 def custom_candidates(report: dict[str, Any]) -> list[dict[str, Any]]:
@@ -1336,12 +1338,14 @@ def _print_custom_candidates(report: dict[str, Any]) -> None:
     decisions = {item["decision"] for item in items}
     flags = ",".join(sorted({flag for item in items for flag in item["linked_flags"]})) or "none"
     print(
-        f"CUSTOM_CANDIDATES rules={len(items)} findings={sum(item['finding_count'] for item in items)} "
-        f"decision={decisions.pop() if len(decisions) == 1 else 'mixed'} flags={flags}"
+        single_line(
+            f"CUSTOM_CANDIDATES rules={len(items)} findings={sum(item['finding_count'] for item in items)} "
+            f"decision={decisions.pop() if len(decisions) == 1 else 'mixed'} flags={flags}"
+        )
     )
     for fact in synthesis_stage.custom_pattern_facts(report):
-        print(fact)
-    print(f'DECIDE_CUSTOM --flags "{flags}"')
+        print(single_line(fact))
+    print(single_line(f'DECIDE_CUSTOM --flags "{flags}"'))
 
 
 def _print_report(report: dict[str, Any]) -> None:
@@ -1352,29 +1356,35 @@ def _print_report(report: dict[str, Any]) -> None:
             continue
         if item["kind"] == "category":
             print(
-                f"RECOMMENDATION {item['id']} {synthesis_stage.screened(item['category'])} "
-                f"findings={item['finding_count']} "
-                f"decision={item['decision']} flags={flags}"
+                single_line(
+                    f"RECOMMENDATION {item['id']} {synthesis_stage.screened(item['category'])} "
+                    f"findings={item['finding_count']} "
+                    f"decision={item['decision']} flags={flags}"
+                )
             )
             entry = synthesis_stage.category_entry(report, item["category"])
             for fact in synthesis_stage.category_facts(report, item["id"], entry) if entry else []:
-                print(fact)
+                print(single_line(fact))
         else:
             print(
-                f"ANALYZER {item['id']} coverage={item['coverage']} tool={synthesis_stage.screened(item['tool'])} "
-                f"rule={synthesis_stage.screened(item['rule'])} "
-                f"findings={item['finding_count']} repositories={','.join(item['repositories'])} "
-                f"decision={item['decision']} flags={flags}"
+                single_line(
+                    f"ANALYZER {item['id']} coverage={item['coverage']} tool={synthesis_stage.screened(item['tool'])} "
+                    f"rule={synthesis_stage.screened(item['rule'])} "
+                    f"findings={item['finding_count']} repositories={','.join(item['repositories'])} "
+                    f"decision={item['decision']} flags={flags}"
+                )
             )
         for row in item["reviewers"]:
             print(
-                f"REVIEWER {item['id']} {flat_text(row['reviewer'])} model={flat_text(row['model'])} "
-                f"findings={row['findings']} flagged={row['flagged_findings']} "
-                f"addressed={_outcome(row['addressed'])} still_present={_outcome(row['still_present'])}"
+                single_line(
+                    f"REVIEWER {item['id']} {flat_text(row['reviewer'])} model={flat_text(row['model'])} "
+                    f"findings={row['findings']} flagged={row['flagged_findings']} "
+                    f"addressed={_outcome(row['addressed'])} still_present={_outcome(row['still_present'])}"
+                )
             )
         for entry in item.get("evidence", [])[:EXAMPLES_PRINTED]:
-            print(f"EXAMPLE {item['id']} {_example(entry)}")
-        print(f"DECIDE {decide_arguments(item)}")
+            print(single_line(f"EXAMPLE {item['id']} {_example(entry)}"))
+        print(single_line(f"DECIDE {decide_arguments(item)}"))
     _print_custom_candidates(report)
 
 
@@ -1382,10 +1392,10 @@ def _run_decide_custom(args: argparse.Namespace, services: Services | None) -> i
     shown = [] if args.flags == "none" else [flag for flag in args.flags.split(",") if flag]
     resolved, skipped, count = decide_custom(args.report, shown, args.decision, note=args.note, services=services)
     for flag_id in resolved:
-        print(f"FLAG_RESOLVED {flag_id}")
+        print(single_line(f"FLAG_RESOLVED {flag_id}"))
     for flag_id in skipped:
-        print(f"FLAG_ALREADY_RESOLVED {flag_id}")
-    print(f"DECIDED custom-candidates rules={count} {args.decision}")
+        print(single_line(f"FLAG_ALREADY_RESOLVED {flag_id}"))
+    print(single_line(f"DECIDED custom-candidates rules={count} {args.decision}"))
     return 0
 
 
@@ -1401,15 +1411,15 @@ def _run_synthesize(args: argparse.Namespace, services: Services | None) -> int:
     except synthesis_stage.SynthesisError as exc:
         for problem in exc.problems[: synthesis_stage.PROBLEMS_SHOWN]:
             print(f"PROBLEM {flat_text(problem)}")
-        print(f"FAILED {exc}")
+        print(single_line(f"FAILED {exc}"))
         return 1
     if args.check:
-        print(f"VALID {args.result}")
+        print(single_line(f"VALID {args.result}"))
         return 0
     report = load_report(args.report)
-    print(f"MARKDOWN {args.report.with_suffix('.md')}")
+    print(single_line(f"MARKDOWN {args.report.with_suffix('.md')}"))
     _print_synthesis(report)
-    print(f"SYNTHESIZED_COUNT {len(added)}")
+    print(single_line(f"SYNTHESIZED_COUNT {len(added)}"))
     return 0
 
 
@@ -1493,10 +1503,10 @@ def main(arguments: list[str] | None = None, services: Services | None = None) -
                 services=services,
                 notices=notices,
             )
-            print(f"REPORT {json_path}")
-            print(f"MARKDOWN {markdown_path}")
+            print(single_line(f"REPORT {json_path}"))
+            print(single_line(f"MARKDOWN {markdown_path}"))
             for fact in [*notices, *review_signals.facts(report["signals"])]:
-                print(fact)
+                print(single_line(fact))
             _print_report(report)
             return 0
         if args.command == "synthesize":
@@ -1504,7 +1514,7 @@ def main(arguments: list[str] | None = None, services: Services | None = None) -
         if args.command == "decide-custom":
             return _run_decide_custom(args, services)
         if args.command == "scope":
-            print("\n".join(working_scope(args.config, services or Services())))
+            print("\n".join(single_line(line) for line in working_scope(args.config, services or Services())))
             return 0
         shown_flags = [] if args.flags == "none" else [flag for flag in args.flags.split(",") if flag]
         resolved, skipped = decide(
@@ -1519,13 +1529,13 @@ def main(arguments: list[str] | None = None, services: Services | None = None) -
             services=services,
         )
         for flag_id in resolved:
-            print(f"FLAG_RESOLVED {flag_id}")
+            print(single_line(f"FLAG_RESOLVED {flag_id}"))
         for flag_id in skipped:
-            print(f"FLAG_ALREADY_RESOLVED {flag_id}")
-        print(f"DECIDED {args.recommendation} {args.decision}")
+            print(single_line(f"FLAG_ALREADY_RESOLVED {flag_id}"))
+        print(single_line(f"DECIDED {args.recommendation} {args.decision}"))
         return 0
     except EXPECTED_ERRORS as exc:
-        print(f"FAILED {exc}")
+        print(single_line(f"FAILED {exc}"))
         return 1
 
 

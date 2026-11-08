@@ -6592,6 +6592,48 @@ class StatsLineTests(unittest.TestCase):
         )
 
 
+class OneLineFactTests(unittest.TestCase):
+    """gh's and git's error text, a configured path, and a reviewed repository's names reach these lines: a break in
+    one printed a second line the orchestrator read as a fact of its own."""
+
+    def run_main(self, *arguments: str) -> tuple[int, list[str]]:
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            code = rp.main(list(arguments), services=mock.Mock())
+        return code, out.getvalue().splitlines()
+
+    def test_a_repository_failure_holding_gh_s_lines_is_one_line(self) -> None:
+        batch = {"repositories": {"example/one": {"complete": False, "error": "gh: denied\nPULL x#1", "eligible": []}}}
+        with tempfile.TemporaryDirectory() as directory, mock.patch.object(rp, "enumerate_batch", return_value=batch):
+            output = Path(directory) / "batch.json"
+            self.assertEqual(
+                (1, ["REPOSITORY_FAILED example/one gh: denied PULL x#1", f"BATCH {output}"]),
+                self.run_main("enumerate", "--output", str(output)),
+            )
+
+    def test_an_inspected_reviewer_line_holding_a_break_is_one_line(self) -> None:
+        lines = ["SKILL review/a\u2028REVIEWER b.md", "UNMATCHED x src/\x85**"]
+        with mock.patch.object(rp, "inspect_reviewer", return_value=lines):
+            self.assertEqual(
+                (0, ["SKILL review/a REVIEWER b.md", "UNMATCHED x src/ **"]),
+                self.run_main("inspect-reviewer", "--repository", REPOSITORY),
+            )
+
+    def test_a_note_holding_a_break_is_one_line(self) -> None:
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            review_reporting._print_ready(
+                {
+                    "selector": SELECTOR,
+                    "run": "run",
+                    "notes": ["checkout /a\nRUN x", "branch\rmain"],
+                    "dispatch": "inline",
+                }
+            )
+        lines = out.getvalue().splitlines()
+        self.assertEqual([f"NOTE {SELECTOR} checkout /a RUN x", f"NOTE {SELECTOR} branch main"], lines[1:3])
+
+
 def test_a_run_whose_repository_holds_read_only_files_is_removed(tmp_path: Path) -> None:
     # git leaves its object files read-only, which Windows deletes only once they are writable again.
     run = tmp_path / "run"
