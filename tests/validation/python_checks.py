@@ -3499,8 +3499,8 @@ def _returncode_read(value: ast.expr | None, errors: set[str], bound: set[str]) 
 
 def _truth_tested(body: list[ast.stmt]) -> Iterator[ast.expr]:
     """Each expression a body reads as true or false: the test of an `if`, a `while`, an `assert`, a conditional
-    expression, or a comprehension's filter, the operand of `not`, the one argument of `bool()`, every operand of an
-    `and` or an `or` that is one of these, and every operand of an `and` or an `or` but its last."""
+    expression, a comprehension's filter, or a `case` guard, the operand of `not`, the one argument of `bool()`, every
+    operand of an `and` or an `or` that is one of these, and every operand of an `and` or an `or` but its last."""
 
     def operands(value: ast.expr) -> Iterator[ast.expr]:
         yield value
@@ -3513,6 +3513,8 @@ def _truth_tested(body: list[ast.stmt]) -> Iterator[ast.expr]:
             tests: list[ast.expr] = []
             if isinstance(node, ast.If | ast.While | ast.IfExp | ast.Assert):
                 tests.append(node.test)
+            elif isinstance(node, ast.match_case) and node.guard is not None:
+                tests.append(node.guard)
             elif isinstance(node, ast.comprehension):
                 tests += node.ifs
             elif isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.Not):
@@ -3527,7 +3529,8 @@ def _truth_tested(body: list[ast.stmt]) -> Iterator[ast.expr]:
 
 def _none_returncode_reads(tree: ast.Module, aliases: dict[str, str]) -> set[int]:
     """The reads, by id, of a GitError's returncode that take no exit code for git not running: one set beside None in
-    a comparison, or read as true or false, inside the body of an `except` clause or a function that holds the error."""
+    a comparison or by a `match` one of whose cases holds a `None` pattern, or read as true or false, inside the body of
+    an `except` clause or a function that holds the error."""
     found: set[int] = set()
     for errors, body in _git_error_bodies(tree, aliases):
         bound = _returncode_names(body, errors)
@@ -3535,6 +3538,16 @@ def _none_returncode_reads(tree: ast.Module, aliases: dict[str, str]) -> set[int
             for compared in ast.walk(statement):
                 if isinstance(compared, ast.Compare):
                     found |= _returncode_beside_none(compared, errors, bound)
+                elif (
+                    isinstance(compared, ast.Match)
+                    and (read := _returncode_read(compared.subject, errors, bound)) is not None
+                    and any(
+                        isinstance(pattern, ast.MatchSingleton) and pattern.value is None
+                        for case in compared.cases
+                        for pattern in ast.walk(case.pattern)
+                    )
+                ):
+                    found.add(id(read))
         for test in _truth_tested(body):
             if (read := _returncode_read(test, errors, bound)) is not None:
                 found.add(id(read))

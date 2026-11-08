@@ -1300,6 +1300,62 @@ DOCUMENTED_FORMS: dict[str, tuple[Any, ...]] = {
             ("read by getattr given a default", "        return getattr(exc, 'returncode', None) is None\n"),
             ("read by getattr as false", "        return not getattr(exc, 'returncode')\n"),
             ("read by getattr as true", "        if getattr(exc, 'returncode'):\n            raise\n"),
+            (
+                "bound and then rebound",
+                "        code = exc.returncode\n        code = 0\n        return code is None\n",
+            ),
+            # "a `match` one of whose cases holds a `None` pattern", alone or among the alternatives of an or-pattern,
+            # and "a `case` guard".
+            (
+                "matched against None",
+                "        match exc.returncode:\n            case None:\n                raise\n",
+            ),
+            (
+                "matched against None among others",
+                "        match exc.returncode:\n            case 1 | None:\n                raise\n",
+            ),
+            (
+                "bound to a name matched against None",
+                "        code = exc.returncode\n        match code:\n            case 128:\n                return 1\n"
+                "            case None:\n                raise\n",
+            ),
+            (
+                "read as true by a case guard",
+                "        match ok:\n            case _ if exc.returncode:\n                raise\n",
+            ),
+        )
+    },
+    # The limits the policy's sentence states: "It does not read a `returncode` handed to another function,
+    # `operator.truth` or `operator.not_` of it, a reach through `vars` or `__dict__`, a name a tuple assignment binds,
+    # or an `Annotated` or a type alias of `GitError`."
+    **{
+        f"a GitError's returncode {form}, a stated limit": _form(
+            git_answered_problems,
+            "import operator\nfrom typing import Annotated\nfrom git_client import GitError\n\nFailure = GitError\n\n\n"
+            "def f(client, judge):\n    try:\n        client.output(['status'])\n"
+            f"    except GitError as exc:\n{body}\n\n\ndef g(error: Annotated[GitError, 'x'], other: Failure):\n"
+            "    return 0\n",
+            refused=False,
+        )
+        for form, body in (
+            ("handed to another function", "        return judge(exc.returncode)"),
+            ("read by operator.truth", "        return operator.truth(exc.returncode)"),
+            ("read by operator.not_", "        return operator.not_(exc.returncode)"),
+            ("reached through vars", "        return vars(exc)['returncode'] is None"),
+            ("reached through __dict__", "        return exc.__dict__['returncode'] is None"),
+            ("bound by a tuple assignment", "        code, n = exc.returncode, 1\n        return code is None"),
+        )
+    },
+    **{
+        f"a parameter {form}, a stated limit": _form(
+            git_answered_problems,
+            f"from typing import Annotated\nfrom git_client import GitError\n\nFailure = GitError\n\n\n"
+            f"def f(error: {annotation}) -> bool:\n    return error.returncode is None\n",
+            refused=False,
+        )
+        for form, annotation in (
+            ("annotated Annotated[GitError, ...]", "Annotated[GitError, 'x']"),
+            ("annotated a type alias of GitError", "Failure"),
         )
     },
     **{
@@ -1319,6 +1375,18 @@ DOCUMENTED_FORMS: dict[str, tuple[Any, ...]] = {
             ("not read by bool() of answered", "        return bool(exc.answered)\n"),
             ("of another value bound to a name", "        code = other.returncode\n        return code is None\n"),
             ("of another value read as true", "        if other.returncode:\n            raise\n"),
+            (
+                "of another value matched against None",
+                "        match other.returncode:\n            case None:\n                raise\n",
+            ),
+            (
+                "matched against True",
+                "        match exc.returncode:\n            case True:\n                raise\n",
+            ),
+            (
+                "matched against a value under a guard on answered",
+                "        match exc.returncode:\n            case 128 if exc.answered:\n                raise\n",
+            ),
         )
     },
     # "a function or an async function given it as a parameter of any kind annotated `GitError`, `GitError | None`,
