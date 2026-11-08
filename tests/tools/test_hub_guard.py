@@ -2581,11 +2581,24 @@ class GitCallTests(GuardTestCase):
             ('git log -1 "$out"', self.tree),
             ('git archive "$out" HEAD', self.tree),
             ('git fetch "$out"', self.tree),
+            ('git merge-file README.md "$base" other', self.tree),
+            ('git mailinfo msg patch "$out"', self.tree),
+            ('git interpret-trailers "$mode" README.md', self.tree),
+            ('git checkout-index -a "$prefix"', self.tree),
+            ('git am "$out" mail.mbox', self.tree),
+            ('git apply "$mode" change.patch', self.tree),
+            ('git worktree move . "$out"', self.tree),
         ):
             with self.subTest(command=command, cwd=cwd.name):
                 self.assertEqual("deny", self.bash(command, cwd))
                 self.assertIn("a word the text does not settle", self.reason)
-        for command in ('git status "$out"', 'git commit -m "$(cat notes.txt)"', 'git diff -- "$out"'):
+        for command in (
+            'git status "$out"',
+            'git commit -m "$(cat notes.txt)"',
+            'git diff -- "$out"',
+            'git merge-file -- README.md "$base" other',
+            'git interpret-trailers -- "$out"',
+        ):
             with self.subTest(command=command):
                 self.assertIsNone(self.bash(command, self.tree))
 
