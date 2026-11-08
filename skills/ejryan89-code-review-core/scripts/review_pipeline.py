@@ -186,12 +186,12 @@ from review_specialists import (
     role_summaries,
 )
 
-# Seconds between finalize's attempts to remove a recorded run whose files another process, such as antivirus or the
-# exiting Copilot CLI host, still holds open.
 PRINT_ALLOWED = {
     "_print_workflow_script": "prints the Workflow script, many lines by design, between the markers the "
     "orchestrating session copies it whole from",
 }
+# Seconds between finalize's attempts to remove a recorded run whose files another process, such as antivirus or the
+# exiting Copilot CLI host, still holds open.
 RUN_REMOVAL_DELAYS = (0.25, 0.5, 1.0, 2.0)
 
 

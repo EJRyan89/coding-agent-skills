@@ -29,7 +29,7 @@ from markdown_sections import SHELL_FENCES
 from module_closure import MODULE_LOADERS
 from path_containment import posix_within
 from powershell_startup import POWERSHELL_PROGRAMS, UnknownWord, startup_command
-from python_checks import sanctioned_problems
+from python_checks import PRINTS, sanctioned_problems
 from skill_roots import SKILL_CORE
 from toolchain import powershell_json
 from validation_support import (
@@ -2298,13 +2298,13 @@ def _call_breaches(node: ast.Call, resolver: CallableResolver, parsers: set[str]
         breaches.append(f"exits {code.value}; scripts exit only 0, 1, or 2")
     stream: ast.expr | None = None
     message = node.args[0] if node.args else None
-    if function == "print":
+    if function in PRINTS:
         stream = next((keyword.value for keyword in node.keywords if keyword.arg == "file"), None)
     elif isinstance(node.func, ast.Attribute) and node.func.attr == "write":
         stream = node.func.value
     elif function == "json.dump":
         stream, message = call_argument(node, 1, "fp"), node
-    target = resolver.name(stream) if stream is not None else "sys.stdout" if function == "print" else ""
+    target = resolver.name(stream) if stream is not None else "sys.stdout" if function in PRINTS else ""
     if target in STANDARD_ERROR and message is not None and _mentions_failed(message):
         breaches.append("prints FAILED on stderr; print it on stdout")
     if (
@@ -2369,11 +2369,10 @@ def _one_line_literal(node: ast.expr) -> bool:
 
 @dataclass(frozen=True)
 class _OutputReader:
-    """Reads what a module's stdout prints print: its imports and bindings, its one-line literal constants, and the
-    module's own stem, so a choke point's own module calls it by its bare name."""
+    """Reads what a module's stdout prints print: its imports and bindings, and the module's own stem, so a choke
+    point's own module calls it by its bare name."""
 
     resolver: CallableResolver
-    constants: frozenset[str]
     stem: str
 
     def name(self, node: ast.expr) -> str:
@@ -2387,7 +2386,7 @@ class _OutputReader:
         if isinstance(node, ast.Constant):
             return _one_line_literal(node)
         if isinstance(node, ast.Name):
-            return self.name(node) in {f"{self.stem}.{constant}" for constant in self.constants}
+            return self.module_constant(node)
         if isinstance(node, ast.JoinedStr):
             return all(
                 self.flat(part.value) if isinstance(part, ast.FormattedValue) else self.flat(part)
@@ -2410,10 +2409,19 @@ class _OutputReader:
             and self.flat(node.args[0].elt)
         )
 
+    def module_constant(self, node: ast.Name) -> bool:
+        """Whether a name is one the module binds once, at its top, to a one-line literal, and no parameter or local
+        of the scope reading it hides."""
+        owner = self.resolver.scopes[id(node)].owner(node.id)
+        if owner is None or owner.parent is not None:
+            return False
+        values = owner.bindings[node.id]
+        return len(values) == 1 and isinstance(values[0], ast.Constant) and _one_line_literal(values[0])
+
     def printed(self, node: ast.Call) -> list[ast.expr] | None:
-        """What a call prints on stdout, or None when it is no stdout print: print given no file or sys.stdout,
-        with its separator, or a write to sys.stdout."""
-        if self.resolver.name(node.func) == "print":
+        """What a call prints on stdout, or None when it is no stdout print: print, under either name the builtins
+        give it, given no file or sys.stdout, with its separator and its end, or a write to sys.stdout."""
+        if self.resolver.name(node.func) in PRINTS:
             stream = next((keyword.value for keyword in node.keywords if keyword.arg == "file"), None)
             if (
                 stream is not None
@@ -2421,8 +2429,8 @@ class _OutputReader:
                 and self.resolver.name(stream) not in STANDARD_OUTPUT
             ):
                 return None
-            separator = [keyword.value for keyword in node.keywords if keyword.arg in {"sep", None}]
-            return [*node.args, *separator]
+            separators = [keyword.value for keyword in node.keywords if keyword.arg in {"sep", "end", None}]
+            return [*node.args, *separators]
         if (
             isinstance(node.func, ast.Attribute)
             and node.func.attr in STREAM_WRITES
@@ -2430,17 +2438,6 @@ class _OutputReader:
         ):
             return [*node.args, *(keyword.value for keyword in node.keywords)]
         return None
-
-
-def _one_line_constants(tree: ast.Module) -> frozenset[str]:
-    """The names a module binds at its top to a one-line literal string."""
-    return frozenset(
-        target.id
-        for node in tree.body
-        if isinstance(node, ast.Assign) and _one_line_literal(node.value)
-        for target in node.targets
-        if isinstance(target, ast.Name)
-    )
 
 
 def print_choke_point_problems(root: Path) -> list[str]:
@@ -2457,7 +2454,7 @@ def print_choke_point_problems(root: Path) -> list[str]:
     for path, name, tree in python_trees(paths, root, problems):
         if _contract_exemption(tree):
             continue
-        reader = _OutputReader(CallableResolver(tree), _one_line_constants(tree), path.stem)
+        reader = _OutputReader(CallableResolver(tree), path.stem)
         found = [
             (
                 node.lineno,
