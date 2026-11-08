@@ -848,7 +848,7 @@ class RecoveryFailureTests(RecoveryTestCase):
         self.deployed(("alpha", "Alpha content"))
         deletion, _ = self.held_leftover()
         self.write(self.skills_dir / names.spare_deletion_name("alpha", "0123abcd") / "SKILL.md", "held too\n")
-        with mock.patch.object(journal.secrets, "token_hex", side_effect=["0123abcd", "89abcdef"]) as drawn:
+        with mock.patch("secrets.token_hex", side_effect=["0123abcd", "89abcdef"]) as drawn:
             spare = journal._free_deletion_name(deletion, "alpha")
         self.assertEqual(self.skills_dir / ".alpha.deploying-del.89abcdef", spare)
         self.assertEqual([mock.call(4), mock.call(4)], drawn.call_args_list)
