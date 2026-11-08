@@ -24,7 +24,9 @@ sys.path.insert(0, str(sibling_scripts("audit-skill")))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "validation"))
 
 import skill_inventory
+import skill_scripts
 from skill_layout import derived_needs
+from test_shell_readers import WRAPPED_GIT_PUSH_SCRIPTS
 
 REPOSITORY = Path(__file__).resolve().parents[2]
 SKILLS = sorted(path.parent.name for path in (REPOSITORY / "skills").glob("*/SKILL.md"))
@@ -41,6 +43,32 @@ def printed_needs(name: str) -> set[str]:
 @pytest.mark.parametrize("name", SKILLS)
 def test_audit_skill_derives_the_needs_validation_holds_each_skill_to(name: str) -> None:
     assert printed_needs(name) == derived_needs(REPOSITORY, name)
+
+
+# The wrapper rows audit-skill's GIT_COMMAND pattern reads as validation's reader does. It finds git only where a
+# command starts or after `command`, `exec`, or find's `-exec`, so every other row of WRAPPED_GIT_PUSH_SCRIPTS is a
+# limit of audit-skill's reader until it reads through the same wrapper catalogue.
+AUDIT_SKILL_READS = frozenset(
+    {
+        "find . -exec git push {} +",
+        "find . -exec git push \\;",
+        "find . -exec git push",
+        "command git push",
+        "exec git push",
+    }
+)
+
+
+@pytest.mark.parametrize("script", WRAPPED_GIT_PUSH_SCRIPTS)
+def test_audit_skill_reads_the_git_command_a_wrapper_runs_as_validation_does_or_names_the_limit(script: str) -> None:
+    assert skill_scripts.shell_git_subcommands(script) == {"push"}
+    # A limit row that audit-skill comes to read fails here, so the limit leaves AUDIT_SKILL_READS's complement.
+    expected = {"push"} if script in AUDIT_SKILL_READS else set()
+    assert skill_inventory.bash_git_subcommands(script) == expected
+
+
+def test_audit_skill_reads_only_wrapper_rows_validation_holds() -> None:
+    assert set(WRAPPED_GIT_PUSH_SCRIPTS) >= AUDIT_SKILL_READS
 
 
 def test_a_skill_that_invokes_another_needs_what_the_invoked_skill_does() -> None:
