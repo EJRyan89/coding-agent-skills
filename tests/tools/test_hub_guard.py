@@ -2403,6 +2403,79 @@ class GitCallTests(GuardTestCase):
             with self.subTest(command=command, cwd=cwd.name):
                 self.assertIsNone(self.bash(command, cwd))
 
+    def test_an_operand_a_root_or_an_in_place_mode_that_writes_the_hub_is_refused_wherever_git_runs(self) -> None:
+        for words in (
+            'interpret-trailers --in-place --trailer "Reviewed-by: outside" {target}',
+            "interpret-trailers --in {target}",
+            "mailinfo {target} out.patch",
+            "mailinfo -k --encoding utf-8 out.msg {target}",
+            "merge-file {target} base other",
+            "merge-file -L a -L b --marker-size 9 {target} base other",
+            "checkout-index --prefix={directory} -a -f",
+            "checkout-index -a -f --prefix {directory}",
+            "checkout-index --pre {directory} -a",
+            "apply --directory={directory} change.patch",
+            "am --directory {directory} mail.mbox",
+            "worktree move other {target}",
+        ):
+            self.writes_from_everywhere(words)
+
+    def test_a_root_or_an_operand_naming_the_hub_from_a_worktree_is_refused_in_each_spelling(self) -> None:
+        up = Path(os.path.relpath(self.hub, self.tree)).as_posix()
+        for command, shells in (
+            (f"git checkout-index --prefix={up}/ -a -f", (self.bash, self.powershell)),
+            (f"git checkout-index --prefix {up}/ -a -f", (self.bash, self.powershell)),
+            (f"git checkout-index -a -f --prefix={up}/", (self.bash, self.powershell)),
+            (f'git checkout-index -a -f --prefix "{self.hub.as_posix()}/"', (self.bash, self.powershell)),
+            (f'git checkout-index "--prefix={self.hub.as_posix()}/" -a -f', (self.bash, self.powershell)),
+            (f"git checkout-index --prefix={up}/.git/ -a -f", (self.bash,)),
+            (f"git apply --unsafe-paths --directory={up} change.patch", (self.bash, self.powershell)),
+            (f'git apply --unsafe-paths --directory "{self.hub.as_posix()}" change.patch', (self.bash,)),
+            (f"git am --directory={up} mail.mbox", (self.bash, self.powershell)),
+            (f"git merge-file {up}/README.md base other", (self.bash, self.powershell)),
+            (f"git mailinfo {up}/README.md {up}/docs/out.patch", (self.bash, self.powershell)),
+            (f'git interpret-trailers --in-place --trailer "Reviewed-by: x" {up}/README.md', (self.bash,)),
+            (f'git -C "{self.hub}" interpret-trailers --in-place README.md', (self.bash, self.powershell)),
+            (f"git worktree move . {up}/docs/moved", (self.bash, self.powershell)),
+        ):
+            for shell in shells:
+                with self.subTest(command=command, shell=shell.__name__):
+                    self.assertEqual("deny", shell(command, self.tree))
+                    self.assertIn("a file of a guarded hub", self.reason)
+
+    def test_apply_with_unsafe_paths_writes_where_its_patch_says_so_it_is_refused_while_a_hub_is_guarded(self) -> None:
+        for command in ("git apply --unsafe-paths change.patch", "git apply --unsafe change.patch"):
+            with self.subTest(command=command):
+                self.assertEqual("deny", self.bash(command, self.tree))
+                self.assertIn("writes a file the text does not settle", self.reason)
+        self.assertIsNone(self.bash("git apply --unsafe-paths --no-unsafe-paths change.patch", self.tree))
+        self.assertIsNone(self.bash("git apply -- --unsafe-paths", self.tree))
+
+    def test_an_operand_writer_that_reads_the_hub_or_writes_elsewhere_is_allowed(self) -> None:
+        up = Path(os.path.relpath(self.hub, self.tree)).as_posix()
+        for command, cwd in (
+            ('git interpret-trailers --trailer "Reviewed-by: x" README.md', self.hub),
+            ("git interpret-trailers README.md", self.hub),
+            ("git interpret-trailers --in-place --no-in-place README.md", self.hub),
+            ("git interpret-trailers -- --in-place README.md", self.hub),
+            (f'git interpret-trailers --trailer "Reviewed-by: x" {up}/README.md', self.tree),
+            ("git interpret-trailers --in-place README.md", self.tree),
+            ("git mailinfo out.msg out.patch", self.tree),
+            ("git merge-file README.md base other", self.tree),
+            (f"git merge-file -p {up}/README.md base other", self.tree),
+            (f"git merge-file --stdout {up}/README.md base other", self.tree),
+            (f"git merge-file README.md {up}/README.md {up}/CLAUDE.md", self.tree),
+            ("git checkout-index --prefix=export/ -a", self.tree),
+            (f'git checkout-index --prefix="{(self.root / "export").as_posix()}/" -a', self.tree),
+            ("git checkout-index -a -f", self.tree),
+            ("git apply --directory=sub change.patch", self.tree),
+            ("git am --directory sub mail.mbox", self.tree),
+            ("git worktree move . ../elsewhere", self.tree),
+            (f'git worktree move . "{(self.root / "moved").as_posix()}"', self.tree),
+        ):
+            with self.subTest(command=command, cwd=cwd.name):
+                self.assertIsNone(self.bash(command, cwd))
+
     def test_a_git_config_that_writes_is_refused_while_a_hub_is_guarded(self) -> None:
         for words in (
             "config coding-agent-skills.hubGuard false",
@@ -2585,16 +2658,10 @@ class ContractListTests(unittest.TestCase):
         # format-patch writes there only without --stdout, which the list names beside it.
         defaults = contract_names("a word after `--` is an operand.", "(`GIT_DEFAULT_WRITES`)")
         self.assertEqual(sorted(hub_guard.GIT_DEFAULT_WRITES), sorted(set(defaults) - {"--stdout"}))
-        operands = contract_names("(`GIT_DEFAULT_WRITES`), and", "at a path an operand names (`GIT_OPERAND_WRITES`)")
-        self.assertEqual(
-            sorted(
-                f"{subcommand} {hub_guard.GIT_SUBCOMMAND_OPERANDS[subcommand][0]}"
-                if subcommand in hub_guard.GIT_SUBCOMMAND_OPERANDS
-                else subcommand
-                for subcommand in hub_guard.GIT_OPERAND_WRITES
-            ),
-            sorted(operands),
-        )
+        operands = contract_names("(`GIT_DEFAULT_WRITES`), and", "at a path an operand names (`GIT_OPERAND_WRITERS`)")
+        self.assertEqual(sorted(hub_guard.GIT_OPERAND_WRITERS), sorted(operands))
+        unread = contract_names("form deciding.", "lets a")
+        self.assertEqual(entries(hub_guard.GIT_UNREAD_MODES), sorted(unread))
 
     def test_the_powershell_commands_the_guard_reads_are_the_ones_its_contract_names(self) -> None:
         named = contract_names("these cmdlets, by its name or an alias PowerShell gives it:", "Every other node")
