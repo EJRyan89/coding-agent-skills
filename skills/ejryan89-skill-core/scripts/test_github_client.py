@@ -359,6 +359,18 @@ class CappedListTests(unittest.TestCase):
             client.capped_list(["pr", "list", "--limit=5"], 2)
         self.assertEqual("a capped listing sets its own --limit; the arguments name one", str(own.exception))
 
+    def test_a_limit_inside_a_shorthand_cluster_is_refused_as_gh_reads_it(self) -> None:
+        # gh reads -wL5 as -w and -L 5, and -L=5 as -L 5; a letter that takes a value takes the rest of the word.
+        client, _sleeper = client_for(scripted()[0])
+        for limit in (["-L", "5"], ["-L5"], ["-L=5"], ["-wL5"], ["-wL", "5"], ["--limit", "5"]):
+            with self.subTest(limit=limit), self.assertRaises(GitHubError) as own:
+                client.capped_list(["pr", "list", *limit], 2)
+            self.assertEqual("input", own.exception.kind)
+        run, calls = scripted(ok("[]"))
+        client, _sleeper = client_for(run)
+        self.assertEqual(Listing([], cut=False), client.capped_list(["pr", "list", "-sLOCKED", "-RL/r"], 2))
+        self.assertEqual(["gh", "pr", "list", "-sLOCKED", "-RL/r", "--limit", "3"], calls[0])
+
     def test_a_rate_limit_is_waited_out_unless_the_caller_turns_retry_off(self) -> None:
         run, calls = scripted(failed(SECONDARY_LIMIT), ok("[]"))
         client, sleeper = client_for(run)
@@ -978,6 +990,47 @@ def test_a_transient_failure_on_a_change_is_an_unknown_outcome_never_retried(
 )
 def test_reads_are_recognized_and_everything_else_is_a_change(arguments: list[str], change: str | None) -> None:
     assert change == github_client.change_of(arguments)
+
+
+COMMENTS = "repos/o/r/issues/1/comments"
+
+
+# gh's flag parser reads a word of shorthands letter by letter: -i (--include) takes no value, the first letter that
+# takes one takes the rest of the word, a `=` before it dropped, or else the next word, and a letter `gh api` does not
+# read leaves what gh sends unknown, so it counts as a change.
+@pytest.mark.parametrize(
+    ("arguments", "change", "attempts"),
+    [
+        (["api", COMMENTS, "-ifbody=hello"], "POST", 1),
+        (["api", COMMENTS, "-iFbody=hello"], "POST", 1),
+        (["api", COMMENTS, "-iXPOST"], "POST", 1),
+        (["api", COMMENTS, "-iX", "POST"], "POST", 1),
+        (["api", COMMENTS, "-fbody=hello"], "POST", 1),
+        (["api", COMMENTS, "-X=POST"], "POST", 1),
+        (["api", COMMENTS, "-i=true", "-f", "body=hello"], "POST", 1),
+        (["api", "graphql", "-iFquery=mutation { addStar(input: {}) { clientMutationId } }"], "POST", 1),
+        (["api", COMMENTS, "-zfbody=hello"], "gh api", 1),
+        (["api", COMMENTS, "-h"], "gh api", 1),
+        (["api", COMMENTS, "-X=GET"], None, 3),
+        (["api", COMMENTS, "-iX=GET"], None, 3),
+        (["api", COMMENTS, "-iXGET", "-fper_page=5"], None, 3),
+        (["api", COMMENTS, "-iHAccept:x"], None, 3),
+        (["api", "graphql", "-iFquery={ viewer { login } }"], None, 3),
+        # A filter's value is no endpoint, so the query that follows keeps a GraphQL read a read.
+        (["api", "-q", ".data", "graphql", "-f", "query={ viewer { login } }"], None, 3),
+        (["api", "--jq", ".data", "graphql", "-f", "query={ viewer { login } }"], None, 3),
+        (["api", COMMENTS, "-i"], None, 3),
+    ],
+    ids=command_id,
+)
+def test_a_shorthand_cluster_is_read_as_gh_reads_it(arguments: list[str], change: str | None, attempts: int) -> None:
+    assert change == github_client.change_of(arguments)
+    run, calls = scripted(*[failed(BAD_GATEWAY)] * 3)
+    client, _sleeper = client_for(run)
+    with pytest.raises(GitHubError) as context:
+        client.run(arguments)
+    assert context.value.kind == ("unknown_outcome" if change else "api")
+    assert [["gh", *arguments]] * attempts == calls
 
 
 @pytest.mark.parametrize(

@@ -131,6 +131,7 @@ TRUST_BOUNDARY_SCRIPTS = (
     f"{SKILL_CORE}/file_presence.py",
     f"{SKILL_CORE}/flat_text.py",
     f"{SKILL_CORE}/folders_up.py",
+    f"{SKILL_CORE}/gh_shorthands.py",
     f"{SKILL_CORE}/git_client.py",
     f"{SKILL_CORE}/git_worktrees.py",
     f"{SKILL_CORE}/github_client.py",
