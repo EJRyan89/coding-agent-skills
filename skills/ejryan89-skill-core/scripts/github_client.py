@@ -33,6 +33,7 @@ import whole_number
 from bounded_process import Finished, run_bounded
 from executable_locator import located_command
 from flat_text import flat_text
+from gh_shorthands import GH_VALUE_SHORTHANDS, shorthands
 
 T = TypeVar("T")
 
@@ -110,8 +111,9 @@ TRANSIENT_KINDS: frozenset[GitHubErrorKind] = frozenset({"api", "network"})
 # `gh <noun> <verb>` commands that only read, besides `gh search`; any other command counts as a change.
 READ_VERBS = frozenset({"view", "list", "status", "diff", "checks"})
 # The `gh api` options that take a value, so a value that looks like an option is never read as one. gh's output
-# filters are left out, since no skill script may use them; a filter's value taken for the endpoint can only make a
-# GraphQL read count as a change.
+# filters are left out, since no skill script may use them: a long filter's value taken for the endpoint can only make
+# a GraphQL read count as a change, and a filter's shorthand is a letter this table does not name, so a word holding
+# one counts as a change too.
 API_VALUE_OPTIONS = frozenset(
     {
         "-H",
@@ -129,6 +131,10 @@ API_VALUE_OPTIONS = frozenset(
         "--cache",
     }
 )
+# The letters `gh api` reads in a shorthand cluster: those that take a value, and -i (--include), its one shorthand
+# that takes none. A cluster holding any other letter counts as a change, since what gh sends is then not known.
+API_VALUE_SHORTHANDS = frozenset(option[1] for option in API_VALUE_OPTIONS if not option.startswith("--"))
+API_SHORTHANDS = API_VALUE_SHORTHANDS | {"i"}
 # The `gh api` options that give a request a body, which gh sends as a POST unless a method is named.
 API_BODY_OPTIONS = frozenset({"-f", "--raw-field", "-F", "--field", "--input"})
 READ_METHODS = frozenset({"GET", "HEAD"})
@@ -273,14 +279,25 @@ def transient_failure(stderr: str, status: int | None = None) -> bool:
     return status in TRANSIENT_STATUSES or any(marker in lowered for marker in TRANSIENT_MARKERS)
 
 
-def _option(part: str) -> tuple[str, str | None]:
-    """A `gh api` option's name and the value attached to it, as in `--method=GET` or `-XGET`, or None."""
+def _api_options(part: str) -> list[tuple[str, str | None]] | None:
+    """The `gh api` options a word gives that take a value, each with the value attached to it, as in `--method=GET`,
+    `-XGET`, `-X=GET`, or `-ifbody=x`, or None when it takes the next word; None for a shorthand cluster holding a
+    letter `gh api` does not read as it is read here."""
     if part.startswith("--"):
         name, separator, value = part.partition("=")
-        return name, value if separator else None
-    if len(part) > 2:
-        return part[:2], part[2:]
-    return part, None
+        return [(name, value if separator else None)] if name in API_VALUE_OPTIONS else []
+    flags = shorthands(part, API_VALUE_SHORTHANDS)
+    if any(flag.flag[1] not in API_SHORTHANDS for flag in flags):
+        return None
+    return [(flag.flag, flag.value) for flag in flags if flag.flag[1] in API_VALUE_SHORTHANDS]
+
+
+def _names_limit(part: str) -> bool:
+    """Whether a word of a gh listing names its limit, as `--limit`, `--limit=5`, `-L5`, or a cluster such as
+    `-wL5`; a letter not known to take a value is read as one that takes none, so a limit after it is found."""
+    if part.startswith("--"):
+        return part.partition("=")[0] in LIMIT_OPTIONS
+    return any(flag.flag in LIMIT_OPTIONS for flag in shorthands(part, GH_VALUE_SHORTHANDS))
 
 
 def _api_change(arguments: Sequence[str]) -> str | None:
@@ -293,18 +310,18 @@ def _api_change(arguments: Sequence[str]) -> str | None:
         if not part.startswith("-"):
             endpoint = endpoint or part
             continue
-        name, value = _option(part)
-        if name not in API_VALUE_OPTIONS:
-            continue
-        if value is None:
-            value = next(parts, "")
-        if name in ("-X", "--method"):
-            method = value.upper()
-        elif name in API_BODY_OPTIONS:
-            body = True
-            key, _, field = value.partition("=")
-            if name != "--input" and key == "query":
-                query = field
+        options = _api_options(part)
+        if options is None:
+            return "gh api"
+        for name, attached in options:
+            value = next(parts, "") if attached is None else attached
+            if name in ("-X", "--method"):
+                method = value.upper()
+            elif name in API_BODY_OPTIONS:
+                body = True
+                key, _, field = value.partition("=")
+                if name != "--input" and key == "query":
+                    query = field
     method = method or ("POST" if body else "GET")
     if method in READ_METHODS:
         return None
@@ -569,7 +586,7 @@ class GitHubClient:
         """
         if isinstance(limit, bool) or limit < 1:
             raise GitHubError(f"a capped listing needs a limit of at least 1, not {limit!r}", kind="input")
-        if any(_option(part)[0] in LIMIT_OPTIONS for part in arguments):
+        if any(_names_limit(part) for part in arguments):
             raise GitHubError("a capped listing sets its own --limit; the arguments name one", kind="input")
         payload = self.json([*arguments, "--limit", str(limit + 1)], retry=retry)
         if not isinstance(payload, list):
