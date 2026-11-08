@@ -1016,9 +1016,10 @@ COMMENTS = "repos/o/r/issues/1/comments"
         (["api", COMMENTS, "-iXGET", "-fper_page=5"], None, 3),
         (["api", COMMENTS, "-iHAccept:x"], None, 3),
         (["api", "graphql", "-iFquery={ viewer { login } }"], None, 3),
-        # A filter's value is no endpoint, so the query that follows keeps a GraphQL read a read.
-        (["api", "-q", ".data", "graphql", "-f", "query={ viewer { login } }"], None, 3),
-        (["api", "--jq", ".data", "graphql", "-f", "query={ viewer { login } }"], None, 3),
+        # No skill script may filter gh's output, so the client does not read a filter: its shorthand is a letter
+        # `gh api` is not read for, and a long filter's value taken for the endpoint makes a GraphQL read a change.
+        (["api", "-q", ".data", "graphql", "-f", "query={ viewer { login } }"], "gh api", 1),
+        (["api", "--jq", ".data", "graphql", "-f", "query={ viewer { login } }"], "POST", 1),
         (["api", COMMENTS, "-i"], None, 3),
     ],
     ids=command_id,

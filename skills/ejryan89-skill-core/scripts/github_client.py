@@ -110,8 +110,10 @@ TRANSIENT_MARKERS = (
 TRANSIENT_KINDS: frozenset[GitHubErrorKind] = frozenset({"api", "network"})
 # `gh <noun> <verb>` commands that only read, besides `gh search`; any other command counts as a change.
 READ_VERBS = frozenset({"view", "list", "status", "diff", "checks"})
-# The `gh api` options that take a value, so a value that looks like an option is never read as one; gh's output
-# filters are among them though no skill script may use them, so a filter's value is never taken for the endpoint.
+# The `gh api` options that take a value, so a value that looks like an option is never read as one. gh's output
+# filters are left out, since no skill script may use them: a long filter's value taken for the endpoint can only make
+# a GraphQL read count as a change, and a filter's shorthand is a letter this table does not name, so a word holding
+# one counts as a change too.
 API_VALUE_OPTIONS = frozenset(
     {
         "-H",
@@ -127,10 +129,6 @@ API_VALUE_OPTIONS = frozenset(
         "-p",
         "--preview",
         "--cache",
-        "-q",
-        "--jq",
-        "-t",
-        "--template",
     }
 )
 # The letters `gh api` reads in a shorthand cluster: those that take a value, and -i (--include), its one shorthand

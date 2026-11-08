@@ -37,6 +37,7 @@ LOADED = sorted(
                 "executable_locator",
                 "file_presence",
                 "flat_text",
+                "gh_shorthands",
                 "git_client",
                 "github_client",
                 "github_remote",
