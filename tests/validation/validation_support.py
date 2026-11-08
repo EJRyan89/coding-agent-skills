@@ -10,10 +10,11 @@ from __future__ import annotations
 import ast
 import builtins
 import codecs
+import functools
 import re
 import sys
 import unittest
-from collections.abc import Iterable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path, PurePath
 
@@ -76,13 +77,24 @@ VALIDATION_DOC = f'"Validation" in {SKILL_GUIDE}'
 OPERATIONS_CONTRACT = "docs/code-review-operations-contract.md"
 # The calls that look an attribute up by its name, as getattr(os, "environ") looks up os.environ.
 ATTRIBUTE_LOOKUPS = frozenset({"getattr", "builtins.getattr"})
-# Every call that reads an object's attribute given the object and the name, the one catalogue each policy reading an
-# attribute by name takes.
+# The one catalogue of the ways Python reads an attribute by its name rather than by the dot, which every policy
+# reading an attribute by name reads through attribute_lookups: a call given the object and the name
+# (ATTRIBUTE_READERS), the lookup method every object has (LOOKUP_METHOD), a getter built from the name and applied to
+# the object (ATTRIBUTE_GETTERS), and a subscript of the object's namespace (NAMESPACE_READERS, NAMESPACE_ATTRIBUTE).
 ATTRIBUTE_READERS = ATTRIBUTE_LOOKUPS | {
     "inspect.getattr_static",
     "object.__getattribute__",
     "builtins.object.__getattribute__",
 }
+# The call that builds a reader of the attribute it names, applied to the object after, as
+# operator.attrgetter("environ")(os) reads os.environ.
+ATTRIBUTE_GETTERS = frozenset({"operator.attrgetter"})
+# The method every object has that reads one of its attributes given the name, as os.__getattribute__("environ").
+LOOKUP_METHOD = "__getattribute__"
+# The calls that return an object's namespace, whose subscript by a name reads the attribute, as vars(os)["environ"].
+NAMESPACE_READERS = frozenset({"vars", "builtins.vars"})
+# The attribute that holds an object's namespace, as os.__dict__["environ"] reads os.environ.
+NAMESPACE_ATTRIBUTE = "__dict__"
 # The calls that import a module by its name, as the module's imports resolve them.
 MODULE_LOADERS = frozenset({"importlib.import_module", "__import__", "builtins.__import__"})
 # The one catalogue of dynamic name lookup, which the indirection policy refuses at the source rather than each policy
@@ -864,9 +876,67 @@ def module_lookup(node: ast.expr, resolver: CallableResolver) -> str:
 
 # The call that binds a function to arguments given ahead, which a later call of its result runs with those first.
 PARTIAL_CALLS = frozenset({"functools.partial"})
-# The call that builds a reader of the attribute it names, applied to the object after, as getattr reads it.
-ATTRIBUTE_GETTERS = frozenset({"operator.attrgetter"})
 BUILTINS_PREFIX = "builtins."
+
+
+@dataclass(frozen=True)
+class AttributeLookup:
+    """One attribute an expression reads by its name: the object it is read on, the expression that gives the name,
+    and whether the expression's value is that attribute itself, which an attrgetter given more than one name is not,
+    since it returns a tuple of them."""
+
+    receiver: ast.expr
+    name: ast.expr
+    alone: bool
+
+
+def attribute_lookups(node: ast.AST, names: Callable[[ast.expr], Iterable[str]]) -> list[AttributeLookup]:
+    """Each attribute a node reads by its name, in every form of the one catalogue: a call of an ATTRIBUTE_READERS
+    entry given the object and the name, as getattr(os, "environ") or inspect.getattr_static(os, "environ"); the
+    object's own LOOKUP_METHOD, as os.__getattribute__("environ"); an ATTRIBUTE_GETTERS getter applied to the object,
+    one lookup for each name it is given; and a subscript of the object's namespace, as vars(os)["environ"] or
+    os.__dict__["environ"]. `names` gives every qualified name an expression may stand for, so each policy resolves a
+    callable its own way. Empty for any other node; a form given no object or no name reads nothing."""
+    if isinstance(node, ast.Subscript):
+        holder = node.value
+        if isinstance(holder, ast.Attribute) and holder.attr == NAMESPACE_ATTRIBUTE:
+            return [AttributeLookup(holder.value, node.slice, alone=True)]
+        if (
+            isinstance(holder, ast.Call)
+            and len(holder.args) == 1
+            and not isinstance(holder.args[0], ast.Starred)
+            and any(name in NAMESPACE_READERS for name in names(holder.func))
+        ):
+            return [AttributeLookup(holder.args[0], node.slice, alone=True)]
+        return []
+    if not isinstance(node, ast.Call):
+        return []
+    function = node.func
+    if any(name in ATTRIBUTE_READERS for name in names(function)):
+        attribute = call_argument(node, 1, "name", "attr")
+        receiver = node.args[0] if node.args and not isinstance(node.args[0], ast.Starred) else None
+        return [] if receiver is None or attribute is None else [AttributeLookup(receiver, attribute, alone=True)]
+    if isinstance(function, ast.Attribute) and function.attr == LOOKUP_METHOD:
+        attribute = call_argument(node, 0, "name")
+        return [] if attribute is None else [AttributeLookup(function.value, attribute, alone=True)]
+    if (
+        isinstance(function, ast.Call)
+        and node.args
+        and not isinstance(node.args[0], ast.Starred)
+        and any(name in ATTRIBUTE_GETTERS for name in names(function.func))
+    ):
+        alone = len(function.args) == 1 and not isinstance(function.args[0], ast.Starred)
+        return [AttributeLookup(node.args[0], attribute, alone=alone) for attribute in function.args]
+    return []
+
+
+def constant_attribute(lookup: AttributeLookup) -> str | None:
+    """The attribute a lookup reads when a string literal names one attribute, or None for a name computed at run time
+    or a dotted path, which an attrgetter follows through more than one attribute."""
+    name = lookup.name
+    if isinstance(name, ast.Constant) and isinstance(name.value, str) and "." not in name.value:
+        return name.value
+    return None
 
 
 @dataclass
@@ -1004,6 +1074,10 @@ def resolved_references(node: ast.expr, resolver: CallableResolver) -> list[Refe
     return _references(node, resolver, frozenset())
 
 
+def _reference_names(node: ast.expr, resolver: CallableResolver, seen: frozenset[int]) -> list[str]:
+    return [reference.name for reference in _references(node, resolver, seen)]
+
+
 def _references(node: ast.expr, resolver: CallableResolver, seen: frozenset[int]) -> list[Reference]:
     found: list[Reference] = []
     for value in bound_values(node, resolver):
@@ -1011,34 +1085,12 @@ def _references(node: ast.expr, resolver: CallableResolver, seen: frozenset[int]
             found.append(Reference("", "", None))
             continue
         inner = seen | {id(value)}
-        getter = value.func if isinstance(value, ast.Call) else None
-        if (
-            isinstance(value, ast.Call)
-            and isinstance(getter, ast.Call)
-            and len(value.args) == 1
-            and len(getter.args) == 1
-            and isinstance(getter.args[0], ast.Constant)
-            and isinstance(getter.args[0].value, str)
-            and "." not in getter.args[0].value
-            and any(reference.name in ATTRIBUTE_GETTERS for reference in _references(getter.func, resolver, inner))
-        ):
-            name = getter.args[0].value
-            owners = [reference.name for reference in _references(value.args[0], resolver, inner)] or [""]
-            found += [Reference(f"{owner}.{name}" if owner else "", name, value.args[0]) for owner in owners]
-            continue
-        if isinstance(value, ast.Call):
-            attribute = call_argument(value, 1, "name")
-            if (
-                value.args
-                and isinstance(attribute, ast.Constant)
-                and isinstance(attribute.value, str)
-                and any(reference.name in ATTRIBUTE_LOOKUPS for reference in _references(value.func, resolver, inner))
-            ):
-                owners = [reference.name for reference in _references(value.args[0], resolver, inner)] or [""]
-                found += [
-                    Reference(f"{owner}.{attribute.value}" if owner else "", attribute.value, value.args[0])
-                    for owner in owners
-                ]
+        if isinstance(value, ast.Call | ast.Subscript):
+            lookups = attribute_lookups(value, functools.partial(_reference_names, resolver=resolver, seen=inner))
+            if len(lookups) == 1 and lookups[0].alone and (attribute := constant_attribute(lookups[0])) is not None:
+                receiver = lookups[0].receiver
+                owners = [reference.name for reference in _references(receiver, resolver, inner)] or [""]
+                found += [Reference(f"{owner}.{attribute}" if owner else "", attribute, receiver) for owner in owners]
             else:
                 found.append(Reference("", "", None))
         elif isinstance(value, ast.Attribute):

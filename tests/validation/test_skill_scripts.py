@@ -563,8 +563,8 @@ class SkillScriptsFixtures(unittest.TestCase):
         handed = "which the module hands on as a value"
         expected = [
             unreadable(path, 7, f"the program `subprocess.run` runs, {handed}"),
-            unreadable(path, 9, "the program `getattr(subprocess, 'run')` runs, which getattr takes"),
-            unreadable(path, 11, "the program `getattr(os, name)` runs, which getattr takes"),
+            unreadable(path, 9, "the program `getattr(subprocess, 'run')` runs, which a lookup by name takes"),
+            unreadable(path, 11, "the program `getattr(os, name)` runs, which a lookup by name takes"),
             unreadable(path, 12, f"the program `subprocess.run` runs, {handed}"),
             unreadable(path, 14, f"the program `run` runs, {handed}"),
             unreadable(path, 16, f"the program `subprocess.Popen` runs, {handed}"),
@@ -600,14 +600,69 @@ class SkillScriptsFixtures(unittest.TestCase):
         path = "skills/alpha/scripts/tool.py"
         self.assertEqual(
             [
-                unreadable(path, 6, "the program `builtins.getattr(subprocess, 'run')` runs, which getattr takes"),
-                unreadable(path, 8, "the program `lookup(subprocess, 'Popen')` runs, which getattr takes"),
-                unreadable(path, 10, "the program `builtins.getattr(os, name)` runs, which getattr takes"),
+                unreadable(
+                    path, 6, "the program `builtins.getattr(subprocess, 'run')` runs, which a lookup by name takes"
+                ),
+                unreadable(path, 8, "the program `lookup(subprocess, 'Popen')` runs, which a lookup by name takes"),
+                unreadable(path, 10, "the program `builtins.getattr(os, name)` runs, which a lookup by name takes"),
             ],
             CommandReader(ast.parse(script)).problems(path),
         )
         self.assertFalse(
             CommandReader(ast.parse("import subprocess\ndef f(p: subprocess.Popen[str]): ...\n")).starts_process()
+        )
+
+    def test_command_policies_report_a_runner_taken_by_every_lookup_by_name(self) -> None:
+        # Each form of the one catalogue of lookups by name, given the runner's name and given a computed one.
+        script = (
+            "import builtins\n"
+            "import inspect\n"
+            "import operator\n"
+            "import os\n"
+            "import subprocess\n"
+            "def named(name):\n"
+            '    inspect.getattr_static(subprocess, "run")(["git"])\n'  # 7
+            '    object.__getattribute__(subprocess, "run")(["git"])\n'  # 8
+            '    builtins.object.__getattribute__(subprocess, "Popen")\n'  # 9
+            '    subprocess.__getattribute__("call")\n'  # 10
+            '    operator.attrgetter("run")(subprocess)(["git"])\n'  # 11
+            '    operator.attrgetter("DEVNULL", "run")(subprocess)\n'  # 12
+            '    vars(subprocess)["run"](["git"])\n'  # 13
+            '    subprocess.__dict__["run"](["git"])\n'  # 14
+            '    inspect.getattr_static(subprocess, attr="run")\n'  # 15
+            "    inspect.getattr_static(os, name)\n"  # 16
+            "    operator.attrgetter(name)(subprocess)\n"  # 17
+            "    vars(os)[name]\n"  # 18
+            # A lookup of what starts nothing, on a module with no runner, or given no object, takes no runner.
+            '    inspect.getattr_static(subprocess, "DEVNULL")\n'
+            '    vars(subprocess)["PIPE"]\n'
+            '    subprocess.__dict__["STDOUT"]\n'
+            '    operator.attrgetter("DEVNULL")(subprocess)\n'
+            "    vars(builtins)[name]\n"
+            "    operator.attrgetter(name)()\n"
+            "    vars()[name]\n"
+        )
+        path = "skills/alpha/scripts/tool.py"
+
+        def taken(line: int, text: str) -> str:
+            return unreadable(path, line, f"the program `{text}` runs, which a lookup by name takes")
+
+        self.assertEqual(
+            [
+                taken(7, "inspect.getattr_static(subprocess, 'run')"),
+                taken(8, "object.__getattribute__(subprocess, 'run')"),
+                taken(9, "builtins.object.__getattribute__(subprocess, 'Popen')"),
+                taken(10, "subprocess.__getattribute__('call')"),
+                taken(11, "operator.attrgetter('run')(subprocess)"),
+                taken(12, "operator.attrgetter('DEVNULL', 'run')(subprocess)"),
+                taken(13, "vars(subprocess)['run']"),
+                taken(14, "subprocess.__dict__['run']"),
+                taken(15, "inspect.getattr_static(subprocess, attr='run')"),
+                taken(16, "inspect.getattr_static(os, name)"),
+                taken(17, "operator.attrgetter(name)(subprocess)"),
+                taken(18, "vars(os)[name]"),
+            ],
+            CommandReader(ast.parse(script)).problems(path),
         )
 
     def test_command_policies_report_a_runner_in_a_collection_indexed_where_it_is_written(self) -> None:
@@ -657,8 +712,12 @@ class SkillScriptsFixtures(unittest.TestCase):
                     4,
                     "the program `importlib.import_module(name).run` runs, from a module looked up by a computed name",
                 ),
-                unreadable("tool.py", 5, "the program `getattr(sys.modules[name], 'run')` runs, which getattr takes"),
-                unreadable("tool.py", 6, "the program `getattr(__import__(name), name)` runs, which getattr takes"),
+                unreadable(
+                    "tool.py", 5, "the program `getattr(sys.modules[name], 'run')` runs, which a lookup by name takes"
+                ),
+                unreadable(
+                    "tool.py", 6, "the program `getattr(__import__(name), name)` runs, which a lookup by name takes"
+                ),
             ],
             reader.problems("tool.py"),
         )
@@ -1338,6 +1397,50 @@ class SkillScriptsFixtures(unittest.TestCase):
             )
             self.assertEqual([], gh_filter_problems(root))
 
+    def test_a_gh_filter_shorthand_is_read_after_shorthands_that_take_no_value(self) -> None:
+        # gh's flag parser reads a cluster of shorthands letter by letter until one that takes a value.
+        doc = '"Commands skills may run" in docs/adding-a-skill.md'
+        refused = {
+            "-iq": ["gh", "api", "repos/o/r", "-iq", ".name"],
+            "-iq<filter>": ["gh", "api", "repos/o/r", "-iq.name"],
+            "-it": ["gh", "api", "repos/o/r", "-it", "{{.name}}"],
+            "-cq": ["gh", "pr", "view", "1", "--json", "comments", "-cq", ".comments"],
+            "-wcq": ["gh", "pr", "view", "1", "--json", "comments", "-wcq.comments"],
+            "-ct": ["gh", "issue", "view", "1", "--json", "comments", "-ct{{.}}"],
+        }
+        for name, arguments in refused.items():
+            flag = "-" + name.replace("<filter>", "")[-1]
+            for script, text in (
+                ("tool.py", f"run({arguments!r})\n"),
+                ("tool.sh", " ".join(arguments) + "\n"),
+                ("tool.ps1", f"$out = {' '.join(arguments)}\n"),
+            ):
+                with self.subTest(form=name, script=script), tempfile.TemporaryDirectory() as temporary:
+                    root = Path(temporary)
+                    write_fixture_tree(root, {f"skills/alpha/scripts/{script}": text})
+                    self.assertEqual(
+                        [
+                            f"skills/alpha/scripts/{script}:1 filters gh output with {flag}; parse its JSON in Python "
+                            f"instead; see {doc}"
+                        ],
+                        gh_filter_problems(root),
+                    )
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            # A shorthand that takes a value takes the rest of the word, a q or a t in it included, and a word of
+            # letters that holds no filter shorthand is none.
+            write_fixture_tree(
+                root,
+                {
+                    "skills/alpha/scripts/tool.py": 'run(["gh", "api", "repos/o/r", "-ftitle=q"])\n'
+                    'run(["gh", "api", "repos/o/r", "-Xquery"])\n'
+                    'run(["gh", "pr", "list", "--json", "title", "-Lq"])\n'
+                    'run(["gh", "pr", "view", "--json", "title", "-cw"])\n',
+                    "skills/alpha/scripts/tool.sh": "gh api repos/o/r -ftitle=q -Hquery:x -i\n",
+                },
+            )
+            self.assertEqual([], gh_filter_problems(root))
+
     def test_the_gh_filter_shorthands_are_read_on_gh_api_and_on_a_continued_command(self) -> None:
         doc = '"Commands skills may run" in docs/adding-a-skill.md'
 
@@ -1962,10 +2065,22 @@ def test_console_setup_policy_passes_a_wrapper_over_a_file_no_console_device_nam
         'fix: object = sys.stdout.reconfigure\nfix(encoding="utf-8")',
         'fix: object = getattr(sys.stdout, "reconfigure")\nfix(encoding="utf-8")',
         '(fix := builtins.getattr(sys.stderr, "reconfigure"))\nfix(encoding="utf-8")',
+        # Every other form of the one catalogue of lookups by name, by the name and by a computed one.
+        'inspect.getattr_static(sys.stdout, "reconfigure")(sys.stdout, encoding="utf-8")',
+        'object.__getattribute__(sys.stdout, "reconfigure")(encoding="utf-8")',
+        'sys.stderr.__getattribute__("reconfigure")(encoding="utf-8")',
+        'vars(sys.stdout)["reconfigure"](encoding="utf-8")',
+        'sys.stdout.__dict__["reconfigure"](encoding="utf-8")',
+        'fix = vars(sys.stdout)["reconfigure"]\nfix(encoding="utf-8")',
+        'inspect.getattr_static(sys.stdout, name)(sys.stdout, encoding="utf-8")',
+        'object.__getattribute__(sys.stdout, name)(encoding="utf-8")',
+        'operator.attrgetter(name)(sys.stdout)(encoding="utf-8")',
+        'sys.stdout.__dict__[name](encoding="utf-8")',
+        'fix = vars(sys.stderr)[name]\nfix(encoding="utf-8")',
     ],
 )
 def test_console_setup_policy_refuses_a_reconfigure_looked_up_by_name(tmp_path: Path, reach: str) -> None:
-    imports = "import builtins\nimport functools\nimport operator\nimport sys\n\n"
+    imports = "import builtins\nimport functools\nimport inspect\nimport operator\nimport sys\n\n"
     write_fixture_tree(tmp_path, {"tools/reconfigured.py": imports + reach + "\n"})
     mark_skills(tmp_path)
     [problem] = console_setup_problems(tmp_path)
@@ -1984,10 +2099,14 @@ def test_console_setup_policy_refuses_a_reconfigure_looked_up_by_name(tmp_path: 
         'operator.methodcaller("reconfigure", line_buffering=True)(sys.stdout)',
         'builtins.getattr(sys.stdout, "write")(encoding="utf-8")',
         'operator.methodcaller("write", encoding="utf-8")(sys.stdout)',
+        'inspect.getattr_static(sys.stdout, "write")(sys.stdout, "text")',
+        'vars(sys.stdout)["write"](encoding="utf-8")',
+        'sys.stdout.__dict__["write"]("text")',
+        "vars(sys.stdout)[name](line_buffering=True)",
     ],
 )
 def test_console_setup_policy_passes_another_method_looked_up_by_name(tmp_path: Path, use: str) -> None:
-    imports = "import builtins\nimport operator\nimport sys\n\n"
+    imports = "import builtins\nimport inspect\nimport operator\nimport sys\n\n"
     write_fixture_tree(tmp_path, {"tools/plain.py": imports + use + "\n"})
     mark_skills(tmp_path)
     assert console_setup_problems(tmp_path) == []

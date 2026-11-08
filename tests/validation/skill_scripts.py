@@ -43,15 +43,16 @@ from python_checks import PRINTS, sanctioned_problems
 from skill_roots import SKILL_CORE
 from toolchain import powershell_json
 from validation_support import (
-    ATTRIBUTE_LOOKUPS,
     BASH_CONTINUATION,
     COMPUTED_NAME,
     MODULE_SCOPE,
     POWERSHELL_CONTINUATION,
     REPOSITORY_ROOT,
     REPOSITORY_SKILLS,
+    AttributeLookup,
     CallableResolver,
     UnreadablePython,
+    attribute_lookups,
     bound_values,
     call_argument,
     call_arguments,
@@ -1039,29 +1040,31 @@ class CommandReader:
             for value in values
         )
 
+    def _takes_a_runner(self, lookup: AttributeLookup) -> bool:
+        """Whether a lookup by name may take a runner: one a string literal names on its module, or on a module looked
+        up by a computed name, or any attribute a computed name may name on a runner's module or such a module."""
+        module = _reached_name(lookup.receiver, self.resolver)
+        if not module:
+            return False
+        name = lookup.name
+        if isinstance(name, ast.Constant):
+            return isinstance(name.value, str) and (
+                f"{module}.{name.value}" in self.runners
+                or (module == COMPUTED_NAME and name.value.partition(".")[0] in self.runner_attributes)
+            )
+        return any(module == COMPUTED_NAME or runner.startswith(f"{module}.") for runner in self.runners)
+
     def _runners_handed_on(self) -> list[Unreadable]:
         """Each runner the module uses other than by calling it or binding a name to it, whose commands the reader
-        cannot follow: one handed to functools.partial, map, a Thread's target, or a collection, or taken by getattr,
-        and each runner's name taken from a module the module looks up by a computed name, which may be the runner's."""
+        cannot follow: one handed to functools.partial, map, a Thread's target, or a collection, or taken by any lookup
+        by name attribute_lookups reads, and each runner's name taken from a module the module looks up by a computed
+        name, which may be the runner's."""
         found: list[Unreadable] = []
         types = _type_uses(self.tree, self.resolver)
         for node in ast.walk(self.tree):
-            if isinstance(node, ast.Call) and self.resolver.name(node.func) in ATTRIBUTE_LOOKUPS and len(node.args) > 1:
-                module = _reached_name(node.args[0], self.resolver)
-                attribute = node.args[1]
-                named = (
-                    isinstance(attribute, ast.Constant)
-                    and isinstance(attribute.value, str)
-                    and (
-                        f"{module}.{attribute.value}" in self.runners
-                        or (module == COMPUTED_NAME and attribute.value in self.runner_attributes)
-                    )
-                )
-                dynamic = not isinstance(attribute, ast.Constant) and any(
-                    module == COMPUTED_NAME or runner.startswith(f"{module}.") for runner in self.runners
-                )
-                if module and (named or dynamic):
-                    found.append(Unreadable(node, f"the program `{ast.unparse(node)}` runs, which getattr takes"))
+            lookups = attribute_lookups(node, lambda function: [self.resolver.name(function)])
+            if any(self._takes_a_runner(lookup) for lookup in lookups):
+                found.append(Unreadable(node, f"the program `{ast.unparse(node)}` runs, which a lookup by name takes"))
             elif (
                 isinstance(node, ast.Attribute)
                 and node.attr in self.runner_attributes
@@ -1648,21 +1651,36 @@ def optional_tool_placement_problems(root: Path, always_optional: set[str]) -> l
 
 
 GH_SHELL_CALL = re.compile(r"(?:^|[\s;|&(])gh\s")
-# A word that passes gh a filter, in each form gh's flag parser reads: --jq or --template alone, with `=` and the
-# filter, and their shorthands -q and -t alone or with the filter attached. The Python and the shell readers both read
-# a word by it.
-GH_FILTER_WORD = re.compile(r"(--jq|--template)(?:=.*)?|(-[qt]).*", re.DOTALL)
+# A word that passes gh a filter by its long name, in each form gh's flag parser reads: --jq or --template alone, or
+# with `=` and the filter. The Python and the shell readers both read a word through gh_filter_flag.
+GH_FILTER_WORD = re.compile(r"(--jq|--template)(?:=.*)?", re.DOTALL)
 # The shorthands, which other commands take for something else: gh's -t is the title of `pr create` and `issue
 # create`, and git's -q is quiet. A Python list holds each as a filter only in a gh command whose output is JSON, one
 # given --json or gh api; a shell command that runs gh holds -q as one wherever it stands, and -t only there.
 GH_FILTER_SHORTHANDS = frozenset({"-q", "-t"})
+# The shorthands that take no value in some gh command that takes a filter, as api's -i (--include) and pr view's -c
+# (--comments), as `gh help reference` lists them. gh's flag parser reads a word of shorthands as a cluster, each
+# letter its own flag, until a letter that takes a value, which takes the rest of the word: -iq.name is -i and
+# -q .name, and -ftitle=x is -f title=x. A letter that takes a value in one such command and none in another is read
+# as taking none, so a filter after it is refused wherever it may be one.
+GH_BOOLEAN_SHORTHANDS = frozenset("acdinuvw")
 GH_SHELL_WORD_BREAK = re.compile(r"[\s;|&()]+")
 
 
 def gh_filter_flag(word: str) -> str | None:
-    """The filter flag a word passes gh, as --jq, --template, -q, or -t, or None when it passes none."""
+    """The filter flag a word passes gh, as --jq, --template, -q, or -t, alone, with its filter attached, or after
+    shorthands in the same word that take no value, or None when it passes none."""
     match = GH_FILTER_WORD.fullmatch(word)
-    return None if match is None else match.group(1) or match.group(2)
+    if match is not None:
+        return match.group(1)
+    if not word.startswith("-") or word.startswith("--"):
+        return None
+    for letter in word[1:]:
+        if f"-{letter}" in GH_FILTER_SHORTHANDS:
+            return f"-{letter}"
+        if letter not in GH_BOOLEAN_SHORTHANDS:
+            return None
+    return None
 
 
 def _gh_json_output(words: list[str]) -> bool:
@@ -1859,22 +1877,22 @@ def _may_name_reconfigure(node: ast.expr) -> bool:
 
 
 def _looks_up_a_computed_name(node: ast.expr, resolver: CallableResolver) -> bool:
-    """Whether an expression may be a getattr, either spelling, given a name computed at run time, itself or through a
-    name bound to one, which may look up reconfigure; resolved_calls reads every lookup of a constant name."""
+    """Whether an expression may be a lookup by name, in any form attribute_lookups reads, given a name computed at run
+    time, itself or through a name bound to one, which may look up reconfigure; resolved_calls reads every lookup of a
+    constant name."""
     return any(
-        isinstance(value, ast.Call)
-        and len(value.args) > 1
-        and not isinstance(value.args[1], ast.Constant)
-        and any(reference.name in ATTRIBUTE_LOOKUPS for reference in resolved_references(value.func, resolver))
+        not isinstance(lookup.name, ast.Constant)
         for value in bound_values(node, resolver)
+        for lookup in attribute_lookups(
+            value, lambda function: [reference.name for reference in resolved_references(function, resolver)]
+        )
     )
 
 
 def _reconfigures(node: ast.Call, resolver: CallableResolver) -> bool:
     """Whether a call may reconfigure a stream's encoding: a reconfigure it may run, on any receiver, as resolved_calls
-    reads it through names, getattr or operator.attrgetter of a constant name, and functools.partial, or a getattr of
-    a computed name, given an encoding or a `**` it cannot read; or an operator.methodcaller of reconfigure or of a
-    computed name given one."""
+    reads it through names, a lookup by a constant name, and functools.partial, or a lookup by a computed name, given
+    an encoding or a `**` it cannot read; or an operator.methodcaller of reconfigure or of a computed name given one."""
     for read in resolved_calls(node, resolver):
         changes = "encoding" in read.keywords or bool(read.unread)
         if changes and read.attribute == RECONFIGURE:
