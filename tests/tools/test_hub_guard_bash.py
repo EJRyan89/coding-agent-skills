@@ -184,6 +184,17 @@ class KeywordTests(unittest.TestCase):
             with self.subTest(word=word):
                 self.assertEqual(word in hub_guard.KEYWORDS_UNDERSTOOD, not reading(sample).unread)
 
+    def test_the_command_the_time_keyword_times_is_read_after_each_option_bash_reads(self) -> None:
+        # Bash reads -p right after time and -- right after time or its -p, then the timed pipeline.
+        plain = reading("git checkout main")
+        self.assertEqual(["git"], [call.program for call in plain.calls])
+        for prefix in ("time", "time -p", "time --", "time -p --", "! time --", "time -- time -p --", "time -- !"):
+            with self.subTest(prefix=prefix):
+                read = reading(f"{prefix} git checkout main")
+                self.assertEqual((plain.calls, []), (read.calls, read.unread))
+                assigned = " ".join(reading(f"{prefix} XDG_CONFIG_HOME=/x git status").unread)
+                self.assertIn(hub_guard.NOT_READ["construct assignment before git"], assigned)
+
     def test_the_constructs_the_grammar_reads_without_a_word_are_not_read(self) -> None:
         for entry, command in (
             ("construct function definition", "f() { :; }"),
