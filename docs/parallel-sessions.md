@@ -174,6 +174,8 @@ git config coding-agent-skills.hubGuard true
 
 The setting lives in the shared `.git/config`, so one command covers the hub and all of its worktrees. Because
 the setting is not tracked, someone who clones the repository and works in a single checkout is never blocked.
+While a hub is guarded the guard refuses every `git config` that may write a setting, so the guard is turned off
+from a terminal, never from a guarded session.
 
 The hook command reads the setting itself, in Bash, and exits before starting Python when the clone has not opted
 in: when git reports the setting unset or false, it exits in silence, and when git cannot read it at all, as with a
@@ -209,7 +211,9 @@ With the guard enabled:
 - **Refused git commands.** Any of the following that would act on the hub, because some subcommand or option of
   each can move `HEAD` or the branch it names, or write the index or tracked files. A command that writes only
   objects, other refs (`notes`, `replace`, `tag`), or other worktrees (`worktree`) is not refused, and nor is
-  `fetch` unless it is given `--update-head-ok` (or `-u`), which lets it move the branch `HEAD` names.
+  `fetch` unless it is given `--update-head-ok` (or `-u`), which lets it move the branch `HEAD` names. Whatever the
+  subcommand, an option that writes a file into the hub or runs a command, and a `git config` that writes, are
+  judged as [What a git call's words write or run](#what-it-understands) says.
   - `add`, `am`, `apply`, `bisect`, `branch`, `checkout`, `checkout-index`, `cherry-pick`, `clean`, `commit`
   - `fast-import`, `filter-branch`, `history`, `merge`, `merge-file`, `merge-index`, `merge-one-file`, `mv`
   - `pull`, `read-tree`, `rebase`, `replay`, `rerere`, `reset`, `restore`, `revert`, `rm`, `sparse-checkout`
@@ -279,11 +283,53 @@ a row decides it.
   options as git does, with no abbreviation and with a value attached after `=` or as the next word (`-C`, `-c`,
   `--attr-source`, `--config-env`, `--git-dir`, `--namespace`, `--shallow-file`, `--super-prefix`, `--work-tree`),
   and `core.worktree` and `alias.<name>` among the command-line configuration a call sees: `GIT_CONFIG_PARAMETERS`,
-  `GIT_CONFIG_COUNT` with its pairs, then each `-c` and `--config-env`. The location and configuration variables
+  `GIT_CONFIG_COUNT` with its pairs, then each `-c` and `--config-env`. Of the settings `-c` and `--config-env` hand
+  git, only the ones `GIT_SETTINGS_UNDERSTOOD` names and every setting of a section `GIT_SECTIONS_UNDERSTOOD` names
+  (`advice`, `alias`, `color`, `column`, `i18n`) are understood, in any case; any other, or one the text does not
+  settle, is a part the guard does not read, since many run a command, as `core.pager`, `pager.<command>`,
+  `core.fsmonitor`, and `diff.external` do, or choose where git writes. The location and configuration variables
   reach a call from the environment Claude Code gives the hook; the command itself sets none of them, since every
   form that would, an assignment before git, `export`, `env`, and a PowerShell assignment among them, is a part the
   guard does not read. On Windows git reads an environment name in any case, so `git_dir` is `GIT_DIR` there; when
   two spellings disagree, the call is judged by the upper-case one, the spelling git reads, with a note.
+- **What a git call's words write or run.** Wherever git runs, a file it writes at a path its words name is judged
+  as a redirection's target is, a relative path read from where git starts. The options that name such a file are
+  `--output`, which every subcommand that reads git's diff or revision options takes, and those
+  `GIT_WRITING_OPTIONS` names: `apply --build-fake-ancestor`, `archive -o`, `bugreport -o`,
+  `bugreport --output-directory`, `clone --separate-git-dir`, `credential-cache --socket`,
+  `credential-store --file`, `diagnose -o`, `diagnose --output-directory`, `fast-export --export-marks`,
+  `fast-import --export-marks`, `format-patch -o`, `format-patch --output-directory`, `gc --expire-to`,
+  `index-pack -o`, `init --separate-git-dir`, `init-db --separate-git-dir`, `mailsplit -o`,
+  `read-tree --index-output`, `repack --expire-to`, and `repack --filter-to`. Each is read in every spelling git's
+  option parser takes: exactly, with its value after `=` or as the next word, abbreviated to a prefix of its name,
+  or, for a letter, with its value attached or at the end of a bundle, as in `-vo <file>`; a word after `--` is an
+  operand. `bugreport`, `clone`, `diagnose`, `format-patch` without `--stdout`, `init`, `init-db`, and
+  `unpack-file` write in the directory git starts in when no option or operand names another
+  (`GIT_DEFAULT_WRITES`), and `bundle create`, `clone`, `index-pack`, `init`, `init-db`, `pack-objects`, and
+  `worktree add` at a path an operand names (`GIT_OPERAND_WRITES`), each judged the same way; an option's value
+  these read as an operand is judged too, so such a call may be refused in a hub for a word that names no file
+  there. A `git config` is understood in its reading
+  forms, with an action that reads (`--get`, `--get-all`, `--get-regexp`, `--get-urlmatch`, `--get-color`,
+  `--get-colorbool`, `-l`, or `--list`), its subcommand `get` or `list`, or one name holding a dot and no action,
+  and only options that change what it reads or how it prints. Any other form may write, an abbreviated option
+  among them, and one that writes only the file `--file` or `-f` names, with no other scope, is judged as a file
+  git writes. The options that start a command or a program their value names, `GIT_RUNNING_OPTIONS`, which takes
+  ejryan89-skill-core's `git_client.CARRIER_OPTIONS` and adds the subcommands its plain client never runs, are
+  refused while a hub is guarded, as a runner around git is, in every spelling and wherever the word stands:
+  `archive --exec`, `clone --config`, `clone --template`, `clone --upload-pack`, `clone -c`, `clone -u`,
+  `difftool --extcmd`, `difftool -x`, `fetch --upload-pack`, `fetch-pack --exec`, `fetch-pack --upload-pack`,
+  `filter-branch --commit-filter`, `filter-branch --env-filter`, `filter-branch --index-filter`,
+  `filter-branch --msg-filter`, `filter-branch --parent-filter`, `filter-branch --setup`,
+  `filter-branch --tag-name-filter`, `filter-branch --tree-filter`, `grep --open-files-in-pager`, `grep -O`,
+  `init --template`, `init-db --template`, `ls-remote --exec`, `ls-remote --upload-pack`, `pull --upload-pack`,
+  `push --exec`, `push --receive-pack`, `rebase --exec`, `rebase -x`, `send-pack --exec`, and
+  `send-pack --receive-pack`. So is a `bisect` or `submodule` action outside the ones `git_client.PLAIN_ACTIONS`
+  lists, as `bisect run` and `submodule foreach` are. A word the text does not settle may be any of these options,
+  so one given to a subcommand these tables name, or to one `GIT_OUTPUT_SUBCOMMANDS` names as taking `--output`, is
+  refused while a hub is guarded; a word after `--` is not. `tests/tools/test_hub_guard_git_options.py` holds every option the installed
+  git's `git <subcommand> -h` lists with a path for its value to one of these tables or to `GIT_PATH_OPTIONS_READ`,
+  which says why each other one neither writes nor runs anything, so an option a later git adds fails there until a
+  row decides it.
 - **Bash, by its grammar.** `tools/bash_syntax.py` reads Bash as Bash parses it: single and double quotes, `$'...'`,
   escapes and line continuations, comments, and here-documents, and the command tree of lists, `&&` and `||`,
   pipelines, `( )` subshells, `{ }` groups, `if`, `case`, `while`, `until`, `for`, `select`, `!`, and `time` with
@@ -375,13 +421,14 @@ a row decides it.
   that is one of them is held to its allow-list too, and after `xargs`, which adds words from its input, it is refused
   unless its words hold a `--` that ends its options, which `find` has none of. A variable one of them reads options
   from, `PROGRAM_VARIABLES`: `RIPGREP_CONFIG_PATH`, `TAPE`, and `TAR_OPTIONS`, is refused where it is assigned
-  before the program or a runner, where `env` sets it, and where the environment holds it. Among the options
+  before the program or before any runner, whatever the runner starts, a `bash -c` or `pwsh -Command` script at any
+  depth included, where `env` sets it, and where the environment holds it. Among the options
   refused are `find`'s `-exec`, `-execdir`, `-ok`, `-okdir`, `-delete`, and `-fprint` family, `rg`'s `--pre` and
   `--hostname-bin`, `sort`'s `--compress-program` and `--output`, and `tar`'s options that run a program.
   `tests/tools/test_prefix_programs.py` holds each allow-list to every option the program's `--help` or getopt table
   lists, pinned in `tests/fixtures/hub-guard/option-catalogues.json`, in each spelling, and holds that fixture to the
-  `--help` of each of `env`, `nice`, `nohup`, `stdbuf`, `timeout`, and `xargs` the system installs. git keeps its
-  own subcommands' judgment.
+  `--help` of each of `env`, `nice`, `nohup`, `stdbuf`, `timeout`, and `xargs` the system installs. git keeps a
+  judgment of its own, by its subcommands and by what its words write or run.
 - **PowerShell.** A PowerShell command is read by PowerShell's own parser, not by a second hand-written grammar,
   and is understood when every node type in its tree is one `POWERSHELL_UNDERSTOOD` names, in the forms that invoke
   nothing: pipelines of commands joined by `&&` and `||`, with redirections, whose elements are constants, strings,
@@ -436,6 +483,10 @@ refuses:
 - a git call that would write the checkout it runs in where the text does not settle its directory, a git call whose
   subcommand the text does not settle, wherever it runs, since it may be an alias that writes a hub, a git call after
   an option of git's own the guard does not read, and a refused subcommand given a word the text does not settle;
+- a git call whose words run a command, write a file at a path the text does not settle, or include a word the text
+  does not settle where it may be an option that does either; a setting `-c` or `--config-env` hands git that the
+  guard does not know to be safe; and a `git config` that may write, but for one that writes only a file `--file`
+  names outside every hub. A file a git call writes into a guarded hub is refused wherever the call runs;
 - an alias that cannot be read, nests more than four deep, or runs a part the guard does not read;
 - a command the guard does not finish reading and judging within 15 seconds, `pwsh` included, and the lookups of the
   hubs the places it names reach, each git call of theirs given no more than the time left; a PowerShell command when
