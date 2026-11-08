@@ -1261,9 +1261,136 @@ DOCUMENTED_FORMS: dict[str, tuple[Any, ...]] = {
         "def f(error: GitHubError) -> bool:\n    return error.returncode is None\n",
         refused=False,
     ),
+    # "read as true or false: the test of an `if`, a `while`, an `assert`, a conditional expression, or a
+    # comprehension's filter, the operand of `not`, the argument of `bool()`, an operand of an `and` or an `or` that one
+    # of those tests, and any
+    # operand of an `and` or an `or` but its last".
+    **{
+        f"a GitError's returncode {form}": _form(
+            git_answered_problems,
+            "from git_client import GitError\n\n\ndef f(client, ok):\n    try:\n        client.output(['status'])\n"
+            f"    except GitError as exc:\n{body}",
+        )
+        for form, body in (
+            ("read as true", "        if exc.returncode:\n            raise\n"),
+            ("read as true by bool()", "        return bool(exc.returncode)\n"),
+            ("read as true in an and", "        if ok and exc.returncode:\n            raise\n"),
+            ("read as true by a while", "        while exc.returncode:\n            break\n"),
+            ("read as true by an assert", "        assert exc.returncode\n"),
+            ("read as true by a conditional expression", "        return 1 if exc.returncode else 0\n"),
+            ("read as true by a comprehension", "        return [x for x in (1,) if exc.returncode]\n"),
+            ("given a default by or", "        return exc.returncode or 128\n"),
+            ("bound to a name first", "        code = exc.returncode\n        if code is None:\n            raise\n"),
+            (
+                "bound to a name and read as true",
+                "        code = exc.returncode\n        if code:\n            raise\n",
+            ),
+            (
+                "bound by an annotated assignment",
+                "        code: int | None = exc.returncode\n        return not code\n",
+            ),
+            ("bound by a chained assignment", "        code = held = exc.returncode\n        return held is None\n"),
+            ("bound twice", "        code = exc.returncode\n        held = code\n        return held is None\n"),
+            ("bound by an assignment expression", "        return (code := exc.returncode) is None\n"),
+            (
+                "read by a name an assignment expression binds",
+                "        if (code := exc.returncode) == 1:\n            return 1\n        return code is None\n",
+            ),
+            ("read by getattr", "        return getattr(exc, 'returncode') is None\n"),
+            ("read by getattr given a default", "        return getattr(exc, 'returncode', None) is None\n"),
+            ("read by getattr as false", "        return not getattr(exc, 'returncode')\n"),
+            ("read by getattr as true", "        if getattr(exc, 'returncode'):\n            raise\n"),
+        )
+    },
+    **{
+        f"a GitError's returncode {form}": _form(
+            git_answered_problems,
+            "from git_client import GitError\n\n\ndef f(client, other):\n    try:\n        client.output(['status'])\n"
+            f"    except GitError as exc:\n{body}",
+            refused=False,
+        )
+        for form, body in (
+            ("returned", "        return exc.returncode\n"),
+            ("set beside 128 in an if", "        if exc.returncode == 128:\n            raise\n"),
+            ("given last in an or", "        return other or exc.returncode\n"),
+            ("bound to a name set beside 0", "        code = exc.returncode\n        return code == 0\n"),
+            ("read by getattr beside 128", "        return getattr(exc, 'returncode') == 128\n"),
+            ("not read by a getattr of answered", "        return not getattr(exc, 'answered')\n"),
+            ("not read by bool() of answered", "        return bool(exc.answered)\n"),
+            ("of another value bound to a name", "        code = other.returncode\n        return code is None\n"),
+            ("of another value read as true", "        if other.returncode:\n            raise\n"),
+        )
+    },
+    # "a function or an async function given it as a parameter of any kind annotated `GitError`, `GitError | None`,
+    # `Optional[GitError]`, or `Union[GitError, None]`, or any of these in quotes".
+    **{
+        f"a GitError parameter's returncode {form}": _form(
+            git_answered_problems, f"{imports}\n\n\n{definition} -> bool:\n    return error.returncode is None\n"
+        )
+        for form, imports, definition in (
+            ("annotated GitError | None", "from git_client import GitError", "def f(error: GitError | None)"),
+            ("annotated None | GitError", "from git_client import GitError", "def f(error: None | GitError)"),
+            (
+                "annotated Optional[GitError]",
+                "from typing import Optional\nfrom git_client import GitError",
+                "def f(error: Optional[GitError])",
+            ),
+            (
+                "annotated typing.Optional[GitError]",
+                "import typing\nfrom git_client import GitError",
+                "def f(error: typing.Optional[GitError])",
+            ),
+            (
+                "annotated Union[GitError, None]",
+                "from typing import Union\nfrom git_client import GitError",
+                "def f(error: Union[GitError, None])",
+            ),
+            ("annotated in quotes", "from git_client import GitError", "def f(error: 'GitError')"),
+            ("annotated in quotes or None", "from git_client import GitError", "def f(error: 'GitError | None')"),
+            (
+                "annotated Optional in quotes",
+                "from typing import Optional\nfrom git_client import GitError",
+                "def f(error: 'Optional[GitError]')",
+            ),
+            ("keyword-only", "from git_client import GitError", "def f(*, error: GitError)"),
+            ("positional-only", "from git_client import GitError", "def f(error: GitError, /)"),
+            ("of an async function", "from git_client import GitError", "async def f(error: GitError)"),
+        )
+    },
+    **{
+        f"a parameter {form}": _form(
+            git_answered_problems,
+            f"{imports}\n\n\ndef f(error: {annotation}) -> bool:\n    return error.returncode is None\n",
+            refused=False,
+        )
+        for form, imports, annotation in (
+            (
+                "annotated Optional of another error",
+                "from typing import Optional\nfrom github_client import GitHubError",
+                "Optional[GitHubError]",
+            ),
+            ("annotated another error in quotes", "from github_client import GitHubError", "'GitHubError'"),
+            ("annotated a list of GitErrors", "from git_client import GitError", "list[GitError]"),
+            ("annotated text that does not parse", "from git_client import GitError", "'GitError |'"),
+            (
+                "annotated a subscript of another generic",
+                "from typing import Sequence\nfrom git_client import GitError",
+                "Sequence[GitError]",
+            ),
+        )
+    },
     "a trim of a git program's output passed by name": _form(
         git_separator_problems,
         "def f(run_tool, git):\n    return run_tool([git, '--exec-path']).output.strip()\n",
+    ),
+    "a trim of a git program's output an attribute holds": _form(
+        git_separator_problems,
+        "def f(self, run_tool):\n    return run_tool([self.git, '--exec-path']).output.strip()\n",
+    ),
+    "a trim of another program's output an attribute holds": _form(
+        git_separator_problems,
+        "def f(self, run_tool):\n    return run_tool([self.tool, '--exec-path']).output.strip()\n",
+        refused=False,
     ),
     "a GitError's name reused by a GitHubError clause": _form(
         git_answered_problems,

@@ -3413,68 +3413,151 @@ def git_separator_problems(root: Path, files: list[Path]) -> list[str]:
 # A GitError whose returncode is None is not one git could not run: git_client raises it, with no exit code, for an
 # answer git gave in the wrong shape, such as a rev-parse that printed no object name. Whether git ran and finished is
 # GitError.answered, so a handler of a GitError, or a function given one, reads that, never `returncode is None`,
-# `returncode in (None, ...)`, or `not returncode`. A read that must stay states why in a module-level
-# GIT_ANSWERED_ALLOWED = {scope: reason}.
+# `returncode in (None, ...)`, `not returncode`, or the returncode read as true, directly, through getattr, or through
+# a name bound to it. A read that must stay states why in a module-level GIT_ANSWERED_ALLOWED = {scope: reason}.
 GIT_ERROR = "git_client.GitError"
 GIT_ANSWERED_ALLOWANCE = "GIT_ANSWERED_ALLOWED"
+# The typing forms a parameter's annotation may hold a GitError in beside None.
+GIT_ERROR_WRAPPERS = ("typing.Optional", "typing.Union")
+
+
+def _annotates_git_error(annotation: ast.expr | None, aliases: dict[str, str]) -> bool:
+    """Whether a parameter's annotation is GitError, alone, beside None as `GitError | None`, `Optional[GitError]`, or
+    `Union[GitError, None]`, or any of these in quotes."""
+    if isinstance(annotation, ast.Constant) and isinstance(annotation.value, str):
+        try:
+            annotation = ast.parse(annotation.value, mode="eval").body
+        except SyntaxError:
+            return False
+    if isinstance(annotation, ast.BinOp) and isinstance(annotation.op, ast.BitOr):
+        return _annotates_git_error(annotation.left, aliases) or _annotates_git_error(annotation.right, aliases)
+    if isinstance(annotation, ast.Subscript) and any(
+        resolves_to(qualified_name(annotation.value, aliases), wrapper) for wrapper in GIT_ERROR_WRAPPERS
+    ):
+        members = annotation.slice.elts if isinstance(annotation.slice, ast.Tuple) else [annotation.slice]
+        return any(_annotates_git_error(member, aliases) for member in members)
+    return annotation is not None and resolves_to(qualified_name(annotation, aliases), GIT_ERROR)
+
+
+def _git_error_bodies(tree: ast.Module, aliases: dict[str, str]) -> Iterator[tuple[set[str], list[ast.stmt]]]:
+    """Each body that holds a GitError, with the names it holds it by: an `except` clause that catches one, alone or
+    among others, or a function, async or not, given one as a parameter of any kind its annotation names."""
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ExceptHandler) and node.name is not None:
+            kinds = node.type.elts if isinstance(node.type, ast.Tuple) else [node.type] if node.type else []
+            if any(resolves_to(qualified_name(kind, aliases), GIT_ERROR) for kind in kinds):
+                yield {node.name}, node.body
+        elif isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
+            parameters = [*node.args.posonlyargs, *node.args.args, *node.args.kwonlyargs]
+            names = {argument.arg for argument in parameters if _annotates_git_error(argument.annotation, aliases)}
+            if names:
+                yield names, node.body
+
+
+def _returncode_names(body: list[ast.stmt], errors: set[str]) -> set[str]:
+    """The names a body binds to a GitError's returncode, by an assignment, an annotated assignment, or an assignment
+    expression, of the returncode or of a name an earlier statement bound to it."""
+    bound: set[str] = set()
+    targets: list[ast.expr]
+    value: ast.expr | None
+    for statement in body:
+        for node in ast.walk(statement):
+            if isinstance(node, ast.Assign):
+                targets, value = node.targets, node.value
+            elif isinstance(node, ast.AnnAssign | ast.NamedExpr):
+                targets, value = [node.target], node.value
+            else:
+                continue
+            if _returncode_read(value, errors, bound) is not None:
+                bound |= {target.id for target in targets if isinstance(target, ast.Name)}
+    return bound
+
+
+def _returncode_read(value: ast.expr | None, errors: set[str], bound: set[str]) -> ast.expr | None:
+    """The node that reads a GitError's returncode, when `value` is one: `error.returncode`, a `getattr` of it given
+    the name as a constant, with a default or not, a name bound to it, or an assignment expression of any of these."""
+    if isinstance(value, ast.NamedExpr):
+        return _returncode_read(value.value, errors, bound)
+    if isinstance(value, ast.Name) and value.id in bound:
+        return value
+    if isinstance(value, ast.Attribute):
+        held = value.value
+        return value if value.attr == "returncode" and isinstance(held, ast.Name) and held.id in errors else None
+    if (
+        isinstance(value, ast.Call)
+        and isinstance(value.func, ast.Name)
+        and value.func.id == "getattr"
+        and len(value.args) in (2, 3)
+        and isinstance(value.args[0], ast.Name)
+        and value.args[0].id in errors
+        and isinstance(value.args[1], ast.Constant)
+        and value.args[1].value == "returncode"
+    ):
+        return value
+    return None
+
+
+def _truth_tested(body: list[ast.stmt]) -> Iterator[ast.expr]:
+    """Each expression a body reads as true or false: the test of an `if`, a `while`, an `assert`, a conditional
+    expression, or a comprehension's filter, the operand of `not`, the one argument of `bool()`, every operand of an
+    `and` or an `or` that is one of these, and every operand of an `and` or an `or` but its last."""
+
+    def operands(value: ast.expr) -> Iterator[ast.expr]:
+        yield value
+        if isinstance(value, ast.BoolOp):
+            for operand in value.values:
+                yield from operands(operand)
+
+    for statement in body:
+        for node in ast.walk(statement):
+            tests: list[ast.expr] = []
+            if isinstance(node, ast.If | ast.While | ast.IfExp | ast.Assert):
+                tests.append(node.test)
+            elif isinstance(node, ast.comprehension):
+                tests += node.ifs
+            elif isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.Not):
+                tests.append(node.operand)
+            elif isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "bool":
+                tests += node.args[:1]
+            elif isinstance(node, ast.BoolOp):
+                tests += node.values[:-1]
+            for test in tests:
+                yield from operands(test)
 
 
 def _none_returncode_reads(tree: ast.Module, aliases: dict[str, str]) -> set[int]:
-    """The comparisons, by id, that set the returncode of a GitError beside None: one an `except` clause catches,
-    alone or among others, inside that clause's own body, or one a function takes as a parameter annotated as one,
-    inside that function's body."""
-
-    def is_git_error(kind: ast.expr | None) -> bool:
-        kinds = kind.elts if isinstance(kind, ast.Tuple) else [kind] if kind is not None else []
-        return any(resolves_to(qualified_name(item, aliases), GIT_ERROR) for item in kinds)
-
+    """The reads, by id, of a GitError's returncode that take no exit code for git not running: one set beside None in
+    a comparison, or read as true or false, inside the body of an `except` clause or a function that holds the error."""
     found: set[int] = set()
-    for node in ast.walk(tree):
-        if isinstance(node, ast.ExceptHandler) and node.name is not None and is_git_error(node.type):
-            names, body = {node.name}, node.body
-        elif isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
-            parameters = [*node.args.posonlyargs, *node.args.args, *node.args.kwonlyargs]
-            names, body = {argument.arg for argument in parameters if is_git_error(argument.annotation)}, node.body
-        else:
-            continue
-        for statement in body if names else []:
+    for errors, body in _git_error_bodies(tree, aliases):
+        bound = _returncode_names(body, errors)
+        for statement in body:
             for compared in ast.walk(statement):
-                if (isinstance(compared, ast.Compare) and _compares_returncode_with_none(compared, names)) or (
-                    isinstance(compared, ast.UnaryOp)
-                    and isinstance(compared.op, ast.Not)
-                    and _is_returncode_of(compared.operand, names)
-                ):
-                    found.add(id(compared))
+                if isinstance(compared, ast.Compare):
+                    found |= _returncode_beside_none(compared, errors, bound)
+        for test in _truth_tested(body):
+            if (read := _returncode_read(test, errors, bound)) is not None:
+                found.add(id(read))
     return found
 
 
-def _is_returncode_of(value: ast.expr, names: set[str]) -> bool:
-    """Whether `value` reads the returncode of one of `names`."""
-    return (
-        isinstance(value, ast.Attribute)
-        and value.attr == "returncode"
-        and isinstance(value.value, ast.Name)
-        and value.value.id in names
-    )
-
-
-def _compares_returncode_with_none(node: ast.Compare, names: set[str]) -> bool:
-    """Whether a comparison sets one of `names`' returncode beside None, as a side or as a member of a literal tuple,
-    list, or set it tests membership in."""
+def _returncode_beside_none(node: ast.Compare, errors: set[str], bound: set[str]) -> set[int]:
+    """The reads, by id, of a GitError's returncode that a comparison sets beside None, as a side or as a member of a
+    literal tuple, list, or set it tests membership in."""
     sides = [node.left, *node.comparators]
-    returncode = any(_is_returncode_of(side, names) for side in sides)
+    reads = {id(read) for side in sides if (read := _returncode_read(side, errors, bound)) is not None}
 
     def none(value: ast.expr) -> bool:
         if isinstance(value, ast.Tuple | ast.List | ast.Set):
             return any(map(none, value.elts))
         return isinstance(value, ast.Constant) and value.value is None
 
-    return returncode and any(map(none, sides))
+    return reads if any(map(none, sides)) else set()
 
 
 def git_answered_problems(root: Path, files: list[Path]) -> list[str]:
-    """Each comparison of a caught GitError's returncode with None outside git_client.py that no GIT_ANSWERED_ALLOWED
-    entry sanctions."""
+    """Each read of a GitError's returncode that takes no exit code for git not running, outside git_client.py, that
+    no GIT_ANSWERED_ALLOWED entry sanctions."""
     problems: list[str] = []
     for _, name, tree in python_trees(claim_files(root, files), root, problems):
         if name == GIT_STATUS_OWNER:
@@ -3489,7 +3572,7 @@ def git_answered_problems(root: Path, files: list[Path]) -> list[str]:
                 f"{GIT_ANSWERED_ALLOWANCE}",
             )
             for node, scope in scoped_nodes(tree.body)
-            if isinstance(node, ast.Compare | ast.UnaryOp) and id(node) in reads
+            if isinstance(node, ast.expr) and id(node) in reads
         ]
         problems += sanctioned_problems(name, tree, GIT_ANSWERED_ALLOWANCE, found)
     return problems
