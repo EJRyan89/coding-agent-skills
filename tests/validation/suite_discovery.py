@@ -20,7 +20,15 @@ from pathlib import Path
 from typing import TypeGuard
 
 import file_presence
-from command_wrappers import ASSIGNMENT, COMMAND_WRAPPERS, SCRIPT_SHELLS, UNREAD_PROGRAM, shell_script_index, unwrapped
+from command_wrappers import (
+    ASSIGNMENT,
+    COMMAND_WRAPPERS,
+    PIPES,
+    SCRIPT_SHELLS,
+    UNREAD_PROGRAM,
+    shell_script_index,
+    unwrapped,
+)
 from dealing import deal
 from job_pool import UNSPLIT_SUITE_WEIGHT, Job, run_process
 from module_closure import MODULE_LOADERS
@@ -426,8 +434,6 @@ def suite_shape_problems(root: Path) -> list[str]:
     return problems
 
 
-# A pipe hands the next command what the one before it writes.
-PIPES = frozenset({"|", "|&"})
 # What ends a simple command in a Bash suite. A redirection's < and > stay in the command they belong to.
 COMMAND_BREAKS = frozenset({";", ";;", "&", "&&", "||", "|", "|&", "(", ")", "{", "}", "\n"})
 # Bash's compound commands, each by the keyword that opens it and the one that closes it; every command of one a pipe

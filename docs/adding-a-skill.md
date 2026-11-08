@@ -226,7 +226,8 @@ reads a Bash shell's `-c` script too, as in Bash, up to the first word that is n
 Bash script runs, which a skill's runtime support is held to, is read the same way, in the command a wrapper or
 `find`'s `-exec` family runs, up to the `;` or `{} +` that ends the action, and in the script `eval`, a shell's
 `-c`, or a PowerShell start-up runs as well as at the script's own level. audit-skill's runtime-support reader reads
-a Bash script's git command through the same wrappers, `find` actions, `eval`, and shell `-c` scripts, by
+a Bash script's git command through the same wrappers, `find` actions, `eval`, shell `-c` scripts, and Bash's `time`
+keyword with the `-p` and `--` it takes, by
 ejryan89-skill-core's `command_wrappers.py`, which validation's reader uses too, and
 `tests/audit-skill/test_audit_skill_runtime_needs.py` holds the two readers equal on every wrapper. A wrapper's program,
 or what `&` runs, held in a variable is a program the policy cannot read, and fails the declared-tool policy.

@@ -22,7 +22,16 @@ import git_client
 import json_reader
 import whole_number
 from call_tables import EVENT_LOOP, PROCESS_STARTS, TEXT_OPENERS
-from command_wrappers import ASSIGNMENT, SCRIPT_SHELLS, UNREAD_PROGRAM, find_actions, shell_script_index, unwrapped
+from command_wrappers import (
+    ASSIGNMENT,
+    PIPES,
+    SCRIPT_SHELLS,
+    TIME_KEYWORD_OPTIONS,
+    UNREAD_PROGRAM,
+    find_actions,
+    shell_script_index,
+    unwrapped,
+)
 from device_names import is_reserved_device_name
 from diff_paths import DRIVE
 from duplication import SKILL_CORE_SCRIPTS
@@ -77,7 +86,8 @@ PLATFORM_ALLOWED = {
 }
 SHELL_OPERATORS = ("&&", "||", ";;", "|&", "()", "(", ")", ";", "&", "|", "<", ">", "\n")
 COMMAND_SEPARATORS = {";", "&", "&&", "|", "||", "|&", "(", "\n", "{"}
-LEADING_KEYWORDS = {"if", "then", "else", "elif", "while", "until", "do", "time", "!", "}", ")", "fi", "done"}
+# The reserved words that may stand before a command's program. Bash's time keyword is read by _TimeKeyword.
+LEADING_KEYWORDS = {"if", "then", "else", "elif", "while", "until", "do", "!", "}", ")", "fi", "done"}
 # Keywords whose following words, up to the next separator, are not commands: "for name in list", "case word in".
 HEADER_KEYWORDS = {"case", "for", "function", "select"}
 SHELL_BUILTINS = {
@@ -361,6 +371,32 @@ def _powershell_script_reading(script: str) -> PowerShellReading:
     return powershell_readings([script])[0]
 
 
+class _TimeKeyword:
+    """Where a Bash script's `time` in a command's place is Bash's keyword, and the options it has yet to take. It is
+    the keyword unless a pipe, a newline right after one, or an assignment stands before it, where Bash runs the time
+    program instead; the keyword takes -p and then --, each optional, before the pipeline it times."""
+
+    def __init__(self) -> None:
+        self.reserved = True
+        self.options: tuple[str, ...] = ()
+
+    def skips(self, word: str, keyword: str | None) -> bool:
+        """Whether a word in a command's place is the time keyword or an option it takes, noting what follows."""
+        if keyword is not None and keyword in self.options:
+            self.options = self.options[self.options.index(keyword) + 1 :]
+            return True
+        timed = keyword == "time" and self.reserved
+        self.options = TIME_KEYWORD_OPTIONS if timed else ()
+        self.follow(word, keyword)
+        return timed
+
+    def follow(self, word: str, keyword: str | None) -> None:
+        """Note whether `time` after this word would be the keyword: not after a pipe, the newline right after one,
+        or an assignment."""
+        if keyword != "\n":
+            self.reserved = keyword not in PIPES and not ASSIGNMENT.match(word)
+
+
 def shell_commands(script: str, commands: list[list[str]] | None = None) -> set[str]:
     """Literal command names a Bash script runs, ignoring keywords, case patterns, and its own functions: each command
     word, each program a wrapper, find's -exec, eval, a shell's -c script, or a PowerShell start-up's script runs, and
@@ -376,6 +412,7 @@ def shell_commands(script: str, commands: list[list[str]] | None = None) -> set[
     found: set[str] = {name for inner in _substitutions(script) for name in shell_commands(inner, commands)}
     state = "command"
     words: list[str] = []
+    time_keyword = _TimeKeyword()
     for word, keyword in [*tokens, ("\n", "\n")]:
         if state == "case-word":
             state = "patterns" if keyword == "in" else state
@@ -386,6 +423,8 @@ def shell_commands(script: str, commands: list[list[str]] | None = None) -> set[
         elif keyword == "esac":
             state = "arguments"
         elif state == "command":
+            if time_keyword.skips(word, keyword):
+                continue
             if keyword in COMMAND_SEPARATORS or keyword in LEADING_KEYWORDS or ASSIGNMENT.match(word):
                 continue
             state = "case-word" if keyword == "case" else "arguments"
@@ -393,6 +432,7 @@ def shell_commands(script: str, commands: list[list[str]] | None = None) -> set[
             if words and COMMAND_NAME.fullmatch(word):
                 found.add(word)
         elif keyword in COMMAND_SEPARATORS:
+            time_keyword.follow(word, keyword)
             found |= _wrapped_programs(words, commands)
             if commands is not None and words:
                 commands.append(words)
