@@ -83,6 +83,10 @@ ASSIGNING = re.compile(r"\$\{(!?)([A-Za-z_]\w*(?:\[.*?\])?):?=", re.ASCII)
 PLAIN_SUBSCRIPT = re.compile(r"\[[^]\s|&;()<>'\"\\$`]*\]")
 # The reserved words after which the next word starts a command, where Bash reads an assignment.
 COMMAND_OPENERS = frozenset({"!", "{", "if", "then", "elif", "else", "while", "until", "do", "time"})
+# The options Bash reads after the `time` keyword, each once, unquoted, and in this order, before the pipeline it times,
+# with the words each may follow: -p right after `time`, and -- right after `time` or its -p. Any other word there, a
+# second -p or -- among them, is the timed command's own.
+TIME_OPTIONS = {"-p": ("time",), "--": ("time", "-p")}
 # The builtins whose arguments Bash reads as assignments, so NAME=( ) among them is an array.
 DECLARATION_BUILTINS = frozenset({"alias", "declare", "eval", "export", "let", "local", "readonly", "typeset"})
 # What may follow a function's name and `()`: a compound command, as Bash requires of a function's body.
@@ -328,14 +332,15 @@ class Lexer:
         return self.tokens
 
     def follow_word(self, word: Word) -> None:
-        """Whether the word after this one starts a command, after a reserved word that opens one, `time -p`, or a
-        function's name, each where Bash reads a reserved word; or stands where Bash reads an assignment, after one
-        that did."""
+        """Whether the word after this one starts a command, after a reserved word that opens one, an option of the
+        `time` keyword, or a function's name, each where Bash reads a reserved word; or stands where Bash reads an
+        assignment, after one that did."""
         if self.redirecting:
             self.redirecting = False
             return
-        after_time = bool(self.tokens) and isinstance(self.tokens[-1], Word) and self.tokens[-1].literal == "time"
-        opens = word.literal in COMMAND_OPENERS or (after_time and word.literal == "-p")
+        previous = self.tokens[-1] if self.tokens else None
+        follows = TIME_OPTIONS.get(word.literal or "", ())
+        opens = word.literal in COMMAND_OPENERS or (isinstance(previous, Word) and previous.literal in follows)
         started, reserved, naming = self.command_start, self.reserved, self.naming_function
         self.reserved = self.redirections_only = naming or (reserved and opens)
         self.command_start = self.reserved or (started and word.assignment is not None)
@@ -800,9 +805,10 @@ class Parser:
         while self.at_reserved("!", "time"):
             word = self.advance()
             negated ^= isinstance(word, Word) and word.literal == "!"
-            token = self.peek()
-            if isinstance(token, Word) and token.literal == "-p":
-                self.index += 1
+            if isinstance(word, Word) and word.literal == "time":
+                for option in TIME_OPTIONS:
+                    if self.at_reserved(option):
+                        self.index += 1
         result = Pipeline([self.command()], negated)
         while self.at_operator("|", "|&"):
             self.index += 1
