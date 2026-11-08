@@ -294,39 +294,49 @@ def _program_word(word: str) -> set[str]:
     return set()
 
 
-def _wrapped_programs(words: list[str], commands: list[list[str]] | None = None) -> set[str]:
+def _wrapped_programs(words: list[str], commands: list[list[str]] | None = None, unread: str | None = None) -> set[str]:
     """The programs a simple command runs through its first word: what a wrapper such as xargs or env runs, what find's
     -exec runs, what eval or a shell's -c script runs, and what the script pwsh or Windows PowerShell is started to run
     runs, followed through a wrapper of a wrapper. Given `commands`, it also appends the words of each command a
     wrapper or find's action runs, from its program on, and of each command the script eval, a shell's -c, or a
-    PowerShell start-up runs holds, as shell_commands and powershell_startup_programs read them."""
+    PowerShell start-up runs holds, as shell_commands and powershell_startup_programs read them. `unread`, given, is
+    the word the caller wrote for one it cannot read, as powershell_readings writes UNREAD_WORD: in a program's place
+    it is UNREAD_PROGRAM, and a start-up or a shell reads it as a word it cannot read."""
     found: set[str] = set()
     while words:
-        started = powershell_startup_programs(words, commands)
+        known = [None if word == unread else word for word in words]
+        started = powershell_startup_programs(known, commands)
         if started is not None:
             return found | started
         head, rest = words[0], words[1:]
         if head == "eval":
             return found | shell_commands(" ".join(rest), commands)
         if head in SCRIPT_SHELLS:
-            index = shell_script_index(rest)
-            return found | (shell_commands(rest[index], commands) if index is not None else set())
+            return found | _started_shell_programs(head, known[1:], commands)
         if head == "find":
             for action in find_actions(rest):
                 if commands is not None:
                     commands.append(action)
-                found |= _program_word(action[0]) | _wrapped_programs(action, commands)
+                found |= _wrapped_program_word(action, unread) | _wrapped_programs(action, commands, unread)
             return found
         wrapped = unwrapped(words)
         if not wrapped:
             return found
         if wrapped[0].startswith(UNREAD_PROGRAM):
             return found | {wrapped[0]}
-        found |= _program_word(wrapped[0])
+        found |= _wrapped_program_word(wrapped, unread)
         if commands is not None:
             commands.append(wrapped)
         words = wrapped
     return found
+
+
+def _wrapped_program_word(words: list[str], unread: str | None) -> set[str]:
+    """What the program of a command a wrapper or find's action runs names, as _program_word reads it, and
+    UNREAD_PROGRAM with the command's words for a program that is the caller's `unread` word."""
+    if unread is not None and words[0] == unread:
+        return {f"{UNREAD_PROGRAM}{' '.join(words)}"}
+    return _program_word(words[0])
 
 
 def powershell_startup_programs(
@@ -1425,9 +1435,10 @@ def powershell_readings(sources: list[str]) -> list[PowerShellReading]:
             programs[source].add(f"{UNREAD_PROGRAM}{item['unread']}")
         elif name := _program_name(item["name"]):
             words = item["words"] if "words" in item else started_process_words(item["arguments"])
+            texts = [name, *(word if word is not None else UNREAD_WORD for word in words)]
             programs[source].add(name)
-            programs[source] |= _started_shell_programs(name, words, commands[source])
-            commands[source].append([name, *(word if word is not None else UNREAD_WORD for word in words)])
+            programs[source] |= _wrapped_programs(texts, commands[source], unread=UNREAD_WORD)
+            commands[source].append(texts)
     return [
         PowerShellReading(frozenset(names), tuple(tuple(words) for words in run))
         for names, run in zip(programs, commands, strict=True)
@@ -1435,7 +1446,9 @@ def powershell_readings(sources: list[str]) -> list[PowerShellReading]:
 
 
 def powershell_commands(sources: list[str]) -> list[set[str]]:
-    """The external programs each PowerShell source runs, read by PowerShell's own parser in one call for them all."""
+    """The external programs each PowerShell source runs, read by PowerShell's own parser in one call for them all, and
+    the program each wrapper, find's action, or shell or PowerShell start-up among them runs, as _wrapped_programs
+    reads it."""
     return [set(reading.programs) for reading in powershell_readings(sources)]
 
 
