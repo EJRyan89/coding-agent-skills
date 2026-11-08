@@ -160,7 +160,6 @@ import errno
 import fnmatch
 import os
 import re
-import shlex
 import sys
 from dataclasses import dataclass, field
 from itertools import dropwhile, pairwise
@@ -169,15 +168,14 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
 import check_provenance
-import command_wrappers
 import frontmatter
-import git_client
+import git_subcommands
 import json_reader
+import powershell_commands
 import python_reader
 import runtime_support
 import skill_menu
 import whole_number
-from command_wrappers import ASSIGNMENT, PIPES, TIME_KEYWORD_OPTIONS
 from console import run_main
 from executable_locator import RelativeEnvironmentPath, absolute_home
 from file_presence import NotAFile, is_directory, is_occupied, is_present, matching
@@ -317,7 +315,6 @@ SCRIPT_FILE = re.compile(
 SCRIPT_SWITCH = re.compile(r"-[BEIOPRS]+")
 # The programs a grant may name by a subcommand, which must follow the program directly.
 SUBCOMMAND_PROGRAMS = frozenset({"git", "gh"})
-SUBCOMMAND = re.compile(r"[a-z][a-z0-9-]*")
 SHELL_FILE_COMMAND = r"(?:cat|head|tail|find|grep|rg|sed|awk|wc|ls)"
 # Word edges that also treat hyphens as part of a word, so "rev-parse" is not "parse".
 WORD_START = r"(?<![\w-])"
@@ -598,15 +595,6 @@ MODEL_VALUE = re.compile(r"(?i)haiku|sonnet|opus|fable|claude-[\w.-]+")
 EFFORT_LEVELS = frozenset({"minimal", "low", "medium", "high", "xhigh", "max"})
 # A sibling skill a skill's Markdown reaches through its own directory.
 SIBLING_SKILL = re.compile(r"\$\{CLAUDE_SKILL_DIR\}/\.\./([A-Za-z0-9._-]+)/")
-# A Bash command's text from where it starts, at the line's start, after an operator, or inside a substitution,
-# up to the operator or substitution that ends it outside quotes and escapes; a substitution inside it is its own.
-SHELL_COMMAND = re.compile(
-    r"(^|\|\||&&|\|&|[;&|(`]|\$\()"
-    r"((?:\\.|'[^']*'|\"(?:\\.|[^\"\\$`]|\$(?!\())*\"|\$(?!\()|[^;&|()`\n\\'\"$])*)"
-)
-# The words that may stand before a command's program: Bash's reserved words and a group's brace. Bash's time keyword
-# is read by program_words.
-LEADING_WORDS = frozenset({"if", "then", "else", "elif", "while", "until", "do", "!", "{"})
 OUTSIDE_REFERENCE = re.compile(r"(?<![\w./-])(\$\{CLAUDE_SKILL_DIR\}/)?((?:\.\./)+[\w./-]+\.md)\b")
 # A relative Markdown path that stays in the skill folder, such as `references/a.md` or `a.md`.
 INSIDE_REFERENCE = re.compile(r"(?<![\w./$}-])(\$\{CLAUDE_SKILL_DIR\}/)?((?:\./)?[\w-][\w./-]*\.md)\b")
@@ -849,7 +837,7 @@ def names_what_it_runs(pattern: str) -> bool:
         return True
     words = command_words(pattern[: pattern.find("*")])
     if words and words[0] in SUBCOMMAND_PROGRAMS:
-        return len(words) > 1 and SUBCOMMAND.fullmatch(words[1]) is not None
+        return len(words) > 1 and runtime_support.SUBCOMMAND_NAME.fullmatch(words[1]) is not None
     return runs_a_script(words)
 
 
@@ -2726,91 +2714,26 @@ def setting_lines(folder: Path) -> list[str]:
 # --- runtime support ------------------------------------------------------------------------------
 
 
-def bash_git_subcommands(text: str) -> set[str]:
-    """The subcommand of each git command a Bash script runs, outside comments: one where a command starts, a
-    substitution's included, and one a wrapper, find's actions, eval, or a shell's -c script runs, read through
-    ejryan89-skill-core's command_wrappers as repository validation reads them."""
-    found: set[str] = set()
-    after_pipe = False
-    for line in text.replace("\\\n", " ").splitlines():
-        if line.lstrip().startswith("#"):
-            continue
-        start, command = "", ""
-        for match in SHELL_COMMAND.finditer(line):
-            # After a pipe, or at the start of the line right after one, `time` is the time program, not the keyword.
-            reserved = match.group(1) not in PIPES and not (match.group(1) == "" and after_pipe)
-            start, command = match.groups()
-            found |= command_git_subcommands(shell_words(command), reserved)
-        # A line whose last operator is a pipe with no command after it hands its output to the next line's command.
-        after_pipe = start in PIPES and not command.strip()
-    return found
-
-
-def shell_words(command: str) -> list[str]:
-    """A command's words as Bash splits them, its quotes removed; a command shlex cannot split, as one with an unclosed
-    quote, is split at whitespace with each word's outer quotes stripped."""
+def powershell_script_commands(script: str) -> list[list[str]]:
+    """The words of each external command one PowerShell script runs, as ejryan89-skill-core's powershell_commands
+    reads them with pwsh's parser, which repository validation's reader runs too. A script pwsh cannot read fails."""
     try:
-        return shlex.split(command)
-    except ValueError:
-        return [word.strip("\"'") for word in command.split()]
-
-
-def command_git_subcommands(words: list[str], reserved: bool = True) -> set[str]:
-    """The git subcommand a simple command runs: past its leading keywords and assignments, Bash's time keyword and the
-    -p and -- it takes, through each wrapper of command_wrappers' catalogue, find's actions, eval, and a shell's -c
-    script, to a git command's own words. `reserved` says `time` in the command's place is Bash's keyword, false where
-    a pipe or find's action runs it; after an assignment it is the time program, which the catalogue reads."""
-    words = program_words(words, reserved)
-    while words:
-        head, rest = words[0], words[1:]
-        if head == "git":
-            subcommand = git_client.subcommand(rest)
-            return {subcommand} if subcommand else set()
-        if head == "eval":
-            return bash_git_subcommands(" ".join(rest))
-        if head in command_wrappers.SCRIPT_SHELLS:
-            index = command_wrappers.shell_script_index(rest)
-            return bash_git_subcommands(rest[index]) if index is not None else set()
-        if head == "find":
-            return {
-                found
-                for action in command_wrappers.find_actions(rest)
-                for found in command_git_subcommands(action, reserved=False)
-            }
-        words = command_wrappers.unwrapped(words)
-        if words and words[0].startswith(command_wrappers.UNREAD_PROGRAM):
-            return set()
-    return set()
-
-
-def program_words(words: list[str], reserved: bool) -> list[str]:
-    """A command's words from its program on: past its leading keywords and assignments, and past Bash's time keyword
-    where `reserved` holds and no assignment stands before it, with the -p and then the --, each optional, it takes
-    before the pipeline it times."""
-    while words:
-        if words[0] == "time" and reserved:
-            words = words[1:]
-            for option in TIME_KEYWORD_OPTIONS:
-                if words and words[0] == option:
-                    words = words[1:]
-        elif words[0] in LEADING_WORDS:
-            words = words[1:]
-        elif ASSIGNMENT.match(words[0]):
-            reserved = False
-            words = words[1:]
-        else:
-            break
-    return words
+        return powershell_commands.read([script])[0]
+    except powershell_commands.PowerShellUnread as exc:
+        raise InputError(f"cannot read a PowerShell script's commands: {exc}") from exc
 
 
 def script_git_subcommands(script: Path) -> set[str]:
-    """The subcommand of each git command a Bash script runs, or of each git call a Python script makes, by the
-    shared derivation; any other script runs none this reads. A Python script that does not parse fails, as
-    script_facts fails it."""
+    """The subcommand of each git command a Bash or PowerShell script runs, by ejryan89-skill-core's git_subcommands,
+    the reader repository validation shares, or of each git call a Python script makes, by the shared derivation; any
+    other script runs none this reads. A Python script that does not parse fails, as script_facts fails it, and so
+    does a PowerShell script, or a script a Bash script starts PowerShell on, that pwsh cannot read."""
     text = require_text(script)
     suffix = script.suffix.casefold()
     if suffix in (".sh", ".bash"):
-        return bash_git_subcommands(text)
+        return git_subcommands.bash_git_subcommands(text, powershell_script_commands)
+    if suffix == ".ps1":
+        return git_subcommands.powershell_git_subcommands(powershell_script_commands(text), powershell_script_commands)
     if suffix != ".py":
         return set()
     try:

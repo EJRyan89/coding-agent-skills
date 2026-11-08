@@ -53,6 +53,28 @@ def test_the_needs_follow_from_grants_start_hooks_tools_and_git() -> None:
     assert runtime_support.frontmatter_needs([], False, git_subcommands=frozenset({"fetch"})) == {"sandbox-network"}
 
 
+# A subcommand no literal names, recorded as the word that stands for it, may be any subcommand, one that reaches a
+# remote included; a subcommand a literal names reaches one only when it is one of NETWORK_GIT_SUBCOMMANDS.
+@pytest.mark.parametrize(
+    ("subcommand", "reaches"),
+    [
+        ("push", True),
+        ("ls-remote", True),
+        ("status", False),
+        ("rev-parse", False),
+        ("$sub", True),
+        ("${subcommand}", True),
+        ("<value>", True),
+        ("Push", True),
+        ("", True),
+    ],
+)
+def test_a_subcommand_no_literal_names_may_reach_a_remote(subcommand: str, reaches: bool) -> None:
+    assert runtime_support.reaches_remote(subcommand) is reaches
+    needs = runtime_support.frontmatter_needs([], False, git_subcommands=frozenset({subcommand}))
+    assert needs == ({"sandbox-network"} if reaches else set())
+
+
 @pytest.mark.parametrize(
     ("line", "expected"),
     [

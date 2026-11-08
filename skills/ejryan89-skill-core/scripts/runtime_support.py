@@ -41,9 +41,13 @@ CAPABILITY_GRANTS = {"Agent": "agent-delegation", "Workflow": "workflow"}
 # optional, needs sandbox-network.
 NETWORK_TOOLS = frozenset({"gh", "copilot"})
 # The git subcommands that reach a remote. Every skill runs git, so git is never declared as a tool; a skill whose
-# script runs one of these, a Bash script by its command line or a Python script by python_git_subcommands, needs
-# sandbox-network as a network tool's does.
+# script runs one of these, a Bash or PowerShell script by git_subcommands or a Python script by
+# python_git_subcommands, needs sandbox-network as a network tool's does.
 NETWORK_GIT_SUBCOMMANDS = frozenset({"clone", "fetch", "ls-remote", "pull", "push"})
+# A git or gh subcommand as a literal names one, which audit-skill's grant reader reads too. A reader records a git
+# subcommand no literal names as the word that stands for it, such as Bash's `$sub` or PowerShell's UNREAD_WORD, which
+# may be any subcommand, one of NETWORK_GIT_SUBCOMMANDS included, so a script that runs one needs sandbox-network too.
+SUBCOMMAND_NAME = re.compile(r"[a-z][a-z0-9-]*")
 # What a skill loses where a runtime lacks the capability, until its author states it more precisely.
 DEFAULT_REASONS = {
     "agent-delegation": "It starts subagents, which this runtime cannot.",
@@ -142,13 +146,19 @@ def frontmatter_needs(
     """The capabilities a skill's frontmatter, metadata, and scripts show it needs: its allowed-tools grants,
     user-only start, for a skill that grants Agent and starts an agent whose definition declares hooks, those hooks,
     and, for a skill that declares a network tool among its tools, required or optional, or whose scripts run a git
-    subcommand that reaches a remote, network access."""
+    subcommand that may reach a remote, as reaches_remote reads it, network access."""
     needs = {CAPABILITY_GRANTS[grant] for grant in allowed_tools if grant in CAPABILITY_GRANTS}
     if starts_hooked_agent and "agent-delegation" in needs:
         needs.add("fail-closed-agent-hooks")
-    if tools & NETWORK_TOOLS or git_subcommands & NETWORK_GIT_SUBCOMMANDS:
+    if tools & NETWORK_TOOLS or any(reaches_remote(subcommand) for subcommand in git_subcommands):
         needs.add("sandbox-network")
     return needs | {"user-only-start"} if user_only else needs
+
+
+def reaches_remote(subcommand: str) -> bool:
+    """Whether a git subcommand a script runs may reach a remote: one of NETWORK_GIT_SUBCOMMANDS, or one no literal
+    names, which may be any of them."""
+    return subcommand in NETWORK_GIT_SUBCOMMANDS or not SUBCOMMAND_NAME.fullmatch(subcommand)
 
 
 def names_git(function: ast.expr) -> bool:

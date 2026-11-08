@@ -98,6 +98,8 @@ NOT_READERS: dict[str, str] = {
     "skill_scripts.optional_tool_placement_problems": DEPLOY_METADATA,
     "toolchain.powershell_json": "reads the last line validation's own PowerShell script prints, failing the policy "
     "with the output when it is not a JSON list",
+    "powershell_commands.read": "reads the last line ejryan89-skill-core's own PowerShell parser script prints, "
+    "refusing it with PowerShellUnread when it is not a JSON list",
     "upgrade_notes._required_variables": SNAPSHOT,
     "upgrade_notes._review_schemas": SNAPSHOT,
     "validation_support.skill_dependency_closure": DEPLOY_METADATA,

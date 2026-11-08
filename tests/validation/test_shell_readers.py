@@ -17,11 +17,18 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts"))
 
 import command_wrappers
-import git_client
+import git_subcommands
+import powershell_commands
 import skill_scripts
 import toolchain
 from command_wrappers import UNREAD_PROGRAM
 from skill_scripts import CommandReader, shell_commands
+
+
+def shell_git_subcommands(script: str) -> set[str]:
+    """The subcommand of each git command a Bash script runs, as the runtime-support policy reads it:
+    ejryan89-skill-core's git_subcommands, the script a PowerShell start-up runs read by powershell_readings."""
+    return git_subcommands.bash_git_subcommands(script, skill_scripts.powershell_script_commands)
 
 
 @pytest.mark.parametrize(
@@ -179,7 +186,7 @@ def test_shell_command_extraction_reads_the_program_the_time_keyword_times(scrip
     ],
 )
 def test_the_git_subcommand_reader_reads_the_git_command_the_time_keyword_times(script: str) -> None:
-    assert skill_scripts.shell_git_subcommands(script) == {"push"}
+    assert shell_git_subcommands(script) == {"push"}
 
 
 def test_the_shell_lexer_gives_each_word_beside_its_syntax() -> None:
@@ -189,7 +196,7 @@ def test_the_shell_lexer_gives_each_word_beside_its_syntax() -> None:
 
 # A line continuation joins its lines, so the word after it is the git command's subcommand.
 def test_the_git_subcommand_reader_reads_past_a_line_continuation() -> None:
-    assert skill_scripts.shell_git_subcommands("git \\\n  push") == {"push"}
+    assert shell_git_subcommands("git \\\n  push") == {"push"}
 
 
 # An unquoted separator still ends the command, so the word after it is the next command's program.
@@ -388,7 +395,7 @@ def test_the_command_policy_reads_the_script_a_powershell_source_starts_powershe
     ],
 )
 def test_the_git_subcommand_reader_reads_the_git_command_a_started_script_runs(script: str) -> None:
-    assert skill_scripts.shell_git_subcommands(script) == {"push"}
+    assert shell_git_subcommands(script) == {"push"}
 
 
 # A git command a wrapper of COMMAND_WRAPPERS or find's -exec family runs directly is read past the wrapper's options,
@@ -429,7 +436,7 @@ WRAPPED_GIT_PUSH_SCRIPTS = (
 
 @pytest.mark.parametrize("script", WRAPPED_GIT_PUSH_SCRIPTS)
 def test_the_git_subcommand_reader_reads_the_git_command_a_wrapper_runs(script: str) -> None:
-    assert skill_scripts.shell_git_subcommands(script) == {"push"}
+    assert shell_git_subcommands(script) == {"push"}
 
 
 # The PowerShell twin of WRAPPED_GIT_PUSH_SCRIPTS: on Linux pwsh, where each wrapper of COMMAND_WRAPPERS and find are
@@ -466,13 +473,10 @@ POWERSHELL_WRAPPED_GIT_PUSH_SOURCES = (
 
 
 def _powershell_git_subcommands(source: str) -> set[str]:
-    """The subcommand of each git command a PowerShell source runs, as powershell_readings reads its commands."""
+    """The subcommand of each git command a PowerShell source runs, as the runtime-support policy reads it:
+    ejryan89-skill-core's git_subcommands over the commands powershell_readings lists."""
     (reading,) = skill_scripts.powershell_readings([source])
-    return {
-        subcommand
-        for words in reading.commands
-        if words[0] == "git" and (subcommand := git_client.subcommand(list(words[1:]))) is not None
-    }
+    return git_subcommands.powershell_git_subcommands(reading.commands, skill_scripts.powershell_script_commands)
 
 
 @pytest.mark.parametrize("source", POWERSHELL_WRAPPED_GIT_PUSH_SOURCES)
@@ -531,7 +535,7 @@ def test_the_powershell_reader_refuses_a_wrapped_program_it_cannot_read(source: 
     ],
 )
 def test_the_git_subcommand_reader_reads_only_the_command_a_wrapper_runs(script: str, subcommands: set[str]) -> None:
-    assert skill_scripts.shell_git_subcommands(script) == subcommands
+    assert shell_git_subcommands(script) == subcommands
 
 
 # A started script that runs no git command gives no subcommand, though a word of it is one.
@@ -546,7 +550,7 @@ def test_the_git_subcommand_reader_reads_only_the_command_a_wrapper_runs(script:
     ],
 )
 def test_the_git_subcommand_reader_finds_none_where_a_started_script_runs_no_git(script: str) -> None:
-    assert skill_scripts.shell_git_subcommands(script) == set()
+    assert shell_git_subcommands(script) == set()
 
 
 # A quoted or escaped ; is a word of the command before it, which runs no git; find's second action, past one, does.
@@ -560,7 +564,7 @@ def test_the_git_subcommand_reader_finds_none_where_a_started_script_runs_no_git
     ],
 )
 def test_the_git_subcommand_reader_reads_past_a_quoted_or_escaped_semicolon(script: str, subcommands: set[str]) -> None:
-    assert skill_scripts.shell_git_subcommands(script) == subcommands
+    assert shell_git_subcommands(script) == subcommands
 
 
 # A subcommand no literal names is recorded as its word: the Bash text, or UNREAD_WORD for PowerShell's.
@@ -568,14 +572,14 @@ def test_the_git_subcommand_reader_reads_past_a_quoted_or_escaped_semicolon(scri
     ("script", "subcommand"),
     [
         ("bash -c 'git \"$sub\"'", "$sub"),
-        ("pwsh -c 'git $sub'", skill_scripts.UNREAD_WORD),
-        ("pwsh -c 'Start-Process git -ArgumentList $arguments'", skill_scripts.UNREAD_WORD),
+        ("pwsh -c 'git $sub'", powershell_commands.UNREAD_WORD),
+        ("pwsh -c 'Start-Process git -ArgumentList $arguments'", powershell_commands.UNREAD_WORD),
     ],
 )
 def test_the_git_subcommand_reader_records_a_subcommand_no_literal_names_as_its_word(
     script: str, subcommand: str
 ) -> None:
-    assert skill_scripts.shell_git_subcommands(script) == {subcommand}
+    assert shell_git_subcommands(script) == {subcommand}
 
 
 # Start-Process starts pwsh or Windows PowerShell with the script its -ArgumentList holds, in any spelling of the
@@ -652,7 +656,7 @@ class StartProcessTable(unittest.TestCase):
             START_PROCESS_LISTING, [], "UNUSED", "PowerShell could not list Start-Process"
         )
         self.assertEqual(
-            skill_scripts.START_PROCESS_PARAMETERS,
+            powershell_commands.START_PROCESS_PARAMETERS,
             {row["name"]: (row["switch"], tuple(row["aliases"])) for row in listed},
         )
 
@@ -682,4 +686,4 @@ def test_start_process_starting_powershell_on_a_file_or_nothing_runs_only_powers
 def test_start_process_words_are_its_argument_list_joined_and_split_as_windows_does(
     arguments: list[str | None], words: list[str | None]
 ) -> None:
-    assert skill_scripts.started_process_words(arguments) == words
+    assert powershell_commands.started_process_words(arguments) == words

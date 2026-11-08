@@ -21,6 +21,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
 import check_provenance
+import powershell_commands
 import skill_inventory
 from file_presence import NotAFile
 from git_client import GitClient, GitError, GitResult
@@ -2609,6 +2610,35 @@ class RuntimeSupportTests(SourceTreeTestCase):
             [line for line in self.runtime(skill) if line.startswith(("RUNTIME_NEEDS", "RUNTIME_OVERCLAIMED"))],
         )
 
+    def test_full_on_codex_for_a_git_push_in_a_powershell_script_is_overclaimed(self) -> None:
+        skill = self.skill("Body.\n", self.full())
+        write(skill.parent / "scripts" / "update.ps1", "git status\n# git push\n")
+        write(skill.parent / "scripts" / "test_update.ps1", "git push\n")
+        self.assertEqual([], [line for line in self.runtime(skill) if line.startswith("RUNTIME_OVERCLAIMED")])
+        write(skill.parent / "scripts" / "update.ps1", "Start-Process git -ArgumentList 'push', 'origin'\n")
+        self.assertEqual(
+            ["RUNTIME_NEEDS sandbox-network git push scripts/update.ps1", "RUNTIME_OVERCLAIMED codex sandbox-network"],
+            [line for line in self.runtime(skill) if line.startswith(("RUNTIME_NEEDS", "RUNTIME_OVERCLAIMED"))],
+        )
+
+    def test_full_on_codex_for_a_git_subcommand_no_literal_names_is_overclaimed(self) -> None:
+        skill = self.skill("Body.\n", self.full())
+        write(skill.parent / "scripts" / "update.sh", 'git -C "$CLONE" "$sub"\n')
+        self.assertEqual(
+            ["RUNTIME_NEEDS sandbox-network git $sub scripts/update.sh", "RUNTIME_OVERCLAIMED codex sandbox-network"],
+            [line for line in self.runtime(skill) if line.startswith(("RUNTIME_NEEDS", "RUNTIME_OVERCLAIMED"))],
+        )
+
+    def test_a_powershell_script_pwsh_cannot_read_fails_the_runtime_derivation(self) -> None:
+        skill = self.skill("Body.\n", self.full())
+        write(skill.parent / "scripts" / "update.ps1", "git push\n")
+        with (
+            mock.patch.object(powershell_commands, "find_executable", return_value=None),
+            self.assertRaises(skill_inventory.InputError) as raised,
+        ):
+            skill_inventory.own_needs(skill.parent)
+        self.assertEqual("cannot read a PowerShell script's commands: pwsh was not found", str(raised.exception))
+
     def test_full_on_codex_for_a_python_git_fetch_is_overclaimed(self) -> None:
         skill = self.skill("Body.\n", self.full())
         write(skill.parent / "scripts" / "test_update.py", 'git(root, "fetch", "origin")\n')
@@ -2720,53 +2750,6 @@ def test_no_skill_this_source_ships_or_keeps_yields_a_subagent_model_or_runtime_
             assert code == 0, (folder, lines[-1:])
             found += [line for line in lines if line.startswith(SUBAGENT_CANDIDATES)]
     assert found == []
-
-
-@pytest.mark.parametrize(
-    ("line", "expected"),
-    [
-        ('git -C "$CLONE" fetch --tags origin', {"fetch"}),
-        ("OUT=$(git ls-remote --tags origin) && git push", {"ls-remote", "push"}),
-        ("if git rev-parse --git-dir; then", {"rev-parse"}),
-        ('echo "run git fetch first"', set()),
-        ("  # git pull later", set()),
-        ("legit fetch", set()),
-        # A wrapper's options are read by its getopt table to the command it runs, and a lookup runs nothing.
-        ("nice -n 5 git push", {"push"}),
-        ("env -i A=1 timeout --signal TERM 5 git fetch", {"fetch"}),
-        ("xargs -n 1 git push", {"push"}),
-        ("env -S 'git push'", {"push"}),
-        ("command -v git", set()),
-        ("xargs echo git push", set()),
-        ("timeout --sig TERM 5 git push", set()),
-        # find's actions, eval, and a shell's -c script are read as commands of their own.
-        ("find . -exec git status {} \\; -exec echo push \\;", {"status"}),
-        ("eval git fetch", {"fetch"}),
-        ("bash -lc 'cd x && git pull'", {"pull"}),
-        # A quoted operator is a word, a substitution in a string is a command, and so is a group's or a continuation's.
-        ("echo 'a; git push'", set()),
-        ('echo "now $(git rev-parse HEAD)"', {"rev-parse"}),
-        ("{ git push; }", {"push"}),
-        ("git \\\n  fetch", {"fetch"}),
-        ("x=1 git push 'unclosed", {"push"}),
-        # Bash's time keyword takes -p and then --, each optional, before the pipeline it times; a second -p, or one
-        # after --, is the timed command's own word. After a pipe, the newline right after one, an assignment, or in
-        # find's action, `time` is the time program, read by its options.
-        ("time -p git push", {"push"}),
-        ("time -p -- git push", {"push"}),
-        ("! time -p git push", {"push"}),
-        ("time -p time -p git push", {"push"}),
-        ("x=$(time -p git fetch)", {"fetch"}),
-        ("time -p -p git push", set()),
-        ("time -- -p git push", set()),
-        ("echo a | time -p -p git push", {"push"}),
-        ("echo a |\n time -p -p git push", {"push"}),
-        ("A=1 time -p -p git push", {"push"}),
-        ("find . -exec time -p -p git push \\;", {"push"}),
-    ],
-)
-def test_a_bash_script_runs_the_git_subcommand_after_gits_own_options(line: str, expected: set[str]) -> None:
-    assert skill_inventory.bash_git_subcommands(line) == expected
 
 
 # A plugin agent as tools/plugin_build.py writes it: the definition without its hooks, which move into the plugin's

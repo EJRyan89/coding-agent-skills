@@ -23,6 +23,19 @@ from path_keys import path_key
 # Microsoft Store placeholder, and python3 elsewhere, where a distribution may install no python command.
 PYTHON = "python" if sys.platform == "win32" else "python3"
 
+# The extension Windows finds a program by when its caller leaves it off, so git and git.exe start one program.
+PROGRAM_EXTENSION = ".exe"
+
+
+def program_name(name: str) -> str:
+    """The name a program is called by, without the extension Windows lets its caller add, in any case: git for
+    git.exe and for git.EXE. Any other name is returned unchanged. The deployer reads it as
+    `platform_support.program_name`."""
+    if name.casefold().endswith(PROGRAM_EXTENSION):
+        return name[: -len(PROGRAM_EXTENSION)]
+    return name
+
+
 # The environment variables a lookup reads, so a program kept from one lookup is looked up again once they change.
 LOOKUP_VARIABLES = ("PATH", "PATHEXT", "LOCALAPPDATA")
 
