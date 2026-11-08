@@ -5,11 +5,14 @@ it. The readers of those tables are held to each spelling git's option parser ta
 
 from __future__ import annotations
 
+import functools
 import re
 import subprocess
 import sys
 import tempfile
 import unittest
+from collections.abc import Sequence
+from dataclasses import astuple
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
@@ -20,44 +23,110 @@ from tools import hub_guard
 # An option line of parse-options' help: an optional short letter, then a long option (perhaps with [no-]) or a short
 # one alone, then its value's placeholder.
 OPTION_LINE = re.compile(r"^\s{2,}(?:-(\w),\s+)?(?:--(?:\[no-\])?([\w-]+)|-(\w))\s*(?:\[?=)?<([^>]+)>")
-# The placeholders that name a file or a directory.
+# The same line for an option that takes the next word or a value after =, not one whose value is optional.
+VALUED_LINE = re.compile(r"^\s{2,}(?:-(\w),\s+)?(?:--(?:\[no-\])?([\w-]+)|-(\w))(?:=| )<([^>]+)>")
+# A boolean option's line, with its description on the same line.
+FLAG_LINE = re.compile(r"^\s{2,}(?:-(\w),\s+)?(?:--(?:\[no-\])?([\w-]+)|-(\w))\s{2,}(\S.*)$")
+# The placeholders that name a file or a directory, and the option names that name a root git writes beneath.
 PATH_PLACEHOLDER = re.compile(r"file|path|dir|root", re.IGNORECASE)
+ROOT_OPTION = re.compile(r"(?:prefix|directory|root)")
+# The operand placeholders of a usage line that name a file, a directory, a mail, or a patch.
+PATH_OPERAND = re.compile(r"file|path|dir|root|msg|patch|mbox|dest|base-name", re.IGNORECASE)
+# A placeholder in a usage line, with the word it is attached to.
+PLACEHOLDER = re.compile(r"(\S*?)<([^>]+)>")
+# What starts a usage line before its words: `usage:` or `or:`, a marker, and `git <subcommand>`.
+USAGE_START = re.compile(r"^\s*(?:usage:|or:)?\s*(?:\(EXPERIMENTAL!\)\s+)?(?:git\s+\S+)?")
+# What a boolean option's description says when it makes git write a file.
+WRITING_FLAG = re.compile(r"\b(?:over)?write\b|in[ -]place|outside the work", re.IGNORECASE)
 # The builtins whose -h starts a server or waits for input rather than printing its options.
 NOT_ASKED = frozenset({"daemon", "credential-cache--daemon", "fsmonitor--daemon", "upload-pack", "receive-pack"})
 
 
-def path_options() -> set[str]:
-    """Each `<subcommand> <option>` the installed git's `-h` lists with a path for its value, both spellings of an
-    option that has a letter and a name."""
+def help_text(words: Sequence[str], cwd: str) -> str:
+    result = subprocess.run(
+        ["git", *words, "-h"],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        cwd=cwd,
+        stdin=subprocess.DEVNULL,
+        timeout=30,
+        check=False,
+    )
+    return result.stdout + result.stderr
+
+
+@functools.cache
+def help_texts() -> dict[str, str]:
+    """The `-h` text of each builtin the installed git lists, asked outside every repository."""
     builtins = subprocess.run(
         ["git", "--list-cmds=builtins"], capture_output=True, text=True, encoding="utf-8", timeout=30, check=True
     ).stdout
-    found: set[str] = set()
     with tempfile.TemporaryDirectory() as empty:
-        for subcommand in builtins.split():
-            if subcommand in NOT_ASKED:
+        return {name: help_text([name], empty) for name in builtins.split() if name not in NOT_ASKED}
+
+
+def spellings(match: re.Match[str]) -> list[str]:
+    letter, name, alone = match.group(1), match.group(2), match.group(3)
+    return [spelling for spelling in (letter and f"-{letter}", name and f"--{name}", alone and f"-{alone}") if spelling]
+
+
+def path_options() -> set[str]:
+    """Each `<subcommand> <option>` the installed git's `-h` lists with a path for its value, or with a name that
+    names a root, both spellings of an option that has a letter and a name."""
+    found: set[str] = set()
+    for subcommand, text in help_texts().items():
+        for line in text.splitlines():
+            match = OPTION_LINE.match(line)
+            if match is None:
                 continue
-            result = subprocess.run(
-                ["git", subcommand, "-h"],
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                cwd=empty,
-                stdin=subprocess.DEVNULL,
-                timeout=30,
-                check=False,
-            )
-            for line in (result.stdout + result.stderr).splitlines():
-                match = OPTION_LINE.match(line)
-                if match is None or not PATH_PLACEHOLDER.search(match.group(4)):
+            if PATH_PLACEHOLDER.search(match.group(4)) or ROOT_OPTION.fullmatch(match.group(2) or ""):
+                found.update(f"{subcommand} {spelling}" for spelling in spellings(match))
+    return found
+
+
+def usage_operands() -> set[str]:
+    """Each `<subcommand> <placeholder>` the installed git's usage names as an operand that is a path, a mail, or a
+    patch: a placeholder no option word stands before or is attached to."""
+    found: set[str] = set()
+    for subcommand, text in help_texts().items():
+        for line in text.split("\n\n", 1)[0].splitlines():
+            rest = USAGE_START.sub("", line, count=1)
+            for placeholder in PLACEHOLDER.finditer(rest):
+                attached = placeholder.group(1).lstrip("[(|")
+                before = rest[: placeholder.start()].split()
+                previous = before[-1].strip("[]()|") if before else ""
+                valued = previous.startswith("-") and previous != "--"
+                if attached.startswith("-") or attached.endswith("=") or (not attached and valued):
                     continue
-                letter, name, alone = match.group(1), match.group(2), match.group(3)
-                found.update(
-                    f"{subcommand} {spelling}"
-                    for spelling in (letter and f"-{letter}", name and f"--{name}", alone and f"-{alone}")
-                    if spelling
-                )
+                if PATH_OPERAND.search(placeholder.group(2)):
+                    found.add(f"{subcommand} <{placeholder.group(2)}>")
+    return found
+
+
+def writing_flags() -> set[str]:
+    """Each `<subcommand> <option>` the installed git's `-h` lists with no value and a description that says it
+    writes, overwrites, edits in place, or reaches outside the work tree."""
+    found: set[str] = set()
+    for subcommand, text in help_texts().items():
+        for line in text.splitlines():
+            match = FLAG_LINE.match(line)
+            if match is not None and WRITING_FLAG.search(match.group(4)):
+                found.update(f"{subcommand} {spelling}" for spelling in spellings(match))
+    return found
+
+
+def valued_options(words: Sequence[str]) -> set[str]:
+    """Each option `git <words> -h` lists that takes the next word as its value, asked in a new repository."""
+    with tempfile.TemporaryDirectory() as directory:
+        subprocess.run(["git", "init", "-q", directory], capture_output=True, timeout=30, check=True)
+        text = help_text(words, directory)
+    found: set[str] = set()
+    for line in text.splitlines():
+        match = VALUED_LINE.match(line)
+        if match is not None:
+            found.update(spellings(match))
     return found
 
 
@@ -93,6 +162,58 @@ class CatalogueTests(unittest.TestCase):
                 self.assertNotIn(option, hub_guard.GIT_WRITING_OPTIONS.get(subcommand, ()))
                 self.assertNotIn(option, running(subcommand))
 
+    def test_every_operand_git_s_usage_names_with_a_path_is_decided(self) -> None:
+        listed = usage_operands()
+        self.assertIn("mailinfo <msg>", listed, "the usage reader finds git's operands")
+        self.assertIn("pack-objects <base-name>", listed, "the usage reader reads a usage's later lines")
+        self.assertNotIn("mailsplit <directory>", listed, "a placeholder attached to an option is its value")
+        undecided = [
+            entry
+            for entry in listed
+            if entry.split(" ")[0] not in hub_guard.GIT_OPERAND_SUBCOMMANDS and entry not in hub_guard.GIT_OPERANDS_READ
+        ]
+        self.assertEqual([], sorted(undecided))
+
+    def test_every_boolean_option_git_says_writes_is_decided(self) -> None:
+        listed = writing_flags()
+        self.assertIn("interpret-trailers --in-place", listed, "the flag reader finds git's in-place modes")
+        self.assertIn("apply --unsafe-paths", listed, "the flag reader finds an option reaching outside the work tree")
+
+        def decided_flag(entry: str) -> bool:
+            subcommand, option = entry.split(" ", 1)
+            rows = [row for key, row in hub_guard.GIT_OPERAND_WRITERS.items() if key.split(" ")[0] == subcommand]
+            return (
+                any(option in row.modes | row.stdout for row in rows)
+                or (subcommand in hub_guard.GIT_UNREAD_MODES and option in hub_guard.GIT_UNREAD_MODES[subcommand].modes)
+                or entry in hub_guard.GIT_MODES_READ
+            )
+
+        self.assertEqual([], sorted(entry for entry in listed if not decided_flag(entry)))
+
+    def test_each_operand_writer_and_unread_mode_skips_the_value_of_every_option_git_lists_with_one(self) -> None:
+        for key, row in (*hub_guard.GIT_OPERAND_WRITERS.items(), *hub_guard.GIT_UNREAD_MODES.items()):
+            with self.subTest(key=key):
+                subcommand = key.split(" ")[0]
+                skipped = row.valued | hub_guard.GIT_WRITING_OPTIONS.get(subcommand, frozenset())
+                self.assertEqual([], sorted(valued_options(key.split(" ")) - skipped))
+
+    def test_every_read_operand_and_mode_names_a_reason_and_none_is_also_a_writer(self) -> None:
+        for entry, reason in (*hub_guard.GIT_OPERANDS_READ.items(), *hub_guard.GIT_MODES_READ.items()):
+            with self.subTest(entry=entry):
+                self.assertGreater(len(reason.split()), 2)
+                self.assertNotIn(entry.split(" ")[0], hub_guard.GIT_OPERAND_SUBCOMMANDS)
+
+    def test_the_writers_an_outside_review_found_allowed_are_in_the_tables(self) -> None:
+        # Pinned against literals, not the tables: an in-place mode, output operands, and roots that wrote a hub.
+        self.assertEqual(frozenset({"--in-place"}), hub_guard.GIT_OPERAND_WRITERS["interpret-trailers"].modes)
+        self.assertEqual((0, None), astuple(hub_guard.GIT_OPERAND_WRITERS["mailinfo"])[:2])
+        self.assertEqual((0, 1), astuple(hub_guard.GIT_OPERAND_WRITERS["merge-file"])[:2])
+        self.assertEqual((1, 1), astuple(hub_guard.GIT_OPERAND_WRITERS["worktree move"])[:2])
+        self.assertIn("--prefix", hub_guard.GIT_WRITING_OPTIONS["checkout-index"])
+        self.assertIn("--directory", hub_guard.GIT_WRITING_OPTIONS["apply"])
+        self.assertIn("--directory", hub_guard.GIT_WRITING_OPTIONS["am"])
+        self.assertEqual(frozenset({"--unsafe-paths"}), hub_guard.GIT_UNREAD_MODES["apply"].modes)
+
     def test_each_subcommand_with_an_option_that_writes_or_runs_refuses_a_word_the_text_does_not_settle(self) -> None:
         # Pinned against literals, not the tables: the subcommands a probe found writing --output.
         for subcommand in ("diff", "log", "show", "rev-list", "shortlog", "reflog", "blame", "range-diff", "revert"):
@@ -120,7 +241,68 @@ class EffectsTests(unittest.TestCase):
             ("bundle", ["create", "--", "out", "HEAD"], ["out"]),
             ("bundle", ["create", None, "HEAD"], [None]),
             ("bundle", ["verify", "out"], []),
-            ("pack-objects", ["--window", "5", "out"], ["5", "out"]),
+            ("pack-objects", ["--window", "5", "out"], ["out"]),
+            ("pack-objects", ["--win", "5", "out"], ["out"]),
+            ("pack-objects", ["--window=5", "out"], ["out"]),
+            ("interpret-trailers", ["--in-place", "--trailer", "Reviewed-by: x", "a"], ["a"]),
+            ("interpret-trailers", ["--in", "--trailer=Reviewed-by: x", "a", "b"], ["a", "b"]),
+            ("interpret-trailers", ["--in-place", "--", "a"], ["a"]),
+            ("interpret-trailers", ["--in-place", "--no-in-place", "a"], []),
+            ("interpret-trailers", ["--no-in-place", "--in-place", "a"], ["a"]),
+            ("interpret-trailers", ["--trailer", "--in-place", "a"], []),
+            ("interpret-trailers", ["a"], []),
+            ("interpret-trailers", ["--", "--in-place", "a"], []),
+            ("mailinfo", ["msg", "patch"], ["msg", "patch"]),
+            ("mailinfo", ["-k", "--encoding", "utf-8", "msg", "patch"], ["msg", "patch"]),
+            ("merge-file", ["current", "base", "other"], ["current"]),
+            ("merge-file", ["-L", "a", "-L", "b", "current", "base", "other"], ["current"]),
+            ("merge-file", ["-La", "--marker-size", "9", "current", "base", "other"], ["current"]),
+            ("merge-file", ["-qL", "a", "current", "base", "other"], ["current"]),
+            ("merge-file", ["-Lp", "current", "base", "other"], ["current"]),
+            ("merge-file", ["--", "-p", "base", "other"], ["-p"]),
+            ("merge-file", ["-p", "current", "base", "other"], []),
+            ("merge-file", ["-qp", "current", "base", "other"], []),
+            ("merge-file", ["--stdo", "current", "base", "other"], []),
+            ("merge-file", ["--object-id", "current", "base", "other"], []),
+            ("merge-file", ["--stdout", "--no-stdout", "current", "base", "other"], ["current"]),
+            ("merge-file", [None, "current", "base", "other"], [None]),
+            ("checkout-index", ["--prefix=out/", "-a", "-f"], ["out/"]),
+            ("checkout-index", ["-a", "--prefix", "out/"], ["out/"]),
+            ("checkout-index", ["--pre", "out/", "-a"], ["out/"]),
+            ("checkout-index", ["-a", "-f"], []),
+            ("apply", ["--directory=out", "p.diff"], ["out"]),
+            ("apply", ["--unsafe-paths", "p.diff"], [None]),
+            ("apply", ["--unsafe", "p.diff"], [None]),
+            ("apply", ["--unsafe-paths", "--no-unsafe-paths", "p.diff"], []),
+            ("apply", ["--", "--unsafe-paths"], []),
+            ("am", ["--directory", "out", "mail.mbox"], ["out"]),
+            ("worktree", ["move", "old", "out"], ["out"]),
+            ("worktree", ["move", "-f", "old", "out"], ["out"]),
+            ("worktree", ["remove", "old"], []),
+            # An option's value spelled as a mode's --no- form, or as a printing option, is that option's value.
+            ("apply", ["--unsafe-paths", "--exclude", "--no-unsafe-paths", "p.diff"], [None]),
+            ("apply", ["--unsafe-paths", "--exc", "--no-unsafe-paths", "p.diff"], [None]),
+            ("apply", ["--unsafe-paths", "-p", "--no-unsafe-paths", "p.diff"], [None]),
+            ("apply", ["--unsafe-paths", "-C", "--no-unsafe-paths", "p.diff"], [None]),
+            ("apply", ["--unsafe-paths", "--include=--no-unsafe-paths", "p.diff"], [None]),
+            ("apply", ["--exclude", "--unsafe-paths", "p.diff"], []),
+            ("apply", ["--directory", "--no-unsafe-paths", "--unsafe-paths", "p.diff"], ["--no-unsafe-paths", None]),
+            ("interpret-trailers", ["--in-place", "--trailer", "--no-in-place", "a"], ["a"]),
+            ("interpret-trailers", ["--in-place", "--where=--no-in-place", "a"], ["a"]),
+            ("merge-file", ["-L", "-p", "current", "base", "other"], ["current"]),
+            ("merge-file", ["-L", "--stdout", "current", "base", "other"], ["current"]),
+            ("merge-file", ["--marker-size", "--stdout", "current", "base", "other"], ["current"]),
+            ("merge-file", ["--diff-algorithm=--stdout", "current", "base", "other"], ["current"]),
+            ("pack-objects", ["--window", "--stdout", "out"], ["out"]),
+            ("format-patch", ["--subject-prefix", "--stdout", "-1"], ["."]),
+            ("format-patch", ["--author", "--stdout", "-1"], ["."]),
+            ("format-patch", ["--cover-letter", "--stdout"], ["."]),
+            ("format-patch", ["-1", "--stdout"], []),
+            ("format-patch", ["--stdout", "-1"], []),
+            ("format-patch", ["HEAD~2", "--stdout"], []),
+            ("format-patch", ["--subject-prefix=x", "--stdout", "-1"], []),
+            ("format-patch", ["-1", "--stdout", "--no-stdout"], ["."]),
+            ("format-patch", ["-1", "--", "--stdout"], ["."]),
             ("pack-objects", ["--stdout"], []),
             ("fast-export", ["--export-m=out"], ["out"]),
             ("diff", ["--output-indicator-new=+"], []),

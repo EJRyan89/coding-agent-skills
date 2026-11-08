@@ -295,8 +295,9 @@ a row decides it.
 - **What a git call's words write or run.** Wherever git runs, a file it writes at a path its words name is judged
   as a redirection's target is, a relative path read from where git starts. The options that name such a file are
   `--output`, which every subcommand that reads git's diff or revision options takes, and those
-  `GIT_WRITING_OPTIONS` names: `apply --build-fake-ancestor`, `archive -o`, `bugreport -o`,
-  `bugreport --output-directory`, `clone --separate-git-dir`, `credential-cache --socket`,
+  `GIT_WRITING_OPTIONS` names: `am --directory`, `apply --build-fake-ancestor`, `apply --directory`, `archive -o`,
+  `bugreport -o`, `bugreport --output-directory`, `checkout--worker --prefix`, `checkout-index --prefix`,
+  `clone --separate-git-dir`, `credential-cache --socket`,
   `credential-store --file`, `diagnose -o`, `diagnose --output-directory`, `fast-export --export-marks`,
   `fast-import --export-marks`, `format-patch -o`, `format-patch --output-directory`, `gc --expire-to`,
   `index-pack -o`, `init --separate-git-dir`, `init-db --separate-git-dir`, `mailsplit -o`,
@@ -305,10 +306,20 @@ a row decides it.
   or, for a letter, with its value attached or at the end of a bundle, as in `-vo <file>`; a word after `--` is an
   operand. `bugreport`, `clone`, `diagnose`, `format-patch` without `--stdout`, `init`, `init-db`, and
   `unpack-file` write in the directory git starts in when no option or operand names another
-  (`GIT_DEFAULT_WRITES`), and `bundle create`, `clone`, `index-pack`, `init`, `init-db`, `pack-objects`, and
-  `worktree add` at a path an operand names (`GIT_OPERAND_WRITES`), each judged the same way; an option's value
-  these read as an operand is judged too, so such a call may be refused in a hub for a word that names no file
-  there. A `git config` is understood in its reading
+  (`GIT_DEFAULT_WRITES`), and `bundle create`, `clone`, `index-pack`, `init`, `init-db`, `interpret-trailers`,
+  `mailinfo`, `merge-file`, `pack-objects`, `worktree add`, and `worktree move` at a path an operand names
+  (`GIT_OPERAND_WRITERS`), each judged the same way. Each row of that table names the operands it writes, the
+  options whose value is the next word, which is then no operand, the boolean mode that must be on for it to write
+  at all, as `interpret-trailers --in-place`, and the options with which it prints instead, as `merge-file -p`. A
+  word that is another option's value, as the second word of `merge-file -L -p`, is never a mode; a mode is read
+  exactly or abbreviated, the last of it and its `--no-` form deciding. `apply --unsafe-paths` lets a
+  patch write at the paths the patch names, which the guard does not read (`GIT_UNREAD_MODES`, whose row names
+  `apply`'s options with a value as a writer's does), so it is refused while a hub is guarded. `format-patch` takes
+  git's revision and diff options, many of which take the next word as their value and no table lists, so its
+  `--stdout` counts only where the word before it can be no option awaiting a value: none, a word that is no option,
+  a count such as `-1`, or an option whose value follows `=`. A root beneath which git writes the files it checks out or patches,
+  `checkout-index --prefix` and the `--directory` of `am` and `apply`, is judged as a file it writes, so a root in
+  the hub's tracked surface is refused from another checkout too. A `git config` is understood in its reading
   forms, with an action that reads (`--get`, `--get-all`, `--get-regexp`, `--get-urlmatch`, `--get-color`,
   `--get-colorbool`, `-l`, or `--list`), its subcommand `get` or `list`, or one name holding a dot and no action,
   and only options that change what it reads or how it prints. Any other form may write, an abbreviated option
@@ -326,10 +337,13 @@ a row decides it.
   `send-pack --receive-pack`. So is a `bisect` or `submodule` action outside the ones `git_client.PLAIN_ACTIONS`
   lists, as `bisect run` and `submodule foreach` are. A word the text does not settle may be any of these options,
   so one given to a subcommand these tables name, or to one `GIT_OUTPUT_SUBCOMMANDS` names as taking `--output`, is
-  refused while a hub is guarded; a word after `--` is not. `tests/tools/test_hub_guard_git_options.py` holds every option the installed
-  git's `git <subcommand> -h` lists with a path for its value to one of these tables or to `GIT_PATH_OPTIONS_READ`,
-  which says why each other one neither writes nor runs anything, so an option a later git adds fails there until a
-  row decides it.
+  refused while a hub is guarded; a word after `--` is not. `tests/tools/test_hub_guard_git_options.py` holds to
+  these tables every option the installed git's `git <subcommand> -h` lists with a path for its value or names as a
+  root, unless `GIT_PATH_OPTIONS_READ` holds it; every operand its usage names with a path, a mail, or a patch,
+  unless `GIT_OPERANDS_READ` does; every boolean option its `-h` says writes, overwrites, edits in place, or reaches
+  outside the work tree, unless `GIT_MODES_READ` does; and each row of `GIT_OPERAND_WRITERS` to every option with a
+  value that `-h` lists. Each read table says why its entry writes nothing outside the checkout a call runs in, so
+  an option or operand a later git adds fails there until a row decides it.
 - **Bash, by its grammar.** `tools/bash_syntax.py` reads Bash as Bash parses it: single and double quotes, `$'...'`,
   escapes and line continuations, comments, and here-documents, and the command tree of lists, `&&` and `||`,
   pipelines, `( )` subshells, `{ }` groups, `if`, `case`, `while`, `until`, `for`, `select`, `!`, and `time` with
