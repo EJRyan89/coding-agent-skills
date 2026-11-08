@@ -31,27 +31,63 @@ from deployer import discovery, platform_support
 from deployer import tools as deployer_tools
 from tools import captured_samples, plugin_canary, runtime_canary
 from tools import runtime_command_lines as lines
-from tools.runtime_canary import Completed
+from tools.runtime_canary import DECLARED_RUNTIME, Completed
 
+# Real output, captured with its provenance in tests/fixtures/captured-output/provenance.json.
+CAPTURED = Path(__file__).resolve().parents[2] / "tests" / "fixtures" / "captured-output"
+RECORDED: dict[str, dict[str, Any]] = json.loads((CAPTURED / "provenance.json").read_text(encoding="utf-8"))["samples"]
+
+
+def sample_text(sample: str) -> str:
+    return (CAPTURED / sample).read_text(encoding="utf-8")
+
+
+def captured(sample: str, status: int, stream: str = "stderr") -> Completed:
+    """A start that printed the captured sample on `stream` and exited with `status`, as the capture did."""
+    text = sample_text(sample)
+    return Completed(status, text, "") if stream == "stdout" else Completed(status, "", text)
+
+
+# Each runtime's signed-out start as it printed it: Codex's ended by the capture's time limit while it retried the
+# unreachable proxy.
 SIGNED_OUT = {
-    "claude": Completed(1, '{"type":"result","result":"Not logged in · Please run /login"}\n', ""),
-    "codex": Completed(-1, '{"type":"thread.started","thread_id":"1"}\n', "", timed_out=True),
-    "copilot": Completed(1, "", "Error: No authentication information found.\n"),
+    "claude": captured("claude/signed-out-stream.jsonl", 1, "stdout"),
+    "codex": Completed(
+        -1, sample_text("codex/signed-out-exec.jsonl"), sample_text("codex/signed-out-exec.stderr.txt"), timed_out=True
+    ),
+    "copilot": captured("copilot/signed-out-prompt.stderr.txt", 1),
 }
+# What each runtime's --version printed, on both streams: Copilot CLI's second line and Codex's warning included.
 VERSIONS = {
-    "claude": "2.1.302 (Claude Code)\n",
-    "codex": "codex-cli 0.163.0\n",
-    "copilot": "GitHub Copilot CLI 1.0.103.\n",
+    "claude": Completed(0, sample_text("claude/version.txt"), ""),
+    "codex": Completed(0, sample_text("codex/version.txt"), sample_text("codex/version.stderr.txt")),
+    "copilot": Completed(0, sample_text("copilot/version.txt"), ""),
 }
 Answer = Callable[[list[str]], Completed | None]
+# Versions the stub prints where a test ages samples against a version of its own, whatever the captures record.
+FIXED_VERSIONS = {
+    "codex": Completed(0, "codex-cli 0.163.0\n", ""),
+    "copilot": Completed(0, "GitHub Copilot CLI 1.0.103.\n", ""),
+}
+
+
+def recorded_version(runtime: str) -> str:
+    """The version provenance.json records for the runtime's captured --version, which the reader must find in it."""
+    return str(RECORDED[f"{runtime}/version.txt"]["versions"][DECLARED_RUNTIME[runtime]])
 
 
 class StubRuntimes:
     """Answers --version and --help, then each command line by `answer`, or as a signed-out runtime does."""
 
-    def __init__(self, answer: Answer = lambda arguments: None, help_text: str | None = None) -> None:
+    def __init__(
+        self,
+        answer: Answer = lambda arguments: None,
+        help_text: str | None = None,
+        versions: dict[str, Completed] | None = None,
+    ) -> None:
         self.answer = answer
         self.help_text = help_text
+        self.versions = VERSIONS if versions is None else versions
         self.started: list[tuple[list[str], str]] = []
 
     def __call__(
@@ -59,7 +95,7 @@ class StubRuntimes:
     ) -> Completed:
         runtime = Path(arguments[0]).name
         if arguments[1:] == ["--version"]:
-            return Completed(0, VERSIONS[runtime], "")
+            return self.versions[runtime]
         if arguments[-1] == "--help":
             return Completed(0, self.help_text if self.help_text is not None else " ".join(self.started_flags()), "")
         self.started.append((arguments, stdin))
@@ -72,16 +108,6 @@ class StubRuntimes:
 
 # The flags each runtime's command lines pass on this platform, read from the builders through the check itself.
 KNOWN_FLAGS: dict[str, list[str]] = {}
-
-
-# Real output, captured with its provenance in tests/fixtures/captured-output/provenance.json.
-CAPTURED = Path(__file__).resolve().parents[2] / "tests" / "fixtures" / "captured-output"
-
-
-def captured(sample: str, status: int, stream: str = "stderr") -> Completed:
-    """A start that printed the captured sample on `stream` and exited with `status`, as the capture did."""
-    text = (CAPTURED / sample).read_text(encoding="utf-8")
-    return Completed(status, text, "") if stream == "stdout" else Completed(status, "", text)
 
 
 def refusing(refusal: Completed) -> Answer:
@@ -120,7 +146,7 @@ class AcceptedTests(RuntimeCommandLinesTestCase):
     def test_every_command_line_a_signed_out_runtime_reaches_is_accepted(self) -> None:
         found = self.check(StubRuntimes())
         self.assertEqual(
-            ["VERSION claude 2.1.302", "VERSION codex 0.163.0", "VERSION copilot 1.0.103"],
+            [f"VERSION {runtime} {recorded_version(runtime)}" for runtime in ("claude", "codex", "copilot")],
             [line for line in found if line.startswith("VERSION ")],
         )
         outcomes = [line for line in found if not line.startswith("VERSION ")]
@@ -318,6 +344,7 @@ class CapturedTests(RuntimeCommandLinesTestCase):
     def test_each_runtimes_real_signed_out_start_is_accepted(self) -> None:
         for runtime, start in (
             ("claude", captured("claude/signed-out-stream.jsonl", 1, "stdout")),
+            ("codex", SIGNED_OUT["codex"]),
             ("copilot", captured("copilot/signed-out-prompt.stderr.txt", 1)),
         ):
             with self.subTest(runtime=runtime):
@@ -334,7 +361,7 @@ class CapturedTests(RuntimeCommandLinesTestCase):
             ("codex", "copilot"),
             5,
             self.root / "run",
-            runner=StubRuntimes(),
+            runner=StubRuntimes(versions=FIXED_VERSIONS),
             which=lambda name: name,
             say=lambda _: None,
             samples=samples,
@@ -353,14 +380,25 @@ class CapturedTests(RuntimeCommandLinesTestCase):
         self.assertIn("| codex | codex/old.txt | SAMPLE_BEHIND 0.162.0 0.163.0 |", lines.summary(found))
 
     def test_without_samples_given_a_run_ages_the_ones_this_checkout_records(self) -> None:
-        recorded = json.loads((CAPTURED / "provenance.json").read_text(encoding="utf-8"))["samples"]
+        # A release newer than every recorded Codex sample, so each is behind whatever versions the captures record.
+        newest = max(
+            tuple(map(int, str(sample["versions"]["codex"]).split(".")))
+            for sample in RECORDED.values()
+            if "codex" in sample["versions"]
+        )
+        installed = f"{newest[0]}.{newest[1] + 1}.0"
         expected = [
-            f"SAMPLE_BEHIND codex {path} {sample['versions']['codex']} 0.163.0"
-            for path, sample in recorded.items()
-            if "codex" in sample["versions"] and tuple(map(int, sample["versions"]["codex"].split("."))) < (0, 163, 0)
+            f"SAMPLE_BEHIND codex {path} {sample['versions']['codex']} {installed}"
+            for path, sample in RECORDED.items()
+            if "codex" in sample["versions"]
         ]
         found = lines.run(
-            ("codex",), 5, self.root / "run", runner=StubRuntimes(), which=lambda name: name, say=lambda _: None
+            ("codex",),
+            5,
+            self.root / "run",
+            runner=StubRuntimes(versions={"codex": Completed(0, f"codex-cli {installed}\n", "")}),
+            which=lambda name: name,
+            say=lambda _: None,
         )
         self.assertEqual(expected, [line for line in found if line.startswith("SAMPLE_BEHIND ")])
         self.assertTrue(expected)

@@ -1179,6 +1179,23 @@ class VersionTests(unittest.TestCase):
             with self.subTest(output=output):
                 self.assertEqual(expected, tools.parse_version(output))
 
+    def test_each_runtimes_captured_version_reads_as_the_version_its_capture_records(self) -> None:
+        # Real --version output, captured with its provenance in tests/fixtures/captured-output/provenance.json:
+        # Copilot CLI's second line and its trailing period included.
+        captured = REPOSITORY_ROOT / "tests" / "fixtures" / "captured-output"
+        recorded = json.loads((captured / "provenance.json").read_text(encoding="utf-8"))["samples"]
+        for sample, runtime in (
+            ("claude/version.txt", "claude-code"),
+            ("codex/version.txt", "codex"),
+            ("copilot/version.txt", "copilot-cli"),
+        ):
+            with self.subTest(sample=sample):
+                expected = tuple(map(int, recorded[sample]["versions"][runtime].split(".")))
+                output = (captured / sample).read_text(encoding="utf-8")
+                self.assertEqual(expected, tools.parse_version(output))
+                if runtime == "copilot-cli":
+                    self.assertEqual(expected, review_hosts.parse_copilot_version(output))
+
     def test_minimum_python_is_3_11_4_in_both_places(self) -> None:
         # 3.11.4 is the first 3.11 release whose tarfile has extraction filters, which --at extracts with.
         specification = importlib.util.spec_from_file_location("deploy_entry", REPOSITORY_ROOT / "deploy.py")

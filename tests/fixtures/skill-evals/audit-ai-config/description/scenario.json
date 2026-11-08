@@ -7,10 +7,10 @@
     "Review the AI agent configuration in this repo and tell me what is wrong with it."
   ],
   "near_misses": [
-    "Write a CLAUDE.md for this repository.",
     "Tidy up the auto-memory for this project."
   ],
   "unserved": [
+    "Write a CLAUDE.md for this repository.",
     "Add a .gitignore entry for the build folder."
   ]
 }

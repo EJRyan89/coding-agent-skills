@@ -56,6 +56,8 @@ removed fails validation until its pattern follows it.
 - **Guard:** `tests/validation/python_checks.py::PythonChecksPolicies::test_file_presence_is_the_one_reader_of_absence`,
   which refuses a presence predicate whose False is the answer, a glob, an os.walk with no onerror, and a removal
   that discards its errors, outside file_presence unless its module states why,
+  `tests/deployer/test_invariants.py::TreeStateTests::test_a_folder_that_cannot_be_listed_fails_the_state_and_a_root_nothing_is_at_holds_nothing`,
+  which holds the deployer harness's walk, in the tests that policy leaves out, to failing on a folder it cannot list,
   `skills/ejryan89-skill-core/scripts/test_file_presence.py::MatchingTests`,
   `tests/tools/test_hub_guard.py::UnstatablePlaceTests`,
   `tests/validation/python_checks.py::PythonChecksPolicies::test_no_git_exit_status_is_read_outside_the_client`,
@@ -132,7 +134,7 @@ removed fails validation until its pattern follows it.
   step never ran; a skill-evaluation scenario that holds `no_finding_above` and no `verdict`; `"timeout"` in a hook
   of `.claude/settings.json` whose program has no bound of its own below it, or reads a part of its input more than
   once per level of nesting, as `for _ in range(2)` over a child does.
-- **Examples:** #1443, #1462, #1603, #1805, #1821, #1824, #1854
+- **Examples:** #1443, #1462, #1603, #1805, #1821, #1824, #1854, #2203
 
 ### Evidence a store records leaving out is withheld, not missing
 
@@ -379,6 +381,8 @@ removed fails validation until its pattern follows it.
 - **Use:** `tools.hub_guard:read_powershell`, `tools.hub_guard:runner_refusal`, `option_reader:option_refusal`, and
   `tools.hub_guard:expansion_form`
 - **Guard:** `tests/tools/test_bash_syntax.py::ArrayAssignmentTests::test_an_array_assignment_to_a_subscript_is_read_where_bash_reads_an_array`,
+  `tests/tools/test_captured_samples.py::test_every_sample_is_named_by_a_suite_that_reads_it`, which fails a captured
+  sample no suite names, so real output no reader is held to is found,
   `tests/validation/test_skill_scripts.py::SkillScriptsFixtures::test_shell_command_extraction_runs_a_program_a_quoted_function_name_never_defined`,
   `skills/ejryan89-skill-core/scripts/test_git_client.py::IsolatedClientTests::test_a_plain_client_refuses_a_command_line_setting_that_can_define_an_alias`,
   `skills/ejryan89-skill-core/scripts/test_git_client.py::IsolatedClientTests::test_a_plain_client_refuses_every_carrier_of_another_command_in_every_spelling`,
@@ -423,7 +427,7 @@ removed fails validation until its pattern follows it.
   than an allow-list of the subcommands, actions, and settings that start none.
 - **Examples:** #1412, #1429, #1430, #1592, #1606, #1843, #1851, #1865, #2032, #2088, #2089, #2134, #2135, #2136,
   #2137, #2138, #2139, #2140, #2188, #2225, #2232, #2233, #2234, #2251, #2262, #2274, #2276, #2316, #2411,
-  #2418
+  #2418, #2203
 
 ### A recursive parser of input has a depth bound
 

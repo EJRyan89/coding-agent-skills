@@ -31,6 +31,8 @@ NOT_UTF8 = b"\xff\xfe\xc3\x28"
 # The shapes that are not bytes, which place() builds at the path.
 DIRECTORY = "directory"
 LINK = "link"
+# ERROR_PRIVILEGE_NOT_HELD, which Windows answers a symbolic link with where the account may not make one.
+WINDOWS_PRIVILEGE_NOT_HELD = 1314
 UNREADABLE = "unreadable"
 
 # The field change that gives a field a value of another type, which a reader refuses unless it documents taking it.
@@ -257,16 +259,22 @@ def cases(format_name: str, valid: bytes | None = None) -> list[Case]:
 
 
 def link(target: Path, path: Path) -> None:
-    """A link at path to target: a junction to target's folder on Windows, which needs no privilege where a file link
-    does, else a symbolic link to the file. Either is a link a reader that refuses links must refuse."""
-    if sys.platform == "win32":
+    """A symbolic link at path to the well-formed file target, which a reader that followed it would read and accept,
+    so only a reader that refuses links refuses it. Where Windows withholds the privilege a file link needs, as it does
+    from an account outside Developer Mode and not elevated, the link is instead a junction to a folder beside target:
+    still a link the reader must refuse, but one a reader that followed it would also refuse, as a folder in its file's
+    place, so there the case shows only that the link is refused, not why. Continuous integration's Windows runners
+    hold the privilege, so there the file link is made."""
+    try:
+        path.symlink_to(target)
+    except OSError as error:
+        if sys.platform != "win32" or getattr(error, "winerror", None) != WINDOWS_PRIVILEGE_NOT_HELD:
+            raise
         folder = target.parent / f"{target.name}.folder"
         folder.mkdir(exist_ok=True)
         import _winapi
 
         _winapi.CreateJunction(str(folder), str(path))
-    else:
-        path.symlink_to(target)
 
 
 @contextmanager

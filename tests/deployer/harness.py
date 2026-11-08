@@ -77,6 +77,10 @@ def remove_directory_link(link: Path) -> None:
         link.unlink()
 
 
+def _raise(error: OSError) -> None:
+    raise error
+
+
 def tree_state(root: Path) -> dict[str, str]:
     """Each directory, file, and link under root by relative path: a file by a hash of its bytes, a link by its target.
 
@@ -88,9 +92,17 @@ def tree_state(root: Path) -> dict[str, str]:
 
 
 def _tree_state(root: Path, walked: set[Path]) -> dict[str, str]:
-    """tree_state of root, following each link whose target lies in none of the walked trees, which it adds to."""
+    """tree_state of root, following each link whose target lies in none of the walked trees, which it adds to.
+
+    A root nothing is at holds nothing, as a home a run has not yet written to. A folder under it that cannot be
+    listed raises, never read as empty, since a change made inside it would then pass unseen.
+    """
     state: dict[str, str] = {}
-    for directory, directories, files in os.walk(root):
+    try:
+        os.lstat(root)
+    except FileNotFoundError:
+        return state
+    for directory, directories, files in os.walk(root, onerror=_raise):
         base = Path(directory)
         followed = []
         for name in sorted([*directories, *files]):

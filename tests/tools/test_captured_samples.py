@@ -3,12 +3,14 @@ reported once a newer release of its runtime leaves it behind."""
 
 from __future__ import annotations
 
+import ast
+import collections
 import json
 import os
 import re
 import subprocess
 import sys
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import pytest
 
@@ -143,6 +145,48 @@ def test_a_sample_older_than_its_runtimes_version_is_behind_and_one_at_it_is_not
     ]
     assert captured_samples.behind(SAMPLES, "claude-code", (9, 0, 0)) == []
     assert captured_samples.behind(SAMPLES, "codex", (0, 159, 0)) == []
+
+
+def string_constants(source: str) -> set[str]:
+    return {
+        node.value for node in ast.walk(ast.parse(source)) if isinstance(node, ast.Constant) and type(node.value) is str
+    }
+
+
+def named_samples(samples: list[str], source: str) -> set[str]:
+    """The samples the suite's source names: by its path under the captured folder, or by its file name alone where no
+    other sample has that name, as a path built from the folder and the name does."""
+    constants = string_constants(source)
+    names = collections.Counter(PurePosixPath(sample).name for sample in samples)
+    return {
+        sample
+        for sample in samples
+        if sample in constants or (names[PurePosixPath(sample).name] == 1 and PurePosixPath(sample).name in constants)
+    }
+
+
+def test_every_sample_is_named_by_a_suite_that_reads_it() -> None:
+    # A sample no suite names is real output no reader is held to, as an unread capture of --version was.
+    samples = sorted(recorded())
+    named: set[str] = set()
+    for suite in sorted(REPOSITORY.joinpath("tests").rglob("test_*.py")):
+        if suite.resolve() != Path(__file__).resolve() and CAPTURED not in suite.resolve().parents:
+            named |= named_samples(samples, suite.read_text(encoding="utf-8"))
+    assert sorted(set(samples) - named) == []
+
+
+@pytest.mark.parametrize(
+    ("source", "named"),
+    [
+        pytest.param('read(CAPTURED / "codex/version.txt")', {"codex/version.txt"}, id="path"),
+        pytest.param('read(CAPTURED / "codex" / "only.txt")', {"codex/only.txt"}, id="unique-name"),
+        pytest.param('read(CAPTURED / "claude" / "version.txt")', set(), id="shared-name"),
+        pytest.param('# reads codex/version.txt in a comment\nx = "codex/version.txt.bak"', set(), id="not-a-constant"),
+    ],
+)
+def test_a_suite_names_a_sample_by_its_path_or_its_unique_file_name(source: str, named: set[str]) -> None:
+    samples = ["claude/version.txt", "codex/version.txt", "codex/only.txt"]
+    assert named_samples(samples, source) == named
 
 
 def test_the_module_imports_on_its_own_from_any_folder(tmp_path: Path) -> None:

@@ -217,6 +217,10 @@ CODEX_LINES = {
 CODEX_LISTING = (REPOSITORY / "tests/fixtures/captured-output/codex/app-server-skills-list.jsonl").read_bytes()
 
 
+# Copilot CLI's `copilot skill list --json` as a run captured it: project, built-in, and user skills.
+COPILOT_LISTING = (REPOSITORY / "tests/fixtures/captured-output/copilot/skill-list.json").read_bytes()
+
+
 READERS = [
     Reader(
         "deployer.config.read",
@@ -228,12 +232,15 @@ READERS = [
     Reader(
         "deployer.discovery.parse_copilot",
         "json",
-        b'[{"name": "example", "source": "personal-agents", "path": "skills/example", "enabled": true}]',
+        COPILOT_LISTING,
         _copilot_listing,
         (discovery.ListingError,),
         accepts={
             "top_level_list": "an empty array is Copilot's listing of no skills, which verify reports as missing",
-            "wrong_type:0.source": "it reads each skill's name, path, and enabled flag, and never this field",
+            **{
+                f"wrong_type:0.{field}": "it reads each skill's name, path, and enabled flag, and never this field"
+                for field in ("description", "source")
+            },
         },
     ),
     Reader(
@@ -343,9 +350,7 @@ READERS = [
         manifest.load,
         (DeployError,),
         accepts={
-            f"wrong_type:sources.{SOURCE_ID}.{field}": "kept as written: the deployer only compares source_dir, as "
-            "text it checks it is, and never reads deployed_at"
-            for field in ("source_dir", "deployed_at")
+            f"wrong_type:sources.{SOURCE_ID}.deployed_at": "kept as written: the deployer never reads deployed_at",
         },
     ),
     Reader(

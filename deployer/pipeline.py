@@ -327,7 +327,7 @@ def _reject_other_checkout(paths: Paths, source_id: str, take_over: bool, *, dry
     """
     entry = manifest.load(paths.manifest_file).source(source_id) or {}
     recorded = entry.get("source_dir")
-    if not isinstance(recorded, str) or not recorded:
+    if not recorded:
         return
     if platform_support.same_directory(Path(recorded), paths.source_dir):
         return

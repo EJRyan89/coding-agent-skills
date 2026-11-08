@@ -1,0 +1,7 @@
+WARNING: proceeding, even though we could not create PATH aliases: Refusing to create helper binaries under temporary dir "<home>\\AppData\\Local\\Temp\\" (codex_home: AbsolutePathBuf("<temp>\\home\\.codex"))
+Reading additional input from stdin...
+2026-11-08T06:27:31.873656Z ERROR codex_api::endpoint::responses_websocket: failed to connect to websocket: IO error: No connection could be made because the target machine actively refused it. (os error 10061), url: wss://api.openai.com/v1/responses
+2026-11-08T06:27:33.971144Z ERROR codex_api::endpoint::responses_websocket: failed to connect to websocket: IO error: No connection could be made because the target machine actively refused it. (os error 10061), url: wss://api.openai.com/v1/responses
+2026-11-08T06:27:36.233982Z ERROR codex_api::endpoint::responses_websocket: failed to connect to websocket: IO error: No connection could be made because the target machine actively refused it. (os error 10061), url: wss://api.openai.com/v1/responses
+2026-11-08T06:27:38.716814Z ERROR codex_api::endpoint::responses_websocket: failed to connect to websocket: IO error: No connection could be made because the target machine actively refused it. (os error 10061), url: wss://api.openai.com/v1/responses
+2026-11-08T06:27:41.522337Z ERROR codex_api::endpoint::responses_websocket: failed to connect to websocket: IO error: No connection could be made because the target machine actively refused it. (os error 10061), url: wss://api.openai.com/v1/responses

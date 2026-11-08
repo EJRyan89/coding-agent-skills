@@ -3903,12 +3903,26 @@ def test_the_report_script_s_base_and_head_agree_on_a_folder_with_no_report_and_
         assert ran == {"base": expected, "head": expected}, folder.name
 
 
-def test_the_tested_change_s_suite_passes_on_its_head() -> None:
+FIXTURE_SHELL_SUITES = sorted(
+    path.relative_to(REVIEW_REPOSITORY).as_posix() for path in REVIEW_REPOSITORY.glob("*/*/tests/test_*.sh")
+)
+
+
+def test_every_scenario_tree_s_shell_suite_is_found() -> None:
+    # Each scenario that plants a defect beside a suite keeps the suite passing, so the review is judged on the
+    # defect alone; found by pattern, a scenario's new suite is run without being listed.
+    assert {"tested-change/head/tests/test_report_age.sh", "missed-sibling/head/tests/test_report_clean.sh"} <= set(
+        FIXTURE_SHELL_SUITES
+    )
+
+
+@pytest.mark.parametrize("suite", FIXTURE_SHELL_SUITES)
+def test_each_scenario_tree_s_shell_suite_passes_on_its_tree(suite: str) -> None:
     bash = platform_support.find_bash()
     assert bash is not None, "Git Bash is required"
-    suite = REVIEW_REPOSITORY / "tested-change" / "head" / "tests" / "test_report_age.sh"
-    ran = platform_support.run_tool([bash, suite.as_posix()], timeout=60)
-    assert (ran.returncode, ran.output) == (0, "PASS report_age\n")
+    ran = platform_support.run_tool([bash, (REVIEW_REPOSITORY / suite).as_posix()], timeout=60)
+    name = Path(suite).stem.removeprefix("test_")
+    assert (ran.returncode, ran.output) == (0, f"PASS {name}\n")
 
 
 @pytest.mark.parametrize(

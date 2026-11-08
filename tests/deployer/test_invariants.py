@@ -76,6 +76,21 @@ class TreeStateTests(DeployerTestCase):
         make_directory_link(outside / "back", tree)
         self.assertNotIn("out/back/b.txt", tree_state(tree))
 
+    def test_a_folder_that_cannot_be_listed_fails_the_state_and_a_root_nothing_is_at_holds_nothing(self) -> None:
+        tree = self.tree("unlisted")
+        unlisted = tree / "a"
+        listing = os.scandir
+
+        def refuse(path: Any) -> Any:
+            if Path(path) == unlisted:
+                raise PermissionError(13, "Access is denied", str(path))
+            return listing(path)
+
+        # Read as empty, the folder would hide a change made inside it from the comparison.
+        with mock.patch.object(os, "scandir", side_effect=refuse), self.assertRaises(PermissionError):
+            tree_state(tree)
+        self.assertEqual({}, tree_state(self.root / "nothing-here"))
+
 
 def failing_after_applying() -> mock._patch[mock.MagicMock | mock.AsyncMock]:
     """Make the deployment fail with REFUSAL once it has applied its plan: a refusal moved after the mutation."""
