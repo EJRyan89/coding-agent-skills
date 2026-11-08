@@ -27,6 +27,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts"))
 
+import option_reader
 from command_wrappers import FIND_COMMANDS
 from guard_limits import process_limits_held
 
@@ -499,7 +500,7 @@ class WindowsBuildTests(unittest.TestCase):
         for build, program in WINDOWS_BUILDS.items():
             for words, safe in self.rows(build):
                 with self.subTest(build=build, form=shlex.join(words)):
-                    arguments: list[hub_guard.Word] = [*words, "x"]
+                    arguments: list[option_reader.Word] = [*words, "x"]
                     reason = hub_guard.program_refusal(program, arguments, windows_build=True)
                     self.assertEqual(not safe, reason is not None)
                     # The program's GNU build reads the same words as operands.
@@ -592,7 +593,7 @@ class WindowsBuildTests(unittest.TestCase):
             ("find", "/c /i /OFFLINE x f", True),
         ):
             with self.subTest(program=program, words=words):
-                arguments: list[hub_guard.Word] = list(words.split())
+                arguments: list[option_reader.Word] = list(words.split())
                 reason = hub_guard.program_refusal(program, arguments, windows_build=True)
                 self.assertEqual(not safe, reason is not None)
 

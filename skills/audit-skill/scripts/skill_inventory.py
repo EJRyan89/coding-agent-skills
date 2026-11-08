@@ -2789,11 +2789,10 @@ def program_words(words: list[str], reserved: bool) -> list[str]:
     before the pipeline it times."""
     while words:
         if words[0] == "time" and reserved:
-            options = TIME_KEYWORD_OPTIONS
             words = words[1:]
-            while words and words[0] in options:
-                options = options[options.index(words[0]) + 1 :]
-                words = words[1:]
+            for option in TIME_KEYWORD_OPTIONS:
+                if words and words[0] == option:
+                    words = words[1:]
         elif words[0] in LEADING_WORDS:
             words = words[1:]
         elif ASSIGNMENT.match(words[0]):
