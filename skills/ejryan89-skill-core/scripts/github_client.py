@@ -303,6 +303,9 @@ def _names_limit(part: str) -> bool:
 def _api_change(arguments: Sequence[str]) -> str | None:
     method: str | None = None
     body = False
+    # With --input, gh sends the file as the body and puts every field in the URL's query string, so a `query`
+    # field is no longer the document gh sends.
+    input_body = False
     query: str | None = None
     endpoint: str | None = None
     parts = iter(arguments)
@@ -319,13 +322,18 @@ def _api_change(arguments: Sequence[str]) -> str | None:
                 method = value.upper()
             elif name in API_BODY_OPTIONS:
                 body = True
+                if name == "--input":
+                    input_body = True
+                    continue
                 key, _, field = value.partition("=")
-                if name != "--input" and key == "query":
+                if key == "query":
                     query = field
     method = method or ("POST" if body else "GET")
     if method in READ_METHODS:
         return None
     # A GraphQL query is sent as a POST but only reads; a document read from a file is not known, so it is a change.
+    if input_body:
+        query = None
     if endpoint == "graphql" and query and not query.startswith("@") and not GRAPHQL_MUTATION.search(query):
         return None
     return method
