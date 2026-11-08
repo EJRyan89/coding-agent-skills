@@ -15,9 +15,10 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from remote_refs import ORIGIN_MAIN, SHADOWING_TAGS, main
+from remote_refs import main
 
 COMMANDS = ("shadows", "fetch")
+SCRIPT = Path(__file__).resolve().parent / "remote_refs.py"
 
 
 def git(*arguments: str | Path) -> str:
@@ -130,8 +131,9 @@ def test_a_remote_that_never_answers_ends_within_the_time_limit(
     capsys: pytest.CaptureFixture[str], clone: Path, command: str
 ) -> None:
     # A local origin's upload-pack runs through the shell, so a configured one that sleeps first stands for a remote
-    # that never answers.
-    git("-C", clone, "config", "remote.origin.uploadpack", "sleep 120; git-upload-pack")
+    # that does not answer within the limit. It answers after the sleep, so a call given no limit, or the client's
+    # default, succeeds instead of failing.
+    git("-C", clone, "config", "remote.origin.uploadpack", "sleep 15; git-upload-pack")
     started = time.monotonic()
     code, output = run(capsys, command, clone, "--seconds", "2")
     assert time.monotonic() - started < 60
@@ -179,10 +181,9 @@ def test_fetch_follows_origin_main_with_its_tags_but_never_a_shadowing_one(
         "main:refs/tags/origin/main",
     )
     assert run(capsys, "fetch", clone) == (0, "FETCHED\n")
-    assert git("-C", clone, "rev-parse", ORIGIN_MAIN) == git("-C", seed, "rev-parse", "main")
+    assert git("-C", clone, "rev-parse", "refs/remotes/origin/main") == git("-C", seed, "rev-parse", "main")
     tags = git("-C", clone, "for-each-ref", "--format=%(refname)", "refs/tags").split()
     assert tags == ["refs/tags/v1.0.0"]
-    assert not set(tags) & set(SHADOWING_TAGS)
 
 
 def test_a_missing_origin_is_a_failed_line(capsys: pytest.CaptureFixture[str], clone: Path, tmp_path: Path) -> None:
@@ -192,6 +193,25 @@ def test_a_missing_origin_is_a_failed_line(capsys: pytest.CaptureFixture[str], c
         assert code == 1
         assert output.startswith("FAILED "), output
         assert output.count("\n") == 1, output
+
+
+def test_the_script_finds_the_core_deployed_beside_it(clone: Path) -> None:
+    # Run isolated, so nothing but the script's own path statement puts ejryan89-skill-core where it imports from.
+    finished = subprocess.run(
+        [sys.executable, "-I", str(SCRIPT), "shadows", str(clone)],
+        capture_output=True,
+        encoding="utf-8",
+        timeout=120,
+        check=False,
+    )
+    assert (finished.returncode, finished.stdout) == (0, "CHECKED\n"), finished.stderr
+
+
+def test_a_command_is_required(capsys: pytest.CaptureFixture[str]) -> None:
+    with pytest.raises(SystemExit) as raised:
+        main([])
+    assert raised.value.code == 2
+    assert capsys.readouterr().out == ""
 
 
 @pytest.mark.parametrize("seconds", ["0", "-1", "nan", "inf", "soon"])
