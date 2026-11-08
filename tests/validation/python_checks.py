@@ -49,7 +49,6 @@ from path_containment import posix_within, relative_within, within
 from runtime_support import names_git
 from toolchain import find_mypy, find_ruff, mypy_job, ruff_job
 from validation_support import (
-    ATTRIBUTE_LOOKUPS,
     BUILTIN_NAMES,
     COMMON_PATH_FUNCTIONS,
     DEFINITIONS,
@@ -69,6 +68,7 @@ from validation_support import (
     import_aliases,
     is_test_script,
     listed,
+    literal_lookups,
     module_allowance,
     module_imports,
     parse_source,
@@ -728,18 +728,24 @@ LINK_TEST_ALLOWANCE = "LINK_TEST_ALLOWED"
 
 
 def _link_test(node: ast.expr, aliases: dict[str, str]) -> str | None:
-    """The link test a node names, as an attribute, an imported name, or the literal a getattr or hasattr reads, or
-    None."""
-    named = ""
+    """The link test a node names, as an attribute, an imported name, or a literal name a lookup literal_lookups
+    reads, a hasattr test among them, gives, as `vars(os.path)["islink"]` names os.path.islink; or None."""
     if isinstance(node, ast.Attribute):
-        named = qualified_name(node, aliases) or node.attr
+        named = [qualified_name(node, aliases) or node.attr]
     elif isinstance(node, ast.Name) and node.id in aliases:
-        named = aliases[node.id]
-    elif isinstance(node, ast.Call) and qualified_name(node.func, aliases) in {*ATTRIBUTE_LOOKUPS, "hasattr"}:
-        literal = call_argument(node, 1, "name")
-        named = literal.value if isinstance(literal, ast.Constant) and isinstance(literal.value, str) else ""
-    test = named.rpartition(".")[2]
-    return test if test in LINK_TESTS and not resolves_to(named, LINK_WRAPPER) else None
+        named = [aliases[node.id]]
+    else:
+        named = [
+            f"{owner}.{literal}" if (owner := qualified_name(lookup.receiver, aliases)) else literal
+            for lookup, literal in literal_lookups(
+                node, lambda function: [qualified_name(function, aliases)], tests=True
+            )
+        ]
+    for name in named:
+        test = name.rpartition(".")[2]
+        if test in LINK_TESTS and not resolves_to(name, LINK_WRAPPER):
+            return test
+    return None
 
 
 def link_test_problems(root: Path, files: list[Path]) -> list[str]:
@@ -1293,17 +1299,16 @@ HOME_LOOKUPS = frozenset({"pathlib.Path.home", "os.path.expanduser", "pathlib.Pa
 HOME_READERS = frozenset({"skills/ejryan89-skill-core/scripts/executable_locator.py", "deployer/platform_support.py"})
 
 
-def _looked_up(node: ast.AST, aliases: dict[str, str]) -> str:
-    """The qualified name a node reads: a name or an attribute it loads, or what a getattr of a constant name on one
-    reads, as `getattr(json, "loads")` reads json.loads; "" for anything else."""
+def _looked_up(node: ast.AST, aliases: dict[str, str]) -> list[str]:
+    """Each qualified name a node reads: a name or an attribute it loads, or what a lookup literal_lookups reads on one
+    reads, as `getattr(json, "loads")` and `vars(json)["loads"]` read json.loads; empty for anything else."""
     if isinstance(node, ast.Attribute | ast.Name) and isinstance(node.ctx, ast.Load):
-        return qualified_name(node, aliases)
-    if isinstance(node, ast.Call) and qualified_name(node.func, aliases) in ATTRIBUTE_LOOKUPS and node.args:
-        owner = qualified_name(node.args[0], aliases)
-        attribute = call_argument(node, 1, "name")
-        if owner and isinstance(attribute, ast.Constant) and isinstance(attribute.value, str):
-            return f"{owner}.{attribute.value}"
-    return ""
+        return [name] if (name := qualified_name(node, aliases)) else []
+    return [
+        f"{owner}.{literal}"
+        for lookup, literal in literal_lookups(node, lambda function: [qualified_name(function, aliases)])
+        if (owner := qualified_name(lookup.receiver, aliases))
+    ]
 
 
 def json_parse_problems(root: Path, files: list[Path]) -> list[str]:
@@ -1321,7 +1326,9 @@ def json_parse_problems(root: Path, files: list[Path]) -> list[str]:
                 f"ejryan89-skill-core's json_reader, the one parse of JSON, or state why in {JSON_PARSE_ALLOWANCE}",
             )
             for node, scope in scoped_nodes(tree.body)
-            if isinstance(node, ast.expr) and (parser := _looked_up(node, aliases)) in JSON_PARSERS
+            if isinstance(node, ast.expr)
+            for parser in _looked_up(node, aliases)
+            if parser in JSON_PARSERS
         ]
         problems += sanctioned_problems(name, tree, JSON_PARSE_ALLOWANCE, found)
     return problems
@@ -1442,14 +1449,19 @@ class _ModuleNumbers:
     def regex_call(self, node: ast.AST, *methods: str) -> tuple[str, bool] | None:
         """The method a call of one of `methods` makes, and whether it is given the pattern or the match first, or None
         for any other call: re's function or a method named on re.Pattern or re.Match, through the module's imports
-        or a getattr of a constant name on one of them, or a method by its name on any other receiver."""
+        or a lookup of a constant name attribute_lookups reads on one of them, as getattr(re, "match") or
+        vars(re)["match"], or a method by its name on any other receiver."""
         if not isinstance(node, ast.Call):
             return None
         function = node.func
-        if isinstance(function, ast.Call) and self.resolver.name(function.func) in ATTRIBUTE_LOOKUPS:
-            attribute = call_argument(function, 1, "name")
-            if function.args and isinstance(attribute, ast.Constant) and attribute.value in methods:
-                return str(attribute.value), self.resolver.name(function.args[0]) in REGEX_OWNERS
+
+        def names(called: ast.expr) -> list[str]:
+            return [self.resolver.name(called)]
+
+        if attribute_lookups(function, names):
+            for lookup, literal in literal_lookups(function, names):
+                if lookup.alone and literal in methods:
+                    return literal, self.resolver.name(lookup.receiver) in REGEX_OWNERS
             return None
         owner, _, method = self.resolver.name(function).rpartition(".")
         if owner in REGEX_OWNERS and method in methods:
@@ -3444,7 +3456,7 @@ def _git_error_bodies(tree: ast.Module, aliases: dict[str, str]) -> Iterator[tup
                 yield names, node.body
 
 
-def _returncode_names(body: list[ast.stmt], errors: set[str]) -> set[str]:
+def _returncode_names(body: list[ast.stmt], errors: set[str], aliases: dict[str, str]) -> set[str]:
     """The names a body binds to a GitError's returncode, by an assignment, an annotated assignment, or an assignment
     expression, of the returncode or of a name an earlier statement bound to it."""
     bound: set[str] = set()
@@ -3458,30 +3470,30 @@ def _returncode_names(body: list[ast.stmt], errors: set[str]) -> set[str]:
                 targets, value = [node.target], node.value
             else:
                 continue
-            if _returncode_read(value, errors, bound) is not None:
+            if _returncode_read(value, errors, bound, aliases) is not None:
                 bound |= {target.id for target in targets if isinstance(target, ast.Name)}
     return bound
 
 
-def _returncode_read(value: ast.expr | None, errors: set[str], bound: set[str]) -> ast.expr | None:
-    """The node that reads a GitError's returncode, when `value` is one: `error.returncode`, a `getattr` of it given
-    the name as a constant, with a default or not, a name bound to it, or an assignment expression of any of these."""
+def _returncode_read(
+    value: ast.expr | None, errors: set[str], bound: set[str], aliases: dict[str, str]
+) -> ast.expr | None:
+    """The node that reads a GitError's returncode, when `value` is one: `error.returncode`, a lookup of it by the
+    name as a constant in any form literal_lookups reads, as getattr(error, "returncode"), with a default or not, or
+    vars(error)["returncode"], a name bound to it, or an assignment expression of any of these."""
     if isinstance(value, ast.NamedExpr):
-        return _returncode_read(value.value, errors, bound)
+        return _returncode_read(value.value, errors, bound, aliases)
     if isinstance(value, ast.Name) and value.id in bound:
         return value
     if isinstance(value, ast.Attribute):
         held = value.value
         return value if value.attr == "returncode" and isinstance(held, ast.Name) and held.id in errors else None
-    if (
-        isinstance(value, ast.Call)
-        and isinstance(value.func, ast.Name)
-        and value.func.id == "getattr"
-        and len(value.args) in (2, 3)
-        and isinstance(value.args[0], ast.Name)
-        and value.args[0].id in errors
-        and isinstance(value.args[1], ast.Constant)
-        and value.args[1].value == "returncode"
+    if value is not None and any(
+        lookup.alone
+        and literal == "returncode"
+        and isinstance(lookup.receiver, ast.Name)
+        and lookup.receiver.id in errors
+        for lookup, literal in literal_lookups(value, lambda function: [qualified_name(function, aliases)])
     ):
         return value
     return None
@@ -3523,14 +3535,14 @@ def _none_returncode_reads(tree: ast.Module, aliases: dict[str, str]) -> set[int
     an `except` clause or a function that holds the error."""
     found: set[int] = set()
     for errors, body in _git_error_bodies(tree, aliases):
-        bound = _returncode_names(body, errors)
+        bound = _returncode_names(body, errors, aliases)
         for statement in body:
             for compared in ast.walk(statement):
                 if isinstance(compared, ast.Compare):
-                    found |= _returncode_beside_none(compared, errors, bound)
+                    found |= _returncode_beside_none(compared, errors, bound, aliases)
                 elif (
                     isinstance(compared, ast.Match)
-                    and (read := _returncode_read(compared.subject, errors, bound)) is not None
+                    and (read := _returncode_read(compared.subject, errors, bound, aliases)) is not None
                     and any(
                         isinstance(pattern, ast.MatchSingleton) and pattern.value is None
                         for case in compared.cases
@@ -3539,16 +3551,16 @@ def _none_returncode_reads(tree: ast.Module, aliases: dict[str, str]) -> set[int
                 ):
                     found.add(id(read))
         for test in _truth_tested(body):
-            if (read := _returncode_read(test, errors, bound)) is not None:
+            if (read := _returncode_read(test, errors, bound, aliases)) is not None:
                 found.add(id(read))
     return found
 
 
-def _returncode_beside_none(node: ast.Compare, errors: set[str], bound: set[str]) -> set[int]:
+def _returncode_beside_none(node: ast.Compare, errors: set[str], bound: set[str], aliases: dict[str, str]) -> set[int]:
     """The reads, by id, of a GitError's returncode that a comparison sets beside None, as a side or as a member of a
     literal tuple, list, or set it tests membership in."""
     sides = [node.left, *node.comparators]
-    reads = {id(read) for side in sides if (read := _returncode_read(side, errors, bound)) is not None}
+    reads = {id(read) for side in sides if (read := _returncode_read(side, errors, bound, aliases)) is not None}
 
     def none(value: ast.expr) -> bool:
         if isinstance(value, ast.Tuple | ast.List | ast.Set):
@@ -4526,7 +4538,8 @@ def _literal_lookup(call: ast.Call) -> str | None:
 
 def _reference(node: ast.AST, resolver: CallableResolver, aliases: dict[str, str]) -> str:
     """The dotted name a node refers to through the module's imports: a name or an attribute read, or a lookup of a
-    literal name, as getattr(json, "dumps") refers to json.dumps; "" for any other node. A name the resolver cannot
+    literal name in any form literal_lookups reads or by a NAME_LOOKUPS call, as getattr(json, "dumps") and
+    vars(json)["dumps"] refer to json.dumps; "" for any other node. A name the resolver cannot
     settle, as one two import statements bind, is read through the module's imports, and a name no scope binds is
     the builtin of that name."""
     if isinstance(node, ast.Name | ast.Attribute) and isinstance(node.ctx, ast.Load):
@@ -4540,6 +4553,9 @@ def _reference(node: ast.AST, resolver: CallableResolver, aliases: dict[str, str
         if root.id in aliases:
             return qualified_name(node, aliases)
         return root.id if node is root and resolver.scopes[id(root)].owner(root.id) is None else ""
+    for lookup, literal in literal_lookups(node, lambda function: [_reference(function, resolver, aliases)]):
+        if lookup.alone and (owner := _reference(lookup.receiver, resolver, aliases)):
+            return f"{owner}.{literal}"
     if isinstance(node, ast.Call) and _reference(node.func, resolver, aliases) in NAME_LOOKUPS and node.args:
         attribute = _literal_lookup(node)
         owner = _reference(node.args[0], resolver, aliases)

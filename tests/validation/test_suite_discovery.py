@@ -1346,6 +1346,42 @@ class PoolSharedStatePolicy(unittest.TestCase):
             [problem.split(", a lookup", 1)[0].split(", which", 1)[0] for problem in problems],
         )
 
+    def test_a_change_through_any_lookup_by_name_is_reported(self) -> None:
+        # Each form of the one catalogue attribute_lookups reads beyond getattr, by a literal name and a computed one,
+        # and a store into a namespace, which replaces the attribute it names.
+        alpha = (
+            "import inspect\n"  # 1
+            "import operator\n"  # 2
+            "import os\n"  # 3
+            "import sys\n"  # 4
+            "\n"  # 5
+            "def check(name):\n"  # 6
+            "    inspect.getattr_static(os, 'environ')['A'] = 'b'\n"  # 7
+            "    object.__getattribute__(os, 'chdir')('..')\n"  # 8
+            "    os.__getattribute__('environ').pop('A')\n"  # 9
+            "    operator.attrgetter('environ')(os).update({})\n"  # 10
+            "    vars(os)['environ']['A'] = 'b'\n"  # 11
+            "    os.__dict__['chdir']('..')\n"  # 12
+            "    vars(sys)['stdout'] = None\n"  # 13
+            "    vars(os)[name]('..')\n"  # 14
+            "    operator.attrgetter('environ', 'sep')(os)[0].clear()\n"  # 15: a tuple of attributes is not followed
+        )
+        problems = self.problems({"tests/validation/alpha.py": alpha})
+        self.assertEqual(
+            [
+                "tests/validation/alpha.py:7 changes inspect.getattr_static(os, 'environ')['A']",
+                "tests/validation/alpha.py:8 calls os.chdir",
+                "tests/validation/alpha.py:9 calls os.environ.pop",
+                "tests/validation/alpha.py:10 calls os.environ.update",
+                "tests/validation/alpha.py:11 changes vars(os)['environ']['A']",
+                "tests/validation/alpha.py:12 calls os.chdir",
+                "tests/validation/alpha.py:13 changes vars(sys)['stdout']",
+                "tests/validation/alpha.py:14 may change a standard stream, os.environ, or the working directory "
+                "through `vars(os)[name]`",
+            ],
+            [problem.split(", a lookup", 1)[0].split(", which", 1)[0] for problem in problems],
+        )
+
     def test_the_runner_itself_is_read_and_a_missing_policy_module_is_reported(self) -> None:
         runner = self.RUNNER + "import contextlib, io\n\ndef f():\n    contextlib.redirect_stderr(io.StringIO())\n"
         with tempfile.TemporaryDirectory() as temporary:

@@ -38,7 +38,6 @@ from shell_targets import run_bash_suite
 from skill_scripts import STANDARD_STREAMS, ShellLexer, substitution_spans
 from toolchain import find_powershell
 from validation_support import (
-    ATTRIBUTE_LOOKUPS,
     COMPUTED_NAME,
     REPOSITORY_ROOT,
     SKILL_GUIDE,
@@ -46,6 +45,7 @@ from validation_support import (
     SUITE_NAME_PATTERNS,
     CallableResolver,
     UnreadablePython,
+    attribute_lookups,
     call_argument,
     import_aliases,
     is_executable_script,
@@ -1416,9 +1416,10 @@ def _constant(node: ast.expr | None) -> str | None:
 def _name(node: ast.expr | None, resolver: CallableResolver) -> str:
     """The dotted name an expression stands for through the module's imports, the names it binds to one by a simple
     assignment, such as os.environ for `environment` after `environment = os.environ`, or for an assignment
-    expression `(environment := os.environ)`, and what it looks up by a literal name, such as os.environ for
-    getattr(os, "environ") or for sys.modules["os"].environ. A part a lookup computes stands for COMPUTED_NAME, as
-    getattr(os, name) stands for os.?; "" when it stands for none."""
+    expression `(environment := os.environ)`, and what it looks up by a literal name in any form attribute_lookups
+    reads, such as os.environ for getattr(os, "environ"), vars(os)["environ"], or sys.modules["os"].environ. A part a
+    lookup computes stands for COMPUTED_NAME, as getattr(os, name) stands for os.?; an attrgetter of more than one name,
+    which gives a tuple, stands for none, as does any expression that is not one of these."""
     if isinstance(node, ast.NamedExpr):
         return _name(node.value, resolver)
     if isinstance(node, ast.Attribute):
@@ -1426,10 +1427,13 @@ def _name(node: ast.expr | None, resolver: CallableResolver) -> str:
         return f"{base}.{node.attr}" if base else ""
     if isinstance(node, ast.Name):
         return module_lookup(node, resolver) or resolver.name(node)
-    if isinstance(node, ast.Call) and resolver.name(node.func) in ATTRIBUTE_LOOKUPS and len(node.args) > 1:
-        owner = _name(node.args[0], resolver)
-        return f"{owner}.{_constant(node.args[1]) or COMPUTED_NAME}" if owner else ""
-    return module_lookup(node, resolver) if node is not None else ""
+    if node is None:
+        return ""
+    lookups = attribute_lookups(node, lambda function: [resolver.name(function)])
+    if lookups:
+        owner = _name(lookups[0].receiver, resolver) if len(lookups) == 1 and lookups[0].alone else ""
+        return f"{owner}.{_constant(lookups[0].name) or COMPUTED_NAME}" if owner else ""
+    return module_lookup(node, resolver)
 
 
 def _computed(name: str) -> bool:
@@ -1469,7 +1473,11 @@ def _changed_target(node: ast.expr, resolver: CallableResolver, augmented: bool)
     """
     if isinstance(node, ast.Subscript):
         name = _name(node.value, resolver)
-        return name if _reaches(name, ENVIRONMENTS) else ""
+        if _reaches(name, ENVIRONMENTS):
+            return name
+        # A store into a namespace replaces the attribute it names, as vars(os)["environ"] = {} replaces os.environ.
+        name = _name(node, resolver)
+        return name if _reaches(name, PATCHED_TARGETS) else ""
     if isinstance(node, ast.Name) and not augmented:
         return ""
     name = _name(node, resolver)
