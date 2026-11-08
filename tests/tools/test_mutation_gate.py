@@ -1932,6 +1932,27 @@ def test_the_windows_leg_runs_a_module_that_reads_a_separator_or_the_null_device
         assert runs_on_windows("tools/report.py", source), source
 
 
+@pytest.mark.parametrize(
+    ("imports", "lookup"),
+    [
+        pytest.param("import builtins\n", "builtins.getattr(os, 'sep')", id="builtins.getattr"),
+        pytest.param("import inspect\n", "inspect.getattr_static(os, 'sep')", id="inspect.getattr_static"),
+        pytest.param("", "object.__getattribute__(os, 'sep')", id="object.__getattribute__"),
+        pytest.param("", "os.__getattribute__('sep')", id="a bound __getattribute__"),
+        pytest.param("import operator\n", "operator.attrgetter('sep')(os)", id="operator.attrgetter"),
+        pytest.param("import operator\n", "operator.attrgetter('path.sep')(os)", id="a dotted attrgetter"),
+        pytest.param("", "vars(os)['sep']", id="vars"),
+        pytest.param("", "os.__dict__['sep']", id="__dict__"),
+        pytest.param("import builtins\n", "builtins.hasattr(os, 'sep')", id="builtins.hasattr"),
+    ],
+)
+def test_the_windows_leg_runs_a_module_that_reads_a_platform_value_by_any_lookup_by_name(
+    imports: str, lookup: str
+) -> None:
+    # Every form of the one catalogue attribute_lookups reads, beside getattr, reads the value it names.
+    assert runs_on_windows("tools/report.py", f"import os\n{imports}VALUE = {lookup}\n")
+
+
 def test_a_module_that_reads_no_platform_value_stays_on_linux() -> None:
     source = "import os\nVALUE = os.path.join(os.curdir, os.extsep)\nNAME = getattr(os, 'getcwd')\n"
     assert not runs_on_windows("tools/report.py", source)
