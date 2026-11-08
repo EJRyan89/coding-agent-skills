@@ -12,7 +12,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from tools.skill_evals_judging import Outcome, counts
-from tools.skill_evals_records import REVIEWER_EFFORT, Index, RoutePin
+from tools.skill_evals_records import JUDGMENT, REVIEWER_EFFORT, Index, RoutePin
 from tools.skill_evals_runs import Run, RunKey, run_keys
 from tools.skill_evals_scenarios import TRIGGER, Scenario, ScenarioError, quote
 
@@ -144,13 +144,32 @@ def results_table(text: str) -> tuple[int, int, list[str]]:
     return _table(text, (RESULTS_BEGIN, RESULTS_END), RESULTS_HEADER, "results table")
 
 
-def replace_results(text: str, skill: str, rows: Sequence[str]) -> str:
-    """The results file with the skill's rows replaced by these and every other skill's rows kept as written, sorted
-    by skill; raise ScenarioError when results_table cannot read its table."""
+def _row_model(row: str) -> str:
+    """The model a row of the results table names."""
+    return (_cells(row) or ["", ""])[1]
+
+
+def kept_models(text: str, skill: str, models: Sequence[str], outcomes: Sequence[Outcome]) -> list[str]:
+    """The models, in run order, whose committed row of the skill a write keeps: each no record of which counted,
+    since every outcome of it failed with a run or record kind, and of which the skill has a row. Such a run
+    measured nothing of the model, so its new row would replace a measured one with `not run` or a pass count of 0; a
+    model the skill has no row of loses nothing, and its new row is written. Raise ScenarioError when results_table
+    cannot read its table."""
+    committed = {_row_model(row) for row in results_table(text)[2] if _row_skill(row) == skill}
+    counted = {outcome.model for outcome in outcomes if outcome.kind in (None, JUDGMENT)}
+    return [model for model in models if model in committed and model not in counted]
+
+
+def replace_results(text: str, skill: str, rows: Sequence[str], keep: Sequence[str] = ()) -> str:
+    """The results file with the skill's rows replaced by these, except that each model in keep keeps its committed
+    row in place of its new one, and every other skill's rows kept as written, sorted by skill; raise ScenarioError
+    when results_table cannot read its table."""
     lines = text.split("\n")
     begin, end, existing = results_table(text)
     kept = [row for row in existing if _row_skill(row) != skill]
-    table = sorted([*kept, *rows], key=_row_skill)
+    committed = {_row_model(row): row for row in existing if _row_skill(row) == skill}
+    mine = [committed[_row_model(row)] if _row_model(row) in keep else row for row in rows]
+    table = sorted([*kept, *mine], key=_row_skill)
     return "\n".join([*lines[: begin + 1], *RESULTS_HEADER, *table, *lines[end:]])
 
 

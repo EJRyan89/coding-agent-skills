@@ -217,7 +217,12 @@ RUNS line's count, and in a text fence the RUNTIME, REVIEWER, and GUARDED lines,
 reason as the results file records it, and each judgment's FAIL line, so the block names no path of the machine. With
 --records, the table alone follows the outcomes. Then `WROTE <file>` when --write replaced the skill's
 rows in docs/skill-evaluations.md, and `REMOVED "<dir>"` when nothing failed and the home is gone; otherwise the home
-stays for its transcripts. Before `WROTE`, --write prints `SAMPLE <scenario> <model>`, with ` run=<run>` as above, the
+stays for its transcripts. Before `SAMPLE`, --write prints `KEPT <model>` for each model, in run order, no record of
+which counted, every expectation on it failing with the `run` or `record` kind, and of which the skill has a row: such a
+run measured nothing of the model, so its committed row stays as it was written rather than being replaced by `not run`
+or a pass count of 0. A model the skill has no row of loses nothing, and its row is written. When no record of any model
+counted, every committed row stays and the skill's rows change only where a model had none.
+Before `WROTE`, --write prints `SAMPLE <scenario> <model>`, with ` run=<run>` as above, the
 run whose transcript the reader checks against its verdicts: of the runs that passed every expectation, the first after
 the scenario and model the skill's row of the samples table names, in scenario order and then model order, wrapping
 round, so successive recorded runs read each scenario on each model in turn. It replaces the skill's samples row with
@@ -227,7 +232,8 @@ is removed, the run keeps the home while it samples one: `REMOVED` then never fo
 `--sample-read agrees` or `--sample-read disagrees`, given with the skill alone, runs nothing: it marks the skill's
 unread samples row with the reading, `agrees` when the transcript shows what each verdict of that run says, and prints
 `WROTE <file>`, or `FAILED "<reason>"` when the results file cannot be read, has no row of the skill, or the row was
-already read. A model none of whose reviewers ran is written in the results file as not run with a fixed
+already read. A model none of whose reviewers ran, and of which the skill has no row, is written in the results file
+as not run with a fixed
 phrase for its first reason, such as `timed out after 1800 seconds` or `denied 2 commands`, which names no path of the
 machine; the FAIL lines and the transcript keep the whole reason. --write reads the results table strictly before any
 run: the header, its separator, then rows of the header's columns, each naming a skill, and nothing else between the
@@ -276,6 +282,7 @@ from tools.runtime_canary import Runner
 from tools.skill_evals_judging import Outcome, judge, not_counted_line, outcome_line, records_in, report, table
 from tools.skill_evals_records import JUDGMENT, MODELS, RUN, Index
 from tools.skill_evals_results import (
+    kept_models,
     pick_sample,
     read_sample,
     replace_results,
@@ -459,7 +466,10 @@ def evaluate(skill: str, scenarios: Sequence[Scenario], options: Options, seams:
     sample: tuple[str, str, Index] | None = None
     if results_text is not None:
         rows = result_rows(skill, scenarios, models, outcomes, runs, version, seams.today())
-        written = replace_results(results_text, skill, rows)
+        kept = kept_models(results_text, skill, models, outcomes)
+        for model in kept:
+            print(f"KEPT {model}")
+        written = replace_results(results_text, skill, rows, kept)
         sample = pick_sample(skill, scenarios, models, outcomes, written)
         if sample is None:
             print("SAMPLE none")

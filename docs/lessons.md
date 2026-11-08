@@ -121,8 +121,11 @@ removed fails validation until its pattern follows it.
   nothing found.
 - **Use:** `conditions:MissingEvidence`, `deployer.discovery:ListingError`, `tools.hub_guard:Reading.time_left`, the
   hub guard's own reading time, below the hook timeout, so a command it cannot finish reading is refused with a reason
-  rather than blocked by a timed-out hook
+  rather than blocked by a timed-out hook, `tools.skill_evals_results:kept_models`, the models whose committed results
+  row a write keeps because no record of theirs counted
 - **Guard:** `skills/ejryan89-code-review-core/scripts/test_review_pipeline.py::test_finalize_refuses_a_result_the_guard_never_claimed_with_nothing_recorded`,
+  `tests/tools/test_skill_evals.py::EvaluateTests::test_a_write_keeps_the_committed_row_of_a_model_no_record_of_which_counted`,
+  `tests/tools/test_skill_evals.py::EvaluateTests::test_a_write_in_which_no_record_counted_keeps_every_committed_row`,
   `skills/audit-ai-config/scripts/test_audit_ai_config.py::test_a_repository_whose_files_show_nothing_says_the_checks_did_not_run`,
   `tests/tools/test_hub_guard.py::test_an_event_that_names_no_command_or_file_is_allowed_with_a_note_never_unseen`,
   `tests/tools/test_hub_guard.py::ReadingBoundTests`,
@@ -132,7 +135,7 @@ removed fails validation until its pattern follows it.
   step never ran; a skill-evaluation scenario that holds `no_finding_above` and no `verdict`; `"timeout"` in a hook
   of `.claude/settings.json` whose program has no bound of its own below it, or reads a part of its input more than
   once per level of nesting, as `for _ in range(2)` over a child does.
-- **Examples:** #1443, #1462, #1603, #1805, #1821, #1824, #1854
+- **Examples:** #1443, #1462, #1603, #1805, #1821, #1824, #1854, #2432
 
 ### Evidence a store records leaving out is withheld, not missing
 
