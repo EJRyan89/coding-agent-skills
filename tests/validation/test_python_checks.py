@@ -384,7 +384,20 @@ class PythonChecksFixtures(unittest.TestCase):
             # Each skill whose scripts/ holds a module is its own root, checked from inside it as the skill imports.
             roots = type_check_skill_roots()
             self.assertIn(SKILLS_ROOT / "ejryan89-code-review-core" / "scripts", roots)
-            self.assertNotIn(SKILLS_ROOT / "update-coding-agent-skills" / "scripts", roots)
+            # A scripts/ folder of shell scripts alone is no root; every skill here now holds a module, so a fixture
+            # tree shows it.
+            with tempfile.TemporaryDirectory() as temporary:
+                fixture = Path(temporary)
+                write_fixture_tree(
+                    fixture,
+                    {
+                        "skills/python-skill/SKILL.md": "---\nname: python-skill\n---\n",
+                        "skills/python-skill/scripts/tool.py": "",
+                        "skills/shell-skill/SKILL.md": "---\nname: shell-skill\n---\n",
+                        "skills/shell-skill/scripts/run.sh": "",
+                    },
+                )
+                self.assertEqual([fixture / "skills" / "python-skill" / "scripts"], type_check_skill_roots(fixture))
             for root in roots:
                 name = f"static type check (mypy {relative(root)})"
                 with self.subTest(root=name):
@@ -404,6 +417,7 @@ class PythonChecksFixtures(unittest.TestCase):
                         "skills/repo-cleanup/scripts",
                         "skills/review-document/scripts",
                         "skills/review-insights/scripts",
+                        "skills/update-coding-agent-skills/scripts",
                         "skills/update-pr-dashboard/scripts",
                         ".claude/skills/audit-repository/scripts",
                         ".claude/skills/change-skill/scripts",
