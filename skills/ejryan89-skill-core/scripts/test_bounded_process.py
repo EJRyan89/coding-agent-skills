@@ -116,6 +116,39 @@ SLEEPING = [sys.executable, "-c", "import time; time.sleep(120)"]
 STALL_PROGRAM = "import time\ntime.sleep(60)\n"
 # The grace a stalled command gets to exit by itself before it is killed.
 EXIT_SECONDS = 0.5
+# Bytes more than any pipe buffers, so a write of them to a command that never reads blocks.
+UNREAD_BYTES = 1024 * 1024
+# Run as its own process, with this folder as its first argument and its case as the second, so a close or a write
+# that waits on stdin with no limit hangs that process, which the test's outer limit ends, never the suite. It starts a
+# command that never reads stdin, keeps a write to it blocked as the case says, and closes the session, then prints, as
+# JSON, how long the close took, the error the write raised, and the command's exit status once closed.
+STDIN_HOLD_PROGRAM = """
+import json, subprocess, sys, threading, time
+sys.path.insert(0, sys.argv[1])
+import bounded_process
+never_reads = [sys.executable, "-c", "import time; time.sleep(30)"]
+raised = None
+with bounded_process.streaming(never_reads, idle_timeout=0.5, exit_wait=0.5) as running:
+    if sys.argv[2] == "thread":
+        def fill():
+            try:
+                running.stdin.write(b"x" * (1024 * 1024))
+                running.stdin.flush()
+            except (OSError, ValueError):
+                pass
+        threading.Thread(target=fill, daemon=True).start()
+        time.sleep(1.0)
+    else:
+        try:
+            running.write(b"x" * (1024 * 1024))
+        except subprocess.TimeoutExpired as error:
+            raised = f"TimeoutExpired {error.timeout:g}"
+    closing = time.monotonic()
+closed = time.monotonic() - closing
+print(json.dumps({"closed": closed, "raised": raised, "status": running._process.poll()}))
+"""
+# How long the process running STDIN_HOLD_PROGRAM may take before the test ends it as hung.
+STDIN_HOLD_LIMIT_SECONDS = 60.0
 
 
 class RecordingTree:
@@ -609,6 +642,46 @@ class StreamingTests(unittest.TestCase):
             raise RuntimeError("the caller failed")
         self.assertLess(time.monotonic() - started, IDLE_MARGIN_SECONDS)
         self.assertEqual(0, running.wait())  # it exited by itself rather than being killed
+
+    def stdin_hold(self, case: str) -> dict[str, Any]:
+        """STDIN_HOLD_PROGRAM's report for `case`, failing the test when it hangs past its outer limit."""
+        command = [sys.executable, "-c", STDIN_HOLD_PROGRAM, str(Path(__file__).resolve().parent), case]
+        try:
+            finished = subprocess.run(command, capture_output=True, timeout=STDIN_HOLD_LIMIT_SECONDS, check=False)
+        except subprocess.TimeoutExpired:
+            self.fail(f"the session was still blocked on stdin after {STDIN_HOLD_LIMIT_SECONDS:g} seconds")
+        self.assertEqual(0, finished.returncode, finished.stderr.decode("utf-8", "replace"))
+        report: dict[str, Any] = json.loads(finished.stdout)
+        return report
+
+    def test_closing_kills_a_command_that_never_reads_while_another_thread_is_blocked_writing(self) -> None:
+        # The writer thread holds stdin's buffer lock while its write waits for a reader that never comes, so a close
+        # that closed stdin first, before its timed wait and kill, waited on the lock for ever.
+        report = self.stdin_hold("thread")
+        self.assertLess(report["closed"], EXIT_SECONDS + IDLE_MARGIN_SECONDS)
+        self.assertIsNotNone(report["status"], "the command was killed, not left running")
+        self.assertNotEqual(0, report["status"])
+
+    def test_a_write_the_command_never_reads_raises_within_the_idle_limit_and_closing_kills_it(self) -> None:
+        report = self.stdin_hold("write")
+        self.assertEqual("TimeoutExpired 0.5", report["raised"])
+        self.assertLess(report["closed"], EXIT_SECONDS + IDLE_MARGIN_SECONDS)
+        self.assertIsNotNone(report["status"], "the command was killed, not left running")
+
+    def test_a_write_the_command_reads_arrives_and_end_input_ends_its_requests(self) -> None:
+        program = "import sys; sys.stdout.buffer.write(sys.stdin.buffer.read()); sys.stdout.flush()"
+        with bounded_process.streaming([sys.executable, "-c", program], idle_timeout=STARTUP_SECONDS) as running:
+            running.write(b"z" * UNREAD_BYTES)
+            running.end_input()
+            running.end_input()  # a closed stdin is closed again without error
+            self.assertEqual(b"z" * UNREAD_BYTES, running.read(UNREAD_BYTES + 1))
+            self.assertEqual(0, running.wait())
+
+    def test_a_write_to_a_command_that_has_exited_raises_os_error(self) -> None:
+        with bounded_process.streaming([sys.executable, "-c", "pass"], idle_timeout=STARTUP_SECONDS) as running:
+            self.assertEqual(0, running.wait())
+            with self.assertRaises(OSError):
+                running.write(b"w" * UNREAD_BYTES)
 
     def test_a_tree_starts_the_command_and_is_left_once_it_has_been_closed(self) -> None:
         tree = RecordingTree({"close_fds": True})
