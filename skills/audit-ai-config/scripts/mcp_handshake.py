@@ -14,13 +14,15 @@ process's but never carrying git's repository-selecting variables, such as a she
 GIT_DIR, which ejryan89-skill-core's bounded_process.streaming removes; it receives initialize,
 notifications/initialized, and tools/list, each one line of JSON ended by a line feed and never a carriage
 return, and is then stopped. --timeout bounds each server from its start to its stop, so neither the server nor a
-program its launcher started and left holding its output keeps the run waiting past it; a server still running
+program its launcher started and left holding its output keeps the run waiting past it, whether on a response or on a
+request the server does not read ('timed out sending a request'); a server still running
 then is killed, and up to ten seconds more are allowed for it to be reported gone. A definition the operating system
 would refuse to start, with a NUL character in its command, args, cwd, or env, or an env name that is empty or holds
 '=', fails that server before it starts, and the servers after it still run. Identical definitions in
 several files are started once. A handshake passes only when the initialize result has the fields
 the MCP schema requires and a protocol version this client supports, and every tools/list page, followed
-through nextCursor, is a valid list of tools. Each config is read by audit_ai_config.py's reader of that file, so
+through nextCursor, is a valid list of tools; a nextCursor over 4096 characters fails the server rather than
+being sent back. Each config is read by audit_ai_config.py's reader of that file, so
 the audit and the handshake report the same problems for it. One line per
 config problem, then one per server, each on one line: a name, command, type, or reason the repository's
 configuration or a server supplies is flattened onto it with ejryan89-skill-core's flat_text.
@@ -92,6 +94,9 @@ PROTOCOL_VERSION = "2025-06-18"
 # Revisions whose initialize and tools/list shapes this client validates; a server may answer with any of them.
 SUPPORTED_PROTOCOL_VERSIONS = frozenset({"2024-11-05", "2025-03-26", PROTOCOL_VERSION})
 MAX_TOOL_PAGES = 100
+# The longest tools/list nextCursor the handshake sends back; a cursor is an opaque token a server keeps short, and one
+# longer is the server's failure rather than a request the handshake writes whatever its size.
+MAX_CURSOR_CHARACTERS = 4096
 # Seconds a server gets to exit once its stdin closes, within --timeout, before it is killed.
 EXIT_WAIT_SECONDS = 2.0
 
@@ -169,9 +174,12 @@ class Session:
             # A tools/list cursor is the server's own value, which can hold what JSON cannot carry back, such as a
             # lone surrogate it escaped; that is the server's failure, reported for it alone.
             raise RuntimeError(f"cannot send the server's value back: {error}") from error
-        # Stdin is binary, so each message ends with exactly the newline the stdio transport frames it with.
-        self.running.stdin.write(text.encode("utf-8") + b"\n")
-        self.running.stdin.flush()
+        # Stdin is binary, so each message ends with exactly the newline the stdio transport frames it with. The write
+        # is bounded like a read, so a server that stops reading cannot hold it past --timeout.
+        try:
+            self.running.write(text.encode("utf-8") + b"\n")
+        except subprocess.TimeoutExpired:
+            raise RuntimeError("timed out sending a request") from None
 
     def response(self, request_id: int) -> dict[str, Any]:
         while True:
@@ -210,9 +218,10 @@ class Session:
         return f"server exited before responding{detail}"
 
     def end_requests(self) -> None:
-        """Close the server's stdin, which tells a stdio server to exit."""
-        with contextlib.suppress(OSError):
-            self.running.stdin.close()
+        """Close the server's stdin, which tells a stdio server to exit; a server that has not read what is buffered
+        within --timeout is left to the stop, which kills it."""
+        with contextlib.suppress(OSError, subprocess.TimeoutExpired):
+            self.running.end_input()
 
 
 def initialize_result(result: dict[str, Any]) -> tuple[str, dict[str, Any]]:
@@ -263,6 +272,8 @@ def tool_count(session: Session) -> int:
             return count
         if not isinstance(cursor, str) or cursor in seen:
             raise RuntimeError("tools/list returned an invalid or repeated nextCursor")
+        if len(cursor) > MAX_CURSOR_CHARACTERS:
+            raise RuntimeError(f"tools/list returned a nextCursor over {MAX_CURSOR_CHARACTERS} characters")
         seen.add(cursor)
     raise RuntimeError(f"tools/list did not finish within {MAX_TOOL_PAGES} pages")
 

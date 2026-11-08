@@ -751,7 +751,9 @@ removed fails validation until its pattern follows it.
   `tests/tools/test_hub_guard.py::ReadingBoundTests::test_a_lookup_while_judging_ends_with_the_reading_time`, and
   `tests/tools/test_hub_guard.py::ReadingBoundTests::test_a_lookup_the_reading_time_cuts_short_is_refused_with_no_hub_in_view_of_the_session`,
   `tests/tools/test_hub_guard.py::PlaceLookupTests::test_a_lookup_git_call_the_reading_time_cuts_short_refuses_a_command_naming_git`,
-  `tests/deployer/test_verify.py::ConverseTests::test_a_program_whose_kill_is_never_reported_ends_in_a_listing_error_within_the_waits_bounds`
+  `tests/deployer/test_verify.py::ConverseTests::test_a_program_whose_kill_is_never_reported_ends_in_a_listing_error_within_the_waits_bounds`,
+  `skills/ejryan89-skill-core/scripts/test_bounded_process.py::StreamingTests::test_closing_kills_a_command_that_never_reads_while_another_thread_is_blocked_writing`,
+  and `skills/audit-ai-config/scripts/test_mcp_handshake.py::test_a_request_the_server_never_reads_fails_within_the_timeout_and_the_server_is_stopped`
 - **Search for:** `deadline` or `time_left` in a module whose functions start a process with a fixed `timeout=`, such
   as `GUARD_GIT_TIMEOUT_SECONDS`, while a caller holds a deadline; a loop that looks at the clock once per item while
   each item's work starts processes; a deadline set after work it promises to bound has begun; a loop that gathers
@@ -759,8 +761,9 @@ removed fails validation until its pattern follows it.
   a handler that counts the deadline's own error as cut short but not a process's timeout error, which a step given
   the time left raises when the deadline ends inside it; a test that moves the clock only between steps, never
   inside one; a `.kill()` followed by a `.wait()` with no `timeout=`, which waits for as long as the kill goes
-  unreported.
-- **Examples:** #2031, #2087, #2092, #2132, #2184
+  unreported; a write to, flush of, or close of a child's stdin outside the limit its reads keep, since a child that
+  stops reading holds a blocking write, and a buffered pipe's close waits for a write another thread has under way.
+- **Examples:** #2031, #2087, #2092, #2132, #2184, #2462
 
 ### A test's time-out is injected, never raced
 
