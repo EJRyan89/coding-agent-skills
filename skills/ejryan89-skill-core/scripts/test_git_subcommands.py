@@ -39,6 +39,8 @@ def listed(scripts: dict[str, list[list[str]]], read: list[str]) -> git_subcomma
         ('echo "run git fetch first"', set()),
         ("  # git pull later", set()),
         ("legit fetch", set()),
+        # Bash finds a program by its name as written, so Git is no git.
+        ("Git push", set()),
         # A wrapper's options are read by its getopt table to the command it runs, and a lookup runs nothing.
         ("nice -n 5 git push", {"push"}),
         ("env -i A=1 timeout --signal TERM 5 git fetch", {"fetch"}),
@@ -136,6 +138,9 @@ def test_a_start_up_whose_script_no_reader_sees_gives_no_subcommand(words: list[
         ([["command", "-v", "git", "push"]], set()),
         ([["time", "-p", "-p", "git", "push"]], {"push"}),
         ([["echo", "git", "push"]], set()),
+        # PowerShell finds the program in any case, so Git and GIT, .exe already dropped, run git.
+        ([["Git", "push"]], {"push"}),
+        ([["GIT", "-C", "dir", "fetch"]], {"fetch"}),
         ([[UNREAD_WORD, "push"]], set()),
     ],
 )

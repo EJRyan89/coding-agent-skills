@@ -65,11 +65,16 @@ def bash_git_subcommands(text: str, read_powershell: PowerShellReader) -> set[st
 def powershell_git_subcommands(commands: Iterable[Sequence[str]], read_powershell: PowerShellReader) -> set[str]:
     """The subcommand of each git command a PowerShell script runs, given the words of each external command it runs:
     git's own, and one a wrapper, find's actions, a shell's -c script, or a PowerShell start-up runs. A word that is
-    no literal is the parser's UNREAD_WORD, so a subcommand no literal names is read as that word."""
+    no literal is the parser's UNREAD_WORD, so a subcommand no literal names is read as that word. PowerShell finds
+    the program a command names in any case, so `Git` and `GIT` run git; a Bash script's program is matched as
+    written."""
     return {
         subcommand
         for words in commands
-        for subcommand in command_git_subcommands(list(words), read_powershell, reserved=False)
+        if words
+        for subcommand in command_git_subcommands(
+            ["git" if words[0].casefold() == "git" else words[0], *words[1:]], read_powershell, reserved=False
+        )
     }
 
 
