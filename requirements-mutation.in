@@ -7,5 +7,5 @@
 # docs/dependency-updates.md owns these pins and says how to compile the lock; Dependabot reviews them weekly.
 -r requirements-dev.in
 -c requirements-dev.txt
-mutmut==3.8.0
-coverage==7.16.2
+mutmut==3.8.1
+coverage==7.17.2

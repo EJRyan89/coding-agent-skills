@@ -126,7 +126,7 @@ class ToolchainFixtures(unittest.TestCase):
                 "winget install --id koalaman.shellcheck",
                 "  - PowerShell 7 (pwsh): its version could not be read; the floor is 7.0 in "
                 "docs/dependency-updates.md: winget install --id Microsoft.PowerShell --installer-type wix",
-                "  - ruff 0.17.0 is older than the floor 0.17.1 in docs/dependency-updates.md: "
+                "  - ruff 0.17.0 is older than the floor 0.17.3 in docs/dependency-updates.md: "
                 "python -m pip install --require-hashes --only-binary :all: -r requirements-dev.txt",
             ],
             outdated_prerequisites(
@@ -137,7 +137,7 @@ class ToolchainFixtures(unittest.TestCase):
         self.assertEqual(
             [],
             outdated_prerequisites(
-                {"Git Bash": None, "ShellCheck": (0, 9, 0), "PowerShell 7 (pwsh)": (7, 5, 3), "ruff": (0, 17, 1)},
+                {"Git Bash": None, "ShellCheck": (0, 9, 0), "PowerShell 7 (pwsh)": (7, 5, 3), "ruff": (0, 17, 3)},
                 (3, 11, 4),
             ),
         )
@@ -505,4 +505,4 @@ class PytestPrerequisiteFixtures(unittest.TestCase):
     def test_pytest_older_than_its_pin_stops_the_run(self) -> None:
         outdated = toolchain.outdated_prerequisites({"pytest": (9, 0, 3)}, (3, 11, 4))
         self.assertEqual(1, len(outdated))
-        self.assertIn("pytest 9.0.3 is older than the floor 9.1.1 in docs/dependency-updates.md", outdated[0])
+        self.assertIn("pytest 9.0.3 is older than the floor 9.2.0 in docs/dependency-updates.md", outdated[0])

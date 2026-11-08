@@ -204,9 +204,9 @@ VALIDATION_FLOORS: dict[str, tuple[int, ...]] = {
     "ShellCheck": (0, 9, 0),
     "PSScriptAnalyzer": (1, 25, 0),
     "PowerShell 7 (pwsh)": (7, 0),
-    "ruff": (0, 17, 1),
-    "mypy": (2, 4, 0),
-    "pytest": (9, 1, 1),
+    "ruff": (0, 17, 3),
+    "mypy": (2, 4, 1),
+    "pytest": (9, 2, 0),
 }
 
 
@@ -510,9 +510,9 @@ class ToolchainPolicies(unittest.TestCase):
                 "ShellCheck": (0, 9, 0),
                 "PSScriptAnalyzer": (1, 25, 0),
                 "PowerShell 7 (pwsh)": (7, 0),
-                "ruff": (0, 17, 1),
-                "mypy": (2, 4, 0),
-                "pytest": (9, 1, 1),
+                "ruff": (0, 17, 3),
+                "mypy": (2, 4, 1),
+                "pytest": (9, 2, 0),
             },
             VALIDATION_FLOORS,
         )
@@ -522,9 +522,9 @@ class ToolchainPolicies(unittest.TestCase):
             "| ShellCheck | 0.9.0 |",
             "| PSScriptAnalyzer | 1.25.0 |",
             "| PowerShell 7 (`pwsh`) | 7.0 |",
-            "| ruff | 0.17.1 |",
-            "| mypy | 2.4.0 |",
-            "| pytest | 9.1.1 |",
+            "| ruff | 0.17.3 |",
+            "| mypy | 2.4.1 |",
+            "| pytest | 9.2.0 |",
         ):
             with self.subTest(row=row):
                 self.assertIn(row, document)
@@ -532,14 +532,14 @@ class ToolchainPolicies(unittest.TestCase):
     def test_the_mutation_gate_installs_its_pinned_tools_and_nothing_else(self) -> None:
         requirements = (REPOSITORY_ROOT / MUTATION_INPUT).read_text(encoding="utf-8")
         self.assertEqual(
-            ["mutmut==3.8.0", "coverage==7.16.2"], [line for line in requirements.splitlines() if "==" in line]
+            ["mutmut==3.8.1", "coverage==7.17.2"], [line for line in requirements.splitlines() if "==" in line]
         )
         self.assertEqual(("mutmut", "coverage"), MUTATION_PACKAGES)
         self.assertEqual(("-r requirements-dev.in", "-c requirements-dev.txt"), MUTATION_INCLUDES)
         self.assertEqual([], requirements_problems(requirements, MUTATION_PACKAGES, MUTATION_INCLUDES))
         document = (REPOSITORY_ROOT / DEPENDENCY_DOC).read_text(encoding="utf-8")
-        self.assertIn("| mutmut | 3.8.0 | `requirements-mutation.in` |", document)
-        self.assertIn("| coverage.py | 7.16.2 | `requirements-mutation.in` |", document)
+        self.assertIn("| mutmut | 3.8.1 | `requirements-mutation.in` |", document)
+        self.assertIn("| coverage.py | 7.17.2 | `requirements-mutation.in` |", document)
 
     def test_every_package_installed_is_locked_with_hashes_and_installed_with_hash_checking(self) -> None:
         self.assertEqual(
@@ -653,7 +653,7 @@ class ToolchainPolicies(unittest.TestCase):
         self.assertIn("python -m mypy --version", workflow)
         requirements = (REPOSITORY_ROOT / DEVELOPMENT_INPUT).read_text(encoding="utf-8")
         self.assertEqual(
-            ["ruff==0.17.1", "mypy==2.4.0", "pytest==9.1.1"],
+            ["ruff==0.17.3", "mypy==2.4.1", "pytest==9.2.0"],
             [line for line in requirements.splitlines() if "==" in line],
         )
         # Every other line is a comment or blank, and the packages are the ones the dependency document lists.
