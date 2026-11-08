@@ -2617,9 +2617,9 @@ RESULTS_TEXT = "\n".join(
         "",
         skill_evals_results.RESULTS_BEGIN,
         *skill_evals_results.RESULTS_HEADER,
-        "| alpha | opus | claude-opus-5-5 | high | 1/1 | 1 | one 1/1 | claude-opus-5-5 | 2.1.0 | 2026-01-01 |",
-        "| review-prs | opus | old | high | 0/1 | 1 | old | old | 2.0.0 | 2026-01-01 |",
-        "| zeta | opus | claude-opus-5-5 | high | 1/1 | 1 | one 1/1 | claude-opus-5-5 | 2.1.0 | 2026-01-01 |",
+        "| alpha | opus | claude-opus-5-5 | high | none | 1/1 | 1 | one 1/1 | claude-opus-5-5 | 2.1.0 | 2026-01-01 |",
+        "| review-prs | opus | old | high | none | 0/1 | 1 | old | old | 2.0.0 | 2026-01-01 |",
+        "| zeta | opus | claude-opus-5-5 | high | none | 1/1 | 1 | one 1/1 | claude-opus-5-5 | 2.1.0 | 2026-01-01 |",
         skill_evals_results.RESULTS_END,
         "",
         "Written by hand after the table.",
@@ -2718,9 +2718,9 @@ class ResultsTests(unittest.TestCase):
         )
         self.assertEqual(
             [
-                "| review-prs | haiku | claude-haiku-4 | high | 1/2 | 1 | a 1/1, b 0/1 | claude-opus-5-5 | 2.1.291 "
-                "| 2026-10-08 |",
-                "| review-prs | sonnet | not run | high | 0/2 | 1 | no such model \\| here | unknown "
+                "| review-prs | haiku | claude-haiku-4 | high | none | 1/2 | 1 | a 1/1, b 0/1 | claude-opus-5-5 "
+                "| 2.1.291 | 2026-10-08 |",
+                "| review-prs | sonnet | not run | high | none | 0/2 | 1 | no such model \\| here | unknown "
                 "| 2.1.291 | 2026-10-08 |",
             ],
             rows,
@@ -2755,7 +2755,7 @@ class ResultsTests(unittest.TestCase):
         )
         self.assertEqual(
             [
-                "| review-document | haiku | claude-haiku-5-5 | high | 1/3 | 1 | a 1/2, b not run, c 0/1 "
+                "| review-document | haiku | claude-haiku-5-5 | high | none | 1/3 | 1 | a 1/2, b not run, c 0/1 "
                 "| claude-opus-5-5 "
                 "| 2.1.291 | 2026-10-08 |"
             ],
@@ -2786,14 +2786,14 @@ class ResultsTests(unittest.TestCase):
         )
         self.assertEqual(
             [
-                "| review-prs | haiku | claude-haiku-5-5 | high | 7/8 | 3 | a 3/3 (3/3 runs), b 2/3 (2/3 runs), "
+                "| review-prs | haiku | claude-haiku-5-5 | high | none | 7/8 | 3 | a 3/3 (3/3 runs), b 2/3 (2/3 runs), "
                 "c 2/2 (2/2 runs), d not run | claude-opus-5-5 | 2.1.291 | 2026-10-08 |"
             ],
             rows,
         )
 
     def test_the_skills_rows_are_replaced_and_every_other_kept(self) -> None:
-        rows = ["| review-prs | haiku | h | high | 1/1 | 1 | a 1/1 | s | 2.1.291 | 2026-10-08 |"]
+        rows = ["| review-prs | haiku | h | high | none | 1/1 | 1 | a 1/1 | s | 2.1.291 | 2026-10-08 |"]
         original = RESULTS_TEXT.split("\n")
         written = skill_evals_results.replace_results(RESULTS_TEXT, "review-prs", rows).split("\n")
         begin, end = written.index(skill_evals_results.RESULTS_BEGIN), written.index(skill_evals_results.RESULTS_END)
@@ -2807,13 +2807,15 @@ class ResultsTests(unittest.TestCase):
     def test_another_skills_row_and_its_order_are_kept_as_written(self) -> None:
         lines = RESULTS_TEXT.split("\n")
         # A row written by hand without the spaces, an aligned separator, and two rows of one skill out of order.
-        lines[4] = "| :--- | --- | --- | --- | ---: | --- | --- | --- | --- | --- |"
-        lines[5] = "|alpha|sonnet|claude-sonnet-5-5|high|1/1|1|one 1/1|claude-opus-5-5|2.1.0|2026-01-01|"
+        lines[4] = "| :--- | --- | --- | --- | --- | ---: | --- | --- | --- | --- | --- |"
+        lines[5] = "|alpha|sonnet|claude-sonnet-5-5|high|none|1/1|1|one 1/1|claude-opus-5-5|2.1.0|2026-01-01|"
         lines.insert(
-            6, "| alpha | haiku | claude-haiku-5-5 | high | 1/1 | 1 | one 1/1 | claude-opus-5-5 | 2.1.0 | 2026-01-01 |"
+            6,
+            "| alpha | haiku | claude-haiku-5-5 | high | none | 1/1 | 1 | one 1/1 | claude-opus-5-5 | 2.1.0 "
+            "| 2026-01-01 |",
         )
         text = "\n".join(lines)
-        rows = ["| review-prs | haiku | h | high | 1/1 | 1 | a 1/1 | s | 2.1.291 | 2026-10-08 |"]
+        rows = ["| review-prs | haiku | h | high | none | 1/1 | 1 | a 1/1 | s | 2.1.291 | 2026-10-08 |"]
         written = skill_evals_results.replace_results(text, "review-prs", rows).split("\n")
         begin, end = written.index(skill_evals_results.RESULTS_BEGIN), written.index(skill_evals_results.RESULTS_END)
         self.assertEqual(
@@ -3053,7 +3055,7 @@ class EvaluateTests(unittest.TestCase):
         self.assertTrue(self.homes.exists())
         written = self.results.read_text(encoding="utf-8")
         self.assertIn(
-            "| review-prs | haiku | claude-haiku-5-5 | high | 22/22 | 1 | clean-change 2/2, design-clean 2/2, "
+            "| review-prs | haiku | claude-haiku-5-5 | high | none | 22/22 | 1 | clean-change 2/2, design-clean 2/2, "
             "design-gaps 5/5, planted-defects 5/5, re-review 8/8 | claude-opus-5-5 | 2.1.291 | 2026-10-08 |",
             written,
         )
@@ -3236,7 +3238,7 @@ class EvaluateTests(unittest.TestCase):
         )
         self.assertTrue(self.homes.is_dir())
         written = self.results.read_text(encoding="utf-8")
-        self.assertIn("| review-prs | sonnet | claude-sonnet-5-5 | high | 0/22 |", written)
+        self.assertIn("| review-prs | sonnet | claude-sonnet-5-5 | high | none | 0/22 |", written)
         self.assertEqual(
             ["| alpha | one | opus | 1 | 2026-01-01 | agrees |"], skill_evals_results.samples_table(written)[2]
         )
@@ -3246,7 +3248,7 @@ class EvaluateTests(unittest.TestCase):
         self.assertEqual(1, status)
         self.assertIn("REVIEWER haiku none", lines)
         self.assertIn(
-            "| review-prs | haiku | not run | high | 0/22 | 1 | the run recorded no review |",
+            "| review-prs | haiku | not run | high | none | 0/22 | 1 | the run recorded no review |",
             self.results.read_text(encoding="utf-8"),
         )
 
@@ -3275,7 +3277,7 @@ class EvaluateTests(unittest.TestCase):
         )
         results = self.results.read_text(encoding="utf-8")
         self.assertIn(
-            "| review-prs | haiku | not run | high | 0/22 | 1 "
+            "| review-prs | haiku | not run | high | none | 0/22 | 1 "
             "| the run recorded no review; Claude Code exited with code 1; "
             "denied 1 command |",
             results,
@@ -3318,6 +3320,70 @@ class EvaluateTests(unittest.TestCase):
         self.assertEqual(1, status)
         reason = "reviewers ran on claude-opus-5-5, not claude-haiku-5-5"
         self.assertIn(f'FAIL review-prs clean-change haiku verdict APPROVED record "{reason}"', lines)
+
+    def pinned_design_gaps(self, **pin: str) -> None:
+        """review-prs's design-gaps scenario, copied under the test's root with its manifest's design-review route
+        pinning `pin` in both trees, so the pin is the configuration and not a change the review sees; every
+        scenario this test loads is then read from that root."""
+        folder = self.root / "scenarios" / "review-prs" / "design-gaps"
+        shutil.copytree(REVIEW_PRS / "design-gaps", folder)
+        for tree in ("base", "head"):
+            manifest = folder / tree / "review" / "specialists.json"
+            data = json.loads(manifest.read_text(encoding="utf-8"))
+            (route,) = data["specialists"]
+            route.update(pin)
+            manifest.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        real = skill_evals_scenarios.load_scenarios
+
+        def from_copy(skill: str, names: Sequence[str] = (), *_: Any) -> list[Scenario]:
+            return real(skill, names, self.root / "scenarios")
+
+        patcher = mock.patch.object(skill_evals_scenarios, "load_scenarios", from_copy)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_a_reviewer_on_the_model_its_route_pins_counts_and_the_row_names_the_pin(self) -> None:
+        # The manifest pins its one route to opus, which the pipeline starts its reviewer on whatever model a row
+        # judges: the pin is the configuration under test, so each model's run counts.
+        self.pinned_design_gaps(model="opus")
+        claude = StubClaude(self, reviewer="claude-opus-5-5")
+        status, lines = self.evaluate(["--write", "--jobs", "1"], self.seams(claude), only=["design-gaps"])
+        self.assertEqual(0, status, lines)
+        self.assertEqual([], [line for line in lines if line.startswith(("NOT_COUNTED ", "FAIL "))])
+        rows = skill_evals_results.results_table(self.results.read_text(encoding="utf-8"))[2]
+        for model in skill_evals_records.MODELS:
+            with self.subTest(model=model):
+                self.assertIn(
+                    f"| review-prs | {model} | claude-opus-5-5 | high | design-review: model opus | 5/5 | 1 "
+                    "| design-gaps 5/5 | claude-opus-5-5 | 2.1.291 | 2026-10-08 |",
+                    rows,
+                )
+
+    def test_a_reviewer_on_neither_the_judged_nor_the_pinned_model_fails_the_run(self) -> None:
+        self.pinned_design_gaps(model="opus")
+        claude = StubClaude(self, reviewer="claude-sonnet-5-5")
+        status, lines = self.evaluate(["--model", "haiku"], self.seams(claude))
+        self.assertEqual(1, status)
+        reason = "reviewers ran on claude-sonnet-5-5, not claude-haiku-5-5 or the pinned claude-opus-5-5"
+        self.assertIn(f'NOT_COUNTED design-gaps haiku record "{reason}"', lines)
+
+    def test_a_route_s_pinned_effort_is_overridden_and_the_row_says_so(self) -> None:
+        # Claude Code starts a native subagent at its agent's effort, so the reviewer runs at the model's reviewer
+        # effort and the row names the pin it overrode.
+        self.pinned_design_gaps(effort="low")
+        claude = StubClaude(self)
+        status, lines = self.evaluate(["--write", "--jobs", "1"], self.seams(claude), only=["design-gaps"])
+        self.assertEqual(0, status, lines)
+        for model, home in ((model, self.homes / model) for model in skill_evals_records.MODELS):
+            with self.subTest(model=model):
+                effort = frontmatter.read(home / skill_evals_runs.REVIEWER_AGENT).string("effort")
+                self.assertEqual(skill_evals_records.REVIEWER_EFFORT[model], effort)
+        rows = skill_evals_results.results_table(self.results.read_text(encoding="utf-8"))[2]
+        self.assertIn(
+            "| review-prs | haiku | claude-haiku-5-5 | high | design-review: effort low overridden | 5/5 | 1 "
+            "| design-gaps 5/5 | claude-opus-5-5 | 2.1.291 | 2026-10-08 |",
+            rows,
+        )
 
     def test_a_record_that_does_not_show_the_model_judged_is_told_as_a_record(self) -> None:
         cases = {
@@ -3526,8 +3592,8 @@ class EvaluateTests(unittest.TestCase):
             record,
         )
         self.assertIn(
-            "| audit-skill | haiku | claude-haiku-5-5 | none | 7/9 | 1 | description 7/9 | claude-haiku-5-5 | 2.1.291 "
-            "| 2026-10-08 |",
+            "| audit-skill | haiku | claude-haiku-5-5 | none | none | 7/9 | 1 | description 7/9 | claude-haiku-5-5 "
+            "| 2.1.291 | 2026-10-08 |",
             self.results.read_text(encoding="utf-8"),
         )
         for arguments, cwd, _ in claude.calls[1:]:
@@ -3654,7 +3720,8 @@ def test_a_document_scenario_runs_the_skill_on_its_staged_document(scenario: str
     written = case.results.read_text(encoding="utf-8")
     passed = REVIEW_DOCUMENT_EXPECTATIONS[scenario]
     case.assertIn(
-        f"| review-document | haiku | claude-haiku-5-5 | high | {passed}/{passed} | 1 | {scenario} {passed}/{passed} | "
+        f"| review-document | haiku | claude-haiku-5-5 | high | none | {passed}/{passed} | 1 "
+        f"| {scenario} {passed}/{passed} | "
         "claude-opus-5-5 | 2.1.291 | 2026-10-08 |",
         written,
     )
@@ -3740,7 +3807,7 @@ def test_a_repository_reviewer_s_scenarios_run_through_review_prs_on_copies_hold
     passed = REVIEW_REPOSITORY_EXPECTATIONS[scenario]
     for model, identifier in skill_evals_records.MODELS.items():
         case.assertIn(
-            f"| review-repository | {model} | {identifier} | high | {passed}/{passed} | 1 "
+            f"| review-repository | {model} | {identifier} | high | none | {passed}/{passed} | 1 "
             f"| {scenario} {passed}/{passed} | claude-opus-5-5 | 2.1.291 | 2026-10-08 |",
             written,
         )
@@ -4027,7 +4094,7 @@ RESULTS_LINES = RESULTS_TEXT.split("\n")
         ("line 7 of the results file is not a row", 6, "a hand note"),
         ("line 8 of the results file is not a row", 7, f"{RESULTS_LINES[7]} n |"),
         (
-            "line 6 of the results file is not a row of the table's 10 columns naming a skill",
+            "line 6 of the results file is not a row of the table's 11 columns naming a skill",
             5,
             RESULTS_LINES[5].replace("alpha", " "),
         ),
@@ -4366,7 +4433,7 @@ def test_the_notes_explain_each_scenario_not_run_and_no_other() -> None:
 
 def test_a_note_that_disagrees_with_the_rows_is_found_either_way() -> None:
     row = (
-        "| review-document | haiku | claude-haiku-5-5 | high | 5/5 | 1 | pdf-gaps 5/5, word-gaps {} | x "
+        "| review-document | haiku | claude-haiku-5-5 | high | none | 5/5 | 1 | pdf-gaps 5/5, word-gaps {} | x "
         "| 2.1.0 | 2026-01-01 |"
     )
     note = "- **`review-document`, `pdf-gaps`:** not run on any model, because no `pdftotext` met the floor.\n"
@@ -4725,3 +4792,145 @@ def test_records_hold_a_trigger_record_to_its_scenario_and_model(tmp_path: Path)
         with pytest.raises(RecordError) as raised:
             source(scenario, "haiku", None)
         assert raised.value.kind == skill_evals_records.RECORD, name
+
+
+def pinned_scenario(root: Path, **pin: Any) -> Scenario:
+    """review-prs's design-gaps scenario loaded from a copy under root whose manifest's one route has `pin` in its base
+    tree, which prepare reads it from."""
+    folder = root / "review-prs" / "design-gaps"
+    shutil.copytree(REVIEW_PRS / "design-gaps", folder)
+    manifest = folder / "base" / "review" / "specialists.json"
+    data = json.loads(manifest.read_text(encoding="utf-8"))
+    data["specialists"][0].update(pin)
+    manifest.write_text(json.dumps(data), encoding="utf-8")
+    (scenario,) = skill_evals_scenarios.load_scenarios("review-prs", root=root)
+    return scenario
+
+
+@pytest.mark.parametrize(
+    ("pin", "pins"),
+    [
+        ({"model": "opus"}, (skill_evals_records.RoutePin("design-review", "opus", None),)),
+        ({"effort": "low"}, (skill_evals_records.RoutePin("design-review", None, "low"),)),
+        ({"model": "haiku", "effort": "max"}, (skill_evals_records.RoutePin("design-review", "haiku", "max"),)),
+        # `inherit` asks for the session's model, which a run sets to the judged one, so it pins nothing.
+        ({"model": "inherit"}, ()),
+        ({"model": "inherit", "effort": "low"}, (skill_evals_records.RoutePin("design-review", None, "low"),)),
+        # Null validates to an absent key, as the manifest reader reads it.
+        ({"model": None, "effort": None}, ()),
+        ({}, ()),
+    ],
+)
+def test_a_route_s_pinned_model_and_effort_are_read_from_the_scenario_s_manifest(
+    pin: dict[str, Any], pins: tuple[skill_evals_records.RoutePin, ...], tmp_path: Path
+) -> None:
+    assert pins == pinned_scenario(tmp_path, **pin).pins
+
+
+def test_a_pin_of_a_model_the_evaluation_names_no_id_for_fails_the_load(tmp_path: Path) -> None:
+    with pytest.raises(ScenarioError, match="design-gaps: route design-review pins model fable, which the evaluation"):
+        pinned_scenario(tmp_path, model="fable")
+
+
+def test_a_pin_the_manifest_reader_refuses_fails_the_load(tmp_path: Path) -> None:
+    with pytest.raises(ScenarioError, match=r"design-gaps: the manifest review/specialists\.json cannot be read"):
+        pinned_scenario(tmp_path, model="claude-opus-5-5")
+
+
+def pinned_run(*reviewers: str) -> runtime_canary.Completed:
+    """A session on the session model whose reviewers ran on these models."""
+    events = [assistant("claude-opus-5-5"), *(assistant(model, subagent=True) for model in reviewers)]
+    return runtime_canary.Completed(0, "\n".join(events), "")
+
+
+def test_a_run_counts_reviewers_on_the_judged_model_or_a_model_a_route_pins() -> None:
+    opus = (skill_evals_records.RoutePin("trust-boundary", "opus"),)
+    effort = (skill_evals_records.RoutePin("deployer", None, "low"),)
+
+    def failure(completed: runtime_canary.Completed, pins: Sequence[skill_evals_records.RoutePin]) -> str | None:
+        return skill_evals_runs.run_failure("haiku", completed, 60, "review-prs", None, pins=pins)
+
+    assert failure(pinned_run("claude-haiku-5-5", "claude-opus-5-5-20261101"), opus) is None
+    assert failure(pinned_run("claude-opus-5-5"), opus) is None
+    assert failure(pinned_run("claude-haiku-5-5", "claude-sonnet-5-5"), opus) == (
+        "reviewers ran on claude-sonnet-5-5, not claude-haiku-5-5 or the pinned claude-opus-5-5"
+    )
+    # An effort pin, or none, leaves every reviewer on the judged model.
+    for pins in (effort, ()):
+        assert failure(pinned_run("claude-opus-5-5"), pins) == "reviewers ran on claude-opus-5-5, not claude-haiku-5-5"
+    # A pin of the judged model itself widens nothing.
+    same = (skill_evals_records.RoutePin("trust-boundary", "haiku"),)
+    assert failure(pinned_run("claude-opus-5-5"), same) == "reviewers ran on claude-opus-5-5, not claude-haiku-5-5"
+    recorded = skill_evals_runs.run_failure(
+        "haiku", pinned_run("claude-haiku-5-5", "claude-opus-5-5"), 60, "review-prs", None, True, opus
+    )
+    assert recorded is None
+
+
+def test_a_record_holds_each_reviewer_to_its_own_route_s_pinned_model() -> None:
+    pins = (
+        skill_evals_records.RoutePin("trust-boundary", "opus"),
+        skill_evals_records.RoutePin("deployer", None, "low"),
+    )
+
+    def reported(**models: str) -> dict[str, Any]:
+        return {"review": {"reviewers": [{"id": route, "model": model} for route, model in models.items()]}}
+
+    unreported = skill_evals_records.unreported_model
+    good = reported(generic="claude-haiku-5-5", deployer="claude-haiku-5-5", **{"trust-boundary": "claude-opus-5-5"})
+    assert unreported(good, "haiku", pins) is None
+    # The pinned model holds only its own route: the generic reviewer on it is not the judged model.
+    swapped = reported(generic="claude-opus-5-5", **{"trust-boundary": "claude-haiku-5-5"})
+    assert unreported(swapped, "haiku", pins) == (
+        "its reviewers did not all run on claude-haiku-5-5 or the model its route pins: generic on claude-opus-5-5, "
+        "trust-boundary on claude-haiku-5-5"
+    )
+    assert unreported(good, "haiku") == (
+        "its reviewers did not all run on claude-haiku-5-5: trust-boundary on claude-opus-5-5"
+    )
+
+
+def test_records_judge_a_pinned_route_s_reviewer_on_its_pin(tmp_path: Path) -> None:
+    scenario = pinned_scenario(tmp_path / "scenarios", model="opus")
+    record = contract_record(model="claude-opus-5-5")
+    record["review"]["reviewers"][0]["id"] = "design-review"
+    folder = tmp_path / "records" / "design-gaps"
+    folder.mkdir(parents=True)
+    (folder / "haiku.json").write_text(json.dumps(record), encoding="utf-8")
+    source = skill_evals_judging.records_in(tmp_path / "records")
+    assert record == source(scenario, "haiku", None)
+    record["review"]["reviewers"][0]["id"] = "generic"
+    (folder / "haiku.json").write_text(json.dumps(record), encoding="utf-8")
+    with pytest.raises(RecordError, match="generic on claude-opus-5-5") as raised:
+        source(scenario, "haiku", None)
+    assert raised.value.kind == skill_evals_records.RECORD
+
+
+def test_a_row_names_each_route_pin_its_scenarios_measured_once() -> None:
+    pin = skill_evals_records.RoutePin
+
+    def scenario(name: str, *pins: skill_evals_records.RoutePin) -> Scenario:
+        return Scenario(
+            skill="review-prs", name=name, directory=Path(name), mode="initial", prior=None, expectations=(), pins=pins
+        )
+
+    scenarios = [
+        scenario("a", pin("trust-boundary", "opus", "low"), pin("deployer", None, "max")),
+        scenario("b", pin("trust-boundary", "opus", "low"), pin("documentation", "sonnet")),
+        scenario("c"),
+    ]
+    assert skill_evals_results.pins_cell(scenarios) == (
+        "deployer: effort max overridden; documentation: model sonnet; "
+        "trust-boundary: model opus, effort low overridden"
+    )
+    assert skill_evals_results.pins_cell([scenario("c")]) == "none"
+    runs: dict[skill_evals_runs.RunKey, skill_evals_runs.Run] = {
+        ("a", "haiku", None): skill_evals_runs.Run({}, None, frozenset({"claude-haiku-5-5"}), frozenset())
+    }
+    (row,) = skill_evals_results.result_rows(
+        "review-prs", scenarios[:1], ["haiku"], [outcome("a", "haiku")], runs, "2.1.291", datetime.date(2026, 10, 8)
+    )
+    assert row == (
+        "| review-prs | haiku | claude-haiku-5-5 | high | deployer: effort max overridden; trust-boundary: model opus, "
+        "effort low overridden | 1/1 | 1 | a 1/1 | unknown | 2.1.291 | 2026-10-08 |"
+    )
