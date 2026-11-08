@@ -27,6 +27,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts"))
 
+from command_wrappers import FIND_COMMANDS
 from guard_limits import process_limits_held
 
 from deployer import platform_support
@@ -648,8 +649,8 @@ class CatalogueTests(unittest.TestCase):
                         self.assertEqual(gnu[name], kinds[name])
 
     def test_find_s_actions_that_run_a_program_are_never_safe(self) -> None:
-        self.assertEqual({"-exec", "-execdir", "-ok", "-okdir"}, hub_guard.FIND_COMMANDS)
-        self.assertEqual(set(), hub_guard.FIND_COMMANDS & SAFE["find"])
+        self.assertEqual({"-exec", "-execdir", "-ok", "-okdir"}, FIND_COMMANDS)
+        self.assertEqual(set(), FIND_COMMANDS & SAFE["find"])
 
     def lists_every_option(self, name: str) -> None:
         helps = installed_help()

@@ -16,9 +16,11 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts"))
 
+import command_wrappers
 import skill_scripts
 import toolchain
-from skill_scripts import UNREAD_PROGRAM, CommandReader, shell_commands
+from command_wrappers import UNREAD_PROGRAM
+from skill_scripts import CommandReader, shell_commands
 
 
 @pytest.mark.parametrize(
@@ -196,7 +198,7 @@ def test_substitution_spans_name_each_substitution_where_its_text_begins(
     ],
 )
 def test_unwrapped_reads_past_a_wrapper_to_the_command_it_runs(words: list[str], program: list[str]) -> None:
-    assert skill_scripts.unwrapped(words) == program
+    assert command_wrappers.unwrapped(words) == program
 
 
 # An option the wrapper's table does not settle, an abbreviation or one it does not list, never gives the program.
@@ -211,7 +213,7 @@ def test_unwrapped_reads_past_a_wrapper_to_the_command_it_runs(words: list[str],
     ],
 )
 def test_unwrapped_leaves_the_program_unread_behind_an_option_it_cannot_place(words: list[str], unread: str) -> None:
-    assert skill_scripts.unwrapped(words) == [f"{UNREAD_PROGRAM}{unread}"]
+    assert command_wrappers.unwrapped(words) == [f"{UNREAD_PROGRAM}{unread}"]
     assert f"{UNREAD_PROGRAM}{unread}" in shell_commands(" ".join(words))
     assert "gh" not in shell_commands(" ".join(words))
 
@@ -219,7 +221,7 @@ def test_unwrapped_leaves_the_program_unread_behind_an_option_it_cannot_place(wo
 # A shell started without -c runs a file or its standard input, and -o's value is no option.
 @pytest.mark.parametrize("words", [["-o", "c", "script.sh"], ["script.sh", "-c", "x"], ["-e"], ["--rcfile", "-c"]])
 def test_shell_script_index_finds_no_script_where_the_shell_runs_none(words: list[str]) -> None:
-    assert skill_scripts.shell_script_index(words) is None
+    assert command_wrappers.shell_script_index(words) is None
 
 
 def test_the_command_policy_reads_a_python_list_s_shell_script_among_its_options() -> None:

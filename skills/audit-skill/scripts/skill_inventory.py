@@ -160,6 +160,7 @@ import errno
 import fnmatch
 import os
 import re
+import shlex
 import sys
 from dataclasses import dataclass, field
 from itertools import dropwhile, pairwise
@@ -168,6 +169,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
 import check_provenance
+import command_wrappers
 import frontmatter
 import git_client
 import json_reader
@@ -175,6 +177,7 @@ import python_reader
 import runtime_support
 import skill_menu
 import whole_number
+from command_wrappers import ASSIGNMENT, PIPES, TIME_KEYWORD_OPTIONS
 from console import run_main
 from executable_locator import RelativeEnvironmentPath, absolute_home
 from file_presence import NotAFile, is_directory, is_occupied, is_present, matching
@@ -595,10 +598,15 @@ MODEL_VALUE = re.compile(r"(?i)haiku|sonnet|opus|fable|claude-[\w.-]+")
 EFFORT_LEVELS = frozenset({"minimal", "low", "medium", "high", "xhigh", "max"})
 # A sibling skill a skill's Markdown reaches through its own directory.
 SIBLING_SKILL = re.compile(r"\$\{CLAUDE_SKILL_DIR\}/\.\./([A-Za-z0-9._-]+)/")
-# A git command where a Bash command starts: at the line's start, after an operator, a substitution, or a keyword.
-GIT_COMMAND = re.compile(
-    r"(?:^|[;&|(`]|\$\(|\b(?:then|do|else|if|elif|while|until|time|command|exec)\s|!\s)\s*git\s+([^;&|)`\n]*)"
+# A Bash command's text from where it starts, at the line's start, after an operator, or inside a substitution,
+# up to the operator or substitution that ends it outside quotes and escapes; a substitution inside it is its own.
+SHELL_COMMAND = re.compile(
+    r"(^|\|&|[;&|(`]|\$\()"
+    r"((?:\\.|'[^']*'|\"(?:\\.|[^\"\\$`]|\$(?!\())*\"|\$(?!\()|[^;&|()`\n\\'\"$])*)"
 )
+# The words that may stand before a command's program: Bash's reserved words and a group's brace. Bash's time keyword
+# is read by program_words.
+LEADING_WORDS = frozenset({"if", "then", "else", "elif", "while", "until", "do", "!", "{"})
 OUTSIDE_REFERENCE = re.compile(r"(?<![\w./-])(\$\{CLAUDE_SKILL_DIR\}/)?((?:\.\./)+[\w./-]+\.md)\b")
 # A relative Markdown path that stays in the skill folder, such as `references/a.md` or `a.md`.
 INSIDE_REFERENCE = re.compile(r"(?<![\w./$}-])(\$\{CLAUDE_SKILL_DIR\}/)?((?:\./)?[\w-][\w./-]*\.md)\b")
@@ -2719,15 +2727,79 @@ def setting_lines(folder: Path) -> list[str]:
 
 
 def bash_git_subcommands(text: str) -> set[str]:
-    """The subcommand of each git command a Bash script runs where a command starts, outside comments."""
+    """The subcommand of each git command a Bash script runs, outside comments: one where a command starts, a
+    substitution's included, and one a wrapper, find's actions, eval, or a shell's -c script runs, read through
+    ejryan89-skill-core's command_wrappers as repository validation reads them."""
     found: set[str] = set()
-    for line in text.splitlines():
+    after_pipe = False
+    for line in text.replace("\\\n", " ").splitlines():
         if line.lstrip().startswith("#"):
             continue
-        for match in GIT_COMMAND.finditer(line):
-            subcommand = git_client.subcommand([word.strip("\"'") for word in match.group(1).split()])
-            found |= {subcommand} if subcommand else set()
+        for match in SHELL_COMMAND.finditer(line):
+            start, command = match.groups()
+            # After a pipe, or at the start of the line right after one, `time` is the time program, not the keyword.
+            reserved = start not in PIPES and not (match.start() == 0 and after_pipe)
+            found |= command_git_subcommands(shell_words(command), reserved)
+        after_pipe = line.rstrip().endswith(tuple(PIPES))
     return found
+
+
+def shell_words(command: str) -> list[str]:
+    """A command's words as Bash splits them, its quotes removed; a command shlex cannot split, as one with an unclosed
+    quote, is split at whitespace with each word's outer quotes stripped."""
+    try:
+        return shlex.split(command)
+    except ValueError:
+        return [word.strip("\"'") for word in command.split()]
+
+
+def command_git_subcommands(words: list[str], reserved: bool = True) -> set[str]:
+    """The git subcommand a simple command runs: past its leading keywords and assignments, Bash's time keyword and the
+    -p and -- it takes, through each wrapper of command_wrappers' catalogue, find's actions, eval, and a shell's -c
+    script, to a git command's own words. `reserved` says `time` in the command's place is Bash's keyword, false where
+    a pipe or find's action runs it; after an assignment it is the time program, which the catalogue reads."""
+    words = program_words(words, reserved)
+    while words:
+        head, rest = words[0], words[1:]
+        if head == "git":
+            subcommand = git_client.subcommand(rest)
+            return {subcommand} if subcommand else set()
+        if head == "eval":
+            return bash_git_subcommands(" ".join(rest))
+        if head in command_wrappers.SCRIPT_SHELLS:
+            index = command_wrappers.shell_script_index(rest)
+            return bash_git_subcommands(rest[index]) if index is not None else set()
+        if head == "find":
+            return {
+                found
+                for action in command_wrappers.find_actions(rest)
+                for found in command_git_subcommands(action, reserved=False)
+            }
+        words = command_wrappers.unwrapped(words)
+        if words and words[0].startswith(command_wrappers.UNREAD_PROGRAM):
+            return set()
+    return set()
+
+
+def program_words(words: list[str], reserved: bool) -> list[str]:
+    """A command's words from its program on: past its leading keywords and assignments, and past Bash's time keyword
+    where `reserved` holds and no assignment stands before it, with the -p and then the --, each optional, it takes
+    before the pipeline it times."""
+    while words:
+        if words[0] == "time" and reserved:
+            options = TIME_KEYWORD_OPTIONS
+            words = words[1:]
+            while words and words[0] in options:
+                options = options[options.index(words[0]) + 1 :]
+                words = words[1:]
+        elif words[0] in LEADING_WORDS:
+            words = words[1:]
+        elif ASSIGNMENT.match(words[0]):
+            reserved = False
+            words = words[1:]
+        else:
+            break
+    return words
 
 
 def script_git_subcommands(script: Path) -> set[str]:
