@@ -55,6 +55,16 @@
       "captured": "2026-10-24",
       "how": "The stderr of `codex exec --no-such-flag hello`, started signed out as claude/version.txt was, with the throwaway folder written <temp> and the profile folder <home>."
     },
+    "codex/signed-out-exec.jsonl": {
+      "versions": {"codex": "0.163.0"},
+      "captured": "2026-11-08",
+      "how": "The stdout of the runtime canary's `codex exec` command line, as tools/runtime_command_lines.py's codex_lines builds it, started by its start in the environment its signed_out builds, with a time limit of 15 seconds, which ended it while it retried the unreachable proxy; its thread id is written as zeros."
+    },
+    "codex/signed-out-exec.stderr.txt": {
+      "versions": {"codex": "0.163.0"},
+      "captured": "2026-11-08",
+      "how": "The stderr of the same start, with the throwaway folder written <temp> and the profile folder <home>."
+    },
     "codex/exec-policy-rejection.stderr.txt": {
       "versions": {"codex": "0.160.0"},
       "captured": "2026-10-03",

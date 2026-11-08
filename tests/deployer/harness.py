@@ -77,20 +77,39 @@ def remove_directory_link(link: Path) -> None:
         link.unlink()
 
 
-def tree_state(root: Path) -> dict[str, str]:
+def tree_state(root: Path, unreadable: Mapping[Path, str] | None = None) -> dict[str, str]:
     """Each directory, file, and link under root by relative path: a file by a hash of its bytes, a link by its target.
 
     A link, a junction included, whose target lies in the tree is recorded and not followed, so a change through it is
     not counted twice. One whose target lies outside the tree is followed too, once, its target's state recorded under
     the link's path, so a write made through it is seen.
+
+    unreadable names each folder the test itself makes unlistable, with why: it is recorded as unreadable rather
+    than walked. Any other folder that cannot be listed raises.
     """
-    return _tree_state(root, {Path(os.path.realpath(root))})
+    return _tree_state(root, {Path(os.path.realpath(root))}, unreadable or {})
 
 
-def _tree_state(root: Path, walked: set[Path]) -> dict[str, str]:
-    """tree_state of root, following each link whose target lies in none of the walked trees, which it adds to."""
+def _tree_state(root: Path, walked: set[Path], unreadable: Mapping[Path, str]) -> dict[str, str]:
+    """tree_state of root, following each link whose target lies in none of the walked trees, which it adds to.
+
+    A root nothing is at holds nothing, as a home a run has not yet written to. A folder under it that cannot be
+    listed raises, never read as empty, since a change made inside it would then pass unseen, unless unreadable
+    names it.
+    """
     state: dict[str, str] = {}
-    for directory, directories, files in os.walk(root):
+
+    def failed(error: OSError) -> None:
+        folder = Path(error.filename) if error.filename is not None else None
+        if folder is None or folder not in unreadable:
+            raise error
+        state[folder.relative_to(root).as_posix()] = "unreadable"
+
+    try:
+        os.lstat(root)
+    except FileNotFoundError:
+        return state
+    for directory, directories, files in os.walk(root, onerror=failed):
         base = Path(directory)
         followed = []
         for name in sorted([*directories, *files]):
@@ -102,7 +121,12 @@ def _tree_state(root: Path, walked: set[Path]) -> dict[str, str]:
                 if target.exists() and not any(target == tree or tree in target.parents for tree in walked):
                     walked.add(target)
                     if target.is_dir():
-                        state.update({f"{relative}/{key}": value for key, value in _tree_state(target, walked).items()})
+                        state.update(
+                            {
+                                f"{relative}/{key}": value
+                                for key, value in _tree_state(target, walked, unreadable).items()
+                            }
+                        )
                     else:
                         state[relative] += f" file {hashlib.sha256(target.read_bytes()).hexdigest()}"
             elif name in files:
@@ -381,6 +405,7 @@ class Deployment:
         refusal_home: Path | None = None,
         changes_home: str = "",
         copilot_home: Path | None = None,
+        unreadable: Mapping[Path, str] | None = None,
         **options: Any,
     ) -> Result:
         """Deploy from source (the fixture source by default) into home, failing the test if the source changed.
@@ -388,7 +413,8 @@ class Deployment:
         Templates are immutable: the deployer renders in memory and writes only under the home, so the source tree is
         compared, file by file and byte for byte, before and after every deployment a test runs. refusal_home checks
         a --canary-home destination without changing the Paths passed to the entry point. copilot_home is the
-        COPILOT_HOME deploy.py would read.
+        COPILOT_HOME deploy.py would read. unreadable names each folder the test makes unlistable, with why, which
+        the comparison records as unreadable rather than refusing.
         """
         paths = Paths(source or self.source, home or self.home, copilot_home=copilot_home)
         return self.run_command(
@@ -396,6 +422,7 @@ class Deployment:
             source=source,
             home=refusal_home or home,
             changes_home=changes_home,
+            unreadable=unreadable,
         )
 
     def assert_run_unchanged(
@@ -406,11 +433,12 @@ class Deployment:
         home: Path,
         home_before: dict[str, str],
         changes_home: str = "",
+        unreadable: Mapping[Path, str] | None = None,
     ) -> None:
         """Every run preserves its source; a nonzero exit preserves its home unless it states why it changes it."""
-        assert source_before == tree_state(source), f"the deployment changed its source:\n{result.output}"
+        assert source_before == tree_state(source, unreadable), f"the deployment changed its source:\n{result.output}"
         if result.code != 0 and not changes_home:
-            assert home_before == tree_state(home), f"the refusal changed the home:\n{result.output}"
+            assert home_before == tree_state(home, unreadable), f"the refusal changed the home:\n{result.output}"
 
     def run_command(
         self,
@@ -419,6 +447,7 @@ class Deployment:
         source: Path | None = None,
         home: Path | None = None,
         changes_home: str = "",
+        unreadable: Mapping[Path, str] | None = None,
     ) -> Result:
         """Run a deployer entry point under the same source and refusal guards, including usage and cancellation.
 
@@ -426,7 +455,7 @@ class Deployment:
         changes_home says why it changes it, before the exception reaches the test.
         """
         source, home = source or self.source, home or self.home
-        source_before, home_before = tree_state(source), tree_state(home)
+        source_before, home_before = tree_state(source, unreadable), tree_state(home, unreadable)
         output = io.StringIO()
         stdout, stderr = _Tee(output), _Tee(output)
         try:
@@ -434,10 +463,10 @@ class Deployment:
                 code = command()
         except BaseException as raised:
             failed = Result(1, f"{output.getvalue()}\nThe run raised {raised!r}.")
-            self.assert_run_unchanged(failed, source, source_before, home, home_before, changes_home)
+            self.assert_run_unchanged(failed, source, source_before, home, home_before, changes_home, unreadable)
             raise
         result = Result(code, output.getvalue(), stdout.getvalue(), stderr.getvalue())
-        self.assert_run_unchanged(result, source, source_before, home, home_before, changes_home)
+        self.assert_run_unchanged(result, source, source_before, home, home_before, changes_home, unreadable)
         return result
 
     def assert_child_home(self, environment: Mapping[str, str]) -> None:

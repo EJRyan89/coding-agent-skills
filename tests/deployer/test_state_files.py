@@ -268,6 +268,12 @@ class StateFileTests(DeployerTestCase):
             data["sources"][SOURCE_ID]["source_dir"] = platform_support.normalize(other)
             self.write(self.manifest_file, json.dumps(data))
 
+        def checkout_not_text() -> None:
+            # Read as no checkout at all, a recorded source_dir that is not text would let any clone take over.
+            data = json.loads(saved)
+            data["sources"][SOURCE_ID]["source_dir"] = 5
+            self.write(self.manifest_file, json.dumps(data))
+
         def held_lock(info: str) -> None:
             self.write(self.lock_dir / "info.json", info)
 
@@ -285,6 +291,11 @@ class StateFileTests(DeployerTestCase):
             "manifest not a file": (functools.partial(damage_manifest, True), "ERROR: The manifest at ", {}),
             "configuration not a file": (damage_configuration, "ERROR: The configuration at ", {}),
             "another checkout recorded": (other_checkout, f"ERROR: Source '{SOURCE_ID}' is deployed from ", {}),
+            "recorded checkout not text": (
+                checkout_not_text,
+                f"ERROR: Manifest source '{SOURCE_ID}' source_dir is malformed",
+                {},
+            ),
             "lock metadata with no PID": (
                 functools.partial(held_lock, '{"token": "x"}'),
                 "ERROR: Lock metadata is malformed (no valid PID): ",

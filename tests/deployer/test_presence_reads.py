@@ -515,7 +515,11 @@ class DeployerPresenceTests(DeployerTestCase):
             "Rerun with --debug to see the traceback.",
         )
         with mock.patch.object(os, "scandir", scandir):
-            result = self.deploy_fails("--all", pattern="Could not read the source's folder")
+            result = self.deploy_fails(
+                "--all",
+                pattern="Could not read the source's folder",
+                unreadable={tree: "the test denies the source folder's listing to the deployment"},
+            )
         self.assert_lines(result.output, *expected)
         self.assertNotIn("Traceback", result.output)
         with stat_failing_at(tree):

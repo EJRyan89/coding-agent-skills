@@ -61,12 +61,12 @@ class ItemEntry(TypedDict):
 class SourceEntry(TypedDict):
     """One source's entry under "sources", as `load` validates it and `source_entry` writes it.
 
-    An entry an older deployer wrote may lack any field. source_dir and deployed_at are not validated, since the
-    deployer only compares the one and never reads the other, so a reader checks source_dir is a string.
+    An entry an older deployer wrote may lack any field. source_dir, when present, is a path written as text, since a
+    deployment refuses another checkout by it; deployed_at is not validated, since the deployer never reads it.
     selected_skills is no longer written, and an older entry keeps it until its source next deploys.
     """
 
-    source_dir: NotRequired[object]
+    source_dir: NotRequired[str]
     source_commit: NotRequired[str]
     source_ref: NotRequired[str]
     deployed_at: NotRequired[object]
@@ -331,6 +331,10 @@ def _validate(data: dict[object, object], sources: dict[object, object], version
         if not isinstance(entry, dict):
             raise DeployError(f"ERROR: Manifest source '{source_id}' is malformed", *MANIFEST_REMEDY)
         _validate_source_commit(source_id, entry)
+        # A checkout recorded as anything but a path's text would let a deployment from another clone take the source
+        # over unrefused.
+        if "source_dir" in entry and not (isinstance(entry["source_dir"], str) and entry["source_dir"]):
+            raise DeployError(f"ERROR: Manifest source '{source_id}' source_dir is malformed", *MANIFEST_REMEDY)
         # selected_skills is no longer written, but an older entry still carries it until its source next
         # deploys, so it is validated, never trusted, on read.
         for field_name in ("selected_skills", "requested_skills", "requested_bundles"):
@@ -381,8 +385,8 @@ def _validate(data: dict[object, object], sources: dict[object, object], version
                         f"ERROR: Manifest entry is malformed: source '{source_id}' {kind.key} {name!r}",
                         *MANIFEST_REMEDY,
                     )
-    # Every field the shape gives a type was checked above; source_dir and deployed_at, which it types as object, and
-    # a field it does not name are kept as they are.
+    # Every field the shape gives a type was checked above; deployed_at, which it types as object, and a field it does
+    # not name are kept as they are.
     return cast(ManifestData, data)
 
 

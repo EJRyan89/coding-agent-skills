@@ -23,10 +23,13 @@ and refuses a pull request that closes an issue an entry still names.
 from __future__ import annotations
 
 import json
+import os
+import stat
 import sys
 import tempfile
 from collections.abc import Callable
 from pathlib import Path
+from unittest import mock
 
 import pytest
 
@@ -316,3 +319,34 @@ def test_a_json_lines_field_case_changes_the_last_record_after_the_lines_before_
     assert found["empty_object:b"] == b'{"a": 1}\n{"b": {}}\n'
     assert found["missing:b.c"] == b'{"a": 1}\n{"b": {}}\n'
     assert "missing:a" not in found
+
+
+def test_a_link_case_is_a_link_to_the_well_formed_file_where_the_platform_makes_one(tmp_path: Path) -> None:
+    target = tmp_path / "file.target"
+    target.write_bytes(b"well-formed")
+    made: list[tuple[Path, Path]] = []
+    with mock.patch.object(Path, "symlink_to", autospec=True, side_effect=lambda path, to: made.append((path, to))):
+        corpus.link(target, tmp_path / "file")
+    # A file link, which a reader that followed it would read and accept, and no junction beside it.
+    assert made == [(tmp_path / "file", target)]
+    assert not (tmp_path / "file.target.folder").exists()
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="a junction is the fallback on Windows alone")
+def test_a_link_case_falls_back_to_a_junction_only_where_windows_withholds_the_privilege(tmp_path: Path) -> None:
+    target = tmp_path / "file.target"
+    target.write_bytes(b"well-formed")
+    # Windows' own refusal: its winerror is the fourth argument, from which it sets errno.
+    withheld = OSError(22, "A required privilege is not held by the client", None, corpus.WINDOWS_PRIVILEGE_NOT_HELD)
+    with mock.patch.object(Path, "symlink_to", side_effect=withheld):
+        corpus.link(target, tmp_path / "file")
+    # A junction: a folder that is a reparse point, not a symbolic link.
+    attributes = getattr(os.lstat(tmp_path / "file"), "st_file_attributes", 0)
+    assert (tmp_path / "file").is_dir()
+    assert not (tmp_path / "file").is_symlink()
+    assert attributes & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+    (tmp_path / "file").rmdir()
+    denied = OSError(13, "Access is denied", None, 5)
+    with mock.patch.object(Path, "symlink_to", side_effect=denied), pytest.raises(OSError, match="Access is denied"):
+        corpus.link(target, tmp_path / "file")
+    assert not (tmp_path / "file").exists()

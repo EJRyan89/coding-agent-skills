@@ -209,6 +209,10 @@ def test_a_patch_release_updates_to_it(installation: Installation) -> None:
     result = installation.update()
     assert_deployed(result, f"UPDATED {before}..{patch}")
     assert installation.deployed_commit() == commit
+    # The next update reads the release this one recorded, so it finds the installation at the patch, not behind it.
+    again = installation.update()
+    assert_deployed(again, f"UP_TO_DATE {patch}")
+    assert installation.deployed_commit() == commit
 
 
 def test_a_breaking_release_stops_until_crossed_then_deploys_moving_renamed_skills(

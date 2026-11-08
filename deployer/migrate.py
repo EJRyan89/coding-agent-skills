@@ -59,7 +59,7 @@ def _record_takeover(context: Context) -> None:
         return
     recorded = entry.get("source_dir")
     current = context.paths.source_dir
-    if isinstance(recorded, str) and recorded and platform_support.same_directory(Path(recorded), current):
+    if recorded and platform_support.same_directory(Path(recorded), current):
         return
     entry["source_dir"] = platform_support.normalize(current)
     context.manifest.save()

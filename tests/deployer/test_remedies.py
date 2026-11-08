@@ -200,6 +200,14 @@ class ManifestRemedyTests(RemedyTestCase):
                 lambda data: entry(data).update(source_ref="main"),
                 f"ERROR: Manifest source '{source}' source_ref is malformed",
             ),
+            (
+                lambda data: entry(data).update(source_dir=5),
+                f"ERROR: Manifest source '{source}' source_dir is malformed",
+            ),
+            (
+                lambda data: entry(data).update(source_dir=""),
+                f"ERROR: Manifest source '{source}' source_dir is malformed",
+            ),
             (lambda data: entry(data).update(requested_skills=[1]), "ERROR: Manifest selection fields are malformed"),
             (
                 lambda data: entry(data).update(requested_bundle_members=[]),
