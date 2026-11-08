@@ -2822,6 +2822,32 @@ class ResultsTests(unittest.TestCase):
             [*skill_evals_results.RESULTS_HEADER, lines[5], lines[6], rows[0], lines[8]], written[begin + 1 : end]
         )
 
+    def test_a_model_no_record_of_which_counted_keeps_its_committed_row(self) -> None:
+        # haiku's records all failed as records and opus's as runs, so neither measured anything; sonnet's judgment
+        # failed, which is a measurement and is written. opus has no committed row to lose, so its new row is written.
+        haiku = "| review-prs | haiku | claude-haiku-5-5 | high | none | 2/2 | 1 | a 2/2 | s | 2.1.0 | 2026-01-01 |"
+        sonnet = "| review-prs | sonnet | claude-sonnet-5-5 | high | none | 2/2 | 1 | a 2/2 | s | 2.1.0 | 2026-01-01 |"
+        text = RESULTS_TEXT.replace(
+            "| review-prs | opus | old | high | none | 0/1 | 1 | old | old | 2.0.0 | 2026-01-01 |", f"{haiku}\n{sonnet}"
+        )
+        outcomes = [
+            Outcome("a", "haiku", "verdict APPROVED", "no guard", skill_evals_records.RECORD),
+            Outcome("a", "sonnet", "verdict APPROVED", "CHANGES_REQUESTED", skill_evals_records.JUDGMENT),
+            Outcome("a", "opus", "verdict APPROVED", "timed out", skill_evals_records.RUN),
+        ]
+        models = ["haiku", "sonnet", "opus"]
+        kept = skill_evals_results.kept_models(text, "review-prs", models, outcomes)
+        self.assertEqual(["haiku"], kept)
+        rows = [
+            f"| review-prs | {model} | new | high | none | 0/1 | 1 | a 0/1 | s | 2.1.291 | 2026-10-08 |"
+            for model in models
+        ]
+        written = skill_evals_results.replace_results(text, "review-prs", rows, kept)
+        self.assertEqual(
+            [RESULTS_TEXT.split("\n")[5], haiku, rows[1], rows[2], RESULTS_TEXT.split("\n")[7]],
+            skill_evals_results.results_table(written)[2],
+        )
+
     def test_a_table_it_cannot_read_is_refused(self) -> None:
         empty = "\n".join([skill_evals_results.RESULTS_BEGIN, skill_evals_results.RESULTS_END])
         with self.assertRaisesRegex(ScenarioError, "must start with the header"):
@@ -3231,13 +3257,15 @@ class EvaluateTests(unittest.TestCase):
         self.assertTrue(lines[first + 15].startswith("FAIL "), lines[first + 15])
         self.assertEqual(told, [line for line in self.cited if line.startswith("NOT_COUNTED ")])
         self.assertTrue(self.output[self.output.index("CITATION BEGIN") - 1].startswith("FAIL "))
-        # No run passed, so nothing is sampled and the skill's samples row, which it has none of, is not written.
+        # No run passed, so nothing is sampled and the skill's samples row, which it has none of, is not written. No
+        # record counted, so opus keeps its committed row, and the models with none get their new ones.
         self.assertEqual(
-            ["SAMPLE none", f"WROTE {runtime_canary.forward(self.results)}"],
+            ["KEPT opus", "SAMPLE none", f"WROTE {runtime_canary.forward(self.results)}"],
             self.output[self.output.index("CITATION END") + 1 :],
         )
         self.assertTrue(self.homes.is_dir())
         written = self.results.read_text(encoding="utf-8")
+        self.assertIn("| review-prs | opus | old | high | none | 0/1 | 1 | old | old | 2.0.0 | 2026-01-01 |", written)
         self.assertIn("| review-prs | sonnet | claude-sonnet-5-5 | high | none | 0/22 |", written)
         self.assertEqual(
             ["| alpha | one | opus | 1 | 2026-01-01 | agrees |"], skill_evals_results.samples_table(written)[2]
@@ -3251,6 +3279,69 @@ class EvaluateTests(unittest.TestCase):
             "| review-prs | haiku | not run | high | none | 0/22 | 1 | the run recorded no review |",
             self.results.read_text(encoding="utf-8"),
         )
+
+    def test_a_write_keeps_the_committed_row_of_a_model_no_record_of_which_counted(self) -> None:
+        # haiku's session ends before any review, so nothing of it is measured and its committed row stays; opus's
+        # committed row is replaced by what this run measured, and sonnet, which had none, gets its new row.
+        haiku = (
+            "| review-prs | haiku | claude-haiku-5-5 | high | none | 2/2 | 1 | clean-change 2/2 | s | 2.1.0 "
+            "| 2026-01-01 |"
+        )
+        self.results.write_text(
+            RESULTS_TEXT.replace("| alpha | opus |", f"{haiku}\n| alpha | opus |", 1), encoding="utf-8"
+        )
+        claude = StubClaude(self)
+        skipped = StubClaude(self, review=False)
+
+        def runner(arguments: list[str], cwd: Path, environment: dict[str, str], timeout: float) -> Any:
+            chosen = skipped if cwd.name == "haiku" else claude
+            return chosen(arguments, cwd, environment, timeout)
+
+        status, lines = self.evaluate(["--write", "--jobs", "1"], self.seams(runner), only=["clean-change"])
+        self.assertEqual(1, status)
+        self.assertIn('NOT_COUNTED clean-change haiku run "the run recorded no review"', lines)
+        self.assertEqual(
+            ["KEPT haiku", "SAMPLE clean-change sonnet", f"WROTE {runtime_canary.forward(self.results)}"],
+            self.output[self.output.index("CITATION END") + 1 :],
+        )
+        rows = skill_evals_results.results_table(self.results.read_text(encoding="utf-8"))[2]
+        self.assertEqual(
+            [
+                RESULTS_TEXT.split("\n")[5],
+                haiku,
+                "| review-prs | sonnet | claude-sonnet-5-5 | high | none | 2/2 | 1 | clean-change 2/2 "
+                "| claude-opus-5-5 | 2.1.291 | 2026-10-08 |",
+                "| review-prs | opus | claude-opus-5-5 | high | none | 2/2 | 1 | clean-change 2/2 | claude-opus-5-5 "
+                "| 2.1.291 | 2026-10-08 |",
+                RESULTS_TEXT.split("\n")[7],
+            ],
+            rows,
+        )
+
+    def test_a_write_in_which_no_record_counted_keeps_every_committed_row(self) -> None:
+        # Every model's committed row stays, in place and as written, and nothing passed, so nothing is sampled.
+        committed = [
+            f"| review-prs | {model} | claude-{model}-5-5 | high | none | 2/2 | 1 | clean-change 2/2 | s | 2.1.0 "
+            "| 2026-01-01 |"
+            for model in skill_evals_records.MODELS
+        ]
+        text = RESULTS_TEXT.replace(
+            "| review-prs | opus | old | high | none | 0/1 | 1 | old | old | 2.0.0 | 2026-01-01 |", "\n".join(committed)
+        )
+        self.results.write_text(text, encoding="utf-8")
+        status, lines = self.evaluate(
+            ["--write", "--jobs", "1"], self.seams(StubClaude(self, review=False)), only=["clean-change"]
+        )
+        self.assertEqual(1, status, lines)
+        self.assertEqual(
+            [
+                *(f"KEPT {model}" for model in skill_evals_records.MODELS),
+                "SAMPLE none",
+                f"WROTE {runtime_canary.forward(self.results)}",
+            ],
+            self.output[self.output.index("CITATION END") + 1 :],
+        )
+        self.assertEqual(text, self.results.read_text(encoding="utf-8"))
 
     def test_a_model_that_did_not_run_is_recorded_without_the_machine_s_paths(self) -> None:
         def denied(arguments: list[str], cwd: Path, environment: dict[str, str], timeout: float) -> Any:

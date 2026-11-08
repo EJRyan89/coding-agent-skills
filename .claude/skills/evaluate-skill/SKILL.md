@@ -43,7 +43,7 @@ When a reason is not enough, search the run's `TRANSCRIPT` file, which is stream
 
 ## 4. Record the result
 
-`--write` replaced the skill's rows in `docs/skill-evaluations.md`, which the `WROTE` line names: commit it with the change. Paste the lines between `CITATION BEGIN` and `CITATION END` into the pull request's Validation section as they are, and add your reading of each `NOT_COUNTED` and `FAIL` line in it. Without a `REMOVED` line, the `HOME` directory keeps the transcripts; give the user its path to delete when they are done with it.
+`--write` replaced the skill's rows in `docs/skill-evaluations.md`, which the `WROTE` line names: commit it with the change. A `KEPT <model>` line names a model no record of which counted, whose committed row the run kept rather than replacing it with a result that measured nothing: say so in the pull request, and run again once what its `NOT_COUNTED` lines name is fixed. Paste the lines between `CITATION BEGIN` and `CITATION END` into the pull request's Validation section as they are, and add your reading of each `NOT_COUNTED` and `FAIL` line in it. Without a `REMOVED` line, the `HOME` directory keeps the transcripts; give the user its path to delete when they are done with it.
 
 ## 5. Read the sampled transcript
 
