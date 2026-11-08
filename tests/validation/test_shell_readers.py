@@ -133,6 +133,55 @@ def test_shell_command_extraction_reads_unquoted_reserved_words_and_functions(sc
     assert shell_commands(script) == programs
 
 
+# Bash's time keyword, read as Bash 5 reads it: at a pipeline's start, after `!`, a separator, or a reserved word, it
+# takes -p and then --, each unquoted and optional, before the pipeline it times. A second -p, a quoted one, or one
+# after -- is the timed command's own word. After a pipe, the newline right after one, or an assignment, `time` is the
+# time program, which runs the program its words name.
+TIMED_SCRIPTS: tuple[tuple[str, set[str]], ...] = (
+    ("time jq .", {"jq"}),
+    ("time -p jq .", {"jq"}),
+    ("time -- jq .", {"jq"}),
+    ("time -p -- jq .", {"jq"}),
+    ("! time -p jq .", {"jq"}),
+    ("time -p ! jq .", {"jq"}),
+    ("time -p time -p jq .", {"jq"}),
+    ("time -p jq . | rg x", {"jq", "rg"}),
+    ("true && time -p jq .", {"true", "jq"}),
+    ("if time -p jq .; then rg x; fi", {"jq", "rg"}),
+    ("{ time -p jq .; }", {"jq"}),
+    ("x=$(time -p jq .)", {"jq"}),
+    ("echo a\ntime -p jq .", {"echo", "jq"}),
+    ("time -p -p jq .", set()),
+    ('time "-p" jq .', set()),
+    ("time -- -p jq .", set()),
+    ("echo a | time -p jq .", {"echo", "time", "jq"}),
+    ("echo a |& time -p jq .", {"echo", "time", "jq"}),
+    ("echo a |\n time -p jq .", {"echo", "time", "jq"}),
+    ("A=1 time -p jq .", {"time", "jq"}),
+)
+
+
+@pytest.mark.parametrize(("script", "programs"), TIMED_SCRIPTS)
+def test_shell_command_extraction_reads_the_program_the_time_keyword_times(script: str, programs: set[str]) -> None:
+    assert shell_commands(script) == programs
+
+
+@pytest.mark.parametrize(
+    "script",
+    [
+        "time git push",
+        "time -p git push",
+        "time -p -- git push",
+        "! time -p git push",
+        "time -p git push | cat",
+        "echo a | time -p git push",
+        "x=$(time -p git push)",
+    ],
+)
+def test_the_git_subcommand_reader_reads_the_git_command_the_time_keyword_times(script: str) -> None:
+    assert skill_scripts.shell_git_subcommands(script) == {"push"}
+
+
 def test_the_shell_lexer_gives_each_word_beside_its_syntax() -> None:
     words = list(skill_scripts.ShellLexer("echo aX'|'b \\; c && d").words())
     assert words == [("echo", "echo"), ("aX|b", None), (";", None), ("c", "c"), ("&&", "&&"), ("d", "d")]
