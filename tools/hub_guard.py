@@ -1157,6 +1157,12 @@ REWRITE_IT = (
 )
 
 
+# The strings that spell gh's --limit, by the scope that holds them, and why each is no gh listing.
+GH_LIMIT_ALLOWED = {
+    "GIT_OPERAND_WRITERS": "holds git merge-file's -L, the label option, which takes a value; no gh call reads it",
+}
+
+
 # Commands whose program the commands reader cannot read, by the scope that starts them, and why.
 COMMANDS_ALLOWED = {
     "powershell_events": "starts the pwsh platform_support.find_pwsh located on the session's PATH",
