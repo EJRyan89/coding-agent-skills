@@ -12,6 +12,7 @@ import sys
 import tempfile
 import unittest
 from collections.abc import Sequence
+from dataclasses import astuple
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
@@ -202,12 +203,12 @@ class CatalogueTests(unittest.TestCase):
                 self.assertGreater(len(reason.split()), 2)
                 self.assertNotIn(entry.split(" ")[0], hub_guard.GIT_OPERAND_SUBCOMMANDS)
 
-    def test_the_writers_the_issue_found_are_in_the_tables(self) -> None:
-        # Pinned against literals, not the tables: the writers #2460 found allowed.
+    def test_the_writers_an_outside_review_found_allowed_are_in_the_tables(self) -> None:
+        # Pinned against literals, not the tables: an in-place mode, output operands, and roots that wrote a hub.
         self.assertEqual(frozenset({"--in-place"}), hub_guard.GIT_OPERAND_WRITERS["interpret-trailers"].modes)
-        self.assertEqual(slice(None), hub_guard.GIT_OPERAND_WRITERS["mailinfo"].written)
-        self.assertEqual(slice(0, 1), hub_guard.GIT_OPERAND_WRITERS["merge-file"].written)
-        self.assertEqual(slice(1, 2), hub_guard.GIT_OPERAND_WRITERS["worktree move"].written)
+        self.assertEqual((0, None), astuple(hub_guard.GIT_OPERAND_WRITERS["mailinfo"])[:2])
+        self.assertEqual((0, 1), astuple(hub_guard.GIT_OPERAND_WRITERS["merge-file"])[:2])
+        self.assertEqual((1, 1), astuple(hub_guard.GIT_OPERAND_WRITERS["worktree move"])[:2])
         self.assertIn("--prefix", hub_guard.GIT_WRITING_OPTIONS["checkout-index"])
         self.assertIn("--directory", hub_guard.GIT_WRITING_OPTIONS["apply"])
         self.assertIn("--directory", hub_guard.GIT_WRITING_OPTIONS["am"])

@@ -171,12 +171,14 @@ GIT_DEFAULT_WRITES = frozenset({"bugreport", "clone", "diagnose", "format-patch"
 class OperandWriter:
     """How a git subcommand writes a file at a path its operands name, read by operand_writes.
 
-    written is the slice of its operands it writes, counted after its own subcommand's word where the table's key
-    names one; valued are the options that take the next word as their value, so that word is no operand; modes are
-    the boolean options of which the last given must be on for it to write at all, as an in-place mode; and stdout
-    are the options with which it writes no operand, printing instead. An empty modes writes without one."""
+    first is the first of its operands it writes, and count how many from there, None for every one after it,
+    counted after its own subcommand's word where the table's key names one; valued are the options that take the
+    next word as their value, so that word is no operand; modes are the boolean options of which the last given must
+    be on for it to write at all, as an in-place mode; and stdout are the options with which it writes no operand,
+    printing instead. An empty modes writes without one."""
 
-    written: slice = slice(None)
+    first: int = 0
+    count: int | None = None
     valued: frozenset[str] = frozenset()
     modes: frozenset[str] = frozenset()
     stdout: frozenset[str] = frozenset()
@@ -192,10 +194,10 @@ class OperandWriter:
 # each writer's valued options to the ones its `-h` lists, and every operand its usage names with a path and every
 # boolean option its `-h` says writes to a row here or to GIT_OPERANDS_READ or GIT_MODES_READ with a reason.
 GIT_OPERAND_WRITERS: dict[str, OperandWriter] = {
-    "bundle create": OperandWriter(slice(0, 1), frozenset({"--version"})),
+    "bundle create": OperandWriter(count=1, valued=frozenset({"--version"})),
     "clone": OperandWriter(
-        slice(1, None),
-        frozenset(
+        first=1,
+        valued=frozenset(
             {
                 *("-b", "--branch", "--bundle-uri", "-c", "--config", "--depth", "--filter", "-j", "--jobs", "-o"),
                 *("--origin", "--ref-format", "--reference", "--reference-if-able", "--revision"),
@@ -220,8 +222,8 @@ GIT_OPERAND_WRITERS: dict[str, OperandWriter] = {
     ),
     "mailinfo": OperandWriter(valued=frozenset({"--encoding", "--quoted-cr"})),
     "merge-file": OperandWriter(
-        slice(0, 1),
-        frozenset({"-L", "--diff-algorithm", "--marker-size"}),
+        count=1,
+        valued=frozenset({"-L", "--diff-algorithm", "--marker-size"}),
         stdout=frozenset({"-p", "--stdout", "--object-id"}),
     ),
     "pack-objects": OperandWriter(
@@ -233,8 +235,8 @@ GIT_OPERAND_WRITERS: dict[str, OperandWriter] = {
         ),
         stdout=frozenset({"--stdout"}),
     ),
-    "worktree add": OperandWriter(slice(0, 1), frozenset({"-b", "-B", "--reason"})),
-    "worktree move": OperandWriter(slice(1, 2)),
+    "worktree add": OperandWriter(count=1, valued=frozenset({"-b", "-B", "--reason"})),
+    "worktree move": OperandWriter(first=1, count=1),
 }
 GIT_OPERAND_SUBCOMMANDS = frozenset(key.split(" ")[0] for key in GIT_OPERAND_WRITERS)
 # The subcommands that write a file at a path a file they read names, in a mode their boolean option turns on, so the
@@ -1900,8 +1902,9 @@ def operand_writer(subcommand: str, arguments: Sequence[Word]) -> tuple[OperandW
 
 def operand_writes(writer: OperandWriter, arguments: Sequence[Word], writing: frozenset[str]) -> list[Word]:
     """The operands a call a GIT_OPERAND_WRITERS row names writes: none where the last of its modes given is off, or
-    one of its stdout options is given; otherwise its written slice of the words that are no option and no option's
-    value, after `--` every word. A word the text does not settle is kept as an operand, so a slice may hold None."""
+    one of its stdout options is given; otherwise the ones its first and count name, of the words that are no option
+    and no option's value, after `--` every word. A word the text does not settle is kept as an operand, so the
+    result may hold None."""
     flags = writer.modes | writer.stdout
     valued = writer.valued | writing
     operands: list[Word] = []
@@ -1921,7 +1924,8 @@ def operand_writes(writer: OperandWriter, arguments: Sequence[Word], writing: fr
         options, valued, writer.stdout, False
     ):
         return []
-    return operands[writer.written]
+    end = None if writer.count is None else writer.first + writer.count
+    return operands[writer.first : end]
 
 
 def takes_next_word(word: str, valued: frozenset[str], flags: frozenset[str]) -> bool:
