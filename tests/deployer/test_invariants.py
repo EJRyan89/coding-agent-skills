@@ -90,6 +90,12 @@ class TreeStateTests(DeployerTestCase):
         with mock.patch.object(os, "scandir", side_effect=refuse), self.assertRaises(PermissionError):
             tree_state(tree)
         self.assertEqual({}, tree_state(self.root / "nothing-here"))
+        # A folder the test names as one it makes unlistable is recorded so, and no other is excused with it.
+        with mock.patch.object(os, "scandir", side_effect=refuse):
+            state = tree_state(tree, {unlisted: "the test denies its listing"})
+            with self.assertRaises(PermissionError):
+                tree_state(tree, {tree / "elsewhere": "the test denies another folder"})
+        self.assertEqual({"a": "unreadable", "b.txt": state["b.txt"]}, state)
 
 
 def failing_after_applying() -> mock._patch[mock.MagicMock | mock.AsyncMock]:
