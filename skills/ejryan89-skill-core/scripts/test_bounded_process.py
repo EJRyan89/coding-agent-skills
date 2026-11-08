@@ -361,14 +361,17 @@ class BoundedProcessTests(unittest.TestCase):
     def test_git_starts_no_askpass_helper_however_one_is_set(self) -> None:
         # git asks GIT_ASKPASS, then core.askPass, then SSH_ASKPASS before the terminal, so each set alone would run a
         # helper that may wait for a person until the time limit; the default and the isolated environment stop all
-        # three, and git fails at once. The conftest removes every GIT_* variable, so the test sets its own.
+        # three, and git fails at once. The conftest removes every GIT_* variable, so the test sets its own. Each row
+        # first runs the same command in the same environment less the askpass switches, which must call the helper,
+        # so the row shows git can start it and its silence under the switches is theirs.
         with tempfile.TemporaryDirectory() as folder:
-            helper = Path(folder, "ask pass.sh")
+            helper = Path(folder, "askpass.sh")
             helper.write_text(ASKPASS_SCRIPT, encoding="utf-8", newline="\n")
             helper.chmod(0o755)
             log = Path(folder, "calls.log")
             # Forward slashes, which git's own shell reads on Windows too.
             helper_path = helper.as_posix()
+            askpass_switches = {"GIT_ASKPASS", "SSH_ASKPASS", "SSH_ASKPASS_REQUIRE"}
             rows: dict[str, tuple[dict[str, str], list[str], bool]] = {
                 "GIT_ASKPASS": ({"GIT_ASKPASS": helper_path}, [], False),
                 "SSH_ASKPASS": ({"SSH_ASKPASS": helper_path}, [], False),
@@ -377,9 +380,22 @@ class BoundedProcessTests(unittest.TestCase):
             }
             for row, (variables, settings, isolated) in rows.items():
                 with self.subTest(row=row), mock.patch.dict(os.environ, {**variables, "ASKPASS_LOG": str(log)}):
-                    log.unlink(missing_ok=True)
                     command = ["git", "-c", "credential.helper=", *settings, "credential", "fill"]
-                    environment = bounded_process.isolated_git_environment() if isolated else None
+                    guarded = (
+                        bounded_process.isolated_git_environment()
+                        if isolated
+                        else bounded_process.non_interactive_environment()
+                    )
+                    control = {
+                        **{name: value for name, value in guarded.items() if name not in askpass_switches},
+                        **variables,
+                    }
+                    log.unlink(missing_ok=True)
+                    called = run_bounded(command, 60, input_bytes=CREDENTIAL_REQUEST, env=control, cwd=Path(folder))
+                    self.assertTrue(log.exists(), called.stderr)
+                    self.assertEqual(0, called.returncode, called.stderr)
+                    log.unlink()
+                    environment = guarded if isolated else None
                     finished = run_bounded(
                         command, 60, input_bytes=CREDENTIAL_REQUEST, env=environment, cwd=Path(folder)
                     )
