@@ -22,6 +22,16 @@ import git_client
 import json_reader
 import whole_number
 from call_tables import EVENT_LOOP, PROCESS_STARTS, TEXT_OPENERS
+from command_wrappers import (
+    ASSIGNMENT,
+    PIPES,
+    SCRIPT_SHELLS,
+    TIME_KEYWORD_OPTIONS,
+    UNREAD_PROGRAM,
+    find_actions,
+    shell_script_index,
+    unwrapped,
+)
 from device_names import is_reserved_device_name
 from diff_paths import DRIVE
 from duplication import SKILL_CORE_SCRIPTS
@@ -69,7 +79,6 @@ from validation_support import (
 )
 
 from deployer import platform_support, render
-from tools.hub_guard import FIND_COMMANDS, OptionTable, option_refusal, option_table
 
 PLATFORM_ALLOWED = {
     "pathlib.PureWindowsPath": "reads a command's program after either path separator on every platform",
@@ -80,10 +89,6 @@ SHELL_OPERATORS = ("&&", "||", ";;", "|&", "()", "(", ")", ";", "&", "|", "<", "
 COMMAND_SEPARATORS = {";", "&", "&&", "|", "||", "|&", "(", "\n", "{"}
 # The reserved words that may stand before a command's program. Bash's time keyword is read by _TimeKeyword.
 LEADING_KEYWORDS = {"if", "then", "else", "elif", "while", "until", "do", "!", "}", ")", "fi", "done"}
-# A pipe hands the next command what the one before it writes.
-PIPES = frozenset({"|", "|&"})
-# The words Bash's time keyword takes before the pipeline it times, each unquoted, each optional, and in this order.
-TIME_KEYWORD_OPTIONS = ("-p", "--")
 # Keywords whose following words, up to the next separator, are not commands: "for name in list", "case word in".
 HEADER_KEYWORDS = {"case", "for", "function", "select"}
 SHELL_BUILTINS = {
@@ -127,60 +132,8 @@ SHELL_BUILTINS = {
     "unset",
     "wait",
 }
-ASSIGNMENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*(\[[^\]]*\])?\+?=")
 COMMAND_NAME = re.compile(r"[A-Za-z][A-Za-z0-9._-]*")
 COMMANDS_DOC = '"Commands skills may run" in docs/adding-a-skill.md'
-# The commands that run the program a later word names, each with every option it takes, in getopt's spelling as
-# `tools/hub_guard.py`'s option_table reads it, and read by that file's option_refusal, the one getopt reader: the
-# program is the first word after the options, after the assignments env takes, and after the duration timeout
-# takes. A long option is placed only spelled in full, and a word the table does not settle, an abbreviation or an
-# option the table does not list, leaves the program unread (UNREAD_PROGRAM) rather than taken for the program.
-# command -v and -V only look a program up.
-COMMAND_WRAPPERS: dict[str, OptionTable] = {
-    "command": option_table("pvV"),
-    "builtin": option_table(),
-    "exec": option_table("cla:"),
-    "nohup": option_table("", "help version"),
-    "time": option_table("af:o:pqvV", "append format= output= portability quiet verbose help version"),
-    "nice": option_table("n:", "adjustment= help version", numbered=re.compile(r"-[+-]?[0-9]+")),
-    "env": option_table(
-        "0a:C:iS:u:v",
-        " ".join(
-            (
-                "null argv0= chdir= ignore-environment split-string= unset= debug block-signal=? default-signal=?",
-                "ignore-signal=? list-signal-handling help version",
-            )
-        ),
-        assignments=True,
-    ),
-    "timeout": option_table(
-        "fk:ps:v", "foreground kill-after= preserve-status signal= verbose help version", operands=1
-    ),
-    "stdbuf": option_table("i:o:e:", "input= output= error= help version"),
-    "xargs": option_table(
-        "0a:d:E:e::I:i::L:l::n:oP:prs:tx",
-        " ".join(
-            (
-                "null arg-file= delimiter= eof=? replace=? max-lines=? max-args= open-tty max-procs= interactive",
-                "no-run-if-empty max-chars= process-slot-var= show-limits verbose exit help version",
-            )
-        ),
-    ),
-}
-# env's options whose value is a command line, split into the words it runs.
-ENV_SPLIT_OPTIONS = frozenset({"-S", "--split-string"})
-LOOKUP_ONLY_OPTIONS = frozenset({"-v", "-V"})
-# The commands that run a script a word holds: eval its arguments, and a shell the script after its -c.
-SCRIPT_SHELLS = frozenset({"bash", "sh", "zsh", "dash", "ksh"})
-# A shell's option letters that take the next word: -o and +o a set option's name, -O and +O a shopt option's. Its
-# long options that do are BASH_LONG_OPTIONS_WITH_VALUE.
-SHELL_ARGUMENT_LETTERS = frozenset("oO")
-BASH_LONG_OPTIONS_WITH_VALUE = frozenset({"--rcfile", "--init-file"})
-# find's actions that run the program the next word names.
-FIND_ACTIONS = FIND_COMMANDS
-# What a reader records for a program a wrapper runs but that no literal names, such as `xargs "$tool"`, so the command
-# policy refuses it rather than passing it unseen; it never names a program.
-UNREAD_PROGRAM = "<unread> "
 
 
 def split_operators(token: str) -> list[str]:
@@ -359,9 +312,7 @@ def _wrapped_programs(words: list[str], commands: list[list[str]] | None = None)
             index = shell_script_index(rest)
             return found | (shell_commands(rest[index], commands) if index is not None else set())
         if head == "find":
-            actions = [index for index, word in enumerate(rest) if word in FIND_ACTIONS and index + 1 < len(rest)]
-            for index in actions:
-                action = _find_action(rest[index + 1 :])
+            for action in find_actions(rest):
                 if commands is not None:
                     commands.append(action)
                 found |= _program_word(action[0]) | _wrapped_programs(action, commands)
@@ -376,15 +327,6 @@ def _wrapped_programs(words: list[str], commands: list[list[str]] | None = None)
             commands.append(wrapped)
         words = wrapped
     return found
-
-
-def _find_action(words: list[str]) -> list[str]:
-    """The words of the command one of find's -exec family runs, given the words after the action: up to the `;` that
-    ends it or the `+` after `{}` that does, or to the end when neither does."""
-    for index, word in enumerate(words[1:], start=1):
-        if word == ";" or (word == "+" and words[index - 1] == "{}"):
-            return words[:index]
-    return words
 
 
 def powershell_startup_programs(
@@ -428,57 +370,6 @@ def _unread_start(words: Sequence[str | None]) -> set[str]:
 def _powershell_script_reading(script: str) -> PowerShellReading:
     """What one PowerShell script a start-up runs, read once for each text in a validation run."""
     return powershell_readings([script])[0]
-
-
-def shell_script_index(arguments: list[str]) -> int | None:
-    """Where, among the words after a shell's name, the script its -c runs stands, read as the shell reads its
-    options: -c alone or in a bundle such as -lc or -ec, before or after the shell's other options, the script being
-    the first word that is no option, after the value -o, -O, --rcfile, or --init-file takes and after `--`; None for
-    a shell started without -c, which runs a file or its standard input."""
-    runs_script, argument_next, options_over = False, False, False
-    for index, word in enumerate(arguments):
-        if argument_next:
-            argument_next = False
-        elif options_over or not word.startswith(("-", "+")) or word in {"-", "+"}:
-            return index if runs_script else None
-        elif word == "--":
-            options_over = True
-        elif word.startswith("--"):
-            argument_next = word in BASH_LONG_OPTIONS_WITH_VALUE
-        else:
-            runs_script = runs_script or "c" in word[1:]
-            argument_next = any(letter in SHELL_ARGUMENT_LETTERS for letter in word[1:])
-    return None
-
-
-def unwrapped(words: list[str], wrappers: Mapping[str, OptionTable] = COMMAND_WRAPPERS) -> list[str]:
-    """The words of the command a wrapper of `wrappers` runs, from its program on: past the wrapper's options and their
-    values, in every spelling option_refusal reads, the assignments env takes, and the duration timeout takes, with
-    the command line env's -S or --split-string holds split into the words it runs. Empty for a command that is no
-    wrapper, one that names no program, and `command -v` or `-V`, which only looks one up. A wrapper option the table
-    does not settle, such as an abbreviation, gives one word, UNREAD_PROGRAM and the wrapper with that option, so no
-    word is taken for the program unread."""
-    head, rest = words[0], words[1:]
-    table = wrappers.get(head)
-    if table is None or (head == "command" and LOOKUP_ONLY_OPTIONS & set(rest)):
-        return []
-    reading = option_refusal(table, list(rest))
-    if reading.refused is not None:
-        return [f"{UNREAD_PROGRAM}{head} {reading.refused}"]
-    split = [value or "" for option, value in reading.values if option in ENV_SPLIT_OPTIONS]
-    if head == "env" and split:
-        return unwrapped(
-            ["env", *(word for value in split for word in _split_line(value)), *rest[reading.stop :]], wrappers
-        )
-    return rest[reading.stop :]
-
-
-def _split_line(value: str) -> list[str]:
-    """A command line split into its words as env's -S splits it; a line shlex cannot split stays one word."""
-    try:
-        return shlex.split(value)
-    except ValueError:
-        return [value]
 
 
 class _TimeKeyword:

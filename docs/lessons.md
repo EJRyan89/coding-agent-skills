@@ -376,7 +376,7 @@ removed fails validation until its pattern follows it.
 - **Why:** A hand-written reader that misses a construct the program reads lets a command or an entry pass unjudged.
   The hub guard's modelling reader closed one spelling per fix and every review found the next, until it was rebuilt
   to refuse what it does not understand.
-- **Use:** `tools.hub_guard:read_powershell`, `tools.hub_guard:runner_refusal`, `tools.hub_guard:option_refusal`, and
+- **Use:** `tools.hub_guard:read_powershell`, `tools.hub_guard:runner_refusal`, `option_reader:option_refusal`, and
   `tools.hub_guard:expansion_form`
 - **Guard:** `tests/tools/test_bash_syntax.py::ArrayAssignmentTests::test_an_array_assignment_to_a_subscript_is_read_where_bash_reads_an_array`,
   `tests/validation/test_skill_scripts.py::SkillScriptsFixtures::test_shell_command_extraction_runs_a_program_a_quoted_function_name_never_defined`,

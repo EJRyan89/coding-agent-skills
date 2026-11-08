@@ -22,10 +22,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan8
 
 import skill_scripts
 from call_tables import EVENT_LOOP
+from command_wrappers import UNREAD_PROGRAM
 from skill_scripts import (
     CLIENT_CLASSES,
     COMMAND_RUNNERS,
-    UNREAD_PROGRAM,
     CommandReader,
     client_command_problems,
     console_entry_points,

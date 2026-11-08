@@ -16,6 +16,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts"))
 
+import option_reader
 from bounded_process import Finished
 from guard_limits import process_limits_held
 
@@ -193,7 +194,7 @@ class ProviderPathTests(unittest.TestCase):
     ) -> None:
         for cmdlet in sorted(hub_guard.POWERSHELL_PATH_COMMANDS):
             writes = cmdlet in hub_guard.POWERSHELL_WRITING_COMMANDS
-            rows: tuple[tuple[list[hub_guard.Word], bool], ...] = (
+            rows: tuple[tuple[list[option_reader.Word], bool], ...] = (
                 (["env:GIT_DIR"], True),
                 (["alias:git", "x"], True),
                 (["x", "Environment::GIT_DIR"], True),
@@ -446,7 +447,7 @@ class RunnerOptionTests(unittest.TestCase):
         ):
             with (
                 self.subTest(command=command, reader=read.__name__),
-                mock.patch.object(hub_guard, "option_refusal", wraps=hub_guard.option_refusal) as helper,
+                mock.patch.object(hub_guard, "option_refusal", wraps=option_reader.option_refusal) as helper,
             ):
                 self.assertEqual([], read(command).unread)
                 self.assertTrue(helper.called)
