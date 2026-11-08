@@ -203,7 +203,7 @@ from bounded_process import run_bounded
 from console import run_main
 from duplication import SANCTION_SUFFIX
 from flat_text import flat_text
-from fsops_platform import ATTRIBUTE_BY_NAME, PLATFORM_ALLOWANCE, platform_tokens_named
+from fsops_platform import PLATFORM_ALLOWANCE, platform_tokens_named
 from git_client import GitClient, output_line
 from job_pool import append_step_summary, worker_count
 from job_selection import host_job_seconds, imported_names, importers, python_imports, reached_suites
@@ -211,7 +211,7 @@ from path_containment import relative_within
 from suite_discovery import PYTEST_ENVIRONMENT, pytest_command
 from suite_names import is_suite_name
 from typed_fields import FieldError, FieldReader
-from validation_support import import_aliases, qualified_name, repository_files
+from validation_support import import_aliases, literal_lookups, qualified_name, repository_files
 
 from deployer import platform_support
 
@@ -593,10 +593,11 @@ def is_gate_module(path: str) -> bool:
 def branches_on_platform(tree: ast.Module) -> bool:
     """Whether a module's code reads the platform: names a token of any kind the platform policy's PLATFORM_TOKENS
     catalogues, as that policy reads it (a qualified name such as `sys.platform` in any expression, a comparison, a
-    method call on it, a `match` subject, an assignment, a subscript, or an argument alike, one named through
-    `getattr` or `hasattr`, a platform module imported, a keyword only one platform's subprocess takes, a Windows
-    environment name, a platform command or path, or a program's Windows extension), or reads one of PLATFORM_VALUES,
-    directly or through `getattr`. Each name is read through the module's imports. A value read from the platform may
+    method call on it, a `match` subject, an assignment, a subscript, or an argument alike, one named through a
+    literal lookup by name or `hasattr`, a platform module imported, a keyword only one platform's subprocess takes, a
+    Windows environment name, a platform command or path, or a program's Windows extension), or reads one of
+    PLATFORM_VALUES, directly or through a lookup by a literal name in any form literal_lookups reads, as
+    `vars(os)["sep"]`. Each name is read through the module's imports. A value read from the platform may
     decide what the module does anywhere it flows, and a test of whether a name exists decides on the platform too, so
     every read counts. A token in a comment, a docstring, or a test case is not read."""
     if platform_tokens_named(tree):
@@ -608,14 +609,11 @@ def branches_on_platform(tree: ast.Module) -> bool:
             return qualified_name(node, aliases) in PLATFORM_VALUES
         if isinstance(node, ast.ImportFrom):
             return not node.level and any(f"{node.module}.{alias.name}" in PLATFORM_VALUES for alias in node.names)
-        if not (isinstance(node, ast.Call) and len(node.args) > 1):
-            return False
-        attribute = node.args[1]
-        return (
-            qualified_name(node.func, aliases) in ATTRIBUTE_BY_NAME
-            and isinstance(attribute, ast.Constant)
-            and isinstance(attribute.value, str)
-            and f"{qualified_name(node.args[0], aliases)}.{attribute.value}" in PLATFORM_VALUES
+        return any(
+            f"{qualified_name(lookup.receiver, aliases)}.{literal}" in PLATFORM_VALUES
+            for lookup, literal in literal_lookups(
+                node, lambda function: [qualified_name(function, aliases)], tests=True
+            )
         )
 
     # ast.walk reaches every Name and Attribute, so `os.sep` inside `os.sep.join(parts)` is read on its own.

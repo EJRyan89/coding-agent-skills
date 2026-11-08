@@ -899,8 +899,22 @@ GIT_OUTPUT_SOURCES = (
 )
 
 
+# Each form of the one catalogue of lookups by name that attribute_lookups reads besides either spelling of getattr,
+# as its name, the import
+# it needs, and the expression that reads `{owner}`'s attribute `{name}`. Every policy that reads a lookup by name reads
+# each of them alike.
+LOOKUP_FORMS = (
+    ("inspect.getattr_static", "import inspect", "inspect.getattr_static({owner}, '{name}')"),
+    ("object.__getattribute__", "", "object.__getattribute__({owner}, '{name}')"),
+    ("a bound __getattribute__", "", "{owner}.__getattribute__('{name}')"),
+    ("operator.attrgetter", "import operator", "operator.attrgetter('{name}')({owner})"),
+    ("vars", "", "vars({owner})['{name}']"),
+    ("__dict__", "", "{owner}.__dict__['{name}']"),
+)
+
+
 # Every spelling of a call of re's function `{name}`, as the module's imports and the callee: by the module, an alias
-# of it, a bare import, an alias of that, a name bound to the function, and a getattr of it.
+# of it, a bare import, an alias of that, a name bound to the function, and a lookup of it by name in each form.
 REGEX_SPELLINGS = (
     ("re.{name}", "import re", "re.{name}"),
     ("an alias of re", "import re as r", "r.{name}"),
@@ -908,6 +922,10 @@ REGEX_SPELLINGS = (
     ("an aliased bare import", "from re import {name} as found", "found"),
     ("a bound name", "import re\n\nfound = re.{name}", "found"),
     ("getattr", "import re", "getattr(re, '{name}')"),
+    *(
+        (form, f"import re\n{imports}", lookup.format(owner="re", name="{name}"))
+        for form, imports, lookup in LOOKUP_FORMS
+    ),
 )
 
 
@@ -985,6 +1003,43 @@ DOCUMENTED_FORMS: dict[str, tuple[Any, ...]] = {
             ("isjunction", "os.path.isjunction(p)"),
             ("st_file_attributes", "os.stat(p).st_file_attributes"),
             ("getattr", "getattr(p, 'is_symlink')()"),
+        )
+    },
+    # A lookup of a link test by a constant name, in any form attribute_lookups reads, and a hasattr of one.
+    **{
+        f"a link test by {form}": _form(
+            link_test_problems,
+            f"import os\n{imports}\n\n\ndef f(p):\n    return {lookup.format(owner='os.path', name='islink')}(p)\n",
+        )
+        for form, imports, lookup in (
+            *LOOKUP_FORMS,
+            ("hasattr", "import builtins", "builtins.hasattr({owner}, '{name}')"),
+        )
+    },
+    "a lookup of platform_support.is_junction by name": _form(
+        link_test_problems,
+        "from deployer import platform_support\n\n\ndef f(p):\n    return vars(platform_support)['is_junction'](p)\n",
+        refused=False,
+    ),
+    # An owner-only callable read by a lookup of a constant name in any form attribute_lookups reads.
+    **{
+        f"an owner-only callable by {form}": _form(
+            python_checks.owner_only_problems,
+            f"import json\n{imports}\n\n\ndef f(v):\n    return {lookup.format(owner='json', name='dumps')}(v)\n",
+        )
+        for form, imports, lookup in LOOKUP_FORMS
+    },
+    # "a use of `json.loads`, `json.load`, or `json.JSONDecoder`, by name or through a lookup of a constant name in any
+    # form `attribute_lookups` reads", a dotted attrgetter path among them.
+    **{
+        f"a JSON parse by {form}": _form(
+            python_checks.json_parse_problems,
+            f"import json\n{imports}\n\n\ndef f(t):\n    return {lookup.format(owner='json', name='loads')}(t)\n",
+        )
+        for form, imports, lookup in (
+            *LOOKUP_FORMS,
+            ("a dotted attrgetter", "import operator", "operator.attrgetter('decoder.JSONDecoder')({owner})"),
+            ("an attrgetter of several names", "import operator", "operator.attrgetter('dumps', '{name}')({owner})[1]"),
         )
     },
     # "A call of `deployer/platform_support.py`'s `is_junction`, which delegates to it, is none."
@@ -1325,9 +1380,22 @@ DOCUMENTED_FORMS: dict[str, tuple[Any, ...]] = {
             ),
         )
     },
+    # "as a lookup given its name as a constant in any form `attribute_lookups` reads".
+    **{
+        f"a GitError's returncode read by {form}": _form(
+            git_answered_problems,
+            f"{imports}\nfrom git_client import GitError\n\n\n"
+            "def f(client):\n    try:\n        client.output(['status'])\n"
+            f"    except GitError as exc:\n        return {lookup.format(owner='exc', name='returncode')} is None\n",
+        )
+        for form, imports, lookup in (
+            *LOOKUP_FORMS,
+            ("builtins.getattr", "import builtins", "builtins.getattr({owner}, '{name}')"),
+        )
+    },
     # The limits the policy's sentence states: "It does not read a `returncode` handed to another function,
-    # `operator.truth` or `operator.not_` of it, a reach through `vars` or `__dict__`, a name a tuple assignment binds,
-    # or an `Annotated` or a type alias of `GitError`."
+    # `operator.truth` or `operator.not_` of it, a name a tuple assignment binds, or an `Annotated` or a type alias of
+    # `GitError`."
     **{
         f"a GitError's returncode {form}, a stated limit": _form(
             git_answered_problems,
@@ -1341,8 +1409,6 @@ DOCUMENTED_FORMS: dict[str, tuple[Any, ...]] = {
             ("handed to another function", "        return judge(exc.returncode)"),
             ("read by operator.truth", "        return operator.truth(exc.returncode)"),
             ("read by operator.not_", "        return operator.not_(exc.returncode)"),
-            ("reached through vars", "        return vars(exc)['returncode'] is None"),
-            ("reached through __dict__", "        return exc.__dict__['returncode'] is None"),
             ("bound by a tuple assignment", "        code, n = exc.returncode, 1\n        return code is None"),
         )
     },
@@ -6482,7 +6548,8 @@ SUPERSEDED_RESOLVER_ROWS = [
         id="a module bound to a local name",
     ),
     pytest.param(
-        "def f(t):\n    return operator.attrgetter('loads')(json)(t)  # refused: indirection\n",
+        # The owner-only rule reads the lookup too, as every policy reads the one catalogue of lookups by name.
+        "def f(t):\n    return operator.attrgetter('loads')(json)(t)  # refused: indirection, owner-only\n",
         SCRIPT,
         id="an attrgetter of a parser",
     ),
