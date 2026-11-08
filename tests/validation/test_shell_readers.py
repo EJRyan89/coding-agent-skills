@@ -17,6 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts"))
 
 import command_wrappers
+import git_client
 import skill_scripts
 import toolchain
 from command_wrappers import UNREAD_PROGRAM
@@ -429,6 +430,91 @@ WRAPPED_GIT_PUSH_SCRIPTS = (
 @pytest.mark.parametrize("script", WRAPPED_GIT_PUSH_SCRIPTS)
 def test_the_git_subcommand_reader_reads_the_git_command_a_wrapper_runs(script: str) -> None:
     assert skill_scripts.shell_git_subcommands(script) == {"push"}
+
+
+# The PowerShell twin of WRAPPED_GIT_PUSH_SCRIPTS: on Linux pwsh, where each wrapper of COMMAND_WRAPPERS and find are
+# programs, the git command one runs is read past the wrapper's options as the Bash reader reads it. PowerShell has no
+# time keyword and no escaped `;`, and its `{}` is a script block, which it reads as no literal.
+POWERSHELL_WRAPPED_GIT_PUSH_SOURCES = (
+    "xargs git push",
+    "env git push",
+    "timeout 5 git push",
+    "find . -exec git push '{}' +",
+    "find . -exec git push {} +",
+    "find . -exec git push ';'",
+    "find . -exec git push",
+    "command git push",
+    "builtin git push",
+    "exec git push",
+    "nohup git push",
+    "time -p git push",
+    "nice -n 5 git push",
+    "env -i A=1 git push",
+    "env -S 'git push'",
+    "stdbuf -o L git push",
+    "xargs -n 1 git push",
+    "timeout --signal TERM 5 git push",
+    "find . -execdir git push ';'",
+    "find . -ok git push '{}' ';'",
+    "find . -okdir git push '{}' +",
+    "nohup env timeout 5 git push",
+    "find . -exec env git push '{}' +",
+    "Start-Process env -ArgumentList 'git', 'push'",
+    "env bash -c 'git push'",
+    "env pwsh -c 'git push'",
+)
+
+
+def _powershell_git_subcommands(source: str) -> set[str]:
+    """The subcommand of each git command a PowerShell source runs, as powershell_readings reads its commands."""
+    (reading,) = skill_scripts.powershell_readings([source])
+    return {
+        subcommand
+        for words in reading.commands
+        if words[0] == "git" and (subcommand := git_client.subcommand(list(words[1:]))) is not None
+    }
+
+
+@pytest.mark.parametrize("source", POWERSHELL_WRAPPED_GIT_PUSH_SOURCES)
+def test_the_powershell_reader_reads_the_git_command_a_wrapper_runs(source: str) -> None:
+    assert "git" in skill_scripts.powershell_commands([source])[0]
+    assert _powershell_git_subcommands(source) == {"push"}
+
+
+# The issue's forms: the program a wrapper or find's action runs is among a PowerShell source's programs, so the
+# declared-tool policy holds it, and a wrapper that runs none, or only looks one up, adds none.
+@pytest.mark.parametrize(
+    ("source", "programs"),
+    [
+        ("env gh pr list", {"env", "gh"}),
+        ("xargs gh pr list", {"xargs", "gh"}),
+        ("find . -exec gh pr list '{}' +", {"find", "gh"}),
+        ("xargs -n $count gh pr list", {"xargs", "gh"}),
+        ("nohup env timeout 5 gh pr list", {"nohup", "env", "timeout", "gh"}),
+        ("command -v gh", {"command"}),
+        ("xargs echo gh", {"xargs", "echo"}),
+        ("env", {"env"}),
+    ],
+)
+def test_the_powershell_reader_reads_the_program_a_wrapper_runs(source: str, programs: set[str]) -> None:
+    assert skill_scripts.powershell_commands([source]) == [programs]
+
+
+# A program a wrapper or find's action runs that no literal names, and a shell or start-up a wrapper runs on a script
+# that is no literal, is refused as unread rather than passed unseen.
+@pytest.mark.parametrize(
+    ("source", "unread"),
+    [
+        ("env $tool", "<value>"),
+        ("xargs $tool pr list", "<value> pr list"),
+        ("find . -exec $tool '{}' +", "<value> {}"),
+        ("env pwsh -c $script", "pwsh -c <value>"),
+        ("env bash -c $script", "bash -c <value>"),
+        ("env --unknown gh", "env --unknown"),
+    ],
+)
+def test_the_powershell_reader_refuses_a_wrapped_program_it_cannot_read(source: str, unread: str) -> None:
+    assert f"{UNREAD_PROGRAM}{unread}" in skill_scripts.powershell_commands([source])[0]
 
 
 # A wrapper that runs no git command, or only looks git up, gives no subcommand; find's second action is read apart
