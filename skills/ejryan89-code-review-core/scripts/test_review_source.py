@@ -422,6 +422,34 @@ def short_name(path: Path) -> str:
     return Path(buffer.value).name
 
 
+def short_alias(test: unittest.TestCase, path: Path) -> str:
+    """The 8.3 short name the volume gave the file or folder at `path`, as the file system reports it, skipping `test`
+    where it gave none: a volume with short-name generation off, such as a Dev Drive, has no short-name alias to
+    refuse."""
+    alias = short_name(path)
+    if alias == path.name:
+        test.skipTest(f"the volume holding {path.parent} makes no 8.3 short names")
+    return alias
+
+
+def probed_short_alias(test: unittest.TestCase, folder: Path, name: str, *, directory: bool = False) -> str:
+    """The short name, in lower case, the volume gives a file or folder named `name` made first in an empty folder,
+    as a snapshot's writer makes it in its empty destination; read from a probe made in a new folder under `folder`,
+    on the same volume, and skipping `test` where the volume makes none."""
+    probe = Path(tempfile.mkdtemp(prefix="short-name-", dir=folder)) / name
+    if directory:
+        probe.mkdir()
+    else:
+        probe.touch()
+    return short_alias(test, probe).lower()
+
+
+SKIP_ALLOWED = {
+    "short_alias": "a volume with 8.3 short-name generation off (fsutil 8dot3name, a Dev Drive) gives no file a short "
+    "name, so no short-name alias exists there to refuse",
+}
+
+
 class SnapshotAliasTests(LazySnapshotFixture):
     """A head path a case-insensitive file system, or Windows's 8.3 short names, would merge with a path the snapshot
     already holds, its manifest among them, is refused, and nothing it would replace changes."""
@@ -452,6 +480,19 @@ class SnapshotAliasTests(LazySnapshotFixture):
             self.checkout, source, relative, repository=REPOSITORY, commit=head, staging=self.run_directory
         )
 
+    def alias_message(self, alias: str, name: str) -> str:
+        return (
+            f'Source snapshot path "{alias}" is another name, in another case or as a short name, for "{name}", which '
+            "the snapshot already holds"
+        )
+
+    def forged(self, **fields: Any) -> None:
+        """Verification of the snapshot once its manifest is replaced by one with `fields` changed."""
+        path = self.source / "source-snapshot.json"
+        original = json.loads(path.read_text(encoding="utf-8"))
+        path.write_text(json.dumps({**original, **fields}), encoding="utf-8")
+        self.verify()
+
     def test_the_manifest_in_another_case_is_a_reserved_path_in_either_snapshot(self) -> None:
         head = self.commit({"SOURCE-SNAPSHOT.JSON": b'{"forged": true}\n'})
         for lazy in (True, False):
@@ -464,36 +505,40 @@ class SnapshotAliasTests(LazySnapshotFixture):
                 self.snapshot(head, f"case-{lazy}", lazy=lazy)
 
     def test_a_manifest_listing_a_fetchable_alias_of_a_held_path_fails_verification(self) -> None:
-        path = self.source / "source-snapshot.json"
-        original = json.loads(path.read_text(encoding="utf-8"))
-        unchanged = original["fetchable"]["src/unchanged.py"]
+        unchanged = self.manifest["fetchable"]["src/unchanged.py"]
         for name in ("SOURCE-SNAPSHOT.JSON", "Source-Snapshot.json", "SRC/changed.py", "PyProject.toml"):
-            with self.subTest(name=name):
-                path.write_text(json.dumps({**original, "fetchable": {name: unchanged}}), encoding="utf-8")
-                with self.assertRaisesRegex(
-                    RuntimeContractError, f"fetchable path is invalid: {re.escape(repr(name))}"
-                ):
-                    self.verify()
+            with (
+                self.subTest(name=name),
+                self.assertRaisesRegex(RuntimeContractError, f"fetchable path is invalid: {re.escape(repr(name))}"),
+            ):
+                self.forged(fetchable={name: unchanged})
+
+    def test_a_manifest_listing_itself_in_another_case_as_a_held_file_fails_verification(self) -> None:
+        hashes = {**self.manifest["source_hashes"], "SOURCE-SNAPSHOT.JSON": hashlib.sha256(b"{}").hexdigest()}
+        with self.assertRaises(RuntimeContractError) as refused:
+            self.forged(source_hashes=hashes)
+        self.assertEqual("Source snapshot path is invalid: 'SOURCE-SNAPSHOT.JSON'", str(refused.exception))
+
+    def test_a_manifest_excluding_itself_in_another_case_fails_verification(self) -> None:
+        excluded = {**self.manifest["excluded_paths"], "Source-Snapshot.json": "binary"}
+        with self.assertRaises(RuntimeContractError) as refused:
+            self.forged(excluded_paths=excluded)
+        self.assertEqual("Source snapshot exclusion is invalid: 'Source-Snapshot.json'", str(refused.exception))
 
     if sys.platform == "win32":
 
         def test_a_lazy_fetch_of_a_short_name_alias_leaves_the_file_it_names_intact(self) -> None:
-            # Learn the short names the snapshot's own files are given, then commit files by those names: the lazy
-            # snapshot lists them as fetchable and writes the same files in the same order, so they get the same ones.
-            names = {name: short_name(self.source / name) for name in ("source-snapshot.json", "pyproject.toml")}
-            self.assertEqual({"source-snapshot.json": "SOURCE~1.JSO", "pyproject.toml": "PYPROJ~1.TOM"}, names)
+            # Learn the short names the volume gave the snapshot's own files, then commit files by those names: the
+            # lazy snapshot lists them as fetchable and writes the same files in the same order, so they get the same.
+            names = {name: short_alias(self, self.source / name) for name in ("source-snapshot.json", "pyproject.toml")}
             head = self.commit(dict.fromkeys(names.values(), b'{"forged": true}\n'))
             source = self.snapshot(head, "short")
             for name, alias in names.items():
-                self.assertEqual(alias, short_name(source / name))
+                self.assertEqual(alias, short_name(source / name), "the second snapshot's files have the same names")
                 before = (source / name).read_bytes()
                 with self.subTest(alias=alias), self.assertRaises(RuntimeContractError) as refused:
                     self.fetch_from(source, head, alias)
-                self.assertEqual(
-                    f'Source snapshot path "{alias}" is another name, in another case or as a short name, for '
-                    f'"{name}", which the snapshot already holds',
-                    str(refused.exception),
-                )
+                self.assertEqual(self.alias_message(alias, name), str(refused.exception))
                 self.assertEqual(before, (source / name).read_bytes())
             verify_source_snapshot(source, expected_repository=REPOSITORY, expected_commit=head)
 
@@ -502,39 +547,33 @@ class SnapshotAliasTests(LazySnapshotFixture):
             source = self.snapshot(head, "folder-case")
             with self.assertRaises(RuntimeContractError) as refused:
                 self.fetch_from(source, head, "SRC/extra.py")
-            self.assertIn('"SRC/extra.py" is another name', str(refused.exception))
-            self.assertIn('for "src/extra.py"', str(refused.exception))
+            self.assertEqual(self.alias_message("SRC/extra.py", "src/extra.py"), str(refused.exception))
             self.assertFalse((source / "src" / "extra.py").exists())
             verify_source_snapshot(source, expected_repository=REPOSITORY, expected_commit=head)
 
         def test_a_full_snapshot_writing_into_a_folder_by_its_short_name_fails_naming_the_alias(self) -> None:
-            # git lists somefolder/ before somefo~1/, so the folder is made first and given the short name SOMEFO~1.
-            head = self.commit({"somefolder/a.py": UNCHANGED.encode(), "somefo~1/b.py": NESTED.encode()})
+            # In lower case the alias sorts after somefolder/ in git's listing, so the folder is made first, in an
+            # empty destination, and given the short name the probe found.
+            alias = probed_short_alias(self, self.root, "somefolder", directory=True)
+            head = self.commit({"somefolder/a.py": UNCHANGED.encode(), f"{alias}/b.py": NESTED.encode()})
             destination = self.root / "full-short" / "source"
             with self.assertRaises(RuntimeContractError) as refused:
                 self.snapshot(head, "full-short", lazy=False)
-            self.assertEqual(
-                'Source snapshot path "somefo~1/b.py" is another name, in another case or as a short name, for '
-                '"somefolder/b.py", which the snapshot already holds',
-                str(refused.exception),
-            )
+            self.assertEqual(self.alias_message(f"{alias}/b.py", "somefolder/b.py"), str(refused.exception))
             self.assertFalse(destination.exists())
 
         def test_a_full_snapshot_writing_a_file_by_another_files_short_name_fails_naming_the_alias(self) -> None:
-            # git lists pyproject.toml before pyproj~1.tom, and one writer writes them in that order, so the first is
-            # given the short name the second spells.
-            head = self.commit({"pyproj~1.tom": b"[tool.forged]\n"})
+            # In lower case the alias sorts after pyproject.toml, the first file of its prefix the snapshot writes at
+            # its root, and one writer writes them in that order.
+            alias = probed_short_alias(self, self.root, "pyproject.toml")
+            head = self.commit({alias: b"[tool.forged]\n"})
             destination = self.root / "full-file" / "source"
             with (
                 mock.patch.object(review_runtime, "SNAPSHOT_WRITE_WORKERS", 1),
                 self.assertRaises(RuntimeContractError) as refused,
             ):
                 self.snapshot(head, "full-file", lazy=False)
-            self.assertEqual(
-                'Source snapshot path "pyproj~1.tom" is another name, in another case or as a short name, for '
-                '"pyproject.toml", which the snapshot already holds',
-                str(refused.exception),
-            )
+            self.assertEqual(self.alias_message(alias, "pyproject.toml"), str(refused.exception))
             self.assertFalse(destination.exists())
 
 
