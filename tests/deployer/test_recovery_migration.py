@@ -34,7 +34,7 @@ from harness import (
     tree_state,
 )
 
-from deployer import fsops, hashing, journal, manifest, pipeline, plan, platform_support, render
+from deployer import fsops, hashing, journal, manifest, names, pipeline, plan, platform_support, render
 from deployer.errors import RECOVERY_STOPPED, RUN_COMMITTED, RUN_NOT_COMMITTED, DeployError
 from deployer.kinds import KINDS
 from deployer.names import deletion_name, transient_name
@@ -802,6 +802,62 @@ class RecoveryFailureTests(RecoveryTestCase):
         self.assertFalse((self.skills_dir / ".backups" / self.HELD / "alpha").exists())
         self.assertTrue((deletion / "SKILL.md").is_file())
         self.assert_no_spare_deletion_names()
+
+    def listing_denied(self) -> tuple[mock._patch[mock.MagicMock | mock.AsyncMock], str]:
+        """Refuse the listing of the skills root for alpha's spare deletion names, as a root the user cannot list
+        refuses it, and return the warning that names it."""
+        real_matching = file_presence.matching
+        root = self.skills_dir
+
+        def matching(folder: Path, pattern: str, **options: Any) -> list[Path]:
+            if folder == root and pattern.startswith(deletion_name("alpha")):
+                raise denied(folder)
+            return real_matching(folder, pattern, **options)
+
+        deletion = forward(self.skills_dir / deletion_name("alpha"))
+        named = (
+            f"  WARNING: Could not look for what is left of copies the deployer was deleting at {deletion}: Access is "
+            f"denied. {SEE_RECOVERY_BACKUPS}"
+        )
+        return mock.patch.object(file_presence, "matching", side_effect=matching), named
+
+    def test_a_root_whose_deletion_leftovers_cannot_be_listed_is_named_and_completes_a_committed_run(self) -> None:
+        # The run is committed, so a root the deployer cannot list for leftovers fails no finalization: it is named,
+        # and the copy the run does not keep is still deleted under its deletion name.
+        journal_file = self.committed_fixture(retain=False)
+        faulted, named = self.listing_denied()
+        with faulted:
+            result = self.deploy_ok("--all")
+        self.assert_lines(result.output, f"Recovering committed run {self.HELD} (completing finalization)...", named)
+        self.assertIn("  Recovery complete.", result.output)
+        self.assertFalse(journal_file.exists())
+        self.assertFalse((self.skills_dir / transient_name("alpha")).exists())
+        self.assertFalse((self.skills_dir / deletion_name("alpha")).exists())
+
+    def test_a_root_whose_deletion_leftovers_cannot_be_listed_is_named_and_fails_no_rollback(self) -> None:
+        self.rolled_back_fixture()
+        faulted, named = self.listing_denied()
+        with faulted:
+            result = self.deploy_ok("--all")
+        self.assert_lines(result.output, f"Recovering uncommitted run {self.HELD} (rolling back)...", named)
+        self.assertIn("  Recovery complete.", result.output)
+        self.assertIn("Alpha content", self.skill_text("alpha"))
+        self.assertFalse((self.skills_dir / transient_name("alpha")).exists())
+
+    def test_a_spare_deletion_name_already_taken_is_drawn_again(self) -> None:
+        self.deployed(("alpha", "Alpha content"))
+        deletion, _ = self.held_leftover()
+        self.write(self.skills_dir / names.spare_deletion_name("alpha", "0123abcd") / "SKILL.md", "held too\n")
+        with mock.patch.object(journal.secrets, "token_hex", side_effect=["0123abcd", "89abcdef"]) as drawn:
+            spare = journal._free_deletion_name(deletion, "alpha")
+        self.assertEqual(self.skills_dir / ".alpha.deploying-del.89abcdef", spare)
+        self.assertEqual([mock.call(4), mock.call(4)], drawn.call_args_list)
+
+    def test_only_the_deletion_name_is_looked_at_where_the_root_is_no_folder(self) -> None:
+        self.write(self.root / "a-file", "not a folder\n")
+        for root in (self.root / "a-file", self.root / "missing"):
+            with self.subTest(root=root.name):
+                self.assertEqual([], journal._deletion_leftovers(root / deletion_name("alpha")))
 
     def test_a_backup_directory_that_cannot_be_created_keeps_the_copy_and_finishes_a_committed_run(self) -> None:
         self.committed_fixture(retain=True)

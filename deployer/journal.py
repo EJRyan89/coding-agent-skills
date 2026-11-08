@@ -512,17 +512,30 @@ def _deletion_path(paths: Paths, entry: JournalEntry) -> Path:
 
 def _deletion_leftovers(deletion: Path) -> list[Path]:
     """What earlier deletions left beside an item: at its deletion name, and at each spare deletion name, which a
-    deletion takes while what is at the first stays. Nothing is listed when the root is not a folder."""
+    deletion takes while what is at the first stays. Only the deletion name is looked at when the root is not a folder.
+
+    A root that cannot be read or listed is named in a warning with what was found before, so a leftover holds up no
+    run: what is left under a name the deployer could not list stays for a later run to finish."""
     root = deletion.parent
-    found = [deletion] if file_presence.is_occupied(deletion) else []
-    if not file_presence.is_directory(root, other_is_absent=True):
+    found: list[Path] = []
+    try:
+        if file_presence.is_occupied(deletion):
+            found.append(deletion)
+        if not file_presence.is_directory(root, other_is_absent=True):
+            return found
+        named = file_presence.matching(root, f"{deletion.name}.*")
+    except OSError as error:
+        _warn(
+            f"Could not look for what is left of copies the deployer was deleting at "
+            f"{platform_support.normalize(deletion)}: {error.strerror or error}. {see_recovery('Backups')}"
+        )
         return found
     deletion_key = platform_support.name_key(deletion.name, root)
-    spares = (
-        root / entry.name
-        for entry in sorted(os.scandir(root), key=lambda entry: entry.name)
-        if spare_deletion_token(platform_support.name_key(entry.name, root), deletion_key) is not None
-    )
+    spares = [
+        path
+        for path in named
+        if spare_deletion_token(platform_support.name_key(path.name, root), deletion_key) is not None
+    ]
     return [*found, *spares]
 
 
@@ -572,10 +585,10 @@ def _delete_backup(item: str, transient: Path, deletion: Path) -> None:
     file another program holds open, does not fail it: the warning names where the copy, or what is left of it, stays.
     """
     _finish_deletion(deletion)
-    if not file_presence.is_occupied(transient):
-        return
-    spare = _free_deletion_name(deletion, item)
     try:
+        if not file_presence.is_occupied(transient):
+            return
+        spare = _free_deletion_name(deletion, item)
         fsops.move(transient, spare)
     except OSError as error:
         _warn(
