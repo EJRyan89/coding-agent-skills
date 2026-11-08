@@ -452,15 +452,18 @@ class Streaming:
             raise subprocess.TimeoutExpired(self.command, limit)
 
     def _on_stdin(self, action: Callable[[], None], seconds: float) -> bool:
-        """Run `action` on a daemon thread for at most `seconds`: True once it has finished, re-raising what it raised,
-        or False while it is still waiting on the command."""
-        failures: list[BaseException] = []
+        """Run `action` on a daemon thread for at most `seconds`: True once it has finished, or False while it is still
+        waiting on the command. The OSError or ValueError a pipe raises, broken or closed, is raised again here, and
+        any other failure, which the thread reports itself, as an OSError."""
+        failures: list[OSError | ValueError] = []
+        finished = threading.Event()
 
         def run() -> None:
             try:
                 action()
-            except BaseException as exc:  # noqa: BLE001 - handed to the caller's thread, which raises it
+            except (OSError, ValueError) as exc:
                 failures.append(exc)
+            finished.set()
 
         worker = threading.Thread(target=run, daemon=True)
         worker.start()
@@ -469,6 +472,8 @@ class Streaming:
             return False
         if failures:
             raise failures[0]
+        if not finished.is_set():
+            raise OSError("the command's stdin failed")
         return True
 
     def errors(self) -> bytes:

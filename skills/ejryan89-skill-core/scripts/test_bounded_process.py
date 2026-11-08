@@ -677,6 +677,15 @@ class StreamingTests(unittest.TestCase):
             self.assertEqual(b"z" * UNREAD_BYTES, running.read(UNREAD_BYTES + 1))
             self.assertEqual(0, running.wait())
 
+    def test_a_write_that_fails_otherwise_on_its_thread_raises_os_error_rather_than_reading_as_done(self) -> None:
+        with bounded_process.streaming([sys.executable, "-c", "pass"], idle_timeout=STARTUP_SECONDS) as running:
+            with (
+                mock.patch("threading.excepthook"),  # the thread's own report of its TypeError
+                self.assertRaisesRegex(OSError, r"^the command's stdin failed$"),
+            ):
+                running.write("text, not bytes")  # type: ignore[arg-type]  # the write's thread raises TypeError
+            self.assertEqual(0, running.wait())
+
     def test_a_write_to_a_command_that_has_exited_raises_os_error(self) -> None:
         with bounded_process.streaming([sys.executable, "-c", "pass"], idle_timeout=STARTUP_SECONDS) as running:
             self.assertEqual(0, running.wait())
