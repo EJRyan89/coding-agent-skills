@@ -1353,6 +1353,31 @@ class ContractValueTests(unittest.TestCase):
         self.assertIn("starts with dot", names.safe_name_problem(names.deletion_name("alpha"), "Skill") or "")
         self.assertIn("`.<name>.deploying-del`", (REPOSITORY_ROOT / "docs" / "recovery.md").read_text(encoding="utf-8"))
 
+    def test_a_spare_deletion_name_is_the_one_docs_recovery_names_and_no_other_items_deletion_name(self) -> None:
+        # A pinned contract value: "Backups" in docs/recovery.md tells users a copy deleted while a leftover holds the
+        # deletion name is .<name>.deploying-del.<token>, eight lowercase hex digits.
+        self.assertEqual(".alpha.deploying-del.0123abcd", names.spare_deletion_name("alpha", "0123abcd"))
+        self.assertIn(
+            "`.<name>.deploying-del.<token>`", (REPOSITORY_ROOT / "docs" / "recovery.md").read_text(encoding="utf-8")
+        )
+        for token in ("0123abc", "0123abcde", "0123ABCD", "deploying"):
+            with self.subTest(token=token), self.assertRaises(ValueError):
+                names.spare_deletion_name("alpha", token)
+        self.assertEqual(
+            "0123abcd", names.spare_deletion_token(".alpha.deploying-del.0123abcd", ".alpha.deploying-del")
+        )
+        # No deletion name of another item reads as one of alpha's spare names: every one ends in .deploying-del or in
+        # a token of its own item.
+        for other in (
+            ".alpha.deploying-del",
+            ".alpha.deploying-del.deploying-del",
+            ".alpha.deploying-del.0123abcd.deploying-del",
+            ".alpha.deploying-del.0123abcd.deploying-del.89abcdef",
+            ".alphabet.deploying-del.0123abcd",
+        ):
+            with self.subTest(other=other):
+                self.assertIsNone(names.spare_deletion_token(other, ".alpha.deploying-del"))
+
     def test_this_source_records_each_renamed_skill_under_its_old_name(self) -> None:
         """An installation under an old name moves to the new one only while source.json records the pair."""
         document = json.loads((REPOSITORY_ROOT / "source.json").read_text(encoding="utf-8"))

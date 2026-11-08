@@ -34,7 +34,7 @@ from harness import (
     tree_state,
 )
 
-from deployer import fsops, hashing, journal, manifest, pipeline, plan, platform_support, render
+from deployer import fsops, hashing, journal, manifest, names, pipeline, plan, platform_support, render
 from deployer.errors import RECOVERY_STOPPED, RUN_COMMITTED, RUN_NOT_COMMITTED, DeployError
 from deployer.kinds import KINDS
 from deployer.names import deletion_name, transient_name
@@ -657,7 +657,8 @@ class RecoveryFailureTests(RecoveryTestCase):
 
     def test_a_held_leftover_at_the_deletion_name_fails_no_later_rollback_or_finalization(self) -> None:
         # What a deletion a held file stopped left at the deletion name is named each time a later run meets it, and
-        # that run deletes its own copy where it stands, so the leftover holds up no run, however many follow.
+        # that run deletes its own copy under a spare deletion name, so the leftover holds up no run, however many
+        # follow.
         self.deployed(("alpha", "Alpha content"))
         deletion = self.skills_dir / deletion_name("alpha")
         self.write(deletion / "SKILL.md", "left by a deletion a held file stopped\n")
@@ -682,7 +683,8 @@ class RecoveryFailureTests(RecoveryTestCase):
                 self.assertIn("Alpha content", self.skill_text("alpha"))
                 self.assertFalse(transient.exists())
                 self.assertTrue((deletion / "SKILL.md").is_file())
-        # A deployment's own finalization deletes the unkept copy it replaced where it stands, beside the same leftover.
+        # A deployment's own finalization deletes the unkept copy it replaced under a spare deletion name, beside the
+        # same leftover.
         self.make_skill("alpha", "Updated alpha")
         with failing_at("remove", deletion):
             result = self.deploy_ok("--all")
@@ -690,6 +692,172 @@ class RecoveryFailureTests(RecoveryTestCase):
         self.assertIn("Updated alpha", self.skill_text("alpha"))
         self.assertFalse(transient.exists())
         self.assertTrue((deletion / "SKILL.md").is_file())
+
+    def held_leftover(self) -> tuple[Path, str]:
+        """A leftover at alpha's deletion name, from a deletion a held file stopped, and the warning that names it."""
+        deletion = self.skills_dir / deletion_name("alpha")
+        self.write(deletion / "SKILL.md", "left by a deletion a held file stopped\n")
+        return deletion, (
+            f"  WARNING: What is left of a copy the deployer was deleting stays at {forward(deletion)}: Access is "
+            f"denied. Delete it once nothing holds it open. {SEE_RECOVERY_BACKUPS}"
+        )
+
+    def deletion_stopped_partway(
+        self, deletion: Path, copy: Path, fault: BaseException
+    ) -> mock._patch[mock.MagicMock | mock.AsyncMock]:
+        """Hold the leftover at deletion, and stop the first deletion of the copy, under whichever name it is deleted,
+        after its SKILL.md is gone, by fault."""
+        real_remove = fsops.remove
+        stopped: list[Path] = []
+
+        def remove(path: Path) -> None:
+            if path == deletion:
+                raise denied(path)
+            if not stopped and (path == copy or path.name.startswith(f"{deletion.name}.")):
+                stopped.append(path)
+                real_remove(path / "SKILL.md")
+                raise fault
+            real_remove(path)
+
+        return mock.patch.object(fsops, "remove", side_effect=remove)
+
+    def assert_no_spare_deletion_names(self) -> None:
+        spares = [child.name for child in self.skills_dir.iterdir() if child.name.startswith(".alpha.deploying-del.")]
+        self.assertEqual([], spares)
+
+    def replaced_by_an_uncommitted_run(self) -> str:
+        """An uncommitted run that replaced alpha with a copy of two files, so a deletion stopped after the first leaves
+        part of it, and returns the run."""
+        original = hashing.hash_path(self.skills_dir / "alpha")
+        (self.skills_dir / "alpha").rename(self.skills_dir / transient_name("alpha"))
+        self.write(self.skills_dir / "alpha" / "SKILL.md", "installed by the interrupted run\n")
+        self.write(self.skills_dir / "alpha" / "notes.md", "a second file\n")
+        self.write_journal(
+            self.HELD,
+            backup_entry("alpha", original),
+            install_entry("alpha", hashing.hash_path(self.skills_dir / "alpha")),
+        )
+        return self.HELD
+
+    def assert_rollback_stopped_beside_a_held_leftover_is_finished(self, fault: BaseException) -> None:
+        # A rollback deletes what the run installed. While the leftover at the deletion name is held, the copy takes a
+        # spare deletion name, so a deletion stopped partway leaves nothing at alpha that recovery would judge by its
+        # hash, and the next run finishes the rollback, with the leftover still held.
+        self.deployed(("alpha", "Alpha content"))
+        deletion, named = self.held_leftover()
+        run = self.replaced_by_an_uncommitted_run()
+        alpha = self.skills_dir / "alpha"
+        with self.deletion_stopped_partway(deletion, alpha, fault), contextlib.suppress(Killed):
+            journal.recover_incomplete(self.paths)
+        # Nothing of the installed copy is left at alpha, where recovery would judge it by its hash.
+        self.assertFalse((alpha / "notes.md").exists())
+        with failing_at("remove", deletion):
+            result = self.deploy_ok("--all")
+        self.assert_lines(result.output, f"Recovering uncommitted run {run} (rolling back)...", named)
+        self.assertIn("  Recovery complete.", result.output)
+        self.assertNotIn("hash mismatch", result.output)
+        self.assertIn("Alpha content", self.skill_text("alpha"))
+        self.assertFalse((self.skills_dir / transient_name("alpha")).exists())
+        self.assertTrue((deletion / "SKILL.md").is_file())
+        self.assert_no_spare_deletion_names()
+        # Once released, the leftover goes with the next run that deletes a copy of alpha.
+        self.make_skill("alpha", "Updated alpha")
+        result = self.deploy_ok("--all")
+        self.assertNotIn("WARNING", result.output)
+        self.assertFalse(deletion.exists())
+        self.assert_no_spare_deletion_names()
+
+    def test_a_rollback_whose_deletion_fails_partway_beside_a_held_leftover_is_finished_by_the_next(self) -> None:
+        self.assert_rollback_stopped_beside_a_held_leftover_is_finished(denied(self.skills_dir / "alpha"))
+
+    def test_a_rollback_killed_partway_through_its_deletion_beside_a_held_leftover_is_finished_by_the_next(
+        self,
+    ) -> None:
+        self.assert_rollback_stopped_beside_a_held_leftover_is_finished(Killed())
+
+    def test_an_unkept_backup_killed_partway_through_its_deletion_beside_a_held_leftover_is_not_kept(self) -> None:
+        # Finalization deletes the copy the run replaced and does not keep. While the leftover at the deletion name is
+        # held, the copy takes a spare deletion name, so a kill partway leaves nothing at alpha.deploying-bak that
+        # recovery would judge by its hash as a change made after the plan and keep under .backups.
+        self.deployed(("alpha", "Alpha content"))
+        deletion, named = self.held_leftover()
+        transient = self.skills_dir / transient_name("alpha")
+        self.write(transient / "SKILL.md", "previous alpha\n")
+        self.write(transient / "notes.md", "a second file\n")
+        self.commit(self.HELD)
+        journal_file = self.write_journal(
+            self.HELD,
+            backup_entry("alpha", hashing.hash_path(transient), False, self.HELD),
+            install_entry("alpha", hashing.hash_path(self.skills_dir / "alpha")),
+        )
+        with self.deletion_stopped_partway(deletion, transient, Killed()), self.assertRaises(Killed):
+            journal.recover_incomplete(self.paths)
+        with failing_at("remove", deletion):
+            result = self.deploy_ok("--all")
+        self.assert_lines(result.output, f"Recovering committed run {self.HELD} (completing finalization)...", named)
+        self.assertIn("  Recovery complete.", result.output)
+        self.assertNotIn("changed after run", result.output)
+        self.assertFalse(journal_file.exists())
+        self.assertFalse(transient.exists())
+        self.assertFalse((self.skills_dir / ".backups" / self.HELD / "alpha").exists())
+        self.assertTrue((deletion / "SKILL.md").is_file())
+        self.assert_no_spare_deletion_names()
+
+    def listing_denied(self) -> tuple[mock._patch[mock.MagicMock | mock.AsyncMock], str]:
+        """Refuse the listing of the skills root for alpha's spare deletion names, as a root the user cannot list
+        refuses it, and return the warning that names it."""
+        real_matching = file_presence.matching
+        root = self.skills_dir
+
+        def matching(folder: Path, pattern: str, **options: Any) -> list[Path]:
+            if folder == root and pattern.startswith(deletion_name("alpha")):
+                raise denied(folder)
+            return real_matching(folder, pattern, **options)
+
+        deletion = forward(self.skills_dir / deletion_name("alpha"))
+        named = (
+            f"  WARNING: Could not look for what is left of copies the deployer was deleting at {deletion}: Access is "
+            f"denied. {SEE_RECOVERY_BACKUPS}"
+        )
+        return mock.patch.object(file_presence, "matching", side_effect=matching), named
+
+    def test_a_root_whose_deletion_leftovers_cannot_be_listed_is_named_and_completes_a_committed_run(self) -> None:
+        # The run is committed, so a root the deployer cannot list for leftovers fails no finalization: it is named,
+        # and the copy the run does not keep is still deleted under its deletion name.
+        journal_file = self.committed_fixture(retain=False)
+        faulted, named = self.listing_denied()
+        with faulted:
+            result = self.deploy_ok("--all")
+        self.assert_lines(result.output, f"Recovering committed run {self.HELD} (completing finalization)...", named)
+        self.assertIn("  Recovery complete.", result.output)
+        self.assertFalse(journal_file.exists())
+        self.assertFalse((self.skills_dir / transient_name("alpha")).exists())
+        self.assertFalse((self.skills_dir / deletion_name("alpha")).exists())
+
+    def test_a_root_whose_deletion_leftovers_cannot_be_listed_is_named_and_fails_no_rollback(self) -> None:
+        self.rolled_back_fixture()
+        faulted, named = self.listing_denied()
+        with faulted:
+            result = self.deploy_ok("--all")
+        self.assert_lines(result.output, f"Recovering uncommitted run {self.HELD} (rolling back)...", named)
+        self.assertIn("  Recovery complete.", result.output)
+        self.assertIn("Alpha content", self.skill_text("alpha"))
+        self.assertFalse((self.skills_dir / transient_name("alpha")).exists())
+
+    def test_a_spare_deletion_name_already_taken_is_drawn_again(self) -> None:
+        self.deployed(("alpha", "Alpha content"))
+        deletion, _ = self.held_leftover()
+        self.write(self.skills_dir / names.spare_deletion_name("alpha", "0123abcd") / "SKILL.md", "held too\n")
+        with mock.patch("secrets.token_hex", side_effect=["0123abcd", "89abcdef"]) as drawn:
+            spare = journal._free_deletion_name(deletion, "alpha")
+        self.assertEqual(self.skills_dir / ".alpha.deploying-del.89abcdef", spare)
+        self.assertEqual([mock.call(4), mock.call(4)], drawn.call_args_list)
+
+    def test_only_the_deletion_name_is_looked_at_where_the_root_is_no_folder(self) -> None:
+        self.write(self.root / "a-file", "not a folder\n")
+        for root in (self.root / "a-file", self.root / "missing"):
+            with self.subTest(root=root.name):
+                self.assertEqual([], journal._deletion_leftovers(root / deletion_name("alpha")))
 
     def test_a_backup_directory_that_cannot_be_created_keeps_the_copy_and_finishes_a_committed_run(self) -> None:
         self.committed_fixture(retain=True)
