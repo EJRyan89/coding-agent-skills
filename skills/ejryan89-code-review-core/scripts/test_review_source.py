@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import copy
+import ctypes
 import errno
 import hashlib
 import io
@@ -405,6 +406,136 @@ class LazySnapshotTests(LazySnapshotFixture):
                 upfront=reads_settings,
             )
         self.assertFalse(destination.exists())
+
+
+def short_name(path: Path) -> str:
+    """The 8.3 short name Windows gave the file or folder at `path`, its own name when it has none."""
+    if sys.platform != "win32":
+        raise AssertionError("only Windows gives a file a short name")
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    get_short_path_name = kernel32.GetShortPathNameW
+    get_short_path_name.argtypes = (ctypes.c_wchar_p, ctypes.c_wchar_p, ctypes.c_uint32)
+    get_short_path_name.restype = ctypes.c_uint32
+    buffer = ctypes.create_unicode_buffer(32768)
+    if not get_short_path_name(str(path), buffer, len(buffer)):
+        raise ctypes.WinError(ctypes.get_last_error())
+    return Path(buffer.value).name
+
+
+class SnapshotAliasTests(LazySnapshotFixture):
+    """A head path a case-insensitive file system, or Windows's 8.3 short names, would merge with a path the snapshot
+    already holds, its manifest among them, is refused, and nothing it would replace changes."""
+
+    def commit(self, files: dict[str, bytes]) -> str:
+        """A commit on the head holding `files` too, each added by its blob, so a name the checkout's file system would
+        merge with another keeps its own spelling in the tree."""
+        for relative, content in files.items():
+            object_id = git(self.checkout, "hash-object", "-w", "--stdin", data=content)
+            git(self.checkout, "update-index", "--add", "--cacheinfo", f"100644,{object_id},{relative}")
+        git(self.checkout, "commit", "-m", "aliases")
+        return git(self.checkout, "rev-parse", "HEAD")
+
+    def snapshot(self, head: str, name: str, *, lazy: bool = True) -> Path:
+        source = self.root / name / "source"
+        materialize_source_snapshot(
+            self.checkout,
+            REPOSITORY,
+            head,
+            source,
+            changed_paths=["src/changed.py"],
+            upfront=reads_settings if lazy else None,
+        )
+        return source
+
+    def fetch_from(self, source: Path, head: str, relative: str) -> Path | str:
+        return fetch_source_file(
+            self.checkout, source, relative, repository=REPOSITORY, commit=head, staging=self.run_directory
+        )
+
+    def test_the_manifest_in_another_case_is_a_reserved_path_in_either_snapshot(self) -> None:
+        head = self.commit({"SOURCE-SNAPSHOT.JSON": b'{"forged": true}\n'})
+        for lazy in (True, False):
+            with (
+                self.subTest(lazy=lazy),
+                self.assertRaisesRegex(
+                    RuntimeContractError, "^Repository contains reserved snapshot path: SOURCE-SNAPSHOT.JSON$"
+                ),
+            ):
+                self.snapshot(head, f"case-{lazy}", lazy=lazy)
+
+    def test_a_manifest_listing_a_fetchable_alias_of_a_held_path_fails_verification(self) -> None:
+        path = self.source / "source-snapshot.json"
+        original = json.loads(path.read_text(encoding="utf-8"))
+        unchanged = original["fetchable"]["src/unchanged.py"]
+        for name in ("SOURCE-SNAPSHOT.JSON", "Source-Snapshot.json", "SRC/changed.py", "PyProject.toml"):
+            with self.subTest(name=name):
+                path.write_text(json.dumps({**original, "fetchable": {name: unchanged}}), encoding="utf-8")
+                with self.assertRaisesRegex(
+                    RuntimeContractError, f"fetchable path is invalid: {re.escape(repr(name))}"
+                ):
+                    self.verify()
+
+    if sys.platform == "win32":
+
+        def test_a_lazy_fetch_of_a_short_name_alias_leaves_the_file_it_names_intact(self) -> None:
+            # Learn the short names the snapshot's own files are given, then commit files by those names: the lazy
+            # snapshot lists them as fetchable and writes the same files in the same order, so they get the same ones.
+            names = {name: short_name(self.source / name) for name in ("source-snapshot.json", "pyproject.toml")}
+            self.assertEqual({"source-snapshot.json": "SOURCE~1.JSO", "pyproject.toml": "PYPROJ~1.TOM"}, names)
+            head = self.commit(dict.fromkeys(names.values(), b'{"forged": true}\n'))
+            source = self.snapshot(head, "short")
+            for name, alias in names.items():
+                self.assertEqual(alias, short_name(source / name))
+                before = (source / name).read_bytes()
+                with self.subTest(alias=alias), self.assertRaises(RuntimeContractError) as refused:
+                    self.fetch_from(source, head, alias)
+                self.assertEqual(
+                    f'Source snapshot path "{alias}" is another name, in another case or as a short name, for '
+                    f'"{name}", which the snapshot already holds',
+                    str(refused.exception),
+                )
+                self.assertEqual(before, (source / name).read_bytes())
+            verify_source_snapshot(source, expected_repository=REPOSITORY, expected_commit=head)
+
+        def test_a_lazy_fetch_into_a_folder_in_another_case_is_refused_with_nothing_written(self) -> None:
+            head = self.commit({"SRC/extra.py": UNCHANGED.encode()})
+            source = self.snapshot(head, "folder-case")
+            with self.assertRaises(RuntimeContractError) as refused:
+                self.fetch_from(source, head, "SRC/extra.py")
+            self.assertIn('"SRC/extra.py" is another name', str(refused.exception))
+            self.assertIn('for "src/extra.py"', str(refused.exception))
+            self.assertFalse((source / "src" / "extra.py").exists())
+            verify_source_snapshot(source, expected_repository=REPOSITORY, expected_commit=head)
+
+        def test_a_full_snapshot_writing_into_a_folder_by_its_short_name_fails_naming_the_alias(self) -> None:
+            # git lists somefolder/ before somefo~1/, so the folder is made first and given the short name SOMEFO~1.
+            head = self.commit({"somefolder/a.py": UNCHANGED.encode(), "somefo~1/b.py": NESTED.encode()})
+            destination = self.root / "full-short" / "source"
+            with self.assertRaises(RuntimeContractError) as refused:
+                self.snapshot(head, "full-short", lazy=False)
+            self.assertEqual(
+                'Source snapshot path "somefo~1/b.py" is another name, in another case or as a short name, for '
+                '"somefolder/b.py", which the snapshot already holds',
+                str(refused.exception),
+            )
+            self.assertFalse(destination.exists())
+
+        def test_a_full_snapshot_writing_a_file_by_another_files_short_name_fails_naming_the_alias(self) -> None:
+            # git lists pyproject.toml before pyproj~1.tom, and one writer writes them in that order, so the first is
+            # given the short name the second spells.
+            head = self.commit({"pyproj~1.tom": b"[tool.forged]\n"})
+            destination = self.root / "full-file" / "source"
+            with (
+                mock.patch.object(review_runtime, "SNAPSHOT_WRITE_WORKERS", 1),
+                self.assertRaises(RuntimeContractError) as refused,
+            ):
+                self.snapshot(head, "full-file", lazy=False)
+            self.assertEqual(
+                'Source snapshot path "pyproj~1.tom" is another name, in another case or as a short name, for '
+                '"pyproject.toml", which the snapshot already holds',
+                str(refused.exception),
+            )
+            self.assertFalse(destination.exists())
 
 
 class SearchTests(LazySnapshotFixture):

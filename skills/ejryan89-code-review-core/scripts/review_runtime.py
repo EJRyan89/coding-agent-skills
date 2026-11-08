@@ -1160,9 +1160,9 @@ def materialize_reviewer(
         )
         for relative in declared:
             content = contents[relative]
-            target = destination.joinpath(*PurePosixPath(relative).parts)
-            target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_bytes(content)
+            _require_own_name(destination, relative)
+            destination.joinpath(*PurePosixPath(relative).parts).parent.mkdir(parents=True, exist_ok=True)
+            _write_new_file(destination, relative, content)
             hashes[relative] = hashlib.sha256(content).hexdigest()
         suite = {
             profile: hashlib.sha256(suite_profile_path(profile).read_bytes()).hexdigest()
@@ -1229,6 +1229,40 @@ def _require_safe_snapshot_path(root: Path, target: Path) -> None:
     resolved = target.resolve(strict=True)
     if not within(resolved, resolved_root):
         raise RuntimeContractError(f"Source snapshot path escapes its root: {target}")
+
+
+def _require_own_name(root: Path, relative: str) -> None:
+    """Refuse a path under `root` whose part already there the file system names otherwise: another spelling of a
+    file or folder written before it, in another case, or as its 8.3 short name on Windows, such as `SOURCE~1.JSO` for
+    `source-snapshot.json`. Writing it would replace that file, or put the file in that folder, under a name nothing
+    lists. The parts not there yet are kept as given."""
+    resolved_root = root.resolve(strict=True)
+    resolved = root.joinpath(*PurePosixPath(relative).parts).resolve()
+    if not within(resolved, resolved_root):
+        raise RuntimeContractError(f"Source snapshot path escapes its root: {relative}")
+    actual = resolved.relative_to(resolved_root).as_posix()
+    if actual != relative:
+        raise _alias_error(relative, actual)
+
+
+def _alias_error(relative: str, actual: str) -> RuntimeContractError:
+    """The refusal of a path that is another spelling of `actual`, which is already written."""
+    return RuntimeContractError(
+        f"Source snapshot path {json_writer.dumps(relative)} is another name, in another case or as a short name, for "
+        f"{json_writer.dumps(actual)}, which the snapshot already holds"
+    )
+
+
+def _write_new_file(root: Path, relative: str, content: bytes) -> None:
+    """Write a file the snapshot has not written, refusing one whose name the file system finds already there, which
+    is another spelling of a file written before it (see `_require_own_name`)."""
+    target = root.joinpath(*PurePosixPath(relative).parts)
+    try:
+        with target.open("xb") as stream:
+            stream.write(content)
+    except FileExistsError:
+        actual = target.resolve().relative_to(root.resolve()).as_posix()
+        raise _alias_error(relative, actual) from None
 
 
 @dataclass
@@ -1524,16 +1558,16 @@ def _verify_fetched_files(
     """The bytes the snapshot holds once the fetched files are added to `total_bytes`, once each fetchable path is a
     safe name the snapshot neither holds from the start nor excludes, with a blob id of the commit's hash, and each
     one fetched is within the per-file and total limits. `contents` also compares each fetched file's blob id."""
-    hashes, excluded = metadata["source_hashes"], metadata["excluded_paths"]
+    excluded = metadata["excluded_paths"]
+    held = {relative.casefold() for relative in metadata["source_hashes"]}
     length = len(metadata["source_commit"])
     for relative, value in fetchable.items():
         normalized = _safe_relative_path(relative, f"a key of {SOURCE_SNAPSHOT_MANIFEST}.{SNAPSHOT_FETCHABLE}")
         blob = READ.hex_digest(value, f"{SOURCE_SNAPSHOT_MANIFEST}.{SNAPSHOT_FETCHABLE}.{relative}", length)
         if (
             normalized != relative
-            or relative == SOURCE_SNAPSHOT_MANIFEST
-            or _in_held_text_folder(relative)
-            or relative in hashes
+            or _is_reserved_snapshot_path(relative)
+            or relative.casefold() in held
             or relative in excluded
             or _is_agent_instruction_path(relative)
             or unsafe_snapshot_name(relative)
@@ -1553,7 +1587,7 @@ def _verify_fetched_files(
 def _snapshot_file_size(tree: _SnapshotTree, relative: str, expected_hash: Any) -> int:
     """A listed file's size, once its name, its hash's format, its place under the root, and its size check out."""
     normalized = _safe_relative_path(relative, f"a key of {SOURCE_SNAPSHOT_MANIFEST}.source_hashes")
-    if normalized != relative or relative == SOURCE_SNAPSHOT_MANIFEST or unsafe_snapshot_name(relative):
+    if normalized != relative or _is_manifest_path(relative) or unsafe_snapshot_name(relative):
         raise RuntimeContractError(f"Source snapshot path is invalid: {relative!r}")
     if _is_agent_instruction_path(relative):
         raise RuntimeContractError(f"Source snapshot includes an agent-instruction path: {relative}")
@@ -1575,12 +1609,7 @@ def _validate_snapshot_exclusion(relative: Any, reason: Any, hashes: dict[str, A
         return
     normalized = _safe_relative_path(relative, f"a key of {SOURCE_SNAPSHOT_MANIFEST}.excluded_paths")
     READ.one_of(reason, f"{path}.{relative}", SNAPSHOT_EXCLUSION_REASONS)
-    if (
-        normalized != relative
-        or relative in hashes
-        or relative == SOURCE_SNAPSHOT_MANIFEST
-        or _in_held_text_folder(relative)
-    ):
+    if normalized != relative or relative in hashes or _is_reserved_snapshot_path(relative):
         raise RuntimeContractError(f"Source snapshot exclusion is invalid: {relative!r}")
 
 
@@ -1636,7 +1665,7 @@ def _entry_exclusion(
     if unsafe_path_reason(name, room) is not None:
         return replace_undecodable(name)[0], "unsafe-path"
     relative = _safe_relative_path(name, "source snapshot member")
-    if relative == SOURCE_SNAPSHOT_MANIFEST or _in_held_text_folder(relative):
+    if _is_reserved_snapshot_path(relative):
         raise RuntimeContractError(f"Repository contains reserved snapshot path: {relative}")
     if kind != "file":
         return relative, kind
@@ -1655,6 +1684,17 @@ def held_path(relative: str, form: str) -> str:
     a path in HELD_TEXT_FOLDER for a format held beside it."""
     suffix = HELD_BESIDE.get(form)
     return relative if suffix is None else f"{HELD_TEXT_FOLDER}/{relative}{suffix}"
+
+
+def _is_manifest_path(relative: str) -> bool:
+    """Whether a path is the snapshot's manifest, in any case, since a case-insensitive file system merges the
+    spellings."""
+    return relative.casefold() == SOURCE_SNAPSHOT_MANIFEST
+
+
+def _is_reserved_snapshot_path(relative: str) -> bool:
+    """Whether a path is one the snapshot writes itself, in any case: its manifest or a path in HELD_TEXT_FOLDER."""
+    return _is_manifest_path(relative) or _in_held_text_folder(relative)
 
 
 def _in_held_text_folder(relative: str) -> bool:
@@ -1961,8 +2001,8 @@ def _populate_snapshot(
     hashes: dict[str, str] = {}
     excluded: dict[str, str] = {}
     total_bytes = 0
-    directories: set[Path] = set()
-    pending: list[Future[int]] = []
+    directories: set[str] = set()
+    pending: list[Future[None]] = []
     # Real-time antivirus scans each new file, which costs milliseconds of latency per file but little CPU, so
     # overlapping the writes hides most of it. Directories are created and checked once, before their files.
     with ThreadPoolExecutor(SNAPSHOT_WRITE_WORKERS) as pool:
@@ -1975,13 +2015,15 @@ def _populate_snapshot(
             total_bytes += len(content)
             if total_bytes > MAX_SOURCE_SNAPSHOT_BYTES:
                 raise RuntimeContractError("Source snapshot exceeds the size limit")
-            target = destination.joinpath(*PurePosixPath(relative).parts)
-            if target.parent not in directories:
-                target.parent.mkdir(parents=True, exist_ok=True)
-                _require_safe_snapshot_path(destination, target.parent)
-                directories.add(target.parent)
+            folder = relative.rpartition("/")[0]
+            if folder not in directories:  # by name, since a Windows path equals its other spellings
+                _require_own_name(destination, relative)
+                parent = destination.joinpath(*PurePosixPath(relative).parts).parent
+                parent.mkdir(parents=True, exist_ok=True)
+                _require_safe_snapshot_path(destination, parent)
+                directories.add(folder)
             hashes[relative] = hashlib.sha256(content).hexdigest()
-            pending.append(pool.submit(target.write_bytes, content))
+            pending.append(pool.submit(_write_new_file, destination, relative, content))
             if len(pending) >= SNAPSHOT_WRITE_WORKERS * 4:  # bound the file contents held in memory
                 pending.pop(0).result()
         for write in pending:
@@ -2152,6 +2194,7 @@ def fetch_source_file(
     if blob is None:
         raise RuntimeContractError(f"The head commit has no file {json_writer.dumps(relative)} the snapshot can hold")
     target = _snapshot_path(root, relative)
+    _require_own_name(root, relative)
     if relative in tree.files:
         _require_blob(root, relative, blob)
         return target
