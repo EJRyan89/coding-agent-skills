@@ -115,6 +115,11 @@ for line in sys.stdin.buffer:
             seen = {name.upper() for name in __import__("os").environ}
             if not {"FIXTURE_TOKEN", "GIT_CONFIG_COUNT"} <= seen or seen & set(sys.argv[2].split(",")):
                 sys.exit(4)
+        if mode == "hugecursor":
+            # A cursor far past what a pipe buffers, after which the server stops reading.
+            result = {"tools": [{"name": "search", "inputSchema": SCHEMA}], "nextCursor": "c" * (1024 * 1024)}
+            print(json.dumps({"jsonrpc": "2.0", "id": message["id"], "result": result}), flush=True)
+            time.sleep(30)
         cursor = message.get("params", {}).get("cursor")
         if mode == "paged" and cursor is None:
             result = {"tools": [{"name": "search", "inputSchema": SCHEMA}], "nextCursor": "page 2"}
@@ -134,6 +139,60 @@ class _Running:
 
     def __init__(self) -> None:
         self.stdin = io.BytesIO()
+
+    def write(self, data: bytes) -> None:
+        self.stdin.write(data)
+
+
+# How long a process the tests start to show a write cannot hang may take before the test ends it as hung.
+HANG_LIMIT_SECONDS = 60.0
+# Run as its own process, with ejryan89-skill-core's and this skill's scripts folders as its arguments, so a write with
+# no limit hangs that process, which the test's outer limit ends, never the suite. Starts a server that never reads,
+# sends it a request of a mebibyte, more than any pipe buffers, within a one-second session, and prints, as JSON, the
+# failure the send raised and how long the send, the end of the requests, and the stop took together.
+DEAF_SERVER_PROGRAM = """
+import json, sys, time
+sys.path[:0] = sys.argv[1:3]
+import bounded_process, mcp_handshake
+never_reads = [sys.executable, "-c", "import time; time.sleep(30)"]
+started = time.monotonic()
+raised = None
+with bounded_process.streaming(never_reads, idle_timeout=1.0, timeout=1.0, exit_wait=1.0) as running:
+    session = mcp_handshake.Session(running)
+    try:
+        session.send({"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {"cursor": "c" * (1024 * 1024)}})
+    except RuntimeError as error:
+        raised = str(error)
+    finally:
+        session.end_requests()
+print(json.dumps({"raised": raised, "elapsed": time.monotonic() - started, "status": running._process.poll()}))
+"""
+
+
+def test_a_request_the_server_never_reads_fails_within_the_timeout_and_the_server_is_stopped() -> None:
+    # The write ran blocking in the main thread, bounded by nothing, so a server that stopped reading held the audit.
+    folders = [str(Path(bounded_process.__file__).resolve().parent), str(Path(mcp_handshake.__file__).resolve().parent)]
+    try:
+        finished = subprocess.run(
+            [sys.executable, "-c", DEAF_SERVER_PROGRAM, *folders],
+            capture_output=True,
+            timeout=HANG_LIMIT_SECONDS,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        pytest.fail(f"the send was still blocked after {HANG_LIMIT_SECONDS:g} seconds")
+    assert finished.returncode == 0, finished.stderr.decode("utf-8", "replace")
+    report = json.loads(finished.stdout)
+    assert report["raised"] == "timed out sending a request"
+    assert report["elapsed"] < 1.0 + bounded_process.KILL_WAIT_SECONDS + MARGIN_SECONDS
+    assert report["status"] is not None, "the server was stopped, not left running"
+
+
+def test_the_cursor_limit_is_the_one_the_usage_and_the_skill_name() -> None:
+    assert mcp_handshake.MAX_CURSOR_CHARACTERS == 4096
+    assert "a nextCursor over 4096 characters" in " ".join((mcp_handshake.__doc__ or "").split())
+    skill = (Path(mcp_handshake.__file__).resolve().parents[1] / "SKILL.md").read_text(encoding="utf-8")
+    assert "`tools/list returned a nextCursor over 4096 characters`" in skill
 
 
 def test_a_message_json_cannot_carry_fails_the_server_never_the_audit() -> None:
@@ -394,6 +453,22 @@ class HandshakeTests(unittest.TestCase):
         self.assertEqual(
             "HANDSHAKE_FAILED slow source=.mcp.json timed out waiting for a response", output.getvalue().strip()
         )
+
+    def test_a_cursor_too_long_to_send_back_fails_the_server_within_the_timeout(self) -> None:
+        # The server sends a mebibyte cursor and stops reading; sending it back blocked with no limit. The handshake
+        # runs as its own process so that a hang ends at the test's outer limit, never the suite's.
+        self._write(".mcp.json", "mcpServers", {"huge": self._stdio("hugecursor")})
+        command = [sys.executable, "-B", mcp_handshake.__file__, "--root", str(self.root), "--timeout", "2"]
+        started = time.monotonic()
+        try:
+            finished = subprocess.run(command, capture_output=True, timeout=HANG_LIMIT_SECONDS, check=False)
+        except subprocess.TimeoutExpired:
+            self.fail(f"the handshake was still running after {HANG_LIMIT_SECONDS:g} seconds")
+        self.assertEqual(
+            (1, ["HANDSHAKE_FAILED huge source=.mcp.json tools/list returned a nextCursor over 4096 characters"]),
+            (finished.returncode, finished.stdout.decode("utf-8").splitlines()),
+        )
+        self.assertLess(time.monotonic() - started, 2.0 + bounded_process.KILL_WAIT_SECONDS + MARGIN_SECONDS)
 
     def test_remote_servers_are_skipped_and_filter_selects_one(self) -> None:
         self._write(

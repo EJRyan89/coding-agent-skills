@@ -37,7 +37,7 @@ import subprocess
 import tempfile
 import threading
 import time
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import AbstractContextManager, ExitStack, contextmanager, nullcontext, suppress
 from dataclasses import dataclass
 from pathlib import Path
@@ -294,11 +294,16 @@ class Streaming:
     never times out, however large. Killing the command instead would not be enough, because a launcher such as Git
     for Windows' git.exe can be killed while the program it started keeps the pipe open.
 
-    The caller ends its requests by closing `stdin`, from whichever thread writes them. Closing ends them too, for a
-    caller that left by an exception before it could, and stops the reader, which closes the command's stdout, so a
+    The caller ends its requests by closing `stdin`, from whichever thread writes them, or through `end_input`. A
+    caller that writes from its own thread writes through `write`, which, like `end_input`, raises
+    subprocess.TimeoutExpired when the command has not taken the bytes within `idle_timeout` or the session, so a
+    command that stops reading cannot hold a write past the time limit. Closing ends the requests too, for a caller
+    that left by an exception before it could, and stops the reader, which closes the command's stdout, so a
     command waiting for requests sees them end and a command still writing fails its next write, and either exits by
     itself; it is killed only if it has not exited `exit_wait` seconds later. A killed launcher's program
-    can hold its working directory a moment longer, so ending it this way matters.
+    can hold its working directory a moment longer, so ending it this way matters. Closing stdin waits for the command
+    to read what is still buffered, and for a write another thread has under way, so it runs on a thread of its own:
+    the `exit_wait` and the kill after it hold even when the command never reads again.
 
     Once the command is gone, its stdout ends at once unless a program it started still holds it, for as long as that
     program runs. Closing therefore waits at most READER_WAIT_SECONDS for the reader, and a reader still waiting then
@@ -416,6 +421,61 @@ class Streaming:
         or by the end of the session."""
         return self._process.wait(timeout=self._within(self.idle_timeout))
 
+    def write(self, data: bytes) -> None:
+        """Write `data` to the command's stdin and flush it, raising subprocess.TimeoutExpired when the command has not
+        taken it within `idle_timeout` seconds or by the end of the session, and OSError when the pipe is broken.
+
+        The write runs on a thread of its own, so a command that has stopped reading cannot hold the caller; a write
+        that times out is left blocked there until `close` ends the command."""
+
+        def send() -> None:
+            self.stdin.write(data)
+            self.stdin.flush()
+
+        self._bounded_stdin(send)
+
+    def end_input(self) -> None:
+        """Close the command's stdin, flushing what is buffered, within the same limits as `write`; a pipe the command
+        has already closed is not an error."""
+        self._bounded_stdin(self._close_stdin)
+
+    def _close_stdin(self) -> None:
+        with suppress(OSError, ValueError):
+            self.stdin.close()  # a command that has stopped reading may fail the flush of what is still buffered
+
+    def _bounded_stdin(self, action: Callable[[], None]) -> None:
+        """Run `action` on stdin within `idle_timeout` and the session, raising subprocess.TimeoutExpired otherwise."""
+        limit = self.idle_timeout
+        if self.timeout is not None and self._within(limit) < limit:
+            limit = self.timeout
+        if not self._on_stdin(action, self._within(self.idle_timeout)):
+            raise subprocess.TimeoutExpired(self.command, limit)
+
+    def _on_stdin(self, action: Callable[[], None], seconds: float) -> bool:
+        """Run `action` on a daemon thread for at most `seconds`: True once it has finished, or False while it is still
+        waiting on the command. The OSError or ValueError a pipe raises, broken or closed, is raised again here, and
+        any other failure, which the thread reports itself, as an OSError."""
+        failures: list[OSError | ValueError] = []
+        finished = threading.Event()
+
+        def run() -> None:
+            try:
+                action()
+            except (OSError, ValueError) as exc:
+                failures.append(exc)
+            finished.set()
+
+        worker = threading.Thread(target=run, daemon=True)
+        worker.start()
+        worker.join(seconds)
+        if worker.is_alive():
+            return False
+        if failures:
+            raise failures[0]
+        if not finished.is_set():
+            raise OSError("the command's stdin failed")
+        return True
+
     def errors(self) -> bytes:
         """What the command has written to stderr so far."""
         self._errors.seek(0)
@@ -428,10 +488,12 @@ class Streaming:
             return
         self._closed = True
         self._stopping.set()
-        with suppress(OSError, ValueError):
-            self.stdin.close()  # a command that has stopped reading may fail the flush of what is still buffered
+        until = time.monotonic() + self._within(self.exit_wait)
+        # Closing stdin flushes what is buffered and waits for a write another thread has under way, either of which
+        # waits for the command to read; it runs on a thread of its own, so the wait and the kill hold regardless.
+        self._on_stdin(self._close_stdin, max(0.0, until - time.monotonic()))
         try:
-            self._process.wait(timeout=self._within(self.exit_wait))
+            self._process.wait(timeout=max(0.0, until - time.monotonic()))
         except subprocess.TimeoutExpired:
             self._process.kill()
             with suppress(subprocess.TimeoutExpired):
