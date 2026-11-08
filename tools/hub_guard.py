@@ -30,7 +30,7 @@ import shlex
 import subprocess
 import sys
 import time
-from collections.abc import Callable, Iterable, Iterator, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
@@ -45,8 +45,20 @@ import json_writer
 import whole_number
 from bounded_process import run_bounded
 from console import run_main
+from git_client import (
+    CARRIER_OPTIONS,
+    CONFIG_READ_ACTIONS,
+    CONFIG_READ_OPTIONS,
+    CONFIG_VALUE_OPTIONS,
+    PLAIN_ACTIONS,
+    CarrierOptions,
+    GitError,
+    GitResult,
+    carried_option,
+    output_line,
+    output_lines,
+)
 from git_client import GLOBAL_VALUE_OPTIONS as GIT_OPTIONS_WITH_VALUE
-from git_client import GitError, GitResult, output_line, output_lines
 from job_tree import process_tree
 from option_reader import (
     OptionReading,
@@ -117,6 +129,174 @@ WRITING_SUBCOMMANDS = {
     "update-ref",
 }
 FETCH = "fetch"
+# The options of git's subcommands that write a file at a path they are given, read in every spelling git's option
+# parser takes: a long option exactly, with its value after = or as the next word, or abbreviated to any prefix of its
+# name; a short one alone, with its value attached, or in a bundle. Each written path is judged as a redirection's
+# target is (read_written, hub_protected), from where git starts. GIT_OUTPUT is read in every subcommand, since each
+# that reads git's diff or revision options takes it (GIT_OUTPUT_SUBCOMMANDS); config's --file is judged by
+# config_refusal. `tests/tools/test_hub_guard_git_options.py` holds every option `git <subcommand> -h` lists with a path
+# for its value to one of these tables or GIT_PATH_OPTIONS_READ.
+GIT_OUTPUT = "--output"
+GIT_WRITING_OPTIONS: dict[str, frozenset[str]] = {
+    "apply": frozenset({"--build-fake-ancestor"}),
+    "archive": frozenset({"-o"}),
+    "bugreport": frozenset({"-o", "--output-directory"}),
+    "clone": frozenset({"--separate-git-dir"}),
+    "credential-cache": frozenset({"--socket"}),
+    "credential-store": frozenset({"--file"}),
+    "diagnose": frozenset({"-o", "--output-directory"}),
+    "fast-export": frozenset({"--export-marks"}),
+    "fast-import": frozenset({"--export-marks"}),
+    "format-patch": frozenset({"-o", "--output-directory"}),
+    "gc": frozenset({"--expire-to"}),
+    "index-pack": frozenset({"-o"}),
+    "init": frozenset({"--separate-git-dir"}),
+    "init-db": frozenset({"--separate-git-dir"}),
+    "mailsplit": frozenset({"-o"}),
+    "read-tree": frozenset({"--index-output"}),
+    "repack": frozenset({"--expire-to", "--filter-to"}),
+}
+# The subcommands that write a file in the directory git starts in when no option or operand names another: a patch
+# per commit, a report, a diagnostics archive, a blob's temporary copy, a repository, and a clone's directory, named
+# after its repository. format-patch's --stdout writes none.
+GIT_DEFAULT_WRITES = frozenset({"bugreport", "clone", "diagnose", "format-patch", "init", "init-db", "unpack-file"})
+# The subcommands that write a file at a path an operand names: pack-objects a pack beside the base name any operand
+# may be, index-pack an index beside the pack any operand names, init a repository in the directory any operand may
+# be, clone its directory at any operand after the repository, and the subcommands GIT_SUBCOMMAND_OPERANDS names at
+# the first operand after their subcommand's options. An option's value that is read as an operand is judged too.
+GIT_OPERAND_WRITES = frozenset({"bundle", "clone", "index-pack", "init", "init-db", "pack-objects", "worktree"})
+# The subcommands of git's subcommands that write at their first operand, with the options before it that take the
+# next word as their value: bundle create its bundle, and worktree add the new worktree.
+GIT_SUBCOMMAND_OPERANDS: dict[str, tuple[str, frozenset[str]]] = {
+    "bundle": ("create", frozenset({"--version"})),
+    "worktree": ("add", frozenset({"-b", "-B", "--reason"})),
+}
+# The options of git's subcommands that start a command or a program their value names, which the guard does not
+# read and which may run git: refused while a hub is guarded, as a runner whose command may be git is (RUNNERS).
+# ejryan89-skill-core's git_client.CARRIER_OPTIONS is the catalogue its plain client refuses; the guard adds the
+# subcommands that client never runs at all, so its catalogue leaves them out: difftool's command, filter-branch's
+# shell filters, and init-db's template, whose hooks a later git call runs. A bisect or submodule action outside
+# git_client.PLAIN_ACTIONS, `bisect run` and `submodule foreach` among them, runs a command too.
+GIT_RUNNING_OPTIONS: dict[str, CarrierOptions] = {
+    **CARRIER_OPTIONS,
+    "difftool": CarrierOptions(frozenset({"extcmd"}), frozenset("x")),
+    "filter-branch": CarrierOptions(
+        frozenset(
+            {"setup", "env-filter", "tree-filter", "index-filter", "parent-filter", "msg-filter", "commit-filter"}
+            | {"tag-name-filter"}
+        )
+    ),
+    "init-db": CarrierOptions(frozenset({"template"})),
+}
+# The subcommands that read git's diff or revision options, among them GIT_OUTPUT, found by running each builtin with
+# it: a word of theirs the text does not settle may be that option, so one is refused while a hub is guarded, as it
+# is for every subcommand the tables above name.
+GIT_OUTPUT_SUBCOMMANDS = frozenset(
+    {
+        *("annotate", "archive", "backfill", "blame", "bundle", "cherry-pick", "diff", "diff-files", "diff-index"),
+        *("diff-pairs", "diff-tree", "fast-export", "format-patch", "last-modified", "log", "pickaxe", "range-diff"),
+        *("reflog", "rev-list", "revert", "shortlog", "show", "stash", "whatchanged"),
+    }
+)
+# The options `git <subcommand> -h` lists with a path for its value that neither write a file nor run a command: each
+# reads the file, or names a place in the repository rather than a file git writes.
+GIT_PATH_OPTIONS_READ: dict[str, str] = {
+    **dict.fromkeys(
+        (
+            *("add --pathspec-from-file", "checkout --pathspec-from-file", "commit --pathspec-from-file"),
+            *("reset --pathspec-from-file", "restore --pathspec-from-file", "rm --pathspec-from-file"),
+            "stage --pathspec-from-file",
+        ),
+        "reads the paths to act on from the file",
+    ),
+    **dict.fromkeys(
+        ("am --exclude", "am --include", "apply --exclude", "apply --include"), "names the paths a patch applies to"
+    ),
+    **dict.fromkeys(("am --directory", "apply --directory"), "names a directory inside the patch's paths"),
+    **dict.fromkeys(
+        (
+            *("annotate --ignore-revs-file", "blame --ignore-revs-file", "pickaxe --ignore-revs-file"),
+            *("annotate -S", "blame -S", "pickaxe -S", "annotate --contents", "blame --contents"),
+            "pickaxe --contents",
+        ),
+        "reads the revisions or contents to blame from the file",
+    ),
+    "archive --add-file": "reads the file into the archive",
+    "archive --add-virtual-file": "adds the content its value gives to the archive",
+    "check-mailmap --mailmap-file": "reads the mailmap from the file",
+    **dict.fromkeys(("clone --recurse-submodules", "clone --recursive"), "names the submodules to clone, by pathspec"),
+    **dict.fromkeys(
+        (
+            *("commit -F", "commit --file", "commit -t", "commit --template", "commit-tree -F", "fmt-merge-msg -F"),
+            *("fmt-merge-msg --file", "merge -F", "merge --file", "tag -F", "tag --file"),
+        ),
+        "reads a message from the file",
+    ),
+    **dict.fromkeys(
+        ("commit-graph --object-dir", "multi-pack-index --object-dir"),
+        "names the object store to read and write, which holds only objects and their indexes",
+    ),
+    **dict.fromkeys(
+        (
+            *("diff -O", "diff-files -O", "diff-index -O", "diff-pairs -O", "diff-tree -O", "range-diff -O"),
+            *("diff --rotate-to", "diff --skip-to", "diff-pairs --rotate-to", "diff-pairs --skip-to"),
+            *("range-diff --rotate-to", "range-diff --skip-to"),
+        ),
+        "reads the order of the paths it shows, or names a path to start at",
+    ),
+    **dict.fromkeys(
+        ("fast-export --import-marks", "fast-export --import-marks-if-exists"), "reads marks from the file"
+    ),
+    **dict.fromkeys(
+        ("fast-import --import-marks", "fast-import --import-marks-if-exists"), "reads marks from the file"
+    ),
+    **dict.fromkeys(
+        ("fast-import --rewrite-submodules-from", "fast-import --rewrite-submodules-to"), "reads a marks file"
+    ),
+    **dict.fromkeys(("format-patch --description-file", "format-patch --signature-file"), "reads text for the patches"),
+    "grep -f": "reads patterns from the file",
+    "hash-object --path": "names the path whose attributes apply",
+    **dict.fromkeys(("log -L", "show -L", "whatchanged -L"), "names a range of lines of a tracked file"),
+    **dict.fromkeys(
+        ("ls-files -X", "ls-files --exclude-from", "ls-files --exclude-per-directory"),
+        "reads exclude patterns from the file",
+    ),
+    "read-tree --prefix": "names a directory inside the index",
+}
+# The settings a command line may hand git with -c or --config-env while a hub is guarded: the ones the guard reads
+# itself (core.worktree, alias.<name>), and ones that change only how git prints, who a commit is by, or which
+# repositories it trusts. Every other setting is refused, since many run a command (core.pager, pager.<command>,
+# core.fsmonitor, core.sshCommand, diff.external, credential.helper, a filter's command) or choose where git writes
+# (core.hooksPath, format.outputDirectory).
+GIT_SETTINGS_UNDERSTOOD = frozenset(
+    {
+        *("core.worktree", "core.quotepath", "core.autocrlf", "core.safecrlf", "core.eol", "core.abbrev"),
+        *("core.longpaths", "core.filemode", "core.ignorecase", "core.symlinks", "user.name", "user.email"),
+        *("author.name", "author.email", "committer.name", "committer.email", "safe.directory"),
+        *("init.defaultbranch", "log.date", "log.decorate", "log.abbrevcommit", "log.showroot", "log.follow"),
+        *("log.mailmap", "diff.renames", "diff.algorithm", "diff.noprefix", "diff.mnemonicprefix", "diff.context"),
+        *("diff.interhunkcontext", "diff.relative", "diff.statgraphwidth", "gc.auto", "maintenance.auto"),
+        *("pull.rebase", "pull.ff", "fetch.prune", "fetch.prunetags", "fetch.parallel", "rebase.autosquash"),
+        *("rebase.autostash", "versionsort.suffix", "tag.sort", "branch.sort", "status.showuntrackedfiles"),
+        *("commit.gpgsign", "tag.gpgsign", "protocol.version"),
+    }
+)
+# The sections every one of whose settings a command line may hand git: aliases, which the guard reads, and colors,
+# advice, columns, and encodings, which change only how git prints.
+GIT_SECTIONS_UNDERSTOOD = frozenset({"alias", "color", "advice", "column", "i18n"})
+# git config's forms that only read: an action that reads, git_client's CONFIG_READ_OPTIONS, or a subcommand that does,
+# its CONFIG_READ_ACTIONS, and beside it only the options that change what is read or how it prints, these and the
+# ones that take a value as the next word or after =, git_client's CONFIG_VALUE_OPTIONS and -f. Any other option, an
+# abbreviation included, may write, so a git config holding one is judged as one that writes (config_refusal).
+CONFIG_MODIFIERS = frozenset(
+    {
+        *("--global", "--system", "--local", "--worktree", "--bool", "--int", "--bool-or-int", "--path"),
+        *("--expiry-date", "-z", "--null", "--name-only", "--show-origin", "--show-scope", "--includes"),
+        *("--no-includes", "--fixed-value", "--all", "--regexp", "--no-type"),
+    }
+)
+CONFIG_SCOPES = frozenset({"--global", "--system", "--local", "--worktree"})
+CONFIG_VALUED = frozenset({"-f", *(f"--{name}" for name in CONFIG_VALUE_OPTIONS)})
 # The only fast-forwards the hub takes: a subcommand's words besides FAST_FORWARD_OPTIONS must be one of these.
 FAST_FORWARD_TARGETS = {"merge": [["origin/main"]], "pull": [[], ["origin", "main"]]}
 FAST_FORWARD_OPTIONS = {"--ff-only", "-q", "--quiet", "-v", "--verbose", "--no-rebase"}
@@ -327,6 +507,8 @@ PROGRAM_VARIABLES: dict[str, frozenset[str]] = {
     "tar": frozenset({"TAR_OPTIONS", "TAPE"}),
     "rg": frozenset({"RIPGREP_CONFIG_PATH"}),
 }
+# Each of them, refused where it is assigned before any runner, whatever the runner starts (read_runner_words).
+PROGRAM_VARIABLE_NAMES = frozenset(name for names in PROGRAM_VARIABLES.values() for name in names)
 # The runners that add words from their input to the command they run, which the text does not settle.
 INPUT_RUNNERS = frozenset({"xargs"})
 # pwsh's options that change nothing the guard reads before -Command.
@@ -1353,12 +1535,14 @@ def read_git_options(arguments: list[Word], options: GitOptions, reading: Readin
             options.work_tree = (True, value)
         elif word == "-c":
             options.configuration.add(value)
+            read_setting(value, reading)
         elif option == "--config-env":
             # The value comes from a variable the text names, which the guard does not follow; the key it settles.
             if value is None:
                 options.configuration.settled = False
             else:
                 options.configuration.entries.append((value.partition("=")[0].lower(), None))
+            read_setting(value, reading)
         elif word == "--bare":
             options.git_dir = options.git_dir if options.git_dir[0] else (True, ".")
         elif option not in GIT_OPTIONS_WITH_VALUE and word not in GIT_OPTIONS_WITHOUT_VALUE:
@@ -1366,6 +1550,19 @@ def read_git_options(arguments: list[Word], options: GitOptions, reading: Readin
             return -1
         index += 2 if separate else 1
     return None
+
+
+def read_setting(setting: Word, reading: Reading) -> None:
+    """A setting -c or --config-env hands git: understood when GIT_SETTINGS_UNDERSTOOD names its key or
+    GIT_SECTIONS_UNDERSTOOD its section, in any case, and otherwise a part the guard does not read, since it may run a
+    command or choose where git writes."""
+    if setting is None:
+        reading.cannot_read("git is handed a setting the text does not settle, which may run a command")
+        return
+    key = setting.partition("=")[0].lower()
+    if key in GIT_SETTINGS_UNDERSTOOD or key.partition(".")[0] in GIT_SECTIONS_UNDERSTOOD:
+        return
+    reading.cannot_read(f"git is handed {key}, not a setting the guard knows to be safe; one may run a command")
 
 
 def read_git(arguments: list[Word], cwd: Path | None, reading: Reading) -> None:
@@ -1489,6 +1686,159 @@ def refusal(call: GitCall) -> str | None:
     return f"`git {subcommand}` would move the hub's HEAD or write its index or tree."
 
 
+@dataclass
+class GitEffects:
+    """What a git call's words make it do beyond its subcommand: the paths it writes, as written, None for one the text
+    does not settle; the option or word that makes it run a command; and whether a word the text does not settle may
+    be an option that does either."""
+
+    written: list[Word] = field(default_factory=list)
+    runs: str | None = None
+    unsettled: bool = False
+
+
+def option_spelled(word: str, options: Iterable[str]) -> tuple[str, str | None] | None:
+    """The option of options a word spells, in every spelling git's option parser reads, and its value when the word
+    carries it: a long option exactly or abbreviated to a prefix of its name, its value after =; a short one alone,
+    with its value attached, or in a bundle, where its letter ends the bundle and the rest is its value. None when the
+    word spells none of them. A value of "" says the option takes the next word."""
+    if word.startswith("--"):
+        name, attached, value = word.partition("=")
+        if len(name) > 2:
+            for option in sorted(options):
+                if option.startswith("--") and option.startswith(name):
+                    return option, value if attached else ""
+        return None
+    if word.startswith("-") and len(word) > 1:
+        for position, letter in enumerate(word[1:], start=1):
+            if f"-{letter}" in options:
+                return f"-{letter}", word[position + 1 :]
+    return None
+
+
+def running_spelling(subcommand: str, arguments: Sequence[Word]) -> str | None:
+    """The word of a git call that makes it start a command or a program its words name: one spelling an option of
+    GIT_RUNNING_OPTIONS, read by git_client's carried_option, which reads every word wherever it stands, and a bisect
+    or submodule action outside git_client's PLAIN_ACTIONS; None where there is none."""
+    settled = [word for word in arguments if word is not None]
+    if subcommand in GIT_RUNNING_OPTIONS:
+        carried = carried_option(settled, GIT_RUNNING_OPTIONS[subcommand])
+        if carried is not None:
+            return carried
+    action = next((word for word in settled if not word.startswith("-")), None)
+    if subcommand in PLAIN_ACTIONS and action is not None and action not in PLAIN_ACTIONS[subcommand]:
+        return action
+    return None
+
+
+def git_effects(subcommand: str, arguments: Sequence[Word]) -> GitEffects:
+    """The files a git call writes at paths its words name, by GIT_OUTPUT, GIT_WRITING_OPTIONS, GIT_DEFAULT_WRITES,
+    and GIT_OPERAND_WRITES, and the command it runs (running_spelling). An option's value is the next word when the
+    word carries none; words after `--` are operands."""
+    writing = {GIT_OUTPUT, *GIT_WRITING_OPTIONS.get(subcommand, ())}
+    effects = GitEffects(runs=running_spelling(subcommand, arguments))
+    operands: list[Word] = []
+    named = False
+    index = 0
+    while index < len(arguments):
+        word = arguments[index]
+        index += 1
+        if word is None:
+            effects.unsettled = True
+            operands.append(None)
+            continue
+        if word == "--":
+            operands.extend(arguments[index:])
+            break
+        spelled = option_spelled(word, writing)
+        if spelled is None:
+            if not word.startswith("-") or word == "-":
+                operands.append(word)
+            continue
+        value = spelled[1]
+        if value == "" and index < len(arguments):
+            value = arguments[index]
+            index += 1
+        if value != "":
+            effects.written.append(value)
+            named = True
+    if "--stdout" in options_before_separator([word for word in arguments if word is not None]):
+        return effects
+    if subcommand in GIT_OPERAND_WRITES:
+        if subcommand in GIT_SUBCOMMAND_OPERANDS:
+            written = subcommand_operand(subcommand, arguments)
+        elif subcommand == "clone":
+            # clone's first operand is the repository it copies, and a URL names no path here.
+            written = [word for word in operands[1:] if word is None or "://" not in word]
+        else:
+            written = operands
+        effects.written.extend(written)
+        named = bool(written) if subcommand in {"clone", "init", "init-db"} else named
+    if subcommand in GIT_DEFAULT_WRITES and not named:
+        effects.written.append(".")
+    return effects
+
+
+def subcommand_operand(subcommand: str, arguments: Sequence[Word]) -> list[Word]:
+    """What a subcommand GIT_SUBCOMMAND_OPERANDS names writes: the first word after its subcommand's options, each
+    option there that takes a value skipping the next word; None where a word before it is one the text does not
+    settle, and nothing for any other of its subcommands."""
+    word_of, valued = GIT_SUBCOMMAND_OPERANDS[subcommand]
+    if list(arguments[:1]) != [word_of]:
+        return []
+    words = iter(arguments[1:])
+    for word in words:
+        if word is None:
+            return [None]
+        if word == "--":
+            return [next(words, None)]
+        if word.startswith("-") and word != "-":
+            spelled = option_spelled(word, valued)
+            if spelled is not None and spelled[1] == "":
+                next(words, None)
+            continue
+        return [word]
+    return []
+
+
+def config_reads(arguments: Sequence[Word]) -> tuple[bool, Word | None]:
+    """Whether a git config only reads: with an action that reads (CONFIG_READ_OPTIONS), a subcommand that does
+    (CONFIG_READ_ACTIONS), or one name and no action, and otherwise only CONFIG_MODIFIERS and CONFIG_VALUED; and the
+    file --file or -f names, when one does and no scope does. A word the text does not settle and an option those
+    tables do not hold, an abbreviation among them, make it one that may write."""
+    names: list[str] = []
+    action = False
+    file: Word | None = None
+    scoped = False
+    words = iter(arguments)
+    for word in words:
+        if word is None:
+            return False, None
+        if word == "--":
+            names.extend("" if name is None else name for name in words)
+            break
+        if not word.startswith("-") or word == "-":
+            names.append(word)
+            continue
+        if word in CONFIG_READ_OPTIONS:
+            action = True
+            continue
+        if word in CONFIG_MODIFIERS:
+            scoped = scoped or word in CONFIG_SCOPES
+            continue
+        option, attached, value = word.partition("=")
+        if word.startswith("-f") and len(word) > 2 and not word.startswith("--"):
+            option, attached, value = "-f", "=", word[2:]
+        if option not in CONFIG_VALUED:
+            return False, None
+        given = value if attached else next(words, None)
+        if option in {"-f", "--file"}:
+            file = given
+    # A key holds a dot, so one name without one, as `git config edit`, is a subcommand.
+    reads = action or (bool(names) and names[0] in CONFIG_READ_ACTIONS) or (len(names) == 1 and "." in names[0])
+    return reads, None if scoped else file
+
+
 def reached_hub(place: Place) -> tuple[Path | None, bool]:
     """The guarded hub a call at place writes, and whether part of the place is not settled.
 
@@ -1541,6 +1891,9 @@ class Judge:
         return None
 
     def judge(self, call: GitCall, depth: int) -> str | None:
+        reason = self.effects_refusal(call)
+        if reason is not None:
+            return reason
         if call.subcommand is None and self.hubs:
             # Whatever place it runs in, a subcommand the text does not settle may be an alias that writes a hub.
             return "The guard could not tell which git subcommand runs, so it is refused while a hub is guarded."
@@ -1566,6 +1919,70 @@ class Judge:
         return (
             f"The guard could not tell where `git {call.subcommand}` runs, and it refuses a git command that would "
             f"write the checkout it runs in when it cannot place it while a hub is guarded. {PLACE_IT}"
+        )
+
+    def effects_refusal(self, call: GitCall) -> str | None:
+        """Why what a git call's words make it do is refused, wherever it runs: a file it writes at a path that lies in
+        a guarded hub, judged as a redirection's target is; and, while a hub is guarded, a command it runs that its
+        words name, a file it writes where the text does not settle, and a word the text does not settle given to a
+        subcommand with an option that does either. A git config that may write is judged by config_refusal."""
+        subcommand = call.subcommand
+        if call.program != "git" or subcommand is None:
+            return None
+        if subcommand == "config":
+            return self.config_refusal(call)
+        effects = git_effects(subcommand, call.arguments)
+        if effects.runs is not None and self.hubs:
+            return (
+                f"`git {subcommand} {effects.runs}` runs a command its words name, which may be git, so it is refused "
+                "while a hub is guarded."
+            )
+        writes = GIT_OUTPUT_SUBCOMMANDS | GIT_WRITING_OPTIONS.keys() | GIT_RUNNING_OPTIONS.keys() | PLAIN_ACTIONS.keys()
+        if effects.unsettled and self.hubs and subcommand in writes | GIT_DEFAULT_WRITES | GIT_OPERAND_WRITES:
+            return (
+                f"`git {subcommand}` is given a word the text does not settle, which may be an option that writes a "
+                "file or runs a command, so it is refused while a hub is guarded."
+            )
+        for value in effects.written:
+            reason = self.written_refusal(call, value)
+            if reason is not None:
+                return reason
+        return None
+
+    def written_refusal(self, call: GitCall, value: Word) -> str | None:
+        """Why a file a git call writes at a path its words name is refused: one in a guarded hub's tracked files or
+        anywhere in its git directory, as a redirection's target is, a relative path read from where git starts; and,
+        while a hub is guarded, one whose path or directory the text does not settle."""
+        if value in DEVICE_FILES:
+            return None
+        unsettled = f"`git {call.subcommand}` writes a file the text does not settle, which may lie in a hub."
+        if value is None:
+            return unsettled if self.hubs else None
+        path = Path(platform_support.from_shell_path(value))
+        if not path.is_absolute():
+            if call.place.start is None:
+                return unsettled if self.hubs else None
+            path = call.place.start / path
+        if hub_protected(path):
+            return f"`git {call.subcommand}` writes {path}, a file of a guarded hub."
+        return None
+
+    def config_refusal(self, call: GitCall) -> str | None:
+        """Why a git config is refused: one that only reads never is (config_reads); one that writes the file --file
+        names is judged as any file a git call writes; and every other one that may write is refused while a hub is
+        guarded, since the configuration a hub shares with its worktrees holds the guard's own opt-in, and the user's
+        and the system's hold settings that run a command in the hub."""
+        reads, file = config_reads(call.arguments)
+        if reads:
+            return None
+        if file is not None:
+            return self.written_refusal(call, file)
+        if not self.hubs:
+            return None
+        return (
+            "`git config` that may write a setting is refused while a hub is guarded: the configuration a hub shares "
+            "with its worktrees holds the guard's own opt-in, and a setting may run a command. Change it from a "
+            "terminal."
         )
 
     def unreadable(self, call: GitCall, why: str) -> str | None:
@@ -2294,9 +2711,15 @@ def read_runner_words(
     GH_CHECKOUTS names. variables are the names assigned before the runner; env's own assignments
     (runner_assignments) and the environment's are added here, for both shells."""
     reason = runner_refusal(program, arguments)
+    own = [name for name, _ in runner_assignments(program, arguments)] if reason is None else []
+    if reason is None:
+        # A variable a program reads options from reaches whatever the runner starts, a shell's script and a runner
+        # inside it among them, whose reading does not carry the assignment, so it is refused before every runner.
+        handed = sorted(PROGRAM_VARIABLE_NAMES & {name.upper() for name in (*variables, *own)})
+        if handed:
+            reason = f"{handed[0]} is assigned before {program}, which hands it to a program that reads options from it"
     if reason is None and program in {"bash", "pwsh"}:
         reason = script()
-    own = [name for name, _ in runner_assignments(program, arguments)] if reason is None else []
     if reason is None:
         # env's own assignments are ones before the command it runs, as those before env are.
         reason = next(

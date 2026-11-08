@@ -1719,7 +1719,8 @@ class UnderstoodSetTests(GuardTestCase):
 
     def test_a_compound_command_is_read_and_one_that_changes_the_directory_leaves_it_unknown(self) -> None:
         for command, cwd, expected in (
-            ("for f in a b; do git log -1 $f; done", self.tree, None),
+            ("for f in a b; do git status $f; done", self.tree, None),
+            ("for f in a b; do git log -1 $f; done", self.tree, "deny"),
             ("if true; then git status; fi && git log -1", self.hub, None),
             ("while false; do git commit -m x; done", self.hub, "deny"),
             (f'if true; then cd "{self.tree}"; fi; git commit -m x', self.hub, "deny"),
@@ -1735,7 +1736,10 @@ class UnderstoodSetTests(GuardTestCase):
 
     def test_words_and_arguments_the_text_does_not_settle_are_judged_by_where_git_acts(self) -> None:
         for command, cwd, expected in (
-            ('git log -1 "$REV"', self.hub, None),
+            # A word log is given may be --output; one after -- is a path.
+            ('git log -1 "$REV"', self.hub, "deny"),
+            ('git log -1 -- "$REV"', self.hub, None),
+            ('git status "$REV"', self.hub, None),
             ('git -C "$SOMEWHERE" status', self.hub, None),
             ('git commit -m "$(date)"', self.tree, None),
             ('git branch "$name"', self.hub, "deny"),
@@ -1949,6 +1953,22 @@ class UnderstoodSetTests(GuardTestCase):
         ):
             with self.subTest(command=command, cwd=cwd.name):
                 self.assertEqual(expected, self.bash(command, cwd))
+
+    def test_a_variable_a_program_reads_options_from_is_refused_before_a_shell_runner_at_any_depth(self) -> None:
+        action = "TAR_OPTIONS='--checkpoint=1 --checkpoint-action=exec=\"git reset --hard HEAD~1\"'"
+        for command in (
+            f"{action} tar cf /tmp/review.tar README.md",
+            f"{action} bash -c 'tar cf /tmp/review.tar README.md'",
+            "TAPE=host:/x bash -c 'tar cf - README.md'",
+            "RIPGREP_CONFIG_PATH=rg.conf bash -c 'rg pattern .'",
+            "bash -c \"RIPGREP_CONFIG_PATH=rg.conf bash -c 'rg pattern .'\"",
+            "TAPE=host:/x pwsh -NoProfile -Command 'tar cf - README.md'",
+            "TAR_OPTIONS=--to-command=x pwsh -Command 'tar xf a.tar'",
+        ):
+            for cwd in (self.hub, self.tree):
+                with self.subTest(command=command, cwd=cwd.name):
+                    self.assertEqual("deny", self.bash(command, cwd))
+        self.assertIsNone(self.bash("OTHER=x bash -c 'tar cf /tmp/review.tar README.md'", self.tree))
 
     def test_the_leftovers_recorded_on_the_fail_closed_issue_are_refused(self) -> None:
         # The binders found against the modelling reader, and the forms its last review left open.
@@ -2295,6 +2315,190 @@ class GitCallTests(GuardTestCase):
             with self.subTest(command=command):
                 self.assertEqual(expected, self.bash(command, self.hub))
 
+    def writes_from_everywhere(self, words: str) -> None:
+        """A git call whose words write a file of the hub is refused from the hub, with -C from outside every
+        repository, and with the hub's path written out from a worktree, through either shell."""
+        relative = words.format(target="README.md", directory="docs")
+        absolute = words.format(target=f'"{self.hub / "README.md"}"', directory=f'"{self.hub / "docs"}"')
+        for shell in (self.bash, self.powershell):
+            for command, cwd in (
+                (f"git {relative}", self.hub),
+                (f'git -C "{self.hub}" {relative}', self.root),
+                (f"git {absolute}", self.tree),
+            ):
+                with self.subTest(shell=shell.__name__, command=command, cwd=cwd.name):
+                    self.assertEqual("deny", shell(command, cwd))
+                    self.assertIn("a file of a guarded hub", self.reason)
+
+    def test_a_git_option_that_writes_a_file_of_the_hub_is_refused_wherever_git_runs(self) -> None:
+        for words in (
+            *(
+                f"{subcommand} --output={{target}}"
+                for subcommand in (
+                    *("diff", "log", "show", "whatchanged", "diff-tree", "diff-files", "diff-index", "range-diff"),
+                    *("format-patch", "rev-list", "shortlog", "reflog", "blame", "fast-export"),
+                )
+            ),
+            "diff --output {target}",
+            "archive --output={target} HEAD",
+            "archive --outp={target} HEAD",
+            "archive -o {target} HEAD",
+            "archive -o{target} HEAD",
+            "archive -vo {target} HEAD",
+            "format-patch -1 -o {directory}",
+            "format-patch -1 --output-directory={directory}",
+            "format-patch -1 --output-d {directory}",
+            "bundle create {target} HEAD",
+            "bundle create -q --version 3 {target} HEAD",
+            "fast-export --export-marks={target} HEAD",
+            "fast-export --export-ma {target} HEAD",
+            "mailsplit -o{directory} mail.mbox",
+            "pack-objects {target}",
+            "bugreport -o {directory}",
+            "bugreport --output-directory={directory}",
+            "diagnose -o {directory}",
+            "config --file {target} a.b c",
+            "config -f{target} a.b c",
+            "apply --build-fake-ancestor={target} change.patch",
+            "read-tree --index-output={target} HEAD",
+            "index-pack -o {target} pack.pack",
+            "repack --expire-to={directory}",
+            "init {directory}",
+            "clone https://example.invalid/x.git {directory}",
+            "worktree add -b topic {directory} HEAD",
+        ):
+            self.writes_from_everywhere(words)
+
+    def test_a_git_output_into_the_hub_s_git_directory_or_its_default_directory_is_refused(self) -> None:
+        for command in (
+            "git diff --output=.git/config",
+            "git format-patch -1",
+            "git bugreport",
+            "git diagnose",
+            "git init",
+            "git unpack-file 0123abc",
+            "git clone https://example.invalid/x.git",
+        ):
+            with self.subTest(command=command):
+                self.assertEqual("deny", self.bash(command, self.hub))
+                self.assertEqual("deny", self.bash(f'git -C "{self.hub}" {command.removeprefix("git ")}', self.root))
+                self.assertIn("a file of a guarded hub", self.reason)
+
+    def test_a_git_option_that_writes_elsewhere_or_writes_nothing_is_allowed(self) -> None:
+        for command, cwd in (
+            ("git diff --output=out.patch", self.tree),
+            ("git archive -o out.tar HEAD", self.tree),
+            ("git format-patch -1", self.tree),
+            ("git format-patch -1 --stdout", self.hub),
+            ("git diff --output=/dev/null", self.hub),
+            ("git log --output-indicator-new=+ -p -1", self.hub),
+            ("git diff -- --output=README.md", self.hub),
+            ("git bundle create out.bundle HEAD", self.tree),
+            ("git worktree add -b topic .claude/worktrees/fix-topic", self.hub),
+            ("git init", self.tree),
+            (f'git clone https://example.invalid/x.git "{self.root / "copy"}"', self.hub),
+            ("git config --file out.config a.b c", self.tree),
+            (f'git config --file "{self.hub / "local.json"}" a.b c', self.tree),
+        ):
+            with self.subTest(command=command, cwd=cwd.name):
+                self.assertIsNone(self.bash(command, cwd))
+
+    def test_a_git_config_that_writes_is_refused_while_a_hub_is_guarded(self) -> None:
+        for words in (
+            "config coding-agent-skills.hubGuard false",
+            "config --local --unset coding-agent-skills.hubGuard",
+            "config --unset-all coding-agent-skills.hubGuard",
+            "config --unse coding-agent-skills.hubGuard",
+            "config unset coding-agent-skills.hubGuard",
+            "config set coding-agent-skills.hubGuard false",
+            "config core.worktree /elsewhere",
+            "config --global core.fsmonitor true",
+            "config --worktree core.pager less",
+            "config --remove-section coding-agent-skills",
+            "config edit",
+            "config -e",
+            'config "$key" false',
+        ):
+            for shell in (self.bash, self.powershell):
+                for command, cwd in (
+                    (f"git {words}", self.hub),
+                    (f'git -C "{self.hub}" {words}', self.root),
+                    (f"git {words}", self.tree),
+                ):
+                    with self.subTest(shell=shell.__name__, command=command, cwd=cwd.name):
+                        self.assertEqual("deny", shell(command, cwd))
+        self.assertEqual("true\n", self.git(self.hub, "config", "coding-agent-skills.hubGuard"))
+        for words in (
+            "config --get coding-agent-skills.hubGuard",
+            "config coding-agent-skills.hubGuard",
+            "config get coding-agent-skills.hubGuard",
+            "config --list --show-origin",
+            "config list --local",
+            "config --get-regexp alias",
+            "config --type=bool --get coding-agent-skills.hubGuard",
+            "config --file .gitmodules --get-regexp path",
+        ):
+            with self.subTest(command=words):
+                self.assertIsNone(self.bash(f"git {words}", self.hub))
+                self.assertIsNone(self.bash(f'git -C "{self.hub}" {words}', self.root))
+
+    def test_a_git_option_or_setting_that_runs_a_command_is_refused_while_a_hub_is_guarded(self) -> None:
+        for words in (
+            "-c core.pager=less log",
+            "-c core.pager='git reset --hard HEAD~1' -p log",
+            "-c pager.log=less log",
+            "-c diff.external=true diff",
+            "-c core.fsmonitor=true status",
+            "-c core.sshCommand=true fetch origin",
+            "-c core.hooksPath=/elsewhere status",
+            "-c include.path=/elsewhere status",
+            "--config-env core.pager=PAGER log",
+            '-c "$setting" status',
+            "fetch --upload-pack=true .",
+            "pull --upload-pack true . main",
+            "ls-remote --upload-pack=true .",
+            "push --receive-pack=true . HEAD",
+            "push --exec=true . HEAD",
+            "archive --remote=. --exec=true HEAD",
+            "grep -Otrue x",
+            "grep --open-files-in-pager x",
+            "rebase -x true HEAD~1",
+            "rebase --exec=true HEAD~1",
+            "bisect run true",
+            "submodule foreach true",
+            "difftool -x true",
+            "filter-branch --tree-filter true HEAD",
+        ):
+            for command, cwd in ((f"git {words}", self.hub), (f'git -C "{self.hub}" {words}', self.root)):
+                with self.subTest(command=command, cwd=cwd.name):
+                    self.assertEqual("deny", self.bash(command, cwd))
+            with self.subTest(command=words, cwd="worktree"):
+                self.assertEqual("deny", self.bash(f"git {words}", self.tree))
+        for command in (
+            "git -c color.ui=never log -1",
+            "git -c core.quotepath=false status",
+            "git -c user.name=Someone -c user.email=a@b.invalid log -1",
+            "git -c alias.go=status go",
+            "git -c Color.Diff.Meta=blue diff",
+        ):
+            with self.subTest(command=command):
+                self.assertIsNone(self.bash(command, self.hub))
+
+    def test_a_word_the_text_does_not_settle_given_to_a_subcommand_that_may_write_is_refused(self) -> None:
+        for command, cwd in (
+            ('git diff "$out"', self.hub),
+            ('git diff "$out"', self.tree),
+            ('git log -1 "$out"', self.tree),
+            ('git archive "$out" HEAD', self.tree),
+            ('git fetch "$out"', self.tree),
+        ):
+            with self.subTest(command=command, cwd=cwd.name):
+                self.assertEqual("deny", self.bash(command, cwd))
+                self.assertIn("a word the text does not settle", self.reason)
+        for command in ('git status "$out"', 'git commit -m "$(cat notes.txt)"', 'git diff -- "$out"'):
+            with self.subTest(command=command):
+                self.assertIsNone(self.bash(command, self.tree))
+
 
 class HubsInViewTests(unittest.TestCase):
     def test_a_directory_git_cannot_read_is_noted_and_the_project_s_hub_still_counts(self) -> None:
@@ -2359,6 +2563,25 @@ class ContractListTests(unittest.TestCase):
         self.assertEqual(
             sorted(name for names in hub_guard.PROGRAM_VARIABLES.values() for name in names), sorted(variables)
         )
+
+    def test_the_git_options_that_write_or_run_and_the_settings_understood_are_the_ones_its_contract_names(
+        self,
+    ) -> None:
+        def entries(table: Mapping[str, frozenset[str]]) -> list[str]:
+            return sorted(f"{subcommand} {option}" for subcommand, options in table.items() for option in options)
+
+        writing = contract_names("those `GIT_WRITING_OPTIONS` names:", ". Each is read in every spelling")
+        self.assertEqual(entries(hub_guard.GIT_WRITING_OPTIONS), sorted(writing))
+        running = contract_names("in every spelling and wherever the word stands:", ". So is a `bisect`")
+        spellings = {
+            subcommand: frozenset(
+                {*(f"--{name}" for name in options.long), *(f"-{letter}" for letter in options.short)}
+            )
+            for subcommand, options in hub_guard.GIT_RUNNING_OPTIONS.items()
+        }
+        self.assertEqual(entries(spellings), sorted(running))
+        sections = contract_names("every setting of a section `GIT_SECTIONS_UNDERSTOOD` names (", ")")
+        self.assertEqual(sorted(hub_guard.GIT_SECTIONS_UNDERSTOOD), sorted(sections))
 
     def test_the_powershell_commands_the_guard_reads_are_the_ones_its_contract_names(self) -> None:
         named = contract_names("these cmdlets, by its name or an alias PowerShell gives it:", "Every other node")
