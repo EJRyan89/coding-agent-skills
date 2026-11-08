@@ -2582,6 +2582,19 @@ class ContractListTests(unittest.TestCase):
         self.assertEqual(entries(spellings), sorted(running))
         sections = contract_names("every setting of a section `GIT_SECTIONS_UNDERSTOOD` names (", ")")
         self.assertEqual(sorted(hub_guard.GIT_SECTIONS_UNDERSTOOD), sorted(sections))
+        # format-patch writes there only without --stdout, which the list names beside it.
+        defaults = contract_names("a word after `--` is an operand.", "(`GIT_DEFAULT_WRITES`)")
+        self.assertEqual(sorted(hub_guard.GIT_DEFAULT_WRITES), sorted(set(defaults) - {"--stdout"}))
+        operands = contract_names("(`GIT_DEFAULT_WRITES`), and", "at a path an operand names (`GIT_OPERAND_WRITES`)")
+        self.assertEqual(
+            sorted(
+                f"{subcommand} {hub_guard.GIT_SUBCOMMAND_OPERANDS[subcommand][0]}"
+                if subcommand in hub_guard.GIT_SUBCOMMAND_OPERANDS
+                else subcommand
+                for subcommand in hub_guard.GIT_OPERAND_WRITES
+            ),
+            sorted(operands),
+        )
 
     def test_the_powershell_commands_the_guard_reads_are_the_ones_its_contract_names(self) -> None:
         named = contract_names("these cmdlets, by its name or an alias PowerShell gives it:", "Every other node")
