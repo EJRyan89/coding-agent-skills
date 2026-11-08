@@ -78,7 +78,7 @@ from audit_ai_config import (
 from bounded_process import Streaming, streaming
 from console import run_main
 from executable_locator import find_executable
-from flat_text import flat_text
+from flat_text import flat_text, single_line
 from seconds_option import positive_seconds
 
 # Every server this starts is a command the target repository configures, so the skill leaves this script ungranted
@@ -397,17 +397,17 @@ def main(arguments: list[str] | None = None) -> int:
     )
     args = parser.parse_args(arguments)
     if not (args.root / ".git").exists():
-        print(f"FAILED {args.root} is not a Git repository")
+        print(single_line(f"FAILED {args.root} is not a Git repository"))
         return 1
     root = args.root.resolve()
     groups, problems = group_servers(root, args.server)
     refused = refuse_outside(root, groups, problems)
     for severity, source, message in problems:
-        print(f"CONFIG_{severity} {source} {flat_text(message)}")
+        print(single_line(f"CONFIG_{severity} {source} {flat_text(message)}"))
     failed = any(severity == "ERROR" for severity, _, _ in problems)
     if not groups:
         if args.server is not None:
-            print(f"FAILED no MCP server named {args.server}")
+            print(single_line(f"FAILED no MCP server named {args.server}"))
             return 1
         if not failed:
             print("NO_SERVERS")
@@ -416,13 +416,13 @@ def main(arguments: list[str] | None = None) -> int:
         # The name, the type, and a failure's reason are the repository's text or carry it, so each is flattened.
         label = f"{flat_text(name)} source={','.join(sources)}"
         if index in refused or not starts(entry, sources):
-            print(f"SKIPPED {label} transport={flat_text(transport(entry, sources))}")
+            print(single_line(f"SKIPPED {label} transport={flat_text(transport(entry, sources))}"))
             continue
         try:
-            print(f"HANDSHAKE_OK {label} {handshake(root, entry, args.timeout)}")
+            print(single_line(f"HANDSHAKE_OK {label} {handshake(root, entry, args.timeout)}"))
         except RuntimeError as error:
             failed = True
-            print(f"HANDSHAKE_FAILED {label} {flat_text(str(error))}")
+            print(single_line(f"HANDSHAKE_FAILED {label} {flat_text(str(error))}"))
     return 1 if failed else 0
 
 

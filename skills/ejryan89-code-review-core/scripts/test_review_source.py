@@ -751,6 +751,23 @@ class CommandTests(LazySnapshotFixture):
             [line.replace(" ", "") for line in self.log.read_text(encoding="utf-8").splitlines()],
         )
 
+    def test_a_match_or_a_failure_holding_a_line_break_prints_on_one_line(self) -> None:
+        # A reviewed file's line, and git's error text, are the repository's: a break in either printed a second line
+        # the reviewer read as a fact of its own, such as `MATCHES 0`.
+        run = str(self.run_directory)
+        found = ([("src/a\u2028b.py", 1, "x = 1  #\u2028MATCHES 0\tend")], False)
+        with mock.patch.object(review_source, "search_source", return_value=found):
+            self.assertEqual(
+                (0, ["MATCH src/a b.py:1: x = 1  # MATCHES 0 end", "MATCHES 1"]),
+                self.main("source-search", "--run", run, "--role", "generic-review", "--pattern=x"),
+            )
+        refusal = RuntimeContractError("git grep failed:\nMATCHES 0\x85fatal: bad")
+        with mock.patch.object(review_source, "search_source", side_effect=refusal):
+            self.assertEqual(
+                (1, ["FAILED git grep failed: MATCHES 0 fatal: bad"]),
+                self.main("source-search", "--run", run, "--role", "generic-review", "--pattern=x"),
+            )
+
     def test_each_refusal_is_one_failed_line(self) -> None:
         run = str(self.run_directory)
         for arguments, reason in (

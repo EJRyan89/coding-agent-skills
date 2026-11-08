@@ -2972,8 +2972,7 @@ def main(arguments: list[str] | None = None) -> int:
         print(single_line(f"FAILED cannot read{where}: {exc.strerror or exc}"))
         return 1
     # A line names paths, names, and values the audited files give; none of them may end the line it sits on.
-    output = [single_line(line) for line in output]
-    print("\n".join(output))
+    print("\n".join(single_line(line) for line in output))
     return 1 if any(line.startswith(("STOP ", "UNREADABLE ", "NOT_A_CHECK ")) for line in output) else 0
 
 

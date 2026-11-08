@@ -42,7 +42,7 @@ import json_writer
 import whole_number
 from console import run_main
 from executable_locator import RelativeEnvironmentPath
-from flat_text import flat_text
+from flat_text import flat_text, single_line
 from review_archive import ArchiveError, every_version, pull_directory, pull_records, record_paths
 from review_config import ConfigurationError, load_config
 from review_flags import (
@@ -213,7 +213,7 @@ def main(arguments: list[str] | None = None) -> int:
     ) as exc:
         print(f"FAILED {flat_text(str(exc))}")
         return 1
-    print("\n".join(lines))
+    print("\n".join(single_line(line) for line in lines))
     return 0
 
 

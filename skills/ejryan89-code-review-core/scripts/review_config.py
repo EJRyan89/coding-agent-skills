@@ -27,7 +27,7 @@ import json_writer
 from console import run_main
 from device_names import is_reserved_device_name
 from executable_locator import absolute_home
-from flat_text import LINE_UNSAFE
+from flat_text import LINE_UNSAFE, single_line
 from github_logins import LOGIN, is_login
 from review_io import CONTENT_ERRORS, PersistenceError, atomic_write_json, read_json
 from review_vocabularies import SEVERITIES, Severity
@@ -742,15 +742,15 @@ def _main(arguments: list[str] | None = None) -> int:
         if args.command == "validate":
             path = args.path or default_config_path()
             load_config(path)
-            print(f"VALID {path}")
+            print(single_line(f"VALID {path}"))
         else:
             path = args.output or default_config_path()
             value = json_reader.loads(args.input.read_text(encoding="utf-8-sig"))
             write_config(value, path)
-            print(f"WROTE {path}")
+            print(single_line(f"WROTE {path}"))
         return 0
     except (ConfigurationError, PersistenceError, OSError, *CONTENT_ERRORS) as exc:
-        print(f"FAILED {exc}")
+        print(single_line(f"FAILED {exc}"))
         return 1
 
 

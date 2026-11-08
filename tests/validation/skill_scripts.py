@@ -39,6 +39,7 @@ from markdown_sections import SHELL_FENCES
 from module_closure import MODULE_LOADERS
 from path_containment import posix_within
 from powershell_startup import POWERSHELL_PROGRAMS, UnknownWord, startup_command
+from python_checks import PRINTS, sanctioned_problems
 from skill_roots import SKILL_CORE
 from toolchain import powershell_json
 from validation_support import (
@@ -2188,13 +2189,13 @@ def _call_breaches(node: ast.Call, resolver: CallableResolver, parsers: set[str]
         breaches.append(f"exits {code.value}; scripts exit only 0, 1, or 2")
     stream: ast.expr | None = None
     message = node.args[0] if node.args else None
-    if function == "print":
+    if function in PRINTS:
         stream = next((keyword.value for keyword in node.keywords if keyword.arg == "file"), None)
     elif isinstance(node.func, ast.Attribute) and node.func.attr == "write":
         stream = node.func.value
     elif function == "json.dump":
         stream, message = call_argument(node, 1, "fp"), node
-    target = resolver.name(stream) if stream is not None else "sys.stdout" if function == "print" else ""
+    target = resolver.name(stream) if stream is not None else "sys.stdout" if function in PRINTS else ""
     if target in STANDARD_ERROR and message is not None and _mentions_failed(message):
         breaches.append("prints FAILED on stderr; print it on stdout")
     if (
@@ -2232,6 +2233,133 @@ def _contract_breaches(tree: ast.Module) -> list[tuple[int, str]]:
                 (node.lineno, breach) for breach in _call_breaches(node, resolver, parsers, id(node) in in_handler)
             ]
     return sorted(breaches)
+
+
+# A shipped skill's stdout holds one fact per line, whatever outside value a line carries: a path, a file's content, a
+# model's result, or git's or gh's error text may hold a line break, and the line after it reads as a fact of its own.
+# So every stdout print in a shipped skill's scripts prints text that cannot hold one: a literal on one line, a name
+# the module binds once to such a literal, or what a choke point returns, ejryan89-skill-core's flat_text, fact_line,
+# single_line, or console's failed_line; an f-string whose every value is one of those; an either-or of two of them;
+# or a join of a comprehension whose every item is one, the final pass over every line. A print that must print
+# something else, such as a Markdown report the skill shows as it is, is sanctioned beside the code as a module-level
+# PRINT_ALLOWED = {scope: reason}. A module that speaks another protocol, under EXIT_CONTRACT_EXEMPT, is not read.
+OUTPUT_CHOKE_POINTS = frozenset(
+    {"flat_text.flat_text", "flat_text.fact_line", "flat_text.single_line", "console.failed_line"}
+)
+PRINT_ALLOWANCE = "PRINT_ALLOWED"
+LOCAL_PREFIX = "<local>."
+STREAM_WRITES = frozenset({"write", "writelines"})
+
+
+def _one_line_literal(node: ast.expr) -> bool:
+    """Whether a node is a literal that prints on one line: a string no line break splits, or any other constant."""
+    if not isinstance(node, ast.Constant):
+        return False
+    return not isinstance(node.value, str) or node.value.splitlines() in ([], [node.value])
+
+
+@dataclass(frozen=True)
+class _OutputReader:
+    """Reads what a module's stdout prints print: its imports and bindings, and the module's own stem, so a choke
+    point's own module calls it by its bare name."""
+
+    resolver: CallableResolver
+    stem: str
+
+    def name(self, node: ast.expr) -> str:
+        qualified = self.resolver.name(node)
+        return (
+            f"{self.stem}.{qualified.removeprefix(LOCAL_PREFIX)}" if qualified.startswith(LOCAL_PREFIX) else qualified
+        )
+
+    def flat(self, node: ast.expr) -> bool:
+        """Whether the text a node gives cannot hold a line break."""
+        if isinstance(node, ast.Constant):
+            return _one_line_literal(node)
+        if isinstance(node, ast.Name):
+            return self.module_constant(node)
+        if isinstance(node, ast.JoinedStr):
+            return all(
+                self.flat(part.value) if isinstance(part, ast.FormattedValue) else self.flat(part)
+                for part in node.values
+            )
+        if isinstance(node, ast.IfExp):
+            return self.flat(node.body) and self.flat(node.orelse)
+        if not isinstance(node, ast.Call):
+            return False
+        if self.name(node.func) in OUTPUT_CHOKE_POINTS:
+            return True
+        return (
+            isinstance(node.func, ast.Attribute)
+            and node.func.attr == "join"
+            and isinstance(node.func.value, ast.Constant)
+            and isinstance(node.func.value.value, str)
+            and len(node.args) == 1
+            and not node.keywords
+            and isinstance(node.args[0], ast.GeneratorExp | ast.ListComp)
+            and self.flat(node.args[0].elt)
+        )
+
+    def module_constant(self, node: ast.Name) -> bool:
+        """Whether a name is one the module binds once, at its top, to a one-line literal, and no parameter or local
+        of the scope reading it hides."""
+        owner = self.resolver.scopes[id(node)].owner(node.id)
+        if owner is None or owner.parent is not None:
+            return False
+        values = owner.bindings[node.id]
+        return len(values) == 1 and isinstance(values[0], ast.Constant) and _one_line_literal(values[0])
+
+    def printed(self, node: ast.Call) -> list[ast.expr] | None:
+        """What a call prints on stdout, or None when it is no stdout print: print, under either name the builtins
+        give it, given no file or sys.stdout, with its separator and its end, or a write to sys.stdout."""
+        if self.resolver.name(node.func) in PRINTS:
+            stream = next((keyword.value for keyword in node.keywords if keyword.arg == "file"), None)
+            if (
+                stream is not None
+                and not (isinstance(stream, ast.Constant) and stream.value is None)
+                and self.resolver.name(stream) not in STANDARD_OUTPUT
+            ):
+                return None
+            separators = [keyword.value for keyword in node.keywords if keyword.arg in {"sep", "end", None}]
+            return [*node.args, *separators]
+        if (
+            isinstance(node.func, ast.Attribute)
+            and node.func.attr in STREAM_WRITES
+            and self.resolver.name(node.func.value) in STANDARD_OUTPUT
+        ):
+            return [*node.args, *(keyword.value for keyword in node.keywords)]
+        return None
+
+
+def print_choke_point_problems(root: Path) -> list[str]:
+    """Each stdout print in a shipped skill's scripts, tests aside, whose text could hold a line break and no
+    PRINT_ALLOWED entry sanctions, then each entry that sanctions nothing."""
+    problems: list[str] = []
+    paths = sorted(
+        path
+        for scripts in skill_script_directories(root)
+        if scripts.parent.parent == root / "skills"
+        for path in file_presence.matching(scripts, "*.py")
+        if file_presence.is_present(path, other_is_absent=True) and not is_test_script(path)
+    )
+    for path, name, tree in python_trees(paths, root, problems):
+        if _contract_exemption(tree):
+            continue
+        reader = _OutputReader(CallableResolver(tree), path.stem)
+        found = [
+            (
+                node.lineno,
+                scope,
+                "prints text that may hold a line break; pass each outside value through flat_text, fact_line, or "
+                f"single_line, or state why in {PRINT_ALLOWANCE}; see {RESULTS_DOC}",
+            )
+            for node, scope in scoped_nodes(tree.body)
+            if isinstance(node, ast.Call)
+            and (printed := reader.printed(node)) is not None
+            and not all(reader.flat(item) for item in printed)
+        ]
+        problems += sanctioned_problems(name, tree, PRINT_ALLOWANCE, found)
+    return problems
 
 
 # CodeQL's sensitive-data heuristic treats a call to a function whose name says "secret" or "trusted" (but not
@@ -2553,6 +2681,10 @@ class SkillScriptsPolicies(unittest.TestCase):
     def test_skill_scripts_follow_the_script_results_contract(self) -> None:
         # An agent that learned one script's results can read every other's.
         self.assertEqual([], script_contract_problems(REPOSITORY_ROOT))
+
+    def test_skill_scripts_print_each_line_through_a_choke_point(self) -> None:
+        # A value holding a line break printed a second line an agent read as a fact of its own.
+        self.assertEqual([], print_choke_point_problems(REPOSITORY_ROOT))
 
     def test_no_shipped_function_is_named_so_codeql_reads_its_result_as_a_secret(self) -> None:
         self.assertEqual([], secret_named_function_problems(REPOSITORY_ROOT))

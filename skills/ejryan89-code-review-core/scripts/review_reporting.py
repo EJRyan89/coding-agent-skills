@@ -8,6 +8,7 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
+from flat_text import single_line
 from review_records import Review, source_parts
 from review_run import ReadCount
 from review_runtime import NATIVE_EFFORT_RUNTIMES
@@ -94,17 +95,17 @@ def stats_lines(review: Review) -> list[str]:
 
 
 def _print_ready(result: dict[str, Any]) -> None:
-    print(f"RUN {result['selector']} {result['run']}")
+    print(single_line(f"RUN {result['selector']} {result['run']}"))
     for note in result["notes"]:
-        print(f"NOTE {result['selector']} {note}")
+        print(single_line(f"NOTE {result['selector']} {note}"))
     if result["dispatch"] == "copilot-host":
-        print(f"HOST copilot-cli {result['run']}")
+        print(single_line(f"HOST copilot-cli {result['run']}"))
         return
     if result["dispatch"] == "inline":
-        print(f"INLINE {result['run']}")
+        print(single_line(f"INLINE {result['run']}"))
         return
     for role in result["roles"]:
-        print(f"ROLE {role['id']} {role['prompt_file']}")
+        print(single_line(f"ROLE {role['id']} {role['prompt_file']}"))
         _print_settings(result["selector"], role, result["runtime"])
 
 
@@ -112,6 +113,6 @@ def _print_settings(selector: str, role: dict[str, Any], runtime: str) -> None:
     """The model a role's trusted profile asks for, and on a runtime whose native delegation takes one, the effort the
     run recorded for it; the orchestrator starts that role's subagent with them."""
     if role.get("model"):
-        print(f"MODEL {selector} {role['id']} {role['model']}")
+        print(single_line(f"MODEL {selector} {role['id']} {role['model']}"))
     if role.get("effort") and runtime in NATIVE_EFFORT_RUNTIMES:
-        print(f"EFFORT {selector} {role['id']} {role['effort']}")
+        print(single_line(f"EFFORT {selector} {role['id']} {role['effort']}"))

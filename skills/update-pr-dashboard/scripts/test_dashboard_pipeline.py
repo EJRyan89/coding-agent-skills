@@ -2065,3 +2065,16 @@ class ReviewArgumentsTests(TrackerPipelineFixture):
         for word in sorted(printed):
             with self.subTest(line=word):
                 self.assertTrue(f"`{word} <" in skill, word)
+
+
+def test_an_override_line_holding_a_line_break_prints_on_one_line() -> None:
+    # An override's key and the configured path are values a user typed or configured.
+    folder = "config" + chr(10) + "WROTE elsewhere"
+    changes = (Path("/", folder), {"o/r#1\u2028SET x": "merged"})
+    output = io.StringIO()
+    with mock.patch.object(tp, "change_overrides", return_value=changes), contextlib.redirect_stdout(output):
+        assert tp._override(["o/r#1=merged"], [], None) == 0
+    assert output.getvalue().splitlines() == [
+        "SET o/r#1 SET x merged",
+        f"WROTE {Path('/config WROTE elsewhere')}",
+    ]

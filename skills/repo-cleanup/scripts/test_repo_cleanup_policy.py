@@ -5,6 +5,7 @@ test_repo_cleanup.py builds."""
 from __future__ import annotations
 
 import contextlib
+import dataclasses
 import io
 import sys
 import tempfile
@@ -294,6 +295,14 @@ class PolicyLinesTests(Fixture):
         self.assertEqual(["FAILED"], [line.split("\t")[0] for line in output.getvalue().splitlines()])
         self.assertFalse((self.root / "plans").exists())
         self.assertEqual([], self.github.calls)
+
+    def test_a_refusal_s_reason_holding_a_line_break_stays_in_its_field(self) -> None:
+        # Every field of a policy line passes the one flattener: a reason that names what it refused may hold a
+        # break, which split the REFUSED_ENTRY line before.
+        policy = dataclasses.replace(
+            cleanup_policy.configured(), refused=(cleanup_policy.Refused("a\u2028b", "names\nPOLICY\tx"),)
+        )
+        self.assertEqual("REFUSED_ENTRY\tregenerable\ta b\tnames POLICY x", rc.policy_lines(policy)[-1])
 
 
 class RecordedPolicyTests(CleanupTestCase):

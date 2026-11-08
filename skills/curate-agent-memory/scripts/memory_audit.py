@@ -116,7 +116,7 @@ from atomic_file import is_read_only, replace_text
 from console import run_main
 from executable_locator import RelativeEnvironmentPath, absolute_home, environment_path, required_environment_path
 from file_presence import is_directory, is_present, matching
-from flat_text import flat_text
+from flat_text import flat_text, single_line
 from git_client import GitClient, GitError
 from link_probe import is_link_or_junction, is_plain_file
 from markdown_sections import CODE_SPAN
@@ -1352,7 +1352,7 @@ def main(arguments: list[str] | None = None) -> int:
             else "set it to the absolute path of your home folder"
         )
         code, lines = 1, [f"FAILED {flat_text(f'{exc}; {remedy}')}"]
-    print("\n".join(lines))
+    print("\n".join(single_line(line) for line in lines))
     return code
 
 

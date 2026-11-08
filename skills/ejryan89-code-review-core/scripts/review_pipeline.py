@@ -53,6 +53,7 @@ import file_presence
 import json_writer
 import whole_number
 from console import run_main
+from flat_text import single_line
 from review_archive import archive_head, commit_record, pull_records
 from review_batches import (
     MAX_PREPARE_PULLS,
@@ -185,6 +186,10 @@ from review_specialists import (
     role_summaries,
 )
 
+PRINT_ALLOWED = {
+    "_print_workflow_script": "prints the Workflow script, many lines by design, between the markers the "
+    "orchestrating session copies it whole from",
+}
 # Seconds between finalize's attempts to remove a recorded run whose files another process, such as antivirus or the
 # exiting Copilot CLI host, still holds open.
 RUN_REMOVAL_DELAYS = (0.25, 0.5, 1.0, 2.0)
@@ -1137,7 +1142,12 @@ def _check_prepare_fixtures(parser: argparse.ArgumentParser, args: argparse.Name
 
 
 def _run_inspect_reviewer(args: argparse.Namespace, services: Services | None) -> int:
-    print("\n".join(inspect_reviewer(args.repository, ref=args.ref, config_path=args.config, services=services)))
+    print(
+        "\n".join(
+            single_line(line)
+            for line in inspect_reviewer(args.repository, ref=args.ref, config_path=args.config, services=services)
+        )
+    )
     return 0
 
 
@@ -1145,7 +1155,7 @@ def _run_validate_reviewer(args: argparse.Namespace, services: Services | None) 
     lines = validate_reviewer(
         args.repository, pulls=args.pulls, ref=args.ref, host=args.host, config_path=args.config, services=services
     )
-    print("\n".join(lines))
+    print("\n".join(single_line(line) for line in lines))
     return 0
 
 
@@ -1163,17 +1173,19 @@ def _run_enumerate(args: argparse.Namespace, services: Services | None) -> int:
     failed = False
     for repository, entry in batch["repositories"].items():
         if not entry["complete"]:
-            print(f"REPOSITORY_FAILED {repository} {entry['error']}")
+            print(single_line(f"REPOSITORY_FAILED {repository} {entry['error']}"))
             failed = True
         else:
             found = entry["listing"]
             print(
-                f"LISTED {repository} scan={found['scan']} pages={found['pages']} pulls={found['pulls']} "
-                f"read={found['read']} candidates={len(entry['eligible'])} deferred={len(entry['deferred'])}"
+                single_line(
+                    f"LISTED {repository} scan={found['scan']} pages={found['pages']} pulls={found['pulls']} "
+                    f"read={found['read']} candidates={len(entry['eligible'])} deferred={len(entry['deferred'])}"
+                )
             )
         for pull in entry["eligible"]:
-            print(f"PULL {repository}#{pull['number']}")
-    print(f"BATCH {output}")
+            print(single_line(f"PULL {repository}#{pull['number']}"))
+    print(single_line(f"BATCH {output}"))
     # A repository that failed to list is a batch item's failure; the others are still listed and reviewable.
     return 1 if failed else 0
 
@@ -1192,7 +1204,7 @@ def _publish_prepared(result: dict[str, Any], failure_label: str | Path) -> bool
                 reason += (
                     f"; unpublished run {result['run']} could not be removed ({cleanup_error}); inspect or delete it."
                 )
-            print(f"FAILED {failure_label} {reason}")
+            print(single_line(f"FAILED {failure_label} {reason}"))
             return False
     _print_ready(result)
     return True
@@ -1262,28 +1274,30 @@ def _run_prepare(args: argparse.Namespace, services: Services | None) -> int:
     outcomes = map_in_order(lambda item: _prepare_item(item, runs["options"], services), group, catch=EXPECTED_ERRORS)
     for item, (result, error) in zip(group, outcomes, strict=True):
         if error is not None or result is None:  # prepare returns a result whenever it raises nothing
-            print(f"FAILED {item['target']} {error}")
+            print(single_line(f"FAILED {item['target']} {error}"))
             failed = True
         elif result["status"] == "skip":
-            print(f"SKIP {result['selector']} {result['reason']}")
+            print(single_line(f"SKIP {result['selector']} {result['reason']}"))
         elif _publish_prepared(result, item["target"]):
             runs["runs"].append({"run": str(result["run"]), "selector": result["selector"], "status": "published"})
         else:
             failed = True
     atomic_write_json(path, runs)
-    print(f"RUNS {path} pending={len(runs['pending'])}")
+    print(single_line(f"RUNS {path} pending={len(runs['pending'])}"))
     return 1 if failed else 0
 
 
 def _run_next_role(args: argparse.Namespace, services: Services | None) -> int:
     selector, role = next_role(args.run, services or Services())
-    print(f"INLINE_ROLE {selector} {role['id']} {role['prompt_file']}" if role else f"INLINE_DONE {selector}")
+    print(
+        single_line(f"INLINE_ROLE {selector} {role['id']} {role['prompt_file']}" if role else f"INLINE_DONE {selector}")
+    )
     return 0
 
 
 def _run_validate_result(args: argparse.Namespace, services: Services | None) -> int:
     invalid = validate_result(args.run, args.role)
-    print(f"INVALID {invalid}" if invalid else "VALID")
+    print(single_line(f"INVALID {invalid}" if invalid else "VALID"))
     return 1 if invalid else 0
 
 
@@ -1318,23 +1332,28 @@ def _run_workflow(args: argparse.Namespace, services: Services | None) -> int:
         print("WORKFLOW none")
         return 0
     script, text, count = workflow_script(runs)
-    print(f"WORKFLOW {script} roles={count}")
+    print(single_line(f"WORKFLOW {script} roles={count}"))
+    _print_workflow_script(text)
+    return 0
+
+
+def _print_workflow_script(text: str) -> None:
+    """Print the Workflow script between its markers, as the orchestrating session passes it to the Workflow tool."""
     print(SCRIPT_BEGIN)
     print(text, end="")
     print(SCRIPT_END)
-    return 0
 
 
 def _run_wait_reviewers(args: argparse.Namespace, services: Services | None) -> int:
     progress, failures = wait_for_reviewers(_subagent_runs(args), args.timeout, services or Services())
     for run, reason in failures.items():
-        print(f"FAILED {run} {reason}")
+        print(single_line(f"FAILED {run} {reason}"))
     for selector, roles in progress:
         if all(status == "ready" for status, _ in roles.values()):
-            print(f"READY {selector}")
+            print(single_line(f"READY {selector}"))
         for identity, (status, elapsed) in roles.items():
             if status != "ready":
-                print(f"{status.upper()} {selector} {identity} {elapsed}s")
+                print(single_line(f"{status.upper()} {selector} {identity} {elapsed}s"))
     # RUNNING and OVERDUE are states the skill acts on by polling again or checking, not failures.
     return 1 if failures else 0
 
@@ -1346,15 +1365,15 @@ def _run_unfinalized(args: argparse.Namespace, services: Services | None) -> int
         try:
             selector = unfinalized_selector(run)
         except EXPECTED_ERRORS as exc:
-            print(f"FAILED {run} {exc}")
+            print(single_line(f"FAILED {run} {exc}"))
             failed = True
             continue
         if selector is not None:
-            print(f"UNFINALIZED {selector} {run.resolve()}")
+            print(single_line(f"UNFINALIZED {selector} {run.resolve()}"))
             pending = True
     # A pull request or fixture no prepare reached was never reviewed: its failure as much as an unfinalized run.
     for item in [] if runs is None else runs["pending"]:
-        print(f"UNPREPARED {item['target']}")
+        print(single_line(f"UNPREPARED {item['target']}"))
         pending = True
     if not pending and not failed:
         print("ALL_FINALIZED")
@@ -1362,21 +1381,21 @@ def _run_unfinalized(args: argparse.Namespace, services: Services | None) -> int
 
 
 def _run_dispatch(args: argparse.Namespace, services: Services | None) -> int:
-    print(f"STARTED {dispatch_copilot(args.run, services or Services())}")
+    print(single_line(f"STARTED {dispatch_copilot(args.run, services or Services())}"))
     return 0
 
 
 def _run_host(args: argparse.Namespace, services: Services | None) -> int:
-    print(f"OUTCOME {run_host(args.run, args.token, services or Services())}")
+    print(single_line(f"OUTCOME {run_host(args.run, args.token, services or Services())}"))
     return 0
 
 
 def _run_wait(args: argparse.Namespace, services: Services | None) -> int:
     dispatched, elapsed = wait_for_host(args.run, args.timeout, services or Services())
     if dispatched is None:
-        print(f"RUNNING {elapsed}s")  # a state the skill polls again
+        print(single_line(f"RUNNING {elapsed}s"))  # a state the skill polls again
         return 0
-    print(f"DISPATCHED {dispatched}")
+    print(single_line(f"DISPATCHED {dispatched}"))
     return 0
 
 
@@ -1388,22 +1407,22 @@ def _run_check(args: argparse.Namespace, services: Services | None) -> int:
         try:
             outcome = check_run(run, services)
         except EXPECTED_ERRORS as exc:
-            print(f"FAILED {run} {exc}")
+            print(single_line(f"FAILED {run} {exc}"))
             entry["status"] = "failed"
             failed = True
             continue
         selector = outcome["selector"]
         for role in outcome["retry"]:
-            print(f"RETRY {selector} {role['id']} {role['prompt_file']} {outcome['errors'][role['id']]}")
+            print(single_line(f"RETRY {selector} {role['id']} {role['prompt_file']} {outcome['errors'][role['id']]}"))
             _print_settings(selector, role, outcome["runtime"])
         for identity, error in outcome["failed"].items():
-            print(f"FAILED {selector} {identity} {error}")
+            print(single_line(f"FAILED {selector} {identity} {error}"))
         for identity, elapsed in outcome["running"].items():
-            print(f"RUNNING {selector} {identity} {elapsed}s")
+            print(single_line(f"RUNNING {selector} {identity} {elapsed}s"))
         if outcome["failed"]:
             entry["status"] = "failed"
         elif not outcome["errors"] and not outcome["running"]:
-            print(f"ALL_VALID {selector}")
+            print(single_line(f"ALL_VALID {selector}"))
             entry["status"] = "valid"
         retry = retry or bool(outcome["retry"])
         failed = failed or bool(outcome["failed"])
@@ -1420,22 +1439,24 @@ def _run_finalize(args: argparse.Namespace, services: Services | None) -> int:
         try:
             result = finalize(run, services)
         except EXPECTED_ERRORS as exc:
-            print(f"FAILED {run} {exc}")
+            print(single_line(f"FAILED {run} {exc}"))
             entry["status"] = "failed"
             failed = True
             continue
         entry["status"] = "recorded"
         for note in result["notes"]:
-            print(f"NOTE {result['selector']} {note}")
+            print(single_line(f"NOTE {result['selector']} {note}"))
         if result["canary_root"]:
-            print(f"CANARY {result['selector']} {result['canary_root']}")
+            print(single_line(f"CANARY {result['selector']} {result['canary_root']}"))
             for path, digest in result["hashes"].items():
-                print(f"SHA256 {digest} {path}")
+                print(single_line(f"SHA256 {digest} {path}"))
             for line in result["stats"]:
-                print(f"STATS {result['selector']} {line}")
+                print(single_line(f"STATS {result['selector']} {line}"))
         print(
-            f"RECORDED {result['selector']} verdict={result['verdict']} new={result['new']} open={result['open']} "
-            f"addressed={result['addressed']} {result['markdown']}"
+            single_line(
+                f"RECORDED {result['selector']} verdict={result['verdict']} new={result['new']} open={result['open']} "
+                f"addressed={result['addressed']} {result['markdown']}"
+            )
         )
     _save_run_list(args, runs)
     return 1 if failed else 0
@@ -1444,7 +1465,11 @@ def _run_finalize(args: argparse.Namespace, services: Services | None) -> int:
 def _run_advance(args: argparse.Namespace, services: Services | None) -> int:
     for repository, (old, new) in advance_watermarks(args.batch, config_path=args.config, services=services).items():
         print(
-            f"WATERMARK {repository} {old} -> {new}" if new else f"WATERMARK {repository} unchanged: enumeration failed"
+            single_line(
+                f"WATERMARK {repository} {old} -> {new}"
+                if new
+                else f"WATERMARK {repository} unchanged: enumeration failed"
+            )
         )
     return 0
 
@@ -1477,7 +1502,7 @@ def _translate_errors(
     try:
         return handler(args, services)
     except EXPECTED_ERRORS as exc:
-        print(f"FAILED {exc}")
+        print(single_line(f"FAILED {exc}"))
         return 1
 
 
