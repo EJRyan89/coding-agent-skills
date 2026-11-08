@@ -44,10 +44,10 @@ NETWORK_TOOLS = frozenset({"gh", "copilot"})
 # script runs one of these, a Bash or PowerShell script by git_subcommands or a Python script by
 # python_git_subcommands, needs sandbox-network as a network tool's does.
 NETWORK_GIT_SUBCOMMANDS = frozenset({"clone", "fetch", "ls-remote", "pull", "push"})
-# A git subcommand a literal names. A reader records a subcommand no literal names as the word that stands for it, such
-# as Bash's `$sub` or PowerShell's UNREAD_WORD, which may be any subcommand, one of NETWORK_GIT_SUBCOMMANDS included,
-# so a script that runs one needs sandbox-network too.
-GIT_SUBCOMMAND_NAME = re.compile(r"[a-z][a-z0-9-]*")
+# A git or gh subcommand as a literal names one, which audit-skill's grant reader reads too. A reader records a git
+# subcommand no literal names as the word that stands for it, such as Bash's `$sub` or PowerShell's UNREAD_WORD, which
+# may be any subcommand, one of NETWORK_GIT_SUBCOMMANDS included, so a script that runs one needs sandbox-network too.
+SUBCOMMAND_NAME = re.compile(r"[a-z][a-z0-9-]*")
 # What a skill loses where a runtime lacks the capability, until its author states it more precisely.
 DEFAULT_REASONS = {
     "agent-delegation": "It starts subagents, which this runtime cannot.",
@@ -158,7 +158,7 @@ def frontmatter_needs(
 def reaches_remote(subcommand: str) -> bool:
     """Whether a git subcommand a script runs may reach a remote: one of NETWORK_GIT_SUBCOMMANDS, or one no literal
     names, which may be any of them."""
-    return subcommand in NETWORK_GIT_SUBCOMMANDS or not GIT_SUBCOMMAND_NAME.fullmatch(subcommand)
+    return subcommand in NETWORK_GIT_SUBCOMMANDS or not SUBCOMMAND_NAME.fullmatch(subcommand)
 
 
 def names_git(function: ast.expr) -> bool:

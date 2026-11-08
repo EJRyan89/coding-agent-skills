@@ -197,6 +197,11 @@ def test_pwsh_that_cannot_be_found_or_cannot_list_the_commands_is_refused(monkey
         powershell_commands.read(["git push"])
 
 
+def test_a_source_json_cannot_write_is_refused_before_pwsh_starts() -> None:
+    with pytest.raises(powershell_commands.PowerShellUnread, match="cannot be handed to pwsh"):
+        powershell_commands.read(["git push \ud800"])
+
+
 def test_pwsh_that_prints_no_list_is_refused(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(powershell_commands, "COMMANDS_RUN", "[Console]::Out.WriteLine('not json'); exit 3")
     with pytest.raises(powershell_commands.PowerShellUnread, match="exit code 3"):

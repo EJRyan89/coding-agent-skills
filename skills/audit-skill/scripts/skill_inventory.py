@@ -315,7 +315,6 @@ SCRIPT_FILE = re.compile(
 SCRIPT_SWITCH = re.compile(r"-[BEIOPRS]+")
 # The programs a grant may name by a subcommand, which must follow the program directly.
 SUBCOMMAND_PROGRAMS = frozenset({"git", "gh"})
-SUBCOMMAND = re.compile(r"[a-z][a-z0-9-]*")
 SHELL_FILE_COMMAND = r"(?:cat|head|tail|find|grep|rg|sed|awk|wc|ls)"
 # Word edges that also treat hyphens as part of a word, so "rev-parse" is not "parse".
 WORD_START = r"(?<![\w-])"
@@ -838,7 +837,7 @@ def names_what_it_runs(pattern: str) -> bool:
         return True
     words = command_words(pattern[: pattern.find("*")])
     if words and words[0] in SUBCOMMAND_PROGRAMS:
-        return len(words) > 1 and SUBCOMMAND.fullmatch(words[1]) is not None
+        return len(words) > 1 and runtime_support.SUBCOMMAND_NAME.fullmatch(words[1]) is not None
     return runs_a_script(words)
 
 

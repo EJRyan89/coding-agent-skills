@@ -231,7 +231,10 @@ def read(sources: Sequence[str], timeout: float = READ_SECONDS) -> list[list[lis
         raise PowerShellUnread("pwsh was not found")
     with tempfile.TemporaryDirectory(prefix="powershell-commands-") as directory:
         request = Path(directory) / "sources.json"
-        json_writer.write(request, list(sources))
+        try:
+            json_writer.write(request, list(sources))
+        except json_writer.CONTENT_ERRORS as exc:
+            raise PowerShellUnread(f"the sources cannot be handed to pwsh: {exc}") from exc
         environment = {**non_interactive_environment(), SOURCES_VARIABLE: str(request)}
         try:
             finished = run_bounded(
