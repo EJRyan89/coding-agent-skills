@@ -310,10 +310,14 @@ a row decides it.
   `mailinfo`, `merge-file`, `pack-objects`, `worktree add`, and `worktree move` at a path an operand names
   (`GIT_OPERAND_WRITERS`), each judged the same way. Each row of that table names the operands it writes, the
   options whose value is the next word, which is then no operand, the boolean mode that must be on for it to write
-  at all, as `interpret-trailers --in-place`, and the options with which it prints instead, as `merge-file -p`; a
-  mode is read exactly or abbreviated, the last of it and its `--no-` form deciding. `apply --unsafe-paths` lets a
-  patch write at the paths the patch names, which the guard does not read (`GIT_UNREAD_MODES`), so it is refused
-  while a hub is guarded. A root beneath which git writes the files it checks out or patches,
+  at all, as `interpret-trailers --in-place`, and the options with which it prints instead, as `merge-file -p`. A
+  word that is another option's value, as the second word of `merge-file -L -p`, is never a mode; a mode is read
+  exactly or abbreviated, the last of it and its `--no-` form deciding. `apply --unsafe-paths` lets a
+  patch write at the paths the patch names, which the guard does not read (`GIT_UNREAD_MODES`, whose row names
+  `apply`'s options with a value as a writer's does), so it is refused while a hub is guarded. `format-patch` takes
+  git's revision and diff options, many of which take the next word as their value and no table lists, so its
+  `--stdout` counts only where the word before it can be no option awaiting a value: none, a word that is no option,
+  a count such as `-1`, or an option whose value follows `=`. A root beneath which git writes the files it checks out or patches,
   `checkout-index --prefix` and the `--directory` of `am` and `apply`, is judged as a file it writes, so a root in
   the hub's tracked surface is refused from another checkout too. A `git config` is understood in its reading
   forms, with an action that reads (`--get`, `--get-all`, `--get-regexp`, `--get-urlmatch`, `--get-color`,

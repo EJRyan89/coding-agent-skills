@@ -240,8 +240,16 @@ GIT_OPERAND_WRITERS: dict[str, OperandWriter] = {
 }
 GIT_OPERAND_SUBCOMMANDS = frozenset(key.split(" ")[0] for key in GIT_OPERAND_WRITERS)
 # The subcommands that write a file at a path a file they read names, in a mode their boolean option turns on, so the
-# path is one the text does not settle: apply's --unsafe-paths lets a patch's own paths lie outside the work tree.
-GIT_UNREAD_MODES: dict[str, frozenset[str]] = {"apply": frozenset({"--unsafe-paths"})}
+# path is one the text does not settle: apply's --unsafe-paths lets a patch's own paths lie outside the work tree. Each
+# row is read as a GIT_OPERAND_WRITERS row's modes are, by its modes and its options with a value, so a value spelled
+# as the mode's --no- form is a value; it writes no operand.
+GIT_UNREAD_MODES: dict[str, OperandWriter] = {
+    "apply": OperandWriter(
+        count=0,
+        valued=frozenset({"--exclude", "--include", "--whitespace", "-C", "-p"}),
+        modes=frozenset({"--unsafe-paths"}),
+    ),
+}
 # The operands a subcommand's usage names with a path that it does not write outside the checkout it runs in: each is
 # read, names a path in the repository, or is written only in the work tree WRITING_SUBCOMMANDS judges, whose git
 # refuses a path outside it. A subcommand GIT_OPERAND_WRITERS names is held to its row there instead.
@@ -1876,12 +1884,13 @@ def git_effects(subcommand: str, arguments: Sequence[Word]) -> GitEffects:
         if value != "":
             effects.written.append(value)
             named = True
-    settled = options_before_separator([word for word in arguments if word is not None])
-    unread = GIT_UNREAD_MODES.get(subcommand, frozenset())
-    if mode_given(settled, frozenset(), unread, False):
-        # The paths it writes are the ones a file it reads names.
-        effects.written.append(None)
-    if subcommand not in GIT_OPERAND_SUBCOMMANDS and mode_given(settled, frozenset(), frozenset({"--stdout"}), False):
+    unread = GIT_UNREAD_MODES.get(subcommand)
+    if unread is not None:
+        valued = unread.valued | GIT_WRITING_OPTIONS.get(subcommand, frozenset())
+        if mode_given(option_words(arguments, valued, unread.modes)[0], valued, unread.modes, False):
+            # The paths it writes are the ones a file it reads names.
+            effects.written.append(None)
+    if subcommand not in GIT_OPERAND_SUBCOMMANDS and stdout_given(arguments):
         # format-patch prints its patches; a writer's own row names the options with which it prints.
         return effects
     found = operand_writer(subcommand, arguments)
@@ -1911,8 +1920,48 @@ def operand_writes(writer: OperandWriter, arguments: Sequence[Word], writing: fr
     one of its stdout options is given; otherwise the ones its first and count name, of the words that are no option
     and no option's value, after `--` every word. A word the text does not settle is kept as an operand, so the
     result may hold None."""
-    flags = writer.modes | writer.stdout
     valued = writer.valued | writing
+    options, operands = option_words(arguments, valued, writer.modes | writer.stdout)
+    if not mode_given(options, valued, writer.modes, not writer.modes) or mode_given(
+        options, valued, writer.stdout, False
+    ):
+        return []
+    end = None if writer.count is None else writer.first + writer.count
+    return operands[writer.first : end]
+
+
+def stdout_given(arguments: Sequence[Word]) -> bool:
+    """Whether a call that writes in the directory git starts in is told to print instead, by the last --stdout or
+    --no-stdout before `--`, read fail-safe: format-patch takes git's revision and diff options, many of which take
+    the next word as their value and no table lists, so --stdout counts only where the word before it can be no
+    option awaiting one: none, a word that is no option, a count such as -1, an option whose value follows =, or
+    --stdout or --no-stdout itself. A --no-stdout always counts, since it only makes the call write."""
+    on = False
+    previous: Word = ""
+    for word in arguments:
+        if word == "--":
+            break
+        if word is not None and word.startswith("--"):
+            if option_spelled(word, {"--stdout"}) is not None:
+                settled = previous is not None and (
+                    not previous.startswith("-")
+                    or previous[1:].isdigit()
+                    or "=" in previous
+                    or option_spelled(previous, {"--stdout", "--no-stdout"}) is not None
+                )
+                on = on or settled
+            elif option_spelled(word, {"--no-stdout"}) is not None:
+                on = False
+        previous = word
+    return on
+
+
+def option_words(
+    arguments: Sequence[Word], valued: frozenset[str], flags: frozenset[str]
+) -> tuple[list[str], list[Word]]:
+    """A call's option words before `--`, each option's value skipped (takes_next_word), and its operands: every other
+    word, after `--` every word, a word the text does not settle kept as an operand. An option's value spelled as an
+    option, as `--exclude --no-unsafe-paths`, is a value and so is neither."""
     operands: list[Word] = []
     options: list[str] = []
     words = iter(arguments)
@@ -1926,12 +1975,7 @@ def operand_writes(writer: OperandWriter, arguments: Sequence[Word], writing: fr
         options.append(word)
         if takes_next_word(word, valued, flags):
             next(words, None)
-    if not mode_given(options, valued, writer.modes, not writer.modes) or mode_given(
-        options, valued, writer.stdout, False
-    ):
-        return []
-    end = None if writer.count is None else writer.first + writer.count
-    return operands[writer.first : end]
+    return options, operands
 
 
 def takes_next_word(word: str, valued: frozenset[str], flags: frozenset[str]) -> bool:

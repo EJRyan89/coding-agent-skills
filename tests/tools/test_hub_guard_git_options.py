@@ -184,14 +184,14 @@ class CatalogueTests(unittest.TestCase):
             rows = [row for key, row in hub_guard.GIT_OPERAND_WRITERS.items() if key.split(" ")[0] == subcommand]
             return (
                 any(option in row.modes | row.stdout for row in rows)
-                or option in hub_guard.GIT_UNREAD_MODES.get(subcommand, ())
+                or (subcommand in hub_guard.GIT_UNREAD_MODES and option in hub_guard.GIT_UNREAD_MODES[subcommand].modes)
                 or entry in hub_guard.GIT_MODES_READ
             )
 
         self.assertEqual([], sorted(entry for entry in listed if not decided_flag(entry)))
 
-    def test_each_operand_writer_skips_the_value_of_every_option_git_lists_with_one(self) -> None:
-        for key, row in hub_guard.GIT_OPERAND_WRITERS.items():
+    def test_each_operand_writer_and_unread_mode_skips_the_value_of_every_option_git_lists_with_one(self) -> None:
+        for key, row in (*hub_guard.GIT_OPERAND_WRITERS.items(), *hub_guard.GIT_UNREAD_MODES.items()):
             with self.subTest(key=key):
                 subcommand = key.split(" ")[0]
                 skipped = row.valued | hub_guard.GIT_WRITING_OPTIONS.get(subcommand, frozenset())
@@ -212,7 +212,7 @@ class CatalogueTests(unittest.TestCase):
         self.assertIn("--prefix", hub_guard.GIT_WRITING_OPTIONS["checkout-index"])
         self.assertIn("--directory", hub_guard.GIT_WRITING_OPTIONS["apply"])
         self.assertIn("--directory", hub_guard.GIT_WRITING_OPTIONS["am"])
-        self.assertEqual(frozenset({"--unsafe-paths"}), hub_guard.GIT_UNREAD_MODES["apply"])
+        self.assertEqual(frozenset({"--unsafe-paths"}), hub_guard.GIT_UNREAD_MODES["apply"].modes)
 
     def test_each_subcommand_with_an_option_that_writes_or_runs_refuses_a_word_the_text_does_not_settle(self) -> None:
         # Pinned against literals, not the tables: the subcommands a probe found writing --output.
@@ -279,6 +279,30 @@ class EffectsTests(unittest.TestCase):
             ("worktree", ["move", "old", "out"], ["out"]),
             ("worktree", ["move", "-f", "old", "out"], ["out"]),
             ("worktree", ["remove", "old"], []),
+            # An option's value spelled as a mode's --no- form, or as a printing option, is that option's value.
+            ("apply", ["--unsafe-paths", "--exclude", "--no-unsafe-paths", "p.diff"], [None]),
+            ("apply", ["--unsafe-paths", "--exc", "--no-unsafe-paths", "p.diff"], [None]),
+            ("apply", ["--unsafe-paths", "-p", "--no-unsafe-paths", "p.diff"], [None]),
+            ("apply", ["--unsafe-paths", "-C", "--no-unsafe-paths", "p.diff"], [None]),
+            ("apply", ["--unsafe-paths", "--include=--no-unsafe-paths", "p.diff"], [None]),
+            ("apply", ["--exclude", "--unsafe-paths", "p.diff"], []),
+            ("apply", ["--directory", "--no-unsafe-paths", "--unsafe-paths", "p.diff"], ["--no-unsafe-paths", None]),
+            ("interpret-trailers", ["--in-place", "--trailer", "--no-in-place", "a"], ["a"]),
+            ("interpret-trailers", ["--in-place", "--where=--no-in-place", "a"], ["a"]),
+            ("merge-file", ["-L", "-p", "current", "base", "other"], ["current"]),
+            ("merge-file", ["-L", "--stdout", "current", "base", "other"], ["current"]),
+            ("merge-file", ["--marker-size", "--stdout", "current", "base", "other"], ["current"]),
+            ("merge-file", ["--diff-algorithm=--stdout", "current", "base", "other"], ["current"]),
+            ("pack-objects", ["--window", "--stdout", "out"], ["out"]),
+            ("format-patch", ["--subject-prefix", "--stdout", "-1"], ["."]),
+            ("format-patch", ["--author", "--stdout", "-1"], ["."]),
+            ("format-patch", ["--cover-letter", "--stdout"], ["."]),
+            ("format-patch", ["-1", "--stdout"], []),
+            ("format-patch", ["--stdout", "-1"], []),
+            ("format-patch", ["HEAD~2", "--stdout"], []),
+            ("format-patch", ["--subject-prefix=x", "--stdout", "-1"], []),
+            ("format-patch", ["-1", "--stdout", "--no-stdout"], ["."]),
+            ("format-patch", ["-1", "--", "--stdout"], ["."]),
             ("pack-objects", ["--stdout"], []),
             ("fast-export", ["--export-m=out"], ["out"]),
             ("diff", ["--output-indicator-new=+"], []),

@@ -2451,6 +2451,23 @@ class GitCallTests(GuardTestCase):
         self.assertIsNone(self.bash("git apply --unsafe-paths --no-unsafe-paths change.patch", self.tree))
         self.assertIsNone(self.bash("git apply -- --unsafe-paths", self.tree))
 
+    def test_an_option_s_value_spelled_as_a_mode_s_off_or_printing_form_leaves_the_write_judged(self) -> None:
+        up = Path(os.path.relpath(self.hub, self.tree)).as_posix()
+        for command, cwd, reason in (
+            ("git apply --unsafe-paths --exclude --no-unsafe-paths change.patch", self.tree, "does not settle"),
+            ("git apply --unsafe-paths --include=--no-unsafe-paths change.patch", self.tree, "does not settle"),
+            ("git apply --unsafe-paths -p --no-unsafe-paths change.patch", self.tree, "does not settle"),
+            (f"git interpret-trailers --in-place --trailer --no-in-place {up}/README.md", self.tree, "guarded hub"),
+            (f"git merge-file -L -p {up}/README.md base other", self.tree, "guarded hub"),
+            (f"git merge-file --marker-size --stdout {up}/README.md base other", self.tree, "guarded hub"),
+            ("git format-patch --subject-prefix --stdout -1", self.hub, "guarded hub"),
+            ("git format-patch --author --stdout -1", self.hub, "guarded hub"),
+        ):
+            for shell in (self.bash, self.powershell):
+                with self.subTest(command=command, shell=shell.__name__):
+                    self.assertEqual("deny", shell(command, cwd))
+                    self.assertIn(reason, self.reason)
+
     def test_an_operand_writer_that_reads_the_hub_or_writes_elsewhere_is_allowed(self) -> None:
         up = Path(os.path.relpath(self.hub, self.tree)).as_posix()
         for command, cwd in (
@@ -2661,7 +2678,7 @@ class ContractListTests(unittest.TestCase):
         operands = contract_names("(`GIT_DEFAULT_WRITES`), and", "at a path an operand names (`GIT_OPERAND_WRITERS`)")
         self.assertEqual(sorted(hub_guard.GIT_OPERAND_WRITERS), sorted(operands))
         unread = contract_names("form deciding.", "lets a")
-        self.assertEqual(entries(hub_guard.GIT_UNREAD_MODES), sorted(unread))
+        self.assertEqual(entries({key: row.modes for key, row in hub_guard.GIT_UNREAD_MODES.items()}), sorted(unread))
 
     def test_the_powershell_commands_the_guard_reads_are_the_ones_its_contract_names(self) -> None:
         named = contract_names("these cmdlets, by its name or an alias PowerShell gives it:", "Every other node")
