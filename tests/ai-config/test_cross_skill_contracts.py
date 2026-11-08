@@ -1066,14 +1066,20 @@ class CrossSkillContractTests(unittest.TestCase):
             "Read `${CLAUDE_SKILL_DIR}/../review-prs/SKILL.md` and follow its steps 2 to 5 exactly for this one pull "
             'request (or its "With the Workflow tool" section when that tool is available).'
         )
-        names = {path.parent.name for path in (REPOSITORY_ROOT / "skills").glob("*/SKILL.md")}
+        # Shipped skills and this repository's own skills both lean on other skills, so both are read and named.
+        skills = sorted(
+            path for tree in ("skills", ".claude/skills") for path in (REPOSITORY_ROOT / tree).glob("*/SKILL.md")
+        )
+        names = {path.parent.name for path in skills}
+        self.assertIn("change-skill", names)
+        self.assertIn("implement-change", names)
         self.assertEqual(["review-prs"], replayed_skills(retired, "re-review", names))
         self.assertEqual(["review-prs"], replayed_skills("Then do step 3 of `review-prs` again.", "x", names))
         self.assertEqual(["review-prs"], replayed_skills('Apply the "Posting" section of `review-prs`.', "x", names))
         self.assertEqual(
             [], replayed_skills("Run step 2 again, then invoke `review-prs` with `--re-review`.", "x", names)
         )
-        for path in sorted((REPOSITORY_ROOT / "skills").glob("*/SKILL.md")):
+        for path in skills:
             with self.subTest(skill=path.parent.name):
                 _, body = frontmatter_and_body(path.read_text(encoding="utf-8-sig"))
                 self.assertEqual([], replayed_skills(body, path.parent.name, names))
