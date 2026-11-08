@@ -665,6 +665,42 @@ class SkillScriptsFixtures(unittest.TestCase):
             CommandReader(ast.parse(script)).problems(path),
         )
 
+    def test_a_lookup_by_name_takes_a_runner_only_where_its_module_and_name_may_give_one(self) -> None:
+        script = (
+            "import builtins\n"
+            "import importlib\n"
+            "import operator\n"
+            "import os\n"
+            "import subprocess\n"
+            "def taken(name):\n"
+            '    builtins.vars(subprocess)["run"](["git"])\n'  # 7
+            # A dotted path on a module looked up by a computed name starts at a runner's name.
+            '    operator.attrgetter("run.__call__")(importlib.import_module(name))\n'  # 8
+            # A runner's attribute name on a module with no runner, a module looked up by a computed name given
+            # what is no runner's name, and a receiver that reaches no name take no runner.
+            "def quiet(name, make):\n"
+            '    vars(os)["run"]\n'
+            '    getattr(importlib.import_module(name), "DEVNULL")\n'
+            '    operator.attrgetter("DEVNULL.run")(importlib.import_module(name))\n'
+            '    getattr(make(), "run")\n'
+            "    getattr(make(), name)\n"
+        )
+        path = "skills/alpha/scripts/tool.py"
+        self.assertEqual(
+            [
+                unreadable(
+                    path, 7, "the program `builtins.vars(subprocess)['run']` runs, which a lookup by name takes"
+                ),
+                unreadable(
+                    path,
+                    8,
+                    "the program `operator.attrgetter('run.__call__')(importlib.import_module(name))` runs, which a "
+                    "lookup by name takes",
+                ),
+            ],
+            CommandReader(ast.parse(script)).problems(path),
+        )
+
     def test_command_policies_report_a_runner_in_a_collection_indexed_where_it_is_written(self) -> None:
         script = (
             "import os\n"
@@ -1440,11 +1476,27 @@ class SkillScriptsFixtures(unittest.TestCase):
                     'run(["gh", "pr", "list", "--json", "title", "-Lq"])\n'
                     'run(["gh", "pr", "list", "--json", "title", "-lq"])\n'
                     'run(["gh", "pr", "list", "--json", "title", "-R", "o/r", "-Rqo/r"])\n'
-                    'run(["gh", "pr", "view", "--json", "title", "-cw"])\n',
-                    "skills/alpha/scripts/tool.sh": "gh api repos/o/r -ftitle=q -Hquery:x -i\n",
+                    'run(["gh", "pr", "view", "--json", "title", "-cw"])\n'
+                    # A long flag is no cluster, whatever letters follow its dashes.
+                    'run(["gh", "pr", "view", "--json", "title", "--quiet", "--iq"])\n',
+                    "skills/alpha/scripts/tool.sh": "gh api repos/o/r -ftitle=q -Hquery:x -i\n"
+                    "gh pr view --json title --quiet --iq\n",
                 },
             )
             self.assertEqual([], gh_filter_problems(root))
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            # A long filter flag's attached filter may run onto further lines.
+            write_fixture_tree(
+                root, {"skills/alpha/scripts/tool.py": 'run(["gh", "pr", "view", "--json", "title", "--jq=.a\\n.b"])\n'}
+            )
+            self.assertEqual(
+                [
+                    "skills/alpha/scripts/tool.py:1 filters gh output with --jq; parse its JSON in Python instead; "
+                    f"see {doc}"
+                ],
+                gh_filter_problems(root),
+            )
 
     def test_the_gh_filter_shorthands_are_read_on_gh_api_and_on_a_continued_command(self) -> None:
         doc = '"Commands skills may run" in docs/adding-a-skill.md'

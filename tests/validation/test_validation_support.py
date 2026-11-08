@@ -310,6 +310,33 @@ def test_a_module_looked_up_by_its_name_is_read_through_the_imports(source: str,
     assert expected == module_lookup(last_expression(tree), CallableResolver(tree))
 
 
+# What a lookup by a constant name stands for, as (name, attribute) for each reference: the attribute on each owner
+# its receiver may name, every binding of the looked-up name kept, and the attribute with no name where the receiver
+# names nothing.
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    [
+        pytest.param(
+            'if flag:\n    owner = os\nelse:\n    owner = sys\nvars(owner)["path"]',
+            [("os.path", "path"), ("sys.path", "path")],
+            id="a receiver with several owners",
+        ),
+        pytest.param(
+            'if flag:\n    found = getattr(os, "sep")\nelse:\n    found = vars(sys)["path"]\nfound',
+            [("os.sep", "sep"), ("sys.path", "path")],
+            id="a name bound to several lookups",
+        ),
+        pytest.param('getattr(make(), "path")', [("", "path")], id="a receiver that names nothing"),
+    ],
+)
+def test_a_lookup_by_a_constant_name_reads_as_the_attribute_on_each_owner(
+    source: str, expected: list[tuple[str, str]]
+) -> None:
+    tree = ast.parse("import os\nimport sys\n" + source)
+    references = resolved_references(last_expression(tree), CallableResolver(tree))
+    assert expected == [(reference.name, reference.attribute) for reference in references]
+
+
 # Each form of the catalogue of lookups by name, as (receiver, name, alone, literal attribute) for each lookup it reads.
 @pytest.mark.parametrize(
     ("source", "expected"),
