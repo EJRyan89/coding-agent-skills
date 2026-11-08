@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 import functools
 import os
+import secrets
 import sys
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -18,7 +19,14 @@ from path_containment import posix_within
 from . import fsops, hashing, manifest, platform_support, state_files
 from .errors import DeployError, see_recovery
 from .kinds import KINDS
-from .names import BACKUP_SUFFIX, deletion_name, safe_name_problem, transient_name
+from .names import (
+    BACKUP_SUFFIX,
+    deletion_name,
+    safe_name_problem,
+    spare_deletion_name,
+    spare_deletion_token,
+    transient_name,
+)
 from .paths import Paths
 from .render import ADAPTER_STAGING, AGENT_STAGING
 
@@ -502,63 +510,85 @@ def _deletion_path(paths: Paths, entry: JournalEntry) -> Path:
     return root_directory(paths, entry_root(entry)) / deletion_name(entry["item"])
 
 
-def _finish_deletion(deletion: Path) -> bool:
-    """Delete what a deletion stopped partway, by a kill or an error, left at an item's deletion name, and return
-    whether something still stays there. The deployer had already decided to delete that copy, so what is left of it
-    is no one's change, and only the deployer uses the name.
+def _deletion_leftovers(deletion: Path) -> list[Path]:
+    """What earlier deletions left beside an item: at its deletion name, and at each spare deletion name, which a
+    deletion takes while what is at the first stays. Nothing is listed when the root is not a folder."""
+    root = deletion.parent
+    found = [deletion] if file_presence.is_occupied(deletion) else []
+    if not file_presence.is_directory(root, other_is_absent=True):
+        return found
+    deletion_key = platform_support.name_key(deletion.name, root)
+    spares = (
+        root / entry.name
+        for entry in sorted(os.scandir(root), key=lambda entry: entry.name)
+        if spare_deletion_token(platform_support.name_key(entry.name, root), deletion_key) is not None
+    )
+    return [*found, *spares]
+
+
+def _finish_deletion(deletion: Path) -> None:
+    """Delete what deletions stopped partway, by a kill or an error, left at an item's deletion name and its spare
+    deletion names. The deployer had already decided to delete those copies, so what is left of them is no one's
+    change, and only the deployer uses the names.
 
     What cannot be deleted, such as a copy holding a file another program has open, is named in a warning and left
-    for the user, so it holds up no later run: the caller then deletes its own copy where it stands.
+    for the user, so it holds up no later run: the caller then deletes its own copy under a spare deletion name.
     """
-    try:
-        if file_presence.is_occupied(deletion):
-            fsops.remove(deletion)
-    except OSError as error:
-        _warn(
-            f"What is left of a copy the deployer was deleting stays at {platform_support.normalize(deletion)}: "
-            f"{error.strerror or error}. Delete it once nothing holds it open. {see_recovery('Backups')}"
-        )
-        return True
-    return False
+    for leftover in _deletion_leftovers(deletion):
+        try:
+            fsops.remove(leftover)
+        except OSError as error:
+            _warn(
+                f"What is left of a copy the deployer was deleting stays at {platform_support.normalize(leftover)}: "
+                f"{error.strerror or error}. Delete it once nothing holds it open. {see_recovery('Backups')}"
+            )
 
 
-def _delete_copy(path: Path, deletion: Path) -> None:
-    """Delete path by renaming it to its item's deletion name first, so a kill or an error partway through leaves it
-    whole at path or what is left of it at deletion, which _finish_deletion completes, and never part of it at path,
-    where recovery would judge the remainder by its hash as a change the user made. While what an earlier deletion
-    left at that name stays, path is deleted where it stands. An OSError of the deletion is raised."""
-    if _finish_deletion(deletion):
-        fsops.remove(path)
-        return
-    fsops.move(path, deletion)
-    fsops.remove(deletion)
+def _free_deletion_name(deletion: Path, item: str) -> Path:
+    """The deletion name a copy of item takes now: its deletion name, or, while something an earlier deletion left
+    stays there, a spare deletion name nothing stands at."""
+    if not file_presence.is_occupied(deletion):
+        return deletion
+    while True:
+        spare = deletion.parent / spare_deletion_name(item, secrets.token_hex(4))
+        if not file_presence.is_occupied(spare):
+            return spare
+
+
+def _delete_copy(path: Path, deletion: Path, item: str) -> None:
+    """Delete path by renaming it to a deletion name first, so a kill or an error partway through leaves it whole at
+    path or what is left of it under a deletion name, which _finish_deletion completes, and never part of it at path,
+    where recovery would judge the remainder by its hash as a change the user made. While what an earlier deletion left
+    at the item's deletion name stays, path takes a spare deletion name instead, and is never deleted where it stands.
+    An OSError of the rename or the deletion is raised."""
+    _finish_deletion(deletion)
+    spare = _free_deletion_name(deletion, item)
+    fsops.move(path, spare)
+    fsops.remove(spare)
 
 
 def _delete_backup(item: str, transient: Path, deletion: Path) -> None:
     """Delete a committed run's transient backup as _delete_copy does. The run is committed, so a failure, such as of a
     file another program holds open, does not fail it: the warning names where the copy, or what is left of it, stays.
     """
-    held = _finish_deletion(deletion)
+    _finish_deletion(deletion)
+    if not file_presence.is_occupied(transient):
+        return
+    spare = _free_deletion_name(deletion, item)
     try:
-        if held:
-            fsops.remove(transient)
-        elif file_presence.is_occupied(transient):
-            fsops.move(transient, deletion)
+        fsops.move(transient, spare)
     except OSError as error:
-        stays = "it, or what is left of it, stays" if held else "it stays"
         _warn(
-            f"{item}'s previous copy could not be deleted, so {stays} at {platform_support.normalize(transient)}: "
+            f"{item}'s previous copy could not be deleted, so it stays at {platform_support.normalize(transient)}: "
             f"{error.strerror or error}. Delete it once nothing holds it open. {see_recovery('Backups')}"
         )
         return
-    if held:
-        return
     try:
-        fsops.remove(deletion)
+        fsops.remove(spare)
     except OSError as error:
         _warn(
             f"{item}'s previous copy could not be deleted, so what is left of it stays at "
-            f"{platform_support.normalize(deletion)}: {error.strerror or error}. Delete it once nothing holds it open. "
+            f"{platform_support.normalize(spare)}: {error.strerror or error}. Delete it once nothing holds it open. "
             f"{see_recovery('Backups')}"
         )
 
@@ -651,10 +681,12 @@ def _undo_install(paths: Paths, entry: InstallEntry, backup_hash: str | None) ->
         _finish_deletion(deletion)
         return True
     if actual == entry["staged_hash"]:
-        _delete_copy(target, deletion)
+        _delete_copy(target, deletion, entry["item"])
         return True
     if actual == backup_hash and not file_presence.is_occupied(_item_path(paths, entry, BACKUP_SUFFIX)):
-        # An earlier rollback that stopped partway already put the replaced copy back.
+        # An earlier rollback that stopped partway already put the replaced copy back, after its deletion of the copy
+        # the run installed failed partway and left the rest of it under a deletion name.
+        _finish_deletion(deletion)
         return True
     _warn(f"Cannot rollback install of {entry['item']} (hash mismatch)")
     return False
