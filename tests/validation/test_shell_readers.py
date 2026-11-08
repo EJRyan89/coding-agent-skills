@@ -170,9 +170,6 @@ def test_shell_command_extraction_reads_the_program_the_time_keyword_times(scrip
     "script",
     [
         "time git push",
-        "time -p git push",
-        "time -p -- git push",
-        "! time -p git push",
         "time -p git push | cat",
         "echo a | time -p git push",
         "x=$(time -p git push)",
@@ -393,9 +390,9 @@ def test_the_git_subcommand_reader_reads_the_git_command_a_started_script_runs(s
 
 # A git command a wrapper of COMMAND_WRAPPERS or find's -exec family runs directly is read past the wrapper's options,
 # and a wrapper of a wrapper, to the git command's own words; find's action ends at its `;` or `{} +`. A bare `time` is
-# Bash's keyword, not the time program, so its row reaches the program through env. An action with no terminator runs
-# to the end of the command. tests/audit-skill/test_audit_skill_runtime_needs.py holds audit-skill's reader to these
-# rows.
+# Bash's keyword, not the time program, so the program's row reaches it through env, and the keyword's rows are read
+# past its -p and --, and after `!`. An action with no terminator runs to the end of the command.
+# tests/audit-skill/test_audit_skill_runtime_needs.py holds audit-skill's reader to these rows.
 WRAPPED_GIT_PUSH_SCRIPTS = (
     "xargs git push",
     "env git push",
@@ -408,6 +405,9 @@ WRAPPED_GIT_PUSH_SCRIPTS = (
     "exec git push",
     "nohup git push",
     "env time -p git push",
+    "time -p git push",
+    "time -p -- git push",
+    "! time -p git push",
     "nice -n 5 git push",
     "env -i A=1 git push",
     "env -S 'git push'",
