@@ -28,6 +28,7 @@ from shell_targets import run_bash_suite
 from skill_scripts import (
     ASSIGNMENT,
     COMMAND_WRAPPERS,
+    PIPES,
     SCRIPT_SHELLS,
     STANDARD_STREAMS,
     UNREAD_PROGRAM,
@@ -435,8 +436,6 @@ def suite_shape_problems(root: Path) -> list[str]:
     return problems
 
 
-# A pipe hands the next command what the one before it writes.
-PIPES = frozenset({"|", "|&"})
 # What ends a simple command in a Bash suite. A redirection's < and > stay in the command they belong to.
 COMMAND_BREAKS = frozenset({";", ";;", "&", "&&", "||", "|", "|&", "(", ")", "{", "}", "\n"})
 # Bash's compound commands, each by the keyword that opens it and the one that closes it; every command of one a pipe
