@@ -2069,7 +2069,8 @@ class ReviewArgumentsTests(TrackerPipelineFixture):
 
 def test_an_override_line_holding_a_line_break_prints_on_one_line() -> None:
     # An override's key and the configured path are values a user typed or configured.
-    changes = (Path("/config\nWROTE elsewhere"), {"o/r#1\u2028SET x": "merged"})
+    folder = "config" + chr(10) + "WROTE elsewhere"
+    changes = (Path("/", folder), {"o/r#1\u2028SET x": "merged"})
     output = io.StringIO()
     with mock.patch.object(tp, "change_overrides", return_value=changes), contextlib.redirect_stdout(output):
         assert tp._override(["o/r#1=merged"], [], None) == 0
