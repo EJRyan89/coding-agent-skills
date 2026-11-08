@@ -286,7 +286,8 @@ a row decides it.
   two spellings disagree, the call is judged by the upper-case one, the spelling git reads, with a note.
 - **Bash, by its grammar.** `tools/bash_syntax.py` reads Bash as Bash parses it: single and double quotes, `$'...'`,
   escapes and line continuations, comments, and here-documents, and the command tree of lists, `&&` and `||`,
-  pipelines, `( )` subshells, `{ }` groups, `if`, `case`, `while`, `until`, `for`, `select`, `!`, and `time`. The
+  pipelines, `( )` subshells, `{ }` groups, `if`, `case`, `while`, `until`, `for`, `select`, `!`, and `time` with
+  its `-p` and `--`. The
   guard understands a simple command whose name is literal once quotes are removed and is a builtin
   `BUILTINS_UNDERSTOOD` names or a program, wherever the tree holds it, as the runner rule below judges it, and reads
   each of its words as literal text, `~`, or an expansion `EXPANSIONS_UNDERSTOOD` names, which leaves its word one
