@@ -79,22 +79,30 @@ def unwrapped(words: list[str], wrappers: Mapping[str, OptionTable] = COMMAND_WR
     """The words of the command a wrapper of `wrappers` runs, from its program on: past the wrapper's options and their
     values, in every spelling option_refusal reads, the assignments env takes, and the duration timeout takes, with
     the command line env's -S or --split-string holds split into the words it runs. Empty for a command that is no
-    wrapper, one that names no program, and `command -v` or `-V`, which only looks one up. A wrapper option the table
-    does not settle, such as an abbreviation, gives one word, UNREAD_PROGRAM and the wrapper with that option, so no
-    word is taken for the program unread."""
+    wrapper, one that names no program, and `command` given -v or -V among its own options, alone or in a bundle such
+    as `-pv`, which only looks one up; a -v after the program is the program's own. A wrapper option the table does not
+    settle, such as an abbreviation, gives one word, UNREAD_PROGRAM and the wrapper with that option, so no word is
+    taken for the program unread."""
     head, rest = words[0], words[1:]
     table = wrappers.get(head)
-    if table is None or (head == "command" and LOOKUP_ONLY_OPTIONS & set(rest)):
+    if table is None:
         return []
     reading = option_refusal(table, list(rest))
     if reading.refused is not None:
         return [f"{UNREAD_PROGRAM}{head} {reading.refused}"]
+    if head == "command" and any(looks_up(word) for word in rest[: reading.stop]):
+        return []
     split = [value or "" for option, value in reading.values if option in ENV_SPLIT_OPTIONS]
     if head == "env" and split:
         return unwrapped(
             ["env", *(word for value in split for word in split_line(value)), *rest[reading.stop :]], wrappers
         )
     return rest[reading.stop :]
+
+
+def looks_up(word: str) -> bool:
+    """Whether one of `command`'s option words, alone or bundled, holds a letter of LOOKUP_ONLY_OPTIONS."""
+    return word.startswith("-") and word != "--" and any(f"-{letter}" in LOOKUP_ONLY_OPTIONS for letter in word[1:])
 
 
 def split_line(value: str) -> list[str]:

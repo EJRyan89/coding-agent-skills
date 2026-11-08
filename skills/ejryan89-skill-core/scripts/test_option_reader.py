@@ -66,6 +66,12 @@ def test_operands_assignments_and_numbered_options_stand_before_the_command() ->
     assert nice.stop == 1
 
 
+def test_a_value_taking_option_at_the_end_takes_an_empty_value() -> None:
+    reading = option_refusal(XARGS, ["-n"])
+    assert (reading.refused, reading.stop, reading.values) == (None, 1, [("-n", "")])
+    assert option_refusal(XARGS, ["--max-args"]).values == [("--max-args", "")]
+
+
 def test_a_word_the_text_does_not_settle_ends_the_reading() -> None:
     assert (option_refusal(XARGS, ["-0", None, "git"]).refused, option_refusal(XARGS, ["-0", None]).stop) == (None, 1)
 

@@ -58,6 +58,17 @@ def test_audit_skill_reads_the_git_command_a_wrapper_runs_as_validation_does(scr
     ("script", "subcommands"),
     [
         ("command -v git push", set()),
+        # command's -v or -V looks a program up only among command's own options, bundled or not; after the program
+        # it is the program's own option.
+        ("command -pv git push", set()),
+        ("command -Vp git push", set()),
+        ("command git push -v", {"push"}),
+        ("command -p git fetch -v", {"fetch"}),
+        # `||` is no pipe, so `time` after it, or on the line after one that ends in it, is Bash's keyword, whose
+        # second -p is the timed command's word; after a pipe it is the time program.
+        ("a || time -p -p git push", set()),
+        ("a ||\ntime -p -p git push", set()),
+        ("a |\ntime -p -p git push", {"push"}),
         ("xargs echo git push", set()),
         ("timeout --sig TERM 5 git push", set()),
         ("find . -exec git status {} \\; -exec echo push \\;", {"status"}),

@@ -601,7 +601,7 @@ SIBLING_SKILL = re.compile(r"\$\{CLAUDE_SKILL_DIR\}/\.\./([A-Za-z0-9._-]+)/")
 # A Bash command's text from where it starts, at the line's start, after an operator, or inside a substitution,
 # up to the operator or substitution that ends it outside quotes and escapes; a substitution inside it is its own.
 SHELL_COMMAND = re.compile(
-    r"(^|\|&|[;&|(`]|\$\()"
+    r"(^|\|\||&&|\|&|[;&|(`]|\$\()"
     r"((?:\\.|'[^']*'|\"(?:\\.|[^\"\\$`]|\$(?!\())*\"|\$(?!\()|[^;&|()`\n\\'\"$])*)"
 )
 # The words that may stand before a command's program: Bash's reserved words and a group's brace. Bash's time keyword
@@ -2735,12 +2735,14 @@ def bash_git_subcommands(text: str) -> set[str]:
     for line in text.replace("\\\n", " ").splitlines():
         if line.lstrip().startswith("#"):
             continue
+        start, command = "", ""
         for match in SHELL_COMMAND.finditer(line):
-            start, command = match.groups()
             # After a pipe, or at the start of the line right after one, `time` is the time program, not the keyword.
-            reserved = start not in PIPES and not (match.start() == 0 and after_pipe)
+            reserved = match.group(1) not in PIPES and not (match.group(1) == "" and after_pipe)
+            start, command = match.groups()
             found |= command_git_subcommands(shell_words(command), reserved)
-        after_pipe = line.rstrip().endswith(tuple(PIPES))
+        # A line whose last operator is a pipe with no command after it hands its output to the next line's command.
+        after_pipe = start in PIPES and not command.strip()
     return found
 
 
