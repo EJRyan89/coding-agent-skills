@@ -163,7 +163,7 @@ An installation follows releases: fixes land on `main` and reach users at the ne
 To update by hand, update the clone, preview the deployment, and then apply it:
 
 ```bash
-git pull --ff-only
+git pull --ff-only origin main
 python deploy.py --all --dry-run
 python deploy.py --all
 ```

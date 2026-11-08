@@ -69,7 +69,7 @@ A skill then starts as `/coding-agent-skills:<skill>`, and `coding-agent-skills-
 
 ## Updating and uninstalling
 
-Start `update-coding-agent-skills` from any runtime: it deploys the latest release, since fixes land on `main` and reach you at the next tag, and it follows `main` itself only when you opt in with `UPDATE_CHANNEL=main` in `configure`. To follow `main` by hand, use `git pull --ff-only` and the same dry run and deployment as above. To uninstall, run `python deploy.py --uninstall`; locally modified copies are kept. [Installation](docs/installation.md#updating) covers both.
+Start `update-coding-agent-skills` from any runtime: it deploys the latest release, since fixes land on `main` and reach you at the next tag, and it follows `main` itself only when you opt in with `UPDATE_CHANNEL=main` in `configure`. To follow `main` by hand, use `git pull --ff-only origin main` and the same dry run and deployment as above. To uninstall, run `python deploy.py --uninstall`; locally modified copies are kept. [Installation](docs/installation.md#updating) covers both.
 
 ## Safety model
 

@@ -1301,7 +1301,7 @@ class HookCommandUnderPowerShellTests(GuardTestCase):
 
 
 UNPLACED = "could not tell where `git {}` runs"
-WRITES = "`git {}` would move the hub's HEAD or write its index or tree."
+WRITES = "`git {}` is not a read-only form the hub allows"
 
 
 def guard_section() -> str:
@@ -1321,22 +1321,33 @@ def contract_names(after: str, before: str) -> list[str]:
 
 
 class CommandGuardTests(GuardTestCase):
-    def test_upstream_values_and_real_rename_options_reach_both_shell_guard_decisions(self) -> None:
+    def test_upstream_and_rename_options_of_branch_are_refused_in_the_hub_through_both_shells(self) -> None:
+        # An upstream set in the hub is one a bare pull would follow (#2468), so none is set, origin/main included.
         for shell in (self.bash, self.powershell):
-            for options, expected in (
-                ("-uorigin/main", None),
-                ("-uorigin/MAIN", None),
-                ("-quorigin/mM-feature", None),
-                ("-u origin/main", None),
-                ("--set-upstream-to=origin/main", None),
-                ("-fm main renamed", "deny"),
-                ("-qM main renamed", "deny"),
-                ("-uorigin/main -m renamed", "deny"),
-                ("--mov main renamed", "deny"),
+            for options in (
+                "-uorigin/main",
+                "-uorigin/MAIN",
+                "-quorigin/mM-feature",
+                "-u origin/main",
+                "-u feat/demo",
+                "--set-upstream-to=origin/main",
+                "--set-upstream-to=feat/demo",
+                "--set-upstream-t feat/demo",
+                "--unset-upstream",
+                "-t origin/main",
+                "-fm main renamed",
+                "-qM main renamed",
+                "-uorigin/main -m renamed",
+                "--mov main renamed",
+                "-m renamed",
+                "renamed",
+                "-c main copy",
+                "-f other main",
             ):
                 with self.subTest(shell=shell.__name__, options=options):
-                    self.assertEqual(expected, shell(f"git branch {options}", self.hub))
-                    self.assertEqual("", self.stderr)
+                    self.assertEqual("deny", shell(f"git branch {options}", self.hub))
+                    self.assertIn(WRITES.format("branch"), self.reason)
+                    self.assertIsNone(shell(f"git branch {options}", self.tree))
         self.assertEqual("main\n", self.git(self.hub, "branch", "--show-current"))
         self.assertEqual("", self.git(self.hub, "status", "--porcelain"))
 
@@ -1442,20 +1453,16 @@ class CommandGuardTests(GuardTestCase):
             "git diff",
             "git fetch origin",
             "git fetch --prune origin",
-            "git pull --ff-only",
             "git pull --ff-only origin main",
             "git pull -q --ff-only --no-rebase origin main",
             "git merge --ff-only origin/main",
             "git merge --quiet --ff-only origin/main",
-            "git submodule status",
-            "git submodule",
-            "git submodule --quiet status --recursive",
-            "git submodule summary",
             "git branch",
             "git branch --show-current",
             "git branch --merged main",
             "git branch -D feat/demo",
-            "git branch -u origin/main",
+            "git branch -vv",
+            "git branch --list 'feat/*'",
             "git switch main",
             "git checkout -q main",
             "git switch main 2>&1",
@@ -1480,15 +1487,33 @@ class CommandGuardTests(GuardTestCase):
             ("git merge --ff-only main", "main"),
             ("git merge --ff-only", "its upstream"),
             ("git merge --ff-only origin/main feat/demo", "origin/main feat/demo"),
-            ("git merge --ff-only --autostash origin/main", "--autostash origin/main"),
             ("git pull --ff-only origin feat/demo", "origin feat/demo"),
             ("git pull --ff-only upstream main", "upstream main"),
             ("git pull --ff-only origin", "origin"),
-            ("git pull --ff-only --rebase origin main", "--rebase origin main"),
+            # A bare pull follows the upstream a setting names, which branch -u or a worktree may change (#2468).
+            ("git pull --ff-only", "its upstream"),
+            ("git pull -q --ff-only", "its upstream"),
         ):
             with self.subTest(command=command):
                 self.assertEqual("deny", self.bash(command, self.hub))
                 self.assertIn(f"only to origin/main, not to {target}.", self.reason)
+        # Any option no row declares is refused, so the last value of --ff-only is the one given.
+        for command in (
+            "git merge --ff-only --autostash origin/main",
+            "git merge --ff-only --no-ff origin/main",
+            "git merge --ff-only --ff origin/main",
+            "git merge --ff-on origin/main",
+            "git pull --ff-only --rebase origin main",
+            "git pull --ff-only -r origin main",
+            "git pull --ff-only --ff origin main",
+            "git pull --ff-only --set-upstream origin main",
+            "git merge origin/main",
+            "git pull origin main",
+            "git merge --ff-only -- origin/main",
+        ):
+            with self.subTest(command=command):
+                self.assertEqual("deny", self.bash(command, self.hub))
+                self.assertIn("is not a read-only form the hub allows", self.reason)
         self.assertIsNone(self.bash("git merge --ff-only feat/demo", self.tree))
 
     def test_aliases_are_judged_by_what_they_run(self) -> None:
@@ -1632,7 +1657,9 @@ class PowerShellGuardTests(GuardTestCase):
 
     def test_the_hub_refuses_powershell_git_writes_but_allows_maintenance_and_work_in_a_worktree(self) -> None:
         self.assertEqual("deny", self.powershell("git switch feat/demo", self.hub))
-        self.assertIsNone(self.powershell("git status; git switch main; git pull --ff-only; git stash list", self.hub))
+        self.assertIsNone(
+            self.powershell("git status; git switch main; git pull --ff-only origin main; git stash list", self.hub)
+        )
         self.assertIsNone(self.powershell(f"Set-Location '{self.tree}'; git commit -m \"it's done\"", self.hub))
 
     def test_a_worktree_session_cannot_reach_into_the_hub_through_either_shell(self) -> None:
@@ -1739,7 +1766,9 @@ class UnderstoodSetTests(GuardTestCase):
             # A word log is given may be --output; one after -- is a path.
             ('git log -1 "$REV"', self.hub, "deny"),
             ('git log -1 -- "$REV"', self.hub, None),
-            ('git status "$REV"', self.hub, None),
+            # In a hub every word before -- is read against its row, so one the text does not settle is refused.
+            ('git status "$REV"', self.hub, "deny"),
+            ('git status -- "$REV"', self.hub, None),
             ('git -C "$SOMEWHERE" status', self.hub, None),
             ('git commit -m "$(date)"', self.tree, None),
             ('git branch "$name"', self.hub, "deny"),
@@ -2198,10 +2227,17 @@ class GitCallTests(GuardTestCase):
             "git fetch -u origin main:main",
             "git fetch -qu origin main:main",
             "git fetch --update-h origin main:main",
+            "git fetch --update-head-ok origin",
+            "git fetch -qu origin",
+            # A refspec with a destination writes the ref a later fast-forward to origin/main follows.
+            "git fetch origin feat/demo:refs/remotes/origin/main",
+            "git fetch origin +feat/demo:main",
+            "git fetch --set-upstream origin feat/demo",
+            "git fetch --refmap= origin",
         ):
             with self.subTest(command=command):
                 self.assertEqual("deny", self.bash(command, self.hub))
-                self.assertIn("`git fetch --update-head-ok` would move the branch the hub's HEAD names.", self.reason)
+                self.assertIn(WRITES.format("fetch"), self.reason)
                 self.assertIsNone(self.bash(command, self.tree))
         for command in ("git fetch origin", "git fetch -j 2 origin", "git fetch -o u origin", "git fetch -- -u"):
             with self.subTest(command=command):
@@ -2226,7 +2262,7 @@ class GitCallTests(GuardTestCase):
         ):
             with self.subTest(command=command, cwd=str(cwd)):
                 self.assertEqual("deny", self.bash(command, cwd))
-                self.assertIn("would move the hub's HEAD", self.reason)
+                self.assertIn("is not a read-only form the hub allows", self.reason)
         self.assertEqual("deny", self.powershell(f"git --git-dir='{git_dir}' commit -m x", self.tree))
         other = self.other_repository() / ".git"
         self.assertIsNone(self.bash(f'git --git-dir="{other}" commit -m x', self.tree))
@@ -2389,14 +2425,14 @@ class GitCallTests(GuardTestCase):
             ("git diff --output=out.patch", self.tree),
             ("git archive -o out.tar HEAD", self.tree),
             ("git format-patch -1", self.tree),
-            ("git format-patch -1 --stdout", self.hub),
-            ("git diff --output=/dev/null", self.hub),
-            ("git log --output-indicator-new=+ -p -1", self.hub),
+            ("git format-patch -1 --stdout", self.tree),
+            ("git diff --output=/dev/null", self.tree),
+            ("git log --output-indicator-new=+ -p -1", self.tree),
             ("git diff -- --output=README.md", self.hub),
             ("git bundle create out.bundle HEAD", self.tree),
             ("git worktree add -b topic .claude/worktrees/fix-topic", self.hub),
             ("git init", self.tree),
-            (f'git clone https://example.invalid/x.git "{self.root / "copy"}"', self.hub),
+            (f'git clone https://example.invalid/x.git "{self.root / "copy"}"', self.tree),
             ("git config --file out.config a.b c", self.tree),
             (f'git config --file "{self.hub / "local.json"}" a.b c', self.tree),
         ):
@@ -2471,10 +2507,10 @@ class GitCallTests(GuardTestCase):
     def test_an_operand_writer_that_reads_the_hub_or_writes_elsewhere_is_allowed(self) -> None:
         up = Path(os.path.relpath(self.hub, self.tree)).as_posix()
         for command, cwd in (
-            ('git interpret-trailers --trailer "Reviewed-by: x" README.md', self.hub),
-            ("git interpret-trailers README.md", self.hub),
-            ("git interpret-trailers --in-place --no-in-place README.md", self.hub),
-            ("git interpret-trailers -- --in-place README.md", self.hub),
+            (f'git interpret-trailers --trailer "Reviewed-by: x" {up}/CLAUDE.md', self.tree),
+            (f"git interpret-trailers {up}/README.md", self.tree),
+            (f"git interpret-trailers --in-place --no-in-place {up}/README.md", self.tree),
+            (f"git interpret-trailers -- --in-place {up}/README.md", self.tree),
             (f'git interpret-trailers --trailer "Reviewed-by: x" {up}/README.md', self.tree),
             ("git interpret-trailers --in-place README.md", self.tree),
             ("git mailinfo out.msg out.patch", self.tree),
@@ -2623,13 +2659,10 @@ class HubsInViewTests(unittest.TestCase):
 class ContractListTests(unittest.TestCase):
     """Each list of names the guard's section of docs/parallel-sessions.md gives is the set tools/hub_guard.py reads."""
 
-    def test_the_refused_subcommands_are_the_writing_subcommands(self) -> None:
-        lines = guard_section().split("\n")
-        start = next(index for index, line in enumerate(lines) if "**Refused git commands.**" in line)
-        end = next(index for index, line in enumerate(lines) if "**Still allowed in the hub.**" in line)
-        listed = [name for line in lines[start:end] if line.startswith("  - ") for name in CODE_SPAN.findall(line)]
+    def test_the_forms_the_hub_allows_are_the_read_only_forms(self) -> None:
+        listed = contract_names("The rows of `READ_ONLY_FORMS` are", ". Most read")
         self.assertEqual(len(listed), len(set(listed)))
-        self.assertEqual(sorted(hub_guard.WRITING_SUBCOMMANDS), sorted(listed))
+        self.assertEqual(sorted(hub_guard.READ_ONLY_FORMS), sorted(listed))
 
     def test_the_file_tools_are_the_ones_the_guard_judges_by_their_path(self) -> None:
         self.assertEqual(sorted(hub_guard.FILE_TOOLS), sorted(contract_names("**File tools.**", "is refused when")))
@@ -2642,12 +2675,12 @@ class ContractListTests(unittest.TestCase):
             ["Bash", "Edit", "Monitor", "NotebookEdit", "PowerShell", "Write"], sorted(group["matcher"].split("|"))
         )
 
-    def test_the_fast_forward_options_and_the_reading_submodule_subcommands_are_the_guard_s(self) -> None:
-        self.assertEqual(
-            sorted(hub_guard.FAST_FORWARD_OPTIONS), sorted(contract_names("`origin main`;", "and a fast-forward to"))
-        )
-        named = contract_names("`submodule` with no subcommand,", "; every other subcommand")
-        self.assertEqual(hub_guard.READ_SUBMODULE, {None, *(name.removeprefix("submodule ") for name in named)})
+    def test_the_fast_forward_options_are_the_guard_s(self) -> None:
+        named = set(contract_names("`merge --ff-only origin/main`, each also with", "; the target is named in full"))
+        pull, merge = hub_guard.READ_ONLY_FORMS["pull"], hub_guard.READ_ONLY_FORMS["merge"]
+        self.assertEqual(sorted(named | {"--ff-only"}), sorted(pull.flags))
+        self.assertEqual(sorted(named - {"--no-rebase"} | {"--ff-only"}), sorted(merge.flags))
+        self.assertEqual((frozenset(), frozenset()), (pull.valued | pull.attached, merge.valued | merge.attached))
 
     def test_git_s_options_with_a_value_are_the_ones_the_guard_reads(self) -> None:
         # The guard reads git_client's list, the one home of the options git reads a value after.
@@ -2758,17 +2791,194 @@ class WorkflowTests(GuardTestCase):
                     self.assertNotIn("could not", self.stderr)
 
     def test_the_documented_hub_commands_are_allowed_in_the_hub(self) -> None:
-        for command in (
-            "git pull --ff-only",
-            "git fetch --prune origin",
-            "python tools/worktrees.py list",
-            "git worktree remove '.claude/worktrees/feat-demo'",
-            "git branch -D 'feat/demo'",
-            "git switch main",
+        # Each git command a document or a repository skill tells the hub to run, as the document writes it, and the
+        # same command with its placeholders filled in; the guard must allow each from the hub through both shells.
+        # The repository skills that work on the hub, repo-cleanup and shepherd-pull-requests, and tools/worktrees.py,
+        # run git from Python, which the hook never sees, so the commands a session types are these.
+        for document, written, command in (
+            ("CLAUDE.md", "`git worktree remove <path>`", "git worktree remove '.claude/worktrees/feat-demo'"),
+            ("CLAUDE.md", "`git branch -D <kind>/<name>`", "git branch -D 'feat/demo'"),
+            ("CLAUDE.md", "`git fetch origin main`", "git fetch origin main"),
+            (
+                "docs/parallel-sessions.md",
+                "git worktree remove '.claude/worktrees/<kind>-<name>'",
+                "git worktree remove '.claude/worktrees/feat-demo'",
+            ),
+            ("docs/parallel-sessions.md", "git branch -D '<kind>/<name>'", "git branch -D 'feat/demo'"),
+            ("docs/parallel-sessions.md", "python tools/worktrees.py list", "python tools/worktrees.py list"),
+            ("CONTRIBUTING.md", "git pull --ff-only origin main", "git pull --ff-only origin main"),
+            ("CONTRIBUTING.md", "git fetch origin main --tags", "git fetch origin main --tags"),
+            ("docs/installation.md", "git pull --ff-only origin main", "git pull --ff-only origin main"),
+            ("docs/implementing-changes.md", "`git pull --ff-only origin main`", "git pull --ff-only origin main"),
+            ("docs/implementing-changes.md", "`git merge --ff-only origin/main`", "git merge --ff-only origin/main"),
+            (
+                "docs/releasing.md",
+                "git grep -n -i -w -F -f '<list>' -- .",
+                "git grep -n -i -w -F -f 'terms.txt' -- .",
+            ),
+            ("docs/code-review-operations.md", "`git ls-remote origin HEAD`", "git ls-remote origin HEAD"),
+            ("README.md", "`git pull --ff-only origin main`", "git pull --ff-only origin main"),
+            ("docs/parallel-sessions.md", "`switch main`", "git switch main"),
+            ("docs/parallel-sessions.md", "`checkout main`", "git checkout -q main"),
         ):
+            text = (REPOSITORY_ROOT / document).read_text(encoding="utf-8")
+            with self.subTest(document=document, written=written):
+                self.assertIn(written, text)
             for shell in (self.bash, self.powershell):
                 with self.subTest(command=command, shell=shell.__name__):
                     self.assertIsNone(shell(command, self.hub))
+                    self.assertNotIn("could not", self.stderr)
+        for command in ("git fetch --prune origin", "git status --short", "git log --oneline -5", "git worktree list"):
+            with self.subTest(command=command):
+                self.assertIsNone(self.bash(command, self.hub))
+
+
+class ReadOnlyFormTests(GuardTestCase):
+    """A git call that acts on a guarded hub is allowed only in a form READ_ONLY_FORMS declares (#2468)."""
+
+    def refused_in_the_hub(
+        self, commands: Sequence[str], reason: str | None = "is not a read-only form the hub allows"
+    ) -> None:
+        for command in commands:
+            for shell in (self.bash, self.powershell):
+                with self.subTest(command=command, shell=shell.__name__):
+                    self.assertEqual("deny", shell(command, self.hub))
+                    if reason is not None:
+                        self.assertIn(reason, self.reason)
+            with self.subTest(command=command, cwd="-C from outside"):
+                outside = self.root / "outside"
+                outside.mkdir(exist_ok=True)
+                words = command.removeprefix("git ")
+                self.assertEqual("deny", self.bash(f'git -C "{self.hub}" {words}', outside))
+
+    def test_reflog_s_writing_forms_are_refused(self) -> None:
+        self.refused_in_the_hub(
+            (
+                "git reflog delete --updateref 'refs/heads/main@{0}'",
+                "git reflog delete --rewrite 'refs/heads/main@{0}'",
+                "git reflog delete --update 'refs/heads/main@{0}'",
+                "git reflog delete --updateref 'main@{0}'",
+                "git reflog expire --updateref --expire=now refs/heads/main",
+                "git reflog expire --expire=now --all",
+                "git reflog --updateref",
+                "git reflog drop",
+            )
+        )
+
+    def test_apply_is_allowed_only_to_check_or_describe_a_patch(self) -> None:
+        self.refused_in_the_hub(
+            (
+                "git apply --check --no-check change.patch",
+                "git apply --check --no-che change.patch",
+                "git apply --check --no-ch change.patch",
+                "git apply --check --no-check",
+                "git apply --check --no-check --index change.patch",
+                "git apply --check --index change.patch",
+                "git apply --check --apply change.patch",
+                "git apply --check --app change.patch",
+                "git apply --stat --apply change.patch",
+                "git apply --chec change.patch",
+                "git apply change.patch",
+                "git apply change.patch -- --check",
+                "git apply --check -3 change.patch",
+            )
+        )
+        for command in ("git apply --check change.patch", "git apply --check", "git apply --stat -- change.patch"):
+            with self.subTest(command=command):
+                self.assertIsNone(self.bash(command, self.hub))
+
+    def test_an_upstream_cannot_be_set_and_then_followed_by_a_pull(self) -> None:
+        self.refused_in_the_hub(
+            (
+                "git branch -u feat/demo",
+                "git branch --set-upstream-to=origin/feat/demo",
+                "git branch --set-upstream-to origin/feat/demo main",
+                "git fetch --set-upstream origin feat/demo",
+                "git pull --ff-only --set-upstream origin main",
+            )
+        )
+        self.refused_in_the_hub(("git pull --ff-only",), reason="only to origin/main, not to its upstream.")
+        self.git(self.hub, "branch", "-u", "feat/demo")
+        self.assertEqual("deny", self.bash("git pull --ff-only", self.hub))
+        self.assertIn("only to origin/main, not to its upstream.", self.reason)
+        self.assertIsNone(self.bash("git pull --ff-only origin main", self.hub))
+
+    def test_the_writes_earlier_outside_reviews_found_stay_refused(self) -> None:
+        # #2451, #2452, and #2460: writes a subcommand's option or operand makes, and guard prefixes before git.
+        self.refused_in_the_hub(
+            (
+                "git diff --output=README.md",
+                "git log --outp=README.md",
+                "git archive -o README.md HEAD",
+                "git config coding-agent-skills.hubGuard false",
+                "git interpret-trailers --in-place README.md",
+                "git mailinfo README.md CLAUDE.md",
+                "git merge-file README.md base other",
+                "git checkout-index --prefix=docs/ -a",
+                "git apply --unsafe-paths change.patch",
+                "git reflog delete --updateref 'main@{0}'",
+                "git replace HEAD HEAD~2",
+                "git notes add -m x",
+                "git tag v0.0.1",
+                "git push origin main",
+                "git gc",
+                "git submodule status",
+                "git stash",
+                "git stash push -m x",
+                "git worktree add -f ../x main",
+                "git worktree remove -f ../x",
+                "git worktree move ../x ../y",
+                "git remote set-url origin https://example.invalid/x.git",
+                "git remote add other https://example.invalid/x.git",
+                "git switch -c other",
+                "git checkout -- main",
+                "git checkout feat/demo",
+                "git status --porcelain=v2 --ext-diff",
+                "git log --ext-diff -p",
+                "git log --textconv -p",
+            ),
+            reason=None,
+        )
+
+    def test_a_subcommand_no_row_names_is_refused_unless_it_is_an_alias_of_a_row(self) -> None:
+        self.refused_in_the_hub(("git frobnicate", "git hash-object -w README.md", "git maintenance run"))
+        self.git(self.hub, "config", "alias.peek", "log --oneline -1")
+        self.git(self.hub, "config", "alias.rewind", "reflog delete --updateref main@{0}")
+        self.assertIsNone(self.bash("git peek", self.hub))
+        self.assertEqual("deny", self.bash("git rewind", self.hub))
+        self.assertIn("is an alias", self.reason)
+
+    def test_a_word_the_text_does_not_settle_is_refused_unless_it_is_an_operand_a_row_allows(self) -> None:
+        for command in ('git log "$x"', 'git fetch origin "$x"', 'git pull --ff-only origin "$x"', 'git branch "$x"'):
+            with self.subTest(command=command):
+                self.assertEqual("deny", self.bash(command, self.hub))
+        self.assertIsNone(self.bash('git log --oneline -- "$x"', self.hub))
+
+    def test_an_option_is_read_only_spelled_in_full_and_a_bundle_only_of_flags(self) -> None:
+        self.refused_in_the_hub(
+            (
+                "git status --shor",
+                "git log --onel",
+                "git branch --show-cur",
+                "git branch -dm feat/demo other",
+                "git fetch --pru origin",
+                "git worktree list --porc",
+            )
+        )
+        for command in ("git branch -qD feat/demo", "git log -n 3 --format=%H", "git log -3", "git status -sb"):
+            with self.subTest(command=command):
+                self.assertIsNone(self.bash(command, self.hub))
+
+    def test_a_call_whose_place_the_text_does_not_settle_is_held_to_the_hub_s_forms(self) -> None:
+        for command, subcommand in (
+            ('cd "$x" && git push', "push"),
+            ('cd "$x" && git tag v1', "tag"),
+            ('git -C "$x" reflog delete "main@{0}"', "reflog"),
+        ):
+            with self.subTest(command=command):
+                self.assertEqual("deny", self.bash(command, self.tree))
+                self.assertIn(UNPLACED.format(subcommand), self.reason)
+        self.assertIsNone(self.bash('cd "$x" && git status', self.tree))
 
 
 class GuardGitTests(unittest.TestCase):
@@ -2799,62 +3009,6 @@ class GuardGitTests(unittest.TestCase):
             ],
             [timeout for _, timeout in calls],
         )
-
-
-@pytest.mark.parametrize(
-    "arguments",
-    [
-        ["-uorigin/main"],
-        ["-uorigin/MAIN"],
-        ["-uorigin/mM-feature"],
-        ["-quorigin/main"],
-        ["-vvuorigin/MAIN"],
-        ["-u", "origin/main"],
-        ["-qu", "origin/MAIN"],
-        ["-um"],
-        ["-uM"],
-        ["-u-mM"],
-        ["-u", "-m"],
-        ["-u", "-M"],
-        ["-tm"],
-        ["-tM"],
-        ["--set-upstream-to=origin/main"],
-        ["--set-upstream-to", "-m"],
-        ["--set-upstream-t", "-M"],
-        ["--", "-m"],
-    ],
-    ids=" ".join,
-)
-def test_upstream_and_tracking_values_are_not_rename_options(arguments: list[str]) -> None:
-    assert not hub_guard.renames_a_branch(arguments)
-
-
-@pytest.mark.parametrize(
-    "arguments",
-    [
-        ["-m", "renamed"],
-        ["-M", "renamed"],
-        ["-fm", "main", "renamed"],
-        ["-qM", "main", "renamed"],
-        ["-mM", "renamed"],
-        ["-muorigin/main"],
-        ["-Mtorigin/main"],
-        ["-uorigin/main", "-m", "renamed"],
-        ["-u", "origin/MAIN", "-M", "renamed"],
-        ["-u", "--", "-m", "renamed"],
-        ["-t", "-m", "renamed"],
-        ["-tdirect", "-M", "renamed"],
-        ["--mo", "main", "renamed"],
-        ["--mov", "main", "renamed"],
-        ["--move", "main", "renamed"],
-        ["--move=main", "renamed"],
-        ["--set-upstream-to", "origin/main", "--move", "renamed"],
-        ["--set-upstream", "-m", "renamed"],
-    ],
-    ids=" ".join,
-)
-def test_rename_options_before_or_after_values_are_still_detected(arguments: list[str]) -> None:
-    assert hub_guard.renames_a_branch(arguments)
 
 
 @pytest.mark.parametrize(

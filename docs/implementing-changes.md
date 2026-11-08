@@ -20,8 +20,8 @@ Anything else is planned first.
 
 A session starts in one of two places.
 
-- **In the hub.** Pull `main` there first (`git pull --ff-only`), since a new worktree branches from the hub's local
-  `main`. Then run `python tools/worktrees.py new <kind> <name>` with the change's title type as the kind, such as
+- **In the hub.** Pull `main` there first (`git pull --ff-only origin main`), since a new worktree branches from the
+  hub's local `main`. Then run `python tools/worktrees.py new <kind> <name>` with the change's title type as the kind, such as
   `feat` or `fix` (see [Pull requests](#pull-requests)), and enter the printed path (in Claude Code, `EnterWorktree`
   with `path:`).
 - **In a worktree a runtime already made**, such as the `.claude/worktrees/<name>` on a `claude/<name>` branch that

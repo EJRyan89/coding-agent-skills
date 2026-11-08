@@ -222,6 +222,157 @@ class CatalogueTests(unittest.TestCase):
         self.assertEqual("--output", hub_guard.GIT_OUTPUT)
 
 
+@functools.cache
+def row_help(key: str) -> str:
+    """`git <key> -h` for a READ_ONLY_FORMS row, asked in a new repository."""
+    with tempfile.TemporaryDirectory() as directory:
+        subprocess.run(["git", "init", "-q", directory], capture_output=True, timeout=30, check=True)
+        return help_text(key.split(" "), directory)
+
+
+# The head of an option line of parse-options' help, before the two spaces its description starts after: an optional
+# letter, then a long option (perhaps with [no-]) or a letter alone, then what follows it.
+HELP_HEAD = re.compile(r"(?:-(\w),\s+)?(?:--(\[no-\])?([\w-]+)|-(\w))(.*)")
+
+
+def help_options(text: str) -> dict[str, tuple[str, str]]:
+    """Each option spelling a help text lists, with its kind, flag, valued, or attached, and its description; the
+    `--no-` form of a `--[no-]` option is a flag."""
+    found: dict[str, tuple[str, str]] = {}
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not line.startswith("  ") or not stripped.startswith("-"):
+            continue
+        head, *described = re.split(r"\s{2,}", stripped, maxsplit=1)
+        description = described[0] if described else ""
+        match = HELP_HEAD.fullmatch(head)
+        if match is None:
+            continue
+        letter, negatable, name, alone, after = match.groups()
+        if after.startswith("["):
+            kind = "attached"
+        elif re.match(r"[ =]<", after):
+            kind = "valued"
+        elif after == "" or after.startswith(" "):
+            # A long head leaves one space before its description.
+            kind, description = "flag", f"{after} {description}".strip()
+        else:
+            continue
+        for spelling in (letter and f"-{letter}", name and f"--{name}", alone and f"-{alone}"):
+            if spelling:
+                found[spelling] = (kind, description)
+        if negatable:
+            found[f"--no-{name}"] = ("flag", description)
+    return found
+
+
+def declared(form: hub_guard.ReadOnlyForm) -> dict[str, str]:
+    """Each option a row declares, with its kind."""
+    return {
+        **dict.fromkeys(form.flags, "flag"),
+        **dict.fromkeys(form.attached, "attached"),
+        **dict.fromkeys(form.valued, "valued"),
+    }
+
+
+class ReadOnlyCatalogueTests(unittest.TestCase):
+    """READ_ONLY_FORMS, the forms a guarded hub allows (#2468), held to the installed git's own catalogue."""
+
+    def test_the_help_reader_reads_each_kind_of_option_line(self) -> None:
+        listed = help_options(row_help("branch"))
+        self.assertEqual("valued", listed["--set-upstream-to"][0])
+        self.assertEqual("valued", listed["-u"][0])
+        self.assertEqual("attached", listed["--color"][0])
+        self.assertEqual("flag", listed["--no-color"][0])
+        self.assertEqual("flag", listed["-D"][0])
+        self.assertEqual("attached", help_options(row_help("tag"))["-n"][0])
+        self.assertIn("delete branch", listed["-D"][1])
+        self.assertEqual("flag", help_options(row_help("apply"))["--inaccurate-eof"][0])
+
+    def test_each_row_declares_only_options_git_lists_for_it_with_the_kind_git_reads(self) -> None:
+        # An option git does not list may be an abbreviation it expands, and a valued option git reads as a flag would
+        # skip a word git reads as an operand or an option.
+        groups = declared(hub_guard.REVISION_OPTIONS) | declared(hub_guard.DIFF_OPTIONS)
+        for key, form in hub_guard.READ_ONLY_FORMS.items():
+            if not form.listed:
+                continue
+            listed = help_options(row_help(key))
+            for option, kind in declared(form).items():
+                if option in groups and groups[option] == kind:
+                    continue
+                with self.subTest(key=key, option=option):
+                    self.assertIn(option, listed)
+                    allowed = {"valued": {"valued"}, "attached": {"attached"}, "flag": {"flag", "attached"}}[kind]
+                    self.assertIn(listed[option][0], allowed)
+
+    def test_no_row_declares_an_option_git_says_writes_or_runs(self) -> None:
+        for key, form in hub_guard.READ_ONLY_FORMS.items():
+            subcommand = key.split(" ")[0]
+            listed = help_options(row_help(key))
+            writing = {
+                hub_guard.GIT_OUTPUT,
+                *hub_guard.GIT_WRITING_OPTIONS.get(subcommand, ()),
+                *running(subcommand),
+                *(option for option, (_, description) in listed.items() if WRITING_FLAG.search(description)),
+            }
+            with self.subTest(key=key):
+                self.assertEqual([], sorted(set(declared(form)) & writing))
+
+    def test_no_row_declares_an_option_known_to_write_the_hub_or_follow_what_does(self) -> None:
+        # Pinned against literals, not the tables: the options the outside reviews and git's documentation name as
+        # moving HEAD, writing the index or tree, setting an upstream, or running a command.
+        known = {
+            "fetch": {"-u", "--update-head-ok", "--set-upstream", "--refmap", "--upload-pack", "--prefetch", "-f"},
+            "pull": {"--rebase", "-r", "--ff", "--no-ff", "--set-upstream", "--autostash", "--squash", "--commit"},
+            "merge": {"--ff", "--no-ff", "--squash", "--commit", "--autostash", "--abort", "--continue", "-m"},
+            "branch": {"-u", "--set-upstream-to", "--unset-upstream", "-t", "--track", "-m", "-M", "--move"},
+            "apply": {"--apply", "--no-check", "--index", "--cached", "-3", "--3way", "--reject", "--unsafe-paths"},
+            "reflog": {"--updateref", "--rewrite", "--expire", "--expire-unreachable", "--stale-fix"},
+            "worktree add": {"-f", "--force", "-B", "--orphan", "--track"},
+            "worktree remove": {"-f", "--force"},
+            "switch": {"-c", "-C", "-f", "--force", "-m", "--merge", "--detach", "--discard-changes"},
+            "checkout": {"-b", "-B", "-f", "--force", "-m", "--merge", "--detach", "-p", "--patch"},
+            "tag": {"-d", "--delete", "-a", "-s", "-f", "-m", "-F"},
+            "log": {"--output", "--ext-diff", "--textconv", "--show-signature", "--notes"},
+            "diff": {"--output", "--ext-diff", "--textconv", "--no-index"},
+            "grep": {"-O", "--open-files-in-pager", "--textconv", "--no-index"},
+            "cat-file": {"--textconv", "--filters"},
+        }
+        for key, options in known.items():
+            with self.subTest(key=key):
+                self.assertEqual([], sorted(set(declared(hub_guard.READ_ONLY_FORMS[key])) & options))
+        self.assertNotIn("reflog delete", hub_guard.READ_ONLY_FORMS)
+        self.assertNotIn("reflog expire", hub_guard.READ_ONLY_FORMS)
+
+    def test_every_builtin_no_row_names_is_refused_in_a_hub(self) -> None:
+        builtins = subprocess.run(
+            ["git", "--list-cmds=builtins"], capture_output=True, text=True, encoding="utf-8", timeout=30, check=True
+        ).stdout.split()
+        self.assertIn("commit", builtins, "git lists its builtins")
+        for name in builtins:
+            if name in hub_guard.READ_ONLY_SUBCOMMANDS:
+                continue
+            with self.subTest(subcommand=name):
+                self.assertIsNotNone(hub_guard.read_only_refusal(name, []))
+        # Pinned against literals: subcommands that write, and actions of a row's subcommand no row names.
+        for words in (
+            ["commit"],
+            ["reset", "--hard"],
+            ["update-ref", "refs/heads/main", "HEAD~1"],
+            ["reflog", "delete", "main@{0}"],
+            ["reflog", "expire", "--all"],
+            ["stash"],
+            ["stash", "pop"],
+            ["worktree", "move", "a", "b"],
+            ["remote", "set-url", "origin", "x"],
+            ["submodule", "status"],
+            ["notes", "add"],
+            ["replace", "HEAD", "HEAD~1"],
+        ):
+            with self.subTest(words=words):
+                self.assertIsNotNone(hub_guard.read_only_refusal(words[0], words[1:]))
+
+
 class EffectsTests(unittest.TestCase):
     def test_each_spelling_of_a_writing_option_names_the_file_it_writes(self) -> None:
         for subcommand, words, written in (
