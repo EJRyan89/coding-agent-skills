@@ -8,7 +8,7 @@ disable-model-invocation: true
 
 # Shepherd pull requests
 
-One tick keeps the open pull requests merging. `.claude/skills/shepherd-pull-requests/scripts/shepherd_pull_requests.py` does every deterministic step, and its docstring lists every line. Your part is the messages, the judgment it leaves you, and the hand-off to `repo-cleanup`.
+One tick keeps the open pull requests merging. `.claude/skills/shepherd-pull-requests/scripts/shepherd_pull_requests.py` does every deterministic step, and its docstring lists every line. Your part is the messages, the judgment it leaves you, and naming each merged worktree for the user to retire.
 
 ## 1. Run the tick
 
@@ -42,11 +42,11 @@ The tick admits only pull requests whose head branch is in this repository and t
 
 The pre-merge review is report-only: it never holds, disarms, or delays a pull request. The tick reads this machine's code-review archive and names each admitted head in step, not in conflict, and with a check neither red nor missing:
 
-- `REVIEW_DUE #<number> ...`: no `review-repository` review covers the head yet. The tick also prints one `REVIEW_ARGUMENTS <arguments>` line covering every due head. From the hub's own session only, invoke `review-prs` through the `Skill` tool once with exactly those arguments. The record it writes covers each head from the next tick on, so a tick without that line starts no review.
+- `REVIEW_DUE #<number> ...`: no review by this repository's reviewer covers the head yet. The tick also prints one `REVIEW_ARGUMENTS <arguments>` line covering every due head. From the hub's own session only, invoke `review-prs` through the `Skill` tool once with exactly those arguments. The record it writes covers each head from the next tick on, so a tick without that line starts no review.
 - `REVIEWED #<number> <branch> head <commit> <version> <verdict> report "<report>"`, `report none` when a legacy review's report is gone, and `carried from <commit>` when only merges followed the reviewed head: a review covers the head. The first time a head's record appears, tell the orchestrating session and the session whose worktree holds the branch its verdict and report path, and that each SHOULD FIX needs its disposition. Never post a report or a finding on the pull request: a public text passes a scan this skill cannot run, so the orchestrating session relays the findings and posts any summary itself.
 - A pull request `review-prs` fails stays due. Try it again on the next tick, at most once per head, then tell the user.
 - `REVIEW_UNREAD <reason>`: tell the user once. The review needs the configuration entry "Configure" in the `review-repository` repository skill gives.
 
 ## 4. Hand off each merge
 
-Each `MERGED #<number> worktree "<path>" branch <branch>` names a worktree whose pull request merged, matched by the commit it has checked out and never by its branch's name, and each local branch to delete: one `branch <branch>` for the worktree's own, and another for the pull request's when one of that name holds a commit it carried. First confirm that no live session still works in `<path>` or on a named branch, and archive the owning session once it is idle. Then invoke the `repo-cleanup` skill on the hub, from a session that is not inside `<path>`; it proves the merge again before it removes the worktree and deletes each branch, and offers one it cannot prove, such as an unpushed worktree branch.
+Each `MERGED #<number> worktree "<path>" branch <branch>` names a worktree whose pull request merged, matched by the commit it has checked out and never by its branch's name, and each local branch to delete: one `branch <branch>` for the worktree's own, and another for the pull request's when one of that name holds a commit it carried. First confirm that no live session still works in `<path>` or on a named branch, and archive the owning session once it is idle. Then tell the user to retire it by typing `/repo-cleanup` with the hub's absolute path in a hub session, not one inside `<path>`. Never start it yourself or remove the worktree or a branch by hand: `repo-cleanup` is user-only because it deletes, and it proves the merge again before it removes the worktree and deletes each branch, and offers one it cannot prove, such as an unpushed worktree branch.
