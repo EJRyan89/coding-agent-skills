@@ -13,10 +13,15 @@ tag_upstream v6.0.0
 publish "after the sixth major"
 
 # An installation as the deployer lays it out under the skills folder the first argument names: the update skill's
-# script, and ejryan89-skill-core's scripts beside it unless the second argument is "without the core".
+# scripts but its suites, and ejryan89-skill-core's scripts beside it unless the second argument is "without the core".
 install_update() {
   mkdir -p "$1/update-coding-agent-skills/scripts"
-  cp -- "$SUBJECT" "$1/update-coding-agent-skills/scripts/update.sh"
+  for SCRIPT in "$SCRIPT_DIR/"*; do
+    case "${SCRIPT##*/}" in
+      test_*) ;;
+      *) [ ! -f "$SCRIPT" ] || cp -- "$SCRIPT" "$1/update-coding-agent-skills/scripts/" ;;
+    esac
+  done
   if [ "${2:-}" != "without the core" ]; then
     mkdir -p "$1/ejryan89-skill-core/scripts"
     for MODULE in "$SCRIPT_DIR/../../ejryan89-skill-core/scripts/"*.py; do
@@ -60,6 +65,33 @@ install_update "$INSTALLED_SKILLS" "without the core"
 SUBJECT="$INSTALLED_SKILLS/update-coding-agent-skills/scripts/update.sh" run_subject "$CLONE" release
 expect_failed "FAILED no ejryan89-skill-core release_tags.py deployed beside update.sh: " "no core beside the script"
 expect_nothing_run "no core beside the script"
+
+# A remote_refs.py that ends without its CHECKED, FETCHED, or FAILED line, here an installed copy whose import fails
+# and one that prints nothing, never reads as success: the update stops with FETCH_FAILED, names the command that
+# printed no result, and deploys nothing.
+begin_case 'remote_refs.py prints no result'
+for BROKEN in 'shadows|import not_a_module_anywhere' \
+  'fetch|import sys
+if sys.argv[1] == "shadows":
+    print("CHECKED")'; do
+  COMMAND=${BROKEN%%|*}
+  new_clone
+  FETCHED=$(git -C "$CLONE" rev-parse origin/main)
+  publish "change while remote_refs.py $COMMAND prints no result"
+  INSTALLED_SKILLS="$FIXTURE/installed (broken $COMMAND)/skills"
+  install_update "$INSTALLED_SKILLS"
+  printf '%s\n' "${BROKEN#*|}" >"$INSTALLED_SKILLS/update-coding-agent-skills/scripts/remote_refs.py"
+  SUBJECT="$INSTALLED_SKILLS/update-coding-agent-skills/scripts/update.sh" run_subject "$CLONE" main
+  expect_status 1 "no result from $COMMAND"
+  expect_first_line "FETCH_FAILED" "no result from $COMMAND"
+  SECOND=$(sed -n 2p <<<"$OUTPUT")
+  [[ "$SECOND" == "remote_refs.py $COMMAND printed no result"* ]] ||
+    fail "no result from $COMMAND: expected the command named as printing no result, got: $OUTPUT"
+  [ "$(wc -l <<<"$OUTPUT")" -eq 2 ] || fail "no result from $COMMAND: expected two lines, got: $OUTPUT"
+  expect_no_stderr "no result from $COMMAND"
+  [ "$(git -C "$CLONE" rev-parse origin/main)" = "$FETCHED" ] || fail "no result from $COMMAND: fetched"
+  expect_not_deployed "no result from $COMMAND"
+done
 
 # A release tag that cannot be read after the tags named it, here deleted by a git wrapper just before update.sh reads
 # its commit, is a named failure that ends with git's reason.

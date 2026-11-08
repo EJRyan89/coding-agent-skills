@@ -195,6 +195,7 @@ mypy-strict = [
     "skills/repo-cleanup/scripts",
     "skills/review-document/scripts",
     "skills/review-insights/scripts",
+    "skills/update-coding-agent-skills/scripts",
     "skills/update-pr-dashboard/scripts",
     ".claude/skills/audit-repository/scripts",
     ".claude/skills/change-skill/scripts",

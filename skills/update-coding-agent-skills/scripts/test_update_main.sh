@@ -196,6 +196,59 @@ expect_first_line "FETCH_FAILED" "fetch failed"
 expect_no_stderr "fetch failed"
 expect_not_deployed "fetch failed"
 
+# An origin that wants a credential fails the update at once, as FETCH_FAILED, and starts none of the askpass helpers
+# GIT_ASKPASS, SSH_ASKPASS, or core.askPass name, which would otherwise answer git or wait for a person. The origin is a
+# local HTTP server that answers every request with 401 and a Basic challenge; it stops once its stop file appears.
+begin_case 'origin wants a credential'
+case "${OSTYPE:-}" in
+  msys* | cygwin*) TEST_PYTHON=python ;;
+  *) TEST_PYTHON=python3 ;;
+esac
+cat >"$FIXTURE/asking_origin.py" <<'EOF'
+import http.server, os, sys, time
+class Unauthorized(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(401)
+        self.send_header("WWW-Authenticate", 'Basic realm="test"')
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+    def log_message(self, *args):
+        pass
+server = http.server.HTTPServer(("127.0.0.1", 0), Unauthorized)
+server.timeout = 0.2
+with open(sys.argv[1] + ".tmp", "w") as port:
+    port.write(str(server.server_address[1]))
+os.replace(sys.argv[1] + ".tmp", sys.argv[1])
+ends = time.monotonic() + 300
+while not os.path.exists(sys.argv[2]) and time.monotonic() < ends:
+    server.handle_request()
+EOF
+"$TEST_PYTHON" "$FIXTURE/asking_origin.py" "$FIXTURE/origin port" "$FIXTURE/origin stop" &
+SERVER_PID=$!
+for _ in $(seq 1 100); do
+  [ ! -s "$FIXTURE/origin port" ] || break
+  sleep 0.1
+done
+[ -s "$FIXTURE/origin port" ] || fail "origin wants a credential: the test origin did not start"
+cat >"$FIXTURE/askpass helper" <<EOF
+#!/bin/sh
+echo started >>"$FIXTURE/askpass ran"
+echo answer
+EOF
+chmod +x "$FIXTURE/askpass helper"
+new_clone
+git_quiet -C "$CLONE" remote set-url origin "http://127.0.0.1:$(<"$FIXTURE/origin port")/repository.git"
+git_quiet -C "$CLONE" config core.askPass "$FIXTURE/askpass helper"
+GIT_ASKPASS="$FIXTURE/askpass helper" SSH_ASKPASS="$FIXTURE/askpass helper" SSH_ASKPASS_REQUIRE=force \
+  NO_PROXY=127.0.0.1 no_proxy=127.0.0.1 run_subject "$CLONE" main
+: >"$FIXTURE/origin stop"
+wait "$SERVER_PID" || true
+expect_status 1 "origin wants a credential"
+expect_first_line "FETCH_FAILED" "origin wants a credential"
+expect_no_stderr "origin wants a credential"
+[ ! -e "$FIXTURE/askpass ran" ] || fail "origin wants a credential: an askpass helper ran"
+expect_not_deployed "origin wants a credential"
+
 # A Git command that fails outright is a named failure.
 begin_case 'status failed'
 new_clone
