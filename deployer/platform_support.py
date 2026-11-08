@@ -339,16 +339,9 @@ def _asked_folds_case(directory: Path) -> bool | None:
 is_reserved_device_name = device_names.is_reserved_device_name
 
 
-# The extension Windows finds a program by when its caller leaves it off, so git and git.exe start one program.
-PROGRAM_EXTENSION = ".exe"
-
-
-def program_name(name: str) -> str:
-    """The name a program is called by, without the extension Windows lets its caller add, in any case: git for
-    git.exe and for git.EXE. Any other name is returned unchanged."""
-    if name.casefold().endswith(PROGRAM_EXTENSION):
-        return name[: -len(PROGRAM_EXTENSION)]
-    return name
+# The name a program is called by, without the extension Windows lets its caller add. ejryan89-skill-core's locator
+# holds it, since a skill's script that reads the commands a script runs names their programs the same way.
+program_name = executable_locator.program_name
 
 
 # A configured directory is an absolute path of this platform's form, which errors name: a drive-letter path on

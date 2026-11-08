@@ -13,6 +13,7 @@ from pathlib import Path
 
 import file_presence
 import frontmatter
+import git_subcommands
 import json_reader
 import json_writer
 import skill_menu
@@ -21,7 +22,7 @@ from markdown_sections import EXECUTABLE_FENCES, markdown_section
 from path_containment import within
 from skill_menu import PLUGIN_HOOKS, PLUGIN_MANIFEST
 from skill_roots import SKILL_CORE
-from skill_scripts import shell_git_subcommands
+from skill_scripts import powershell_readings, powershell_script_commands
 from suite_names import is_suite_name
 from validation_support import (
     CODE_SPAN,
@@ -188,8 +189,8 @@ def own_needs(root: Path, name: str) -> set[str]:
     """The runtime capabilities a skill's own frontmatter, metadata, and scripts show it needs.
 
     A skill that grants Agent and names, in backticks, an agent whose definition declares hooks starts that agent
-    under them, and one whose deploy-meta declares a network tool, required or optional, or one of whose Bash or Python
-    scripts runs a git subcommand that reaches a remote, needs network access.
+    under them, and one whose deploy-meta declares a network tool, required or optional, or one of whose Bash,
+    PowerShell, or Python scripts runs a git subcommand that may reach a remote, needs network access.
     """
     import runtime_support
 
@@ -205,20 +206,32 @@ def own_needs(root: Path, name: str) -> set[str]:
     declared = json_reader.loads(metadata.read_text(encoding="utf-8")) if file_presence.is_present(metadata) else {}
     tools = frozenset([*declared.get("tools", []), *declared.get("optional_tools", [])])
     scripts = skills[name] / "scripts"
-    readers = {
-        ".sh": shell_git_subcommands,
-        ".bash": shell_git_subcommands,
-        ".py": runtime_support.python_git_subcommands,
-    }
     git_subcommands = frozenset(
         subcommand
         for script in (sorted(scripts.iterdir()) if file_presence.is_directory(scripts) else [])
-        if script.suffix in readers and not is_test_script(script)
-        for subcommand in readers[script.suffix](script.read_text(encoding="utf-8"))
+        if not is_test_script(script)
+        for subcommand in script_git_subcommands(script)
     )
     return runtime_support.frontmatter_needs(
         granted if isinstance(granted, list) else [granted], user_only(document), starts_hooked, tools, git_subcommands
     )
+
+
+def script_git_subcommands(script: Path) -> set[str]:
+    """The git subcommands one of a skill's scripts runs, by ejryan89-skill-core's git_subcommands, the reader
+    audit-skill's runtime-support derivation shares: a Bash script's, a PowerShell script's as powershell_readings
+    lists its commands, and a Python script's git calls; any other file runs none this reads."""
+    import runtime_support
+
+    suffix = script.suffix.casefold()
+    if suffix in (".sh", ".bash"):
+        return git_subcommands.bash_git_subcommands(script.read_text(encoding="utf-8-sig"), powershell_script_commands)
+    if suffix == ".ps1":
+        (reading,) = powershell_readings([script.read_text(encoding="utf-8-sig")])
+        return git_subcommands.powershell_git_subcommands(reading.commands, powershell_script_commands)
+    if suffix == ".py":
+        return runtime_support.python_git_subcommands(script.read_text(encoding="utf-8"))
+    return set()
 
 
 def derived_needs(root: Path, name: str) -> set[str]:

@@ -18,7 +18,6 @@ from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import TextIO, overload
 
 import file_presence
-import git_client
 import json_reader
 import whole_number
 from call_tables import EVENT_LOOP, PROCESS_STARTS, TEXT_OPENERS
@@ -38,6 +37,7 @@ from duplication import SKILL_CORE_SCRIPTS
 from markdown_sections import SHELL_FENCES
 from module_closure import MODULE_LOADERS
 from path_containment import posix_within
+from powershell_commands import COMMANDS_RUN, SOURCES_VARIABLE, UNREAD_WORD, command_words
 from powershell_startup import POWERSHELL_PROGRAMS, UnknownWord, startup_command
 from python_checks import PRINTS, sanctioned_problems
 from skill_roots import SKILL_CORE
@@ -454,17 +454,10 @@ def shell_commands(script: str, commands: list[list[str]] | None = None) -> set[
     return found - functions
 
 
-def shell_git_subcommands(script: str) -> set[str]:
-    """The subcommand of each git command a Bash script runs by name, a command substitution's included, and so is
-    one in the script eval, a shell's -c, or a pwsh or Windows PowerShell start-up runs, read past git's own options
-    as ejryan89-skill-core's git client reads them."""
-    commands: list[list[str]] = []
-    shell_commands(script, commands)
-    return {
-        subcommand
-        for words in commands
-        if words[0] == "git" and (subcommand := git_client.subcommand(words[1:])) is not None
-    }
+def powershell_script_commands(script: str) -> tuple[tuple[str, ...], ...]:
+    """The words of each external command one PowerShell script runs, as powershell_readings reads them: the
+    PowerShellReader through which ejryan89-skill-core's git_subcommands reads the script a start-up runs."""
+    return _powershell_script_reading(script).commands
 
 
 # The contexts deployer/render.py gives a fence of commands for a command shell: a POSIX shell's, fish's, and cmd's.
@@ -1252,163 +1245,6 @@ def command_reader(path: Path) -> CommandReader:
     return _read_commands(python_source(path))
 
 
-# Start-Process's parameters, by name, each with whether it is a switch, which takes no value, and the aliases
-# PowerShell binds, as `(Get-Command Start-Process).Parameters` lists them; test_shell_readers.py holds the table to
-# that listing.
-START_PROCESS_PARAMETERS: dict[str, tuple[bool, tuple[str, ...]]] = {
-    "FilePath": (False, ("PSPath", "Path")),
-    "ArgumentList": (False, ("Args",)),
-    "Credential": (False, ("RunAs",)),
-    "WorkingDirectory": (False, ()),
-    "LoadUserProfile": (True, ("Lup",)),
-    "NoNewWindow": (True, ("nnw",)),
-    "PassThru": (True, ()),
-    "RedirectStandardError": (False, ("RSE",)),
-    "RedirectStandardInput": (False, ("RSI",)),
-    "RedirectStandardOutput": (False, ("RSO",)),
-    "Verb": (False, ()),
-    "WindowStyle": (False, ()),
-    "Wait": (True, ()),
-    "UseNewEnvironment": (True, ()),
-    "Environment": (False, ()),
-    "Verbose": (True, ("vb",)),
-    "Debug": (True, ("db",)),
-    "ErrorAction": (False, ("ea",)),
-    "WarningAction": (False, ("wa",)),
-    "InformationAction": (False, ("infa",)),
-    "ProgressAction": (False, ("proga",)),
-    "ErrorVariable": (False, ("ev",)),
-    "WarningVariable": (False, ("wv",)),
-    "InformationVariable": (False, ("iv",)),
-    "OutVariable": (False, ("ov",)),
-    "OutBuffer": (False, ("ob",)),
-    "PipelineVariable": (False, ("pv",)),
-    "WhatIf": (True, ("wi",)),
-    "Confirm": (True, ("cf",)),
-}
-
-
-def _start_process_table() -> str:
-    """START_PROCESS_PARAMETERS as a PowerShell array of entries, each its name, whether it is a switch, and an array
-    of its aliases."""
-    entries = []
-    for name, (switch, aliases) in START_PROCESS_PARAMETERS.items():
-        quoted = ", ".join(f"'{alias}'" for alias in aliases)
-        entries.append(f"@('{name}', ${'true' if switch else 'false'}, @({quoted}))")
-    return f"@({', '.join(entries)})"
-
-
-# Prints one JSON array of {source, name} for each external command run by the PowerShell sources in the JSON file
-# COMMAND_SOURCES names, as PowerShell's own parser reads them, and {source, unread} for each program it cannot read. A
-# function a source defines is its own, and so is what PowerShell ships: its aliases and the commands of its core and
-# of the modules under its home, such as Get-ChildItem and ForEach-Object. A module installed elsewhere, such as
-# PSScriptAnalyzer, is not standard. What Start-Process starts, by -FilePath or by its first positional argument, what
-# `& (Get-Command name)` runs, and every command of a string Invoke-Expression runs are read as commands too; a
-# program any of these, or `&` or `.`, names other than by a literal is unread, but for a .ps1 script a path names,
-# whose own commands the policy reads in its file. Start-Process's parameters are bound as PowerShell binds them, by
-# START_PROCESS_PARAMETERS: a name, an alias, or a prefix of one name alone, a switch taking no value; one it does not
-# place leaves the program unread. Each external command carries its words after its name, a literal's text or null for
-# any other, and one Start-Process starts carries instead the items of its -ArgumentList, or of the positional argument
-# after the program, each a literal's text or null for any other, a list or array of them read item by item, so
-# powershell_startup_programs reads the script a pwsh or Windows PowerShell start-up runs.
-POWERSHELL_COMMANDS_RUN = (
-    "$ErrorActionPreference = 'Stop'; "
-    "[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false); "
-    "$sources = @(Get-Content -LiteralPath $env:COMMAND_SOURCES -Raw -Encoding utf8 | ConvertFrom-Json); "
-    "$shipped = @(Get-Module -ListAvailable | Where-Object { "
-    "$_.ModuleBase.StartsWith($PSHOME, [StringComparison]::OrdinalIgnoreCase) } | ForEach-Object Name); "
-    "$own = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase); "
-    "foreach ($command in Get-Command -Module @($shipped + 'Microsoft.PowerShell.Core')) { "
-    "[void]$own.Add($command.Name) }; "
-    "foreach ($alias in Get-Alias) { [void]$own.Add($alias.Name) }; "
-    "function Get-Literal($element) { "
-    "if ($element -is [Management.Automation.Language.StringConstantExpressionAst]) { return $element.Value }; "
-    "if ($element -is [Management.Automation.Language.ExpandableStringExpressionAst] -and "
-    "$element.NestedExpressions.Count -eq 0) { return $element.Value }; "
-    "return $null }; "
-    "function Get-Argument($elements, $named, $switches) { "
-    "for ($at = 1; $at -lt $elements.Count; $at++) { $element = $elements[$at]; "
-    "if ($element -is [Management.Automation.Language.CommandParameterAst]) { "
-    "if ($named -contains $element.ParameterName) { "
-    "if ($element.Argument) { return $element.Argument }; return $elements[$at + 1] }; "
-    "if (-not ($switches -contains $element.ParameterName) -and -not $element.Argument) { $at++ }; continue }; "
-    "return $element }; "
-    "return $null }; "
-    "function Find-StartParameter($parameter) { "
-    "foreach ($entry in $startParameters) { "
-    "if ($entry[0] -eq $parameter -or $entry[2] -contains $parameter) { return ,$entry } }; "
-    "$prefixed = @(foreach ($entry in $startParameters) { "
-    "if ($entry[0].StartsWith($parameter, [StringComparison]::OrdinalIgnoreCase)) { ,$entry } }); "
-    "if ($prefixed.Count -eq 1) { return ,$prefixed[0] }; return $null }; "
-    "function Get-Started($elements) { "
-    "$bound = @{}; $positional = [Collections.Generic.List[object]]::new(); "
-    "for ($at = 1; $at -lt $elements.Count; $at++) { $element = $elements[$at]; "
-    "if ($element -isnot [Management.Automation.Language.CommandParameterAst]) { "
-    "$positional.Add($element); continue }; "
-    "$entry = Find-StartParameter $element.ParameterName; "
-    "if ($null -eq $entry) { $bound.unread = $true; return $bound }; "
-    "$value = if ($element.Argument) { $element.Argument } elseif ($entry[1]) { $null } "
-    "else { $at++; $elements[$at] }; "
-    "if ($entry[0] -eq 'FilePath') { $bound.program = $value } "
-    "elseif ($entry[0] -eq 'ArgumentList') { $bound.arguments = $value } }; "
-    "foreach ($key in @('program', 'arguments')) { "
-    "if (-not $bound.ContainsKey($key) -and $positional.Count) { "
-    "$bound[$key] = $positional[0]; $positional.RemoveAt(0) } }; "
-    "return $bound }; "
-    "function Get-Literals($element) { "
-    "while ($element -is [Management.Automation.Language.ParenExpressionAst] -or "
-    "$element -is [Management.Automation.Language.ArrayExpressionAst]) { "
-    "$statements = if ($element -is [Management.Automation.Language.ParenExpressionAst]) { @($element.Pipeline) } "
-    "else { @($element.SubExpression.Statements) }; "
-    "if ($statements.Count -eq 0) { return ,@() }; "
-    "$pipeline = $statements[0]; "
-    "if ($statements.Count -ne 1 -or $pipeline -isnot [Management.Automation.Language.PipelineAst] -or "
-    "$pipeline.PipelineElements.Count -ne 1 -or "
-    "$pipeline.PipelineElements[0] -isnot [Management.Automation.Language.CommandExpressionAst]) { "
-    "return ,@($null) }; "
-    "$element = $pipeline.PipelineElements[0].Expression }; "
-    "if ($null -eq $element) { return ,@() }; "
-    "$items = if ($element -is [Management.Automation.Language.ArrayLiteralAst]) { @($element.Elements) } "
-    "else { @($element) }; "
-    "return ,@(foreach ($item in $items) { Get-Literal $item }) }; "
-    f"$startParameters = {_start_process_table()}; "
-    "$found = [Collections.Generic.List[object]]::new(); "
-    "$queue = [Collections.Generic.Queue[object]]::new(); "
-    "for ($index = 0; $index -lt $sources.Count; $index++) { $queue.Enqueue(@($index, $sources[$index])) }; "
-    "while ($queue.Count) { $item = $queue.Dequeue(); $index = $item[0]; "
-    "$tokens = $null; $errors = $null; "
-    "$tree = [Management.Automation.Language.Parser]::ParseInput($item[1], [ref]$tokens, [ref]$errors); "
-    "$functions = @($tree.FindAll({ param($node) "
-    "$node -is [Management.Automation.Language.FunctionDefinitionAst] }, $true) | ForEach-Object Name); "
-    "foreach ($command in $tree.FindAll({ param($node) "
-    "$node -is [Management.Automation.Language.CommandAst] }, $true)) { "
-    "$name = $command.GetCommandName(); $elements = $command.CommandElements; "
-    "if (-not $name -and $elements[0].Extent.Text -match '\\.ps1\\W*$') { continue }; "
-    "if (-not $name) { $first = $elements[0]; "
-    "$inner = @($first.FindAll({ param($node) $node -is [Management.Automation.Language.CommandAst] }, $true)); "
-    "if ($inner.Count -eq 1 -and @('Get-Command', 'gcm') -contains $inner[0].GetCommandName()) { "
-    "$name = Get-Literal (Get-Argument $inner[0].CommandElements @('Name') @()) }; "
-    "if (-not $name) { $found.Add([ordered]@{ source = $index; unread = $first.Extent.Text }); continue } }; "
-    "$arguments = $null; "
-    "if (@('Start-Process', 'saps', 'start') -contains $name) { $started = Get-Started $elements; "
-    "$name = if ($started.program -and -not $started.unread) { Get-Literal $started.program } else { $null }; "
-    "if (-not $name) { $found.Add([ordered]@{ source = $index; unread = $command.Extent.Text }); continue }; "
-    "$arguments = Get-Literals $started.arguments }; "
-    "if (@('Invoke-Expression', 'iex') -contains $name) { "
-    "$script = Get-Argument $elements @('Command') @(); $text = if ($script) { Get-Literal $script } else { $null }; "
-    "if ($null -eq $text) { $found.Add([ordered]@{ source = $index; unread = $command.Extent.Text }) } "
-    "else { $queue.Enqueue(@($index, $text)) }; continue }; "
-    "if ($functions -contains $name -or $own.Contains($name)) { continue }; "
-    "if ($null -ne $arguments) { "
-    "$found.Add([ordered]@{ source = $index; name = $name; arguments = $arguments }); continue }; "
-    "$words = @(for ($at = 1; $at -lt $elements.Count; $at++) { $element = $elements[$at]; "
-    "if ($element -isnot [Management.Automation.Language.CommandParameterAst]) { Get-Literal $element } "
-    "elseif ($element.Argument) { $null } else { $element.Extent.Text } }); "
-    "$found.Add([ordered]@{ source = $index; name = $name; words = $words }) } }; "
-    "[Console]::Out.WriteLine((ConvertTo-Json -InputObject $found.ToArray() -Compress -Depth 3))"
-)
-
-
 @dataclass(frozen=True)
 class PowerShellReading:
     """What one PowerShell source runs: `programs`, as powershell_commands gives them, and `commands`, the words of
@@ -1419,26 +1255,20 @@ class PowerShellReading:
     commands: tuple[tuple[str, ...], ...]
 
 
-# What powershell_readings records for a word of a command a PowerShell source runs that is no literal.
-UNREAD_WORD = "<value>"
-
-
 def powershell_readings(sources: list[str]) -> list[PowerShellReading]:
-    """What each PowerShell source runs, read by PowerShell's own parser in one call for them all."""
+    """What each PowerShell source runs, read by PowerShell's own parser in one call for them all, through
+    ejryan89-skill-core's powershell_commands, which audit-skill's runtime-support reader runs too."""
     if not sources:
         return []
-    found = powershell_json(
-        POWERSHELL_COMMANDS_RUN, sources, "COMMAND_SOURCES", "PowerShell could not read the commands"
-    )
+    found = powershell_json(COMMANDS_RUN, sources, SOURCES_VARIABLE, "PowerShell could not read the commands")
     programs: list[set[str]] = [set() for _ in sources]
     commands: list[list[list[str]]] = [[] for _ in sources]
     for item in found:
         source = item["source"]
-        if "unread" in item:
+        if (words := command_words(item)) is None:
             programs[source].add(f"{UNREAD_PROGRAM}{item['unread']}")
         elif name := _program_name(item["name"]):
-            words = item["words"] if "words" in item else started_process_words(item["arguments"])
-            texts = [name, *(word if word is not None else UNREAD_WORD for word in words)]
+            texts = [name, *words[1:]]
             programs[source].add(name)
             programs[source] |= _wrapped_programs(texts, commands[source], unread=UNREAD_WORD)
             commands[source].append(texts)
@@ -1453,24 +1283,6 @@ def powershell_commands(sources: list[str]) -> list[set[str]]:
     the program each wrapper, find's action, or shell or PowerShell start-up among them runs, as _wrapped_programs
     reads it."""
     return [set(reading.programs) for reading in powershell_readings(sources)]
-
-
-def started_process_words(arguments: list[str | None]) -> list[str | None]:
-    """The words a program Start-Process starts is given, from the items of its -ArgumentList, each a literal's text or
-    None: Start-Process joins the items with spaces into one command line, which the program splits at whitespace
-    outside double quotes, as the Windows C runtime does. The items before the first one that is no literal are read
-    so, and None stands for that item and every later one; a line whose double quote is never closed is None too."""
-    known = [item for item in itertools.takewhile(lambda item: item is not None, arguments) if item is not None]
-    lexer = shlex.shlex(" ".join(known), posix=True)
-    lexer.whitespace_split = True
-    lexer.quotes = '"'
-    lexer.escape = ""
-    lexer.commenters = ""
-    try:
-        words: list[str | None] = list(lexer)
-    except ValueError:
-        return [None]
-    return [*words, None] if len(known) < len(arguments) else words
 
 
 def _started_shell_programs(name: str, words: list[str | None], commands: list[list[str]] | None = None) -> set[str]:

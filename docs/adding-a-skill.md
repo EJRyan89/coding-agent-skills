@@ -229,14 +229,15 @@ reads every command of the script its `-Command`, `-CommandWithArgs`, or Windows
 runs, its parameters read as ejryan89-skill-core's `powershell_startup.py` reads them; an `-EncodedCommand`, a script
 read from standard input, and one a word the policy cannot read holds are programs it cannot read. In PowerShell it
 reads a Bash shell's `-c` script too, as in Bash, up to the first word that is not a literal. The git subcommand a
-Bash script runs, which a skill's runtime support is held to, is read the same way, in the command a wrapper or
-`find`'s `-exec` family runs, up to the `;` or `{} +` that ends the action, and in the script `eval`, a shell's
-`-c`, or a PowerShell start-up runs as well as at the script's own level. audit-skill's runtime-support reader reads
-a Bash script's git command through the same wrappers, `find` actions, `eval`, shell `-c` scripts, and Bash's `time`
-keyword with the `-p` and `--` it takes, by
-ejryan89-skill-core's `command_wrappers.py`, which validation's reader uses too, and
-`tests/audit-skill/test_audit_skill_runtime_needs.py` holds the two readers equal on every wrapper. A wrapper's program,
-or what `&` runs, held in a variable is a program the policy cannot read, and fails the declared-tool policy.
+Bash or PowerShell script runs, which a skill's runtime support is held to, is read the same way, in the command a
+wrapper or `find`'s `-exec` family runs, up to the `;` or `{} +` that ends the action, and in the script `eval`, a
+shell's `-c`, or a PowerShell start-up runs as well as at the script's own level, a PowerShell script's commands
+listed by the same parser reading as this policy's. One reader does it for validation and for audit-skill's
+runtime-support derivation, ejryan89-skill-core's `git_subcommands.py`, on the parser script in its
+`powershell_commands.py`, and `tests/audit-skill/test_audit_skill_runtime_needs.py` holds the two derivations equal on
+every wrapper. A subcommand no literal names, such as `git "$sub"` or `git $sub`, may be any, one that reaches a
+remote included, so the skill needs network access. A wrapper's program, or what `&` runs, held in a variable is a
+program the policy cannot read, and fails the declared-tool policy.
 
 Reach for these substitutes instead:
 
