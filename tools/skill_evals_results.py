@@ -12,18 +12,21 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from tools.skill_evals_judging import Outcome, counts
-from tools.skill_evals_records import REVIEWER_EFFORT, Index
+from tools.skill_evals_records import REVIEWER_EFFORT, Index, RoutePin
 from tools.skill_evals_runs import Run, RunKey, run_keys
 from tools.skill_evals_scenarios import TRIGGER, Scenario, ScenarioError, quote
 
 RESULTS_BEGIN = "<!-- skill-evals:begin -->"
 RESULTS_END = "<!-- skill-evals:end -->"
 RESULTS_HEADER = (
-    "| Skill | Model | Model ID | Reviewer effort | Passed | Runs | By scenario | Session model | Claude Code | Date |",
-    "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+    "| Skill | Model | Model ID | Reviewer effort | Route pins | Passed | Runs | By scenario | Session model "
+    "| Claude Code | Date |",
+    "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
 )
 # The reviewer effort of a row whose scenarios start no reviewer, only trigger sessions.
 NO_REVIEWER = "none"
+# The route pins of a row whose scenarios' manifests pin no route's model or effort.
+NO_PINS = "none"
 
 
 # A results table's cell border, a pipe its cell does not escape, and a separator cell, aligned or not.
@@ -33,6 +36,18 @@ SEPARATOR_CELL = re.compile(r":?-{3,}:?")
 
 def _cell(text: str) -> str:
     return text.replace("|", "\\|").replace("\n", " ")
+
+
+def pins_cell(scenarios: Sequence[Scenario]) -> str:
+    """The route pins the skill's scenarios measured, each once, by route: a pinned model, which its route's reviewers
+    ran on, and a pinned effort, which the run overrode with the judged model's reviewer effort; or none."""
+    pins: set[RoutePin] = {pin for scenario in scenarios for pin in scenario.pins}
+    described = []
+    for pin in sorted(pins, key=lambda item: (item.route, item.model or "", item.effort or "")):
+        parts = [f"model {pin.model}"] if pin.model else []
+        parts += [f"effort {pin.effort} overridden"] if pin.effort else []
+        described.append(f"{pin.route}: {', '.join(parts)}")
+    return "; ".join(described) or NO_PINS
 
 
 def result_rows(
@@ -45,14 +60,16 @@ def result_rows(
     today: datetime.date,
 ) -> list[str]:
     """One row per model: the model IDs the part judged ran on, the effort its reviewers ran at, or none when every
-    scenario is a trigger scenario, which starts no reviewer, its expectations passed, the runs of each scenario,
-    each scenario's counts, and the run's versions; a model none of whose judged part ran is recorded as not run, with
-    its first run's reason as the results file records it, which names no path of the machine. A run none of whose
-    reviewers ran on a model, such as one the session refused before starting any, holds no judgment of that model, so
-    its expectations are left out of the model's count, and a scenario none of whose runs holds one says `not run`."""
+    scenario is a trigger scenario, which starts no reviewer, the route pins its scenarios measured, its expectations
+    passed, the runs of each scenario, each scenario's counts, and the run's versions; a model none of whose judged
+    part ran is recorded as not run, with its first run's reason as the results file records it, which names no path
+    of the machine. A run none of whose reviewers ran on a model, such as one the session refused before starting
+    any, holds no judgment of that model, so its expectations are left out of the model's count, and a scenario none
+    of whose runs holds one says `not run`."""
     rows = []
     numbers = {key[2] for key in runs}
     reviewed = any(scenario.mode != TRIGGER for scenario in scenarios)
+    pins = pins_cell(scenarios)
     for model in models:
         mine = [(key, runs[key]) for key in run_keys(scenarios, [model], runs)]
         reviewers = sorted({name for _, run in mine for name in run.reviewers})
@@ -72,7 +89,7 @@ def result_rows(
             detail = next((run.recorded for _, run in mine if run.recorded), "no run")
         passed = f"{sum(1 for outcome in theirs if outcome.failure is None)}/{len(theirs)}"
         effort = REVIEWER_EFFORT[model] if reviewed else NO_REVIEWER
-        cells = [skill, model, identifier, effort, passed, str(len(numbers)), detail, session, version]
+        cells = [skill, model, identifier, effort, pins, passed, str(len(numbers)), detail, session, version]
         cells.append(today.isoformat())
         rows.append(f"| {' | '.join(_cell(cell) for cell in cells)} |")
     return rows

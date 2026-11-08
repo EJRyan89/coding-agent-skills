@@ -42,7 +42,9 @@ from tools.skill_evals_records import (
     Index,
     Record,
     RecordError,
+    RoutePin,
     names_model,
+    pinned_models,
     review,
     unguarded,
 )
@@ -426,11 +428,18 @@ def find_record(directory: Path, version: int) -> Record:
 
 
 def run_failure(
-    model: str, completed: Completed, timeout: float, skill: str, missing: str | None, recorded: bool = False
+    model: str,
+    completed: Completed,
+    timeout: float,
+    skill: str,
+    missing: str | None,
+    recorded: bool = False,
+    pins: Sequence[RoutePin] = (),
 ) -> str | None:
-    """Why a run counts for nothing, or None when it recorded a review on the model it was given. With `recorded`, the
-    reason as the results file records it: why the record is missing, why Claude Code could not start, and each
-    denied command, which may name the machine's paths, are each a fixed phrase."""
+    """Why a run counts for nothing, or None when it recorded a review on the model it was given, its reviewers on that
+    model or on a model a route of the scenario's manifest pins, which the pipeline starts that route's reviewer on.
+    With `recorded`, the reason as the results file records it: why the record is missing, why Claude Code could not
+    start, and each denied command, which may name the machine's paths, are each a fixed phrase."""
     listed, denials = runtime_canary.claude_stream(completed.stdout)
     session, reviewers = stream_models(completed.stdout)
     if missing is not None:
@@ -452,9 +461,12 @@ def run_failure(
         return "; ".join(reasons)
     if not reviewers:
         return "no reviewer subagent ran, so the record is not the model's"
-    other = sorted(name for name in reviewers if not names_model(name, MODELS[model]))
+    pinned = [identifier for identifier in pinned_models(pins) if identifier != MODELS[model]]
+    allowed = [MODELS[model], *pinned]
+    other = sorted(name for name in reviewers if not any(names_model(name, identifier) for identifier in allowed))
     if other:
-        return f"reviewers ran on {', '.join(other)}, not {MODELS[model]}"
+        routes = f" or the pinned {', '.join(pinned)}" if pinned else ""
+        return f"reviewers ran on {', '.join(other)}, not {MODELS[model]}{routes}"
     elsewhere = sorted(name for name in session if not names_model(name, MODELS[SESSION_MODEL]))
     if elsewhere:
         return f"the session ran on {', '.join(elsewhere)}, not {MODELS[SESSION_MODEL]}"
@@ -580,8 +592,8 @@ def _session_run(
         record = find_record(run / "tmp", RECORD_VERSION[scenario.mode])
     except RecordError as exc:
         missing = str(exc)
-    failure = run_failure(model, completed, session.timeout, scenario.skill, missing)
-    recorded = run_failure(model, completed, session.timeout, scenario.skill, missing, recorded=True)
+    failure = run_failure(model, completed, session.timeout, scenario.skill, missing, pins=scenario.pins)
+    recorded = run_failure(model, completed, session.timeout, scenario.skill, missing, True, scenario.pins)
     if failure is None and record is not None:
         failure = recorded = unguarded(record)
     orchestrators, reviewers = stream_models(completed.stdout)

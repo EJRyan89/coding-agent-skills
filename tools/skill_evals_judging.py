@@ -73,7 +73,7 @@ def records_in(directory: Path) -> RecordSource:
     """A record source reading DIR/<scenario>/<model>.json, or DIR/<scenario>/<model>-<run>.json for each of several
     runs, holding each record to what a run's is held to: for a trigger scenario, trigger_record_problem; for any
     other, the record contract, the scenario's review version, a guard that held every reviewer, and each reviewer's
-    reported model."""
+    reported model, the one its route pins or else the judged one."""
 
     def source(scenario: Scenario, model: str, index: Index) -> Record:
         path = directory / scenario.name / record_name(model, index)
@@ -96,7 +96,7 @@ def records_in(directory: Path) -> RecordSource:
         reason = (
             f"it is review version {version}, not the {wanted} a {scenario.mode} run records"
             if version != wanted
-            else unguarded(record) or unreported_model(record, model)
+            else unguarded(record) or unreported_model(record, model, scenario.pins)
         )
         if reason:
             raise RecordError(f"{path} counts for nothing: {reason}", RECORD)

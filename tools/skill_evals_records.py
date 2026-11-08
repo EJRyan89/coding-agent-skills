@@ -5,7 +5,8 @@ from __future__ import annotations
 
 import re
 import sys
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -42,6 +43,31 @@ class RecordError(Exception):
     def __init__(self, message: str, kind: str = RUN) -> None:
         super().__init__(message)
         self.kind = kind
+
+
+@dataclass(frozen=True)
+class RoutePin:
+    """A route of a scenario's reviewer manifest that names its own model or effort. `model` is the model's name in
+    MODELS, which the pipeline starts the route's reviewer on in place of the judged model, so a run judges that
+    reviewer on it; None leaves the route on the judged model. `effort` is the manifest's effort, which a run
+    overrides: Claude Code starts a native subagent at its agent's effort, the judged model's REVIEWER_EFFORT, and
+    not at one the pipeline is given, so a row records the pin as overridden."""
+
+    route: str
+    model: str | None = None
+    effort: str | None = None
+
+
+def route_model(pins: Sequence[RoutePin], route: str, model: str) -> str:
+    """The model ID a route's reviewer runs on in a run judging `model`: its pinned model's, else the judged one's."""
+    pinned = next((pin.model for pin in pins if pin.route == route and pin.model is not None), None)
+    return MODELS[pinned or model]
+
+
+def pinned_models(pins: Sequence[RoutePin]) -> list[str]:
+    """The model IDs the routes pin, in MODELS order."""
+    named = {pin.model for pin in pins}
+    return [identifier for name, identifier in MODELS.items() if name in named]
 
 
 # Which of a scenario's runs on a model: None when each runs once, or its number from 1 when it runs several times.
@@ -104,12 +130,16 @@ def unguarded(record: Record) -> str | None:
     return f"no reviewer guard held {', '.join(loose)}: its files_read is null" if loose else None
 
 
-def unreported_model(record: Record, model: str) -> str | None:
-    """Why the record does not show every reviewer on the model's ID, by the model each reviewer's result reports, or
-    None. A reviewer reports its own model, so this is weaker than a run's check of the transcript."""
+def unreported_model(record: Record, model: str, pins: Sequence[RoutePin] = ()) -> str | None:
+    """Why the record does not show every reviewer on the model ID it runs on, by the model each reviewer's result
+    reports, or None: a route the manifest pins on its pinned model's, and every other on the judged model's. A
+    reviewer reports its own model, so this is weaker than a run's check of the transcript."""
     others = [
         f"{reviewer['id']} on {reviewer.get('model', 'no model it reports')}"
         for reviewer in review(record).get("reviewers", [])
-        if not names_model(str(reviewer.get("model", "")), MODELS[model])
+        if not names_model(str(reviewer.get("model", "")), route_model(pins, str(reviewer["id"]), model))
     ]
-    return f"its reviewers did not all run on {MODELS[model]}: {', '.join(others)}" if others else None
+    if not others:
+        return None
+    pinned = " or the model its route pins" if any(pin.model for pin in pins) else ""
+    return f"its reviewers did not all run on {MODELS[model]}{pinned}: {', '.join(others)}"

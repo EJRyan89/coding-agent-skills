@@ -43,7 +43,16 @@ from suite_names import is_suite_name
 
 from deployer import fsops
 from tools import runtime_canary
-from tools.skill_evals_records import Record, RecordError, entry_severity, findings, judgments, review
+from tools.skill_evals_records import (
+    MODELS,
+    Record,
+    RecordError,
+    RoutePin,
+    entry_severity,
+    findings,
+    judgments,
+    review,
+)
 
 PLATFORM_ALLOWED = {
     "pathlib.PureWindowsPath": "refuses a path a scenario names that Windows reads as absolute, a drive's included, "
@@ -112,6 +121,8 @@ class Scenario:
     # neighbours' requests, then its requests no skill serves.
     requests: tuple[str, ...] = ()
     near_misses: tuple[str, ...] = ()
+    # Each route of the scenario's reviewer manifest that pins a model or an effort.
+    pins: tuple[RoutePin, ...] = ()
 
 
 def quote(value: str) -> str:
@@ -441,32 +452,50 @@ def _manifest(tree: Path, manifest_path: str, what: str) -> dict[str, Any]:
         raise ScenarioError(f"{what} {manifest_path} cannot be read: {exc}") from exc
 
 
-def finding_categories(spec: Mapping[str, object], directory: Path, checkout: Path) -> list[str] | None:
-    """The finding categories of the manifest the scenario's reviewers follow, or None when it lists none: a document
-    scenario's is review-document's design manifest, a repository reviewer's the checkout's manifest, and any other
-    fixture's the one its pull.json names, which prepare reads from the base tree."""
+def scenario_manifest(spec: Mapping[str, object], directory: Path, checkout: Path) -> dict[str, Any] | None:
+    """The manifest the scenario's reviewers follow, or None for the generic reviewer alone: a document scenario's is
+    review-document's design manifest, a repository reviewer's the checkout's manifest, and any other fixture's the one
+    its pull.json names, which prepare reads from the base tree."""
     if "document" in spec:
-        return list(specialists_manifest(PurePosixPath(str(spec["document"])).name)["finding_categories"])
+        return specialists_manifest(PurePosixPath(str(spec["document"])).name)
     manifest_path = _manifest_path(directory)
     if manifest_path is None:
         return None
     tree = checkout if "reviewer" in spec else directory / "base"
-    categories = _manifest(tree, manifest_path, "the manifest").get("finding_categories")
+    return _manifest(tree, manifest_path, "the manifest")
+
+
+def finding_categories(spec: Mapping[str, object], directory: Path, checkout: Path) -> list[str] | None:
+    """The finding categories of the manifest the scenario's reviewers follow, or None when it lists none."""
+    manifest = scenario_manifest(spec, directory, checkout)
+    categories = None if manifest is None else manifest.get("finding_categories")
     return None if categories is None else list(categories)
 
 
 def finding_sources(spec: Mapping[str, object], directory: Path, checkout: Path) -> list[str]:
     """The reviewers that may raise a finding in the scenario: the generic reviewer and each specialist of the manifest
-    the scenario's reviewers follow, found as `finding_categories` finds it."""
-    if "document" in spec:
-        manifest = specialists_manifest(PurePosixPath(str(spec["document"])).name)
-    else:
-        manifest_path = _manifest_path(directory)
-        if manifest_path is None:
-            return [GENERIC_SPECIALIST]
-        tree = checkout if "reviewer" in spec else directory / "base"
-        manifest = _manifest(tree, manifest_path, "the manifest")
+    the scenario's reviewers follow."""
+    manifest = scenario_manifest(spec, directory, checkout) or {}
     return [GENERIC_SPECIALIST, *(specialist["id"] for specialist in manifest.get("specialists", []))]
+
+
+def route_pins(spec: Mapping[str, object], directory: Path, checkout: Path) -> tuple[RoutePin, ...]:
+    """Each route of the manifest the scenario's reviewers follow that pins a model or an effort, in the manifest's
+    order. A pinned `inherit` asks for the model the run judges, so it pins no model. Raise ScenarioError for a pinned
+    model MODELS names no ID for, since no run could show its route's reviewer ran on it."""
+    pins = []
+    for specialist in (scenario_manifest(spec, directory, checkout) or {}).get("specialists", []):
+        model = specialist.get("model")
+        model = None if model == "inherit" else model
+        effort = specialist.get("effort")
+        if model is not None and model not in MODELS:
+            raise ScenarioError(
+                f"route {specialist['id']} pins model {model}, which the evaluation names no model ID for: "
+                f"{', '.join(MODELS)}"
+            )
+        if model is not None or effort is not None:
+            pins.append(RoutePin(str(specialist["id"]), model, effort))
+    return tuple(pins)
 
 
 def _listed_sources(expectations: Sequence[Mapping[str, Any]], sources: Sequence[str]) -> None:
@@ -706,6 +735,7 @@ def review_scenario(skill: str, directory: Path, spec: Mapping[str, object], mod
         placed=placed,
         stage=stage,
         held=held,
+        pins=route_pins(spec, directory, checkout),
     )
 
 

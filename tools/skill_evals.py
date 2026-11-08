@@ -109,7 +109,8 @@ Records come from a record source, a function of a scenario, a model, and which 
 run wrote. --records DIR reads DIR/<scenario>/<model>.json, or with --runs N above 1, DIR/<scenario>/<model>-<run>.json
 for each run from 1 to N: the record JSON a run finalized, or a trigger scenario's trigger record. It holds a review
 record to what a run's record is held to: ejryan89-code-review-core's record contract (validate_record), the review
-version of the scenario's mode, a guard that held every reviewer, and every reviewer's `model` naming that model's ID.
+version of the scenario's mode, a guard that held every reviewer, and every reviewer's `model` naming that model's ID,
+or the ID of the model its route pins.
 The model is the one each reviewer's result reports, which is weaker than a run's check of the transcript. A trigger
 record must name each of the scenario's requests once, and every model ID in it must be that model's. A missing or
 unreadable record, or one any of those refuses, fails every expectation of its scenario, model, and run.
@@ -136,9 +137,13 @@ run before any session starts. The session, which
 orchestrates the skill, stays on SESSION_MODEL's ID. It has no Workflow tool, so reviewers start as native
 subagents, whose messages --forward-subagent-text puts in the transcript with the model each ran on, and
 --include-hook-events puts each guard decision beside them. A run counts only if every one of those messages names
-that model's ID, a dated suffix allowed, and every message of the session names the session's; a run with no
-subagent, or one on another model or another generation of the same family, fails every expectation, since the model
-was not the one judged.
+that model's ID, a dated suffix allowed, or the ID of a model a route of the scenario's manifest pins, and every
+message of the session names the session's; a run with no subagent, or one on another model or another generation of
+the same family, fails every expectation, since the model was not the one judged. A route's pinned `model` is
+honoured, since the pipeline starts that route's reviewer on it in place of the agent's model: the pins are the
+configuration under test. A pinned `inherit` pins nothing, and a pin of a model MODELS names no ID for fails the
+scenario's load. A route's pinned `effort` is overridden, since Claude Code starts a native subagent at its agent's
+effort, the model's reviewer effort, and not at one the pipeline is given; the results row names both kinds of pin.
 Edits are accepted, standing in for the user who approves each reviewer's result file, which the reviewers write
 inside the home, and the reviewers' self-check and source commands are allowed, each by the quoted path of the home's
 deployed script as the pipeline's prompts give it, in both shells, with no wildcard in the path; the skill's
@@ -236,7 +241,8 @@ Exit status:
   1  a FAIL, FAILED, or DEPLOY_FAILED line
   2  a usage error
 
-It records pass or fail, the model identifiers, the reviewers' effort, the runtime version, and the date,
+It records pass or fail, the model identifiers, the reviewers' effort, the route pins, the runtime version, and the
+date,
 and nothing else: no tokens,
 cost, or timings. It calls models, so it is never part of validation; see .claude/skills/evaluate-skill/SKILL.md.
 """
