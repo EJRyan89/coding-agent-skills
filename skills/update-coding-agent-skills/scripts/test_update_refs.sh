@@ -149,27 +149,9 @@ run_subject "$CLONE" main
 git_quiet -C "$SEED" push origin ":refs/tags/main"
 expect_shadowed "refs/tags/main on origin"$'\n'"refs/tags/origin/main in the clone" "remote and local tags"
 
-# A shadowing tag origin publishes after the check is not fetched, and the update follows origin's main. A Git wrapper
-# hides the tag from the check.
-begin_case 'tag after the check'
-new_clone
-publish "change while a tag appears after the check"
-git_quiet -C "$SEED" push origin "$SIDE:refs/tags/origin/main" "$SIDE:refs/tags/main"
-cat >"$WRAPPER/git" <<EOF
-#!/usr/bin/env bash
-case " \$* " in
-  *" ls-remote "*) exit 0 ;;
-esac
-exec "$(command -v git)" "\$@"
-EOF
-PATH="$WRAPPER:$PATH" run_subject "$CLONE" main
-git_quiet -C "$SEED" push origin ":refs/tags/origin/main" ":refs/tags/main"
-expect_status 0 "tag after the check"
-[ "$(head_of "$CLONE" refs/heads/main)" = "$(head_of "$SEED" HEAD)" ] || fail "tag after the check: main is not origin's main"
-for TAG in refs/tags/main refs/tags/origin/main; do
-  ! git -C "$CLONE" show-ref --verify --quiet "$TAG" || fail "tag after the check: $TAG was fetched"
-done
-expect_deployed "tag after the check"
+# A shadowing tag origin publishes after the check is not fetched: remote_refs.py runs both calls to origin through
+# ejryan89-skill-core's GitClient, which a Git wrapper here cannot stand in for, so test_remote_refs.py fetches from an
+# origin holding both tags.
 
 # A reading Git cannot give is a named failure, never an empty answer: the clone's tags, which would otherwise read as
 # no shadowing tag, and the list of repository-selecting variables, which would otherwise leave every one in place.

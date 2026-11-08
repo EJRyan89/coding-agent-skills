@@ -11,7 +11,8 @@
 #                    deployed <commit>, the pin is not the release channel's own, and --unpin was not given; on the
 #                    main channel nothing was fetched, and on the release channel the clone was fetched and the pin
 #                    is at another commit than the release the update would deploy
-#   FETCH_FAILED     followed by Git's error
+#   FETCH_FAILED     followed by Git's error on one line: origin could not be reached, refused, wanted a credential
+#                    the configured helpers could not give without asking, or did not answer within the time limit
 #   TAG_SHADOWS_BRANCH followed by each tag named main or origin/main, as "<tag> on origin" or "<tag> in the clone";
 #                    nothing was fetched
 #   NO_RELEASE       alone, on the release channel: no release tag reaches origin/main; the clone was fetched
@@ -330,15 +331,35 @@ fi
 MAIN=refs/heads/main
 ORIGIN_MAIN=refs/remotes/origin/main
 
+# The two calls to origin, the tag check here and the fetch below, run through remote_refs.py beside this script, which
+# runs git through ejryan89-skill-core's GitClient: with no prompt, no askpass helper that an inherited GIT_ASKPASS,
+# core.askPass, or SSH_ASKPASS names, no Git Credential Manager dialog, and a time limit, so a credential the helpers
+# cannot give without asking, or a remote that never answers, ends the update with FETCH_FAILED and git's reason
+# instead of holding it. Its last line is CHECKED, FETCHED, or FAILED <reason>; any other last line is a failure too.
+REMOTE_REFS="$SCRIPTS/remote_refs.py"
+REMOTE_OUT=
+remote_refs() {
+  local output last
+  output=$("$PYTHON" "$REMOTE_REFS" "$@" </dev/null 2>&1 | tr -d '\r')
+  last=$(printf '%s\n' "$output" | tail -n 1)
+  case "$last" in
+    CHECKED | FETCHED)
+      REMOTE_OUT=$output
+      return 0
+      ;;
+  esac
+  echo "FETCH_FAILED"
+  case "$last" in
+    "FAILED "*) printf '%s\n' "${last#FAILED }" ;;
+    *) printf 'remote_refs.py %s printed no result: %s\n' "$1" "$(one_line "$output")" ;;
+  esac
+  return 1
+}
+
 # A tag named like a branch the update reads, on origin or in the clone, stops it before anything is fetched: such a
 # tag still shadows the branch in the user's own Git commands.
-if ! OUTPUT=$(git -C "$CLONE" ls-remote --tags --refs origin "refs/tags/main" "refs/tags/origin/main" 2>&1); then
-  echo "FETCH_FAILED"
-  printf '%s\n' "$OUTPUT" | tr -d '\r'
-  exit 1
-fi
-SHADOWS=$(printf '%s\n' "$OUTPUT" | tr -d '\r' |
-  awk -F '\t' '$2 == "refs/tags/main" || $2 == "refs/tags/origin/main" { print $2 " on origin" }')
+remote_refs shadows "$CLONE" || exit 1
+SHADOWS=$(printf '%s\n' "$REMOTE_OUT" | awk '$1 == "ON_ORIGIN" { print $2 " on origin" }')
 # The clone's own tags are listed rather than probed one by one, so tags git cannot read stop the update instead of
 # reading as none.
 if ! OUTPUT=$(git -C "$CLONE" for-each-ref --format='%(refname)' refs/tags/main refs/tags/origin/main 2>&1); then
@@ -356,13 +377,8 @@ fi
 
 # Release tags are fetched too, so both sides' versions can be compared below and the release channel finds its
 # release. The negative refspecs keep the tag fetch from creating a shadowing tag that origin published after the
-# check above.
-if ! OUTPUT=$(git -C "$CLONE" fetch --quiet --tags origin "+$MAIN:$ORIGIN_MAIN" \
-  "^refs/tags/main" "^refs/tags/origin/main" 2>&1); then
-  echo "FETCH_FAILED"
-  printf '%s\n' "$OUTPUT" | tr -d '\r'
-  exit 1
-fi
+# check above. remote_refs.py names the same refs as MAIN and ORIGIN_MAIN above.
+remote_refs fetch "$CLONE" || exit 1
 
 # The highest release on origin/main: the release the release channel deploys, and the one the stop below compares on
 # either channel. RELEASE_REF is that tag's full name and RELEASE_COMMIT its commit; DEPLOY_END is the commit the

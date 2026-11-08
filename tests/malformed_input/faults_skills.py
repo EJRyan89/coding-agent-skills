@@ -447,6 +447,14 @@ def tagged_repository(fixture: Fixture) -> None:
     fixture.git("tag", "v1.0.0")
 
 
+def repository_with_origin(fixture: Fixture) -> None:
+    """A repository whose origin is a bare copy of it, as update-coding-agent-skills' clone is."""
+    fixture.repository()
+    origin = fixture.root / "origin.git"
+    fixture.git("clone", "-q", "--bare", str(fixture.work), str(origin))
+    fixture.git("remote", "add", "origin", str(origin))
+
+
 def flag_store(fixture: Fixture) -> None:
     """A code-review configuration naming an archive that holds three reviews of example/one#12, and a flag store
     holding one open flag on the first review's first finding."""
@@ -1043,6 +1051,21 @@ DRIVERS: list[Driver] = [
         prepare=recorded_report,
         inputs=(f"{OUTPUT}/fixture/pull.json", RECORDED, RECORDED.replace(".md", ".json")),
         outputs=(OUTPUT,),
+    ),
+    # update-coding-agent-skills' calls to origin
+    Driver(
+        "skills/update-coding-agent-skills/scripts/remote_refs.py",
+        "shadows",
+        ("shadows", "{work}"),
+        prepare=repository_with_origin,
+        git=True,
+    ),
+    Driver(
+        "skills/update-coding-agent-skills/scripts/remote_refs.py",
+        "fetch",
+        ("fetch", "{work}"),
+        prepare=repository_with_origin,
+        git=True,
     ),
     # release tags, flag-review-finding, github-activity-report, and repo-cleanup
     Driver(

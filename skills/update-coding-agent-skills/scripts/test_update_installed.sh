@@ -13,10 +13,15 @@ tag_upstream v6.0.0
 publish "after the sixth major"
 
 # An installation as the deployer lays it out under the skills folder the first argument names: the update skill's
-# script, and ejryan89-skill-core's scripts beside it unless the second argument is "without the core".
+# scripts but its suites, and ejryan89-skill-core's scripts beside it unless the second argument is "without the core".
 install_update() {
   mkdir -p "$1/update-coding-agent-skills/scripts"
-  cp -- "$SUBJECT" "$1/update-coding-agent-skills/scripts/update.sh"
+  for SCRIPT in "$SCRIPT_DIR/"*; do
+    case "${SCRIPT##*/}" in
+      test_*) ;;
+      *) [ ! -f "$SCRIPT" ] || cp -- "$SCRIPT" "$1/update-coding-agent-skills/scripts/" ;;
+    esac
+  done
   if [ "${2:-}" != "without the core" ]; then
     mkdir -p "$1/ejryan89-skill-core/scripts"
     for MODULE in "$SCRIPT_DIR/../../ejryan89-skill-core/scripts/"*.py; do
