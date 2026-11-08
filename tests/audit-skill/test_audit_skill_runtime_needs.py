@@ -47,7 +47,8 @@ def test_audit_skill_derives_the_needs_validation_holds_each_skill_to(name: str)
 
 # The wrapper rows audit-skill's GIT_COMMAND pattern reads as validation's reader does. It finds git only where a
 # command starts or after `command`, `exec`, or find's `-exec`, so every other row of WRAPPED_GIT_PUSH_SCRIPTS is a
-# limit of audit-skill's reader until it reads through the same wrapper catalogue.
+# limit of audit-skill's reader until it reads through the same wrapper catalogue. Its pattern takes Bash's time
+# keyword as a command start but not the keyword's -p or --, so TIME_KEYWORD_LIMITS are among those limits.
 AUDIT_SKILL_READS = frozenset(
     {
         "find . -exec git push {} +",
@@ -57,6 +58,7 @@ AUDIT_SKILL_READS = frozenset(
         "exec git push",
     }
 )
+TIME_KEYWORD_LIMITS = frozenset({"time -p git push", "time -p -- git push", "! time -p git push"})
 
 
 @pytest.mark.parametrize("script", WRAPPED_GIT_PUSH_SCRIPTS)
@@ -69,6 +71,11 @@ def test_audit_skill_reads_the_git_command_a_wrapper_runs_as_validation_does_or_
 
 def test_audit_skill_reads_only_wrapper_rows_validation_holds() -> None:
     assert set(WRAPPED_GIT_PUSH_SCRIPTS) >= AUDIT_SKILL_READS
+
+
+def test_the_time_keyword_rows_are_rows_validation_holds_and_limits_of_audit_skill() -> None:
+    assert set(WRAPPED_GIT_PUSH_SCRIPTS) >= TIME_KEYWORD_LIMITS
+    assert not TIME_KEYWORD_LIMITS & AUDIT_SKILL_READS
 
 
 def test_a_skill_that_invokes_another_needs_what_the_invoked_skill_does() -> None:

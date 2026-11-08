@@ -2349,3 +2349,23 @@ class CheckerCommandFixtures(unittest.TestCase):
         problems = self.problems({"tools/alias.py": source})
         self.assertTrue(problems)
         self.assertTrue(all(problem.startswith("tools/alias.py:") for problem in problems), problems)
+
+
+# The declared-tool policy reads the program Bash's time keyword times past the keyword's options, so a tool a skill
+# runs under `time -p` is held to its declaration as one it runs directly is.
+@pytest.mark.parametrize("script", ["time -p jq .", "time -p -- jq .", "! time -p jq ."])
+def test_the_command_policy_holds_the_program_the_time_keyword_times_to_its_declaration(script: str) -> None:
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        write_fixture_tree(
+            root,
+            {
+                "deploy-meta/alpha.json": "{}",
+                "skills/alpha/SKILL.md": "# alpha\n",
+                "skills/alpha/scripts/tool.sh": f"{script}\n",
+            },
+        )
+        doc = '"Commands skills may run" in docs/adding-a-skill.md'
+        assert skill_command_problems(root, {"gh"}, {"git"}) == [
+            f"skill alpha runs jq, which a standard install lacks; see {doc}"
+        ]
