@@ -52,6 +52,7 @@ import hook_decision
 import json_writer
 import mcp_handshake
 import memory_audit
+import powershell_commands
 import review_config
 import review_document
 import review_guard
@@ -515,6 +516,12 @@ REFUSALS: tuple[Row, ...] = (
         (1, [f"FAILED the audit report cannot be written: {REASON}"]),
     ),
     Row("review_config.load_config", "review_config.validate_config", _load_config, f"ConfigurationError: {REASON}"),
+    Row(
+        "powershell_commands.read",
+        DUMPS,
+        lambda _: raised(powershell_commands.PowerShellUnread, lambda: powershell_commands.read(["Get-Item x"])),
+        f"PowerShellUnread: the sources cannot be handed to pwsh: {REASON}",
+    ),
     Row(
         "hook_decision.denial",
         "hook_decision._denial_text",
