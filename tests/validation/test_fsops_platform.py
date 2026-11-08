@@ -1779,3 +1779,34 @@ def test_filesystem_write_policy_reports_ambiguous_assigned_callables(tmp_path: 
         f"deployer/ambiguous.py:{len(source.splitlines())} cannot resolve callable alias "
         f"{function}; use a single binding to a known callable"
     ] == filesystem_write_problems(tmp_path)
+
+
+# Each form of the one catalogue of lookups by name that attribute_lookups reads beyond getattr and __dict__, as the
+# import it needs and the expression that reads `{owner}`'s attribute `{name}`.
+LOOKUP_FORMS = [
+    pytest.param("import inspect", "inspect.getattr_static({owner}, '{name}')", id="inspect.getattr_static"),
+    pytest.param("", "object.__getattribute__({owner}, '{name}')", id="object.__getattribute__"),
+    pytest.param("", "{owner}.__getattribute__('{name}')", id="a bound __getattribute__"),
+    pytest.param("import operator", "operator.attrgetter('{name}')({owner})", id="operator.attrgetter"),
+    pytest.param("", "vars({owner})['{name}']", id="vars"),
+]
+
+
+@pytest.mark.parametrize(("imports", "lookup"), LOOKUP_FORMS)
+def test_platform_policy_reads_a_token_named_by_any_lookup_by_name(imports: str, lookup: str) -> None:
+    source = f"import os\n{imports}\nVALUE = {lookup.format(owner='os', name='fork')}\n"
+    assert (3, "os.fork") in _platform_names(ast.parse(source), set())
+
+
+@pytest.mark.parametrize(("imports", "lookup"), LOOKUP_FORMS)
+def test_filesystem_write_policy_reads_a_write_called_through_any_lookup_by_name(
+    tmp_path: Path, imports: str, lookup: str
+) -> None:
+    called = lookup.format(owner="shutil", name="rmtree")
+    source = f"import shutil\n{imports}\n\n\ndef go(path):\n    {called}(path)\n    return {called}\n"
+    write_fixture_tree(tmp_path, {"deployer/lookups.py": source})
+    route = "; route it through deployer/fsops.py"
+    # The call and the callable handed on as a value are both read, and the module the lookup reads on is not.
+    assert [f"deployer/lookups.py:{line} writes with shutil.rmtree{route}" for line in (6, 7)] == (
+        filesystem_write_problems(tmp_path)
+    )

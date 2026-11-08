@@ -45,6 +45,7 @@ from validation_support import (
     import_aliases,
     is_main_guard,
     listed,
+    literal_lookups,
     markdown_section,
     module_allowance,
     module_imports,
@@ -382,6 +383,32 @@ def test_attribute_lookups_read_every_form_of_the_catalogue(
         (ast.unparse(lookup.receiver), ast.unparse(lookup.name), lookup.alone, constant_attribute(lookup))
         for lookup in lookups
     ]
+
+
+# What literal_lookups reads, as (receiver, literal, alone) for each lookup, with and without a hasattr test.
+@pytest.mark.parametrize(
+    ("source", "tests", "expected"),
+    [
+        pytest.param('vars(os)["path"]', False, [("os", "path", True)], id="a form of the catalogue"),
+        pytest.param('operator.attrgetter("path.sep")(os)', False, [("os", "path.sep", True)], id="a dotted path"),
+        pytest.param(
+            'operator.attrgetter("sep", name)(os)', False, [("os", "sep", False)], id="a computed name left out"
+        ),
+        pytest.param("getattr(os, name)", False, [], id="a computed name"),
+        pytest.param('hasattr(os, "path")', False, [], id="a hasattr not asked for"),
+        pytest.param('hasattr(os, "path")', True, [("os", "path", False)], id="a hasattr"),
+        pytest.param('builtins.hasattr(os, name="path")', True, [("os", "path", False)], id="builtins.hasattr"),
+        pytest.param("hasattr(os, name)", True, [], id="a hasattr of a computed name"),
+        pytest.param('hasattr(*pair, "path")', True, [], id="a hasattr of a starred object"),
+    ],
+)
+def test_literal_lookups_read_each_lookup_by_a_literal_name(
+    source: str, tests: bool, expected: list[tuple[str, str, bool]]
+) -> None:
+    tree = ast.parse("import builtins\nimport operator\nimport os\n" + source)
+    resolver = CallableResolver(tree)
+    lookups = literal_lookups(last_expression(tree), lambda function: [resolver.name(function)], tests=tests)
+    assert expected == [(ast.unparse(lookup.receiver), literal, lookup.alone) for lookup, literal in lookups]
 
 
 @pytest.mark.parametrize(

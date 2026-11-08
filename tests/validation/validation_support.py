@@ -75,19 +75,23 @@ SKILL_GUIDE = "docs/adding-a-skill.md"
 VALIDATION_DOC = f'"Validation" in {SKILL_GUIDE}'
 # The code-review bundle's operations contract, whose threat model and format tables the policies read.
 OPERATIONS_CONTRACT = "docs/code-review-operations-contract.md"
-# The calls that look an attribute up by its name, as getattr(os, "environ") looks up os.environ.
-ATTRIBUTE_LOOKUPS = frozenset({"getattr", "builtins.getattr"})
-# The one catalogue of the ways Python reads an attribute by its name rather than by the dot, read through
-# attribute_lookups by resolved_references and resolved_calls, the runner-handed-on and console-setup policies in
-# skill_scripts.py, and the git-status reader in python_checks.py; the readers that still read ATTRIBUTE_LOOKUPS
-# alone are tracked to move onto it. Its forms: a call given the object and the name
+# The one catalogue of the ways Python reads an attribute by its name rather than by the dot, which every policy
+# reads through attribute_lookups, or literal_lookups for a name spelled as one string literal, and through no
+# catalogue of its own. Its forms: a call given the object and the name, as getattr(os, "environ") reads os.environ
 # (ATTRIBUTE_READERS), the lookup method every object has (LOOKUP_METHOD), a getter built from the name and applied to
 # the object (ATTRIBUTE_GETTERS), and a subscript of the object's namespace (NAMESPACE_READERS, NAMESPACE_ATTRIBUTE).
-ATTRIBUTE_READERS = ATTRIBUTE_LOOKUPS | {
-    "inspect.getattr_static",
-    "object.__getattribute__",
-    "builtins.object.__getattribute__",
-}
+ATTRIBUTE_READERS = frozenset(
+    {
+        "getattr",
+        "builtins.getattr",
+        "inspect.getattr_static",
+        "object.__getattribute__",
+        "builtins.object.__getattribute__",
+    }
+)
+# The calls that test whether an object has an attribute given its name, which name the attribute without reading
+# it, as hasattr(os, "fork") names os.fork; literal_lookups reads them for a policy that asks.
+ATTRIBUTE_TESTS = frozenset({"hasattr", "builtins.hasattr"})
 # The call that builds a reader of the attribute it names, applied to the object after, as
 # operator.attrgetter("environ")(os) reads os.environ.
 ATTRIBUTE_GETTERS = frozenset({"operator.attrgetter"})
@@ -930,6 +934,26 @@ def attribute_lookups(node: ast.AST, names: Callable[[ast.expr], Iterable[str]])
         alone = len(function.args) == 1 and not isinstance(function.args[0], ast.Starred)
         return [AttributeLookup(node.args[0], attribute, alone=alone) for attribute in function.args]
     return []
+
+
+def literal_lookups(
+    node: ast.AST, names: Callable[[ast.expr], Iterable[str]], *, tests: bool = False
+) -> list[tuple[AttributeLookup, str]]:
+    """Each lookup attribute_lookups reads in a node whose name is one string literal, with that literal, which may be
+    dotted, as an attrgetter's names a path through more than one attribute; with `tests`, also an ATTRIBUTE_TESTS
+    call given the object and a literal name, as a lookup whose value is not the attribute. A lookup by a name computed
+    at run time is left out, for a policy that reads one to read through attribute_lookups."""
+    lookups = attribute_lookups(node, names)
+    if tests and isinstance(node, ast.Call) and any(name in ATTRIBUTE_TESTS for name in names(node.func)):
+        attribute = call_argument(node, 1, "name")
+        receiver = node.args[0] if node.args and not isinstance(node.args[0], ast.Starred) else None
+        if receiver is not None and attribute is not None:
+            lookups.append(AttributeLookup(receiver, attribute, alone=False))
+    return [
+        (lookup, lookup.name.value)
+        for lookup in lookups
+        if isinstance(lookup.name, ast.Constant) and isinstance(lookup.name.value, str)
+    ]
 
 
 def constant_attribute(lookup: AttributeLookup) -> str | None:
