@@ -34,6 +34,7 @@ from command_wrappers import (
 from device_names import is_reserved_device_name
 from diff_paths import DRIVE
 from duplication import SKILL_CORE_SCRIPTS
+from gh_shorthands import GH_VALUE_SHORTHANDS, shorthands
 from markdown_sections import SHELL_FENCES
 from module_closure import MODULE_LOADERS
 from path_containment import posix_within
@@ -1483,13 +1484,6 @@ GH_FILTER_WORD = re.compile(r"(--jq|--template)(?:=.*)?", re.DOTALL)
 # create`, and git's -q is quiet. A Python list holds each as a filter only in a gh command whose output is JSON, one
 # given --json or gh api; a shell command that runs gh holds -q as one wherever it stands, and -t only there.
 GH_FILTER_SHORTHANDS = frozenset({"-q", "-t"})
-# gh's flag parser reads a word of shorthands as a cluster, each letter its own flag, until a letter that takes a
-# value, which takes the rest of the word: -iq.name is -i (api's --include) and -q .name, and -ftitle=x is -f title=x.
-# These are the letters that take a value in every gh command that takes a filter and has them, as `gh help
-# reference` lists them, with the global -R (--repo). Every other letter is read as one that takes none, a letter gh
-# adds later and one that takes a value in one such command and none in another included, so a filter after it is
-# refused wherever it may be one.
-GH_VALUE_SHORTHANDS = frozenset("ABFHLORSXbefjklmoprs")
 GH_SHELL_WORD_BREAK = re.compile(r"[\s;|&()]+")
 
 
@@ -1499,13 +1493,11 @@ def gh_filter_flag(word: str) -> str | None:
     match = GH_FILTER_WORD.fullmatch(word)
     if match is not None:
         return match.group(1)
-    if not word.startswith("-") or word.startswith("--"):
-        return None
-    for letter in word[1:]:
-        if f"-{letter}" in GH_FILTER_SHORTHANDS:
-            return f"-{letter}"
-        if letter in GH_VALUE_SHORTHANDS:
-            return None
+    # ejryan89-skill-core's gh_shorthands reads a cluster as gh's flag parser does, letter by letter until a letter
+    # that takes a value or a `=`; a letter its GH_VALUE_SHORTHANDS does not name is read as one that takes none.
+    for shorthand in shorthands(word, GH_VALUE_SHORTHANDS):
+        if shorthand.flag in GH_FILTER_SHORTHANDS:
+            return shorthand.flag
     return None
 
 

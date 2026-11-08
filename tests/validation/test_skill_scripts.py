@@ -1477,6 +1477,9 @@ class SkillScriptsFixtures(unittest.TestCase):
                     'run(["gh", "pr", "list", "--json", "title", "-lq"])\n'
                     'run(["gh", "pr", "list", "--json", "title", "-R", "o/r", "-Rqo/r"])\n'
                     'run(["gh", "pr", "view", "--json", "title", "-cw"])\n'
+                    # A `=` ends a cluster as a letter that takes a value does: the rest is the value of the letter
+                    # before it, so no filter shorthand follows.
+                    'run(["gh", "pr", "view", "--json", "title", "-c=qt"])\n'
                     # A long flag is no cluster, whatever letters follow its dashes.
                     'run(["gh", "pr", "view", "--json", "title", "--quiet", "--iq"])\n',
                     "skills/alpha/scripts/tool.sh": "gh api repos/o/r -ftitle=q -Hquery:x -i\n"
