@@ -49,9 +49,7 @@ from path_containment import posix_within, relative_within, within
 from runtime_support import names_git
 from toolchain import find_mypy, find_ruff, mypy_job, ruff_job
 from validation_support import (
-    ATTRIBUTE_GETTERS,
     ATTRIBUTE_LOOKUPS,
-    ATTRIBUTE_READERS,
     BUILTIN_NAMES,
     COMMON_PATH_FUNCTIONS,
     DEFINITIONS,
@@ -65,6 +63,7 @@ from validation_support import (
     CallableResolver,
     ResolvedCall,
     UnreadablePython,
+    attribute_lookups,
     bound_values,
     call_argument,
     import_aliases,
@@ -2882,8 +2881,8 @@ class _GitResults:
         return self.is_result(node)
 
     def status_read(self, node: ast.AST) -> bool:
-        """Whether a node reads a held result's returncode: as an attribute, through a lookup of an attribute by its
-        name or an attrgetter given any name but a constant that names another attribute, by a class pattern, or by
+        """Whether a node reads a held result's returncode: as an attribute, through any lookup by name
+        attribute_lookups reads given any name but a constant that names another attribute, by a class pattern, or by
         reaching the result's fields as a whole, which hold it."""
         if isinstance(node, ast.pattern):
             return id(node) in self.patterns
@@ -2893,21 +2892,12 @@ class _GitResults:
             return node.attr == "returncode" and isinstance(node.ctx, ast.Load) and self.holds(node.value)
         if not isinstance(node, ast.Call):
             return False
-        called = self.resolver.name(node.func)
-        if called in ATTRIBUTE_READERS:
-            return len(node.args) >= 2 and _may_name_status(node.args[1]) and self.holds(node.args[0])
-        if called in RESULT_FIELD_READERS:
-            return bool(node.args) and self.holds(node.args[0])
-        if isinstance(node.func, ast.Attribute) and node.func.attr == "__getattribute__":
-            return bool(node.args) and _may_name_status(node.args[0]) and self.holds(node.func.value)
-        getter = node.func
-        return (
-            isinstance(getter, ast.Call)
-            and self.resolver.name(getter.func) in ATTRIBUTE_GETTERS
-            and any(_may_name_status(name) for name in getter.args)
-            and bool(node.args)
-            and self.holds(node.args[0])
-        )
+        # A subscript of the result's namespace is read where the namespace is: vars(r) and r.__dict__ reach every
+        # field, so only the call forms of a lookup by name are read here.
+        lookups = attribute_lookups(node, lambda function: [self.resolver.name(function)])
+        if lookups:
+            return any(_may_name_status(lookup.name) and self.holds(lookup.receiver) for lookup in lookups)
+        return self.resolver.name(node.func) in RESULT_FIELD_READERS and bool(node.args) and self.holds(node.args[0])
 
 
 def _case_patterns(pattern: ast.pattern) -> Iterator[ast.pattern]:
