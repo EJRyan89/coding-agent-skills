@@ -101,7 +101,10 @@ scenario; with more than one, each scenario's counts end with the runs that pass
 `7/9 (2/3 runs)`, and a run whose reviewers never started is left out of both counts. A scenario is "not run" for a model when none of its reviewers started, such as
 when the session refused before reviewing, since it holds no judgment of the model; the notes below say why. A model
 is "not run" when none of its reviewers ran, with the first reason in place of the scenarios, in fixed phrases that
-name no path of the machine; the run's `FAIL` lines keep the whole reason. A run with `--write` refuses, before it
+name no path of the machine; the run's `FAIL` lines keep the whole reason. A run measures nothing of a model no
+record of which counted, every expectation on it failing as a `run` or `record`, such as a session that was signed
+out or a reviewer no guard held, so `--write` keeps that model's committed row as it was and prints `KEPT <model>`
+for it, and writes the model's new row only when the skill had none. A run with `--write` refuses, before it
 starts, a table between the markers that holds anything but the header, its separator, and rows of its columns. A
 pull request that changes a skill's prompt, description, model guidance, or reviewer instructions cites this run.
 
