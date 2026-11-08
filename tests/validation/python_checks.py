@@ -3426,8 +3426,8 @@ def _annotates_git_error(annotation: ast.expr | None, aliases: dict[str, str]) -
     `Union[GitError, None]`, or any of these in quotes."""
     if isinstance(annotation, ast.Constant) and isinstance(annotation.value, str):
         try:
-            annotation = ast.parse(annotation.value, mode="eval").body
-        except SyntaxError:
+            annotation = python_reader.parse_expression(annotation.value).body
+        except python_reader.CONTENT_ERRORS:
             return False
     if isinstance(annotation, ast.BinOp) and isinstance(annotation.op, ast.BitOr):
         return _annotates_git_error(annotation.left, aliases) or _annotates_git_error(annotation.right, aliases)
