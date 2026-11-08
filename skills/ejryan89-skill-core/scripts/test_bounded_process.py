@@ -23,12 +23,29 @@ import job_tree
 from bounded_process import Finished, run_bounded
 from process_identity import process_status
 
+# The prompt switches, written out here rather than read from bounded_process, so the pins below fail when the
+# module's set changes: git's terminal prompt and every askpass helper git or ssh would start, Git Credential Manager's
+# dialog, and gh's prompts.
+NO_PROMPT = {
+    "GIT_TERMINAL_PROMPT": "0",
+    "GIT_ASKPASS": "",
+    "SSH_ASKPASS": "",
+    "SSH_ASKPASS_REQUIRE": "never",
+    "GCM_INTERACTIVE": "never",
+    "GH_PROMPT_DISABLED": "1",
+}
+# Prints, as JSON, its stdin and the prompt switches and KEPT as its environment holds them.
 ENVIRONMENT_PROGRAM = (
     "import json, os, sys; "
     "print(json.dumps({'stdin': sys.stdin.read(), "
-    "'variables': {name: os.environ.get(name) for name in ('GIT_TERMINAL_PROMPT', 'GCM_INTERACTIVE', "
-    "'GH_PROMPT_DISABLED', 'KEPT')}}))"
+    "'variables': {name: os.environ.get(name) for name in ('GIT_TERMINAL_PROMPT', 'GIT_ASKPASS', 'SSH_ASKPASS', "
+    "'SSH_ASKPASS_REQUIRE', 'GCM_INTERACTIVE', 'GH_PROMPT_DISABLED', 'KEPT')}}))"
 )
+# An askpass helper that records each call in the file ASKPASS_LOG names and answers with a secret, as a helper an IDE
+# terminal sets would answer for the person.
+ASKPASS_SCRIPT = '#!/bin/sh\necho "called: $1" >> "$ASKPASS_LOG"\necho a-secret\n'
+# What `git credential fill` reads: a request no configured helper answers, so git would ask a person.
+CREDENTIAL_REQUEST = b"protocol=https\nhost=example.invalid\n\n"
 
 # git's repository-selecting variables, written out here rather than read from bounded_process, so the pin below fails
 # when the module's set changes; each is set in the case a shell exports it and in lower case, as Windows matches it.
@@ -153,19 +170,19 @@ class BoundedProcessTests(unittest.TestCase):
             self.assertEqual(b"", running.errors())
 
     def test_the_command_reads_no_stdin_and_sees_every_prompt_turned_off(self) -> None:
-        with mock.patch.dict("os.environ", {"KEPT": "a value", "GIT_TERMINAL_PROMPT": "1", "GCM_INTERACTIVE": "auto"}):
+        inherited = {
+            "KEPT": "a value",
+            "GIT_TERMINAL_PROMPT": "1",
+            "GIT_ASKPASS": "an askpass helper",
+            "SSH_ASKPASS": "another helper",
+            "SSH_ASKPASS_REQUIRE": "force",
+            "GCM_INTERACTIVE": "auto",
+        }
+        with mock.patch.dict("os.environ", inherited):
             finished = run_bounded([sys.executable, "-c", ENVIRONMENT_PROGRAM], 60)
         self.assertEqual(0, finished.returncode)
         self.assertEqual(
-            {
-                "stdin": "",
-                "variables": {
-                    "GIT_TERMINAL_PROMPT": "0",
-                    "GCM_INTERACTIVE": "never",
-                    "GH_PROMPT_DISABLED": "1",
-                    "KEPT": "a value",
-                },
-            },
+            {"stdin": "", "variables": {**NO_PROMPT, "KEPT": "a value"}},
             json.loads(finished.stdout),
         )
 
@@ -174,15 +191,7 @@ class BoundedProcessTests(unittest.TestCase):
             finished = run_bounded([sys.executable, "-c", ENVIRONMENT_PROGRAM], 60, input_bytes=b"given\n")
         self.assertEqual(0, finished.returncode)
         self.assertEqual(
-            {
-                "stdin": "given\n",
-                "variables": {
-                    "GIT_TERMINAL_PROMPT": "0",
-                    "GCM_INTERACTIVE": "never",
-                    "GH_PROMPT_DISABLED": "1",
-                    "KEPT": "kept",
-                },
-            },
+            {"stdin": "given\n", "variables": {**NO_PROMPT, "KEPT": "kept"}},
             json.loads(finished.stdout),
         )
 
@@ -347,10 +356,35 @@ class BoundedProcessTests(unittest.TestCase):
         self.assertEqual(["held", "left with the command gone"], tree.events)
 
     def test_the_prompt_switches(self) -> None:
-        self.assertEqual(
-            {"GIT_TERMINAL_PROMPT": "0", "GCM_INTERACTIVE": "never", "GH_PROMPT_DISABLED": "1"},
-            bounded_process.NON_INTERACTIVE,
-        )
+        self.assertEqual(NO_PROMPT, bounded_process.NON_INTERACTIVE)
+
+    def test_git_starts_no_askpass_helper_however_one_is_set(self) -> None:
+        # git asks GIT_ASKPASS, then core.askPass, then SSH_ASKPASS before the terminal, so each set alone would run a
+        # helper that may wait for a person until the time limit; the default and the isolated environment stop all
+        # three, and git fails at once. The conftest removes every GIT_* variable, so the test sets its own.
+        with tempfile.TemporaryDirectory() as folder:
+            helper = Path(folder, "ask pass.sh")
+            helper.write_text(ASKPASS_SCRIPT, encoding="utf-8", newline="\n")
+            helper.chmod(0o755)
+            log = Path(folder, "calls.log")
+            # Forward slashes, which git's own shell reads on Windows too.
+            helper_path = helper.as_posix()
+            rows: dict[str, tuple[dict[str, str], list[str], bool]] = {
+                "GIT_ASKPASS": ({"GIT_ASKPASS": helper_path}, [], False),
+                "SSH_ASKPASS": ({"SSH_ASKPASS": helper_path}, [], False),
+                "core.askPass": ({}, ["-c", f"core.askPass={helper_path}"], False),
+                "SSH_ASKPASS, isolated": ({"SSH_ASKPASS": helper_path}, [], True),
+            }
+            for row, (variables, settings, isolated) in rows.items():
+                with self.subTest(row=row), mock.patch.dict(os.environ, {**variables, "ASKPASS_LOG": str(log)}):
+                    log.unlink(missing_ok=True)
+                    command = ["git", "-c", "credential.helper=", *settings, "credential", "fill"]
+                    environment = bounded_process.isolated_git_environment() if isolated else None
+                    finished = run_bounded(
+                        command, 60, input_bytes=CREDENTIAL_REQUEST, env=environment, cwd=Path(folder)
+                    )
+                    self.assertFalse(log.exists(), log.read_text(encoding="utf-8") if log.exists() else "")
+                    self.assertEqual(128, finished.returncode, finished.stderr)
 
     def test_the_default_environment_leaves_out_every_repository_selecting_variable_in_any_case(self) -> None:
         kept = {"GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "a.b", "GIT_CONFIG_VALUE_0": "c", "GIT_SSH_COMMAND": "ssh"}
@@ -371,6 +405,7 @@ class BoundedProcessTests(unittest.TestCase):
         self.assertEqual(
             {
                 "GIT_TERMINAL_PROMPT": "0",
+                "GIT_ASKPASS": "",
                 "GIT_CONFIG_NOSYSTEM": "1",
                 "GIT_CONFIG_GLOBAL": null,
                 "GIT_ATTR_NOSYSTEM": "1",
@@ -378,8 +413,11 @@ class BoundedProcessTests(unittest.TestCase):
             {name: value for name, value in environment.items() if name.upper().startswith("GIT_")},
         )
         self.assertEqual(
-            ("never", "1", "kept"),
-            tuple(environment[name] for name in ("GCM_INTERACTIVE", "GH_PROMPT_DISABLED", "PATH_KEPT")),
+            ("", "never", "never", "1", "kept"),
+            tuple(
+                environment[name]
+                for name in ("SSH_ASKPASS", "SSH_ASKPASS_REQUIRE", "GCM_INTERACTIVE", "GH_PROMPT_DISABLED", "PATH_KEPT")
+            ),
         )
 
     def test_the_one_builder_leaves_out_exactly_the_repository_selecting_variables_in_any_case(self) -> None:

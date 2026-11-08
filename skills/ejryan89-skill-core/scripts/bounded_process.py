@@ -2,7 +2,9 @@
 
 The command reads no stdin, or only the input its caller gives in full up front, and its environment turns off every
 prompt git, Git Credential Manager, and gh would otherwise show, so an expired credential fails at once instead of
-waiting for an answer nobody gives. Its environment, that default or one its caller gives, also leaves out git's
+waiting for an answer nobody gives: git's terminal prompt, every askpass helper git or ssh would start (`GIT_ASKPASS`,
+`core.askPass`, and `SSH_ASKPASS`), Git Credential Manager's dialog, and gh's prompts, as `NON_INTERACTIVE` sets them.
+Its environment, that default or one its caller gives, also leaves out git's
 repository-selecting variables, such as `GIT_DIR` and `GIT_INDEX_FILE`, which a git hook exports and a shell may pass
 on: a command names its repository by the directory it runs in or names, as `git -C` and gh in its working directory
 do, and reads that repository, its index, and its objects, never one a variable points at. A program that is not git,
@@ -57,7 +59,21 @@ READER_WAIT_SECONDS = 1.0
 CHUNK_BYTES = 64 * 1024
 QUEUED_CHUNKS = 16  # how far a streaming command's reader runs ahead of its caller
 POLL_SECONDS = 0.1
-NON_INTERACTIVE = {"GIT_TERMINAL_PROMPT": "0", "GCM_INTERACTIVE": "never", "GH_PROMPT_DISABLED": "1"}
+# What the default and the isolated environment set so that nothing asks a person anything. git asks for a credential
+# through GIT_ASKPASS, then core.askPass, then SSH_ASKPASS, and only then at the terminal, which GIT_TERMINAL_PROMPT
+# turns off; an empty GIT_ASKPASS stops git at the first step with no helper started, so neither an inherited
+# GIT_ASKPASS nor a core.askPass in any configuration runs. An empty SSH_ASKPASS with SSH_ASKPASS_REQUIRE=never starts
+# no helper from ssh. GCM_INTERACTIVE stops Git Credential Manager's dialog, and GH_PROMPT_DISABLED gh's prompts.
+# A user's GIT_SSH_COMMAND and core.sshCommand stay theirs, so no ssh option such as BatchMode is added; see
+# docs/design.md.
+NON_INTERACTIVE = {
+    "GIT_TERMINAL_PROMPT": "0",
+    "GIT_ASKPASS": "",
+    "SSH_ASKPASS": "",
+    "SSH_ASKPASS_REQUIRE": "never",
+    "GCM_INTERACTIVE": "never",
+    "GH_PROMPT_DISABLED": "1",
+}
 # What `isolated_git_environment` sets: no system configuration, the null device as the global one, which also stands
 # in for the XDG file, and no system attributes.
 ISOLATED_GIT = {"GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull, "GIT_ATTR_NOSYSTEM": "1"}
