@@ -937,15 +937,18 @@ removed fails validation until its pattern follows it.
 - **Why:** A deletion a kill or an error stops partway leaves a remainder that matches nothing, which a recovery that
   reads it where the copy stood takes for someone's change and keeps or refuses.
 - **Use:** `deployer.journal:_delete_copy`, which renames the copy to `deployer.names:deletion_name` before deleting
-  it, and `deployer.journal:_finish_deletion`, which finishes what a stopped deletion left there and only names what
-  it cannot delete, so a held leftover fails no later run.
+  it, or to `deployer.names:spare_deletion_name` while a held leftover stays there, and
+  `deployer.journal:_finish_deletion`, which finishes what a stopped deletion left under either name and only names
+  what it cannot delete, so a held leftover fails no later run.
 - **Guard:** `tests/deployer/test_backup_settlement.py::SettlementTests::test_finalization_and_recovery_settle_each_backup_alike`,
   whose rows include a deletion killed partway and one failing partway, and
   `tests/deployer/test_recovery_migration.py::RecoveryTests::test_a_rollback_killed_partway_through_deleting_the_installed_copy_is_finished_by_the_next`,
   and, for a leftover that cannot be deleted, `tests/deployer/test_recovery_migration.py::RecoveryFailureTests::test_a_held_leftover_at_the_deletion_name_fails_no_later_rollback_or_finalization`
+  and the tests of a deletion stopped partway beside one, such as
+  `tests/deployer/test_recovery_migration.py::RecoveryFailureTests::test_a_rollback_killed_partway_through_its_deletion_beside_a_held_leftover_is_finished_by_the_next`
 - **Search for:** `fsops.remove(` or `shutil.rmtree(` of a path a later step reads with `hash_path(`, `_hash_existing(`,
   or `backup_unchanged(`; a retry that compares a tree it may have been deleting when it stopped.
-- **Examples:** #2314
+- **Examples:** #2314, #2449
 
 ### A missing record decides nothing it would have decided
 
