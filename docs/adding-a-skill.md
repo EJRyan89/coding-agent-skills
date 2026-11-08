@@ -199,8 +199,10 @@ literal program prefix, such as `f"{program} api"`, a value the script reads fro
 function no call in the script passes, that the script hands on as a value, or that other scripts may call by its
 public name. So is a runner itself that the script hands on as a value, to `functools.partial`, `map`, a thread's
 target, or a collection, or takes by any lookup by name in the one catalogue `attribute_lookups` in
-`tests/validation/validation_support.py` reads (`getattr`, `inspect.getattr_static`, `object.__getattribute__`,
-`operator.attrgetter`, `vars(x)[...]`, and `x.__dict__[...]`), given the runner's name or one the script computes. Keep the program name literal and interpolate only its arguments. A function whose program truly comes from
+`tests/validation/validation_support.py` reads (`getattr`, `inspect.getattr_static`, `object.__getattribute__`, a
+bound `x.__getattribute__(name)`, `operator.attrgetter`, `vars(x)[...]`, and `x.__dict__[...]`), given the runner's
+name or one the script computes. Keep the program name literal and interpolate only its arguments. A function whose
+program truly comes from
 elsewhere, such as a runner a client injects or a server a repository configures, states why beside
 the code, as a module-level `COMMANDS_ALLOWED = {scope: reason}` keyed by the function's qualified name or by a
 module-level assignment's target; validation fails on an allowance that sanctions nothing it reads. A parameter

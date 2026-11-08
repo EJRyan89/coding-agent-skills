@@ -1658,18 +1658,19 @@ GH_FILTER_WORD = re.compile(r"(--jq|--template)(?:=.*)?", re.DOTALL)
 # create`, and git's -q is quiet. A Python list holds each as a filter only in a gh command whose output is JSON, one
 # given --json or gh api; a shell command that runs gh holds -q as one wherever it stands, and -t only there.
 GH_FILTER_SHORTHANDS = frozenset({"-q", "-t"})
-# The shorthands that take no value in some gh command that takes a filter, as api's -i (--include) and pr view's -c
-# (--comments), as `gh help reference` lists them. gh's flag parser reads a word of shorthands as a cluster, each
-# letter its own flag, until a letter that takes a value, which takes the rest of the word: -iq.name is -i and
-# -q .name, and -ftitle=x is -f title=x. A letter that takes a value in one such command and none in another is read
-# as taking none, so a filter after it is refused wherever it may be one.
-GH_BOOLEAN_SHORTHANDS = frozenset("acdinuvw")
+# gh's flag parser reads a word of shorthands as a cluster, each letter its own flag, until a letter that takes a
+# value, which takes the rest of the word: -iq.name is -i (api's --include) and -q .name, and -ftitle=x is -f title=x.
+# These are the letters that take a value in every gh command that takes a filter and has them, as `gh help
+# reference` lists them, with the global -R (--repo). Every other letter is read as one that takes none, a letter gh
+# adds later and one that takes a value in one such command and none in another included, so a filter after it is
+# refused wherever it may be one.
+GH_VALUE_SHORTHANDS = frozenset("ABFHLORSXbefjklmoprs")
 GH_SHELL_WORD_BREAK = re.compile(r"[\s;|&()]+")
 
 
 def gh_filter_flag(word: str) -> str | None:
     """The filter flag a word passes gh, as --jq, --template, -q, or -t, alone, with its filter attached, or after
-    shorthands in the same word that take no value, or None when it passes none."""
+    shorthands in the same word that may take no value, or None when it passes none."""
     match = GH_FILTER_WORD.fullmatch(word)
     if match is not None:
         return match.group(1)
@@ -1678,7 +1679,7 @@ def gh_filter_flag(word: str) -> str | None:
     for letter in word[1:]:
         if f"-{letter}" in GH_FILTER_SHORTHANDS:
             return f"-{letter}"
-        if letter not in GH_BOOLEAN_SHORTHANDS:
+        if letter in GH_VALUE_SHORTHANDS:
             return None
     return None
 

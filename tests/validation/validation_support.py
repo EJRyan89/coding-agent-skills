@@ -77,8 +77,10 @@ VALIDATION_DOC = f'"Validation" in {SKILL_GUIDE}'
 OPERATIONS_CONTRACT = "docs/code-review-operations-contract.md"
 # The calls that look an attribute up by its name, as getattr(os, "environ") looks up os.environ.
 ATTRIBUTE_LOOKUPS = frozenset({"getattr", "builtins.getattr"})
-# The one catalogue of the ways Python reads an attribute by its name rather than by the dot, which every policy
-# reading an attribute by name reads through attribute_lookups: a call given the object and the name
+# The one catalogue of the ways Python reads an attribute by its name rather than by the dot, read through
+# attribute_lookups by resolved_references and resolved_calls, the runner-handed-on and console-setup policies in
+# skill_scripts.py, and the git-status reader in python_checks.py; the readers that still read ATTRIBUTE_LOOKUPS
+# alone are tracked to move onto it. Its forms: a call given the object and the name
 # (ATTRIBUTE_READERS), the lookup method every object has (LOOKUP_METHOD), a getter built from the name and applied to
 # the object (ATTRIBUTE_GETTERS), and a subscript of the object's namespace (NAMESPACE_READERS, NAMESPACE_ATTRIBUTE).
 ATTRIBUTE_READERS = ATTRIBUTE_LOOKUPS | {

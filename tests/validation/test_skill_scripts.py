@@ -1407,6 +1407,9 @@ class SkillScriptsFixtures(unittest.TestCase):
             "-cq": ["gh", "pr", "view", "1", "--json", "comments", "-cq", ".comments"],
             "-wcq": ["gh", "pr", "view", "1", "--json", "comments", "-wcq.comments"],
             "-ct": ["gh", "issue", "view", "1", "--json", "comments", "-ct{{.}}"],
+            # A letter no filter-taking command lists, as one a later gh may add, is read as taking no value.
+            "-xq": ["gh", "run", "view", "1", "--json", "status", "-xq", ".status"],
+            "-hxq": ["gh", "run", "view", "1", "--json", "status", "-hxq.status"],
         }
         for name, arguments in refused.items():
             flag = "-" + name.replace("<filter>", "")[-1]
@@ -1435,6 +1438,8 @@ class SkillScriptsFixtures(unittest.TestCase):
                     "skills/alpha/scripts/tool.py": 'run(["gh", "api", "repos/o/r", "-ftitle=q"])\n'
                     'run(["gh", "api", "repos/o/r", "-Xquery"])\n'
                     'run(["gh", "pr", "list", "--json", "title", "-Lq"])\n'
+                    'run(["gh", "pr", "list", "--json", "title", "-lq"])\n'
+                    'run(["gh", "pr", "list", "--json", "title", "-R", "o/r", "-Rqo/r"])\n'
                     'run(["gh", "pr", "view", "--json", "title", "-cw"])\n',
                     "skills/alpha/scripts/tool.sh": "gh api repos/o/r -ftitle=q -Hquery:x -i\n",
                 },

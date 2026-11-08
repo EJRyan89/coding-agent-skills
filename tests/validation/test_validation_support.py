@@ -33,9 +33,11 @@ from validation_support import (
     ModuleImport,
     ScriptsEntry,
     UnreadablePython,
+    attribute_lookups,
     bound_values,
     call_argument,
     call_arguments,
+    constant_attribute,
     continued_lines,
     docstring_ids,
     fence_body_line,
@@ -306,6 +308,53 @@ def test_global_and_nonlocal_rebindings_invalidate_the_original_alias(source: st
 def test_a_module_looked_up_by_its_name_is_read_through_the_imports(source: str, expected: str) -> None:
     tree = ast.parse(source)
     assert expected == module_lookup(last_expression(tree), CallableResolver(tree))
+
+
+# Each form of the catalogue of lookups by name, as (receiver, name, alone, literal attribute) for each lookup it reads.
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    [
+        pytest.param('getattr(os, "path")', [("os", "'path'", True, "path")], id="getattr"),
+        pytest.param('builtins.getattr(os, "path")', [("os", "'path'", True, "path")], id="builtins.getattr"),
+        pytest.param('inspect.getattr_static(os, "path")', [("os", "'path'", True, "path")], id="getattr_static"),
+        pytest.param('inspect.getattr_static(os, attr="path")', [("os", "'path'", True, "path")], id="attr keyword"),
+        pytest.param('object.__getattribute__(os, "path")', [("os", "'path'", True, "path")], id="object's lookup"),
+        pytest.param('os.__getattribute__("path")', [("os", "'path'", True, "path")], id="a bound lookup"),
+        pytest.param('operator.attrgetter("path")(os)', [("os", "'path'", True, "path")], id="attrgetter"),
+        pytest.param('vars(os)["path"]', [("os", "'path'", True, "path")], id="vars"),
+        pytest.param('os.__dict__["path"]', [("os", "'path'", True, "path")], id="__dict__"),
+        pytest.param("getattr(os, name)", [("os", "name", True, None)], id="a computed name"),
+        # An attrgetter given several names returns a tuple, and one given a starred name may too.
+        pytest.param(
+            'operator.attrgetter("sep", "path")(os)',
+            [("os", "'sep'", False, "sep"), ("os", "'path'", False, "path")],
+            id="attrgetter of several names",
+        ),
+        pytest.param("operator.attrgetter(*names)(os)", [("os", "*names", False, None)], id="a starred name"),
+        # A dotted path follows more than one attribute, so it names no one attribute.
+        pytest.param('operator.attrgetter("path.sep")(os)', [("os", "'path.sep'", True, None)], id="a dotted path"),
+        # A starred or missing receiver, a missing name, and another call or subscript read nothing.
+        pytest.param('getattr(*pair, "path")', [], id="a starred receiver"),
+        pytest.param('operator.attrgetter("path")(*objects)', [], id="a starred object"),
+        pytest.param("vars(*objects)['path']", [], id="vars of a starred object"),
+        pytest.param("vars()['path']", [], id="vars of no object"),
+        pytest.param("getattr(os)", [], id="no name"),
+        pytest.param("os.__getattribute__()", [], id="a bound lookup of no name"),
+        pytest.param('print(os, "path")', [], id="another call"),
+        pytest.param('table["path"]', [], id="another subscript"),
+    ],
+)
+def test_attribute_lookups_read_every_form_of_the_catalogue(
+    source: str, expected: list[tuple[str, str, bool, str | None]]
+) -> None:
+    imports = "import builtins\nimport inspect\nimport operator\nimport os\n"
+    tree = ast.parse(imports + source)
+    resolver = CallableResolver(tree)
+    lookups = attribute_lookups(last_expression(tree), lambda function: [resolver.name(function)])
+    assert expected == [
+        (ast.unparse(lookup.receiver), ast.unparse(lookup.name), lookup.alone, constant_attribute(lookup))
+        for lookup in lookups
+    ]
 
 
 @pytest.mark.parametrize(
