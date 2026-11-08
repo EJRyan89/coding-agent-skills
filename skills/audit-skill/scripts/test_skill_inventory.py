@@ -2731,6 +2731,38 @@ def test_no_skill_this_source_ships_or_keeps_yields_a_subagent_model_or_runtime_
         ('echo "run git fetch first"', set()),
         ("  # git pull later", set()),
         ("legit fetch", set()),
+        # A wrapper's options are read by its getopt table to the command it runs, and a lookup runs nothing.
+        ("nice -n 5 git push", {"push"}),
+        ("env -i A=1 timeout --signal TERM 5 git fetch", {"fetch"}),
+        ("xargs -n 1 git push", {"push"}),
+        ("env -S 'git push'", {"push"}),
+        ("command -v git", set()),
+        ("xargs echo git push", set()),
+        ("timeout --sig TERM 5 git push", set()),
+        # find's actions, eval, and a shell's -c script are read as commands of their own.
+        ("find . -exec git status {} \\; -exec echo push \\;", {"status"}),
+        ("eval git fetch", {"fetch"}),
+        ("bash -lc 'cd x && git pull'", {"pull"}),
+        # A quoted operator is a word, a substitution in a string is a command, and so is a group's or a continuation's.
+        ("echo 'a; git push'", set()),
+        ('echo "now $(git rev-parse HEAD)"', {"rev-parse"}),
+        ("{ git push; }", {"push"}),
+        ("git \\\n  fetch", {"fetch"}),
+        ("x=1 git push 'unclosed", {"push"}),
+        # Bash's time keyword takes -p and then --, each optional, before the pipeline it times; a second -p, or one
+        # after --, is the timed command's own word. After a pipe, the newline right after one, an assignment, or in
+        # find's action, `time` is the time program, read by its options.
+        ("time -p git push", {"push"}),
+        ("time -p -- git push", {"push"}),
+        ("! time -p git push", {"push"}),
+        ("time -p time -p git push", {"push"}),
+        ("x=$(time -p git fetch)", {"fetch"}),
+        ("time -p -p git push", set()),
+        ("time -- -p git push", set()),
+        ("echo a | time -p -p git push", {"push"}),
+        ("echo a |\n time -p -p git push", {"push"}),
+        ("A=1 time -p -p git push", {"push"}),
+        ("find . -exec time -p -p git push \\;", {"push"}),
     ],
 )
 def test_a_bash_script_runs_the_git_subcommand_after_gits_own_options(line: str, expected: set[str]) -> None:

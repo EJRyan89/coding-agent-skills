@@ -15,6 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts"))
 
 import bash_agreement
+import option_reader
 from guard_limits import process_limits_held
 
 from deployer import platform_support
@@ -410,12 +411,12 @@ class RunnerTests(unittest.TestCase):
 
     def test_option_refusal_is_the_one_reading_of_a_program_s_words(self) -> None:
         xargs = hub_guard.RUNNER_OPTIONS["xargs"]
-        self.assertEqual(("-0IX", 0), (hub_guard.option_refusal(xargs, ["-0IX", "X"]).refused, 0))
-        safe = hub_guard.option_refusal(xargs, ["-0rn1", "grep", "-n"])
+        self.assertEqual(("-0IX", 0), (option_reader.option_refusal(xargs, ["-0IX", "X"]).refused, 0))
+        safe = option_reader.option_refusal(xargs, ["-0rn1", "grep", "-n"])
         self.assertEqual((None, 1), (safe.refused, safe.stop))
-        env = hub_guard.option_refusal(hub_guard.RUNNER_OPTIONS["env"], ["-u", "X", "Y=1", "ls"])
+        env = option_reader.option_refusal(hub_guard.RUNNER_OPTIONS["env"], ["-u", "X", "Y=1", "ls"])
         self.assertEqual(([("Y", "1")], 3), (env.assigned, env.stop))
-        tar = hub_guard.option_refusal(hub_guard.PROGRAM_OPTIONS["tar"], ["-tf", "a", "--force-local", "--", "-x"])
+        tar = option_reader.option_refusal(hub_guard.PROGRAM_OPTIONS["tar"], ["-tf", "a", "--force-local", "--", "-x"])
         self.assertEqual((None, [("-f", "a")], ["--force-local"]), (tar.refused, tar.values, tar.longs))
 
     def test_gh_a_runner_starts_is_read_where_the_runner_s_options_end(self) -> None:

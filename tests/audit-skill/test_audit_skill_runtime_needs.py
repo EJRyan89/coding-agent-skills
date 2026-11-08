@@ -45,37 +45,40 @@ def test_audit_skill_derives_the_needs_validation_holds_each_skill_to(name: str)
     assert printed_needs(name) == derived_needs(REPOSITORY, name)
 
 
-# The wrapper rows audit-skill's GIT_COMMAND pattern reads as validation's reader does. It finds git only where a
-# command starts or after `command`, `exec`, or find's `-exec`, so every other row of WRAPPED_GIT_PUSH_SCRIPTS is a
-# limit of audit-skill's reader until it reads through the same wrapper catalogue. Its pattern takes Bash's time
-# keyword as a command start but not the keyword's -p or --, so TIME_KEYWORD_LIMITS are among those limits.
-AUDIT_SKILL_READS = frozenset(
-    {
-        "find . -exec git push {} +",
-        "find . -exec git push \\;",
-        "find . -exec git push",
-        "command git push",
-        "exec git push",
-    }
-)
-TIME_KEYWORD_LIMITS = frozenset({"time -p git push", "time -p -- git push", "! time -p git push"})
-
-
+# audit-skill reads the git command a wrapper, find's actions, eval, or a shell's -c runs through
+# ejryan89-skill-core's command_wrappers, as validation's reader does, so the two agree on every wrapper row.
 @pytest.mark.parametrize("script", WRAPPED_GIT_PUSH_SCRIPTS)
-def test_audit_skill_reads_the_git_command_a_wrapper_runs_as_validation_does_or_names_the_limit(script: str) -> None:
-    assert skill_scripts.shell_git_subcommands(script) == {"push"}
-    # A limit row that audit-skill comes to read fails here, so the limit leaves AUDIT_SKILL_READS's complement.
-    expected = {"push"} if script in AUDIT_SKILL_READS else set()
-    assert skill_inventory.bash_git_subcommands(script) == expected
+def test_audit_skill_reads_the_git_command_a_wrapper_runs_as_validation_does(script: str) -> None:
+    assert skill_inventory.bash_git_subcommands(script) == skill_scripts.shell_git_subcommands(script) == {"push"}
 
 
-def test_audit_skill_reads_only_wrapper_rows_validation_holds() -> None:
-    assert set(WRAPPED_GIT_PUSH_SCRIPTS) >= AUDIT_SKILL_READS
-
-
-def test_the_time_keyword_rows_are_rows_validation_holds_and_limits_of_audit_skill() -> None:
-    assert set(WRAPPED_GIT_PUSH_SCRIPTS) >= TIME_KEYWORD_LIMITS
-    assert not TIME_KEYWORD_LIMITS & AUDIT_SKILL_READS
+# A wrapper that runs no git command, only looks git up, or takes an option its table does not settle gives no
+# subcommand to either reader; find's second action is read apart from its first.
+@pytest.mark.parametrize(
+    ("script", "subcommands"),
+    [
+        ("command -v git push", set()),
+        # command's -v or -V looks a program up only among command's own options, bundled or not; after the program
+        # it is the program's own option.
+        ("command -pv git push", set()),
+        ("command -Vp git push", set()),
+        ("command git push -v", {"push"}),
+        ("command -p git fetch -v", {"fetch"}),
+        # `||` is no pipe, so `time` after it, or on the line after one that ends in it, is Bash's keyword, whose
+        # second -p is the timed command's word; after a pipe it is the time program.
+        ("a || time -p -p git push", set()),
+        ("a ||\ntime -p -p git push", set()),
+        ("a |\ntime -p -p git push", {"push"}),
+        ("xargs echo git push", set()),
+        ("timeout --sig TERM 5 git push", set()),
+        ("find . -exec git status {} \\; -exec echo push \\;", {"status"}),
+        ("find . -exec echo {} + -exec git push {} +", {"push"}),
+    ],
+)
+def test_audit_skill_reads_only_the_command_a_wrapper_runs_as_validation_does(
+    script: str, subcommands: set[str]
+) -> None:
+    assert skill_inventory.bash_git_subcommands(script) == skill_scripts.shell_git_subcommands(script) == subcommands
 
 
 def test_a_skill_that_invokes_another_needs_what_the_invoked_skill_does() -> None:

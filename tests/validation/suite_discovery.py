@@ -20,23 +20,22 @@ from pathlib import Path
 from typing import TypeGuard
 
 import file_presence
-from dealing import deal
-from job_pool import UNSPLIT_SUITE_WEIGHT, Job, run_process
-from module_closure import MODULE_LOADERS
-from path_containment import posix_within, within
-from shell_targets import run_bash_suite
-from skill_scripts import (
+from command_wrappers import (
     ASSIGNMENT,
     COMMAND_WRAPPERS,
     PIPES,
     SCRIPT_SHELLS,
-    STANDARD_STREAMS,
     UNREAD_PROGRAM,
-    ShellLexer,
     shell_script_index,
-    substitution_spans,
     unwrapped,
 )
+from dealing import deal
+from job_pool import UNSPLIT_SUITE_WEIGHT, Job, run_process
+from module_closure import MODULE_LOADERS
+from option_reader import OptionTable, option_table
+from path_containment import posix_within, within
+from shell_targets import run_bash_suite
+from skill_scripts import STANDARD_STREAMS, ShellLexer, substitution_spans
 from toolchain import find_powershell
 from validation_support import (
     ATTRIBUTE_LOOKUPS,
@@ -70,7 +69,6 @@ from validation_support import (
 )
 
 from deployer.platform_support import program_name
-from tools.hub_guard import OptionTable, option_table
 
 CONFTEST = "conftest.py"
 # A Python suite is split into one shard per this many tests, up to MAXIMUM_SHARDS. Smaller shards spread a long
