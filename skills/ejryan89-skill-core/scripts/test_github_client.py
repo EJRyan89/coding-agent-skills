@@ -1034,6 +1034,40 @@ def test_a_shorthand_cluster_is_read_as_gh_reads_it(arguments: list[str], change
     assert [["gh", *arguments]] * attempts == calls
 
 
+VIEWER = "query={ viewer { login } }"
+
+
+# With --input, gh sends the file as the request body and puts every field in the URL's query string, so a `query`
+# field does not make the request a GraphQL read: the body is the file's, which is not known, so it is a change.
+@pytest.mark.parametrize(
+    ("arguments", "change", "attempts"),
+    [
+        (["api", "graphql", "--input", "mutation.json", "-f", VIEWER], "POST", 1),
+        (["api", "graphql", "--input=mutation.json", "-f", VIEWER], "POST", 1),
+        (["api", "graphql", "--input", "-", "-f", VIEWER], "POST", 1),
+        (["api", "graphql", "-f", VIEWER, "--input", "mutation.json"], "POST", 1),
+        (["api", "graphql", "-F", VIEWER, "--input", "mutation.json"], "POST", 1),
+        (["api", "graphql", "--raw-field", VIEWER, "--input=-"], "POST", 1),
+        (["api", "graphql", f"--field={VIEWER}", "--input", "mutation.json"], "POST", 1),
+        (["api", "graphql", f"-iF{VIEWER}", "--input", "mutation.json"], "POST", 1),
+        (["api", "graphql", "--input", "mutation.json", f"-f{VIEWER}"], "POST", 1),
+        (["api", "graphql", "-f", VIEWER], None, 3),
+        (["api", "graphql", "-F", VIEWER], None, 3),
+        (["api", "graphql", f"-iF{VIEWER}"], None, 3),
+    ],
+    ids=command_id,
+)
+def test_an_input_body_overrides_a_graphql_query_field(arguments: list[str], change: str | None, attempts: int) -> None:
+    assert change == github_client.change_of(arguments)
+    run, calls = scripted(*[failed(BAD_GATEWAY)] * 3)
+    client, sleeper = client_for(run)
+    with pytest.raises(GitHubError) as context:
+        client.run(arguments)
+    assert context.value.kind == ("unknown_outcome" if change else "api")
+    assert [["gh", *arguments]] * attempts == calls
+    assert len(sleeper.waits) == attempts - 1
+
+
 @pytest.mark.parametrize(
     ("data", "text", "count"),
     [
