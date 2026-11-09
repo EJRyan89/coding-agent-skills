@@ -319,7 +319,7 @@ class RunnerOptionTests(unittest.TestCase):
             ("env --split='git status'", True),
             ("env -C d ls", True),
             # The Rust coreutils' env reads variables from a file by --file and names what its command runs as by
-            # --argv0 (#2555).
+            # --argv0, and ubuntu-26.04 ships that env.
             ("env --file x git commit", True),
             ("env -fx ls", True),
             ("env --argv0 name git status", True),
