@@ -220,8 +220,9 @@ With the guard enabled:
   - every option is one its row declares, spelled in full: an abbreviation git would accept, a negation such as
     `--no-check`, and any option the row does not name are refused, so the last value of an option that keeps a form
     read-only, as `--check` or `--ff-only`, is always the one given
-  - a value is attached after `=`, or as the rest of a letter's word, or is the next word, which is read as an
-    option of its own when it starts with a dash; a bundle of letters is read only when every letter is a flag
+  - a value is attached after `=`, or as the rest of a letter's word, or is the next word, which git takes as the
+    value whatever it holds, so a call whose next word starts with a dash, `-` and `--` among them, is refused and
+    its value is to be attached; a bundle of letters is read only when every letter is a flag
   - a word the text does not settle stands only after a `--` the row allows, since it may be any option
   - the row's operands hold, and `--` stands only where the row allows one
 - **The forms the hub allows.** The rows of `READ_ONLY_FORMS` are `apply`, `blame`, `branch`, `cat-file`,
@@ -398,7 +399,9 @@ a row decides it.
 - **gh.** `gh pr checkout`, `gh pr co`, and `gh repo sync` check a branch out in the checkout gh runs in, and are
   judged as a checkout git makes there, a runner's command among them, from Bash and PowerShell alike, read where
   the runner's options end; gh after `xargs`, which adds words from its input to gh's, is refused, since they may make
-  any subcommand one of these.
+  any subcommand one of these. A flag before the words that would name one of these, other than `-R`, `--repo`, and
+  `--hostname`, is a part the guard does not read, since gh takes the word after a flag it does not know as its
+  value, so `gh pr -b x checkout 12` checks a branch out.
 - **Redirections.** A redirection that writes a file at a path the text settles is refused when the file lies in a
   guarded hub's tracked files or anywhere in its git directory, as a file tool's edit is; a duplication such as
   `2>&1` and a device such as `/dev/null` write none. In PowerShell every command's file redirection is read so,
@@ -543,7 +546,9 @@ hub in view, the same is allowed with a note on stderr, unless the command holds
 a path one of its literal words names, as `export GIT_DIR=<hub>/.git` or a string `eval` is handed does, lies in a
 guarded hub: that hub is then in view. A place whose lookup the reading time cuts short, between git calls or inside
 one, or whose lookup git answers with an error for, may be a guarded hub's, so the guard then refuses the command as
-if one were in view; it looks up every other place first, so the hubs they reach stay in view. A defect in the guard
+if one were in view; it looks up every other place first, so the hubs they reach stay in view. It looks up no more
+than 32 directories its literal words name, so a command naming more is refused the same way once those are looked
+up, since one it did not look up may be a guarded hub's. A defect in the guard
 itself, once it has found a guarded hub in view, is refused the same way, since a failure says nothing about where a
 call acts; a defect before that, such as an event it cannot decode, an event that names no command or file path, or a
 hub of the session's own directory or project it cannot look up, an opt-in git cannot read among them, is allowed
