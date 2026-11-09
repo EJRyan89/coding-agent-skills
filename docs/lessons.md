@@ -223,13 +223,14 @@ removed fails validation until its pattern follows it.
   `tests/tools/test_mutation_gate.py::SummaryFixtures::test_a_run_the_cap_cut_short_says_so_on_its_first_line_naming_each_module_and_its_counts`,
   `skills/review-document/scripts/test_review_document.py::PullRequestTests::test_a_file_listing_shorter_than_the_files_the_pull_request_changes_fails_before_any_document_is_read`,
   `skills/ejryan89-code-review-core/scripts/test_adversarial_inputs.py::ChangeSizeTests::test_a_file_listing_cut_short_or_read_at_a_moved_head_is_refused_by_each_of_its_readers`,
-  `tests/deployer/test_plan.py::UnmanagedDiffTests`
+  `tests/deployer/test_plan.py::UnmanagedDiffTests`,
+  `tests/tools/test_hub_guard.py::UnderstoodSetTests::test_with_no_hub_in_view_named_paths_past_the_lookup_limit_are_refused_as_a_lookup_cut_short`
 - **Search for:** `"--limit"` in a `gh` call whose result is never compared with the limit; a pull request's
   `pulls/<n>/files` pages read outside `review_github:GitHubClient.list_pull_files`, or its `PullFiles` used without
   comparing `files` with `changed`, since GitHub's files API lists at most 3,000; a slice such as
   `[:MAX_RELATED_TESTS]` or `rg -n "\[:[A-Z_a-z]*(LIMIT|MAX|BUDGET|CAP)[A-Z_a-z]*\]"` with no flag beside it; a
   `break` on a counter in a loop that returns no sign it stopped.
-- **Examples:** #1845, #1857, #1864, #1891, #2213, #2220
+- **Examples:** #1845, #1857, #1864, #1891, #2213, #2220, #2482
 
 ### One source that cannot be read costs only its own findings
 
@@ -395,6 +396,10 @@ removed fails validation until its pattern follows it.
   `tests/tools/test_hub_guard_pwsh.py::NodeCatalogueTests::test_every_node_type_powershell_has_is_understood_or_not_read_and_never_both`,
   `tests/tools/test_prefix_programs.py::RunnerFormTests::test_timeout`,
   `tests/tools/test_hub_guard.py::UnderstoodSetTests::test_each_class_of_construct_the_guard_does_not_read_is_refused_while_a_hub_is_in_view`,
+  `tests/tools/test_hub_guard.py::ReadOnlyFormTests::test_a_dash_word_after_a_valued_option_written_alone_is_refused`,
+  which refuses a dash word git would take as a lone valued option's value,
+  `tests/tools/test_hub_guard.py::UnderstoodSetTests::test_a_gh_flag_before_its_subcommand_is_not_read_past`, which
+  refuses a flag cobra may take the next word for before gh's subcommand,
   `tests/tools/test_captured_samples.py::test_every_sample_has_its_provenance_and_every_provenance_its_sample`,
   `tests/tools/test_runtime_changelogs.py::test_a_term_matches_only_where_a_real_entry_names_it`,
   `.claude/skills/shepherd-pull-requests/scripts/test_shepherd_pull_requests.py::ShapeTest::test_the_recorded_rollup_reads_its_newest_validation_run`,
@@ -438,7 +443,7 @@ removed fails validation until its pattern follows it.
   which git built with PCRE quotes between `\Q` and `\E`, rather than through `audit_repository.grep_pattern`.
 - **Examples:** #1412, #1429, #1430, #1592, #1606, #1843, #1851, #1865, #2032, #2088, #2089, #2134, #2135, #2136,
   #2137, #2138, #2139, #2140, #2188, #2225, #2232, #2233, #2234, #2251, #2262, #2274, #2276, #2316, #2411,
-  #2418, #2203, #2450, #2474
+  #2418, #2203, #2450, #2476, #2481, #2474
 
 ### A recursive parser of input has a depth bound
 
