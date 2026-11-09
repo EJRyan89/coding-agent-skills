@@ -280,5 +280,37 @@ class ContentErrorsTests(unittest.TestCase):
         self.assertIs(UnicodeDecodeError, type(raised.exception))
 
 
+class AnswersRequestTests(unittest.TestCase):
+    def test_a_refused_object_with_the_request_id_among_its_id_members_answers_it(self) -> None:
+        for text in (
+            '{"id": 3, "result": {"n": NaN}}',
+            '{"id": 3, "result": {"n": 1e400}}',
+            '{"id": 3, "result": {"s": "\\ud800"}}',
+            '{"id": 3, "result": {"n": ' + "9" * (whole_number.DIGIT_LIMIT + 1) + "}}",
+            '{"id": 3, "result": ' + "[" * (deep := nesting_depth.DEPTH_LIMIT + 1) + "]" * deep + "}",
+            '{"id": 3, "id": 3, "result": {}}',
+            '{"id": 8, "id": 3, "result": {}}',
+            b'{"id": 3, "result": {"n": NaN}}',
+        ):
+            with self.subTest(text=text[:60]):
+                self.assertRaises(JsonRefused, loads, text)
+                self.assertTrue(json_reader.answers_request(text, 3))
+
+    def test_a_refused_line_with_no_integer_id_equal_to_the_request_answers_nothing(self) -> None:
+        for text in (
+            '{"method": "notifications/message", "params": {"n": NaN}}',
+            '{"id": 4, "id": 4, "result": {}}',
+            '{"id": "3", "result": {"n": NaN}}',
+            '{"id": 3.0, "result": {"n": NaN}}',
+            '{"id": true, "result": {"n": NaN}}',
+            '{"result": {"id": 3, "n": NaN}}',
+            '[{"id": 3, "n": NaN}]',
+            "not json",
+            "[" * 100000 + "]" * 100000,
+        ):
+            with self.subTest(text=text[:60]):
+                self.assertFalse(json_reader.answers_request(text, 3))
+
+
 def test_the_readers_that_raise_the_family_are_named() -> None:
     assert json_reader.CONTENT_READERS == ("loads", "raw_decode", "read_file")

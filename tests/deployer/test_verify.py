@@ -598,6 +598,44 @@ class ParsingTests(unittest.TestCase):
                 discovery.parse_codex(lines)
             self.assertEqual(reason, str(caught.exception))
 
+    def test_a_codex_answer_json_reader_refuses_is_the_answer_and_a_listing_error_naming_the_refusal(self) -> None:
+        # Passed over as a line that answers nothing, the answer left verify waiting out its timeout, then reporting
+        # that Codex did not answer.
+        refused = "its skills/list answer was refused: the JSON {}"
+        cases = {
+            '{"id": 1, "result": {"data": [{"skills": [], "errors": [], "x": NaN}]}}': refused.format(
+                "holds NaN, which JSON does not define"
+            ),
+            '{"id": 1, "result": {"data": [{"skills": [{"name": "a", "path": "C:/s/\\ud800/SKILL.md"}]}]}}': (
+                refused.format("holds a lone surrogate U+D800, which UTF-8 cannot encode")
+            ),
+            '{"id": 1, "id": 1, "result": {"data": []}}': refused.format("repeats the key 'id' in one object"),
+            '{"id": 7, "id": 1, "result": {"data": []}}': refused.format("repeats the key 'id' in one object"),
+        }
+        for line, reason in cases.items():
+            with self.subTest(line=line):
+                self.assertTrue(discovery.codex_answered(line))
+                for parse in (discovery.parse_codex, discovery.parse_codex_refusals):
+                    with self.assertRaises(ListingError) as caught:
+                        parse([json.dumps({"id": 0, "result": {}}), line])
+                    self.assertEqual(reason, str(caught.exception))
+
+    def test_a_refused_codex_line_that_answers_no_pending_request_is_passed_over(self) -> None:
+        passed_over = [
+            '{"method": "notifications/message", "params": {"n": NaN}}',
+            '{"id": 9, "id": 9, "result": {}}',
+            '{"id": "1", "result": {"n": NaN}}',
+            '{"id": 1.0, "result": {"n": NaN}}',
+            '{"id": 0, "result": {"x": "\\ud800"}}',
+        ]
+        for line in passed_over:
+            with self.subTest(line=line):
+                self.assertFalse(discovery.codex_answered(line))
+        answer = codex_answer(("alpha", "C:/home/.agents/skills/alpha/SKILL.md", True))
+        self.assertEqual(
+            {"alpha": [Listed("C:/home/.agents/skills/alpha", True)]}, discovery.parse_codex([*passed_over, answer])
+        )
+
     def test_codex_requests_are_these_lines_with_text_past_ascii_escaped(self) -> None:
         # The bytes Codex reads, pinned whole: a change of separators, key order, or escaping fails here.
         self.assertEqual(
@@ -762,6 +800,25 @@ class ConverseTests(DeployerTestCase):
         with self.assertRaisesRegex(ListingError, r"^no answer within 1 seconds$"):
             self.talk(arguments, ['{"id": 0}'], answered=discovery.codex_answered, timeout=1)
         self.assertLess(time.monotonic() - started, discovery.CLOSE_GRACE)
+
+    def test_a_codex_answer_json_reader_refuses_fails_the_listing_at_once_never_as_a_timeout(self) -> None:
+        # Like the Codex app server, the program answers skills/list and then stays running until stdin closes.
+        arguments = self.program("""
+            import json, sys, time
+            for line in sys.stdin:
+                if json.loads(line).get("id") == 1:
+                    print('{"id": 1, "result": {"data": [{"skills": [], "x": NaN}]}}', flush=True)
+                    time.sleep(120)
+        """)
+        started = time.monotonic()
+        with mock.patch.object(discovery, "CLOSE_GRACE", 0.5), self.assertRaises(ListingError) as caught:
+            discovery.parse_codex(
+                self.talk(arguments, ['{"id": 0}', '{"id": 1}'], answered=discovery.codex_answered, timeout=20)
+            )
+        self.assertEqual(
+            "its skills/list answer was refused: the JSON holds NaN, which JSON does not define", str(caught.exception)
+        )
+        self.assertLess(time.monotonic() - started, 15, "the refused answer was waited out")
 
     def test_a_program_killed_after_its_answer_ends_the_program_it_started(self) -> None:
         # Like a launcher script that runs the runtime: killing the launcher alone would leave the runtime running.
@@ -1379,6 +1436,17 @@ class VerifyCommandTests(DeployerTestCase):
         self.assertIn("\n=== CODEX CLI ===\n\nCannot list its skills: no answer within 120 seconds\n\n", result.output)
         self.assertEqual({"FOUND": ["alpha", "beta"]}, self.groups(result.output, "COPILOT CLI"))
         self.assertIn("Verification failed for Codex CLI.\nSee docs/codex-support.md.\n", result.output)
+
+    def test_a_codex_answer_json_reader_refuses_is_reported_as_refused_not_as_no_answer(self) -> None:
+        self.answer()
+        self.runtimes.answers["codex"] = ['{"id": 1, "id": 1, "result": {"data": []}}']
+        result = self.verify()
+        self.assertEqual(1, result.code, result.output)
+        self.assertIn(
+            "\n=== CODEX CLI ===\n\nCannot list its skills: its skills/list answer was refused: the JSON repeats the "
+            "key 'id' in one object\n\n",
+            result.output,
+        )
 
     def test_adapters_of_every_deployed_source_are_checked(self) -> None:
         data = self.manifest()
