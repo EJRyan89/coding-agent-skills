@@ -8,7 +8,8 @@ Usage:
 
 It first refuses, with FAILED "<reason>" before it makes a home, a checkout that follows another
 repository's pull request, as tools/checkout_trust.py reads it: a branch whose upstream is a pull request's ref
-(refs/pull/...) or a remote other than origin, or a HEAD detached at a commit no branch of origin holds, since the run
+(refs/pull/...), a remote other than origin, or another ref that is not a branch, or a HEAD detached at a commit no
+branch of origin holds, a pull request's head mirrored under refs/remotes/origin being no branch, since the run
 deploys and runs the checkout's skills and fixture signed in as the user.
 
 It makes a fresh home under the temporary directory and deploys this checkout into it with `deploy.py
