@@ -1468,7 +1468,7 @@ class CommandGuardTests(GuardTestCase):
             "git switch main 2>&1",
             "git stash list",
             "git apply --check change.patch",
-            "git worktree add ../x -b y main",
+            "git worktree add ../x -b fix/y main",
             "git worktree remove ../x",
             "git branch -d feat/demo",
             "echo git commit",
@@ -2430,7 +2430,7 @@ class GitCallTests(GuardTestCase):
             ("git log --output-indicator-new=+ -p -1", self.tree),
             ("git diff -- --output=README.md", self.hub),
             ("git bundle create out.bundle HEAD", self.tree),
-            ("git worktree add -b topic .claude/worktrees/fix-topic", self.hub),
+            ("git worktree add -b fix/topic .claude/worktrees/fix-topic", self.hub),
             ("git init", self.tree),
             (f'git clone https://example.invalid/x.git "{self.root / "copy"}"', self.tree),
             ("git config --file out.config a.b c", self.tree),
@@ -2673,6 +2673,15 @@ class ContractListTests(unittest.TestCase):
         self.assertEqual(sorted({*hub_guard.FILE_TOOLS, *hub_guard.SHELL_READERS}), sorted(group["matcher"].split("|")))
         self.assertEqual(
             ["Bash", "Edit", "Monitor", "NotebookEdit", "PowerShell", "Write"], sorted(group["matcher"].split("|"))
+        )
+
+    def test_the_refs_that_shadow_origin_main_are_the_guard_s(self) -> None:
+        named = contract_names("(`FAST_FORWARD_SHADOWS`:", "), or when git cannot list them")
+        self.assertEqual(sorted(hub_guard.FAST_FORWARD_SHADOWS), sorted(named))
+        # Pinned against literals: the refs gitrevisions reads `origin/main` as before or beside the remote one.
+        self.assertEqual(
+            {"refs/origin/main", "refs/tags/origin/main", "refs/heads/origin/main", "refs/remotes/origin/main/HEAD"},
+            set(hub_guard.FAST_FORWARD_SHADOWS),
         )
 
     def test_the_fast_forward_options_are_the_guard_s(self) -> None:
@@ -2953,6 +2962,76 @@ class ReadOnlyFormTests(GuardTestCase):
             with self.subTest(command=command):
                 self.assertEqual("deny", self.bash(command, self.hub))
         self.assertIsNone(self.bash('git log --oneline -- "$x"', self.hub))
+
+    def test_a_branch_the_hub_creates_is_a_task_s_and_never_shadows_origin_main(self) -> None:
+        # worktree add -b origin/main creates refs/heads/origin/main, which git reads for origin/main before
+        # refs/remotes/origin/main, so a later merge --ff-only origin/main would follow an unmerged commit.
+        self.refused_in_the_hub(
+            (
+                "git worktree add -b origin/main .claude/worktrees/x feat/demo",
+                "git worktree add -borigin/main .claude/worktrees/x feat/demo",
+                "git worktree add -B origin/main .claude/worktrees/x feat/demo",
+                "git worktree add -b main .claude/worktrees/x feat/demo",
+                "git worktree add -b HEAD .claude/worktrees/x feat/demo",
+                "git worktree add -b refs/remotes/origin/main .claude/worktrees/x feat/demo",
+                "git worktree add -b remotes/origin/main .claude/worktrees/x feat/demo",
+                "git worktree add -b topic .claude/worktrees/x feat/demo",
+                "git worktree add -b fix/Upper .claude/worktrees/x feat/demo",
+                "git worktree add -b -q .claude/worktrees/x feat/demo",
+                "git worktree add .claude/worktrees/x feat/demo",
+                "git worktree add .claude/worktrees/x",
+            )
+        )
+        for command in (
+            "git worktree add -b fix/x .claude/worktrees/fix-x origin/main",
+            "git worktree add -q -b feat/new-thing .claude/worktrees/feat-new-thing main",
+            "git worktree add -bfix/x .claude/worktrees/fix-x main",
+        ):
+            for shell in (self.bash, self.powershell):
+                with self.subTest(command=command, shell=shell.__name__):
+                    self.assertIsNone(shell(command, self.hub))
+
+    def test_a_fast_forward_to_origin_main_is_refused_while_another_ref_of_that_name_exists(self) -> None:
+        self.git(self.hub, "update-ref", "refs/remotes/origin/main", "main")
+        self.assertIsNone(self.bash("git merge --ff-only origin/main", self.hub))
+        # The two steps the review found: a hub form that created refs/heads/origin/main, then the fast-forward.
+        self.assertEqual("deny", self.bash("git worktree add -b origin/main .claude/worktrees/x feat/demo", self.hub))
+        for ref in ("refs/heads/origin/main", "refs/tags/origin/main", "refs/origin/main"):
+            with self.subTest(ref=ref):
+                self.git(self.hub, "update-ref", ref, "feat/demo")
+                for shell in (self.bash, self.powershell):
+                    self.assertEqual("deny", shell("git merge --ff-only origin/main", self.hub))
+                    self.assertIn(f"would follow {ref}, not refs/remotes/origin/main", self.reason)
+                self.assertEqual("deny", self.bash(f'git -C "{self.hub}" merge --ff-only origin/main', self.tree))
+                self.assertIsNone(self.bash("git merge --ff-only origin/main", self.tree))
+                self.git(self.hub, "update-ref", "-d", ref)
+        self.assertIsNone(self.bash("git merge --ff-only origin/main", self.hub))
+        self.assertIsNone(self.bash("git pull --ff-only origin main", self.hub))
+
+    def test_an_operand_a_row_takes_none_of_and_a_delete_naming_no_branch_are_refused(self) -> None:
+        for command, reason in (
+            ("git remote -v origin", "it takes no operand"),
+            ("git worktree list extra", "it takes no operand"),
+            ("git worktree prune extra", "it takes no operand"),
+            ("git count-objects x", "it takes no operand"),
+            ("git version x", "it takes no operand"),
+            ("git branch -D", "it deletes no branch"),
+            ("git branch --delete", "it deletes no branch"),
+            ("git branch -d -q", "it deletes no branch"),
+        ):
+            with self.subTest(command=command):
+                self.assertEqual("deny", self.bash(command, self.hub))
+                self.assertIn(reason, self.reason)
+        for command in ("git remote", "git worktree list", "git count-objects -v", "git version"):
+            with self.subTest(command=command):
+                self.assertIsNone(self.bash(command, self.hub))
+
+    def test_a_valued_option_given_a_word_the_text_does_not_settle_is_refused(self) -> None:
+        for command in ('git log -n "$x"', 'git fetch -j "$x" origin', 'git branch --contains "$x"'):
+            with self.subTest(command=command):
+                self.assertEqual("deny", self.bash(command, self.hub))
+                self.assertIn("a word the text does not settle", self.reason)
+        self.assertIsNone(self.bash("git fetch -j 2 origin", self.hub))
 
     def test_an_option_is_read_only_spelled_in_full_and_a_bundle_only_of_flags(self) -> None:
         self.refused_in_the_hub(

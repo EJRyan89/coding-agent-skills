@@ -1128,6 +1128,7 @@ GIT_STATUS_ALLOWED = {
         "skips the guard with a note naming git's stderr, as the guard's contract says"
     ),
     "git_builtins": "fails closed: an empty list makes every subcommand a possible alias, which is read and judged",
+    "shadowed_fast_forward": "fails closed: any failure to list the refs refuses the fast-forward",
     "hub_protected": (
         "fails closed: a check-ignore git cannot answer counts the path as tracked, so the edit is refused"
     ),
@@ -1680,8 +1681,9 @@ class ReadOnlyForm:
     of letters is read only when every letter is a flag. required holds the options of which at least one must be
     given, as --ff-only for a fast-forward; counts allows a count such as -5; separator allows a `--`, after which every
     word is an operand; and operands judges the operands, given the options used, None allowing any. judge, where set,
-    decides the call alone, as git config's reading forms do. listed says `git <form> -h` lists every option the row
-    declares outside REVISION_OPTIONS and DIFF_OPTIONS, with the kind it declares, which
+    decides the call alone, as git config's reading forms do. values judges the value of the options it names, as
+    the branch `worktree add -b` creates must be a task's (task_branch). listed says `git <form> -h` lists every
+    option the row declares outside REVISION_OPTIONS and DIFF_OPTIONS, with the kind it declares, which
     tests/tools/test_hub_guard_git_options.py holds.
     """
 
@@ -1695,6 +1697,7 @@ class ReadOnlyForm:
     operands: Operands | None = None
     judge: Callable[[Sequence[Word]], str | None] | None = None
     listed: bool = True
+    values: Mapping[str, Callable[[str], str | None]] = field(default_factory=dict)
 
 
 def exactly(*expected: str) -> Operands:
@@ -1751,6 +1754,15 @@ def branch_operands(operands: Sequence[Word], given: frozenset[str]) -> str | No
     if given & {"-d", "-D", "--delete"}:
         return None if operands else "it deletes no branch"
     return listed_with("-l", "--list")(operands, given)
+
+
+def task_branch(name: str) -> str | None:
+    """A branch a hub form creates must be a task's, `<kind>/<name>` as tools/worktrees.py names one, so it never
+    shadows a ref the hub follows, as `origin/main` would shadow refs/remotes/origin/main."""
+    kind, slash, rest = name.partition("/")
+    if slash and kind in worktrees.KINDS and worktrees.SLUG.fullmatch(rest):
+        return None
+    return f"a branch the hub creates is a task's, <kind>/<name> as tools/worktrees.py names one, not {name or 'none'}"
 
 
 def config_form(arguments: Sequence[Word]) -> str | None:
@@ -1945,10 +1957,13 @@ READ_ONLY_FORMS: dict[str, ReadOnlyForm] = {
         operands=no_operands,
     ),
     "worktree add": ReadOnlyForm(
-        "creates a task's worktree, never a second checkout of main, which -f would allow",
+        "creates a task's worktree on a new task branch, never a second checkout of main, which -f would allow, nor a "
+        "branch git names itself or one that shadows a ref the hub follows",
         flags=options("-q --quiet"),
         valued=options("-b"),
+        required=options("-b"),
         separator=False,
+        values={"-b": task_branch},
     ),
     "worktree remove": ReadOnlyForm(
         "removes a task's worktree, never one with changes, which -f would allow", separator=False
@@ -2090,13 +2105,28 @@ def read_only_words(form: ReadOnlyForm, words: Sequence[Word]) -> tuple[frozense
         if spelled is None:
             return f"with {word}: its row declares no such option, spelled so."
         given.update(spelled)
-        if spelled[-1] == word and word in form.valued and index < len(words):
-            value = words[index]
-            if value is None:
-                return UNSETTLED_WORD
-            if not value.startswith("-"):
-                index += 1
+        # A next word the text does not settle is never taken as a value: the next pass refuses it.
+        following = words[index] if index < len(words) else ""
+        if following is not None and spelled[-1] == word and word in form.valued and not following.startswith("-"):
+            index += 1
+        why = value_refusal(form, word, spelled[-1], following or "")
+        if why is not None:
+            return why
     return frozenset(given), operands
+
+
+def value_refusal(form: ReadOnlyForm, word: str, option: str, following: str) -> str | None:
+    """Why the value a row judges (ReadOnlyForm.values) is refused: the value attached to the word, after = or as the
+    rest of a letter's word, or else the word after it, which git takes whatever it holds."""
+    judge = form.values.get(option)
+    if judge is None:
+        return None
+    if word.startswith("--"):
+        value = word.partition("=")[2] if "=" in word else following
+    else:
+        value = word[len(option) :] or following
+    why = judge(value)
+    return None if why is None else f"with {option} {value}: {why}."
 
 
 def read_option(form: ReadOnlyForm, word: str) -> list[str] | None:
@@ -2115,6 +2145,34 @@ def read_option(form: ReadOnlyForm, word: str) -> list[str] | None:
         return [letter]
     letters = [f"-{each}" for each in word[1:]]
     return letters if all(each in form.flags for each in letters) else None
+
+
+# The refs git reads `origin/main` as before refs/remotes/origin/main, or as ambiguous beside it (gitrevisions): the
+# fast-forward to origin/main is refused while any of them exists, since git would follow it instead.
+FAST_FORWARD_SHADOWS = (
+    "refs/origin/main",
+    "refs/tags/origin/main",
+    "refs/heads/origin/main",
+    "refs/remotes/origin/main/HEAD",
+)
+
+
+def shadowed_fast_forward(hub: Path) -> str | None:
+    """Why `merge --ff-only origin/main` in a hub is refused: a ref of that short name other than
+    refs/remotes/origin/main exists, which git resolves first or reads as ambiguous, or git cannot list them."""
+    result = git(hub, "for-each-ref", "--format=%(refname)", *FAST_FORWARD_SHADOWS)
+    if result.returncode != 0:
+        said = " ".join(result.stderr.split()) or f"git for-each-ref exited with {result.returncode}"
+        return (
+            f"`git merge --ff-only origin/main` is refused: the guard could not list the refs it may follow ({said})."
+        )
+    shadows = output_lines(result.stdout)
+    if not shadows:
+        return None
+    return (
+        f"`git merge --ff-only origin/main` would follow {shadows[0]}, not refs/remotes/origin/main; delete that ref "
+        "from a terminal, or pull with `git pull --ff-only origin main`."
+    )
 
 
 def hub_refusal(call: GitCall) -> str | None:
@@ -2438,6 +2496,8 @@ class Judge:
                 f"write a guarded hub. {PLACE_IT if hub is None else ''}".rstrip()
             )
         reason = hub_refusal(call)
+        if reason is None and call.program == "git" and call.subcommand == "merge":
+            reason = next(filter(None, map(shadowed_fast_forward, [hub] if hub else sorted(self.hubs))), None)
         if reason is not None and may_be_alias(call):
             # No read-only form names it, but an alias of that name may run one: the alias is judged by what it runs,
             # and a name that is no alias stays refused.

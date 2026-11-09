@@ -235,15 +235,20 @@ With the guard enabled:
   - `pull --ff-only origin main` and `merge --ff-only origin/main`, each also with `-q`, `--quiet`, `-v`, or
     `--verbose`, and the pull with `--no-rebase`; the target is named in full, so a bare `pull --ff-only`, which
     follows whatever upstream a setting names, is refused, and a fast-forward to any other target is refused with a
-    reason that names it. A call from a worktree that writes what the hub shares, as `branch -u <x> main`,
-    `remote set-url`, or `update-ref refs/remotes/origin/main`, acts on that worktree and is not refused, so
+    reason that names it. The merge is refused while a ref git reads as `origin/main` before
+    `refs/remotes/origin/main`, or beside it, exists (`FAST_FORWARD_SHADOWS`: `refs/origin/main`,
+    `refs/tags/origin/main`, `refs/heads/origin/main`, and `refs/remotes/origin/main/HEAD`), or when git cannot list
+    them. A call from a worktree that writes what the hub shares, as `branch -u <x> main`, `remote set-url`, or
+    `update-ref refs/remotes/origin/main`, acts on that worktree and is not refused, so
     `merge --ff-only origin/main` follows whatever that remote-tracking ref holds
   - `fetch` with options that change only what it prints or which remotes it reads, and operands with no `:`, so it
     never moves the branch `HEAD` names (`-u`), sets an upstream (`--set-upstream`), or writes a ref a refspec names,
     as `x:refs/remotes/origin/main` would for a later fast-forward
   - `switch main` and `checkout main`, optionally with `-q`
-  - `worktree add` with `-b` and `-q`, and `worktree remove`, without `-f`, which would check `main` out a second time
-    or remove a worktree with changes
+  - `worktree add` with `-b` naming a task branch, `<kind>/<name>` as `tools/worktrees.py` names one, so it never
+    creates a branch git names itself or one that shadows a ref the hub follows, as `-b origin/main` would, and
+    optionally `-q`; and `worktree remove`; neither with `-f`, which would check `main` out a second time or remove a
+    worktree with changes
   - `branch` listing, or deleting with `-d`, `-D`, or `--delete`, which git refuses for a branch a worktree has
     checked out; an operand without one of those or `--list` creates a branch, and `-u`, `--set-upstream-to`, `-m`,
     `-c`, and `-f` are not declared
