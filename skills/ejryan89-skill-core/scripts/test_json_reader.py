@@ -341,6 +341,44 @@ class AnswersRequestTests(unittest.TestCase):
             with self.subTest(text=text[:60]):
                 self.assertFalse(json_reader.answers_request(text, 3))
 
+    def test_the_scan_keeps_the_ids_read_before_a_member_that_does_not_scan_and_none_after_it(self) -> None:
+        # The scan stops at the first member it cannot read: an id before it still answers, and one after it, or
+        # one only a scan that read on past the fault would find, does not.
+        for text in (
+            '{"id": 3, "x": NaN, "y": [1',
+            '{"id": 3, "x": NaN, "y": [1, "a]}',
+            '{"id": 3, "x": NaN, "y": "a',
+            '{"id": 3, "x',
+            '{"id": 3, "x" 1}',
+            '{"id": 3 "x": 1}',
+            '{"id": 3, "x": , "y": NaN}',
+        ):
+            with self.subTest(text=text):
+                self.assertRaises(CONTENT_ERRORS, loads, text)
+                self.assertTrue(json_reader.answers_request(text, 3))
+        for text in (
+            '{"x": [1, "a], "id": 3}',
+            '{"id" 3}',
+            '{"id" 33}',
+            '{"x": [1, "a]}, "id": 3}',
+            '{"x": , "id": 3}',
+            '{"x": 1 "id": 3}',
+            '{"x": 1 x"id": 3}',
+            '{"x" 1, "id": 3}',
+            '{"x": [1, "id": 3',
+        ):
+            with self.subTest(text=text):
+                self.assertRaises(CONTENT_ERRORS, loads, text)
+                self.assertFalse(json_reader.answers_request(text, 3))
+
+    def test_bytes_are_read_in_the_encoding_json_detects_and_bytes_that_do_not_decode_answer_nothing(self) -> None:
+        for encoding in ("utf-16", "utf-16-le", "utf-16-be", "utf-32", "utf-8-sig"):
+            with self.subTest(encoding=encoding):
+                self.assertTrue(json_reader.answers_request('{"id": 3, "n": NaN}'.encode(encoding), 3))
+        for data in (b"\xff\xfe\x00\xd8", b'\xff{"id": 3}', b'{"id": 3, "s": "\xff"}'):
+            with self.subTest(data=data):
+                self.assertFalse(json_reader.answers_request(data, 3))
+
 
 def test_the_readers_that_raise_the_family_are_named() -> None:
     assert json_reader.CONTENT_READERS == ("loads", "raw_decode", "read_file")
