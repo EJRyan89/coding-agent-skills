@@ -2055,6 +2055,21 @@ class TwinTests(Fixture):
         self.assertEqual([f"CONSTRUCT {fix} 1", f"HITS {fix} 1"], lines[4:6])
         self.assertIn(f'- `"tools/escaped twin.py:1"`: `{json.dumps(escaped)}`', self.briefs(lines)["twins"])
 
+    def test_a_construct_line_of_nothing_but_backslash_e_is_searched_never_passed_over(self) -> None:
+        # Split at each backslash-E, the line leaves no part to give git: it is searched by its backslash, and only a
+        # line holding it whole is a hit, not one holding a lone backslash.
+        only = "\\E" * 8
+        write(self.root, {"tools/escapes.py": f"{only}\n", "tools/escapes twin.py": f"{only}\nx = '\\\\'\n"})
+        self.commit("feat: add the escapes")
+        base = git(self.root, "rev-parse", "HEAD")
+        write(self.root, {"tools/escapes.py": "value = escapes()\n"})
+        self.commit("fix: build the escapes")
+        fix = git(self.root, "rev-parse", "HEAD")
+        code, lines = self.run_main("twins", "--since", base)
+        self.assertEqual(0, code, lines)
+        self.assertEqual([f"CONSTRUCT {fix} 1", f"HITS {fix} 1"], lines[4:6])
+        self.assertIn(f'- `"tools/escapes twin.py:1"`: `{json.dumps(only)}`', self.briefs(lines)["twins"])
+
     def test_a_title_holding_the_field_separator_is_read_whole(self) -> None:
         write(self.root, {"README.md": "readme, changed again\n"})
         self.commit("fix: a unit\x1fseparator in the title")
@@ -2308,6 +2323,16 @@ def test_each_grep_record_is_read_whole_and_one_it_cannot_read_is_skipped() -> N
     with mock.patch.object(GitClient, "run", run):
         hits, cut = audit.search_construct(GitClient(), Path(), head, ["one", "last"])
     assert (hits, cut) == ([audit.Hit("c.py", 3, "one\0two"), audit.Hit("d.py", 4, "last")], False)
+
+
+def test_an_empty_construct_line_is_refused_before_git_runs() -> None:
+    def run(client: GitClient, arguments: Sequence[str], **options: Any) -> GitResult:
+        raise AssertionError("git ran")
+
+    with mock.patch.object(GitClient, "run", run):
+        for construct in ([""], ["a construct line", ""]):
+            with pytest.raises(audit.AuditError, match=r"^git grep: an empty construct line names nothing"):
+                audit.search_construct(GitClient(), Path(), "f" * 40, construct)
 
 
 def test_a_search_with_no_hit_is_empty_and_any_other_failure_is_named() -> None:

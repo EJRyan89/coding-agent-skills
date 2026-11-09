@@ -1234,20 +1234,23 @@ def grep_pattern(line: str) -> str:
     regular expression; search_construct keeps only the hits that hold the whole line."""
     if "\\E" not in line:
         return line
-    return max(line.split("\\E"), key=len)
+    # A line of nothing but backslash-Es has no part between them: every such line holds a backslash, which git reads
+    # as one inside its quote, and the whole line is matched afterwards.
+    return max(line.split("\\E"), key=len) or "\\"
 
 
 def search_construct(git: GitClient, repository: Path, head: str, construct: Sequence[str]) -> tuple[list[Hit], bool]:
     """Each line HEAD's tree holds that contains a line of the construct, as fixed text, at most MAX_HITS, and whether
     there were more. The patterns reach git grep on its stdin, so no command line limits them, and it exits 1 when
     nothing matches, which is no hit, not a failure. A line git is given only a part of, by grep_pattern, is matched
-    whole here."""
+    whole here. An empty line, which every line holds and construct_of never gives, is refused rather than searched or
+    passed over."""
     if not construct:
         return [], False
+    if "" in construct:
+        raise AuditError("git grep: an empty construct line names nothing to search for")
     arguments = ["grep", "-n", "-I", "-F", "-z", "--full-name", "-f", "-", head, "--"]
-    patterns = "".join(f"{grep_pattern(line)}\n" for line in construct if grep_pattern(line)).encode("utf-8")
-    if not patterns:
-        return [], False
+    patterns = "".join(f"{grep_pattern(line)}\n" for line in construct).encode("utf-8")
     try:
         found = git.quiet_output(arguments, directory=repository, input_bytes=patterns)
     except GitError as exc:
