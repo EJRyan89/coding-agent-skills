@@ -463,6 +463,42 @@ class RunnerTests(unittest.TestCase):
         placed = reading("timeout 60 gh pr checkout 1")
         self.assertEqual([("gh", START)], [(call.program, call.place.start) for call in placed.calls])
 
+    def test_env_s_file_and_argv0_are_refused_in_every_spelling_and_neither_value_is_read_as_its_command(self) -> None:
+        # The Rust coreutils' env (#2555): --file sets variables from a file the text does not show, which may change
+        # what runs or where git acts, and --argv0 names what its command runs as, by which a multicall program picks
+        # the program it runs. Each is refused as the option it is, never past it to a value read as the command.
+        for command, option in (
+            ("env --file x git commit", "--file"),
+            ("env -f x git commit", "-f"),
+            ("env --file=x ls", "--file=x"),
+            ("env -fx ls", "-fx"),
+            ("env -f - ls", "-f"),
+            ("env -if x ls", "-if"),
+            ("env -u X --file x ls", "--file"),
+            ("env --argv0 name git status", "--argv0"),
+            ("env -a name git status", "-a"),
+            ("env --argv0=name git status", "--argv0=name"),
+            ("env -aname git status", "-aname"),
+            ("env -ia name ls", "-ia"),
+            ("env --argv0 ls ls -la", "--argv0"),
+            ("env -a sort ls -o out.txt f", "-a"),
+            ("env --argv0=env ls -S 'git commit'", "--argv0=env"),
+        ):
+            with self.subTest(command=command):
+                self.assertIn(f", and {option} is not one of its options", " ".join(reading(command).unread))
+
+    def test_the_rust_coreutils_short_forms_of_safe_options_are_read_as_their_long_forms(self) -> None:
+        # timeout's -f and -p are the Rust coreutils' --foreground and --preserve-status, and sort's --check-silent is
+        # their -C (#2555); GNU's builds refuse the words and run nothing.
+        with mock.patch.object(platform_support, "SYSTEM_PROGRAMS_TAKE_SLASH_OPTIONS", False):
+            for command in ("timeout -f 5 ls", "timeout -p 5 ls", "timeout -fp -k 3 5 ls", "timeout -pk3 5 ls"):
+                with self.subTest(command=command):
+                    self.assertEqual([], reading(command).unread)
+            self.assertEqual([], reading("sort --check-silent f").unread)
+            for command in ("timeout -f 5 git status", "timeout -pk git 5 ls", "sort --check-sil f", "env -h ls"):
+                with self.subTest(command=command):
+                    self.assertTrue(reading(command).unread)
+
     def test_env_s_assignments_after_a_valued_option_reach_the_command_s_judgment(self) -> None:
         # GIT_DIR after env's -u X is still an assignment before the command, as one before env is.
         for command in ("env GIT_DIR=/x ls", "env -u X GIT_DIR=/x ls", "env --unset X -i GIT_DIR=/x ls"):
