@@ -9,6 +9,7 @@ import io
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tarfile
@@ -296,7 +297,7 @@ class RuntimeContractTests(unittest.TestCase):
                 commit = self._git(checkout, "rev-parse", "HEAD")
                 destination = root / "materialized"
                 held: list[bytes] = []
-                remove = review_runtime.shutil.rmtree
+                remove = shutil.rmtree
 
                 def keeping(path: Path, ignore_errors: bool = False) -> None:
                     # What the refused materialization holds at the first name, read before its cleanup removes it.
@@ -304,7 +305,7 @@ class RuntimeContractTests(unittest.TestCase):
                     remove(path, ignore_errors=ignore_errors)
 
                 with (
-                    mock.patch.object(review_runtime.shutil, "rmtree", keeping),
+                    mock.patch.object(shutil, "rmtree", keeping),
                     self.assertRaises(RuntimeContractError) as refused,
                 ):
                     materialize_reviewer(checkout, commit, manifest, destination)
