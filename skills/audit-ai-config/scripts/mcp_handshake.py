@@ -92,6 +92,8 @@ RUNS_REPOSITORY_CODE = "starts each stdio MCP server command the target reposito
 OWNER_ONLY_ALLOWED = {
     "group_servers": "builds a key that compares a user's MCP server definitions, where a TOML nan or date must stay "
     "distinct rather than be refused; it writes no JSON anyone reads",
+    "answers": "parses a line json_reader refused, only to tell whether it is the response to the pending request; "
+    "JSON_PARSE_ALLOWED states why",
 }
 PROTOCOL_VERSION = "2025-06-18"
 # Revisions whose initialize and tools/list shapes this client validates; a server may answer with any of them.
