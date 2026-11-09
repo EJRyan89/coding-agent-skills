@@ -12,7 +12,8 @@ recurse, each array or object one level and a scalar none, and so is an integer 
 key holding a lone surrogate, which a `\\ud800` escape gives and UTF-8 cannot encode, is refused too, so the reader
 takes nothing `json_writer` refuses to write. It bounds nothing else: whatever else `json.loads` raises, such as its
 `JSONDecodeError`, it raises. `CONTENT_ERRORS` is every error it raises on bad content, the family a caller's handler
-names whole.
+names whole. `answers_request` tells whether text `loads` refused is the response to a pending JSON-RPC request, so a
+reader waiting for one reports the refusal rather than waiting out its time limit.
 """
 
 from __future__ import annotations
@@ -141,3 +142,26 @@ def read_file(path: Path) -> Any:
     when the file cannot be read, a `UnicodeDecodeError`, a `ValueError` too, when it is not UTF-8, which includes a
     byte-order mark that the caller does not expect."""
     return loads(path.read_bytes().decode("utf-8"))
+
+
+class _Members(list[tuple[str, Any]]):
+    """An object's members in order, every one of a repeated key kept, as `answers_request` reads them."""
+
+
+class _Digits(str):
+    """An integer's digits as the text spells them, never converted, so no digit count refuses the text."""
+
+
+def answers_request(text: str | bytes, request_id: int) -> bool:
+    """Whether `text`, which `loads` refused, is a JSON object any of whose `id` members is the integer `request_id`:
+    the response to a pending JSON-RPC request. It tells only that, through a parse that takes what `loads` refuses,
+    so a caller reports the refusal as the response's rather than passing over the line as one that answers nothing
+    and waiting out its time limit; the response's values are read by `loads` alone, so none is ever acted on. Text
+    that is not JSON, or nests past the recursion limit, answers no request."""
+    try:
+        message = json.loads(text, object_pairs_hook=_Members, parse_int=_Digits)
+    except (ValueError, RecursionError):
+        return False
+    return isinstance(message, _Members) and any(
+        key == "id" and isinstance(value, _Digits) and value == str(request_id) for key, value in message
+    )
