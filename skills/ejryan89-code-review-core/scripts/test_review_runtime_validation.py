@@ -967,6 +967,51 @@ def directory_link(link: Path, target: Path) -> None:
         link.symlink_to(target, target_is_directory=True)
 
 
+class OwnNameTests(unittest.TestCase):
+    """The checks every write into a snapshot or a reviewer's materialization makes: a path whose part already there
+    the file system names otherwise is another spelling of what was written, refused naming both, and one that leads
+    out of the root is refused as escaping it. A link inside the root merges two spellings on every platform, as a
+    case-insensitive file system or a short name does on Windows."""
+
+    def setUp(self) -> None:
+        temporary = tempfile.TemporaryDirectory(prefix="own-name-")
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name).resolve() / "source"
+        (self.root / "real").mkdir(parents=True)
+        (self.root / "real" / "app.py").write_bytes(APP)
+        directory_link(self.root / "alias", self.root / "real")
+        self.outside = Path(temporary.name).resolve() / "outside"
+        self.outside.mkdir()
+        directory_link(self.root / "out", self.outside)
+
+    def alias_message(self, alias: str, name: str) -> str:
+        return (
+            f'Source snapshot path "{alias}" is another name, in another case or as a short name, for "{name}", which '
+            "the snapshot already holds"
+        )
+
+    def test_a_path_through_another_spelling_of_a_written_folder_is_refused_naming_both(self) -> None:
+        for relative, actual in (("alias/app.py", "real/app.py"), ("alias/new.py", "real/new.py")):
+            with self.subTest(relative=relative), self.assertRaises(RuntimeContractError) as refused:
+                review_runtime._require_own_name(self.root, relative)
+            self.assertEqual(self.alias_message(relative, actual), str(refused.exception))
+        review_runtime._require_own_name(self.root, "real/app.py")  # its own name passes
+        review_runtime._require_own_name(self.root, "new/deeper/file.py")  # and so does a path not there yet
+
+    def test_a_path_that_leads_out_of_the_root_is_refused_as_escaping_it(self) -> None:
+        with self.assertRaises(RuntimeContractError) as refused:
+            review_runtime._require_own_name(self.root, "out/app.py")
+        self.assertEqual("Source snapshot path escapes its root: out/app.py", str(refused.exception))
+
+    def test_a_write_to_a_name_already_there_is_refused_and_the_file_it_names_is_unchanged(self) -> None:
+        with self.assertRaises(RuntimeContractError) as refused:
+            review_runtime._write_new_file(self.root, "alias/app.py", b"replaced\n")
+        self.assertEqual(self.alias_message("alias/app.py", "real/app.py"), str(refused.exception))
+        self.assertEqual(APP, (self.root / "real" / "app.py").read_bytes())
+        review_runtime._write_new_file(self.root, "real/new.py", b"new\n")
+        self.assertEqual(b"new\n", (self.root / "real" / "new.py").read_bytes())
+
+
 class SnapshotLinkTests(unittest.TestCase):
     """Real junctions made below a snapshot's root after it was written, as anything that can write to the run could
     make them. A junction's target holds the listed file's exact bytes, so only the walk can tell it apart."""

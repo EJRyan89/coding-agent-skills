@@ -341,7 +341,8 @@ def materialized_reviewer_entrypoint(materialized_root: Path) -> Path:
     expected_files = {"materialization.json"}
     for declared_path, expected_hash in source_hashes.items():
         normalized = _safe_relative_path(declared_path, "a key of materialization.source_hashes")
-        if normalized != declared_path or declared_path == "materialization.json":
+        # In any case, since a case-insensitive file system holds the record itself at each spelling.
+        if normalized != declared_path or declared_path.casefold() == "materialization.json":
             raise RuntimeContractError(f"Copilot reviewer materialization path is invalid: {declared_path!r}")
         READ.hex_digest(expected_hash, f"materialization.source_hashes.{declared_path}", 64)
         target = materialized_root.joinpath(*PurePosixPath(declared_path).parts)
