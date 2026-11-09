@@ -595,6 +595,8 @@ GIT_PREFIXES: dict[str, frozenset[str]] = {
 }
 # gh runs git itself for these subcommands, which check a branch out in the checkout gh runs in.
 GH_CHECKOUTS = {("pr", "checkout"), ("pr", "co"), ("repo", "sync")}
+# The flags of gh read before its subcommand, each of which takes the next word as its value when written alone.
+GH_VALUED_FLAGS = frozenset({"-R", "--repo", "--hostname"})
 # The variables naming the system's temporary folder, whose value from the environment a redirection's target may
 # take, as `> "$TMP/out.txt"` does.
 TEMPORARY_VARIABLES = frozenset({"TMP", "TEMP", "TMPDIR"})
@@ -1349,6 +1351,10 @@ class ReadingTimeout(Exception):
     """The guard's reading time ended before the command was read and judged."""
 
 
+class LookupsCutShort(Exception):
+    """The command names more directories than NAMED_PATH_LIMIT, so some were never looked up for a guarded hub."""
+
+
 def reading_clock() -> float:
     return time.monotonic()
 
@@ -1676,14 +1682,14 @@ class ReadOnlyForm:
     """One form of a git subcommand a guarded hub allows, read by read_only_refusal.
 
     Every option word is spelled in full, as one of these, or refused: flags take no value; valued take one, attached
-    after = (a long option) or as the rest of the word (a letter), or as the next word unless that word starts with a
-    dash, which is then read as an option of its own; attached take one only attached, and may stand alone. A bundle
-    of letters is read only when every letter is a flag. required holds the options of which at least one must be
-    given, as --ff-only for a fast-forward; counts allows a count such as -5; separator allows a `--`, after which every
-    word is an operand; and operands judges the operands, given the options used, None allowing any. judge, where set,
-    decides the call alone, as git config's reading forms do. values judges the value of the options it names, as
-    the branch `worktree add -b` creates must be a task's (task_branch). listed says `git <form> -h` lists every
-    option the row declares outside REVISION_OPTIONS and DIFF_OPTIONS, with the kind it declares, which
+    after = (a long option) or as the rest of the word (a letter), or as the next word, a call whose next word starts
+    with a dash being refused, since git takes it as the value; attached take one only attached, and may stand alone.
+    A bundle of letters is read only when every letter is a flag. required holds the options of which at least one must
+    be given, as --ff-only for a fast-forward; counts allows a count such as -5; separator allows a `--`, after which
+    every word is an operand; and operands judges the operands, given the options used, None allowing any. judge,
+    where set, decides the call alone, as git config's reading forms do. values judges the value of the options it
+    names, as the branch `worktree add -b` creates must be a task's (task_branch). listed says `git <form> -h` lists
+    every option the row declares outside REVISION_OPTIONS and DIFF_OPTIONS, with the kind it declares, which
     tests/tools/test_hub_guard_git_options.py holds.
     """
 
@@ -2105,14 +2111,25 @@ def read_only_words(form: ReadOnlyForm, words: Sequence[Word]) -> tuple[frozense
         if spelled is None:
             return f"with {word}: its row declares no such option, spelled so."
         given.update(spelled)
-        # A next word the text does not settle is never taken as a value: the next pass refuses it.
+        # A next word the text does not settle is never taken as a value: the next pass refuses it. git takes the next
+        # word as a lone valued option's value whatever it holds, so one that starts with a dash is refused rather than
+        # read as an option of its own, which git would not read.
         following = words[index] if index < len(words) else ""
-        if following is not None and spelled[-1] == word and word in form.valued and not following.startswith("-"):
+        if following is not None and spelled[-1] == word and word in form.valued:
+            if following.startswith("-"):
+                return dash_value_refusal(word, following)
             index += 1
         why = value_refusal(form, word, spelled[-1], following or "")
         if why is not None:
             return why
     return frozenset(given), operands
+
+
+def dash_value_refusal(option: str, following: str) -> str:
+    """Why a valued option spelled alone is refused before a word that starts with a dash: git takes that word as its
+    value, so the guard does not read it as an option; the value is to be attached instead."""
+    attached = f"{option}=<value>" if option.startswith("--") else f"{option}<value>"
+    return f"with {option} {following}: git takes {following} as the value of {option}; attach it, as {attached}."
 
 
 def value_refusal(form: ReadOnlyForm, word: str, option: str, following: str) -> str | None:
@@ -3502,20 +3519,43 @@ def powershell_command(name: str) -> bool:
 
 def read_gh(arguments: list[Word], directory: Directory, reading: Reading) -> None:
     """gh, which runs git itself to check a branch out for the subcommands GH_CHECKOUTS names, in the checkout it
-    runs in."""
+    runs in. A flag before the words that would name such a subcommand, other than one of GH_VALUED_FLAGS, is not
+    read: cobra takes the word after a flag it does not know as that flag's value, so `gh pr -b x checkout 12` checks
+    a branch out while its first two words are pr and x."""
     named: list[Word] = []
+    unknown_flag: str | None = None
     words = iter(arguments)
     for word in words:
-        if word in {"-R", "--repo", "--hostname"}:
+        if word in GH_VALUED_FLAGS:
             next(words, None)
         elif word is None or not word.startswith("-"):
             named.append(word)
+        elif unknown_flag is None and gh_checkout_prefix(named) and not gh_flag_with_value(word):
+            unknown_flag = word
     named = named[:2]
     if named[:1] == [None] or (named[:1] in (["pr"], ["repo"]) and None in named):
         reading.cannot_read("a gh subcommand the text does not settle, which may check a branch out")
+    elif unknown_flag is not None:
+        reading.cannot_read(
+            f"gh's {unknown_flag} before its subcommand, whose next word gh may take as its value, so the subcommand "
+            "may be one that checks a branch out"
+        )
     elif tuple(named) in GH_CHECKOUTS:
         place = Place(directory.cwd, directory.cwd)
         reading.calls.append(GitCall(place, " ".join(str(word) for word in named), [], program="gh"))
+
+
+def gh_checkout_prefix(named: Sequence[Word]) -> bool:
+    """Whether the words gh has read so far may still begin a subcommand GH_CHECKOUTS names: none yet, or one of their
+    first words alone."""
+    return not named or (len(named) == 1 and any(named[0] == key[0] for key in GH_CHECKOUTS))
+
+
+def gh_flag_with_value(word: str) -> bool:
+    """Whether a flag word of gh carries its value as one of GH_VALUED_FLAGS does: after = for a long one, or
+    attached to -R."""
+    name, equals, _ = word.partition("=")
+    return (bool(equals) and name in GH_VALUED_FLAGS) or (word.startswith("-R") and len(word) > 2)
 
 
 NOT_READ_XTRACE = "xtrace expands PS4 before each command, and the environment's PS4 holds an expansion, which may run"
@@ -4006,7 +4046,9 @@ def reached_hubs(reading: Reading, found: set[Path] | None = None) -> set[Path]:
 def named_hubs(reading: Reading, cwd: Path, found: set[Path]) -> set[Path]:
     """The guarded hubs the paths a command names lie in, looked up when none is in view and the command holds a part
     the guard does not read, which may reach one of them; at most NAMED_PATH_LIMIT directories, each within the
-    reading time. A path git answers with an error for may be a guarded hub's, raised once the others are looked up."""
+    reading time. A path git answers with an error for may be a guarded hub's, raised once the others are looked up;
+    then, where the command names more directories than the limit, LookupsCutShort is raised, since one not looked up
+    may be a guarded hub's."""
     directories: list[Path] = []
     for name in reading.named:
         try:
@@ -4028,6 +4070,11 @@ def named_hubs(reading: Reading, cwd: Path, found: set[Path]) -> set[Path]:
                 found.add(hub)
     if failures:
         raise failures[0]
+    if len(directories) > NAMED_PATH_LIMIT:
+        raise LookupsCutShort(
+            f"the command names {len(directories)} directories, more than the {NAMED_PATH_LIMIT} the guard looks up "
+            "for a guarded hub"
+        )
     return found
 
 
@@ -4039,8 +4086,9 @@ def guard(stream: str) -> int:
     # The command and the guarded hubs in view, known before the command is read, so that a reader or a judgment that
     # fails leaves a command the guard cannot read; None until then.
     in_view: tuple[str, set[Path]] | None = None
-    # Whether the hubs of the places the command names are being looked up: a lookup the reading time cuts short, or
-    # one git answers with an error for, leaves a place not looked up, which may be a guarded hub's.
+    # Whether the hubs of the places the command names are being looked up: a lookup the reading time cuts short, one
+    # git answers with an error for, or paths past NAMED_PATH_LIMIT leave a place not looked up, which may be a guarded
+    # hub's.
     looking_up = False
     try:
         event = json_reader.loads(stream)
@@ -4071,7 +4119,7 @@ def guard(stream: str) -> int:
             for note in reading.notes:
                 print(f"hub guard could not judge part of the command: {note}", file=sys.stderr)
     except Exception as exc:  # noqa: BLE001 - a broken guard must not block every tool; the regression suite pins what it refuses
-        cut_short = looking_up and isinstance(exc, (ReadingTimeout, GitError))
+        cut_short = looking_up and isinstance(exc, (ReadingTimeout, GitError, LookupsCutShort))
         if in_view is None or not (in_view[1] or cut_short):
             print(f"hub guard skipped: {type(exc).__name__}: {exc}", file=sys.stderr)
             return 0
