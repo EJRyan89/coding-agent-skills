@@ -1322,7 +1322,7 @@ def contract_names(after: str, before: str) -> list[str]:
 
 class CommandGuardTests(GuardTestCase):
     def test_upstream_and_rename_options_of_branch_are_refused_in_the_hub_through_both_shells(self) -> None:
-        # An upstream set in the hub is one a bare pull would follow (#2468), so none is set, origin/main included.
+        # An upstream set in the hub is one a bare pull would follow, so none is set, origin/main included.
         for shell in (self.bash, self.powershell):
             for options in (
                 "-uorigin/main",
@@ -1490,7 +1490,7 @@ class CommandGuardTests(GuardTestCase):
             ("git pull --ff-only origin feat/demo", "origin feat/demo"),
             ("git pull --ff-only upstream main", "upstream main"),
             ("git pull --ff-only origin", "origin"),
-            # A bare pull follows the upstream a setting names, which branch -u or a worktree may change (#2468).
+            # A bare pull follows the upstream a setting names, which branch -u or a worktree may change.
             ("git pull --ff-only", "its upstream"),
             ("git pull -q --ff-only", "its upstream"),
         ):
@@ -2834,7 +2834,7 @@ class WorkflowTests(GuardTestCase):
 
 
 class ReadOnlyFormTests(GuardTestCase):
-    """A git call that acts on a guarded hub is allowed only in a form READ_ONLY_FORMS declares (#2468)."""
+    """A git call that acts on a guarded hub is allowed only in a form READ_ONLY_FORMS declares."""
 
     def refused_in_the_hub(
         self, commands: Sequence[str], reason: str | None = "is not a read-only form the hub allows"
@@ -2904,7 +2904,7 @@ class ReadOnlyFormTests(GuardTestCase):
         self.assertIsNone(self.bash("git pull --ff-only origin main", self.hub))
 
     def test_the_writes_earlier_outside_reviews_found_stay_refused(self) -> None:
-        # #2451, #2452, and #2460: writes a subcommand's option or operand makes, and guard prefixes before git.
+        # The writes a subcommand's option or operand makes, and the prefixes before git, that earlier passes found.
         self.refused_in_the_hub(
             (
                 "git diff --output=README.md",

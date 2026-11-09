@@ -1797,8 +1797,9 @@ DIFF_OPTIONS = ReadOnlyForm(
 def read_only(reason: str, *groups: ReadOnlyForm, **row: Any) -> ReadOnlyForm:
     """A row reading revisions or diffs: the options of each group, beside the row's own."""
     merged = {
-        name: frozenset().union(row.get(name, frozenset()), *(getattr(group, name) for group in groups))
-        for name in ("flags", "valued", "attached")
+        "flags": frozenset().union(row.get("flags", frozenset()), *(group.flags for group in groups)),
+        "valued": frozenset().union(row.get("valued", frozenset()), *(group.valued for group in groups)),
+        "attached": frozenset().union(row.get("attached", frozenset()), *(group.attached for group in groups)),
     }
     return ReadOnlyForm(reason, **{**row, **merged})
 
@@ -2038,6 +2039,10 @@ def read_only_form(subcommand: str, arguments: Sequence[Word]) -> tuple[str, Rea
     return subcommand, READ_ONLY_FORMS.get(subcommand), arguments
 
 
+# Why a word the text does not settle, before any `--`, is refused in a hub: it may be any option.
+UNSETTLED_WORD = "is given a word the text does not settle, which may be any of its options."
+
+
 def read_only_refusal(subcommand: str, arguments: Sequence[Word]) -> str | None:
     """Why a git call in a guarded hub is refused: unless READ_ONLY_FORMS declares its form and every option it uses,
     spelled in full (read_only_words), and its operands are ones the row allows; None when it is one of them."""
@@ -2049,6 +2054,8 @@ def read_only_refusal(subcommand: str, arguments: Sequence[Word]) -> str | None:
         why = form.judge(words)
         return None if why is None else f"{refused}: {why}."
     read = read_only_words(form, words)
+    if read == UNSETTLED_WORD:
+        return f"`git {key}` {read}"
     if isinstance(read, str):
         return f"{refused} {read}"
     given, operands = read
@@ -2070,7 +2077,7 @@ def read_only_words(form: ReadOnlyForm, words: Sequence[Word]) -> tuple[frozense
         word = words[index]
         index += 1
         if word is None:
-            return "with a word the text does not settle, which may be any of its options."
+            return UNSETTLED_WORD
         if word == "--":
             if not form.separator:
                 return "with `--`, after which its operands are paths."
@@ -2086,7 +2093,7 @@ def read_only_words(form: ReadOnlyForm, words: Sequence[Word]) -> tuple[frozense
         if spelled[-1] == word and word in form.valued and index < len(words):
             value = words[index]
             if value is None:
-                return "with a word the text does not settle, which may be any of its options."
+                return UNSETTLED_WORD
             if not value.startswith("-"):
                 index += 1
     return frozenset(given), operands
@@ -2439,8 +2446,8 @@ class Judge:
         if reason is None or hub is not None:
             return reason
         return (
-            f"The guard could not tell where `git {call.subcommand}` runs, and in a place it cannot settle while a hub "
-            f"is guarded it allows only the hub's read-only forms: {reason} {PLACE_IT}"
+            f"The guard could not tell where `git {call.subcommand}` runs; since it cannot place it while a hub is "
+            f"guarded, it allows it only in the hub's read-only forms: {reason} {PLACE_IT}"
         )
 
     def effects_refusal(self, call: GitCall) -> str | None:

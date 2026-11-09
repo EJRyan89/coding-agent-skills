@@ -276,7 +276,7 @@ def declared(form: hub_guard.ReadOnlyForm) -> dict[str, str]:
 
 
 class ReadOnlyCatalogueTests(unittest.TestCase):
-    """READ_ONLY_FORMS, the forms a guarded hub allows (#2468), held to the installed git's own catalogue."""
+    """READ_ONLY_FORMS, the forms a guarded hub allows, held to the installed git's own catalogue."""
 
     def test_the_help_reader_reads_each_kind_of_option_line(self) -> None:
         listed = help_options(row_help("branch"))
