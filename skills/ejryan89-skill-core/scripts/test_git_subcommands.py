@@ -109,6 +109,17 @@ def test_a_bash_script_runs_the_git_subcommand_after_gits_own_options(line: str,
         ("(git push)", {"push"}),
         ("(cd x) && git push", {"push"}),
         ('x="$(date) git push"', set()),
+        # A backquote closes the substitution it opened, so the text after the closing one is read by where it stands:
+        # a case word's `in`, a pattern, or the rest of the command the substitution stands in.
+        ("case `uname` in\n  Linux) git push ;;\nesac", {"push"}),
+        ("case `uname` in Linux) git push;; esac", {"push"}),
+        ("case `uname\n` in Linux) git push;; esac", {"push"}),
+        ("case `echo $(uname)` in Linux) git push;; esac", {"push"}),
+        ("echo `date` git push", set()),
+        # A substitution in a quoted case word leaves the rest of that word before its `in`.
+        ('case "`uname`" in Linux) git push;; esac', {"push"}),
+        ('case "$(uname)" in Linux) git push;; esac', {"push"}),
+        ('case "a$(uname)b" in Linux) git push;; esac', {"push"}),
     ],
 )
 def test_a_git_command_is_read_wherever_bash_starts_a_command(script: str, expected: set[str]) -> None:

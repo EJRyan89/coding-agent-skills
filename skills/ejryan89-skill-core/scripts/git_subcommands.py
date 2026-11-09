@@ -37,39 +37,48 @@ PowerShellReader = Callable[[str], Sequence[Sequence[str]]]
 
 # A Bash command's text from where it may start, at the line's start, after an operator, a case item's end, an opening
 # or closing parenthesis, or inside a substitution, up to the operator or substitution that ends it outside quotes and
-# escapes; a substitution inside it is its own. CommandStarts says which of these texts Bash runs as a command.
+# escapes; a substitution inside it is its own. A double quote a substitution splits from its pair stays in the text
+# either side, so a quoted case word's `in` is read after it. CommandStarts says which of these texts Bash runs.
 SHELL_COMMAND = re.compile(
     r"(^|;;&|;;|;&|\|\||&&|\|&|[;&|()`]|\$\()"
-    r"((?:\\.|'[^']*'|\"(?:\\.|[^\"\\$`]|\$(?!\())*\"|\$(?!\()|[^;&|()`\n\\'\"$])*)"
+    r"((?:\\.|'[^']*'|\"(?:\\.|[^\"\\$`]|\$(?!\())*\"|\$(?!\()|[^;&|()`\n\\'\"$]|\")*)"
 )
 # The words that may stand before a command's program: Bash's reserved words and a group's brace. Bash's time keyword
 # is read by program_words.
 LEADING_WORDS = frozenset({"if", "then", "else", "elif", "while", "until", "do", "!", "{"})
 # The starts of a substitution's command, which runs wherever it stands, in a case word or a pattern too.
 SUBSTITUTIONS = frozenset({"$(", "`"})
+# What CommandStarts reads a backquote that closes its substitution as, since SHELL_COMMAND starts a text at both.
+BACKQUOTE_END = "`)"
 
 
 class CommandStarts:
     """Which of a Bash script's texts, as SHELL_COMMAND splits them in order, Bash runs as a command, as validation's
     shell_commands reads them: a case word up to its `in`, and each pattern up to the `)` that ends it, run nothing but
     their substitutions; the text after that `)` is the item's command, up to the ;; ;& or ;;& that ends the item or
-    the `esac` that ends the case. The text after any other `)` runs only where it ends a function's `()`, since the
-    `)` of a subshell or a substitution is followed by a redirection or an operator."""
+    the `esac` that ends the case. The text after any other `)`, or after the backquote that closes a substitution,
+    runs only where it ends a function's `()`, since a subshell or a substitution is followed by a redirection, an
+    operator, or the rest of the word or command it stands in."""
 
     def __init__(self) -> None:
         self.state = "command"
         self.previous = ("", "-")
+        self.backquoted = False
 
     def runs(self, start: str, command: str) -> bool:
         """Whether the text `command` that `start` begins runs as a command, read as the script's next text."""
         previous, self.previous = self.previous, (start, command)
         words = shell_words(command)
+        if start == "`":
+            self.backquoted = not self.backquoted
+            start = start if self.backquoted else BACKQUOTE_END
         if start in SUBSTITUTIONS and self.state != "command":
             return True
         if start in CASE_ITEM_ENDS:
             self.state = "patterns"
         if self.state == "case-word":
-            if words[:1] == ["in"]:
+            # After a substitution in a quoted case word, the text first ends that word, as `" in` does.
+            if words[:1] == ["in"] or (command[:1].strip() and words[1:2] == ["in"]):
                 self.state = "patterns"
             return False
         if self.state == "patterns":
@@ -78,7 +87,7 @@ class CommandStarts:
                     self.state = "command"
                 return False
             self.state = "command"
-        elif start == ")" and not (previous[0] == "(" and not previous[1].strip()):
+        elif start == BACKQUOTE_END or (start == ")" and not (previous[0] == "(" and not previous[1].strip())):
             return False
         program = program_words(words, reserved=True)
         if program[:1] == ["case"]:
