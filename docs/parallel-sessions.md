@@ -208,41 +208,63 @@ With the guard enabled:
   tracked files or anywhere in its git directory, `.git`, which holds the hub's `HEAD`, index, and configuration
   beside what every worktree shares. This applies whichever session asks, so a worktree session that writes to a hub
   path by absolute path is also stopped. Gitignored files, such as `.claude/settings.local.json`, are exempt.
-- **Refused git commands.** Any of the following that would act on the hub, because some subcommand or option of
-  each can move `HEAD` or the branch it names, or write the index or tracked files. A command that writes only
-  objects, other refs (`notes`, `replace`, `tag`), or other worktrees (`worktree`) is not refused, and nor is
-  `fetch` unless it is given `--update-head-ok` (or `-u`), which lets it move the branch `HEAD` names. Whatever the
-  subcommand, an option that writes a file into the hub or runs a command, and a `git config` that writes, are
-  judged as [What a git call's words write or run](#what-it-understands) says.
-  - `add`, `am`, `apply`, `bisect`, `branch`, `checkout`, `checkout-index`, `cherry-pick`, `clean`, `commit`
-  - `fast-import`, `filter-branch`, `history`, `merge`, `merge-file`, `merge-index`, `merge-one-file`, `mv`
-  - `pull`, `read-tree`, `rebase`, `replay`, `rerere`, `reset`, `restore`, `revert`, `rm`, `sparse-checkout`
-  - `stage`, `stash`, `submodule`, `switch`, `symbolic-ref`, `update-index`, `update-ref`
-  - the interactive tools `citool`, `difftool`, `gui`, and `mergetool`
-  - the importers `archimport`, `cvsimport`, `p4`, `quiltimport`, and `svn`
-- **Still allowed in the hub.** Only these forms of a refused command, which keep the hub on `main` and current:
+- **Git in the hub: an allow-list.** A git call that acts on the hub is allowed only in a form `READ_ONLY_FORMS`
+  in `tools/hub_guard.py` declares, and every other is refused, whatever it would do: git's surface is too wide to
+  list what writes, and successive outside reviews each found a writing spelling a list of writing commands
+  missed. A form is a subcommand, or a subcommand and the word of its own subcommand, as `worktree add`, which must
+  come first; `reflog delete` is no `reflog`, and `stash` alone, which pushes, is no `stash list`. A call whose place
+  the text does not settle is judged the same way while a hub is guarded, since it may act on the hub. Whatever the
+  subcommand, and wherever git runs, an option that writes a file into the hub or runs a command, and a `git config`
+  that writes, are also judged as [What a git call's words write or run](#what-it-understands) says. Each row
+  declares the options its form may take, and a call is allowed only when:
+  - every option is one its row declares, spelled in full: an abbreviation git would accept, a negation such as
+    `--no-check`, and any option the row does not name are refused, so the last value of an option that keeps a form
+    read-only, as `--check` or `--ff-only`, is always the one given
+  - a value is attached after `=`, or as the rest of a letter's word, or is the next word, which is read as an
+    option of its own when it starts with a dash; a bundle of letters is read only when every letter is a flag
+  - a word the text does not settle stands only after a `--` the row allows, since it may be any option
+  - the row's operands hold, and `--` stands only where the row allows one
+- **The forms the hub allows.** The rows of `READ_ONLY_FORMS` are `apply`, `blame`, `branch`, `cat-file`,
+  `check-attr`, `check-ignore`, `checkout`, `cherry`, `config`, `count-objects`, `describe`, `diff`, `fetch`,
+  `for-each-ref`, `grep`, `log`, `ls-files`, `ls-remote`, `ls-tree`, `merge`, `merge-base`, `pull`, `reflog`,
+  `reflog show`, `remote`, `remote get-url`, `remote show`, `rev-list`, `rev-parse`, `shortlog`, `show`,
+  `show-ref`, `stash list`, `stash show`, `status`, `switch`, `tag`, `version`, `worktree add`, `worktree list`,
+  `worktree prune`, and `worktree remove`. Most read and take only options that change what they print; the log, show,
+  and diff forms take a declared set of revision and diff options, without `--output`, `--ext-diff`, or `--textconv`.
+  The others keep the hub on `main` and current, or retire a task:
+  - `pull --ff-only origin main` and `merge --ff-only origin/main`, each also with `-q`, `--quiet`, `-v`, or
+    `--verbose`, and the pull with `--no-rebase`; the target is named in full, so a bare `pull --ff-only`, which
+    follows whatever upstream a setting names, is refused, and a fast-forward to any other target is refused with a
+    reason that names it. The merge is refused while a ref git reads as `origin/main` before
+    `refs/remotes/origin/main`, or beside it, exists (`FAST_FORWARD_SHADOWS`: `refs/origin/main`,
+    `refs/tags/origin/main`, `refs/heads/origin/main`, and `refs/remotes/origin/main/HEAD`), or when git cannot list
+    them. A call from a worktree that writes what the hub shares, as `branch -u <x> main`, `remote set-url`, or
+    `update-ref refs/remotes/origin/main`, acts on that worktree and is not refused, so
+    `merge --ff-only origin/main` follows whatever that remote-tracking ref holds
+  - `fetch` with options that change only what it prints or which remotes it reads, and operands with no `:`, so it
+    never moves the branch `HEAD` names (`-u`), sets an upstream (`--set-upstream`), or writes a ref a refspec names,
+    as `x:refs/remotes/origin/main` would for a later fast-forward
   - `switch main` and `checkout main`, optionally with `-q`
-  - `merge --ff-only origin/main`, and `pull --ff-only` with no target or with `origin main`; besides
-    `--ff-only`, each may take only `-q`, `--quiet`, `-v`, `--verbose`, or `--no-rebase`, and a fast-forward to
-    any other target is refused with a reason that names it
-  - `stash list` and `stash show`
-  - `apply --check`, with `--check` among the options before any `--` and no `--apply`, which applies the patch
-    all the same
-  - `submodule` with no subcommand, `submodule status`, and `submodule summary`; every other subcommand, `foreach`
-    included, is refused
-  - `branch` without `-m`, `-M`, or `--move`, which rename a branch, `HEAD`'s own included; an abbreviated
-    `--move` or a bundle such as `-fm` counts as one. Attached option values are not bundles: `-uorigin/main`
-    is allowed like `-u origin/main` and `--set-upstream-to=origin/main`, while a separate rename option
-    before or after the upstream value is still refused
-- **Aliases.** A subcommand that is neither refused itself nor one of git's builtins, which no alias can stand for,
+  - `worktree add` with `-b` naming a task branch, `<kind>/<name>` as `tools/worktrees.py` names one, so it never
+    creates a branch git names itself or one that shadows a ref the hub follows, as `-b origin/main` would, and
+    optionally `-q`; and `worktree remove`; neither with `-f`, which would check `main` out a second time or remove a
+    worktree with changes
+  - `branch` listing, or deleting with `-d`, `-D`, or `--delete`, which git refuses for a branch a worktree has
+    checked out; an operand without one of those or `--list` creates a branch, and `-u`, `--set-upstream-to`, `-m`,
+    `-c`, and `-f` are not declared
+  - `tag` listing, its operands read only with `-l` or `--list`
+  - `apply` with `--check`, `--stat`, `--numstat`, or `--summary`, which check or describe a patch; `--apply` and
+    `--no-check` are not declared
+  - `config` in its reading forms
+- **Aliases.** A subcommand that no row names and that is not one of git's builtins, which no alias can stand for,
   may be an alias, so the guard reads it, first among the `alias.<name>` settings the command line gives (`-c`,
   `GIT_CONFIG_PARAMETERS`, `GIT_CONFIG_COUNT`), then with `git config --get alias.<name>` in the hub for a call that
   acts on the hub, or where the call acts for one outside every hub (a worktree shares its hub's configuration, so a
-  hub's alias is read from a worktree too), and judges what it runs, through further aliases. A shell alias (`!...`)
-  is read as Bash from the top of the work tree it runs in. An alias that cannot be read, nests more than four deep,
-  or runs something the guard cannot judge is refused while a guarded hub is in view, and one that writes a hub is
-  refused wherever it is called.
-- **Both shell tools.** The same commands are refused, with the same allowances, whether they run through the
+  hub's alias is read from a worktree too), and judges what it runs, through further aliases, by the same rows. In the
+  hub, a name that is no alias is refused. A shell alias (`!...`) is read as Bash from the top of the work tree it
+  runs in. An alias that cannot be read, nests more than four deep, or runs something the guard cannot judge is
+  refused while a guarded hub is in view, and one that writes a hub is refused wherever it is called.
+- **Both shell tools.** The same commands are allowed and refused whether they run through the
   `Bash` tool or the `PowerShell` tool, or as a `Monitor` tool's command, which runs in the `Bash` tool's shell.
 
 ### Other runtimes

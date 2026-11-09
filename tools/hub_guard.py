@@ -3,8 +3,9 @@
 Usage:
   python tools/hub_guard.py   reads one PreToolUse event on stdin and prints a deny decision, or nothing
 
-The guard refuses file edits inside the hub and git commands that would move the hub's HEAD or write its tree,
-whether they run through the Bash tool, the PowerShell tool, or the Monitor tool, whose command runs in Bash. It fails
+The guard refuses file edits inside the hub and every git command that acts on the hub but the read-only forms
+READ_ONLY_FORMS declares, whether they run through the Bash tool, the PowerShell tool, or the Monitor tool, whose
+command runs in Bash. It fails
 closed: it reads a command only as far as it understands it, Bash by tools/bash_syntax.py's grammar and PowerShell by
 PowerShell's own parser (tools/hub_guard-powershell.ps1), judges every git call it can place, and refuses every part
 it does not understand while a guarded hub is in view. What it understands is the tables below, each a catalogue a
@@ -76,59 +77,6 @@ from tools.worktrees import CLIENT, GUARD_GIT_TIMEOUT_SECONDS, MAIN, Checkout, s
 
 GUARD_SETTING = "coding-agent-skills.hubGuard"
 FILE_TOOLS = {"Edit", "NotebookEdit", "Write"}
-# Git subcommands that can move HEAD or the branch it names, or write the index or the tracked files of the
-# checkout they run in, whichever subcommand or option makes them do it: the plumbing and porcelain that do, the
-# interactive tools that can (difftool and mergetool, gui, citool), and the importers that commit and check
-# out (archimport, cvsimport, p4, quiltimport, svn). A subcommand that writes only objects, refs other than HEAD's
-# branch (notes, replace, tag), or other worktrees (worktree) is not here. fetch is judged by its options: with
-# --update-head-ok it moves the branch HEAD names, as git pull asks it to.
-WRITING_SUBCOMMANDS = {
-    "add",
-    "am",
-    "apply",
-    "archimport",
-    "bisect",
-    "branch",
-    "checkout",
-    "checkout-index",
-    "cherry-pick",
-    "citool",
-    "clean",
-    "commit",
-    "cvsimport",
-    "difftool",
-    "fast-import",
-    "filter-branch",
-    "gui",
-    "history",
-    "merge",
-    "merge-file",
-    "merge-index",
-    "merge-one-file",
-    "mergetool",
-    "mv",
-    "p4",
-    "pull",
-    "quiltimport",
-    "read-tree",
-    "rebase",
-    "replay",
-    "rerere",
-    "reset",
-    "restore",
-    "revert",
-    "rm",
-    "sparse-checkout",
-    "stage",
-    "stash",
-    "submodule",
-    "svn",
-    "switch",
-    "symbolic-ref",
-    "update-index",
-    "update-ref",
-}
-FETCH = "fetch"
 # The options of git's subcommands that write a file at a path they are given, read in every spelling git's option
 # parser takes: a long option exactly, with its value after = or as the next word, or abbreviated to any prefix of its
 # name; a short one alone, with its value attached, or in a bundle. Each written path is judged as a redirection's
@@ -251,8 +199,9 @@ GIT_UNREAD_MODES: dict[str, OperandWriter] = {
     ),
 }
 # The operands a subcommand's usage names with a path that it does not write outside the checkout it runs in: each is
-# read, names a path in the repository, or is written only in the work tree WRITING_SUBCOMMANDS judges, whose git
-# refuses a path outside it. A subcommand GIT_OPERAND_WRITERS names is held to its row there instead.
+# read, names a path in the repository, or is written only in the work tree of the checkout it runs in, which
+# READ_ONLY_FORMS judges in a hub, whose git refuses a path outside it. A subcommand GIT_OPERAND_WRITERS names is held
+# to its row there instead.
 GIT_OPERANDS_READ: dict[str, str] = {
     **dict.fromkeys(
         ("am <mbox>", "am <Maildir>", "apply <patch>", "mailsplit <mbox>", "mailsplit <Maildir>"),
@@ -281,7 +230,8 @@ GIT_OPERANDS_READ: dict[str, str] = {
     ),
 }
 # The boolean options a subcommand's `-h` says write or overwrite that write nowhere a path names: in the work tree or
-# the git directory of the repository the call runs in, which WRITING_SUBCOMMANDS judges, or only refs or objects.
+# the git directory of the repository the call runs in, which READ_ONLY_FORMS judges in a hub, or only refs or
+# objects.
 GIT_MODES_READ: dict[str, str] = {
     **dict.fromkeys(
         ("checkout-index -f", "checkout-index --force", "checkout-index --temp"),
@@ -418,11 +368,6 @@ CONFIG_MODIFIERS = frozenset(
 )
 CONFIG_SCOPES = frozenset({"--global", "--system", "--local", "--worktree"})
 CONFIG_VALUED = frozenset({"-f", *(f"--{name}" for name in CONFIG_VALUE_OPTIONS)})
-# The only fast-forwards the hub takes: a subcommand's words besides FAST_FORWARD_OPTIONS must be one of these.
-FAST_FORWARD_TARGETS = {"merge": [["origin/main"]], "pull": [[], ["origin", "main"]]}
-FAST_FORWARD_OPTIONS = {"--ff-only", "-q", "--quiet", "-v", "--verbose", "--no-rebase"}
-# The submodule subcommands that only read; no subcommand at all means status. foreach runs any command.
-READ_SUBMODULE = {None, "status", "summary"}
 # git's own options, read as git.c reads them: no abbreviation, and a value either attached after = or the next word.
 # Those that take a value are git_client's GLOBAL_VALUE_OPTIONS, imported above as GIT_OPTIONS_WITH_VALUE.
 GIT_OPTIONS_WITHOUT_VALUE = {
@@ -1183,6 +1128,7 @@ GIT_STATUS_ALLOWED = {
         "skips the guard with a note naming git's stderr, as the guard's contract says"
     ),
     "git_builtins": "fails closed: an empty list makes every subcommand a possible alias, which is read and judged",
+    "shadowed_fast_forward": "fails closed: any failure to list the refs refuses the fast-forward",
     "hub_protected": (
         "fails closed: a check-ignore git cannot answer counts the path as tracked, so the edit is refused"
     ),
@@ -1717,100 +1663,526 @@ def record_git_call(arguments: list[Word], options: GitOptions, reading: Reading
 # Judging a call
 
 
-def allowed_form(subcommand: str, arguments: list[str]) -> bool:
-    """Whether a refused subcommand is called in one of the forms that leave the hub on main and its tree alone."""
-    if subcommand in {"checkout", "switch"}:
-        return [argument for argument in arguments if argument not in {"-q", "--quiet"}] == [MAIN]
-    if subcommand == "stash":
-        return bool(arguments) and arguments[0] in {"list", "show"}
-    if subcommand == "apply":
-        return only_checks_a_patch(arguments)
-    if subcommand == "submodule":
-        return next((argument for argument in arguments if not argument.startswith("-")), None) in READ_SUBMODULE
-    if subcommand == "branch":
-        return not renames_a_branch(arguments)
-    return False
+def options(text: str) -> frozenset[str]:
+    """The option spellings a whitespace-separated text names, so a table row reads as git's own help does."""
+    return frozenset(text.split())
 
 
-def options_before_separator(arguments: list[str]) -> list[str]:
-    """The words git reads as options: those before a `--`, after which every word is an operand."""
-    return arguments[: arguments.index("--")] if "--" in arguments else arguments
+Operands = Callable[[Sequence[Word], frozenset[str]], str | None]
 
 
-def only_checks_a_patch(arguments: list[str]) -> bool:
-    """Whether git apply only checks: --check among its options, and no --apply, or a prefix of it, that applies the
-    patch all the same."""
-    options = options_before_separator(arguments)
-    applies = any(len(option) >= 4 and "--apply".startswith(option) for option in options)
-    return "--check" in options and not applies
+@dataclass(frozen=True)
+class ReadOnlyForm:
+    """One form of a git subcommand a guarded hub allows, read by read_only_refusal.
 
-
-def updates_head(arguments: list[str]) -> bool:
-    """Whether git fetch is given --update-head-ok, a prefix of it git accepts, or -u, alone or in a bundle, which let
-    it move the branch HEAD names. -j and -o take a value, which ends a bundle."""
-    for option in options_before_separator(arguments):
-        if option.startswith("--"):
-            name = option[2:].partition("=")[0]
-            if len(name) >= len("update-h") and "update-head-ok".startswith(name):
-                return True
-        elif option.startswith("-") and len(option) > 1:
-            for letter in option[1:]:
-                if letter == "u":
-                    return True
-                if letter in "jo":
-                    break
-    return False
-
-
-def renames_a_branch(arguments: list[str]) -> bool:
-    """Whether git branch is asked to move a branch, which renames HEAD's own when it names none or that one.
-
-    git takes a unique prefix of a long option and a bundle of short ones, so --mov and -fm both move.
-    A short option's attached value ends its bundle; -u also takes a separate value, while -t does not.
+    Every option word is spelled in full, as one of these, or refused: flags take no value; valued take one, attached
+    after = (a long option) or as the rest of the word (a letter), or as the next word unless that word starts with a
+    dash, which is then read as an option of its own; attached take one only attached, and may stand alone. A bundle
+    of letters is read only when every letter is a flag. required holds the options of which at least one must be
+    given, as --ff-only for a fast-forward; counts allows a count such as -5; separator allows a `--`, after which every
+    word is an operand; and operands judges the operands, given the options used, None allowing any. judge, where set,
+    decides the call alone, as git config's reading forms do. values judges the value of the options it names, as
+    the branch `worktree add -b` creates must be a task's (task_branch). listed says `git <form> -h` lists every
+    option the row declares outside REVISION_OPTIONS and DIFF_OPTIONS, with the kind it declares, which
+    tests/tools/test_hub_guard_git_options.py holds.
     """
-    options = iter(arguments)
-    for argument in options:
-        if argument == "--":
-            return False
-        if argument.startswith("--"):
-            name, inline, _ = argument[2:].partition("=")
-            if len(name) >= 2 and "move".startswith(name):
-                return True
-            # Shorter prefixes also match git's hidden, valueless --set-upstream option.
-            if not inline and name.startswith("set-upstream-") and "set-upstream-to".startswith(name):
-                next(options, None)
-        elif argument.startswith("-"):
-            for index, option in enumerate(argument[1:], start=1):
-                if option in {"m", "M"}:
-                    return True
-                if option in {"u", "t"}:
-                    if option == "u" and index == len(argument) - 1:
-                        next(options, None)
-                    break
-    return False
+
+    reason: str
+    flags: frozenset[str] = frozenset()
+    valued: frozenset[str] = frozenset()
+    attached: frozenset[str] = frozenset()
+    required: frozenset[str] = frozenset()
+    counts: bool = False
+    separator: bool = True
+    operands: Operands | None = None
+    judge: Callable[[Sequence[Word]], str | None] | None = None
+    listed: bool = True
+    values: Mapping[str, Callable[[str], str | None]] = field(default_factory=dict)
 
 
-def refusal(call: GitCall) -> str | None:
-    """Why this git call would move HEAD or write the index or tree of the checkout it runs in; None if it would not."""
+def exactly(*expected: str) -> Operands:
+    """Operands that must be these words and no others."""
+
+    def judge(operands: Sequence[Word], given: frozenset[str]) -> str | None:
+        if list(operands) == list(expected):
+            return None
+        shown = " ".join("<unsettled>" if word is None else word for word in operands) or "no operand"
+        return f"it takes only {' '.join(expected)}, not {shown}"
+
+    return judge
+
+
+def fast_forward(subcommand: str, *target: str) -> Operands:
+    """The one fast-forward the hub takes: to origin/main, named in full, never to an upstream a setting chooses."""
+
+    def judge(operands: Sequence[Word], given: frozenset[str]) -> str | None:
+        if list(operands) == list(target):
+            return None
+        shown = " ".join("<unsettled>" if word is None else word for word in operands) or "its upstream"
+        return f"`git {subcommand} --ff-only` moves the hub only to origin/main, not to {shown}."
+
+    return judge
+
+
+def no_operands(operands: Sequence[Word], given: frozenset[str]) -> str | None:
+    return None if not operands else f"it takes no operand, and {operands[0]} would be one"
+
+
+def fetched_refs(operands: Sequence[Word], given: frozenset[str]) -> str | None:
+    """A fetch's repository and refspecs: none may name a ref to write, as `x:refs/remotes/origin/main` does, which a
+    later fast-forward to origin/main would follow."""
+    for word in operands:
+        if word is None or ":" in word:
+            return "a refspec with a destination, or one the text does not settle, writes a ref a fast-forward follows"
+    return None
+
+
+def listed_with(*listing: str) -> Operands:
+    """Operands a listing reads as patterns only with one of its listing options; without one, they create a ref."""
+
+    def judge(operands: Sequence[Word], given: frozenset[str]) -> str | None:
+        if not operands or given & set(listing):
+            return None
+        return f"without {' or '.join(listing)} its operands create a ref"
+
+    return judge
+
+
+def branch_operands(operands: Sequence[Word], given: frozenset[str]) -> str | None:
+    """git branch deletes the branches it names with -d, -D, or --delete, and otherwise lists them only with -l or
+    --list; any other operand creates a branch."""
+    if given & {"-d", "-D", "--delete"}:
+        return None if operands else "it deletes no branch"
+    return listed_with("-l", "--list")(operands, given)
+
+
+def task_branch(name: str) -> str | None:
+    """A branch a hub form creates must be a task's, `<kind>/<name>` as tools/worktrees.py names one, so it never
+    shadows a ref the hub follows, as `origin/main` would shadow refs/remotes/origin/main."""
+    kind, slash, rest = name.partition("/")
+    if slash and kind in worktrees.KINDS and worktrees.SLUG.fullmatch(rest):
+        return None
+    return f"a branch the hub creates is a task's, <kind>/<name> as tools/worktrees.py names one, not {name or 'none'}"
+
+
+def config_form(arguments: Sequence[Word]) -> str | None:
+    """git config in one of its reading forms (config_reads); any other form may write a setting."""
+    if config_reads(arguments)[0]:
+        return None
+    return "it may write a setting, which the configuration a hub shares with its worktrees holds"
+
+
+# The revision options of log and the commands that read revisions as it does, none of which writes or runs a command;
+# --output, --ext-diff, --textconv, and the options that run a program are not among them. -n is log's own and is
+# added where a row takes it, since shortlog spells --numbered with it.
+REVISION_OPTIONS = ReadOnlyForm(
+    reason="",
+    flags=options(
+        "--oneline --graph --all --branches --tags --remotes --first-parent --merges --no-merges --reverse "
+        "--topo-order --date-order --author-date-order --abbrev-commit --no-abbrev-commit --no-decorate --source "
+        "--left-right --cherry-pick --cherry-mark --cherry --left-only --right-only --boundary --ancestry-path "
+        "--full-history --simplify-by-decoration --follow --parents --children --relative-date -i "
+        "--regexp-ignore-case -E --extended-regexp -F --fixed-strings --basic-regexp --all-match --invert-grep "
+        "--no-notes --mailmap --no-mailmap --use-mailmap --dense --sparse --count --show-pulls"
+    ),
+    valued=options("--max-count --skip --since --after --until --before --author --committer --grep -L --exclude"),
+    attached=options("--pretty --format --decorate --date --abbrev --glob --no-walk"),
+)
+# The diff options of diff, show, and log that change only what they print.
+DIFF_OPTIONS = ReadOnlyForm(
+    reason="",
+    flags=options(
+        "-p --patch -u --no-patch -s --raw --numstat --shortstat --summary --name-only --name-status --full-index "
+        "--binary --no-color --no-renames --minimal --patience --histogram -w --ignore-all-space -b "
+        "--ignore-space-change --ignore-blank-lines --ignore-space-at-eol --ignore-cr-at-eol -R --text -a "
+        "--no-ext-diff --no-textconv --exit-code --quiet --check --cached --staged --no-prefix --cc -m "
+        "--compact-summary --patch-with-stat --irreversible-delete -D --find-copies-harder --merge-base -z"
+    ),
+    valued=options("-S -G --diff-filter --diff-algorithm --src-prefix --dst-prefix --anchored"),
+    attached=options(
+        "--stat --dirstat --color --color-moved --word-diff --color-words --find-renames -M --find-copies -C "
+        "--unified -U --abbrev --diff-merges --relative --submodule --ignore-submodules --inter-hunk-context"
+    ),
+)
+
+
+def read_only(reason: str, *groups: ReadOnlyForm, **row: Any) -> ReadOnlyForm:
+    """A row reading revisions or diffs: the options of each group, beside the row's own."""
+    merged = {
+        "flags": frozenset().union(row.get("flags", frozenset()), *(group.flags for group in groups)),
+        "valued": frozenset().union(row.get("valued", frozenset()), *(group.valued for group in groups)),
+        "attached": frozenset().union(row.get("attached", frozenset()), *(group.attached for group in groups)),
+    }
+    return ReadOnlyForm(reason, **{**row, **merged})
+
+
+LOG_FORM = {"valued": options("-n"), "counts": True}
+# The git forms a guarded hub allows: its subcommand, or its subcommand and the word of its own subcommand, as
+# `worktree add`, with the options each may take and what it does. Every other subcommand, option, abbreviation, and
+# form is refused in a hub, since git's whole surface is too wide to list what writes ("The guard's contract" in
+# docs/parallel-sessions.md). Each row reads, or keeps the hub on main and current: pulling main, creating and removing
+# the worktrees and branches of tasks, and surveying. A row may not name an option git's own help says writes or runs a
+# command, nor one git does not list for it (tests/tools/test_hub_guard_git_options.py), and every git command the
+# hub's documents and repository skills run is one of them (tests/tools/test_hub_guard.py).
+READ_ONLY_FORMS: dict[str, ReadOnlyForm] = {
+    "status": ReadOnlyForm(
+        "shows the work tree's state",
+        flags=options(
+            "-v --verbose -s --short -b --branch --show-stash --ahead-behind --no-ahead-behind --long -z --null "
+            "--no-renames --renames --no-column"
+        ),
+        attached=options("--porcelain -u --untracked-files --ignored --ignore-submodules --column -M --find-renames"),
+    ),
+    "log": read_only("shows history", REVISION_OPTIONS, DIFF_OPTIONS, **LOG_FORM, listed=False),
+    "show": read_only("shows objects", REVISION_OPTIONS, DIFF_OPTIONS, **LOG_FORM, listed=False),
+    "diff": read_only("shows changes", DIFF_OPTIONS, listed=False),
+    "rev-list": read_only("lists commits", REVISION_OPTIONS, **LOG_FORM, flags=options("--objects"), listed=False),
+    "shortlog": read_only(
+        "summarizes history",
+        REVISION_OPTIONS,
+        flags=options("-c --committer -n --numbered -s --summary -e --email"),
+        valued=options("--group"),
+        attached=options("-w"),
+    ),
+    "reflog": read_only("shows a reflog", REVISION_OPTIONS, DIFF_OPTIONS, **LOG_FORM, listed=False),
+    "reflog show": read_only("shows a reflog", REVISION_OPTIONS, DIFF_OPTIONS, **LOG_FORM, listed=False),
+    "stash list": read_only("lists stashes", REVISION_OPTIONS, DIFF_OPTIONS, **LOG_FORM, listed=False),
+    "stash show": read_only("shows a stash", DIFF_OPTIONS, listed=False),
+    "rev-parse": ReadOnlyForm(
+        "names objects and paths",
+        flags=options(
+            "--show-toplevel --git-dir --git-common-dir --absolute-git-dir --verify -q --quiet --symbolic "
+            "--symbolic-full-name --is-inside-work-tree --is-inside-git-dir --is-bare-repository "
+            "--is-shallow-repository --show-prefix --show-cdup --show-superproject-working-tree --local-env-vars "
+            "--all --branches --tags --remotes --revs-only --no-revs --flags --no-flags --sq --not"
+        ),
+        valued=options("--git-path --default"),
+        attached=options("--short --abbrev-ref --path-format --show-object-format"),
+        listed=False,
+    ),
+    "ls-files": ReadOnlyForm(
+        "lists the index's files",
+        flags=options(
+            "-z -t -v -f -c --cached -d --deleted -m --modified -o --others -i --ignored -s --stage -k --killed "
+            "--directory --eol --no-empty-directory -u --unmerged --resolve-undo --exclude-standard --full-name "
+            "--recurse-submodules --error-unmatch --debug --deduplicate --sparse"
+        ),
+        valued=options("-x --exclude -X --exclude-from --exclude-per-directory --with-tree --format"),
+        attached=options("--abbrev"),
+    ),
+    "ls-tree": ReadOnlyForm(
+        "lists a tree",
+        flags=options("-d -r -t -z -l --long --name-only --name-status --object-only --full-name --full-tree"),
+        valued=options("--format"),
+        attached=options("--abbrev"),
+    ),
+    "cat-file": ReadOnlyForm(
+        "prints objects",
+        flags=options(
+            "-e -p -t -s --use-mailmap --mailmap -Z --batch-all-objects --buffer --follow-symlinks --unordered"
+        ),
+        attached=options("--batch --batch-check --batch-command"),
+    ),
+    "show-ref": ReadOnlyForm(
+        "lists refs",
+        flags=options("--tags --branches --exists --verify --head -d --dereference -q --quiet"),
+        attached=options("-s --hash --abbrev --exclude-existing"),
+    ),
+    "for-each-ref": ReadOnlyForm(
+        "lists refs",
+        flags=options("-s --shell -p --perl --python --tcl --omit-empty --ignore-case --include-root-refs"),
+        valued=options("--count --format --sort --points-at --merged --no-merged --contains --no-contains --exclude"),
+        attached=options("--color"),
+    ),
+    "merge-base": ReadOnlyForm(
+        "finds common ancestors", flags=options("-a --all --octopus --independent --is-ancestor --fork-point")
+    ),
+    "describe": ReadOnlyForm(
+        "names a commit by its tags",
+        flags=options("--contains --all --tags --long --first-parent --exact-match --always"),
+        valued=options("--candidates --match --exclude"),
+        attached=options("--abbrev --dirty --broken"),
+    ),
+    "grep": ReadOnlyForm(
+        "searches files",
+        flags=options(
+            "--cached --untracked --exclude-standard --no-exclude-standard --recurse-submodules -v --invert-match -i "
+            "--ignore-case -w --word-regexp -a --text -I -r --recursive -E --extended-regexp -G --basic-regexp -F "
+            "--fixed-strings -P --perl-regexp -n --line-number --column -h -H --full-name -l --files-with-matches "
+            "--name-only -L --files-without-match -z --null -o --only-matching -c --count --no-color --break "
+            "--heading -p --show-function -W --function-context --and --or --not -q --quiet --all-match"
+        ),
+        valued=options(
+            "--max-depth -C --context -B --before-context -A --after-context --threads -f -e -m --max-count"
+        ),
+        attached=options("--color"),
+        counts=True,
+    ),
+    "blame": ReadOnlyForm(
+        "shows who changed each line",
+        flags=options(
+            "-l -t -s -e -f -n -p -w -b --porcelain --line-porcelain --root --show-email --show-name --show-number "
+            "--incremental --show-stats"
+        ),
+        valued=options("-L --ignore-rev"),
+    ),
+    "check-attr": ReadOnlyForm(
+        "shows attributes", flags=options("-a --all --cached --stdin -z"), valued=options("--source")
+    ),
+    "check-ignore": ReadOnlyForm(
+        "shows which paths are ignored",
+        flags=options("-q --quiet -v --verbose --stdin -z -n --non-matching --no-index"),
+    ),
+    "ls-remote": ReadOnlyForm(
+        "lists a remote's refs",
+        flags=options("-q --quiet -t --tags -b --branches --refs --get-url --exit-code --symref"),
+        valued=options("--sort -o --server-option"),
+    ),
+    "count-objects": ReadOnlyForm(
+        "counts objects", flags=options("-v --verbose -H --human-readable"), operands=no_operands
+    ),
+    "cherry": ReadOnlyForm(
+        "lists commits not yet upstream", flags=options("-v --verbose"), attached=options("--abbrev")
+    ),
+    "version": ReadOnlyForm("prints git's version", operands=no_operands, listed=False),
+    "config": ReadOnlyForm("reads a setting", judge=config_form, listed=False),
+    "remote": ReadOnlyForm("lists the remotes", flags=options("-v --verbose"), separator=False, operands=no_operands),
+    "remote get-url": ReadOnlyForm("prints a remote's address", flags=options("--push --all"), separator=False),
+    "remote show": ReadOnlyForm("describes a remote", flags=options("-n"), separator=False),
+    "worktree list": ReadOnlyForm(
+        "lists the worktrees",
+        flags=options("--porcelain -v --verbose -z"),
+        valued=options("--expire"),
+        separator=False,
+        operands=no_operands,
+    ),
+    "worktree add": ReadOnlyForm(
+        "creates a task's worktree on a new task branch, never a second checkout of main, which -f would allow, nor a "
+        "branch git names itself or one that shadows a ref the hub follows",
+        flags=options("-q --quiet"),
+        valued=options("-b"),
+        required=options("-b"),
+        separator=False,
+        values={"-b": task_branch},
+    ),
+    "worktree remove": ReadOnlyForm(
+        "removes a task's worktree, never one with changes, which -f would allow", separator=False
+    ),
+    "worktree prune": ReadOnlyForm(
+        "forgets worktrees whose folders are gone",
+        flags=options("-n --dry-run -v --verbose"),
+        valued=options("--expire"),
+        separator=False,
+        operands=no_operands,
+    ),
+    "branch": ReadOnlyForm(
+        "lists branches, and deletes a task's, which git refuses for a branch a worktree has checked out; never "
+        "creates, renames, copies, or forces one, nor sets an upstream",
+        flags=options(
+            "-v --verbose -q --quiet -r --remotes -a --all -d --delete -D -l --list --show-current -i --ignore-case "
+            "--no-color --omit-empty"
+        ),
+        valued=options("--contains --no-contains --merged --no-merged --sort --points-at --format"),
+        attached=options("--color --abbrev --column"),
+        separator=False,
+        operands=branch_operands,
+    ),
+    "tag": ReadOnlyForm(
+        "lists tags, never creating or deleting one",
+        flags=options("-l --list -i --ignore-case --omit-empty"),
+        valued=options("--contains --no-contains --merged --no-merged --sort --points-at --format"),
+        attached=options("-n --column --color"),
+        separator=False,
+        operands=listed_with("-l", "--list"),
+    ),
+    "fetch": ReadOnlyForm(
+        "updates the remote-tracking refs, never the branch HEAD names (-u) nor a ref a refspec names, nor an upstream",
+        flags=options(
+            "-v --verbose -q --quiet --all -t --tags -n --no-tags -p --prune --dry-run --porcelain --progress "
+            "--no-progress --no-recurse-submodules -4 --ipv4 -6 --ipv6 --show-forced-updates "
+            "--no-show-forced-updates"
+        ),
+        valued=options("-j --jobs -o --server-option"),
+        operands=fetched_refs,
+    ),
+    "pull": ReadOnlyForm(
+        "fast-forwards main to origin's main, named in full rather than an upstream a setting chooses",
+        flags=options("--ff-only -q --quiet -v --verbose --no-rebase"),
+        required=options("--ff-only"),
+        separator=False,
+        operands=fast_forward("pull", "origin", "main"),
+    ),
+    "merge": ReadOnlyForm(
+        "fast-forwards main to origin/main",
+        flags=options("--ff-only -q --quiet -v --verbose"),
+        required=options("--ff-only"),
+        separator=False,
+        operands=fast_forward("merge", "origin/main"),
+    ),
+    "switch": ReadOnlyForm(
+        "returns the hub to main", flags=options("-q --quiet"), separator=False, operands=exactly(MAIN)
+    ),
+    "checkout": ReadOnlyForm(
+        "returns the hub to main", flags=options("-q --quiet"), separator=False, operands=exactly(MAIN)
+    ),
+    "apply": ReadOnlyForm(
+        "checks a patch or shows its statistics, never applying it, which only --apply or a later --no-check does",
+        flags=options(
+            "--check --stat --numstat --summary -v --verbose -q --quiet -R --reverse -z --recount --inaccurate-eof "
+            "--allow-empty --unidiff-zero --ignore-space-change --ignore-whitespace"
+        ),
+        valued=options("--exclude --include -p -C --whitespace"),
+        required=options("--check --stat --numstat --summary"),
+    ),
+}
+# The subcommands a row of READ_ONLY_FORMS names: none is an alias, since each is a builtin, which no alias can be.
+READ_ONLY_SUBCOMMANDS = frozenset(key.split(" ")[0] for key in READ_ONLY_FORMS)
+
+
+def read_only_form(subcommand: str, arguments: Sequence[Word]) -> tuple[str, ReadOnlyForm | None, Sequence[Word]]:
+    """The row of READ_ONLY_FORMS a call is read by, its key, and the words after the key: a subcommand some row names
+    with its own subcommand's word takes its first word as that word when it is no option, and a row of the
+    subcommand alone is read only when the first word is an option or there is none, so `reflog delete` is no
+    `reflog`."""
+    first = arguments[0] if arguments else None
+    if first is not None and not first.startswith("-") and f"{subcommand} {first}" in READ_ONLY_FORMS:
+        key = f"{subcommand} {first}"
+        return key, READ_ONLY_FORMS[key], arguments[1:]
+    actions = any(key.startswith(f"{subcommand} ") for key in READ_ONLY_FORMS)
+    if actions and first is not None and not first.startswith("-"):
+        return f"{subcommand} {first}", None, arguments[1:]
+    return subcommand, READ_ONLY_FORMS.get(subcommand), arguments
+
+
+# Why a word the text does not settle, before any `--`, is refused in a hub: it may be any option.
+UNSETTLED_WORD = "is given a word the text does not settle, which may be any of its options."
+
+
+def read_only_refusal(subcommand: str, arguments: Sequence[Word]) -> str | None:
+    """Why a git call in a guarded hub is refused: unless READ_ONLY_FORMS declares its form and every option it uses,
+    spelled in full (read_only_words), and its operands are ones the row allows; None when it is one of them."""
+    key, form, words = read_only_form(subcommand, arguments)
+    refused = f"`git {key}` is not a read-only form the hub allows"
+    if form is None:
+        return f"{refused}; the hub allows only the forms READ_ONLY_FORMS in tools/hub_guard.py declares."
+    if form.judge is not None:
+        why = form.judge(words)
+        return None if why is None else f"{refused}: {why}."
+    read = read_only_words(form, words)
+    if read == UNSETTLED_WORD:
+        return f"`git {key}` {read}"
+    if isinstance(read, str):
+        return f"{refused} {read}"
+    given, operands = read
+    if form.required and not given & form.required:
+        return f"{refused} without {' or '.join(sorted(form.required))}."
+    why = form.operands(operands, given) if form.operands is not None else None
+    if why is None:
+        return None
+    return why if why.startswith("`git") else f"{refused}: {why}."
+
+
+def read_only_words(form: ReadOnlyForm, words: Sequence[Word]) -> tuple[frozenset[str], list[Word]] | str:
+    """The options a call gives and its operands, read by a READ_ONLY_FORMS row; or, for the first word the row does
+    not declare, the end of the reason it is refused."""
+    given: set[str] = set()
+    operands: list[Word] = []
+    index = 0
+    while index < len(words):
+        word = words[index]
+        index += 1
+        if word is None:
+            return UNSETTLED_WORD
+        if word == "--":
+            if not form.separator:
+                return "with `--`, after which its operands are paths."
+            operands.extend(words[index:])
+            break
+        if word == "-" or not word.startswith("-"):
+            operands.append(word)
+            continue
+        spelled = read_option(form, word)
+        if spelled is None:
+            return f"with {word}: its row declares no such option, spelled so."
+        given.update(spelled)
+        # A next word the text does not settle is never taken as a value: the next pass refuses it.
+        following = words[index] if index < len(words) else ""
+        if following is not None and spelled[-1] == word and word in form.valued and not following.startswith("-"):
+            index += 1
+        why = value_refusal(form, word, spelled[-1], following or "")
+        if why is not None:
+            return why
+    return frozenset(given), operands
+
+
+def value_refusal(form: ReadOnlyForm, word: str, option: str, following: str) -> str | None:
+    """Why the value a row judges (ReadOnlyForm.values) is refused: the value attached to the word, after = or as the
+    rest of a letter's word, or else the word after it, which git takes whatever it holds."""
+    judge = form.values.get(option)
+    if judge is None:
+        return None
+    if word.startswith("--"):
+        value = word.partition("=")[2] if "=" in word else following
+    else:
+        value = word[len(option) :] or following
+    why = judge(value)
+    return None if why is None else f"with {option} {value}: {why}."
+
+
+def read_option(form: ReadOnlyForm, word: str) -> list[str] | None:
+    """The options of a READ_ONLY_FORMS row one word spells in full, None where it spells none: a long option exactly
+    or with its value after =; a count where the row takes one; a letter alone or with its value attached; or a bundle
+    of letters each a flag, which spells each of them. A valued option spelled alone is the word itself, so its value
+    is the next word."""
+    if word.startswith("--"):
+        name, attached, _ = word.partition("=")
+        declared = form.valued | form.attached if attached else form.flags | form.valued | form.attached
+        return [name] if name in declared else None
+    if form.counts and word[1:].isdigit():
+        return [word]
+    letter = word[:2]
+    if letter in form.valued | form.attached:
+        return [letter]
+    letters = [f"-{each}" for each in word[1:]]
+    return letters if all(each in form.flags for each in letters) else None
+
+
+# The refs git reads `origin/main` as before refs/remotes/origin/main, or as ambiguous beside it (gitrevisions): the
+# fast-forward to origin/main is refused while any of them exists, since git would follow it instead.
+FAST_FORWARD_SHADOWS = (
+    "refs/origin/main",
+    "refs/tags/origin/main",
+    "refs/heads/origin/main",
+    "refs/remotes/origin/main/HEAD",
+)
+
+
+def shadowed_fast_forward(hub: Path) -> str | None:
+    """Why `merge --ff-only origin/main` in a hub is refused: a ref of that short name other than
+    refs/remotes/origin/main exists, which git resolves first or reads as ambiguous, or git cannot list them."""
+    result = git(hub, "for-each-ref", "--format=%(refname)", *FAST_FORWARD_SHADOWS)
+    if result.returncode != 0:
+        said = " ".join(result.stderr.split()) or f"git for-each-ref exited with {result.returncode}"
+        return (
+            f"`git merge --ff-only origin/main` is refused: the guard could not list the refs it may follow ({said})."
+        )
+    shadows = output_lines(result.stdout)
+    if not shadows:
+        return None
+    return (
+        f"`git merge --ff-only origin/main` would follow {shadows[0]}, not refs/remotes/origin/main; delete that ref "
+        "from a terminal, or pull with `git pull --ff-only origin main`."
+    )
+
+
+def hub_refusal(call: GitCall) -> str | None:
+    """Why a call that acts on a guarded hub is refused, or None: gh checking a branch out, and every git form
+    READ_ONLY_FORMS does not declare."""
     if call.program == "gh":
         return f"`gh {call.subcommand}` checks a branch out in the checkout it runs in."
-    subcommand = call.subcommand
-    if None in call.arguments and (subcommand == FETCH or subcommand in WRITING_SUBCOMMANDS):
-        return f"`git {subcommand}` is given a word the text does not settle, which may be any of its options."
-    arguments = [argument for argument in call.arguments if argument is not None]
-    if subcommand == FETCH:
-        if updates_head(arguments):
-            return "`git fetch --update-head-ok` would move the branch the hub's HEAD names."
-        return None
-    if subcommand not in WRITING_SUBCOMMANDS or allowed_form(subcommand, arguments):
-        return None
-    if subcommand in {"merge", "pull"} and "--ff-only" in arguments:
-        target = [argument for argument in arguments if argument not in FAST_FORWARD_OPTIONS]
-        if target in FAST_FORWARD_TARGETS[subcommand]:
-            return None
-        shown = " ".join(target) or "its upstream"
-        return f"`git {subcommand} --ff-only` moves the hub only to origin/main, not to {shown}."
-    return f"`git {subcommand}` would move the hub's HEAD or write its index or tree."
+    if call.subcommand is None:
+        return "The guard could not tell which git subcommand runs."
+    return read_only_refusal(call.subcommand, call.arguments)
 
 
 @dataclass
@@ -2112,7 +2484,7 @@ class Judge:
             return "The guard could not tell which git subcommand runs, so it is refused while a hub is guarded."
         hub, unknown = reached_hub(call.place)
         if hub is None and not (unknown and self.hubs):
-            if unknown and (call.subcommand is None or refusal(call) is not None):
+            if unknown and hub_refusal(call) is not None:
                 self.notes.append(f"could not tell where `git {call.subcommand or '<computed>'}` runs")
             if unknown or not may_be_alias(call):
                 return None
@@ -2123,15 +2495,19 @@ class Judge:
                 "The guard could not tell which git subcommand runs, and it refuses one it cannot read where it may "
                 f"write a guarded hub. {PLACE_IT if hub is None else ''}".rstrip()
             )
-        reason = refusal(call)
-        if reason is None and may_be_alias(call):
+        reason = hub_refusal(call)
+        if reason is None and call.program == "git" and call.subcommand == "merge":
+            reason = next(filter(None, map(shadowed_fast_forward, [hub] if hub else sorted(self.hubs))), None)
+        if reason is not None and may_be_alias(call):
+            # No read-only form names it, but an alias of that name may run one: the alias is judged by what it runs,
+            # and a name that is no alias stays refused.
             hubs = [hub] if hub is not None else sorted(self.hubs)
-            reason = self.alias_refusal(call, [AliasLookup(each, None, each) for each in hubs], depth)
+            reason = self.alias_refusal(call, [AliasLookup(each, None, each) for each in hubs], depth, missing=reason)
         if reason is None or hub is not None:
             return reason
         return (
-            f"The guard could not tell where `git {call.subcommand}` runs, and it refuses a git command that would "
-            f"write the checkout it runs in when it cannot place it while a hub is guarded. {PLACE_IT}"
+            f"The guard could not tell where `git {call.subcommand}` runs; since it cannot place it while a hub is "
+            f"guarded, it allows it only in the hub's read-only forms: {reason} {PLACE_IT}"
         )
 
     def effects_refusal(self, call: GitCall) -> str | None:
@@ -2208,8 +2584,11 @@ class Judge:
         self.notes.append(message)
         return None
 
-    def alias_refusal(self, call: GitCall, lookups: list[AliasLookup], depth: int) -> str | None:
-        """Why the alias a call names would write a hub; None when it is no alias, or one that would not.
+    def alias_refusal(
+        self, call: GitCall, lookups: list[AliasLookup], depth: int, missing: str | None = None
+    ) -> str | None:
+        """Why the alias a call names would write a hub; None when it is one that would not, and missing when it is no
+        alias at all.
 
         git runs a builtin before an alias, so only a subcommand that is no builtin is looked up: first among aliases
         given on the command line, then in the configuration of each place the lookups name.
@@ -2223,6 +2602,7 @@ class Judge:
             if expansion is None:
                 return self.unreadable(call, "its value is computed at run time")
             return self.expansion_refusal(call, expansion, depth, call.place.tree)
+        found = False
         for lookup in lookups:
             repository = () if lookup.repository is None else ("--git-dir", str(lookup.repository))
             result = git(lookup.directory, *repository, "config", "--get", f"alias.{subcommand}")
@@ -2230,10 +2610,11 @@ class Judge:
                 continue
             if result.returncode != 0:
                 return self.unreadable(call, result.stderr.strip())
+            found = True
             reason = self.expansion_refusal(call, result.stdout.removesuffix("\n"), depth, lookup.top)
             if reason is not None:
                 return reason
-        return None
+        return None if found else missing
 
     def expansion_refusal(self, call: GitCall, expansion: str, depth: int, top: Path | None) -> str | None:
         """Why what an alias expands to would write a hub; a shell alias runs at top, the top of the work tree."""
@@ -2273,12 +2654,12 @@ class AliasLookup:
 
 
 def may_be_alias(call: GitCall) -> bool:
-    """Whether a call's subcommand may be an alias: one the guard neither refuses itself nor finds among git's
-    builtins, which no alias can stand for."""
+    """Whether a call's subcommand may be an alias: one neither READ_ONLY_FORMS names nor git lists among its builtins,
+    which no alias can stand for."""
     return (
         call.program == "git"
         and call.subcommand is not None
-        and call.subcommand not in WRITING_SUBCOMMANDS | {FETCH} | git_builtins()
+        and call.subcommand not in READ_ONLY_SUBCOMMANDS | git_builtins()
     )
 
 
