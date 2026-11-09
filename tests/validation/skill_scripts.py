@@ -426,12 +426,16 @@ def shell_commands(script: str, commands: list[list[str]] | None = None) -> set[
     state = "command"
     words: list[str] = []
     time_keyword = _TimeKeyword()
+    previous: str | None = None
     for word, keyword in [*tokens, ("\n", "\n")]:
+        # ShellLexer splits ;& into ; and &, and ;;& into ;; and &; each ends a case item as ;; does.
+        ends_item = keyword == ";;" or (keyword == "&" and previous == ";")
+        previous = keyword
         if state == "case-word":
             state = "patterns" if keyword == "in" else state
         elif state == "patterns":
             state = "command" if keyword == ")" else "arguments" if keyword == "esac" else state
-        elif keyword == ";;":
+        elif ends_item:
             state = "patterns"
         elif keyword == "esac":
             state = "arguments"
@@ -1249,8 +1253,8 @@ def command_reader(path: Path) -> CommandReader:
 @dataclass(frozen=True)
 class PowerShellReading:
     """What one PowerShell source runs: `programs`, as powershell_commands gives them, and `commands`, the words of
-    each external command it runs, its program's name first and UNREAD_WORD for a word that is no literal, a command
-    a script it starts runs included."""
+    each external command it runs, its program's name or path first and UNREAD_WORD for a word that is no literal, a
+    command a script it starts runs included."""
 
     programs: frozenset[str]
     commands: tuple[tuple[str, ...], ...]
@@ -1273,6 +1277,10 @@ def powershell_readings(sources: list[str]) -> list[PowerShellReading]:
             programs[source].add(name)
             programs[source] |= _wrapped_programs(texts, commands[source], unread=UNREAD_WORD)
             commands[source].append(texts)
+        else:
+            # A program named by a path names no tool the declared-tool policy holds, but the command still runs, and
+            # git_subcommands reads the git it names by its file name.
+            commands[source].append(words)
     return [
         PowerShellReading(frozenset(names), tuple(tuple(words) for words in run))
         for names, run in zip(programs, commands, strict=True)

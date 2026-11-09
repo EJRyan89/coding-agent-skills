@@ -81,6 +81,65 @@ def test_a_bash_script_runs_the_git_subcommand_after_gits_own_options(line: str,
     assert git_subcommands.bash_git_subcommands(line, no_powershell) == expected
 
 
+# A command starts wherever Bash starts one: at a line's start, after an operator, in a group, a subshell, or a
+# substitution, in each case item after its pattern's `)`, whichever of ;; ;& ;;& or a newline ends the item before
+# it, and in a function's body after its `()` or its name. A case word, a pattern, and a function's name run nothing,
+# and the `)` ending a subshell or a substitution starts no command.
+@pytest.mark.parametrize(
+    ("script", "expected"),
+    [
+        ('case "$x" in\n  up) git push ;;\nesac', {"push"}),
+        ("case x in y) git push;; esac", {"push"}),
+        ("case x in (y) git push;; esac", {"push"}),
+        ("case x in a|b) git push;; esac", {"push"}),
+        ("case x in a) git fetch;& b) git push;;& c) git pull;; esac", {"fetch", "push", "pull"}),
+        ("case x in a) git fetch\n;;\nb) git push\n;;\nesac", {"fetch", "push"}),
+        ("case x\nin\n a) git push;;\nesac", {"push"}),
+        ("case x in a) case y in b) git push;; esac;; c) git fetch;; esac", {"push", "fetch"}),
+        ("if true; then case x in a) git push;; esac; fi", {"push"}),
+        ("case x in a) git push;; esac\ngit fetch", {"push", "fetch"}),
+        ("case git in push) true;; esac", set()),
+        ("case x in git) true;; esac", set()),
+        ("f() { git push; }", {"push"}),
+        ("f () { git push; }", {"push"}),
+        ("function f { git push; }", {"push"}),
+        ("function f() { git push; }", {"push"}),
+        ("f() (git push)", {"push"}),
+        ("function git { true; }", set()),
+        ("(git push)", {"push"}),
+        ("(cd x) && git push", {"push"}),
+        ('x="$(date) git push"', set()),
+    ],
+)
+def test_a_git_command_is_read_wherever_bash_starts_a_command(script: str, expected: set[str]) -> None:
+    assert git_subcommands.bash_git_subcommands(script, no_powershell) == expected
+
+
+# Bash runs the program a path names, and Git Bash the one named with .exe, so git named either way is git, as is a
+# shell whose -c script runs it; a name is matched as written, so Git and GIT.exe are no git in Bash.
+@pytest.mark.parametrize(
+    ("script", "expected"),
+    [
+        ("/usr/bin/git push", {"push"}),
+        ("git.exe push origin", {"push"}),
+        ("'/c/Program Files/Git/cmd/git.exe' fetch", {"fetch"}),
+        ('"$HOME/bin/git" push', {"push"}),
+        ('/bin/bash -c "git push"', {"push"}),
+        ("bash.exe -c 'git push'", {"push"}),
+        ("/usr/bin/env git push", {"push"}),
+        ("env /usr/bin/git push", {"push"}),
+        ("/usr/bin/find . -exec /usr/bin/git push {} +", {"push"}),
+        ("Git push", set()),
+        ("/usr/bin/Git push", set()),
+        ("GIT.exe push", set()),
+        ("legit.exe push", set()),
+        ("/usr/bin/git/ push", set()),
+    ],
+)
+def test_git_or_a_shell_named_by_a_path_or_with_exe_is_read_as_bash_runs_it(script: str, expected: set[str]) -> None:
+    assert git_subcommands.bash_git_subcommands(script, no_powershell) == expected
+
+
 # The script a pwsh or Windows PowerShell start-up runs is PowerShell, whose commands the caller's reader lists: by
 # -Command, -CommandWithArgs, or Windows PowerShell's first positional word, named by a path or with .exe too, and
 # behind a wrapper or in find's action.
@@ -142,6 +201,13 @@ def test_a_start_up_whose_script_no_reader_sees_gives_no_subcommand(words: list[
         ([["Git", "push"]], {"push"}),
         ([["GIT", "-C", "dir", "fetch"]], {"fetch"}),
         ([[UNREAD_WORD, "push"]], set()),
+        # A program named by a path, either slash, or with .exe in any case is the program its file name names.
+        ([["C:/Program Files/Git/cmd/git", "push"]], {"push"}),
+        ([["C:\\Program Files\\Git\\cmd\\GIT.EXE", "fetch"]], {"fetch"}),
+        ([["/usr/bin/git", "push"]], {"push"}),
+        ([["C:/Program Files/Git/bin/bash.exe", "-c", "git push"]], {"push"}),
+        ([["/usr/bin/env", "git", "push"]], {"push"}),
+        ([["C:/tools/legit.exe", "push"]], set()),
     ],
 )
 def test_a_powershell_scripts_commands_give_the_git_subcommands_they_run(

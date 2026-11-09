@@ -382,9 +382,14 @@ removed fails validation until its pattern follows it.
 - **Why:** A hand-written reader that misses a construct the program reads lets a command or an entry pass unjudged.
   The hub guard's modelling reader closed one spelling per fix and every review found the next, until it was rebuilt
   to refuse what it does not understand.
-- **Use:** `tools.hub_guard:read_powershell`, `tools.hub_guard:runner_refusal`, `option_reader:option_refusal`, and
-  `tools.hub_guard:expansion_form`
+- **Use:** `tools.hub_guard:read_powershell`, `tools.hub_guard:runner_refusal`, `option_reader:option_refusal`,
+  `tools.hub_guard:expansion_form`, `git_subcommands:CommandStarts`, which says where Bash starts a command, and
+  `command_wrappers:bash_program`, the program a Bash command's word names by its file name
 - **Guard:** `tests/tools/test_bash_syntax.py::ArrayAssignmentTests::test_an_array_assignment_to_a_subscript_is_read_where_bash_reads_an_array`,
+  `skills/ejryan89-skill-core/scripts/test_git_subcommands.py::test_a_git_command_is_read_wherever_bash_starts_a_command`,
+  `skills/ejryan89-skill-core/scripts/test_git_subcommands.py::test_git_or_a_shell_named_by_a_path_or_with_exe_is_read_as_bash_runs_it`,
+  `tests/validation/test_shell_readers.py::test_both_readers_read_the_git_command_a_case_item_or_a_function_body_runs`,
+  which holds the git subcommand reader and validation's shell command reader to the same command starts,
   `tests/tools/test_captured_samples.py::test_every_sample_is_named_by_a_suite_that_reads_it`, which fails a captured
   sample no suite names, so real output no reader is held to is found,
   `tests/validation/test_skill_scripts.py::SkillScriptsFixtures::test_shell_command_extraction_runs_a_program_a_quoted_function_name_never_defined`,
@@ -436,10 +441,13 @@ removed fails validation until its pattern follows it.
   `rebase --exec` or `-x`, `bisect run`, a transport's `--upload-pack`, or a `-c` setting that names a program, rather
   than an allow-list of the subcommands, actions, and settings that start none; a reader of a gh flag word that takes
   its first two characters for the flag, rather than `gh_shorthands.shorthands`, which reads a cluster such as
-  `-ifbody=x` letter by letter as gh does.
+  `-ifbody=x` letter by letter as gh does; a reader of the commands a Bash script runs that starts one only at a
+  line's start, an operator, or a substitution, and not after a case pattern's `)`, a `;&` or `;;&`, or a function's
+  `()`, or that compares a command's first word, such as `head == "git"` or `head in SCRIPT_SHELLS`, with a program's
+  name rather than the file name `command_wrappers.bash_program` reads, so `/usr/bin/git` and `git.exe` go unread.
 - **Examples:** #1412, #1429, #1430, #1592, #1606, #1843, #1851, #1865, #2032, #2088, #2089, #2134, #2135, #2136,
   #2137, #2138, #2139, #2140, #2188, #2225, #2232, #2233, #2234, #2251, #2262, #2274, #2276, #2316, #2411,
-  #2418, #2203, #2450, #2476, #2481
+  #2418, #2203, #2450, #2476, #2481, #2478
 
 ### A recursive parser of input has a depth bound
 

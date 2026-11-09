@@ -13,6 +13,7 @@ import re
 import shlex
 from collections.abc import Mapping
 
+from executable_locator import program_name
 from option_reader import OptionTable, option_refusal, option_table
 
 # The commands that run the program a later word names, each with every option it takes, in getopt's spelling as
@@ -68,11 +69,20 @@ ASSIGNMENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*(\[[^\]]*\])?\+?=")
 # A pipe hands the next command what the one before it writes; `time` after one is the time program, not Bash's
 # keyword.
 PIPES = frozenset({"|", "|&"})
+# The operators that end a case item's commands, after which the next item's patterns stand.
+CASE_ITEM_ENDS = frozenset({";;", ";&", ";;&"})
 # The words Bash's time keyword takes before the pipeline it times, each unquoted, each optional, and in this order.
 TIME_KEYWORD_OPTIONS: tuple[str, ...] = ("-p", "--")
 # What a reader records for a program a wrapper runs but that no literal names, such as `xargs "$tool"`, so the command
 # policy refuses it rather than passing it unseen; it never names a program.
 UNREAD_PROGRAM = "<unread> "
+
+
+def bash_program(word: str) -> str:
+    """The program a Bash command's word names, by its file name, as Bash finds it: `/usr/bin/git` and `git.exe` are
+    git, the .exe Windows lets its caller add dropped in any case, while the name itself is matched as written, so `Git`
+    is no git."""
+    return program_name(word.rpartition("/")[2])
 
 
 def unwrapped(words: list[str], wrappers: Mapping[str, OptionTable] = COMMAND_WRAPPERS) -> list[str]:
