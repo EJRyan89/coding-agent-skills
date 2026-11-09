@@ -9,6 +9,7 @@ import io
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tarfile
@@ -276,6 +277,45 @@ class RuntimeContractTests(unittest.TestCase):
                 manifest["entrypoint"],
                 json.loads((destination / "materialization.json").read_text(encoding="utf-8"))["entrypoint"],
             )
+
+    if sys.platform == "win32":
+
+        def test_declared_files_a_case_insensitive_file_system_merges_are_refused_naming_both(self) -> None:
+            with tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary).resolve()
+                checkout, _, _ = self._repository(root)
+                manifest = self._manifest()
+                first = manifest["resources"][0]
+                other = first.replace("rules.md", "RULES.md")
+                manifest["resources"].append(other)
+                # Added by its blob, since the checkout's file system holds only one of the two names.
+                blob = self._git_bytes(checkout, "hash-object", "-w", "--stdin", data=b"Other rules\n").decode().strip()
+                self._git(checkout, "update-index", "--add", "--cacheinfo", f"100644,{blob},{other}")
+                self._git(
+                    checkout, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-m", "x"
+                )
+                commit = self._git(checkout, "rev-parse", "HEAD")
+                destination = root / "materialized"
+                held: list[bytes] = []
+                remove = shutil.rmtree
+
+                def keeping(path: Path, ignore_errors: bool = False) -> None:
+                    # What the refused materialization holds at the first name, read before its cleanup removes it.
+                    held.append(Path(path).joinpath(*first.split("/")).read_bytes())
+                    remove(path, ignore_errors=ignore_errors)
+
+                with (
+                    mock.patch.object(shutil, "rmtree", keeping),
+                    self.assertRaises(RuntimeContractError) as refused,
+                ):
+                    materialize_reviewer(checkout, commit, manifest, destination)
+                self.assertEqual(
+                    f'Source snapshot path "{other}" is another name, in another case or as a short name, for '
+                    f'"{first}", which the snapshot already holds',
+                    str(refused.exception),
+                )
+                self.assertEqual([b"Rules\n"], held, "the first file keeps its own bytes")
+                self.assertFalse(destination.exists(), "a refused materialization leaves nothing behind")
 
     def test_trusted_files_are_materialized_as_their_exact_committed_bytes(self) -> None:
         crlf, latin1 = b"line one\r\nline two\r\n", b"caf\xe9\n"

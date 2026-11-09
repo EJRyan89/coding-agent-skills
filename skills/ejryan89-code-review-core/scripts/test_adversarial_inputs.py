@@ -60,6 +60,7 @@ from review_records import ReviewRecord
 from review_runtime import materialize_source_snapshot, verify_github_tarball
 from test_review_documents import StubPdftotext, body_xml, paragraph, pdf_document, word_document
 from test_review_pipeline import checked_run_list, claim
+from test_review_source import short_alias, short_name
 
 REPOSITORY = "example/one"
 NUMBER = 12
@@ -509,6 +510,47 @@ class FileNameTests(AdversarialFixture):
         with self.assertRaisesRegex(review_runtime.RuntimeContractError, "collide"):
             materialize_source_snapshot(self.checkout, REPOSITORY, commit, destination, upfront=lambda path: False)
         self.assertFalse(destination.exists())
+
+    def test_the_manifest_s_name_in_another_case_fails_the_snapshot_before_anything_is_written(self) -> None:
+        # A case-insensitive file system would hold the pull request's bytes at the manifest's own path.
+        commit = write_commit(self.checkout, files({"app/service.py": b"one\n", "SOURCE-SNAPSHOT.JSON": b"{}\n"}))
+        destination = self.root / "manifest case"
+        for upfront in (None, lambda path: False):
+            with (
+                self.subTest(lazy=upfront is not None),
+                self.assertRaises(review_runtime.RuntimeContractError) as raised,
+            ):
+                materialize_source_snapshot(self.checkout, REPOSITORY, commit, destination, upfront=upfront)
+            self.assertEqual("Repository contains reserved snapshot path: SOURCE-SNAPSHOT.JSON", str(raised.exception))
+            self.assertIsInstance(raised.exception, review_run.EXPECTED_ERRORS, "prepare prints it as one FAILED line")
+            self.assertFalse(destination.exists())
+
+    if sys.platform == "win32":
+
+        def test_a_fetch_of_the_manifest_s_short_name_is_refused_and_the_manifest_is_unchanged(self) -> None:
+            # Learn the short name the volume gives the manifest of a lazy snapshot, then commit a file by that name:
+            # the same snapshot of that commit writes the same files, lists the file as fetchable, and is asked for it.
+            base = write_commit(self.checkout, files({"app/service.py": b"one\n"}))
+            learned = self.root / "learned" / "source"
+            materialize_source_snapshot(self.checkout, REPOSITORY, base, learned, upfront=lambda path: False)
+            alias = short_alias(self, learned / "source-snapshot.json")
+            commit = write_commit(self.checkout, files({"app/service.py": b"one\n", alias: b'{"forged": true}\n'}))
+            source = self.root / "aliased" / "source"
+            materialize_source_snapshot(self.checkout, REPOSITORY, commit, source, upfront=lambda path: False)
+            manifest = source / "source-snapshot.json"
+            self.assertEqual(alias, short_name(manifest), "the second snapshot's manifest has the same short name")
+            before = manifest.read_bytes()
+            with self.assertRaises(review_runtime.RuntimeContractError) as raised:
+                review_runtime.fetch_source_file(
+                    self.checkout, source, alias, repository=REPOSITORY, commit=commit, staging=source.parent
+                )
+            self.assertEqual(
+                f'Source snapshot path "{alias}" is another name, in another case or as a short name, for '
+                '"source-snapshot.json", which the snapshot already holds',
+                str(raised.exception),
+            )
+            self.assertEqual(before, manifest.read_bytes())
+            review_runtime.verify_source_snapshot(source, expected_repository=REPOSITORY, expected_commit=commit)
 
 
 def path_of(units: int, *, folder: int = 0) -> str:
