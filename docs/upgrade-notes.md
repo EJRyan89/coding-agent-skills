@@ -28,6 +28,13 @@ Level: minor.
 - User action: none. In a clone that opts into the hub guard, git in the hub runs only in the forms "The guard's contract" in `docs/parallel-sessions.md` lists, with options spelled in full; pull `main` with `git pull --ff-only origin main` rather than a bare `git pull --ff-only`, and run any other git from a worktree or a terminal.
 - Pull request: #2472
 
+### A review snapshot refuses another case or short name of a file it holds
+
+- Level: patch, a fix whose refusal enforces what the snapshot already promised: no head path replaces the manifest or another snapshot file.
+- Contract: none
+- User action: none. A review of a pull request whose tree names the snapshot's manifest in another case, or names a file or folder the snapshot already wrote by another case or a Windows 8.3 short name, now fails before anything is written, naming both spellings, where it used to fail later with a misleading contract error. A reviewer whose declared files hold two such spellings, or, on the Copilot CLI host, a file named `materialization.json` in any case, is refused the same way; rename the declared file.
+- Pull request: #2470
+
 ### The hub guard judges git's operand writers, in-place modes, and roots
 
 - Level: patch, a defect fix in a contributor-facing tool with no contract change.
@@ -46,7 +53,7 @@ Level: minor.
 
 - Level: patch, because it fixes a hang. No argument, status word, or exit code changes.
 - Contract: none.
-- User action: none. If the update stops with `FETCH_FAILED` naming a credential, run `git fetch` in the clone once to sign in, then rerun the update.
+- User action: none. If the update stops with `FETCH_FAILED` naming a credential, run `git fetch` in the clone once to sign in, then rerun the update. The update that brings this release still runs the installed copy of `update.sh`, whose fetch may ask for a credential or wait on a remote that never answers: if it hangs, stop it, run `git fetch --tags origin` in the clone yourself, and rerun the update.
 - Pull request: #2459
 
 ### The hub guard reads what git's options write and run, and refuses a writing git config
@@ -182,9 +189,11 @@ Level: minor.
 - `FAILED not a git repository: <clone>` becomes `FAILED cannot read <clone> as a git repository: <git's reason>`.
   - New reasons:
     - `FAILED cannot look up refs/heads/main: <reason>`;
-- `FAILED cannot tell whether refs/heads/main is an ancestor of refs/remotes/origin/main: <reason>`;
+    - `FAILED cannot tell whether refs/heads/main is an ancestor of refs/remotes/origin/main: <reason>`;
     - `FAILED cannot read the branch the clone is on: <reason>`;
     - `FAILED cannot read the commit the clone is on: <reason>`;
+    - `FAILED cannot read the branch or the commit the clone is on: git named none`;
+    - `FAILED cannot create a temporary file for git's errors: <reason>`;
     - `FAILED cannot compare release <current> with <target>: <reason>`.
 - `FAILED cannot compare release tag <tag>: its <part> version has more than 18 digits` is gone, because such a release now compares exactly.
 - The short-name failures of main before and after the fast-forward and of the deployed commit now stop before the checkout, leaving the clone as found.
@@ -413,7 +422,7 @@ Level: minor.
 
 - Level: patch, the dry run now gives the answer the deployment gives, which `docs/recovery.md` promises: it never shows a plan or a pending recovery the deployment would refuse.
 - Contract: none
-- User action: none. If `--dry-run` now stops with `Source '<id>' is deployed from <path>, not from this checkout`, run it from the recorded checkout. If this checkout replaces the recorded one, deploy with `--take-over-source`; a dry run cannot take the flag yet (#2313). A dry run while another deployment runs now stops with `Another deployment is running`, as that deployment's own journal is not a recovery to report; rerun it once the deployment finishes.
+- User action: none. If `--dry-run` now stops with `Source '<id>' is deployed from <path>, not from this checkout`, run it from the recorded checkout. If this checkout replaces the recorded one, deploy with `--take-over-source`, which a dry run also takes to preview the takeover. A dry run while another deployment runs now stops with `Another deployment is running`, as that deployment's own journal is not a recovery to report; rerun it once the deployment finishes.
 - Pull request: #2306
 
 ### `verify` names Codex's cap on the skills budget when an adapter is omitted
