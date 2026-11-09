@@ -312,22 +312,35 @@ def codex_requests(cwd: Path) -> list[str]:
     return [json_writer.dumps(message) for message in messages]
 
 
-def _codex_message(line: str) -> dict[str, object] | None:
+def _codex_answer(line: str) -> dict[str, object] | None:
+    """The message a line holds when it is the app server's answer to `skills/list`, or None for any other line: one
+    that is not JSON, such as stray output, another message, and one json_reader refuses that answers no pending
+    request. An answer json_reader refuses, for a repeated key, NaN, a number too large, an integer of too many digits,
+    nesting too deep, or a lone surrogate, raises ListingError naming the refusal, since passing over it would report
+    that Codex did not answer when it did."""
     try:
         message = json_reader.loads(line)
-    except ValueError:  # a decoding error, the digit limit, or nesting json_reader refuses
+    except json_reader.JsonRefused as exc:
+        if json_reader.answers_request(line, CODEX_LIST_ID):
+            raise ListingError(f"its skills/list answer was refused: {exc}") from None
         return None
-    return message if isinstance(message, dict) else None
+    except ValueError:  # a line that is not JSON, or not UTF-8
+        return None
+    return message if isinstance(message, dict) and message.get("id") == CODEX_LIST_ID else None
 
 
 def codex_answered(line: str) -> bool:
-    message = _codex_message(line)
-    return message is not None and message.get("id") == CODEX_LIST_ID
+    """Whether a line is the app server's answer to `skills/list`, a refused one included, which parse_codex
+    reports."""
+    try:
+        return _codex_answer(line) is not None
+    except ListingError:
+        return True
 
 
 def _codex_groups(lines: list[str]) -> list[dict[str, object]]:
     """The groups of the app server's answer to `skills/list`, one per working directory asked about."""
-    answers = [message for line in lines if (message := _codex_message(line)) and message.get("id") == CODEX_LIST_ID]
+    answers = [message for line in lines if (message := _codex_answer(line))]
     if not answers:
         raise ListingError("it did not answer the skills/list request")
     answer = answers[-1]
