@@ -136,6 +136,19 @@ for line in sys.stdin.buffer:
         if mode == "repeatedid":
             print('{"jsonrpc": "2.0", "id": %d, "id": 5, "result": {"tools": []}}' % message["id"], flush=True)
             time.sleep(30)
+        if mode == "deep":
+            # Nested past the client's recursion limit, with the id after the nesting.
+            deep = "[" * (sys.getrecursionlimit() * 20) + "]" * (sys.getrecursionlimit() * 20)
+            print('{"jsonrpc": "2.0", "result": {"tools": [], "x": %s}, "id": %d}' % (deep, message["id"]), flush=True)
+            time.sleep(30)
+        if mode in ("floatid", "exponentid"):
+            spelled = "%d.0" % message["id"] if mode == "floatid" else "%de0" % message["id"]
+            print('{"jsonrpc": "2.0", "id": %s, "result": {"tools": [], "n": NaN}}' % spelled, flush=True)
+            time.sleep(30)
+        if mode == "floatok":
+            # A response json_reader takes, its id spelled as a float, answers as an integer-spelled one does.
+            print('{"jsonrpc": "2.0", "id": %de0, "result": {"tools": []}}' % message["id"], flush=True)
+            continue
         cursor = message.get("params", {}).get("cursor")
         if mode == "paged" and cursor is None:
             result = {"tools": [{"name": "search", "inputSchema": SCHEMA}], "nextCursor": "page 2"}
@@ -273,6 +286,10 @@ class HandshakeTests(unittest.TestCase):
             ("surrogate", refused.format("tools/list", "holds a lone surrogate U+D800, which UTF-8 cannot encode")),
             ("nan", refused.format("initialize", "holds NaN, which JSON does not define")),
             ("repeatedid", refused.format("tools/list", "repeats the key 'id' in one object")),
+            # Nested past the recursion limit, and an id spelled as a float, the response was still waited out.
+            ("deep", refused.format("tools/list", "nests deeper than the parser can read")),
+            ("floatid", refused.format("tools/list", "holds NaN, which JSON does not define")),
+            ("exponentid", refused.format("tools/list", "holds NaN, which JSON does not define")),
         ):
             with self.subTest(mode=mode):
                 self._write(".mcp.json", "mcpServers", {"bad": self._stdio(mode)})
@@ -284,6 +301,11 @@ class HandshakeTests(unittest.TestCase):
                     (1, [f"HANDSHAKE_FAILED bad source=.mcp.json {reason}"]), (code, output.getvalue().splitlines())
                 )
                 self.assertLess(time.monotonic() - started, 20.0, "the refusal waited for the timeout")
+
+    def test_a_response_whose_id_is_spelled_as_a_float_is_taken_as_an_integer_spelled_one_is(self) -> None:
+        # One rule matches the id of a taken response and of a refused one: a number equal to the request's.
+        self._write(".mcp.json", "mcpServers", {"docs": self._stdio("floatok")})
+        self.assertEqual((0, ["HANDSHAKE_OK docs source=.mcp.json protocol=2025-06-18 tools=0"]), self._run())
 
     def test_a_refused_message_that_answers_no_pending_request_is_passed_over(self) -> None:
         self._write(".mcp.json", "mcpServers", {"docs": self._stdio("refusedother")})

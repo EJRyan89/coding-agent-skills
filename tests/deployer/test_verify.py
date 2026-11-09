@@ -16,6 +16,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts"))
 
 import job_tree
+import json_reader
 from bounded_process import KILL_WAIT_SECONDS
 from harness import (
     DEPLOY_COMMAND,
@@ -625,7 +626,8 @@ class ParsingTests(unittest.TestCase):
             '{"method": "notifications/message", "params": {"n": NaN}}',
             '{"id": 9, "id": 9, "result": {}}',
             '{"id": "1", "result": {"n": NaN}}',
-            '{"id": 1.0, "result": {"n": NaN}}',
+            '{"id": true, "result": {"n": NaN}}',
+            '{"id": 1.5, "result": {"n": NaN}}',
             '{"id": 0, "result": {"x": "\\ud800"}}',
         ]
         for line in passed_over:
@@ -803,22 +805,50 @@ class ConverseTests(DeployerTestCase):
 
     def test_a_codex_answer_json_reader_refuses_fails_the_listing_at_once_never_as_a_timeout(self) -> None:
         # Like the Codex app server, the program answers skills/list and then stays running until stdin closes.
+        # An answer nested past the interpreter's recursion limit, or whose id is spelled 1.0 or 1e0, was waited out
+        # too, since the id was found only by a parse that recursed and took an integer spelling alone.
         arguments = self.program("""
             import json, sys, time
+            answer = open(sys.argv[1], encoding="utf-8").read()
             for line in sys.stdin:
                 if json.loads(line).get("id") == 1:
-                    print('{"id": 1, "result": {"data": [{"skills": [], "x": NaN}]}}', flush=True)
+                    print(answer, flush=True)
                     time.sleep(120)
         """)
-        started = time.monotonic()
-        with mock.patch.object(discovery, "CLOSE_GRACE", 0.5), self.assertRaises(ListingError) as caught:
-            discovery.parse_codex(
-                self.talk(arguments, ['{"id": 0}', '{"id": 1}'], answered=discovery.codex_answered, timeout=20)
-            )
-        self.assertEqual(
-            "its skills/list answer was refused: the JSON holds NaN, which JSON does not define", str(caught.exception)
-        )
-        self.assertLess(time.monotonic() - started, 15, "the refused answer was waited out")
+        deep = "[" * (sys.getrecursionlimit() * 20) + "]" * (sys.getrecursionlimit() * 20)
+        nan = "the JSON holds NaN, which JSON does not define"
+        for answer, reason in (
+            ('{"id": 1, "result": {"data": [{"skills": [], "x": NaN}]}}', nan),
+            ('{"id": 1.0, "result": {"data": [{"skills": [], "x": NaN}]}}', nan),
+            ('{"id": 1e0, "result": {"data": [{"skills": [], "x": NaN}]}}', nan),
+            ('{"result": {"data": [{"skills": [], "x": ' + deep + '}]}, "id": 1}', json_reader.NESTED),
+        ):
+            with self.subTest(answer=answer[:24]):
+                spelled = self.root / "answer.json"
+                spelled.write_text(answer, encoding="utf-8")
+                started = time.monotonic()
+                with mock.patch.object(discovery, "CLOSE_GRACE", 0.5), self.assertRaises(ListingError) as caught:
+                    discovery.parse_codex(
+                        self.talk(
+                            [*arguments, str(spelled)],
+                            ['{"id": 0}', '{"id": 1}'],
+                            answered=discovery.codex_answered,
+                            timeout=20,
+                        )
+                    )
+                self.assertEqual(f"its skills/list answer was refused: {reason}", str(caught.exception))
+                self.assertLess(time.monotonic() - started, 15, "the refused answer was waited out")
+
+    def test_an_answer_whose_id_is_spelled_as_a_float_is_taken_as_an_integer_spelled_one_is(self) -> None:
+        # One rule matches the id of a taken answer and of a refused one: a number equal to the request's.
+        for spelled in ("1.0", "1e0", "10E-1"):
+            with self.subTest(id=spelled):
+                line = '{"id": ' + spelled + ', "result": {"data": [{"skills": []}]}}'
+                self.assertTrue(discovery.codex_answered(line))
+                self.assertEqual({}, discovery.parse_codex([line]))
+        for spelled in ("true", '"1"', "null"):
+            with self.subTest(id=spelled):
+                self.assertFalse(discovery.codex_answered('{"id": ' + spelled + ', "result": {"data": []}}'))
 
     def test_a_program_killed_after_its_answer_ends_the_program_it_started(self) -> None:
         # Like a launcher script that runs the runtime: killing the launcher alone would leave the runtime running.

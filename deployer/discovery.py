@@ -326,7 +326,9 @@ def _codex_answer(line: str) -> dict[str, object] | None:
         return None
     except ValueError:  # a line that is not JSON, or not UTF-8
         return None
-    return message if isinstance(message, dict) and message.get("id") == CODEX_LIST_ID else None
+    return (
+        message if isinstance(message, dict) and json_reader.is_request_id(message.get("id"), CODEX_LIST_ID) else None
+    )
 
 
 def codex_answered(line: str) -> bool:

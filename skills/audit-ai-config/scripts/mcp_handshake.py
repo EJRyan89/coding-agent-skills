@@ -22,10 +22,12 @@ would refuse to start, with a NUL character in its command, args, cwd, or env, o
 several files are started once. A handshake passes only when the initialize result has the fields
 the MCP schema requires and a protocol version this client supports, and every tools/list page, followed
 through nextCursor, is a valid list of tools; a nextCursor over 4096 characters fails the server rather than
-being sent back. A line that is not JSON, and a message that answers no pending request, are passed over; a response
-to initialize or tools/list that ejryan89-skill-core's json_reader refuses, for a repeated key, NaN or Infinity, a
-number too large, an integer of too many digits, nesting too deep, or a lone surrogate, fails the server at once ('the
-server's response to <method> was refused: <reason>') rather than being waited out. Each config is read by
+being sent back. A response is the message whose id is the number the request was sent with, however it is spelled
+(json_reader's is_request_id). A line that is not JSON, and a message that answers no pending request, are passed
+over; a response to initialize or tools/list that ejryan89-skill-core's json_reader refuses, for a repeated key, NaN or
+Infinity, a number too large, an integer of too many digits, nesting too deep, at any depth, or a lone surrogate, fails
+the server at once ('the server's response to <method> was refused: <reason>') rather than being waited out, since
+json_reader's answers_request finds its id without reading the rest. Each config is read by
 audit_ai_config.py's reader of that file, so the audit and the handshake report the same problems for it. One line per
 config problem, then one per server, each on one line: a name, command, type, or reason the repository's
 configuration or a server supplies is flattened onto it with ejryan89-skill-core's flat_text.
@@ -92,8 +94,6 @@ RUNS_REPOSITORY_CODE = "starts each stdio MCP server command the target reposito
 OWNER_ONLY_ALLOWED = {
     "group_servers": "builds a key that compares a user's MCP server definitions, where a TOML nan or date must stay "
     "distinct rather than be refused; it writes no JSON anyone reads",
-    "answers": "parses a line json_reader refused, only to tell whether it is the response to the pending request; "
-    "JSON_PARSE_ALLOWED states why",
 }
 PROTOCOL_VERSION = "2025-06-18"
 # Revisions whose initialize and tools/list shapes this client validates; a server may answer with any of them.
@@ -201,12 +201,12 @@ class Session:
             try:
                 message = json_reader.loads(text)
             except json_reader.JsonRefused as error:
-                if answers(text, request_id):
+                if json_reader.answers_request(text, request_id):
                     raise RuntimeError(f"the server's response to {method} was refused: {error}") from error
                 continue
             except ValueError:  # a line that is not JSON, such as a server's stray output
                 continue
-            if isinstance(message, dict) and message.get("id") == request_id:
+            if isinstance(message, dict) and json_reader.is_request_id(message.get("id"), request_id):
                 if "error" in message:
                     raise RuntimeError(f"server returned an error: {json_writer.dumps(message['error'])}")
                 result = message.get("result")
@@ -234,34 +234,6 @@ class Session:
         within --timeout is left to the stop, which kills it."""
         with contextlib.suppress(OSError, subprocess.TimeoutExpired):
             self.running.end_input()
-
-
-class _Members(list[tuple[str, Any]]):
-    """An object's members in order, every one of a repeated key kept, as `answers` reads them."""
-
-
-class _Integer(str):
-    """An integer's digits as the line spells them, never converted, so no digit count refuses the line."""
-
-
-def answers(text: str, request_id: int) -> bool:
-    """Whether a line json_reader refused is a JSON object any of whose `id` members is the integer `request_id`, the
-    response to the pending request. It tells only that: the response's values are read by json_reader alone, so a
-    refused one is reported, never acted on. A line nested past the recursion limit reads as no response."""
-    try:
-        message = json.loads(text, object_pairs_hook=_Members, parse_int=_Integer)
-    except (ValueError, RecursionError):
-        return False
-    return isinstance(message, _Members) and any(
-        key == "id" and isinstance(value, _Integer) and value == str(request_id) for key, value in message
-    )
-
-
-# The parses of JSON outside json_reader, with the reason.
-JSON_PARSE_ALLOWED = {
-    "answers": "tells whether a line json_reader refused answers the pending request, so the refusal is reported as "
-    "the server's response rather than waited out; no value it reads is acted on",
-}
 
 
 def initialize_result(result: dict[str, Any]) -> tuple[str, dict[str, Any]]:

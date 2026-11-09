@@ -291,18 +291,48 @@ class AnswersRequestTests(unittest.TestCase):
             '{"id": 3, "id": 3, "result": {}}',
             '{"id": 8, "id": 3, "result": {}}',
             b'{"id": 3, "result": {"n": NaN}}',
+            '{"id": 3.0, "result": {"n": NaN}}',
+            '{"id": 3e0, "result": {"n": NaN}}',
+            '{"id": 30E-1, "result": {"n": NaN}}',
+            '{"\\u0069d": 3, "result": {"n": NaN}}',
+            ' {\n"s": "}]\\"{[", "id" : 3 , "n": NaN}',
         ):
             with self.subTest(text=text[:60]):
                 self.assertRaises(JsonRefused, loads, text)
                 self.assertTrue(json_reader.answers_request(text, 3))
 
-    def test_a_refused_line_with_no_integer_id_equal_to_the_request_answers_nothing(self) -> None:
+    def test_a_response_nested_past_the_recursion_limit_is_told_by_its_id_wherever_the_id_stands(self) -> None:
+        # The id was read by a parse that recursed into every value, so a response nested past the interpreter's
+        # recursion limit answered nothing and its reader waited out its time limit.
+        deep = "[" * (sys.getrecursionlimit() * 20) + "]" * (sys.getrecursionlimit() * 20)
+        for text in ('{"id": 3, "result": ' + deep + "}", '{"result": {"x": ' + deep + '}, "id": 3}'):
+            with self.subTest(at=text[:8]):
+                self.assertRaises(JsonRefused, loads, text)
+                self.assertTrue(json_reader.answers_request(text, 3))
+        self.assertFalse(json_reader.answers_request('{"result": ' + deep + ', "id": 4}', 3))
+
+    def test_a_request_id_is_a_number_equal_to_it_whatever_its_spelling_and_nothing_else(self) -> None:
+        # The one rule both a taken response and a refused one are matched by.
+        for value in (3, 3.0, loads("3e0"), loads("30E-1")):
+            with self.subTest(value=value):
+                self.assertTrue(json_reader.is_request_id(value, 3))
+        for value in ("3", True, None, 4, 3.5, [3], {"id": 3}):
+            with self.subTest(value=value):
+                self.assertFalse(json_reader.is_request_id(value, 3))
+        self.assertFalse(json_reader.is_request_id(True, 1))
+        self.assertFalse(json_reader.is_request_id(False, 0))
+
+    def test_a_refused_line_with_no_id_equal_to_the_request_answers_nothing(self) -> None:
         for text in (
             '{"method": "notifications/message", "params": {"n": NaN}}',
             '{"id": 4, "id": 4, "result": {}}',
             '{"id": "3", "result": {"n": NaN}}',
-            '{"id": 3.0, "result": {"n": NaN}}',
+            '{"id": 3.5, "result": {"n": NaN}}',
             '{"id": true, "result": {"n": NaN}}',
+            '{"id": null, "result": {"n": NaN}}',
+            '{"id": NaN, "result": {}}',
+            '{"id": [3], "result": {"n": NaN}}',
+            '{"ids": 3, "result": {"n": NaN}}',
             '{"result": {"id": 3, "n": NaN}}',
             '[{"id": 3, "n": NaN}]',
             "not json",
