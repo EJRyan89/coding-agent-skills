@@ -22,8 +22,11 @@ would refuse to start, with a NUL character in its command, args, cwd, or env, o
 several files are started once. A handshake passes only when the initialize result has the fields
 the MCP schema requires and a protocol version this client supports, and every tools/list page, followed
 through nextCursor, is a valid list of tools; a nextCursor over 4096 characters fails the server rather than
-being sent back. Each config is read by audit_ai_config.py's reader of that file, so
-the audit and the handshake report the same problems for it. One line per
+being sent back. A line that is not JSON, and a message that answers no pending request, are passed over; a response
+to initialize or tools/list that ejryan89-skill-core's json_reader refuses, for a repeated key, NaN or Infinity, a
+number too large, an integer of too many digits, nesting too deep, or a lone surrogate, fails the server at once ('the
+server's response to <method> was refused: <reason>') rather than being waited out. Each config is read by
+audit_ai_config.py's reader of that file, so the audit and the handshake report the same problems for it. One line per
 config problem, then one per server, each on one line: a name, command, type, or reason the repository's
 configuration or a server supplies is flattened onto it with ejryan89-skill-core's flat_text.
 
@@ -181,7 +184,10 @@ class Session:
         except subprocess.TimeoutExpired:
             raise RuntimeError("timed out sending a request") from None
 
-    def response(self, request_id: int) -> dict[str, Any]:
+    def response(self, request_id: int, method: str) -> dict[str, Any]:
+        """The result of the response to the request `request_id` sent for `method`, passing over a line that is not
+        JSON, a message with another id or none, and one json_reader refuses that does not answer this request; a
+        response to it json_reader refuses fails at once, naming the refusal, rather than being waited for."""
         while True:
             try:
                 line = self.running.readline()
@@ -189,10 +195,14 @@ class Session:
                 raise RuntimeError("timed out waiting for a response") from None
             if not line:
                 raise RuntimeError(self.exited() or "server exited before responding")
+            text = line.decode("utf-8", "replace")
             try:
-                message = json_reader.loads(line.decode("utf-8", "replace"))
-            # ValueError covers a decode error, an over-long integer, and nesting json_reader refuses
-            except ValueError:
+                message = json_reader.loads(text)
+            except json_reader.JsonRefused as error:
+                if answers(text, request_id):
+                    raise RuntimeError(f"the server's response to {method} was refused: {error}") from error
+                continue
+            except ValueError:  # a line that is not JSON, such as a server's stray output
                 continue
             if isinstance(message, dict) and message.get("id") == request_id:
                 if "error" in message:
@@ -222,6 +232,34 @@ class Session:
         within --timeout is left to the stop, which kills it."""
         with contextlib.suppress(OSError, subprocess.TimeoutExpired):
             self.running.end_input()
+
+
+class _Members(list[tuple[str, Any]]):
+    """An object's members in order, every one of a repeated key kept, as `answers` reads them."""
+
+
+class _Integer(str):
+    """An integer's digits as the line spells them, never converted, so no digit count refuses the line."""
+
+
+def answers(text: str, request_id: int) -> bool:
+    """Whether a line json_reader refused is a JSON object any of whose `id` members is the integer `request_id`, the
+    response to the pending request. It tells only that: the response's values are read by json_reader alone, so a
+    refused one is reported, never acted on. A line nested past the recursion limit reads as no response."""
+    try:
+        message = json.loads(text, object_pairs_hook=_Members, parse_int=_Integer)
+    except (ValueError, RecursionError):
+        return False
+    return isinstance(message, _Members) and any(
+        key == "id" and isinstance(value, _Integer) and value == str(request_id) for key, value in message
+    )
+
+
+# The parses of JSON outside json_reader, with the reason.
+JSON_PARSE_ALLOWED = {
+    "answers": "tells whether a line json_reader refused answers the pending request, so the refusal is reported as "
+    "the server's response rather than waited out; no value it reads is acted on",
+}
 
 
 def initialize_result(result: dict[str, Any]) -> tuple[str, dict[str, Any]]:
@@ -254,7 +292,7 @@ def tool_count(session: Session) -> int:
         if cursor is not None:
             request["params"] = {"cursor": cursor}
         session.send(request)
-        result = session.response(request_id)
+        result = session.response(request_id, "tools/list")
         tools = result.get("tools")
         if not isinstance(tools, list):
             raise RuntimeError("tools/list result has no tools array")
@@ -390,7 +428,7 @@ def _initialize_and_list(session: Session) -> str:
             },
         }
     )
-    version, capabilities = initialize_result(session.response(1))
+    version, capabilities = initialize_result(session.response(1, "initialize"))
     session.send({"jsonrpc": "2.0", "method": "notifications/initialized"})
     tools = str(tool_count(session)) if "tools" in capabilities else "none"
     return f"protocol={version} tools={tools}"

@@ -94,10 +94,18 @@ for line in sys.stdin.buffer:
             if mode == "unparseable":
                 print('{"id": ' + "1" * 5000 + "}", flush=True)
                 print("[" * 100000 + "]" * 100000, flush=True)
+            if mode == "refusedother":
+                # Messages json_reader refuses that answer no pending request: a notification and another id.
+                print(json.dumps({"jsonrpc": "2.0", "method": "notifications/message", "params": {"n": float("nan")}}),
+                      flush=True)
+                print('{"jsonrpc": "2.0", "id": 9, "id": 9, "result": {}}', flush=True)
+                print('{"jsonrpc": "2.0", "id": "1", "result": {"n": NaN}}', flush=True)
             print("not json", flush=True)
             print(json.dumps({"jsonrpc": "2.0", "method": "notifications/message"}), flush=True)
             result = INITIALIZE.get(mode, {"protocolVersion": "2025-06-18", "capabilities": capabilities,
                                            "serverInfo": INFO})
+            if mode == "nan":
+                result = {**result, "instructions": float("nan")}
             reply = {"jsonrpc": "2.0", "id": 1, "result": result}
         if mode == "notutf8":
             # A server name holding a byte that is not UTF-8, which the client reads as a replacement character.
@@ -119,6 +127,14 @@ for line in sys.stdin.buffer:
             # A cursor far past what a pipe buffers, after which the server stops reading.
             result = {"tools": [{"name": "search", "inputSchema": SCHEMA}], "nextCursor": "c" * (1024 * 1024)}
             print(json.dumps({"jsonrpc": "2.0", "id": message["id"], "result": result}), flush=True)
+            time.sleep(30)
+        if mode == "surrogate":
+            # A cursor holding a lone surrogate, which json.dumps escapes as \\ud800 and UTF-8 cannot encode.
+            result = {"tools": [], "nextCursor": chr(0xD800)}
+            print(json.dumps({"jsonrpc": "2.0", "id": message["id"], "result": result}), flush=True)
+            time.sleep(30)
+        if mode == "repeatedid":
+            print('{"jsonrpc": "2.0", "id": %d, "id": 5, "result": {"tools": []}}' % message["id"], flush=True)
             time.sleep(30)
         cursor = message.get("params", {}).get("cursor")
         if mode == "paged" and cursor is None:
@@ -247,6 +263,30 @@ class HandshakeTests(unittest.TestCase):
 
     def test_a_line_too_deep_or_holding_an_over_long_integer_is_skipped_as_one_that_is_not_json(self) -> None:
         self._write(".mcp.json", "mcpServers", {"docs": self._stdio("unparseable")})
+        self.assertEqual((0, ["HANDSHAKE_OK docs source=.mcp.json protocol=2025-06-18 tools=2"]), self._run())
+
+    def test_a_response_json_reader_refuses_fails_naming_the_refusal_at_once_never_as_a_timeout(self) -> None:
+        # The response was passed over as a line that is not JSON, so the handshake waited out --timeout and reported
+        # that the server never answered.
+        refused = "the server's response to {} was refused: the JSON {}"
+        for mode, reason in (
+            ("surrogate", refused.format("tools/list", "holds a lone surrogate U+D800, which UTF-8 cannot encode")),
+            ("nan", refused.format("initialize", "holds NaN, which JSON does not define")),
+            ("repeatedid", refused.format("tools/list", "repeats the key 'id' in one object")),
+        ):
+            with self.subTest(mode=mode):
+                self._write(".mcp.json", "mcpServers", {"bad": self._stdio(mode)})
+                started = time.monotonic()
+                output = io.StringIO()
+                with contextlib.redirect_stdout(output):
+                    code = mcp_handshake.main(["--root", str(self.root), "--timeout", "30"])
+                self.assertEqual(
+                    (1, [f"HANDSHAKE_FAILED bad source=.mcp.json {reason}"]), (code, output.getvalue().splitlines())
+                )
+                self.assertLess(time.monotonic() - started, 20.0, "the refusal waited for the timeout")
+
+    def test_a_refused_message_that_answers_no_pending_request_is_passed_over(self) -> None:
+        self._write(".mcp.json", "mcpServers", {"docs": self._stdio("refusedother")})
         self.assertEqual((0, ["HANDSHAKE_OK docs source=.mcp.json protocol=2025-06-18 tools=2"]), self._run())
 
     def test_server_without_tools_capability_is_not_asked_for_tools(self) -> None:
