@@ -2038,6 +2038,23 @@ class TwinTests(Fixture):
             lines[4:7],
         )
 
+    def test_a_construct_line_holding_backslash_e_is_searched_as_fixed_text(self) -> None:
+        # git searches a fixed pattern as a PCRE pattern quoted between \Q and \E where it is built with PCRE, so a
+        # backslash-E inside the line ends that quote early: here git would read an unmatched parenthesis and fail.
+        escaped = r"value = read(r'\Environment::x') (also \Environment)"
+        # A line holding only a part of the construct line is no twin.
+        part = "nvironment::x') (also "
+        write(self.root, {"tools/escaped.py": f"{escaped}\n", "tools/escaped twin.py": f"{escaped}\n{part}\n"})
+        self.commit("feat: add the escaped reader")
+        base = git(self.root, "rev-parse", "HEAD")
+        write(self.root, {"tools/escaped.py": "value = read_environment('x')\n"})
+        self.commit("fix: read the environment through its helper")
+        fix = git(self.root, "rev-parse", "HEAD")
+        code, lines = self.run_main("twins", "--since", base)
+        self.assertEqual(0, code, lines)
+        self.assertEqual([f"CONSTRUCT {fix} 1", f"HITS {fix} 1"], lines[4:6])
+        self.assertIn(f'- `"tools/escaped twin.py:1"`: `{json.dumps(escaped)}`', self.briefs(lines)["twins"])
+
     def test_a_title_holding_the_field_separator_is_read_whole(self) -> None:
         write(self.root, {"README.md": "readme, changed again\n"})
         self.commit("fix: a unit\x1fseparator in the title")
@@ -2280,6 +2297,8 @@ def test_each_grep_record_is_read_whole_and_one_it_cannot_read_is_skipped() -> N
             # The text is everything after the second separator, a separator of its own included.
             f"{head}:c.py\x003\0one\0two \n",
             f"{head}:d.py\x004\0last\n",
+            # A line that holds no whole construct line, as git finds for a part grep_pattern gives it, is skipped.
+            f"{head}:e.py\x005\0on\n",
         ]
     )
 
@@ -2287,7 +2306,7 @@ def test_each_grep_record_is_read_whole_and_one_it_cannot_read_is_skipped() -> N
         return GitResult(returncode=0, stdout=stdout, stderr="")
 
     with mock.patch.object(GitClient, "run", run):
-        hits, cut = audit.search_construct(GitClient(), Path(), head, ["a construct line"])
+        hits, cut = audit.search_construct(GitClient(), Path(), head, ["one", "last"])
     assert (hits, cut) == ([audit.Hit("c.py", 3, "one\0two"), audit.Hit("d.py", 4, "last")], False)
 
 
