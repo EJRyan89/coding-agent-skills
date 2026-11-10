@@ -43,7 +43,9 @@ from call_tables import (
     ProcessStart,
     TextOpener,
 )
+from gh_shorthands import GH_VALUE_SHORTHANDS, shorthands
 from git_client import GLOBAL_VALUE_OPTIONS
+from github_client import LIMIT_OPTIONS
 from job_pool import UNSPLIT_SUITE_WEIGHT, Job
 from path_containment import posix_within, relative_within, within
 from runtime_support import names_git
@@ -2468,11 +2470,12 @@ def _client_bases(node: ast.ClassDef, resolver: CallableResolver) -> list[str]:
     return [name for base in node.bases if (name := resolver.name(base))]
 
 
-def git_client_classes(trees: list[tuple[str, ast.Module]]) -> set[str]:
-    """GitClient and each class that subclasses it, at any depth, by the qualified name a caller reaches it by, and
-    each name a module's top level binds to one, as a re-export does, followed through every module that binds it
-    again; a class a module defines inside a function or another class is read by _GitClients alone."""
-    classes = {RESULT_CLIENT}
+def git_client_classes(trees: list[tuple[str, ast.Module]], client: str = RESULT_CLIENT) -> set[str]:
+    """GitClient, or another client class by its qualified name, and each class that subclasses it, at any depth, by
+    the qualified name a caller reaches it by, and each name a module's top level binds to one, as a re-export does,
+    followed through every module that binds it again; a class a module defines inside a function or another class is
+    read by _GitClients alone. The commands policy reads GitHubClient's subclasses through it too."""
+    classes = {client}
     bases: list[tuple[str, list[str]]] = []
     bindings: list[tuple[str, str]] = []
     for name, tree in trees:
@@ -2494,7 +2497,7 @@ def git_client_classes(trees: list[tuple[str, ast.Module]]) -> set[str]:
     while found := {
         bound
         for bound, targets in [*bases, *((bound, [target]) for bound, target in bindings)]
-        if bound not in classes and any(_reaches(target, known) for target in targets for known in classes)
+        if bound not in classes and any(reaches(target, known) for target in targets for known in classes)
     }:
         classes |= found
     return classes
@@ -2556,7 +2559,7 @@ class _GitClients:
 
     def _is_class(self, name: str) -> bool:
         """Whether a qualified name is a client class: GitClient through its package, or a subclass of it."""
-        return any(resolves_to(name, known) or _reaches(name, known) for known in self.classes)
+        return any(resolves_to(name, known) or reaches(name, known) for known in self.classes)
 
     def _bind(self, target: ast.expr) -> None:
         if isinstance(target, ast.Name):
@@ -2699,7 +2702,7 @@ def _assigned(target: ast.expr, value: ast.expr) -> Iterator[tuple[ast.Name, ast
             yield from _assigned(element, item)
 
 
-def _reaches(called: str, producer: str) -> bool:
+def reaches(called: str, producer: str) -> bool:
     """Whether a call's qualified name reaches a producer's: the same name, or either one the other's dotted tail, as a
     module imported by its bare name reaches one keyed by its path from the repository root."""
     return "." in called and (called == producer or producer.endswith(f".{called}") or called.endswith(f".{producer}"))
@@ -2735,7 +2738,7 @@ def git_result_producers(trees: list[tuple[str, ast.Module]]) -> set[str]:
     while found := {
         bound
         for bound, target in bindings
-        if bound not in producers and any(_reaches(target, producer) for producer in producers)
+        if bound not in producers and any(reaches(target, producer) for producer in producers)
     }:
         producers |= found
     return producers
@@ -2883,7 +2886,7 @@ class _GitResults:
         if isinstance(function, ast.Attribute) and (owner := self._instance_of(function.value)) is not None:
             return function.attr in self.methods[owner]
         called = self.resolver.name(function)
-        return bool(called) and (called in self.local or any(_reaches(called, name) for name in self.producers))
+        return bool(called) and (called in self.local or any(reaches(called, name) for name in self.producers))
 
     def holds(self, node: ast.expr) -> bool:
         if isinstance(node, ast.NamedExpr):
@@ -2960,9 +2963,19 @@ def git_status_problems(root: Path, files: list[Path]) -> list[str]:
 # must stay states why in a module-level GH_LIMIT_ALLOWED = {scope: reason}.
 GH_LIMIT_OWNER = "skills/ejryan89-skill-core/scripts/github_client.py"
 GH_LIMIT_ALLOWANCE = "GH_LIMIT_ALLOWED"
-# gh's limit option, long or short, alone, with its value after =, or with digits attached; an f-string's `-L{n}` holds
-# the `-L` alone.
-GH_LIMIT_OPTION = re.compile(r"--limit(?:=.*)?|-L[0-9]*")
+
+
+def names_gh_limit(word: str) -> bool:
+    """Whether a word passes gh its limit in a spelling gh reads: `--limit` alone or with its value after `=`, or `-L`
+    alone, with its value attached or after `=`, or inside a shorthand cluster, as `-wL5`; an f-string's `-L{n}` holds
+    the `-L` alone. ejryan89-skill-core's gh_shorthands reads the cluster as gh's flag parser does, as github_client
+    reads a listing's limit. A word holding whitespace is text, such as a Markdown item or a list of another program's
+    options, and no word a listing passes gh."""
+    if word.startswith("--"):
+        return word.partition("=")[0] in LIMIT_OPTIONS
+    return not any(character.isspace() for character in word) and any(
+        flag.flag in LIMIT_OPTIONS for flag in shorthands(word, GH_VALUE_SHORTHANDS)
+    )
 
 
 def gh_limit_problems(root: Path, files: list[Path]) -> list[str]:
@@ -2979,9 +2992,7 @@ def gh_limit_problems(root: Path, files: list[Path]) -> list[str]:
                 f"or state why in {GH_LIMIT_ALLOWANCE}",
             )
             for node, scope in scoped_nodes(tree.body)
-            if isinstance(node, ast.Constant)
-            and isinstance(node.value, str)
-            and GH_LIMIT_OPTION.fullmatch(node.value) is not None
+            if isinstance(node, ast.Constant) and isinstance(node.value, str) and names_gh_limit(node.value)
         ]
         problems += sanctioned_problems(name, tree, GH_LIMIT_ALLOWANCE, found)
     return problems

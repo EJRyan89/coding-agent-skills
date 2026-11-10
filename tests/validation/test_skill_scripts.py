@@ -28,6 +28,7 @@ from skill_scripts import (
     COMMAND_RUNNERS,
     CommandReader,
     client_command_problems,
+    command_reader,
     console_entry_points,
     console_setup_problems,
     gh_filter_problems,
@@ -36,6 +37,7 @@ from skill_scripts import (
     script_contract_problems,
     secret_named_function_problems,
     shell_commands,
+    skill_client_classes,
     skill_command_problems,
 )
 from validation_support import REPOSITORY_ROOT, write_fixture_tree
@@ -1768,6 +1770,33 @@ class SkillScriptsFixtures(unittest.TestCase):
                 skill_command_problems(root, {"copilot", "dotnet-format", "gh"}, {"git", "python"}),
             )
 
+    def test_command_policies_read_a_client_subclass_another_module_defines(self) -> None:
+        # A subclass of a client in one script, re-exported by a second and called in a third, runs the client's
+        # command where it is called, as one the calling module defines does.
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "deploy-meta").mkdir()
+            (root / "deploy-meta" / "alpha.json").write_text(json.dumps({}), encoding="utf-8")
+            write_fixture_tree(
+                root,
+                {
+                    "skills/alpha/SKILL.md": "# alpha\n",
+                    "skills/alpha/scripts/clients.py": (
+                        "from github_client import GitHubClient\n\n\nclass Mine(GitHubClient):\n    pass\n"
+                    ),
+                    "skills/alpha/scripts/again.py": "from clients import Mine\n\nAgain = Mine\n",
+                    "skills/alpha/scripts/run.py": "from again import Again\n\nAgain().json(['api', 'user'])\n",
+                },
+            )
+            self.assertEqual(
+                ["skill alpha runs gh without declaring it in tools"],
+                skill_command_problems(root, {"gh"}, {"python"}),
+            )
+            reader = command_reader(root / "skills" / "alpha" / "scripts" / "run.py", skill_client_classes(root))
+            self.assertTrue(reader.starts_process())
+            # Without the other modules' subclasses, the call reads as no client's.
+            self.assertFalse(command_reader(root / "skills" / "alpha" / "scripts" / "run.py").starts_process())
+
     def test_skill_command_policy_follows_dependencies_of_dependencies(self) -> None:
         # ejryan89-code-review-core depends on ejryan89-skill-core, so a skill that reaches ejryan89-code-review-core
         # reaches ejryan89-skill-core too.
@@ -1983,6 +2012,11 @@ STREAM_REACHES = [
     'codecs.lookup("utf-8").streamwriter(sys.stdout.buffer)',
     'W = codecs.lookup("utf-8").streamwriter\nW(sys.stdout.buffer)',
     "encodings.utf_8.StreamWriter(sys.stdout.buffer)",
+    # A codec factory or stream class reached by a lookup by name.
+    'getattr(codecs, "getwriter")("utf-8")(sys.stdout.buffer)',
+    'W = getattr(codecs, "getreader")("utf-8")\nW(sys.stdin.buffer)',
+    'getattr(codecs.lookup("utf-8"), "streamwriter")(sys.stdout.buffer)',
+    'getattr(encodings.utf_8, "StreamWriter")(sys.stdout.buffer)',
     *(f'open("{device}", "w", encoding="utf-8")' for device in ("/dev/stdout", "/dev/fd/2", "CONOUT$", "CON")),
     'functools.partial(io.TextIOWrapper, sys.stdout.buffer)(encoding="utf-8")',
     'functools.partial(open, 1, "w")(encoding="utf-8")',
@@ -2011,6 +2045,8 @@ def test_console_setup_policy_refuses_a_wrapper_over_every_reach_to_a_standard_s
         'fd = 3\nos.fdopen(fd, "w", encoding="utf-8")',
         'B = raw.buffer\nio.TextIOWrapper(B, encoding="utf-8")',
         'W = codecs.getwriter("utf-8")\nW(raw)',
+        'getattr(codecs, "getwriter")("utf-8")(raw)',
+        'getattr(codecs, "lookup")("utf-8")(sys.stdout.buffer)',
         'codecs.EncodedFile(raw, "utf-8")',
         'open("/dev/null", "w", encoding="utf-8")',
         'out = sys.stdout\nout.write("text")',
