@@ -210,9 +210,10 @@ def _value_end(text: str, index: int) -> int:
 
 def _is_id_key(spelled: str) -> bool:
     try:
-        return loads(spelled, surrogates=True) == "id"
+        key = loads(spelled, surrogates=True)
     except CONTENT_ERRORS:
         return False
+    return isinstance(key, str) and key == "id"
 
 
 def _top_level_ids(text: str) -> list[str]:
