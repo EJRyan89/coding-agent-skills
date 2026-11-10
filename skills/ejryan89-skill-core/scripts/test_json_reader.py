@@ -280,5 +280,105 @@ class ContentErrorsTests(unittest.TestCase):
         self.assertIs(UnicodeDecodeError, type(raised.exception))
 
 
+class AnswersRequestTests(unittest.TestCase):
+    def test_a_refused_object_with_the_request_id_among_its_id_members_answers_it(self) -> None:
+        for text in (
+            '{"id": 3, "result": {"n": NaN}}',
+            '{"id": 3, "result": {"n": 1e400}}',
+            '{"id": 3, "result": {"s": "\\ud800"}}',
+            '{"id": 3, "result": {"n": ' + "9" * (whole_number.DIGIT_LIMIT + 1) + "}}",
+            '{"id": 3, "result": ' + "[" * (deep := nesting_depth.DEPTH_LIMIT + 1) + "]" * deep + "}",
+            '{"id": 3, "id": 3, "result": {}}',
+            '{"id": 8, "id": 3, "result": {}}',
+            b'{"id": 3, "result": {"n": NaN}}',
+            '{"id": 3.0, "result": {"n": NaN}}',
+            '{"id": 3e0, "result": {"n": NaN}}',
+            '{"id": 30E-1, "result": {"n": NaN}}',
+            '{"\\u0069d": 3, "result": {"n": NaN}}',
+            ' {\n"s": "}]\\"{[", "id" : 3 , "n": NaN}',
+        ):
+            with self.subTest(text=text[:60]):
+                self.assertRaises(JsonRefused, loads, text)
+                self.assertTrue(json_reader.answers_request(text, 3))
+
+    def test_a_response_nested_past_the_recursion_limit_is_told_by_its_id_wherever_the_id_stands(self) -> None:
+        # The id was read by a parse that recursed into every value, so a response nested past the interpreter's
+        # recursion limit answered nothing and its reader waited out its time limit.
+        deep = "[" * (sys.getrecursionlimit() * 20) + "]" * (sys.getrecursionlimit() * 20)
+        for text in ('{"id": 3, "result": ' + deep + "}", '{"result": {"x": ' + deep + '}, "id": 3}'):
+            with self.subTest(at=text[:8]):
+                self.assertRaises(JsonRefused, loads, text)
+                self.assertTrue(json_reader.answers_request(text, 3))
+        self.assertFalse(json_reader.answers_request('{"result": ' + deep + ', "id": 4}', 3))
+
+    def test_a_request_id_is_a_number_equal_to_it_whatever_its_spelling_and_nothing_else(self) -> None:
+        # The one rule both a taken response and a refused one are matched by.
+        for value in (3, 3.0, loads("3e0"), loads("30E-1")):
+            with self.subTest(value=value):
+                self.assertTrue(json_reader.is_request_id(value, 3))
+        for value in ("3", True, None, 4, 3.5, [3], {"id": 3}):
+            with self.subTest(value=value):
+                self.assertFalse(json_reader.is_request_id(value, 3))
+        self.assertFalse(json_reader.is_request_id(True, 1))
+        self.assertFalse(json_reader.is_request_id(False, 0))
+
+    def test_a_refused_line_with_no_id_equal_to_the_request_answers_nothing(self) -> None:
+        for text in (
+            '{"method": "notifications/message", "params": {"n": NaN}}',
+            '{"id": 4, "id": 4, "result": {}}',
+            '{"id": "3", "result": {"n": NaN}}',
+            '{"id": 3.5, "result": {"n": NaN}}',
+            '{"id": true, "result": {"n": NaN}}',
+            '{"id": null, "result": {"n": NaN}}',
+            '{"id": NaN, "result": {}}',
+            '{"id": [3], "result": {"n": NaN}}',
+            '{"ids": 3, "result": {"n": NaN}}',
+            '{"result": {"id": 3, "n": NaN}}',
+            '[{"id": 3, "n": NaN}]',
+            "not json",
+            "[" * 100000 + "]" * 100000,
+        ):
+            with self.subTest(text=text[:60]):
+                self.assertFalse(json_reader.answers_request(text, 3))
+
+    def test_the_scan_keeps_the_ids_read_before_a_member_that_does_not_scan_and_none_after_it(self) -> None:
+        # The scan stops at the first member it cannot read: an id before it still answers, and one after it, or
+        # one only a scan that read on past the fault would find, does not.
+        for text in (
+            '{"id": 3, "x": NaN, "y": [1',
+            '{"id": 3, "x": NaN, "y": [1, "a]}',
+            '{"id": 3, "x": NaN, "y": "a',
+            '{"id": 3, "x',
+            '{"id": 3, "x" 1}',
+            '{"id": 3 "x": 1}',
+            '{"id": 3, "x": , "y": NaN}',
+        ):
+            with self.subTest(text=text):
+                self.assertRaises(CONTENT_ERRORS, loads, text)
+                self.assertTrue(json_reader.answers_request(text, 3))
+        for text in (
+            '{"x": [1, "a], "id": 3}',
+            '{"id" 3}',
+            '{"id" 33}',
+            '{"x": [1, "a]}, "id": 3}',
+            '{"x": , "id": 3}',
+            '{"x": 1 "id": 3}',
+            '{"x": 1 x"id": 3}',
+            '{"x" 1, "id": 3}',
+            '{"x": [1, "id": 3',
+        ):
+            with self.subTest(text=text):
+                self.assertRaises(CONTENT_ERRORS, loads, text)
+                self.assertFalse(json_reader.answers_request(text, 3))
+
+    def test_bytes_are_read_in_the_encoding_json_detects_and_bytes_that_do_not_decode_answer_nothing(self) -> None:
+        for encoding in ("utf-16", "utf-16-le", "utf-16-be", "utf-32", "utf-8-sig"):
+            with self.subTest(encoding=encoding):
+                self.assertTrue(json_reader.answers_request('{"id": 3, "n": NaN}'.encode(encoding), 3))
+        for data in (b"\xff\xfe\x00\xd8", b'\xff{"id": 3}', b'{"id": 3, "s": "\xff"}'):
+            with self.subTest(data=data):
+                self.assertFalse(json_reader.answers_request(data, 3))
+
+
 def test_the_readers_that_raise_the_family_are_named() -> None:
     assert json_reader.CONTENT_READERS == ("loads", "raw_decode", "read_file")

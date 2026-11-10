@@ -329,7 +329,7 @@ def _mcp_response(path: Path) -> object:
         output = path.read_bytes()
     except OSError as error:
         raise NotText(f"{type(error).__name__}: {error}") from error
-    return mcp_handshake.Session(cast(Any, _ServerOutput(output))).response(1)
+    return mcp_handshake.Session(cast(Any, _ServerOutput(output))).response(1, "initialize")
 
 
 def _skill_tools(path: Path) -> object:

@@ -32,6 +32,7 @@ import review_pipeline
 import review_run
 import review_source
 import runtime_support
+from module_assignments import assigned_names, sole_assignment
 from module_closure import copy_with_imports, imports_of
 from review_config import COMPUTED_DASHBOARD_STATES
 
@@ -45,20 +46,14 @@ REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 
 
 def literal_assignment(path: Path, name: str) -> object:
+    """The literal a module assigns a name once at its top level, through module_assignments' sole_assignment, so a
+    chained, unpacking, augmented, or repeated assignment of it fails rather than being read by position."""
     tree = ast.parse(path.read_text(encoding="utf-8-sig"), filename=str(path))
-    for node in tree.body:
-        if (
-            isinstance(node, ast.AnnAssign)
-            and isinstance(node.target, ast.Name)
-            and node.target.id == name
-            and node.value is not None
-        ):
-            return ast.literal_eval(node.value)
-        if isinstance(node, ast.Assign) and any(
-            isinstance(target, ast.Name) and target.id == name for target in node.targets
-        ):
-            return ast.literal_eval(node.value)
-    raise AssertionError(f"{name} is not a literal assignment in {path}")
+    binding = [node for node in tree.body if name in assigned_names(node)]
+    sole = [assignment for node in binding if (assignment := sole_assignment(node)) is not None]
+    if len(binding) != 1 or len(sole) != 1:
+        raise AssertionError(f"{name} is not one literal assignment in {path}")
+    return ast.literal_eval(sole[0][1])
 
 
 # The review pipeline's command line and the modules its steps are cut into, whose source a contract reads as one.
@@ -161,6 +156,22 @@ def claude_code_grants(pattern: str, command: str, skill: Path) -> bool:
 
 
 class CrossSkillContractTests(unittest.TestCase):
+    def test_a_contract_literal_is_read_only_from_its_one_assignment(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            module = Path(temporary) / "catalogue.py"
+            module.write_text("NAMES: tuple[str, ...] = ('a',)\nOTHER = 1\n", encoding="utf-8")
+            self.assertEqual(("a",), literal_assignment(module, "NAMES"))
+            for source in (
+                "NAMES = ('a',)\nNAMES = ('b',)\n",
+                "NAMES = OTHER = ('a',)\n",
+                "NAMES, OTHER = ('a',), 1\n",
+                "NAMES = ('a',)\nNAMES += ('b',)\n",
+            ):
+                with self.subTest(source=source):
+                    module.write_text(source, encoding="utf-8")
+                    with self.assertRaises(AssertionError):
+                        literal_assignment(module, "NAMES")
+
     def test_runtime_compatibility_keeps_skill_tool_mapping(self) -> None:
         contract = (REPOSITORY_ROOT / "skills/runtime-compatibility.md").read_text(encoding="utf-8-sig")
         self.assertIn("For `Skill`, use native skill invocation.", contract)

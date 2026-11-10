@@ -71,7 +71,7 @@ from file_presence import NotADirectory, is_directory, is_present
 from flat_text import flat_text
 from git_client import GitClient, GitError, command_name, output_line
 from github_client import GitHubClient, GitHubError, subprocess_runner
-from markdown_sections import HTML_COMMENT
+from markdown_sections import HTML_COMMENT, LINE_END, LIST_MARKER, MARKDOWN_SPACE
 from typed_text import read_typed
 
 TEMPLATE_NAME = "pull_request_template.md"
@@ -84,7 +84,8 @@ CLOSING_START = re.compile(rf"(?i){CLOSING_PREFIX}{REFERENCE_START}")
 CLOSING_LINE = re.compile(rf"(?i)\s*{CLOSING_PREFIX}{REFERENCE_START}")
 BARE_CLOSING_LINE = re.compile(rf"(?i){CLOSING_KEYWORDS}\b:?\s+#")
 CLOSES_ONE = re.compile(r"Closes #([1-9][0-9]*)")
-EMPTY_LIST_ITEM = re.compile(r"\s*(?:[-*+]|[0-9]+[.)])\s*")
+# A list item with no text: its marker, as markdown_sections reads one, alone between spaces and tabs.
+EMPTY_LIST_ITEM = re.compile(rf"[{MARKDOWN_SPACE}]*{LIST_MARKER}[{LINE_END}]*")
 HEADING = re.compile(r"^ {0,3}(#{1,6})[ \t]+(.+?)(?:[ \t]+#+)?[ \t]*$", re.MULTILINE)
 
 
@@ -397,7 +398,7 @@ def main(
     try:
         return run(options, git or GitClient(), github)
     except PullRequestError as exc:
-        print(f"FAILED {exc}")
+        print(f"FAILED {flat_text(str(exc))}")
         return 1
 
 

@@ -137,10 +137,36 @@ def test_shell_command_extraction_reads_a_quoted_or_escaped_reserved_word_as_a_w
         ("case $(echo a) in a) jq .;; esac", {"echo", "jq"}),
         ("case x in a) jq .;; b) rg foo;; esac", {"jq", "rg"}),
         ("case x in a) jq .\nesac", {"jq"}),
+        # ;& and ;;& end a case item as ;; does, so the next item's pattern runs nothing.
+        ("case x in a) jq .;& b) rg foo;;& c) echo a;; esac", {"jq", "rg", "echo"}),
     ],
 )
 def test_shell_command_extraction_reads_unquoted_reserved_words_and_functions(script: str, programs: set[str]) -> None:
     assert shell_commands(script) == programs
+
+
+# The two Bash readers start a command in the same places: where shell_commands reads git as a case item's or a
+# function body's program, ejryan89-skill-core's git_subcommands reads the subcommand it runs.
+@pytest.mark.parametrize(
+    "script",
+    [
+        'case "$x" in\n  up) git push ;;\nesac',
+        "case x in y) git push;; esac",
+        "case x in (y) git push;; esac",
+        "case x in a) jq .;& b) git push;;& c) jq .;; esac",
+        "case $(echo a) in a) git push;; esac",
+        "case `uname` in Linux) git push;; esac",
+        'case "$(uname)" in Linux) git push;; esac',
+        'case "`uname`" in Linux) git push;; esac',
+        "f() { git push; }",
+        "f () { git push; }",
+        "function f { git push; }",
+        "function f() { git push; }",
+    ],
+)
+def test_both_readers_read_the_git_command_a_case_item_or_a_function_body_runs(script: str) -> None:
+    assert "git" in shell_commands(script)
+    assert shell_git_subcommands(script) == {"push"}
 
 
 # Bash's time keyword, read as Bash 5 reads it: at a pipeline's start, after `!`, a separator, or a reserved word, it
@@ -482,6 +508,16 @@ def _powershell_git_subcommands(source: str) -> set[str]:
 @pytest.mark.parametrize("source", POWERSHELL_WRAPPED_GIT_PUSH_SOURCES)
 def test_the_powershell_reader_reads_the_git_command_a_wrapper_runs(source: str) -> None:
     assert "git" in skill_scripts.powershell_commands([source])[0]
+    assert _powershell_git_subcommands(source) == {"push"}
+
+
+# Git named by a path is no declared tool's name, so the command policy reads no program of it, but it runs git, so
+# the runtime-support reader reads its subcommand.
+@pytest.mark.parametrize(
+    "source", ["& 'C:/Program Files/Git/cmd/git' push", "C:\\Git\\cmd\\git.exe push", "/usr/bin/git push"]
+)
+def test_the_powershell_reader_reads_the_git_command_a_path_names(source: str) -> None:
+    assert skill_scripts.powershell_commands([source])[0] == set()
     assert _powershell_git_subcommands(source) == {"push"}
 
 

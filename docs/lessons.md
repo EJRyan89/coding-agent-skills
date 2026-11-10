@@ -168,15 +168,20 @@ removed fails validation until its pattern follows it.
   `skills/repo-cleanup/scripts/test_repo_cleanup.py::SyncTests::test_each_stop_is_returned_as_the_state_it_stopped_in_never_read_back_from_the_lines`,
   `skills/repo-cleanup/scripts/test_repo_cleanup_stops.py::StopAndRefusalTests::test_a_branch_a_stopped_apply_never_offered_is_refused_and_the_stop_outlasts_later_commands`,
   `tests/validation/exit_tables.py::ExitTablePolicies::test_each_entry_point_s_exit_table_names_exactly_the_codes_it_can_exit_with`,
-  `tests/malformed_input/test_faults_programs.py::test_each_command_refuses_a_git_or_gh_that_fails`
+  `tests/malformed_input/test_faults_programs.py::test_each_command_refuses_a_git_or_gh_that_fails`,
+  `tests/deployer/test_verify.py::ConverseTests::test_a_codex_answer_json_reader_refuses_fails_the_listing_at_once_never_as_a_timeout`,
+  `skills/audit-ai-config/scripts/test_mcp_handshake.py::HandshakeTests::test_a_response_json_reader_refuses_fails_naming_the_refusal_at_once_never_as_a_timeout`,
+  `skills/ejryan89-skill-core/scripts/test_json_reader.py::AnswersRequestTests::test_a_response_nested_past_the_recursion_limit_is_told_by_its_id_wherever_the_id_stands`,
+  `skills/ejryan89-skill-core/scripts/test_json_reader.py::AnswersRequestTests::test_a_request_id_is_a_number_equal_to_it_whatever_its_spelling_and_nothing_else`
 - **Search for:** `rg -nU "except (OSError|ValueError|UnicodeDecodeError)[^\n]*:\n\s+(print\([^\n]*\)\n\s+)?return 1\b"`,
   a handler that ends every failure in one code; two probes under one `except` that print one message; an `except`
   around a `git` or `gh` call that drops the exception's text; `FAILED KeyError`, `FAILED TypeError`, or
   `FAILED AttributeError` expected by a test; a state decided from the lines a step printed, such as
   `split("\t")[0] ==`, instead of a value the step returned; a recorded failure a later, different command clears;
   a reader that returns None or `{}` for every fault, whose caller then refuses a field of it as missing; an entry
-  point's message about where it runs, such as "Run this inside the repository", printed after any git failure.
-- **Examples:** #1511, #1840, #1855, #1910, #2022, #2181, #2207, #2209
+  point's message about where it runs, such as "Run this inside the repository", printed after any git failure;
+  a wait for a response that passes over every line `json_reader` refuses, reporting a refused answer as a timeout.
+- **Examples:** #1511, #1840, #1855, #1910, #2022, #2181, #2207, #2209, #2477, #2548
 
 ### A caller catches the whole error family its callee raises on content
 
@@ -223,13 +228,14 @@ removed fails validation until its pattern follows it.
   `tests/tools/test_mutation_gate.py::SummaryFixtures::test_a_run_the_cap_cut_short_says_so_on_its_first_line_naming_each_module_and_its_counts`,
   `skills/review-document/scripts/test_review_document.py::PullRequestTests::test_a_file_listing_shorter_than_the_files_the_pull_request_changes_fails_before_any_document_is_read`,
   `skills/ejryan89-code-review-core/scripts/test_adversarial_inputs.py::ChangeSizeTests::test_a_file_listing_cut_short_or_read_at_a_moved_head_is_refused_by_each_of_its_readers`,
-  `tests/deployer/test_plan.py::UnmanagedDiffTests`
+  `tests/deployer/test_plan.py::UnmanagedDiffTests`,
+  `tests/tools/test_hub_guard.py::UnderstoodSetTests::test_with_no_hub_in_view_named_paths_past_the_lookup_limit_are_refused_as_a_lookup_cut_short`
 - **Search for:** `"--limit"` in a `gh` call whose result is never compared with the limit; a pull request's
   `pulls/<n>/files` pages read outside `review_github:GitHubClient.list_pull_files`, or its `PullFiles` used without
   comparing `files` with `changed`, since GitHub's files API lists at most 3,000; a slice such as
   `[:MAX_RELATED_TESTS]` or `rg -n "\[:[A-Z_a-z]*(LIMIT|MAX|BUDGET|CAP)[A-Z_a-z]*\]"` with no flag beside it; a
   `break` on a counter in a loop that returns no sign it stopped.
-- **Examples:** #1845, #1857, #1864, #1891, #2213, #2220
+- **Examples:** #1845, #1857, #1864, #1891, #2213, #2220, #2482
 
 ### One source that cannot be read costs only its own findings
 
@@ -381,9 +387,14 @@ removed fails validation until its pattern follows it.
 - **Why:** A hand-written reader that misses a construct the program reads lets a command or an entry pass unjudged.
   The hub guard's modelling reader closed one spelling per fix and every review found the next, until it was rebuilt
   to refuse what it does not understand.
-- **Use:** `tools.hub_guard:read_powershell`, `tools.hub_guard:runner_refusal`, `option_reader:option_refusal`, and
-  `tools.hub_guard:expansion_form`
+- **Use:** `tools.hub_guard:read_powershell`, `tools.hub_guard:runner_refusal`, `option_reader:option_refusal`,
+  `tools.hub_guard:expansion_form`, `git_subcommands:CommandStarts`, which says where Bash starts a command, and
+  `command_wrappers:bash_program`, the program a Bash command's word names by its file name
 - **Guard:** `tests/tools/test_bash_syntax.py::ArrayAssignmentTests::test_an_array_assignment_to_a_subscript_is_read_where_bash_reads_an_array`,
+  `skills/ejryan89-skill-core/scripts/test_git_subcommands.py::test_a_git_command_is_read_wherever_bash_starts_a_command`,
+  `skills/ejryan89-skill-core/scripts/test_git_subcommands.py::test_git_or_a_shell_named_by_a_path_or_with_exe_is_read_as_bash_runs_it`,
+  `tests/validation/test_shell_readers.py::test_both_readers_read_the_git_command_a_case_item_or_a_function_body_runs`,
+  which holds the git subcommand reader and validation's shell command reader to the same command starts,
   `tests/tools/test_captured_samples.py::test_every_sample_is_named_by_a_suite_that_reads_it`, which fails a captured
   sample no suite names, so real output no reader is held to is found,
   `tests/validation/test_skill_scripts.py::SkillScriptsFixtures::test_shell_command_extraction_runs_a_program_a_quoted_function_name_never_defined`,
@@ -394,7 +405,18 @@ removed fails validation until its pattern follows it.
   `tests/tools/test_hub_guard_bash.py::ExpansionTests::test_every_expansion_form_is_understood_or_not_read_and_has_a_sample`,
   `tests/tools/test_hub_guard_pwsh.py::NodeCatalogueTests::test_every_node_type_powershell_has_is_understood_or_not_read_and_never_both`,
   `tests/tools/test_prefix_programs.py::RunnerFormTests::test_timeout`,
+  `tests/tools/test_prefix_programs.py::CatalogueTests::test_the_installed_runners_list_no_option_the_fixture_leaves_out`,
+  which holds each installed runner to the catalogue of the implementation its version option names, GNU or the Rust
+  coreutils,
+  `tests/tools/test_prefix_programs.py::CatalogueTests::test_each_safe_option_takes_its_value_as_every_implementation_reads_it`,
+  `tests/tools/test_hub_guard_bash.py::RunnerTests::test_env_s_file_and_argv0_are_refused_in_every_spelling_and_neither_value_is_read_as_its_command`,
+  which refuses the Rust coreutils' env options that read variables from a file and name what a multicall program
+  runs as,
   `tests/tools/test_hub_guard.py::UnderstoodSetTests::test_each_class_of_construct_the_guard_does_not_read_is_refused_while_a_hub_is_in_view`,
+  `tests/tools/test_hub_guard.py::ReadOnlyFormTests::test_a_dash_word_after_a_valued_option_written_alone_is_refused`,
+  which refuses a dash word git would take as a lone valued option's value,
+  `tests/tools/test_hub_guard.py::UnderstoodSetTests::test_a_gh_flag_before_its_subcommand_is_not_read_past`, which
+  refuses a flag cobra may take the next word for before gh's subcommand,
   `tests/tools/test_captured_samples.py::test_every_sample_has_its_provenance_and_every_provenance_its_sample`,
   `tests/tools/test_runtime_changelogs.py::test_a_term_matches_only_where_a_real_entry_names_it`,
   `.claude/skills/shepherd-pull-requests/scripts/test_shepherd_pull_requests.py::ShapeTest::test_the_recorded_rollup_reads_its_newest_validation_run`,
@@ -405,7 +427,10 @@ removed fails validation until its pattern follows it.
   `skills/dotnet-dependencies/scripts/test_msbuild_conditions.py::test_equality_compares_numbers_booleans_and_text_as_msbuild_does`,
   which hold the condition reader to MSBuild's verdicts captured from the .NET SDK's MSBuild, and
   `skills/ejryan89-skill-core/scripts/test_github_client.py::test_a_shorthand_cluster_is_read_as_gh_reads_it`, which
-  holds the client's reading of a gh api command to gh's flag parser, a letter it does not read counting as a change
+  holds the client's reading of a gh api command to gh's flag parser, a letter it does not read counting as a change,
+  and
+  `.claude/skills/audit-repository/scripts/test_audit_repository.py::TwinTests::test_a_construct_line_holding_backslash_e_is_searched_as_fixed_text`,
+  which holds the twin sweep's fixed-text search to what git grep built with PCRE does with a backslash-E
 - **Search for:** a Python parser or folding, `float(`, `int(` with or without a base, `casefold()`, `lower()`,
   `strip()`, or a pattern with `re.IGNORECASE` and no `re.ASCII`, applied to a value another program reads, each
   checked against that program's own reading of it, as MSBuild reads a number with .NET's invariant `Double.TryParse`
@@ -431,10 +456,15 @@ removed fails validation until its pattern follows it.
   `rebase --exec` or `-x`, `bisect run`, a transport's `--upload-pack`, or a `-c` setting that names a program, rather
   than an allow-list of the subcommands, actions, and settings that start none; a reader of a gh flag word that takes
   its first two characters for the flag, rather than `gh_shorthands.shorthands`, which reads a cluster such as
-  `-ifbody=x` letter by letter as gh does.
+  `-ifbody=x` letter by letter as gh does; a fixed pattern handed to `git grep -F` that may hold a backslash-E, which
+  git built with PCRE quotes between `\Q` and `\E`, rather than through `audit_repository.grep_pattern`; a reader of the
+  commands a Bash script runs that starts one only at a line's start, an operator, or a substitution, and not after a
+  case pattern's `)`, a `;&` or `;;&`, or a function's `()`, or that compares a command's first word, such as
+  `head == "git"` or `head in SCRIPT_SHELLS`, with a program's name rather than the file name
+  `command_wrappers.bash_program` reads, so `/usr/bin/git` and `git.exe` go unread.
 - **Examples:** #1412, #1429, #1430, #1592, #1606, #1843, #1851, #1865, #2032, #2088, #2089, #2134, #2135, #2136,
   #2137, #2138, #2139, #2140, #2188, #2225, #2232, #2233, #2234, #2251, #2262, #2274, #2276, #2316, #2411,
-  #2418, #2203, #2450
+  #2418, #2203, #2450, #2476, #2481, #2478, #2555, #2474
 
 ### A recursive parser of input has a depth bound
 

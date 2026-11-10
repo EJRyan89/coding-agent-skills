@@ -1840,6 +1840,31 @@ class UnderstoodSetTests(GuardTestCase):
             with self.subTest(command=command, cwd=cwd.name):
                 self.assertEqual(expected, self.bash(command, cwd))
 
+    def test_a_gh_flag_before_its_subcommand_is_not_read_past(self) -> None:
+        # cobra takes the word after a flag it does not know as that flag's value, so `gh pr -b x checkout 12` runs
+        # pr checkout while its first two plain words are pr and x.
+        for command in (
+            "gh pr -b x checkout 12",
+            "gh pr --branch x checkout 12",
+            "gh repo -b x sync",
+            "gh -b x pr checkout 12",
+            "gh pr --bogus=x checkout 12",
+        ):
+            with self.subTest(command=command):
+                self.assertEqual("deny", self.bash(command, self.hub))
+                self.assertIn("before its subcommand", self.reason)
+        for command in (
+            "gh pr list --state open",
+            "gh -R o/r pr view 1",
+            "gh --repo=o/r pr view 1",
+            "gh -Ro/r pr view 1",
+            "gh pr view 12 --json title",
+            "gh api -X GET repos/o/r/pulls",
+        ):
+            with self.subTest(command=command):
+                self.assertIsNone(self.bash(command, self.hub))
+        self.assertEqual("deny", self.bash("gh pr checkout 12", self.hub))
+
     def test_an_assignment_before_a_command_is_read_by_the_name_it_assigns(self) -> None:
         for command, expected in (
             ("LC_ALL=C sort notes.txt", None),
@@ -1956,6 +1981,26 @@ class UnderstoodSetTests(GuardTestCase):
             with self.subTest(command=command):
                 self.assertEqual("deny", self.bash(command, outside, environment))
                 self.assertIn(UNREAD, self.reason)
+
+    def test_with_no_hub_in_view_named_paths_past_the_lookup_limit_are_refused_as_a_lookup_cut_short(self) -> None:
+        # Only the first NAMED_PATH_LIMIT directories are looked up, so a hub named after them would never come into
+        # view: a command naming more is refused once those are looked up, as a lookup the reading time cuts short is.
+        outside = self.outside()
+        environment = {name: value for name, value in self.environment.items() if name != "CLAUDE_PROJECT_DIR"}
+        places = []
+        for index in range(hub_guard.NAMED_PATH_LIMIT):
+            place = outside / f"place-{index}"
+            place.mkdir()
+            places.append(f'"{place.as_posix()}"')
+        within = f"export X=1; ls {' '.join(places)}; git commit -m x"
+        self.assertIsNone(self.bash(within, outside, environment))
+        for last in (f'"{self.hub.as_posix()}"', f'"{(outside / "one-more").as_posix()}"'):
+            (outside / "one-more").mkdir(exist_ok=True)
+            command = f"export X=1; ls {' '.join(places)} {last}; git commit -m x"
+            with self.subTest(last=last):
+                self.assertEqual("deny", self.bash(command, outside, environment))
+                self.assertIn("LookupsCutShort", self.reason)
+                self.assertIn(f"more than the {hub_guard.NAMED_PATH_LIMIT} the guard looks up", self.reason)
 
     def test_a_cdpath_search_and_cd_dash_leave_the_directory_unknown(self) -> None:
         environment = {**self.environment, "CDPATH": str(self.root)}
@@ -2829,6 +2874,11 @@ class WorkflowTests(GuardTestCase):
             ("README.md", "`git pull --ff-only origin main`", "git pull --ff-only origin main"),
             ("docs/parallel-sessions.md", "`switch main`", "git switch main"),
             ("docs/parallel-sessions.md", "`checkout main`", "git checkout -q main"),
+            # The remedies the deployer prints, and its recovery guide repeats, for a deployment, which runs from
+            # the hub.
+            ("deployer/manifest.py", "'git pull --ff-only origin main'", "git pull --ff-only origin main"),
+            ("docs/recovery.md", "`git pull --ff-only origin main`", "git pull --ff-only origin main"),
+            ("deployer/source.py", "'git show HEAD:source.json'", "git show HEAD:source.json"),
         ):
             text = (REPOSITORY_ROOT / document).read_text(encoding="utf-8")
             with self.subTest(document=document, written=written):
@@ -2893,6 +2943,31 @@ class ReadOnlyFormTests(GuardTestCase):
             )
         )
         for command in ("git apply --check change.patch", "git apply --check", "git apply --stat -- change.patch"):
+            with self.subTest(command=command):
+                self.assertIsNone(self.bash(command, self.hub))
+
+    def test_a_dash_word_after_a_valued_option_written_alone_is_refused(self) -> None:
+        # git takes the word after a valued option written alone as its value whatever it holds, so the guard may not
+        # read a dash word there as an option of its own: --check would be --exclude's value and the patch applied, and
+        # -l --format's value and origin/main or v9.9.9 a ref created.
+        self.refused_in_the_hub(
+            (
+                "git apply --exclude --check change.patch",
+                "git apply -p --check change.patch",
+                "git apply --exclude -- --check change.patch",
+                "git branch --format -l origin/main",
+                "git tag --format -l v9.9.9",
+                "git branch --contains -l origin/main",
+            ),
+            reason="as the value of",
+        )
+        for command in (
+            "git apply --exclude=--check --check change.patch",
+            "git apply -p1 --check change.patch",
+            "git branch --format=-l",
+            "git tag --format=-l -l",
+            "git branch --format x -l",
+        ):
             with self.subTest(command=command):
                 self.assertIsNone(self.bash(command, self.hub))
 

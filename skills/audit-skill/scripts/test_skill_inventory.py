@@ -856,6 +856,20 @@ class ToolsTests(TemporaryTestCase):
             self.grants(allowed, body),
         )
 
+    def test_only_one_assignment_of_the_name_alone_declares_repository_code(self) -> None:
+        script = self.root / "start.py"
+        for source, declared in (
+            ('RUNS_REPOSITORY_CODE = "starts a server"\n', True),
+            ('RUNS_REPOSITORY_CODE: str = "starts a server"\n', True),
+            ('RUNS_REPOSITORY_CODE = OTHER = "starts a server"\n', False),
+            ('RUNS_REPOSITORY_CODE, OTHER = "starts a server", 1\n', False),
+            ('RUNS_REPOSITORY_CODE = "starts a server"\nRUNS_REPOSITORY_CODE = ""\n', False),
+            ('RUNS_REPOSITORY_CODE = ""\nRUNS_REPOSITORY_CODE += "starts a server"\n', False),
+        ):
+            with self.subTest(source=source):
+                write(script, source)
+                self.assertEqual(declared, skill_inventory.runs_repository_code(script))
+
     def test_a_script_that_runs_repository_code_is_reported_apart_from_ungranted_commands(self) -> None:
         # Such a script starts code the target repository configures, so its command must keep prompting: one a
         # grant covers is reported, and one no grant covers is the intended state rather than a missing grant.
@@ -1247,6 +1261,31 @@ class ScanTests(TemporaryTestCase):
         )
         self.assertEqual(f"CUE {skill.as_posix()} 5 shell-file-command Use `find . -name x` or `cat`.", lines[0])
 
+    def test_a_fenced_file_command_is_read_past_keywords_assignments_and_wrappers(self) -> None:
+        for command in (
+            "then cat notes.txt",
+            "if grep -q x file; then",
+            "A=1 grep x file",
+            "time ls",
+            "env LC_ALL=C sort < x | xargs wc -l",
+            "nohup tail -f log",
+            'bash -c "head -n 1 file"',
+            "eval sed -n 1p file",
+            "{ ls; }",
+        ):
+            with self.subTest(command=command):
+                skill = write(self.root / "SKILL.md", f"```bash\n{command}\n```\n")
+                code, lines, error = run("scan", str(skill))
+                self.assertEqual(0, code, error)
+                self.assertIn(f"CUE {skill.as_posix()} 2 shell-file-command {command}", lines)
+        # A quoted keyword is the program Bash runs, never a keyword before one.
+        for command in ("git ls-files", "echo cat", "printf '%s' head", 'xargs "$tool" x', "'then' cat notes.txt"):
+            with self.subTest(command=command):
+                skill = write(self.root / "SKILL.md", f"```bash\n{command}\n```\n")
+                code, lines, error = run("scan", str(skill))
+                self.assertEqual(0, code, error)
+                self.assertNotIn("shell-file-command", " ".join(lines))
+
     def test_inline_python_is_generated_code_in_every_interpreter_spelling(self) -> None:
         # The token is split so that a deployment, which renders this file, leaves it for the scan to read.
         token = "{{" + "PYTHON}}"
@@ -1606,6 +1645,7 @@ PROSE_CUE_NAMES = {name for name, _ in skill_inventory.PROSE_CUES}
         ("Drift and polish go into the next milestone.", "owed-by-rules"),
         # A file or message drafted by hand.
         ("1. Write the title and the body from the repository's template, each to a file.", "hand-drafted"),
+        ("1) Write the title and the body from the repository's template, each to a file.", "hand-drafted"),
         ("Copy the `RUNTIME`, `MATRIX`, and `SKIPPED` lines into the pull request.", "hand-drafted"),
         ("If it is empty, print `usage: tool <name>` and stop.", "hand-drafted"),
         ("Finish with `Processed <N> repositories.` from the count.", "hand-drafted"),
@@ -1630,6 +1670,8 @@ def test_a_deterministic_prose_shape_is_its_cue(line: str, cue: str, tmp_path: P
         "Recommend splitting the body into reference files.",
         "`CONFLICT` lines come in groups of two or more versions.",
         "- **`judgment`**: the evaluation's result for that model.",
+        # A no-break space after a dash opens no list item, so the line is no keyed item.
+        "-\u00a0**`the run recorded no review; ...`**: the session ended early.",
         # A line the last command printed, with no per-item record, and a rule that sets no follow-up.
         "For each `ROLE` line the last `prepare` printed, start one subagent.",
         "Read the files the change touches and their tests.",

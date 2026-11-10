@@ -280,8 +280,9 @@ UTF8_SIG = "the file is decoded as UTF-8 with an optional byte-order mark"
 ANY_JSON = "it returns any JSON value, and each caller checks the shape it expects"
 NO_ANALYZER = "a file that configures no analyzer names none, so the inventory lists nothing for it"
 OWNER_FIELDS = (
-    "it returns the owner record whole, and _stale reads its pid as a positive integer, holding a lock whose pid is "
-    "not one as still held, and its start time as unknown when it is not an integer"
+    "it returns the owner record whole, and _stale reads its pid through read_pid as an integer from 1 to the "
+    "platform's PID_MAXIMUM, holding a lock whose pid is not one, a pid past PID_MAXIMUM included, as still held, and "
+    "its start time as unknown when it is not an integer"
 )
 MATERIALIZATION_UNREAD = "the loader reads the manifest, the adapter, and the hashes by kind, and never this field"
 

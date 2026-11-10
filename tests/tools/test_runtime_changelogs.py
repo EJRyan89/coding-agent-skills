@@ -119,6 +119,15 @@ class ChangelogTests(unittest.TestCase):
             releases[0].entries,
         )
 
+    def test_a_release_heading_is_read_as_commonmark_reads_a_heading(self) -> None:
+        # A no-break space after the marks makes no heading, and a fourth level is no release; up to three spaces of
+        # indentation and closing marks are a heading's, and a tab is Markdown's whitespace.
+        text = "## 2.0.0\n- one\n##\u00a01.9.0\n- hidden\n#### 1.8.0\n- deep\n  ## 1.7.0 ##\n-\ttwo\n"
+        self.assertEqual(
+            [("2.0.0", ("one", "hidden", "deep")), ("1.7.0", ("two",))],
+            [(found.name, found.entries) for found in watch.markdown_releases(text)],
+        )
+
     def test_github_releases_are_read_page_by_page_until_the_recorded_release(self) -> None:
         fetcher = StubFetcher(answers())
         releases = watch.changelog_releases(CODEX, fetcher, 1.0)
@@ -284,6 +293,17 @@ def test_a_release_whose_entries_are_a_numbered_list_or_which_is_empty_is_unread
     # A GitHub release whose body is null reads as one whose text is empty.
     unnamed = watch.github_releases([{"tag_name": "rust-v0.150.0", "body": None}], "https://example.com/releases")
     assert [(found.name, found.entries, found.unread) for found in unnamed] == [("0.150.0", (), "its text is empty")]
+
+
+def test_a_release_that_is_not_an_object_is_refused_by_its_place_rather_than_passed_over() -> None:
+    url = "https://example.com/releases"
+    for member, kind in (("v0.150.0", "str"), (None, "NoneType"), ([{"tag_name": "v0.150.0"}], "list")):
+        with pytest.raises(watch.WatchError) as caught:
+            watch.github_releases([{"tag_name": "rust-v0.151.0", "body": "- Fixed."}, member], url)
+        assert str(caught.value) == f"{url} returned release 1, {kind}, which is not an object"
+    # A draft or a prerelease is still passed over.
+    drafts = [{"tag_name": "v0.152.0", "draft": True}, {"tag_name": "v0.153.0", "prerelease": True}]
+    assert watch.github_releases(drafts, url) == []
 
 
 def test_a_read_through_the_changelog_never_names_stops_the_watch() -> None:

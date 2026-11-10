@@ -11,7 +11,6 @@ and tools/runtime_command_lines.py against the version the installed runtime pri
 
 from __future__ import annotations
 
-import datetime
 import sys
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -19,6 +18,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "ejryan89-skill-core" / "scripts"))
 
+import calendar_date
 import json_reader
 import versions
 
@@ -28,14 +28,6 @@ PROVENANCE = CAPTURED / "provenance.json"
 
 class SampleError(Exception):
     """The provenance record cannot be read, or names a sample in a shape this reader does not know."""
-
-
-def is_date(text: str) -> bool:
-    """Whether `text` is a calendar date written YYYY-MM-DD."""
-    try:
-        return datetime.date.fromisoformat(text).isoformat() == text
-    except ValueError:
-        return False
 
 
 @dataclass(frozen=True)
@@ -71,7 +63,7 @@ def sample(path: str, entry: object, runtimes: tuple[str, ...]) -> Sample:
         if runtime not in runtimes or number is None:
             raise SampleError(f"{path}: versions maps a runtime of {', '.join(runtimes)} to a version, not {runtime}")
         read[runtime] = number
-    if not isinstance(captured, str) or not is_date(captured):
+    if not isinstance(captured, str) or calendar_date.parse(captured) is None:
         raise SampleError(f"{path}: captured is a date, YYYY-MM-DD")
     if not isinstance(how, str) or not how.strip():
         raise SampleError(f"{path}: how says how the sample was captured")

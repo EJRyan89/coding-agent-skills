@@ -118,11 +118,13 @@ TRUST_BOUNDARY_SCRIPTS = (
     "tests/tools/test_bash_syntax.py",
     "tests/tools/test_hub_guard.py",
     "tests/tools/test_hub_guard_bash.py",
+    "tests/tools/test_hub_guard_git_options.py",
     "tests/tools/test_hub_guard_pwsh.py",
     "tests/tools/test_prefix_programs.py",
     # The merge shepherd's admission of a pull request whose head branch is in this repository.
     ".claude/skills/shepherd-pull-requests/scripts/shepherd_pull_requests.py",
     ".claude/skills/shepherd-pull-requests/scripts/test_shepherd_pull_requests.py",
+    f"{SKILL_CORE}/analyzer_config.py",
     f"{SKILL_CORE}/bounded_process.py",
     f"{SKILL_CORE}/device_names.py",
     f"{SKILL_CORE}/diff_paths.py",
@@ -142,9 +144,11 @@ TRUST_BOUNDARY_SCRIPTS = (
     f"{SKILL_CORE}/json_writer.py",
     f"{SKILL_CORE}/link_probe.py",
     f"{SKILL_CORE}/markdown_literal.py",
+    f"{SKILL_CORE}/module_assignments.py",
     f"{SKILL_CORE}/msbuild_xml.py",
     f"{SKILL_CORE}/nesting_depth.py",
     f"{SKILL_CORE}/option_reader.py",
+    f"{SKILL_CORE}/ordinal_case.py",
     f"{SKILL_CORE}/path_containment.py",
     f"{SKILL_CORE}/path_keys.py",
     f"{SKILL_CORE}/pdf_tool.py",
@@ -613,6 +617,14 @@ class ManifestTests(unittest.TestCase):
         ]
         self.assertEqual(named - set(NAMED_ELSEWHERE), {path.rsplit("/", 1)[-1] for path in paths})
         self.assertEqual([], [path for path in paths if "trust-boundary" not in reached([path])[path]])
+
+    def test_the_hub_guard_s_option_suite_reaches_the_trust_boundary_reviewers(self) -> None:
+        # The option suite holds the guard's allowlist of git's options to its catalogues, so a change that loosens
+        # it reaches the reviewers a change to tools/hub_guard.py reaches, and on a fix the sibling-spellings one.
+        path = "tests/tools/test_hub_guard_git_options.py"
+        self.assertIn("trust-boundary", reached([path])[path])
+        on_a_fix = route(MANIFEST, [path], lambda name: True, title="fix(hub-guard): refuse an option")
+        self.assertEqual([path], on_a_fix.get("sibling-spellings"))
 
     def test_every_file_the_design_trust_model_names_reaches_the_trust_boundary_reviewer(self) -> None:
         # docs/design.md's trust model names the code that holds each boundary and the suites that hold it, so a file

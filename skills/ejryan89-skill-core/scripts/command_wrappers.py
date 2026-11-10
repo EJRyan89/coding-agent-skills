@@ -1,5 +1,5 @@
-"""The one reading of the commands that run a command a later word names: a wrapper such as xargs or env, find's
-actions, and a shell's -c script.
+"""The one reading of the commands that run a command a later word names: a wrapper such as xargs, env, or sudo,
+find's actions, and a shell's -c script.
 
 A reader of a shell script's commands goes past such a command to the one it runs: `unwrapped` past a wrapper of
 COMMAND_WRAPPERS, read by option_reader's getopt reading, `find_action` to the command one of find's FIND_COMMANDS
@@ -13,13 +13,18 @@ import re
 import shlex
 from collections.abc import Mapping
 
+from executable_locator import program_name
 from option_reader import OptionTable, option_refusal, option_table
 
 # The commands that run the program a later word names, each with every option it takes, in getopt's spelling as
 # option_table reads it, and read by option_refusal, the one getopt reader: the program is the first word after the
 # options, after the assignments env takes, and after the duration timeout takes. A long option is placed only spelled
 # in full, and a word the table does not settle, an abbreviation or an option the table does not list, leaves the
-# program unread (UNREAD_PROGRAM) rather than taken for the program. command -v and -V only look a program up.
+# program unread (UNREAD_PROGRAM) rather than taken for the program. command -v and -V only look a program up. Each
+# program's table beyond the shell's builtins and coreutils' is its getopt table, as the hub guard's option catalogue
+# records it; sudo also takes assignments, and chrt, taskset, and
+# chroot take one operand, a priority, a CPU mask, or a new root, before the program. Every reader of a command's
+# program reads these, so a reader that needs another wrapper adds it here.
 COMMAND_WRAPPERS: dict[str, OptionTable] = {
     "command": option_table("pvV"),
     "builtin": option_table(),
@@ -50,6 +55,53 @@ COMMAND_WRAPPERS: dict[str, OptionTable] = {
             )
         ),
     ),
+    "sudo": option_table(
+        "Aa:BbC:c:D:Eeg:Hh::iKklNnPp:R:r:SsT:t:U:u:Vv",
+        " ".join(
+            (
+                "askpass auth-type= bell background close-from= login-class= chdir= preserve-env=? edit group=",
+                "set-home help host= login remove-timestamp reset-timestamp list no-update non-interactive",
+                "preserve-groups prompt= chroot= role= stdin shell command-timeout= type= other-user= user= version",
+                "validate",
+            )
+        ),
+        assignments=True,
+    ),
+    "doas": option_table("a:C:Lnsu:"),
+    "setsid": option_table("cfwhV", "ctty fork wait help version"),
+    "ionice": option_table("c:n:p:P:tu:hV", "class= classdata= pid= pgid= ignore uid= help version"),
+    "chrt": option_table(
+        "abdefimoprRT:P:D:vhV",
+        " ".join(
+            (
+                "all-tasks batch deadline ext fifo idle max other pid rr reset-on-fork sched-runtime= sched-period=",
+                "sched-deadline= verbose help version",
+            )
+        ),
+        operands=1,
+    ),
+    "taskset": option_table("acphV", "all-tasks cpu-list pid help version", operands=1),
+    "chroot": option_table("", "groups= userspec= skip-chdir help version", operands=1),
+    "unbuffer": option_table("p"),
+    "chronic": option_table("ev"),
+    "strace": option_table(
+        "Aa:b:CcDdE:e:FfhI:ikno:O:P:p:qrS:s:tTU:u:VvwX:xyYzZ",
+        " ".join(
+            (
+                "output-append-mode columns= detach-on= summary summary-only daemonize=? debug env= follow-forks",
+                "output-separately help interruptible= instruction-pointer stack-trace syscall-number output=",
+                "summary-syscall-overhead= trace-path= attach= quiet=? relative-timestamps=? summary-sort-by=",
+                "string-limit= absolute-timestamps=? syscall-times=? summary-columns= user= version no-abbrev=?",
+                "summary-wall-clock const-print-style= strings-in-hex=? decode-fds=? decode-pids=? successful-only",
+                "failed-only trace= signal= status= inject= fault= abbrev= verbose= raw= read= write= kvm=",
+                "secontext=? seccomp-bpf kill-on-exit tips=?",
+            )
+        ),
+    ),
+    "ltrace": option_table(
+        "a:A:bcCD:e:fF:hil:Ln:o:p:rs:StTu:Vw:x:",
+        "align= no-signals demangle debug= config= help library= indent= output= version where=",
+    ),
 }
 # env's options whose value is a command line, split into the words it runs.
 ENV_SPLIT_OPTIONS = frozenset({"-S", "--split-string"})
@@ -68,11 +120,20 @@ ASSIGNMENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*(\[[^\]]*\])?\+?=")
 # A pipe hands the next command what the one before it writes; `time` after one is the time program, not Bash's
 # keyword.
 PIPES = frozenset({"|", "|&"})
+# The operators that end a case item's commands, after which the next item's patterns stand.
+CASE_ITEM_ENDS = frozenset({";;", ";&", ";;&"})
 # The words Bash's time keyword takes before the pipeline it times, each unquoted, each optional, and in this order.
 TIME_KEYWORD_OPTIONS: tuple[str, ...] = ("-p", "--")
 # What a reader records for a program a wrapper runs but that no literal names, such as `xargs "$tool"`, so the command
 # policy refuses it rather than passing it unseen; it never names a program.
 UNREAD_PROGRAM = "<unread> "
+
+
+def bash_program(word: str) -> str:
+    """The program a Bash command's word names, by its file name, as Bash finds it: `/usr/bin/git` and `git.exe` are
+    git, the .exe Windows lets its caller add dropped in any case, while the name itself is matched as written, so `Git`
+    is no git."""
+    return program_name(word.rpartition("/")[2])
 
 
 def unwrapped(words: list[str], wrappers: Mapping[str, OptionTable] = COMMAND_WRAPPERS) -> list[str]:

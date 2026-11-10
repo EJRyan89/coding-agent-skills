@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import os
-import re
 import sys
 import time
 from collections.abc import Callable
@@ -13,14 +12,13 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
+import calendar_date
 from executable_locator import absolute_home
 from review_config import validate_repository_identity
 from review_io import ResourceLock, atomic_write_json, read_json, record_present
 from typed_fields import FieldError, FieldReader
 
 SCHEMA_VERSION = 1
-# A watermark's date as the contract states it. date.fromisoformat alone also takes a week date or the basic form.
-WATERMARK_DATE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
 
 
 class StateError(ValueError):
@@ -59,12 +57,10 @@ def utc_date(value: str) -> date:
 
 def watermark_date(identity: str, value: str) -> date:
     """The date a repository's merged_since watermark names: its first ten characters, as YYYY-MM-DD."""
-    head = value[:10]
-    if WATERMARK_DATE.fullmatch(head):
-        try:
-            return date.fromisoformat(head)
-        except ValueError:
-            pass  # a day the calendar lacks, refused below
+    # The contract's YYYY-MM-DD: date.fromisoformat alone also takes a week date or the basic form.
+    found = calendar_date.parse(value[:10])
+    if found is not None:
+        return found
     raise StateError(f"State {identity}.merged_since must begin with a YYYY-MM-DD date, not {value!r}")
 
 

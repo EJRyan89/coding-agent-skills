@@ -12,7 +12,9 @@ recurse, each array or object one level and a scalar none, and so is an integer 
 key holding a lone surrogate, which a `\\ud800` escape gives and UTF-8 cannot encode, is refused too, so the reader
 takes nothing `json_writer` refuses to write. It bounds nothing else: whatever else `json.loads` raises, such as its
 `JSONDecodeError`, it raises. `CONTENT_ERRORS` is every error it raises on bad content, the family a caller's handler
-names whole.
+names whole. `answers_request` tells whether text `loads` refused is the response to a pending JSON-RPC request, so a
+reader waiting for one reports the refusal rather than waiting out its time limit, and `is_request_id` is the one rule
+by which a response's `id`, taken or refused, is matched to the request.
 """
 
 from __future__ import annotations
@@ -141,3 +143,127 @@ def read_file(path: Path) -> Any:
     when the file cannot be read, a `UnicodeDecodeError`, a `ValueError` too, when it is not UTF-8, which includes a
     byte-order mark that the caller does not expect."""
     return loads(path.read_bytes().decode("utf-8"))
+
+
+# The characters JSON allows between tokens.
+_WHITESPACE = " \t\n\r"
+
+
+def is_request_id(value: Any, request_id: int) -> bool:
+    """Whether `value`, an `id` that `loads` read, is the integer `request_id` a JSON-RPC request was sent with: a JSON
+    number equal to it, spelled `2`, `2.0`, or `2e0`, since JSON gives a number one value whatever its spelling. A
+    string, null, and a boolean, which Python compares equal to 1 or 0, are never a number's id. It is the one rule by
+    which a reader waiting for a response matches it, whether `loads` takes the response or `answers_request` reads
+    a refused one."""
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and value == request_id
+
+
+def _skip_whitespace(text: str, index: int) -> int:
+    while index < len(text) and text[index] in _WHITESPACE:
+        index += 1
+    return index
+
+
+def _string_end(text: str, index: int) -> int:
+    """The index just past the string that opens at `index`, or -1 when it never closes."""
+    index += 1
+    while index < len(text):
+        if text[index] == "\\":
+            index += 2
+        elif text[index] == '"':
+            return index + 1
+        else:
+            index += 1
+    return -1
+
+
+def _value_end(text: str, index: int) -> int:
+    """The index just past the value that starts at `index`, or -1: a string to its closing quote, an array or an
+    object to the bracket that closes it, counted rather than parsed so that no depth recurses, and any other value
+    to the next comma, bracket, or whitespace."""
+    if index >= len(text):
+        return -1
+    if text[index] == '"':
+        return _string_end(text, index)
+    if text[index] in "[{":
+        depth = 0
+        while index < len(text):
+            character = text[index]
+            if character == '"':
+                index = _string_end(text, index)
+                if index < 0:
+                    return -1
+                continue
+            if character in "[{":
+                depth += 1
+            elif character in "]}":
+                depth -= 1
+                if depth == 0:
+                    return index + 1
+            index += 1
+        return -1
+    end = index
+    while end < len(text) and text[end] not in ",]}" + _WHITESPACE:
+        end += 1
+    return end if end > index else -1
+
+
+def _is_id_key(spelled: str) -> bool:
+    try:
+        key = loads(spelled, surrogates=True)
+    except CONTENT_ERRORS:
+        return False
+    return isinstance(key, str) and key == "id"
+
+
+def _top_level_ids(text: str) -> list[str]:
+    """The text of each `id` member's value in the object `text` holds, a repeated one each time, scanned member by
+    member at the top level alone, so that no value is parsed and no nesting recurses: none when `text` holds no
+    object, and only those before the first member that does not scan."""
+    ids: list[str] = []
+    index = _skip_whitespace(text, 0)
+    if index >= len(text) or text[index] != "{":
+        return ids
+    index = _skip_whitespace(text, index + 1)
+    while index < len(text) and text[index] == '"':
+        key_end = _string_end(text, index)
+        if key_end < 0:
+            return ids
+        key = text[index:key_end]
+        index = _skip_whitespace(text, key_end)
+        if index >= len(text) or text[index] != ":":
+            return ids
+        start = _skip_whitespace(text, index + 1)
+        end = _value_end(text, start)
+        if end < 0:
+            return ids
+        if _is_id_key(key):
+            ids.append(text[start:end])
+        index = _skip_whitespace(text, end)
+        if index >= len(text) or text[index] != ",":
+            return ids
+        index = _skip_whitespace(text, index + 1)
+    return ids
+
+
+def answers_request(text: str | bytes, request_id: int) -> bool:
+    """Whether `text`, which `loads` refused, is a JSON object any of whose `id` members `is_request_id` takes for
+    `request_id`: the response to a pending JSON-RPC request. It tells only that, so a caller reports the refusal as
+    the response's rather than passing over the line as one that answers nothing and waiting out its time limit; the
+    response's other values are read by `loads` alone, so none is ever acted on. It scans the top-level members without
+    parsing their values, so a response nested past the interpreter's recursion limit is told too, and reads each `id`
+    value with `loads`, so a refused response is matched by the rule a taken one is. Text holding no object answers no
+    request."""
+    if isinstance(text, bytes):
+        try:
+            text = text.decode(json.detect_encoding(text))
+        except UnicodeDecodeError:
+            return False
+    for spelled in _top_level_ids(text):
+        try:
+            value = loads(spelled)
+        except CONTENT_ERRORS:
+            continue
+        if is_request_id(value, request_id):
+            return True
+    return False

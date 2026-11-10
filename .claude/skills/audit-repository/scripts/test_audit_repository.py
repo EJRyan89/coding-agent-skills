@@ -597,6 +597,7 @@ class ReleaseTests(Fixture):
             ("rev-parse", not_repository, f"FAILED {self.root.as_posix()} is not a Git repository"),
             ("for-each-ref", refusal, f"FAILED git for-each-ref: {refusal}"),
             ("for-each-ref", not_repository, f"FAILED {self.root.as_posix()} is not a Git repository"),
+            ("rev-parse", "fatal: one\nfatal:\ttwo", "FAILED git rev-parse: fatal: one fatal: two"),
         )
         for subcommand, stderr, expected in cases:
             with self.subTest(subcommand=subcommand, stderr=stderr):
@@ -1351,6 +1352,30 @@ def test_a_malformed_record_fails_with_the_reason(tmp_path: Path, text: str, rea
     assert reason in str(caught.value)
 
 
+@pytest.mark.parametrize(
+    "when",
+    [
+        pytest.param("\u0662\u0660\u0662\u0666-\u0661\u0661-\u0660\u0669", id="arabic-indic-digits"),
+        pytest.param("2026-13-45", id="no-such-month"),
+        pytest.param("2026-02-30", id="no-such-day"),
+        pytest.param("20261109", id="basic-format"),
+    ],
+)
+def test_a_record_date_that_is_not_an_existing_ascii_date_fails(tmp_path: Path, when: str) -> None:
+    path = tmp_path / "rotation.json"
+    entry = {"date": when, "tag": "v1.0.0", "area": "code-review"}
+    path.write_text(json.dumps({"audits": [entry]}), encoding="utf-8")
+    with pytest.raises(audit.AuditError) as caught:
+        audit.read_record(path)
+    assert str(caught.value).endswith("audit 1 has a date that is not YYYY-MM-DD")
+
+
+def test_a_leap_day_is_a_record_date(tmp_path: Path) -> None:
+    path = tmp_path / "rotation.json"
+    path.write_text('{"audits": [{"date": "2028-02-29", "tag": "v1.0.0", "area": "code-review"}]}', encoding="utf-8")
+    assert [audit.Entry("2028-02-29", "v1.0.0", "code-review")] == audit.read_record(path)
+
+
 def test_a_record_is_read_as_utf_8_whatever_the_platform_s_codec(tmp_path: Path) -> None:
     path = tmp_path / "rotation.json"
     path.write_bytes('{"audits": [{"date": "2026-01-01", "tag": "v1.0.0", "area": "dé"}]}'.encode())
@@ -2038,6 +2063,38 @@ class TwinTests(Fixture):
             lines[4:7],
         )
 
+    def test_a_construct_line_holding_backslash_e_is_searched_as_fixed_text(self) -> None:
+        # git searches a fixed pattern as a PCRE pattern quoted between \Q and \E where it is built with PCRE, so a
+        # backslash-E inside the line ends that quote early: here git would read an unmatched parenthesis and fail.
+        escaped = r"value = read(r'\Environment::x') (also \Environment)"
+        # A line holding only a part of the construct line is no twin.
+        part = "nvironment::x') (also "
+        write(self.root, {"tools/escaped.py": f"{escaped}\n", "tools/escaped twin.py": f"{escaped}\n{part}\n"})
+        self.commit("feat: add the escaped reader")
+        base = git(self.root, "rev-parse", "HEAD")
+        write(self.root, {"tools/escaped.py": "value = read_environment('x')\n"})
+        self.commit("fix: read the environment through its helper")
+        fix = git(self.root, "rev-parse", "HEAD")
+        code, lines = self.run_main("twins", "--since", base)
+        self.assertEqual(0, code, lines)
+        self.assertEqual([f"CONSTRUCT {fix} 1", f"HITS {fix} 1"], lines[4:6])
+        self.assertIn(f'- `"tools/escaped twin.py:1"`: `{json.dumps(escaped)}`', self.briefs(lines)["twins"])
+
+    def test_a_construct_line_of_nothing_but_backslash_e_is_searched_never_passed_over(self) -> None:
+        # Split at each backslash-E, the line leaves no part to give git: it is searched by its backslash, and only a
+        # line holding it whole is a hit, not one holding a lone backslash.
+        only = "\\E" * 8
+        write(self.root, {"tools/escapes.py": f"{only}\n", "tools/escapes twin.py": f"{only}\nx = '\\\\'\n"})
+        self.commit("feat: add the escapes")
+        base = git(self.root, "rev-parse", "HEAD")
+        write(self.root, {"tools/escapes.py": "value = escapes()\n"})
+        self.commit("fix: build the escapes")
+        fix = git(self.root, "rev-parse", "HEAD")
+        code, lines = self.run_main("twins", "--since", base)
+        self.assertEqual(0, code, lines)
+        self.assertEqual([f"CONSTRUCT {fix} 1", f"HITS {fix} 1"], lines[4:6])
+        self.assertIn(f'- `"tools/escapes twin.py:1"`: `{json.dumps(only)}`', self.briefs(lines)["twins"])
+
     def test_a_title_holding_the_field_separator_is_read_whole(self) -> None:
         write(self.root, {"README.md": "readme, changed again\n"})
         self.commit("fix: a unit\x1fseparator in the title")
@@ -2280,6 +2337,8 @@ def test_each_grep_record_is_read_whole_and_one_it_cannot_read_is_skipped() -> N
             # The text is everything after the second separator, a separator of its own included.
             f"{head}:c.py\x003\0one\0two \n",
             f"{head}:d.py\x004\0last\n",
+            # A line that holds no whole construct line, as git finds for a part grep_pattern gives it, is skipped.
+            f"{head}:e.py\x005\0on\n",
         ]
     )
 
@@ -2287,8 +2346,18 @@ def test_each_grep_record_is_read_whole_and_one_it_cannot_read_is_skipped() -> N
         return GitResult(returncode=0, stdout=stdout, stderr="")
 
     with mock.patch.object(GitClient, "run", run):
-        hits, cut = audit.search_construct(GitClient(), Path(), head, ["a construct line"])
+        hits, cut = audit.search_construct(GitClient(), Path(), head, ["one", "last"])
     assert (hits, cut) == ([audit.Hit("c.py", 3, "one\0two"), audit.Hit("d.py", 4, "last")], False)
+
+
+def test_an_empty_construct_line_is_refused_before_git_runs() -> None:
+    def run(client: GitClient, arguments: Sequence[str], **options: Any) -> GitResult:
+        raise AssertionError("git ran")
+
+    with mock.patch.object(GitClient, "run", run):
+        for construct in ([""], ["a construct line", ""]):
+            with pytest.raises(audit.AuditError, match=r"^git grep: an empty construct line names nothing"):
+                audit.search_construct(GitClient(), Path(), "f" * 40, construct)
 
 
 def test_a_search_with_no_hit_is_empty_and_any_other_failure_is_named() -> None:

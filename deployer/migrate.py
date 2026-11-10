@@ -29,7 +29,11 @@ def _migration_candidates(context: Context, old_entry: SourceEntry, kind: ItemKi
             if context.source.shared_assets.get(name) != "owner":
                 continue
             if not (context.paths.skills_src / name).is_file():
-                raise DeployError(f"ERROR: Cannot migrate shared asset '{name}': source owner file is missing.")
+                raise DeployError(
+                    f"ERROR: Cannot migrate shared asset '{name}': source owner file is missing.",
+                    f"Put back skills/{name} in this checkout, or remove '{name}' from source.json's shared_assets, "
+                    "then rerun --migrate-from.",
+                )
             if old_entry[kind.key][name].get("role") != "owner":
                 continue
         elif kind is AGENT_KIND:

@@ -22,10 +22,12 @@ from typing import TypeGuard
 import file_presence
 from command_wrappers import (
     ASSIGNMENT,
+    CASE_ITEM_ENDS,
     COMMAND_WRAPPERS,
     PIPES,
     SCRIPT_SHELLS,
     UNREAD_PROGRAM,
+    bash_program,
     shell_script_index,
     unwrapped,
 )
@@ -67,8 +69,6 @@ from validation_support import (
     repository_files,
     skill_script_directories,
 )
-
-from deployer.platform_support import program_name
 
 CONFTEST = "conftest.py"
 # A Python suite is split into one shard per this many tests, up to MAXIMUM_SHARDS. Smaller shards spread a long
@@ -442,8 +442,6 @@ COMMAND_BREAKS = frozenset({";", ";;", "&", "&&", "||", "|", "|&", "(", ")", "{"
 COMPOUND_CLOSERS = {"if": "fi", "while": "done", "until": "done", "for": "done", "select": "done", "case": "esac"}
 COMMAND_LEADERS = frozenset({"if", "then", "elif", "else", "while", "until", "do", "!"})
 COMPOUND_HEADERS = frozenset({"for", "select", "case"})
-# What ends a case item's commands, so a pattern follows.
-CASE_ITEM_ENDS = frozenset({";;", ";&", ";;&"})
 GREP_PROGRAMS = frozenset({"grep", "egrep", "fgrep"})
 RIPGREP = "rg"
 # Bash's $'...' string, in which a backslash escapes a single quote.
@@ -499,11 +497,6 @@ SHELL_OPTIONS_VARIABLE = re.compile(r"\bSHELLOPTS=[^\s;&|]*pipefail")
 NESTING_LIMIT = 16
 
 
-def _program(word: str) -> str:
-    """The program a command word names, by its file name: `/usr/bin/head` and `head.exe` are head."""
-    return program_name(word.rpartition("/")[2])
-
-
 def _long_option(word: str, options: frozenset[str]) -> str | None:
     """The one of `options` a long option word names, in full or by a prefix, as getopt_long takes a unique one."""
     option = word.partition("=")[0]
@@ -517,7 +510,7 @@ def _command_words(words: list[str]) -> list[str]:
     xargs runs its command on no pipe, so it stays. _BashReader has already read past the reserved words that lead a
     command, so a word here that spells one is a literal, the program Bash runs."""
     while words:
-        program = _program(words[0])
+        program = bash_program(words[0])
         if ASSIGNMENT.match(words[0]):
             words = words[1:]
         elif program != "xargs" and program in WRAPPERS:
@@ -530,7 +523,7 @@ def _command_words(words: list[str]) -> list[str]:
 def _shell_script(words: list[str]) -> str | None:
     """The script a command runs in a shell of its own or in this one: a shell's -c script, among its other options,
     as shell_script_index reads it, and eval's arguments, joined as eval joins them; None for any other command."""
-    program = _program(words[0]) if words else ""
+    program = bash_program(words[0]) if words else ""
     if program == "eval":
         return " ".join(words[1:])
     if program not in SCRIPT_SHELLS:
@@ -546,7 +539,7 @@ def _early_exit_program(words: list[str]) -> str:
     and that option."""
     if words and words[0].startswith(UNREAD_PROGRAM):
         return words[0].removeprefix(UNREAD_PROGRAM)
-    program = _program(words[0]) if words else ""
+    program = bash_program(words[0]) if words else ""
     if program in GREP_PROGRAMS:
         return _early_exit_grep([program, *words[1:]])
     if program == RIPGREP:
@@ -928,7 +921,7 @@ def _sets_pipefail(script: str, commands: list[tuple[str, int, list[str]]]) -> b
         return True
     for _, _, words in commands:
         run = _command_words(words)
-        program = _program(run[0]) if run else ""
+        program = bash_program(run[0]) if run else ""
         if PIPEFAIL in run and (program in OPTION_SETTERS or program in SCRIPT_SHELLS):
             return True
     return False

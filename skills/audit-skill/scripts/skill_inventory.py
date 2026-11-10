@@ -168,6 +168,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
 import check_provenance
+import command_wrappers
 import frontmatter
 import git_subcommands
 import json_reader
@@ -181,7 +182,16 @@ from executable_locator import RelativeEnvironmentPath, absolute_home
 from file_presence import NotAFile, is_directory, is_occupied, is_present, matching
 from flat_text import flat_text, single_line
 from git_client import GitClient, GitError
-from markdown_sections import ATX_HEADING, CODE_SPAN, POWERSHELL_FENCES, SHELL_FENCES, find_fences, prose_code_spans
+from markdown_sections import (
+    ATX_HEADING,
+    CODE_SPAN,
+    LIST_MARKER,
+    POWERSHELL_FENCES,
+    SHELL_FENCES,
+    find_fences,
+    prose_code_spans,
+)
+from module_assignments import assigned_names, sole_assignment
 from path_containment import within
 from path_keys import path_key
 from powershell_startup import POWERSHELL_PROGRAMS, StartupCommand, startup_command
@@ -315,7 +325,9 @@ SCRIPT_FILE = re.compile(
 SCRIPT_SWITCH = re.compile(r"-[BEIOPRS]+")
 # The programs a grant may name by a subcommand, which must follow the program directly.
 SUBCOMMAND_PROGRAMS = frozenset({"git", "gh"})
-SHELL_FILE_COMMAND = r"(?:cat|head|tail|find|grep|rg|sed|awk|wc|ls)"
+# The programs that read or list files, which a skill's own tools do instead.
+SHELL_FILE_COMMANDS = ("cat", "head", "tail", "find", "grep", "rg", "sed", "awk", "wc", "ls")
+SHELL_FILE_COMMAND = rf"(?:{'|'.join(SHELL_FILE_COMMANDS)})"
 # Word edges that also treat hyphens as part of a word, so "rev-parse" is not "parse".
 WORD_START = r"(?<![\w-])"
 WORD_END = r"(?![\w-])"
@@ -384,11 +396,12 @@ CUES = (
 )
 # Deterministic work a script should print or take, which the prose leaves to the agent. A code span names a printed
 # value when it is not a flag; a status span starts with an upper-case name; an instruction opens its line, item, or
-# sentence, or follows "then" or "and".
+# sentence, or follows "then" or "and". A list item's marker and the space and the tab around it are read as
+# markdown_sections reads them.
 VALUE_SPAN = r"`(?!--)[^`\n]+`"
 STATUS_SPAN = r"`[A-Z][A-Z0-9_]+[^`\n]*`"
 FLAG_SPAN = r"`--[\w-]+[^`\n]*`"
-INSTRUCTION = r"(?:^\s*(?:[-*+]|\d+\.)?\s*|[.:;]\s+|,\s+(?=print\b)|\b(?:then|and)\s+)"
+INSTRUCTION = rf"(?:^[ \t]*(?:{LIST_MARKER})?[ \t]*|[.:;]\s+|,\s+(?=print\b)|\b(?:then|and)\s+)"
 PROSE_CUES = (
     # A flag chosen per printed line or value: "`--pull <pr>` for each `missing`", "one `--run` per `RUN` line",
     # "for a `SYNTHESIZED` line, `--synthesized`", "pass ... every `doc` path".
@@ -407,7 +420,7 @@ PROSE_CUES = (
         re.compile(
             r"(?i)\bsplit(?:s|ting)?\s+(?:its|the|their|each)\s+(?:[\w-]+\s+)?(?:list|lines?|output|label)\s+"
             r"(?:by|between|into)\b|\bin (?:groups|batches) of up to\b|"
-            rf"(?-i:^\s*(?:[-*+]|\d+\.)\s+\*\*`[a-z][^`]*\s[^`]*`)|\breport (?:it|them|that|this) as {STATUS_SPAN}"
+            rf"(?-i:^[ \t]*{LIST_MARKER}[ \t]+\*\*`[a-z][^`]*\s[^`]*`)|\breport (?:it|them|that|this) as {STATUS_SPAN}"
         ),
     ),
     # A count, a summary, or a last-seen value carried from one step to a later one.
@@ -599,7 +612,6 @@ OUTSIDE_REFERENCE = re.compile(r"(?<![\w./-])(\$\{CLAUDE_SKILL_DIR\}/)?((?:\.\./
 # A relative Markdown path that stays in the skill folder, such as `references/a.md` or `a.md`.
 INSIDE_REFERENCE = re.compile(r"(?<![\w./$}-])(\$\{CLAUDE_SKILL_DIR\}/)?((?:\./)?[\w-][\w./-]*\.md)\b")
 CONTENTS_HEADING = re.compile(r"(?i)(?:table of )?contents")
-FENCE_SHELL_COMMAND = re.compile(rf"(?:^|[|;&(]|\$\()\s*({SHELL_FILE_COMMAND})\b")
 SPAN_SHELL_COMMAND = re.compile(rf"^{SHELL_FILE_COMMAND}(?:\s|$)")
 
 
@@ -762,20 +774,19 @@ def trailing_wildcard(pattern: str) -> str:
 
 
 def runs_repository_code(script: Path) -> bool:
-    """Whether a Python script declares, as a module-level non-empty string, that it starts repository code."""
+    """Whether a Python script declares, as a module-level non-empty string, that it starts repository code: one
+    statement at its top level binds the name, and module_assignments' sole_assignment reads it as that name alone,
+    so a chained, unpacking, augmented, or repeated assignment declares nothing, which validation refuses."""
     text = read_text(script) if script_is_present(script) else None
     try:
         tree = python_reader.parse(text or "")
     except python_reader.CONTENT_ERRORS:
         return False
-    for node in tree.body:
-        targets = (
-            node.targets if isinstance(node, ast.Assign) else [node.target] if isinstance(node, ast.AnnAssign) else []
-        )
-        value = node.value if isinstance(node, ast.Assign | ast.AnnAssign) else None
-        if any(isinstance(target, ast.Name) and target.id == REPOSITORY_CODE_DECLARATION for target in targets):
-            return isinstance(value, ast.Constant) and isinstance(value.value, str) and bool(value.value.strip())
-    return False
+    binding = [node for node in tree.body if REPOSITORY_CODE_DECLARATION in assigned_names(node)]
+    if len(binding) != 1 or (assignment := sole_assignment(binding[0])) is None:
+        return False
+    value = assignment[1]
+    return isinstance(value, ast.Constant) and isinstance(value.value, str) and bool(value.value.strip())
 
 
 def repository_code_commands(skill_dir: Path, commands: list[tuple[int, str]]) -> frozenset[str]:
@@ -1808,7 +1819,7 @@ def scan(given: list[Path]) -> list[str]:
             if language is not None:
                 cues = [cue for cue in cues if cue in CODE_CUES]
             shell = (
-                FENCE_SHELL_COMMAND.search(line)
+                runs_file_command(line)
                 if language is not None
                 else any(SPAN_SHELL_COMMAND.match(span.strip()) for span in CODE_SPAN.findall(line))
             )
@@ -1830,6 +1841,44 @@ def scan(given: list[Path]) -> list[str]:
         + sample_lines(runtime_prompts)
         + [line for path in given if is_directory(path, other_is_absent=True) for line in status_lines(path)]
     )
+
+
+def runs_file_command(line: str) -> bool:
+    """Whether a fenced line runs one of SHELL_FILE_COMMANDS where Bash starts a command, read as git_subcommands reads
+    a command: at the line's start, after an operator, in a group, a subshell, or a substitution, past its leading
+    keywords and assignments, each read only unquoted, and Bash's time keyword, through each wrapper of
+    command_wrappers' catalogue, and into the script eval or a shell's -c runs, so `then cat x`, `A=1 grep x`, and
+    `xargs wc -l` each run one, and `'then' cat x` runs the program `then`."""
+    starts = git_subcommands.CommandStarts()
+    for match in git_subcommands.SHELL_COMMAND.finditer(line):
+        start, command = match.groups()
+        if not starts.runs(start, command):
+            continue
+        spelled = git_subcommands.spelled_words(command)
+        words, spellings = [word for word, _ in spelled], [spelling for _, spelling in spelled]
+        if command_runs_file_command(words, spellings, reserved=start not in command_wrappers.PIPES):
+            return True
+    return False
+
+
+def command_runs_file_command(words: list[str], spellings: list[str], reserved: bool) -> bool:
+    """Whether a simple command, given its words and each word as written, runs one of SHELL_FILE_COMMANDS, read past
+    what `runs_file_command` names; a wrapper whose program no literal names runs none this can see."""
+    words = words[git_subcommands.program_start(spellings, reserved) :]
+    while words:
+        head, rest = words[0], words[1:]
+        name = command_wrappers.bash_program(head)
+        if name in SHELL_FILE_COMMANDS:
+            return True
+        if head == "eval":
+            return runs_file_command(" ".join(rest))
+        if name in command_wrappers.SCRIPT_SHELLS:
+            index = command_wrappers.shell_script_index(rest)
+            return index is not None and runs_file_command(rest[index])
+        words = command_wrappers.unwrapped([name, *rest])
+        if words and words[0].startswith(command_wrappers.UNREAD_PROGRAM):
+            return False
+    return False
 
 
 def delegation_lines(

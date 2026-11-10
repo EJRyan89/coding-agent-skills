@@ -17,13 +17,20 @@ FOREIGN = {
     "pull-request-ref": "its branch main follows refs/pull/7/head, a pull request's ref",
     "another-remote": "its branch main follows someone, not origin",
     "detached-unheld": "its HEAD is detached at a commit no branch of origin holds",
+    "detached-mirrored-pull-request": "its HEAD is detached at a commit no branch of origin holds",
 }
+
+# The fetch refspec git clone gives origin, and the one that mirrors its pull requests' heads beside its branches.
+BRANCHES_REFSPEC = "+refs/heads/*:refs/remotes/origin/*"
+PULL_REQUESTS_REFSPEC = "+refs/pull/*/head:refs/remotes/origin/pr/*"
 
 
 def own_checkout(root: Path, git: GitClient) -> Path:
-    """A checkout at `root` on main, two commits deep, whose origin/main holds only the first."""
+    """A checkout at `root` on main, two commits deep, whose origin/main holds only the first, with the fetch refspec
+    git clone gives origin."""
     for arguments in (
         ["init", "-q", "-b", "main"],
+        ["config", "remote.origin.fetch", BRANCHES_REFSPEC],
         [*AUTHOR, "commit", "-q", "--allow-empty", "-m", "one"],
         ["update-ref", "refs/remotes/origin/main", "HEAD"],
         [*AUTHOR, "commit", "-q", "--allow-empty", "-m", "two"],
@@ -37,6 +44,14 @@ def follow(root: Path, git: GitClient, remote: str, merge: str) -> None:
     git.output(["config", "branch.main.merge", merge], directory=root)
 
 
+def detach_at_mirrored_pull_request(root: Path, git: GitClient) -> None:
+    """Mirror pull request 7's head, at the commit origin/main does not hold, under refs/remotes/origin/pr/7 as
+    PULL_REQUESTS_REFSPEC fetches it, and detach HEAD there."""
+    git.output(["config", "--add", "remote.origin.fetch", PULL_REQUESTS_REFSPEC], directory=root)
+    git.output(["update-ref", "refs/remotes/origin/pr/7", "HEAD"], directory=root)
+    git.output(["checkout", "-q", "--detach", "refs/remotes/origin/pr/7"], directory=root)
+
+
 def make_foreign(root: Path, git: GitClient, case: str) -> str:
     """Turn the own checkout at `root` into the case of FOREIGN named `case`, and return its reason."""
     if case == "pull-request-ref":
@@ -45,6 +60,8 @@ def make_foreign(root: Path, git: GitClient, case: str) -> str:
         follow(root, git, "someone", "refs/heads/topic")
     elif case == "detached-unheld":
         git.output(["checkout", "-q", "--detach", "HEAD"], directory=root)
+    elif case == "detached-mirrored-pull-request":
+        detach_at_mirrored_pull_request(root, git)
     else:
         raise ValueError(f"no such case {case}")
     return FOREIGN[case]

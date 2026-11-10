@@ -110,6 +110,7 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[4] / "skills" / "ejryan89-skill-core" / "scripts"))
 
+import calendar_date
 import guidance_record
 import json_reader
 import json_writer
@@ -130,7 +131,6 @@ from suite_names import is_suite_name
 
 # The rotation record, relative to the top of the repository it describes.
 RECORD_PATH = ".claude/skills/audit-repository/references/rotation.json"
-DATE_FORMAT = re.compile(r"\d{4}-\d{2}-\d{2}")
 # The most files one reader is given; a larger area is split between readers by directory.
 MAX_FILES_PER_READER = 60
 # Every briefs directory starts with this, directly in the temporary directory; remove-briefs deletes no other.
@@ -631,7 +631,7 @@ def record_entry(name: str, number: int, item: object) -> Entry:
     if not isinstance(item, dict) or set(item) != {"date", "tag", "area"}:
         raise AuditError(f"{name} audit {number} must have exactly a date, a tag, and an area")
     when, tag, area = item["date"], item["tag"], item["area"]
-    if not isinstance(when, str) or not DATE_FORMAT.fullmatch(when):
+    if not isinstance(when, str) or calendar_date.parse(when) is None:
         raise AuditError(f"{name} audit {number} has a date that is not YYYY-MM-DD")
     if not isinstance(tag, str) or not is_release_tag(tag):
         raise AuditError(f"{name} audit {number} has a tag that is not a release tag vX.Y.Z")
@@ -1227,14 +1227,30 @@ def pathspec_batches(paths: Sequence[str]) -> list[list[str]]:
     return batches
 
 
+def grep_pattern(line: str) -> str:
+    """The fixed text git grep is given for a construct line: the line itself, or, when it holds a backslash-E, its
+    longest part between them. git built with PCRE searches a fixed pattern as a PCRE pattern quoted between \\Q and
+    \\E, so a backslash-E inside the line would end that quote early, and git would fail on the rest or read it as a
+    regular expression; search_construct keeps only the hits that hold the whole line."""
+    if "\\E" not in line:
+        return line
+    # A line of nothing but backslash-Es has no part between them: every such line holds a backslash, which git reads
+    # as one inside its quote, and the whole line is matched afterwards.
+    return max(line.split("\\E"), key=len) or "\\"
+
+
 def search_construct(git: GitClient, repository: Path, head: str, construct: Sequence[str]) -> tuple[list[Hit], bool]:
     """Each line HEAD's tree holds that contains a line of the construct, as fixed text, at most MAX_HITS, and whether
     there were more. The patterns reach git grep on its stdin, so no command line limits them, and it exits 1 when
-    nothing matches, which is no hit, not a failure."""
+    nothing matches, which is no hit, not a failure. A line git is given only a part of, by grep_pattern, is matched
+    whole here. An empty line, which every line holds and construct_of never gives, is refused rather than searched or
+    passed over."""
     if not construct:
         return [], False
+    if "" in construct:
+        raise AuditError("git grep: an empty construct line names nothing to search for")
     arguments = ["grep", "-n", "-I", "-F", "-z", "--full-name", "-f", "-", head, "--"]
-    patterns = "".join(f"{line}\n" for line in construct).encode("utf-8")
+    patterns = "".join(f"{grep_pattern(line)}\n" for line in construct).encode("utf-8")
     try:
         found = git.quiet_output(arguments, directory=repository, input_bytes=patterns)
     except GitError as exc:
@@ -1247,6 +1263,8 @@ def search_construct(git: GitClient, repository: Path, head: str, construct: Seq
         fields = record.split("\0", 2)
         number = whole_number.parse(fields[1]) if len(fields) == 3 else None
         if number is None or not fields[0].startswith(prefix):
+            continue
+        if not any(line in fields[2] for line in construct):
             continue
         hits.append(Hit(fields[0][len(prefix) :], number, fields[2].strip()))
     return hits[:MAX_HITS], len(hits) > MAX_HITS
@@ -1646,7 +1664,7 @@ def main(
             else:
                 lines = duplicates(gh, options.queries)
     except AuditError as exc:
-        print(f"FAILED {exc}")
+        print(f"FAILED {flat_text(str(exc))}")
         return 1
     print("\n".join(lines))
     return 0

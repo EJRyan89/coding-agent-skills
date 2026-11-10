@@ -3,6 +3,7 @@ reading of a PowerShell source's commands it runs on (powershell_commands.py).""
 
 from __future__ import annotations
 
+import subprocess
 import sys
 from collections.abc import Sequence
 from pathlib import Path
@@ -81,6 +82,138 @@ def test_a_bash_script_runs_the_git_subcommand_after_gits_own_options(line: str,
     assert git_subcommands.bash_git_subcommands(line, no_powershell) == expected
 
 
+# A command starts wherever Bash starts one: at a line's start, after an operator, in a group, a subshell, or a
+# substitution, in each case item after its pattern's `)`, whichever of ;; ;& ;;& or a newline ends the item before
+# it, and in a function's body after its `()` or its name. A case word, a pattern, and a function's name run nothing,
+# and the `)` ending a subshell or a substitution starts no command.
+@pytest.mark.parametrize(
+    ("script", "expected"),
+    [
+        ('case "$x" in\n  up) git push ;;\nesac', {"push"}),
+        ("case x in y) git push;; esac", {"push"}),
+        ("case x in (y) git push;; esac", {"push"}),
+        ("case x in a|b) git push;; esac", {"push"}),
+        ("case x in a) git fetch;& b) git push;;& c) git pull;; esac", {"fetch", "push", "pull"}),
+        ("case x in a) git fetch\n;;\nb) git push\n;;\nesac", {"fetch", "push"}),
+        ("case x\nin\n a) git push;;\nesac", {"push"}),
+        ("case x in a) case y in b) git push;; esac;; c) git fetch;; esac", {"push", "fetch"}),
+        ("if true; then case x in a) git push;; esac; fi", {"push"}),
+        ("case x in a) git push;; esac\ngit fetch", {"push", "fetch"}),
+        ("case git in push) true;; esac", set()),
+        ("case x in git) true;; esac", set()),
+        ("f() { git push; }", {"push"}),
+        ("f () { git push; }", {"push"}),
+        ("function f { git push; }", {"push"}),
+        ("function f() { git push; }", {"push"}),
+        ("f() (git push)", {"push"}),
+        ("function git { true; }", set()),
+        ("(git push)", {"push"}),
+        ("(cd x) && git push", {"push"}),
+        ('x="$(date) git push"', set()),
+        # A backquote closes the substitution it opened, so the text after the closing one is read by where it stands:
+        # a case word's `in`, a pattern, or the rest of the command the substitution stands in.
+        ("case `uname` in\n  Linux) git push ;;\nesac", {"push"}),
+        ("case `uname` in Linux) git push;; esac", {"push"}),
+        ("case `uname\n` in Linux) git push;; esac", {"push"}),
+        ("case `echo $(uname)` in Linux) git push;; esac", {"push"}),
+        ("echo `date` git push", set()),
+        # A substitution in a quoted case word leaves the rest of that word before its `in`.
+        ('case "`uname`" in Linux) git push;; esac', {"push"}),
+        ('case "$(uname)" in Linux) git push;; esac', {"push"}),
+        ('case "a$(uname)b" in Linux) git push;; esac', {"push"}),
+    ],
+)
+def test_a_git_command_is_read_wherever_bash_starts_a_command(script: str, expected: set[str]) -> None:
+    assert git_subcommands.bash_git_subcommands(script, no_powershell) == expected
+
+
+# Bash runs the program a path names, and Git Bash the one named with .exe, so git named either way is git, as is a
+# shell whose -c script runs it; a name is matched as written, so Git and GIT.exe are no git in Bash.
+@pytest.mark.parametrize(
+    ("script", "expected"),
+    [
+        ("/usr/bin/git push", {"push"}),
+        ("git.exe push origin", {"push"}),
+        ("'/c/Program Files/Git/cmd/git.exe' fetch", {"fetch"}),
+        ('"$HOME/bin/git" push', {"push"}),
+        ('/bin/bash -c "git push"', {"push"}),
+        ("bash.exe -c 'git push'", {"push"}),
+        ("/usr/bin/env git push", {"push"}),
+        ("env /usr/bin/git push", {"push"}),
+        ("/usr/bin/find . -exec /usr/bin/git push {} +", {"push"}),
+        ("Git push", set()),
+        ("/usr/bin/Git push", set()),
+        ("GIT.exe push", set()),
+        ("legit.exe push", set()),
+        ("/usr/bin/git/ push", set()),
+    ],
+)
+def test_git_or_a_shell_named_by_a_path_or_with_exe_is_read_as_bash_runs_it(script: str, expected: set[str]) -> None:
+    assert git_subcommands.bash_git_subcommands(script, no_powershell) == expected
+
+
+# Bash recognizes a reserved word, time and its -p, and function only spelled with no quote or escape, and an
+# assignment only with its name and `=` unquoted: `'if' git push` runs a program named `if`, never git, while a
+# quoted value leaves an assignment one, and a quoted `time` is the time program, which runs git. A quoted case word
+# starts no case, so the git command after it is read.
+@pytest.mark.parametrize(
+    ("script", "expected"),
+    [
+        ("if git push; then :; fi", {"push"}),
+        ("'if' git push", set()),
+        ('"{" git push', set()),
+        ("\\! git push", set()),
+        ("'while' git push", set()),
+        ("th'en' git push", set()),
+        ("'function' f git push", set()),
+        ('"A=1" git push', set()),
+        ("A='1 2' git push", {"push"}),
+        ('A="x" B=y git push', {"push"}),
+        ("'time' git push", {"push"}),
+        ("time '-p' git push", set()),
+        ("! { git fetch; }", {"fetch"}),
+        ("'case' x in; git push", {"push"}),
+        ("\\git push", {"push"}),
+        ("'git' push", {"push"}),
+    ],
+)
+def test_a_quoted_or_escaped_keyword_or_assignment_is_read_as_the_program(script: str, expected: set[str]) -> None:
+    assert git_subcommands.bash_git_subcommands(script, no_powershell) == expected
+
+
+# Every wrapper of command_wrappers' catalogue runs the git command after it, sudo and setsid as env and nohup do.
+@pytest.mark.parametrize(
+    "script",
+    [
+        "sudo git push",
+        "sudo -u me A=1 git push",
+        "doas -u me git push",
+        "setsid -w git push",
+        "ionice -c 2 git push",
+        "chrt -f 10 git push",
+        "taskset -c 0 git push",
+        "chroot / git push",
+        "unbuffer -p git push",
+        "chronic -e git push",
+        "strace -f -o log git push",
+        "ltrace -o log git push",
+    ],
+)
+def test_the_git_command_a_wrapper_runs_is_read(script: str) -> None:
+    assert git_subcommands.bash_git_subcommands(script, no_powershell) == {"push"}
+
+
+def test_a_command_s_words_are_read_beside_their_spellings() -> None:
+    assert git_subcommands.spelled_words("'if' A=\"1 2\" \\! git") == [
+        ("if", "'if'"),
+        ("A=1 2", 'A="1 2"'),
+        ("!", "\\!"),
+        ("git", "git"),
+    ]
+    assert git_subcommands.spelled_words("git 'push") == [("git", "git"), ("push", "'push")]
+    assert git_subcommands.spelled_words("") == []
+
+
 # The script a pwsh or Windows PowerShell start-up runs is PowerShell, whose commands the caller's reader lists: by
 # -Command, -CommandWithArgs, or Windows PowerShell's first positional word, named by a path or with .exe too, and
 # behind a wrapper or in find's action.
@@ -142,6 +275,13 @@ def test_a_start_up_whose_script_no_reader_sees_gives_no_subcommand(words: list[
         ([["Git", "push"]], {"push"}),
         ([["GIT", "-C", "dir", "fetch"]], {"fetch"}),
         ([[UNREAD_WORD, "push"]], set()),
+        # A program named by a path, either slash, or with .exe in any case is the program its file name names.
+        ([["C:/Program Files/Git/cmd/git", "push"]], {"push"}),
+        ([["C:\\Program Files\\Git\\cmd\\GIT.EXE", "fetch"]], {"fetch"}),
+        ([["/usr/bin/git", "push"]], {"push"}),
+        ([["C:/Program Files/Git/bin/bash.exe", "-c", "git push"]], {"push"}),
+        ([["/usr/bin/env", "git", "push"]], {"push"}),
+        ([["C:/tools/legit.exe", "push"]], set()),
     ],
 )
 def test_a_powershell_scripts_commands_give_the_git_subcommands_they_run(
@@ -200,6 +340,17 @@ def test_pwsh_that_cannot_be_found_or_cannot_list_the_commands_is_refused(monkey
     monkeypatch.setattr(powershell_commands, "find_executable", lambda name: None)
     with pytest.raises(powershell_commands.PowerShellUnread, match="pwsh was not found"):
         powershell_commands.read(["git push"])
+
+
+def test_pwsh_s_last_line_is_split_on_newlines_alone(monkeypatch: pytest.MonkeyPatch) -> None:
+    # A word holding U+0085 or U+2028, which a JSON string may carry unescaped, stays in the one line pwsh printed.
+    listing = '[{"source": 0, "name": "git", "words": ["commit", "-m", "a\u0085b\u2028c"]}]'
+    stdout = f"warming up\r\n{listing}\r\n\r\n".encode()
+    monkeypatch.setattr(powershell_commands, "find_executable", lambda name: name)
+    monkeypatch.setattr(
+        powershell_commands, "run_bounded", lambda *_, **__: subprocess.CompletedProcess([], 0, stdout, b"")
+    )
+    assert powershell_commands.read(["git commit"]) == [[["git", "commit", "-m", "a\u0085b\u2028c"]]]
 
 
 def test_a_source_json_cannot_write_is_refused_before_pwsh_starts() -> None:

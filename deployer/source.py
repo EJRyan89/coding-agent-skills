@@ -36,8 +36,12 @@ SKILL_NAME_PATTERN = re.compile(r"^[a-z0-9]([a-z0-9-]*[a-z0-9])?$")
 # not contain a reserved word, and neither its name nor its description an XML tag. The naming grammar already keeps
 # angle brackets out of a name.
 AGENT_SKILLS_RULE = "which the Agent Skills frontmatter rules forbid"
-# The step a source.json the deployer cannot read takes: the checkout's own copy is the one to put back.
-SOURCE_JSON_REMEDY = "Put back the checkout's source.json, for example with 'git checkout -- source.json', then retry."
+# The step a source.json the deployer cannot read takes: the checkout's own copy is the one to put back. It names a
+# git command a guarded hub allows, where a deployment runs, rather than one that writes the work tree.
+SOURCE_JSON_REMEDY = (
+    "Put back the checkout's source.json as its last commit holds it, which 'git show HEAD:source.json' prints, "
+    "then retry."
+)
 # The names the deployer reads a source by, each spelled only as here: Windows opens another case's spelling as the
 # name, where Linux passes it over, so either platform would deploy a source the other refuses or reads otherwise.
 SOURCE_JSON = "source.json"
@@ -358,19 +362,36 @@ def _load_skill(paths: Paths, name: str, directories: dict[str, Path]) -> Skill:
         or not isinstance(opt_in, bool)
     ):
         raise shape_error
+    metadata_file = f"deploy-meta/{name}.json"
     if opt_in and not selectable:
-        raise DeployError(f"ERROR: Skill '{name}' is opt-in but not selectable; only menu items can be opt-in")
+        raise DeployError(
+            f"ERROR: Skill '{name}' is opt-in but not selectable; only menu items can be opt-in",
+            f'Set selectable to true or opt_in to false in {metadata_file}; see "Opt-in skills and bundles" in '
+            "docs/adding-a-skill.md.",
+        )
     known = set(DERIVED_VARIABLES) | set(CONFIGURED_VARIABLES)
     for variable in required:
         if variable not in known:
-            raise DeployError(f"ERROR: Skill '{name}' requires unknown variable '{variable}'")
+            raise DeployError(
+                f"ERROR: Skill '{name}' requires unknown variable '{variable}'",
+                f"Remove it from required_vars in {metadata_file}, or declare it in deployer/config.py; see "
+                '"Template values" in docs/adding-a-skill.md.',
+            )
     for tool in [*tools, *optional_tools]:
         if tool not in SKILL_TOOLS:
             known_tools = ", ".join(sorted(SKILL_TOOLS))
-            raise DeployError(f"ERROR: Skill '{name}' declares unknown tool '{tool}' (known tools: {known_tools})")
+            raise DeployError(
+                f"ERROR: Skill '{name}' declares unknown tool '{tool}' (known tools: {known_tools})",
+                f"Name a known tool in {metadata_file}, or add this one to deployer/tools.py; see "
+                '"Commands skills may run" in docs/adding-a-skill.md.',
+            )
     both = sorted(set(tools) & set(optional_tools))
     if both:
-        raise DeployError(f"ERROR: Skill '{name}' declares tool '{both[0]}' both required and optional")
+        raise DeployError(
+            f"ERROR: Skill '{name}' declares tool '{both[0]}' both required and optional",
+            f'Keep it in tools or in optional_tools in {metadata_file}, not both; see "Metadata" in '
+            "docs/adding-a-skill.md.",
+        )
     return Skill(
         name=name,
         directory=directory,

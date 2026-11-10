@@ -29,6 +29,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-cor
 
 import json_reader
 import json_writer
+from analyzer_config import analyzer_config_lines, read_line, roslyn_lower
 from dotnet_solution import read_bounded, read_text
 from flat_text import flat_text
 from msbuild_xml import is_sdk_style, local_name
@@ -74,7 +75,6 @@ MSBUILD_PROPERTY_PREFIXES = ("AnalysisLevel", "AnalysisMode")
 DIAGNOSTIC_KEY = re.compile(r"dotnet_(?:analyzer_)?diagnostic(?:\.[^\s=]+)?\.severity", re.IGNORECASE)
 GLOBAL_KEYS = frozenset({"is_global", "global_level"})
 TOP_SECTION = "\x00top"
-SECTION_HEADER = re.compile(r"\[(.+)\]")
 RULE_SELECTIONS = ("select", "extend-select", "ignore", "extend-ignore")
 FLAKE8_SELECTIONS = ("select", "extend-select", "ignore", "extend-ignore", "extend_select", "extend_ignore")
 PYPROJECT_TOOLS = {"pylint": "pylint", "mypy": "mypy", "pyright": "pyright", "flake8": "flake8", "bandit": "bandit"}
@@ -212,25 +212,24 @@ def _msbuild(found: _Inventory, path: str, text: str) -> None:
 
 
 def _editorconfig(found: _Inventory, path: str, text: str) -> None:
-    # One `key = value` per line: EditorConfig has no continuation lines, so indentation means nothing. A repeated
-    # section or key merges into its first position and the last value wins.
-    sections: dict[str, dict[str, str]] = {TOP_SECTION: {}}
+    # Lines as the compiler reads them (`analyzer_config.read_line`): broken only where the compiler breaks a line,
+    # `=` or `:` after a key, and a `#` or `;` after a value or a header starting a comment. There are no
+    # continuation lines, so indentation means nothing. A repeated section merges into its first position, and a key
+    # the compiler reads as the same, in any case, keeps its first position and its last spelling and value. A line
+    # the compiler reads as setting nothing leaves the file unread here, so no setting is guessed past it.
+    sections: dict[str, dict[str, tuple[str, str]]] = {TOP_SECTION: {}}
     current = sections[TOP_SECTION]
-    for line in text.splitlines():
-        stripped = line.strip()
-        if not stripped or stripped.startswith(("#", ";")):
-            continue
-        header = SECTION_HEADER.fullmatch(stripped)
-        key, equals, value = stripped.partition("=")
-        if header:
-            current = sections.setdefault(header.group(1), {})
-        elif equals and key.strip():
-            current[key.strip()] = value.strip()
-        else:
+    for terminated in analyzer_config_lines(text):
+        line = read_line(terminated)
+        if line.kind == "section":
+            current = sections.setdefault(line.name, {})
+        elif line.kind == "property":
+            current[roslyn_lower(line.name)] = (line.name, line.value)
+        elif line.kind == "other":
             raise _Unparsed("a line that is neither a section nor a setting")
     for section, values in sections.items():
-        for key, value in values.items():
-            if DIAGNOSTIC_KEY.fullmatch(key) or key.casefold() in GLOBAL_KEYS:
+        for lowered, (key, value) in values.items():
+            if DIAGNOSTIC_KEY.fullmatch(key) or lowered in GLOBAL_KEYS:
                 prefix = "" if section == TOP_SECTION else f"[{section}] "
                 found.setting(path, f"{prefix}{key} = {value}")
 

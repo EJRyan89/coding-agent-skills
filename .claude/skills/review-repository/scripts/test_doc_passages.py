@@ -48,6 +48,22 @@ class UnitTests(unittest.TestCase):
             [(unit.line, unit.text, unit.code) for unit in doc_passages.units(text)],
         )
 
+    def test_block_rules_are_read_as_commonmark_reads_them(self) -> None:
+        # A no-break space or an Arabic-Indic digit opens no list item, `#tag` is no heading, and a fence inside a
+        # blockquote or a list item is a fenced block whose closer ends it.
+        text = (
+            "Text\n-\u00a0dash\n\u0661. digit\n#tag\n\n> ```\n> quoted\n> ```\nAfter quote.\n\n- ```\n  listed\n  ```\n"
+        )
+        self.assertEqual(
+            [
+                (1, "Text\n-\u00a0dash\n\u0661. digit\n#tag", False),
+                (7, "quoted", True),
+                (9, "After quote.", False),
+                (12, "  listed", True),
+            ],
+            [(unit.line, unit.text, unit.code) for unit in doc_passages.units(text)],
+        )
+
 
 class ConditionTests(unittest.TestCase):
     def setUp(self) -> None:

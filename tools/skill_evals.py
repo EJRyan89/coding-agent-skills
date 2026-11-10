@@ -161,8 +161,9 @@ only 0, and null means the boundary was never exercised.
 A run vouches for the checkout it deploys: a scenario's fixture is trusted input, as review_canary.py says, since its
 manifest names the condition scripts a review runs, and the homes run this checkout's skills, in sessions signed in as
 the user. Before anything runs, the run therefore refuses a checkout that follows another repository's pull request:
-a branch whose upstream is a pull request's ref (refs/pull/...) or a remote other than origin, as `gh pr checkout`
-sets for one, and a detached HEAD at a commit no branch of origin holds. A branch with no upstream, or one that follows
+a branch whose upstream is a pull request's ref (refs/pull/...), a remote other than origin, or another ref that is
+not a branch, as `gh pr checkout` sets for one, and a detached HEAD at a commit no branch of origin holds, a pull
+request's head mirrored under refs/remotes/origin being no branch. A branch with no upstream, or one that follows
 origin's branch or a local one, is the user's own. A pull request from another author is read in full, as its code
 is, before its scenarios run; "Skill evaluations" in docs/skill-evaluations.md states the rule.
 

@@ -73,7 +73,16 @@ from conditions import (
     unset_variables_line,
 )
 from console import run_main
-from markdown_sections import COMMONMARK_CODE_SPAN
+from markdown_sections import (
+    ATX_HEADING,
+    COMMONMARK_CODE_SPAN,
+    MARKDOWN_SPACE,
+    MAX_BLOCK_INDENT,
+    find_fences,
+    indentation,
+    is_blank,
+    list_item,
+)
 
 DUPLICATION_ALLOWED = {
     "EXIT_CONTRACT_EXEMPT": (
@@ -111,9 +120,10 @@ MAX_PASSAGE_CHARACTERS = 1200
 
 HUNK = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@ ?(.*)$")
 DEFINITION = re.compile(r"^(async\s+def|def|class)\s+([A-Za-z_]\w*)")
-FENCE = re.compile(r"^\s*(```|~~~)")
-LIST_ITEM = re.compile(r"^\s*(?:[-*+]|\d+[.)])\s")
-TABLE_SEPARATOR = re.compile(r"^\s*\|[\s:|-]+\|\s*$")
+# A table's delimiter row, which holds no passage. ejryan89-skill-core's markdown_sections reads every other block
+# rule a passage is split by, as CommonMark does: a fence, a list item, a heading, and the space and the tab as
+# Markdown's whitespace.
+TABLE_SEPARATOR = re.compile(r"[ \t]*\|[ \t:|-]+\|[ \t]*")
 
 
 @dataclass(frozen=True)
@@ -257,37 +267,46 @@ def unsearched(root: Path) -> list[tuple[str, str]]:
     )
 
 
+def _single_line(line: str) -> bool:
+    """Whether a line is a passage of its own: an ATX heading, or a table row, indented at most MAX_BLOCK_INDENT
+    columns."""
+    return ATX_HEADING.fullmatch(line) is not None or (
+        indentation(line) <= MAX_BLOCK_INDENT and line.lstrip(MARKDOWN_SPACE).startswith("|")
+    )
+
+
 def units(text: str) -> Iterator[Unit]:
-    """A document's passages: each heading, table row, list item, paragraph, and fenced block, with its first line."""
+    """A document's passages: each heading, table row, list item, paragraph, and fenced block, with its first line.
+    Fences, list items, headings, and blank lines are read through ejryan89-skill-core's markdown_sections."""
+    lines = text.replace("\r\n", "\n").split("\n")
+    fences = {fence.opener: fence for fence in find_fences(lines)}
     block: list[str] = []
     start = 0
-    fence: str | None = None
-    for number, line in enumerate(text.replace("\r\n", "\n").split("\n"), 1):
-        opening = FENCE.match(line)
-        if fence is not None:
-            if opening and opening.group(1) == fence:
-                if block:
-                    yield Unit(start, "\n".join(block), True)
-                block, fence = [], None
-            else:
-                block.append(line)
-            continue
-        single = line.lstrip().startswith(("#", "|"))
-        if opening or not line.strip() or single or LIST_ITEM.match(line):
+    index = 0
+    while index < len(lines):
+        line, number = lines[index], index + 1
+        fence = fences.get(index)
+        single = fence is None and _single_line(line)
+        if fence is not None or is_blank(line) or single or list_item(line) is not None:
             if block:
                 yield Unit(start, "\n".join(block).strip(), False)
             block = []
-        if opening:
-            start, fence = number + 1, opening.group(1)
-        elif single:
-            if not TABLE_SEPARATOR.match(line):
-                yield Unit(number, line.strip(), False)
-        elif line.strip():
+        if fence is not None:
+            body = [fence.text(lines[inside]) for inside in fence.body()]
+            if body:
+                yield Unit(number + 1, "\n".join(body), True)
+            index = fence.lines().stop
+            continue
+        if single:
+            if not TABLE_SEPARATOR.fullmatch(line):
+                yield Unit(number, line.strip(MARKDOWN_SPACE), False)
+        elif not is_blank(line):
             if not block:
                 start = number
             block.append(line)
+        index += 1
     if block:
-        yield Unit(start, "\n".join(block).strip(), fence is not None)
+        yield Unit(start, "\n".join(block).strip(), False)
 
 
 def passages(root: Path, names: list[Name]) -> list[Passage]:

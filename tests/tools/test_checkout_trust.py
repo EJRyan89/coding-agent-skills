@@ -13,7 +13,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts"))
 
-from checkout_fixture import FOREIGN, follow, make_foreign, own_checkout
+from checkout_fixture import BRANCHES_REFSPEC, FOREIGN, PULL_REQUESTS_REFSPEC, follow, make_foreign, own_checkout
 from git_client import GitClient, GitError, GitResult, subprocess_runner
 
 from conftest import GitHome
@@ -101,6 +101,64 @@ class CheckoutTests(unittest.TestCase):
             checkout_trust.origin_branches_holding_head(self.git, self.root),
         )
 
+    def test_a_detached_head_at_a_mirrored_pull_request_s_head_in_a_clone_is_refused(self) -> None:
+        # A fork's pull request reaches origin as refs/pull/7/head; a clone that mirrors pull requests' heads fetches
+        # it to refs/remotes/origin/pr/7, which is not a branch of origin however its name reads.
+        origin = temporary_root(self)
+        self.git.output(["clone", "-q", "--bare", str(self.root), str(origin)])
+        self.git.output(["update-ref", "refs/pull/7/head", "refs/heads/main"], directory=origin)
+        self.git.output(["update-ref", "refs/heads/main", "refs/heads/main~1"], directory=origin)
+        clone = temporary_root(self)
+        self.git.output(["clone", "-q", str(origin), str(clone)])
+        self.git.output(["config", "--add", "remote.origin.fetch", PULL_REQUESTS_REFSPEC], directory=clone)
+        self.git.output(["fetch", "-q", "origin"], directory=clone)
+        self.git.output(["checkout", "-q", "--detach", "refs/remotes/origin/pr/7"], directory=clone)
+        self.assertEqual([], checkout_trust.origin_branches_holding_head(self.git, clone))
+        self.assertEqual(
+            "its HEAD is detached at a commit no branch of origin holds",
+            checkout_trust.foreign_checkout(self.git, clone),
+        )
+        self.git.output(["checkout", "-q", "--detach", "refs/remotes/origin/main"], directory=clone)
+        self.assertIsNone(checkout_trust.foreign_checkout(self.git, clone))
+
+    def test_a_ref_counts_only_when_origin_s_refspecs_write_it_from_a_branch_alone(self) -> None:
+        self.git.output(["update-ref", "refs/remotes/origin/pr/7", "HEAD"], directory=self.root)
+        self.git.output(["update-ref", "refs/remotes/origin/topic", "HEAD"], directory=self.root)
+        self.git.output(["update-ref", "refs/mirror/heads/side", "HEAD"], directory=self.root)
+        cases: dict[tuple[str, ...], list[str]] = {
+            # No fetch refspec: nothing is a branch of origin, its name under refs/remotes/origin notwithstanding.
+            (): [],
+            # The clone's refspec alone writes origin/pr/7 from a branch named pr/7.
+            (BRANCHES_REFSPEC,): ["refs/remotes/origin/pr/7", "refs/remotes/origin/topic"],
+            # A pull request's refspec may write origin/pr/7 too, so it is never read as a branch.
+            (BRANCHES_REFSPEC, PULL_REQUESTS_REFSPEC): ["refs/remotes/origin/topic"],
+            (PULL_REQUESTS_REFSPEC,): [],
+            # A negative refspec leaves the branch it names out.
+            (BRANCHES_REFSPEC, "^refs/heads/topic"): ["refs/remotes/origin/pr/7"],
+            # A refspec with no star, and one that writes a branch outside refs/remotes/origin.
+            ("refs/heads/topic:refs/remotes/origin/topic", "+refs/heads/*:refs/mirror/heads/*"): [
+                "refs/mirror/heads/side",
+                "refs/remotes/origin/topic",
+            ],
+            # A mirror clone's refspec writes every ref from its own name, and only refs/heads/ is a branch.
+            ("+refs/*:refs/*",): ["refs/heads/main"],
+            # A refspec with no destination writes no local ref.
+            ("refs/heads/topic",): [],
+        }
+        for refspecs, held in cases.items():
+            with self.subTest(refspecs=refspecs):
+                if self.git.quiet_output(["config", "--get-all", "remote.origin.fetch"], directory=self.root):
+                    self.git.output(["config", "--unset-all", "remote.origin.fetch"], directory=self.root)
+                for refspec in refspecs:
+                    self.git.output(["config", "--add", "remote.origin.fetch", refspec], directory=self.root)
+                self.assertEqual(held, checkout_trust.origin_branches_holding_head(self.git, self.root))
+
+    def test_a_branch_following_origin_at_a_ref_that_is_not_a_branch_is_refused(self) -> None:
+        for merge in ("refs/merge-requests/7/head", "refs/remotes/origin/pr/7", "refs/tags/v1"):
+            with self.subTest(merge=merge):
+                follow(self.root, self.git, "origin", merge)
+                self.assertEqual(f"its branch main follows {merge}, not a branch", self.foreign())
+
     def test_a_setting_or_head_git_cannot_read_raises_never_read_as_unset(self) -> None:
         refused = GitResult(1, "", "error: could not lock config file .git/config\n")
         for word in ("branch.main.remote", "branch.main.merge", "symbolic-ref"):
@@ -111,6 +169,18 @@ class CheckoutTests(unittest.TestCase):
             with self.subTest(word=word), self.assertRaises(GitError) as raised:
                 checkout_trust.foreign_checkout(GitClient(run), self.root)
             self.assertIn("could not lock config file", str(raised.exception))
+
+    def test_origin_s_refspecs_git_cannot_read_raise_never_read_as_unset(self) -> None:
+        self.git.output(["checkout", "-q", "--detach", "refs/remotes/origin/main"], directory=self.root)
+
+        def run(command: Sequence[str], timeout: float) -> GitResult:
+            if "remote.origin.fetch" in command:
+                return GitResult(1, "", "error: could not lock config file .git/config\n")
+            return subprocess_runner(command, timeout)
+
+        with self.assertRaises(GitError) as raised:
+            checkout_trust.foreign_checkout(GitClient(run), self.root)
+        self.assertIn("could not lock config file", str(raised.exception))
 
     def test_a_folder_git_cannot_read_raises(self) -> None:
         outside = self.root.parent / "not a checkout"

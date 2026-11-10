@@ -801,6 +801,9 @@ def test_a_race_in_unquoted_backticks_is_named_once(tmp_path: Path) -> None:
         pytest.param("set 0<&0 -o pipefail", id="after a <& redirection"),
         pytest.param("x=$(set -o pipefail)", id="in a substitution"),
         pytest.param("bash -o pipefail -c 'printf a | head -n 1'", id="a shell started with it"),
+        # A shell named by a path or with .exe is the shell its file name names.
+        pytest.param("/usr/bin/bash -o pipefail -c 'printf a | head -n 1'", id="a shell named by a path"),
+        pytest.param("bash.exe -o pipefail -c 'printf a | head -n 1'", id="a shell named with .exe"),
         pytest.param("env SHELLOPTS=pipefail bash -c 'printf a | head -n 1'", id="SHELLOPTS"),
         pytest.param("SHELLOPTS=braceexpand:pipefail bash -c 'printf a | head -n 1'", id="SHELLOPTS listing it"),
     ],
