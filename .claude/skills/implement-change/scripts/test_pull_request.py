@@ -452,6 +452,12 @@ class CheckCommandTests(Repository):
         self.assertEqual(1, code)
         self.assertTrue(lines[-1].startswith("FAILED cannot fetch main from nowhere: "), lines)
 
+    def test_a_failure_spanning_lines_is_one_failed_line(self) -> None:
+        refusal = pull_request.PullRequestError("git fetch: fatal: one\nfatal:\u2028two")
+        with mock.patch.object(pull_request, "run", side_effect=refusal):
+            code, lines = self.run_script("check", *self.files_arguments())
+        self.assertEqual((1, ["FAILED git fetch: fatal: one fatal: two"]), (code, lines))
+
     def test_an_unreadable_file_is_a_failed_line(self) -> None:
         self.body.unlink()
         code, lines = self.run_script("check", *self.files_arguments())

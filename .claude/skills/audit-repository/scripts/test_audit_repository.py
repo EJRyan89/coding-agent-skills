@@ -597,6 +597,7 @@ class ReleaseTests(Fixture):
             ("rev-parse", not_repository, f"FAILED {self.root.as_posix()} is not a Git repository"),
             ("for-each-ref", refusal, f"FAILED git for-each-ref: {refusal}"),
             ("for-each-ref", not_repository, f"FAILED {self.root.as_posix()} is not a Git repository"),
+            ("rev-parse", "fatal: one\nfatal:\ttwo", "FAILED git rev-parse: fatal: one fatal: two"),
         )
         for subcommand, stderr, expected in cases:
             with self.subTest(subcommand=subcommand, stderr=stderr):
@@ -1349,6 +1350,30 @@ def test_a_malformed_record_fails_with_the_reason(tmp_path: Path, text: str, rea
     with pytest.raises(audit.AuditError) as caught:
         audit.read_record(path)
     assert reason in str(caught.value)
+
+
+@pytest.mark.parametrize(
+    "when",
+    [
+        pytest.param("\u0662\u0660\u0662\u0666-\u0661\u0661-\u0660\u0669", id="arabic-indic-digits"),
+        pytest.param("2026-13-45", id="no-such-month"),
+        pytest.param("2026-02-30", id="no-such-day"),
+        pytest.param("20261109", id="basic-format"),
+    ],
+)
+def test_a_record_date_that_is_not_an_existing_ascii_date_fails(tmp_path: Path, when: str) -> None:
+    path = tmp_path / "rotation.json"
+    entry = {"date": when, "tag": "v1.0.0", "area": "code-review"}
+    path.write_text(json.dumps({"audits": [entry]}), encoding="utf-8")
+    with pytest.raises(audit.AuditError) as caught:
+        audit.read_record(path)
+    assert str(caught.value).endswith("audit 1 has a date that is not YYYY-MM-DD")
+
+
+def test_a_leap_day_is_a_record_date(tmp_path: Path) -> None:
+    path = tmp_path / "rotation.json"
+    path.write_text('{"audits": [{"date": "2028-02-29", "tag": "v1.0.0", "area": "code-review"}]}', encoding="utf-8")
+    assert [audit.Entry("2028-02-29", "v1.0.0", "code-review")] == audit.read_record(path)
 
 
 def test_a_record_is_read_as_utf_8_whatever_the_platform_s_codec(tmp_path: Path) -> None:
