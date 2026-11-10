@@ -305,6 +305,16 @@ class MatchingTests(unittest.TestCase):
             with self.subTest(pattern=pattern):
                 self.assertEqual(sorted(self.root.glob(pattern)), matching(self.root, pattern))
 
+    def test_two_names_the_file_system_keeps_apart_are_two_matches(self) -> None:
+        # Windows' path comparison lowers the Kelvin sign to k, while its file system keeps the sign and K apart.
+        folder = self.root / "kelvin"
+        folder.mkdir()
+        kelvin = "\u212a.dll"
+        for name in (kelvin, "K.dll"):
+            (folder / name).write_text("", encoding="utf-8")
+        self.assertEqual(sorted([kelvin, "K.dll"]), sorted(path.name for path in matching(folder, "*.dll")))
+        self.assertEqual(2, len(matching(self.root, "**/*.dll")))
+
     def test_nothing_at_the_folder_matches_nothing_and_something_else_is_refused(self) -> None:
         self.assertEqual([], matching(self.root / "missing", "*"))
         self.assertEqual([], matching(self.root / "a.py" / "below", "*"))

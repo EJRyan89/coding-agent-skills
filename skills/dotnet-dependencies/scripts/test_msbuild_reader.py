@@ -573,6 +573,121 @@ def test_a_framework_key_is_the_name_case_folded() -> None:
     assert framework_key(".NETFoo,Version=v1.0") == ".netfoo,version=v1.0"
 
 
+@pytest.mark.parametrize(
+    ("expected", "first", "second"),
+    [
+        # Arabic-Indic and full-width digits are no version digits to NuGet's framework parser, so a long name holding
+        # them is no short one, and a platform version of them is not trimmed as a version.
+        (False, ".NETFramework,Version=v\u0664.\u0668", "net\u0664\u0668"),
+        (False, ".NETCoreApp,Version=v\uff18.0", "net\uff18.0"),
+        (False, "net8.0-windows\u0661\u0660.0", "net8.0-windows\u0661\u0660"),
+        # The long s and the Kelvin sign are no s or k to .NET's ordinal comparison ignoring case.
+        (False, "net48-klient", ".NETFramework,Version=v4.8,Profile=\u212alient"),
+        (False, "netstandard2.0", "net\u017ftandard2.0"),
+        (False, "net8.0-ios", "NET8.0-IO\u017f"),
+        # A letter beyond ASCII matches its other case, as the ordinal comparison ignoring case finds it.
+        (True, "net8.0-\u00e9x", "NET8.0-\u00c9X"),
+        (True, "net48-client", ".NETFramework,Version=v4.8,Profile=CLIENT"),
+    ],
+)
+def test_a_framework_name_is_folded_and_its_digits_read_as_nuget_reads_them(
+    expected: bool, first: str, second: str
+) -> None:
+    assert expected is same_framework(first, second)
+    assert expected is same_framework(second, first)
+
+
+SHARP_S = "Lantern.Stra\u00dfe"
+CAFE = "Lantern.Caf\u00e9"
+CAFE_UPPER = "LANTERN.CAF\u00c9"
+KELVIN = "Lantern.\u212alient"
+# Every spelling, in an order no fold sorts them in: the sharp s and ss, the Kelvin sign and K, two cases of one
+# accented letter.
+SPELLINGS = ("Lantern.Strasz", SHARP_S, "Lantern.Strasse", KELVIN, "Lantern.Klient", CAFE)
+
+
+def nuspec_dependencies(root: Path) -> list[str]:
+    listed = "".join(
+        f'<dependency id="{name}" version="1.0.0" />' for name in (*SPELLINGS, CAFE_UPPER, "LANTERN.KLIENT")
+    )
+    path = root / "Lantern.Core.nuspec"
+    path.write_text(
+        f"<package><metadata><id>Lantern.Core</id><version>1.0.0</version><dependencies>{listed}"
+        "</dependencies></metadata></package>",
+        encoding="utf-8",
+    )
+    return list(read_nuspec(path).dependencies)
+
+
+def shipped_assemblies(root: Path) -> tuple[str, ...]:
+    lib = root / "Lantern.Core.1.0.0" / "lib" / "net45"
+    lib.mkdir(parents=True)
+    for name in SPELLINGS:
+        (lib / f"{name}.dll").write_text("", encoding="utf-8")
+    return package_assemblies(root / "Lantern.Core.1.0.0")
+
+
+def restored_assemblies(root: Path) -> tuple[str, ...]:
+    compile_entries: dict[str, object] = {f"lib/net8.0/{name}.dll": {} for name in SPELLINGS}
+    return msbuild_reader.assets_assemblies({"compile": compile_entries}, root / "project.assets.json", "Lantern.Core")
+
+
+def restored_folder(root: Path, recorded: str, restored: str) -> str:
+    """Where a project a restore recorded in `recorded`, beside the restored project in `restored`, is after the
+    checkout moved to `moved`."""
+    found = msbuild_reader.restored_path(
+        (root / "w" / recorded / "Lib" / "Lib.csproj").as_posix(),
+        (root / "w" / restored / "App" / "App.csproj").as_posix(),
+        root / "moved" / restored / "App",
+    )
+    return found.relative_to(root).as_posix()
+
+
+READER_ROWS: list[tuple[str, Callable[[Path], object], object]] = [
+    # read_nuspec keeps the first of each dependency spelled alike, ordinally ignoring case.
+    (
+        "read_nuspec",
+        nuspec_dependencies,
+        ["Lantern.Strasz", SHARP_S, "Lantern.Strasse", KELVIN, "Lantern.Klient", CAFE],
+    ),
+    # package_assemblies and assets_assemblies list each assembly in the order of its ordinal fold.
+    (
+        "package_assemblies",
+        shipped_assemblies,
+        (CAFE, "Lantern.Klient", "Lantern.Strasse", "Lantern.Strasz", SHARP_S, KELVIN),
+    ),
+    (
+        "assets_assemblies",
+        restored_assemblies,
+        (CAFE, "Lantern.Klient", "Lantern.Strasse", "Lantern.Strasz", SHARP_S, KELVIN),
+    ),
+    # restored_path shares a folder only where the two spellings are one name.
+    (
+        "restored_path: sharp s is not ss",
+        lambda root: restored_folder(root, "Stra\u00dfe", "Strasse"),
+        "moved/Stra\u00dfe/Lib/Lib.csproj",
+    ),
+    (
+        "restored_path: Kelvin sign is not K",
+        lambda root: restored_folder(root, "\u212alient", "Klient"),
+        "moved/\u212alient/Lib/Lib.csproj",
+    ),
+    (
+        "restored_path: other case matches",
+        lambda root: restored_folder(root, "Caf\u00e9", "CAF\u00c9"),
+        "moved/CAF\u00c9/Lib/Lib.csproj",
+    ),
+]
+
+
+@pytest.mark.parametrize(("reader", "read", "expected"), READER_ROWS, ids=[row[0] for row in READER_ROWS])
+def test_each_reader_compares_names_by_the_ordinal_fold(
+    reader: str, read: Callable[[Path], object], expected: object, tmp_path: Path
+) -> None:
+    # The sharp s and ss, and the Kelvin sign and K, are two names; an accented letter and its other case are one.
+    assert read(tmp_path.resolve()) == expected
+
+
 @contextlib.contextmanager
 def stat_failing_at(target: Path) -> Iterator[None]:
     """A stat of `target` alone fails, as on a path the script may not examine: Path.stat, os.stat, and os.lstat raise
