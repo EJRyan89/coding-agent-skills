@@ -124,6 +124,7 @@ TRUST_BOUNDARY_SCRIPTS = (
     # The merge shepherd's admission of a pull request whose head branch is in this repository.
     ".claude/skills/shepherd-pull-requests/scripts/shepherd_pull_requests.py",
     ".claude/skills/shepherd-pull-requests/scripts/test_shepherd_pull_requests.py",
+    f"{SKILL_CORE}/analyzer_config.py",
     f"{SKILL_CORE}/bounded_process.py",
     f"{SKILL_CORE}/device_names.py",
     f"{SKILL_CORE}/diff_paths.py",

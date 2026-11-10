@@ -442,6 +442,36 @@ class InventoryTests(unittest.TestCase):
             self.settings(result, "team.globalconfig"),
         )
 
+    def test_editorconfig_and_globalconfig_lines_are_read_as_the_compiler_reads_them(self) -> None:
+        paths = self.write(
+            {
+                # A colon separates a key from its value; a # or ; after a value or a header starts a comment; a
+                # form feed, which str.splitlines breaks at, is within a line; a next line ends one; and a key the
+                # compiler lowers to the same one is the same key.
+                ".editorconfig": "[*.cs] # C# files\n"
+                "dotnet_diagnostic.CA1000.severity: warning\n"
+                "dotnet_diagnostic.CA2000.severity = error ; too noisy\n"
+                "dotnet_diagnostic.CA3000.severity = none # \f note\n"
+                "dotnet_diagnostic.CA4000.severity = error\x85dotnet_diagnostic.CA5000.severity = none\n"
+                "dotnet_diagnostic.CA6000.severity = error\n"
+                "DOTNET_DIAGNOSTIC.CA6000.SEVERITY = none\n",
+                "team.globalconfig": "is_global: true # every project\nglobal_level = 100\n",
+            }
+        )
+        result = inventory(self.root, paths)
+        self.assertEqual(
+            [
+                "[*.cs] dotnet_diagnostic.CA1000.severity = warning",
+                "[*.cs] dotnet_diagnostic.CA2000.severity = error",
+                "[*.cs] dotnet_diagnostic.CA3000.severity = none",
+                "[*.cs] dotnet_diagnostic.CA4000.severity = error",
+                "[*.cs] dotnet_diagnostic.CA5000.severity = none",
+                "[*.cs] DOTNET_DIAGNOSTIC.CA6000.SEVERITY = none",
+            ],
+            self.settings(result, ".editorconfig"),
+        )
+        self.assertEqual(["is_global = true", "global_level = 100"], self.settings(result, "team.globalconfig"))
+
     def test_editorconfig_lines_that_are_neither_section_nor_setting_leave_it_unread(self) -> None:
         for text in ("[*.cs]\nbroken\n", "[*.cs]\n  = error\n", "[]\nroot = true\n"):
             with self.subTest(text=text):
