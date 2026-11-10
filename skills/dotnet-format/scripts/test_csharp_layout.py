@@ -21,6 +21,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
+import analyzer_config
 import atomic_file
 import csharp_layout as layout
 import dotnet_format_targets as targets
@@ -1195,7 +1196,7 @@ class ConfigTests(unittest.TestCase):
         )
         for text, lowered in cases:
             with self.subTest(text=text):
-                self.assertEqual(lowered, layout.roslyn_lower(text))
+                self.assertEqual(lowered, analyzer_config.roslyn_lower(text))
 
     def test_a_property_line_is_read_by_the_compilers_pattern(self) -> None:
         # Roslyn's s_propertyMatcher: ^\s*([\w\.\-_]+)\s*[=:]\s*(.*?)\s*([#;].*)?$, with .NET's \w (letters, nonspacing

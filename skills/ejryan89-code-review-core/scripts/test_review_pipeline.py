@@ -24,6 +24,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
+import file_presence
 import process_identity
 import review_batches
 import review_canary
@@ -1736,7 +1737,7 @@ class RetryTests(PipelineFixture):
         role = ready["roles"][0]
         result = Path(role["result_file"])
         self.write_role_result(role, findings=[self.finding(line=1)])  # line 1 is unchanged context
-        with mock.patch.object(review_dispatch.file_presence, "is_occupied", side_effect=PermissionError("denied")):
+        with mock.patch.object(file_presence, "is_occupied", side_effect=PermissionError("denied")):
             code, out, _ = self.run_main("check", "--run", str(ready["run"]))
         self.assertEqual(1, code)
         self.assertNotIn("RETRY", out, "no retry is handed out while the rejected result may still be there")
