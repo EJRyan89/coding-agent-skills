@@ -147,6 +147,7 @@ TRUST_BOUNDARY_SCRIPTS = (
     f"{SKILL_CORE}/msbuild_xml.py",
     f"{SKILL_CORE}/nesting_depth.py",
     f"{SKILL_CORE}/option_reader.py",
+    f"{SKILL_CORE}/ordinal_case.py",
     f"{SKILL_CORE}/path_containment.py",
     f"{SKILL_CORE}/path_keys.py",
     f"{SKILL_CORE}/pdf_tool.py",

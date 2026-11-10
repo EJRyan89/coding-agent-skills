@@ -46,6 +46,7 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
 import nesting_depth
+from ordinal_case import ordinal_fold, simple_uppercase
 
 # The values a property may hold at one point, in the order met: `""` for unset, None for one the reader cannot settle.
 Value = tuple[str | None, ...]
@@ -135,14 +136,14 @@ def file_above(function: str, arguments: list[str], files: FileSystem) -> str | 
     holding it, from the nearest folder at or above the directory that holds it; `""` when none does."""
     if len(arguments) != 2:
         return None
-    if function.casefold() == "getpathoffileabove":
+    if ordinal_fold(function) == "getpathoffileabove":
         name, start = arguments
     else:
         start, name = arguments
     folder = files.folder_above(name, start or files.directory)
     if folder is None or folder == "":
         return folder
-    return f"{folder.rstrip('/')}/{name}" if function.casefold() == "getpathoffileabove" else folder
+    return f"{folder.rstrip('/')}/{name}" if ordinal_fold(function) == "getpathoffileabove" else folder
 
 
 def property_expression(inner: str, lookup: Callable[[str], str | None], files: FileSystem, depth: int) -> str | None:
@@ -158,7 +159,7 @@ def property_expression(inner: str, lookup: Callable[[str], str | None], files: 
         if value is None:
             return None
         operation = {"startswith": value.startswith, "endswith": value.endswith, "contains": value.__contains__}
-        return str(operation[method.group(2).casefold()](method.group(3)))
+        return str(operation[ordinal_fold(method.group(2))](method.group(3)))
     function = FILE_ABOVE.fullmatch(inner)
     if function is not None:
         if depth >= nesting_depth.DEPTH_LIMIT:
@@ -195,7 +196,7 @@ def expand_one(text: str, lookup: Callable[[str], str | None], files: FileSystem
 def combinations(names: Iterable[str], value_of: Callable[[str], Value]) -> list[dict[str, str | None]] | None:
     """Each combination of the values the named properties may hold, keyed by the name case-folded, or None when there
     are more than `COMBINATION_LIMIT`."""
-    keys = list(dict.fromkeys(name.casefold() for name in names))
+    keys = list(dict.fromkeys(ordinal_fold(name) for name in names))
     choices = [value_of(key) for key in keys]
     count = 1
     for choice in choices:
@@ -206,7 +207,7 @@ def combinations(names: Iterable[str], value_of: Callable[[str], Value]) -> list
 
 
 def lookup_in(combination: dict[str, str | None]) -> Callable[[str], str | None]:
-    return lambda name: combination.get(name.casefold())
+    return lambda name: combination.get(ordinal_fold(name))
 
 
 def expanded(text: str, value_of: Callable[[str], Value], files: FileSystem) -> Value:
@@ -357,8 +358,8 @@ def tokenize(text: str) -> list[tuple[str, str]]:
 
 def word_token(word: str, rest: str) -> tuple[str, str]:
     """A bare word: the keyword `and` or `or` in any case, a function's name before a parenthesis, else a string."""
-    if word.casefold() in ("and", "or"):
-        return ("keyword", word.casefold())
+    if ordinal_fold(word) in ("and", "or"):
+        return ("keyword", ordinal_fold(word))
     return ("function", word) if rest.lstrip().startswith("(") else ("string", word)
 
 
@@ -405,26 +406,15 @@ def number(text: str) -> float | None:
     return float(value - (1 << INT32_BITS) if value >= 1 << (INT32_BITS - 1) else value)
 
 
-def _case_folded(character: str) -> str | None:
-    """A character as .NET's ordinal comparison ignoring case compares it, its simple uppercase, which never maps a
-    character beyond ASCII onto an ASCII one. Python gives only the full uppercase: where that is several characters,
-    as for `ß` or `ﬀ`, the simple one is the character itself, except where its titlecase is one character, as for a
-    Greek letter with a subscript iota, whose simple uppercase this cannot tell, so None."""
-    upper = character.upper()
-    if len(upper) != 1:
-        return None if len(character.title()) == 1 else character
-    return character if upper.isascii() and not character.isascii() else upper
-
-
 def same_text(left: str, right: str) -> bool | None:
     """Whether two strings are equal as MSBuild's `==` compares two that are neither both numbers nor both booleans,
     .NET's ordinal comparison ignoring case; None when a character's simple uppercase cannot be told."""
     if left.isascii() and right.isascii():
-        return left.lower() == right.lower()
+        return ordinal_fold(left) == ordinal_fold(right)
     if len(left) != len(right):
         return False
     folded = [
-        (_case_folded(first), _case_folded(second))
+        (simple_uppercase(first), simple_uppercase(second))
         for first, second in zip(left, right, strict=True)
         if first != second
     ]
@@ -461,9 +451,9 @@ def called(name: str, values: list[str | None], files: FileSystem) -> bool | Non
     value = values[0] if len(values) == 1 else None
     if value is None:
         return None
-    if name.casefold() == "exists":
+    if ordinal_fold(name) == "exists":
         return files.exists(value) if value.strip() else False
-    if name.casefold() == "hastrailingslash":
+    if ordinal_fold(name) == "hastrailingslash":
         return value.endswith(("/", "\\"))
     return None
 
