@@ -20,6 +20,7 @@ from skill_roots import sibling_scripts
 
 sys.path.insert(0, str(sibling_scripts("ejryan89-code-review-core")))
 
+import atomic_file
 import review_dispatch
 import review_hosts
 from presence_denial import denied as stat_denied
@@ -266,6 +267,24 @@ class RuntimePromptsTestCase(unittest.TestCase):
         runtime_prompts.write(self.root, renderers)
         self.assertEqual((False, False), (first.exists(), folder.exists()))
         self.assertEqual([], runtime_prompts.problems(self.root, renderers))
+
+    def test_an_extra_whose_read_only_question_fails_is_left_to_its_removal(self) -> None:
+        renderers = {"alpha": renderer({"reviewer": "Review it."})}
+        runtime_prompts.write(self.root, renderers)
+        folder = self.root / "docs" / "runtime-prompts" / "gamma"
+        folder.mkdir()
+        extra = folder / "old.txt"
+        extra.write_text("Gone.\n", encoding="utf-8")
+        asked = atomic_file.is_read_only
+
+        def is_read_only(path: Path) -> bool:
+            if path == extra:
+                raise PermissionError(errno.EACCES, "Access is denied", str(path))
+            return asked(path)
+
+        with mock.patch.object(atomic_file, "is_read_only", side_effect=is_read_only):
+            runtime_prompts.write(self.root, renderers)
+        self.assertEqual((False, False), (extra.exists(), folder.exists()), "its removal answers, and it goes")
 
     def test_each_skill_renders_its_prompts_without_a_model_and_bounds_their_replies(self) -> None:
         # The real renderers, into a throwaway root: every prompt the skills' scripts write today.
