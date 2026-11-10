@@ -42,7 +42,7 @@ from module_closure import MODULE_LOADERS
 from path_containment import posix_within
 from powershell_commands import COMMANDS_RUN, SOURCES_VARIABLE, UNREAD_WORD, command_words
 from powershell_startup import POWERSHELL_PROGRAMS, UnknownWord, startup_command
-from python_checks import PRINTS, sanctioned_problems
+from python_checks import PRINTS, git_client_classes, reaches, sanctioned_problems
 from skill_roots import SKILL_CORE
 from toolchain import powershell_json
 from validation_support import (
@@ -64,6 +64,7 @@ from validation_support import (
     import_aliases,
     is_main_guard,
     is_test_script,
+    literal_lookups,
     module_allowance,
     module_imports,
     module_lookup,
@@ -777,9 +778,15 @@ class CommandReader:
     command whose program it cannot read never passes unseen.
     """
 
-    def __init__(self, tree: ast.Module, runners: Mapping[str, tuple[int, str]] = COMMAND_RUNNERS) -> None:
+    def __init__(
+        self,
+        tree: ast.Module,
+        runners: Mapping[str, tuple[int, str]] = COMMAND_RUNNERS,
+        clients: Mapping[str, str] = CLIENT_CLASSES,
+    ) -> None:
         self.tree = tree
         self.runners = runners
+        self.known_clients = clients
         self.runner_attributes = frozenset(runner.rpartition(".")[2] for runner in runners)
         self.resolver = CallableResolver(tree)
         self.bindings = _NameBindings(tree, self.resolver)
@@ -826,9 +833,10 @@ class CommandReader:
         self._unreadable: list[Unreadable] | None = None
 
     def _client_classes(self) -> dict[str, str]:
-        """The command each ejryan89-skill-core client runs, by the client's qualified name, and the module's own
+        """The command each ejryan89-skill-core client runs, by the client's qualified name, with each subclass of one
+        another module defines that the reader was given, as skill_client_classes reads them, and the module's own
         classes that derive from one, each by its local name, so a call through a subclass runs the client's command."""
-        clients = dict(CLIENT_CLASSES)
+        clients = dict(self.known_clients)
         classes = [node for node in ast.walk(self.tree) if isinstance(node, ast.ClassDef)]
         while True:
             derived = {
@@ -836,11 +844,15 @@ class CommandReader:
                 for node in classes
                 if f"<local>.{node.name}" not in clients
                 for base in node.bases
-                if (command := clients.get(self.resolver.name(base)))
+                if (command := _client_command(clients, self.resolver.name(base)))
             }
             if not derived:
                 return clients
             clients.update(derived)
+
+    def client_command(self, name: str) -> str | None:
+        """The command a call of a qualified name runs as a client, or None for a name that is no client's."""
+        return _client_command(self.clients, name)
 
     def _read_function(self, function: Function) -> None:
         if not isinstance(function, ast.Lambda):
@@ -1170,7 +1182,7 @@ class CommandReader:
         runs code from the target repository; that is the script's RUNS_REPOSITORY_CODE declaration.
         """
         return bool(self._runners_handed_on()) or any(
-            self._runner(node.func) or self.resolver.name(node.func) in self.clients for node in self.calls
+            self._runner(node.func) or self.client_command(self.resolver.name(node.func)) for node in self.calls
         )
 
     def scope(self, source: Unreadable) -> str:
@@ -1239,7 +1251,7 @@ class CommandReader:
                     if isinstance(text, str) and text in known:
                         found.add(text)
                 elif isinstance(node, ast.Call):
-                    client = self.clients.get(self.resolver.name(node.func))
+                    client = self.client_command(self.resolver.name(node.func))
                     found |= {client} if client else set()
                     if _is_lookup(node, self.resolver.aliases(node.func)):
                         looked_up = _read_literals(self.program_literals(_lookup_argument(node)))
@@ -1249,16 +1261,45 @@ class CommandReader:
         return self._commands[key]
 
 
+def _client_command(clients: Mapping[str, str], name: str) -> str | None:
+    """The command a client class of `clients` runs when a qualified name reaches it: the same name, or either one the
+    other's dotted tail, as a module imported by its bare name reaches one keyed by its path from the repository
+    root."""
+    if name in clients:
+        return clients[name]
+    return next((command for known, command in clients.items() if reaches(name, known)), None)
+
+
 @functools.cache
-def _read_commands(source: str) -> CommandReader:
-    return CommandReader(parse_source(source, "<commands>"))
+def _read_commands(source: str, clients: tuple[tuple[str, str], ...] = ()) -> CommandReader:
+    return CommandReader(parse_source(source, "<commands>"), clients=dict(clients) if clients else CLIENT_CLASSES)
 
 
-def command_reader(path: Path) -> CommandReader:
-    """The CommandReader of a Python file as it is now, built once for each content in a validation run, so every
-    policy that reads a file's commands shares one reading of it and a file that changes is read again. A file no
-    policy can read raises UnreadablePython."""
-    return _read_commands(python_source(path))
+def command_reader(path: Path, clients: tuple[tuple[str, str], ...] = ()) -> CommandReader:
+    """The CommandReader of a Python file as it is now, built once for each content and set of clients in a
+    validation run, so every policy that reads a file's commands shares one reading of it and a file that changes is
+    read again. `clients` is what skill_client_classes gives, or empty for ejryan89-skill-core's own clients alone. A
+    file no policy can read raises UnreadablePython."""
+    return _read_commands(python_source(path), clients)
+
+
+def skill_client_classes(root: Path) -> tuple[tuple[str, str], ...]:
+    """The command each ejryan89-skill-core client runs, by the qualified name of the client and of each class in any
+    skill's scripts that subclasses one, at any depth and in any module, or of a name a module binds to one, so a call
+    through a subclass another module defines runs the client's command, as the git status policy reads GitClient's
+    subclasses, or empty when no module subclasses one. A script no policy can read adds none; the policy that reads
+    it reports it."""
+    trees: list[tuple[str, ast.Module]] = []
+    for scripts in skill_script_directories(root):
+        for path in file_presence.matching(scripts, "**/*.py"):
+            if not is_test_script(path):
+                with contextlib.suppress(UnreadablePython):
+                    trees.append((path.relative_to(root).as_posix(), command_reader(path).tree))
+    found: dict[str, str] = {}
+    for client, command in CLIENT_CLASSES.items():
+        found.update(dict.fromkeys(sorted(git_client_classes(trees, client)), command))
+    # With no subclass outside the clients' own modules, each file's reading is the one every other policy shares.
+    return () if found == CLIENT_CLASSES else tuple(sorted(found.items()))
 
 
 @dataclass(frozen=True)
@@ -1338,15 +1379,18 @@ def _powershell_sources(path: Path) -> list[str]:
     return []
 
 
-def _file_commands(path: Path, known: set[str], powershell: dict[str, set[str]]) -> set[str]:
-    """The programs a file runs, where powershell holds what each PowerShell source read for the run runs. A Python
-    file no policy can read runs nothing here; skill_command_problems reports it."""
+def _file_commands(
+    path: Path, known: set[str], powershell: dict[str, set[str]], clients: tuple[tuple[str, str], ...] = ()
+) -> set[str]:
+    """The programs a file runs, where powershell holds what each PowerShell source read for the run runs and clients
+    what skill_client_classes gives. A Python file no policy can read runs nothing here; skill_command_problems reports
+    it."""
     text = path.read_text(encoding="utf-8", errors="replace")
     suffix = path.suffix.casefold()
     found = {command for source in _powershell_sources(path) for command in powershell[source]}
     if suffix == ".py":
         with contextlib.suppress(UnreadablePython):
-            found |= command_reader(path).commands(known)
+            found |= command_reader(path, clients).commands(known)
     elif suffix in {".sh", ".bash"}:
         found |= shell_commands(text)
     elif suffix == ".md":
@@ -1446,19 +1490,20 @@ def skill_command_problems(root: Path, known: set[str], standard: set[str]) -> l
         {source for *_, own, deps in skills for path in own + deps for source in _powershell_sources(path)}
     )
     powershell = dict(zip(sources, powershell_commands(sources), strict=True))
+    clients = skill_client_classes(root)
     problems: list[str] = []
     for skill, declared, own, dependency_scripts in skills:
         for path in own + dependency_scripts:
             if path.suffix.casefold() == ".py":
                 name = path.relative_to(root).as_posix()
                 try:
-                    problems += command_reader(path).problems(name)
+                    problems += command_reader(path, clients).problems(name)
                 except UnreadablePython as error:
                     problems.append(f"{name} {error}")
-        used = {command for path in own for command in _file_commands(path, known, powershell)}
+        used = {command for path in own for command in _file_commands(path, known, powershell, clients)}
         reached: dict[str, Path] = {}
         for path in dependency_scripts:
-            for command in _file_commands(path, known, powershell):
+            for command in _file_commands(path, known, powershell, clients):
                 reached.setdefault(command, path)
         unread = sorted(name for name in [*used, *reached] if name.startswith(UNREAD_PROGRAM))
         problems += [
@@ -1815,11 +1860,30 @@ def _is_stream_value(node: ast.AST, aliases: dict[str, str], names: _StreamNames
     )
 
 
+def _looked_up(node: ast.AST, aliases: dict[str, str]) -> list[tuple[str, str]]:
+    """Each attribute a node reads by a literal name, in every form attribute_lookups reads, as getattr(codecs,
+    "getwriter") reads codecs.getwriter: the dotted name of the object it is read on, "" when that is no dotted name,
+    and the attribute's name."""
+    return [
+        (qualified_name(lookup.receiver, aliases), name)
+        for lookup, name in literal_lookups(node, lambda function: [qualified_name(function, aliases)])
+        if lookup.alone
+    ]
+
+
 def _is_codec_class(node: ast.AST, aliases: dict[str, str], names: _StreamNames | None) -> bool:
     """Whether an expression is a codec's stream class: what codecs.getwriter or getreader returns, a codec's
-    StreamWriter and its kin, codecs.lookup(...).streamwriter, or a name bound to one of them."""
+    StreamWriter and its kin, codecs.lookup(...).streamwriter, or a name bound to one of them, each read as an
+    attribute or as a lookup by name, as getattr(codecs, "getwriter")("utf-8") is."""
+    if any(
+        name.rpartition(".")[2] in CODEC_STREAM_ATTRIBUTES | CODEC_STREAM_CLASSES
+        for _, name in _looked_up(node, aliases)
+    ):
+        return True
     if isinstance(node, ast.Call):
-        return qualified_name(node.func, aliases) in CODEC_WRAPPERS
+        return qualified_name(node.func, aliases) in CODEC_WRAPPERS or any(
+            f"{receiver}.{name}" in CODEC_WRAPPERS for receiver, name in _looked_up(node.func, aliases) if receiver
+        )
     if isinstance(node, ast.Attribute) and node.attr in CODEC_STREAM_ATTRIBUTES:
         return True
     if isinstance(node, ast.Name) and names is not None and node.id in names.codec_classes:
@@ -2308,6 +2372,7 @@ def client_command_problems(root: Path) -> list[str]:
     a command a script starts itself has none of that, so a sweep can wait forever on a credential prompt.
     """
     problems: list[str] = []
+    clients = skill_client_classes(root)
     for path in sorted(
         path for scripts in skill_script_directories(root) for path in file_presence.matching(scripts, "**/*.py")
     ):
@@ -2315,7 +2380,7 @@ def client_command_problems(root: Path) -> list[str]:
         if is_test_script(path) or posix_within(name, SKILL_CORE_SCRIPTS, strict=True):
             continue
         try:
-            reader = command_reader(path)
+            reader = command_reader(path, clients)
         except UnreadablePython as error:
             problems.append(f"{name} {error}")
             continue
