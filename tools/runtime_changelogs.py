@@ -103,6 +103,7 @@ from agent_skills import CODEX_METADATA
 from console import run_main
 from flat_text import single_line
 from guidance_record import GUIDANCE_PATH, PYTHON_SUBJECT, Changelog, GuidanceRecord, GuidanceRecordError
+from markdown_sections import ATX_HEADING
 from path_containment import relative_within
 from runtime_support import RUNTIMES as SUBJECTS
 from seconds_option import positive_seconds
@@ -137,10 +138,12 @@ PLACEHOLDER = re.compile(r"\$\{([A-Z][A-Z0-9_]*)\}")
 VARIABLE_NAME = re.compile(r"[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)*")
 ENVIRONMENT_MAPPING = re.compile(r"(?:^|_)(?:environ|env|environment)$", re.IGNORECASE)
 VARIABLE_COLLECTION = re.compile(r"(?:^|_)VARIABLES$")
-# A release heading of a Markdown changelog, such as `## 2.1.302` or `## 1.0.103 - 2026-10-22`, and a release whose
-# number goes on into a prerelease suffix, such as `1.0.104-0`.
-RELEASE_HEADING = re.compile(r"^#{1,3}\s+\[?v?(?P<release>[0-9]+(?:\.[0-9]+)+)(?P<suffix>[-+][0-9A-Za-z.]+)?\b")
-BULLET = re.compile(r"^\s*[-*]\s+(?P<text>.*)$")
+# The text of a release heading of a Markdown changelog, such as `## 2.1.302` or `## 1.0.103 - 2026-10-22`, at a
+# level up to RELEASE_LEVELS, and a release whose number goes on into a prerelease suffix, such as `1.0.104-0`. The
+# heading itself is read through ejryan89-skill-core's markdown_sections, as CommonMark reads one.
+RELEASE_HEADING = re.compile(r"\[?v?(?P<release>[0-9]+(?:\.[0-9]+)+)(?P<suffix>[-+][0-9A-Za-z.]+)?\b")
+RELEASE_LEVELS = 3
+BULLET = re.compile(r"[ \t]*[-*][ \t]+(?P<text>.*)")
 YAML_KEY = re.compile(r"^\s*(?P<key>[A-Za-z_][\w-]*):", re.MULTILINE)
 KINDS = ("flag", "variable", "path", "frontmatter")
 
@@ -415,6 +418,14 @@ def read_release(release: tuple[int, ...], lines: Sequence[str]) -> Release:
     return Release(release, entries, f"no bullet in its text: {single_line(text[0])}" if text else "its text is empty")
 
 
+def release_heading(line: str) -> re.Match[str] | None:
+    """The release a Markdown line's heading names, or None for a line that is no heading at a release's level."""
+    heading = ATX_HEADING.fullmatch(line)
+    if heading is None or len(heading.group("marks")) > RELEASE_LEVELS:
+        return None
+    return RELEASE_HEADING.match(heading.group("text"))
+
+
 def markdown_releases(text: str) -> list[Release]:
     """The releases of a Markdown changelog, prereleases aside, each with its entries."""
     releases: list[Release] = []
@@ -426,7 +437,7 @@ def markdown_releases(text: str) -> list[Release]:
             releases.append(read_release(current, body))
 
     for line in text.splitlines():
-        heading = RELEASE_HEADING.match(line)
+        heading = release_heading(line)
         if heading:
             close()
             body = []

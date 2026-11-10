@@ -181,7 +181,16 @@ from executable_locator import RelativeEnvironmentPath, absolute_home
 from file_presence import NotAFile, is_directory, is_occupied, is_present, matching
 from flat_text import flat_text, single_line
 from git_client import GitClient, GitError
-from markdown_sections import ATX_HEADING, CODE_SPAN, POWERSHELL_FENCES, SHELL_FENCES, find_fences, prose_code_spans
+from markdown_sections import (
+    ATX_HEADING,
+    CODE_SPAN,
+    LIST_MARKER,
+    POWERSHELL_FENCES,
+    SHELL_FENCES,
+    find_fences,
+    prose_code_spans,
+)
+from module_assignments import assigned_names, sole_assignment
 from path_containment import within
 from path_keys import path_key
 from powershell_startup import POWERSHELL_PROGRAMS, StartupCommand, startup_command
@@ -384,11 +393,12 @@ CUES = (
 )
 # Deterministic work a script should print or take, which the prose leaves to the agent. A code span names a printed
 # value when it is not a flag; a status span starts with an upper-case name; an instruction opens its line, item, or
-# sentence, or follows "then" or "and".
+# sentence, or follows "then" or "and". A list item's marker and the space and the tab around it are read as
+# markdown_sections reads them.
 VALUE_SPAN = r"`(?!--)[^`\n]+`"
 STATUS_SPAN = r"`[A-Z][A-Z0-9_]+[^`\n]*`"
 FLAG_SPAN = r"`--[\w-]+[^`\n]*`"
-INSTRUCTION = r"(?:^\s*(?:[-*+]|\d+\.)?\s*|[.:;]\s+|,\s+(?=print\b)|\b(?:then|and)\s+)"
+INSTRUCTION = rf"(?:^[ \t]*(?:{LIST_MARKER})?[ \t]*|[.:;]\s+|,\s+(?=print\b)|\b(?:then|and)\s+)"
 PROSE_CUES = (
     # A flag chosen per printed line or value: "`--pull <pr>` for each `missing`", "one `--run` per `RUN` line",
     # "for a `SYNTHESIZED` line, `--synthesized`", "pass ... every `doc` path".
@@ -407,7 +417,7 @@ PROSE_CUES = (
         re.compile(
             r"(?i)\bsplit(?:s|ting)?\s+(?:its|the|their|each)\s+(?:[\w-]+\s+)?(?:list|lines?|output|label)\s+"
             r"(?:by|between|into)\b|\bin (?:groups|batches) of up to\b|"
-            rf"(?-i:^\s*(?:[-*+]|\d+\.)\s+\*\*`[a-z][^`]*\s[^`]*`)|\breport (?:it|them|that|this) as {STATUS_SPAN}"
+            rf"(?-i:^[ \t]*{LIST_MARKER}[ \t]+\*\*`[a-z][^`]*\s[^`]*`)|\breport (?:it|them|that|this) as {STATUS_SPAN}"
         ),
     ),
     # A count, a summary, or a last-seen value carried from one step to a later one.
@@ -762,20 +772,19 @@ def trailing_wildcard(pattern: str) -> str:
 
 
 def runs_repository_code(script: Path) -> bool:
-    """Whether a Python script declares, as a module-level non-empty string, that it starts repository code."""
+    """Whether a Python script declares, as a module-level non-empty string, that it starts repository code: one
+    statement at its top level binds the name, and module_assignments' sole_assignment reads it as that name alone,
+    so a chained, unpacking, augmented, or repeated assignment declares nothing, which validation refuses."""
     text = read_text(script) if script_is_present(script) else None
     try:
         tree = python_reader.parse(text or "")
     except python_reader.CONTENT_ERRORS:
         return False
-    for node in tree.body:
-        targets = (
-            node.targets if isinstance(node, ast.Assign) else [node.target] if isinstance(node, ast.AnnAssign) else []
-        )
-        value = node.value if isinstance(node, ast.Assign | ast.AnnAssign) else None
-        if any(isinstance(target, ast.Name) and target.id == REPOSITORY_CODE_DECLARATION for target in targets):
-            return isinstance(value, ast.Constant) and isinstance(value.value, str) and bool(value.value.strip())
-    return False
+    binding = [node for node in tree.body if REPOSITORY_CODE_DECLARATION in assigned_names(node)]
+    if len(binding) != 1 or (assignment := sole_assignment(binding[0])) is None:
+        return False
+    value = assignment[1]
+    return isinstance(value, ast.Constant) and isinstance(value.value, str) and bool(value.value.strip())
 
 
 def repository_code_commands(skill_dir: Path, commands: list[tuple[int, str]]) -> frozenset[str]:

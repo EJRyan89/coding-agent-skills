@@ -143,6 +143,7 @@ TRUST_BOUNDARY_SCRIPTS = (
     f"{SKILL_CORE}/json_writer.py",
     f"{SKILL_CORE}/link_probe.py",
     f"{SKILL_CORE}/markdown_literal.py",
+    f"{SKILL_CORE}/module_assignments.py",
     f"{SKILL_CORE}/msbuild_xml.py",
     f"{SKILL_CORE}/nesting_depth.py",
     f"{SKILL_CORE}/option_reader.py",

@@ -124,6 +124,15 @@ class BodyCheckTests(unittest.TestCase):
             pull_request.body_problems(body, TEMPLATE),
         )
 
+    def test_an_empty_list_item_is_read_as_markdown_reads_one(self) -> None:
+        # A no-break space after a dash, or an Arabic-Indic digit, opens no list item, so the line is text; a tab
+        # and a carriage return around a marker leave it empty.
+        for text in ("-\u00a0", "\u0661.", "-1.", "1234567890."):
+            body = FILLED.replace("- `tool.py`", f"{text}\n- `tool.py`")
+            self.assertEqual([], pull_request.body_problems(body, TEMPLATE), text)
+        body = FILLED.replace("- `tool.py`", "\t2)\t\r\n- `tool.py`")
+        self.assertEqual(["PLACEHOLDER 8 an empty list item"], pull_request.body_problems(body, TEMPLATE))
+
     def test_a_template_comment_left_in_the_body_is_named(self) -> None:
         body = FILLED.replace("None\n", "<!-- One entry per change.\n\n### What changed\n\n- Level: patch\n-->\nNone\n")
         self.assertEqual(["PLACEHOLDER 12 a template comment"], pull_request.body_problems(body, TEMPLATE))

@@ -33,6 +33,7 @@ from deployer import render
 # subject; the path is set once here, at import, so no policy changes sys.path while another policy module is importing.
 sys.path.insert(0, str(sibling_scripts("audit-skill")))
 import skill_inventory
+from module_assignments import assigned_names
 from path_containment import relative_within
 
 GRANTS_DOC = '"Granting tools" in docs/adding-a-skill.md'
@@ -335,14 +336,10 @@ def repository_code_declaration_problems(root: Path) -> list[str]:
         ]
     )
     for script, name, tree in python_trees(scripts, root, problems):
+        # Every statement that binds the name in any form, as module_assignments reads one: a chained, unpacking,
+        # or augmented assignment the inventory reads as no declaration is refused, not passed unseen.
         assigned = [
-            node
-            for node in ast.walk(tree)
-            if isinstance(node, ast.Assign | ast.AnnAssign)
-            and any(
-                isinstance(target, ast.Name) and target.id == declaration
-                for target in (node.targets if isinstance(node, ast.Assign) else [node.target])
-            )
+            node for node in ast.walk(tree) if isinstance(node, ast.stmt) and declaration in assigned_names(node)
         ]
         if not assigned:
             continue

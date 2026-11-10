@@ -1636,6 +1636,39 @@ class CopilotConfigurationTests(unittest.TestCase):
                     [(f.severity, f.message) for f in result.findings if f.check == "scope"],
                 )
 
+    def test_a_generator_scope_assigned_more_than_once_or_with_others_is_not_read(self) -> None:
+        rest = "TARGET_SURFACES = []\nTARGET_FEATURES = []\n"
+        script = self.root / ".github/scripts/ai_config.py"
+        script.parent.mkdir(parents=True)
+        for source in (
+            f"TARGET_RUNTIMES = ['claude']\nTARGET_RUNTIMES = ['codex']\n{rest}",
+            f"TARGET_RUNTIMES = OTHER = ['claude']\n{rest}",
+            f"TARGET_RUNTIMES, OTHER = ['claude'], []\n{rest}",
+            f"TARGET_RUNTIMES = ['claude']\nTARGET_RUNTIMES += ['codex']\n{rest}",
+        ):
+            with self.subTest(source=source):
+                script.write_text(source, encoding="utf-8")
+                self.assertEqual((None, "generator-scope-not-literal"), audit.derive_generator_scope(self.root))
+        script.write_text(f"TARGET_RUNTIMES: list[str] = ['claude']\n{rest}", encoding="utf-8")
+        self.assertEqual(
+            ({"runtimes": ["claude"], "surfaces": [], "features": []}, "independently-derived"),
+            audit.derive_generator_scope(self.root),
+        )
+
+    def test_the_maintaining_section_is_a_level_two_heading_as_markdown_reads_one(self) -> None:
+        claude_md = self.root / "CLAUDE.md"
+        for text, found in (
+            ("# CLAUDE.md\n\n## Maintaining AI Agent Config\n", True),
+            ("# CLAUDE.md\r\n\r\n   ##\tmaintaining ai agent config ##\r\n", True),
+            ("## Maintaining\u00a0AI Agent Config\n", False),
+            ("```\n## Maintaining AI Agent Config\n```\n", False),
+            ("### Maintaining AI Agent Config\n", False),
+            ("    ## Maintaining AI Agent Config\n", False),
+        ):
+            with self.subTest(text=text):
+                claude_md.write_bytes(text.encode("utf-8"))
+                self.assertEqual(found, audit._has_maintaining_section(self.root))
+
     def test_scope_statuses_and_generator_failure_reasons_match_report_schema(self) -> None:
         documented = {
             "independently-derived",
