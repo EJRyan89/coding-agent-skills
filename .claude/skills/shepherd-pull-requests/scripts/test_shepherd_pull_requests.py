@@ -466,7 +466,9 @@ class StubGh:
                 raise AssertionError(f"unexpected gh api call: {command}")
             number = int(match.group(1))
             listed_head = next(item["headRefOid"] for item in self.pulls if item["number"] == number)
-            return CommandResult(0, json.dumps({"head": {"sha": self.moved.get(number, listed_head)}}), "")
+            sha = self.moved.get(number, listed_head)
+            # An empty moved head stands for an answer that leaves the head's sha out.
+            return CommandResult(0, json.dumps({"head": {"sha": sha} if sha else {}}), "")
         raise AssertionError(f"unexpected gh call: {command}")
 
     @staticmethod
@@ -1179,6 +1181,7 @@ class UpdateTest(FixtureTestCase):
                 {11: "c" * 40},
                 "pull request #11 moved from aaaaaaa to ccccccc while its files were read",
             ),
+            "head without its sha": (files, {11: ""}, "GitHub returned a pull request without its head"),
         }
         for case, (pages, moved, reason) in cases.items():
             with self.subTest(case=case):
