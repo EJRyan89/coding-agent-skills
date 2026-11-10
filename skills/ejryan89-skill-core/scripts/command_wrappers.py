@@ -1,5 +1,5 @@
-"""The one reading of the commands that run a command a later word names: a wrapper such as xargs or env, find's
-actions, and a shell's -c script.
+"""The one reading of the commands that run a command a later word names: a wrapper such as xargs, env, or sudo,
+find's actions, and a shell's -c script.
 
 A reader of a shell script's commands goes past such a command to the one it runs: `unwrapped` past a wrapper of
 COMMAND_WRAPPERS, read by option_reader's getopt reading, `find_action` to the command one of find's FIND_COMMANDS
@@ -20,7 +20,11 @@ from option_reader import OptionTable, option_refusal, option_table
 # option_table reads it, and read by option_refusal, the one getopt reader: the program is the first word after the
 # options, after the assignments env takes, and after the duration timeout takes. A long option is placed only spelled
 # in full, and a word the table does not settle, an abbreviation or an option the table does not list, leaves the
-# program unread (UNREAD_PROGRAM) rather than taken for the program. command -v and -V only look a program up.
+# program unread (UNREAD_PROGRAM) rather than taken for the program. command -v and -V only look a program up. Each
+# program's table beyond the shell's builtins and coreutils' is its getopt table, as the hub guard's option catalogue
+# records it; sudo also takes assignments, and chrt, taskset, and
+# chroot take one operand, a priority, a CPU mask, or a new root, before the program. Every reader of a command's
+# program reads these, so a reader that needs another wrapper adds it here.
 COMMAND_WRAPPERS: dict[str, OptionTable] = {
     "command": option_table("pvV"),
     "builtin": option_table(),
@@ -50,6 +54,53 @@ COMMAND_WRAPPERS: dict[str, OptionTable] = {
                 "no-run-if-empty max-chars= process-slot-var= show-limits verbose exit help version",
             )
         ),
+    ),
+    "sudo": option_table(
+        "Aa:BbC:c:D:Eeg:Hh::iKklNnPp:R:r:SsT:t:U:u:Vv",
+        " ".join(
+            (
+                "askpass auth-type= bell background close-from= login-class= chdir= preserve-env=? edit group=",
+                "set-home help host= login remove-timestamp reset-timestamp list no-update non-interactive",
+                "preserve-groups prompt= chroot= role= stdin shell command-timeout= type= other-user= user= version",
+                "validate",
+            )
+        ),
+        assignments=True,
+    ),
+    "doas": option_table("a:C:Lnsu:"),
+    "setsid": option_table("cfwhV", "ctty fork wait help version"),
+    "ionice": option_table("c:n:p:P:tu:hV", "class= classdata= pid= pgid= ignore uid= help version"),
+    "chrt": option_table(
+        "abdefimoprRT:P:D:vhV",
+        " ".join(
+            (
+                "all-tasks batch deadline ext fifo idle max other pid rr reset-on-fork sched-runtime= sched-period=",
+                "sched-deadline= verbose help version",
+            )
+        ),
+        operands=1,
+    ),
+    "taskset": option_table("acphV", "all-tasks cpu-list pid help version", operands=1),
+    "chroot": option_table("", "groups= userspec= skip-chdir help version", operands=1),
+    "unbuffer": option_table("p"),
+    "chronic": option_table("ev"),
+    "strace": option_table(
+        "Aa:b:CcDdE:e:FfhI:ikno:O:P:p:qrS:s:tTU:u:VvwX:xyYzZ",
+        " ".join(
+            (
+                "output-append-mode columns= detach-on= summary summary-only daemonize=? debug env= follow-forks",
+                "output-separately help interruptible= instruction-pointer stack-trace syscall-number output=",
+                "summary-syscall-overhead= trace-path= attach= quiet=? relative-timestamps=? summary-sort-by=",
+                "string-limit= absolute-timestamps=? syscall-times=? summary-columns= user= version no-abbrev=?",
+                "summary-wall-clock const-print-style= strings-in-hex=? decode-fds=? decode-pids=? successful-only",
+                "failed-only trace= signal= status= inject= fault= abbrev= verbose= raw= read= write= kvm=",
+                "secontext=? seccomp-bpf kill-on-exit tips=?",
+            )
+        ),
+    ),
+    "ltrace": option_table(
+        "a:A:bcCD:e:fF:hil:Ln:o:p:rs:StTu:Vw:x:",
+        "align= no-signals demangle debug= config= help library= indent= output= version where=",
     ),
 }
 # env's options whose value is a command line, split into the words it runs.

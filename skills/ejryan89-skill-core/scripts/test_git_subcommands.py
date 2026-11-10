@@ -152,6 +152,68 @@ def test_git_or_a_shell_named_by_a_path_or_with_exe_is_read_as_bash_runs_it(scri
     assert git_subcommands.bash_git_subcommands(script, no_powershell) == expected
 
 
+# Bash recognizes a reserved word, time and its -p, and function only spelled with no quote or escape, and an
+# assignment only with its name and `=` unquoted: `'if' git push` runs a program named `if`, never git, while a
+# quoted value leaves an assignment one, and a quoted `time` is the time program, which runs git. A quoted case word
+# starts no case, so the git command after it is read.
+@pytest.mark.parametrize(
+    ("script", "expected"),
+    [
+        ("if git push; then :; fi", {"push"}),
+        ("'if' git push", set()),
+        ('"{" git push', set()),
+        ("\\! git push", set()),
+        ("'while' git push", set()),
+        ("th'en' git push", set()),
+        ("'function' f git push", set()),
+        ('"A=1" git push', set()),
+        ("A='1 2' git push", {"push"}),
+        ('A="x" B=y git push', {"push"}),
+        ("'time' git push", {"push"}),
+        ("time '-p' git push", set()),
+        ("! { git fetch; }", {"fetch"}),
+        ("'case' x in; git push", {"push"}),
+        ("\\git push", {"push"}),
+        ("'git' push", {"push"}),
+    ],
+)
+def test_a_quoted_or_escaped_keyword_or_assignment_is_read_as_the_program(script: str, expected: set[str]) -> None:
+    assert git_subcommands.bash_git_subcommands(script, no_powershell) == expected
+
+
+# Every wrapper of command_wrappers' catalogue runs the git command after it, sudo and setsid as env and nohup do.
+@pytest.mark.parametrize(
+    "script",
+    [
+        "sudo git push",
+        "sudo -u me A=1 git push",
+        "doas -u me git push",
+        "setsid -w git push",
+        "ionice -c 2 git push",
+        "chrt -f 10 git push",
+        "taskset -c 0 git push",
+        "chroot / git push",
+        "unbuffer -p git push",
+        "chronic -e git push",
+        "strace -f -o log git push",
+        "ltrace -o log git push",
+    ],
+)
+def test_the_git_command_a_wrapper_runs_is_read(script: str) -> None:
+    assert git_subcommands.bash_git_subcommands(script, no_powershell) == {"push"}
+
+
+def test_a_command_s_words_are_read_beside_their_spellings() -> None:
+    assert git_subcommands.spelled_words("'if' A=\"1 2\" \\! git") == [
+        ("if", "'if'"),
+        ("A=1 2", 'A="1 2"'),
+        ("!", "\\!"),
+        ("git", "git"),
+    ]
+    assert git_subcommands.spelled_words("git 'push") == [("git", "git"), ("push", "'push")]
+    assert git_subcommands.spelled_words("") == []
+
+
 # The script a pwsh or Windows PowerShell start-up runs is PowerShell, whose commands the caller's reader lists: by
 # -Command, -CommandWithArgs, or Windows PowerShell's first positional word, named by a path or with .exe too, and
 # behind a wrapper or in find's action.
