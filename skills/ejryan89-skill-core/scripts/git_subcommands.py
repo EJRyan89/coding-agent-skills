@@ -43,8 +43,12 @@ SHELL_COMMAND = re.compile(
     r"(^|;;&|;;|;&|\|\||&&|\|&|[;&|()`]|\$\()"
     r"((?:\\.|'[^']*'|\"(?:\\.|[^\"\\$`]|\$(?!\())*\"|\$(?!\()|[^;&|()`\n\\'\"$]|\")*)"
 )
-# The words that may stand before a command's program: Bash's reserved words and a group's brace. Bash's time keyword
-# is read by program_words.
+# A Bash word as written, its quoted and escaped parts kept, up to the unquoted blank that ends it.
+SHELL_WORD = re.compile(r"(?:\\.|'[^']*'|\"(?:\\.|[^\"\\])*\"|[^ \t\r\n'\"\\])+", re.DOTALL)
+# The blanks shlex splits a command's words at.
+WORD_BLANKS = " \t\r\n"
+# The words that may stand before a command's program: Bash's reserved words and a group's brace, each a keyword only
+# spelled with no quote or escape, as Bash recognizes a reserved word. Bash's time keyword is read by program_start.
 LEADING_WORDS = frozenset({"if", "then", "else", "elif", "while", "until", "do", "!", "{"})
 # The starts of a substitution's command, which runs wherever it stands, in a case word or a pattern too.
 SUBSTITUTIONS = frozenset({"$(", "`"})
@@ -68,7 +72,8 @@ class CommandStarts:
     def runs(self, start: str, command: str) -> bool:
         """Whether the text `command` that `start` begins runs as a command, read as the script's next text."""
         previous, self.previous = self.previous, (start, command)
-        words = shell_words(command)
+        # The case, in, and esac a text is read by are reserved words, which Bash recognizes only unquoted.
+        words = [spelling for _, spelling in spelled_words(command)]
         if start == "`":
             self.backquoted = not self.backquoted
             start = start if self.backquoted else BACKQUOTE_END
@@ -89,7 +94,7 @@ class CommandStarts:
             self.state = "command"
         elif start == BACKQUOTE_END or (start == ")" and not (previous[0] == "(" and not previous[1].strip())):
             return False
-        program = program_words(words, reserved=True)
+        program = words[program_start(words, reserved=True) :]
         if program[:1] == ["case"]:
             self.state = "patterns" if program[2:3] == ["in"] else "case-word"
             return False
@@ -113,7 +118,9 @@ def bash_git_subcommands(text: str, read_powershell: PowerShellReader) -> set[st
             start, command = match.groups()
             if not starts.runs(start, command):
                 continue
-            found |= command_git_subcommands(shell_words(command), read_powershell, reserved)
+            spelled = spelled_words(command)
+            words, spellings = [word for word, _ in spelled], [spelling for _, spelling in spelled]
+            found |= command_git_subcommands(words, read_powershell, reserved, spellings)
         # A line whose last operator is a pipe with no command after it hands its output to the next line's command.
         after_pipe = start in PIPES and not command.strip()
     return found
@@ -141,22 +148,30 @@ def powershell_program(word: str) -> str:
     return word if word == UNREAD_WORD else program_name(PureWindowsPath(word).name).casefold()
 
 
-def shell_words(command: str) -> list[str]:
-    """A command's words as Bash splits them, its quotes removed; a command shlex cannot split, as one with an unclosed
-    quote, is split at whitespace with each word's outer quotes stripped."""
+def spelled_words(command: str) -> list[tuple[str, str]]:
+    """A command's words as Bash splits them, each with its quotes removed beside its spelling as written, so a
+    reader can tell `if` from `'if'` and `\\!`; a command shlex cannot split, as one with an unclosed quote, is split
+    at whitespace with each word's outer quotes stripped, beside the word as written."""
+    spellings = SHELL_WORD.findall(command)
     try:
-        return shlex.split(command)
+        if SHELL_WORD.sub("", command).strip(WORD_BLANKS):
+            raise ValueError(command)
+        return [(shlex.split(spelling)[0], spelling) for spelling in spellings]
     except ValueError:
-        return [word.strip("\"'") for word in command.split()]
+        return [(word.strip("\"'"), word) for word in command.split()]
 
 
-def command_git_subcommands(words: list[str], read_powershell: PowerShellReader, reserved: bool = True) -> set[str]:
+def command_git_subcommands(
+    words: list[str], read_powershell: PowerShellReader, reserved: bool = True, spellings: list[str] | None = None
+) -> set[str]:
     """The git subcommand a simple command runs: past its leading keywords and assignments, Bash's time keyword and the
     -p and -- it takes, through each wrapper of command_wrappers' catalogue, find's actions, eval, a shell's -c
     script, and a PowerShell start-up's script, to a git command's own words. `reserved` says `time` in the command's
     place is Bash's keyword, false where a pipe or find's action runs it, and in PowerShell, which has no such
-    keyword; after an assignment it is the time program, which the catalogue reads."""
-    words = program_words(words, reserved)
+    keyword; after an assignment it is the time program, which the catalogue reads. `spellings`, given, are the
+    words as written, by which a keyword or an assignment is read only unquoted; without them each word is its own
+    spelling."""
+    words = words[program_start(words if spellings is None else spellings, reserved) :]
     while words:
         head, rest = words[0], words[1:]
         name = bash_program(head)
@@ -199,23 +214,27 @@ def startup_git_subcommands(program: str, words: list[str], read_powershell: Pow
     return powershell_git_subcommands(read_powershell(" ".join(texts)), read_powershell)
 
 
-def program_words(words: list[str], reserved: bool) -> list[str]:
-    """A command's words from its program on: past its leading keywords and assignments, a function's `function` and
-    name, and Bash's time keyword where `reserved` holds and no assignment stands before it, with the -p and then the
-    --, each optional, it takes before the pipeline it times."""
-    while words:
-        if words[0] == "function" and reserved:
-            words = words[2:]
-        elif words[0] == "time" and reserved:
-            words = words[1:]
+def program_start(spellings: Sequence[str], reserved: bool) -> int:
+    """Where a command's program stands among its words, given each as written: past its leading keywords and
+    assignments, a function's `function` and name, and Bash's time keyword where `reserved` holds and no assignment
+    stands before it, with the -p and then the --, each optional, it takes before the pipeline it times. As Bash reads
+    them, a keyword is one only spelled with no quote or escape, and an assignment only with its name and `=`
+    unquoted, so `'if' git` runs the program `if`, and `"A=1" git` the program `A=1`."""
+    index = 0
+    while index < len(spellings):
+        word = spellings[index]
+        if word == "function" and reserved:
+            index += 2
+        elif word == "time" and reserved:
+            index += 1
             for option in TIME_KEYWORD_OPTIONS:
-                if words and words[0] == option:
-                    words = words[1:]
-        elif words[0] in LEADING_WORDS:
-            words = words[1:]
-        elif ASSIGNMENT.match(words[0]):
+                if index < len(spellings) and spellings[index] == option:
+                    index += 1
+        elif word in LEADING_WORDS:
+            index += 1
+        elif ASSIGNMENT.match(word):
             reserved = False
-            words = words[1:]
+            index += 1
         else:
             break
-    return words
+    return min(index, len(spellings))
