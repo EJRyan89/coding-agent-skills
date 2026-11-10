@@ -22,6 +22,7 @@ from pathlib import Path
 
 from device_names import is_reserved_device_name
 from folder_walk import SKIPPED_FOLDERS
+from ordinal_case import has_suffix
 from path_containment import within
 from path_keys import path_key
 from xml_reader import read_xml
@@ -122,7 +123,7 @@ def refusal(path: Path, tree: Path) -> str | None:
 
 
 def is_solution(path: Path) -> bool:
-    return path.name.casefold().endswith(SOLUTION_SUFFIXES)
+    return has_suffix(path.name, SOLUTION_SUFFIXES)
 
 
 def read_listed_projects(solution: Path) -> list[str]:
@@ -136,7 +137,7 @@ def read_listed_projects(solution: Path) -> list[str]:
 def listed_projects(text: str, solution: Path) -> list[str]:
     """The project paths the text of `solution` lists, as written, read as `read_listed_projects` reads the file, for
     a caller that read the text itself."""
-    if solution.name.casefold().endswith(".slnx"):
+    if has_suffix(solution.name, ".slnx"):
         document = read_xml(text)
         return [path for element in document.iter("Project") if (path := element.get("Path"))]
     return [match.group(1) for line in text.splitlines() if (match := SOLUTION_PROJECT.match(line))]

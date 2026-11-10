@@ -75,13 +75,14 @@ from msbuild_reader import (
     parse_xml,
 )
 from msbuild_xml import implicit_sdk, is_sdk_style, local_name
+from ordinal_case import ordinal_fold
 
 BUILD_PROPS = "Directory.Build.props"
 BUILD_TARGETS = "Directory.Build.targets"
 OPERATIONS = ("Include", "Update", "Remove")
 # The item types the graph reads, by their names case-folded, as MSBuild matches an item type.
 ITEM_KINDS = {
-    name.casefold(): name
+    ordinal_fold(name): name
     for name in ("PackageReference", "PackageVersion", "GlobalPackageReference", "ProjectReference", "Reference")
 }
 # The metadata each item type's facts are read from.
@@ -111,7 +112,7 @@ TOOLSET_PROPERTIES = (
     "MSBuildToolsRoot",
     "VSToolsPath",
 )
-TOOLSET_IMPORT = re.compile(r"^\s*\$\(\s*(?:" + "|".join(TOOLSET_PROPERTIES) + r")\s*\)", re.IGNORECASE)
+TOOLSET_IMPORT = re.compile(r"^\s*\$\(\s*(?:" + "|".join(TOOLSET_PROPERTIES) + r")\s*\)", re.IGNORECASE | re.ASCII)
 # The toolset files whose import is where Directory.Build.props and Directory.Packages.props are imported, and those
 # whose import is where Directory.Build.targets is.
 PROPS_FILES = frozenset(("microsoft.common.props", "sdk.props"))
@@ -119,7 +120,7 @@ TARGETS_FILES = frozenset(
     ("microsoft.common.targets", "microsoft.csharp.targets", "microsoft.visualbasic.targets", "sdk.targets")
 )
 # A TargetFrameworkVersion, such as `v4.7.2`.
-VERSION_NAME = re.compile(r"v\d+(?:\.\d+)*", re.IGNORECASE)
+VERSION_NAME = re.compile(r"v\d+(?:\.\d+)*", re.IGNORECASE | re.ASCII)
 # What the reader does instead of applying an item it cannot settle, by the item's operation.
 NOT_APPLIED = {"Include": "it is left out", "Update": "the Update is not applied", "Remove": "it is not removed"}
 
@@ -196,7 +197,7 @@ class State:
         self.opaque = opaque
 
     def get(self, name: str) -> Value:
-        key = name.casefold()
+        key = ordinal_fold(name)
         if key in self.fixed:
             return (self.fixed[key],)
         if key in self.values:
@@ -204,7 +205,7 @@ class State:
         return UNKNOWN if self.opaque or key not in INITIALLY_EMPTY else EMPTY
 
     def set(self, name: str, value: Value, certain: bool) -> None:
-        key = name.casefold()
+        key = ordinal_fold(name)
         if key not in self.fixed:
             self.values[key] = value if certain else union(self.get(key), value)
 
@@ -218,7 +219,7 @@ class State:
     def restricted(self, name: str, value: str) -> State:
         """This state in the build where the property ended with `value`."""
         found = self.copy()
-        found.values[name.casefold()] = (value,)
+        found.values[ordinal_fold(name)] = (value,)
         return found
 
     @staticmethod
@@ -317,7 +318,7 @@ class Evaluation:
         self.run(project.root)
 
     def value_of(self, name: str) -> Value:
-        key = name.casefold()
+        key = ordinal_fold(name)
         if key.startswith("msbuildthisfile"):
             return (file_properties(self.file, "msbuildthisfile").get(key),)
         return self.state.get(key)
@@ -392,7 +393,7 @@ class Evaluation:
     def item_group(self, group: Element, branch: str | None) -> None:
         outer = (group.get("Condition") or "").strip()
         for element in group:
-            kind = ITEM_KINDS.get(local_name(element).casefold())
+            kind = ITEM_KINDS.get(ordinal_fold(local_name(element)))
             operation = next((name for name in OPERATIONS if element.get(name)), None)
             if kind is None or operation is None:
                 continue
@@ -442,7 +443,7 @@ class Evaluation:
     def import_element(self, element: Element, unsettled: tuple[str, ...]) -> None:
         written = element.get("Project") or ""
         if element.get("Sdk") is not None or TOOLSET_IMPORT.match(written):
-            name = written.replace("\\", "/").rsplit("/", 1)[-1].strip().casefold()
+            name = ordinal_fold(written.replace("\\", "/").rsplit("/", 1)[-1].strip())
             if name in PROPS_FILES:
                 self.props_point()
             elif name in TARGETS_FILES:
@@ -531,7 +532,7 @@ class Evaluation:
         """Report each item inside a Target, which MSBuild defines only when the target runs."""
         label = target.get("Name") or "without a Name"
         for element in target.iter():
-            kind = ITEM_KINDS.get(local_name(element).casefold())
+            kind = ITEM_KINDS.get(ordinal_fold(local_name(element)))
             operation = next((name for name in OPERATIONS if element.get(name)), None)
             if kind is None or operation is None:
                 continue
@@ -571,10 +572,10 @@ class Evaluation:
         found: list[Candidate] = [
             (self.metadata_value(text), True, "")
             for key, text in element.attrib.items()
-            if key.casefold() == name.casefold()
+            if ordinal_fold(key) == ordinal_fold(name)
         ]
         for child in element:
-            if local_name(child).casefold() != name.casefold():
+            if ordinal_fold(local_name(child)) != ordinal_fold(name):
                 continue
             condition = (child.get("Condition") or "").strip()
             value = self.holds(condition)
@@ -687,7 +688,7 @@ class Entry:
 
 def item_key(kind: str, name: str, directory: Path) -> str:
     """What an Update or a Remove matches an item by: a project by its path, any other by its name without case."""
-    return same_path(project_path(directory, name)) if kind == "ProjectReference" else name.casefold()
+    return same_path(project_path(directory, name)) if kind == "ProjectReference" else ordinal_fold(name)
 
 
 def step_unsettled(step: Step, directory: Path) -> list[Unsettled]:
@@ -762,18 +763,22 @@ def references(framework: str, steps: Iterable[Step], directory: Path) -> Build:
     """The references the steps of a build, or of the view with no restore, leave."""
     lists, unsettled = item_pass(steps, directory)
     versions = {
-        item.name.casefold(): version for item in lists["PackageVersion"] if (version := item.metadata.get("Version"))
+        ordinal_fold(item.name): version
+        for item in lists["PackageVersion"]
+        if (version := item.metadata.get("Version"))
     }
     packages: list[PackageRef] = []
     unversioned: set[str] = set()
     for item in lists["PackageReference"]:
         own = item.metadata.get("Version") or item.metadata.get("VersionOverride")
-        version = own or versions.get(item.name.casefold())
+        version = own or versions.get(ordinal_fold(item.name))
         central = item.origin == "central" or (not own and version is not None)
         packages.append(PackageRef(item.name, version, "central" if central else "PackageReference"))
         if not own:
-            unversioned.add(item.name.casefold())
-    unsettled = [entry for entry in unsettled if entry.kind != "PackageVersion" or entry.name.casefold() in unversioned]
+            unversioned.add(ordinal_fold(item.name))
+    unsettled = [
+        entry for entry in unsettled if entry.kind != "PackageVersion" or ordinal_fold(entry.name) in unversioned
+    ]
     assemblies = [
         AssemblyRef(
             item.name.split(",", 1)[0].strip(),
@@ -806,7 +811,7 @@ def framework_version_name(state: State, version: str) -> str:
     `TargetFrameworkVersion` of `v4.7.2` under the default `.NETFramework` identifier; the version as written when
     the project sets another identifier, or one the reader cannot settle."""
     identifier = state.values.get("targetframeworkidentifier")
-    default = identifier is None or [value and value.casefold() for value in identifier] == [".netframework"]
+    default = identifier is None or [value and ordinal_fold(value) for value in identifier] == [".netframework"]
     if default and VERSION_NAME.fullmatch(version.strip()):
         return framework_key(f".NETFramework,Version={version.strip()}")
     return version.strip()

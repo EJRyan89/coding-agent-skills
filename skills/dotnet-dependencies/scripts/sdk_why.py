@@ -27,6 +27,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-cor
 
 from bounded_process import non_interactive_environment, run_bounded
 from executable_locator import find_executable, located_command
+from ordinal_case import ordinal_fold
 
 ANSI = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 HEADING = re.compile(
@@ -115,7 +116,7 @@ def why_command(project: Path, package: str) -> list[str]:
 def parse_why(text: str, package: str) -> ParsedWhy:
     """The chains to `package` in a run's output, per project stem, and the stems the run answered."""
     answer = ParsedWhy()
-    target = package.casefold()
+    target = ordinal_fold(package)
     project: str | None = None
     framework = ""
     stack: list[tuple[str, str]] = []
@@ -140,7 +141,7 @@ def parse_why(text: str, package: str) -> ParsedWhy:
         depth = max(0, (len(node.group("indent")) - TREE_BASE) // TREE_STEP)
         del stack[depth:]
         stack.append((node.group("name"), node.group("version")))
-        if node.group("name").casefold() == target:
+        if ordinal_fold(node.group("name")) == target:
             answer.paths[project].append(SdkPath(project, framework, tuple(stack)))
     return answer
 
