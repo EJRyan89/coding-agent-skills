@@ -318,6 +318,13 @@ class RunnerOptionTests(unittest.TestCase):
             ("Write-Output git | xargs -0IX X status", True),
             ("env --split='git status'", True),
             ("env -C d ls", True),
+            # The Rust coreutils' env reads variables from a file by --file and names what its command runs as by
+            # --argv0, and ubuntu-26.04 ships that env.
+            ("env --file x git commit", True),
+            ("env -fx ls", True),
+            ("env --argv0 name git status", True),
+            ("env -aname ls", True),
+            ("timeout -p 5 ls", False),
             ("timeout 5 tar --to-command=git -xf a.tar", True),
             ("Write-Output a | xargs rg x", True),
             ("timeout 5 tar -tf a.tar", False),
