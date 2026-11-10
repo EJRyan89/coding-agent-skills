@@ -29,7 +29,7 @@ When a tagged release carried the defect, its advisory is published once the fix
 
 Reports are especially useful when they involve a boundary the [trust model](docs/design.md#trust-model) places, each named here in bold as the trust model names it, or one of the areas after them:
 
-- **A pull request's or document's author**: content of a pull request, or of a document given to `review-document` for a standalone review, that reaches trusted reviewer instructions, is followed as an instruction, or escapes the review snapshot's rules. A fixture is trusted input only as the checkout that holds it is.
+- **A pull request's or document's author**: content of a pull request, of a comment anyone writes on it, of an issue it links as closed, or of a document given to `review-document` for a standalone review, that reaches trusted reviewer instructions, is followed as an instruction, or escapes the review snapshot's rules. A fixture is trusted input only as the checkout that holds it is.
 - **The PDF parser**: a PDF's bytes reaching `pdftotext` without the version check passing, or its output accepted past the size, time, or encoding limits.
 - **Authored upgrade notes**: a pull request's body reaching executable script text in continuous integration, or the release notes other than as authored Markdown.
 - **What a skill may run**: a skill that runs a command beyond the standard set and the tools it declares, or writes inside a deployed skill directory.
