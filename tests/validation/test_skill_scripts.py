@@ -2471,6 +2471,32 @@ def entry_points_with_a_main_block() -> list[tuple[Path, int]]:
     ]
 
 
+# A shell, wrapper, or find named by a path or with .exe runs what its bare name runs, so the tool behind it is held to
+# the skill's declaration: by its file name as written in Bash, and in any case in PowerShell.
+@pytest.mark.parametrize(
+    ("script", "text"),
+    [
+        pytest.param("run.sh", "/bin/bash -c 'curl x'\n", id="a shell named by a path"),
+        pytest.param("run.sh", "bash.exe -c 'curl x'\n", id="a shell named with .exe"),
+        pytest.param("run.sh", "/usr/bin/env curl x\n", id="a wrapper named by a path"),
+        pytest.param("run.sh", "/usr/bin/find . -exec curl {} ';'\n", id="find named by a path"),
+        pytest.param("run.ps1", "C:/Git/bin/bash.exe -c 'curl x'\n", id="a shell named by a path in PowerShell"),
+        pytest.param("run.ps1", "BASH.EXE -c 'curl x'\n", id="a shell named in another case in PowerShell"),
+    ],
+)
+def test_skill_command_policy_reads_the_tool_a_path_named_shell_wrapper_or_find_runs(
+    tmp_path: Path, script: str, text: str
+) -> None:
+    write_fixture_tree(
+        tmp_path,
+        {"deploy-meta/beta.json": "{}", "skills/beta/SKILL.md": "Beta\n", f"skills/beta/scripts/{script}": text},
+    )
+    # The command word itself is read as the policy reads one today, so each spelling of the shell is standard here.
+    assert skill_command_problems(tmp_path, {"curl"}, {"bash", "bash.exe", "BASH", "env", "find"}) == [
+        "skill beta runs curl without declaring it in tools"
+    ]
+
+
 class EntryPointRunnerTests(unittest.TestCase):
     def test_every_entry_point_turns_a_failure_into_a_failed_line_and_ctrl_c_into_exit_130(self) -> None:
         # The policy proves each block starts with the runner; this runs each block as written with its main failing.

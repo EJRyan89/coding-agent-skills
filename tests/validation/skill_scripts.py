@@ -12,7 +12,7 @@ import re
 import shlex
 import unittest
 from collections import defaultdict
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import TextIO, overload
@@ -27,6 +27,7 @@ from command_wrappers import (
     SCRIPT_SHELLS,
     TIME_KEYWORD_OPTIONS,
     UNREAD_PROGRAM,
+    bash_program,
     find_actions,
     shell_script_index,
     unwrapped,
@@ -35,6 +36,7 @@ from device_names import is_reserved_device_name
 from diff_paths import DRIVE
 from duplication import SKILL_CORE_SCRIPTS
 from gh_shorthands import GH_VALUE_SHORTHANDS, shorthands
+from git_subcommands import powershell_program
 from markdown_sections import SHELL_FENCES
 from module_closure import MODULE_LOADERS
 from path_containment import posix_within
@@ -296,14 +298,21 @@ def _program_word(word: str) -> set[str]:
     return set()
 
 
-def _wrapped_programs(words: list[str], commands: list[list[str]] | None = None, unread: str | None = None) -> set[str]:
+def _wrapped_programs(
+    words: list[str],
+    commands: list[list[str]] | None = None,
+    unread: str | None = None,
+    program: Callable[[str], str] = bash_program,
+) -> set[str]:
     """The programs a simple command runs through its first word: what a wrapper such as xargs or env runs, what find's
     -exec runs, what eval or a shell's -c script runs, and what the script pwsh or Windows PowerShell is started to run
     runs, followed through a wrapper of a wrapper. Given `commands`, it also appends the words of each command a
     wrapper or find's action runs, from its program on, and of each command the script eval, a shell's -c, or a
     PowerShell start-up runs holds, as shell_commands and powershell_startup_programs read them. `unread`, given, is
     the word the caller wrote for one it cannot read, as powershell_readings writes UNREAD_WORD: in a program's place
-    it is UNREAD_PROGRAM, and a start-up or a shell reads it as a word it cannot read."""
+    it is UNREAD_PROGRAM, and a start-up or a shell reads it as a word it cannot read. A shell, find, or wrapper is
+    the one `program` reads its first word as naming by its file name: as written in Bash, and in any case in
+    PowerShell, so `/bin/bash -c`, `bash.exe -c`, and `/usr/bin/env` run what their bare names run."""
     found: set[str] = set()
     while words:
         known = [None if word == unread else word for word in words]
@@ -311,17 +320,19 @@ def _wrapped_programs(words: list[str], commands: list[list[str]] | None = None,
         if started is not None:
             return found | started
         head, rest = words[0], words[1:]
+        # eval is a builtin, which no path names.
         if head == "eval":
             return found | shell_commands(" ".join(rest), commands)
-        if head in SCRIPT_SHELLS:
-            return found | _started_shell_programs(head, known[1:], commands)
-        if head == "find":
+        name = program(head) if head != unread else head
+        if name in SCRIPT_SHELLS:
+            return found | _started_shell_programs(name, known[1:], commands)
+        if name == "find":
             for action in find_actions(rest):
                 if commands is not None:
                     commands.append(action)
-                found |= _wrapped_program_word(action, unread) | _wrapped_programs(action, commands, unread)
+                found |= _wrapped_program_word(action, unread) | _wrapped_programs(action, commands, unread, program)
             return found
-        wrapped = unwrapped(words)
+        wrapped = unwrapped([name, *rest])
         if not wrapped:
             return found
         if wrapped[0].startswith(UNREAD_PROGRAM):
@@ -426,12 +437,16 @@ def shell_commands(script: str, commands: list[list[str]] | None = None) -> set[
     state = "command"
     words: list[str] = []
     time_keyword = _TimeKeyword()
+    previous: str | None = None
     for word, keyword in [*tokens, ("\n", "\n")]:
+        # ShellLexer splits ;& into ; and &, and ;;& into ;; and &; each ends a case item as ;; does.
+        ends_item = keyword == ";;" or (keyword == "&" and previous == ";")
+        previous = keyword
         if state == "case-word":
             state = "patterns" if keyword == "in" else state
         elif state == "patterns":
             state = "command" if keyword == ")" else "arguments" if keyword == "esac" else state
-        elif keyword == ";;":
+        elif ends_item:
             state = "patterns"
         elif keyword == "esac":
             state = "arguments"
@@ -1249,8 +1264,8 @@ def command_reader(path: Path) -> CommandReader:
 @dataclass(frozen=True)
 class PowerShellReading:
     """What one PowerShell source runs: `programs`, as powershell_commands gives them, and `commands`, the words of
-    each external command it runs, its program's name first and UNREAD_WORD for a word that is no literal, a command
-    a script it starts runs included."""
+    each external command it runs, its program's name or path first and UNREAD_WORD for a word that is no literal, a
+    command a script it starts runs included."""
 
     programs: frozenset[str]
     commands: tuple[tuple[str, ...], ...]
@@ -1271,8 +1286,14 @@ def powershell_readings(sources: list[str]) -> list[PowerShellReading]:
         elif name := _program_name(item["name"]):
             texts = [name, *words[1:]]
             programs[source].add(name)
-            programs[source] |= _wrapped_programs(texts, commands[source], unread=UNREAD_WORD)
+            programs[source] |= _wrapped_programs(texts, commands[source], UNREAD_WORD, powershell_program)
             commands[source].append(texts)
+        else:
+            # A program named by a path names no tool the declared-tool policy holds, but the command still runs, and
+            # git_subcommands reads the git it names by its file name. A shell, find, or wrapper named by a path still
+            # runs what its file name's program runs.
+            programs[source] |= _wrapped_programs(words, commands[source], UNREAD_WORD, powershell_program)
+            commands[source].append(words)
     return [
         PowerShellReading(frozenset(names), tuple(tuple(words) for words in run))
         for names, run in zip(programs, commands, strict=True)
