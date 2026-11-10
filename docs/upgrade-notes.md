@@ -21,6 +21,62 @@ A pull request whose change no user meets writes `None` under its `## Upgrade no
 
 Level: minor.
 
+### Deployer refusals name a step a guarded hub allows, and more of them end with a step
+
+- Level: patch, refusal and remedy wording only.
+- Contract: none.
+- User action: none. A manifest a newer checkout wrote now asks you to update with `git pull --ff-only origin main`, and an unreadable `source.json` points at `git show HEAD:source.json` for the copy to put back. An unsafe shared asset name, a missing owner file during `--migrate-from`, the metadata checks of a skill, and an unreadable menu answer now end with the step to take.
+- Pull request: #2567
+
+### `inspect-reviewer` reports a local manifest it cannot examine as unreadable
+
+- Level: patch. It fixes a status that misreported a manifest as missing.
+- Contract: the `MANIFEST local` line of `review_pipeline.py inspect-reviewer`.
+- User action: none. A script that reads the line should also expect `unreadable <reason>` beside `present` and `missing`.
+- Pull request: #2566
+
+### dotnet-dependencies and dotnet-format compare names as MSBuild and NuGet do
+
+- Level: patch, a defect fix bringing the comparison to the one the consumers make.
+- Contract: none
+- User action: none. A package, assembly, or framework name, or a solution or project file's suffix, that differs from another only by a long s, a sharp s, the Kelvin sign, or a non-ASCII digit is now its own name, as MSBuild and NuGet read it.
+- Pull request: #2565
+
+### The canaries and skill evaluations refuse a checkout detached at a mirrored pull request head
+
+- Level: patch. The checkout trust refusal now holds where it already claimed to, and the tools it guards are the repository's own development tools.
+- Contract: none
+- User action: none. A contributor who runs the runtime canary, the plugin canary, or `tools/skill_evals.py` from a detached HEAD that only a mirrored pull request ref (such as `refs/remotes/origin/pr/<n>`) holds is now refused. They read that pull request in full, then run from a branch of their own, as the refusal already asked for `gh pr checkout`.
+- Pull request: #2557
+
+### audit-ai-config's MCP handshake reports a response it refuses as refused, not as a timeout
+
+- Level: patch, a defect fix that adds no option and changes no exit code.
+- Contract: `HANDSHAKE_FAILED` gains the reason `the server's response to <method> was refused: <reason>`.
+- User action: none. `deploy.py verify`'s `its skills/list answer was refused: <reason>` now covers the same forms: an answer nested past the recursion limit, and one whose `id` is spelled as a float.
+- Pull request: #2549
+
+### The hub guard reads `timeout -f` and `-p` and `sort --check-silent`, and keeps refusing the Rust coreutils' `env --file` and `--argv0`
+
+- Level: patch, a defect fix in a contributor-facing tool with no contract change.
+- Contract: none
+- User action: none. In a clone that has opted into the guard, while a guarded hub is in view, `timeout -f`, `timeout -p`, and `sort --check-silent` are now understood where before they were refused; `env --file` and `env --argv0` remain refused.
+- Pull request: #2556
+
+### deploy.py verify reports a Codex skills/list answer it cannot read as refused, not as no answer
+
+- Level: patch, a defect fix: a failure reported as a timeout now names its cause.
+- Contract: `deploy.py verify` (`Cannot list its skills: its skills/list answer was refused: <reason>`, in place of `Cannot list its skills: no answer within <seconds> seconds` or `Cannot list its skills: it did not answer the skills/list request` when Codex answered with JSON the verifier does not read)
+- User action: none. If you see the new reason, Codex answered with JSON that holds a repeated key, `NaN`, or a lone surrogate, which the reason names; report it.
+- Pull request: #2553
+
+### The hub guard refuses a dash value after a lone valued option, a gh flag before its subcommand, and paths past its lookup limit
+
+- Level: patch, a defect fix in a contributor-facing tool with no contract change.
+- Contract: none
+- User action: none, in a clone that has not opted into the guard. In one that has, while a guarded hub is in view, a git read-only form whose valued option is written alone before a word starting with a dash, such as `git branch --format -l`, and a gh command with a flag other than `-R`, `--repo`, or `--hostname` before its subcommand, such as `gh pr -b x checkout 12`, are now refused, where before they were allowed. Attach the value, as `--format=-l`, and put gh's flags after its subcommand. With no hub in view, a command holding a part the guard does not read that names more than 32 directories is now refused rather than allowed with only the first 32 looked up.
+- Pull request: #2547
+
 ### The hub guard allows only declared read-only git forms in a guarded hub
 
 - Level: patch, a defect fix in a contributor-facing tool with no contract change.
