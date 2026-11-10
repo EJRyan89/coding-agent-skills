@@ -118,7 +118,11 @@ def matching(folder: Path, pattern: str, *, skip: Callable[[Path], bool] = _neve
     `skip` names the folders below `folder` a caller leaves out, such as `node_modules` or a folder of fixtures: one it
     answers True for is never listed or entered, so a folder it cannot list inside a skipped one is never met, while
     one elsewhere still raises. A skipped folder is still a match of a final part, as an entry of the folder above
-    it."""
+    it.
+
+    Each path is kept once by its spelling as the listing gave it, never by `Path` equality, which on Windows lowers
+    each name with `str.lower` and so takes two names the file system keeps apart, such as the Kelvin sign and K, for
+    one."""
     parts = pattern.split("/")
     if parts[-1] == "**" or any(part in ("", ".", "..") for part in parts):
         raise ValueError(f"{pattern!r} is no relative glob pattern this reads")
@@ -136,7 +140,7 @@ def matching(folder: Path, pattern: str, *, skip: Callable[[Path], bool] = _neve
             for entry in _entries(base)
             if fnmatch.fnmatch(entry.name, part) and (last or (entry.is_dir() and not skip(Path(entry.path))))
         ]
-    return sorted(set(found))
+    return sorted({os.fspath(path): path for path in found}.values())
 
 
 def _entries(folder: Path) -> list[os.DirEntry[str]]:
