@@ -46,6 +46,7 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
 import nesting_depth
+from ordinal_case import ordinal_fold, simple_uppercase
 
 # The values a property may hold at one point, in the order met: `""` for unset, None for one the reader cannot settle.
 Value = tuple[str | None, ...]
@@ -405,31 +406,6 @@ def number(text: str) -> float | None:
     return float(value - (1 << INT32_BITS) if value >= 1 << (INT32_BITS - 1) else value)
 
 
-def _case_folded(character: str) -> str | None:
-    """A character as .NET's ordinal comparison ignoring case compares it, its simple uppercase, which never maps a
-    character beyond ASCII onto an ASCII one. Python gives only the full uppercase: where that is several characters,
-    as for `ß` or `ﬀ`, the simple one is the character itself, except where its titlecase is one character, as for a
-    Greek letter with a subscript iota, whose simple uppercase this cannot tell, so None."""
-    upper = character.upper()
-    if len(upper) != 1:
-        return None if len(character.title()) == 1 else character
-    return character if upper.isascii() and not character.isascii() else upper
-
-
-def ordinal_fold(text: str) -> str:
-    """A text in the one form two spellings MSBuild and NuGet find equal share, as .NET's ordinal comparison ignoring
-    case folds each character, so a name, a package id, an assembly name, or a file name they compare that way is
-    looked up and compared by it, never by `casefold()`, which folds the sharp s onto `ss`, the long s onto `s`, and
-    the Kelvin sign onto `k`. An ASCII letter is lowered and any other character takes its simple uppercase, which is
-    never ASCII, so ASCII text keeps the order `casefold()` gave it; a character whose simple uppercase cannot be told
-    is kept as written, so it matches only itself."""
-    if text.isascii():
-        return text.lower()
-    return "".join(
-        character.lower() if character.isascii() else _case_folded(character) or character for character in text
-    )
-
-
 def same_text(left: str, right: str) -> bool | None:
     """Whether two strings are equal as MSBuild's `==` compares two that are neither both numbers nor both booleans,
     .NET's ordinal comparison ignoring case; None when a character's simple uppercase cannot be told."""
@@ -438,7 +414,7 @@ def same_text(left: str, right: str) -> bool | None:
     if len(left) != len(right):
         return False
     folded = [
-        (_case_folded(first), _case_folded(second))
+        (simple_uppercase(first), simple_uppercase(second))
         for first, second in zip(left, right, strict=True)
         if first != second
     ]

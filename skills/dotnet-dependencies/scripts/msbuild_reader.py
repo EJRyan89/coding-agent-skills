@@ -37,8 +37,8 @@ import json_reader
 from dotnet_solution import FileRefused, decode_text, lexical_absolute, listed_projects, project_path
 from file_presence import is_directory, is_occupied, is_present, matching
 from folders_up import folders_up
-from msbuild_conditions import ordinal_fold
 from msbuild_xml import local_name
+from ordinal_case import ordinal_fold
 from xml_reader import XmlRefused, read_xml
 
 # What marks the folder a checkout starts in: a folder, or a file in a linked worktree or a submodule.

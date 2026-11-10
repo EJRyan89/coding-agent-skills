@@ -86,6 +86,7 @@ from git_client import GitClient, GitError, GitResult, output_line
 from github_client import GitHubClient, GitHubError, subprocess_runner
 from github_client import Runner as GhRunner
 from link_probe import is_link_or_junction
+from ordinal_case import has_suffix, ordinal_fold
 from xml_reader import XmlRefused, read_xml
 
 # An ASP.NET project, whose files the dotnet-format global tool is not run on. The skill has skipped them since its
@@ -433,7 +434,7 @@ def formatter_for(root: Path, solution: Path) -> str:
     projects that are all SDK-style files inside `root`; the dotnet-format global tool for any other .sln, one it
     cannot read included, so that only a solution shown to suit the SDK's command gets it. A relative root or
     solution is taken from the working directory, as the formatter takes them."""
-    if solution.name.casefold().endswith(".slnx"):
+    if has_suffix(solution.name, ".slnx"):
         return SDK_FORMATTER
     root, solution = lexical_absolute(root), lexical_absolute(solution)
     try:
@@ -443,7 +444,7 @@ def formatter_for(root: Path, solution: Path) -> str:
     projects = [
         project
         for entry in listed
-        if (project := project_path(solution.parent, entry)).suffix.casefold() in FORMATTED_PROJECT_SUFFIXES
+        if has_suffix((project := project_path(solution.parent, entry)).name, FORMATTED_PROJECT_SUFFIXES)
     ]
     if projects and all(refusal(project, root) is None and is_sdk_style(project) for project in projects):
         return SDK_FORMATTER
@@ -506,8 +507,8 @@ def best_solution(root: Path, candidates: list[Path], owners: list[list[Path]]) 
         key=lambda item: (
             -item[0],
             len(item[1].relative_to(root).parts),
-            item[1].name.casefold().endswith(".slnx"),
-            relative(item[1], root).casefold(),
+            has_suffix(item[1].name, ".slnx"),
+            ordinal_fold(relative(item[1], root)),
         ),
     )
     best_score, best = ranked[0]

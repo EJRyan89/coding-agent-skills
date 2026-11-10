@@ -27,7 +27,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-cor
 
 from bounded_process import non_interactive_environment, run_bounded
 from executable_locator import find_executable, located_command
-from msbuild_conditions import ordinal_fold
+from ordinal_case import ordinal_fold
 
 ANSI = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 HEADING = re.compile(

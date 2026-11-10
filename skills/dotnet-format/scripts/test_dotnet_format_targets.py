@@ -1263,3 +1263,26 @@ def test_a_web_project_is_named_as_msbuild_compares_its_sdk(expected: bool, sdk:
     project = tmp_path / "App.csproj"
     project.write_text(f'<Project Sdk="{sdk}"></Project>\n', encoding="utf-8")
     assert expected is targets.is_web_project(project)
+
+
+LONG_S = "\u017f"
+
+
+def test_a_solution_or_project_suffix_spelled_with_a_long_s_is_not_one(tmp_path: Path) -> None:
+    # The long s is no s to .NET's ordinal comparison ignoring case: a file whose suffix spells .slnx with it is no
+    # .slnx for the SDK's formatter, and a listed project whose suffix spells .csproj with it is no C# project.
+    (tmp_path / "Lib").mkdir()
+    (tmp_path / "Lib" / f"Lib.c{LONG_S}proj").write_text(SDK_PROJECT, encoding="utf-8")
+    listed = tmp_path / "App.sln"
+    listed.write_text(solution(f"Lib\\Lib.c{LONG_S}proj"), encoding="utf-8")
+    assert targets.formatter_for(tmp_path, listed) == targets.TOOL_FORMATTER
+    imitation = tmp_path / f"App.{LONG_S}lnx"
+    imitation.write_text(solution(), encoding="utf-8")
+    assert targets.formatter_for(tmp_path, imitation) == targets.TOOL_FORMATTER
+
+
+def test_a_tie_goes_to_a_sln_over_a_slnx_by_its_suffix_as_dotnet_compares_it(tmp_path: Path) -> None:
+    # A long-s spelling of .slnx is no .slnx, so the tie between it and a .sln goes by name.
+    named, plain = tmp_path / f"A.{LONG_S}lnx", tmp_path / "B.sln"
+    assert targets.best_solution(tmp_path, [plain, named], []) == (named, 0)
+    assert targets.best_solution(tmp_path, [tmp_path / "A.slnx", plain], []) == (plain, 0)

@@ -59,7 +59,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-cor
 
 from dotnet_solution import project_path, refusal, same_path
 from file_presence import is_directory, is_present
-from msbuild_conditions import EMPTY, UNKNOWN, FileSystem, Value, condition_value, expanded, ordinal_fold, union
+from msbuild_conditions import EMPTY, UNKNOWN, FileSystem, Value, condition_value, expanded, union
 from msbuild_reader import (
     ASSEMBLY_VERSION,
     CENTRAL_VERSIONS,
@@ -75,6 +75,7 @@ from msbuild_reader import (
     parse_xml,
 )
 from msbuild_xml import implicit_sdk, is_sdk_style, local_name
+from ordinal_case import ordinal_fold
 
 BUILD_PROPS = "Directory.Build.props"
 BUILD_TARGETS = "Directory.Build.targets"

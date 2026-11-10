@@ -98,7 +98,6 @@ from executable_locator import RelativeEnvironmentPath, absolute_home, environme
 from flat_text import fact_line, flat_text
 from folder_walk import walk_files
 from folders_up import folders_up
-from msbuild_conditions import ordinal_fold
 from msbuild_evaluation import Build, ProjectFile, Sources, Unsettled, read_project
 from msbuild_reader import (
     ASSETS_FILE,
@@ -119,6 +118,7 @@ from msbuild_reader import (
     read_redirects,
     read_solution,
 )
+from ordinal_case import ordinal_fold
 from sdk_why import DEFAULT_TIMEOUT_SECONDS, SdkPath, Services, run_why
 from skill_roots import skills_directory_holding
 
