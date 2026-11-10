@@ -569,6 +569,17 @@ class ReadLogTests(GuardFixture):
             "the folder a log names is no file read",
         )
 
+    def test_a_logged_path_holding_a_nul_counts_for_nothing_and_the_others_are_counted(self) -> None:
+        log = guard.read_log(self.run_directory, "csharp-review")
+        log.write_text(
+            "".join(json.dumps(entry) + "\n" for entry in ("app/Role.cs\0.txt", "app/Role.cs")), encoding="utf-8"
+        )
+        state: Any = {"reads": {}}
+        self.assertTrue(review_dispatch.count_reads(self.run_directory, state, ["csharp-review"]))
+        size = (self.source / "app" / "Role.cs").stat().st_size
+        self.assertEqual({"csharp-review": {"files": 1, "bytes": size, "searches": 0}}, state["reads"])
+        self.assertFalse(log.exists(), "a counted log is removed, so no rerun meets it again")
+
     def test_each_role_has_its_own_log(self) -> None:
         self.claim()
         self.claim("sql-review", agent=OTHER_AGENT)

@@ -127,7 +127,8 @@ def _read_log(log: Path, source: Path) -> tuple[dict[str, int], int]:
         with contextlib.suppress(*CONTENT_ERRORS):
             relative = json_reader.loads(line)
             searches += is_search_entry(relative)
-            target = source.joinpath(relative) if isinstance(relative, str) else source
+            # A path holding a NUL names no file, which file_presence refuses as an OSError: count it as nothing.
+            target = source.joinpath(relative) if isinstance(relative, str) and "\0" not in relative else source
             key = path_key(target, textual=True)
             if (
                 key not in sizes

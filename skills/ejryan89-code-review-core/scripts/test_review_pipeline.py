@@ -1728,6 +1728,8 @@ class RetryTests(PipelineFixture):
         self.assertIn(f"FAILED {SELECTOR} generic-review", out)
         with self.assertRaisesRegex(review_run.PipelineError, "invalid"):
             rp.finalize(ready["run"])
+        self.assertIsNone(latest_record(self.archive, REPOSITORY, 12))
+        self.assertTrue(ready["run"].exists(), "a failed run is kept for inspection")
 
     def test_an_invalid_result_it_cannot_stat_fails_the_check_rather_than_staying_for_the_retry(self) -> None:
         ready = self.prepare()
@@ -1740,8 +1742,6 @@ class RetryTests(PipelineFixture):
         self.assertNotIn("RETRY", out, "no retry is handed out while the rejected result may still be there")
         self.assertIn("denied", out)
         self.assertTrue(result.is_file())
-        self.assertIsNone(latest_record(self.archive, REPOSITORY, 12))
-        self.assertTrue(ready["run"].exists(), "a failed run is kept for inspection")
 
 
 class ReReviewTests(PipelineFixture):
@@ -4149,6 +4149,38 @@ class ReviewerSourceTests(PipelineFixture):
         lines = self.run_main("inspect-reviewer", "--repository", REPOSITORY, "--ref", "main")[1].splitlines()
         self.assertIn(f"MANIFEST local {default} present", lines)
         self.assertEqual("VERDICT manifest-configured", lines[-1])
+
+    def test_a_condition_snapshot_folder_it_cannot_stat_raises_rather_than_being_taken_again(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            source = Path(temporary) / "source"
+            source.mkdir()
+            taken: list[Path] = []
+            arguments: dict[str, Any] = {
+                "checkout": Path(temporary),
+                "repository": REPOSITORY,
+                "head": "0" * 40,
+                "changed": [],
+                "renamed": {},
+                "reviewer_root": Path(temporary),
+                "manifest": {"conditions": {"python": {"script": "condition.py"}}},
+                "source": source,
+                "work": Path(temporary) / "work",
+                "diff_file": Path(temporary) / "diff.patch",
+                "results": {},
+                "services": review_run.Services(),
+            }
+            with (
+                mock.patch.object(review_reviewer_setup, "condition_reads", return_value=None),
+                mock.patch.object(
+                    review_reviewer_setup, "materialize_source_snapshot", lambda *a, **k: taken.append(a[3])
+                ),
+                mock.patch.object(review_reviewer_setup, "evaluate_condition", return_value=True),
+            ):
+                with unstatable(source), self.assertRaises(PermissionError):
+                    review_reviewer_setup._route_condition("python", **arguments)
+                self.assertEqual([], taken, "a folder it cannot stat is never read as a snapshot not yet taken")
+                self.assertTrue(review_reviewer_setup._route_condition("python", **arguments))
+                self.assertEqual([], taken, "a snapshot already taken is used as it is")
 
     def test_inspect_reviewer_reads_a_local_manifest_it_cannot_stat_as_unreadable_not_missing(self) -> None:
         default = default_manifest_path(self.config_path, REPOSITORY)

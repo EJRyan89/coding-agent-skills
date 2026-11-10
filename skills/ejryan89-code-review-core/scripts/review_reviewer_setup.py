@@ -413,8 +413,9 @@ def _route_condition(
 ) -> bool:
     """Evaluate one routing condition on the pull request's source snapshot, taken on first use as a review takes it,
     and record it: lazy, holding the paths the conditions routing runs declare they read, when each declares them.
-    The script is given the pull request's diff, `diff_file`, and a file to write, as a review gives them."""
-    if not source.exists():
+    The script is given the pull request's diff, `diff_file`, and a file to write, as a review gives them. A snapshot
+    folder it cannot stat, or something other than a folder in its place, raises, never read as not yet taken."""
+    if not file_presence.is_directory(source):
         reads = condition_reads(manifest, changed, renamed)
         materialize_source_snapshot(
             checkout,
