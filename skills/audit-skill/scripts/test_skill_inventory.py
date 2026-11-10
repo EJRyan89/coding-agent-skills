@@ -856,6 +856,20 @@ class ToolsTests(TemporaryTestCase):
             self.grants(allowed, body),
         )
 
+    def test_only_one_assignment_of_the_name_alone_declares_repository_code(self) -> None:
+        script = self.root / "start.py"
+        for source, declared in (
+            ('RUNS_REPOSITORY_CODE = "starts a server"\n', True),
+            ('RUNS_REPOSITORY_CODE: str = "starts a server"\n', True),
+            ('RUNS_REPOSITORY_CODE = OTHER = "starts a server"\n', False),
+            ('RUNS_REPOSITORY_CODE, OTHER = "starts a server", 1\n', False),
+            ('RUNS_REPOSITORY_CODE = "starts a server"\nRUNS_REPOSITORY_CODE = ""\n', False),
+            ('RUNS_REPOSITORY_CODE = ""\nRUNS_REPOSITORY_CODE += "starts a server"\n', False),
+        ):
+            with self.subTest(source=source):
+                write(script, source)
+                self.assertEqual(declared, skill_inventory.runs_repository_code(script))
+
     def test_a_script_that_runs_repository_code_is_reported_apart_from_ungranted_commands(self) -> None:
         # Such a script starts code the target repository configures, so its command must keep prompting: one a
         # grant covers is reported, and one no grant covers is the intended state rather than a missing grant.
@@ -1630,6 +1644,7 @@ PROSE_CUE_NAMES = {name for name, _ in skill_inventory.PROSE_CUES}
         ("Drift and polish go into the next milestone.", "owed-by-rules"),
         # A file or message drafted by hand.
         ("1. Write the title and the body from the repository's template, each to a file.", "hand-drafted"),
+        ("1) Write the title and the body from the repository's template, each to a file.", "hand-drafted"),
         ("Copy the `RUNTIME`, `MATRIX`, and `SKIPPED` lines into the pull request.", "hand-drafted"),
         ("If it is empty, print `usage: tool <name>` and stop.", "hand-drafted"),
         ("Finish with `Processed <N> repositories.` from the count.", "hand-drafted"),
@@ -1654,6 +1669,8 @@ def test_a_deterministic_prose_shape_is_its_cue(line: str, cue: str, tmp_path: P
         "Recommend splitting the body into reference files.",
         "`CONFLICT` lines come in groups of two or more versions.",
         "- **`judgment`**: the evaluation's result for that model.",
+        # A no-break space after a dash opens no list item, so the line is no keyed item.
+        "-\u00a0**`the run recorded no review; ...`**: the session ended early.",
         # A line the last command printed, with no per-item record, and a rule that sets no follow-up.
         "For each `ROLE` line the last `prepare` printed, start one subagent.",
         "Read the files the change touches and their tests.",

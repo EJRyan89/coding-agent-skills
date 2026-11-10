@@ -69,6 +69,8 @@ from frontmatter import (
 from frontmatter import split as split_frontmatter
 from link_probe import is_link_or_junction
 from markdown_literal import markdown_line
+from markdown_sections import ATX_HEADING, find_fences
+from module_assignments import assigned_names, sole_assignment
 from path_containment import within
 from typed_fields import FieldError, FieldReader
 
@@ -551,6 +553,10 @@ RECURSIVE_INVENTORY_NAMES: list[str] = ["AGENTS.md", "AGENTS.override.md"]
 # Every name a nested-file check walks the repository for; the inventory's walk reports a link to one that leads out.
 NESTED_FILE_NAMES: frozenset[str] = frozenset({*RECURSIVE_INVENTORY_NAMES, ".mcp.json"})
 GENERATOR_CANDIDATES: list[str] = [".github/scripts/ai_config.py", "scripts/ai_config.py"]
+# The literal declarations a generator's scope is read from, each assigned once at module level.
+GENERATOR_TARGETS = frozenset({"TARGET_RUNTIMES", "TARGET_SURFACES", "TARGET_FEATURES"})
+# The text a CLAUDE.md's level-two heading opens with when it holds the generated layout's maintenance section.
+MAINTAINING_SECTION = re.compile(r"Maintaining[ \t]+AI[ \t]+Agent[ \t]+Config", re.IGNORECASE | re.ASCII)
 # The folders whose presence alone a check reads, as the scope a repository's files show reads .codex and .github; the
 # inventory reports one it cannot examine, or a file in its place.
 INVENTORY_FOLDERS: list[str] = [".codex", ".github"]
@@ -1444,25 +1450,21 @@ def derive_generator_scope(root: Path) -> tuple[dict[str, list[str]] | None, str
             return None, "generator-scope-unreadable"
         values: dict[str, list[str]] = {}
         for node in tree.body:
-            if not isinstance(node, (ast.Assign, ast.AnnAssign)):
+            if not GENERATOR_TARGETS.intersection(assigned_names(node)):
                 continue
-            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
-            for target in targets:
-                if isinstance(target, ast.Name) and target.id in {
-                    "TARGET_RUNTIMES",
-                    "TARGET_SURFACES",
-                    "TARGET_FEATURES",
-                }:
-                    value = node.value
-                    if value is None:  # an annotation without a value
-                        return None, "generator-scope-not-literal"
-                    try:
-                        literal = python_reader.literal(value)
-                    except python_reader.CONTENT_ERRORS:
-                        return None, "generator-scope-not-literal"
-                    if not isinstance(literal, list) or not all(isinstance(item, str) for item in literal):
-                        return None, "generator-scope-invalid"
-                    values[target.id] = literal
+            # module_assignments reads which statements assign one name alone, so a chained, unpacking, augmented,
+            # or repeated assignment, or an annotation without a value, is refused rather than read by position.
+            assignment = sole_assignment(node)
+            if assignment is None or assignment[0].id in values:
+                return None, "generator-scope-not-literal"
+            target, value = assignment
+            try:
+                literal = python_reader.literal(value)
+            except python_reader.CONTENT_ERRORS:
+                return None, "generator-scope-not-literal"
+            if not isinstance(literal, list) or not all(isinstance(item, str) for item in literal):
+                return None, "generator-scope-invalid"
+            values[target.id] = literal
         if len(values) != 3:
             return None, "generator-scope-incomplete"
         return {
@@ -1834,7 +1836,15 @@ def _has_maintaining_section(root: Path) -> bool:
     claude_md = claude_md_text(root)
     if claude_md is None:
         return False
-    return re.search(r"^##\s+Maintaining\s+AI\s+Agent\s+Config", claude_md[1], re.MULTILINE | re.IGNORECASE) is not None
+    # markdown_sections reads the heading and the fences a heading-shaped line inside one belongs to, as CommonMark
+    # reads them.
+    lines = claude_md[1].split("\n")
+    fenced = {index for fence in find_fences(lines) for index in fence.lines()}
+    return any(
+        heading.group("marks") == "##" and MAINTAINING_SECTION.match(heading.group("text")) is not None
+        for index, line in enumerate(lines)
+        if index not in fenced and (heading := ATX_HEADING.fullmatch(line.rstrip("\r"))) is not None
+    )
 
 
 def _has_generator_script(root: Path) -> bool:
