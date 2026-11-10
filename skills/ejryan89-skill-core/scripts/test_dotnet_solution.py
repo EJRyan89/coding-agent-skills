@@ -139,6 +139,15 @@ class SolutionReaderTests(unittest.TestCase):
         self.assertTrue(is_solution(Path("Harbor.slnx")))
         self.assertFalse(is_solution(Path("Harbor.csproj")))
 
+    def test_a_suffix_is_matched_as_dotnet_compares_it_never_folded_onto_ascii(self) -> None:
+        # The long s is no s to .NET's ordinal comparison ignoring case, so neither name is a solution, and a .sln
+        # whose suffix is spelled with it is read as a .sln, never parsed as a .slnx's XML.
+        for name in ("Harbor.LONG_Sln", "Harbor.LONG_Slnx"):
+            with self.subTest(name=name):
+                self.assertFalse(is_solution(Path(name.replace("LONG_S", "\u017f"))))
+        sln = 'Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Harbor", "src\\Harbor.csproj", "{1}"\n'
+        self.assertEqual(["src\\Harbor.csproj"], listed_projects(sln, self.root / "Harbor.\u017flnx"))
+
     def test_same_path_normalizes_separators_and_case_as_the_platform_does(self) -> None:
         self.assertEqual(same_path(Path("a/./b")), same_path(Path("a") / "b"))
         if os.name == "nt":

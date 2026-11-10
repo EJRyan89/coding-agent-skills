@@ -19,6 +19,8 @@ from pathlib import Path
 from typing import Any
 from unittest import mock
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
@@ -1464,6 +1466,834 @@ class FrameworkAndAssemblyTests(Fixture):
             [("Lantern.Bundle", "1.0.0"), ("Quill.Http", "1.0.0")],
             [(row[2], row[3]) for row in self.lines(rows, "REACHES") if row[4] == "package"],
         )
+
+
+LEGACY_APP_PROJECT = """<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="15.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <PropertyGroup><TargetFrameworkVersion>v4.7.2</TargetFrameworkVersion></PropertyGroup>
+</Project>
+"""
+SHARP_S = "Lantern.Stra\u00dfe"
+CAFE = "Lantern.Caf\u00e9"
+
+
+def packages_config(*packages: tuple[str, str]) -> str:
+    listed = "".join(
+        f'<package id="{name}" version="{version}" targetFramework="net472" />' for name, version in packages
+    )
+    return f"<packages>{listed}</packages>"
+
+
+def plain_nuspec(name: str, version: str, *dependencies: str) -> str:
+    listed = "".join(f'<dependency id="{dependency}" version="1.0.0" />' for dependency in dependencies)
+    metadata = f"<id>{name}</id><version>{version}</version><dependencies>{listed}</dependencies>"
+    return f"<package><metadata>{metadata}</metadata></package>"
+
+
+class OrdinalNameTests(Fixture):
+    """Package ids and the packages folder's names compared as NuGet compares them, ordinally ignoring case: a letter
+    beyond ASCII matches its own other case, while the sharp s is never `ss`, as `casefold()` would read it."""
+
+    def legacy_app(self, packages: list[tuple[str, str]], nuspecs: list[tuple[str, str, tuple[str, ...]]]) -> Path:
+        self.write("App/App.csproj", LEGACY_APP_PROJECT)
+        self.write("App/packages.config", packages_config(*packages))
+        for name, version, dependencies in nuspecs:
+            self.write(f"packages/{name}.{version}/{name}.nuspec", plain_nuspec(name, version, *dependencies))
+        return self.write("App.sln", solution("App\\App.csproj"))
+
+    def test_two_ids_casefold_merges_are_two_packages_and_one_spelled_in_another_case_is_found(self) -> None:
+        root = self.legacy_app(
+            # Listed after the ss spelling, the sharp-s package is the one a casefold() key would keep for both.
+            [("Lantern.Strasse", "2.0.0"), (SHARP_S, "1.0.0"), (CAFE, "3.0.0")],
+            [
+                ("Lantern.Strasse", "2.0.0", ()),
+                (SHARP_S, "1.0.0", ()),
+                (CAFE, "3.0.0", ("Lantern.Strasse",)),
+            ],
+        )
+        code, rows = self.run_main("why", SHARP_S, "--root", str(root))
+        self.assertEqual(0, code)
+        self.assertEqual([["App/App.csproj", "-", SHARP_S, "graph", f"{SHARP_S} (v1.0.0)"]], self.lines(rows, "PATH"))
+        code, rows = self.run_main("why", "Lantern.Strasse", "--root", str(root))
+        self.assertEqual(0, code)
+        self.assertEqual(
+            [
+                ["App/App.csproj", "-", "Lantern.Strasse", "graph", "Lantern.Strasse (v2.0.0)"],
+                ["App/App.csproj", "-", "Lantern.Strasse", "graph", f"{CAFE} (v3.0.0) > Lantern.Strasse (v2.0.0)"],
+            ],
+            self.lines(rows, "PATH"),
+        )
+        code, rows = self.run_main("why", "LANTERN.CAF\u00c9", "--root", str(root))
+        self.assertEqual(0, code)
+        self.assertEqual(
+            [["App/App.csproj", "-", "LANTERN.CAF\u00c9", "graph", f"{CAFE} (v3.0.0)"]], self.lines(rows, "PATH")
+        )
+
+    def test_a_packages_folder_named_with_the_sharp_s_is_not_the_folder_of_an_id_spelled_with_ss(self) -> None:
+        root = self.legacy_app([("Lantern.Strasse", "2.0.0")], [(SHARP_S, "2.0.0", ("Lantern.Gone",))])
+        code, rows = self.run_main("why", "Lantern.Gone", "--root", str(root))
+        self.assertEqual(0, code)
+        self.assertEqual([["App/App.csproj", "legacy", "direct", "listed"]], self.lines(rows, "PROJECT"))
+        self.assertEqual([], self.lines(rows, "PATH"))
+
+    def test_rows_are_printed_in_the_order_of_their_ordinal_fold(self) -> None:
+        packages = [("Lantern.Strasz", "1.0.0"), (SHARP_S, "1.0.0"), ("Lantern.Strasse", "2.0.0"), (CAFE, "3.0.0")]
+        root = self.legacy_app(packages, [(name, version, ()) for name, version in packages])
+        code, rows = self.run_main(
+            "why", "--all", "--project", str(self.root / "App" / "App.csproj"), "--root", str(root)
+        )
+        self.assertEqual(0, code)
+        self.assertEqual(
+            [CAFE, "Lantern.Strasse", "Lantern.Strasz", SHARP_S], [row[2] for row in self.lines(rows, "REACHES")]
+        )
+
+
+STRASSE_SHARP = "Lantern.Stra\u00dfe"
+CAFE_UPPER = "LANTERN.CAF\u00c9"
+KELVIN = "Lantern.\u212alient"
+QUILL_SHARP = "Quill.Stra\u00dfe"
+# Legacy projects named and referencing packages and assemblies in each spelling the ordinal fold keeps apart from
+# casefold(): the sharp s after ss and sz, the Kelvin sign after every ASCII letter, and an accented letter matched
+# in its other case. Each project gives its packages, the extra items of its project file, and its Web.config.
+ORDINAL_PROJECTS: dict[str, tuple[list[tuple[str, str]], str, str | None]] = {
+    "Caf\u00e9": (
+        [(CAFE, "1.0.0"), ("Lantern.Strasse", "1.0.0"), ("Lantern.Klient", "1.0.0")],
+        '<ProjectReference Include="..\\Stra\u00dfe\\Stra\u00dfe.csproj" />',
+        None,
+    ),
+    "Strasse": ([(CAFE_UPPER, "2.0.0")], "", None),
+    # The sharp-s package listed first, so a walk keyed by casefold() would take the ss package as walked.
+    "Strasz": ([(STRASSE_SHARP, "2.0.0"), ("Lantern.Strasse", "2.0.0"), (CAFE, "3.0.0")], "", None),
+    # The ss package listed first, the other order.
+    "Stra\u00dfe": (
+        [("Lantern.Strasse", "2.0.0"), (STRASSE_SHARP, "2.0.0"), (KELVIN, "2.0.0"), (CAFE, "3.0.0")],
+        f'<Reference Include="{STRASSE_SHARP}, Version=1.0.0.0" /><Reference Include="{QUILL_SHARP}" />'
+        '<Reference Include="Quill.Strasse" />',
+        '<?xml version="1.0"?><configuration><runtime><assemblyBinding xmlns="urn:schemas-microsoft-com:asm.v1">'
+        '<dependentAssembly><assemblyIdentity name="Lantern.Strasse" />'
+        '<bindingRedirect oldVersion="0.0.0.0-9.9.9.9" newVersion="9.9.9.9" /></dependentAssembly>'
+        f'<dependentAssembly><assemblyIdentity name="{CAFE_UPPER}" />'
+        '<bindingRedirect oldVersion="0.0.0.0-1.0.0.0" newVersion="1.0.0.0" /></dependentAssembly>'
+        "</assemblyBinding></runtime></configuration>",
+    ),
+    # Both spellings with no nuspec, so each is a direct package alone.
+    "\u212alient": ([(STRASSE_SHARP, "7.0.0"), ("Lantern.Strasse", "7.0.0")], "", None),
+}
+# The packages folder: each unpacked package with the dependency its nuspec names, and the sharp-s package shipping
+# an assembly spelled with the sharp s.
+ORDINAL_PACKAGES = {
+    "Lantern.Strasse.2.0.0": ("Lantern.Strasse", "Lantern.Other"),
+    f"{STRASSE_SHARP}.2.0.0": (STRASSE_SHARP, "Lantern.Deep"),
+}
+
+
+def ordinal_solution(root: Path) -> Path:
+    sln = root / "Ordinal.sln"
+    if sln.exists():
+        return sln
+    for name, (packages, items, config) in ORDINAL_PROJECTS.items():
+        folder = root / name
+        folder.mkdir(parents=True)
+        project = LEGACY_APP_PROJECT.replace("</Project>", f"  <ItemGroup>{items}</ItemGroup>\n</Project>")
+        (folder / f"{name}.csproj").write_text(project, encoding="utf-8")
+        (folder / "packages.config").write_text(packages_config(*packages), encoding="utf-8")
+        if config is not None:
+            (folder / "Web.config").write_text(config, encoding="utf-8")
+    for name, (package, dependency) in ORDINAL_PACKAGES.items():
+        unpacked = root / "packages" / name
+        unpacked.mkdir(parents=True)
+        (unpacked / f"{package}.nuspec").write_text(plain_nuspec(package, "2.0.0", dependency), encoding="utf-8")
+    shipped = root / "packages" / f"{STRASSE_SHARP}.2.0.0" / "lib" / "net45"
+    shipped.mkdir(parents=True)
+    (shipped / f"{QUILL_SHARP}.Core.dll").write_text("", encoding="utf-8")
+    sln.write_text(solution(*(f"{name}\\{name}.csproj" for name in ORDINAL_PROJECTS)), encoding="utf-8")
+    return sln
+
+
+# A restored SDK-style project depending on both spellings, each depending on one package.
+SDK_ORDINAL_PROJECT = """<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup><TargetFramework>net8.0</TargetFramework></PropertyGroup>
+</Project>
+"""
+SDK_ORDINAL_ASSETS = {
+    "version": 3,
+    "targets": {
+        "net8.0": {
+            "Lantern.Strasse/2.0.0": {"type": "package", "dependencies": {"Lantern.Deep": "1.0.0"}},
+            f"{STRASSE_SHARP}/1.0.0": {"type": "package", "dependencies": {"Lantern.Deep": "1.0.0"}},
+            "Lantern.Deep/1.0.0": {"type": "package"},
+        }
+    },
+    "project": {
+        "frameworks": {
+            "net8.0": {
+                "dependencies": {
+                    "Lantern.Strasse": {"target": "Package", "version": "[2.0.0, )"},
+                    STRASSE_SHARP: {"target": "Package", "version": "[1.0.0, )"},
+                }
+            }
+        }
+    },
+}
+# The SDK names the route through the sharp-s package alone.
+SDK_ORDINAL_TEXT = (
+    "Project 'Restored' has the following dependency graph(s) for 'Lantern.Deep':\r\n\r\n  [net8.0]\r\n"
+    f"  \u2514\u2500\u2500 {STRASSE_SHARP} (v1.0.0)\r\n      \u2514\u2500\u2500 Lantern.Deep (v1.0.0)\r\n\r\n"
+)
+
+
+def sdk_ordinal_why(root: Path, answered: bool) -> list[list[str]]:
+    project = root / "Restored" / "Restored.csproj"
+    project.parent.mkdir(parents=True)
+    project.write_text(SDK_ORDINAL_PROJECT, encoding="utf-8")
+    (project.parent / "obj").mkdir()
+    (project.parent / "obj" / "project.assets.json").write_text(json.dumps(SDK_ORDINAL_ASSETS), encoding="utf-8")
+    sln = root / "Restored.sln"
+    sln.write_text(solution("Restored\\Restored.csproj"), encoding="utf-8")
+    sdk = TableSdk({(same_path(project), "lantern.deep"): SDK_ORDINAL_TEXT})
+    services = Services(run=sdk, which=lambda name: "C:/tools/dotnet.exe" if answered and name == "dotnet" else None)
+    return keyed(cli_lines(sln, "why", "Lantern.Deep", services=services), "PATH")
+
+
+def cli_lines(root: Path, *arguments: str, services: Services | None = None) -> list[list[str]]:
+    output = io.StringIO()
+    with contextlib.redirect_stdout(output):
+        main([*arguments, "--root", str(root)], services or Services(run=FakeSdk(), which=lambda name: None))
+    return [line.split("\t") for line in output.getvalue().splitlines()]
+
+
+def keyed(rows: list[list[str]], *keys: str) -> list[list[str]]:
+    return [row for row in rows if row[0] in keys]
+
+
+def ordinal_query(root: Path, *queries: tuple[str, ...], keys: tuple[str, ...]) -> list[list[str]]:
+    """The lines of `keys` each query prints over the ordinal solution, query after query; a query naming
+    `--project` names it by its folder."""
+    sln = ordinal_solution(root)
+    found: list[list[str]] = []
+    for query in queries:
+        arguments = [
+            str(root / part / f"{part}.csproj") if previous == "--project" else part
+            for previous, part in zip(("", *query[:-1]), query, strict=True)
+        ]
+        found += keyed(cli_lines(sln, *arguments), *keys)
+    return found
+
+
+def ordinal_graph(root: Path) -> list[str]:
+    """The WROTE line's node and edge counts, then each node's label, of the ordinal solution's Mermaid graph."""
+    output = root / "graph.md"
+    wrote = keyed(cli_lines(ordinal_solution(root), "graph", "--format", "mermaid", "--output", str(output)), "WROTE")
+    labels = [
+        line.split('["', 1)[1].split('"]', 1)[0]
+        for line in output.read_text(encoding="utf-8").splitlines()
+        if '["' in line
+    ]
+    return [*wrote[0][2:], *labels]
+
+
+def unpacked(root: Path, *folders: str) -> Path:
+    """A packages folder holding each folder named, nested folders written with `/`."""
+    packages = root / "packages"
+    for folder in folders:
+        (packages / folder).mkdir(parents=True)
+    return packages
+
+
+def found_folder(packages: Path, package: str, version: str) -> str | None:
+    found = dependency_graph.package_directory([packages], package, version)
+    return None if found is None else found.relative_to(packages).as_posix()
+
+
+def found_nuspec(root: Path, folder: str, nuspec: str, package: str) -> str | None:
+    packages = unpacked(root, folder)
+    (packages / folder / f"{nuspec}.nuspec").write_text(plain_nuspec(nuspec, "1.0.0"), encoding="utf-8")
+    graph = dependency_graph.Graph(root, root, root)
+    node = dependency_graph.nuspec_node(graph, [packages], msbuild_reader.PackageRef(package, "1.0.0", "packages"))
+    return None if node is None else node.id
+
+
+def found_projects(root: Path, *names: str) -> list[str]:
+    for name in names:
+        (root / name).parent.mkdir(parents=True, exist_ok=True)
+        (root / name).write_text(LEGACY_APP_PROJECT, encoding="utf-8")
+    return [path.relative_to(root).as_posix() for path in dependency_graph.find_projects(root, [])]
+
+
+def solution_projects(root: Path, *names: str) -> list[str]:
+    found_projects(root, *names)
+    sln = root / "Listed.sln"
+    sln.write_text(solution(*(name.replace("/", "\\") for name in names)), encoding="utf-8")
+    _, _, projects = dependency_graph.resolve_root(sln, [])
+    return [path.relative_to(root).as_posix() for path in projects]
+
+
+def config_redirects(root: Path, config: str) -> list[list[str]]:
+    folder = root / "App"
+    folder.mkdir()
+    (folder / "App.csproj").write_text(LEGACY_APP_PROJECT, encoding="utf-8")
+    (folder / "packages.config").write_text(packages_config(), encoding="utf-8")
+    (folder / config).write_text(WEB_CONFIG, encoding="utf-8")
+    (root / "App.sln").write_text(solution("App\\App.csproj"), encoding="utf-8")
+    rows = cli_lines(root / "App.sln", "conflicts")
+    return [row[3:4] for row in keyed(rows, "REDIRECT_UNREFERENCED", "REDIRECT_STALE")]
+
+
+def ordinal_keys(*packages: str) -> list[str]:
+    target = dependency_graph.Target("-")
+    return [dependency_graph.package_key(target, package, "1.0.0")[0] for package in packages]
+
+
+CAFE_LABEL = "Caf\u00e9/Caf\u00e9.csproj"
+SHARP_LABEL = "Stra\u00dfe/Stra\u00dfe.csproj"
+KELVIN_LABEL = "\u212alient/\u212alient.csproj"
+ORDINAL_ROWS: list[tuple[str, Callable[[Path], object], object]] = [
+    # package_directory, a packages folder's <id>.<version>
+    (
+        "packages folder: sharp s is not ss",
+        lambda root: found_folder(unpacked(root, f"{STRASSE_SHARP}.1.0.0"), "Lantern.Strasse", "1.0.0"),
+        None,
+    ),
+    (
+        "packages folder: Kelvin sign is not K",
+        lambda root: found_folder(unpacked(root, f"{KELVIN}.1.0.0"), "Lantern.Klient", "1.0.0"),
+        None,
+    ),
+    (
+        "packages folder: other case matches",
+        lambda root: found_folder(unpacked(root, f"{CAFE}.1.0.0"), CAFE_UPPER, "1.0.0"),
+        f"{CAFE}.1.0.0",
+    ),
+    # package_directory, the NuGet cache's <id>/<version>
+    (
+        "cache: sharp s is not ss",
+        lambda root: found_folder(unpacked(root, f"{STRASSE_SHARP}/1.0.0"), "Lantern.Strasse", "1.0.0"),
+        None,
+    ),
+    (
+        "cache: Kelvin sign is not K",
+        lambda root: found_folder(unpacked(root, f"{KELVIN}/1.0.0"), "Lantern.Klient", "1.0.0"),
+        None,
+    ),
+    (
+        "cache: other case matches",
+        lambda root: found_folder(unpacked(root, f"{CAFE}/1.0.0"), CAFE_UPPER, "1.0.0"),
+        f"{CAFE}/1.0.0",
+    ),
+    # nuspec_node, the nuspec's own name in the package's folder
+    (
+        "nuspec: sharp s is not ss",
+        lambda root: found_nuspec(root, "Lantern.Strasse.1.0.0", STRASSE_SHARP, "Lantern.Strasse"),
+        None,
+    ),
+    (
+        "nuspec: Kelvin sign is not K",
+        lambda root: found_nuspec(root, "Lantern.Klient.1.0.0", KELVIN, "Lantern.Klient"),
+        None,
+    ),
+    ("nuspec: other case matches", lambda root: found_nuspec(root, f"{CAFE}.1.0.0", CAFE, CAFE_UPPER), CAFE),
+    # find_projects and resolve_root, a project file's suffix
+    ("find_projects", lambda root: found_projects(root, "A/App.CSPROJ", "B/Lib.c\u017fproj"), ["A/App.CSPROJ"]),
+    ("resolve_root", lambda root: solution_projects(root, "A/App.CSPROJ", "B/Lib.c\u017fproj"), ["A/App.CSPROJ"]),
+    # read_configs, a config file's name
+    ("read_configs: ligature is not fi", lambda root: config_redirects(root, "Web.con\ufb01g"), []),
+    (
+        "read_configs: other case matches",
+        lambda root: config_redirects(root, "WEB.CONFIG"),
+        [["Lantern.Json"], ["Quill.Http"], ["Ghost.Assembly"]],
+    ),
+    # package_key, a graph node's key
+    (
+        "package_key",
+        lambda root: ordinal_keys("Lantern.Strasse", STRASSE_SHARP, CAFE, CAFE_UPPER, "Lantern.Klient", KELVIN),
+        [
+            "package:lantern.strasse@1.0.0",
+            "package:lantern.stra\u00dfe@1.0.0",
+            "package:lantern.caf\u00c9@1.0.0",
+            "package:lantern.caf\u00c9@1.0.0",
+            "package:lantern.klient@1.0.0",
+            "package:lantern.\u212alient@1.0.0",
+        ],
+    ),
+    (
+        "ROOT and PROJECT",
+        lambda root: [row[:2] for row in ordinal_query(root, ("why", "Lantern.None"), keys=("PROJECT",))],
+        [
+            ["PROJECT", "Caf\xe9/Caf\xe9.csproj"],
+            ["PROJECT", "Strasse/Strasse.csproj"],
+            ["PROJECT", "Strasz/Strasz.csproj"],
+            ["PROJECT", "Stra\xdfe/Stra\xdfe.csproj"],
+            ["PROJECT", "\u212alient/\u212alient.csproj"],
+        ],
+    ),
+    (
+        "WHERE an accented name in either case",
+        lambda root: ordinal_query(root, ("where", CAFE_UPPER), keys=("WHERE",)),
+        [
+            ["WHERE", "Caf\xe9/Caf\xe9.csproj", "-", "Lantern.Caf\xe9", "package", "1.0.0", "Lantern.Caf\xe9 (v1.0.0)"],
+            ["WHERE", "Strasse/Strasse.csproj", "-", "LANTERN.CAF\xc9", "package", "2.0.0", "LANTERN.CAF\xc9 (v2.0.0)"],
+            ["WHERE", "Strasz/Strasz.csproj", "-", "Lantern.Caf\xe9", "package", "3.0.0", "Lantern.Caf\xe9 (v3.0.0)"],
+            [
+                "WHERE",
+                "Stra\xdfe/Stra\xdfe.csproj",
+                "-",
+                "Lantern.Caf\xe9",
+                "package",
+                "3.0.0",
+                "Lantern.Caf\xe9 (v3.0.0)",
+            ],
+        ],
+    ),
+    (
+        "WHERE each spelling of a package",
+        lambda root: ordinal_query(
+            root, ("where", "Lantern.Strasse"), ("where", STRASSE_SHARP), ("where", "Lantern.Klient"), keys=("WHERE",)
+        ),
+        [
+            ["WHERE", "Caf\xe9/Caf\xe9.csproj", "-", "Lantern.Strasse", "package", "1.0.0", "Lantern.Strasse (v1.0.0)"],
+            ["WHERE", "Strasz/Strasz.csproj", "-", "Lantern.Strasse", "package", "2.0.0", "Lantern.Strasse (v2.0.0)"],
+            [
+                "WHERE",
+                "Stra\xdfe/Stra\xdfe.csproj",
+                "-",
+                "Lantern.Strasse",
+                "package",
+                "2.0.0",
+                "Lantern.Strasse (v2.0.0)",
+            ],
+            [
+                "WHERE",
+                "\u212alient/\u212alient.csproj",
+                "-",
+                "Lantern.Strasse",
+                "package",
+                "7.0.0",
+                "Lantern.Strasse (v7.0.0)",
+            ],
+            ["WHERE", "Stra\xdfe/Stra\xdfe.csproj", "-", "Lantern.Stra\xdfe", "framework", "1.0.0.0", "-"],
+            [
+                "WHERE",
+                "\u212alient/\u212alient.csproj",
+                "-",
+                "Lantern.Stra\xdfe",
+                "package",
+                "7.0.0",
+                "Lantern.Stra\xdfe (v7.0.0)",
+            ],
+            ["WHERE", "Caf\xe9/Caf\xe9.csproj", "-", "Lantern.Klient", "package", "1.0.0", "Lantern.Klient (v1.0.0)"],
+        ],
+    ),
+    (
+        "WHERE a referenced project",
+        # Each query apart: the row the sharp-s spelling finds must not move to the ss spelling's query.
+        lambda root: [ordinal_query(root, ("where", query), keys=("WHERE",)) for query in ("Strasse", "STRA\u00dfE")],
+        [[], [["WHERE", "Caf\xe9/Caf\xe9.csproj", "-", "Stra\xdfe", "project", "-", "Stra\xdfe/Stra\xdfe.csproj"]]],
+    ),
+    (
+        "why a referenced project",
+        lambda root: ordinal_query(root, ("why", "Strasse"), ("why", "STRA\u00dfE"), keys=("PATH",)),
+        [["PATH", "Caf\xe9/Caf\xe9.csproj", "-", "STRA\xdfE", "graph", "Stra\xdfe (project)"]],
+    ),
+    (
+        "why each spelling of a package",
+        lambda root: [
+            ordinal_query(root, ("why", query), keys=("PATH",)) for query in ("Lantern.Strasse", STRASSE_SHARP)
+        ],
+        [
+            [
+                [
+                    "PATH",
+                    "Caf\xe9/Caf\xe9.csproj",
+                    "-",
+                    "Lantern.Strasse",
+                    "graph",
+                    "Stra\xdfe (project) > Lantern.Strasse (v2.0.0)",
+                ],
+                ["PATH", "Caf\xe9/Caf\xe9.csproj", "-", "Lantern.Strasse", "graph", "Lantern.Strasse (v1.0.0)"],
+                ["PATH", "Strasz/Strasz.csproj", "-", "Lantern.Strasse", "graph", "Lantern.Strasse (v2.0.0)"],
+                ["PATH", "Stra\xdfe/Stra\xdfe.csproj", "-", "Lantern.Strasse", "graph", "Lantern.Strasse (v2.0.0)"],
+                ["PATH", "\u212alient/\u212alient.csproj", "-", "Lantern.Strasse", "graph", "Lantern.Strasse (v7.0.0)"],
+            ],
+            [
+                [
+                    "PATH",
+                    "Caf\xe9/Caf\xe9.csproj",
+                    "-",
+                    "Lantern.Stra\xdfe",
+                    "graph",
+                    "Stra\xdfe (project) > Lantern.Stra\xdfe (v2.0.0)",
+                ],
+                [
+                    "PATH",
+                    "Caf\xe9/Caf\xe9.csproj",
+                    "-",
+                    "Lantern.Stra\xdfe",
+                    "graph",
+                    "Stra\xdfe (project) > Lantern.Stra\xdfe (v1.0.0.0, framework)",
+                ],
+                ["PATH", "Strasz/Strasz.csproj", "-", "Lantern.Stra\xdfe", "graph", "Lantern.Stra\xdfe (v2.0.0)"],
+                ["PATH", "Stra\xdfe/Stra\xdfe.csproj", "-", "Lantern.Stra\xdfe", "graph", "Lantern.Stra\xdfe (v2.0.0)"],
+                [
+                    "PATH",
+                    "Stra\xdfe/Stra\xdfe.csproj",
+                    "-",
+                    "Lantern.Stra\xdfe",
+                    "graph",
+                    "Lantern.Stra\xdfe (v1.0.0.0, framework)",
+                ],
+                [
+                    "PATH",
+                    "\u212alient/\u212alient.csproj",
+                    "-",
+                    "Lantern.Stra\xdfe",
+                    "graph",
+                    "Lantern.Stra\xdfe (v7.0.0)",
+                ],
+            ],
+        ],
+    ),
+    (
+        "why an assembly",
+        lambda root: ordinal_query(
+            root,
+            ("why", "Quill.Strasse"),
+            ("why", "Quill.Strasse.Core"),
+            ("why", "QUILL.STRA\u00dfE.CORE"),
+            keys=("PATH",),
+        ),
+        [
+            [
+                "PATH",
+                "Caf\xe9/Caf\xe9.csproj",
+                "-",
+                "Quill.Strasse",
+                "graph",
+                "Stra\xdfe (project) > Quill.Strasse (framework)",
+            ],
+            ["PATH", "Stra\xdfe/Stra\xdfe.csproj", "-", "Quill.Strasse", "graph", "Quill.Strasse (framework)"],
+            [
+                "PATH",
+                "Caf\xe9/Caf\xe9.csproj",
+                "-",
+                "QUILL.STRA\xdfE.CORE",
+                "graph",
+                "Stra\xdfe (project) > Lantern.Stra\xdfe (v2.0.0) > Quill.Stra\xdfe.Core (assembly)",
+            ],
+            [
+                "PATH",
+                "Strasz/Strasz.csproj",
+                "-",
+                "QUILL.STRA\xdfE.CORE",
+                "graph",
+                "Lantern.Stra\xdfe (v2.0.0) > Quill.Stra\xdfe.Core (assembly)",
+            ],
+            [
+                "PATH",
+                "Stra\xdfe/Stra\xdfe.csproj",
+                "-",
+                "QUILL.STRA\xdfE.CORE",
+                "graph",
+                "Lantern.Stra\xdfe (v2.0.0) > Quill.Stra\xdfe.Core (assembly)",
+            ],
+        ],
+    ),
+    (
+        "why --all",
+        lambda root: ordinal_query(
+            root,
+            ("why", "--all", "--project", "Stra\u00dfe"),
+            ("why", "--all", "--project", "Strasz"),
+            keys=("REACHES",),
+        ),
+        [
+            [
+                "REACHES",
+                "Stra\xdfe/Stra\xdfe.csproj",
+                "-",
+                "Lantern.Stra\xdfe",
+                "1.0.0.0",
+                "framework",
+                "Lantern.Stra\xdfe (v1.0.0.0, framework)",
+            ],
+            [
+                "REACHES",
+                "Stra\xdfe/Stra\xdfe.csproj",
+                "-",
+                "Quill.Strasse",
+                "-",
+                "framework",
+                "Quill.Strasse (framework)",
+            ],
+            [
+                "REACHES",
+                "Stra\xdfe/Stra\xdfe.csproj",
+                "-",
+                "Quill.Stra\xdfe",
+                "-",
+                "framework",
+                "Quill.Stra\xdfe (framework)",
+            ],
+            [
+                "REACHES",
+                "Stra\xdfe/Stra\xdfe.csproj",
+                "-",
+                "Lantern.Caf\xe9",
+                "3.0.0",
+                "package",
+                "Lantern.Caf\xe9 (v3.0.0)",
+            ],
+            [
+                "REACHES",
+                "Stra\xdfe/Stra\xdfe.csproj",
+                "-",
+                "Lantern.Deep",
+                "1.0.0",
+                "package",
+                "Lantern.Stra\xdfe (v2.0.0)",
+            ],
+            [
+                "REACHES",
+                "Stra\xdfe/Stra\xdfe.csproj",
+                "-",
+                "Lantern.Other",
+                "1.0.0",
+                "package",
+                "Lantern.Strasse (v2.0.0)",
+            ],
+            [
+                "REACHES",
+                "Stra\xdfe/Stra\xdfe.csproj",
+                "-",
+                "Lantern.Strasse",
+                "2.0.0",
+                "package",
+                "Lantern.Strasse (v2.0.0)",
+            ],
+            [
+                "REACHES",
+                "Stra\xdfe/Stra\xdfe.csproj",
+                "-",
+                "Lantern.Stra\xdfe",
+                "2.0.0",
+                "package",
+                "Lantern.Stra\xdfe (v2.0.0)",
+            ],
+            [
+                "REACHES",
+                "Stra\xdfe/Stra\xdfe.csproj",
+                "-",
+                "Lantern.\u212alient",
+                "2.0.0",
+                "package",
+                "Lantern.\u212alient (v2.0.0)",
+            ],
+            ["REACHES", "Strasz/Strasz.csproj", "-", "Lantern.Caf\xe9", "3.0.0", "package", "Lantern.Caf\xe9 (v3.0.0)"],
+            ["REACHES", "Strasz/Strasz.csproj", "-", "Lantern.Deep", "1.0.0", "package", "Lantern.Stra\xdfe (v2.0.0)"],
+            ["REACHES", "Strasz/Strasz.csproj", "-", "Lantern.Other", "1.0.0", "package", "Lantern.Strasse (v2.0.0)"],
+            ["REACHES", "Strasz/Strasz.csproj", "-", "Lantern.Strasse", "2.0.0", "package", "Lantern.Strasse (v2.0.0)"],
+            [
+                "REACHES",
+                "Strasz/Strasz.csproj",
+                "-",
+                "Lantern.Stra\xdfe",
+                "2.0.0",
+                "package",
+                "Lantern.Stra\xdfe (v2.0.0)",
+            ],
+        ],
+    ),
+    (
+        "conflicts and redirects",
+        lambda root: ordinal_query(
+            root, ("conflicts",), keys=("CONFLICT", "REDIRECT_STALE", "REDIRECT_UNREFERENCED", "SUMMARY")
+        ),
+        [
+            [
+                "CONFLICT",
+                "Lantern.Caf\xe9",
+                "package",
+                "1.0.0",
+                "Caf\xe9/Caf\xe9.csproj",
+                "-",
+                "Lantern.Caf\xe9 (v1.0.0)",
+            ],
+            [
+                "CONFLICT",
+                "LANTERN.CAF\xc9",
+                "package",
+                "2.0.0",
+                "Strasse/Strasse.csproj",
+                "-",
+                "LANTERN.CAF\xc9 (v2.0.0)",
+            ],
+            ["CONFLICT", "Lantern.Caf\xe9", "package", "3.0.0", "Caf\xe9/Caf\xe9.csproj", "-", "Stra\xdfe (project)"],
+            [
+                "CONFLICT",
+                "Lantern.Caf\xe9",
+                "package",
+                "3.0.0",
+                "Strasz/Strasz.csproj",
+                "-",
+                "Lantern.Caf\xe9 (v3.0.0)",
+            ],
+            [
+                "CONFLICT",
+                "Lantern.Caf\xe9",
+                "package",
+                "3.0.0",
+                "Stra\xdfe/Stra\xdfe.csproj",
+                "-",
+                "Lantern.Caf\xe9 (v3.0.0)",
+            ],
+            [
+                "CONFLICT",
+                "Lantern.Strasse",
+                "package",
+                "1.0.0",
+                "Caf\xe9/Caf\xe9.csproj",
+                "-",
+                "Lantern.Strasse (v1.0.0)",
+            ],
+            ["CONFLICT", "Lantern.Strasse", "package", "2.0.0", "Caf\xe9/Caf\xe9.csproj", "-", "Stra\xdfe (project)"],
+            [
+                "CONFLICT",
+                "Lantern.Strasse",
+                "package",
+                "2.0.0",
+                "Strasz/Strasz.csproj",
+                "-",
+                "Lantern.Strasse (v2.0.0)",
+            ],
+            [
+                "CONFLICT",
+                "Lantern.Strasse",
+                "package",
+                "2.0.0",
+                "Stra\xdfe/Stra\xdfe.csproj",
+                "-",
+                "Lantern.Strasse (v2.0.0)",
+            ],
+            [
+                "CONFLICT",
+                "Lantern.Strasse",
+                "package",
+                "7.0.0",
+                "\u212alient/\u212alient.csproj",
+                "-",
+                "Lantern.Strasse (v7.0.0)",
+            ],
+            ["CONFLICT", "Lantern.Stra\xdfe", "package", "2.0.0", "Caf\xe9/Caf\xe9.csproj", "-", "Stra\xdfe (project)"],
+            [
+                "CONFLICT",
+                "Lantern.Stra\xdfe",
+                "package",
+                "2.0.0",
+                "Strasz/Strasz.csproj",
+                "-",
+                "Lantern.Stra\xdfe (v2.0.0)",
+            ],
+            [
+                "CONFLICT",
+                "Lantern.Stra\xdfe",
+                "package",
+                "2.0.0",
+                "Stra\xdfe/Stra\xdfe.csproj",
+                "-",
+                "Lantern.Stra\xdfe (v2.0.0)",
+            ],
+            [
+                "CONFLICT",
+                "Lantern.Stra\xdfe",
+                "package",
+                "7.0.0",
+                "\u212alient/\u212alient.csproj",
+                "-",
+                "Lantern.Stra\xdfe (v7.0.0)",
+            ],
+            ["SUMMARY", "3", "0"],
+        ],
+    ),
+    (
+        "graph",
+        ordinal_graph,
+        [
+            "20",
+            "19",
+            "Caf\xe9/Caf\xe9.csproj",
+            "Stra\xdfe/Stra\xdfe.csproj",
+            "Lantern.Caf\xe9 1.0.0",
+            "Lantern.Strasse 1.0.0",
+            "Lantern.Klient 1.0.0",
+            "Strasse/Strasse.csproj",
+            "LANTERN.CAF\xc9 2.0.0",
+            "Strasz/Strasz.csproj",
+            "Lantern.Stra\xdfe 2.0.0",
+            "Lantern.Strasse 2.0.0",
+            "Lantern.Caf\xe9 3.0.0",
+            "Lantern.Deep 1.0.0",
+            "Lantern.Other 1.0.0",
+            "Lantern.\u212alient 2.0.0",
+            "Lantern.Stra\xdfe",
+            "Quill.Stra\xdfe",
+            "Quill.Strasse",
+            "\u212alient/\u212alient.csproj",
+            "Lantern.Stra\xdfe 7.0.0",
+            "Lantern.Strasse 7.0.0",
+        ],
+    ),
+    (
+        "restored packages without the SDK",
+        lambda root: sdk_ordinal_why(root, answered=False),
+        [
+            [
+                "PATH",
+                "Restored/Restored.csproj",
+                "net8.0",
+                "Lantern.Deep",
+                "graph",
+                "Lantern.Strasse (v2.0.0) > Lantern.Deep (v1.0.0)",
+            ],
+            [
+                "PATH",
+                "Restored/Restored.csproj",
+                "net8.0",
+                "Lantern.Deep",
+                "graph",
+                "Lantern.Stra\xdfe (v1.0.0) > Lantern.Deep (v1.0.0)",
+            ],
+        ],
+    ),
+    (
+        "restored packages with the SDK",
+        lambda root: sdk_ordinal_why(root, answered=True),
+        [
+            [
+                "PATH",
+                "Restored/Restored.csproj",
+                "net8.0",
+                "Lantern.Deep",
+                "sdk",
+                "Lantern.Stra\xdfe (v1.0.0) > Lantern.Deep (v1.0.0)",
+            ],
+            [
+                "PATH",
+                "Restored/Restored.csproj",
+                "net8.0",
+                "Lantern.Deep",
+                "graph",
+                "Lantern.Strasse (v2.0.0) > Lantern.Deep (v1.0.0)",
+            ],
+        ],
+    ),
+]
+
+
+@pytest.mark.parametrize(("reader", "read", "expected"), ORDINAL_ROWS, ids=[row[0] for row in ORDINAL_ROWS])
+def test_each_reader_compares_names_by_the_ordinal_fold(
+    reader: str, read: Callable[[Path], object], expected: object, tmp_path: Path
+) -> None:
+    # The sharp s and ss, and the Kelvin sign and K, are two names; an accented letter and its other case are one.
+    assert read(tmp_path.resolve()) == expected
 
 
 class UnreadableInputTests(Fixture):
