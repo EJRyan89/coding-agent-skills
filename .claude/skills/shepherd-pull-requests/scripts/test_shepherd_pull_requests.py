@@ -405,13 +405,14 @@ class StubGh:
         merged: Sequence[dict[str, Any]] = (),
         failing: Sequence[str] = (),
         pages: Mapping[int, Any] | None = None,
-        moved: Mapping[int, str] | None = None,
+        moved: Mapping[int, Any] | None = None,
     ) -> None:
         self.pulls = list(pulls)
         # Each pull request's files as GitHub's files endpoint lists them, every page: a list of paths, or the raw
         # value --slurp prints for a shape the shepherd must refuse.
         self.pages = dict(pages or {})
-        # The head a pull request's own endpoint answers when a push landed after the listing.
+        # The head a pull request's own endpoint answers when a push landed after the listing, or the raw answer it
+        # gives in a shape the shepherd must refuse.
         self.moved = dict(moved or {})
         self.runs = dict(runs or {})
         self.logs = dict(logs or {})
@@ -466,9 +467,8 @@ class StubGh:
                 raise AssertionError(f"unexpected gh api call: {command}")
             number = int(match.group(1))
             listed_head = next(item["headRefOid"] for item in self.pulls if item["number"] == number)
-            sha = self.moved.get(number, listed_head)
-            # An empty moved head stands for an answer that leaves the head's sha out.
-            return CommandResult(0, json.dumps({"head": {"sha": sha} if sha else {}}), "")
+            answer = self.moved.get(number, listed_head)
+            return CommandResult(0, json.dumps({"head": {"sha": answer}} if isinstance(answer, str) else answer), "")
         raise AssertionError(f"unexpected gh call: {command}")
 
     @staticmethod
@@ -699,6 +699,16 @@ class ListingTest(FixtureTestCase):
         self.assertEqual([], gh.writes())
         listing = next(call for call in gh.calls if call[1:3] == ["pr", "list"])
         self.assertEqual("3", listing[listing.index("--limit") + 1])
+
+    def test_files_that_cannot_be_read_whole_are_an_incomplete_answer(self) -> None:
+        files = [f"docs/page-{index}.md" for index in range(150)]
+        for case, pages, moved in (("short pages", files[:149], {}), ("a moved head", files, {11: "c" * 40})):
+            with self.subTest(case=case):
+                gh = StubGh([pull(11, files=files)], pages={11: pages}, moved=moved)
+                client = GitHubClient(gh, backoff=NO_WAIT, sleeper=lambda _: None)
+                with self.assertRaises(GitHubError) as context:
+                    shepherd.read_pulls(client, REPOSITORY)
+                self.assertEqual("incomplete", context.exception.kind)
 
     def test_a_cut_open_listing_is_an_incomplete_answer(self) -> None:
         client = GitHubClient(StubGh([pull(10), pull(11)]), backoff=NO_WAIT, sleeper=lambda _: None)
@@ -1165,7 +1175,8 @@ class UpdateTest(FixtureTestCase):
 
     def test_a_cut_listing_whose_files_cannot_be_read_whole_ends_the_tick_with_no_write(self) -> None:
         files = [f"docs/page-{index}.md" for index in range(150)]
-        cases = {
+        # Each case's file pages, its pull request's own answer by number, and the refusal it ends the tick with.
+        cases: dict[str, tuple[Any, dict[int, Any], str]] = {
             "pages not a list": (
                 {"files": "docs/a.md"},
                 {},
@@ -1181,7 +1192,29 @@ class UpdateTest(FixtureTestCase):
                 {11: "c" * 40},
                 "pull request #11 moved from aaaaaaa to ccccccc while its files were read",
             ),
-            "head without its sha": (files, {11: ""}, "GitHub returned a pull request without its head"),
+            "a page that is not a list of objects": (
+                [["docs/a.md"]],
+                {},
+                "GitHub returned a pull request's files that is not a list of objects",
+            ),
+            "a filename that is not text": (
+                [[{"filename": 5}]],
+                {},
+                "GitHub returned a pull request file without its filename",
+            ),
+            "an empty filename": ([[{"filename": ""}]], {}, "GitHub returned a pull request file without its filename"),
+            "head without its sha": (files, {11: {"head": {}}}, "GitHub returned a pull request without its head"),
+            "an empty head sha": (files, {11: ""}, "GitHub returned a pull request without its head"),
+            "a head that is not an object": (
+                files,
+                {11: {"head": "aaaaaaa"}},
+                "GitHub returned a pull request without its head",
+            ),
+            "a pull request that is not an object": (
+                files,
+                {11: []},
+                "GitHub returned a pull request without its head",
+            ),
         }
         for case, (pages, moved, reason) in cases.items():
             with self.subTest(case=case):
