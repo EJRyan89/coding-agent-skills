@@ -422,7 +422,10 @@ removed fails validation until its pattern follows it.
   `skills/dotnet-dependencies/scripts/test_msbuild_conditions.py::test_equality_compares_numbers_booleans_and_text_as_msbuild_does`,
   which hold the condition reader to MSBuild's verdicts captured from the .NET SDK's MSBuild, and
   `skills/ejryan89-skill-core/scripts/test_github_client.py::test_a_shorthand_cluster_is_read_as_gh_reads_it`, which
-  holds the client's reading of a gh api command to gh's flag parser, a letter it does not read counting as a change
+  holds the client's reading of a gh api command to gh's flag parser, a letter it does not read counting as a change,
+  and
+  `.claude/skills/audit-repository/scripts/test_audit_repository.py::TwinTests::test_a_construct_line_holding_backslash_e_is_searched_as_fixed_text`,
+  which holds the twin sweep's fixed-text search to what git grep built with PCRE does with a backslash-E
 - **Search for:** a Python parser or folding, `float(`, `int(` with or without a base, `casefold()`, `lower()`,
   `strip()`, or a pattern with `re.IGNORECASE` and no `re.ASCII`, applied to a value another program reads, each
   checked against that program's own reading of it, as MSBuild reads a number with .NET's invariant `Double.TryParse`
@@ -448,10 +451,11 @@ removed fails validation until its pattern follows it.
   `rebase --exec` or `-x`, `bisect run`, a transport's `--upload-pack`, or a `-c` setting that names a program, rather
   than an allow-list of the subcommands, actions, and settings that start none; a reader of a gh flag word that takes
   its first two characters for the flag, rather than `gh_shorthands.shorthands`, which reads a cluster such as
-  `-ifbody=x` letter by letter as gh does.
+  `-ifbody=x` letter by letter as gh does; a fixed pattern handed to `git grep -F` that may hold a backslash-E,
+  which git built with PCRE quotes between `\Q` and `\E`, rather than through `audit_repository.grep_pattern`.
 - **Examples:** #1412, #1429, #1430, #1592, #1606, #1843, #1851, #1865, #2032, #2088, #2089, #2134, #2135, #2136,
   #2137, #2138, #2139, #2140, #2188, #2225, #2232, #2233, #2234, #2251, #2262, #2274, #2276, #2316, #2411,
-  #2418, #2203, #2450, #2476, #2481, #2555
+  #2418, #2203, #2450, #2476, #2481, #2555, #2474
 
 ### A recursive parser of input has a depth bound
 
