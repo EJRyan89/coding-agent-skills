@@ -404,11 +404,15 @@ class StubGh:
         logs: Mapping[int, str] | None = None,
         merged: Sequence[dict[str, Any]] = (),
         failing: Sequence[str] = (),
-        pages: Mapping[int, Sequence[str]] | None = None,
+        pages: Mapping[int, Any] | None = None,
+        moved: Mapping[int, str] | None = None,
     ) -> None:
         self.pulls = list(pulls)
-        # Each pull request's files as GitHub's files endpoint lists them, every page.
+        # Each pull request's files as GitHub's files endpoint lists them, every page: a list of paths, or the raw
+        # value --slurp prints for a shape the shepherd must refuse.
         self.pages = dict(pages or {})
+        # The head a pull request's own endpoint answers when a push landed after the listing.
+        self.moved = dict(moved or {})
         self.runs = dict(runs or {})
         self.logs = dict(logs or {})
         self.merged = list(merged)
@@ -448,11 +452,21 @@ class StubGh:
             match = re.fullmatch(rf"repos/{REPOSITORY}/pulls/(\d+)/files\?per_page=100", arguments[3])
             if match is None or len(arguments) != 4:
                 raise AssertionError(f"unexpected gh api call: {command}")
-            files = list(self.pages[int(match.group(1))])
+            listed = self.pages[int(match.group(1))]
+            if not isinstance(listed, list) or not all(isinstance(path, str) for path in listed):
+                return CommandResult(0, json.dumps(listed), "")
+            files = list(listed)
             slurped = [
                 [{"filename": path} for path in files[start : start + 100]] for start in range(0, len(files), 100)
             ]
             return CommandResult(0, json.dumps(slurped), "")
+        if verb.startswith("api repos/"):
+            match = re.fullmatch(rf"repos/{REPOSITORY}/pulls/(\d+)", arguments[1])
+            if match is None or len(arguments) != 2:
+                raise AssertionError(f"unexpected gh api call: {command}")
+            number = int(match.group(1))
+            listed_head = next(item["headRefOid"] for item in self.pulls if item["number"] == number)
+            return CommandResult(0, json.dumps({"head": {"sha": self.moved.get(number, listed_head)}}), "")
         raise AssertionError(f"unexpected gh call: {command}")
 
     @staticmethod
@@ -1146,6 +1160,53 @@ class UpdateTest(FixtureTestCase):
             lines[-1],
         )
         self.assertEqual([], gh.writes())
+
+    def test_a_cut_listing_whose_files_cannot_be_read_whole_ends_the_tick_with_no_write(self) -> None:
+        files = [f"docs/page-{index}.md" for index in range(150)]
+        cases = {
+            "pages not a list": (
+                {"files": "docs/a.md"},
+                {},
+                "GitHub returned a pull request's file pages that are not a list",
+            ),
+            "entry without its filename": (
+                [[{"filename": path} for path in files[:100]], [{"status": "added"}]],
+                {},
+                "GitHub returned a pull request file without its filename",
+            ),
+            "head moved": (
+                files,
+                {11: "c" * 40},
+                "pull request #11 moved from aaaaaaa to ccccccc while its files were read",
+            ),
+        }
+        for case, (pages, moved, reason) in cases.items():
+            with self.subTest(case=case):
+                gh = StubGh(
+                    [pull(10, merge="BEHIND", armed=False), pull(11, files=files)], pages={11: pages}, moved=moved
+                )
+                status, lines = self.tick(gh)
+                self.assertEqual(1, status)
+                self.assertEqual(f"FAILED cannot list the open pull requests: {reason}", lines[-1])
+                self.assertEqual([], gh.writes())
+
+    def test_a_pull_request_the_tick_does_not_admit_has_no_files_read_past_the_listing(self) -> None:
+        files = [f"docs/page-{index}.md" for index in range(150)]
+        files[120] = "tests/validation/job_selection.py"
+        for case, listed in (
+            ("from a fork", pull(11, files=files, cross=True)),
+            ("onto another branch", pull(11, files=files, base="release")),
+        ):
+            with self.subTest(case=case):
+                # Pages that would refuse: a fork's author controls them, and they must not end the tick.
+                gh = StubGh([pull(10, merge="BEHIND"), listed], pages={11: files[:149]})
+                status, lines = self.tick(gh)
+                self.assertNotIn("FAILED", " ".join(lines))
+                self.assertEqual([], [call for call in gh.calls if call[1] == "api"])
+                self.assertEqual([], [line for line in lines if line.startswith("HOLD ")])
+                self.assertEqual([["pr", "update-branch", "10", "--repo", REPOSITORY]], gh.writes())
+                self.assertTrue(any(line.startswith("NOT_ADMITTED #11 ") for line in lines), lines)
+                self.assertEqual(1, status)
 
     def test_a_listing_that_holds_every_file_reads_no_page(self) -> None:
         gh = StubGh([pull(11, files=[f"docs/page-{index}.md" for index in range(100)])])

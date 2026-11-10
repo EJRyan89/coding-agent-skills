@@ -8,9 +8,11 @@ Run it from the hub on main. One tick:
   linked worktree it leaves the hub to the hub's own session; a hub it runs in and cannot fast-forward, because the
   fetch failed or the hub is off main, has a tracked change, or diverged, is named for the shepherd's judgment;
 - lists the open pull requests that are not drafts, with their merge state, auto-merge, head, and the state of the
-  required check Validation on that head, and the files each changes: when gh's listing, which holds a pull
-  request's first 100 files, holds fewer than the pull request changes, it reads every page of GitHub's files
-  endpoint, and a count that still disagrees ends the tick, so a HOLD is never judged on part of a pull request;
+  required check Validation on that head, and the files each admitted one changes: when gh's listing, which holds
+  a pull request's first 100 files, holds fewer than the pull request changes, it reads every page of GitHub's files
+  endpoint and then the pull request's head, and a count that still disagrees or a head that moved since the listing
+  ends the tick, so a HOLD is never judged on part of a pull request or on another head's files; a pull request it
+  does not admit is judged on nothing it changes, so its files are never read past the listing;
 - holds each admitted pull request whose body has a line `Shepherd-hold: <reason>`: it neither arms it nor lets it
   merge, turning off an auto-merge already armed, and names it with the reason, while it still names, judges, and
   reruns for it as for any other; deleting the line releases it;
@@ -535,16 +537,20 @@ def read_pulls(client: GitHubClient, repository: str) -> list[Pull]:
     listing = client.capped_list(arguments, OPEN_LISTED)
     if listing.cut:
         raise GitHubError(f"more than {OPEN_LISTED} are open, more than one tick lists", kind="incomplete")
-    return sorted(
-        (every_file(client, repository, pull_of(item)) for item in listing.items), key=lambda pull: pull.number
-    )
+    pulls = (pull_of(item) for item in listing.items)
+    # Only an admitted pull request's files decide anything, a HOLD, so only its files are read past the listing:
+    # one the tick does not admit, such as a fork's, never costs a read or ends the tick.
+    read = (every_file(client, repository, pull) if admitted(pull) else pull for pull in pulls)
+    return sorted(read, key=lambda pull: pull.number)
 
 
 def every_file(client: GitHubClient, repository: str, pull: Pull) -> Pull:
     """`pull` with every file it changes: gh's listing holds a pull request's first 100, so when it holds fewer than
-    the pull request changes, every page of GitHub's files endpoint. A count that still disagrees, as when a push
-    landed between the reads, raises an `incomplete` GitHubError, since a HOLD judged on part of a pull request's
-    files could miss the one path that holds."""
+    the pull request changes, every page of GitHub's files endpoint, then the pull request's head. A count that still
+    disagrees, or a head that is no longer the one the listing recorded, as when a push landed between the reads,
+    raises an `incomplete` GitHubError, since a HOLD judged on part of a pull request's files, or on another head's,
+    could miss the one path that holds. The arm and merge calls do not bind to the listed head, so the files are
+    pinned to it here."""
     if len(pull.files) == pull.changed_files:
         return pull
     endpoint = f"repos/{repository}/pulls/{pull.number}/files?per_page={FILES_PAGE}"
@@ -560,6 +566,16 @@ def every_file(client: GitHubClient, repository: str, pull: Pull) -> Pull:
     if len(files) != pull.changed_files:
         raise GitHubError(
             f"pull request #{pull.number} lists {len(files)} of the {pull.changed_files} files it changes",
+            kind="incomplete",
+        )
+    current = client.json(["api", f"repos/{repository}/pulls/{pull.number}"])
+    head = current.get("head") if isinstance(current, dict) else None
+    sha = head.get("sha") if isinstance(head, dict) else None
+    if not isinstance(sha, str) or not sha:
+        raise malformed("a pull request without its head")
+    if sha != pull.head:
+        raise GitHubError(
+            f"pull request #{pull.number} moved from {pull.head[:7]} to {flat_text(sha)[:7]} while its files were read",
             kind="incomplete",
         )
     return replace(pull, files=files)
