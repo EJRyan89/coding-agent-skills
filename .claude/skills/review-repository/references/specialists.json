@@ -111,7 +111,7 @@
         "(?i)^skills/review-document/scripts/review_document\\.py$",
         "(?i)^skills/review-insights/scripts/review_(?:guidance|insights|signals|synthesis)\\.py$",
         "(?i)^skills/(?:audit-ai-config|dotnet-dependencies)/scripts/",
-        "(?i)^skills/ejryan89-skill-core/scripts/(?:bounded_process|device_names|diff_paths|dotnet_solution|executable_locator|file_presence|flat_text|folders_up|gh_shorthands|git_client|git_worktrees|github_client|github_remote|hook_decision|job_tree|json_reader|json_writer|link_probe|markdown_literal|msbuild_xml|nesting_depth|option_reader|path_containment|path_keys|pdf_tool|process_identity|python_reader|skill_menu|typed_fields|versions|whole_number|xml_reader)\\.py$"
+        "(?i)^skills/ejryan89-skill-core/scripts/(?:analyzer_config|bounded_process|device_names|diff_paths|dotnet_solution|executable_locator|file_presence|flat_text|folders_up|gh_shorthands|git_client|git_worktrees|github_client|github_remote|hook_decision|job_tree|json_reader|json_writer|link_probe|markdown_literal|msbuild_xml|nesting_depth|option_reader|path_containment|path_keys|pdf_tool|process_identity|python_reader|skill_menu|typed_fields|versions|whole_number|xml_reader)\\.py$"
       ],
       "exclude": [],
       "resources": ["docs/code-review-operations-contract.md", "docs/parallel-sessions.md"],
@@ -181,7 +181,7 @@
         "(?i)^skills/review-document/scripts/review_document\\.py$",
         "(?i)^skills/review-insights/scripts/review_(?:guidance|insights|signals|synthesis)\\.py$",
         "(?i)^skills/(?:audit-ai-config|dotnet-dependencies)/scripts/",
-        "(?i)^skills/ejryan89-skill-core/scripts/(?:bounded_process|device_names|diff_paths|dotnet_solution|executable_locator|file_presence|flat_text|folders_up|gh_shorthands|git_client|git_worktrees|github_client|github_remote|hook_decision|job_tree|json_reader|json_writer|link_probe|markdown_literal|msbuild_xml|nesting_depth|option_reader|path_containment|path_keys|pdf_tool|process_identity|python_reader|skill_menu|typed_fields|versions|whole_number|xml_reader)\\.py$",
+        "(?i)^skills/ejryan89-skill-core/scripts/(?:analyzer_config|bounded_process|device_names|diff_paths|dotnet_solution|executable_locator|file_presence|flat_text|folders_up|gh_shorthands|git_client|git_worktrees|github_client|github_remote|hook_decision|job_tree|json_reader|json_writer|link_probe|markdown_literal|msbuild_xml|nesting_depth|option_reader|path_containment|path_keys|pdf_tool|process_identity|python_reader|skill_menu|typed_fields|versions|whole_number|xml_reader)\\.py$",
         "(?i)^tests/validation/",
         "(?i)^tests/run_validation\\.py$",
         "(?i)^conftest\\.py$",

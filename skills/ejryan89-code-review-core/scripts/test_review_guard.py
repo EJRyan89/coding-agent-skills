@@ -548,6 +548,27 @@ class ReadLogTests(GuardFixture):
                 expected = {"files": 2, "bytes": 5 + size, **({"searches": 4} if "searches" in counted else {})}
                 self.assertEqual({"csharp-review": expected}, state["reads"])
 
+    def test_a_read_file_it_cannot_stat_fails_the_count_and_keeps_every_log_for_the_rerun(self) -> None:
+        logs = [guard.read_log(self.run_directory, role) for role in ("csharp-review", "sql-review")]
+        logs[0].write_text(json.dumps("app/Role.cs") + "\n", encoding="utf-8")
+        logs[1].write_text("".join(json.dumps(entry) + "\n" for entry in ("app/Service.cs", "app")), encoding="utf-8")
+        state: Any = {"reads": {}}
+        with unstatable(self.source / "app" / "Service.cs"), self.assertRaises(PermissionError) as raised:
+            review_dispatch.count_reads(self.run_directory, state, ["csharp-review", "sql-review"])
+        self.assertIn("Service.cs", str(raised.exception))
+        self.assertEqual({"reads": {}}, state, "no role is counted short of a file its reviewer read")
+        self.assertTrue(all(log.exists() for log in logs), "every log stays for the rerun")
+        self.assertTrue(review_dispatch.count_reads(self.run_directory, state, ["csharp-review", "sql-review"]))
+        sizes = {name: (self.source / "app" / name).stat().st_size for name in ("Role.cs", "Service.cs")}
+        self.assertEqual(
+            {
+                "csharp-review": {"files": 1, "bytes": sizes["Role.cs"], "searches": 0},
+                "sql-review": {"files": 1, "bytes": sizes["Service.cs"], "searches": 0},
+            },
+            state["reads"],
+            "the folder a log names is no file read",
+        )
+
     def test_each_role_has_its_own_log(self) -> None:
         self.claim()
         self.claim("sql-review", agent=OTHER_AGENT)

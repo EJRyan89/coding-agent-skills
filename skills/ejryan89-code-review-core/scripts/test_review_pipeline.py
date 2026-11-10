@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import contextlib
+import errno
 import hashlib
 import io
 import json
@@ -1727,6 +1728,18 @@ class RetryTests(PipelineFixture):
         self.assertIn(f"FAILED {SELECTOR} generic-review", out)
         with self.assertRaisesRegex(review_run.PipelineError, "invalid"):
             rp.finalize(ready["run"])
+
+    def test_an_invalid_result_it_cannot_stat_fails_the_check_rather_than_staying_for_the_retry(self) -> None:
+        ready = self.prepare()
+        role = ready["roles"][0]
+        result = Path(role["result_file"])
+        self.write_role_result(role, findings=[self.finding(line=1)])  # line 1 is unchanged context
+        with mock.patch.object(review_dispatch.file_presence, "is_occupied", side_effect=PermissionError("denied")):
+            code, out, _ = self.run_main("check", "--run", str(ready["run"]))
+        self.assertEqual(1, code)
+        self.assertNotIn("RETRY", out, "no retry is handed out while the rejected result may still be there")
+        self.assertIn("denied", out)
+        self.assertTrue(result.is_file())
         self.assertIsNone(latest_record(self.archive, REPOSITORY, 12))
         self.assertTrue(ready["run"].exists(), "a failed run is kept for inspection")
 
@@ -4136,6 +4149,22 @@ class ReviewerSourceTests(PipelineFixture):
         lines = self.run_main("inspect-reviewer", "--repository", REPOSITORY, "--ref", "main")[1].splitlines()
         self.assertIn(f"MANIFEST local {default} present", lines)
         self.assertEqual("VERDICT manifest-configured", lines[-1])
+
+    def test_inspect_reviewer_reads_a_local_manifest_it_cannot_stat_as_unreadable_not_missing(self) -> None:
+        default = default_manifest_path(self.config_path, REPOSITORY)
+        self.local_manifest(path=default)
+        self.configure(self.skill_reviewer(".claude/agents/team-review.md", manifest=True))
+        with unstatable(default):
+            lines = self.run_main("inspect-reviewer", "--repository", REPOSITORY, "--ref", "main")[1].splitlines()
+        (manifest,) = [line for line in lines if line.startswith("MANIFEST local ")]
+        self.assertTrue(manifest.startswith(f"MANIFEST local {default} unreadable "), manifest)
+        self.assertIn("Permission denied", manifest)
+        default.unlink()
+        lines = self.run_main("inspect-reviewer", "--repository", REPOSITORY, "--ref", "main")[1].splitlines()
+        self.assertIn(f"MANIFEST local {default} missing", lines)
+        default.mkdir()
+        lines = self.run_main("inspect-reviewer", "--repository", REPOSITORY, "--ref", "main")[1].splitlines()
+        self.assertIn(f"MANIFEST local {default} unreadable [Errno {errno.EISDIR}] not a file: {str(default)!r}", lines)
 
     def test_validate_reviewer_proves_files_patterns_and_routing(self) -> None:
         manifest = self.local_manifest(

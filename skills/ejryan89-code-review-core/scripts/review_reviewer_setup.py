@@ -12,6 +12,8 @@ from typing import Any, NamedTuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
+import file_presence
+from flat_text import flat_text
 from git_client import output_lines
 from review_config import default_config_path, load_config, validate_repository_identity
 from review_guard import RUN_PREFIX
@@ -293,6 +295,16 @@ def _reviewer_commit(checkout: Path, reviewer: dict[str, Any], ref: str | None, 
         raise PipelineError(f"Cannot resolve {candidate} in {checkout}; pass --ref: {exc}") from exc
 
 
+def _manifest_state(path: Path) -> str:
+    """Whether the local manifest is there: `present`, `missing` when nothing is at the path, or `unreadable` with the
+    reason when it cannot be stat'ed or something other than a file stands there, never `missing` for a manifest it
+    could not examine."""
+    try:
+        return "present" if file_presence.is_present(path) else "missing"
+    except OSError as exc:
+        return f"unreadable {flat_text(str(exc))}"
+
+
 def inspect_reviewer(
     repository: str, *, ref: str | None = None, config_path: Path | None = None, services: Services | None = None
 ) -> list[str]:
@@ -312,7 +324,7 @@ def inspect_reviewer(
     lines.extend(f"REFERENCES {path}" for path in inspection.references)
     local = manifest_location(reviewer, config_path, repository)
     if local is not None:
-        lines.append(f"MANIFEST local {local} {'present' if local.is_file() else 'missing'}")
+        lines.append(f"MANIFEST local {local} {_manifest_state(local)}")
         verdict = "manifest-configured"
     else:
         verdict = {"yes": "manifest-required", "no": "entrypoint-ok", "unknown": "undetermined"}[inspection.delegates]
