@@ -20,6 +20,7 @@ from skill_roots import sibling_scripts
 
 sys.path.insert(0, str(sibling_scripts("ejryan89-code-review-core")))
 
+import atomic_file
 import review_dispatch
 import review_hosts
 from presence_denial import denied as stat_denied
@@ -244,6 +245,46 @@ class RuntimePromptsTestCase(unittest.TestCase):
             with self.subTest(arguments=arguments), stat_denied(folder, stat=False):
                 code, stdout, stderr = self.run_main(renderers, *arguments)
             self.assertEqual((2, "", f"FAILED cannot read docs/runtime-prompts: {refused}\n"), (code, stdout, stderr))
+
+    def test_a_read_only_extra_is_refused_before_any_sample_is_written_or_extra_removed(self) -> None:
+        renderers = {"alpha": renderer({"reviewer": "Review it."})}
+        runtime_prompts.write(self.root, renderers)
+        sample = self.root / "docs" / "runtime-prompts" / "alpha" / "reviewer.txt"
+        sample.write_text("Stale.\n", encoding="utf-8")
+        folder = self.root / "docs" / "runtime-prompts" / "gamma"
+        folder.mkdir()
+        # Sorted before the read-only one, so a removal loop that asks each in turn has removed it by then.
+        first = folder / "a.txt"
+        locked = folder / "b.txt"
+        first.write_text("Gone.\n", encoding="utf-8")
+        locked.write_text("Kept.\n", encoding="utf-8")
+        locked.chmod(0o444)
+        with self.assertRaisesRegex(runtime_prompts.RenderError, r"^cannot remove docs/runtime-prompts/gamma/b\.txt: "):
+            runtime_prompts.write(self.root, renderers)
+        self.assertEqual("Stale.\n", sample.read_text(encoding="utf-8"), "no sample is written")
+        self.assertEqual((True, True), (first.exists(), locked.exists()), "no extra is removed")
+        locked.chmod(0o644)
+        runtime_prompts.write(self.root, renderers)
+        self.assertEqual((False, False), (first.exists(), folder.exists()))
+        self.assertEqual([], runtime_prompts.problems(self.root, renderers))
+
+    def test_an_extra_whose_read_only_question_fails_is_left_to_its_removal(self) -> None:
+        renderers = {"alpha": renderer({"reviewer": "Review it."})}
+        runtime_prompts.write(self.root, renderers)
+        folder = self.root / "docs" / "runtime-prompts" / "gamma"
+        folder.mkdir()
+        extra = folder / "old.txt"
+        extra.write_text("Gone.\n", encoding="utf-8")
+        asked = atomic_file.is_read_only
+
+        def is_read_only(path: Path) -> bool:
+            if path == extra:
+                raise PermissionError(errno.EACCES, "Access is denied", str(path))
+            return asked(path)
+
+        with mock.patch.object(atomic_file, "is_read_only", side_effect=is_read_only):
+            runtime_prompts.write(self.root, renderers)
+        self.assertEqual((False, False), (extra.exists(), folder.exists()), "its removal answers, and it goes")
 
     def test_each_skill_renders_its_prompts_without_a_model_and_bounds_their_replies(self) -> None:
         # The real renderers, into a throwaway root: every prompt the skills' scripts write today.

@@ -2874,6 +2874,11 @@ class WorkflowTests(GuardTestCase):
             ("README.md", "`git pull --ff-only origin main`", "git pull --ff-only origin main"),
             ("docs/parallel-sessions.md", "`switch main`", "git switch main"),
             ("docs/parallel-sessions.md", "`checkout main`", "git checkout -q main"),
+            # The remedies the deployer prints, and its recovery guide repeats, for a deployment, which runs from
+            # the hub.
+            ("deployer/manifest.py", "'git pull --ff-only origin main'", "git pull --ff-only origin main"),
+            ("docs/recovery.md", "`git pull --ff-only origin main`", "git pull --ff-only origin main"),
+            ("deployer/source.py", "'git show HEAD:source.json'", "git show HEAD:source.json"),
         ):
             text = (REPOSITORY_ROOT / document).read_text(encoding="utf-8")
             with self.subTest(document=document, written=written):

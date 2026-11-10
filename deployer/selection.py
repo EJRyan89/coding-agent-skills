@@ -81,10 +81,12 @@ def select(context: Context) -> Selection | None:
     elif answer == "none":
         selection.deselect_all = True
     else:
+        # The step either refusal takes: nothing was chosen, so the run is asked again from the start.
+        retry = f"Run it again and enter numbers from 1 to {len(choices)} separated by spaces, 'all', or 'none'."
         for token in answer.split():
-            index = whole_number.read(token, DeployError(f"ERROR: Invalid selection '{token}'")) - 1
+            index = whole_number.read(token, DeployError(f"ERROR: Invalid selection '{token}'", retry)) - 1
             if index < 0 or index >= len(choices):
-                raise DeployError(f"ERROR: Selection '{token}' is out of range")
+                raise DeployError(f"ERROR: Selection '{token}' is out of range", retry)
             name, kind = choices[index]
             chosen = selection.bundles if kind == "bundle" else selection.skills
             # The manifest records each requested root once, however often the answer names it.

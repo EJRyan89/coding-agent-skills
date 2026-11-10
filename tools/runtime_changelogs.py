@@ -453,8 +453,12 @@ def github_releases(payload: object, url: str) -> list[Release]:
     if not isinstance(payload, list):
         raise WatchError(f"{url} did not return a list of releases")
     releases: list[Release] = []
-    for item in payload:
-        if not isinstance(item, dict) or item.get("draft") or item.get("prerelease"):
+    for position, item in enumerate(payload):
+        # A member that is not a release object is a shape this reader does not know, refused rather than passed
+        # over like a draft, which would leave its release unread with no failure.
+        if not isinstance(item, dict):
+            raise WatchError(f"{url} returned release {position}, {type(item).__name__}, which is not an object")
+        if item.get("draft") or item.get("prerelease"):
             continue
         found = re.search(r"(?<![0-9.])([0-9]+(?:\.[0-9]+)+)(?![0-9.]|-)", str(item.get("tag_name", "")))
         if found:

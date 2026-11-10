@@ -42,9 +42,11 @@ sys.path.insert(0, str(sibling_scripts("ejryan89-code-review-core")))
 sys.path.insert(0, str(sibling_scripts("review-document")))
 sys.path.insert(0, str(sibling_scripts("review-insights")))
 
+import atomic_file
 import file_presence
 import json_reader
 import json_writer
+import path_containment
 import review_dispatch
 import review_document
 import review_hosts
@@ -317,8 +319,31 @@ def problems(root: Path, renderers: Renderers | None = None) -> list[str]:
     return found
 
 
+def _removable(root: Path, expected: Mapping[Path, str]) -> tuple[list[Path], list[Path]]:
+    """The extra files and the folders their removal leaves empty, the deepest folder last, once each is asked whether
+    it can be removed: one that is read-only, or whose folder is, is a RenderError before anything is written or
+    removed, so a refusal leaves the samples as they were rather than half rewritten.
+
+    An extra whose stat the file system refuses cannot be asked; removing it needs no stat, so its removal answers,
+    and a failure there is the RenderError write raises."""
+    files, folders = _listed(root)
+    kept = [root / relative for relative in expected]
+    extras = [path for path in files if path.relative_to(root) not in expected]
+    emptied = [folder for folder in folders if not any(path_containment.within(path, folder) for path in kept)]
+    for path in [*extras, *emptied]:
+        try:
+            refused = atomic_file.is_read_only(path) or atomic_file.is_read_only(path.parent)
+        except OSError:
+            continue
+        if refused:
+            shown = path.relative_to(root).as_posix()
+            raise RenderError(f"cannot remove {shown}: it or its folder is read-only; make it writable, then rerun")
+    return extras, emptied
+
+
 def write(root: Path, renderers: Renderers | None = None) -> None:
     expected = rendered(RENDERERS if renderers is None else renderers)
+    extras, emptied = _removable(root, expected)
     for relative, text in expected.items():
         path = root / relative
         try:
@@ -326,13 +351,12 @@ def write(root: Path, renderers: Renderers | None = None) -> None:
             path.write_text(text, encoding="utf-8", newline="\n")
         except OSError as exc:
             raise RenderError(f"cannot write {relative.as_posix()}: {exc}") from exc
-    files, folders = _listed(root)
     # Each extra file, then each folder left empty, the deepest first.
-    for path in [*(path for path in files if path.relative_to(root) not in expected), *reversed(folders)]:
+    for path in [*extras, *reversed(emptied)]:
         try:
-            if path in files:
+            if path in extras:
                 path.unlink()
-            elif not any(path.iterdir()):
+            else:
                 path.rmdir()
         except OSError as exc:
             raise RenderError(f"cannot remove {path.relative_to(root).as_posix()}: {exc}") from exc
