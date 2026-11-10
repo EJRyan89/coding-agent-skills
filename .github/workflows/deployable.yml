@@ -21,15 +21,15 @@ on:
       claude-version:
         description: Claude Code version to install from npm, or latest. The default is the README's tested version.
         type: string
-        default: '2.1.316'
+        default: '2.1.319'
       codex-version:
         description: Codex CLI version to install from npm, or latest. The default is the README's tested version.
         type: string
-        default: '0.166.0'
+        default: '0.167.0'
       copilot-version:
         description: GitHub Copilot CLI version to install from npm, or latest. The default is the README's tested version.
         type: string
-        default: '1.0.105'
+        default: '1.0.107'
   schedule:
     - cron: '23 6 * * 2'
 
@@ -52,9 +52,9 @@ jobs:
         # the inputs' defaults, and beside them the latest release of every runtime.
         runtimes: ${{ github.event_name == 'schedule' && fromJSON('["readme", "latest"]') || fromJSON('["requested"]') }}
     env:
-      CLAUDE_VERSION: ${{ matrix.runtimes == 'latest' && 'latest' || inputs.claude-version || '2.1.316' }}
-      CODEX_VERSION: ${{ matrix.runtimes == 'latest' && 'latest' || inputs.codex-version || '0.166.0' }}
-      COPILOT_VERSION: ${{ matrix.runtimes == 'latest' && 'latest' || inputs.copilot-version || '1.0.105' }}
+      CLAUDE_VERSION: ${{ matrix.runtimes == 'latest' && 'latest' || inputs.claude-version || '2.1.319' }}
+      CODEX_VERSION: ${{ matrix.runtimes == 'latest' && 'latest' || inputs.codex-version || '0.167.0' }}
+      COPILOT_VERSION: ${{ matrix.runtimes == 'latest' && 'latest' || inputs.copilot-version || '1.0.107' }}
       # Copilot CLI otherwise runs the newest package it has downloaded, not the one installed and checked here.
       COPILOT_AUTO_UPDATE: 'false'
     defaults:
@@ -275,9 +275,9 @@ jobs:
         # the inputs' defaults, and beside them the latest release of every runtime.
         runtimes: ${{ github.event_name == 'schedule' && fromJSON('["readme", "latest"]') || fromJSON('["requested"]') }}
     env:
-      CLAUDE_VERSION: ${{ matrix.runtimes == 'latest' && 'latest' || inputs.claude-version || '2.1.316' }}
-      CODEX_VERSION: ${{ matrix.runtimes == 'latest' && 'latest' || inputs.codex-version || '0.166.0' }}
-      COPILOT_VERSION: ${{ matrix.runtimes == 'latest' && 'latest' || inputs.copilot-version || '1.0.105' }}
+      CLAUDE_VERSION: ${{ matrix.runtimes == 'latest' && 'latest' || inputs.claude-version || '2.1.319' }}
+      CODEX_VERSION: ${{ matrix.runtimes == 'latest' && 'latest' || inputs.codex-version || '0.167.0' }}
+      COPILOT_VERSION: ${{ matrix.runtimes == 'latest' && 'latest' || inputs.copilot-version || '1.0.107' }}
       # Copilot CLI otherwise runs the newest package it has downloaded, not the one installed and checked here.
       COPILOT_AUTO_UPDATE: 'false'
     defaults:

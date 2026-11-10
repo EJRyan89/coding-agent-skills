@@ -17,6 +17,526 @@ An entry is a `###` heading saying what changed, followed by these fields:
 
 A pull request whose change no user meets writes `None` under its `## Upgrade note`.
 
+## v0.13.0
+
+Level: minor.
+
+### Deployer refusals name a step a guarded hub allows, and more of them end with a step
+
+- Level: patch, refusal and remedy wording only.
+- Contract: none.
+- User action: none. A manifest a newer checkout wrote now asks you to update with `git pull --ff-only origin main`, and an unreadable `source.json` points at `git show HEAD:source.json` for the copy to put back. An unsafe shared asset name, a missing owner file during `--migrate-from`, the metadata checks of a skill, and an unreadable menu answer now end with the step to take.
+- Pull request: #2567
+
+### `inspect-reviewer` reports a local manifest it cannot examine as unreadable
+
+- Level: patch. It fixes a status that misreported a manifest as missing.
+- Contract: the `MANIFEST local` line of `review_pipeline.py inspect-reviewer`.
+- User action: none. A script that reads the line should also expect `unreadable <reason>` beside `present` and `missing`.
+- Pull request: #2566
+
+### dotnet-dependencies and dotnet-format compare names as MSBuild and NuGet do
+
+- Level: patch, a defect fix bringing the comparison to the one the consumers make.
+- Contract: none
+- User action: none. A package, assembly, or framework name, or a solution or project file's suffix, that differs from another only by a long s, a sharp s, the Kelvin sign, or a non-ASCII digit is now its own name, as MSBuild and NuGet read it.
+- Pull request: #2565
+
+### The canaries and skill evaluations refuse a checkout detached at a mirrored pull request head
+
+- Level: patch. The checkout trust refusal now holds where it already claimed to, and the tools it guards are the repository's own development tools.
+- Contract: none
+- User action: none. A contributor who runs the runtime canary, the plugin canary, or `tools/skill_evals.py` from a detached HEAD that only a mirrored pull request ref (such as `refs/remotes/origin/pr/<n>`) holds is now refused. They read that pull request in full, then run from a branch of their own, as the refusal already asked for `gh pr checkout`.
+- Pull request: #2557
+
+### audit-ai-config's MCP handshake reports a response it refuses as refused, not as a timeout
+
+- Level: patch, a defect fix that adds no option and changes no exit code.
+- Contract: `HANDSHAKE_FAILED` gains the reason `the server's response to <method> was refused: <reason>`.
+- User action: none. `deploy.py verify`'s `its skills/list answer was refused: <reason>` now covers the same forms: an answer nested past the recursion limit, and one whose `id` is spelled as a float.
+- Pull request: #2549
+
+### The hub guard reads `timeout -f` and `-p` and `sort --check-silent`, and keeps refusing the Rust coreutils' `env --file` and `--argv0`
+
+- Level: patch, a defect fix in a contributor-facing tool with no contract change.
+- Contract: none
+- User action: none. In a clone that has opted into the guard, while a guarded hub is in view, `timeout -f`, `timeout -p`, and `sort --check-silent` are now understood where before they were refused; `env --file` and `env --argv0` remain refused.
+- Pull request: #2556
+
+### deploy.py verify reports a Codex skills/list answer it cannot read as refused, not as no answer
+
+- Level: patch, a defect fix: a failure reported as a timeout now names its cause.
+- Contract: `deploy.py verify` (`Cannot list its skills: its skills/list answer was refused: <reason>`, in place of `Cannot list its skills: no answer within <seconds> seconds` or `Cannot list its skills: it did not answer the skills/list request` when Codex answered with JSON the verifier does not read)
+- User action: none. If you see the new reason, Codex answered with JSON that holds a repeated key, `NaN`, or a lone surrogate, which the reason names; report it.
+- Pull request: #2553
+
+### The hub guard refuses a dash value after a lone valued option, a gh flag before its subcommand, and paths past its lookup limit
+
+- Level: patch, a defect fix in a contributor-facing tool with no contract change.
+- Contract: none
+- User action: none, in a clone that has not opted into the guard. In one that has, while a guarded hub is in view, a git read-only form whose valued option is written alone before a word starting with a dash, such as `git branch --format -l`, and a gh command with a flag other than `-R`, `--repo`, or `--hostname` before its subcommand, such as `gh pr -b x checkout 12`, are now refused, where before they were allowed. Attach the value, as `--format=-l`, and put gh's flags after its subcommand. With no hub in view, a command holding a part the guard does not read that names more than 32 directories is now refused rather than allowed with only the first 32 looked up.
+- Pull request: #2547
+
+### The hub guard allows only declared read-only git forms in a guarded hub
+
+- Level: patch, a defect fix in a contributor-facing tool with no contract change.
+- Contract: none
+- User action: none. In a clone that opts into the hub guard, git in the hub runs only in the forms "The guard's contract" in `docs/parallel-sessions.md` lists, with options spelled in full; pull `main` with `git pull --ff-only origin main` rather than a bare `git pull --ff-only`, and run any other git from a worktree or a terminal.
+- Pull request: #2472
+
+### A review snapshot refuses another case or short name of a file it holds
+
+- Level: patch, a fix whose refusal enforces what the snapshot already promised: no head path replaces the manifest or another snapshot file.
+- Contract: none
+- User action: none. A review of a pull request whose tree names the snapshot's manifest in another case, or names a file or folder the snapshot already wrote by another case or a Windows 8.3 short name, now fails before anything is written, naming both spellings, where it used to fail later with a misleading contract error. A reviewer whose declared files hold two such spellings, or, on the Copilot CLI host, a file named `materialization.json` in any case, is refused the same way; rename the declared file.
+- Pull request: #2470
+
+### The hub guard judges git's operand writers, in-place modes, and roots
+
+- Level: patch, a defect fix in a contributor-facing tool with no contract change.
+- Contract: none
+- User action: none in a clone that has not opted into the guard. In one that has, while a hub is guarded the guard refuses `git interpret-trailers --in-place`, `git mailinfo`, `git merge-file` without `-p`, or `git worktree move` writing into the hub; `git checkout-index --prefix`, `git am --directory`, or `git apply --directory` pointing into the hub, from any checkout; and every `git apply --unsafe-paths`.
+- Pull request: #2466
+
+### audit-ai-config's MCP handshake bounds its writes and caps a paging cursor
+
+- Level: patch, a defect fix that adds no option and changes no exit code.
+- Contract: `HANDSHAKE_FAILED` gains the reasons `timed out sending a request` and `tools/list returned a nextCursor over 4096 characters`.
+- User action: none.
+- Pull request: #2465
+
+### The update no longer asks for a credential when it fetches
+
+- Level: patch, because it fixes a hang. No argument, status word, or exit code changes.
+- Contract: none.
+- User action: none. If the update stops with `FETCH_FAILED` naming a credential, run `git fetch` in the clone once to sign in, then rerun the update. The update that brings this release still runs the installed copy of `update.sh`, whose fetch may ask for a credential or wait on a remote that never answers: if it hangs, stop it, run `git fetch --tags origin` in the clone yourself, and rerun the update.
+- Pull request: #2459
+
+### The hub guard reads what git's options write and run, and refuses a writing git config
+
+- Level: patch, a defect fix in a contributor-facing tool with no contract change.
+- Contract: none
+- User action: none in a clone that has not opted into the guard. In one that has, while a hub is guarded the guard refuses: a git option that writes a file into the hub, such as `git diff --output=<file>` or `git archive -o <file>`; a `git config` that writes, so turn the guard off from a terminal; a `-c` setting outside the guard's allow-list, such as `core.pager`; an option that runs a command, such as `rebase -x` or `fetch --upload-pack`; and a variable or substitution given to `diff`, `log`, `fetch`, `push`, and the other subcommands with such an option. Write such words literally. `TAR_OPTIONS`, `TAPE`, and `RIPGREP_CONFIG_PATH` are refused before any runner, `bash -c` included.
+- Pull request: #2458
+
+### A copy deleted beside a held deletion leftover is never deleted in place
+
+- Level: patch. A rerun after a rollback or finalization stopped partway beside a held leftover now finishes instead of refusing or keeping a fragment as a backup.
+- Contract: none
+- User action: none. A warning may now name `.<name>.deploying-del.<token>`: delete it once nothing holds it open, as for `.<name>.deploying-del`.
+- Pull request: #2455
+
+### A skill's git and gh commands start no askpass helper
+
+- Level: patch, a defect fix that brings the commands back to the documented "shows no prompt".
+- Contract: none.
+- User action: none. If a skill's push or fetch relied on an IDE's askpass dialog for a credential, configure a credential helper, or sign in to Git Credential Manager or gh, before running the skill.
+- Pull request: #2454
+
+### audit-skill reads the git subcommands a PowerShell script runs
+
+- Level: patch, a defect fix: the runtime-support derivation now sees what the scripts it audits run.
+- Contract: `audit-skill` `RUNTIME_NEEDS`, `audit-skill` `FAILED`
+- User action: none. A `RUNTIME_NEEDS sandbox-network git <subcommand>` line may now name a `.ps1` script or a subcommand no literal names, such as `$sub`, and auditing a skill that has PowerShell scripts needs pwsh.
+- Pull request: #2446
+
+### A manifest whose recorded checkout is not text is refused
+
+- Level: patch, since it refuses a malformed manifest no deployer writes, and no contract item changes.
+- Contract: none
+- User action: none, unless a hand edit left `source_dir` as something other than a path; the refusal names the manifest's remedy.
+- Pull request: #2442
+
+### `tools/skill_evals.py --write` keeps a model's measured row when no record of it counted
+
+- Level: patch, a defect fix: a run that measured nothing no longer overwrites a measured result.
+- Contract: none. `tools/skill_evals.py` and `evaluate-skill` are repository tools, not deployed.
+- User action: none for a user of the deployed skills. A contributor who reads a `KEPT <model>` line fixes what that model's `NOT_COUNTED` lines name and runs the evaluation again to record it.
+- Pull request: #2441
+
+### The hub guard reads the git call after the `time` keyword's `--`
+
+- Level: patch, a defect fix in a contributor-facing tool with no contract change.
+- Contract: none
+- User action: none, in a clone that has not opted into the guard. In one that has, a git call after `time --` or `time -p --`, such as `time -- git checkout main`, is now judged as the bare call: allowed from a worktree, and refused in the hub when it writes the hub, where before it was allowed.
+- Pull request: #2440
+
+### Values on the code-review and other skills' status lines stay on one line
+
+- Level: patch, a fix to what the status lines print for a value holding a line break, a tab, or a control character; no line is added, renamed, or removed.
+- Contract: `review-prs` `MATCH`, `review-prs` `FAILED`, `review-prs` `REPOSITORY_FAILED`, `review-prs` `NOTE`, `review-prs` `RETRY`, `review-prs` `INVALID`, `review-prs` `SKILL`, `review-prs` `UNMATCHED`, `review-prs` `REVIEWER`, `review-prs` `TOOLS`, `review-document` `DOCUMENT`, `review-document` `FAILED`, `review-insights` `FAILED`, `curate-agent-memory` `SKILL_FILE`, `repo-cleanup` `REFUSED_ENTRY`, `repo-cleanup` `POLICY`, `audit-ai-config` `FAILED`, `update-pr-dashboard` `SET`, `update-pr-dashboard` `WROTE`. Each value these and the same skills' other stdout lines print passes ejryan89-skill-core's `flat_text`, `fact_line`, or `single_line`: a tab, a control character, or a line break in it prints as a space, and a line's trailing whitespace is dropped, so one fact is one line. `repo-cleanup` prints `-` for an empty field of a `POLICY`, `ADDED`, or `REFUSED_ENTRY` line, as its other lines do.
+- User action: none.
+- Pull request: #2436
+
+### audit-skill reads a git command a wrapper runs
+
+- Level: patch, a defect fix that brings audit-skill's runtime needs to what validation and its documentation state.
+- Contract: none
+- User action: none. An audit of a skill whose Bash script runs `xargs git push` or a similar wrapped remote git command may now report the network need it missed.
+- Pull request: #2435
+
+### audit-ai-config names a JSON report it cannot write
+
+- Level: patch, because the exit code is unchanged and the `FAILED <reason>` line the skill already documents gains one reason.
+- Contract: `audit-ai-config` `FAILED <reason>`
+- User action: none.
+- Pull request: #2407
+
+### update-coding-agent-skills says where it runs in a guarded clone
+
+- Level: patch: a fix to the skill's guidance, with no new configuration or command.
+- Contract: none.
+- User action: in a clone with `coding-agent-skills.hubGuard` set, start the skill from a session outside the clone, or run its script from a terminal; from PowerShell, through `& "$env:ProgramFiles\Git\bin\bash.exe"`.
+- Pull request: #2401
+
+### A relative home folder is refused by name
+
+- Level: patch, a defect fix: a relative `USERPROFILE` or `HOME` was read under the working directory.
+- Contract: none.
+- User action: none, unless your profile folder variable is a relative path; set it to an absolute one.
+- Pull request: #2392
+
+### repo-cleanup names a branch or path this plan already handled
+
+- Level: patch, a defect fix: a branch or path the plan already deleted or removed was reported `PRESERVED`, against SKILL.md's "stays".
+- Contract: `repo-cleanup` `ALREADY_DELETED`, `repo-cleanup` `ALREADY_REMOVED`
+- User action: none. Naming one again prints `ALREADY_DELETED <branch>` or `ALREADY_REMOVED <path>`, still with exit 0, and the summary no longer lists it as preserved.
+- Pull request: #2391
+
+### dotnet-format's fix refuses a read-only or linked file before the formatter writes
+
+- Level: patch, a defect fix bringing the fix to what `docs/skills.md` says it checks.
+- Contract: `dotnet-format` `REFUSED`
+- User action: none. `fix` prints `REFUSED <file> <reason>` for each read-only or linked file and exits 1, leaving it unwritten; make the file writable, or the path a real file, and run it again.
+- Pull request: #2391
+
+### curate-agent-memory counts the overlaps it leaves out
+
+- Level: minor, an added report field the skill reads, which is additive under Versioning in `docs/releasing.md`.
+- Contract: `curate-agent-memory` `overlaps_omitted`
+- User action: none.
+- Pull request: #2391
+
+### A status override key past ten digits fails the configuration
+
+- Level: patch, a defect fix: such a key loaded, then `update` and `override --clear` refused it.
+- Contract: none
+- User action: remove an override key of more than ten digits from the code-review configuration, which no GitHub pull request number reaches.
+- Pull request: #2391
+
+### A repository owner GitHub cannot have is refused
+
+- Level: minor. A configuration naming an owner no GitHub login spells, such as `my.org/repo`, `a--b/repo`, or a 40-character owner, now fails to load, which asks its user to act; no repository GitHub holds is affected.
+- Contract: none
+- User action: you are affected only if a configured repository's owner holds a dot, a doubled, leading, or trailing hyphen, more than one `_`, or more than 39 characters. Correct it to the owner's login as GitHub shows it.
+- Pull request: #2393
+
+### Reviewers link only the same defect as a repeat
+
+- Level: patch, a defect fix: a second defect in the same code no longer closes with the first.
+- Contract: none
+- User action: none.
+- Pull request: #2393
+
+### update-coding-agent-skills names git's reason when git fails, and compares release numbers of any length
+
+- Level: patch. The status words and exit codes are unchanged. Only the reasons a `FAILED` line gives change, a `FAILED` line now always comes before anything is merged, and one case moves from `NOT_FAST_FORWARD` to `FAILED`.
+- Contract: `update-coding-agent-skills` `FAILED`, `update-coding-agent-skills` `NOT_FAST_FORWARD`.
+- `FAILED not a git repository: <clone>` becomes `FAILED cannot read <clone> as a git repository: <git's reason>`.
+  - New reasons:
+    - `FAILED cannot look up refs/heads/main: <reason>`;
+    - `FAILED cannot tell whether refs/heads/main is an ancestor of refs/remotes/origin/main: <reason>`;
+    - `FAILED cannot read the branch the clone is on: <reason>`;
+    - `FAILED cannot read the commit the clone is on: <reason>`;
+    - `FAILED cannot read the branch or the commit the clone is on: git named none`;
+    - `FAILED cannot create a temporary file for git's errors: <reason>`;
+    - `FAILED cannot compare release <current> with <target>: <reason>`.
+- `FAILED cannot compare release tag <tag>: its <part> version has more than 18 digits` is gone, because such a release now compares exactly.
+- The short-name failures of main before and after the fast-forward and of the deployed commit now stop before the checkout, leaving the clone as found.
+- A `merge-base` that warns before exiting 1 is a `FAILED` line rather than `NOT_FAST_FORWARD`.
+- User action: none.
+- Pull request: #2382
+
+### The hub guard refuses any slash word to Windows sort or find that isn't exactly a safe option
+
+- Level: patch, a contributor-facing tool refusing more spellings of an option it already refused.
+- Contract: none
+- User action: none, in a clone that hasn't opted into the guard. In one that has, on Windows and while a guarded hub is in view, give `sort` and `find` paths that don't start with a slash, such as `./x` or `C:/x`, and write each slash option as a word of its own, in ASCII, with any value in the next word. `sort` there takes only the dash options `-r`, `-R`, and `-M`.
+- Pull request: #2386
+
+### dotnet-format reads `.editorconfig` lines as the compiler does
+
+- Level: patch, a defect fix that brings the reading in line with the compiler.
+- Contract: none.
+- User action: none. A setting written with `:` or followed by a comment is now read, so `config` may stop reporting it as missing.
+- Pull request: #2383
+
+### audit-ai-config refuses a non-finite hook timeout and follows `CLAUDE.local.md` for AGENTS.md scope
+
+- Level: patch, a defect fix in what the audit reports.
+- Contract: none.
+- User action: none. A Codex hook with `timeout = inf` or `nan` is now an `ERROR`, and a repository with only `AGENTS.md` and `CLAUDE.local.md` is no longer audited for Claude Code.
+- Pull request: #2383
+
+### The code-review configuration accepts an optional `reviewer_model`
+
+- Level: minor. Additive: an optional key, null by default, so a configuration without it behaves as before; a previous release refuses a configuration that has it.
+- Contract: `docs/code-review-operations-contract.md`
+- User action: none. To run reviewers on a model by default, set `reviewer_model` to `sonnet`, `opus`, `haiku`, `fable`, or `inherit`; a specialist's own `model` still wins.
+- Pull request: #2378
+
+### The hub guard reads runners' and programs' options by an allow-list
+
+- Level: minor, a contributor-facing tool's contract changing what it refuses.
+- Contract: none
+- User action: none, in a clone that has not opted into the guard. In one that has, while a guarded hub is in view, a command that gives a runner, `find`, `rg`, `sort`, or `tar` an option off its allow-list, or an abbreviated long option, is refused, and so are `tar`'s extraction and `-C`. Spell the option in full, or leave out an option that changes where the command runs or writes a file the command does not name; extract an archive outside a guarded hub's view.
+- Pull request: #2371
+
+### A repository Windows cannot keep in a folder of its own is refused, and its archived records are no longer read
+
+- Level: minor. Before `1.0.0` a refusal that asks some users to act is a minor unless it only enforces a promise the documents already made, and none promised this one. It removes access to existing data: on every platform, a review, re-review, or `review-insights` report of such a repository is refused, `update-pr-dashboard`'s collection of a set holding it fails with the reason and, as any repository's failure does, writes no collection, the records an earlier release archived for it are no longer read, and a hand-written `reviewers/<owner>/<name>/manifest.json` for it is no longer found. On Windows those records had shared another repository's folder.
+- Contract: none
+- User action: you are affected only if a configured repository's owner or name ends in a dot, such as `owner/a.`, or is a Windows reserved device name, alone or before an extension (`con`, `prn`, `aux`, `nul`, `com0` to `com9`, `lpt0` to `lpt9`, `conin$`, `conout$`, such as `owner/con` or `owner/nul.js`); the refusal names the identity and the folder under `archive_root` it no longer reads or writes. No supported route reviews such a repository: remove it from your repository sets, and keep or move aside its folder under `archive_root` and its `reviewers/<owner>/<name>` folder, which nothing reads. On Windows, the records under the trimmed name's folder (`owner/a` for `owner/a.`) are that other repository's and its own mixed, and no record says which is which.
+- Pull request: #2374
+
+### A pull request adding a file named by whitespace alone is reviewed
+
+- Level: patch, a defect fix: the review, review-document, and the tracker refused the whole file listing.
+- Contract: none
+- User action: none.
+- Pull request: #2374
+
+### review-insights names a guidance file it would not follow through a link, and a stopped search only when pairs were left
+
+- Level: patch, a defect fix: the lines now say what the search and the read did.
+- Contract: `review-insights` `GUIDANCE_UNREADABLE` `GUIDANCE_SEARCH_STOPPED`
+- User action: none. `GUIDANCE_UNREADABLE` now also names a file reached through a link in the checkout, such as a `CLAUDE.md` linked to `AGENTS.md`; `GUIDANCE_SEARCH_STOPPED` appears only when the search left pairs uncompared, and its `pairs=` counts the pairs compared.
+- Pull request: #2374
+
+### A run's journal beside no manifest is refused, never rolled back
+
+- Level: minor. The fix adds a refusal that takes back an automatic recovery the documents promised: a journal an earlier release left on a first deployment it never committed was rolled back, and is now reconciled by hand, so before 1.0.0 it is a minor rather than a patch.
+- Contract: none
+- User action: none, unless a deployment or dry run stops with `The manifest <path> is missing, but run <run-id>'s journal remains`. If you moved the manifest aside, put it back and rerun. Otherwise the run is one an earlier release left unfinished on a first deployment, before any manifest existed, and it was not committed: reconcile it by hand as "When recovery fails" in `docs/recovery.md` describes for a run that was not committed, then rerun with `--dry-run`.
+- Pull request: #2375
+
+### A day over GitHub's search cap is searched again in parts instead of being reported as capped
+
+- Level: minor. Counts that were capped at 1000 results for a day now include every result whenever a second date can separate them, and the `WARNING` remains only for a part that still exceeds the cap. A run that meets such a day takes several minutes longer for each one.
+- Contract: none
+- User action: none. A month a history file records as `capped`, including one an earlier version capped, is now searched again on every run instead of being read back. The `WARNING` that said such a month "is read from the history file" is gone. While the month's search is still capped, the run shows the search's own `WARNING`. Once a run counts the month whole, the month is recorded uncapped and closed. The report should run in the background, since each day over the cap adds minutes no one can know in advance.
+- Pull request: #2373
+
+### A dry run can preview a source takeover
+
+- Level: minor, a deployer flag pairing that was refused is now accepted.
+- Contract: `deploy.py` `--take-over-source`
+- User action: none. To preview taking a source over from a moved or re-cloned checkout, run `python deploy.py --all --take-over-source --dry-run` before deploying with the flag.
+- Pull request: #2372
+
+### A deletion the deployer stopped partway is finished, not kept as your change
+
+- Level: patch, a defect fix: recovery no longer reports the deployer's own half-done deletion as a change made after the plan.
+- Contract: none
+- User action: none. A `.<name>.deploying-del` a warning names holds only what the deployer was deleting: delete it once nothing holds it open.
+- Pull request: #2372
+
+### JSON a skill, the deployer, or a tool writes is checked before it is written
+
+- Level: patch. A value that could not be read back strictly, such as `NaN` or a lone surrogate, is now refused where the JSON is written rather than wherever it is read later. The hub guard refuses a command it would hand its PowerShell reader holding one. When a reason the hub guard or the code-review reviewer guard gives for a denial holds one, the guard still denies the call, with a fixed reason in its place.
+- Contract: none
+- User action: none
+- Pull request: #2367
+
+### Skills stop with their FAILED line on a file they cannot read or a git that fails
+
+- Level: patch, defect fixes that bring each skill to the failure its documentation already names.
+- Contract: `curate-agent-memory` `resolve`, `curate-agent-memory` `reindex`, `curate-agent-memory` `audit`, `flag-review-finding` `findings`
+- User action: none. Where a skill now ends with `FAILED <reason>` naming a file or git's reason, such as `curate-agent-memory`'s `resolve` for a settings file it cannot read (once `NO_MEMORY_DIR` and exit 0) or `flag-review-finding`'s `findings` for a review record missing between versions, fix what it names and rerun.
+- Pull request: #2366
+
+### deploy.py names a skill folder that holds no SKILL.md
+
+- Level: patch, a clearer refusal for the same refused source.
+- Contract: none
+- User action: none. `ERROR: Skill '<name>' has no SKILL.md file in skills/<name>` replaces `deploy-meta/<name>.json has no matching skill directory` when the folder is there; restore its `SKILL.md`.
+- Pull request: #2366
+
+### Every entry point states its exit codes in an exit table
+
+- Level: patch, a contributor rule validation holds; no command changes.
+- Contract: none
+- User action: none for a user. A contributor adding an entry point or a subcommand writes its `Exit status:` table ("Script results" in `docs/adding-a-skill.md`) and a fault driver in `tests/malformed_input/faults_*.py`.
+- Pull request: #2366
+
+### The hub guard refuses every part of a command it does not understand
+
+- Level: minor, a contributor-facing tool's contract changing what it refuses.
+- Contract: none
+- User action: none, in a clone that has not opted into the guard. In one that has, while a guarded hub is in view, a command holding a part the guard does not read, such as `export`, `eval`, `bash <script>`, a runner around git such as `timeout 60 git status`, arithmetic, a function definition, or a redirection to `"$out"`, is refused even when it names no git, where before it was allowed when the guard could model it; write it as plain commands with literal words. A hook that fails or times out now blocks the command rather than letting it run.
+- Pull request: #2363
+
+### update-coding-agent-skills names a deployed commit the clone lacks and a list git cannot read
+
+- Level: minor, since `NOT_IN_CLONE` and `UNLISTED` are new output lines of a shipped skill, which Versioning places at minor; the rest is a defect fix.
+- Contract: `update-coding-agent-skills` `NOT_IN_CLONE`, `update-coding-agent-skills` `UNLISTED`. `NOT_IN_CLONE <commit>` follows `MAJOR_UPDATE` or `UPDATED` when the clone does not hold the deployed commit `deploy.py check` names, and `<current>` or `<old>` is then `unknown`; `UNLISTED <range> <reason>` stands in place of a list of commits git could not read.
+- User action: none for an installation whose clone still holds the deployed commit. Where the clone has lost it, the update that installs this change runs the installed copy of `update.sh`, which still ends `FAILED cannot read the release tags reaching the deployed commit`, and `--cross-major` does not get past that: deploy the release once by hand from the clone, with `git fetch --tags origin` and then `python deploy.py --all --at refs/tags/<tag>` (adding `--unpin` if the deployer refuses to replace a pin), as "Deploying an earlier commit" in `docs/recovery.md` describes; that records a commit the clone holds, and later updates report a lost commit with `NOT_IN_CLONE`.
+- Pull request: #2344
+
+### flag-review-finding reads a pull request number and a review version in ASCII digits alone
+
+- Level: patch, a defect fix: a value `int()` read as another number, such as `1_0` or a digit of another script, is now refused, as "A number read from text is bounded" promises.
+- Contract: `flag-review-finding` `--pull`, `flag-review-finding` `--review-version`
+- User action: none. A `--pull` or `--review-version` of `0`, a negative number, or anything but ASCII digits is now a usage error that exits 2, rather than `FAILED Pull number must be positive` with exit 1 or a flag on a different number.
+- Pull request: #2340
+
+### review-document refuses a pull request whose file listing GitHub cut short or whose head moved during the build
+
+- Level: patch, a defect fix. The skill promised to review each document a pull request changes, and a capped or mixed listing broke that promise without any sign.
+- Contract: `review-document` `FAILED`, `docs/code-review-operations-contract.md`
+- User action: none. For a pull request too large for GitHub's files listing, review its documents by path in a checkout of its head. After a `changed while its files were being read` failure, build again.
+- Pull request: #2333
+
+### `--at` refuses a commit that sets export-ignore or export-subst
+
+- Level: patch, a fix that refuses a tree `--at` used to deploy other than its commit's, naming the attribute and path to remove.
+- Contract: none
+- User action: none, unless you deploy with `--at`, or update through `update-coding-agent-skills`, from a source whose attributes set `export-ignore` or `export-subst`; then remove those attributes from the commit or the clone, as the refusal says.
+- Pull request: #2339
+
+### `run_bounded` takes an `index_file` keyword
+
+- Level: patch, an addition no existing caller meets.
+- Contract: none
+- User action: none. A skill author whose script needs git to read another index passes `index_file=<path>` to ejryan89-skill-core's `run_bounded`; a `GIT_INDEX_FILE` in a given `env` is still left out, whatever its value, as every other repository-selecting variable is.
+- Pull request: #2339
+
+### Deployment reports say when a diff is cut, and more refusals end with their step
+
+- Level: patch, a defect fix that brings the reports to what `docs/installation.md` and `docs/recovery.md` promise.
+- Contract: none.
+- User action: none. A deployed file whose name is not valid UTF-8 is now refused by name: rename or remove it.
+- Pull request: #2335
+
+### A review record that is not JSON fails the insights report as an invalid pair, and a stray period folder no longer stops later reports
+
+- Level: patch, a defect fix that brings two failures to the lines `review-insights` already documents.
+- Contract: none.
+- User action: none.
+- Pull request: #2328
+
+### A home, COPILOT_HOME, or CLAUDE_CONFIG_DIR that is not an absolute path is refused
+
+- Level: patch, a fix that makes these reads follow the platform seam's rule that nothing is looked up relative to the working directory.
+- Contract: none
+- User action: none, unless `USERPROFILE` (Windows), `HOME` (elsewhere), `COPILOT_HOME`, or `CLAUDE_CONFIG_DIR` is set to a relative path; set it to an absolute path, or unset `COPILOT_HOME` or `CLAUDE_CONFIG_DIR`, as the refusal says.
+- Pull request: #2330
+
+### A repository whose name starts with a dot, such as an organization's `.github`, is accepted
+
+- Level: patch, a defect fix. GitHub allows the name, and the configuration's mute list already took it.
+- Contract: `docs/code-review-operations-contract.md`, `skills/ejryan89-code-review-core/references/review-adapter.schema.json`
+- User action: none. The adapter schema's `repository` pattern accepts the same names, so an entrypoint reviewer's author who validates against it should take the updated schema. Every `dashboard.status_overrides` key an earlier release wrote still loads.
+- Pull request: #2324
+
+### dotnet-dependencies reads condition values as MSBuild does
+
+- Level: patch, a defect fix that brings the condition reader to the behavior its docstring promises.
+- Contract: none
+- User action: none. An answer may now include or leave out an item whose condition compares numbers or booleans in a spelling MSBuild reads differently from Python, and a comparison MSBuild refuses is reported as `UNREADABLE` rather than settled.
+- Pull request: #2338
+
+### A source file or folder spelled in another case is refused
+
+- Level: patch, a refusal of a source the deployer already could not deploy alike on both platforms.
+- Contract: none.
+- User action: none for this repository's source. A source of your own whose `SKILL.md`, `source.json`, `skills`, `deploy-meta`, or `agents` folder, metadata `.json`, or owned shared asset is spelled in another case is refused with the rename to make.
+- Pull request: #2342
+
+### A read-only configuration or manifest is refused rather than replaced
+
+- Level: patch, a defect fix: the deployer now leaves a file the user made read-only as it was, on every platform, as the skills' scripts already do.
+- Contract: none
+- User action: none. To have `configure` or a deployment rewrite a file you made read-only, make it writable first; the refusal, `ERROR: The manifest is read-only: <path>` for the manifest, names the file, and a dry run gives it too.
+- Pull request: #2337
+
+### `curate-agent-memory` refuses to delete a read-only memory, before it deletes any
+
+- Level: patch, a defect fix: a refusal the command promised to make before any deletion now comes first.
+- Contract: none; the refusal is a `FAILED <name>: <reason>` line delete already prints.
+- User action: none. To delete a memory you marked read-only, make it writable first; on Linux and macOS this is new.
+- Pull request: #2332
+
+### A deployment finishes when it cannot delete a leftover after its commit
+
+- Level: patch, recovery and finalization now follow one documented rule, and a cleanup step after the commit no longer fails a finished deployment.
+- Contract: none
+- User action: none. If a deployment warns that a previous copy `could not be deleted`, delete that `<name>.deploying-bak` once nothing holds it open; the next deployment of that item refuses until it is gone.
+- Pull request: #2306
+
+### A dry run from another checkout is refused as the deployment refuses it
+
+- Level: patch, the dry run now gives the answer the deployment gives, which `docs/recovery.md` promises: it never shows a plan or a pending recovery the deployment would refuse.
+- Contract: none
+- User action: none. If `--dry-run` now stops with `Source '<id>' is deployed from <path>, not from this checkout`, run it from the recorded checkout. If this checkout replaces the recorded one, deploy with `--take-over-source`, which a dry run also takes to preview the takeover. A dry run while another deployment runs now stops with `Another deployment is running`, as that deployment's own journal is not a recovery to report; rerun it once the deployment finishes.
+- Pull request: #2306
+
+### `verify` names Codex's cap on the skills budget when an adapter is omitted
+
+- Level: patch, a reworded report line with the same status and exit code.
+- Contract: none.
+- User action: none. An adapter reported `OMITTED` is brought back by offering Codex fewer skills; raising `skills.max_context_tokens` helps only below the cap Codex sets, which "Checking discovery" in `docs/codex-support.md` points at.
+- Pull request: #2304
+
+### A path or folder a skill or the deployer cannot examine fails the step instead of reading as missing or empty
+
+- Level: minor, a new value in a report field an agent parses.
+- Contract: skill invocation: curate-agent-memory's report field `exists` can now be `null`, with an `unreadable` reason, beside `true` and `false`.
+- User action: none. The curate-agent-memory report gives a cited path it cannot examine as `"exists": null` with an `"unreadable"` reason, apart from `"exists": false` for one that is not there. A `FAILED` line, or a deployer `ERROR: Could not ...` line, naming a folder or file now means it is there but could not be examined or listed. Fix its permissions or the share it lives on and run the step again.
+- Pull request: #2282
+
+### A deployer path that cannot be stat'ed is refused, not read as absent
+
+- Level: patch, a defect fix: the deployer read a path it could not stat as missing, and could remove a skill whose files it could not stat, or move a pin a user made without `--unpin`.
+- Contract: none
+- User action: none. If `deploy.py` or `deploy.py verify` now stops naming a path and `Access is denied` or another reason, fix the permissions on the path it names and rerun. If it stops with `git --exec-path failed`, or `check` reports Git Bash `UNUSABLE`, put right what Git reports, or set `GIT_BASH`.
+- Pull request: #2272
+
+### A reviewer manifest's specialist can route on the title, choose its pull-request texts, and be given the issues the pull request closes
+
+- Level: minor, a new optional manifest field and a new record field, both backward compatible.
+- Contract: `docs/code-review-operations-contract.md` (`specialists-manifest.specialists[].title_types`, `specialists-manifest.specialists[].inputs`, `request.pull_request.closing_issues` and its `issues[]` with `unreadable`, `record.pull_request.closing_issues` and its `issues[]` with `unreadable`, `fixture-pull.closing_issues[]` with `unreadable`), `review-prs` `validate-reviewer` `TITLE`
+- User action: none. A manifest that uses neither field reviews as before.
+- Pull request: #2271
+
+### A configuration path that cannot be examined or listed is reported, not taken for no file or an empty folder
+
+- Level: patch, a defect fix: the audit, `dotnet-format`, and the tools read a path they could not examine or list as absent or empty.
+- Contract: none
+- User action: none. An audit or run that now reports such a path names it and the reason; put the kind of file or folder the runtimes read there, or make it readable.
+- Pull request: #2270
+
+### A code-review file or folder that cannot be read fails the step instead of reading as missing
+
+- Level: patch, a defect fix.
+- Contract: a migrated legacy review index (`legacy-review.json`) the file system will not let be stat'ed or read is no longer treated as unreviewed: `enumerate` and `collect` report it as that repository's `REPOSITORY_FAILED` line, and `prepare` fails naming it, rather than offering the pull request for review again. An index that is not there, or whose content is invalid, still reads as unreviewed.
+- User action: none. A `FAILED` or `REPOSITORY_FAILED` line naming a flag store, batch state, legacy index, review record, archive folder, run file, insights report, or tracker record now means it is there but could not be read; fix its permissions or the share it lives on and run the step again.
+- Pull request: #2269
+
+### Skills report a file or folder they cannot look at instead of treating it as missing
+
+- Level: patch. A defect fix: an unreadable path read as absent, or a folder that could not be listed read as empty, gave an empty answer or let a change go ahead, such as a skill not found, no metadata, a worktree with nothing to lose, an orphan already gone, or a new output folder. The lines are the ones each skill already prints for an unreadable or refused input, now printed for one whose stat fails too.
+- Contract: none
+- User action: none.
+- Pull request: #2268
+
+### A source, staging, or backup path the deployer cannot stat is refused, not read as absent
+
+- Level: patch, a defect fix: the deployer refused a path it could not read, but read one it could not stat as missing.
+- Contract: none
+- User action: none. If `deploy.py` now stops with `ERROR: Could not ...` naming the source's `.git` or the `agents` folder, or with `Cannot list the staging runs`, or recovery keeps a run it cannot read, fix the permissions on the path it names and rerun.
+- Pull request: #2266
+
 ## v0.12.0
 
 Level: minor.
