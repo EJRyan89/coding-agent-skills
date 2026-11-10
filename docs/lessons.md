@@ -169,7 +169,10 @@ removed fails validation until its pattern follows it.
   `skills/repo-cleanup/scripts/test_repo_cleanup_stops.py::StopAndRefusalTests::test_a_branch_a_stopped_apply_never_offered_is_refused_and_the_stop_outlasts_later_commands`,
   `tests/validation/exit_tables.py::ExitTablePolicies::test_each_entry_point_s_exit_table_names_exactly_the_codes_it_can_exit_with`,
   `tests/malformed_input/test_faults_programs.py::test_each_command_refuses_a_git_or_gh_that_fails`,
-  `tests/deployer/test_verify.py::ConverseTests::test_a_codex_answer_json_reader_refuses_fails_the_listing_at_once_never_as_a_timeout`
+  `tests/deployer/test_verify.py::ConverseTests::test_a_codex_answer_json_reader_refuses_fails_the_listing_at_once_never_as_a_timeout`,
+  `skills/audit-ai-config/scripts/test_mcp_handshake.py::HandshakeTests::test_a_response_json_reader_refuses_fails_naming_the_refusal_at_once_never_as_a_timeout`,
+  `skills/ejryan89-skill-core/scripts/test_json_reader.py::AnswersRequestTests::test_a_response_nested_past_the_recursion_limit_is_told_by_its_id_wherever_the_id_stands`,
+  `skills/ejryan89-skill-core/scripts/test_json_reader.py::AnswersRequestTests::test_a_request_id_is_a_number_equal_to_it_whatever_its_spelling_and_nothing_else`
 - **Search for:** `rg -nU "except (OSError|ValueError|UnicodeDecodeError)[^\n]*:\n\s+(print\([^\n]*\)\n\s+)?return 1\b"`,
   a handler that ends every failure in one code; two probes under one `except` that print one message; an `except`
   around a `git` or `gh` call that drops the exception's text; `FAILED KeyError`, `FAILED TypeError`, or
@@ -178,7 +181,7 @@ removed fails validation until its pattern follows it.
   a reader that returns None or `{}` for every fault, whose caller then refuses a field of it as missing; an entry
   point's message about where it runs, such as "Run this inside the repository", printed after any git failure;
   a wait for a response that passes over every line `json_reader` refuses, reporting a refused answer as a timeout.
-- **Examples:** #1511, #1840, #1855, #1910, #2022, #2181, #2207, #2209, #2548
+- **Examples:** #1511, #1840, #1855, #1910, #2022, #2181, #2207, #2209, #2477, #2548
 
 ### A caller catches the whole error family its callee raises on content
 
