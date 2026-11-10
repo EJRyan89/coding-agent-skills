@@ -39,6 +39,26 @@ VERSION = ProcessResult(0, "GitHub Copilot CLI 1.0.88\n", "")
 REVIEWED = ProcessResult(0, '{"type":"assistant.message","text":"done"}\n', "")
 RESULT = b'{"status": "complete"}'
 BASE_ENVIRONMENT = {"GH_TOKEN": "test-token", "PATH": "C:/tools"}
+# Copilot CLI variables a caller may export for their own sessions, from its command reference, written out here
+# rather than read from review_hosts: every permission granted, a model and a provider command chosen, skill and
+# instruction folders added, repository hooks, extensions, and MCP servers loaded in prompt mode, the homes and the
+# update setting the host sets itself, and one in lower case.
+CALLER_COPILOT_VARIABLES = {
+    "COPILOT_ALLOW_ALL": "true",
+    "COPILOT_MODEL": "caller-model",
+    "COPILOT_PROVIDER_API_KEY_COMMAND": "caller-command",
+    "COPILOT_SKILLS_DIRS": "C:/caller/skills",
+    "COPILOT_CUSTOM_INSTRUCTIONS_DIRS": "C:/caller/instructions",
+    "GITHUB_COPILOT_PROMPT_MODE_REPO_HOOKS": "true",
+    "GITHUB_COPILOT_PROMPT_MODE_EXTENSIONS": "true",
+    "GITHUB_COPILOT_PROMPT_MODE_WORKSPACE_MCP": "true",
+    "COPILOT_HOME": "C:/caller/copilot",
+    "COPILOT_CACHE_HOME": "C:/caller/cache",
+    "COPILOT_AUTO_UPDATE": "true",
+    "copilot_assisted_approval": "true",
+}
+# What signs Copilot CLI in, which the host keeps: it isolates configuration, not credentials.
+COPILOT_SIGN_IN = {"COPILOT_GITHUB_TOKEN": "copilot-token", "COPILOT_GH_HOST": "github.com"}
 # git's repository-selecting variables, written out here rather than read from ejryan89-skill-core, each pointing
 # elsewhere.
 REPOSITORY_SELECTING = (
@@ -197,6 +217,7 @@ def _environment(paths: dict[str, Path]) -> dict[str, str]:
         "HOME": str(paths["isolation"] / "home"),
         "USERPROFILE": str(paths["isolation"] / "home"),
         "COPILOT_HOME": str(paths["isolation"] / "copilot-home"),
+        "COPILOT_CACHE_HOME": str(paths["isolation"] / "copilot-cache"),
         "COPILOT_AUTO_UPDATE": "false",
     }
 
@@ -703,7 +724,8 @@ class CopilotHostTests(unittest.TestCase):
         self.assertEqual(RESULT, paths["result"].read_bytes())
         self.assertFalse(paths["staging"].exists())
         self.assertEqual(
-            ["copilot-home", "home", "workspace"], sorted(path.name for path in paths["isolation"].iterdir())
+            ["copilot-cache", "copilot-home", "home", "workspace"],
+            sorted(path.name for path in paths["isolation"].iterdir()),
         )
 
     def test_each_copilot_version_starts_with_the_flags_it_takes_to_keep_the_session_local(self) -> None:
@@ -1159,10 +1181,46 @@ class CopilotProcessTests(unittest.TestCase):
                 "HOME": str(isolation / "home"),
                 "USERPROFILE": str(isolation / "home"),
                 "COPILOT_HOME": str(isolation / "copilot-home"),
+                "COPILOT_CACHE_HOME": str(isolation / "copilot-cache"),
                 "COPILOT_AUTO_UPDATE": "false",
             },
             environment,
         )
+
+    def test_a_given_base_environment_loses_every_copilot_variable_but_the_sign_in(self) -> None:
+        base = {**BASE_ENVIRONMENT, **CALLER_COPILOT_VARIABLES, **COPILOT_SIGN_IN}
+        isolation = self.folder / "isolation"
+        _, environment = review_hosts.isolated_copilot_environment(isolation, base)
+        self.assertEqual(
+            {
+                **BASE_ENVIRONMENT,
+                **COPILOT_SIGN_IN,
+                "HOME": str(isolation / "home"),
+                "USERPROFILE": str(isolation / "home"),
+                "COPILOT_HOME": str(isolation / "copilot-home"),
+                "COPILOT_CACHE_HOME": str(isolation / "copilot-cache"),
+                "COPILOT_AUTO_UPDATE": "false",
+            },
+            environment,
+        )
+
+    def test_this_processs_copilot_variables_never_reach_the_host(self) -> None:
+        # The dispatched host passes no base environment, so it starts from this process's.
+        with mock.patch.dict(os.environ, {**CALLER_COPILOT_VARIABLES, **COPILOT_SIGN_IN}):
+            _, environment = review_hosts.isolated_copilot_environment(self.folder / "isolation")
+        caller = {name.upper() for name in CALLER_COPILOT_VARIABLES} - {
+            "COPILOT_HOME",
+            "COPILOT_CACHE_HOME",
+            "COPILOT_AUTO_UPDATE",
+        }
+        self.assertEqual(set(), caller & {name.upper() for name in environment})
+        self.assertEqual(COPILOT_SIGN_IN, {name: environment[name] for name in COPILOT_SIGN_IN})
+
+    def test_the_copilot_home_turns_every_allow_all_option_off(self) -> None:
+        isolation = self.folder / "isolation"
+        review_hosts.isolated_copilot_environment(isolation, BASE_ENVIRONMENT)
+        settings = json.loads((isolation / "copilot-home" / "settings.json").read_text(encoding="utf-8"))
+        self.assertEqual({"permissions": {"disableBypassPermissionsMode": "disable"}}, settings)
 
     def test_output_past_the_limit_is_cut_and_the_cut_named_in_the_diagnostic(self) -> None:
         program = "import sys; sys.stdout.write('o' * 1000); sys.stderr.write('kept'); sys.exit(1)"

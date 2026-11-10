@@ -78,6 +78,16 @@ HOST_LOCK = "copilot-host.lock"
 HOST_START_GRACE_SECONDS = 60
 # How long past the Copilot limit a host may take to record its outcome before it counts as gone.
 HOST_EXIT_GRACE_SECONDS = 300
+# The prefixes of Copilot CLI's own variables, matched in any case. Its command reference lists variables under both
+# that grant every permission, choose the model or a provider, add skill and instruction folders, and load repository
+# hooks, extensions, or MCP servers in prompt mode, so none of the caller's reaches the host but those it keeps.
+COPILOT_VARIABLE_PREFIXES = ("COPILOT_", "GITHUB_COPILOT_")
+# The Copilot variables the host keeps from the caller: the sign-in token, and the GitHub host Copilot signs in to,
+# since the host isolates configuration, not credentials (docs/copilot-support.md).
+COPILOT_KEPT_VARIABLES = frozenset({"COPILOT_GITHUB_TOKEN", "COPILOT_GH_HOST"})
+# The isolated Copilot home's user settings: Copilot ignores every allow-all option, which the host never passes, so
+# nothing else in the host's environment or command can lift its tool and path rules either.
+COPILOT_SETTINGS = {"permissions": {"disableBypassPermissionsMode": "disable"}}
 
 
 class HostSuperseded(RuntimeContractError):
@@ -290,11 +300,13 @@ def isolated_copilot_environment(
     isolation_root: Path,
     base_environment: Mapping[str, str] | None = None,
 ) -> tuple[Path, dict[str, str]]:
-    """Make the isolation root's home, Copilot home, and workspace, and return the workspace and Copilot CLI's
-    environment: `base_environment`, or this process's, without git's repository-selecting variables, so neither
-    Copilot nor a git it runs reads the repository a shell's `GIT_DIR` names, with both homes in the isolation root
-    and Copilot's auto-update off, so the Copilot CLI whose version the host checks is the one that reviews, not a
-    newer package it has downloaded."""
+    """Make the isolation root's home, Copilot home, Copilot cache, and workspace, write the Copilot home's settings,
+    and return the workspace and Copilot CLI's environment: `base_environment`, or this process's, without git's
+    repository-selecting variables, so neither Copilot nor a git it runs reads the repository a shell's `GIT_DIR`
+    names, and without any of Copilot's own variables but COPILOT_KEPT_VARIABLES, so no permission, model, or folder
+    the caller set for their own sessions reaches a host that reads pull request content. Both homes and the cache are
+    in the isolation root, and Copilot's auto-update is off, so the Copilot CLI whose version the host checks is the
+    one that reviews, not a newer package it has downloaded."""
     if not isolation_root.is_absolute():
         raise RuntimeContractError("Copilot isolation root must be absolute")
     # A root whose stat fails raises, never reads as no root and so as empty.
@@ -306,15 +318,29 @@ def isolated_copilot_environment(
         raise RuntimeContractError("Copilot isolation root must be empty")
     home = isolation_root / "home"
     copilot_home = isolation_root / "copilot-home"
+    copilot_cache = isolation_root / "copilot-cache"
     workspace = isolation_root / "workspace"
-    for directory in (home, copilot_home, workspace):
+    for directory in (home, copilot_home, copilot_cache, workspace):
         directory.mkdir(parents=True, exist_ok=True)
-    environment = without_repository_variables(os.environ if base_environment is None else base_environment)
+    atomic_write_json(copilot_home / "settings.json", COPILOT_SETTINGS)
+    environment = {
+        name: value
+        for name, value in without_repository_variables(
+            os.environ if base_environment is None else base_environment
+        ).items()
+        if not copilot_variable(name) or name.upper() in COPILOT_KEPT_VARIABLES
+    }
     environment["HOME"] = str(home)
     environment["USERPROFILE"] = str(home)
     environment["COPILOT_HOME"] = str(copilot_home)
+    environment["COPILOT_CACHE_HOME"] = str(copilot_cache)
     environment["COPILOT_AUTO_UPDATE"] = "false"
     return workspace, environment
+
+
+def copilot_variable(name: str) -> bool:
+    """Whether `name`, in any case, is one of Copilot CLI's own variables."""
+    return name.upper().startswith(COPILOT_VARIABLE_PREFIXES)
 
 
 def materialized_reviewer_entrypoint(materialized_root: Path) -> Path:
