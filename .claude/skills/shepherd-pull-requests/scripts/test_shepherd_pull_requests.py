@@ -296,7 +296,9 @@ def pull(
         "isDraft": draft,
         "mergeStateStatus": merge,
         "autoMergeRequest": {"mergeMethod": "SQUASH"} if armed else None,
-        "files": [{"path": path} for path in files],
+        # gh's listing holds a pull request's first 100 files; changedFiles counts them all.
+        "files": [{"path": path} for path in files[:100]],
+        "changedFiles": len(files),
         "statusCheckRollup": rollup(state, run),
         "body": "",
         "baseRefName": base,
@@ -402,8 +404,11 @@ class StubGh:
         logs: Mapping[int, str] | None = None,
         merged: Sequence[dict[str, Any]] = (),
         failing: Sequence[str] = (),
+        pages: Mapping[int, Sequence[str]] | None = None,
     ) -> None:
         self.pulls = list(pulls)
+        # Each pull request's files as GitHub's files endpoint lists them, every page.
+        self.pages = dict(pages or {})
         self.runs = dict(runs or {})
         self.logs = dict(logs or {})
         self.merged = list(merged)
@@ -439,6 +444,15 @@ class StubGh:
             return CommandResult(0, json.dumps(self.runs[int(arguments[2])]), "")
         if verb in ("pr merge", "pr update-branch", "run rerun"):
             return CommandResult(0, "", "")
+        if arguments[:3] == ["api", "--paginate", "--slurp"]:
+            match = re.fullmatch(rf"repos/{REPOSITORY}/pulls/(\d+)/files\?per_page=100", arguments[3])
+            if match is None or len(arguments) != 4:
+                raise AssertionError(f"unexpected gh api call: {command}")
+            files = list(self.pages[int(match.group(1))])
+            slurped = [
+                [{"filename": path} for path in files[start : start + 100]] for start in range(0, len(files), 100)
+            ]
+            return CommandResult(0, json.dumps(slurped), "")
         raise AssertionError(f"unexpected gh call: {command}")
 
     @staticmethod
@@ -1113,6 +1127,31 @@ class UpdateTest(FixtureTestCase):
         self.assertEqual([], gh.writes())
         self.assertTrue(self.line(lines, "PR #41 ").endswith(" would-update"))
 
+    def test_a_holding_path_past_the_first_hundred_files_gh_lists_holds_the_updates(self) -> None:
+        files = [f"docs/page-{index}.md" for index in range(150)]
+        files[120] = "tests/validation/job_selection.py"
+        gh = StubGh([pull(10, merge="BEHIND"), pull(11, files=files)], pages={11: files})
+        _, lines = self.tick(gh)
+        self.assertEqual("HOLD #11 changes tests/validation/job_selection.py", self.line(lines, "HOLD "))
+        self.assertEqual([], gh.writes())
+        self.assertTrue(self.line(lines, "PR #10 ").endswith(" held"))
+
+    def test_a_pull_request_whose_pages_still_list_fewer_files_than_it_changes_ends_the_tick(self) -> None:
+        files = [f"docs/page-{index}.md" for index in range(150)]
+        gh = StubGh([pull(10, merge="BEHIND"), pull(11, files=files)], pages={11: files[:149]})
+        status, lines = self.tick(gh)
+        self.assertEqual(1, status)
+        self.assertEqual(
+            "FAILED cannot list the open pull requests: pull request #11 lists 149 of the 150 files it changes",
+            lines[-1],
+        )
+        self.assertEqual([], gh.writes())
+
+    def test_a_listing_that_holds_every_file_reads_no_page(self) -> None:
+        gh = StubGh([pull(11, files=[f"docs/page-{index}.md" for index in range(100)])])
+        self.tick(gh)
+        self.assertEqual([], [call for call in gh.calls if call[1] == "api"])
+
     def test_other_test_paths_hold_nothing(self) -> None:
         self.assertIsNone(shepherd.holding_path(["tests/validation_notes.md", "tests/run_validation.pyc", "x.py"]))
         self.assertEqual("tests/validation/x.py", shepherd.holding_path(["a", "tests/validation/x.py"]))
@@ -1228,6 +1267,7 @@ class ShapeTest(unittest.TestCase):
             "statusCheckRollup": ("a pull request without its statusCheckRollup", None),
             "body": ("a pull request without its body", "a pull request without its body"),
             "baseRefName": ("a pull request without its baseRefName", "a pull request without its baseRefName"),
+            "changedFiles": ("a pull request without its changedFiles", "a pull request without its changedFiles"),
         }
         self.assertEqual(set(catalogue), set(shepherd.PULL_FIELDS.split(",")))
         for key, (absent, null) in catalogue.items():

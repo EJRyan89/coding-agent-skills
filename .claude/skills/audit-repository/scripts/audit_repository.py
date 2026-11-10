@@ -130,7 +130,8 @@ from suite_names import is_suite_name
 
 # The rotation record, relative to the top of the repository it describes.
 RECORD_PATH = ".claude/skills/audit-repository/references/rotation.json"
-DATE_FORMAT = re.compile(r"\d{4}-\d{2}-\d{2}")
+# A recorded date: ASCII digits alone, which \d is not, since it also matches every other script's digits.
+DATE_FORMAT = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
 # The most files one reader is given; a larger area is split between readers by directory.
 MAX_FILES_PER_READER = 60
 # Every briefs directory starts with this, directly in the temporary directory; remove-briefs deletes no other.
@@ -627,11 +628,22 @@ def read_record(path: Path) -> list[Entry]:
     return entries
 
 
+def is_date(when: str) -> bool:
+    """Whether `when` is a YYYY-MM-DD date in ASCII digits that exists, never one such as 2026-13-45."""
+    if not DATE_FORMAT.fullmatch(when):
+        return False
+    try:
+        date.fromisoformat(when)
+    except ValueError:
+        return False
+    return True
+
+
 def record_entry(name: str, number: int, item: object) -> Entry:
     if not isinstance(item, dict) or set(item) != {"date", "tag", "area"}:
         raise AuditError(f"{name} audit {number} must have exactly a date, a tag, and an area")
     when, tag, area = item["date"], item["tag"], item["area"]
-    if not isinstance(when, str) or not DATE_FORMAT.fullmatch(when):
+    if not isinstance(when, str) or not is_date(when):
         raise AuditError(f"{name} audit {number} has a date that is not YYYY-MM-DD")
     if not isinstance(tag, str) or not is_release_tag(tag):
         raise AuditError(f"{name} audit {number} has a tag that is not a release tag vX.Y.Z")
@@ -1664,7 +1676,7 @@ def main(
             else:
                 lines = duplicates(gh, options.queries)
     except AuditError as exc:
-        print(f"FAILED {exc}")
+        print(f"FAILED {flat_text(str(exc))}")
         return 1
     print("\n".join(lines))
     return 0

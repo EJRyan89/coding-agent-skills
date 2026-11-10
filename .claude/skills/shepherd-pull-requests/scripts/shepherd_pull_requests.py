@@ -1,5 +1,6 @@
 """One tick of the merge shepherd over this repository's open pull requests, so the session that runs it only
-messages the sessions that own them, judges what the script cannot, and hands each merge to repo-cleanup.
+messages the sessions that own them, judges what the script cannot, and names each merged worktree for the user to
+retire with /repo-cleanup.
 
 Run it from the hub on main. One tick:
 
@@ -7,7 +8,9 @@ Run it from the hub on main. One tick:
   linked worktree it leaves the hub to the hub's own session; a hub it runs in and cannot fast-forward, because the
   fetch failed or the hub is off main, has a tracked change, or diverged, is named for the shepherd's judgment;
 - lists the open pull requests that are not drafts, with their merge state, auto-merge, head, and the state of the
-  required check Validation on that head;
+  required check Validation on that head, and the files each changes: when gh's listing, which holds a pull
+  request's first 100 files, holds fewer than the pull request changes, it reads every page of GitHub's files
+  endpoint, and a count that still disagrees ends the tick, so a HOLD is never judged on part of a pull request;
 - holds each admitted pull request whose body has a line `Shepherd-hold: <reason>`: it neither arms it nor lets it
   merge, turning off an auto-merge already armed, and names it with the reason, while it still names, judges, and
   reruns for it as for any other; deleting the line releases it;
@@ -113,7 +116,7 @@ import argparse
 import re
 import sys
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -149,10 +152,12 @@ VALIDATION_STEPS = frozenset(
     }
 )
 OPEN_LISTED = 100
+# The files one page of GitHub's pull request files endpoint lists, its maximum.
+FILES_PAGE = 100
 MERGED_LISTED = 100
 PULL_FIELDS = (
-    "number,headRefName,headRefOid,isCrossRepository,isDraft,mergeStateStatus,autoMergeRequest,files,statusCheckRollup,"
-    "body,baseRefName"
+    "number,headRefName,headRefOid,isCrossRepository,isDraft,mergeStateStatus,autoMergeRequest,files,changedFiles,"
+    "statusCheckRollup,body,baseRefName"
 )
 # The line in a pull request's body that holds it from arming and merging, with its reason; deleting it releases it.
 HOLD_LINE = re.compile(r"^Shepherd-hold:[ 	]*(.*?)[ 	]*$", re.MULTILINE)
@@ -244,6 +249,7 @@ class Pull:
     draft: bool
     hold: str | None  # the reason a Shepherd-hold line gives, or None when none holds it
     base: str  # the branch it would merge into
+    changed_files: int  # how many files GitHub counts the pull request changing, which `files` may fall short of
 
 
 @dataclass
@@ -513,6 +519,7 @@ def pull_of(item: Any) -> Pull:
         draft,
         hold_of(reported(item, "body", str, what)),
         base,
+        reported(item, "changedFiles", int, what),
     )
 
 
@@ -528,7 +535,34 @@ def read_pulls(client: GitHubClient, repository: str) -> list[Pull]:
     listing = client.capped_list(arguments, OPEN_LISTED)
     if listing.cut:
         raise GitHubError(f"more than {OPEN_LISTED} are open, more than one tick lists", kind="incomplete")
-    return sorted((pull_of(item) for item in listing.items), key=lambda pull: pull.number)
+    return sorted(
+        (every_file(client, repository, pull_of(item)) for item in listing.items), key=lambda pull: pull.number
+    )
+
+
+def every_file(client: GitHubClient, repository: str, pull: Pull) -> Pull:
+    """`pull` with every file it changes: gh's listing holds a pull request's first 100, so when it holds fewer than
+    the pull request changes, every page of GitHub's files endpoint. A count that still disagrees, as when a push
+    landed between the reads, raises an `incomplete` GitHubError, since a HOLD judged on part of a pull request's
+    files could miss the one path that holds."""
+    if len(pull.files) == pull.changed_files:
+        return pull
+    endpoint = f"repos/{repository}/pulls/{pull.number}/files?per_page={FILES_PAGE}"
+    pages = client.json(["api", "--paginate", "--slurp", endpoint])
+    # --slurp wraps the pages in one array, so the output is a list of pages, each a list of files.
+    if not isinstance(pages, list):
+        raise malformed("a pull request's file pages that are not a list")
+    entries = [entry for page in pages for entry in objects(page, "a pull request's files")]
+    listed = [entry.get("filename") for entry in entries]
+    files = tuple(path for path in listed if isinstance(path, str) and path)
+    if len(files) != len(listed):
+        raise malformed("a pull request file without its filename")
+    if len(files) != pull.changed_files:
+        raise GitHubError(
+            f"pull request #{pull.number} lists {len(files)} of the {pull.changed_files} files it changes",
+            kind="incomplete",
+        )
+    return replace(pull, files=files)
 
 
 def branch_heads(git: GitClient, top: Path) -> dict[str, str]:
