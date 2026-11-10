@@ -96,34 +96,48 @@ def count_reads(run: Path, state: RunState, roles: Sequence[str]) -> bool:
     `searches`, since its earlier searches are unknown. A role without a log is not counted: no guard ran for it, and on
     Claude Code `unguarded_roles` refuses its result. A run prepared before reads were counted has no `reads` and
     counts nothing. The snapshot's own manifest is not a file of the snapshot, as `review.snapshot.files` leaves it
-    out, so reading it counts for nothing."""
+    out, so reading it counts for nothing. A logged path where nothing is, or a folder, which a search names, is not a
+    file read and counts for nothing; one it cannot stat raises the stat's OSError before any log is counted or
+    deleted, so the step fails naming it and a rerun counts every log whole, never a count short of a file the reviewer
+    read."""
     if "reads" not in state:
         return False
-    source = run / "source"
-    manifest = path_key(source / SOURCE_SNAPSHOT_MANIFEST, textual=True)
-    counted = False
-    for role in roles:
-        log = read_log(run, role)
-        if not file_presence.is_present(log):
-            continue
-        sizes: dict[str, int] = {}
-        searches = 0
-        for line in log.read_text(encoding="utf-8", errors="replace").splitlines():
-            with contextlib.suppress(*CONTENT_ERRORS):
-                relative = json_reader.loads(line)
-                searches += is_search_entry(relative)
-                target = source.joinpath(relative) if isinstance(relative, str) else source
-                key = path_key(target, textual=True)
-                if key not in sizes and key != manifest and _inside(target, source) and target.is_file():
-                    sizes[key] = target.stat().st_size
+    read = [
+        (role, log, *_read_log(log, run / "source"))
+        for role in roles
+        if file_presence.is_present(log := read_log(run, role))
+    ]
+    for role, log, sizes, searches in read:
         total: ReadCount = state["reads"].get(role, {"files": 0, "bytes": 0, "searches": 0})
         count: ReadCount = {"files": total["files"] + len(sizes), "bytes": total["bytes"] + sum(sizes.values())}
         if "searches" in total:
             count["searches"] = total["searches"] + searches
         state["reads"][role] = count
         log.unlink()
-        counted = True
-    return counted
+    return bool(read)
+
+
+def _read_log(log: Path, source: Path) -> tuple[dict[str, int], int]:
+    """A read log's distinct snapshot files with their bytes, keyed as the file system compares paths, and the count
+    of its searches."""
+    manifest = path_key(source / SOURCE_SNAPSHOT_MANIFEST, textual=True)
+    sizes: dict[str, int] = {}
+    searches = 0
+    for line in log.read_text(encoding="utf-8", errors="replace").splitlines():
+        with contextlib.suppress(*CONTENT_ERRORS):
+            relative = json_reader.loads(line)
+            searches += is_search_entry(relative)
+            # A path holding a NUL names no file, which file_presence refuses as an OSError: count it as nothing.
+            target = source.joinpath(relative) if isinstance(relative, str) and "\0" not in relative else source
+            key = path_key(target, textual=True)
+            if (
+                key not in sizes
+                and key != manifest
+                and _inside(target, source)
+                and file_presence.is_present(target, other_is_absent=True)
+            ):
+                sizes[key] = target.stat().st_size
+    return sizes, searches
 
 
 # What a refused role's reviewer does instead of the agent: work the review inline, where the seal holds it.
@@ -241,7 +255,7 @@ def _check_roles(run: Path, state: RunState) -> dict[str, Any]:
             continue
         if seal is not None:
             seal["results"].pop(identity, None)  # set aside, so next-role hands the role out again
-        if result.exists():
+        if file_presence.is_occupied(result):  # a result it cannot stat raises, never stays to pass as the retry's
             result.replace(result.with_name(f"{result.name}.rejected-{state['attempts'][identity] + 1}"))
         if state["attempts"][identity] < MAX_RETRIES:
             state["attempts"][identity] += 1
