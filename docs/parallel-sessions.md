@@ -421,9 +421,16 @@ a row decides it.
   for each of `chronic`, `chroot`, `chrt`, `doas`, `env`, `ionice`, `ltrace`, `nice`, `nohup`, `setsid`, `stdbuf`,
   `strace`, `sudo`, `taskset`, `time`, `timeout`, `unbuffer`, and `xargs` the options known to be safe: ones that
   neither build its command from text, as `xargs`'s `-I` and `env`'s `-S` do, nor change where it runs, as `env`'s
-  `-C` does, nor write a file or run another program. Every other option word of a runner is refused, in every
-  spelling getopt reads: exactly, with its value attached by `=` or directly, abbreviated, or as a letter in a
-  bundle, as `-0IX` is. A long option is understood only spelled in full, since an abbreviation of a safe option may
+  `-C` does, nor write a file or run another program, nor change what runs. The Rust coreutils (uutils), which
+  some Linux distributions install as their coreutils, add options to some runners: `env`'s `-f` or `--file`, which sets variables from a file the
+  text does not show, `GIT_DIR` or `PATH` among them, and its `-a` or `--argv0`, the name its command runs as, by
+  which a multicall program such as the Rust coreutils' own `coreutils` or busybox picks the program it runs, are
+  refused, so `env --argv0=env ls -S 'git commit'` is; `-h` and `-V`, the help and version options of `env`,
+  `nice`, `nohup`, `stdbuf`, `timeout`, and `chroot`, run no command and are refused as `--help` and `--version`
+  are; and `timeout`'s `-f` and `-p` are read as `--foreground` and `--preserve-status`, and, of the programs
+  below, `sort`'s `--check-silent` as its `-C`. Every other option word of a runner is refused, in every spelling getopt reads:
+  exactly, with its value attached by `=` or directly, abbreviated, or as a letter in a bundle, as `-0IX` is. A long
+  option is understood only spelled in full, since an abbreviation of a safe option may
   be one of another option too. `env`'s `NAME=VALUE` words are read among its options as assignments for its
   command, a value-taking option's value never ending them, and judged as ones before it, from Bash and PowerShell
   alike; such a word before any other runner's command, as `sudo`
@@ -465,8 +472,10 @@ a row decides it.
   refused are `find`'s `-exec`, `-execdir`, `-ok`, `-okdir`, `-delete`, and `-fprint` family, `rg`'s `--pre` and
   `--hostname-bin`, `sort`'s `--compress-program` and `--output`, and `tar`'s options that run a program.
   `tests/tools/test_prefix_programs.py` holds each allow-list to every option the program's `--help` or getopt table
-  lists, pinned in `tests/fixtures/hub-guard/option-catalogues.json`, in each spelling, and holds that fixture to the
-  `--help` of each of `env`, `nice`, `nohup`, `stdbuf`, `timeout`, and `xargs` the system installs. git keeps a
+  lists, pinned in `tests/fixtures/hub-guard/option-catalogues.json` and, for the programs the Rust coreutils
+  replace, in `tests/fixtures/hub-guard/option-catalogues-uutils.json`, every option either lists, in each spelling,
+  and holds each of `env`, `nice`, `nohup`, `stdbuf`, `timeout`, and `xargs` the system installs to the catalogue of
+  the implementation its `--version` names, GNU or uutils, every option its `--help` lists. git keeps a
   judgment of its own, by its subcommands and by what its words write or run.
 - **PowerShell.** A PowerShell command is read by PowerShell's own parser, not by a second hand-written grammar,
   and is understood when every node type in its tree is one `POWERSHELL_UNDERSTOOD` names, in the forms that invoke

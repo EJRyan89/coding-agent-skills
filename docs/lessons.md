@@ -402,6 +402,13 @@ removed fails validation until its pattern follows it.
   `tests/tools/test_hub_guard_bash.py::ExpansionTests::test_every_expansion_form_is_understood_or_not_read_and_has_a_sample`,
   `tests/tools/test_hub_guard_pwsh.py::NodeCatalogueTests::test_every_node_type_powershell_has_is_understood_or_not_read_and_never_both`,
   `tests/tools/test_prefix_programs.py::RunnerFormTests::test_timeout`,
+  `tests/tools/test_prefix_programs.py::CatalogueTests::test_the_installed_runners_list_no_option_the_fixture_leaves_out`,
+  which holds each installed runner to the catalogue of the implementation its version option names, GNU or the Rust
+  coreutils,
+  `tests/tools/test_prefix_programs.py::CatalogueTests::test_each_safe_option_takes_its_value_as_every_implementation_reads_it`,
+  `tests/tools/test_hub_guard_bash.py::RunnerTests::test_env_s_file_and_argv0_are_refused_in_every_spelling_and_neither_value_is_read_as_its_command`,
+  which refuses the Rust coreutils' env options that read variables from a file and name what a multicall program
+  runs as,
   `tests/tools/test_hub_guard.py::UnderstoodSetTests::test_each_class_of_construct_the_guard_does_not_read_is_refused_while_a_hub_is_in_view`,
   `tests/tools/test_hub_guard.py::ReadOnlyFormTests::test_a_dash_word_after_a_valued_option_written_alone_is_refused`,
   which refuses a dash word git would take as a lone valued option's value,
@@ -449,7 +456,7 @@ removed fails validation until its pattern follows it.
   name rather than the file name `command_wrappers.bash_program` reads, so `/usr/bin/git` and `git.exe` go unread.
 - **Examples:** #1412, #1429, #1430, #1592, #1606, #1843, #1851, #1865, #2032, #2088, #2089, #2134, #2135, #2136,
   #2137, #2138, #2139, #2140, #2188, #2225, #2232, #2233, #2234, #2251, #2262, #2274, #2276, #2316, #2411,
-  #2418, #2203, #2450, #2476, #2481, #2478
+  #2418, #2203, #2450, #2476, #2481, #2478, #2555
 
 ### A recursive parser of input has a depth bound
 
