@@ -4384,7 +4384,9 @@ def listings(client, count):
     client.json(["run", "list", "-L", "5"])
     client.json(["run", "list", "-L5"])
     client.json(["run", "list", f"-L{count}"])
-    client.json(["run", "list", "-Lx", "--limits"])
+    client.json(["run", "list", "-L=5"])
+    client.json(["run", "list", "-wL5"])
+    client.json(["run", "list", "-fL5", "--limits", "-w", "-", "- Left", "-L --ignore-rev"])
     client.capped_list(["pr", "list"], 5)
 
 
@@ -4406,7 +4408,7 @@ def test_gh_limit_policy_refuses_a_limit_passed_by_hand() -> None:
         "state why in GH_LIMIT_ALLOWED"
     )
     assert found == [
-        *(f"{alpha}:{line} {refusal}" for line in (2, 3, 4, 5, 6)),
+        *(f"{alpha}:{line} {refusal}" for line in (2, 3, 4, 5, 6, 7, 8)),
         f"{alpha}: GH_LIMIT_ALLOWED allows stale, which holds nothing it sanctions; remove the entry",
         "tools/broken.py: GH_LIMIT_ALLOWED must map each function, class, or assignment to its reason",
     ]

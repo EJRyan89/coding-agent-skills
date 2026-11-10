@@ -119,6 +119,15 @@ class ChangelogTests(unittest.TestCase):
             releases[0].entries,
         )
 
+    def test_a_release_heading_is_read_as_commonmark_reads_a_heading(self) -> None:
+        # A no-break space after the marks makes no heading, and a fourth level is no release; up to three spaces of
+        # indentation and closing marks are a heading's, and a tab is Markdown's whitespace.
+        text = "## 2.0.0\n- one\n##\u00a01.9.0\n- hidden\n#### 1.8.0\n- deep\n  ## 1.7.0 ##\n-\ttwo\n"
+        self.assertEqual(
+            [("2.0.0", ("one", "hidden", "deep")), ("1.7.0", ("two",))],
+            [(found.name, found.entries) for found in watch.markdown_releases(text)],
+        )
+
     def test_github_releases_are_read_page_by_page_until_the_recorded_release(self) -> None:
         fetcher = StubFetcher(answers())
         releases = watch.changelog_releases(CODEX, fetcher, 1.0)

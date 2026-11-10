@@ -614,6 +614,12 @@ class SkillGrantsFixtures(unittest.TestCase):
                     "skills/a/scripts/nested.py": f"import subprocess\n\n\ndef f() -> None:\n    {declared}"
                     f"    subprocess.run({command})\n",
                     ".claude/skills/b/scripts/stale.py": f"import json\n\n{declared}",
+                    "skills/a/scripts/unpacked.py": 'import subprocess\n\nRUNS_REPOSITORY_CODE, OTHER = "x", 1\n'
+                    f"subprocess.run({command})\n",
+                    "skills/a/scripts/chained.py": 'import subprocess\n\nRUNS_REPOSITORY_CODE = OTHER = "x"\n'
+                    f"subprocess.run({command})\n",
+                    "skills/a/scripts/augmented.py": f"import subprocess\n\n{declared}RUNS_REPOSITORY_CODE += 'y'\n"
+                    f"subprocess.run({command})\n",
                 },
             )
             rule = "RUNS_REPOSITORY_CODE must be one module-level assignment of a non-empty reason"
@@ -621,9 +627,12 @@ class SkillGrantsFixtures(unittest.TestCase):
                 [
                     ".claude/skills/b/scripts/stale.py: declares RUNS_REPOSITORY_CODE but starts no process; "
                     "remove the declaration",
+                    f"skills/a/scripts/augmented.py: {rule}",
+                    f"skills/a/scripts/chained.py: {rule}",
                     f"skills/a/scripts/empty.py: {rule}",
                     f"skills/a/scripts/nested.py: {rule}",
                     f"skills/a/scripts/twice.py: {rule}",
+                    f"skills/a/scripts/unpacked.py: {rule}",
                 ],
                 repository_code_declaration_problems(root),
             )
