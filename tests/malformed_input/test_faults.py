@@ -25,6 +25,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "validation"))
 
+import corpus
 import exit_tables
 import fault_check
 import faults
@@ -368,3 +369,21 @@ def test_the_shared_checkout_is_removed_at_exit_read_only_git_objects_included(m
     # The exit handler removes the whole copy, though Windows refuses a bare rmtree of a read-only file.
     function(*args)
     assert not root.parent.exists()
+
+
+def test_a_snapshot_refuses_a_path_it_cannot_stat_or_a_folder_it_cannot_list(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (tmp_path / "shut").mkdir()
+    (tmp_path / "shut" / "b").write_bytes(b"2")
+    assert fault_check.tree(tmp_path / "absent") == {}
+    assert fault_check.tree(tmp_path)[(tmp_path / "shut" / "b").as_posix()] == b"2"
+    with corpus.unlistable(tmp_path / "shut"), pytest.raises(PermissionError):
+        fault_check.tree(tmp_path)
+
+    def denied(path: Any) -> None:
+        raise PermissionError(13, "Access is denied", str(path))
+
+    monkeypatch.setattr("os.lstat", denied)
+    with pytest.raises(PermissionError):
+        fault_check.tree(tmp_path / "absent")

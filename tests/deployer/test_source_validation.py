@@ -32,7 +32,10 @@ from deployer import config, journal, manifest, names, platform_support, report,
 from deployer.errors import DeployError
 
 # The step a source.json the deployer cannot read names, written out here rather than read from the deployer.
-SOURCE_JSON_REMEDY = "Put back the checkout's source.json, for example with 'git checkout -- source.json', then retry."
+SOURCE_JSON_REMEDY = (
+    "Put back the checkout's source.json as its last commit holds it, which 'git show HEAD:source.json' prints, "
+    "then retry."
+)
 
 
 class ConfigValidationTests(DeployerTestCase):

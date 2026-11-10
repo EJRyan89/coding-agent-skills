@@ -16,6 +16,12 @@ DELETION_SUFFIX = ".deploying-del"
 # deletion name of another item can end in, since every one ends in DELETION_SUFFIX or in another such token.
 SPARE_DELETION_TOKEN = re.compile(r"[0-9a-f]{8}")
 TEMPORARY_INFIX = ".tmp."
+# The step a name require_safe_name refuses takes.
+SAFE_NAME_RULES = (
+    "Rename it to one file name of letters, digits, dots, hyphens, underscores, and spaces that does not start with a "
+    "dot, end in a dot or a space, or name a Windows device such as con, and that neither ends in "
+    f"'{BACKUP_SUFFIX}' nor contains '{TEMPORARY_INFIX}'; see \"Shared assets\" in docs/adding-a-skill.md."
+)
 
 
 def transient_name(item: str) -> str:
@@ -79,6 +85,7 @@ def _reserved_problem(name: str, context: str) -> str | None:
 
 
 def require_safe_name(name: str, context: str) -> None:
+    """DeployError, ending with the step to take, unless name is a safe single-level file name."""
     problem = safe_name_problem(name, context)
     if problem is not None:
-        raise DeployError(problem)
+        raise DeployError(problem, SAFE_NAME_RULES)

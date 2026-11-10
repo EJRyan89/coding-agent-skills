@@ -286,6 +286,17 @@ def test_a_release_whose_entries_are_a_numbered_list_or_which_is_empty_is_unread
     assert [(found.name, found.entries, found.unread) for found in unnamed] == [("0.150.0", (), "its text is empty")]
 
 
+def test_a_release_that_is_not_an_object_is_refused_by_its_place_rather_than_passed_over() -> None:
+    url = "https://example.com/releases"
+    for member, kind in (("v0.150.0", "str"), (None, "NoneType"), ([{"tag_name": "v0.150.0"}], "list")):
+        with pytest.raises(watch.WatchError) as caught:
+            watch.github_releases([{"tag_name": "rust-v0.151.0", "body": "- Fixed."}, member], url)
+        assert str(caught.value) == f"{url} returned release 1, {kind}, which is not an object"
+    # A draft or a prerelease is still passed over.
+    drafts = [{"tag_name": "v0.152.0", "draft": True}, {"tag_name": "v0.153.0", "prerelease": True}]
+    assert watch.github_releases(drafts, url) == []
+
+
 def test_a_read_through_the_changelog_never_names_stops_the_watch() -> None:
     typo = Changelog(CLAUDE.subject, CLAUDE.url, CLAUDE.format, "2.1.3020")
     with pytest.raises(watch.WatchError) as caught:

@@ -17,6 +17,8 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from pathlib import Path
+from typing import Any
+from unittest import mock
 
 # Past the int-to-string limit Python applies to a decimal integer, 4300 digits by default.
 LONG_INTEGER = b"9" * 5000
@@ -275,6 +277,34 @@ def link(target: Path, path: Path) -> None:
         import _winapi
 
         _winapi.CreateJunction(str(folder), str(path))
+
+
+def entries(folder: Path) -> list[Path]:
+    """Every entry below folder, sorted, links listed and never followed: a snapshot's walk. A folder it cannot list
+    raises its OSError, never read as empty, since a change made inside it would then pass unseen."""
+
+    def failed(error: OSError) -> None:
+        raise error
+
+    found: list[Path] = []
+    for directory, folders, files in os.walk(folder, onerror=failed):
+        found.extend(Path(directory) / name for name in [*folders, *files])
+    return sorted(found)
+
+
+@contextmanager
+def unlistable(folder: Path) -> Iterator[None]:
+    """folder a folder this process may not list while the context lasts, every other one listed as before: the test
+    of a snapshot's walk, made the same way on every platform."""
+    listing = os.scandir
+
+    def scandir(path: Any = ".") -> Any:
+        if Path(path) == folder:
+            raise PermissionError(13, "Access is denied", str(path))
+        return listing(path)
+
+    with mock.patch("os.scandir", scandir):
+        yield
 
 
 @contextmanager

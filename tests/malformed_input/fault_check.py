@@ -16,6 +16,7 @@ import ast
 import atexit
 import functools
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -96,13 +97,16 @@ def shared_checkout() -> Path:
 
 def tree(path: Path) -> dict[str, bytes | None]:
     """Every entry at and below path by its path: a file's bytes, or None for a folder or one this process cannot
-    read; an empty mapping for a path that is not there."""
-    if not path.exists():
+    read; an empty mapping for a path that is not there. A path it cannot stat, and a folder it cannot list, raise,
+    never read as absent or empty, since a change made there would then pass unseen."""
+    try:
+        os.lstat(path)
+    except FileNotFoundError:
         return {}
     if path.is_file():
         return {path.as_posix(): path.read_bytes()}
     found: dict[str, bytes | None] = {path.as_posix(): None}
-    for entry in sorted(path.rglob("*")):
+    for entry in corpus.entries(path):
         try:
             found[entry.as_posix()] = entry.read_bytes() if entry.is_file() else None
         except OSError:

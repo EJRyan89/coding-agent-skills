@@ -459,8 +459,10 @@ def load(path: Path) -> Manifest:
     if version > MANIFEST_VERSION:
         raise DeployError(
             f"ERROR: Manifest schema version '{version}' is newer than supported version {MANIFEST_VERSION}",
-            # A newer deployer wrote it, so this checkout is older than the one that last deployed.
-            "Update this checkout with 'git pull', or deploy from the checkout that wrote the manifest.",
+            # A newer deployer wrote it, so this checkout is older than the one that last deployed. The pull is the
+            # form a guarded hub allows, since a deployment runs from the hub.
+            "Update this checkout with 'git pull --ff-only origin main', or deploy from the checkout that wrote the "
+            "manifest.",
         )
     data = _validate(raw, sources, version, path)
     _upgrade_dependencies(data)

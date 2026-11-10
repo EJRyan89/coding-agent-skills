@@ -55,6 +55,69 @@ class RemedyTestCase(DeployerTestCase):
 
 
 class SourceRemedyTests(RemedyTestCase):
+    def test_an_unsafe_shared_asset_name_states_the_file_name_rules(self) -> None:
+        self.make_source_json(shared_assets={".hidden.md": "owner"})
+        self.make_skill("alpha", "Test", shared_deps=[".hidden.md"])
+        self.make_config()
+        result = self.deploy_fails("--all", pattern="starts with dot")
+        self.assert_lines(
+            result.output,
+            "ERROR: shared asset name '.hidden.md' starts with dot",
+            "Rename it to one file name of letters, digits, dots, hyphens, underscores, and spaces that does not start "
+            "with a dot, end in a dot or a space, or name a Windows device such as con, and that neither ends in "
+            "'.deploying-bak' nor contains '.tmp.'; see \"Shared assets\" in docs/adding-a-skill.md.",
+        )
+
+    def test_each_metadata_refusal_names_the_change_to_make_in_the_skills_metadata(self) -> None:
+        self.fixture()
+        for metadata, required, message, step in (
+            (
+                {"opt_in": True, "selectable": False},
+                [],
+                "ERROR: Skill 'alpha' is opt-in but not selectable; only menu items can be opt-in",
+                'Set selectable to true or opt_in to false in deploy-meta/alpha.json; see "Opt-in skills and '
+                'bundles" in docs/adding-a-skill.md.',
+            ),
+            (
+                {},
+                ["GH_ORG"],
+                "ERROR: Skill 'alpha' requires unknown variable 'GH_ORG'",
+                "Remove it from required_vars in deploy-meta/alpha.json, or declare it in deployer/config.py; see "
+                '"Template values" in docs/adding-a-skill.md.',
+            ),
+            (
+                {"tools": ["jq"]},
+                [],
+                "ERROR: Skill 'alpha' declares unknown tool 'jq' (known tools: copilot, dotnet, dotnet-format, gh, "
+                "pdftotext)",
+                "Name a known tool in deploy-meta/alpha.json, or add this one to deployer/tools.py; see "
+                '"Commands skills may run" in docs/adding-a-skill.md.',
+            ),
+            (
+                {"tools": ["gh"], "optional_tools": ["gh"]},
+                [],
+                "ERROR: Skill 'alpha' declares tool 'gh' both required and optional",
+                'Keep it in tools or in optional_tools in deploy-meta/alpha.json, not both; see "Metadata" in '
+                "docs/adding-a-skill.md.",
+            ),
+        ):
+            with self.subTest(message=message):
+                self.make_skill("alpha", "Test", required)
+                self.write(
+                    self.source / "deploy-meta" / "alpha.json",
+                    json.dumps({"required_vars": required, **metadata}),
+                )
+                result = self.deploy_fails("--all", pattern=re.escape(message))
+                self.assert_lines(result.output, message, step)
+
+    def test_a_selection_it_cannot_read_states_what_to_enter(self) -> None:
+        self.fixture()
+        step = "Run it again and enter numbers from 1 to 1 separated by spaces, 'all', or 'none'."
+        for answer, message in (("x", "ERROR: Invalid selection 'x'"), ("9", "ERROR: Selection '9' is out of range")):
+            with self.subTest(answer=answer):
+                result = self.deploy_fails(stdin=f"{answer}\n", pattern=re.escape(message))
+                self.assert_lines(result.output, message, step)
+
     def test_every_invalid_name_states_the_naming_rules(self) -> None:
         self.make_config()
         for name, message in (
@@ -160,7 +223,10 @@ class ManifestRemedyTests(RemedyTestCase):
 
     PUT_BACK = "Put back a copy you trust, or move it out of the skills folder and rerun with --dry-run."
     SEE_STATE_FILE = 'See "A state file that does not read" in docs/recovery.md.'
-    NEWER = "Update this checkout with 'git pull', or deploy from the checkout that wrote the manifest."
+    NEWER = (
+        "Update this checkout with 'git pull --ff-only origin main', or deploy from the checkout that wrote the "
+        "manifest."
+    )
 
     def deployed(self) -> dict[str, Any]:
         self.fixture()
@@ -417,7 +483,12 @@ class OwnershipRemedyTests(RemedyTestCase):
         self.make_config("new/source")
         (self.source / "skills" / "guide.md").unlink()
         result = self.deploy_fails("--migrate-from", "old/source", pattern="source owner file is missing")
-        self.assert_lines(result.output, "ERROR: Cannot migrate shared asset 'guide.md': source owner file is missing.")
+        self.assert_lines(
+            result.output,
+            "ERROR: Cannot migrate shared asset 'guide.md': source owner file is missing.",
+            "Put back skills/guide.md in this checkout, or remove 'guide.md' from source.json's shared_assets, then "
+            "rerun --migrate-from.",
+        )
 
 
 class RecoveryRemedyTests(RemedyTestCase):

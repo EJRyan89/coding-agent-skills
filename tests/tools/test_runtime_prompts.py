@@ -245,6 +245,28 @@ class RuntimePromptsTestCase(unittest.TestCase):
                 code, stdout, stderr = self.run_main(renderers, *arguments)
             self.assertEqual((2, "", f"FAILED cannot read docs/runtime-prompts: {refused}\n"), (code, stdout, stderr))
 
+    def test_a_read_only_extra_is_refused_before_any_sample_is_written_or_extra_removed(self) -> None:
+        renderers = {"alpha": renderer({"reviewer": "Review it."})}
+        runtime_prompts.write(self.root, renderers)
+        sample = self.root / "docs" / "runtime-prompts" / "alpha" / "reviewer.txt"
+        sample.write_text("Stale.\n", encoding="utf-8")
+        folder = self.root / "docs" / "runtime-prompts" / "gamma"
+        folder.mkdir()
+        # Sorted before the read-only one, so a removal loop that asks each in turn has removed it by then.
+        first = folder / "a.txt"
+        locked = folder / "b.txt"
+        first.write_text("Gone.\n", encoding="utf-8")
+        locked.write_text("Kept.\n", encoding="utf-8")
+        locked.chmod(0o444)
+        with self.assertRaisesRegex(runtime_prompts.RenderError, r"^cannot remove docs/runtime-prompts/gamma/b\.txt: "):
+            runtime_prompts.write(self.root, renderers)
+        self.assertEqual("Stale.\n", sample.read_text(encoding="utf-8"), "no sample is written")
+        self.assertEqual((True, True), (first.exists(), locked.exists()), "no extra is removed")
+        locked.chmod(0o644)
+        runtime_prompts.write(self.root, renderers)
+        self.assertEqual((False, False), (first.exists(), folder.exists()))
+        self.assertEqual([], runtime_prompts.problems(self.root, renderers))
+
     def test_each_skill_renders_its_prompts_without_a_model_and_bounds_their_replies(self) -> None:
         # The real renderers, into a throwaway root: every prompt the skills' scripts write today.
         runtime_prompts.write(self.root)

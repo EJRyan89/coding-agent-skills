@@ -173,8 +173,9 @@ def _codex_refusals(path: Path) -> object:
 
 
 def _codex_catalog(path: Path) -> object:
-    """The catalog as list_skills reads it, from the lines `codex debug prompt-input` prints."""
-    return discovery.parse_codex_catalog(text_of(path).splitlines())
+    """The catalog as list_skills reads it, from the lines `codex debug prompt-input` prints, which converse reads off
+    the same text stream as the app server's."""
+    return discovery.parse_codex_catalog(_app_server_lines(path))
 
 
 def _adapter_frontmatter(path: Path) -> object:

@@ -40,6 +40,8 @@ import reader_scan
 import readers
 from known_failures import KNOWN_FAILURES, read_known_failures
 
+from deployer import discovery
+
 REPOSITORY = Path(__file__).resolve().parents[2]
 KNOWN = {(entry.reader, entry.case): entry.issue for entry in read_known_failures(REPOSITORY / KNOWN_FAILURES)}
 PAIRS = [(reader, case) for reader in readers.READERS for case in readers.applicable_cases(reader)]
@@ -51,9 +53,9 @@ ESCAPES = (ArithmeticError, AttributeError, LookupError, MemoryError, OSError, R
 
 def tree(folder: Path) -> dict[str, bytes | None]:
     """Every entry below folder by its relative path: a file's bytes, or None for a folder or a file this process
-    cannot read."""
+    cannot read. A folder it cannot list raises, as corpus.entries does."""
     found: dict[str, bytes | None] = {}
-    for entry in sorted(folder.rglob("*")):
+    for entry in corpus.entries(folder):
         try:
             found[entry.relative_to(folder).as_posix()] = entry.read_bytes() if entry.is_file() else None
         except OSError:
@@ -350,3 +352,49 @@ def test_a_link_case_falls_back_to_a_junction_only_where_windows_withholds_the_p
     with mock.patch.object(Path, "symlink_to", side_effect=denied), pytest.raises(OSError, match="Access is denied"):
         corpus.link(target, tmp_path / "file")
     assert not (tmp_path / "file").exists()
+
+
+def test_the_codex_catalog_is_read_from_the_lines_converse_gives_it(tmp_path: Path) -> None:
+    # Codex writes a JSON string as it is, so a description may hold U+2028, U+0085, or U+2029 raw; converse reads
+    # the program's text stream, which breaks only at a newline, and the corpus reads the file the same way.
+    [reader] = [each for each in readers.READERS if each.name == "deployer.discovery.parse_codex_catalog"]
+    document = json.loads(reader.valid)
+    for separator in ("\u2028", "\u0085", "\u2029"):
+        text = document[0]["content"][0]["text"].replace("An example.", f"An{separator}example.")
+        held = [{**document[0], "content": [{**document[0]["content"][0], "text": text}]}]
+        path = tmp_path / reader.filename
+        path.write_bytes(json.dumps(held, ensure_ascii=False).encode("utf-8"))
+        assert reader.read(path) == discovery.parse_codex_catalog(discovery.output_lines(path.read_text("utf-8")))
+
+
+def test_the_lock_owner_reason_states_the_pid_bound_stale_holds(tmp_path: Path) -> None:
+    import process_identity
+    import readers_core_review
+    import review_io
+
+    assert "read_pid" in readers_core_review.OWNER_FIELDS
+    assert "PID_MAXIMUM" in readers_core_review.OWNER_FIELDS
+    probed: list[int] = []
+
+    def probe(pid: int) -> process_identity.ProcessStatus:
+        probed.append(pid)
+        return process_identity.ProcessStatus(False, None)
+
+    lock = review_io.ResourceLock(tmp_path / "lock", probe=probe)
+    owned = review_io.LockIdentity("ab12")
+    # A pid past the bound is not one, so the lock is held as the reason says, and no process is asked about.
+    for pid in (0, process_identity.PID_MAXIMUM + 1):
+        assert lock._stale(owned, {"pid": pid}) is None
+    assert probed == []
+    assert lock._stale(owned, {"pid": process_identity.PID_MAXIMUM}) is not None
+    assert probed == [process_identity.PID_MAXIMUM]
+
+
+def test_a_snapshot_refuses_a_folder_it_cannot_list_rather_than_read_it_as_empty(tmp_path: Path) -> None:
+    (tmp_path / "kept").mkdir()
+    (tmp_path / "kept" / "a").write_bytes(b"1")
+    (tmp_path / "shut").mkdir()
+    (tmp_path / "shut" / "b").write_bytes(b"2")
+    assert tree(tmp_path) == {"kept": None, "kept/a": b"1", "shut": None, "shut/b": b"2"}
+    with corpus.unlistable(tmp_path / "shut"), pytest.raises(PermissionError):
+        tree(tmp_path)
