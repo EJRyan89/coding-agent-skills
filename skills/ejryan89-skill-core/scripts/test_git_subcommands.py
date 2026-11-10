@@ -3,6 +3,7 @@ reading of a PowerShell source's commands it runs on (powershell_commands.py).""
 
 from __future__ import annotations
 
+import subprocess
 import sys
 from collections.abc import Sequence
 from pathlib import Path
@@ -277,6 +278,17 @@ def test_pwsh_that_cannot_be_found_or_cannot_list_the_commands_is_refused(monkey
     monkeypatch.setattr(powershell_commands, "find_executable", lambda name: None)
     with pytest.raises(powershell_commands.PowerShellUnread, match="pwsh was not found"):
         powershell_commands.read(["git push"])
+
+
+def test_pwsh_s_last_line_is_split_on_newlines_alone(monkeypatch: pytest.MonkeyPatch) -> None:
+    # A word holding U+0085 or U+2028, which a JSON string may carry unescaped, stays in the one line pwsh printed.
+    listing = '[{"source": 0, "name": "git", "words": ["commit", "-m", "a\u0085b\u2028c"]}]'
+    stdout = f"warming up\r\n{listing}\r\n\r\n".encode()
+    monkeypatch.setattr(powershell_commands, "find_executable", lambda name: name)
+    monkeypatch.setattr(
+        powershell_commands, "run_bounded", lambda *_, **__: subprocess.CompletedProcess([], 0, stdout, b"")
+    )
+    assert powershell_commands.read(["git commit"]) == [[["git", "commit", "-m", "a\u0085b\u2028c"]]]
 
 
 def test_a_source_json_cannot_write_is_refused_before_pwsh_starts() -> None:

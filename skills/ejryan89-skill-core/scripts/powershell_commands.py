@@ -246,7 +246,10 @@ def read(sources: Sequence[str], timeout: float = READ_SECONDS) -> list[list[lis
             raise PowerShellUnread(f"pwsh could not start: {exc}") from exc
         except subprocess.TimeoutExpired as exc:
             raise PowerShellUnread(f"pwsh did not finish within {timeout:g} seconds") from exc
-    lines = [line for line in finished.stdout.decode("utf-8", "replace").splitlines() if line.strip()]
+    # pwsh ends a line with "\n" or "\r\n", and a JSON string may hold U+0085 or U+2028 unescaped, which
+    # str.splitlines() would break the document on, so the output is split on "\n" alone.
+    output = finished.stdout.decode("utf-8", "replace")
+    lines = [line.removesuffix("\r") for line in output.split("\n") if line.strip(" \t\r")]
     try:
         found = json_reader.loads(lines[-1]) if finished.returncode == 0 and lines else None
     except json_reader.CONTENT_ERRORS:
