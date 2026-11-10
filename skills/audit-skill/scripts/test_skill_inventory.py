@@ -1247,6 +1247,30 @@ class ScanTests(TemporaryTestCase):
         )
         self.assertEqual(f"CUE {skill.as_posix()} 5 shell-file-command Use `find . -name x` or `cat`.", lines[0])
 
+    def test_a_fenced_file_command_is_read_past_keywords_assignments_and_wrappers(self) -> None:
+        for command in (
+            "then cat notes.txt",
+            "if grep -q x file; then",
+            "A=1 grep x file",
+            "time ls",
+            "env LC_ALL=C sort < x | xargs wc -l",
+            "nohup tail -f log",
+            'bash -c "head -n 1 file"',
+            "eval sed -n 1p file",
+            "{ ls; }",
+        ):
+            with self.subTest(command=command):
+                skill = write(self.root / "SKILL.md", f"```bash\n{command}\n```\n")
+                code, lines, error = run("scan", str(skill))
+                self.assertEqual(0, code, error)
+                self.assertIn(f"CUE {skill.as_posix()} 2 shell-file-command {command}", lines)
+        for command in ("git ls-files", "echo cat", "printf '%s' head", 'xargs "$tool" x'):
+            with self.subTest(command=command):
+                skill = write(self.root / "SKILL.md", f"```bash\n{command}\n```\n")
+                code, lines, error = run("scan", str(skill))
+                self.assertEqual(0, code, error)
+                self.assertNotIn("shell-file-command", " ".join(lines))
+
     def test_inline_python_is_generated_code_in_every_interpreter_spelling(self) -> None:
         # The token is split so that a deployment, which renders this file, leaves it for the scan to read.
         token = "{{" + "PYTHON}}"

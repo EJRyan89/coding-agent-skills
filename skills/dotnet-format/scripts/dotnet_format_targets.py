@@ -93,7 +93,9 @@ from xml_reader import XmlRefused, read_xml
 # them, so `formatter_skips` holds the skip to the global tool alone.
 WEB_PROJECT = re.compile(
     r"Microsoft\.NET\.Sdk\.Web|<WebApplication>|<WebSiteType>|349c5851-65df-11da-9384-00065b846f21",
-    re.IGNORECASE,
+    # ASCII: without it, ignoring case also matches the long s and the Kelvin sign as the s and k of `Sdk`, which
+    # MSBuild, comparing ordinally ignoring case, keeps apart.
+    re.IGNORECASE | re.ASCII,
 )
 # The project files the formatters format, whose style chooses between them; any other, such as a C++ project, is left
 # out of the choice.

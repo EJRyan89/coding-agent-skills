@@ -341,6 +341,33 @@ class EvaluationTests(unittest.TestCase):
             [("Beacon.One", "1.0.0.0"), ("Beacon.Two", None)], [(a.name, a.version) for a in project.assemblies]
         )
 
+    def test_a_central_version_is_found_by_its_package_id_as_nuget_compares_ids(self) -> None:
+        # NuGet compares ids ordinally ignoring case: a letter beyond ASCII matches its own other case, never a
+        # spelling casefold() gives, such as ss for the sharp s or s for the long s.
+        self.write(
+            "Directory.Packages.props",
+            "<Project><PropertyGroup><ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally>"
+            '</PropertyGroup><ItemGroup><PackageVersion Include="Lantern.Strasse" Version="1.0.0" />'
+            '<PackageVersion Include="Lantern.Text" Version="2.0.0" />'
+            '<PackageVersion Include="Lantern.\u00c9clair" Version="3.0.0" /></ItemGroup></Project>',
+        )
+        references = "".join(
+            f'<PackageReference Include="{name}" />'
+            for name in ("Lantern.Stra\u00dfe", "Lantern.\u017fext", "LANTERN.\u00e9CLAIR")
+        )
+        self.write(
+            "src/App/App.csproj", f'<Project Sdk="Microsoft.NET.Sdk"><ItemGroup>{references}</ItemGroup></Project>'
+        )
+        project = self.read("src/App/App.csproj")
+        self.assertEqual(
+            [
+                PackageRef("Lantern.Stra\u00dfe", None, "PackageReference"),
+                PackageRef("Lantern.\u017fext", None, "PackageReference"),
+                PackageRef("LANTERN.\u00e9CLAIR", "3.0.0", "central"),
+            ],
+            project.packages,
+        )
+
     def test_central_versions_come_from_the_nearest_props_file_at_or_above_the_project_inside_the_tree(self) -> None:
         # MSBuild searches for Directory.Packages.props up to the filesystem's root, past the solution's folder; one
         # it finds outside the examined tree is reported as an import not read, naming its path, and never opened.

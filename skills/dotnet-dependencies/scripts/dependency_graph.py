@@ -98,6 +98,7 @@ from executable_locator import RelativeEnvironmentPath, absolute_home, environme
 from flat_text import fact_line, flat_text
 from folder_walk import walk_files
 from folders_up import folders_up
+from msbuild_conditions import ordinal_fold
 from msbuild_evaluation import Build, ProjectFile, Sources, Unsettled, read_project
 from msbuild_reader import (
     ASSETS_FILE,
@@ -155,7 +156,7 @@ class Target:
     assemblies: list[AssemblyRef] = field(default_factory=list)
 
     def node(self, package: str) -> PackageNode | None:
-        return self.nodes.get(package.casefold())
+        return self.nodes.get(ordinal_fold(package))
 
 
 @dataclass
@@ -259,7 +260,9 @@ def find_projects(directory: Path, unreadable: list[tuple[Path, str]]) -> list[P
     its subfolders', outside the folders the .NET search skips (`dotnet_solution.SEARCH_SKIPPED_FOLDERS`). A folder the
     walk does not enter, a junction or a symbolic link, which may lead outside the directory or back into it, a nested
     checkout, or one that cannot be listed, is reported, and costs only the projects it holds."""
-    walk = walk_files(directory, lambda name: name.casefold().endswith(PROJECT_SUFFIX), skipped=SEARCH_SKIPPED_FOLDERS)
+    walk = walk_files(
+        directory, lambda name: ordinal_fold(name).endswith(PROJECT_SUFFIX), skipped=SEARCH_SKIPPED_FOLDERS
+    )
     unreadable += [(entry.path, entry.reason) for entry in walk.not_entered]
     return walk.files
 
@@ -281,7 +284,7 @@ def resolve_root(path: Path, graph_unreadable: list[tuple[Path, str]]) -> tuple[
             entries = []
         tree = examined_tree(path.parent)
         for listed in entries:
-            if not listed.casefold().endswith(PROJECT_SUFFIX):
+            if not ordinal_fold(listed).endswith(PROJECT_SUFFIX):
                 continue
             candidate = project_path(path.parent, listed)
             refused = refusal(candidate, tree)
@@ -350,7 +353,8 @@ def read_configs(graph: Graph, project: Project) -> None:
         configs = [
             candidate
             for candidate in sorted(folder.iterdir())
-            if candidate.name.casefold() in CONFIG_FILES and file_presence.is_present(candidate, other_is_absent=True)
+            if ordinal_fold(candidate.name) in CONFIG_FILES
+            and file_presence.is_present(candidate, other_is_absent=True)
         ]
     except OSError as error:
         graph.refuse(os_unreadable(error, folder))
@@ -397,14 +401,14 @@ def package_directory(folders: Sequence[Path], package: str, version: str) -> Pa
     `<id>/<version>` in the NuGet cache, matched without regard to case. A folder it cannot list or an entry it cannot
     stat raises Unreadable naming it, never reads as a package that is not unpacked there."""
     for folder in folders:
-        wanted = {f"{package}.{version}".casefold(), f"{package}/{version}".casefold()}
+        wanted = {ordinal_fold(f"{package}.{version}"), ordinal_fold(f"{package}/{version}")}
         try:
             for child in folder.iterdir():
-                if child.name.casefold() == f"{package}.{version}".casefold() and _folder(child):
+                if ordinal_fold(child.name) == ordinal_fold(f"{package}.{version}") and _folder(child):
                     return child
-                if child.name.casefold() == package.casefold() and _folder(child):
+                if ordinal_fold(child.name) == ordinal_fold(package) and _folder(child):
                     for inner in child.iterdir():
-                        if f"{child.name}/{inner.name}".casefold() in wanted and _folder(inner):
+                        if ordinal_fold(f"{child.name}/{inner.name}") in wanted and _folder(inner):
                             return inner
         except OSError as error:
             raise os_unreadable(error, folder) from None
@@ -428,7 +432,9 @@ def nuspec_node(graph: Graph, folders: Sequence[Path], reference: PackageRef) ->
     if directory is None:
         return None
     try:
-        nuspecs = [path for path in directory.iterdir() if path.name.casefold() == f"{reference.id}.nuspec".casefold()]
+        nuspecs = [
+            path for path in directory.iterdir() if ordinal_fold(path.name) == ordinal_fold(f"{reference.id}.nuspec")
+        ]
     except OSError as error:
         graph.refuse(os_unreadable(error, directory))
         return None
@@ -457,7 +463,7 @@ def closure_from_nuspecs(graph: Graph, project: Project, direct: list[PackageRef
     for reference in direct:
         node = nuspec_node(graph, folders, reference)
         if node is not None:
-            target.nodes[reference.id.casefold()] = node
+            target.nodes[ordinal_fold(reference.id)] = node
     project.targets = [target]
     project.edges = "nuspec" if target.nodes else "direct"
 
@@ -516,7 +522,7 @@ def closure_from_assets(graph: Graph, project: Project, assets_path: Path, servi
     project.targets = [
         Target(
             framework,
-            {package.casefold(): node for package, node in nodes.items()},
+            {ordinal_fold(package): node for package, node in nodes.items()},
             direct_references(graph, project, assets, framework),
             project_references(graph, project, assets, framework),
             assembly_references(graph, project, framework),
@@ -588,7 +594,7 @@ def build_graph(root: Path, services: Services) -> Graph:
 
 def print_graph(graph: Graph, out: Emitter) -> None:
     out.line("ROOT", graph.root.as_posix())
-    for project in sorted(graph.projects.values(), key=lambda item: graph.label(item).casefold()):
+    for project in sorted(graph.projects.values(), key=lambda item: ordinal_fold(graph.label(item))):
         out.line(
             "PROJECT",
             graph.label(project),
@@ -636,7 +642,7 @@ class PathFinder:
 
     def __init__(self, graph: Graph, target: str, framework: str, limit: int | None = None) -> None:
         self.graph = graph
-        self.target = target.casefold()
+        self.target = ordinal_fold(target)
         self.framework = framework
         self.limit = PATH_LIMIT if limit is None else limit
         self.found: list[tuple[Hop, ...]] = []
@@ -660,20 +666,23 @@ class PathFinder:
             child = self.graph.project_at(reference)
             if child is not None:
                 hop: Hop = ("project", child.file.assembly_name, "")
-                if child.file.assembly_name.casefold() == self.target or child.file.path.stem.casefold() == self.target:
+                if (
+                    ordinal_fold(child.file.assembly_name) == self.target
+                    or ordinal_fold(child.file.path.stem) == self.target
+                ):
                     self.record((*path, hop))
                 self.from_project(child, (*path, hop), seen)
         for target in project.targets_for(self.framework):
             for direct in target.direct:
                 self.from_package(target, direct.id, direct.version, path, frozenset())
         for assembly in assemblies:
-            if assembly.name.casefold() == self.target:
+            if ordinal_fold(assembly.name) == self.target:
                 self.record((*path, assembly_hop(assembly.name, assembly.version, assembly.hint_path)))
 
     def from_package(
         self, owner: Target, package: str, requested: str | None, path: tuple[Hop, ...], seen: frozenset[str]
     ) -> None:
-        fold = package.casefold()
+        fold = ordinal_fold(package)
         if fold in seen:
             return
         path = (*path, package_hop(owner, package, requested))
@@ -683,7 +692,7 @@ class PathFinder:
         node = owner.node(package)
         if node is None:
             return
-        shipped = next((name for name in node.assemblies if name.casefold() == self.target), None)
+        shipped = next((name for name in node.assemblies if ordinal_fold(name) == self.target), None)
         if shipped is not None:
             self.record((*path, ("assembly", shipped, "")))
         for dependency, version in node.dependencies.items():
@@ -732,13 +741,14 @@ def reaches(graph: Graph, project: Project, framework: str) -> list[Reached]:
         (hop, target, child), first = queue.popleft()
         kind, name, version = hop
         found.setdefault(
-            (kind if kind != "framework" else "assembly", name.casefold(), version), Reached(kind, name, version, first)
+            (kind if kind != "framework" else "assembly", ordinal_fold(name), version),
+            Reached(kind, name, version, first),
         )
         if child is not None and same_path(child.file.path) not in walked_projects:
             walked_projects.add(same_path(child.file.path))
             enqueue(own_steps(child), first)
-        elif target is not None and (id(target), name.casefold()) not in walked_packages:
-            walked_packages.add((id(target), name.casefold()))
+        elif target is not None and (id(target), ordinal_fold(name)) not in walked_packages:
+            walked_packages.add((id(target), ordinal_fold(name)))
             node = target.node(name)
             if node is not None:
                 enqueue(
@@ -751,7 +761,7 @@ def reaches(graph: Graph, project: Project, framework: str) -> list[Reached]:
 def selected_projects(graph: Graph, narrowed: Path | None) -> list[Project]:
     """Every project in label order, or the one `--project` names."""
     if narrowed is None:
-        return sorted(graph.projects.values(), key=lambda item: graph.label(item).casefold())
+        return sorted(graph.projects.values(), key=lambda item: ordinal_fold(graph.label(item)))
     project = graph.project_at(narrowed.resolve())
     if project is None:
         raise Failed(f"{narrowed} is not a project of {graph.root}")
@@ -782,7 +792,7 @@ def same_route(walked: tuple[Hop, ...], printed: SdkPath) -> bool:
     whatever their versions. The SDK prints each package at the version the answering project resolves, and the
     walk takes a referenced project's packages from that project's own restore, which may resolve another."""
     return len(walked) == len(printed.hops) and all(
-        kind in ("package", "project") and name.casefold() == sdk_name.casefold()
+        kind in ("package", "project") and ordinal_fold(name) == ordinal_fold(sdk_name)
         for (kind, name, _), (sdk_name, _) in zip(walked, printed.hops, strict=True)
     )
 
@@ -877,7 +887,7 @@ def why_all_query(graph: Graph, narrowed: Path, out: Emitter) -> None:
         for item in reaches(graph, project, target.framework)
     )
     for frameworks, (name, version, kind, first_hop) in sorted(
-        rows, key=lambda row: (row[1][2], row[1][0].casefold(), row[1][1])
+        rows, key=lambda row: (row[1][2], ordinal_fold(row[1][0]), row[1][1])
     ):
         out.line("REACHES", graph.label(project), frameworks, name, version, kind, first_hop)
     out.line("SUMMARY", len(rows))
@@ -893,15 +903,15 @@ def resolved_assemblies(graph: Graph, project: Project, target: Target) -> list[
         kind = "reference" if assembly.hint_path else "framework"
         found.append((assembly.name, kind, assembly.version or "-", assembly.hint_path or "-"))
     first_hops = {
-        (item.name.casefold(), item.version): item.first_hop
+        (ordinal_fold(item.name), item.version): item.first_hop
         for item in reaches(graph, project, target.framework)
         if item.kind == "package"
     }
     packages: dict[str, tuple[str, str]] = {
-        node.id.casefold(): (node.id, node.version) for node in target.nodes.values()
+        ordinal_fold(node.id): (node.id, node.version) for node in target.nodes.values()
     }
     for direct in target.direct:
-        packages.setdefault(direct.id.casefold(), (direct.id, direct.version or ""))
+        packages.setdefault(ordinal_fold(direct.id), (direct.id, direct.version or ""))
     for fold, (package, version) in packages.items():
         node = target.node(package)
         names = node.assemblies if node and node.assemblies else (package,)
@@ -911,7 +921,7 @@ def resolved_assemblies(graph: Graph, project: Project, target: Target) -> list[
 
 
 def where_query(graph: Graph, assembly: str, narrowed: Path | None, out: Emitter) -> None:
-    target_name = assembly.casefold()
+    target_name = ordinal_fold(assembly)
     projects = 0
     for project in selected_projects(graph, narrowed):
         rows: list[tuple[str, Row]] = []
@@ -919,11 +929,11 @@ def where_query(graph: Graph, assembly: str, narrowed: Path | None, out: Emitter
             rows += [
                 (target.framework, (name, kind, version, via))
                 for name, kind, version, via in resolved_assemblies(graph, project, target)
-                if name.casefold() == target_name
+                if ordinal_fold(name) == target_name
             ]
             for reference in target.project_refs:
                 child = graph.project_at(reference)
-                if child is not None and child.file.assembly_name.casefold() == target_name:
+                if child is not None and ordinal_fold(child.file.assembly_name) == target_name:
                     rows.append((target.framework, (child.file.assembly_name, "project", "-", graph.label(child))))
         for frameworks, row in labelled(rows):
             out.line("WHERE", graph.label(project), frameworks, *row)
@@ -976,12 +986,14 @@ def redirect_lines(graph: Graph, project: Project, out: Emitter) -> int:
     """Check each binding redirect against the assembly versions the project references; return the stale count."""
     stale = 0
     referenced = {
-        name.casefold() for target in project.targets for name, _, _, _ in resolved_assemblies(graph, project, target)
+        ordinal_fold(name)
+        for target in project.targets
+        for name, _, _, _ in resolved_assemblies(graph, project, target)
     }
     _, assemblies = references_of(project.targets)
     for redirect in project.file.redirects:
-        fold = redirect.name.casefold()
-        versions = sorted({item.version for item in assemblies if item.name.casefold() == fold and item.version})
+        fold = ordinal_fold(redirect.name)
+        versions = sorted({item.version for item in assemblies if ordinal_fold(item.name) == fold and item.version})
         config = graph.relative(redirect.config)
         if versions and redirect.new_version not in versions:
             out.line(
@@ -998,14 +1010,16 @@ def conflicts_query(graph: Graph, narrowed: Path | None, out: Emitter) -> None:
     by_name: dict[tuple[str, str], list[Want]] = {}
     for project in projects:
         for want in wants(graph, project):
-            by_name.setdefault((want.kind, want.name.casefold()), []).append(want)
+            by_name.setdefault((want.kind, ordinal_fold(want.name)), []).append(want)
     names = 0
     for (kind, _), items in sorted(by_name.items(), key=lambda entry: (entry[0][1], entry[0][0])):
         if not at_odds(items):
             continue
         names += 1
         rows = labelled((item.framework, (item.name, item.version, item.project, item.via)) for item in items)
-        for frameworks, (name, version, label, via) in sorted(rows, key=lambda row: (row[1][1], row[1][2].casefold())):
+        for frameworks, (name, version, label, via) in sorted(
+            rows, key=lambda row: (row[1][1], ordinal_fold(row[1][2]))
+        ):
             out.line("CONFLICT", name, kind, version, label, frameworks, via)
     stale = sum(redirect_lines(graph, project, out) for project in projects)
     out.line("SUMMARY", names, stale)
@@ -1017,7 +1031,7 @@ Nodes = dict[str, tuple[str, str]]
 def package_key(target: Target, package: str, requested: str | None) -> tuple[str, str]:
     """A package node's key and label, at the version the target resolved or asked for."""
     _, name, version = package_hop(target, package, requested)
-    return f"package:{name.casefold()}@{version}", f"{name} {version}".strip()
+    return f"package:{ordinal_fold(name)}@{version}", f"{name} {version}".strip()
 
 
 def with_references(graph: Graph, projects: list[Project]) -> list[Project]:
@@ -1030,7 +1044,7 @@ def with_references(graph: Graph, projects: list[Project]) -> list[Project]:
             if child is not None and same_path(child.file.path) not in found:
                 found[same_path(child.file.path)] = child
                 queue.append(child)
-    return sorted(found.values(), key=lambda item: graph.label(item).casefold())
+    return sorted(found.values(), key=lambda item: ordinal_fold(graph.label(item)))
 
 
 def graph_edges(graph: Graph, projects: list[Project]) -> tuple[Nodes, list[tuple[str, str]]]:
@@ -1060,7 +1074,7 @@ def graph_edges(graph: Graph, projects: list[Project]) -> tuple[Nodes, list[tupl
                     edges.append((owner, add(*package_key(target, dependency, wanted), "package")))
         for assembly in assemblies:
             kind = "assembly" if assembly.hint_path else "framework"
-            edges.append((source, add(f"{kind}:{assembly.name.casefold()}", assembly.name, kind)))
+            edges.append((source, add(f"{kind}:{ordinal_fold(assembly.name)}", assembly.name, kind)))
     return nodes, list(dict.fromkeys(edges))
 
 

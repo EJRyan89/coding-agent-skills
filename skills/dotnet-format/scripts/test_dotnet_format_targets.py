@@ -1247,3 +1247,19 @@ def test_origin_s_default_branch_keeps_a_name_ending_in_a_character_strip_drops(
 
     services = targets.Services(git=git_client.GitClient(run))
     assert targets.remote_default_branch(services, Path("r")) == "origin/main\u00a0"
+
+
+@pytest.mark.parametrize(
+    ("expected", "sdk"),
+    [
+        (True, "Microsoft.NET.Sdk.Web"),
+        (True, "MICROSOFT.NET.SDK.WEB"),
+        # The long s and the Kelvin sign are no s or k to MSBuild, which compares ordinally ignoring ASCII case.
+        (False, "Microsoft.NET.\u017fdk.Web"),
+        (False, "Microsoft.NET.Sd\u212a.Web"),
+    ],
+)
+def test_a_web_project_is_named_as_msbuild_compares_its_sdk(expected: bool, sdk: str, tmp_path: Path) -> None:
+    project = tmp_path / "App.csproj"
+    project.write_text(f'<Project Sdk="{sdk}"></Project>\n', encoding="utf-8")
+    assert expected is targets.is_web_project(project)

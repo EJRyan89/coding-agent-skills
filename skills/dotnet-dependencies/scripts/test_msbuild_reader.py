@@ -573,6 +573,30 @@ def test_a_framework_key_is_the_name_case_folded() -> None:
     assert framework_key(".NETFoo,Version=v1.0") == ".netfoo,version=v1.0"
 
 
+@pytest.mark.parametrize(
+    ("expected", "first", "second"),
+    [
+        # Arabic-Indic and full-width digits are no version digits to NuGet's framework parser, so a long name holding
+        # them is no short one, and a platform version of them is not trimmed as a version.
+        (False, ".NETFramework,Version=v\u0664.\u0668", "net\u0664\u0668"),
+        (False, ".NETCoreApp,Version=v\uff18.0", "net\uff18.0"),
+        (False, "net8.0-windows\u0661\u0660.0", "net8.0-windows\u0661\u0660"),
+        # The long s and the Kelvin sign are no s or k to .NET's ordinal comparison ignoring case.
+        (False, "net48-klient", ".NETFramework,Version=v4.8,Profile=\u212alient"),
+        (False, "netstandard2.0", "net\u017ftandard2.0"),
+        (False, "net8.0-ios", "NET8.0-IO\u017f"),
+        # A letter beyond ASCII matches its other case, as the ordinal comparison ignoring case finds it.
+        (True, "net8.0-\u00e9x", "NET8.0-\u00c9X"),
+        (True, "net48-client", ".NETFramework,Version=v4.8,Profile=CLIENT"),
+    ],
+)
+def test_a_framework_name_is_folded_and_its_digits_read_as_nuget_reads_them(
+    expected: bool, first: str, second: str
+) -> None:
+    assert expected is same_framework(first, second)
+    assert expected is same_framework(second, first)
+
+
 @contextlib.contextmanager
 def stat_failing_at(target: Path) -> Iterator[None]:
     """A stat of `target` alone fails, as on a path the script may not examine: Path.stat, os.stat, and os.lstat raise

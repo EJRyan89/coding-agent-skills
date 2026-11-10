@@ -37,19 +37,21 @@ import json_reader
 from dotnet_solution import FileRefused, decode_text, lexical_absolute, listed_projects, project_path
 from file_presence import is_directory, is_occupied, is_present, matching
 from folders_up import folders_up
+from msbuild_conditions import ordinal_fold
 from msbuild_xml import local_name
 from xml_reader import XmlRefused, read_xml
 
 # What marks the folder a checkout starts in: a folder, or a file in a linked worktree or a submodule.
 CHECKOUT_MARKER = ".git"
 
-ASSEMBLY_VERSION = re.compile(r"\bVersion\s*=\s*([^,\s]+)", re.IGNORECASE)
+ASSEMBLY_VERSION = re.compile(r"\bVersion\s*=\s*([^,\s]+)", re.IGNORECASE | re.ASCII)
 # A target framework's long name, as older restores key their targets: `.NETCoreApp,Version=v8.0`.
 LONG_FRAMEWORK = re.compile(
-    r"^(?P<identifier>\.[a-z]+),Version=v(?P<version>\d+(?:\.\d+)*)(?:,Profile=(?P<profile>\w+))?$", re.IGNORECASE
+    r"^(?P<identifier>\.[a-z]+),Version=v(?P<version>\d+(?:\.\d+)*)(?:,Profile=(?P<profile>\w+))?$",
+    re.IGNORECASE | re.ASCII,
 )
 # A short moniker with a platform, whose version a restore writes out where the project may leave it to the default.
-PLATFORM_FRAMEWORK = re.compile(r"^(?P<base>net\d+\.\d+)-(?P<platform>[a-z]+)(?P<version>\d+(?:\.\d+)*)?$")
+PLATFORM_FRAMEWORK = re.compile(r"^(?P<base>net\d+\.\d+)-(?P<platform>[a-z]+)(?P<version>\d+(?:\.\d+)*)?$", re.ASCII)
 # The platform version the .NET SDK gives a platform a project names without one. A workload sets every other
 # platform's, which varies with the workload, so a name without a version matches any version of such a platform.
 PLATFORM_DEFAULT_VERSIONS = {"windows": "7.0"}
@@ -182,12 +184,12 @@ def framework_key(name: str) -> str:
     text = name.strip()
     long = LONG_FRAMEWORK.match(text)
     if long is None:
-        key = text.casefold()
+        key = ordinal_fold(text)
         platform = PLATFORM_FRAMEWORK.match(key)
         if platform is None or not platform.group("version"):
             return key
         return f"{platform.group('base')}-{platform.group('platform')}{platform_version(platform.group('version'))}"
-    identifier = long.group("identifier").casefold()
+    identifier = ordinal_fold(long.group("identifier"))
     parts = long.group("version").split(".")
     if identifier == ".netframework":
         while len(parts) > 2 and parts[-1] == "0":
@@ -199,9 +201,9 @@ def framework_key(name: str) -> str:
         modern = identifier == ".netcoreapp" and (len(major) > 1 or major >= "5")
         short = ("net" if modern else identifier[1:]) + f"{parts[0]}.{parts[1] if len(parts) > 1 else '0'}"
     else:
-        return text.casefold()
+        return ordinal_fold(text)
     profile = long.group("profile")
-    return f"{short}-{profile.casefold()}" if profile else short
+    return f"{short}-{ordinal_fold(profile)}" if profile else short
 
 
 def same_framework(first: str, second: str) -> bool:
@@ -300,7 +302,7 @@ def read_nuspec(path: Path, assemblies: tuple[str, ...] = ()) -> PackageNode:
     dependencies: dict[str, str] = {}
     for element in children(root, "dependency"):
         dependency = element.get(NUSPEC_DEPENDENCY_ID)
-        if dependency and dependency.casefold() not in {key.casefold() for key in dependencies}:
+        if dependency and ordinal_fold(dependency) not in {ordinal_fold(key) for key in dependencies}:
             dependencies[dependency] = element.get("version") or ""
     return PackageNode(package, version, dependencies, assemblies)
 
@@ -323,7 +325,7 @@ def assets_assemblies(entry: dict[str, Any], path: Path, where: str) -> tuple[st
     """The assembly stems a restored package's compile entries name, each once; `where` names the package in the
     assets file at `path`, whose compile section of another kind than an object is Unreadable."""
     compile_entries = mapping(entry, "compile", path, f"{where}.compile")
-    stems = {Path(key).stem for key in compile_entries if key.casefold().endswith(".dll")}
+    stems = {Path(key).stem for key in compile_entries if ordinal_fold(key).endswith(".dll")}
     return tuple(sorted(stems, key=str.casefold))
 
 
@@ -447,7 +449,7 @@ def restored_path(recorded: str, restored_project: str, project_dir: Path) -> Pa
     parts = recorded.replace("\\", "/").split("/")
     base = restored_project.replace("\\", "/").split("/")[:-1]
     shared = 0
-    while shared < min(len(base), len(parts) - 1) and parts[shared].casefold() == base[shared].casefold():
+    while shared < min(len(base), len(parts) - 1) and ordinal_fold(parts[shared]) == ordinal_fold(base[shared]):
         shared += 1
     if shared == 0:
         return lexical_absolute("/".join(parts))
