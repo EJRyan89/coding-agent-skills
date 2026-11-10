@@ -1846,22 +1846,25 @@ def scan(given: list[Path]) -> list[str]:
 def runs_file_command(line: str) -> bool:
     """Whether a fenced line runs one of SHELL_FILE_COMMANDS where Bash starts a command, read as git_subcommands reads
     a command: at the line's start, after an operator, in a group, a subshell, or a substitution, past its leading
-    keywords and assignments and Bash's time keyword, through each wrapper of command_wrappers' catalogue, and into the
-    script eval or a shell's -c runs, so `then cat x`, `A=1 grep x`, and `xargs wc -l` each run one."""
+    keywords and assignments, each read only unquoted, and Bash's time keyword, through each wrapper of
+    command_wrappers' catalogue, and into the script eval or a shell's -c runs, so `then cat x`, `A=1 grep x`, and
+    `xargs wc -l` each run one, and `'then' cat x` runs the program `then`."""
     starts = git_subcommands.CommandStarts()
     for match in git_subcommands.SHELL_COMMAND.finditer(line):
         start, command = match.groups()
-        if starts.runs(start, command) and command_runs_file_command(
-            git_subcommands.shell_words(command), reserved=start not in command_wrappers.PIPES
-        ):
+        if not starts.runs(start, command):
+            continue
+        spelled = git_subcommands.spelled_words(command)
+        words, spellings = [word for word, _ in spelled], [spelling for _, spelling in spelled]
+        if command_runs_file_command(words, spellings, reserved=start not in command_wrappers.PIPES):
             return True
     return False
 
 
-def command_runs_file_command(words: list[str], reserved: bool) -> bool:
-    """Whether a simple command, given its words, runs one of SHELL_FILE_COMMANDS, read past what `runs_file_command`
-    names; a wrapper whose program no literal names runs none this can see."""
-    words = git_subcommands.program_words(words, reserved)
+def command_runs_file_command(words: list[str], spellings: list[str], reserved: bool) -> bool:
+    """Whether a simple command, given its words and each word as written, runs one of SHELL_FILE_COMMANDS, read past
+    what `runs_file_command` names; a wrapper whose program no literal names runs none this can see."""
+    words = words[git_subcommands.program_start(spellings, reserved) :]
     while words:
         head, rest = words[0], words[1:]
         name = command_wrappers.bash_program(head)

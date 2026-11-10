@@ -1278,7 +1278,8 @@ class ScanTests(TemporaryTestCase):
                 code, lines, error = run("scan", str(skill))
                 self.assertEqual(0, code, error)
                 self.assertIn(f"CUE {skill.as_posix()} 2 shell-file-command {command}", lines)
-        for command in ("git ls-files", "echo cat", "printf '%s' head", 'xargs "$tool" x'):
+        # A quoted keyword is the program Bash runs, never a keyword before one.
+        for command in ("git ls-files", "echo cat", "printf '%s' head", 'xargs "$tool" x', "'then' cat notes.txt"):
             with self.subTest(command=command):
                 skill = write(self.root / "SKILL.md", f"```bash\n{command}\n```\n")
                 code, lines, error = run("scan", str(skill))
