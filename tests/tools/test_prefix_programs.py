@@ -4,11 +4,14 @@ suite names as safe, in every spelling getopt reads, and a runner whose command 
 its options.
 
 The rows come from tests/fixtures/hub-guard/option-catalogues.json, each program's options as its --help or its getopt
-table lists them, never from the guard's tables: each option alone, with its value attached and after it,
-abbreviated where the program reads an abbreviation, and bundled with each other short option. Which options are
-safe is SAFE below, a literal of this suite's own, and the guard's tables are held to it. Where the system installs a
-runner, Git Bash's on Windows and the system's elsewhere, its own --help is read too, and every option it lists must be
-in the fixture, so a release that adds an option fails here until the fixture and SAFE decide it.
+table lists them, and, for the programs the Rust coreutils (uutils) replace, as ubuntu-26.04 does, from
+tests/fixtures/hub-guard/option-catalogues-uutils.json too, never from the guard's tables: every option either
+implementation lists, alone, with its value attached and after it, abbreviated where the program reads an
+abbreviation, and bundled with each other short option. Which options are safe is SAFE below, a literal of this
+suite's own, and the guard's tables are held to it. Where the system installs a runner, Git Bash's on Windows and the
+system's elsewhere, its own --help is read too, and every option it lists must be in the catalogue of the
+implementation its --version names, so a release of either that adds an option fails here until the fixture and SAFE
+decide it.
 """
 
 from __future__ import annotations
@@ -38,7 +41,15 @@ SKIP_ALLOWED = {
     "CatalogueTests.lists_every_option": "a program the system does not install has no --help to read",
 }
 
-CATALOGUES = Path(__file__).resolve().parents[1] / "fixtures" / "hub-guard" / "option-catalogues.json"
+FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "hub-guard"
+CATALOGUES = FIXTURES / "option-catalogues.json"
+# The Rust coreutils' builds of the programs they replace, catalogued beside the GNU builds, so the rows hold the guard
+# to every option either takes.
+RUST_CATALOGUES = FIXTURES / "option-catalogues-uutils.json"
+# Each implementation a program's --version names in parentheses after its name, with its catalogue: GNU's prints
+# `env (GNU coreutils) 8.32`, and the Rust coreutils' `env (uutils coreutils) 0.10.0`, by uucore's crate_version.
+IMPLEMENTATIONS = {"GNU": CATALOGUES, "uutils": RUST_CATALOGUES}
+VERSION_LINE = re.compile(r"(\S+) \((GNU|uutils) [a-z]+\) ")
 # The options this suite holds safe: they neither run a command nor build one from text, change where one runs,
 # write a file the command does not name, nor change what the guard reads.
 SAFE: dict[str, set[str]] = {
@@ -47,7 +58,10 @@ SAFE: dict[str, set[str]] = {
         *("-0", "--null", "-a", "--arg-file", "-d", "--delimiter", "-E", "-L", "-n", "--max-args", "-P"),
         *("--max-procs", "-r", "--no-run-if-empty", "-s", "--max-chars", "-t", "--verbose", "-x", "--exit"),
     },
-    "timeout": {"-k", "--kill-after", "-s", "--signal", "-v", "--verbose", "--preserve-status", "--foreground"},
+    "timeout": {
+        *("-k", "--kill-after", "-s", "--signal", "-v", "--verbose", "-p", "--preserve-status", "-f"),
+        "--foreground",
+    },
     "nice": {"-n", "--adjustment"},
     "nohup": set(),
     "stdbuf": {"-i", "--input", "-o", "--output", "-e", "--error"},
@@ -103,7 +117,7 @@ SAFE: dict[str, set[str]] = {
         *("--human-numeric-sort", "-n", "--numeric-sort", "-R", "--random-sort", "--random-source", "-r"),
         *("--reverse", "--sort", "-V", "--version-sort", "--batch-size", "-c", "--check", "-C", "--debug"),
         *("--files0-from", "-k", "--key", "-m", "--merge", "-s", "--stable", "-S", "--buffer-size", "-t"),
-        *("--field-separator", "--parallel", "-u", "--unique", "-z", "--zero-terminated"),
+        *("--field-separator", "--parallel", "-u", "--unique", "-z", "--zero-terminated", "--check-silent"),
     },
     "tar": {
         *("-A", "--catenate", "--concatenate", "-c", "--create", "--delete", "-d", "--diff", "--compare", "-r"),
@@ -200,6 +214,7 @@ for name in "$@"; do
   path=$(type -P "$name") || continue
   printf '%s\n' "$path" > "path.$name"
   "$path" --help < /dev/null > "help.$name" 2>&1
+  "$path" --version < /dev/null > "version.$name" 2>&1
 done"""
 WORKSPACE = tempfile.TemporaryDirectory(prefix="runner-forms.")
 
@@ -219,15 +234,42 @@ class Form:
 
 
 @functools.cache
-def catalogues() -> dict[str, dict[str, object]]:
-    loaded: dict[str, dict[str, object]] = json.loads(CATALOGUES.read_text(encoding="utf-8"))
+def catalogue(path: Path) -> dict[str, dict[str, object]]:
+    loaded: dict[str, dict[str, object]] = json.loads(path.read_text(encoding="utf-8"))
     return loaded
 
 
-def options_of(program: str) -> list[Option]:
-    entries = catalogues()[program]["options"]
+def catalogues() -> dict[str, dict[str, object]]:
+    return catalogue(CATALOGUES)
+
+
+def listed_options(path: Path, program: str) -> list[Option]:
+    """The options one catalogue lists for a program."""
+    entries = catalogue(path)[program]["options"]
     assert isinstance(entries, list)
     return [Option(entry["short"], entry["long"], entry["value"]) for entry in entries]
+
+
+def options_of(program: str) -> list[Option]:
+    """Every option any implementation's catalogue lists for a program, so the guard is held to each of them."""
+    found = [
+        option
+        for path in IMPLEMENTATIONS.values()
+        if program in catalogue(path)
+        for option in listed_options(path, program)
+    ]
+    return list(dict.fromkeys(found))
+
+
+def names(options: list[Option]) -> set[str]:
+    return {each for option in options for each in (option.short, option.long) if each}
+
+
+def implementation(version: str) -> str | None:
+    """The implementation a program's --version names on its first line, GNU or uutils; None for any other."""
+    lines = version.strip().splitlines()
+    match = VERSION_LINE.match(lines[0]) if lines else None
+    return match[2] if match else None
 
 
 def spelled(name: str, kind: str, attach: str) -> list[tuple[str, ...]]:
@@ -340,8 +382,8 @@ def find_bash() -> str:
 
 
 @functools.cache
-def installed_help() -> dict[str, str]:
-    """The --help of each runner CHECKED names that the system installs."""
+def installed_help() -> dict[str, tuple[str, str]]:
+    """The --help and the --version of each runner CHECKED names that the system installs."""
     workspace = Path(WORKSPACE.name)
     result = platform_support.run_tool(
         [find_bash(), "-c", DISCOVER, "discover", platform_support.normalize(workspace), *CHECKED], timeout=120
@@ -349,7 +391,10 @@ def installed_help() -> dict[str, str]:
     if result.returncode != 0:
         raise AssertionError(f"Bash could not list the runners: {result.output.strip()}")
     return {
-        name: (workspace / f"help.{name}").read_text(encoding="utf-8", errors="replace")
+        name: (
+            (workspace / f"help.{name}").read_text(encoding="utf-8", errors="replace"),
+            (workspace / f"version.{name}").read_text(encoding="utf-8", errors="replace"),
+        )
         for name in CHECKED
         if (workspace / f"path.{name}").is_file()
     }
@@ -630,8 +675,7 @@ class CatalogueTests(unittest.TestCase):
                 allowed = {f"-{letter}" for letter in table.short} | set(table.long)
                 self.assertEqual(sorted(SAFE[name]), sorted(allowed))
                 self.assertTrue(all(each.startswith(prefix) for each in table.long))
-                listed = {each for option in options_of(name) for each in (option.short, option.long) if each}
-                self.assertLessEqual(SAFE[name], listed, "a safe option the program does not list")
+                self.assertLessEqual(SAFE[name], names(options_of(name)), "a safe option the program does not list")
 
     def test_every_runner_but_the_shells_and_the_ones_always_refused_reads_its_options(self) -> None:
         readers = set(hub_guard.RUNNERS) - hub_guard.RUNNERS_ALWAYS_REFUSED - {"bash", "pwsh"}
@@ -653,16 +697,80 @@ class CatalogueTests(unittest.TestCase):
         self.assertEqual({"-exec", "-execdir", "-ok", "-okdir"}, FIND_COMMANDS)
         self.assertEqual(set(), FIND_COMMANDS & SAFE["find"])
 
+    def test_the_rust_coreutils_catalogue_holds_programs_the_guard_reads_each_with_its_provenance(self) -> None:
+        tables = {**hub_guard.RUNNER_OPTIONS, **hub_guard.PROGRAM_OPTIONS}
+        rust = catalogue(RUST_CATALOGUES)
+        # The programs the guard reads options of that the Rust coreutils replace: coreutils' runners, and sort.
+        self.assertEqual(["chroot", "env", "nice", "nohup", "sort", "stdbuf", "timeout"], sorted(rust))
+        self.assertLessEqual(set(rust), set(tables))
+        for path in IMPLEMENTATIONS.values():
+            for name, entry in catalogue(path).items():
+                with self.subTest(catalogue=path.name, program=name):
+                    self.assertTrue(str(entry["source"]).strip())
+        for name, entry in rust.items():
+            with self.subTest(program=name):
+                self.assertTrue(str(entry["source"]).startswith("Rust coreutils (uutils) "))
+                self.assertIn(f"src/uu/{name}/src/{name}.rs", str(entry["how"]))
+                # option_forms abbreviates by the GNU catalogue's word, so both must say the same.
+                self.assertEqual(catalogues()[name]["abbreviates"], entry["abbreviates"])
+
+    def test_each_safe_option_takes_its_value_as_every_implementation_reads_it(self) -> None:
+        # One read with a value by one implementation and without by another would let a value word escape the reading.
+        for name in sorted(SAFE):
+            kinds: dict[str, set[str]] = {}
+            for path in IMPLEMENTATIONS.values():
+                if name not in catalogue(path):
+                    continue
+                for option in listed_options(path, name):
+                    for each in (option.short, option.long):
+                        if each in SAFE[name]:
+                            kinds.setdefault(each, set()).add(option.value)
+            for each, found in sorted(kinds.items()):
+                with self.subTest(program=name, option=each):
+                    self.assertEqual(1, len(found), f"{each} is read as taking {sorted(found)}")
+
+    def test_the_rows_hold_every_option_either_implementation_lists(self) -> None:
+        for path in IMPLEMENTATIONS.values():
+            for name in catalogue(path):
+                with self.subTest(catalogue=path.name, program=name):
+                    self.assertLessEqual(set(listed_options(path, name)), set(options_of(name)))
+        env = [form.words for form in program_forms("env")]
+        for words in (("-a", VALUE), ("--argv0", VALUE), ("-a" + VALUE,), ("--file=" + VALUE,), ("-h",), ("-V",)):
+            with self.subTest(words=words):
+                self.assertIn(words, env)
+        self.assertIn(("-p",), [form.words for form in program_forms("timeout")])
+        self.assertIn(("--check-silent",), [form.words for form in program_forms("sort")])
+
+    def test_the_implementation_is_the_one_the_program_s_version_names(self) -> None:
+        for version, expected in (
+            ("env (GNU coreutils) 8.32\nCopyright (C) 2020 Free Software Foundation, Inc.\n", "GNU"),
+            ("xargs (GNU findutils) 4.10.0\n", "GNU"),
+            ("env (uutils coreutils) 0.10.0\n", "uutils"),
+            ("\n  nice (uutils coreutils) 0.8.0\n", "uutils"),
+            ("env 1.0\n", None),
+            ("env (BusyBox) v1.36\n", None),
+            ("", None),
+        ):
+            with self.subTest(version=version):
+                self.assertEqual(expected, implementation(version))
+
     def lists_every_option(self, name: str) -> None:
         helps = installed_help()
         if name not in helps:
             self.skipTest(f"{name} is not installed here")
-        listed = {each for option in options_of(name) for each in (option.short, option.long) if each}
-        for option in help_options(helps[name]):
+        text, version = helps[name]
+        first = (version.strip().splitlines() or [""])[0]
+        build = implementation(version)
+        self.assertIsNotNone(build, f"{name}'s --version names neither GNU nor uutils: {first!r}")
+        assert build is not None
+        path = IMPLEMENTATIONS[build]
+        self.assertIn(name, catalogue(path), f"{path.name} has no catalogue of {name}, which is {first!r} here")
+        listed = names(listed_options(path, name))
+        for option in help_options(text):
             for each in (option.short, option.long):
                 if each is not None:
                     with self.subTest(option=each):
-                        self.assertIn(each, listed, f"{name} lists an option the fixture does not")
+                        self.assertIn(each, listed, f"{first} lists an option {path.name} does not")
 
     def test_the_installed_runners_list_no_option_the_fixture_leaves_out(self) -> None:
         for name in CHECKED:

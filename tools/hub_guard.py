@@ -447,19 +447,24 @@ RUNNERS_ALWAYS_REFUSED = frozenset(
 
 # The options of each runner the guard reads, by an allow-list: the ones known neither to build its command from text,
 # as xargs's -I and env's -S do, nor to change where it runs, as env's -C does, nor to write a file or run another
-# program. While a hub is guarded every other option word of a runner is refused, in any spelling: exactly, with its
-# value attached, abbreviated, or inside a bundle (option_refusal). A long option is understood only spelled in full,
-# since an abbreviation of a safe option may be one of another option too. env's NAME=VALUE words are read as
-# assignments for its command (runner_assignments); one before any other runner's command, as sudo takes, is refused,
-# since it may set a variable the guard does not judge. bash and pwsh are read by their scripts
-# (shell_script), and the runners RUNNERS_ALWAYS_REFUSED names are refused whatever their options.
+# program, nor to change what runs. The Rust coreutils' env takes two that may: -f or --file sets variables from a
+# file the text does not show, GIT_DIR or PATH among them, and -a or --argv0 names what its command runs as, by which a
+# multicall program, as the Rust coreutils' `coreutils` and busybox are, picks the program it runs; neither is safe.
+# Each runner's help and version options run nothing, so no command runs after one, and are left out too. While a hub
+# is guarded every other option word of a runner is refused, in any spelling: exactly, with its value attached,
+# abbreviated, or inside a bundle (option_refusal). A long option is understood only spelled in full, since an
+# abbreviation of a safe option may be one of another option too. timeout's -f and -p, the Rust coreutils' short
+# forms of --foreground and --preserve-status, are read as those are. env's NAME=VALUE words are read as assignments
+# for its command (runner_assignments); one before any other runner's command, as sudo takes, is refused, since it may
+# set a variable the guard does not judge. bash and pwsh are read by their scripts (shell_script), and the runners
+# RUNNERS_ALWAYS_REFUSED names are refused whatever their options.
 RUNNER_OPTIONS: dict[str, OptionTable] = {
     "env": option_table("i0u:v", "ignore-environment null unset= debug", assignments=True),
     "xargs": option_table(
         "0a:d:E:L:n:P:rs:tx",
         "null arg-file= delimiter= max-args= max-procs= no-run-if-empty max-chars= verbose exit",
     ),
-    "timeout": option_table("k:s:v", "kill-after= signal= verbose preserve-status foreground", operands=1),
+    "timeout": option_table("fk:ps:v", "kill-after= signal= verbose preserve-status foreground", operands=1),
     "nice": option_table("n:", "adjustment=", numbered=re.compile(r"-[+-]?[0-9]+")),
     "nohup": option_table(),
     "stdbuf": option_table("i:o:e:", "input= output= error="),
@@ -530,7 +535,7 @@ PROGRAM_OPTIONS: dict[str, OptionTable] = {
                 "ignore-leading-blanks dictionary-order ignore-case general-numeric-sort ignore-nonprinting",
                 "month-sort human-numeric-sort numeric-sort random-sort random-source= reverse sort= version-sort",
                 "batch-size= check=? debug files0-from= key= merge stable buffer-size= field-separator= parallel=",
-                "unique zero-terminated",
+                "unique zero-terminated check-silent",
             )
         ),
         permutes=True,
