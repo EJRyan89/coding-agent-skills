@@ -21,8 +21,8 @@ from option_reader import OptionTable, option_refusal, option_table
 # options, after the assignments env takes, and after the duration timeout takes. A long option is placed only spelled
 # in full, and a word the table does not settle, an abbreviation or an option the table does not list, leaves the
 # program unread (UNREAD_PROGRAM) rather than taken for the program. command -v and -V only look a program up. Each
-# program's table beyond the shell's builtins and coreutils' is its getopt table as
-# tests/fixtures/hub-guard/option-catalogues.json catalogues it; sudo also takes assignments, and chrt, taskset, and
+# program's table beyond the shell's builtins and coreutils' is its getopt table, as the hub guard's option catalogue
+# records it; sudo also takes assignments, and chrt, taskset, and
 # chroot take one operand, a priority, a CPU mask, or a new root, before the program. Every reader of a command's
 # program reads these, so a reader that needs another wrapper adds it here.
 COMMAND_WRAPPERS: dict[str, OptionTable] = {
