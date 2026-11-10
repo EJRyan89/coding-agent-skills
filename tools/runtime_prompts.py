@@ -46,6 +46,7 @@ import atomic_file
 import file_presence
 import json_reader
 import json_writer
+import path_containment
 import review_dispatch
 import review_document
 import review_hosts
@@ -328,7 +329,7 @@ def _removable(root: Path, expected: Mapping[Path, str]) -> tuple[list[Path], li
     files, folders = _listed(root)
     kept = [root / relative for relative in expected]
     extras = [path for path in files if path.relative_to(root) not in expected]
-    emptied = [folder for folder in folders if not any(path.is_relative_to(folder) for path in kept)]
+    emptied = [folder for folder in folders if not any(path_containment.within(path, folder) for path in kept)]
     for path in [*extras, *emptied]:
         try:
             refused = atomic_file.is_read_only(path) or atomic_file.is_read_only(path.parent)
