@@ -110,6 +110,7 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[4] / "skills" / "ejryan89-skill-core" / "scripts"))
 
+import calendar_date
 import guidance_record
 import json_reader
 import json_writer
@@ -130,7 +131,6 @@ from suite_names import is_suite_name
 
 # The rotation record, relative to the top of the repository it describes.
 RECORD_PATH = ".claude/skills/audit-repository/references/rotation.json"
-DATE_FORMAT = re.compile(r"\d{4}-\d{2}-\d{2}")
 # The most files one reader is given; a larger area is split between readers by directory.
 MAX_FILES_PER_READER = 60
 # Every briefs directory starts with this, directly in the temporary directory; remove-briefs deletes no other.
@@ -631,7 +631,7 @@ def record_entry(name: str, number: int, item: object) -> Entry:
     if not isinstance(item, dict) or set(item) != {"date", "tag", "area"}:
         raise AuditError(f"{name} audit {number} must have exactly a date, a tag, and an area")
     when, tag, area = item["date"], item["tag"], item["area"]
-    if not isinstance(when, str) or not DATE_FORMAT.fullmatch(when):
+    if not isinstance(when, str) or calendar_date.parse(when) is None:
         raise AuditError(f"{name} audit {number} has a date that is not YYYY-MM-DD")
     if not isinstance(tag, str) or not is_release_tag(tag):
         raise AuditError(f"{name} audit {number} has a tag that is not a release tag vX.Y.Z")
@@ -1664,7 +1664,7 @@ def main(
             else:
                 lines = duplicates(gh, options.queries)
     except AuditError as exc:
-        print(f"FAILED {exc}")
+        print(f"FAILED {flat_text(str(exc))}")
         return 1
     print("\n".join(lines))
     return 0

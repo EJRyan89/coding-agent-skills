@@ -398,7 +398,7 @@ def main(
     try:
         return run(options, git or GitClient(), github)
     except PullRequestError as exc:
-        print(f"FAILED {exc}")
+        print(f"FAILED {flat_text(str(exc))}")
         return 1
 
 

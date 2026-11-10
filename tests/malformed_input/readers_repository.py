@@ -242,6 +242,7 @@ SHEPHERD_PULL = {
     "mergeStateStatus": "CLEAN",
     "autoMergeRequest": {"enabledAt": "2026-10-25T12:00:00Z", "mergeMethod": "SQUASH"},
     "files": [{"path": "tools/example.py", "additions": 1, "deletions": 0}],
+    "changedFiles": 1,
     "statusCheckRollup": [
         {
             "__typename": "CheckRun",
@@ -316,7 +317,7 @@ def _shepherd_pull(path: Path) -> object:
 
 def _shepherd_pull_on(head: str) -> object:
     return shepherd.Pull(
-        12, "fix/example", head, "CLEAN", False, shepherd.Check("FAILURE", 7), (), False, False, None, "main"
+        12, "fix/example", head, "CLEAN", False, shepherd.Check("FAILURE", 7), (), False, False, None, "main", 0
     )
 
 
