@@ -1,0 +1,391 @@
+{
+ "env": {
+  "source": "Rust coreutils (uutils) 0.10.0, its clap options",
+  "how": "Read from src/uu/env/src/env.rs at uutils/coreutils tag 0.10.0 (gh api 'repos/uutils/coreutils/contents/src/uu/env/src/env.rs?ref=0.10.0'): each Arg uu_app declares with a short or long name, taking a value where its action is Set or Append or it gives no action and is not a positional, an optional one where num_args is 0..=1 or 0.. with require_equals; abbreviates from its infer_long_args(true), and -h, --help, -V, and --version, which clap adds. ubuntu-26.04 image 20261101.186 installs coreutils 9.5-1ubuntu2+0.0.0~ubuntu25, from Ubuntu's coreutils-from source, which runs rust-coreutils, whose resolute version, read from Launchpad's getPublishedSources, is 0.10.0-1ubuntu2~26.04.1 in -updates and 0.8.0-0ubuntu3 at release; 0.8.0's declarations of these options are the same.",
+  "abbreviates": true,
+  "options": [
+   {
+    "short": "-i",
+    "long": "--ignore-environment",
+    "value": "none"
+   },
+   {
+    "short": "-C",
+    "long": "--chdir",
+    "value": "value"
+   },
+   {
+    "short": "-0",
+    "long": "--null",
+    "value": "none"
+   },
+   {
+    "short": "-f",
+    "long": "--file",
+    "value": "value"
+   },
+   {
+    "short": "-u",
+    "long": "--unset",
+    "value": "value"
+   },
+   {
+    "short": "-v",
+    "long": "--debug",
+    "value": "none"
+   },
+   {
+    "short": "-S",
+    "long": "--split-string",
+    "value": "value"
+   },
+   {
+    "short": "-a",
+    "long": "--argv0",
+    "value": "value"
+   },
+   {
+    "short": null,
+    "long": "--ignore-signal",
+    "value": "optional"
+   },
+   {
+    "short": null,
+    "long": "--default-signal",
+    "value": "optional"
+   },
+   {
+    "short": null,
+    "long": "--block-signal",
+    "value": "optional"
+   },
+   {
+    "short": null,
+    "long": "--list-signal-handling",
+    "value": "none"
+   },
+   {
+    "short": "-h",
+    "long": "--help",
+    "value": "none"
+   },
+   {
+    "short": "-V",
+    "long": "--version",
+    "value": "none"
+   }
+  ]
+ },
+ "timeout": {
+  "source": "Rust coreutils (uutils) 0.10.0, its clap options",
+  "how": "Read from src/uu/timeout/src/timeout.rs at uutils/coreutils tag 0.10.0 (gh api 'repos/uutils/coreutils/contents/src/uu/timeout/src/timeout.rs?ref=0.10.0'): each Arg uu_app declares with a short or long name, taking a value where its action is Set or Append or it gives no action and is not a positional, an optional one where num_args is 0..=1 or 0.. with require_equals; abbreviates from its infer_long_args(true), and -h, --help, -V, and --version, which clap adds. ubuntu-26.04 image 20261101.186 installs coreutils 9.5-1ubuntu2+0.0.0~ubuntu25, from Ubuntu's coreutils-from source, which runs rust-coreutils, whose resolute version, read from Launchpad's getPublishedSources, is 0.10.0-1ubuntu2~26.04.1 in -updates and 0.8.0-0ubuntu3 at release; 0.8.0's declarations of these options are the same.",
+  "abbreviates": true,
+  "options": [
+   {
+    "short": "-f",
+    "long": "--foreground",
+    "value": "none"
+   },
+   {
+    "short": "-k",
+    "long": "--kill-after",
+    "value": "value"
+   },
+   {
+    "short": "-p",
+    "long": "--preserve-status",
+    "value": "none"
+   },
+   {
+    "short": "-s",
+    "long": "--signal",
+    "value": "value"
+   },
+   {
+    "short": "-v",
+    "long": "--verbose",
+    "value": "none"
+   },
+   {
+    "short": "-h",
+    "long": "--help",
+    "value": "none"
+   },
+   {
+    "short": "-V",
+    "long": "--version",
+    "value": "none"
+   }
+  ]
+ },
+ "nice": {
+  "source": "Rust coreutils (uutils) 0.10.0, its clap options",
+  "how": "Read from src/uu/nice/src/nice.rs at uutils/coreutils tag 0.10.0 (gh api 'repos/uutils/coreutils/contents/src/uu/nice/src/nice.rs?ref=0.10.0'): each Arg uu_app declares with a short or long name, taking a value where its action is Set or Append or it gives no action and is not a positional, an optional one where num_args is 0..=1 or 0.. with require_equals; abbreviates from its infer_long_args(true), and -h, --help, -V, and --version, which clap adds. ubuntu-26.04 image 20261101.186 installs coreutils 9.5-1ubuntu2+0.0.0~ubuntu25, from Ubuntu's coreutils-from source, which runs rust-coreutils, whose resolute version, read from Launchpad's getPublishedSources, is 0.10.0-1ubuntu2~26.04.1 in -updates and 0.8.0-0ubuntu3 at release; 0.8.0's declarations of these options are the same.",
+  "abbreviates": true,
+  "options": [
+   {
+    "short": "-n",
+    "long": "--adjustment",
+    "value": "value"
+   },
+   {
+    "short": "-h",
+    "long": "--help",
+    "value": "none"
+   },
+   {
+    "short": "-V",
+    "long": "--version",
+    "value": "none"
+   }
+  ]
+ },
+ "nohup": {
+  "source": "Rust coreutils (uutils) 0.10.0, its clap options",
+  "how": "Read from src/uu/nohup/src/nohup.rs at uutils/coreutils tag 0.10.0 (gh api 'repos/uutils/coreutils/contents/src/uu/nohup/src/nohup.rs?ref=0.10.0'): each Arg uu_app declares with a short or long name, taking a value where its action is Set or Append or it gives no action and is not a positional, an optional one where num_args is 0..=1 or 0.. with require_equals; abbreviates from its infer_long_args(true), and -h, --help, -V, and --version, which clap adds. ubuntu-26.04 image 20261101.186 installs coreutils 9.5-1ubuntu2+0.0.0~ubuntu25, from Ubuntu's coreutils-from source, which runs rust-coreutils, whose resolute version, read from Launchpad's getPublishedSources, is 0.10.0-1ubuntu2~26.04.1 in -updates and 0.8.0-0ubuntu3 at release; 0.8.0's declarations of these options are the same.",
+  "abbreviates": true,
+  "options": [
+   {
+    "short": "-h",
+    "long": "--help",
+    "value": "none"
+   },
+   {
+    "short": "-V",
+    "long": "--version",
+    "value": "none"
+   }
+  ]
+ },
+ "stdbuf": {
+  "source": "Rust coreutils (uutils) 0.10.0, its clap options",
+  "how": "Read from src/uu/stdbuf/src/stdbuf.rs at uutils/coreutils tag 0.10.0 (gh api 'repos/uutils/coreutils/contents/src/uu/stdbuf/src/stdbuf.rs?ref=0.10.0'): each Arg uu_app declares with a short or long name, taking a value where its action is Set or Append or it gives no action and is not a positional, an optional one where num_args is 0..=1 or 0.. with require_equals; abbreviates from its infer_long_args(true), and -h, --help, -V, and --version, which clap adds. ubuntu-26.04 image 20261101.186 installs coreutils 9.5-1ubuntu2+0.0.0~ubuntu25, from Ubuntu's coreutils-from source, which runs rust-coreutils, whose resolute version, read from Launchpad's getPublishedSources, is 0.10.0-1ubuntu2~26.04.1 in -updates and 0.8.0-0ubuntu3 at release; 0.8.0's declarations of these options are the same.",
+  "abbreviates": true,
+  "options": [
+   {
+    "short": "-i",
+    "long": "--input",
+    "value": "value"
+   },
+   {
+    "short": "-o",
+    "long": "--output",
+    "value": "value"
+   },
+   {
+    "short": "-e",
+    "long": "--error",
+    "value": "value"
+   },
+   {
+    "short": "-h",
+    "long": "--help",
+    "value": "none"
+   },
+   {
+    "short": "-V",
+    "long": "--version",
+    "value": "none"
+   }
+  ]
+ },
+ "chroot": {
+  "source": "Rust coreutils (uutils) 0.10.0, its clap options",
+  "how": "Read from src/uu/chroot/src/chroot.rs at uutils/coreutils tag 0.10.0 (gh api 'repos/uutils/coreutils/contents/src/uu/chroot/src/chroot.rs?ref=0.10.0'): each Arg uu_app declares with a short or long name, taking a value where its action is Set or Append or it gives no action and is not a positional, an optional one where num_args is 0..=1 or 0.. with require_equals; abbreviates from its infer_long_args(true), and -h, --help, -V, and --version, which clap adds. ubuntu-26.04 image 20261101.186 installs coreutils 9.5-1ubuntu2+0.0.0~ubuntu25, from Ubuntu's coreutils-from source, which runs rust-coreutils, whose resolute version, read from Launchpad's getPublishedSources, is 0.10.0-1ubuntu2~26.04.1 in -updates and 0.8.0-0ubuntu3 at release; 0.8.0's declarations of these options are the same.",
+  "abbreviates": true,
+  "options": [
+   {
+    "short": null,
+    "long": "--groups",
+    "value": "value"
+   },
+   {
+    "short": null,
+    "long": "--userspec",
+    "value": "value"
+   },
+   {
+    "short": null,
+    "long": "--skip-chdir",
+    "value": "none"
+   },
+   {
+    "short": "-h",
+    "long": "--help",
+    "value": "none"
+   },
+   {
+    "short": "-V",
+    "long": "--version",
+    "value": "none"
+   }
+  ]
+ },
+ "sort": {
+  "source": "Rust coreutils (uutils) 0.10.0, its clap options",
+  "how": "Read from src/uu/sort/src/sort.rs at uutils/coreutils tag 0.10.0 (gh api 'repos/uutils/coreutils/contents/src/uu/sort/src/sort.rs?ref=0.10.0'): each Arg uu_app declares with a short or long name, taking a value where its action is Set or Append or it gives no action and is not a positional, an optional one where num_args is 0..=1 or 0.. with require_equals; abbreviates from its infer_long_args(true); its --help and --version, declared with disable_help_flag and disable_version_flag, have no short form; -c and --check are one Arg whose value require_equals attaches only by `=`, so -c is listed taking none and --check an optional one. ubuntu-26.04 image 20261101.186 installs coreutils 9.5-1ubuntu2+0.0.0~ubuntu25, from Ubuntu's coreutils-from source, which runs rust-coreutils, whose resolute version, read from Launchpad's getPublishedSources, is 0.10.0-1ubuntu2~26.04.1 in -updates and 0.8.0-0ubuntu3 at release; 0.8.0's declarations of these options are the same.",
+  "abbreviates": true,
+  "options": [
+   {
+    "short": null,
+    "long": "--help",
+    "value": "none"
+   },
+   {
+    "short": null,
+    "long": "--version",
+    "value": "none"
+   },
+   {
+    "short": null,
+    "long": "--sort",
+    "value": "value"
+   },
+   {
+    "short": "-h",
+    "long": "--human-numeric-sort",
+    "value": "none"
+   },
+   {
+    "short": "-M",
+    "long": "--month-sort",
+    "value": "none"
+   },
+   {
+    "short": "-n",
+    "long": "--numeric-sort",
+    "value": "none"
+   },
+   {
+    "short": "-g",
+    "long": "--general-numeric-sort",
+    "value": "none"
+   },
+   {
+    "short": "-V",
+    "long": "--version-sort",
+    "value": "none"
+   },
+   {
+    "short": "-R",
+    "long": "--random-sort",
+    "value": "none"
+   },
+   {
+    "short": null,
+    "long": "--random-source",
+    "value": "value"
+   },
+   {
+    "short": "-d",
+    "long": "--dictionary-order",
+    "value": "none"
+   },
+   {
+    "short": "-m",
+    "long": "--merge",
+    "value": "none"
+   },
+   {
+    "short": "-c",
+    "long": null,
+    "value": "none"
+   },
+   {
+    "short": null,
+    "long": "--check",
+    "value": "optional"
+   },
+   {
+    "short": "-C",
+    "long": "--check-silent",
+    "value": "none"
+   },
+   {
+    "short": "-f",
+    "long": "--ignore-case",
+    "value": "none"
+   },
+   {
+    "short": "-i",
+    "long": "--ignore-nonprinting",
+    "value": "none"
+   },
+   {
+    "short": "-b",
+    "long": "--ignore-leading-blanks",
+    "value": "none"
+   },
+   {
+    "short": "-o",
+    "long": "--output",
+    "value": "value"
+   },
+   {
+    "short": "-r",
+    "long": "--reverse",
+    "value": "none"
+   },
+   {
+    "short": "-s",
+    "long": "--stable",
+    "value": "none"
+   },
+   {
+    "short": "-u",
+    "long": "--unique",
+    "value": "none"
+   },
+   {
+    "short": "-k",
+    "long": "--key",
+    "value": "value"
+   },
+   {
+    "short": "-t",
+    "long": "--field-separator",
+    "value": "value"
+   },
+   {
+    "short": "-z",
+    "long": "--zero-terminated",
+    "value": "none"
+   },
+   {
+    "short": null,
+    "long": "--parallel",
+    "value": "value"
+   },
+   {
+    "short": "-S",
+    "long": "--buffer-size",
+    "value": "value"
+   },
+   {
+    "short": "-T",
+    "long": "--temporary-directory",
+    "value": "value"
+   },
+   {
+    "short": null,
+    "long": "--compress-program",
+    "value": "value"
+   },
+   {
+    "short": null,
+    "long": "--batch-size",
+    "value": "value"
+   },
+   {
+    "short": null,
+    "long": "--files0-from",
+    "value": "value"
+   },
+   {
+    "short": null,
+    "long": "--debug",
+    "value": "none"
+   }
+  ]
+ }
+}

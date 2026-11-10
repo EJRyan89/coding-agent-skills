@@ -88,6 +88,13 @@ def both_needs(root: Path, scripts: dict[str, str]) -> tuple[set[str], set[str]]
         ("update.sh", "git push origin\n", {"sandbox-network"}),
         ("update.sh", "pwsh -c 'git push'\n", {"sandbox-network"}),
         ("update.sh", "git status\n", set()),
+        # A case item's or a function body's command, and git or a shell named by a path or with .exe.
+        ("update.sh", 'case "$x" in\n  up) git push ;;\nesac\n', {"sandbox-network"}),
+        ("update.sh", "f() { git push; }\n", {"sandbox-network"}),
+        ("update.sh", "/usr/bin/git push\n", {"sandbox-network"}),
+        ("update.sh", "git.exe push origin\n", {"sandbox-network"}),
+        ("update.sh", '/bin/bash -c "git push"\n', {"sandbox-network"}),
+        ("update.ps1", "& 'C:/Program Files/Git/cmd/git' push\n", {"sandbox-network"}),
     ],
 )
 def test_a_git_subcommand_a_script_runs_needs_the_same_capabilities_in_both(
