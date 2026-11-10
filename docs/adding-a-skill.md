@@ -210,8 +210,8 @@ that `COMMAND_RUNNERS` in `tests/validation/skill_scripts.py` names, such as `ru
 each caller instead.
 
 A command that runs another reads as both. In Bash, validation reads the program each command substitution, quoted
-or not, runs, and the program a wrapper runs: `xargs`, `env`, `command`, `exec`, `nohup`, `timeout`, `nice`,
-`stdbuf`, and `find`'s `-exec`, and every command of the script `eval` or a shell's `-c` runs, with `-c` read as the
+or not, runs, and the program a wrapper of `COMMAND_WRAPPERS` in ejryan89-skill-core's `command_wrappers.py` runs,
+such as `xargs`, `env`, `command`, `nohup`, `timeout`, `sudo`, and `setsid`, and `find`'s `-exec`, and every command of the script `eval` or a shell's `-c` runs, with `-c` read as the
 shell reads it, alone or in a bundle such as `-lc`, before or after the shell's other options; `command -v` only looks
 one up. A shell, wrapper, or `find` is read by its file name, so `/bin/bash -c`, `bash.exe -c`, and `/usr/bin/env` run
 what their bare names run, matched as written in Bash and in any case in PowerShell. Only an unquoted operator or keyword is syntax: a quoted or escaped `;`, `&`, `|`, `(`, or `{`, such as the
