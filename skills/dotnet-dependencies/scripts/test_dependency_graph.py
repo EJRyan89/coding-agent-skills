@@ -1466,6 +1466,86 @@ class FrameworkAndAssemblyTests(Fixture):
         )
 
 
+LEGACY_APP_PROJECT = """<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="15.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <PropertyGroup><TargetFrameworkVersion>v4.7.2</TargetFrameworkVersion></PropertyGroup>
+</Project>
+"""
+SHARP_S = "Lantern.Stra\u00dfe"
+CAFE = "Lantern.Caf\u00e9"
+
+
+def packages_config(*packages: tuple[str, str]) -> str:
+    listed = "".join(
+        f'<package id="{name}" version="{version}" targetFramework="net472" />' for name, version in packages
+    )
+    return f"<packages>{listed}</packages>"
+
+
+def plain_nuspec(name: str, version: str, *dependencies: str) -> str:
+    listed = "".join(f'<dependency id="{dependency}" version="1.0.0" />' for dependency in dependencies)
+    metadata = f"<id>{name}</id><version>{version}</version><dependencies>{listed}</dependencies>"
+    return f"<package><metadata>{metadata}</metadata></package>"
+
+
+class OrdinalNameTests(Fixture):
+    """Package ids and the packages folder's names compared as NuGet compares them, ordinally ignoring case: a letter
+    beyond ASCII matches its own other case, while the sharp s is never `ss`, as `casefold()` would read it."""
+
+    def legacy_app(self, packages: list[tuple[str, str]], nuspecs: list[tuple[str, str, tuple[str, ...]]]) -> Path:
+        self.write("App/App.csproj", LEGACY_APP_PROJECT)
+        self.write("App/packages.config", packages_config(*packages))
+        for name, version, dependencies in nuspecs:
+            self.write(f"packages/{name}.{version}/{name}.nuspec", plain_nuspec(name, version, *dependencies))
+        return self.write("App.sln", solution("App\\App.csproj"))
+
+    def test_two_ids_casefold_merges_are_two_packages_and_one_spelled_in_another_case_is_found(self) -> None:
+        root = self.legacy_app(
+            # Listed after the ss spelling, the sharp-s package is the one a casefold() key would keep for both.
+            [("Lantern.Strasse", "2.0.0"), (SHARP_S, "1.0.0"), (CAFE, "3.0.0")],
+            [
+                ("Lantern.Strasse", "2.0.0", ()),
+                (SHARP_S, "1.0.0", ()),
+                (CAFE, "3.0.0", ("Lantern.Strasse",)),
+            ],
+        )
+        code, rows = self.run_main("why", SHARP_S, "--root", str(root))
+        self.assertEqual(0, code)
+        self.assertEqual([["App/App.csproj", "-", SHARP_S, "graph", f"{SHARP_S} (v1.0.0)"]], self.lines(rows, "PATH"))
+        code, rows = self.run_main("why", "Lantern.Strasse", "--root", str(root))
+        self.assertEqual(0, code)
+        self.assertEqual(
+            [
+                ["App/App.csproj", "-", "Lantern.Strasse", "graph", "Lantern.Strasse (v2.0.0)"],
+                ["App/App.csproj", "-", "Lantern.Strasse", "graph", f"{CAFE} (v3.0.0) > Lantern.Strasse (v2.0.0)"],
+            ],
+            self.lines(rows, "PATH"),
+        )
+        code, rows = self.run_main("why", "LANTERN.CAF\u00c9", "--root", str(root))
+        self.assertEqual(0, code)
+        self.assertEqual(
+            [["App/App.csproj", "-", "LANTERN.CAF\u00c9", "graph", f"{CAFE} (v3.0.0)"]], self.lines(rows, "PATH")
+        )
+
+    def test_a_packages_folder_named_with_the_sharp_s_is_not_the_folder_of_an_id_spelled_with_ss(self) -> None:
+        root = self.legacy_app([("Lantern.Strasse", "2.0.0")], [(SHARP_S, "2.0.0", ("Lantern.Gone",))])
+        code, rows = self.run_main("why", "Lantern.Gone", "--root", str(root))
+        self.assertEqual(0, code)
+        self.assertEqual([["App/App.csproj", "legacy", "direct", "listed"]], self.lines(rows, "PROJECT"))
+        self.assertEqual([], self.lines(rows, "PATH"))
+
+    def test_rows_are_printed_in_the_order_of_their_ordinal_fold(self) -> None:
+        packages = [("Lantern.Strasz", "1.0.0"), (SHARP_S, "1.0.0"), ("Lantern.Strasse", "2.0.0"), (CAFE, "3.0.0")]
+        root = self.legacy_app(packages, [(name, version, ()) for name, version in packages])
+        code, rows = self.run_main(
+            "why", "--all", "--project", str(self.root / "App" / "App.csproj"), "--root", str(root)
+        )
+        self.assertEqual(0, code)
+        self.assertEqual(
+            [CAFE, "Lantern.Strasse", "Lantern.Strasz", SHARP_S], [row[2] for row in self.lines(rows, "REACHES")]
+        )
+
+
 class UnreadableInputTests(Fixture):
     def test_an_unreadable_central_versions_file_is_reported_once_and_each_project_keeps_its_own_facts(self) -> None:
         root = self.mixed_solution()

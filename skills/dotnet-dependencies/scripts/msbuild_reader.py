@@ -318,7 +318,7 @@ def package_assemblies(package_dir: Path) -> tuple[str, ...]:
         found = matching(lib, "**/*.dll")
     except OSError as error:
         raise os_unreadable(error, lib) from None
-    return tuple(sorted({path.stem for path in found}, key=str.casefold))
+    return tuple(sorted({path.stem for path in found}, key=ordinal_fold))
 
 
 def assets_assemblies(entry: dict[str, Any], path: Path, where: str) -> tuple[str, ...]:
@@ -326,7 +326,7 @@ def assets_assemblies(entry: dict[str, Any], path: Path, where: str) -> tuple[st
     assets file at `path`, whose compile section of another kind than an object is Unreadable."""
     compile_entries = mapping(entry, "compile", path, f"{where}.compile")
     stems = {Path(key).stem for key in compile_entries if ordinal_fold(key).endswith(".dll")}
-    return tuple(sorted(stems, key=str.casefold))
+    return tuple(sorted(stems, key=ordinal_fold))
 
 
 def mapping(document: dict[str, Any], key: str, path: Path, where: str) -> dict[str, Any]:
