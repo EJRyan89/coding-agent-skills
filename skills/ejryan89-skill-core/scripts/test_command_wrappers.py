@@ -33,6 +33,17 @@ def test_the_catalogue_names_each_wrapper_and_find_s_actions() -> None:
         "timeout",
         "stdbuf",
         "xargs",
+        "sudo",
+        "doas",
+        "setsid",
+        "ionice",
+        "chrt",
+        "taskset",
+        "chroot",
+        "unbuffer",
+        "chronic",
+        "strace",
+        "ltrace",
     }
     assert {"-exec", "-execdir", "-ok", "-okdir"} == FIND_COMMANDS
 
@@ -62,6 +73,24 @@ def test_the_catalogue_names_each_wrapper_and_find_s_actions() -> None:
         (["command", "-p", "git", "push", "-V"], ["git", "push", "-V"]),
         (["env"], []),
         (["git", "push"], []),
+        (["sudo", "git", "push"], ["git", "push"]),
+        (["sudo", "-u", "me", "-E", "A=1", "git"], ["git"]),
+        (["sudo", "--user=me", "-h", "git"], ["git"]),
+        (["sudo", "-hhost", "--preserve-env", "git"], ["git"]),
+        (["sudo", "-a", "type", "--auth-type", "type", "git"], ["git"]),
+        (["doas", "-u", "me", "-n", "git"], ["git"]),
+        (["setsid", "-fw", "git"], ["git"]),
+        (["ionice", "-c", "2", "-n7", "--ignore", "git"], ["git"]),
+        (["chrt", "-f", "--sched-runtime", "5", "10", "git"], ["git"]),
+        (["chrt", "-T", "5", "-o", "0", "git"], ["git"]),
+        (["taskset", "-c", "0-3", "git"], ["git"]),
+        (["taskset", "0x1", "git"], ["git"]),
+        (["chroot", "--userspec", "me", "/root", "git"], ["git"]),
+        (["unbuffer", "-p", "git"], ["git"]),
+        (["chronic", "-ev", "git"], ["git"]),
+        (["strace", "-f", "-o", "log", "-e", "trace=all", "-s", "80", "git"], ["git"]),
+        (["strace", "--output=log", "--quiet", "git"], ["git"]),
+        (["ltrace", "-f", "-o", "log", "-l", "lib", "git"], ["git"]),
     ],
 )
 def test_unwrapped_reads_past_a_wrapper_to_the_command_it_runs(words: list[str], program: list[str]) -> None:
@@ -74,6 +103,9 @@ def test_unwrapped_reads_past_a_wrapper_to_the_command_it_runs(words: list[str],
         (["timeout", "--sig", "TERM", "5", "git"], "timeout --sig"),
         (["xargs", "--max-a", "1", "git"], "xargs --max-a"),
         (["env", "-W", "git"], "env -W"),
+        (["sudo", "--us", "me", "git"], "sudo --us"),
+        (["doas", "--user", "me", "git"], "doas --user"),
+        (["chronic", "-x", "git"], "chronic -x"),
     ],
 )
 def test_an_option_the_table_does_not_settle_leaves_the_program_unread(words: list[str], unread: str) -> None:
@@ -81,8 +113,8 @@ def test_an_option_the_table_does_not_settle_leaves_the_program_unread(words: li
 
 
 def test_a_caller_s_own_catalogue_is_read_the_same_way() -> None:
-    assert unwrapped(["sudo", "-u", "me", "git"], {"sudo": option_table("u:")}) == ["git"]
-    assert unwrapped(["sudo", "git"]) == []
+    assert unwrapped(["run", "-u", "me", "git"], {"run": option_table("u:")}) == ["git"]
+    assert unwrapped(["run", "git"]) == []
 
 
 def test_a_split_line_shlex_cannot_split_stays_one_word() -> None:
