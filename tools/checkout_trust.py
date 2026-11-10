@@ -21,19 +21,61 @@ from git_client import GitClient, GitError, output_line, output_lines
 OWN_REMOTES = frozenset({"", ".", "origin"})
 
 
+# A branch's name on a remote: the source a fetch refspec maps a branch of origin from.
+BRANCH_PREFIX = "refs/heads/"
+
+
+def refspec_match(pattern: str, name: str) -> str | None:
+    """What `name` matches of one side of a refspec, git's way: the text the side's one `*` stands for, the empty text
+    when the side has no `*` and is `name` itself, or None when it does not match."""
+    if "*" not in pattern:
+        return "" if pattern == name else None
+    before, after = pattern.split("*", 1)
+    if len(name) < len(before) + len(after) or not (name.startswith(before) and name.endswith(after)):
+        return None
+    return name[len(before) : len(name) - len(after)]
+
+
+def fetched_from(refspecs: list[str], ref: str) -> list[str]:
+    """The names on the remote that the fetch refspecs `refspecs` write to the local `ref`, one for each refspec whose
+    destination matches it, leaving out a name a negative refspec excludes."""
+    negatives = [spec[1:] for spec in refspecs if spec.startswith("^")]
+    sources: list[str] = []
+    for spec in refspecs:
+        if spec.startswith("^"):
+            continue
+        source, separator, destination = spec.removeprefix("+").partition(":")
+        captured = refspec_match(destination, ref) if separator else None
+        if captured is None:
+            continue
+        mapped = source.replace("*", captured, 1)
+        if not any(refspec_match(negative, mapped) is not None for negative in negatives):
+            sources.append(mapped)
+    return sources
+
+
+def is_origin_branch(refspecs: list[str], ref: str) -> bool:
+    """Whether the local `ref` is a branch of origin: origin's fetch refspecs `refspecs` write it from a branch on the
+    remote and from nothing else, so a name a pull request's refspec, or another ref's, may also write never counts."""
+    sources = fetched_from(refspecs, ref)
+    return bool(sources) and all(source.startswith(BRANCH_PREFIX) for source in sources)
+
+
 def origin_branches_holding_head(git: GitClient, directory: Path) -> list[str]:
-    """The full names of origin's remote-tracking branches whose history holds the checkout's HEAD, in git's order.
-    Raises GitError when git cannot read the checkout."""
-    held = git.output(
-        ["for-each-ref", "--contains", "HEAD", "--format=%(refname)", "refs/remotes/origin"], directory=directory
-    )
-    return output_lines(held)
+    """The full names of origin's remote-tracking branches whose history holds the checkout's HEAD, in git's order: the
+    local refs origin's fetch refspecs write from its branches alone, never another ref they write, such as a pull
+    request's head mirrored under refs/remotes/origin. Raises GitError when git cannot read the checkout."""
+    # Exits 1 saying nothing when origin has no fetch refspec, and then no ref is a branch of origin.
+    configured = git.quiet_output(["config", "--get-all", "remote.origin.fetch"], directory=directory)
+    refspecs = output_lines(configured or "")
+    held = output_lines(git.output(["for-each-ref", "--contains", "HEAD", "--format=%(refname)"], directory=directory))
+    return [ref for ref in held if is_origin_branch(refspecs, ref)]
 
 
 def foreign_checkout(git: GitClient, directory: Path) -> str | None:
     """Why the checkout at `directory` follows another repository's pull request, or None when it does not: its
-    branch's upstream is a pull request's ref or a remote other than origin, or its HEAD is detached at a commit no
-    branch of origin holds. Raises GitError when git cannot read the checkout."""
+    branch's upstream is a pull request's ref, a remote other than origin, or any other ref that is not a branch, or its
+    HEAD is detached at a commit no branch of origin holds. Raises GitError when git cannot read the checkout."""
     # Each read exits 1 saying nothing for what is not there: a detached HEAD, or a branch that follows nothing.
     branch = git.quiet_output(["symbolic-ref", "-q", "--short", "HEAD"], directory=directory)
     if branch is None:
@@ -47,6 +89,8 @@ def foreign_checkout(git: GitClient, directory: Path) -> str | None:
         return f"its branch {name} follows {merge}, a pull request's ref"
     if remote not in OWN_REMOTES:
         return f"its branch {name} follows {remote}, not origin"
+    if merge and not merge.startswith(BRANCH_PREFIX):
+        return f"its branch {name} follows {merge}, not a branch"
     return None
 
 
