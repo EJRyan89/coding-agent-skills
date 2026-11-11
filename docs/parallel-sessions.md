@@ -250,7 +250,8 @@ With the guard enabled:
     creates a branch git names itself or one that shadows a ref the hub follows, as `-b origin/main` would, and
     optionally `-q`; and `worktree remove`; neither with `-f`, which would check `main` out a second time or remove a
     worktree with changes
-  - `branch` listing, or deleting with `-d`, `-D`, or `--delete`, which git refuses for a branch a worktree has
+  - `branch` listing, or deleting with `-d`, `-D`, or `--delete` any local branch git will delete, not only a task's
+    `<kind>/<name>` branch, and with `-r` any remote-tracking ref; git refuses to delete a branch a worktree has
     checked out; an operand without one of those or `--list` creates a branch, and `-u`, `--set-upstream-to`, `-m`,
     `-c`, and `-f` are not declared
   - `tag` listing, its operands read only with `-l` or `--list`

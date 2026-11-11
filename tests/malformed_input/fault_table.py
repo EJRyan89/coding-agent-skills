@@ -116,14 +116,14 @@ class Driver:
     """One command of an entry point, run under faults.
 
     `entry` is the entry point's path from the repository root, and `command` its subcommand, or "" for one that has
-    none. `arguments` are its command line, each formatted with the fixture's `{root}`, `{home}`, and `{work}`.
-    `prepare` builds the fixture before each run; `inputs` are the files below the fixture root the command reads,
-    each run under every file fault; `git` and `gh` say it runs that program, so it is run under its faults.
-    `not_run` names each fault of its kinds it is not run under, or `<fault> <input>` for one input alone, with the
-    reason. A driver `from_checkout` runs the
-    entry point's copy in the fixture's checkout, for a command that reads the repository it lies in; `outputs` are
-    the files and folders it would write, beside the home and the work folder, which a refused run leaves as it found
-    them. `inputs` and `outputs` are formatted as the arguments are.
+    none. `arguments` are its command line, each formatted with the fixture's `{root}`, `{home}`, `{work}`, and
+    `{checkout}`, the copy of this checkout a `from_checkout` driver runs from. `prepare` builds the fixture before each
+    run; `inputs` are the files below the fixture root the command reads, each run under every file fault; `git` and
+    `gh` say it runs that program, so it is run under its faults. `not_run` names each fault of its kinds it is not run
+    under, or `<fault> <input>` for one input alone, with the reason. A driver `from_checkout` runs the entry point's
+    copy in the fixture's checkout, for a command that reads the repository it lies in; `outputs` are the files and
+    folders it would write, beside the home and the work folder, which a refused run leaves as it found them. `inputs`
+    and `outputs` are formatted as the arguments are.
     """
 
     entry: str

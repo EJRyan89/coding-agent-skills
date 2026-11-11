@@ -194,7 +194,9 @@ def review_document_prompts(directory: Path) -> dict[str, str]:
 
 def review_repository(directory: Path) -> dict[str, str]:
     """The sibling-spellings specialist's prompt, which a fix's title routes and which is given the closing issue, from
-    the scenario that plants a fix closing only the reproduced spelling, with the reviewer placed as a run places it."""
+    the scenario that plants a fix closing only the reproduced spelling, with the reviewer placed as a run places it.
+    It is the one role sampled for this skill: the closing issue is what review-repository adds to a prompt, and the
+    other specialists the scenario routes are written by the same pipeline that writes review-prs' samples."""
     scenario = skill_evals_scenarios.load_scenario("review-repository", REVIEWER_SCENARIOS / "open-spelling")
     with skill_evals_scenarios.reviewed_fixture(scenario) as fixture:
         prompts = _prepared_prompts(fixture, directory)

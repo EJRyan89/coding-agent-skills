@@ -534,16 +534,17 @@ def main(stream: str) -> int:
         reason = f"Code-review reviewer boundary: the guard could not evaluate this call ({type(exc).__name__})."
     if reason:
         # A reason JSON cannot carry, such as one quoting a resolved path whose name decoded to a lone surrogate,
-        # gives way to UNWRITABLE_REASON, so a denial is always written: a FAILED line instead would let the call
-        # through.
+        # gives way to UNWRITABLE_REASON, so a denial is always written: a FAILED line instead would block the call,
+        # as the reviewer agent's hook declares onFailure: block, but give the model a hook error, not the reason.
         print(hook_decision.denial(reason, UNWRITABLE_REASON))
     return 0
 
 
 def hook() -> int:
     """Answer the hook event on stdin. A stream that cannot be read, such as bytes the console's code page cannot
-    decode, is an unreadable event, and is denied like one, never left to the runner's FAILED line, which Claude Code
-    would read as a hook error and let the call through."""
+    decode, is an unreadable event, and is denied like one, never left to the runner's FAILED line: Claude Code reads
+    that as a hook error, which blocks the call where the reviewer agent's hook declares onFailure: block, but the
+    denial is written so its reason reaches the model."""
     try:
         stream = sys.stdin.read()
     except (OSError, ValueError):
