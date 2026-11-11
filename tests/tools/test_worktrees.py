@@ -440,3 +440,19 @@ class GitMarkNameTests(unittest.TestCase):
             for folds in (True, False):
                 with self.subTest(folds=folds), mock.patch.dict(path_keys._FOLDS_CASE, {str(repository): folds}):
                     self.assertEqual(not folds, worktrees.below_a_checkout(inside))
+
+    def test_a_common_directory_spelled_in_another_case_is_a_checkout_s_where_its_folder_folds_case(self) -> None:
+        # git names the common directory as it was given, so on a folding file system .GIT marks a checkout.
+        with tempfile.TemporaryDirectory() as temporary:
+            place = Path(temporary).resolve()
+            common = place / ".GIT"
+            common.mkdir()
+            answer = git_client.GitResult(0, f"{place}\n{common}\n", "")
+            for folds in (True, False):
+                with (
+                    self.subTest(folds=folds),
+                    mock.patch.dict(path_keys._FOLDS_CASE, {str(place): folds}),
+                    mock.patch.object(worktrees, "git", return_value=answer),
+                ):
+                    expected = worktrees.Checkout(place, place) if folds else None
+                    self.assertEqual(expected, worktrees.checkout_of(place))

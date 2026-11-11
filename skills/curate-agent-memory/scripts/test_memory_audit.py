@@ -22,6 +22,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-cor
 
 import atomic_file
 import memory_audit
+import path_keys
 import skill_roots
 from executable_locator import RelativeEnvironmentPath
 from file_presence import NotAFile
@@ -2141,6 +2142,26 @@ class ResolveTests(unittest.TestCase):
         self.assertEqual(f"git config gave core.worktree in {common / 'config'} an empty value", str(context.exception))
         with self.assertRaises(memory_audit.UnknownMainWorktree):
             main_worktree_given(None)
+
+    def test_a_shared_git_directory_spelled_in_another_case_is_the_main_worktree_s_where_it_folds(self) -> None:
+        # git names the shared Git directory as it was given, so on a folding file system .GIT is the main
+        # worktree's own; on a case-sensitive one it is another folder, read through core.worktree.
+        main = self.root / "main"
+        common = main / ".GIT"
+        common.mkdir(parents=True)
+        paths = [self.root / "linked", common / "worktrees" / "linked", common]
+        for folds in (True, False):
+            with (
+                self.subTest(folds=folds),
+                mock.patch.dict(path_keys._FOLDS_CASE, {str(main): folds}),
+                mock.patch.object(GitClient, "rev_parse_paths", return_value=paths),
+                mock.patch.object(GitClient, "quiet_output", return_value=None),
+            ):
+                if folds:
+                    self.assertEqual(main, memory_audit.main_worktree(self.root / "linked"))
+                else:
+                    with self.assertRaises(memory_audit.UnknownMainWorktree):
+                        memory_audit.main_worktree(self.root / "linked")
 
     def test_a_used_repository_choice_states_the_block_rule(self) -> None:
         self.store(self.home / "chosen")

@@ -137,7 +137,7 @@ def checkout_of(path: Path, timeout: float = GUARD_GIT_TIMEOUT_SECONDS) -> Check
     if len(lines) != 2:
         raise GitError(f"git rev-parse answered {len(lines)} lines for the checkout at {directory}, not two")
     common = Path(lines[1])
-    if common.name != ".git":
+    if platform_support.name_key(common.name, common.parent) != ".git":
         return None
     return Checkout(Path(lines[0]), common.parent)
 
