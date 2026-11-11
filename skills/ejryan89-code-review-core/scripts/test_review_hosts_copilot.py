@@ -1098,7 +1098,7 @@ class CopilotProcessTests(unittest.TestCase):
     def setUp(self) -> None:
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
-        self.folder = Path(temporary.name)
+        self.folder = Path(temporary.name).resolve()
         self.environment = {**os.environ, "COPILOT_FIXTURE": "isolated value"}
 
     def run_copilot_program(self, program: str, stdin: str = "") -> ProcessResult:

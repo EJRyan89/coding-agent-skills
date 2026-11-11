@@ -281,7 +281,7 @@ class MemoryAuditTests(unittest.TestCase):
 
     if FOLDS_CASE:
 
-        def test_case_only_index_targets_are_indexed_and_duplicate_on_windows(self) -> None:
+        def test_case_only_index_targets_are_indexed_and_duplicate_where_the_store_folds_case(self) -> None:
             write(self.memory_dir / "rule.md", memory("rule", "Rule body."))
             self.assertTrue((self.memory_dir / "RULE.md").is_file(), "the fixture requires a case-insensitive store")
             write(self.memory_dir / "MEMORY.md", "- [Rule](RULE.md) — hook\n")

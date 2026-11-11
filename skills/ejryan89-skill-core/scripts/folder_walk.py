@@ -11,6 +11,8 @@ with the reason, so each caller decides what a folder it could not search costs 
   NuGet's `packages` (`dotnet_solution.SEARCH_SKIPPED_FOLDERS`).
 - Nested checkouts: a folder below `top` holding a `.git` folder or file, a clone, a submodule, or a worktree, is
   another repository's, so its files are not given; it is reported as `NESTED_CHECKOUT`. `top` itself is searched.
+  The `.git` entry is recognized as the folder holding it compares names, so `.GIT` marks a checkout only where that
+  folder folds case.
 - Links: an entry that is a symbolic link, a Windows junction, or another reparse point, as `link_probe` judges one,
   and that leads to a folder or to nothing, is not entered, since it may lead out of the tree or back into it,
   and is reported as `LINKED`, unless the caller's `follow` accepts its path. Even then a link that leads
@@ -31,6 +33,7 @@ from pathlib import Path
 from typing import Final, Literal
 
 from link_probe import is_link_or_junction
+from path_keys import name_key
 
 SKIPPED_FOLDERS = frozenset(
     {".git", ".hg", ".svn", "node_modules", ".venv", "venv", ".tox", ".nox", "__pycache__", "bin", "obj", ".vs"}
@@ -141,6 +144,12 @@ def enter(
     return inside | {identity}
 
 
+def is_checkout_marker(name: str, folder: Path) -> bool:
+    """Whether `name` in `folder` is its `.git` entry as the folder compares names. The folder is asked only about a
+    name that is `.git` in some case, so the walk asks no folder that holds none."""
+    return name.casefold() == CHECKOUT_MARKER and name_key(name, folder) == CHECKOUT_MARKER
+
+
 def search_folder(
     walk: Walk, folder: Path, top: Path, wanted: Callable[[str], bool], skipped: frozenset[str]
 ) -> list[tuple[Path, bool]]:
@@ -152,7 +161,7 @@ def search_folder(
     except OSError as error:
         walk.not_entered.append(unlistable(folder, error))
         return []
-    if folder != top and any(entry.name.casefold() == CHECKOUT_MARKER for entry in entries):
+    if folder != top and any(is_checkout_marker(entry.name, folder) for entry in entries):
         walk.not_entered.append(NotEntered(folder, NESTED_CHECKOUT, NESTED_CHECKOUT_REASON))
         return []
     subfolders: list[tuple[Path, bool]] = []

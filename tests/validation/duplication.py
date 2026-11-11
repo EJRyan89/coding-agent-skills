@@ -341,6 +341,38 @@ def _folds_path_case(
     )
 
 
+def _compares_git_name(
+    node: ast.AST, _members: frozenset[str], _imports_owner: bool, _name: str, resolver: CallableResolver
+) -> bool:
+    """A name compared with `.git` by hand: `==` or `!=` between the literal and anything but path_keys' name_key, as
+    an exact match, which misses a `.GIT` a folding file system takes for `.git`, or a str.casefold, which takes it
+    on a case-sensitive one too. name_key asks the folder's file system, so `.GIT` is the Git directory only where the
+    folder folds case."""
+    if not isinstance(node, ast.Compare):
+        return False
+    operands = [node.left, *node.comparators]
+    for index, operator in enumerate(node.ops):
+        if not isinstance(operator, (ast.Eq, ast.NotEq)):
+            continue
+        first, second = operands[index], operands[index + 1]
+        for side, other in ((first, second), (second, first)):
+            if isinstance(side, ast.Constant) and side.value == GIT_DIRECTORY and not _keyed_by_folder(other, resolver):
+                return True
+    return False
+
+
+# The Git directory's name, which _compares_git_name looks for as a literal.
+GIT_DIRECTORY = ".git"
+
+
+def _keyed_by_folder(node: ast.AST, resolver: CallableResolver) -> bool:
+    """Whether `node` calls name_key, from path_keys or through the deployer's platform_support, which re-exports it."""
+    if not isinstance(node, ast.Call):
+        return False
+    module, _, function = resolver.name(node.func).rpartition(".")
+    return function == "name_key" and module.rpartition(".")[2] in {"path_keys", "platform_support"}
+
+
 @dataclass(frozen=True)
 class SharedFact:
     """One value or function the repository keeps in one module, its owner, under one module-level name, and how
@@ -367,6 +399,7 @@ def _shared_facts() -> tuple[SharedFact, ...]:
         SharedFact("tests/validation/skill_layout.py", "HOME_SPELLINGS", _patterns_member),
         SharedFact(f"{SKILL_CORE_SCRIPTS}/versions.py", "SEPARATOR", _reads_version_numbers),
         SharedFact(f"{SKILL_CORE_SCRIPTS}/path_keys.py", "path_key", _folds_path_case),
+        SharedFact(f"{SKILL_CORE_SCRIPTS}/path_keys.py", "name_key", _compares_git_name),
     )
 
 

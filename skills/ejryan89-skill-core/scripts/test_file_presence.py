@@ -14,6 +14,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import path_keys
 from file_presence import NotADirectory, NotAFile, is_directory, is_occupied, is_present, matching
 
 # The errno values Python gives a directory and an invalid argument on Windows and on Linux alike, written out so the
@@ -306,14 +307,19 @@ class MatchingTests(unittest.TestCase):
                 self.assertEqual(sorted(self.root.glob(pattern)), matching(self.root, pattern))
 
     def test_two_names_the_file_system_keeps_apart_are_two_matches(self) -> None:
-        # Windows' path comparison lowers the Kelvin sign to k, while its file system keeps the sign and K apart.
+        # Windows' path comparison lowers the Kelvin sign to k, while NTFS and Linux's file systems keep the sign and K
+        # apart. macOS's default APFS folds the sign to k as well, so it holds one file; the folder's own listing is
+        # the answer, and each name it holds is one match.
         folder = self.root / "kelvin"
         folder.mkdir()
         kelvin = "\u212a.dll"
         for name in (kelvin, "K.dll"):
             (folder / name).write_text("", encoding="utf-8")
-        self.assertEqual(sorted([kelvin, "K.dll"]), sorted(path.name for path in matching(folder, "*.dll")))
-        self.assertEqual(2, len(matching(self.root, "**/*.dll")))
+        held = sorted(path.name for path in folder.iterdir())
+        self.assertEqual(held, sorted(path.name for path in matching(folder, "*.dll")))
+        self.assertEqual(len(held), len(matching(self.root, "**/*.dll")))
+        if not path_keys.folds_case(folder):
+            self.assertEqual(sorted([kelvin, "K.dll"]), held)
 
     def test_nothing_at_the_folder_matches_nothing_and_something_else_is_refused(self) -> None:
         self.assertEqual([], matching(self.root / "missing", "*"))

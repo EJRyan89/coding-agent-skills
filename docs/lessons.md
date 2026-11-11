@@ -711,7 +711,9 @@ removed fails validation until its pattern follows it.
   repository identity is compared in, which `review_state:validate_state` keys the state by.
 - **Guard:** `tests/validation/duplication.py::DuplicationPolicies::test_repository_copies_only_what_it_sanctions`,
   which fails a version's numbers read by hand outside the version reader, and a path case-folded by hand outside
-  the path key, and os.path.normcase of a path or a name anywhere outside the path key's module;
+  the path key, and os.path.normcase of a path or a name anywhere outside the path key's module, and a name compared
+  with the Git directory's name by equality other than through the name key;
+  `tests/validation/test_duplication.py::SharedFactPolicy::test_a_name_compared_with_git_by_hand_fails_and_one_keyed_by_its_folder_passes`,
   `skills/ejryan89-skill-core/scripts/test_versions.py::OrderTests::test_versions_order_by_number_never_as_text`,
   `skills/ejryan89-skill-core/scripts/test_path_keys.py::PathKeyTests::test_two_spellings_of_one_path_have_one_key`,
   `skills/ejryan89-skill-core/scripts/test_path_keys.py::PathKeyTests::test_a_case_sensitive_directory_keeps_two_spellings_apart_whatever_the_platform`,
@@ -724,12 +726,15 @@ removed fails validation until its pattern follows it.
   `skills/ejryan89-code-review-core/scripts/test_review_pipeline.py::BatchTests::test_a_state_holding_one_repository_under_two_spellings_is_refused`
 - **Search for:** `version in`, `.startswith(version`, `sorted(tags`, or `tags[-1]`; `int(part) for part in` or
   `map(int,` over a `.split(".")`; in a workflow, `grep` or `contains(` on a version; `==` between two paths with no
-  normalization, or `os.path.normcase` outside `path_keys.py`, of a whole path or of one name such as `.git`;
-  `sys.platform == "win32"` or `os.name == "nt"` standing for a case-insensitive file system; a glob,
+  normalization, or `os.path.normcase` outside `path_keys.py`, of a whole path or of one name such as `.git`; a
+  name compared with `.git`, or with a constant that holds it, exactly or after `str.casefold`;
+  `sys.platform == "win32"` or `os.name == "nt"` standing for a case-insensitive file system, in a test as in code;
+  a fixture that writes two names into one folder that a folding file system makes one, such as `K.dll` and `k.dll`,
+  or `Strasse` and `Straße`, which macOS's default APFS also folds together; a glob,
   `fnmatch.fnmatch(`, or `.is_file()` of a fixed file name, which folds case on Windows, beside a dictionary keyed by
   each file's spelling on disk; a dictionary read from a file and keyed by repository identity whose keys pass
   `validate_repository_identity(` but are kept as written, while lookups use the lowercase form it returns.
-- **Examples:** #1556, #1855, #1867, #1909, #2299, #2590, #2614
+- **Examples:** #1556, #1855, #1867, #1909, #2299, #2590, #2614, #2615, #2620
 
 ### A child process starts from an environment built for it
 
