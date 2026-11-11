@@ -62,6 +62,7 @@ from git_client import (
 from git_client import GLOBAL_VALUE_OPTIONS as GIT_OPTIONS_WITH_VALUE
 from job_tree import process_tree
 from option_reader import (
+    MACOS_ENV_LETTERS,
     OptionReading,
     OptionTable,
     Word,
@@ -455,11 +456,22 @@ RUNNERS_ALWAYS_REFUSED = frozenset(
 # abbreviated, or inside a bundle (option_refusal). A long option is understood only spelled in full, since an
 # abbreviation of a safe option may be one of another option too. timeout's -f and -p, the Rust coreutils' short
 # forms of --foreground and --preserve-status, are read as those are. env's NAME=VALUE words are read as assignments
-# for its command (runner_assignments); one before any other runner's command, as sudo takes, is refused, since it may
+# for its command (runner_assignments). macOS's env, FreeBSD's, lists `-` as a letter and takes no long option, so it
+# reads a long option word as a bundle of letters, `--unset tar xf` as `-`, `-u nset`, and the command tar: env's
+# table reads each dash word that way too, by that build's letters and the ones of them known to be safe, and refuses
+# one the two builds read as taking different words (option_reader's dash_reading), so `--unset NAME` is refused and
+# `--unset=NAME` understood. macOS's other runners take no `-` letter and refuse such a word, or, as its xargs, read
+# GNU's long names. One NAME=VALUE word before any other runner's command, as sudo takes, is refused, since it may
 # set a variable the guard does not judge. bash and pwsh are read by their scripts (shell_script), and the runners
 # RUNNERS_ALWAYS_REFUSED names are refused whatever their options.
 RUNNER_OPTIONS: dict[str, OptionTable] = {
-    "env": option_table("i0u:v", "ignore-environment null unset= debug", assignments=True),
+    "env": option_table(
+        "i0u:v",
+        "ignore-environment null unset= debug",
+        assignments=True,
+        dash_build=MACOS_ENV_LETTERS,
+        dash_safe="-0iuv",
+    ),
     "xargs": option_table(
         "0a:d:E:L:n:P:rs:tx",
         "null arg-file= delimiter= max-args= max-procs= no-run-if-empty max-chars= verbose exit",

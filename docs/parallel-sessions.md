@@ -431,7 +431,12 @@ a row decides it.
   below, `sort`'s `--check-silent` as its `-C`. Every other option word of a runner is refused, in every spelling getopt reads:
   exactly, with its value attached by `=` or directly, abbreviated, or as a letter in a bundle, as `-0IX` is. A long
   option is understood only spelled in full, since an abbreviation of a safe option may
-  be one of another option too. `env`'s `NAME=VALUE` words are read among its options as assignments for its
+  be one of another option too. macOS's `env`, FreeBSD's, takes no long option and lists `-` as an option letter, so
+  it reads a long option word as a bundle of letters, `env --unset tar xf a.tar` as `-`, `-u` with `nset` attached,
+  and the program `tar`; `env`'s words are read by that build's letters too, and a word the two builds read as taking
+  different words is refused, so `--unset NAME` is refused on every platform and `--unset=NAME` is understood.
+  macOS's other runners take no `-` letter, so they refuse such a word and run nothing, or, as its `xargs` and
+  `sort` do, read GNU's long names alike. `env`'s `NAME=VALUE` words are read among its options as assignments for its
   command, a value-taking option's value never ending them, and judged as ones before it, from Bash and PowerShell
   alike; such a word before any other runner's command, as `sudo`
   takes, is refused, since it may set a variable the guard does not judge. `bash -c` with a literal script is read as
