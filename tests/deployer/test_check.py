@@ -352,7 +352,9 @@ class CheckCommandTests(DeployerTestCase):
         result = self.check(Machine(missing=("shellcheck",)))
         self.assertEqual(1, result.code, result.output)
         groups = self.report_groups(result.output, "CHECK")
-        hint = "winget install --id koalaman.shellcheck" if platform_support.WINDOWS else "sudo apt install shellcheck"
+        hint = {"win32": "winget install --id koalaman.shellcheck", "darwin": "brew install shellcheck"}.get(
+            sys.platform, "sudo apt install shellcheck"
+        )
         self.assertEqual([f"ShellCheck (needed to deploy; {hint})"], groups["MISSING"])
         self.assertTrue(
             result.output.endswith(
@@ -1047,6 +1049,7 @@ class StandardCommandTests(unittest.TestCase):
                     "mv",
                     "od",
                     "paste",
+                    "ps",
                     "readlink",
                     "realpath",
                     "rm",

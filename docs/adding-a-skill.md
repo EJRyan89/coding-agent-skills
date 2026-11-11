@@ -182,7 +182,7 @@ Every metadata file has one layout, the one `tools/new_skill.py` writes: one key
 Skills run on machines where installing extra utilities may be inconvenient or not allowed, so a skill may run only:
 
 - Python and its standard library. Call it as `{{PYTHON}}` in a Markdown example and a grant, which the deployer renders as `python` on Windows, where `python3` is often a Microsoft Store placeholder, and as `python3` elsewhere, where a distribution may install no `python` command; see [Template values](#template-values).
-- `git`, Bash, and the utilities Git for Windows bundles on Windows and a Linux system provides, such as `grep`, `sed`, `awk`, `find`, `tr`, `xargs`, and `curl`. On Windows they come with Git for Windows, together with `cygpath`; on Linux they are the system's.
+- `git`, Bash, and the utilities Git for Windows bundles on Windows and a Linux or macOS system provides, such as `grep`, `sed`, `awk`, `find`, `tr`, `xargs`, `ps`, and `curl`. On Windows they come with Git for Windows, together with `cygpath`; on Linux and macOS they are the system's, and a script that must run the same on both keeps to the options POSIX gives them, since macOS's are BSD's rather than GNU's.
 - PowerShell: `pwsh`, and on Windows also Windows PowerShell (`powershell`).
 - A tool from the catalogue in `deployer/tools.py`, declared in the skill's metadata as described below.
 

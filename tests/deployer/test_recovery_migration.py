@@ -11,6 +11,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import unittest
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any, ClassVar, get_args
@@ -949,6 +950,7 @@ class RecoveryFailureTests(RecoveryTestCase):
         self.assertFalse((self.home / ".claude" / "deployer" / "staging" / self.NEXT).exists())
         self.assertFalse(self.lock_dir.exists())
 
+    @unittest.skipIf(sys.platform == "darwin", "APFS and HFS+ refuse a name that is not valid UTF-8")
     def test_an_installed_copy_holding_a_name_that_is_not_utf8_sends_a_committed_run_to_the_manual_steps(self) -> None:
         # The name tree_hash could not encode raised a UnicodeEncodeError no recovery handler caught, so the report
         # promised a retry that would meet the same name forever.

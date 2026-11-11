@@ -1,4 +1,4 @@
-"""Operating-system specific behavior: Windows, and Linux in the deployer core."""
+"""Operating-system specific behavior: Windows, and Linux and macOS in the deployer core."""
 
 from __future__ import annotations
 
@@ -27,9 +27,10 @@ from job_tree import JobRefused
 
 from .errors import DeployError, os_error, see_recovery
 
-# The platforms the deployer runs on, by sys.platform. macOS is not yet one of them.
-SUPPORTED_PLATFORMS = {"win32": "Windows", "linux": "Linux"}
+# The platforms the deployer runs on, by sys.platform.
+SUPPORTED_PLATFORMS = {"win32": "Windows", "linux": "Linux", "darwin": "macOS"}
 WINDOWS = sys.platform == "win32"
+MACOS = sys.platform == "darwin"
 # Whether a process's environment matches a variable's name in any case, as Windows does, so git there takes git_dir
 # as GIT_DIR; elsewhere each spelling is a variable of its own and git reads only the upper-case one.
 ENVIRONMENT_NAMES_FOLD_CASE = WINDOWS
@@ -86,7 +87,18 @@ LINUX_INSTALL_HINTS = {
     "pytest": "python3 -m pip install --require-hashes --only-binary :all: -r requirements-dev.txt",
     "PSScriptAnalyzer": "pwsh -Command 'Install-Module PSScriptAnalyzer -Scope CurrentUser -Force'",
 }
-INSTALL_HINTS = WINDOWS_INSTALL_HINTS if WINDOWS else LINUX_INSTALL_HINTS
+# Homebrew's commands. macOS's own /bin/bash is a Bash 3.2 that Apple no longer updates, so the hint installs a current
+# one, which Homebrew puts ahead of it on PATH.
+MACOS_INSTALL_HINTS = {
+    "Bash": "brew install bash",
+    "ShellCheck": "brew install shellcheck",
+    "PowerShell": "brew install --cask powershell",
+    "ruff": "python3 -m pip install --require-hashes --only-binary :all: -r requirements-dev.txt",
+    "mypy": "python3 -m pip install --require-hashes --only-binary :all: -r requirements-dev.txt",
+    "pytest": "python3 -m pip install --require-hashes --only-binary :all: -r requirements-dev.txt",
+    "PSScriptAnalyzer": "pwsh -Command 'Install-Module PSScriptAnalyzer -Scope CurrentUser -Force'",
+}
+INSTALL_HINTS = WINDOWS_INSTALL_HINTS if WINDOWS else MACOS_INSTALL_HINTS if MACOS else LINUX_INSTALL_HINTS
 WINDOWS_INSTALL_HELP = (
     'For Chocolatey, Scoop, or direct downloads, see "Installing the tools" in',
     "docs/installation.md. To use Git Bash from another location, set GIT_BASH",
@@ -98,7 +110,11 @@ LINUX_INSTALL_HELP = (
     'For other distributions, Microsoft\'s package repository, or direct downloads, see "Installing the tools" in',
     "docs/installation.md.",
 )
-INSTALL_HELP = WINDOWS_INSTALL_HELP if WINDOWS else LINUX_INSTALL_HELP
+MACOS_INSTALL_HELP = (
+    'For MacPorts or direct downloads, see "Installing the tools" in docs/installation.md.',
+    "After installing, open a new terminal, so the shell finds the programs Homebrew linked.",
+)
+INSTALL_HELP = WINDOWS_INSTALL_HELP if WINDOWS else MACOS_INSTALL_HELP if MACOS else LINUX_INSTALL_HELP
 # The command that runs Python here, which every shipped skill's fences and grants render from {{PYTHON}}:
 # ejryan89-skill-core's, which the skills' scripts write into the commands they hand an agent, so the two always agree.
 PYTHON = executable_locator.PYTHON
@@ -117,9 +133,9 @@ PRESENCE_ALLOWED = {
 
 def ensure_supported() -> None:
     if sys.platform not in SUPPORTED_PLATFORMS:
+        *others, last = SUPPORTED_PLATFORMS.values()
         raise DeployError(
-            f"ERROR: The deployer runs on {' and '.join(SUPPORTED_PLATFORMS.values())} only "
-            f"(detected platform: {sys.platform})."
+            f"ERROR: The deployer runs on {', '.join(others)}, and {last} only (detected platform: {sys.platform})."
         )
 
 
@@ -350,7 +366,7 @@ ABSOLUTE = WINDOWS_ABSOLUTE if WINDOWS else POSIX_ABSOLUTE
 ROOT = WINDOWS_ROOT if WINDOWS else POSIX_ROOT
 ABSOLUTE_PATH = "an absolute Windows path" if WINDOWS else "an absolute path"
 # The directory a prompt for one gives as its example.
-EXAMPLE_DIRECTORY = "C:/GitHub" if WINDOWS else "/home/you/GitHub"
+EXAMPLE_DIRECTORY = "C:/GitHub" if WINDOWS else "/Users/you/GitHub" if MACOS else "/home/you/GitHub"
 
 
 def is_absolute(value: str) -> bool:
@@ -408,7 +424,7 @@ def _own_metadata(path: str | os.PathLike[str]) -> os.stat_result | None:
 
 # The machine settings a runtime needs here before it can run a skill's scripts, which `deploy.py check` reports: on
 # Windows, Codex CLI uses a read-only sandbox until ~/.codex/config.toml sets [windows] sandbox, and no sandbox of
-# Codex CLI can start a program that is an app execution alias. Linux has neither.
+# Codex CLI can start a program that is an app execution alias. Linux and macOS have neither.
 CODEX_NEEDS_SANDBOX_SETTING = WINDOWS
 HAS_APP_EXECUTION_ALIASES = WINDOWS
 APP_EXECUTION_ALIAS_REMEDY = (

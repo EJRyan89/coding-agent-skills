@@ -13,9 +13,10 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import bounded_process
 import job_tree
 import process_identity
-from process_identity import ProcessStatus, proc_status, process_status, read_pid, stat_fields
+from process_identity import ProcessStatus, proc_status, process_status, ps_status, read_pid, stat_fields
 from typed_fields import FieldError, FieldReader
 
 # Seconds a started child gets to come up, and an ended one to be reported as ended, on a loaded machine.
@@ -70,21 +71,51 @@ class ProcessStatusTests(unittest.TestCase):
         def test_a_child_that_has_ended_but_is_not_yet_reaped_is_not_alive(self) -> None:
             child = subprocess.Popen([sys.executable, "-c", "pass"])
             self.addCleanup(child.wait)
-            stat = Path(f"/proc/{child.pid}/stat")
             deadline = time.monotonic() + SETTLE_SECONDS
-            while b") Z " not in stat.read_bytes():
+            while not zombie(child.pid):
                 if time.monotonic() >= deadline:
                     self.fail("the child never became a zombie")
                 time.sleep(0.05)
             self.assertEqual(ProcessStatus(False, None), process_status(child.pid))
 
+    if sys.platform == "darwin":
+
+        def test_this_process_s_start_is_the_one_ps_prints_in_utc(self) -> None:
+            # Read independently of the probe: ps's elapsed seconds, taken from now, land within a few seconds of it.
+            elapsed = subprocess.run(
+                ["/bin/ps", "-o", "etime=", "-p", str(os.getpid())], capture_output=True, encoding="ascii", check=True
+            ).stdout.strip()
+            start = process_status(os.getpid()).start_time
+            if start is None:
+                self.fail("this process reports its start time")
+            self.assertLess(abs(time.time() - etime_seconds(elapsed) - start), 5)
+
+
+def zombie(pid: int) -> bool:
+    """Whether the process has ended and waits to be reaped, read as this platform reports it."""
+    if sys.platform == "darwin":
+        state = subprocess.run(["/bin/ps", "-o", "stat=", "-p", str(pid)], capture_output=True, encoding="ascii").stdout
+        return state.strip().startswith("Z")
+    return b") Z " in Path(f"/proc/{pid}/stat").read_bytes()
+
+
+def etime_seconds(text: str) -> int:
+    """The seconds of ps's elapsed time, `[[dd-]hh:]mm:ss`."""
+    days, _, clock = text.rpartition("-")
+    seconds = 0
+    for part in clock.split(":"):
+        seconds = seconds * 60 + int(part)
+    return seconds + int(days or 0) * 86400
+
 
 class PidRangeTests(unittest.TestCase):
     def test_each_platforms_pid_range_is_the_one_its_kernel_allots(self) -> None:
-        # Pinned contract values: a Windows PID is a DWORD, and Linux's PID_MAX_LIMIT on a 64-bit kernel is 2**22.
+        # Pinned contract values: a Windows PID is a DWORD, Linux's PID_MAX_LIMIT on a 64-bit kernel is 2**22, and
+        # macOS's PID_MAX is 99999.
         self.assertEqual(4294967295, process_identity.WINDOWS_PID_MAXIMUM)
         self.assertEqual(4194303, process_identity.LINUX_PID_MAXIMUM)
-        expected = 4294967295 if sys.platform == "win32" else 4194303
+        self.assertEqual(99999, process_identity.MACOS_PID_MAXIMUM)
+        expected = {"win32": 4294967295, "darwin": 99999}.get(sys.platform, 4194303)
         self.assertEqual(expected, process_identity.PID_MAXIMUM)
 
     def test_a_pid_is_read_within_the_platforms_range_and_anything_else_is_refused_by_its_path(self) -> None:
@@ -174,6 +205,96 @@ class ProcStatusTests(unittest.TestCase):
             with self.subTest(pid=pid), mock.patch.object(os, "kill") as kill:
                 self.assertEqual(ProcessStatus(False, None), proc_status(pid))
             kill.assert_not_called()
+
+
+class PsStatusTests(unittest.TestCase):
+    """How macOS's ps is asked and read, with ps replaced by the lines it prints, on every platform."""
+
+    def answer(self, stdout: bytes = b"", returncode: int = 0, raised: BaseException | None = None) -> mock.MagicMock:
+        patcher = mock.patch.object(
+            process_identity,
+            "run_bounded",
+            side_effect=raised,
+            return_value=bounded_process.Finished(returncode, stdout, b""),
+        )
+        run = patcher.start()
+        self.addCleanup(patcher.stop)
+        return run
+
+    def test_ps_is_asked_by_its_path_in_the_c_locale_and_utc_for_the_state_and_start(self) -> None:
+        run = self.answer(b"Ss   Tue Nov 10 20:00:01 2026\n")
+        self.assertEqual(ProcessStatus(True, 1794340801), ps_status(4242))
+        run.assert_called_once_with(
+            ["/bin/ps", "-o", "stat=", "-o", "lstart=", "-p", "4242"],
+            10.0,
+            env={"LC_ALL": "C", "TZ": "UTC0", "PATH": "/usr/bin:/bin"},
+            output_limit=4096,
+        )
+
+    def test_a_day_ps_pads_with_a_space_is_read(self) -> None:
+        self.answer(b"R+   Sun Mar  1 00:00:00 2026\n")
+        self.assertEqual(ProcessStatus(True, 1772323200), ps_status(4242))
+
+    def test_a_process_that_has_ended_but_is_not_yet_reaped_is_gone(self) -> None:
+        for state in (b"Z", b"Z+", b"Zs"):
+            with self.subTest(state=state):
+                self.answer(state + b"   Tue Nov 10 20:00:01 2026\n")
+                self.assertEqual(ProcessStatus(False, None), ps_status(4242))
+
+    def test_a_start_it_cannot_read_reports_the_process_running_with_no_start_time(self) -> None:
+        for line in (
+            b"S",
+            b"S   Tue Nov 10 20:00:01",
+            b"S   Tue Bru 10 20:00:01 2026",
+            b"S   Tue Nov 31 20:00:01 2026",
+            b"S   Tue Nov 10 20:00 2026",
+            b"S   Tue Nov 10 25:00:01 2026",
+            b"S   Tue Nov \xd9\xa1\xd9\xa0 20:00:01 2026",
+            b"S   mar. 10 nov. 20:00:01 2026",
+        ):
+            with self.subTest(line=line):
+                self.answer(line)
+                self.assertEqual(ProcessStatus(True, None), ps_status(4242))
+
+    def test_a_ps_that_cannot_run_or_does_not_finish_reports_the_process_running_with_no_start_time(self) -> None:
+        for raised in (
+            FileNotFoundError(2, "No such file"),
+            OSError(13, "denied"),
+            subprocess.TimeoutExpired("ps", 10),
+        ):
+            with self.subTest(raised=raised), mock.patch.object(os, "kill") as kill:
+                self.answer(raised=raised)
+                self.assertEqual(ProcessStatus(True, None), ps_status(4242))
+            kill.assert_not_called()
+
+    def test_a_pid_ps_does_not_list_is_gone_only_on_the_kernel_s_word(self) -> None:
+        for raised, expected in (
+            (ProcessLookupError(3, "No such process"), ProcessStatus(False, None)),
+            (PermissionError(1, "Operation not permitted"), ProcessStatus(True, None)),
+            (None, ProcessStatus(True, None)),
+        ):
+            with self.subTest(raised=raised), mock.patch.object(os, "kill", side_effect=raised) as kill:
+                self.answer(b"", returncode=1)
+                self.assertEqual(expected, ps_status(4251))
+            kill.assert_called_once_with(4251, 0)
+
+    def test_ps_is_never_asked_for_a_pid_of_zero_or_below_or_past_macos_s_range(self) -> None:
+        run = self.answer(b"S   Tue Nov 10 20:00:01 2026")
+        for pid in (0, -1, 100_000, 2**31):
+            with self.subTest(pid=pid):
+                self.assertEqual(ProcessStatus(False, None), ps_status(pid))
+        run.assert_not_called()
+
+    def test_macos_is_asked_through_ps(self) -> None:
+        with (
+            mock.patch.object(sys, "platform", "darwin"),
+            mock.patch.object(process_identity, "PID_MAXIMUM", 99999),
+            mock.patch.object(process_identity, "ps_status", return_value=ProcessStatus(True, 7)) as asked,
+            mock.patch.object(process_identity, "proc_status") as proc,
+        ):
+            self.assertEqual(ProcessStatus(True, 7), process_status(4242))
+        asked.assert_called_once_with(4242)
+        proc.assert_not_called()
 
 
 class OpenFailureTests(unittest.TestCase):

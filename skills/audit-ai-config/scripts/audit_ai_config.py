@@ -1091,7 +1091,6 @@ def _validate_skill(path: Path, root: Path) -> list[Finding]:
     for finding in findings:
         finding.path = rel
     name = values.get("name", "")
-    directory_name = path.parent.name
     if not name:
         findings.append(Finding("ERROR", "copilot-skill", rel, message="Skill frontmatter requires name"))
     elif not isinstance(name, str) or not re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", name):
@@ -1102,15 +1101,8 @@ def _validate_skill(path: Path, root: Path) -> list[Finding]:
         findings.append(Finding("ERROR", "copilot-skill", rel, message="Skill frontmatter requires description"))
     if values.get("allowed-tools") in ("", []):
         findings.append(Finding("ERROR", "copilot-skill", rel, message="allowed-tools must not be empty"))
-    if directory_name in COPILOT_BUILTIN_NAMES:
-        findings.append(
-            Finding(
-                "ERROR",
-                "collision",
-                rel,
-                message=f"Repository skill '{directory_name}' collides with a Copilot built-in agent",
-            )
-        )
+    # A skill takes no agent ID: GitHub's code review page recommends a review-focused skill directory name such as
+    # code-review, so only a custom agent can collide with a built-in agent (_copilot_agent_fields).
     return findings
 
 
@@ -3333,9 +3325,9 @@ def _rule_scope(root: Path, path: Path, rel: str, text: str) -> list[Finding]:
 CODEX_HOOKS_FILE = ".codex/hooks.json"
 CODEX_AGENTS = ".codex/agents"
 CODEX_RULES = ".codex/rules"
-# The hooks page's events, and the two model-request events Codex 0.164.0 adds, which the page does not list yet; its
-# handler types, of which it parses prompt and agent but skips them; and the guards it says a background hook cannot
-# be: tool policies, permission decisions, prompt rejection, and turn continuation.
+# The hooks page's events, the two model-request events among them; its handler types, of which it parses prompt and
+# agent but skips them; and the guards it says a background hook cannot be: tool policies, permission decisions,
+# prompt rejection, and turn continuation.
 CODEX_HOOKS = HookRules(
     runtime="Codex",
     events=frozenset(

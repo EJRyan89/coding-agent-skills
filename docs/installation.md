@@ -25,9 +25,9 @@ Every deployment needs:
 | Tool | Why |
 |---|---|
 | Python 3.11.4 or newer | Runs the deployer. The deployer and the `audit-ai-config` engine use only the standard library. |
-| Git for Windows, or on Linux Git and Bash | The Bash, Git for Windows' on Windows and the system's on Linux, checks the syntax of rendered Bash scripts and Bash blocks in Markdown; several skills run Bash commands. A deployment from a Git checkout runs Git to record the commit it deployed. |
+| Git for Windows, or on Linux and macOS Git and Bash | The Bash, Git for Windows' on Windows and the first `bash` on `PATH` on Linux and macOS, checks the syntax of rendered Bash scripts and Bash blocks in Markdown; several skills run Bash commands. A deployment from a Git checkout runs Git to record the commit it deployed. |
 | ShellCheck | Lints the same rendered Bash content. Deployment stops if it is missing. CI uses 0.9.0 and checks the latest release weekly; newer releases also work. |
-| PowerShell | Parses rendered `.ps1` files regardless of extension case. Windows PowerShell 5.1 is enough for deployment on Windows; Linux and the validation suite need PowerShell 7 (`pwsh`), and GitHub Copilot CLI on Windows needs PowerShell 6 or newer. |
+| PowerShell | Parses rendered `.ps1` files regardless of extension case. Windows PowerShell 5.1 is enough for deployment on Windows; Linux, macOS, and the validation suite need PowerShell 7 (`pwsh`), and GitHub Copilot CLI on Windows needs PowerShell 6 or newer. |
 
 Some skills need more when you use them, not when you deploy them:
 
@@ -40,7 +40,7 @@ Some skills need more when you use them, not when you deploy them:
 | .NET SDK 9.0.200 or newer, whose `dotnet format` formats a `.slnx` solution or a `.sln` of SDK-style projects; the deprecated `dotnet-format` global tool only for any other `.sln` | `dotnet-format`, which checks for them and reports the install command; `dotnet-dependencies` uses the SDK, when present, for `dotnet nuget why` |
 | `pdftotext` from Xpdf or Poppler, meeting its [provider-specific support floor](dependency-updates.md#runtime-tool-floors) (optional) | The code-review skills, to review a PDF a pull request changes; a missing, unsupported, or unidentifiable parser leaves that review `INCOMPLETE` |
 
-`python deploy.py check` and the skills find each of these tools the same way: the first on your `PATH`, else the one in WinGet's Links folder (`%LOCALAPPDATA%\Microsoft\WinGet\Links`), where WinGet puts a portable install that may not be on `PATH`; on Linux, `PATH` alone. A skill runs the tool at the path it found, so a tool `check` reports is the one the skill starts.
+`python deploy.py check` and the skills find each of these tools the same way: the first on your `PATH`, else the one in WinGet's Links folder (`%LOCALAPPDATA%\Microsoft\WinGet\Links`), where WinGet puts a portable install that may not be on `PATH`; on Linux and macOS, `PATH` alone. A skill runs the tool at the path it found, so a tool `check` reports is the one the skill starts.
 
 For PDF review, an old `pdftotext` bundled with Git for Windows may no longer meet its provider's floor. Install a supported parser from a source you trust and put its directory on the reviewing process's `PATH`, then run `python deploy.py check` in that environment. The [Xpdf command-line tools](https://www.xpdfreader.com/download.html) and [Poppler project](https://poppler.freedesktop.org/) remain supported providers; the project does not install or update them for you. `check` and every extraction look at each `pdftotext` on `PATH`, then in WinGet's Links folder, take the first one that meets its floor, and name each one they passed over and where it was found, so Git's bundled copy, which Git Bash puts ahead of the Windows `PATH`, is skipped rather than blocking a supported one further down. Runtime extraction checks again, so a later `PATH` change or downgrade is checked rather than trusted. A standalone `review-document` refuses before creating its fixture; a pull request records an explicit PDF coverage gap.
 
@@ -85,8 +85,32 @@ The deployer and the whole validation suite run on Linux, and the [`deployable` 
 | Codex CLI | none | none | `npm install -g @openai/codex` with Node.js, or [GitHub releases](https://github.com/openai/codex/releases) |
 | GitHub Copilot CLI | none | none | `npm install -g @github/copilot` with Node.js 22 or newer, `brew install --cask copilot-cli` with Homebrew, the install script `https://gh.io/copilot-install`, or [GitHub releases](https://github.com/github/copilot-cli/releases) ([Installing GitHub Copilot CLI](https://docs.github.com/en/copilot/how-tos/copilot-cli/set-up-copilot-cli/install-copilot-cli)) |
 | `pdftotext` | none: the archive's `poppler-utils` is below Poppler's floor | none, for the same reason | the [Xpdf command-line tools](https://www.xpdfreader.com/download.html), as [Requirements](#requirements) describes |
+| bubblewrap, for Codex CLI's sandbox | `bubblewrap` | `bubblewrap` | [GitHub releases](https://github.com/containers/bubblewrap/releases) |
 
 On a release whose `python3` is older than the deployer's floor, `check` says so; install a newer Python from python.org or with a version manager. On Linux the deployer uses the first `bash` and `pwsh` on your `PATH`, your home is `HOME`, and a configured directory is an absolute path such as `/home/you/GitHub`. Linux distributions name Python `python3`, so run every command on this page as `python3`, as in `python3 deploy.py check`; the skills' own commands already name it so there.
+
+Codex CLI runs a skill's scripts in its sandbox, which on Linux and WSL2 is the first `bwrap` on `PATH`. Without bubblewrap installed Codex falls back to a helper it bundles, which needs the kernel to let an unprivileged user create a user namespace and warns at startup when it cannot; install the `bubblewrap` package, as [Codex's sandboxing guide](https://learn.chatgpt.com/docs/sandboxing) says. On a distribution whose AppArmor restricts user namespaces, such as Ubuntu 24.04, Codex may still warn after bubblewrap is installed: load the AppArmor profile for `bwrap` that the guide gives rather than lifting the restriction for the whole machine. `python3 deploy.py check` does not look for `bwrap`, since Codex runs without it wherever the kernel allows its helper, and Claude Code and Copilot CLI never use it.
+
+### On macOS
+
+The deployer runs on macOS, and the [`deployable` workflow](../.github/workflows/deployable.yml) deploys onto a fresh macOS runner; the validation suite runs on macOS in CI, where some suites do not pass yet; the [README](../README.md#supported-platforms-and-runtimes) says where macOS support stands. Install the tools with [Homebrew](https://brew.sh/):
+
+| Tool | Homebrew | Official download |
+|---|---|---|
+| Python | `brew install python`, or the installer from python.org | [python.org](https://www.python.org/downloads/macos/) |
+| Git and Bash | `brew install git bash` | [git-scm.com](https://git-scm.com/downloads/mac) |
+| ShellCheck | `brew install shellcheck` | [GitHub releases](https://github.com/koalaman/shellcheck/releases) |
+| PowerShell 7 | `brew install --cask powershell` | [GitHub releases](https://github.com/PowerShell/PowerShell/releases), the `.pkg` |
+| GitHub CLI | `brew install gh` | [cli.github.com](https://cli.github.com/) |
+| Node.js, for the npm installs below | `brew install node` | [nodejs.org](https://nodejs.org/) |
+| Claude Code | none | `npm install -g @anthropic-ai/claude-code` with Node.js |
+| Codex CLI | `brew install --cask codex` | `npm install -g @openai/codex` with Node.js, or [GitHub releases](https://github.com/openai/codex/releases) |
+| GitHub Copilot CLI | `brew install --cask copilot-cli` | `npm install -g @github/copilot` with Node.js 22 or newer, or [GitHub releases](https://github.com/github/copilot-cli/releases) |
+| `pdftotext` | `brew install poppler`, whose Poppler meets its floor | the [Xpdf command-line tools](https://www.xpdfreader.com/download.html) |
+
+macOS's own `/bin/bash` is a Bash 3.2 that Apple no longer updates, so install a current one with Homebrew, which puts it ahead of `/bin/bash` on `PATH`; the deployer, like the skills, uses the first `bash` on `PATH`, and the first `pwsh`. Your home is `HOME`, and a configured directory is an absolute path such as `/Users/you/GitHub`. Run every command on this page as `python3`, as in `python3 deploy.py check`, since a macOS install of Python names itself `python3`; the skills' own commands already name it so there. Codex CLI's sandbox on macOS is the system's Seatbelt, which needs no setup.
+
+macOS's default file system, APFS, compares names without regard to case, as Windows' NTFS does, though a volume may be formatted case-sensitive. The deployer asks a directory's file system whether two names in it are one file, but it still compares whole paths with case kept on macOS, so give a configured path, such as `REPOS_ROOT`, in the case the folder has on disk.
 
 ### After installing
 
@@ -94,7 +118,7 @@ On a release whose `python3` is older than the deployer's floor, `check` says so
 
 ## Codex CLI settings
 
-Codex CLI on Windows needs two machine settings before it can run a skill's scripts; on Linux it needs neither. Until both are in place, every skill script fails in Codex, with `blocked by policy` or `The file cannot be accessed by the system`:
+Codex CLI on Windows needs two machine settings before it can run a skill's scripts. On Linux it needs neither, but its sandbox needs bubblewrap, as [On Linux](#on-linux) says, and on macOS it needs nothing. Until both are in place on Windows, every skill script fails in Codex, with `blocked by policy` or `The file cannot be accessed by the system`:
 
 - add a Windows sandbox setting to `~/.codex/config.toml`: MXC, which OpenAI recommends, where the machine offers it, and the elevated sandbox as its fallback, whose one-time setup an administrator approves, as [Windows sandbox mode](codex-support.md#windows-sandbox-mode) shows; and
 - turn off the `python.exe` and `python3.exe` app execution aliases.
@@ -107,7 +131,7 @@ Windows registers `python.exe` and `python3.exe` as app execution aliases in `%L
 
 ## Deploying
 
-Clone the repository and run every command from its directory, in PowerShell or Git Bash on Windows, or in any shell on Linux with `python3` in place of `python`:
+Clone the repository and run every command from its directory, in PowerShell or Git Bash on Windows, or in any shell on Linux or macOS with `python3` in place of `python`:
 
 ```bash
 python deploy.py check
@@ -118,7 +142,7 @@ python deploy.py --all
 
 `check` lists every tool the deployer and the skills need, with its version and which skills use it, and changes nothing. It also lists Git and Claude Code with their versions, so its output is what a bug report asks for; when the source is a Git checkout, Git is listed with the tools needed to deploy, and `check` is not ready to deploy without it. It reports a Claude Code older than its floor in [Dependency updates](dependency-updates.md#runtime-tool-floors) as `OUTDATED`, because the code-review reviewer's guard needs that release to deny a call when the guard cannot run. A tool with a floor whose `--version` fails or prints no version is `UNUSABLE`, naming what its version probe did, until that probe reads a version. Its `Deployed commit` line names the commit the skills were last deployed from, with the nearest tag when Git can describe it, such as `v0.1.0-14-g71ad815 (<full hash>)`, the full hash alone when there is no checkout or Git to ask or the checkout no longer holds the commit, or `unknown` before the first deployment that records one; when Git fails to describe it for any other reason, `check` stops and names Git's reason. A deployment from a Git checkout whose commit Git cannot read, because Git is missing or fails, refuses before it changes anything and names Git's reason, so it never replaces the recorded commit with none. `deploy.py` is the only script you run to deploy; run `python deploy.py --help` for every option.
 
-`configure` prompts for the root directory containing your local repositories, and for `UPDATE_CHANNEL`, what [Updating](#updating) deploys: `release`, the default, or `main`. It also asks for `REPO_CLEANUP_REGENERABLE` and `REPO_CLEANUP_PROTECTED`, what `repo-cleanup` adds to the directories it may delete with a worktree and to the branch prefixes it never deletes; leave both empty to keep its shipped lists, which [`repo-cleanup`](skills.md#repo-cleanup) describes with how to extend them. Rerun it to change a value, or add `--reset` to start from an empty configuration. At any prompt, Enter keeps the current value, a lone `-` clears an optional one, such as either `repo-cleanup` list, and Ctrl+C cancels without saving. Configured paths must be absolute paths of directories that already exist: drive-letter paths on Windows, and paths from the root, such as `/home/you/GitHub`, on Linux. On Windows `configure` accepts them as you would type or paste them, such as `C:\GitHub` or `"C:\GitHub\"`, and stores them with forward slashes, such as `C:/GitHub`.
+`configure` prompts for the root directory containing your local repositories, and for `UPDATE_CHANNEL`, what [Updating](#updating) deploys: `release`, the default, or `main`. It also asks for `REPO_CLEANUP_REGENERABLE` and `REPO_CLEANUP_PROTECTED`, what `repo-cleanup` adds to the directories it may delete with a worktree and to the branch prefixes it never deletes; leave both empty to keep its shipped lists, which [`repo-cleanup`](skills.md#repo-cleanup) describes with how to extend them. Rerun it to change a value, or add `--reset` to start from an empty configuration. At any prompt, Enter keeps the current value, a lone `-` clears an optional one, such as either `repo-cleanup` list, and Ctrl+C cancels without saving. Configured paths must be absolute paths of directories that already exist: drive-letter paths on Windows, and paths from the root, such as `/home/you/GitHub` on Linux or `/Users/you/GitHub` on macOS. On Windows `configure` accepts them as you would type or paste them, such as `C:\GitHub` or `"C:\GitHub\"`, and stores them with forward slashes, such as `C:/GitHub`.
 
 Every prompt, `configure`'s and the deployment's selection menu alike, goes to stderr, and results go to stdout, so a script that reads `deploy.py`'s output never receives a question.
 

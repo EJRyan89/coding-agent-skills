@@ -218,17 +218,23 @@ class JobSecondsFixtures(unittest.TestCase):
     def test_the_table_reads_each_platform_s_seconds_by_job_name(self) -> None:
         path = self.write_table(
             '{"runs": [7, 9], "seconds": {"Linux": {"tests/test_a.py": 1.5}, '
-            '"Windows": {"static lint check": 2.5, "tests/test_a.py": 12}}}\n'
+            '"Windows": {"static lint check": 2.5, "tests/test_a.py": 12}, "macOS": {"tests/test_a.py": 3}}}\n'
         )
         self.assertEqual(
-            {"Linux": {"tests/test_a.py": 1.5}, "Windows": {"static lint check": 2.5, "tests/test_a.py": 12.0}},
+            {
+                "Linux": {"tests/test_a.py": 1.5},
+                "Windows": {"static lint check": 2.5, "tests/test_a.py": 12.0},
+                "macOS": {"tests/test_a.py": 3.0},
+            },
             job_seconds(path),
         )
         self.assertTrue(JOB_SECONDS.is_file())
         recorded = job_seconds(JOB_SECONDS)
         # Pinned against the literals, not the platforms the reader takes from platform_support.
-        self.assertEqual(["Linux", "Windows"], sorted(recorded))
-        self.assertTrue(all(recorded.values()))
+        self.assertEqual(["Linux", "Windows", "macOS"], sorted(recorded))
+        # macOS's legs are measured at the first refresh from push runs that hold them; until then each of its suites
+        # is dealt by its test count.
+        self.assertTrue(recorded["Linux"] and recorded["Windows"])
 
     def test_a_table_from_one_run_is_refused_with_the_step_that_rewrites_it(self) -> None:
         path = self.write_table('{"run": 7, "seconds": {"tests/test_a.py": 1}}\n')
