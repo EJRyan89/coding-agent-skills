@@ -6056,7 +6056,8 @@ class BatchTests(PipelineFixture):
         review_state.update_state(self.state_path, concurrent_advance)
         code, out, err = self.run_main("advance", "--batch", str(batch_path))
         self.assertEqual((0, ""), (code, err))
-        self.assertIn("WATERMARK example/one 2026-03-01 -> 2026-03-10\n", out)
+        # The state already holds a later watermark, so nothing moved: the line reports what the state holds.
+        self.assertIn("WATERMARK example/one unchanged: the state holds 2026-03-12\n", out)
         state = load_state(self.state_path)
         self.assertEqual(later, state["repositories"][REPOSITORY])
         self.assertEqual({"merged_since": "2026-03-04", "updated_at": "2026-03-10"}, state["repositories"][other])
@@ -6074,8 +6075,21 @@ class BatchTests(PipelineFixture):
         review_state.update_state(self.state_path, concurrent_advance)
         code, out, err = self.run_main("advance", "--batch", str(batch_path))
         self.assertEqual((0, ""), (code, err))
-        self.assertEqual("WATERMARK example/one 2026-03-01 -> 2026-03-10\n", out)
+        self.assertEqual("WATERMARK example/one unchanged: the state holds 2026-03-10\n", out)
         self.assertEqual(same_day, load_state(self.state_path)["repositories"][REPOSITORY])
+
+    def test_a_watermark_line_moves_from_the_date_the_state_held_not_the_batch_s(self) -> None:
+        batch_path = self._completed_merged_batch()
+
+        def concurrent_advance(state: dict[str, Any]) -> dict[str, Any]:
+            state["repositories"][REPOSITORY] = {"merged_since": "2026-03-05", "updated_at": "2026-03-05"}
+            return state
+
+        review_state.update_state(self.state_path, concurrent_advance)
+        code, out, err = self.run_main("advance", "--batch", str(batch_path))
+        # The batch started at 1 March, but the state held 5 March when this run moved it.
+        self.assertEqual((0, "WATERMARK example/one 2026-03-05 -> 2026-03-10\n", ""), (code, out, err))
+        self.assertEqual("2026-03-10", load_state(self.state_path)["repositories"][REPOSITORY]["merged_since"])
 
     def test_enumerate_then_advance_after_merged_reviews_complete(self) -> None:
         self.state_path.parent.mkdir(parents=True)
@@ -6243,6 +6257,155 @@ class BatchTests(PipelineFixture):
                 self.assertEqual((1, ""), (code, err))
                 self.assertIn("REPOSITORY_FAILED example/one Review record has no artifact hashes\n", out)
 
+    def _second_repository(self) -> contextlib.ExitStack:
+        """Configure example/two beside example/one, both listing what the fixture's GitHub lists for example/one."""
+        other = "example/two"
+        config = json.loads(self.config_path.read_text(encoding="utf-8"))
+        config["repository_sets"]["primary"].append(other)
+        config["repositories"][other] = config["repositories"][REPOSITORY]
+        self.config_path.write_text(json.dumps(config), encoding="utf-8")
+        listing = self.services.github.list_pulls
+        closed = self.services.github.list_closed_pulls_since
+        stack = contextlib.ExitStack()
+        stack.enter_context(
+            mock.patch.object(
+                self.services.github,
+                "list_pulls",
+                side_effect=lambda repository, **kwargs: listing(REPOSITORY, **kwargs),
+            )
+        )
+        stack.enter_context(
+            mock.patch.object(
+                self.services.github,
+                "list_closed_pulls_since",
+                side_effect=lambda repository, watermark: closed(REPOSITORY, watermark),
+            )
+        )
+        return stack
+
+    def test_a_review_report_that_is_not_utf8_fails_only_its_repository(self) -> None:
+        ready = self.prepare()
+        self.write_role_result(ready["roles"][0])
+        rp.finalize(ready["run"])
+        self.github.listing = [rest_pull(12, self.head, self.base)]
+        (report,) = pull_directory(self.archive, REPOSITORY, 12).glob("*.md")
+        report.write_bytes(report.read_bytes() + b"\xff\xfe")
+        batch_path = self.root / "batch.json"
+        with self._second_repository():
+            code, out, err = self.run_main("enumerate", "--output", str(batch_path))
+        self.assertEqual((1, ""), (code, err))
+        lines = out.splitlines()
+        failed = [line for line in lines if line.startswith("REPOSITORY_FAILED ")]
+        self.assertEqual(1, len(failed), out)
+        self.assertRegex(failed[0], r"^REPOSITORY_FAILED example/one Review Markdown .* is not UTF-8: ")
+        self.assertIn("PULL example/two#12", lines)
+        self.assertEqual(f"BATCH {batch_path}", lines[-1])
+        self.assertFalse(json.loads(batch_path.read_text(encoding="utf-8"))["repositories"][REPOSITORY]["complete"])
+
+    def test_advance_refuses_each_batch_field_of_another_kind_naming_it_with_the_state_unchanged(self) -> None:
+        self.github.listing = [rest_pull(12, self.head, self.base, state="closed", merged_at="2026-03-05T10:00:00Z")]
+        batch_path = self.root / "batch.json"
+        code, _, err = self.run_main("enumerate", "--output", str(batch_path))
+        self.assertEqual((0, ""), (code, err))
+        written = batch_path.read_text(encoding="utf-8")
+        self.state_path.parent.mkdir(parents=True, exist_ok=True)
+        self.state_path.write_text(
+            json.dumps({"schema_version": 1, "repositories": {REPOSITORY: {"merged_since": "2026-03-01"}}}),
+            encoding="utf-8",
+        )
+        state_before = self.state_path.read_bytes()
+        entry = f"batch.repositories.{REPOSITORY}"
+        cases: tuple[tuple[str, Callable[[dict[str, Any]], None], str], ...] = (
+            ("today missing", lambda batch: batch.pop("today"), "batch must be an object with field today"),
+            (
+                "today in the basic form",
+                lambda batch: batch.update(today="20260310"),
+                "batch.today must be a YYYY-MM-DD date",
+            ),
+            (
+                "repositories a list",
+                lambda batch: batch.update(repositories=[]),
+                "batch.repositories must be an object",
+            ),
+            (
+                "complete a string",
+                lambda batch: batch["repositories"][REPOSITORY].update(complete="no"),
+                f"{entry}.complete must be a boolean",
+            ),
+            (
+                "a complete entry with no watermark",
+                lambda batch: batch["repositories"][REPOSITORY].update(previous_watermark=None),
+                f"{entry}.previous_watermark must be a YYYY-MM-DD date in a complete entry",
+            ),
+            (
+                "an incomplete entry with no error",
+                lambda batch: batch["repositories"][REPOSITORY].update(complete=False),
+                f"{entry}.error must be a string in an incomplete entry",
+            ),
+            (
+                "eligible an object",
+                lambda batch: batch["repositories"][REPOSITORY].update(eligible={}),
+                f"{entry}.eligible must be an array",
+            ),
+            (
+                "a deferred pull request a number",
+                lambda batch: batch["repositories"][REPOSITORY].update(deferred=[12]),
+                f"{entry}.deferred[0] must be an object",
+            ),
+            (
+                "an unknown listing scan",
+                lambda batch: batch["repositories"][REPOSITORY]["listing"].update(scan="merged"),
+                f"{entry}.listing.scan must be one of",
+            ),
+            (
+                "an unknown entry field",
+                lambda batch: batch["repositories"][REPOSITORY].update(extra=1),
+                f"{entry} must be an object of known fields",
+            ),
+            (
+                "one repository under two spellings",
+                lambda batch: batch["repositories"].update({"Example/One": batch["repositories"][REPOSITORY]}),
+                "lists example/one under more than one spelling",
+            ),
+        )
+        for name, change, message in cases:
+            with self.subTest(name):
+                batch = json.loads(written)
+                change(batch)
+                batch_path.write_text(json.dumps(batch), encoding="utf-8")
+                code, out, err = self.run_main("advance", "--batch", str(batch_path))
+                self.assertEqual((1, ""), (code, err))
+                self.assertTrue(out.startswith("FAILED "), out)
+                self.assertIn(message, out)
+                self.assertEqual(state_before, self.state_path.read_bytes())
+
+    def test_a_state_key_in_another_case_is_that_repository_s_watermark(self) -> None:
+        self.state_path.parent.mkdir(parents=True, exist_ok=True)
+        self.state_path.write_text(
+            json.dumps({"schema_version": 1, "repositories": {"Example/One": {"merged_since": "2026-03-05"}}}),
+            encoding="utf-8",
+        )
+        self.github.listing = [rest_pull(12, self.head, self.base, state="closed", merged_at="2026-03-03T10:00:00Z")]
+        batch_path = self.root / "batch.json"
+        code, out, err = self.run_main("enumerate", "--output", str(batch_path))
+        self.assertEqual((0, ""), (code, err))
+        # The 5 March watermark is found, so the pull request merged before it is not offered again.
+        self.assertNotIn("PULL ", out)
+        entry = json.loads(batch_path.read_text(encoding="utf-8"))["repositories"][REPOSITORY]
+        self.assertEqual("2026-03-05", entry["previous_watermark"])
+        code, out, err = self.run_main("advance", "--batch", str(batch_path))
+        self.assertEqual((0, "WATERMARK example/one 2026-03-05 -> 2026-03-10\n", ""), (code, out, err))
+        stored = json.loads(self.state_path.read_text(encoding="utf-8"))
+        self.assertEqual([REPOSITORY], list(stored["repositories"]))
+
+    def test_a_state_holding_one_repository_under_two_spellings_is_refused(self) -> None:
+        state = {
+            "schema_version": 1,
+            "repositories": {REPOSITORY: {"merged_since": "2026-03-01"}, "Example/One": {"merged_since": "2026-03-05"}},
+        }
+        with self.assertRaisesRegex(review_state.StateError, "example/one under more than one spelling"):
+            review_state.validate_state(state)
+
     def test_advance_refuses_a_malformed_pending_merge_date_without_changing_state(self) -> None:
         self.github.listing = [rest_pull(12, self.head, self.base, state="closed", merged_at="2026-03-10T10:00:00Z")]
         batch_path = self.root / "batch.json"
@@ -6317,8 +6480,9 @@ class BatchTests(PipelineFixture):
         self.assertEqual((0, ""), (code, err))
         batch = json.loads(batch_path.read_text(encoding="utf-8"))
         entry = batch["repositories"][REPOSITORY]
-        entry["complete"] = False
-        entry["eligible"] = [{"number": 12}]
+        # An entry whose enumeration failed after listing its merged pull request, which advance must not read.
+        entry["complete"], entry["error"] = False, "listing failed"
+        self.assertEqual([12], [pull["number"] for pull in entry["eligible"]])
         batch_path.write_text(json.dumps(batch), encoding="utf-8")
         self.state_path.parent.mkdir(parents=True)
         self.state_path.write_text(

@@ -1463,14 +1463,15 @@ def _run_finalize(args: argparse.Namespace, services: Services | None) -> int:
 
 
 def _run_advance(args: argparse.Namespace, services: Services | None) -> int:
-    for repository, (old, new) in advance_watermarks(args.batch, config_path=args.config, services=services).items():
-        print(
-            single_line(
-                f"WATERMARK {repository} {old} -> {new}"
-                if new
-                else f"WATERMARK {repository} unchanged: enumeration failed"
-            )
-        )
+    changes = advance_watermarks(args.batch, config_path=args.config, services=services)
+    for repository, (outcome, previous, current) in changes.items():
+        if outcome == "moved":
+            line = f"WATERMARK {repository} {previous} -> {current}"
+        elif outcome == "held":
+            line = f"WATERMARK {repository} unchanged: the state holds {current}"
+        else:
+            line = f"WATERMARK {repository} unchanged: enumeration failed"
+        print(single_line(line))
     return 0
 
 

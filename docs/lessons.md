@@ -183,6 +183,23 @@ removed fails validation until its pattern follows it.
   a wait for a response that passes over every line `json_reader` refuses, reporting a refused answer as a timeout.
 - **Examples:** #1511, #1840, #1855, #1910, #2022, #2181, #2207, #2209, #2477, #2548
 
+### A report of a change names the change the write made
+
+- **Rule:** A line or result that reports a change states what the write left in place, read from the write
+  itself, never the value a step computed before a write that may keep something else.
+- **Why:** A write that only moves forward, or keeps a concurrent run's value, otherwise reports a move it did
+  not make, and its reader acts on a state that is not there.
+- **Use:** `review_batches:WatermarkChange`, which `review_batches:advance_watermarks` sets inside the state
+  update, under its lock, as moved, held at what the state already holds, or failed.
+- **Guard:** `skills/ejryan89-code-review-core/scripts/test_review_pipeline.py::BatchTests::test_advance_preserves_a_concurrent_later_watermark_and_advances_other_repositories`,
+  `skills/ejryan89-code-review-core/scripts/test_review_pipeline.py::BatchTests::test_advance_preserves_an_equal_watermark_date_and_its_timestamp`,
+  `skills/ejryan89-code-review-core/scripts/test_review_pipeline.py::BatchTests::test_a_watermark_line_moves_from_the_date_the_state_held_not_the_batch_s`
+- **Search for:** a callback passed to `update_state(` or another locked read-modify-write whose caller prints or
+  returns the value it handed the callback; `if existing is None or new >` or `setdefault(` in such a callback
+  with no result recorded beside the write; a status line formatted from a candidate, a plan, or a request rather
+  than from what the write returned.
+- **Examples:** #2595
+
 ### A caller catches the whole error family its callee raises on content
 
 - **Rule:** A caller handles every error its callee raises for bad content, by the family the callee exports or a
@@ -201,15 +218,18 @@ removed fails validation until its pattern follows it.
   `tests/validation/test_python_checks.py::test_content_errors_policy_reads_read_json_as_raising_persistence_error`,
   `tests/validation/test_python_checks.py::test_content_errors_policy_reads_the_family_named_for_a_core_reader`,
   `tests/deployer/test_recovery_migration.py::RecoveryFailureTests::test_each_failure_other_than_an_os_error_a_rerun_repeats_sends_a_committed_run_to_the_manual_steps`,
-  `tests/deployer/test_recovery_migration.py::RecoveryFailureTests::test_each_failure_recovery_expects_outside_a_step_fails_its_run_and_the_next_still_recovers`
+  `tests/deployer/test_recovery_migration.py::RecoveryFailureTests::test_each_failure_recovery_expects_outside_a_step_fails_its_run_and_the_next_still_recovers`,
+  `skills/ejryan89-code-review-core/scripts/test_review_pipeline.py::BatchTests::test_a_review_report_that_is_not_utf8_fails_only_its_repository`
 - **Search for:** `except json.JSONDecodeError`, `except UnicodeDecodeError:`, or `except tomllib.TOMLDecodeError:`
   around a reader that raises more; `except ValueError` near an `xml_reader`, `tomllib`, or `csv.` call; an `except X`
   around a helper that raises a class outside `X`; an `except (`, `OSError`, or `ValueError` around a
-  `validate_record_pair` or `read_json` call with no `PersistenceError` beside it; `.encode("utf-8")` of a name read
+  `validate_record_pair` or `read_json` call with no `PersistenceError` beside it; `read_text(encoding="utf-8")`
+  with no `errors=` inside a validator whose callers catch only its own error class, where a file that is not
+  UTF-8 escapes as `UnicodeDecodeError`; `.encode("utf-8")` of a name read
   from disk with no handler, which raises `UnicodeEncodeError` for a lone surrogate or a surrogate escape; in the
   content-errors policy, a table merged into `self.families[` that a second reader fills too, replacing a family
   without a problem, or an entry stored with no class.
-- **Examples:** #1634, #1816, #1874, #2221, #2294, #2351, #2358
+- **Examples:** #1634, #1816, #1874, #2221, #2294, #2351, #2358, #2591
 
 ### A result cut short says it was cut
 
@@ -352,7 +372,9 @@ removed fails validation until its pattern follows it.
   `shepherd_pull_requests:member`, which refuse a gh listing or field of another kind than the shepherd acts on, and
   `shepherd_pull_requests:reported` and `shepherd_pull_requests:present`, which refuse a member that decides a write
   when the listing leaves it out, so an absent field is never read as the answer that permits the write, and
-  `tools.hub_guard:judge_option`, which refuses a shell option neither table of the guard's names.
+  `tools.hub_guard:judge_option`, which refuses a shell option neither table of the guard's names, and
+  `review_batches:load_batch`, which reads a batch file whole before the advance or prepare command uses any field
+  of it.
 - **Guard:** `skills/ejryan89-skill-core/scripts/test_typed_fields.py::FieldReaderTests::test_an_object_holds_its_required_fields_and_no_unknown_one`,
   `tests/malformed_input/test_malformed_input.py::test_each_reader_refuses_or_documents_accepting_each_case`, which
   fails a reader that answers on a field or a list item of another type it does not document taking,
@@ -364,6 +386,7 @@ removed fails validation until its pattern follows it.
   the same table for each check run in a rollup, and
   `tests/deployer/test_state_files.py::ReaderTests::test_a_journal_entry_with_any_key_of_another_type_is_malformed_never_an_error`,
   which gives every key of each journal entry the deployer writes a list, an object, and a number, and
+  `skills/ejryan89-code-review-core/scripts/test_review_pipeline.py::BatchTests::test_advance_refuses_each_batch_field_of_another_kind_naming_it_with_the_state_unchanged`, and
   `tests/malformed_input/test_malformed_input.py::test_every_function_that_calls_a_shared_reader_is_held_reached_pending_or_named_no_reader`,
   which fails a function calling a shared reader that no table holds, no held reader of its own module reaches, and
   neither the pending list nor NOT_READERS, the functions named as no reader with the reason, names, passes a helper
@@ -375,7 +398,7 @@ removed fails validation until its pattern follows it.
   such as arming, holding, or a rerun, and an absent member would read as the answer that allows it;
   `rg -n "\.get\([^)]*\)\)? (not )?in [A-Z_{(]"`, a field read from a file tested against a set, a frozenset, or a
   dictionary before its type is checked, which a list or an object fails with `TypeError` rather than as malformed.
-- **Examples:** #1890, #1892, #2054, #2227, #2235, #2292
+- **Examples:** #1890, #1892, #2054, #2227, #2235, #2292, #2589
 
 ### A reader of another program's language reads it as that program does
 
@@ -671,7 +694,8 @@ removed fails validation until its pattern follows it.
   it; `path_keys:path_key`, the one form a path is compared in, which the deployer reaches as
   `deployer.platform_support:path_key`; `guidance_record:canonical_url`; `deployer.source:any_case` and
   `deployer.source:refuse_other_spellings`, which find a name the deployer reads spelled in any case on every
-  platform and refuse one spelled otherwise.
+  platform and refuse one spelled otherwise; `review_config:validate_repository_identity`, the one form a
+  repository identity is compared in, which `review_state:validate_state` keys the state by.
 - **Guard:** `tests/validation/duplication.py::DuplicationPolicies::test_repository_copies_only_what_it_sanctions`,
   which fails a version's numbers read by hand outside the version reader, and a path case-folded by hand outside
   the path key;
@@ -679,12 +703,16 @@ removed fails validation until its pattern follows it.
   `skills/ejryan89-skill-core/scripts/test_path_keys.py::PathKeyTests::test_two_spellings_of_one_path_have_one_key`,
   `skills/ejryan89-skill-core/scripts/test_release_tags.py::ReleaseTagTests::test_releases_are_ordered_by_their_numbers_not_their_text`,
   `skills/ejryan89-skill-core/scripts/test_guidance_record.py::test_the_canonical_form_folds_only_raw_github_s_refs_heads_and_the_scheme_and_host_case`,
-  `tests/deployer/test_source_validation.py::MetadataValidationTests::test_a_name_the_deployer_reads_spelled_in_another_case_is_refused_by_name_on_every_platform`
+  `tests/deployer/test_source_validation.py::MetadataValidationTests::test_a_name_the_deployer_reads_spelled_in_another_case_is_refused_by_name_on_every_platform`,
+  `skills/ejryan89-code-review-core/scripts/test_review_pipeline.py::BatchTests::test_a_state_key_in_another_case_is_that_repository_s_watermark`,
+  `skills/ejryan89-code-review-core/scripts/test_review_pipeline.py::BatchTests::test_a_state_holding_one_repository_under_two_spellings_is_refused`
 - **Search for:** `version in`, `.startswith(version`, `sorted(tags`, or `tags[-1]`; `int(part) for part in` or
   `map(int,` over a `.split(".")`; in a workflow, `grep` or `contains(` on a version; `==` between two paths with no
   normalization, or `os.path.normcase` outside `path_keys.py`; a glob, `fnmatch.fnmatch(`, or `.is_file()` of a
-  fixed file name, which folds case on Windows, beside a dictionary keyed by each file's spelling on disk.
-- **Examples:** #1556, #1855, #1867, #1909, #2299
+  fixed file name, which folds case on Windows, beside a dictionary keyed by each file's spelling on disk; a
+  dictionary read from a file and keyed by repository identity whose keys pass `validate_repository_identity(`
+  but are kept as written, while lookups use the lowercase form it returns.
+- **Examples:** #1556, #1855, #1867, #1909, #2299, #2590
 
 ### A child process starts from an environment built for it
 

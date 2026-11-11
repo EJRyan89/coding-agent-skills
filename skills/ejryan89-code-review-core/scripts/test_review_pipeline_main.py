@@ -376,6 +376,34 @@ def run_lines(out: str) -> list[str]:
     return [line for line in out.splitlines() if line.startswith("RUN ")]
 
 
+def batch_file(repositories: dict[str, Any]) -> dict[str, Any]:
+    """A batch file as enumerate writes it, from entries that name each pull request by its number alone."""
+
+    def pull(number: object) -> dict[str, Any]:
+        return {
+            "number": number,
+            "title": "Change",
+            "url": f"https://github.com/example/app/pull/{number}",
+            "state": "OPEN",
+            "isDraft": False,
+            "baseRefName": "main",
+            "baseRefOid": "a" * 40,
+            "headRefName": "change",
+            "headRefOid": "b" * 40,
+            "mergedAt": None,
+        }
+
+    entries = {}
+    for repository, entry in repositories.items():
+        entries[repository] = {
+            "previous_watermark": "2026-03-01" if entry["complete"] else None,
+            "error": None,
+            **entry,
+            **{name: [pull(item["number"]) for item in entry[name]] for name in ("eligible", "deferred")},
+        }
+    return {"schema_version": 2, "today": "2026-03-10", "repositories": entries}
+
+
 def prepare_call(
     selector: str,
     *,
@@ -784,8 +812,7 @@ class PrepareTests(RunListCase):
 
     def test_a_batch_file_is_prepared_in_the_order_enumerate_printed_it(self) -> None:
         batch = self.directory / "batch.json"
-        value = {"schema_version": 2, **EnumerateTests.BATCH}
-        batch.write_text(json.dumps(value), encoding="utf-8")
+        batch.write_text(json.dumps(batch_file(EnumerateTests.BATCH["repositories"])), encoding="utf-8")
         prepare = self.stub(
             "prepare", effect=lambda selector, **_: {"status": "skip", "selector": selector, "reason": "x"}
         )
@@ -803,7 +830,7 @@ class PrepareTests(RunListCase):
 
     def test_an_empty_batch_writes_an_empty_run_list(self) -> None:
         batch = self.directory / "batch.json"
-        batch.write_text(json.dumps({"schema_version": 2, "repositories": {}}), encoding="utf-8")
+        batch.write_text(json.dumps(batch_file({})), encoding="utf-8")
         self.assertEqual((0, self.runs_line(), ""), self.run_main("prepare", "--batch", str(batch)))
         self.assertEqual(([], []), (self.listed()["pending"], self.listed()["runs"]))
         self.assertEqual((0, "ALL_FINALIZED\n", ""), self.run_main("unfinalized", "--runs", str(self.run_list)))
@@ -814,7 +841,13 @@ class PrepareTests(RunListCase):
             # Version 1 recorded no deferred pull requests, so reading one as this version would be a guess.
             ({"schema_version": 1}, f"{batch} is not a review batch file"),
             ({"schema_version": 3}, f"{batch} is not a review batch file"),
-            ({"schema_version": 2, "repositories": {"example/app": {"eligible": [{"number": "3"}]}}}, "number"),
+            (
+                batch_file(
+                    {"example/app": {"complete": True, "eligible": [{"number": "3"}], "deferred": [], "listing": None}}
+                ),
+                "pull.number must be an integer",
+            ),
+            ({"schema_version": 2, "repositories": {}}, "batch must be an object with field today"),
         ):
             with self.subTest(reason=reason):
                 batch.write_text(json.dumps(value), encoding="utf-8")
@@ -1488,9 +1521,10 @@ class AdvanceTests(MainCase):
         stub = self.stub(
             "advance_watermarks",
             {
-                "example/app": ("2026-01-01", "2026-02-01"),
-                "example/lib": ("2026-01-01", None),
-                "example/web": ("2026-01-01", ""),
+                "example/app": review_batches.WatermarkChange("moved", "2026-01-01", "2026-02-01"),
+                "example/lib": review_batches.WatermarkChange("failed", "2026-01-01", None),
+                "example/web": review_batches.WatermarkChange("held", "2026-03-01", "2026-03-01"),
+                "example/new": review_batches.WatermarkChange("failed", None, None),
             },
         )
         self.assertEqual(
@@ -1498,7 +1532,8 @@ class AdvanceTests(MainCase):
                 0,
                 "WATERMARK example/app 2026-01-01 -> 2026-02-01\n"
                 "WATERMARK example/lib unchanged: enumeration failed\n"
-                "WATERMARK example/web unchanged: enumeration failed\n",
+                "WATERMARK example/web unchanged: the state holds 2026-03-01\n"
+                "WATERMARK example/new unchanged: enumeration failed\n",
                 "",
             ),
             self.run_main("--config", CONFIG, "advance", "--batch", "batch.json"),
