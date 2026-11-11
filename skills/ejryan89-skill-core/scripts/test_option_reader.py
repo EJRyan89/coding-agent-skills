@@ -91,6 +91,32 @@ def test_a_windows_build_reads_its_slash_options_in_any_case() -> None:
     assert option_refusal(table, [long_s], windows_build=True).refused == long_s
 
 
+@pytest.mark.parametrize(
+    ("arguments", "refused", "stop"),
+    [
+        # The other build reads --name as `-`, then -n with ame attached, taking no word where this one takes one.
+        (["--name", "x", "git"], "--name", 0),
+        (["-a", "--name", "x", "git"], "--name", 1),
+        (["--name=x", "git"], None, 1),
+        # It refuses --flag at f, which it does not take, so only this build's reading runs a command.
+        (["--flag", "git"], None, 1),
+        # A letter it takes that is not safe: --cmd is `-`, then -c.
+        (["--cmd", "git"], "--cmd", 0),
+        (["-an", "x", "git"], None, 2),
+    ],
+)
+def test_a_dash_word_is_held_to_another_build_that_reads_dash_as_a_letter(
+    arguments: list[Word], refused: str | None, stop: int
+) -> None:
+    table = option_table("an:c", "name= flag cmd", dash_build="-ac:n:", dash_safe="-an")
+    assert dict(table.dash_build or {}) == {"-": NO_VALUE, "a": NO_VALUE, "c": VALUE, "n": VALUE}
+    reading = option_refusal(table, arguments)
+    assert (reading.refused, reading.stop) == (refused, stop)
+    # Without that build, the table's own reading stands.
+    plain = option_refusal(option_table("an:c", "name= flag cmd"), arguments)
+    assert plain.refused is None
+
+
 def test_tar_s_old_style_first_word_takes_its_values_in_order() -> None:
     table = option_table("tf:C:", first_letters=True, permutes=True)
     assert option_refusal(table, ["tf", "a.tar"]).values == [("-f", "a.tar")]

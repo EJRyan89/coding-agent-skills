@@ -390,7 +390,9 @@ class RunnerTests(unittest.TestCase):
                 (f"env {variable}=x {program} -v y", {}),
                 (f"env -i {variable}=x {program} -v y", {}),
                 (f"env -u X {variable}=x {program} -v y", {}),
-                (f"env --unset X {variable}=x {program} -v y", {}),
+                # --unset with its value attached, which macOS's env reads as -u with nset=X; with its value
+                # after it, env is refused before its assignments, since macOS's env runs X as its command.
+                (f"env --unset=X {variable}=x {program} -v y", {}),
                 (f"env -u X -- {variable}=x {program} -v y", {}),
                 (f"sudo {variable}=x {program} -v y", {}),
                 (f"{variable}=x timeout 5 {program} -v y", {}),
@@ -501,8 +503,9 @@ class RunnerTests(unittest.TestCase):
                     self.assertTrue(reading(command).unread)
 
     def test_env_s_assignments_after_a_valued_option_reach_the_command_s_judgment(self) -> None:
-        # GIT_DIR after env's -u X is still an assignment before the command, as one before env is.
-        for command in ("env GIT_DIR=/x ls", "env -u X GIT_DIR=/x ls", "env --unset X -i GIT_DIR=/x ls"):
+        # GIT_DIR after env's -u X is still an assignment before the command, as one before env is. --unset takes its
+        # value attached here: written apart, macOS's env runs the value as its command, so env is refused first.
+        for command in ("env GIT_DIR=/x ls", "env -u X GIT_DIR=/x ls", "env --unset=X -i GIT_DIR=/x ls"):
             with self.subTest(command=command):
                 self.assertIn("GIT_DIR", " ".join(reading(command).unread))
 

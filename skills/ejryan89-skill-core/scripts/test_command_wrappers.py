@@ -56,6 +56,8 @@ def test_the_catalogue_names_each_wrapper_and_find_s_actions() -> None:
         (["env", "-i", "A=1", "-u", "B", "git"], ["git"]),
         (["env", "-S", "git push", "x"], ["git", "push", "x"]),
         (["env", "--split-string=-u B git push"], ["git", "push"]),
+        # Its value attached, --unset places the program alike on macOS's env, where it is -u with nset=B attached.
+        (["env", "--unset=B", "--null", "git"], ["git"]),
         (["timeout", "--signal", "TERM", "5", "git"], ["git"]),
         (["nice", "-5", "git"], ["git"]),
         (["nice", "-n", "5", "git"], ["git"]),
@@ -103,6 +105,9 @@ def test_unwrapped_reads_past_a_wrapper_to_the_command_it_runs(words: list[str],
         (["timeout", "--sig", "TERM", "5", "git"], "timeout --sig"),
         (["xargs", "--max-a", "1", "git"], "xargs --max-a"),
         (["env", "-W", "git"], "env -W"),
+        # macOS's env reads --unset as `-` and -u with nset attached, and git as its program.
+        (["env", "--unset", "git", "push"], "env --unset"),
+        (["env", "-i", "--unset", "x", "git"], "env --unset"),
         (["sudo", "--us", "me", "git"], "sudo --us"),
         (["doas", "--user", "me", "git"], "doas --user"),
         (["chronic", "-x", "git"], "chronic -x"),
