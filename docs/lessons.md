@@ -893,8 +893,10 @@ removed fails validation until its pattern follows it.
   `tests/tools/test_captured_samples.py::test_a_sample_older_than_its_runtimes_version_is_behind_and_one_at_it_is_not`
 - **Search for:** a sentence about a runtime's behavior in `docs/*-support.md` or `docs/installation.md` with no
   link; `always`, `never`, `only`, `cannot`, or `does not` in a support page; a `"--` flag literal in a list passed to
-  `copilot`, `codex`, or `claude` that `tools/runtime_command_lines.py` does not build.
-- **Examples:** #1362, #1409, #1538, #1573, #1581, #1583, #1842, #1856
+  `copilot`, `codex`, or `claude` that `tools/runtime_command_lines.py` does not build; a `"decision"` entry in a
+  skill's `references/provenance.json` that states what a runtime does, where no `"page"` entry of the same check
+  states it; `does not list` or `not list yet` beside a page in a provenance passage, a policy, or a comment.
+- **Examples:** #1362, #1409, #1538, #1573, #1581, #1583, #1842, #1856, #2571, #2580
 
 ### A fix reaches every sibling of its construct
 
