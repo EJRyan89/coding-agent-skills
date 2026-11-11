@@ -507,19 +507,35 @@ class SameDirectoryTests(unittest.TestCase):
 
 
 class SupportedPlatformTests(unittest.TestCase):
-    def test_windows_and_linux_are_supported_and_macos_is_refused_by_name(self) -> None:
-        for platform in ("win32", "linux"):
+    def test_windows_linux_and_macos_are_supported_and_another_platform_is_refused_by_name(self) -> None:
+        for platform in ("win32", "linux", "darwin"):
             with self.subTest(platform=platform), mock.patch.object(sys, "platform", platform):
                 platform_support.ensure_supported()
         with (
-            mock.patch.object(sys, "platform", "darwin"),
+            mock.patch.object(sys, "platform", "freebsd14"),
             self.assertRaises(DeployError) as raised,
         ):
             platform_support.ensure_supported()
         self.assertEqual(
-            ("ERROR: The deployer runs on Windows and Linux only (detected platform: darwin).",),
+            ("ERROR: The deployer runs on Windows, Linux, and macOS only (detected platform: freebsd14).",),
             raised.exception.lines,
         )
+
+    def test_each_platform_names_its_own_package_manager_in_the_install_hints(self) -> None:
+        self.assertEqual("winget install --id koalaman.shellcheck", platform_support.WINDOWS_INSTALL_HINTS["ShellCheck"])
+        self.assertEqual("sudo apt install shellcheck", platform_support.LINUX_INSTALL_HINTS["ShellCheck"])
+        self.assertEqual("brew install shellcheck", platform_support.MACOS_INSTALL_HINTS["ShellCheck"])
+        self.assertEqual("brew install --cask powershell", platform_support.MACOS_INSTALL_HINTS["PowerShell"])
+        self.assertEqual("brew install bash", platform_support.MACOS_INSTALL_HINTS["Bash"])
+        self.assertEqual(
+            set(platform_support.LINUX_INSTALL_HINTS), set(platform_support.MACOS_INSTALL_HINTS), "the same tools"
+        )
+        expected = {"win32": "WINDOWS", "linux": "LINUX", "darwin": "MACOS"}[sys.platform]
+        self.assertIs(getattr(platform_support, f"{expected}_INSTALL_HINTS"), platform_support.INSTALL_HINTS)
+        self.assertIs(getattr(platform_support, f"{expected}_INSTALL_HELP"), platform_support.INSTALL_HELP)
+
+    def test_this_platform_is_macos_only_on_macos(self) -> None:
+        self.assertEqual(sys.platform == "darwin", platform_support.MACOS)
 
     def test_this_platform_is_windows_only_on_windows(self) -> None:
         self.assertEqual(sys.platform == "win32", platform_support.WINDOWS)
