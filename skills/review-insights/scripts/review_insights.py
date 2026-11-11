@@ -79,6 +79,7 @@ from console import run_main
 from flat_text import flat_text, single_line
 from git_client import GitClient, GitError
 from path_containment import within
+from path_keys import name_key
 from review_archive import ArchiveError, every_version, pull_directory, record_files, record_paths
 from review_config import (
     RUNTIME_HOSTS,
@@ -188,14 +189,15 @@ class Services:
 
 def current_repository(config: dict[str, Any], services: Services) -> str | None:
     """The configured repository whose `checkout_path` holds the working directory, or whose main checkout a worktree
-    there belongs to; the innermost when checkouts nest."""
+    there belongs to; the innermost when checkouts nest. Git names the common directory as it was given, so its `.git`
+    is recognized as the folder holding it compares names: `.GIT` is one only where that folder folds case."""
     directory = services.cwd()
     candidates = [directory]
     try:
         common = services.git_common_dir(directory)
     except GitError as exc:
         raise InsightError(f"git could not read the checkout at {directory.as_posix()}: {exc}") from exc
-    if common is not None and common.name.casefold() == ".git":
+    if common is not None and name_key(common.name, common.parent) == ".git":
         candidates.append(common.parent)
     matches = [
         (len(str(Path(entry["checkout_path"]).resolve())), identity)

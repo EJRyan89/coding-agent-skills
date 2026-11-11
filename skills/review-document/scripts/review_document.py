@@ -77,6 +77,7 @@ from flat_text import flat_text, single_line
 from git_client import GitClient, GitError, output_line
 from github_client import GitHubError
 from path_containment import within
+from path_keys import name_key
 from review_config import LOCAL_OWNER
 from review_documents import ExtractionRefused, document_format, extract, unlabeled
 from review_github import GitHubClient, NotOneFile
@@ -219,7 +220,9 @@ def normalized(content: bytes) -> bytes:
 
 
 def locate(path: Path, git: GitClient) -> Location:
-    """The document's path in its checkout, as git tracks it, or its file name with no checkout."""
+    """The document's path in its checkout, as git tracks it, or its file name with no checkout. A path through the
+    checkout's `.git` folder is refused in any spelling the checkout's file system takes for it, so `.GIT` is refused
+    where the checkout folds case."""
     try:
         top = git.rev_parse_path("--show-toplevel", directory=path.parent)
     except GitError as exc:
@@ -228,7 +231,7 @@ def locate(path: Path, git: GitClient) -> Location:
         return Location(path.name, None)
     checkout = top.resolve()
     relative = PurePosixPath(*path.relative_to(checkout).parts)
-    if relative.parts[0] == ".git":
+    if name_key(relative.parts[0], checkout) == ".git":
         raise DocumentError(f"{path} is inside the checkout's .git folder")
     return Location(tracked_name(relative.as_posix(), path, checkout, git), checkout)
 

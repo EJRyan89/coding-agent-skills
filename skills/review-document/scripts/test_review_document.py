@@ -34,6 +34,7 @@ from skill_roots import sibling_scripts
 sys.path.insert(0, str(sibling_scripts("ejryan89-code-review-core")))
 
 import json_reader
+import path_keys
 import review_document
 import review_guard
 import review_pipeline as rp
@@ -386,6 +387,26 @@ class CheckoutTests(DocumentTestCase):
             (1, [f"FAILED {note} is inside the checkout's .git folder"]), (code, output.getvalue().splitlines())
         )
         self.assertFalse(self.output.exists())
+
+    def test_a_path_through_git_spelled_in_another_case_is_refused_only_where_the_checkout_folds_case(self) -> None:
+        # On a folding file system .GIT is the checkout's .git folder; on a case-sensitive one it is another folder.
+        with tempfile.TemporaryDirectory() as temporary:
+            checkout = Path(temporary).resolve()
+            note = checkout / ".GIT" / "note.md"
+
+            def runner(command: Sequence[str], timeout: float) -> GitResult:
+                if "--show-toplevel" in command:
+                    return GitResult(0, f"{checkout}\n", "")
+                return GitResult(0, "", "")  # ls-files: git tracks no such name
+
+            for folds in (True, False):
+                with self.subTest(folds=folds), mock.patch.dict(path_keys._FOLDS_CASE, {str(checkout): folds}):
+                    if folds:
+                        with self.assertRaisesRegex(review_document.DocumentError, "inside the checkout's .git folder"):
+                            review_document.locate(note, GitClient(runner=runner))
+                    else:
+                        located = review_document.locate(note, GitClient(runner=runner))
+                        self.assertEqual(review_document.Location(".GIT/note.md", checkout), located)
 
     def test_a_document_in_a_folder_the_review_keeps_is_refused_before_any_fixture(self) -> None:
         checkout = self.checkout()

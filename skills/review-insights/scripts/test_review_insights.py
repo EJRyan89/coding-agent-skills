@@ -26,6 +26,7 @@ from skill_roots import sibling_scripts
 sys.path.insert(0, str(sibling_scripts("ejryan89-code-review-core")))
 
 import json_writer
+import path_keys
 import review_guidance
 import review_insights as ri
 import review_records
@@ -2018,6 +2019,17 @@ class ScopeTests(InsightFixture):
             "CURRENT_REPOSITORY owner/repo set=primary",
             self.scope(worktree, common=self.checkouts / "repo" / ".git")[0],
         )
+
+    def test_a_common_directory_spelled_in_another_case_names_its_checkout_only_where_its_folder_folds_case(
+        self,
+    ) -> None:
+        # git names the common directory as it was given, so on a folding file system .GIT is the checkout's.
+        worktree = self.root / "worktrees" / "repo" / "feature"
+        checkout = self.checkouts / "repo"
+        for folds in (True, False):
+            with self.subTest(folds=folds), mock.patch.dict(path_keys._FOLDS_CASE, {str(checkout): folds}):
+                expected = "CURRENT_REPOSITORY owner/repo set=primary" if folds else "NO_CURRENT_REPOSITORY"
+                self.assertEqual(expected, self.scope(worktree, common=checkout / ".GIT")[0])
 
     def test_a_directory_in_no_checkout_names_none(self) -> None:
         for name, cwd in (

@@ -21,6 +21,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
 import cleanup_policy
+import path_keys
 import repo_cleanup as rc
 from test_repo_cleanup import (
     GIT_CONFIG,
@@ -892,3 +893,14 @@ def test_a_hidden_file_whose_stat_fails_is_refused_rather_than_read_as_absent(tm
         f"cannot tell whether the marked file locked of worktree {tmp_path} is there: "
         f"[Errno 13] Permission denied: {str(locked)!r}"
     )
+
+
+def test_a_git_entry_in_another_case_holds_a_checkout_only_where_its_directory_folds_case(tmp_path: Path) -> None:
+    # On a folding file system .GIT is a nested repository's .git, so the directory holding it is never an orphan.
+    leftover = tmp_path.resolve() / "leftover"
+    inner = leftover / "inner"
+    (inner / ".GIT").mkdir(parents=True)
+    (inner / ".GIT" / "HEAD").write_text("ref: refs/heads/main\n", encoding="utf-8")
+    for folds in (True, False):
+        with mock.patch.dict(path_keys._FOLDS_CASE, {str(inner): folds}):
+            assert rc.holds_checkout(leftover, []) is folds

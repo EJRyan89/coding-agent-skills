@@ -1816,6 +1816,56 @@ ORDINAL_ROWS: list[tuple[str, Callable[[Path], object], object]] = [
         ],
     ),
     (
+        "restored packages without the SDK",
+        lambda root: sdk_ordinal_why(root, answered=False),
+        [
+            [
+                "PATH",
+                "Restored/Restored.csproj",
+                "net8.0",
+                "Lantern.Deep",
+                "graph",
+                "Lantern.Strasse (v2.0.0) > Lantern.Deep (v1.0.0)",
+            ],
+            [
+                "PATH",
+                "Restored/Restored.csproj",
+                "net8.0",
+                "Lantern.Deep",
+                "graph",
+                "Lantern.Stra\xdfe (v1.0.0) > Lantern.Deep (v1.0.0)",
+            ],
+        ],
+    ),
+    (
+        "restored packages with the SDK",
+        lambda root: sdk_ordinal_why(root, answered=True),
+        [
+            [
+                "PATH",
+                "Restored/Restored.csproj",
+                "net8.0",
+                "Lantern.Deep",
+                "sdk",
+                "Lantern.Stra\xdfe (v1.0.0) > Lantern.Deep (v1.0.0)",
+            ],
+            [
+                "PATH",
+                "Restored/Restored.csproj",
+                "net8.0",
+                "Lantern.Deep",
+                "graph",
+                "Lantern.Strasse (v2.0.0) > Lantern.Deep (v1.0.0)",
+            ],
+        ],
+    ),
+]
+# The rows that build the ordinal solution, whose folders hold the sharp s and ss spellings side by side: a project
+# folder of each and a package of each unpacked in one packages folder. A file system that folds the sharp s to ss,
+# as macOS's default APFS does, holds one of each pair, so the solution can be built only where the temporary folder
+# keeps the two apart. The rows above build one spelling at a time and run on every file system.
+SOLUTION_ROWS: list[tuple[str, Callable[[Path], object], object]] = [
+    (
         "ROOT and PROJECT",
         lambda root: [row[:2] for row in ordinal_query(root, ("why", "Lantern.None"), keys=("PROJECT",))],
         [
@@ -2241,51 +2291,15 @@ ORDINAL_ROWS: list[tuple[str, Callable[[Path], object], object]] = [
             "Lantern.Strasse 7.0.0",
         ],
     ),
-    (
-        "restored packages without the SDK",
-        lambda root: sdk_ordinal_why(root, answered=False),
-        [
-            [
-                "PATH",
-                "Restored/Restored.csproj",
-                "net8.0",
-                "Lantern.Deep",
-                "graph",
-                "Lantern.Strasse (v2.0.0) > Lantern.Deep (v1.0.0)",
-            ],
-            [
-                "PATH",
-                "Restored/Restored.csproj",
-                "net8.0",
-                "Lantern.Deep",
-                "graph",
-                "Lantern.Stra\xdfe (v1.0.0) > Lantern.Deep (v1.0.0)",
-            ],
-        ],
-    ),
-    (
-        "restored packages with the SDK",
-        lambda root: sdk_ordinal_why(root, answered=True),
-        [
-            [
-                "PATH",
-                "Restored/Restored.csproj",
-                "net8.0",
-                "Lantern.Deep",
-                "sdk",
-                "Lantern.Stra\xdfe (v1.0.0) > Lantern.Deep (v1.0.0)",
-            ],
-            [
-                "PATH",
-                "Restored/Restored.csproj",
-                "net8.0",
-                "Lantern.Deep",
-                "graph",
-                "Lantern.Strasse (v2.0.0) > Lantern.Deep (v1.0.0)",
-            ],
-        ],
-    ),
 ]
+
+
+def temporary_folder_keeps_apart(first: str, second: str) -> bool:
+    """Whether the file system holding the temporary folder, where every fixture is built, keeps two names apart in
+    one folder: NTFS and Linux's file systems keep the sharp s and ss apart, and macOS's default APFS makes them one."""
+    with tempfile.TemporaryDirectory() as directory:
+        (Path(directory) / first).mkdir()
+        return not (Path(directory) / second).exists()
 
 
 @pytest.mark.parametrize(("reader", "read", "expected"), ORDINAL_ROWS, ids=[row[0] for row in ORDINAL_ROWS])
@@ -2294,6 +2308,16 @@ def test_each_reader_compares_names_by_the_ordinal_fold(
 ) -> None:
     # The sharp s and ss, and the Kelvin sign and K, are two names; an accented letter and its other case are one.
     assert read(tmp_path.resolve()) == expected
+
+
+# The solution's rows run where its folders can hold both spellings; see SOLUTION_ROWS.
+if temporary_folder_keeps_apart("Strasse", SHARP_S.removeprefix("Lantern.")):
+
+    @pytest.mark.parametrize(("command", "read", "expected"), SOLUTION_ROWS, ids=[row[0] for row in SOLUTION_ROWS])
+    def test_each_command_compares_names_by_the_ordinal_fold_over_a_solution_holding_both_spellings(
+        command: str, read: Callable[[Path], object], expected: object, tmp_path: Path
+    ) -> None:
+        assert read(tmp_path.resolve()) == expected
 
 
 class UnreadableInputTests(Fixture):

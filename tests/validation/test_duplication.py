@@ -369,7 +369,10 @@ class SharedFactPolicy(unittest.TestCase):
             'SEPARATOR = "."\n\n\ndef read(text):\n'
             "    return tuple(whole_number.parse(part) for part in text.split(SEPARATOR))\n"
         ),
-        PATH_KEYS: "def path_key(path):\n    return os.path.normcase(os.path.abspath(path))\n",
+        PATH_KEYS: (
+            "def path_key(path):\n    return os.path.normcase(os.path.abspath(path))\n\n\n"
+            "def name_key(name, directory=None):\n    return name.casefold()\n"
+        ),
     }
 
     def problems(self, files: Mapping[str, str]) -> list[str]:
@@ -534,14 +537,22 @@ class SharedFactPolicy(unittest.TestCase):
             # normcase is named through the module's imports, under any alias.
             ("from os.path import normcase as fold\n\nkey = fold(path)\n", 3),
             ("import ntpath\n\nkey = ntpath.normcase(ntpath.abspath(path))\n", 3),
-            # A name folded by the platform's rule, as the hub guard's and worktrees' `.git` checks were, which missed a
-            # `.GIT` that macOS's default APFS takes as `.git`.
-            ('git = os.path.normcase(directory.name) == ".git"\n', 1),
-            ('marked = any(os.path.normcase(part) == ".git" for part in path.parts)\n', 1),
         ):
             with self.subTest(folding=folding):
                 self.assertEqual(
                     [self.restated(canary, line, "path_key", self.PATH_KEYS)], self.problems({canary: folding})
+                )
+        # A name folded by the platform's rule, as the hub guard's and worktrees' `.git` checks were, which missed a
+        # `.GIT` that macOS's default APFS takes as `.git`, is a key built by hand and a name compared with `.git` by
+        # hand.
+        for folding in (
+            'git = os.path.normcase(directory.name) == ".git"\n',
+            'marked = any(os.path.normcase(part) == ".git" for part in path.parts)\n',
+        ):
+            with self.subTest(folding=folding):
+                self.assertEqual(
+                    [self.restated(canary, 1, fact, self.PATH_KEYS) for fact in ("name_key", "path_key")],
+                    self.problems({canary: folding}),
                 )
         shared = (
             "key = platform_support.path_key(path)\nsame = path_key(first, resolve=True) == path_key(second)\n"
@@ -553,6 +564,33 @@ class SharedFactPolicy(unittest.TestCase):
             "suffix = path.suffix.casefold()\nlabel = name.lower()\n"
         )
         self.assertEqual([], self.problems({canary: shared}))
+
+    def test_a_name_compared_with_git_by_hand_fails_and_one_keyed_by_its_folder_passes(self) -> None:
+        canary = "tools/git_tool.py"
+        for comparison, line in (
+            # An exact match misses a .GIT that a folding file system takes for .git, as repo-cleanup's and
+            # review-document's did; a casefold takes it on a case-sensitive one too, as review-insights' did.
+            ('found = child.name == ".git"\n', 1),
+            ('inside = relative.parts[0] == ".git"\n', 1),
+            ('found = common.name.casefold() == ".git"\n', 1),
+            ('other = ".git" != name.lower()\n', 1),
+            ('found = "" < name == ".git"\n', 1),
+            # A function of the module's own that shares name_key's name asks no file system.
+            ('def name_key(name, folder):\n    return name\n\n\nfound = name_key(name, folder) == ".git"\n', 5),
+        ):
+            with self.subTest(comparison=comparison):
+                self.assertEqual(
+                    [self.restated(canary, line, "name_key", self.PATH_KEYS)], self.problems({canary: comparison})
+                )
+        keyed = (
+            "import path_keys\nimport platform_support\nfrom path_keys import name_key\n\n"
+            'found = name_key(child.name, child.parent) == ".git"\n'
+            'other = ".git" != platform_support.name_key(common.name, common.parent)\n'
+            'also = path_keys.name_key(part, checkout) == ".git"\n'
+            # Other operators and other names are not a name compared with .git.
+            'listed = ".git" in names\nignored = path.suffix == ".gitignore"\n'
+        )
+        self.assertEqual([], self.problems({canary: keyed}))
 
     def test_the_owner_and_the_suites_may_hold_the_fact(self) -> None:
         literal = 'PATTERNS = ("test_*", "*_test")\nOPTIONS = ("-c", "-C", "--git-dir", "--work-tree")\n'
@@ -607,6 +645,7 @@ class SharedFactPolicy(unittest.TestCase):
                         (self.GIT_CLIENT, "GLOBAL_VALUE_OPTIONS"),
                         (self.REVIEW_CONFIG, "DEFAULT_CONFIG_NAME"),
                         (self.PATH_KEYS, "path_key"),
+                        (self.PATH_KEYS, "name_key"),
                     )
                 ],
                 shared_fact_owner_problems(root),

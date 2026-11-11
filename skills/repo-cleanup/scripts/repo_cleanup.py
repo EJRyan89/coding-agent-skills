@@ -73,7 +73,7 @@ from github_client import Runner as GhRunner
 from github_remote import github_repository
 from link_probe import is_plain_directory, is_plain_file
 from path_containment import relative_within, within
-from path_keys import path_key
+from path_keys import name_key, path_key
 from skill_roots import skills_directory_holding
 from typed_fields import FieldError, FieldReader, describe
 
@@ -1640,7 +1640,9 @@ def offer_detached(services: Services, plan: dict[str, Any]) -> None:
 def holds_checkout(directory: Path, registered: list[str]) -> bool:
     """Whether a registered worktree, or a `.git` entry of any repository or worktree, is inside `directory`.
 
-    Links are never followed. A directory that cannot be read counts as holding one, so it is never reported.
+    A `.git` entry is recognized as the directory holding it compares names, so `.GIT` is one where that directory
+    folds case. Links are never followed. A directory that cannot be read counts as holding one, so it is never
+    reported.
     """
     if any(strictly_inside(path, str(directory)) for path in registered):
         return True
@@ -1651,7 +1653,7 @@ def holds_checkout(directory: Path, registered: list[str]) -> bool:
         except OSError:
             return True
         for child in children:
-            if child.name == ".git":
+            if name_key(child.name, child.parent) == ".git":
                 return True
             if is_plain_directory(child):
                 pending.append(child)
