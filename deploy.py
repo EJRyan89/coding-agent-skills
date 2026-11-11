@@ -45,14 +45,13 @@ def require_supported_python(version_info: Sequence[int | str] = sys.version_inf
 def main() -> int:
     require_supported_python()
     from deployer import cli, platform_support
-    from deployer.errors import DeployError, print_error
     from deployer.paths import Paths, copilot_home
 
-    try:
-        paths = Paths(Path(__file__).resolve().parent, platform_support.home_directory(), copilot_home=copilot_home())
-    except DeployError as error:
-        print_error(error)
-        return error.exit_code
+    def paths() -> Paths:
+        """The paths the environment names, which cli.main reads once the command line has parsed, so --help and a
+        usage error exit as the table says whatever the home or COPILOT_HOME holds."""
+        return Paths(Path(__file__).resolve().parent, platform_support.home_directory(), copilot_home=copilot_home())
+
     return cli.main(sys.argv[1:], paths)
 
 
