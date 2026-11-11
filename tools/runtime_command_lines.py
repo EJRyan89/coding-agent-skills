@@ -88,6 +88,11 @@ DEFAULT_TIMEOUT = 30.0
 # A port nothing listens on, so a runtime that found a credential after all could still reach no model through it.
 UNREACHABLE_PROXY = "http://127.0.0.1:9"
 PROXY_VARIABLES = ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY", "https_proxy", "http_proxy", "all_proxy")
+# The variables naming each runtime's, and GitHub CLI's, configuration folder, and the folder signed_out puts each in
+# under its home. They are named here, where runtime_changelogs reads them from the code, since signed_out builds no
+# environment on a machine whose GitHub CLI sits beside the runtime or Node.js.
+CONFIGURATION_VARIABLES = ("CLAUDE_CONFIG_DIR", "CODEX_HOME", "COPILOT_HOME", "GH_CONFIG_DIR")
+CONFIGURATION_FOLDERS = dict(zip(CONFIGURATION_VARIABLES, (".claude", ".codex", ".copilot", ".gh"), strict=True))
 # What a builder is given where a real run gives its own: the canary's fixture skill, a request, and a plugin.
 REQUEST = "runtime command line check"
 REVIEWED_SKILL = "review-prs"
@@ -188,12 +193,7 @@ def signed_out(home: Path, executable: str) -> dict[str, str]:
     UNREACHABLE_PROXY, and Copilot CLI on the version installed."""
     environment = platform_support.signed_out_environment(os.environ, home)
     environment["PATH"] = without_gh(environment.get("PATH", ""), executable)
-    folders = {
-        "CLAUDE_CONFIG_DIR": home / ".claude",
-        "CODEX_HOME": home / ".codex",
-        "COPILOT_HOME": home / ".copilot",
-        "GH_CONFIG_DIR": home / ".gh",
-    }
+    folders = {name: home / folder for name, folder in CONFIGURATION_FOLDERS.items()}
     for folder in folders.values():
         folder.mkdir(parents=True, exist_ok=True)
     return {

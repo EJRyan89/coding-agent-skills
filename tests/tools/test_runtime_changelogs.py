@@ -28,6 +28,7 @@ from guidance_record import GUIDANCE_PATH, Changelog
 from presence_denial import denied
 
 from tools import runtime_changelogs as watch
+from tools import runtime_command_lines
 from tools.runtime_changelogs import Fetched, Term
 
 REPOSITORY = Path(__file__).resolve().parents[2]
@@ -534,6 +535,17 @@ class RepositoryTermsTests(unittest.TestCase):
         self.assertEqual(len(self.terms), len(set(self.terms)))
         kinds = [term.kind for term in self.terms]
         self.assertEqual(sorted(kinds, key=watch.KINDS.index), kinds)
+
+    def test_the_configuration_folders_variables_are_terms_where_no_signed_out_environment_is_built(self) -> None:
+        # Where GitHub CLI sits beside Node.js, as Homebrew installs both on macOS, signed_out raises Unsafe.
+        def unsafe(*_: object) -> dict[str, str]:
+            raise runtime_command_lines.Unsafe("GitHub CLI is beside Node.js")
+
+        with pytest.MonkeyPatch.context() as patch:
+            patch.setattr(runtime_command_lines, "signed_out", unsafe)
+            terms = watch.terms(REPOSITORY)
+        variables = {term.text for term in terms if term.kind == "variable"}
+        self.assertLessEqual({"CLAUDE_CONFIG_DIR", "CODEX_HOME", "COPILOT_HOME", "GH_CONFIG_DIR"}, variables)
 
 
 class MainTests(unittest.TestCase):
