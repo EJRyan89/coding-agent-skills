@@ -259,8 +259,9 @@ def _resolve_local(path: Path) -> Path:
 
 def _same(first: Path, second: Path) -> bool:
     """Whether `first`, a path the reviewer gave, is `second`, a path the run or this skill holds, by its exact
-    spelling, part by part, each part compared as the directory holding `second`'s compares names, so a spelling its
-    file system takes as `second` matches and none is normalized; only `second` is asked."""
+    spelling, part by part, neither normalized: a part differing only in case matches where the directory holding
+    `second`'s part folds case, and one differing in Unicode normalization only where that directory finds one entry
+    under both names, so a spelling its file system takes as another folder never matches; only `second` is asked."""
     return same_parts(first.parts, second.parts)
 
 

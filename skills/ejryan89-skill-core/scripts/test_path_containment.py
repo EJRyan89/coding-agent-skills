@@ -80,6 +80,16 @@ class WithinTests(unittest.TestCase):
                 self.assertFalse(within(self.tree.parent / "Tree", self.tree, strict=True))
                 self.assertFalse(within(self.tree.parent / "TREE-other" / "x", self.tree))
 
+    def test_a_normalization_form_is_inside_only_where_the_tree_s_directory_finds_one_entry(self) -> None:
+        composed, decomposed = "caf\u00e9", "cafe\u0301"
+        tree = self.tree.parent / composed
+        tree.mkdir()
+        try:
+            one = os.path.samestat(os.lstat(self.tree.parent / decomposed), os.lstat(tree))
+        except FileNotFoundError:
+            one = False
+        self.assertEqual(one, within(self.tree.parent / decomposed / "x", tree))
+
     def test_the_path_judged_is_never_asked(self) -> None:
         judged = self.tree.parent / "judged"
         (judged / "deep").mkdir(parents=True)

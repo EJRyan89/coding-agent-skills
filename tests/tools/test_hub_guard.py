@@ -3211,3 +3211,22 @@ class GitDirectoryNameTests(unittest.TestCase):
                 ):
                     self.assertEqual(folds, hub_guard.hub_protected(place / ".GIT" / "config"))
                     self.assertEqual([mock.call(place / ".GIT")] if folds else [], of_repository.call_args_list)
+
+    def test_a_common_directory_spelled_in_another_case_is_the_hub_s_where_its_folder_folds_case(self) -> None:
+        # git names the common directory as it was given, so on a folding file system .GIT is the hub's.
+        with tempfile.TemporaryDirectory() as temporary:
+            place = Path(temporary).resolve()
+            common = place / ".GIT"
+            common.mkdir()
+            answer = f"{common}\n{common}\n"
+            for folds in (True, False):
+                hub_guard.guarded_hub_of_repository.cache_clear()
+                with (
+                    self.subTest(folds=folds),
+                    mock.patch.dict(path_keys._FOLDS_CASE, {str(place): folds}),
+                    mock.patch.object(worktrees.CLIENT, "output", return_value=answer),
+                    mock.patch.object(hub_guard, "guarded_hub_at", return_value=place) as hub_at,
+                ):
+                    self.assertEqual(place if folds else None, hub_guard.guarded_hub_of_repository(common))
+                    self.assertEqual([mock.call(place)] if folds else [], hub_at.call_args_list)
+            hub_guard.guarded_hub_of_repository.cache_clear()

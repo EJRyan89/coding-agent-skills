@@ -103,6 +103,17 @@ class PathKeyTests(KeyedTestCase):
             self.assertEqual(path_key(self.root / "Work", textual=True), path_key(self.root / "wORK", textual=True))
             self.assertTrue(path_key(self.root / "Work").endswith("work"))
 
+    def test_a_folding_directory_lowercases_one_letter_to_one_and_keeps_sharp_s_apart_from_ss(self) -> None:
+        # NTFS and .NET's ordinal comparison never expand a letter, so Strasse and Stra\u00dfe are two folders there.
+        with self.answers({self.root: True}):
+            self.assertNotEqual(path_key(self.root / "Stra\u00dfe"), path_key(self.root / "Strasse"))
+            self.assertEqual(path_key(self.root / "STRA\u00dfE"), path_key(self.root / "stra\u00dfe"))
+            self.assertFalse(
+                same_parts(PurePath(self.root / "Strasse").parts, PurePath(self.root / "Stra\u00dfe").parts)
+            )
+        # A name compared with no directory folds fully, the answer that refuses more names as one.
+        self.assertEqual(name_key("Stra\u00dfe"), name_key("STRASSE"))
+
     def test_each_name_folds_as_the_directory_holding_it_does(self) -> None:
         # A case-sensitive folder inside one that folds, as a case-sensitive volume mounted under a folding one.
         sensitive = self.root / "cs"
@@ -201,6 +212,37 @@ class SamePartsTests(KeyedTestCase):
             self.assertTrue(same_parts(PurePath(self.root / "RUN" / "prompt.md").parts, reference))
             self.assertFalse(same_parts(other, reference))
 
+    def test_normalization_forms_are_one_only_where_the_directory_finds_one_entry(self) -> None:
+        composed, decomposed = "caf\u00e9", "cafe\u0301"
+        (self.root / composed).mkdir()
+        reference = PurePath(self.root / composed / "x").parts
+        other = PurePath(self.root / decomposed / "x").parts
+        try:
+            one = os.path.samestat(os.lstat(self.root / decomposed), os.lstat(self.root / composed))
+        except FileNotFoundError:
+            one = False
+        # APFS finds one entry under both forms; NTFS and Linux's file systems keep them apart.
+        self.assertEqual(one, same_parts(other, reference))
+        real = os.lstat
+
+        def unifying(path: Any) -> os.stat_result:
+            given = Path(path)
+            return real(given.with_name(composed) if given.name == decomposed else given)
+
+        def apart(path: Any) -> os.stat_result:
+            if Path(path).name == decomposed:
+                raise FileNotFoundError(2, "No such file or directory", str(path))
+            return real(path)
+
+        for lstat, expected in ((unifying, True), (apart, False)):
+            with self.subTest(expected=expected), mock.patch.object(os, "lstat", side_effect=lstat):
+                self.assertEqual(expected, same_parts(other, reference))
+                self.assertTrue(same_parts(reference, reference))
+        # A reference whose entry is missing cannot be asked, so the forms stay apart, while a key merges them.
+        missing = PurePath(self.root / "na\u00efve" / "x").parts
+        self.assertFalse(same_parts(PurePath(self.root / "nai\u0308ve" / "x").parts, missing))
+        self.assertEqual(path_key(self.root / composed), path_key(self.root / decomposed))
+
     def test_only_the_reference_is_asked(self) -> None:
         judged = self.root / "judged"
         (judged / "deep").mkdir(parents=True)
@@ -250,6 +292,27 @@ class FoldsCaseTests(KeyedTestCase):
             self.assertFalse(folds_case(self.root))
         self.assertEqual("Guide.MD", name_key("Guide.MD", self.root))
         self.assertNotEqual(name_key("Guide.md", self.root), name_key("guide.md", self.root))
+
+    def test_an_entry_removed_between_the_two_lookups_is_passed_over_never_read_as_case_sensitive(self) -> None:
+        # A folding file system misses the case-swapped name too once the entry is gone, so that miss shows nothing.
+        (self.root / "PROBE.txt").write_bytes(b"")
+        real = os.lstat
+        looked: list[str] = []
+
+        def lstat(path: Any) -> os.stat_result:
+            name = Path(path).name
+            if name == "probe.TXT":
+                raise FileNotFoundError(2, "No such file or directory", str(path))
+            if name == "PROBE.txt":
+                looked.append(str(path))
+                if len(looked) > 1:
+                    raise FileNotFoundError(2, "No such file or directory", str(path))
+            return real(path)
+
+        with mock.patch.object(os, "lstat", side_effect=lstat):
+            self.assertIsNone(path_keys._asked_folds_case(str(self.root)))
+        self.assertEqual(2, len(looked))
+        self.assertNotIn(str(self.root), path_keys._FOLDS_CASE)
 
     def test_a_directory_with_nothing_to_ask_takes_the_answer_above_and_is_asked_again(self) -> None:
         (self.root / "1234").write_bytes(b"")  # no letter whose case could be swapped

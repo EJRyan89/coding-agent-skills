@@ -1,19 +1,22 @@
 """The one form a path or a name is compared in, so two spellings of one path compare equal as its file system reads
 them.
 
-A path's key is the path made absolute against the working directory and normalized, so `a/../b` and `b` are one
-path, then each name in it folded as the directory holding that name compares names. Case sensitivity belongs to the
-file system, not the platform: NTFS and macOS's default APFS fold case, while Linux's file systems, an APFS volume
-formatted case-sensitive, and a Windows directory marked case-sensitive do not. So each directory on the path is asked
-through `folds_case`, and a name in one that folds is case-folded, so `C:\\Work` and `c:\\work` are one path on NTFS
-and `/Users/you/Work` and `/users/YOU/work` are one on APFS, while a case-sensitive directory keeps them apart. The
-anchor, a drive letter or a network share's name, is folded on every platform, since no file system holds it.
+A path's key is the path made absolute against the working directory and normalized, so `a/../b` and `b` are one path,
+then each name in it folded as the directory holding that name compares names. Case sensitivity belongs to the file
+system, not the platform: NTFS and macOS's default APFS fold case, while Linux's file systems, an APFS volume formatted
+case-sensitive, and a Windows directory marked case-sensitive do not. So each directory on the path is asked through
+`folds_case`, and a name in one that folds is lowercased, one letter to one letter, so `C:\\Work` and `c:\\work` are one
+path on NTFS and `/Users/you/Work` and `/users/YOU/work` are one on APFS, while a case-sensitive directory keeps them
+apart. The anchor, a drive letter or a network share's name, is folded on every platform, since no file system holds it.
 
-A name is also composed to Unicode's NFC form on every file system. APFS and HFS+ ignore the difference between a
-composed and a decomposed spelling, so `é` written as one code point or as `e` and a combining accent names one file
-there; NTFS and Linux's file systems keep them apart, where the key merges two names that differ only in it. A
-directory can rarely be asked, since it seldom holds a name the two forms spell differently, so the key composes
-everywhere, the answer that keeps a path out of a protected folder in every spelling the file system accepts.
+A key also composes each name to Unicode's NFC form on every file system. APFS and HFS+ ignore the difference
+between a composed and a decomposed spelling, so `é` written as one code point or as `e` and a combining accent names
+one file there; NTFS and Linux's file systems keep them apart, where the key merges two names that differ only in it.
+A directory can rarely be asked, since it seldom holds a name the two forms spell differently, and a key is only
+compared, so it composes everywhere. `same_parts`, which decides containment and the reviewer guard's exact match, has
+the trusted path's own entry in hand, so it asks: it takes the two forms as one only where that directory finds one
+entry under both, and keeps them apart where it does not or cannot be asked, so a spelling that names another folder
+on NTFS or Linux is never taken for an admitted one.
 
 Asking never leaves the path's own text or reaches past it: a key asks only the directories it reaches from the anchor
 without following a symbolic link or junction, never the path's last name, and nothing under a network or device
@@ -47,6 +50,10 @@ from link_probe import is_plain_directory
 PRESENCE_ALLOWED = {
     "_asked_folds_case": "None is its answer when no entry can tell whether the file system folds case, and an entry "
     "it cannot stat is passed for the next, which the caller reads as the answer of the directory above",
+    "_one_entry": "a name it cannot stat is not shown to be the trusted entry, so the two spellings stay apart, the "
+    "answer an exact-spelling match and an admitting containment check refuse on",
+    "_still_there": "an entry it cannot stat any more is passed over, so the probe reads no case rule from a lookup "
+    "that missed a vanished entry and asks the next entry instead",
 }
 # The separators a network or device anchor opens with two of: `\\host\share`, `//host/share`, `\\?\`, and `\\.\` on
 # Windows, and `//host` where POSIX leaves a path opening with two to the system.
@@ -57,12 +64,13 @@ _FOLDS_CASE: dict[str, bool] = {}
 
 
 def fold(name: str, folds: bool) -> str:
-    """`name` as a directory compares it: composed to NFC, and case-folded first when the directory `folds` case.
+    """`name` as a directory compares it: composed to NFC, and lowercased first when the directory `folds` case.
 
-    Folding decomposes before it folds and composes after, as Unicode's canonical caseless match does, so two
-    spellings of one character compare equal whatever form each was written in."""
+    Folding decomposes before it lowercases and composes after, so two spellings of one character compare equal
+    whatever form each was written in. It lowercases, as NTFS's and .NET's ordinal comparisons map one letter to one
+    letter, never casefolds, which would expand `ß` to `ss` and merge two folders NTFS keeps apart."""
     if folds:
-        name = unicodedata.normalize("NFD", name).casefold()
+        name = unicodedata.normalize("NFD", name).lower()
     return unicodedata.normalize("NFC", name)
 
 
@@ -93,41 +101,40 @@ def name_key(name: str, directory: str | os.PathLike[str] | None = None) -> str:
     """The form in which the file system compares a name in `directory`: two names with one key are one file there.
 
     `directory` is asked through folds_case, and a name in one that does not fold keeps its case. Without a directory,
-    case is folded, the answer that refuses more names as one. Either way the name is composed to NFC."""
-    return fold(name, directory is None or folds_case(directory))
+    case is folded, the answer that refuses more names as one, and folded fully, as `str.casefold` does, so `ß`
+    and `ss` are one name too: a collision check refuses rather than merge nothing. Either way the name is composed
+    to NFC."""
+    if directory is not None and not folds_case(directory):
+        return fold(name, False)
+    return unicodedata.normalize("NFC", unicodedata.normalize("NFD", name).casefold())
 
 
 def part_folds(parts: Sequence[str]) -> tuple[bool, ...]:
     """For each of an absolute path's `parts`, its anchor first, whether the directory holding it folds case: the
     anchor folds; each name takes the answer of the directory before it, asked while the walk reaches it from the
     anchor without a link, and otherwise the last answer given."""
-    anchor = parts[0]
-    asking = _asks(anchor)
-    folds = _answer_or(anchor, True) if asking else True
-    result = [True]
-    directory = anchor
-    for index, name in enumerate(parts[1:], start=1):
-        result.append(folds)
-        if not asking or index == len(parts) - 1:
-            continue
-        directory = os.path.join(directory, name)  # noqa: PTH118 - text, as the parts were
-        asking = is_plain_directory(directory)
-        if asking:
-            folds = _answer_or(directory, folds)
-    return tuple(result)
+    return tuple(folds for folds, _ in _walk(parts))
 
 
 def same_parts(parts: Sequence[str], reference: Sequence[str]) -> bool:
-    """Whether `parts`, an absolute path's parts from its anchor, name what `reference`'s parts name, each compared as
-    the directory holding the reference's part compares names, and neither path normalized. Only `reference` is
-    asked, so a caller passes the trusted path there and the path it judges in `parts`. A relative `reference` names
-    nothing to compare against, so no path matches it, and nothing is asked relative to the working directory."""
+    """Whether `parts`, an absolute path's parts from its anchor, name what `reference`'s parts name, part by part,
+    neither path normalized. Each part is compared as the directory holding the reference's part compares names:
+    case-folded where it folds case, and two spellings that differ in Unicode normalization taken as one only when that
+    directory, reached without a link, finds one entry under both, as APFS does; where it keeps the forms apart, as
+    NTFS and Linux's file systems do, or cannot be asked, the two must be spelled alike. Only `reference`'s directories
+    are asked, and of a name only the one canonically equivalent to the reference's own, so a caller passes the
+    trusted path there and the path it judges in `parts`. A relative `reference` names nothing to compare against, so
+    no path matches it, and nothing is asked relative to the working directory."""
     if len(parts) != len(reference) or not PurePath(*reference).is_absolute():
         return False
-    folds = part_folds(reference)
-    return all(
-        fold(given, folded) == fold(known, folded) for given, known, folded in zip(parts, reference, folds, strict=True)
-    )
+    for index, (given, known, (folds, asked)) in enumerate(zip(parts, reference, _walk(reference), strict=True)):
+        if _cased(given, folds) == _cased(known, folds):
+            continue
+        if fold(given, folds) != fold(known, folds):
+            return False
+        if not (asked and _one_entry(os.path.join(*reference[:index]), given, known)):  # noqa: PTH118 - text
+            return False
+    return True
 
 
 def path_key(path: str | os.PathLike[str], *, resolve: bool = False, textual: bool = False) -> str:
@@ -145,6 +152,42 @@ def path_key(path: str | os.PathLike[str], *, resolve: bool = False, textual: bo
     parts = PurePath(absolute).parts
     folded = [fold(part, folds) for part, folds in zip(parts, part_folds(parts), strict=True)]
     return os.path.join(*folded)  # noqa: PTH118 - a key is text
+
+
+def _walk(parts: Sequence[str]) -> list[tuple[bool, bool]]:
+    """For each of an absolute path's `parts`, whether the directory holding it folds case, and whether that directory
+    was reached from the anchor without a link and so may be asked; the anchor itself folds and is held by nothing."""
+    anchor = parts[0]
+    asking = _asks(anchor)
+    folds = _answer_or(anchor, True) if asking else True
+    result = [(True, False)]
+    directory = anchor
+    for index, name in enumerate(parts[1:], start=1):
+        result.append((folds, asking))
+        if not asking or index == len(parts) - 1:
+            continue
+        directory = os.path.join(directory, name)  # noqa: PTH118 - text, as the parts were
+        asking = is_plain_directory(directory)
+        if asking:
+            folds = _answer_or(directory, folds)
+    return result
+
+
+def _cased(name: str, folds: bool) -> str:
+    """`name` lowercased as `fold` lowercases it where its directory `folds`, and otherwise as written, with no
+    normalization."""
+    return name.lower() if folds else name
+
+
+def _one_entry(directory: str, given: str, known: str) -> bool:
+    """Whether `directory` finds one entry under both names, neither followed if a link; False when either is missing
+    or cannot be read, so a spelling the directory cannot show to be the known one is not taken for it."""
+    try:
+        known_entry = os.lstat(os.path.join(directory, known))  # noqa: PTH118 - text, as the parts were
+        given_entry = os.lstat(os.path.join(directory, given))  # noqa: PTH118 - text, as the parts were
+    except OSError:
+        return False
+    return (given_entry.st_dev, given_entry.st_ino) == (known_entry.st_dev, known_entry.st_ino)
 
 
 def _asks(anchor: str) -> bool:
@@ -185,10 +228,22 @@ def _asked_folds_case(directory: str) -> bool | None:
                 try:
                     other = os.lstat(os.path.join(directory, swapped))  # noqa: PTH118 - text, as the entry's path is
                 except FileNotFoundError:
-                    return False
+                    if _still_there(entry.path, found):
+                        return False
+                    continue  # removed meanwhile, so a folding file system misses the swapped name too
                 except OSError:
                     continue
                 return (other.st_dev, other.st_ino) == (found.st_dev, found.st_ino)
     except OSError:
         return None
     return None
+
+
+def _still_there(path: str, found: os.stat_result) -> bool:
+    """Whether the entry at `path` is still the one `found` described, so a case-swapped name that missed it shows
+    the directory keeps case, rather than the entry having gone between the two lookups."""
+    try:
+        current = os.lstat(path)
+    except OSError:
+        return False
+    return (current.st_dev, current.st_ino) == (found.st_dev, found.st_ino)
