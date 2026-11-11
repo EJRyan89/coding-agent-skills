@@ -3287,6 +3287,25 @@ class EvaluateTests(unittest.TestCase):
         self.assertIn(f"NOT_COUNTED clean-change haiku record {json.dumps(reason)}", lines)
         self.assertFalse([line for line in lines if line.startswith("PASS ")], lines)
 
+    def test_a_run_with_no_record_whose_stream_is_refused_counts_for_nothing_by_both_reasons(self) -> None:
+        # The missing record makes it a `run` failure, and the refused line is named beside it, in the FAIL lines and
+        # in the results file alike.
+        claude = StubClaude(self, review=False)
+
+        def runner(arguments: list[str], cwd: Path, environment: dict[str, str], timeout: float) -> Any:
+            completed = claude(arguments, cwd, environment, timeout)
+            if arguments[1:] == ["--version"]:
+                return completed
+            return dataclasses.replace(completed, stdout="[]\n" + completed.stdout)
+
+        status, lines = self.evaluate(["--write", "--jobs", "1"], self.seams(runner), only=["clean-change"])
+        self.assertEqual(1, status)
+        refused = "line 1 of the session's stream is a JSON array, not an event object"
+        both = f"the run recorded no review; {refused}"
+        self.assertIn(f"NOT_COUNTED clean-change haiku run {json.dumps(both)}", lines)
+        self.assertIn(f"FAIL review-prs clean-change haiku verdict APPROVED run {json.dumps(both)}", lines)
+        self.assertIn(f"| {both} |", self.results.read_text(encoding="utf-8"))
+
     def test_a_results_file_that_cannot_be_written_fails_by_name_after_the_run_is_judged(self) -> None:
         with unwritable(self.results):
             status, lines = self.evaluate(
