@@ -2217,10 +2217,28 @@ def test_provenance_names_each_source_of_a_check_and_refuses_a_measurement() -> 
 
 
 def test_provenance_of_checks_alone_exits_0_and_a_decision_is_one_line() -> None:
-    code, lines, _ = run("provenance", "UNPAIRED_ALLOWED")
+    code, lines, _ = run("provenance", "UNPRINTED")
     assert code == 0
     assert len(lines) == 1
-    assert lines[0].startswith("DECISION UNPAIRED_ALLOWED On Windows the model may run")
+    assert lines[0].startswith("DECISION UNPRINTED A skill's Markdown keys on the lines")
+
+
+def test_provenance_of_unpaired_allowed_cites_claude_codes_tools_page_before_the_decision() -> None:
+    code, lines, _ = run("provenance", "UNPAIRED_ALLOWED")
+    assert code == 0
+    assert [line.split(" ", 3)[:3] for line in lines] == [
+        ["PAGE", "UNPAIRED_ALLOWED", "https://code.claude.com/docs/en/tools-reference"],
+        ["DECISION", "UNPAIRED_ALLOWED", "On"],
+    ]
+
+
+def test_provenance_of_expands_says_no_page_states_it_and_what_it_rests_on() -> None:
+    code, lines, _ = run("provenance", "EXPANDS")
+    assert code == 0
+    assert len(lines) == 1
+    assert lines[0].startswith("DECISION EXPANDS ")
+    assert "No Claude Code page states this" in lines[0]
+    assert "hand check in Claude Code on Windows" in lines[0]
 
 
 def test_provenance_fails_on_a_file_that_leaves_a_check_out() -> None:
