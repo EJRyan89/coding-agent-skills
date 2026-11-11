@@ -3,7 +3,6 @@ from __future__ import annotations
 import contextlib
 import json
 import os
-import signal
 import subprocess
 import sys
 import tempfile
@@ -24,6 +23,24 @@ from review_process import same_process, start_detached
 SLEEPER = (
     "import sys, time; print('host started', flush=True); "
     "print('to stderr', file=sys.stderr, flush=True); time.sleep(120)"
+)
+
+# Prints, as one JSON line, which of its own descriptors refer to the file argv[1] names, compared by device and
+# inode, and whether its input is the null device, then sleeps like SLEEPER. Reading /dev/fd from inside the host
+# serves Linux and macOS alike, where /proc/<pid>/fd is Linux's alone.
+DESCRIBER = (
+    "import json, os, stat, sys, time; log = os.stat(sys.argv[1]); found = []\n"
+    "for name in os.listdir('/dev/fd'):\n"
+    "    try:\n"
+    "        opened = os.fstat(int(name))\n"
+    "    except OSError:\n"
+    "        continue\n"
+    "    if (opened.st_dev, opened.st_ino) == (log.st_dev, log.st_ino):\n"
+    "        found.append(int(name))\n"
+    "null, given = os.stat(os.devnull), os.fstat(0)\n"
+    "quiet = stat.S_ISCHR(given.st_mode) and given.st_rdev == null.st_rdev\n"
+    "print(json.dumps({'log': sorted(found), 'null_input': quiet}), flush=True)\n"
+    "print('to stderr', file=sys.stderr, flush=True); time.sleep(120)\n"
 )
 
 # git's repository-selecting variables, written out here rather than read from ejryan89-skill-core.
@@ -108,19 +125,23 @@ if sys.platform == "win32":
 
 
 else:
+    from job_tree import end_group
 
     def terminate(pid: int) -> None:
         """End the host and every process it started: the host leads a session of its own, so its process group's ID
-        is its PID. A group already gone has nothing left to end."""
-        with contextlib.suppress(ProcessLookupError):
-            os.killpg(pid, signal.SIGKILL)
+        is its PID. end_group returns at once for a group already gone, or one holding only processes waiting to be
+        reaped, which macOS refuses to signal."""
+        end_group(pid)
 
-    def descriptors_to(pid: int | str, path: Path) -> set[int]:
-        """The open file descriptors of the process `pid`, or `self`, that refer to `path`, as /proc lists them."""
+    def descriptors_to(path: Path) -> set[int]:
+        """This process's open file descriptors that refer to `path`, read from /dev/fd, which Linux and macOS both
+        list, and compared by device and inode."""
+        target = path.stat()
         found: set[int] = set()
-        for entry in Path("/proc", str(pid), "fd").iterdir():
+        for entry in Path("/dev/fd").iterdir():
             with contextlib.suppress(OSError):
-                if entry.readlink() == path.resolve():
+                opened = os.fstat(int(entry.name))
+                if (opened.st_dev, opened.st_ino) == (target.st_dev, target.st_ino):
                     found.add(int(entry.name))
         return found
 
@@ -228,9 +249,11 @@ class StartDetachedTests(unittest.TestCase):
                 root = Path(temporary) / "run with spaces"
                 root.mkdir()
                 log = root / "host.log"
-                pid = start_detached([sys.executable, "-c", SLEEPER], root, log)
+                log.touch()
+                pid = start_detached([sys.executable, "-c", DESCRIBER, str(log)], root, log)
                 self.addCleanup(terminate, pid)
                 self.assertTrue(wait_until(lambda: "to stderr" in log.read_text(encoding="utf-8", errors="replace")))
-                self.assertEqual({1, 2}, descriptors_to(pid, log), "the host's output and errors, and nothing else")
-                self.assertEqual(set(), descriptors_to("self", log), "this process keeps no descriptor of the log")
-                self.assertEqual(Path(os.devnull), Path(f"/proc/{pid}/fd/0").readlink(), "no input")
+                seen = json.loads(log.read_text(encoding="utf-8").splitlines()[0])
+                self.assertEqual([1, 2], seen["log"], "the host's output and errors, and nothing else")
+                self.assertEqual(set(), descriptors_to(log), "this process keeps no descriptor of the log")
+                self.assertIs(True, seen["null_input"], "no input")

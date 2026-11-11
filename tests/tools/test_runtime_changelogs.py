@@ -535,6 +535,17 @@ class RepositoryTermsTests(unittest.TestCase):
         kinds = [term.kind for term in self.terms]
         self.assertEqual(sorted(kinds, key=watch.KINDS.index), kinds)
 
+    def test_the_configuration_folders_variables_are_terms_where_no_signed_out_environment_is_built(self) -> None:
+        # Where GitHub CLI sits beside Node.js, as Homebrew installs both on macOS, signed_out raises Unsafe.
+        def unsafe(*_: object) -> dict[str, str]:
+            raise watch.runtime_command_lines.Unsafe("GitHub CLI is beside Node.js")
+
+        with pytest.MonkeyPatch.context() as patch:
+            patch.setattr(watch.runtime_command_lines, "signed_out", unsafe)
+            terms = watch.terms(REPOSITORY)
+        variables = {term.text for term in terms if term.kind == "variable"}
+        self.assertLessEqual({"CLAUDE_CONFIG_DIR", "CODEX_HOME", "COPILOT_HOME", "GH_CONFIG_DIR"}, variables)
+
 
 class MainTests(unittest.TestCase):
     """A run over this checkout's guidance record, with every request answered by a stub."""
