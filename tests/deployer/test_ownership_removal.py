@@ -788,7 +788,11 @@ class ManagedRootTests(DeployerTestCase):
         with self.assertRaises(DeployError) as raised:
             validate_managed_roots(self.paths)
         self.assertEqual(
-            (f"ERROR: Deployment path component is not a directory: {forward(self.home)}",), raised.exception.lines
+            (
+                f"ERROR: Deployment path component is not a directory: {forward(self.home)}",
+                "Move it aside after checking it, so the deployer can make the folder there, then retry.",
+            ),
+            raised.exception.lines,
         )
 
     def test_configure_rejects_a_linked_config_directory(self) -> None:

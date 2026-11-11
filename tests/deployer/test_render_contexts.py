@@ -38,7 +38,12 @@ class SubstitutionContextTests(unittest.TestCase):
         with self.assertRaises(DeployError) as caught:
             render.render_file("s/config.toml", b"root = {{X}}\n", {"X": "value"})
         self.assertEqual(
-            (f"ERROR: Rendered TOML validation failed: s/config.toml: {parsed.exception}",), caught.exception.lines
+            (
+                f"ERROR: Rendered TOML validation failed: s/config.toml: {parsed.exception}",
+                'Correct that file in the source so it parses with its tokens substituted; see "Template values" in '
+                "docs/adding-a-skill.md.",
+            ),
+            caught.exception.lines,
         )
 
     def test_toml_values_are_escaped_and_parsed(self) -> None:
@@ -98,6 +103,7 @@ class SubstitutionContextTests(unittest.TestCase):
                     (
                         f"ERROR: Variable PYTHON cannot be substituted into {logical}: {value!r} is not one of "
                         "python, python3",
+                        "This platform's Python command is not one the deployer renders.",
                     ),
                     raised.exception.lines,
                 )

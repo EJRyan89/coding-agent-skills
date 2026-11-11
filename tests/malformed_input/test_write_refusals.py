@@ -426,13 +426,13 @@ REFUSALS: tuple[Row, ...] = (
         "deployer.journal.Journal.write",
         DUMPS,
         _deployer_error(_journal),
-        f"DeployError: ERROR: Cannot write the journal <tmp>/journal.jsonl: {REASON}",
+        f"DeployError: ERROR: Cannot write the journal <tmp>/journal.jsonl: {REASON}\n{DEBUG_HINT}",
     ),
     Row(
         "deployer.manifest.Manifest.save",
         DUMPS,
         _deployer_error(_manifest),
-        f"DeployError: ERROR: Cannot write the manifest <tmp>/manifest.json: {REASON}",
+        f"DeployError: ERROR: Cannot write the manifest <tmp>/manifest.json: {REASON}\n{DEBUG_HINT}",
     ),
     Row(
         "deployer.pipeline._execute",
