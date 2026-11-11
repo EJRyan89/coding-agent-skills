@@ -3,8 +3,8 @@ fault in a throwaway fixture, and judged.
 
 fault_runner.py runs the command under the fault and stops it, past any handler, if it starts a program other than
 git, opens a network connection, or writes outside the temporary folder or inside this checkout, even where the
-temporary folder holds it. A run must reach its fault and end with a
-nonzero exit its docstring's exit table names, output that names what failed, a refusal line, no traceback, and the
+temporary folder holds it. A run must reach its fault and end with a nonzero exit its docstring's exit table names,
+output that names what failed, the line naming it being its refusal whatever word leads it, no traceback, and the
 home, the work folder, and the outputs the driver names as it found them. The suites test_faults_<group>.py run every
 driver's runs of their group of faults, so the runner deals each group to a leg of its own; test_faults.py holds the
 coverage and the harness's own tests.
@@ -187,8 +187,8 @@ def judged(
     docstring: str, fault: str, target: Path | None, finished: subprocess.CompletedProcess[str], record: dict[str, Any]
 ) -> list[str]:
     """What is wrong with a run's end, judged against its entry point's docstring: a stop, a fault never reached, an
-    exit 0 or one the table does not name, a traceback, output that never names what failed, or a last line that is
-    no refusal."""
+    exit 0 or one the table does not name, a traceback, or output that never names what failed, whose line naming it is
+    the refusal."""
     problems: list[str] = []
     if record["stopped"]:
         problems.append(f"the harness stopped it: {record['stopped']}")
@@ -209,27 +209,11 @@ def judged(
     words = evidence(fault, target)
     if not any(word.casefold() in output.casefold() for word in words):
         problems.append(f"its output never names what failed ({' or '.join(map(repr, words))})")
-    lines = [line for line in output.splitlines() if line.strip()]
-    if not lines:
+    # The line that names what failed is the run's refusal, whatever word leads it, and a remedy line may follow it,
+    # as the deployer's does, so no check of the refusal's form or place is made beyond it.
+    if not output.strip():
         problems.append("it printed nothing")
-    elif not any(refuses(line, docstring, words) for line in lines):
-        problems.append(
-            "no line it printed is a refusal: none is FAILED, starts with a word its docstring names, or "
-            "names what failed"
-        )
     return problems
-
-
-def refuses(line: str, docstring: str, words: tuple[str, ...]) -> bool:
-    """Whether a line is a refusal: a FAILED line, one led by a word its docstring names, such as a finding's or
-    ERROR, or one that names what failed. The refusal need not be the last line, since one may follow it with its
-    remedy, as the deployer's does."""
-    first = line.split()[0].rstrip(":")
-    return (
-        first == "FAILED"
-        or (first.isupper() and re.search(rf"(?<![\w-]){re.escape(first)}(?![\w-])", docstring) is not None)
-        or any(word.casefold() in line.casefold() for word in words)
-    )
 
 
 def shown(name: str, root: Path) -> str:
