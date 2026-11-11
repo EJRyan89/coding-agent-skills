@@ -1178,6 +1178,83 @@ class CollisionTests(unittest.TestCase):
         self.assertEqual([], [f for f in audit.audit(self.root).findings if f.check == "collision"])
 
 
+# The "Built-in agents" table of Copilot CLI's command reference, typed here rather than read from the constant under
+# test: https://docs.github.com/en/copilot/reference/copilot-cli-reference/cli-command-reference#built-in-agents
+BUILT_IN_AGENTS = ("code-review", "explore", "general-purpose", "research", "rubber-duck", "security-review", "task")
+
+
+def builtin_collision(name: str) -> str:
+    return (
+        f"Custom agent '{name}' takes the name of a Copilot CLI built-in agent, which delegating to '{name}' always "
+        "runs, so Copilot CLI never offers this agent to the model; rename it"
+    )
+
+
+class BuiltInAgentCollisionTests(unittest.TestCase):
+    """Copilot CLI's changelog: a custom agent that shares a built-in agent's name is not offered to the model, since
+    delegating to that name always runs the built-in agent. Its name is its name field, else its ID, in its own case."""
+
+    def test_the_catalogue_is_the_command_references_built_in_agents(self) -> None:
+        self.assertEqual(frozenset(BUILT_IN_AGENTS), audit.COPILOT_BUILTIN_AGENTS)
+
+    def test_a_custom_agent_whose_id_is_any_built_in_agents_collides_in_both_folders(self) -> None:
+        for name in BUILT_IN_AGENTS:
+            with self.subTest(name=name):
+                self.assertEqual(
+                    [
+                        ("ERROR", "collision", f".github/agents/{name}.agent.md", builtin_collision(name)),
+                        ("ERROR", "collision", f".claude/agents/{name}.md", builtin_collision(name)),
+                    ],
+                    runtime_rows(
+                        {
+                            f".github/agents/{name}.agent.md": "---\ndescription: Mine.\n---\n",
+                            f".claude/agents/{name}.md": f"---\nname: {name}\ndescription: Mine.\n---\n",
+                        },
+                        ("collision",),
+                    ),
+                )
+
+    def test_the_name_field_collides_and_the_id_it_replaces_does_not(self) -> None:
+        self.assertEqual(
+            [
+                ("ERROR", "collision", ".github/agents/helper.agent.md", builtin_collision("explore")),
+                ("ERROR", "collision", ".claude/agents/reviewer.md", builtin_collision("task")),
+            ],
+            runtime_rows(
+                {
+                    # Named explore and task, whatever their files are called.
+                    ".github/agents/helper.agent.md": "---\nname: explore\ndescription: Mine.\n---\n",
+                    ".claude/agents/reviewer.md": "---\nname: task\ndescription: Mine.\n---\n",
+                    # Named reviewer and helper: the name field, not the file, is what Copilot CLI offers.
+                    ".github/agents/research.agent.md": "---\nname: reviewer\ndescription: Mine.\n---\n",
+                    ".claude/agents/code-review.md": "---\nname: helper\ndescription: Mine.\n---\n",
+                },
+                ("collision",),
+            ),
+        )
+
+    def test_a_name_in_another_case_does_not_collide(self) -> None:
+        self.assertEqual(
+            [],
+            runtime_rows(
+                {
+                    ".github/agents/Explore.agent.md": "---\ndescription: Mine.\n---\n",
+                    ".github/agents/other.agent.md": "---\nname: Code-Review\ndescription: Mine.\n---\n",
+                    ".claude/agents/task.md": "---\nname: TASK\ndescription: Mine.\n---\n",
+                },
+                ("collision",),
+            ),
+        )
+
+    def test_an_empty_name_falls_back_to_the_id(self) -> None:
+        self.assertEqual(
+            [("ERROR", "collision", ".github/agents/rubber-duck.agent.md", builtin_collision("rubber-duck"))],
+            runtime_rows(
+                {".github/agents/rubber-duck.agent.md": '---\nname: ""\ndescription: Mine.\n---\n'}, ("collision",)
+            ),
+        )
+
+
 # ---------------------------------------------------------------------------
 # Copilot configuration, provenance, and scope tests
 # ---------------------------------------------------------------------------
@@ -1466,12 +1543,7 @@ class CopilotConfigurationTests(unittest.TestCase):
         agent.write_text("---\ndescription: Review.\n---\n", encoding="utf-8")
         result = audit.audit(self.root)
         self.assertEqual(
-            [
-                (
-                    ".github/agents/code-review.agent.md",
-                    "Custom agent 'code-review' collides with a Copilot built-in agent",
-                )
-            ],
+            [(".github/agents/code-review.agent.md", builtin_collision("code-review"))],
             [(f.path, f.message) for f in result.findings if f.check == "collision"],
         )
         self.assertEqual(
@@ -5162,6 +5234,8 @@ class RuntimeSkillAndAgentTests(unittest.TestCase):
                     "Claude Code agent 'code-review': tools Read, Grep; inherit; its own hooks",
                 ),
                 ("ERROR", "copilot-agent", ".claude/agents/reviewer.md", "target must be 'vscode' or 'github-copilot'"),
+                # Copilot CLI names the agent by its name field, not its file.
+                ("ERROR", "collision", ".claude/agents/reviewer.md", builtin_collision("code-review")),
                 ("ERROR", "claude-agent", ".claude/agents/unnamed.md", "Agent frontmatter requires name"),
             ],
             rows,
@@ -5179,12 +5253,7 @@ class RuntimeSkillAndAgentTests(unittest.TestCase):
                     ".github/agents/fields.agent.md",
                     "modelPolicy must be 'preferred' or 'required'",
                 ),
-                (
-                    "ERROR",
-                    "collision",
-                    ".claude/agents/code-review.md",
-                    "Custom agent 'code-review' collides with a Copilot built-in agent",
-                ),
+                ("ERROR", "collision", ".claude/agents/code-review.md", builtin_collision("code-review")),
                 ("ERROR", "copilot-agent", ".claude/agents/fields.md", "infer must be a boolean"),
                 (
                     "ERROR",
@@ -5196,7 +5265,7 @@ class RuntimeSkillAndAgentTests(unittest.TestCase):
             ],
             runtime_rows(
                 {
-                    ".claude/agents/code-review.md": "---\nname: reviewer\ndescription: Reviews.\n---\n",
+                    ".claude/agents/code-review.md": "---\nname: code-review\ndescription: Reviews.\n---\n",
                     ".claude/agents/fields.md": (
                         "---\nname: fields\ndescription: Fields.\ninfer: sometimes\ntools:\nmodelPolicy: strict\n---\n"
                     ),
