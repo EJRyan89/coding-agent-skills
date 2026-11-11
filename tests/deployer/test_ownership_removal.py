@@ -8,6 +8,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import unittest
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -655,10 +656,12 @@ class UnlistedFolderTests(DeployerTestCase):
 
 
 # A file name UTF-8 cannot encode: on Linux a byte that is not UTF-8, which Python reads as this surrogate escape, and
-# on Windows the lone surrogate itself, which NTFS holds.
+# on Windows the lone surrogate itself, which NTFS holds. macOS's file systems refuse to create one.
 UNENCODABLE_NAME = "note\udcff.md"
+NO_UNENCODABLE_NAMES = "APFS and HFS+ refuse a name that is not valid UTF-8, so a macOS volume holds none"
 
 
+@unittest.skipIf(sys.platform == "darwin", NO_UNENCODABLE_NAMES)
 class UnencodableNameTests(DeployerTestCase):
     """A deployed file whose name is not valid UTF-8 cannot be hashed: the dry run and the deployment refuse it as a
     DeployError naming the item and the path, never an uncaught UnicodeEncodeError."""
@@ -721,6 +724,7 @@ class ManagedRootTests(DeployerTestCase):
         self.assertEqual(["20260101-000000-keep"], sorted(path.name for path in outside.iterdir()))
         self.assertEqual("external data\n", (outside / "20260101-000000-keep" / "data.txt").read_text(encoding="utf-8"))
 
+    @unittest.skipIf(sys.platform == "darwin", NO_UNENCODABLE_NAMES)
     def test_a_home_or_checkout_path_the_records_cannot_hold_is_refused_before_anything_is_written(self) -> None:
         # A lone surrogate is how Python spells a POSIX name's byte that is not UTF-8, and an unpaired UTF-16 unit of a
         # Windows name. The manifest and the journal, which the JSON writer refuses one in, record these paths, so

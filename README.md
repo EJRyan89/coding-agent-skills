@@ -23,7 +23,7 @@ Portable agent skills for Claude Code, Codex, and GitHub Copilot CLI, with a gua
 |---|---|
 | Windows | Supported. |
 | Linux, WSL included | The deployer and the whole validation suite run there, and the `deployable` workflow below deploys onto a fresh Ubuntu runner and checks discovery. Not yet supported: no model has run a skill on Linux through the runtime canary. |
-| macOS | Not supported. The deployer stops before changing anything. |
+| macOS | The deployer runs there, and the `deployable` workflow below deploys onto a fresh macOS runner and checks discovery; the validation suite runs on macOS in CI, where some suites do not pass yet. Not yet supported: no model has run a skill on macOS through the runtime canary. |
 
 Install the runtimes you use. None of them is needed to deploy, so you can use the skills from Codex or Copilot without installing Claude Code; [Runtime support](docs/skills.md#runtime-support) says which skills run there in part.
 
@@ -37,7 +37,7 @@ The maintainer's machines ran the [runtime canary](tools/runtime_canary.py) and 
 
 ## Quick start
 
-You need Python 3.11.4 or newer, Git for Windows (on Linux, Git and the system's Bash), ShellCheck, and PowerShell (PowerShell 7 on Linux); several skills also use the GitHub CLI. [Installation](docs/installation.md) gives the install commands and explains each step below.
+You need Python 3.11.4 or newer, Git for Windows (on Linux and macOS, Git and Bash), ShellCheck, and PowerShell (PowerShell 7 on Linux and macOS); several skills also use the GitHub CLI. [Installation](docs/installation.md) gives the install commands and explains each step below.
 
 ```bash
 git clone https://github.com/EJRyan89/coding-agent-skills.git
@@ -52,7 +52,7 @@ python deploy.py --all --dry-run
 python deploy.py --all
 ```
 
-On Linux, run them as `python3`. `check` reports missing tools, `configure` asks for the directory holding your local repositories and whether updates follow releases, the default, or `main`, and `--all` deploys every skill except opt-in ones such as the `dotnet` bundle, which you add with `--include dotnet`.
+On Linux and macOS, run them as `python3`. `check` reports missing tools, `configure` asks for the directory holding your local repositories and whether updates follow releases, the default, or `main`, and `--all` deploys every skill except opt-in ones such as the `dotnet` bundle, which you add with `--include dotnet`.
 
 If you use Codex CLI, make its two [Windows settings](docs/installation.md#codex-cli-settings) before starting a skill. If you use Codex or Copilot CLI, `python deploy.py verify` checks that each finds the deployed skills.
 

@@ -22,7 +22,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import job_tree
-from bounded_process import run_bounded
+from bounded_process import Finished, run_bounded
 from job_tree import GroupTree, JobRefused, JobTree, TreeNotEnded
 from process_identity import process_status
 
@@ -596,6 +596,37 @@ class ProcessTreeTests(unittest.TestCase):
                 self.assertEqual([100, 103], sorted(job_tree.group_members(7)))
                 self.assertEqual([], job_tree.group_members(9))
 
+    def test_ps_lists_a_group_s_processes_still_running(self) -> None:
+        listing = b"    1     1 Ss\n  100     7 S\n  101     7 Z\n  102     8 R\n  103     7 R+\n  104     7 Z+\n\n"
+        with mock.patch.object(job_tree, "run_bounded", return_value=Finished(0, listing, b"")) as run:
+            self.assertEqual([100, 103], job_tree.listed_members(7))
+            self.assertEqual([], job_tree.listed_members(9))
+        run.assert_called_with(
+            ["/bin/ps", "-A", "-o", "pid=,pgid=,stat="],
+            10.0,
+            env={"LC_ALL": "C", "TZ": "UTC0", "PATH": "/usr/bin:/bin"},
+        )
+
+    def test_a_ps_listing_it_cannot_trust_lists_nothing(self) -> None:
+        for answer in (
+            OSError(2, "No such file"),
+            subprocess.TimeoutExpired("ps", 10),
+            Finished(1, b"  100     7 S\n", b"ps: denied"),
+            Finished(0, b"  100     7\n", b""),
+            Finished(0, b"  100  seven S\n", b""),
+            Finished(0, b"  \xd9\xa1     7 S\n", b""),
+        ):
+            with (
+                self.subTest(answer=answer),
+                mock.patch.object(
+                    job_tree,
+                    "run_bounded",
+                    side_effect=answer if isinstance(answer, BaseException) else None,
+                    return_value=answer,
+                ),
+            ):
+                self.assertIsNone(job_tree.listed_members(7))
+
     def test_the_windows_job_values(self) -> None:
         # Pinned against the values winnt.h and the job object documentation give, not the module's own names.
         self.assertEqual(
@@ -688,9 +719,27 @@ if sys.platform != "win32":
         def test_a_group_it_cannot_signal_says_its_processes_may_still_run(self) -> None:
             with (
                 mock.patch.object(os, "killpg", side_effect=PermissionError(1, "Operation not permitted")),
+                mock.patch.object(job_tree, "group_members", return_value=[4243]),
                 self.assertRaisesRegex(TreeNotEnded, r"^The group's processes may still run: killpg failed: "),
             ):
                 job_tree.end_group(4242)
+            for raised in (OSError(22, "Invalid argument"), PermissionError(1, "Operation not permitted")):
+                with (
+                    self.subTest(raised=raised),
+                    mock.patch.object(os, "killpg", side_effect=raised),
+                    mock.patch.object(job_tree, "group_members", return_value=[4242]),
+                    self.assertRaisesRegex(TreeNotEnded, r"^The group's processes may still run: killpg failed: "),
+                ):
+                    job_tree.end_group(4242)
+
+        def test_a_group_it_may_not_signal_whose_every_process_has_ended_has_ended(self) -> None:
+            # macOS refuses to signal a group that holds only processes waiting to be reaped.
+            with (
+                mock.patch.object(os, "killpg", side_effect=PermissionError(1, "Operation not permitted")),
+                mock.patch.object(job_tree, "group_members", return_value=[]) as members,
+            ):
+                job_tree.end_group(4242)
+            members.assert_called_once_with(4242)
 
         def test_a_group_with_no_process_left_has_ended(self) -> None:
             with (
@@ -711,15 +760,37 @@ if sys.platform != "win32":
             ):
                 job_tree.end_group(4242)
 
-        def test_without_proc_the_group_itself_is_asked(self) -> None:
-            for raised, expected in ((None, [4242]), (ProcessLookupError(3, "No such process"), [])):
+        def test_without_proc_or_ps_the_group_itself_is_asked(self) -> None:
+            for raised, expected in (
+                (None, [4242]),
+                (ProcessLookupError(3, "No such process"), []),
+                (PermissionError(1, "Operation not permitted"), [4242]),
+            ):
                 with (
                     self.subTest(raised=raised),
                     mock.patch.object(job_tree, "PROC", str(Path(self.ready.parent) / "not mounted")),
+                    mock.patch.object(job_tree, "listed_members", return_value=None),
                     mock.patch.object(os, "killpg", side_effect=raised) as killpg,
                 ):
                     self.assertEqual(expected, job_tree.group_members(4242))
                 killpg.assert_called_once_with(4242, 0)
+
+        def test_without_proc_ps_lists_the_group(self) -> None:
+            with (
+                mock.patch.object(job_tree, "PROC", str(Path(self.ready.parent) / "not mounted")),
+                mock.patch.object(job_tree, "listed_members", return_value=[4243]) as listed,
+                mock.patch.object(os, "killpg") as killpg,
+            ):
+                self.assertEqual([4243], job_tree.group_members(4242))
+            listed.assert_called_once_with(4242)
+            killpg.assert_not_called()
+
+        def test_a_real_group_is_listed_by_ps_as_by_proc(self) -> None:
+            process = subprocess.Popen(SLEEPER, start_new_session=True)
+            self.addCleanup(process.wait)
+            self.addCleanup(process.kill)
+            self.assertEqual([process.pid], job_tree.listed_members(process.pid))
+            self.assertEqual([process.pid], job_tree.group_members(process.pid))
 
 
 @pytest.mark.parametrize(("platform", "kind"), [("win32", JobTree), ("linux", GroupTree), ("darwin", GroupTree)])

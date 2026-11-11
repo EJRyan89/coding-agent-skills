@@ -315,9 +315,12 @@ class StateAndLockTests(unittest.TestCase):
                     lock.__exit__(None, None, None)
                     self.assertFalse(path.exists(), "the lock is released while the owner file is open")
                     self.assertEqual(lock.token, json.loads(reader.read())["token"])
+                # This process's status, read before sleeping fails: the probe's own wait for ps, where there is no
+                # /proc, is no wait for the lock.
+                status = process_identity.process_status(os.getpid())
                 with (
                     mock.patch.object(time, "sleep", side_effect=AssertionError("waited")),
-                    ResourceLock(path),
+                    ResourceLock(path, probe=lambda _pid: status),
                 ):
                     pass
             self.assertEqual("", errors.getvalue())

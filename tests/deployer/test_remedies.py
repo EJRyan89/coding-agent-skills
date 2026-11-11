@@ -760,7 +760,7 @@ class LockRemedyTests(RemedyTestCase):
 
     def test_failed_stale_lock_reclaim_says_to_retry(self) -> None:
         self.fixture()
-        self.write_lock({"pid": 999999, "token": "stale-token", "start_time": 1})
+        self.write_lock({"pid": 99998, "token": "stale-token", "start_time": 1})
         real_move = fsops.move
 
         def failing_move(source: Path, destination: Path) -> None:

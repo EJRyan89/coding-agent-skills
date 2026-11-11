@@ -53,6 +53,22 @@ def run(command: list[str], environment: dict[str, str], stdin: str = "") -> sub
     )
 
 
+SKIP_ALLOWED = {
+    "installation": "a release whose deployer refuses this platform, as every release before the macOS port refuses "
+    "macOS, cannot be installed here, so there is nothing to update from; the first release that supports the "
+    "platform runs the suite",
+}
+
+
+def release_supports_this_platform(release: str) -> bool:
+    """Whether the release's deployer names this platform among those it runs on, read from its own
+    platform_support.py's SUPPORTED_PLATFORMS line, so the answer holds for the code the release ships."""
+    source = git(REPOSITORY_ROOT, "show", f"refs/tags/{release}:deployer/platform_support.py")
+    declared = next((line for line in source.splitlines() if line.startswith("SUPPORTED_PLATFORMS = ")), "")
+    assert declared, f"{release}'s deployer/platform_support.py declares no SUPPORTED_PLATFORMS"
+    return f'"{sys.platform}"' in declared
+
+
 def git(directory: Path, *arguments: str) -> str:
     """git in a fixture repository, with the root conftest.py's isolated configuration and identity."""
     completed = subprocess.run(
@@ -137,6 +153,8 @@ def installation(tmp_path: Path) -> Installation:
     """The latest release, deployed on the release channel from a clone of an origin whose main is HEAD."""
     root = tmp_path.resolve()
     release = latest_release()
+    if not release_supports_this_platform(release):
+        pytest.skip(f"{release}'s deployer refuses {sys.platform}, so no installation of it exists here to update")
     origin = root / "origin.git"
     git(root, "clone", "--quiet", "--bare", str(REPOSITORY_ROOT), str(origin))
     git(origin, "update-ref", "refs/heads/main", git(REPOSITORY_ROOT, "rev-parse", "HEAD"))

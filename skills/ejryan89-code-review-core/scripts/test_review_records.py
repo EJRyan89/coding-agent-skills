@@ -626,6 +626,10 @@ class RecordTests(unittest.TestCase):
             markdown_path.write_text(markdown_path.read_text(encoding="utf-8") + "tampered\n", encoding="utf-8")
             with self.assertRaisesRegex(RecordError, "Markdown hash mismatch"):
                 validate_record_pair(json_path, markdown_path)
+            # Bytes that are not UTF-8 are bad content like a mismatch, never a decoding error its callers miss.
+            markdown_path.write_bytes(markdown_path.read_bytes() + b"\xff")
+            with self.assertRaisesRegex(RecordError, r"^Review Markdown .*review\.md is not UTF-8: "):
+                validate_record_pair(json_path, markdown_path)
 
     def test_a_record_pair_without_artifact_hashes_is_refused(self) -> None:
         # The contract reads a null `artifacts` as absent, and an archived pair without them cannot be verified.

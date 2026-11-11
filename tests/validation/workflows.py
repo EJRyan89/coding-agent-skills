@@ -914,6 +914,20 @@ def leg_problems(workflow: str, legs: int) -> list[str]:
     return problems
 
 
+def provisional_job_problems(workflow: str, job: str) -> list[str]:
+    """Report how validate.yml's `job` departs from a leg that is not yet a gate: it goes on after an error, so a red
+    leg leaves the run's conclusion as it was, and the `validate` job, the required check, does not need it. A job
+    that joins the required check drops both together, and its test moves to `required_check_problems`."""
+    tree = read_workflow(workflow)
+    problems: list[str] = []
+    if _mapping(tree, "jobs", job).get("continue-on-error") != "true":
+        problems.append(f"the {job} job does not set continue-on-error: true, so a red leg fails the run")
+    needs = _mapping(tree, "jobs", "validate").get("needs")
+    if job in ([needs] if isinstance(needs, str) else needs if isinstance(needs, list) else []):
+        problems.append(f"the validate job needs the {job} job, which goes on after an error and so cannot gate")
+    return problems
+
+
 def required_check_problems(workflow: str, jobs: tuple[str, ...]) -> list[str]:
     """Report how validate.yml's `validate` job departs from the one required check over `jobs`: named `Validation`,
     as branch protection requires it, needing each of them, running when one fails, since a skipped required check
@@ -957,43 +971,56 @@ LINUX_VALIDATION_LINES = (
 )
 
 
-# The Linux legs check ShellCheck's release archive against the workflow's pinned digest before extracting it.
+# The Linux legs check ShellCheck's release archive against the workflow's pinned digest before extracting it, and
+# the macOS legs theirs with the tool macOS has for it.
 LINUX_SHELLCHECK_DIGEST_CHECK = 'echo "$SHELLCHECK_LINUX_SHA256  $archive" | sha256sum --check --strict'
+MACOS_SHELLCHECK_DIGEST_CHECK = 'echo "$SHELLCHECK_MACOS_SHA256  $archive" | shasum --algorithm 256 --check --strict'
+# The macOS legs' name, shaped as the Linux legs' is, from which tools/record_job_seconds.py reads each macOS leg's
+# shard index and count.
+MACOS_LEG_NAME = "macOS shard ${{ matrix.shard }}, Python ${{ matrix.python-version }}"
+# validate.yml's jobs that run the whole validation on a POSIX platform, by job: the runner, the legs' name, and the
+# check of ShellCheck's release archive against its pinned digest.
+POSIX_VALIDATION_JOBS = {
+    "linux": ("ubuntu-latest", LINUX_LEG_NAME, LINUX_SHELLCHECK_DIGEST_CHECK),
+    "macos": ("macos-latest", MACOS_LEG_NAME, MACOS_SHELLCHECK_DIGEST_CHECK),
+}
 
 
-def linux_job_problems(workflow: str, legs: int) -> list[str]:
-    """Report how validate.yml's `linux` job departs from one validation run on ubuntu-latest dealt across `legs` legs
-    named as Linux legs, each running its own shard, every leg reporting rather than the first failure cancelling the
-    rest: the checkout's whole history, the matrix's Pythons as LINUX_PYTHON gives them, the floor and, on the weekly
-    schedule, the latest stable release beside it, each leg's own read by its name and installed by setup-python,
-    with pip's cache keyed on requirements-dev.txt, ShellCheck from the pinned release's archive checked against its
-    pinned digest, PSScriptAnalyzer at the workflow's pin, and the Windows legs' validation step.
+def posix_job_problems(workflow: str, legs: int, job: str = "linux") -> list[str]:
+    """Report how validate.yml's `job`, one of POSIX_VALIDATION_JOBS, departs from one validation run on its runner
+    dealt across `legs` legs named as its platform's legs, each running its own shard, every leg reporting rather than
+    the first failure cancelling the rest: the checkout's whole history, the matrix's Pythons as LINUX_PYTHON gives
+    them, the floor and, on the weekly schedule, the latest stable release beside it, each leg's own read by its name
+    and installed by setup-python, with pip's cache keyed on requirements-dev.txt, ShellCheck from the pinned release's
+    archive checked against its pinned digest, PSScriptAnalyzer at the workflow's pin, and the Windows legs'
+    validation step.
     `required_check_problems` holds it inside the required check, `tool_cache_problems` its tool caches, and
     `pinned_tool_problems` its verify step."""
+    runner, leg_name, digest_check = POSIX_VALIDATION_JOBS[job]
     tree = read_workflow(workflow)
-    linux = _mapping(tree, "jobs", "linux")
+    linux = _mapping(tree, "jobs", job)
     if not linux:
-        return ["there is no linux job"]
+        return [f"there is no {job} job"]
     problems: list[str] = []
-    if linux.get("runs-on") != "ubuntu-latest":
-        problems.append(f"the linux job runs on {linux.get('runs-on')}, not ubuntu-latest")
-    if linux.get("name") != LINUX_LEG_NAME:
-        problems.append(f"the linux job's legs are named {linux.get('name')!r}, not {LINUX_LEG_NAME!r}")
+    if linux.get("runs-on") != runner:
+        problems.append(f"the {job} job runs on {linux.get('runs-on')}, not {runner}")
+    if linux.get("name") != leg_name:
+        problems.append(f"the {job} job's legs are named {linux.get('name')!r}, not {leg_name!r}")
     strategy = _mapping(linux, "strategy")
     expected = [f"{index}/{legs}" for index in range(1, legs + 1)]
     shards = _mapping(strategy, "matrix").get("shard")
     if shards != expected:
-        problems.append(f"the linux matrix's shards are {shards}, expected {expected}")
+        problems.append(f"the {job} matrix's shards are {shards}, expected {expected}")
     pythons = _mapping(strategy, "matrix").get("python-version")
     if pythons != LINUX_PYTHON:
-        problems.append(f"the linux matrix's Python is {pythons}, expected {LINUX_PYTHON}")
+        problems.append(f"the {job} matrix's Python is {pythons}, expected {LINUX_PYTHON}")
     if strategy.get("fail-fast") != "false":
-        problems.append("the linux matrix does not set fail-fast: false, so one red leg would cancel the other")
+        problems.append(f"the {job} matrix does not set fail-fast: false, so one red leg would cancel the other")
     steps = _steps(linux)
     checkouts = [_mapping(step, "with") for step in steps if str(step.get("uses", "")).startswith("actions/checkout@")]
     if checkouts != [{"fetch-depth": "0", **NO_STORED_CREDENTIAL}]:
         problems.append(
-            f"the linux job checks out {checkouts}, not the whole history with fetch-depth 0 and no stored credential"
+            f"the {job} job checks out {checkouts}, not the whole history with fetch-depth 0 and no stored credential"
         )
     python = [_mapping(step, "with") for step in steps if str(step.get("uses", "")).startswith("actions/setup-python@")]
     setup = {
@@ -1003,13 +1030,13 @@ def linux_job_problems(workflow: str, legs: int) -> list[str]:
     }
     if python != [setup]:
         problems.append(
-            f"the linux job sets up Python as {python}, not the matrix's with pip's cache on requirements-dev.txt"
+            f"the {job} job sets up Python as {python}, not the matrix's with pip's cache on requirements-dev.txt"
         )
     scripts = [str(step.get("run", "")) for step in steps]
     problems.extend(
-        f"no step of the linux job runs {install!r}"
+        f"no step of the {job} job runs {install!r}"
         for install in (
-            LINUX_SHELLCHECK_DIGEST_CHECK,
+            digest_check,
             "Install-Module PSScriptAnalyzer -RequiredVersion $env:PSSCRIPTANALYZER_VERSION ",
             "python -m pip install --require-hashes --only-binary :all: -r requirements-dev.txt",
         )
@@ -1017,7 +1044,7 @@ def linux_job_problems(workflow: str, legs: int) -> list[str]:
     )
     runs = [step for step in steps if "tests/run_validation.py" in str(step.get("run", ""))]
     if len(runs) != 1:
-        problems.append(f"the linux job has {len(runs)} steps that run tests/run_validation.py, not one")
+        problems.append(f"the {job} job has {len(runs)} steps that run tests/run_validation.py, not one")
     for step in runs:
         script = str(step.get("run", ""))
         if step.get("shell") != "pwsh":
@@ -1305,39 +1332,44 @@ def verify_log_problems(workflow: str) -> list[str]:
     return problems
 
 
-# The step of deployable.yml's Windows job that its Linux job has no counterpart for: Codex CLI's machine settings
-# exist only on Windows (docs/codex-support.md).
+# The step of deployable.yml's Windows job that its Linux and macOS jobs have no counterpart for: Codex CLI's machine
+# settings exist only on Windows (docs/codex-support.md).
 CODEX_SETTINGS_STEP = "Make the Codex sandbox settings and record the Python aliases"
 WINDOWS_ONLY_DEPLOYABLE_STEPS = (CODEX_SETTINGS_STEP,)
 
 
-def deployable_linux_problems(workflow: str) -> list[str]:
-    """Report how deployable.yml's `deployable-linux` job departs from its Windows job run on a fresh ubuntu-latest
-    runner in Bash: the same matrix, runtime versions, and time limit, and the same steps in the same order, but the
-    Windows-only ones."""
+# deployable.yml's jobs that deploy onto a fresh POSIX runner, by job: the runner.
+DEPLOYABLE_POSIX_JOBS = {"deployable-linux": "ubuntu-latest", "deployable-macos": "macos-latest"}
+
+
+def deployable_posix_problems(workflow: str, job: str = "deployable-linux") -> list[str]:
+    """Report how deployable.yml's `job`, one of DEPLOYABLE_POSIX_JOBS, departs from its Windows job run on a fresh
+    runner of its own in Bash: the same matrix, runtime versions, and time limit, and the same steps in the same order,
+    but the Windows-only ones."""
+    runner = DEPLOYABLE_POSIX_JOBS[job]
     tree = read_workflow(workflow)
     windows = _mapping(tree, "jobs", "deployable")
-    linux = _mapping(tree, "jobs", "deployable-linux")
-    if not linux:
-        return ["there is no deployable-linux job"]
+    posix = _mapping(tree, "jobs", job)
+    if not posix:
+        return [f"there is no {job} job"]
     problems: list[str] = []
     if windows.get("runs-on") != "windows-latest":
         problems.append(f"the deployable job runs on {windows.get('runs-on')}, not windows-latest")
-    if linux.get("runs-on") != "ubuntu-latest":
-        problems.append(f"the deployable-linux job runs on {linux.get('runs-on')}, not ubuntu-latest")
-    if _mapping(linux, "defaults", "run").get("shell") != "bash":
-        problems.append("the deployable-linux job's steps do not run in bash")
+    if posix.get("runs-on") != runner:
+        problems.append(f"the {job} job runs on {posix.get('runs-on')}, not {runner}")
+    if _mapping(posix, "defaults", "run").get("shell") != "bash":
+        problems.append(f"the {job} job's steps do not run in bash")
     problems.extend(
-        f"the deployable-linux job's {key} is not the deployable job's"
+        f"the {job} job's {key} is not the deployable job's"
         for key in ("strategy", "env", "timeout-minutes")
-        if linux.get(key) != windows.get(key)
+        if posix.get(key) != windows.get(key)
     )
     expected = [
         str(step.get("name")) for step in _steps(windows) if step.get("name") not in WINDOWS_ONLY_DEPLOYABLE_STEPS
     ]
-    found = [str(step.get("name")) for step in _steps(linux)]
+    found = [str(step.get("name")) for step in _steps(posix)]
     if found != expected:
-        problems.append(f"the deployable-linux job's steps are {found}, expected {expected}")
+        problems.append(f"the {job} job's steps are {found}, expected {expected}")
     return problems
 
 
@@ -1419,6 +1451,7 @@ CONFIGURE_STEP = "Configure"
 CONFIGURE_PIPES = {
     "deployable": re.compile(r"(?P<answers>.+?)\s*\|\s*python deploy\.py configure(?:\s|$)"),
     "deployable-linux": re.compile(r"printf '%s\\n' (?P<answers>.+?)\s*\|\s*python3 deploy\.py configure(?:\s|$)"),
+    "deployable-macos": re.compile(r"printf '%s\\n' (?P<answers>.+?)\s*\|\s*python3 deploy\.py configure(?:\s|$)"),
 }
 REPOSITORIES_ANSWER = "$repositories"
 
@@ -1470,15 +1503,17 @@ def configure_answer_problems(workflow: str, prompts: Collection[str], defaulted
 
 
 def copilot_auto_update_problems(workflow: str) -> list[str]:
-    """Report each deployable.yml job whose env does not set COPILOT_AUTO_UPDATE to false.
+    """Report each deployable.yml job whose env does not set COPILOT_AUTO_UPDATE to false, and each of the Windows job
+    and DEPLOYABLE_POSIX_JOBS the workflow does not hold, so a job removed or renamed fails rather than drops out.
 
     Copilot CLI otherwise runs the newest package it has downloaded rather than the one the job installed, so a later
     step could run a version other than the one the job checked and the README's fresh-runner column records.
     """
     jobs = _mapping(read_workflow(workflow), "jobs")
-    return [
+    missing = [f"there is no {job} job" for job in ("deployable", *DEPLOYABLE_POSIX_JOBS) if job not in jobs]
+    return missing + [
         f"the {job} job's env does not set COPILOT_AUTO_UPDATE: 'false'"
-        for job in ("deployable", "deployable-linux")
+        for job in jobs
         if _mapping(jobs, job, "env").get("COPILOT_AUTO_UPDATE") != "false"
     ]
 
@@ -1545,10 +1580,10 @@ def changelog_job_problems(workflow: str) -> list[str]:
     return problems
 
 
-LINUX_VERIFY = re.compile(r"python3\s+(?:deploy\.py|tools/deployable_report\.py)\s+verify(?:\s|$)")
+POSIX_VERIFY = re.compile(r"python3\s+(?:deploy\.py|tools/deployable_report\.py)\s+verify(?:\s|$)")
 
 
-def _linux_verify_pair_problems(lines: list[str], filename: str) -> list[str]:
+def _posix_verify_pair_problems(lines: list[str], filename: str) -> list[str]:
     producer = f'python3 deploy.py verify 2>&1 | tee "$LOGS/{filename}" || deploy_verify=$?'
     problems: list[str] = []
     reports = [line for line in lines if line.startswith("python3 tools/deployable_report.py verify")]
@@ -1571,21 +1606,22 @@ def _linux_verify_pair_problems(lines: list[str], filename: str) -> list[str]:
     return problems
 
 
-def linux_verify_log_problems(workflow: str) -> list[str]:
-    """Hold deployable.yml's Linux verify reports to the exact log their own step's verify writes, in order, with that
-    verify's exit status, which a failing pipeline would otherwise end the step on before its report."""
-    steps = _steps(_mapping(read_workflow(workflow), "jobs", "deployable-linux"))
+def posix_verify_log_problems(workflow: str, job: str = "deployable-linux") -> list[str]:
+    """Hold the verify reports of deployable.yml's POSIX `job` to the exact log their own step's verify writes, in
+    order, with that verify's exit status, which a failing pipeline would otherwise end the step on before its
+    report."""
+    steps = _steps(_mapping(read_workflow(workflow), "jobs", job))
     pairs: list[tuple[str, list[str]]] = []
     for index, step in enumerate(steps):
         lines = [line.strip() for line in str(step.get("run", "")).splitlines()]
         lines = [line for line in lines if line and not line.startswith("#")]
-        if any(LINUX_VERIFY.search(line) for line in lines):
+        if any(POSIX_VERIFY.search(line) for line in lines):
             pairs.append((str(step.get("name", f"step {index + 1}")), lines))
     problems: list[str] = []
     if len(pairs) != 2:
         problems.append(f"expected first and second verify steps, found {len(pairs)}")
     for filename, (name, lines) in zip(("verify-first.log", "verify-second.log"), pairs, strict=False):
-        problems += [f"{name}: {problem}" for problem in _linux_verify_pair_problems(lines, filename)]
+        problems += [f"{name}: {problem}" for problem in _posix_verify_pair_problems(lines, filename)]
     return problems
 
 
@@ -1618,6 +1654,14 @@ UNINSTALL_CHECKS = {
         ],
     ),
     "deployable-linux": (
+        ["python3 tools/deployable_report.py layout --label 'first deploy' --results \"$RESULTS\""],
+        [
+            'python3 deploy.py --uninstall --dry-run 2>&1 | tee "$LOGS/uninstall-dry-run.log"',
+            'python3 deploy.py --uninstall 2>&1 | tee "$LOGS/uninstall.log"',
+        ],
+        ['python3 tools/deployable_report.py leftovers --results "$RESULTS"'],
+    ),
+    "deployable-macos": (
         ["python3 tools/deployable_report.py layout --label 'first deploy' --results \"$RESULTS\""],
         [
             'python3 deploy.py --uninstall --dry-run 2>&1 | tee "$LOGS/uninstall-dry-run.log"',
@@ -1921,15 +1965,19 @@ class WorkflowsPolicies(unittest.TestCase):
     def test_deployable_verify_reports_read_the_logs_saved_by_their_own_steps(self) -> None:
         workflow = (REPOSITORY_ROOT / ".github/workflows/deployable.yml").read_text(encoding="utf-8")
         self.assertEqual([], verify_log_problems(workflow))
-        self.assertEqual([], linux_verify_log_problems(workflow))
+        for job in DEPLOYABLE_POSIX_JOBS:
+            with self.subTest(job=job):
+                self.assertEqual([], posix_verify_log_problems(workflow, job))
 
     def test_deployable_workflow_checks_what_the_uninstall_left_through_the_report_in_both_jobs(self) -> None:
         workflow = (REPOSITORY_ROOT / ".github/workflows/deployable.yml").read_text(encoding="utf-8")
         self.assertEqual([], uninstall_check_problems(workflow))
 
-    def test_deployable_workflow_runs_the_windows_job_again_on_a_fresh_linux_runner(self) -> None:
+    def test_deployable_workflow_runs_the_windows_job_again_on_fresh_linux_and_macos_runners(self) -> None:
         workflow = (REPOSITORY_ROOT / ".github/workflows/deployable.yml").read_text(encoding="utf-8")
-        self.assertEqual([], deployable_linux_problems(workflow))
+        for job in DEPLOYABLE_POSIX_JOBS:
+            with self.subTest(job=job):
+                self.assertEqual([], deployable_posix_problems(workflow, job))
 
     def test_deployable_workflow_writes_the_codex_settings_the_codex_guide_gives(self) -> None:
         workflow = (REPOSITORY_ROOT / ".github/workflows/deployable.yml").read_text(encoding="utf-8")
@@ -2041,7 +2089,7 @@ class WorkflowsPolicies(unittest.TestCase):
     def test_validate_workflow_runs_the_whole_run_on_linux_inside_the_required_check(self) -> None:
         workflow = (REPOSITORY_ROOT / ".github/workflows/validate.yml").read_text(encoding="utf-8")
         # Keep the Linux leg count here and in the workflow synchronized.
-        self.assertEqual([], linux_job_problems(workflow, 2))
+        self.assertEqual([], posix_job_problems(workflow, 2))
         # The Linux legs restore the same pinned tools as the Windows legs, and install them from the network only on
         # a miss: ShellCheck from its release archive, so the Linux pin is exact.
         self.assertEqual(
@@ -2064,6 +2112,31 @@ class WorkflowsPolicies(unittest.TestCase):
         # Every supported platform gates a merge through the one check branch protection requires.
         self.assertEqual([], required_check_problems(workflow, ("suite", "linux", "known-failures")))
 
+    def test_validate_workflow_runs_the_whole_run_on_macos(self) -> None:
+        workflow = (REPOSITORY_ROOT / ".github/workflows/validate.yml").read_text(encoding="utf-8")
+        # Keep the macOS leg count here and in the workflow synchronized.
+        self.assertEqual([], posix_job_problems(workflow, 2, "macos"))
+        # The macOS legs restore the same pinned tools as the Linux legs: ShellCheck from its release archive.
+        self.assertEqual(
+            [],
+            tool_cache_problems(
+                workflow,
+                {
+                    "shellcheck-${{ runner.os }}-${{ env.SHELLCHECK_VERSION }}": MACOS_SHELLCHECK_DIGEST_CHECK,
+                    "psscriptanalyzer-${{ runner.os }}-${{ env.PSSCRIPTANALYZER_VERSION }}": (
+                        "Install-Module PSScriptAnalyzer -RequiredVersion $env:PSSCRIPTANALYZER_VERSION "
+                    ),
+                },
+                job="macos",
+            ),
+        )
+        self.assertEqual([], pinned_tool_problems(workflow, "macos"))
+        self.assertEqual([], mypy_cache_problems(workflow, "macos"))
+        self.assertEqual([], image_module_problems(workflow, "macos"))
+        # Not yet a gate: the legs that still fail on macOS are tracked on the port's issue, and the job joins the
+        # required check once every leg passes.
+        self.assertEqual([], provisional_job_problems(workflow, "macos"))
+
     def test_deployable_workflow_installs_the_runtime_versions_the_readme_lists_for_the_fresh_runner(self) -> None:
         workflow = (REPOSITORY_ROOT / ".github/workflows/deployable.yml").read_text(encoding="utf-8")
         readme = (REPOSITORY_ROOT / "README.md").read_text(encoding="utf-8")
@@ -2081,4 +2154,4 @@ class WorkflowsPolicies(unittest.TestCase):
                 self.assertEqual(tested, default)
                 # A scheduled run has no inputs, so its README leg falls back to the same version, in each job.
                 fallbacks = re.findall(rf"inputs\.{key} \|\| '([^']+)'", workflow)
-                self.assertEqual([tested, tested], fallbacks)
+                self.assertEqual([tested] * 3, fallbacks)

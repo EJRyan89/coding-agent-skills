@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import io
 import stat
+import sys
 from pathlib import Path
 from unittest import mock
 
@@ -38,7 +39,7 @@ class ConfigureTests(DeployerTestCase):
         self.make_config()
         result = self.configure(stdin="\n\n\n\n")
         self.assertEqual(0, result.code, result.output)
-        example = "C:/GitHub" if platform_support.WINDOWS else "/home/you/GitHub"
+        example = {"win32": "C:/GitHub", "darwin": "/Users/you/GitHub"}.get(sys.platform, "/home/you/GitHub")
         self.assertIn(
             f"REPOS_ROOT: root directory for your git repositories, such as {example}\n"
             f"  Current: {forward(self.repos)}\n"

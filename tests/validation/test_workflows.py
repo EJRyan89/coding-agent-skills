@@ -38,16 +38,17 @@ from workflows import (
     configure_answer_problems,
     copilot_auto_update_problems,
     defender_problems,
-    deployable_linux_problems,
+    deployable_posix_problems,
     image_module_problems,
     leg_problems,
-    linux_job_problems,
-    linux_verify_log_problems,
     mutation_checkout_problems,
     mutation_job_problems,
     mutation_pin_problems,
     mypy_cache_problems,
     pinned_tool_problems,
+    posix_job_problems,
+    posix_verify_log_problems,
+    provisional_job_problems,
     read_workflow,
     required_check_problems,
     shared_pin_problems,
@@ -435,7 +436,31 @@ LINUX = (
 
 class LinuxJobFixtures(unittest.TestCase):
     def test_the_linux_job_runs_the_whole_run_across_its_legs_named_as_linux(self) -> None:
-        self.assertEqual([], linux_job_problems(LINUX, 2))
+        self.assertEqual([], posix_job_problems(LINUX, 2))
+
+    def test_the_macos_job_is_held_to_its_own_runner_name_and_digest_check(self) -> None:
+        macos = (
+            LINUX.replace("  linux:\n    name: Linux shard", "  macos:\n    name: macOS shard")
+            .replace("runs-on: ubuntu-latest", "runs-on: macos-latest")
+            .replace(
+                '"$SHELLCHECK_LINUX_SHA256  $archive" | sha256sum --check --strict',
+                '"$SHELLCHECK_MACOS_SHA256  $archive" | shasum --algorithm 256 --check --strict',
+            )
+        )
+        self.assertEqual([], posix_job_problems(macos, 2, "macos"))
+        self.assertEqual(["there is no macos job"], posix_job_problems(LINUX, 2, "macos"))
+        for drifted, problem in (
+            (macos.replace("runs-on: macos-latest", "runs-on: ubuntu-latest"), "not macos-latest"),
+            (macos.replace("name: macOS shard", "name: Linux shard"), "the macos job's legs are named"),
+            (
+                macos.replace("shasum --algorithm 256 --check --strict", "sha256sum --check --strict"),
+                "SHELLCHECK_MACOS",
+            ),
+            (macos.replace("['1/2', '2/2']", "['1/1']"), "the macos matrix's shards"),
+        ):
+            with self.subTest(problem=problem):
+                problems = posix_job_problems(drifted, 2, "macos")
+                self.assertTrue(any(problem in found for found in problems), problems)
 
     def test_the_linux_job_restores_its_tools_from_caches_keyed_on_the_workflow_pins(self) -> None:
         caches = {"tool-${{ env.TOOL_VERSION }}": "sha256sum --check --strict"}
@@ -573,7 +598,7 @@ class LinuxJobFixtures(unittest.TestCase):
 )
 def test_a_linux_job_that_runs_less_than_the_whole_run_or_is_misnamed_fails(drifted: str, problem: str) -> None:
     count = 3 if problem.startswith("expected") else 2
-    problems = linux_job_problems(drifted, count)
+    problems = posix_job_problems(drifted, count)
     assert any(problem in found for found in problems), problems
 
 
@@ -799,6 +824,20 @@ class RequiredCheckFixtures(unittest.TestCase):
     def test_the_one_required_check_fails_unless_every_platform_passes(self) -> None:
         self.assertEqual([], required_check_problems(REQUIRED_CHECK, ("suite", "linux")))
 
+    def test_a_provisional_leg_goes_on_after_an_error_and_is_left_out_of_the_required_check(self) -> None:
+        provisional = REQUIRED_CHECK.replace(
+            "  validate:\n", "  macos:\n    runs-on: macos-latest\n    continue-on-error: true\n  validate:\n"
+        )
+        self.assertEqual([], provisional_job_problems(provisional, "macos"))
+        for drifted, problem in (
+            (provisional.replace("    continue-on-error: true\n", ""), "does not set continue-on-error: true"),
+            (provisional.replace("continue-on-error: true", "continue-on-error: false"), "a red leg fails the run"),
+            (provisional.replace("needs: [suite, linux]", "needs: [suite, linux, macos]"), "needs the macos job"),
+            (provisional.replace("needs: [suite, linux]", "needs: macos"), "needs the macos job"),
+        ):
+            with self.subTest(problem=problem):
+                self.assertTrue(any(problem in found for found in provisional_job_problems(drifted, "macos")))
+
 
 @pytest.mark.parametrize(
     ("drifted", "problem"),
@@ -1009,7 +1048,7 @@ class CodexSettingsFixtures(unittest.TestCase):
 
 class DeployableLinuxFixtures(unittest.TestCase):
     def test_the_linux_job_runs_the_windows_jobs_steps_but_the_windows_only_one(self) -> None:
-        self.assertEqual([], deployable_linux_problems(DEPLOYABLE_JOBS))
+        self.assertEqual([], deployable_posix_problems(DEPLOYABLE_JOBS))
         linux = DEPLOYABLE_JOBS.index("  deployable-linux:")
         for drifted, problem in (
             (DEPLOYABLE_JOBS.replace("  deployable-linux:\n", "  other:\n"), "there is no deployable-linux job"),
@@ -1032,16 +1071,35 @@ class DeployableLinuxFixtures(unittest.TestCase):
             ),
         ):
             with self.subTest(problem=problem):
-                problems = deployable_linux_problems(drifted)
+                problems = deployable_posix_problems(drifted)
+                self.assertTrue(any(problem in found for found in problems), problems)
+
+    def test_the_macos_job_runs_the_windows_jobs_steps_on_its_own_runner(self) -> None:
+        macos = DEPLOYABLE_JOBS.replace(
+            "  deployable-linux:\n    runs-on: ubuntu-latest", "  deployable-macos:\n    runs-on: macos-latest"
+        )
+        self.assertEqual([], deployable_posix_problems(macos, "deployable-macos"))
+        for drifted, problem in (
+            (DEPLOYABLE_JOBS, "there is no deployable-macos job"),
+            (macos.replace("runs-on: macos-latest", "runs-on: ubuntu-latest"), "not macos-latest"),
+            (macos.replace("name: Deploy\n        run: python3", "name: Ship\n        run: python3"), "steps are"),
+        ):
+            with self.subTest(problem=problem):
+                problems = deployable_posix_problems(drifted, "deployable-macos")
                 self.assertTrue(any(problem in found for found in problems), problems)
 
     def test_each_job_that_does_not_turn_copilots_auto_update_off_fails(self) -> None:
-        pinned = DEPLOYABLE_JOBS.replace("    env:\n", "    env:\n      COPILOT_AUTO_UPDATE: 'false'\n")
+        linux_part = DEPLOYABLE_JOBS[DEPLOYABLE_JOBS.index("  deployable-linux:") :]
+        three = DEPLOYABLE_JOBS + linux_part.replace("deployable-linux", "deployable-macos").replace(
+            "ubuntu-latest", "macos-latest"
+        )
+        pinned = three.replace("    env:\n", "    env:\n      COPILOT_AUTO_UPDATE: 'false'\n")
         self.assertEqual([], copilot_auto_update_problems(pinned))
-        linux = pinned.index("  deployable-linux:")
+        linux, macos = pinned.index("  deployable-linux:"), pinned.index("  deployable-macos:")
         for drifted, jobs in (
-            (DEPLOYABLE_JOBS, ["deployable", "deployable-linux"]),
-            (pinned[:linux] + pinned[linux:].replace("'false'", "'true'"), ["deployable-linux"]),
+            (three, ["deployable", "deployable-linux", "deployable-macos"]),
+            (pinned[:linux] + pinned[linux:macos].replace("'false'", "'true'") + pinned[macos:], ["deployable-linux"]),
+            (pinned[:macos] + pinned[macos:].replace("'false'", "'true'"), ["deployable-macos"]),
             (pinned.replace("      COPILOT_AUTO_UPDATE: 'false'\n", "", 1), ["deployable"]),
         ):
             with self.subTest(jobs=jobs):
@@ -1049,6 +1107,21 @@ class DeployableLinuxFixtures(unittest.TestCase):
                     [f"the {job} job's env does not set COPILOT_AUTO_UPDATE: 'false'" for job in jobs],
                     copilot_auto_update_problems(drifted),
                 )
+
+    def test_a_deployable_job_removed_or_renamed_fails_the_copilot_check(self) -> None:
+        linux_part = DEPLOYABLE_JOBS[DEPLOYABLE_JOBS.index("  deployable-linux:") :]
+        pinned = (
+            DEPLOYABLE_JOBS
+            + linux_part.replace("deployable-linux", "deployable-macos").replace("ubuntu-latest", "macos-latest")
+        ).replace("    env:\n", "    env:\n      COPILOT_AUTO_UPDATE: 'false'\n")
+        macos = pinned.index("  deployable-macos:")
+        for drifted, job in (
+            (pinned[:macos], "deployable-macos"),
+            (pinned.replace("  deployable-linux:", "  deployable-ubuntu:"), "deployable-linux"),
+            (pinned.replace("  deployable:\n", "  windows:\n"), "deployable"),
+        ):
+            with self.subTest(job=job):
+                self.assertEqual([f"there is no {job} job"], copilot_auto_update_problems(drifted))
 
 
 CONFIGURE_JOBS = (
@@ -1058,6 +1131,10 @@ CONFIGURE_JOBS = (
     "          $repositories = Join-Path $env:USERPROFILE 'GitHub'\n"
     "          $repositories, '', '' | python deploy.py configure 2>&1 | Tee-Object -FilePath configure.log\n"
     "  deployable-linux:\n    runs-on: ubuntu-latest\n    steps:\n"
+    "      - name: Configure\n        run: |\n"
+    '          repositories="$HOME/GitHub"\n'
+    "          printf '%s\\n' \"$repositories\" '' '' | python3 deploy.py configure 2>&1 | tee configure.log\n"
+    "  deployable-macos:\n    runs-on: macos-latest\n    steps:\n"
     "      - name: Configure\n        run: |\n"
     '          repositories="$HOME/GitHub"\n'
     "          printf '%s\\n' \"$repositories\" '' '' | python3 deploy.py configure 2>&1 | tee configure.log\n"
@@ -1084,7 +1161,10 @@ class ConfigureAnswerFixtures(unittest.TestCase):
         ):
             with self.subTest(problem=problem):
                 self.assertEqual(
-                    [f"{job}: the 'Configure' step {problem}" for job in ("deployable", "deployable-linux")],
+                    [
+                        f"{job}: the 'Configure' step {problem}"
+                        for job in ("deployable", "deployable-linux", "deployable-macos")
+                    ],
                     configure_answer_problems(CONFIGURE_JOBS, prompts, defaults),
                 )
 
@@ -1100,8 +1180,12 @@ class ConfigureAnswerFixtures(unittest.TestCase):
                     "deployable: the first answer, to REPOS_ROOT, must be $repositories",
                 ],
             ),
-            (CONFIGURE_JOBS[:linux] + CONFIGURE_JOBS[linux:].replace("name: Configure", "name: Setup"), [missing]),
-            (CONFIGURE_JOBS[:linux] + CONFIGURE_JOBS[linux:].replace("printf '%s\\n' ", "echo "), [missing]),
+            (CONFIGURE_JOBS[:linux] + CONFIGURE_JOBS[linux:].replace("name: Configure", "name: Setup", 1), [missing]),
+            (CONFIGURE_JOBS[:linux] + CONFIGURE_JOBS[linux:].replace("printf '%s\\n' ", "echo ", 1), [missing]),
+            (
+                CONFIGURE_JOBS.replace("  deployable-macos:", "  other:"),
+                ["deployable-macos: expected one 'Configure' step whose one line pipes answers into configure"],
+            ),
         ):
             with self.subTest(problems=problems):
                 self.assertEqual(problems, configure_answer_problems(drifted, CONFIGURE_PROMPTS, CONFIGURE_DEFAULTS))
@@ -1198,7 +1282,7 @@ LINUX_VERIFY_LOGS = (
 
 class LinuxVerifyLogFixtures(unittest.TestCase):
     def test_each_report_reads_the_log_and_the_status_its_own_verify_left(self) -> None:
-        self.assertEqual([], linux_verify_log_problems(LINUX_VERIFY_LOGS))
+        self.assertEqual([], posix_verify_log_problems(LINUX_VERIFY_LOGS))
 
     def test_wrong_swapped_unquoted_or_missing_wiring_fails(self) -> None:
         first = '--deploy-verify-log "$LOGS/verify-first.log"'
@@ -1226,14 +1310,14 @@ class LinuxVerifyLogFixtures(unittest.TestCase):
             ("missing job", "jobs:\n  other:\n    steps: []\n"),
         ):
             with self.subTest(drift=name):
-                self.assertTrue(linux_verify_log_problems(drifted), name)
+                self.assertTrue(posix_verify_log_problems(drifted), name)
 
     def test_a_report_before_its_producer_cannot_read_that_runs_log(self) -> None:
         lines = LINUX_VERIFY_LOGS.splitlines()
         producer = next(index for index, line in enumerate(lines) if "python3 deploy.py verify" in line)
         report = next(index for index, line in enumerate(lines) if "python3 tools/deployable_report.py" in line)
         lines[producer], lines[report] = lines[report], lines[producer]
-        self.assertTrue(linux_verify_log_problems("\n".join(lines)))
+        self.assertTrue(posix_verify_log_problems("\n".join(lines)))
 
 
 UNINSTALL_CHECK = (
@@ -1260,6 +1344,9 @@ UNINSTALL_CHECK = (
     '          python3 deploy.py --uninstall 2>&1 | tee "$LOGS/uninstall.log"\n'
     "      - name: Confirm the profile holds nothing from the suite\n        run: |\n"
     '          python3 tools/deployable_report.py leftovers --results "$RESULTS"\n'
+)
+UNINSTALL_CHECK += UNINSTALL_CHECK[UNINSTALL_CHECK.index("  deployable-linux:") :].replace(
+    "  deployable-linux:", "  deployable-macos:"
 )
 
 
@@ -1335,6 +1422,11 @@ class UninstallCheckFixtures(unittest.TestCase):
             ),
             ("no uninstall", windows_part.replace("name: Uninstall", "name: Remove") + linux_part, "expected one"),
             ("no linux job", windows_part, "deployable-linux: expected one 'Uninstall' step, found 0"),
+            (
+                "no macos job",
+                UNINSTALL_CHECK.replace("  deployable-macos:", "  other:"),
+                "deployable-macos: expected one 'Uninstall' step, found 0",
+            ),
         ):
             with self.subTest(drift=name):
                 problems = uninstall_check_problems(drifted)

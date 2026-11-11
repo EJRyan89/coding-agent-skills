@@ -22,6 +22,9 @@ env:
   PSSCRIPTANALYZER_VERSION: '1.25.0'
   # The digest of ShellCheck's Linux release archive at the pin, which the Linux legs check before extracting it.
   SHELLCHECK_LINUX_SHA256: '700324c6dd0ebea0117591c6cc9d7350d9c7c5c287acbad7630fa17b1d4d9e2f'
+  # The digest of ShellCheck's macOS release archive at the pin, which the macOS legs check before extracting it. The
+  # pin publishes an x86_64 build alone, which the arm64 runner runs under Rosetta 2.
+  SHELLCHECK_MACOS_SHA256: '7d3730694707605d6e60cec4efcb79a0632d61babc035aa16cda1b897536acf5'
 
 # A newer push to a pull request cancels its older run; every commit on main keeps its own result.
 concurrency:
@@ -329,6 +332,150 @@ jobs:
         run: |
           # The Windows legs' step: outside a pull request there is no base to compare with, so every suite runs, and
           # a pull request's body and title reach the checks as files written from the event payload.
+          $arguments = @('-B', 'tests/run_validation.py', '-v', '--shard', $env:SHARD)
+          if ($env:GITHUB_EVENT_NAME -ne 'pull_request') { $arguments += '--full' }
+          else {
+            $payload = Get-Content -LiteralPath $env:GITHUB_EVENT_PATH -Raw -Encoding utf8 | ConvertFrom-Json
+            $bodyFile = Join-Path $env:RUNNER_TEMP 'pull-request-body.md'
+            [System.IO.File]::WriteAllText($bodyFile, [string]$payload.pull_request.body)
+            $arguments += @('--pr-body', $bodyFile)
+            $titleFile = Join-Path $env:RUNNER_TEMP 'pull-request-title.txt'
+            [System.IO.File]::WriteAllText($titleFile, [string]$payload.pull_request.title)
+            $arguments += @('--pr-title', $titleFile)
+          }
+          python @arguments
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+  # The whole validation run on macOS, dealt across its own legs by macOS's seconds as the Linux legs are by Linux's.
+  # A free account runs few macOS jobs at once, so the run is dealt across fewer legs than Linux's. Until every macOS
+  # leg passes, a red one fails neither the run nor the required check: the `validate` job does not need this job, and
+  # continue-on-error keeps the run's conclusion, which tools/record_job_seconds.py reads the push runs on main by.
+  macos:
+    # Named as the Linux legs are; tools/record_job_seconds.py reads each macOS leg's shard from the name.
+    name: macOS shard ${{ matrix.shard }}, Python ${{ matrix.python-version }}
+    runs-on: macos-latest
+    timeout-minutes: 30
+    continue-on-error: true
+    # As the Windows legs: the checkout and nothing else, and no command a step runs is given the token.
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        # The floor in deployer/tools.py on every run, and the latest stable release on the weekly schedule only, as on
+        # the other legs.
+        python-version: ${{ github.event_name == 'schedule' && fromJSON('["3.11", "3.x"]') || fromJSON('["3.11"]') }}
+        # One run's jobs dealt across two runners; each interpreter runs every leg. The count is the second number of
+        # each entry.
+        shard: ['1/2', '2/2']
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # No later step needs git's credential, so the checkout stores none for them to read.
+          persist-credentials: false
+          # As on the other legs: the base branch tells a documentation-only change, and the tags the upgrade notes.
+          fetch-depth: 0
+
+      - name: Set up Python
+        id: python
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+
+      # Each type check keeps mypy's cache in a folder of its own under this one, so the standard library's stubs are
+      # parsed once per leg, Python, and mypy pin rather than at every run; the leg's index keys it, since each leg's
+      # deal runs its own type checks.
+      - name: Restore mypy's cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/mypy-cache
+          key: mypy-${{ runner.os }}-${{ steps.python.outputs.python-version }}-${{ strategy.job-index }}-${{ hashFiles('requirements-dev.txt') }}
+
+      # As on the other legs, a leg after the first restores the pinned tools; a raised pin changes the key.
+      - name: Restore ShellCheck
+        id: shellcheck
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/shellcheck
+          key: shellcheck-${{ runner.os }}-${{ env.SHELLCHECK_VERSION }}
+
+      # As on the Linux legs, the cache and the install run only when the image lacks the pinned PSScriptAnalyzer.
+      - name: Find the pinned PSScriptAnalyzer on the image
+        id: psscriptanalyzer-image
+        shell: pwsh
+        run: |
+          $found = @(Get-Module -ListAvailable PSScriptAnalyzer | Where-Object { [string]$_.Version -eq $env:PSSCRIPTANALYZER_VERSION })
+          Write-Host "PSScriptAnalyzer $env:PSSCRIPTANALYZER_VERSION on the image: $($found.Count -gt 0)"
+          Add-Content -LiteralPath $env:GITHUB_OUTPUT -Value "installed=$(([string]($found.Count -gt 0)).ToLowerInvariant())"
+
+      - name: Restore PSScriptAnalyzer
+        id: psscriptanalyzer
+        if: steps.psscriptanalyzer-image.outputs.installed != 'true'
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.local/share/powershell/Modules/PSScriptAnalyzer
+          key: psscriptanalyzer-${{ runner.os }}-${{ env.PSSCRIPTANALYZER_VERSION }}
+
+      # The image has Bash and PowerShell 7. ShellCheck is the pinned release's own macOS build, checked against its
+      # pinned digest and kept in its own folder ahead of the image's on PATH.
+      - name: Install ShellCheck
+        shell: bash
+        env:
+          SHELLCHECK_CACHED: ${{ steps.shellcheck.outputs.cache-hit }}
+        run: |
+          shellcheck="$RUNNER_TEMP/shellcheck"
+          if [ "$SHELLCHECK_CACHED" != true ]; then
+            release="https://github.com/koalaman/shellcheck/releases/download/v$SHELLCHECK_VERSION"
+            archive="$RUNNER_TEMP/shellcheck.tar.xz"
+            curl --fail --silent --show-error --location --retry 3 --output "$archive" "$release/shellcheck-v$SHELLCHECK_VERSION.darwin.x86_64.tar.xz"
+            echo "$SHELLCHECK_MACOS_SHA256  $archive" | shasum --algorithm 256 --check --strict
+            mkdir -p "$shellcheck"
+            tar --extract --xz --file "$archive" --directory "$shellcheck" --strip-components 1 "shellcheck-v$SHELLCHECK_VERSION/shellcheck"
+          fi
+          echo "$shellcheck" >> "$GITHUB_PATH"
+
+      - name: Install PSScriptAnalyzer
+        if: steps.psscriptanalyzer-image.outputs.installed != 'true' && steps.psscriptanalyzer.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          Install-Module PSScriptAnalyzer -RequiredVersion $env:PSSCRIPTANALYZER_VERSION -Scope CurrentUser -Force -ErrorAction Stop
+
+      - name: Install development dependencies
+        shell: bash
+        run: |
+          python -m pip install --require-hashes --only-binary :all: -r requirements-dev.txt
+
+      - name: Verify validation tools
+        shell: pwsh
+        run: |
+          foreach ($command in @('python', 'bash', 'pwsh', 'shellcheck')) {
+            $resolved = Get-Command $command -ErrorAction Stop
+            Write-Host "$command -> $($resolved.Source)"
+            & $resolved.Source --version
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+          python -m ruff --version
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python -m mypy --version
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          # Validation runs the first ShellCheck on PATH and the newest installed PSScriptAnalyzer: each is the pin.
+          $shellcheck = [string]((shellcheck --version) -match '^version: ' -replace '^version: ')
+          if ($shellcheck -ne $env:SHELLCHECK_VERSION) { throw "ShellCheck is '$shellcheck', not the pin $env:SHELLCHECK_VERSION" }
+          $analyzer = [string](Get-Module -ListAvailable PSScriptAnalyzer | Sort-Object Version -Descending | Select-Object -First 1).Version
+          if ($analyzer -ne $env:PSSCRIPTANALYZER_VERSION) { throw "PSScriptAnalyzer is '$analyzer', not the pin $env:PSSCRIPTANALYZER_VERSION" }
+          Write-Host "ShellCheck $shellcheck; PSScriptAnalyzer $analyzer"
+
+      - name: Run repository validation
+        shell: pwsh
+        env:
+          SHARD: ${{ matrix.shard }}
+          VALIDATION_MYPY_CACHE: ${{ runner.temp }}/mypy-cache
+        run: |
+          # The other legs' step: outside a pull request there is no base to compare with, so every suite runs, and a
+          # pull request's body and title reach the checks as files written from the event payload.
           $arguments = @('-B', 'tests/run_validation.py', '-v', '--shard', $env:SHARD)
           if ($env:GITHUB_EVENT_NAME -ne 'pull_request') { $arguments += '--full' }
           else {
