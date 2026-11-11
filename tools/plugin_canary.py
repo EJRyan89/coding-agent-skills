@@ -89,6 +89,8 @@ from review_run import RunState
 
 from deployer import platform_support
 from tools import checkout_trust, plugin_build
+from tools.claude_stream import StreamError
+from tools.claude_stream import events as claude_events
 from tools.runtime_canary import (
     DEFAULT_TIMEOUT,
     FIXTURE_SKILL,
@@ -319,16 +321,6 @@ def install(session: Session, executable: str, plugins: list[plugin_build.Plugin
     yield f"PATHS {json_writer.dumps(paths)}"
 
 
-def stream_events(output: str) -> Iterator[dict[str, Any]]:
-    for line in output.splitlines():
-        try:
-            event = json_reader.loads(line)
-        except ValueError:
-            continue
-        if isinstance(event, dict):
-            yield event
-
-
 def result_text(content: object) -> str:
     """A tool result's content as text: a string as it is, or the text of each part of a list."""
     if isinstance(content, str):
@@ -341,7 +333,7 @@ def result_text(content: object) -> str:
 def tool_results(output: str) -> Iterator[tuple[str | None, bool, str]]:
     """Each tool result the stream holds: the tool call of the subagent it came back to, or None for the main
     session's own call, whether it is an error, and its text."""
-    for event in stream_events(output):
+    for event in claude_events(output):
         message = event.get("message")
         if event.get("type") != "user" or not isinstance(message, dict):
             continue
@@ -364,7 +356,10 @@ def denial(text: str) -> str:
 
 def guard_lines(output: str, agent: str, marker: str) -> list[str]:
     """Whether the main session read the marker file and the reviewer was denied it, from the session's stream."""
-    results = list(tool_results(output))
+    try:
+        results = list(tool_results(output))
+    except StreamError as exc:
+        return [f"GUARD claude {who} FAILED {quote(str(exc))}" for who in ("main-session", agent)]
     main = [(error, text) for parent, error, text in results if parent is None]
     reviewer = [(error, text) for parent, error, text in results if parent is not None]
     if any(marker in text and not error for error, text in main):

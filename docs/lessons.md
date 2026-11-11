@@ -172,7 +172,9 @@ removed fails validation until its pattern follows it.
   `tests/deployer/test_verify.py::ConverseTests::test_a_codex_answer_json_reader_refuses_fails_the_listing_at_once_never_as_a_timeout`,
   `skills/audit-ai-config/scripts/test_mcp_handshake.py::HandshakeTests::test_a_response_json_reader_refuses_fails_naming_the_refusal_at_once_never_as_a_timeout`,
   `skills/ejryan89-skill-core/scripts/test_json_reader.py::AnswersRequestTests::test_a_response_nested_past_the_recursion_limit_is_told_by_its_id_wherever_the_id_stands`,
-  `skills/ejryan89-skill-core/scripts/test_json_reader.py::AnswersRequestTests::test_a_request_id_is_a_number_equal_to_it_whatever_its_spelling_and_nothing_else`
+  `skills/ejryan89-skill-core/scripts/test_json_reader.py::AnswersRequestTests::test_a_request_id_is_a_number_equal_to_it_whatever_its_spelling_and_nothing_else`,
+  `tests/tools/test_skill_evals.py::EvaluateTests::test_a_results_file_that_cannot_be_written_fails_by_name_after_the_run_is_judged`,
+  `tests/tools/test_runtime_changelogs.py::MainTests::test_a_summary_that_cannot_be_appended_to_fails_by_name_after_the_findings`
 - **Search for:** `rg -nU "except (OSError|ValueError|UnicodeDecodeError)[^\n]*:\n\s+(print\([^\n]*\)\n\s+)?return 1\b"`,
   a handler that ends every failure in one code; two probes under one `except` that print one message; an `except`
   around a `git` or `gh` call that drops the exception's text; `FAILED KeyError`, `FAILED TypeError`, or
@@ -180,8 +182,10 @@ removed fails validation until its pattern follows it.
   `split("\t")[0] ==`, instead of a value the step returned; a recorded failure a later, different command clears;
   a reader that returns None or `{}` for every fault, whose caller then refuses a field of it as missing; an entry
   point's message about where it runs, such as "Run this inside the repository", printed after any git failure;
-  a wait for a response that passes over every line `json_reader` refuses, reporting a refused answer as a timeout.
-- **Examples:** #1511, #1840, #1855, #1910, #2022, #2181, #2207, #2209, #2477, #2548
+  a wait for a response that passes over every line `json_reader` refuses, reporting a refused answer as a timeout;
+  a `write_text(` or `.open("a"` of a results or summary file after an entry point printed its verdict lines, outside
+  any handler, so its failure ends in `run_main`'s generic line after them rather than one its docstring names.
+- **Examples:** #1511, #1840, #1855, #1910, #2022, #2181, #2207, #2209, #2477, #2548, #2596
 
 ### A caller catches the whole error family its callee raises on content
 
@@ -352,11 +356,14 @@ removed fails validation until its pattern follows it.
   `shepherd_pull_requests:member`, which refuse a gh listing or field of another kind than the shepherd acts on, and
   `shepherd_pull_requests:reported` and `shepherd_pull_requests:present`, which refuse a member that decides a write
   when the listing leaves it out, so an absent field is never read as the answer that permits the write, and
-  `tools.hub_guard:judge_option`, which refuses a shell option neither table of the guard's names.
+  `tools.hub_guard:judge_option`, which refuses a shell option neither table of the guard's names, and
+  `tools.claude_stream:events`, the one reader of Claude Code's stream-json output, which refuses a line that is JSON
+  but no event object, by its line.
 - **Guard:** `skills/ejryan89-skill-core/scripts/test_typed_fields.py::FieldReaderTests::test_an_object_holds_its_required_fields_and_no_unknown_one`,
   `tests/malformed_input/test_malformed_input.py::test_each_reader_refuses_or_documents_accepting_each_case`, which
   fails a reader that answers on a field or a list item of another type it does not document taking,
   `tests/malformed_input/test_malformed_input.py::test_a_field_case_changes_one_field_of_the_readers_own_document`,
+  `tests/tools/test_claude_stream.py::test_a_json_line_that_is_no_object_is_refused_by_its_line_and_kind`,
   `.claude/skills/shepherd-pull-requests/scripts/test_shepherd_pull_requests.py::ShapeTest::test_a_pull_request_member_the_listing_leaves_out_or_nulls_is_malformed_never_a_default`,
   which holds a written-out row for every member the shepherd lists, absent and null, and fails when the listing
   gains a member without one, and
@@ -375,7 +382,7 @@ removed fails validation until its pattern follows it.
   such as arming, holding, or a rerun, and an absent member would read as the answer that allows it;
   `rg -n "\.get\([^)]*\)\)? (not )?in [A-Z_{(]"`, a field read from a file tested against a set, a frozenset, or a
   dictionary before its type is checked, which a list or an object fails with `TypeError` rather than as malformed.
-- **Examples:** #1890, #1892, #2054, #2227, #2235, #2292
+- **Examples:** #1890, #1892, #2054, #2227, #2235, #2292, #2564
 
 ### A reader of another program's language reads it as that program does
 
@@ -613,7 +620,8 @@ removed fails validation until its pattern follows it.
   `skill_inventory:delegation_lines`, which returns each runtime prompt's line number beside the lines it prints;
   `run_dotnet_format:parse_diagnostics`, which splits a formatter's log on a newline alone for the same reason;
   `deployer.discovery:output_lines`, which splits a runtime's output, its skill catalog, and the canary's records on a
-  newline alone, taking off a carriage return before it; `flat_text:fact_line`, which flattens every field of a
+  newline alone, taking off a carriage return before it, and `tools.claude_stream:events`, which reads Claude Code's
+  stream-json output through it for the canaries and the skill evaluations; `flat_text:fact_line`, which flattens every field of a
   tab-separated fact line; and the choke points every stdout line of a shipped skill's scripts passes,
   `flat_text:flat_text`, `flat_text:fact_line`, `console:failed_line`, and `flat_text:single_line`, given a whole
   line or each line of a newline join, as `review_pipeline:_run_enumerate` and `memory_audit:main` print it, and
@@ -639,6 +647,7 @@ removed fails validation until its pattern follows it.
   `tests/deployer/test_verify.py::ParsingTests::test_a_codex_catalog_description_holding_a_line_break_other_than_newline_is_part_of_its_line`,
   `tests/deployer/test_verify.py::ConverseTests::test_a_last_error_line_holding_a_line_break_other_than_newline_is_named_whole`,
   `tests/tools/test_runtime_canary.py::RunTests::test_a_line_holding_a_line_break_other_than_newline_is_read_whole`,
+  `tests/tools/test_claude_stream.py::test_an_event_holding_a_line_break_other_than_newline_is_one_event`,
   `tests/validation/skill_scripts.py::SkillScriptsPolicies::test_skill_scripts_print_each_line_through_a_choke_point`,
   which refuses a stdout print in a shipped skill's scripts whose text may hold a line break, unless its module's
   allowance states why,
@@ -659,7 +668,7 @@ removed fails validation until its pattern follows it.
   reason; `.strip()` or `.split()` with no
   argument on git's output, a ref name read from `symbolic-ref` or `config` most of all; a git subcommand left out of
   the policy's catalogue and run through a wrapper whose name does not say git.
-- **Examples:** #1816, #1848, #1862, #1908, #2034, #2187, #2206, #2211, #2214, #2248
+- **Examples:** #1816, #1848, #1862, #1908, #2034, #2187, #2206, #2211, #2214, #2248, #2564
 
 ### Two spellings are compared as their consumer compares them
 
@@ -1111,3 +1120,20 @@ removed fails validation until its pattern follows it.
   `ensure_ascii=`, `sort_keys=`, or `mode=` argument at a converted site that the `Mutation gate` step summary lists
   as a survivor.
 - **Examples:** #1948, #1949, #1953, #1957, #1961
+
+### A scheduled read of GitHub's API carries the run's own token
+
+- **Rule:** A workflow's read of GitHub's API sends the run's own read-only token, given to its one command as
+  `GH_TOKEN`, to `api.github.com` alone and never on to an address a redirect names, rather than reading signed out.
+- **Why:** Signed out, a request from a hosted runner shares that runner address's limit with every other job on it,
+  so a scheduled run fails on a limit it does not control.
+- **Use:** `tools.runtime_changelogs:authorization`, which gives the token to an https request to GitHub's API host
+  alone, sent as an unredirected header.
+- **Guard:** `tests/tools/test_runtime_changelogs.py::test_the_token_goes_to_github_s_api_over_https_alone`,
+  `tests/tools/test_runtime_changelogs.py::test_a_fetch_sends_the_token_to_the_api_and_never_on_to_a_redirect`,
+  `tests/validation/test_workflows.py::test_the_changelog_watch_alone_is_given_the_token_beside_the_open_issue_query`
+- **Search for:** `api.github.com` in a module under `tools/`, `deployer/`, or a skill's `scripts/` that a workflow
+  runs and that reads it through `urllib.request` rather than `gh`; a workflow step that runs such a module with no
+  `GH_TOKEN` in its `env`; `add_header("Authorization"` or `headers={"Authorization"`, which a redirect carries to
+  another host where `add_unredirected_header` does not.
+- **Examples:** #2568

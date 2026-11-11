@@ -27,6 +27,8 @@ from workflows import (
     SAME_REPOSITORY_STATEMENT,
     TOKEN_CLAIM_OMISSIONS,
     TOKEN_CLAIM_SPANS,
+    TOKEN_STEP_PERMISSIONS,
+    TOKEN_STEPS,
     WORKFLOW_GUARDS,
     WorkflowSyntaxError,
     action_pins,
@@ -1690,6 +1692,39 @@ CHECK_JOB_END = "        run: python check.py\n  other:\n"
 
 def test_the_token_reaches_exactly_the_sanctioned_step_in_a_job_reading_issues() -> None:
     assert workflow_guard_problems(CREDENTIAL_WORKFLOW, ["push"], set(), (), TOKEN_STEP) == []
+
+
+def test_a_token_job_given_its_own_permissions_holds_exactly_those() -> None:
+    # The changelog watch's job reads contents alone; the default, contents and issues, is refused for it, and its
+    # own permissions are refused where the default applies.
+    contents = CREDENTIAL_WORKFLOW.replace("      contents: read\n      issues: read\n", "      contents: read\n")
+    only = {"contents": "read"}
+    assert workflow_guard_problems(contents, ["push"], set(), (), TOKEN_STEP, only) == []
+    assert workflow_guard_problems(CREDENTIAL_WORKFLOW, ["push"], set(), (), TOKEN_STEP, only) == [
+        "job run hands a step the token, so its permissions are exactly {'contents': 'read'}, "
+        "not {'contents': 'read', 'issues': 'read'}"
+    ]
+    assert workflow_guard_problems(contents, ["push"], set(), (), TOKEN_STEP) == [
+        "job run hands a step the token, so its permissions are exactly {'contents': 'read', 'issues': 'read'}, "
+        "not {'contents': 'read'}"
+    ]
+
+
+def test_the_changelog_watch_alone_is_given_the_token_beside_the_open_issue_query() -> None:
+    # Pinned against literals: the steps given the token, their commands, and the watch job's permissions.
+    assert {name: dict(steps) for name, steps in TOKEN_STEPS.items()} == {
+        "validate.yml": {
+            ("known-failures", "Ask whether each known failure's issue is open"): (
+                "python -B tests/known_failure_issues.py"
+            )
+        },
+        "runtime-changelogs.yml": {
+            ("changelogs", "Watch the changelogs and the guidance pages"): (
+                'python3 tools/runtime_changelogs.py --summary "$GITHUB_STEP_SUMMARY"'
+            )
+        },
+    }
+    assert TOKEN_STEP_PERMISSIONS == {"runtime-changelogs.yml": {"contents": "read"}}
 
 
 @pytest.mark.parametrize(
