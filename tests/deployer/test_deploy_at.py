@@ -720,9 +720,16 @@ class DeployAtTests(DeployerTestCase):
         with (
             patch,
             mock.patch.object(source_ref, "refuse_archive_attributes"),
-            self.assertRaisesRegex(DeployError, "git archive could not export 0{40}: fatal: "),
+            self.assertRaisesRegex(DeployError, "git archive could not export 0{40}: fatal: ") as raised,
         ):
             source_ref.export(self.source, "0" * 40)
+        self.assertEqual(
+            (
+                "Put right what Git reports in the checkout, then retry.",
+                'See "Deploying an earlier commit" in docs/recovery.md.',
+            ),
+            raised.exception.lines[1:],
+        )
         self.assertEqual(1, len(made))
         self.assertFalse(made[0].exists())
 

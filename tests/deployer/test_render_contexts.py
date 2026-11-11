@@ -10,7 +10,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts"))
 
-import harness  # noqa: F401 - imported for its effect: it puts the repository root on sys.path for deployer
+from harness import DEPLOY_COMMAND  # importing harness also puts the repository root on sys.path for deployer
 from markdown_sections import EXECUTABLE_FENCES, FENCE_LANGUAGES, find_fences
 
 from deployer import hashing, platform_support, render
@@ -18,6 +18,49 @@ from deployer.errors import DeployError
 
 
 class SubstitutionContextTests(unittest.TestCase):
+    def test_a_value_a_context_refuses_names_where_to_change_it(self) -> None:
+        # A configured value is answered again with configure; a derived one names where the deployer derives it.
+        for key, step in (
+            ("REPOS_ROOT", f"Run '{DEPLOY_COMMAND} configure' to give REPOS_ROOT a value without it."),
+            ("HOME", "Skills cannot be deployed into a home folder whose path has other characters."),
+            ("SOURCE_ROOT", "Move the checkout to a path without other characters, then deploy from there."),
+        ):
+            with self.subTest(key=key), self.assertRaises(DeployError) as raised:
+                render.render_file("s/run.sh", f'echo "{{{{{key}}}}}"\n'.encode(), {key: 'a"b'})
+            self.assertEqual(
+                (
+                    f"ERROR: Variable {key} cannot be safely substituted into s/run.sh (shell context): value contains "
+                    "'\"'",
+                    step,
+                ),
+                raised.exception.lines,
+            )
+
+    def test_each_adapter_frontmatter_refusal_names_the_change_to_skill_md(self) -> None:
+        long = "x" * 1025
+        for rendered, first, step in (
+            (
+                b"---\nname: alpha\n---\n\nBody\n",
+                "ERROR: Skill 'alpha' has no description for its runtime adapter",
+                'Give skills/alpha/SKILL.md a description; see "Description" in docs/adding-a-skill.md.',
+            ),
+            (
+                f"---\nname: alpha\ndescription: {long}\n---\n\nBody\n".encode(),
+                "ERROR: Skill 'alpha' description is 1025 characters; runtime adapters allow at most 1024",
+                'Shorten the description in skills/alpha/SKILL.md; see "Description" in docs/adding-a-skill.md.',
+            ),
+            (
+                b"---\nname: alpha\ndescription: \xff\n---\n",
+                "ERROR: Skill 'alpha' frontmatter cannot be read: ",
+                'Correct the frontmatter of skills/alpha/SKILL.md; see "Files" in docs/adding-a-skill.md.',
+            ),
+        ):
+            with self.subTest(first=first), self.assertRaises(DeployError) as raised:
+                render._adapter_frontmatter("alpha", rendered)
+            self.assertEqual(2, len(raised.exception.lines), raised.exception.lines)
+            self.assertTrue(raised.exception.lines[0].startswith(first), raised.exception.lines)
+            self.assertEqual(step, raised.exception.lines[1])
+
     def test_json_values_are_escaped_inside_strings(self) -> None:
         rendered = render.render_file("s/config.json", b'{"root": "{{X}}"}', {"X": 'a"b\\c'})
         self.assertEqual({"root": 'a"b\\c'}, json.loads(rendered))

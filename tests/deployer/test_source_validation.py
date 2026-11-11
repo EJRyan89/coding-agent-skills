@@ -229,7 +229,12 @@ class MetadataValidationTests(DeployerTestCase):
         skill_md = directory / "SKILL.md"
         self.write(skill_md, skill_md.read_text(encoding="utf-8").replace("name: alpha", "name: wrong"))
         self.make_config()
-        self.deploy_fails("--all", pattern="frontmatter name 'wrong' does not match directory")
+        result = self.deploy_fails("--all", pattern="frontmatter name 'wrong' does not match directory")
+        self.assert_refusal(
+            result.output,
+            "ERROR: Skill 'alpha' frontmatter name 'wrong' does not match directory",
+            "Set name to 'alpha' in skills/alpha/SKILL.md's frontmatter; see \"Files\" in docs/adding-a-skill.md.",
+        )
 
     def test_frontmatter_name_may_be_quoted(self) -> None:
         self.make_source_json()
@@ -262,12 +267,19 @@ class MetadataValidationTests(DeployerTestCase):
             "# No frontmatter\n": "no frontmatter",
             "---\nname: alpha\nname: alpha\n---\n": "name appears more than once",
             "---\nname:\n  nested: alpha\n---\n": "name: a nested mapping is not supported",
-            "---\nname: [alpha]\n---\n": "name must be a single value",
+            "---\nname: [alpha]\n---\n": "name must be a single value, not a list",
         }
         for text, reason in cases.items():
             with self.subTest(reason=reason):
                 self.write(skill_md, text)
-                self.deploy_fails("--all", pattern=re.escape(f"Skill 'alpha' frontmatter cannot be read: {reason}"))
+                result = self.deploy_fails(
+                    "--all", pattern=re.escape(f"Skill 'alpha' frontmatter cannot be read: {reason}")
+                )
+                self.assert_refusal(
+                    result.output,
+                    f"ERROR: Skill 'alpha' frontmatter cannot be read: {reason}",
+                    f'Correct the frontmatter of {forward(skill_md)}; see "Files" in docs/adding-a-skill.md.',
+                )
 
     def test_skill_without_metadata_is_rejected(self) -> None:
         self.make_source_json()
@@ -553,7 +565,11 @@ class MetadataValidationTests(DeployerTestCase):
         self.write(self.source / "deploy-meta" / "ghost.json", json.dumps({"required_vars": []}))
         self.make_config()
         result = self.deploy_fails("--all", pattern="has no matching skill directory")
-        self.assert_lines(result.output, "ERROR: deploy-meta/ghost.json has no matching skill directory")
+        self.assert_refusal(
+            result.output,
+            "ERROR: deploy-meta/ghost.json has no matching skill directory",
+            'Add skills/ghost/SKILL.md, or remove deploy-meta/ghost.json; see "Files" in docs/adding-a-skill.md.',
+        )
 
     def test_a_skill_folder_whose_skill_md_is_gone_or_a_folder_is_named_as_that_never_as_no_folder(self) -> None:
         self.make_source_json()
@@ -566,7 +582,12 @@ class MetadataValidationTests(DeployerTestCase):
                 skill_md.mkdir()
             with self.subTest(state=state):
                 result = self.deploy_fails("--all", pattern="has no SKILL.md file")
-                self.assert_lines(result.output, "ERROR: Skill 'alpha' has no SKILL.md file in skills/alpha")
+                self.assert_refusal(
+                    result.output,
+                    "ERROR: Skill 'alpha' has no SKILL.md file in skills/alpha",
+                    'Add skills/alpha/SKILL.md, or remove deploy-meta/alpha.json; see "Files" in '
+                    "docs/adding-a-skill.md.",
+                )
 
     def test_a_required_variable_the_deployer_does_not_declare_is_refused(self) -> None:
         self.make_source_json()
@@ -579,13 +600,22 @@ class MetadataValidationTests(DeployerTestCase):
         self.make_source_json()
         self.make_skill("beta", "Beta")
         self.make_config()
-        for dependencies, line in (
-            (["gamma"], "ERROR: Skill 'alpha' depends on unknown skill 'gamma'"),
-            (["beta", "beta"], "ERROR: Skill 'alpha' contains duplicate skill dependency 'beta'"),
+        for dependencies, line, step in (
+            (
+                ["gamma"],
+                "ERROR: Skill 'alpha' depends on unknown skill 'gamma'",
+                "Remove 'gamma' from skill_deps in deploy-meta/alpha.json, or add the skill; see \"Metadata\" in "
+                "docs/adding-a-skill.md.",
+            ),
+            (
+                ["beta", "beta"],
+                "ERROR: Skill 'alpha' contains duplicate skill dependency 'beta'",
+                "List 'beta' once in skill_deps in deploy-meta/alpha.json.",
+            ),
         ):
             with self.subTest(dependencies=dependencies):
                 self.make_skill("alpha", "Alpha", skill_deps=dependencies)
-                self.assert_lines(self.deploy_fails("--all", pattern="skill").output, line)
+                self.assert_refusal(self.deploy_fails("--all", pattern="skill").output, line, step)
 
     def test_a_directory_link_in_source_is_rejected(self) -> None:
         self.make_source_json()
@@ -658,6 +688,20 @@ class RenamedValidationTests(DeployerTestCase):
                 document["renamed"] = renamed
                 (self.source / "source.json").write_text(json.dumps(document), encoding="utf-8")
                 self.deploy_fails("--all", pattern=re.escape(message))
+        shape = (
+            "Make renamed in source.json map each old name to the name of one of the source's skills; see \"Renaming "
+            'a skill" in docs/adding-a-skill.md.'
+        )
+        for renamed, error in (
+            (["beta"], "ERROR: source.json renamed must be an object mapping each old skill name to its new name"),
+            ({"beta": "gamma"}, "ERROR: source.json renames 'beta' to \"gamma\", which is no skill of this source"),
+            ({"beta": 7}, "ERROR: source.json renames 'beta' to 7, which is no skill of this source"),
+        ):
+            with self.subTest(step_after=error):
+                document = json.loads((self.source / "source.json").read_text(encoding="utf-8"))
+                document["renamed"] = renamed
+                (self.source / "source.json").write_text(json.dumps(document), encoding="utf-8")
+                self.assert_refusal(self.deploy_fails("--all", pattern="renamed|renames").output, error, shape)
 
 
 class SharedAssetValidationTests(DeployerTestCase):
@@ -701,9 +745,10 @@ class SharedAssetValidationTests(DeployerTestCase):
                     self.write_shared_assets(value)
                     result = self.run_cli(*arguments)
                     self.assertEqual(1, result.code, result.output)
-                    self.assertIn(
-                        "ERROR: source.json shared_assets must be an object mapping each asset to its role",
+                    self.assert_refusal(
                         result.output,
+                        "ERROR: source.json shared_assets must be an object mapping each asset to its role",
+                        SHARED_SHAPE,
                     )
 
     def test_a_role_that_is_not_a_string_fails_discovery_naming_the_asset(self) -> None:
@@ -718,6 +763,19 @@ class SharedAssetValidationTests(DeployerTestCase):
                     pattern="ERROR: source.json shared_assets 'shared.md' has a role that is not a string",
                 )
                 self.assertEqual(1, result.code)
+                self.assert_refusal(
+                    result.output,
+                    "ERROR: source.json shared_assets 'shared.md' has a role that is not a string",
+                    SHARED_SHAPE,
+                )
+
+
+# What a malformed shared_assets in source.json asks of its author, written out rather than read from the
+# deployer.
+SHARED_SHAPE = (
+    "Make shared_assets in source.json map each asset's file name to its role, owner or dependency; see "
+    '"Shared assets" in docs/adding-a-skill.md.'
+)
 
 
 class LinkedWorktreeTestCase(DeployerTestCase):
@@ -742,7 +800,11 @@ class SourceCheckoutTests(LinkedWorktreeTestCase):
     def test_deploying_from_a_linked_worktree_is_refused_before_any_change(self) -> None:
         linked = self.make_linked_worktree()
         result = self.deploy_fails_from(linked, "--all")
-        self.assertIn(f"ERROR: {forward(linked)} is a linked git worktree.", result.output)
+        self.assert_refusal(
+            result.output,
+            f"ERROR: {forward(linked)} is a linked git worktree.",
+            "Deploy from the main checkout on main instead; --dry-run is allowed here. See docs/parallel-sessions.md.",
+        )
         self.assertFalse((self.skills_dir / "alpha").exists())
         self.assertFalse(self.manifest_file.exists())
         self.assertFalse((self.home / ".claude" / "deployer" / ".deploy.lock.d").exists())

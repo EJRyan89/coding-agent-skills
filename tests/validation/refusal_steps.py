@@ -22,6 +22,8 @@ from validation_support import (
 
 # The deployer's refusal. A class the deployer derives from it is a refusal too, found by its bases.
 REFUSAL = "deployer.errors.DeployError"
+# The file that defines it, which the policy must have read for any finding, or none, to mean anything.
+REFUSAL_MODULE = "deployer/errors.py"
 # A refusal whose one line is the whole report, written out here rather than read from the deployer, so a change there
 # cannot also change what this policy looks for: a cancellation is the user's own act, which needs no step.
 STEPLESS = {"deployer.errors.Cancelled": "a cancellation is the user's own act, so it asks nothing of them"}
@@ -68,6 +70,16 @@ def refusal_classes(trees: list[tuple[str, ast.Module]]) -> set[str]:
     return refusals
 
 
+def _defines_refusal(trees: list[tuple[str, ast.Module]]) -> bool:
+    """Whether the module REFUSAL names was read and defines the class at its top level."""
+    module, _, class_name = REFUSAL.rpartition(".")
+    return any(
+        _module_name(name) == module
+        and any(isinstance(node, ast.ClassDef) and node.name == class_name for node in tree.body)
+        for name, tree in trees
+    )
+
+
 def _ends_with_a_step(call: ast.Call) -> bool:
     """Whether a refusal's lines can hold a step after its first: a second positional argument, or an unpacking that
     may give one, such as `*lines`."""
@@ -106,6 +118,12 @@ def refusal_step_problems(root: Path) -> list[str]:
     problems: list[str] = []
     ordered = sorted(_scanned_files(root), key=lambda path: path.relative_to(root).as_posix())
     trees = [(name, tree) for _, name, tree in python_trees(ordered, root, problems)]
+    if not _defines_refusal(trees):
+        # Without the class no call is read as a refusal, so an empty pass would only mean nothing was looked at.
+        problems.append(
+            f"{REFUSAL_MODULE} defines no {REFUSAL.rsplit('.', 1)[-1]} class, so no deployer refusal could be read; "
+            "the policy checked nothing"
+        )
     refusals = refusal_classes(trees)
     found: list[str] = []
     for name, tree in trees:

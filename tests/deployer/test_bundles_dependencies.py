@@ -186,18 +186,41 @@ class BundleAndDependencyTests(DeployerTestCase):
         self.assertNotIn("aardvark", result.output)
 
     def test_invalid_bundles_fail_before_mutation(self) -> None:
-        cases: dict[str, dict[str, Any]] = {
-            "contains duplicate member 'alpha'": {"operations": {"members": ["alpha", "alpha"]}},
-            "references unknown member 'ghost'": {"operations": {"members": ["ghost"]}},
-            "must contain a non-empty string members array": {"operations": {"members": []}},
-            "Bundle name 'Bad_Name' is invalid": {"Bad_Name": {"members": ["alpha"]}},
+        shape = (
+            "Make bundles in source.json an object mapping each bundle's name to an object with a non-empty "
+            'members list of skill names and, where present, an opt_in of true or false; see "Opt-in skills and '
+            'bundles" in docs/adding-a-skill.md.'
+        )
+        cases: dict[str, tuple[dict[str, Any], str]] = {
+            "Bundle 'operations' contains duplicate member 'alpha'": (
+                {"operations": {"members": ["alpha", "alpha"]}},
+                "List 'alpha' once in the bundle's members in source.json.",
+            ),
+            "Bundle 'operations' references unknown member 'ghost'": (
+                {"operations": {"members": ["ghost"]}},
+                "Remove 'ghost' from the bundle's members in source.json, or add the skill.",
+            ),
+            "Bundle 'operations' must contain a non-empty string members array": (
+                {"operations": {"members": []}},
+                shape,
+            ),
+            "Bundle 'alpha' collides with a skill name": (
+                {"alpha": {"members": ["alpha"]}},
+                'Rename the bundle in source.json so no skill has its name; see "Opt-in skills and bundles" in '
+                "docs/adding-a-skill.md.",
+            ),
+            "Bundle 'operations' opt_in must be true or false": (
+                {"operations": {"members": ["alpha"], "opt_in": "yes"}},
+                shape,
+            ),
         }
-        for message, bundles in cases.items():
+        for message, (bundles, step) in cases.items():
             with self.subTest(message=message):
                 self.make_source_json(bundles=bundles)
                 self.make_skill("alpha", "Alpha")
                 self.make_config()
-                self.deploy_fails("--all", pattern=re.escape(message))
+                result = self.deploy_fails("--all", pattern=re.escape(message))
+                self.assert_refusal(result.output, f"ERROR: {message}", step)
                 self.assertFalse((self.skills_dir / "alpha").exists())
 
     def test_deselecting_a_bundle_removes_its_complete_dependency_closure(self) -> None:
