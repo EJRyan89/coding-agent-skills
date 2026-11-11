@@ -127,7 +127,8 @@ def ensure_supported() -> None:
     if sys.platform not in SUPPORTED_PLATFORMS:
         *others, last = SUPPORTED_PLATFORMS.values()
         raise DeployError(
-            f"ERROR: The deployer runs on {', '.join(others)}, and {last} only (detected platform: {sys.platform})."
+            f"ERROR: The deployer runs on {', '.join(others)}, and {last} only (detected platform: {sys.platform}).",
+            "Deploy from a checkout on one of those.",
         )
 
 
@@ -615,7 +616,8 @@ def run_tool(
             raise ToolTimedOut(arguments[0], seconds) from None
         except JobRefused as exc:
             raise DeployError(
-                f"ERROR: {Path(arguments[0]).name} could not be run with an end to every process it starts: {exc}."
+                f"ERROR: {Path(arguments[0]).name} could not be run with an end to every process it starts: {exc}.",
+                f"The tool was {normalize(arguments[0])}. Check that it runs by itself, then retry.",
             ) from exc
         captured.seek(0)
         errors.seek(0)

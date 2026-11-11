@@ -37,6 +37,13 @@ def usage_error(message: str, *details: str, prog: str = PROG) -> DeployError:
     return DeployError(f"ERROR: {message}", *details, f"Run '{prog} --help' for usage.", exit_code=USAGE_ERROR)
 
 
+def command_given(command: str) -> DeployError:
+    """A subcommand handed to a deployment, which deploy.py itself routes, with how to run it."""
+    return DeployError(
+        f"ERROR: '{command}' is a command, not a deployment.", f"Run it as '{PROG} {command}'.", exit_code=USAGE_ERROR
+    )
+
+
 class ParserExit(Exception):
     """Raised instead of exiting the process when a parser finishes, as it does after --help."""
 

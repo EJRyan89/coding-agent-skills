@@ -17,7 +17,7 @@ import json_writer
 from path_containment import posix_within
 
 from . import fsops, hashing, manifest, platform_support, state_files
-from .errors import DeployError, see_recovery
+from .errors import DEBUG_HINT, DeployError, see_recovery
 from .kinds import KINDS
 from .names import (
     BACKUP_SUFFIX,
@@ -86,6 +86,11 @@ PRESENCE_ALLOWED = {
     "recover_incomplete": "a staging root it cannot list is reported as an ERROR and recovery answers False, that a "
     "run needs inspection, never that none was interrupted",
 }
+# The refusals caught beside them, which never reach the user.
+STEP_ALLOWED = {
+    "keep_backup": "its refusal is caught in the same function, whose warning names the step: move the kept copy out "
+    "of the root after checking it",
+}
 
 
 def entry_root(entry: JournalEntry) -> str:
@@ -114,7 +119,7 @@ class Journal:
             line = json_writer.dumps(entry, separators=(",", ":"))
         except json_writer.JsonWriteRefused as exc:
             raise DeployError(
-                f"ERROR: Cannot write the journal {platform_support.normalize(self.path)}: {exc}"
+                f"ERROR: Cannot write the journal {platform_support.normalize(self.path)}: {exc}", DEBUG_HINT
             ) from exc
         fsops.append_line(self.path, line)
         self.entries.append(entry)

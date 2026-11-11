@@ -187,6 +187,22 @@ removed fails validation until its pattern follows it.
   any handler, so its failure ends in `run_main`'s generic line after them rather than one its docstring names.
 - **Examples:** #1511, #1840, #1855, #1910, #2022, #2181, #2207, #2209, #2477, #2548, #2596
 
+### A refusal ends with the step to take
+
+- **Rule:** A deployer refusal names what is wrong on its `ERROR:` line and the step to take on a line of its own,
+  or its module states beside the code why it needs none: every caller adds the step, or it is caught before it
+  reaches the user.
+- **Why:** A refusal that names only what is wrong leaves its reader to guess the fix, and a step inside the
+  `ERROR:` line reads as part of the failure.
+- **Use:** `deployer.errors:see_recovery`, `deployer.errors:DEBUG_HINT`, `deployer.source:COMPLETE_CHECKOUT`,
+  `deployer.source:SOURCE_JSON_REMEDY`
+- **Guard:** `tests/validation/refusal_steps.py::RefusalStepPolicies::test_every_deployer_refusal_ends_with_a_step`,
+  `tests/deployer/test_remedies.py::RefusalStepTests`
+- **Search for:** a `DeployError(` with one positional argument under `deployer/`, which the guard reads, and a
+  `STEP_ALLOWED` entry whose caller no longer adds the step; a step written after a semicolon or a full stop inside an
+  `ERROR:` line; a new caller of a function its module's `STEP_ALLOWED` names, which must add the step too.
+- **Examples:** #2545, #2563
+
 ### A report of a change names the change the write made
 
 - **Rule:** A line or result that reports a change states what the write left in place, read from the write

@@ -32,7 +32,7 @@ from harness import (
     probe_returning,
 )
 
-from deployer import errors, fsops, journal, manifest, platform_support
+from deployer import config, errors, fsops, journal, manifest, pipeline, platform_support
 from deployer.errors import DeployError
 from deployer.paths import Paths
 
@@ -400,6 +400,109 @@ class ConfigurationRemedyTests(RemedyTestCase):
             result.output,
             f"ERROR: REPOS_ROOT must not be a filesystem root (got: {root})",
             f"Run '{DEPLOY_COMMAND} configure' to change it.",
+        )
+
+
+class RefusalStepTests(RemedyTestCase):
+    """Refusals that ended at their ERROR line until each was given its step, one test each, pinned against its own
+    literal; tests/validation/refusal_steps.py refuses a new one."""
+
+    def test_a_config_line_with_crlf_says_to_convert_its_line_endings(self) -> None:
+        self.fixture()
+        self.config_file().write_bytes(f"_source_id=test/skills\r\nREPOS_ROOT={forward(self.repos)}\n".encode())
+        result = self.deploy_fails("--all", pattern="contains CRLF")
+        self.assert_lines(
+            result.output, "ERROR: Config line 1 contains CRLF.", "Convert the file's line endings to LF.", RESET
+        )
+
+    def test_a_configure_answer_the_configuration_refuses_says_to_answer_again(self) -> None:
+        self.make_source_json()
+        self.make_skill("alpha", "Test")
+        missing = self.root / "missing"
+        result = self.configure(stdin=f"{forward(missing)}\n\n\n\n")
+        self.assertEqual(1, result.code, result.output)
+        self.assert_lines(
+            result.output,
+            f"ERROR: REPOS_ROOT directory does not exist: {forward(missing)}",
+            f"Run '{DEPLOY_COMMAND} configure' again and give that value another answer; nothing was saved.",
+        )
+
+    def test_a_canary_home_whose_path_a_configured_value_refuses_says_to_choose_another(self) -> None:
+        with self.assertRaises(DeployError) as raised:
+            config.canary("test/skills", self.root / "canary+home", self.source)
+        self.assertEqual(
+            "Choose another --canary-home under the temporary directory, then retry.", raised.exception.lines[-1]
+        )
+        self.assertIn("contains disallowed character '+'", raised.exception.lines[0])
+
+    def test_a_command_given_to_a_deployment_says_how_to_run_it(self) -> None:
+        self.fixture()
+        result = self.run_command(lambda: pipeline.run(["check"], self.paths))
+        self.assertEqual(2, result.code, result.output)
+        self.assert_lines(
+            result.output, "ERROR: 'check' is a command, not a deployment.", f"Run it as '{DEPLOY_COMMAND} check'."
+        )
+
+    def test_a_deployment_path_component_that_is_a_file_says_to_move_it_aside(self) -> None:
+        self.fixture()
+        self.write(self.home / ".agents", "not a folder")
+        result = self.deploy_fails("--all", pattern="is not a directory")
+        self.assert_lines(
+            result.output,
+            f"ERROR: Deployment path component is not a directory: {forward(self.home / '.agents')}",
+            "Move it aside after checking it, so the deployer can make the folder there, then retry.",
+        )
+
+    def test_each_source_refusal_names_the_change_to_make(self) -> None:
+        def opt_in_member() -> None:
+            self.make_skill("alpha", "Test", opt_in=True)
+            self.make_source_json(bundles={"pack": {"members": ["alpha"]}})
+
+        cases: tuple[tuple[Callable[[], object], str, str], ...] = (
+            (
+                opt_in_member,
+                "ERROR: Skill 'alpha' is opt-in but belongs to bundle 'pack'",
+                'Set opt_in to false in deploy-meta/alpha.json and mark the bundle opt-in instead; see "Opt-in '
+                'skills and bundles" in docs/adding-a-skill.md.',
+            ),
+            (
+                lambda: self.make_skill("alpha", "Test", skill_deps=["ghost"]),
+                "ERROR: Skill 'alpha' depends on unknown skill 'ghost'",
+                "Remove 'ghost' from skill_deps in deploy-meta/alpha.json, or add the skill; see \"Metadata\" in "
+                "docs/adding-a-skill.md.",
+            ),
+            (
+                lambda: self.make_skill("alpha", "Test", agent_deps=["ghost"]),
+                "ERROR: Skill 'alpha' depends on unknown agent 'ghost'",
+                "Add agents/ghost.md, or remove 'ghost' from agent_deps in deploy-meta/alpha.json; see \"Subagent "
+                'definitions" in docs/adding-a-skill.md.',
+            ),
+            (
+                lambda: self.make_source_json(renamed={"alpha": "alpha"}),
+                "ERROR: source.json renames 'alpha', which is still a skill or bundle of this source",
+                "Remove 'alpha' from renamed in source.json, or finish the rename; see \"Renaming a skill\" in "
+                "docs/adding-a-skill.md.",
+            ),
+            (
+                lambda: self.make_skill("alpha", "Fence fixture\n\n```bash\necho open"),
+                "ERROR: Unclosed Bash code fence in alpha/SKILL.md",
+                "Close the fence with the characters that open it, then retry.",
+            ),
+        )
+        for arrange, message, step in cases:
+            with self.subTest(message=message):
+                self.fixture()
+                arrange()
+                result = self.deploy_fails("--all", pattern=re.escape(message))
+                self.assert_lines(result.output, message, step)
+
+    def test_at_outside_a_git_checkout_says_to_run_it_from_a_clone(self) -> None:
+        self.fixture()
+        result = self.deploy_fails("--all", "--at", "main", pattern="needs a Git checkout")
+        self.assert_lines(
+            result.output,
+            f"ERROR: --at needs a Git checkout, and {forward(self.source)} is not one.",
+            'Run --at from a Git clone of the source. See "Deploying an earlier commit" in docs/recovery.md.',
         )
 
 

@@ -925,10 +925,11 @@ class CheckCommandTests(DeployerTestCase):
             with self.subTest(answer=answer):
                 result = self.check(Machine(describe=answer))
                 self.assertEqual(1, result.code, result.output)
-                self.assertIn(
-                    f"ERROR: Cannot describe the deployed commit {COMMIT} in {shown}: git describe answered "
-                    f"'{flat}', not one name\n",
+                self.assert_refusal(
                     result.output,
+                    f"ERROR: Cannot describe the deployed commit {COMMIT} in {shown}: git describe answered "
+                    f"'{flat}', not one name",
+                    "Rename the tag git describe names so it holds no line break, then retry.",
                 )
 
     def test_a_deployed_commit_git_cannot_describe_fails_the_check_with_gits_reason(self) -> None:

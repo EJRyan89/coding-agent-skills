@@ -327,6 +327,21 @@ def import_aliases(tree: ast.AST) -> dict[str, str]:
     return {name: target for found in module_imports(tree) for name, target in found.bindings}
 
 
+def relative_import_aliases(tree: ast.Module, package: str) -> dict[str, str]:
+    """What each name a relative import binds stands for, such as deployer.kinds.SKILL for `from .kinds import SKILL`
+    in a module of the deployer package."""
+    aliases: dict[str, str] = {}
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.ImportFrom) or node.level == 0:
+            continue
+        parts = package.split(".")
+        base = ".".join(parts[: len(parts) - (node.level - 1)])
+        module = f"{base}.{node.module}" if node.module else base
+        for alias in node.names:
+            aliases[alias.asname or alias.name] = f"{module}.{alias.name}"
+    return aliases
+
+
 def qualified_name(node: ast.AST, aliases: dict[str, str]) -> str:
     """The dotted name an expression stands for through the module's imports, such as shutil.rmtree for sh.rmtree
     after `import shutil as sh`, or "" when it is not a dotted name. A name bound otherwise stands for itself."""
