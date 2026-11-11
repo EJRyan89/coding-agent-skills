@@ -13,7 +13,7 @@ from typing import assert_never
 
 import file_presence
 
-from . import fsops, hashing, journal, platform_support, render, source
+from . import fsops, hashing, journal, platform_support, render, source, state_files
 from .arguments import PROG, usage_error
 from .context import Context
 from .errors import DeployError, see_recovery
@@ -394,11 +394,15 @@ def _check_role(paths: Paths, asset: str, role: str) -> None:
             f"ERROR: Shared asset '{asset}' has invalid role '{role}' (must be 'owner' or 'dependency')",
             f"Give '{asset}' the role 'owner' or 'dependency' in source.json.",
         )
-    if role == "owner" and not (paths.skills_src / asset).is_file():
+    if role != "owner":
+        return
+    # A stat that fails is refused with its reason, and something other than a file as not a file, never as missing.
+    remedy = f"Add the file to the source, or give '{asset}' the role 'dependency' when another source owns it."
+    if not state_files.is_present(paths.skills_src / asset, f"Owned shared asset '{asset}'", remedy):
         raise DeployError(
             f"ERROR: source.json declares '{asset}' as owned but file not found at "
             f"{platform_support.normalize(paths.skills_src / asset)}",
-            f"Add the file to the source, or give '{asset}' the role 'dependency' when another source owns it.",
+            remedy,
         )
 
 
@@ -422,7 +426,8 @@ def _check_dependency(context: Context, asset: str) -> None:
     ends with the step to take."""
     destination = context.paths.dest_dir / asset
     first = DEPLOY_OWNER_FIRST.format(asset=asset)
-    if not destination.is_file():
+    # A stat that fails is refused with its reason, never given the remedy for a missing dependency.
+    if not state_files.is_present(destination, f"Dependency '{asset}'", first):
         raise DeployError(
             f"ERROR: Dependency '{asset}' not found at destination ({platform_support.normalize(destination)})", first
         )

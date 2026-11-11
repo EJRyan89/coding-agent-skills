@@ -349,13 +349,19 @@ def _warn(message: str) -> None:
 UNSAFE_HASH = "unsafe"
 
 
+def _hash_present(path: Path) -> str | None:
+    """The hash of what is at `path`, or None when nothing is. A path whose metadata cannot be read raises its OSError
+    rather than reading as absent, and content hashing refuses, such as a link inside it, raises its DeployError."""
+    if not file_presence.is_occupied(path):
+        return None
+    return hashing.hash_path(path)
+
+
 def _hash_existing(path: Path) -> str | None:
     """Hash a recovery target; content containing a link never matches any journaled hash. A target whose metadata
     cannot be read raises its OSError, which fails the run, rather than reading as absent."""
-    if not file_presence.is_occupied(path):
-        return None
     try:
-        return hashing.hash_path(path)
+        return _hash_present(path)
     except DeployError as exc:
         print(*(f"  {line}" for line in exc.lines), sep="\n", file=sys.stderr)
         return UNSAFE_HASH
@@ -423,21 +429,25 @@ def backup_unchanged(paths: Paths, entry: BackupEntry) -> bool:
     """Whether a backup entry's transient backup is gone or still matches the hash the plan recorded for it.
 
     Only then may a backup the run does not keep be deleted: one that differs was changed after the plan read it, such
-    as by an edit just before the move, and is kept as a modified item would have been.
+    as by an edit just before the move, and is kept as a modified item would have been. A copy whose metadata cannot be
+    read raises its OSError, and one hashing refuses its DeployError, for backup_disposition to name as unreadable.
     """
-    return _hash_existing(_item_path(paths, entry, BACKUP_SUFFIX)) in (None, entry["backup_hash"])
+    return _hash_present(_item_path(paths, entry, BACKUP_SUFFIX)) in (None, entry["backup_hash"])
 
 
 def backup_disposition(paths: Paths, entry: BackupEntry) -> tuple[Literal["delete", "keep", "gone"], str]:
-    """What a committed run's finalization does with an entry's transient backup, with the reason a stat failed or "":
-    delete one the run does not keep while it is unchanged, keep one that is still there, or nothing when it is gone.
-    A copy whose stat fails is kept, never deleted or left unreported."""
+    """What a committed run's finalization does with an entry's transient backup, with the reason it could not be read
+    or "": delete one the run does not keep while it is unchanged, keep one that is still there, or nothing when it is
+    gone. A copy whose stat fails, or whose content hashing refuses, such as one holding a link, is kept, never deleted
+    or left unreported; the run is committed, so the refusal is its reason, never printed as an error to put right."""
     try:
         if not entry["retain"] and backup_unchanged(paths, entry):
             return "delete", ""
         return ("keep" if file_presence.is_occupied(_item_path(paths, entry, BACKUP_SUFFIX)) else "gone"), ""
     except OSError as error:
         return "keep", error.strerror or str(error)
+    except DeployError as refusal:
+        return "keep", refusal.lines[0].removeprefix("ERROR: ")
 
 
 def keep_backup(
