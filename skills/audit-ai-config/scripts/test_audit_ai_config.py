@@ -1455,7 +1455,9 @@ class CopilotConfigurationTests(unittest.TestCase):
         result = audit.audit(self.root)
         self.assertEqual([], [f for f in result.findings if f.severity == "ERROR"])
 
-    def test_code_review_collisions_are_errors(self) -> None:
+    def test_a_custom_agent_named_code_review_collides_and_a_skill_so_named_does_not(self) -> None:
+        # GitHub's code review page recommends a review-focused skill directory name such as code-review; only a custom
+        # agent takes the ID of Copilot CLI's built-in code-review agent.
         skill = self.root / ".github/skills/code-review/SKILL.md"
         skill.parent.mkdir(parents=True)
         skill.write_text("---\nname: code-review\ndescription: Review.\n---\n", encoding="utf-8")
@@ -1463,8 +1465,18 @@ class CopilotConfigurationTests(unittest.TestCase):
         agent.parent.mkdir(parents=True)
         agent.write_text("---\ndescription: Review.\n---\n", encoding="utf-8")
         result = audit.audit(self.root)
-        collisions = [f for f in result.findings if f.check == "collision" and "code-review" in f.message]
-        self.assertEqual(2, len(collisions))
+        self.assertEqual(
+            [
+                (
+                    ".github/agents/code-review.agent.md",
+                    "Custom agent 'code-review' collides with a Copilot built-in agent",
+                )
+            ],
+            [(f.path, f.message) for f in result.findings if f.check == "collision"],
+        )
+        self.assertEqual(
+            [], [f for f in result.findings if f.severity == "ERROR" and (f.path or "").startswith(".github/skills/")]
+        )
 
     def test_generated_copilot_projection_requires_manifest_ownership(self) -> None:
         projection = self.root / ".github/skills/project-skill/SKILL.md"
@@ -5281,9 +5293,8 @@ class CodexConfigurationTests(unittest.TestCase):
             ),
         )
 
-    def test_the_hook_events_are_the_pages_and_the_model_request_events_of_0_164_0(self) -> None:
-        # The hooks page's twelve events, and the two that HookEventName.ts adds at rust-v0.164.0
-        # (openai/codex#55144), which the page does not list yet.
+    def test_the_hook_events_are_the_pages(self) -> None:
+        # The hooks page's events, the model-request pair under "For each model request attempt" among them.
         self.assertEqual(
             {
                 "PreModelRequest",

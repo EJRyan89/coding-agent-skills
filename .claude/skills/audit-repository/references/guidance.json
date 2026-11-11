@@ -564,11 +564,19 @@
     {
       "url": "https://code.visualstudio.com/docs/agent-customization/custom-instructions",
       "subject": "copilot-cli",
-      "governs": "instructions: the VS Code settings that decide which instruction files its chat reads",
+      "governs": "instructions: the agent harnesses a VS Code chat session selects and the instruction files each reads",
       "read": [
         "v0.11.0",
         "v0.11.1",
         "v0.12.0",
+        "v0.13.0"
+      ]
+    },
+    {
+      "url": "https://code.visualstudio.com/docs/agents/reference/custom-instructions-reference",
+      "subject": "copilot-cli",
+      "governs": "instructions: the VS Code settings that decide which instruction files its Local harness reads",
+      "read": [
         "v0.13.0"
       ]
     },
