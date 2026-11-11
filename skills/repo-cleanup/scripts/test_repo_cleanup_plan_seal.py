@@ -11,6 +11,7 @@ import os
 import shutil
 import sys
 import tempfile
+import unittest
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -591,6 +592,7 @@ class PlanFieldTests(CleanupTestCase):
             str(raised.exception),
         )
 
+    @unittest.skipIf(sys.platform == "darwin", "APFS and HFS+ refuse a name that is not valid UTF-8")
     def test_a_plan_path_holding_a_lone_surrogate_is_sealed_and_read_back(self) -> None:
         # A name of bytes that are not UTF-8 reaches Python as a lone surrogate, which the seal's name must hash.
         plan = self.plan.with_name("plan \udce9.json")
