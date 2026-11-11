@@ -419,8 +419,19 @@ jobs:
           path: ~/.local/share/powershell/Modules/PSScriptAnalyzer
           key: psscriptanalyzer-${{ runner.os }}-${{ env.PSSCRIPTANALYZER_VERSION }}
 
-      # The image has Bash and PowerShell 7. ShellCheck is the pinned release's own macOS build, checked against its
-      # pinned digest and kept in its own folder ahead of the image's on PATH.
+      # The image's /bin/bash is a Bash 3.2 that Apple no longer updates, older than validation's Bash floor, so the leg
+      # installs Homebrew's, as docs/installation.md tells a Mac to, and puts it ahead of /bin/bash on PATH.
+      - name: Install Bash
+        shell: bash
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: '1'
+          HOMEBREW_NO_INSTALL_CLEANUP: '1'
+        run: |
+          brew install bash
+          echo "$(brew --prefix)/bin" >> "$GITHUB_PATH"
+
+      # The image has PowerShell 7. ShellCheck is the pinned release's own macOS build, checked against its pinned
+      # digest and kept in its own folder ahead of the image's on PATH.
       - name: Install ShellCheck
         shell: bash
         env:

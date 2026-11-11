@@ -452,7 +452,9 @@ removed fails validation until its pattern follows it.
   `tests/tools/test_prefix_programs.py::RunnerFormTests::test_timeout`,
   `tests/tools/test_prefix_programs.py::CatalogueTests::test_the_installed_runners_list_no_option_the_fixture_leaves_out`,
   which holds each installed runner to the catalogue of the implementation its version option names, GNU or the Rust
-  coreutils,
+  coreutils, or on macOS, whose runners name none, Apple's BSD build, read from the usage synopsis it prints,
+  `tests/tools/test_prefix_programs.py::CatalogueTests::test_the_programs_macos_builds_of_its_own_list_no_option_the_fixture_leaves_out`,
+  which holds macOS's chroot, find, sort, and time to Apple's catalogue and its tar to bsdtar's,
   `tests/tools/test_prefix_programs.py::CatalogueTests::test_each_safe_option_takes_its_value_as_every_implementation_reads_it`,
   `tests/tools/test_hub_guard_bash.py::RunnerTests::test_env_s_file_and_argv0_are_refused_in_every_spelling_and_neither_value_is_read_as_its_command`,
   which refuses the Rust coreutils' env options that read variables from a file and name what a multicall program
@@ -509,7 +511,7 @@ removed fails validation until its pattern follows it.
   `command_wrappers.bash_program` reads, so `/usr/bin/git` and `git.exe` go unread.
 - **Examples:** #1412, #1429, #1430, #1592, #1606, #1843, #1851, #1865, #2032, #2088, #2089, #2134, #2135, #2136,
   #2137, #2138, #2139, #2140, #2188, #2225, #2232, #2233, #2234, #2251, #2262, #2274, #2276, #2316, #2411,
-  #2418, #2203, #2450, #2476, #2481, #2478, #2555, #2474
+  #2418, #2203, #2450, #2476, #2481, #2478, #2555, #2474, #2616
 
 ### A recursive parser of input has a depth bound
 

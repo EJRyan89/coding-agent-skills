@@ -194,13 +194,15 @@ def missing_prerequisites(
 # The oldest release of each validation tool the suite is known to work with. docs/dependency-updates.md owns these.
 # CI installs PSScriptAnalyzer, ruff, mypy, and pytest at their floors on every leg, Python at the newest release of
 # its floor's minor version, and ShellCheck at its floor on the Windows legs; the Linux job takes Ubuntu's archive
-# ShellCheck unpinned, which this floor must not pass. PowerShell 7 arrives unpinned with each runner image. Git Bash
-# has no floor: the shell scripts need no Bash 4. ruff's, mypy's, and pytest's floors are their pins in
-# requirements-dev.txt, because a newer release can change the formatting style, report new errors, or collect and
-# report tests differently in an unchanged tree.
+# ShellCheck unpinned, which this floor must not pass. PowerShell 7 and Bash arrive unpinned with each runner image,
+# and the macOS legs install Homebrew's Bash. The shell scripts need no Bash 4, but the suites hold tools/bash_syntax.py
+# and the hub guard to the Bash validation finds, and the reader reads Bash as 5.2 and later do, where macOS's own
+# /bin/bash is 3.2. ruff's, mypy's, and pytest's floors are their pins in requirements-dev.txt, because a newer release
+# can change the formatting style, report new errors, or collect and report tests differently in an unchanged tree.
 DEPENDENCY_DOC = "docs/dependency-updates.md"
 VALIDATION_FLOORS: dict[str, tuple[int, ...]] = {
     "Python": tools.MINIMUM_PYTHON,
+    platform_support.BASH_NAME: (5, 2),
     "ShellCheck": (0, 9, 0),
     "PSScriptAnalyzer": (1, 25, 0),
     "PowerShell 7 (pwsh)": (7, 0),
@@ -471,6 +473,9 @@ def outdated_prerequisites(versions: dict[str, tuple[int, ...] | None], python: 
         if label not in found:
             continue
         version = found[label]
+        if version is not None and version >= floor:
+            continue
+        # The install hint only of a tool reported, so a tool at its floor needs none.
         hint = f": {platform_support.install_hint(hints[label])}" if label in hints else ""
         if version is None:
             outdated.append(
@@ -504,9 +509,11 @@ def report_prerequisite_problems(versions: dict[str, tuple[int, ...] | None]) ->
 
 class ToolchainPolicies(unittest.TestCase):
     def test_validation_floors_are_the_documented_versions(self) -> None:
+        self.assertIn(platform_support.BASH_NAME, ("Git Bash", "Bash"))
         self.assertEqual(
             {
                 "Python": (3, 11, 4),
+                platform_support.BASH_NAME: (5, 2),
                 "ShellCheck": (0, 9, 0),
                 "PSScriptAnalyzer": (1, 25, 0),
                 "PowerShell 7 (pwsh)": (7, 0),
@@ -519,6 +526,7 @@ class ToolchainPolicies(unittest.TestCase):
         document = (REPOSITORY_ROOT / DEPENDENCY_DOC).read_text(encoding="utf-8")
         for row in (
             "| Python | 3.11.4 |",
+            "| Git Bash, or Bash on Linux and macOS | 5.2 |",
             "| ShellCheck | 0.9.0 |",
             "| PSScriptAnalyzer | 1.25.0 |",
             "| PowerShell 7 (`pwsh`) | 7.0 |",

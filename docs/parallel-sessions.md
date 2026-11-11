@@ -472,11 +472,15 @@ a row decides it.
   refused are `find`'s `-exec`, `-execdir`, `-ok`, `-okdir`, `-delete`, and `-fprint` family, `rg`'s `--pre` and
   `--hostname-bin`, `sort`'s `--compress-program` and `--output`, and `tar`'s options that run a program.
   `tests/tools/test_prefix_programs.py` holds each allow-list to every option the program's `--help` or getopt table
-  lists, pinned in `tests/fixtures/hub-guard/option-catalogues.json` and, for the programs the Rust coreutils
-  replace, in `tests/fixtures/hub-guard/option-catalogues-uutils.json`, every option either lists, in each spelling,
-  and holds each of `env`, `nice`, `nohup`, `stdbuf`, `timeout`, and `xargs` the system installs to the catalogue of
-  the implementation its `--version` names, GNU or uutils, every option its `--help` lists. git keeps a
-  judgment of its own, by its subcommands and by what its words write or run.
+  lists, pinned in `tests/fixtures/hub-guard/option-catalogues.json`, for the programs the Rust coreutils replace,
+  in `tests/fixtures/hub-guard/option-catalogues-uutils.json`, and for macOS's builds of `chroot`, `env`, `find`,
+  `nice`, `nohup`, `sort`, `time`, and `xargs`, Apple's builds of FreeBSD's, in
+  `tests/fixtures/hub-guard/option-catalogues-bsd.json`, every option any build lists, in each spelling, `tar`'s rows
+  holding bsdtar's options too, as macOS's and Windows' `tar` is bsdtar. It holds each of `env`, `nice`, `nohup`,
+  `stdbuf`, `timeout`, and `xargs` the system installs to the catalogue of the implementation its `--version` names,
+  GNU or uutils, or on macOS, where it names none, the BSD one, every option its `--help` or, for a BSD build, its
+  usage synopsis lists, macOS's `chroot`, `find`, `sort`, and `time` the same way, and macOS's `tar` to bsdtar's
+  catalogue by its `--help`. git keeps a judgment of its own, by its subcommands and by what its words write or run.
 - **PowerShell.** A PowerShell command is read by PowerShell's own parser, not by a second hand-written grammar,
   and is understood when every node type in its tree is one `POWERSHELL_UNDERSTOOD` names, in the forms that invoke
   nothing: pipelines of commands joined by `&&` and `||`, with redirections, whose elements are constants, strings,

@@ -51,6 +51,12 @@ from suite_discovery import (
 from toolchain import find_git_bash
 from validation_support import REPOSITORY_ROOT, SUITE_NAME_PATTERNS, is_test_script, write_fixture_tree
 
+# The operating-system names this module states on purpose, with the reason, which the platform policy reads.
+PLATFORM_ALLOWED = {
+    "sys.platform": "skips the run of GNU_RACES on macOS, which has no timeout and whose env reads no long option; a "
+    "skip whose condition reads the platform alone is what the workaround policy allows, which a seam constant is not",
+}
+
 
 def run_pytest(suite: Path, *options: str) -> subprocess.CompletedProcess[str]:
     """Run a fixture suite as the runner runs a suite, from the repository root, with its conftest.py as a plugin,
@@ -634,7 +640,6 @@ def test_the_pipe_race_policy_passes_a_reader_that_reads_to_the_end(tmp_path: Pa
 # in Git Bash, which the test after this one checks wherever Bash runs.
 BASH_RACES = [
     pytest.param("seq 1 200000 | /usr/bin/env head -n 1", "head -n", id="env by a path"),
-    pytest.param("seq 1 200000 | /usr/bin/timeout 5 head -n 1", "head -n", id="timeout by a path"),
     pytest.param("seq 1 200000 | if true; then head -n 1; fi", "head -n", id="if's body"),
     pytest.param("seq 1 200000 | if head -n 1; then :; fi", "head -n", id="if's condition"),
     pytest.param("seq 1 200000 | if false; then :; else head -n 1; fi", "head -n", id="else"),
@@ -680,14 +685,14 @@ BASH_RACES = [
     pytest.param("seq 1 200000 | sh -c 'head -n 1'", "head -n", id="sh -c"),
     pytest.param("seq 1 200000 | bash -ec 'head -n 1'", "head -n", id="bash -c in a cluster"),
     pytest.param("seq 1 200000 | bash -o errexit -c 'head -n 1'", "head -n", id="bash -c after -o"),
-    pytest.param("seq 1 200000 | /usr/bin/bash -c 'head -n 1'", "head -n", id="bash by a path"),
+    # /bin/bash is where Linux, macOS, and Git Bash each hold a Bash; macOS has none at /usr/bin/bash.
+    pytest.param("seq 1 200000 | /bin/bash -c 'head -n 1'", "head -n", id="bash by a path"),
     pytest.param("seq 1 200000 | eval 'head -n 1'", "head -n", id="eval"),
     pytest.param("seq 1 200000 | eval head -n 1", "head -n", id="eval's words"),
     pytest.param("seq 1 200000 | command eval 'head -n 1'", "head -n", id="eval behind command"),
     pytest.param("seq 1 200000 | bash -c 'eval \"head -n 1\"'", "head -n", id="eval in a shell"),
     pytest.param("seq 1 200000 | env -S 'head -n 1'", "head -n", id="env -S"),
     pytest.param('seq 1 200000 | env -S"head -n 1"', "head -n", id="env -S glued"),
-    pytest.param("seq 1 200000 | env --split-string='head -n 1'", "head -n", id="env --split-string"),
     pytest.param("seq 1 200000 | env -u HOME -S 'LC_ALL=C head -n 1'", "head -n", id="env -S after an option"),
     # A substitution reads its command's standard input, so a pipe that feeds the command feeds the reader in it.
     pytest.param("seq 1 200000 | echo $(head -n 1)", "head -n", id="a substitution in a fed command"),
@@ -718,21 +723,39 @@ BASH_RACES = [
 ]
 
 
-@pytest.mark.parametrize(("script", "reader"), BASH_RACES)
+# Forms whose program GNU's userland has and macOS's lacks: macOS ships no timeout, and its env reads no long option.
+GNU_RACES = [
+    pytest.param("seq 1 200000 | /usr/bin/timeout 5 head -n 1", "head -n", id="timeout by a path"),
+    pytest.param("seq 1 200000 | env --split-string='head -n 1'", "head -n", id="env --split-string"),
+]
+
+
+@pytest.mark.parametrize(("script", "reader"), BASH_RACES + GNU_RACES)
 def test_the_pipe_race_policy_finds_the_reader_in_every_bash_form(tmp_path: Path, script: str, reader: str) -> None:
     # The race is named at the reader's line, or at the line that runs the function or shell holding it.
     line = 3 + script[: script.rindex(reader.split()[0])].count("\n")
     assert races_in(tmp_path, script) == [f"{line} pipes into {reader}"]
 
 
-@pytest.mark.parametrize(("script", "reader"), BASH_RACES)
-def test_each_bash_form_the_policy_refuses_fails_under_pipefail_in_bash(script: str, reader: str) -> None:
+def assert_fails_under_pipefail(script: str) -> None:
     # The table is held to real Bash: each form ends with the writer's SIGPIPE status, 141, under pipefail.
-    del reader
     result = subprocess.run(
         [find_git_bash(), "-c", f"set -o pipefail\n{script}"], capture_output=True, encoding="utf-8", check=False
     )
     assert result.returncode == 141, (result.returncode, result.stderr)
+
+
+@pytest.mark.parametrize(("script", "reader"), BASH_RACES)
+def test_each_bash_form_the_policy_refuses_fails_under_pipefail_in_bash(script: str, reader: str) -> None:
+    del reader
+    assert_fails_under_pipefail(script)
+
+
+@pytest.mark.skipif(sys.platform == "darwin", reason="macOS ships no timeout, and its env reads no long option")
+@pytest.mark.parametrize(("script", "reader"), GNU_RACES)
+def test_each_gnu_form_the_policy_refuses_fails_under_pipefail_in_bash(script: str, reader: str) -> None:
+    del reader
+    assert_fails_under_pipefail(script)
 
 
 # Readers that end early by their own options, as their programs document, which a shell may not show in every run.

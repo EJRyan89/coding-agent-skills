@@ -9,7 +9,7 @@ days_old() {
     return 2
   fi
   now=$(date +%s)
-  modified=$(stat -c %Y -- "$path")
+  modified=$(stat -c %Y -- "$path" 2>/dev/null || stat -f %m -- "$path")
   echo $(((now - modified) / 86400))
 }
 

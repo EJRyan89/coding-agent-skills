@@ -978,11 +978,14 @@ MACOS_SHELLCHECK_DIGEST_CHECK = 'echo "$SHELLCHECK_MACOS_SHA256  $archive" | sha
 # The macOS legs' name, shaped as the Linux legs' is, from which tools/record_job_seconds.py reads each macOS leg's
 # shard index and count.
 MACOS_LEG_NAME = "macOS shard ${{ matrix.shard }}, Python ${{ matrix.python-version }}"
-# validate.yml's jobs that run the whole validation on a POSIX platform, by job: the runner, the legs' name, and the
-# check of ShellCheck's release archive against its pinned digest.
-POSIX_VALIDATION_JOBS = {
-    "linux": ("ubuntu-latest", LINUX_LEG_NAME, LINUX_SHELLCHECK_DIGEST_CHECK),
-    "macos": ("macos-latest", MACOS_LEG_NAME, MACOS_SHELLCHECK_DIGEST_CHECK),
+# The lines a macOS leg runs, before validation, to put Homebrew's Bash ahead of the image's /bin/bash, a Bash 3.2
+# older than validation's Bash floor, on PATH. The Linux image's own Bash meets the floor.
+MACOS_BASH_INSTALL = ("brew install bash", 'echo "$(brew --prefix)/bin" >> "$GITHUB_PATH"')
+# validate.yml's jobs that run the whole validation on a POSIX platform, by job: the runner, the legs' name, the check
+# of ShellCheck's release archive against its pinned digest, and the lines that install the Bash validation runs.
+POSIX_VALIDATION_JOBS: dict[str, tuple[str, str, str, tuple[str, ...]]] = {
+    "linux": ("ubuntu-latest", LINUX_LEG_NAME, LINUX_SHELLCHECK_DIGEST_CHECK, ()),
+    "macos": ("macos-latest", MACOS_LEG_NAME, MACOS_SHELLCHECK_DIGEST_CHECK, MACOS_BASH_INSTALL),
 }
 
 
@@ -992,11 +995,11 @@ def posix_job_problems(workflow: str, legs: int, job: str = "linux") -> list[str
     the first failure cancelling the rest: the checkout's whole history, the matrix's Pythons as LINUX_PYTHON gives
     them, the floor and, on the weekly schedule, the latest stable release beside it, each leg's own read by its name
     and installed by setup-python, with pip's cache keyed on requirements-dev.txt, ShellCheck from the pinned release's
-    archive checked against its pinned digest, PSScriptAnalyzer at the workflow's pin, and the Windows legs'
-    validation step.
+    archive checked against its pinned digest, PSScriptAnalyzer at the workflow's pin, the Bash its platform's image
+    lacks installed in one step before validation runs, and the Windows legs' validation step.
     `required_check_problems` holds it inside the required check, `tool_cache_problems` its tool caches, and
     `pinned_tool_problems` its verify step."""
-    runner, leg_name, digest_check = POSIX_VALIDATION_JOBS[job]
+    runner, leg_name, digest_check, bash_install = POSIX_VALIDATION_JOBS[job]
     tree = read_workflow(workflow)
     linux = _mapping(tree, "jobs", job)
     if not linux:
@@ -1042,6 +1045,13 @@ def posix_job_problems(workflow: str, legs: int, job: str = "linux") -> list[str
         )
         if not any(install in script for script in scripts)
     )
+    if bash_install:
+        before = [
+            {line.strip() for line in str(step.get("run", "")).splitlines()}
+            for step in steps[: _validation_index(steps)]
+        ]
+        if not any(set(bash_install) <= lines for lines in before):
+            problems.append(f"no step of the {job} job runs {list(bash_install)} before validation runs")
     runs = [step for step in steps if "tests/run_validation.py" in str(step.get("run", ""))]
     if len(runs) != 1:
         problems.append(f"the {job} job has {len(runs)} steps that run tests/run_validation.py, not one")
