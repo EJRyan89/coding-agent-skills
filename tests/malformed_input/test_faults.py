@@ -228,6 +228,12 @@ def fixture_run(
         (f"Path({str(REPOSITORY / 'never-written.txt')!r}).write_text('x')", "wrote outside the run's folders"),
         (f"Path({str(REPOSITORY / 'never-made')!r}).mkdir()", "changed a path outside the run's folders"),
         ("try:\n    import subprocess\n    subprocess.run(['gh'])\nexcept Exception:\n    pass", "started a program"),
+        # Only macOS's ps by its own path is the process probe; a ps PATH finds is any program.
+        ("try:\n    import subprocess\n    subprocess.run(['ps'])\nexcept Exception:\n    pass", "started a program"),
+        (
+            "try:\n    import subprocess\n    subprocess.run(['/usr/bin/ps'])\nexcept Exception:\n    pass",
+            "started a program",
+        ),
     ],
 )
 def test_the_runner_stops_a_program_a_connection_and_a_write_outside_the_temporary_folder_past_any_handler(
@@ -236,6 +242,17 @@ def test_the_runner_stops_a_program_a_connection_and_a_write_outside_the_tempora
     finished, record = fixture_run(body, GIT_EXIT)
     assert record["stopped"] is not None, finished
     assert record["stopped"].startswith(stopped)
+
+
+def test_the_runner_lets_a_run_start_macos_ps_by_its_own_path_alone() -> None:
+    # The process probe of process_identity and job_tree where there is no /proc; on another platform the start
+    # fails, which the body passes over, after the runner has judged it.
+    body = (
+        "try:\n    import subprocess\n    subprocess.run(['/bin/ps', '-o', 'stat=', '-p', '1'])\n"
+        "except OSError:\n    pass"
+    )
+    finished, record = fixture_run(body, GIT_EXIT)
+    assert record["stopped"] is None, finished
     assert not (REPOSITORY / "never-written.txt").exists()
     assert not (REPOSITORY / "never-made").exists()
 

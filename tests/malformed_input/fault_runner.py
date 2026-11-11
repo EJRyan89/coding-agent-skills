@@ -66,6 +66,9 @@ WRITES = {
 READS = frozenset({"open", "os.listdir", "os.scandir"})
 WRITE_FLAGS = os.O_WRONLY | os.O_RDWR | os.O_CREAT | os.O_APPEND | os.O_TRUNC
 GIT_NAMES = frozenset({"git", "git.exe"})
+# The process probe a run may start: macOS's ps, by its own path alone, which ejryan89-skill-core's process_identity
+# and job_tree read a process's state from where there is no /proc. It reads the process table and writes nothing.
+PROBE_PROGRAMS = frozenset({"/bin/ps"})
 # The presence checks of os.path, which answer False where a stat raises.
 PRESENCE_CHECKS = ("exists", "lexists", "isfile", "isdir", "islink")
 
@@ -152,8 +155,9 @@ class Run:
         if event in STARTS:
             program = arguments[0] if event == "subprocess.Popen" else None
             command = arguments[1] if event == "subprocess.Popen" else arguments
-            name = Path(program_of(program, command)).name.casefold()
-            if not (self.allow_git and name in GIT_NAMES):
+            started = program_of(program, command)
+            name = Path(started).name.casefold()
+            if started not in PROBE_PROGRAMS and not (self.allow_git and name in GIT_NAMES):
                 self.stop(f"started a program: {name or event}")
         elif event == "socket.connect":
             self.stop("opened a network connection")

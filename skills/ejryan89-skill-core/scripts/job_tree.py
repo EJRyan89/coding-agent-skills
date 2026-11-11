@@ -465,7 +465,6 @@ def end_group(group: int) -> None:
 
 INT_PARSE_ALLOWED = {
     "group_members": "the kernel names each process's /proc entry by its ID",
-    "listed_members": "ps prints each process's ID and its group's in ASCII digits, which isdigit checks first",
 }
 
 

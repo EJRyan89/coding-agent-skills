@@ -2319,7 +2319,9 @@ class EndToEndTests(SpecialistFixture, unittest.TestCase):
 
         def start(command: list[str], **options: Any) -> subprocess.Popen[str]:
             process: subprocess.Popen[str] = popen(command, **options)
-            processes.append(process)
+            # The process tree's own probe, ps where there is no /proc, is no start of the condition's.
+            if command[:1] != ["/bin/ps"]:
+                processes.append(process)
             return process
 
         began = time.monotonic()

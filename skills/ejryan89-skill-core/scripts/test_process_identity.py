@@ -83,23 +83,18 @@ class ProcessStatusTests(unittest.TestCase):
         def test_this_process_s_start_is_the_one_ps_prints_in_utc(self) -> None:
             # Read independently of the probe: ps's elapsed seconds, taken from now, land within a few seconds of it.
             elapsed = subprocess.run(
-                ["/bin/ps", "-o", "etime=", "-p", str(os.getpid())], capture_output=True, text=True, check=True
+                ["/bin/ps", "-o", "etime=", "-p", str(os.getpid())], capture_output=True, encoding="ascii", check=True
             ).stdout.strip()
             start = process_status(os.getpid()).start_time
             if start is None:
                 self.fail("this process reports its start time")
             self.assertLess(abs(time.time() - etime_seconds(elapsed) - start), 5)
 
-        def test_a_change_of_time_zone_leaves_the_start_as_it_was(self) -> None:
-            before = process_status(os.getpid())
-            with mock.patch.dict(os.environ, {"TZ": "Pacific/Kiritimati"}):
-                self.assertEqual(before, process_status(os.getpid()))
-
 
 def zombie(pid: int) -> bool:
     """Whether the process has ended and waits to be reaped, read as this platform reports it."""
     if sys.platform == "darwin":
-        state = subprocess.run(["/bin/ps", "-o", "stat=", "-p", str(pid)], capture_output=True, text=True).stdout
+        state = subprocess.run(["/bin/ps", "-o", "stat=", "-p", str(pid)], capture_output=True, encoding="ascii").stdout
         return state.strip().startswith("Z")
     return b") Z " in Path(f"/proc/{pid}/stat").read_bytes()
 

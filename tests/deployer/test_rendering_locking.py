@@ -841,7 +841,7 @@ class LockTests(DeployerTestCase):
 
     def test_double_contention_cleans_renamed_stale_lock(self) -> None:
         self.fixture()
-        lock_dir = self.write_lock({"pid": 999999, "token": "stale-token", "start_time": 1})
+        lock_dir = self.write_lock({"pid": 99998, "token": "stale-token", "start_time": 1})
         with contended_lock(lock_dir):
             self.deploy_fails(
                 "--all",
