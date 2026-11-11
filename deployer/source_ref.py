@@ -30,6 +30,8 @@ from .source_commit import COMMIT_PATTERN
 REF_PATTERN = re.compile(r"^(?!-)[A-Za-z0-9._/@{}~^+-]{1,255}$")
 REF_RULES = "A ref may not start with '-' and may hold only letters, digits, and . _ / @ { } ~ ^ + -."
 EARLIER_COMMIT = "Deploying an earlier commit"
+# What --at in a folder Git does not take for a checkout asks of the user.
+AT_FROM_CLONE = f"Run --at from a Git clone of the source. {see_recovery(EARLIER_COMMIT)}"
 # The attributes git archive applies and a checkout does not, with what git archive does to a path one is set on: an
 # export honouring them would not hold the commit's tree, so --at refuses a commit that sets either.
 ARCHIVE_ONLY_ATTRIBUTES = {
@@ -127,7 +129,7 @@ def resolve(source_dir: Path, ref: str) -> Pin:
     shown = platform_support.normalize(source_dir)
     # A .git whose stat fails is refused as no checkout: its False stops --at before anything runs, as git would.
     if not (source_dir / ".git").exists():
-        raise DeployError(f"ERROR: --at needs a Git checkout, and {shown} is not one.")
+        raise DeployError(f"ERROR: --at needs a Git checkout, and {shown} is not one.", AT_FROM_CLONE)
     # commit_of ends the options before the ref, so a ref is never read as an option even if the pattern above ever
     # let one through, and answers None only when git says the ref names no commit.
     try:
@@ -135,7 +137,9 @@ def resolve(source_dir: Path, ref: str) -> Pin:
     except GitError as error:
         reason = flat_text(str(error))
         if error.kind == "not_repository":
-            raise DeployError(f"ERROR: --at needs a Git checkout, and {shown} is not one: {reason}") from error
+            raise DeployError(
+                f"ERROR: --at needs a Git checkout, and {shown} is not one: {reason}", AT_FROM_CLONE
+            ) from error
         raise DeployError(
             f"ERROR: Git could not read --at {ref} in {shown}: {reason}",
             "Put right what Git reports in the checkout, then retry.",
@@ -231,7 +235,11 @@ def export(source_dir: Path, commit: str) -> Path:
         archive = root / "tree.tar"
         result = _git(source_dir, "archive", "--format=tar", f"--output={archive}", commit)
         if result.returncode != 0:
-            raise DeployError(f"ERROR: git archive could not export {commit}: {flat_text(result.output)}")
+            raise DeployError(
+                f"ERROR: git archive could not export {commit}: {flat_text(result.output)}",
+                "Put right what Git reports in the checkout, then retry.",
+                see_recovery(EARLIER_COMMIT),
+            )
         fsops.make_directory(root / "tree")
         try:
             _refuse_links(archive, commit)
@@ -239,7 +247,11 @@ def export(source_dir: Path, commit: str) -> Path:
         except tarfile.TarError as exc:
             # The data filter's refusal names the member and why; any other TarError is an archive tarfile cannot read.
             reason = flat_text(str(exc))
-            raise DeployError(f"ERROR: The deployer refused to extract the tree of {commit}: {reason}.") from exc
+            raise DeployError(
+                f"ERROR: The deployer refused to extract the tree of {commit}: {reason}.",
+                "Deploy a commit whose files all extract inside the folder they belong to.",
+                see_recovery(EARLIER_COMMIT),
+            ) from exc
     except BaseException:
         remove(root)
         raise

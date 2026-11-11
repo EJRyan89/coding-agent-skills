@@ -10,6 +10,19 @@ from . import fsops, platform_support, state_files
 from .arguments import CONFIGURE_COMMAND_LINE
 from .errors import STATE_FILE, DeployError, os_error, see_recovery
 
+# These checks serve a saved configuration, configure's answers, and a --canary-home's values alike, so each caller
+# adds the step its reader takes.
+STEP_ALLOWED = {
+    "_require_allowed": "parse's callers and canary add the step: read the --reset or drop step, configure's answer "
+    "check the step to answer again, and canary the step to choose another --canary-home",
+    "parse": "read adds the --reset step, or for an UnknownKey the step to drop it, and configure's answer check the "
+    "step to answer again",
+    "_validate_absolute_directory": "validate_directories' callers add the step: load the configure step, "
+    "configure's answer check the step to answer again, and canary the step to choose another --canary-home",
+}
+# What a --canary-home whose values the deployer refuses asks of the user.
+OTHER_CANARY_HOME = "Choose another --canary-home under the temporary directory, then retry."
+
 ALLOW_PATH = "[A-Za-z0-9 /:.@_()-]"
 # repo-cleanup's additions to its shipped lists: words separated by spaces, which the skill passes quoted to its
 # script; the script, not the configuration, refuses an entry that could hold work.
@@ -94,7 +107,7 @@ def parse(text: str, source_id: str, dropped: list[str] | None = None) -> dict[s
     values: dict[str, str] = {}
     for number, line in enumerate(lines, start=1):
         if "\r" in line:
-            raise DeployError(f"ERROR: Config line {number} contains CRLF. Convert to LF.")
+            raise DeployError(f"ERROR: Config line {number} contains CRLF.", "Convert the file's line endings to LF.")
         if not line or line.startswith("#"):
             continue
         match = KEY_VALUE.fullmatch(line)
@@ -189,13 +202,19 @@ def canary(source_id: str, home: Path, source_dir: Path) -> dict[str, str]:
     """The values for a --canary-home deployment: every configured directory is a folder of that home, and every other
     configured variable takes its default."""
     values = {SOURCE_KEY: source_id, **DEFAULTS}
-    for key, folder in CANARY_DIRECTORIES.items():
-        values[key] = platform_support.normalize(home / folder)
-        _require_allowed(key, values[key])
+    try:
+        for key, folder in CANARY_DIRECTORIES.items():
+            values[key] = platform_support.normalize(home / folder)
+            _require_allowed(key, values[key])
+    except DeployError as exc:
+        raise DeployError(*exc.lines, OTHER_CANARY_HOME) from exc
     values.update(derived_values(home, source_dir))
     for folder in CANARY_DIRECTORIES.values():
         fsops.make_directories(home / folder)
-    validate_directories(values)
+    try:
+        validate_directories(values)
+    except DeployError as exc:
+        raise DeployError(*exc.lines, OTHER_CANARY_HOME) from exc
     return values
 
 

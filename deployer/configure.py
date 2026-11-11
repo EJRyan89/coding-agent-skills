@@ -13,6 +13,8 @@ from .paths import Paths, validate_managed_roots
 
 # Ctrl+C or the end of input at a prompt. The configuration is written atomically, so it is unchanged.
 CANCELLED = "Configuration cancelled; existing config was not changed."
+# An answer the configuration refuses. Nothing is written before every answer passes.
+ANSWER_AGAIN = f"Run '{PROG} {CONFIGURE_COMMAND}' again and give that value another answer; nothing was saved."
 
 
 def _prompt(key: str, description: str, current: str, stdin: TextIO) -> str | None:
@@ -83,7 +85,10 @@ def execute(namespace: argparse.Namespace, paths: Paths, stdin: TextIO | None = 
         lines = [f"{config.SOURCE_KEY}={source_id}"]
         lines += [f"{key}={values[key]}" for key in config.CONFIGURED_VARIABLES if values.get(key)]
         content = "\n".join(lines) + "\n"
-        config.validate_directories(config.parse(content, source_id))
+        try:
+            config.validate_directories(config.parse(content, source_id))
+        except DeployError as exc:
+            raise DeployError(*exc.lines, ANSWER_AGAIN) from exc
         # The directory is made only for the write, so a run that stops before it leaves a fresh home as it was.
         fsops.make_directories(config_file.parent)
         fsops.write_atomic(config_file, content.encode("utf-8"))

@@ -519,9 +519,7 @@ class MetadataValidationTests(DeployerTestCase):
         self.deploy_fails("--all", pattern="Skill 'alpha' is opt-in but not selectable; only menu items can be opt-in")
         self.make_skill("alpha", "Test", opt_in=True)
         self.make_source_json(bundles={"pack": {"members": ["alpha"]}})
-        self.deploy_fails(
-            "--all", pattern="Skill 'alpha' is opt-in but belongs to bundle 'pack'; mark the bundle opt-in instead"
-        )
+        self.deploy_fails("--all", pattern="Skill 'alpha' is opt-in but belongs to bundle 'pack'")
         self.make_skill("alpha", "Test")
         self.make_source_json(bundles={"pack": {"members": ["alpha"], "opt_in": "yes"}})
         self.deploy_fails("--all", pattern="Bundle 'pack' opt_in must be true or false")
@@ -626,8 +624,11 @@ class MetadataValidationTests(DeployerTestCase):
                 with judged, self.assertRaises(DeployError) as raised:
                     source._reject_links(tree)
                 self.assertEqual(
-                    f"ERROR: {expected} found in deployable source tree: {platform_support.normalize(link)}",
-                    str(raised.exception),
+                    (
+                        f"ERROR: {expected} found in deployable source tree: {platform_support.normalize(link)}",
+                        "Replace it with the file or folder it points at, or remove it, then retry.",
+                    ),
+                    raised.exception.lines,
                 )
 
 

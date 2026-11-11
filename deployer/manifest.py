@@ -11,7 +11,7 @@ import json_writer
 from atomic_file import is_read_only
 
 from . import fsops, platform_support, state_files
-from .errors import STATE_FILE, DeployError, os_error, see_recovery
+from .errors import DEBUG_HINT, STATE_FILE, DeployError, os_error, see_recovery
 from .hashing import HASH_PATTERN
 from .kinds import ADAPTER_KIND, AGENT_KIND, DEPENDENCY_KINDS, KINDS, SHARED, SKILL, ItemKind, KindKey
 from .names import safe_name_problem
@@ -265,7 +265,7 @@ class Manifest:
             text = json_writer.dumps(self.data, indent=2)
         except json_writer.JsonWriteRefused as exc:
             raise DeployError(
-                f"ERROR: Cannot write the manifest {platform_support.normalize(self.path)}: {exc}"
+                f"ERROR: Cannot write the manifest {platform_support.normalize(self.path)}: {exc}", DEBUG_HINT
             ) from exc
         fsops.write_atomic(self.path, (text + "\n").encode("utf-8"))
 

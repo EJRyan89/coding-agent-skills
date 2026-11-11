@@ -362,7 +362,12 @@ def run(
     if isinstance(namespace, int):
         return namespace
     if namespace.command is not None:
-        print_error(DeployError(f"ERROR: '{namespace.command}' is a command; run it with deploy.py itself."))
+        print_error(
+            DeployError(
+                f"ERROR: '{namespace.command}' is a command, not a deployment.",
+                f"Run it as '{PROG} {namespace.command}'.",
+            )
+        )
         return USAGE_ERROR
     return execute(namespace, paths, probe=probe, stdin=stdin)
 

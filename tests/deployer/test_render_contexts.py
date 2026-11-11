@@ -204,7 +204,8 @@ class FenceTests(unittest.TestCase):
             self.assertEqual(
                 (
                     "ERROR: Variable X cannot be substituted into s/SKILL.md: the deployer knows no escaping for a "
-                    f"{context} fence; write the example in a Bash, PowerShell, or Python fence",
+                    f"{context} fence",
+                    "Write the example in a Bash, PowerShell, or Python fence.",
                 ),
                 raised.exception.lines,
             )

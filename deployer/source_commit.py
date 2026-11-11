@@ -65,7 +65,10 @@ def _description(source_dir: Path, commit: str) -> str | None:
     lines = output_lines(described.rstrip("\r\n"))
     # output_lines gives no line for an empty answer, and one line of an answer that is never empty.
     if len(lines) != 1:
-        raise DeployError(f"{cannot}: git describe answered {flat_text(described)!r}, not one name")
+        raise DeployError(
+            f"{cannot}: git describe answered {flat_text(described)!r}, not one name",
+            "Rename the tag git describe names so it holds no line break, then retry.",
+        )
     return lines[0]
 
 
