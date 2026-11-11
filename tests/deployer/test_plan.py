@@ -22,11 +22,33 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan8
 
 from harness import ALLOWED_TOOLS, DEPLOY_COMMAND, REPOSITORY_ROOT, ZERO_HASH, DeployerTestCase, Deployment, forward
 
-from deployer import hashing, manifest, migrate, plan, report, selection
+from deployer import hashing, manifest, migrate, plan, platform_support, report, selection
 from deployer.context import Context, Options, Selection
 from deployer.errors import DeployError
+from deployer.kinds import SHARED as SHARED_KIND
 from deployer.paths import Paths
 from deployer.source import Skill, Source
+
+
+@contextlib.contextmanager
+def stat_denied(denied: Path) -> Iterator[None]:
+    """A stat of one path that fails as a denied one does, and Path.is_file answering False for it, as it does for a
+    failed stat from Python 3.14 on; every other path is answered as it is."""
+    real_stat, real_is_file = Path.stat, Path.is_file
+
+    def stat(self: Path, *, follow_symlinks: bool = True) -> os.stat_result:
+        if self == denied:
+            raise PermissionError(13, "Access is denied", str(self))
+        return real_stat(self, follow_symlinks=follow_symlinks)
+
+    def is_file(self: Path, **options: Any) -> bool:
+        return False if self == denied else real_is_file(self, **options)
+
+    with (
+        mock.patch.object(Path, "stat", autospec=True, side_effect=stat),
+        mock.patch.object(Path, "is_file", autospec=True, side_effect=is_file),
+    ):
+        yield
 
 
 @dataclass(frozen=True)
@@ -642,10 +664,25 @@ class ValidateSharedAssetsTests(unittest.TestCase):
 
     def test_an_owned_asset_must_be_a_file_in_the_source(self) -> None:
         missing = self.paths.skills_src / "o.md"
+        remedy = "Add the file to the source, or give 'o.md' the role 'dependency' when another source owns it."
         message = f"ERROR: source.json declares 'o.md' as owned but file not found at {self.shown(missing)}"
-        self.assertEqual(message, self.refusal(self.context({"o.md": "owner"}, {}), []))
+        self.assertEqual((message, remedy), self.refused(self.context({"o.md": "owner"}, {}), []))
         missing.mkdir()
-        self.assertEqual(message, self.refusal(self.context({"o.md": "owner"}, {}), []))
+        self.assertEqual(
+            (f"ERROR: Owned shared asset 'o.md' at {self.shown(missing)} is not a file.", remedy),
+            self.refused(self.context({"o.md": "owner"}, {}), []),
+        )
+
+    def test_an_owned_asset_it_cannot_stat_is_refused_with_the_reason_not_as_missing(self) -> None:
+        owned = self.paths.skills_src / "o.md"
+        owned.write_text("owned\n", encoding="utf-8")
+        with stat_denied(owned):
+            lines = self.refused(self.context({"o.md": "owner"}, {}), [])
+        self.assertEqual(
+            f"ERROR: Could not tell whether owned shared asset 'o.md' is there: {self.shown(owned)}: Access is denied",
+            lines[0],
+        )
+        self.assertNotIn("not found", " ".join(lines))
 
     def test_a_dependency_no_selected_skill_needs_is_not_checked(self) -> None:
         context = self.context({"d.md": "dependency"}, {"alpha": [], "beta": ["d.md"]})
@@ -653,11 +690,29 @@ class ValidateSharedAssetsTests(unittest.TestCase):
 
     def test_a_needed_dependency_must_be_a_file_at_the_destination(self) -> None:
         destination = self.paths.dest_dir / "d.md"
+        first = plan.DEPLOY_OWNER_FIRST.format(asset="d.md")
         message = f"ERROR: Dependency 'd.md' not found at destination ({self.shown(destination)})"
         context = self.context({"d.md": "dependency"}, {"alpha": ["d.md"]})
-        self.assertEqual(message, self.refusal(context, ["alpha"]))
+        self.assertEqual((message, first), self.refused(context, ["alpha"]))
         destination.mkdir()
-        self.assertEqual(message, self.refusal(context, ["alpha"]))
+        self.assertEqual(
+            (f"ERROR: Dependency 'd.md' at {self.shown(destination)} is not a file.", first),
+            self.refused(context, ["alpha"]),
+        )
+
+    def test_a_needed_dependency_it_cannot_stat_is_refused_with_the_reason_not_told_to_redeploy_the_owner(
+        self,
+    ) -> None:
+        self.installed_dependency()
+        destination = self.paths.dest_dir / "d.md"
+        context = self.context({"d.md": "dependency"}, {"alpha": ["d.md"]})
+        with stat_denied(destination):
+            lines = self.refused(context, ["alpha"])
+        self.assertEqual(
+            f"ERROR: Could not tell whether dependency 'd.md' is there: {self.shown(destination)}: Access is denied",
+            lines[0],
+        )
+        self.assertNotIn(plan.DEPLOY_OWNER_FIRST.format(asset="d.md"), lines)
 
     def test_a_needed_dependency_needs_another_source_that_owns_it_with_a_matching_hash(self) -> None:
         self.installed_dependency()
@@ -800,6 +855,38 @@ class ContextStepTests(unittest.TestCase):
         context.manifest.data["sources"]["another/source"] = {}
         with self.assertRaisesRegex(DeployError, "Migration source 'old/source' is not present in the manifest"):
             migrate.migrate(context, "old/source")
+
+    def test_migrating_an_owned_asset_it_cannot_stat_is_refused_with_the_reason_not_as_missing(self) -> None:
+        context = self.context({})
+        context.source.shared_assets["guide.md"] = "owner"
+        owned = self.paths.skills_src / "guide.md"
+        owned.parent.mkdir(parents=True, exist_ok=True)
+        old_entry: Any = {"shared": {"guide.md": {"role": "owner", "hash": ZERO_HASH}}}
+        put_back = (
+            "Put back skills/guide.md in this checkout, or remove 'guide.md' from source.json's shared_assets, then "
+            "rerun --migrate-from."
+        )
+        with self.assertRaises(DeployError) as raised:
+            migrate._migration_candidates(context, old_entry, SHARED_KIND)
+        self.assertEqual(
+            ("ERROR: Cannot migrate shared asset 'guide.md': source owner file is missing.", put_back),
+            tuple(raised.exception.lines),
+        )
+        owned.mkdir()
+        with self.assertRaises(DeployError) as raised:
+            migrate._migration_candidates(context, old_entry, SHARED_KIND)
+        shown = platform_support.normalize(owned)
+        self.assertEqual(
+            (f"ERROR: Owned shared asset 'guide.md' at {shown} is not a file.", put_back), tuple(raised.exception.lines)
+        )
+        owned.rmdir()
+        owned.write_text("guide\n", encoding="utf-8")
+        with stat_denied(owned), self.assertRaises(DeployError) as raised:
+            migrate._migration_candidates(context, old_entry, SHARED_KIND)
+        self.assertEqual(
+            f"ERROR: Could not tell whether owned shared asset 'guide.md' is there: {shown}: Access is denied",
+            raised.exception.lines[0],
+        )
 
 
 def test_the_planned_actions_are_the_labelled_ones_in_report_order() -> None:
