@@ -114,7 +114,15 @@
     ],
     "collision": [
       {
-        "decision": "A custom agent whose ID is code-review collides with Copilot CLI's built-in agent of that name, and a skill so named does not, since a skill takes no agent ID, and an unmarked AGENTS.md or copilot-instructions.md is one the generator refuses to overwrite: checks 8 and 11 of references/audit-policy.md."
+        "page": "https://docs.github.com/en/copilot/reference/copilot-cli-reference/cli-command-reference",
+        "passage": "Copilot CLI's built-in agents are code-review, explore, general-purpose, research, rubber-duck, security-review, and task, and a custom agent's name field defaults to its agent ID."
+      },
+      {
+        "page": "https://raw.githubusercontent.com/github/copilot-cli/main/changelog.md",
+        "passage": "Custom agents that share a built-in agent's name are no longer offered to the model as a second agent type, since delegating to that name always runs the built-in agent."
+      },
+      {
+        "decision": "A skill named after a built-in agent does not collide, since a skill takes no agent ID, and an unmarked AGENTS.md or copilot-instructions.md is one the generator refuses to overwrite: checks 8 and 11 of references/audit-policy.md."
       }
     ],
     "copilot-agent": [
@@ -128,7 +136,7 @@
       },
       {
         "page": "https://docs.github.com/en/copilot/reference/copilot-cli-reference/cli-command-reference",
-        "passage": "Copilot CLI loads custom agents from ~/.copilot/agents, then a project's .github/agents, then its .claude/agents, then .github/agents and .claude/agents under a directory added with --add-dir, and derives each agent's ID from the file's path relative to the agents directory, without the .agent.md or .md extension and with each directory separator replaced by --, so agents/team/reviewer.agent.md is team--reviewer; its built-in agents include code-review."
+        "passage": "Copilot CLI loads custom agents from ~/.copilot/agents, then a project's .github/agents, then its .claude/agents, then .github/agents and .claude/agents under a directory added with --add-dir, and derives each agent's ID from the file's path relative to the agents directory, without the .agent.md or .md extension and with each directory separator replaced by --, so agents/team/reviewer.agent.md is team--reviewer."
       }
     ],
     "copilot-config": [
