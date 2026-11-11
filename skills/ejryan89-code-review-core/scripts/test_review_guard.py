@@ -20,6 +20,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
 import json_writer
+import path_keys
 import review_dispatch
 import review_guard as guard
 import review_pipeline as rp
@@ -201,10 +202,7 @@ class ReadTests(GuardFixture):
         ]
         self.assertEqual(
             [
-                *[
-                    Path(os.path.normcase(f"{nested.name}/{name}")).as_posix()
-                    for name in ("run.json", "Service.cs", "Service.cs", "Service.cs")
-                ],
+                *[f"{nested.name}/{name}" for name in ("run.json", "Service.cs", "Service.cs", "Service.cs")],
                 *[guard.search_entry(tool) for tool in ("Grep", "Grep", "Glob", "Glob")],
             ],
             logged,
@@ -455,8 +453,9 @@ class ReadLogTests(GuardFixture):
 
     @staticmethod
     def entry(relative: str) -> str:
-        """A path as the log names it: relative to the snapshot, in the case the file system compares."""
-        return Path(os.path.normcase(relative)).as_posix()
+        """A path as the log names it: relative to the snapshot, as the reviewer spelled it; review_dispatch keys it
+        as the snapshot's file system compares names."""
+        return Path(relative).as_posix()
 
     def test_check_skips_a_log_line_the_parser_refuses_and_counts_the_others(self) -> None:
         log = guard.read_log(self.run_directory, "csharp-review")
@@ -621,6 +620,20 @@ class WriteTests(GuardFixture):
                 ):
                     with self.subTest(path=path):
                         self.assert_denied(self.decide(tool, file_path=path), "write only your own result file")
+
+    def test_a_result_spelled_in_another_case_is_the_result_only_where_the_run_folds_case(self) -> None:
+        # The run's file system decides, never the platform's name: on a case-sensitive one the other spelling is
+        # another file, and on one that folds, as macOS's default APFS does, it is the result.
+        self.claim()
+        work = self.run_directory / "work"
+        other = str(work / "CSHARP-REVIEW.result.json")
+        for folds in (True, False):
+            with self.subTest(folds=folds), mock.patch.dict(path_keys._FOLDS_CASE, {str(work): folds}):
+                reason = self.decide("Write", file_path=other)
+                if folds:
+                    self.assertIsNone(reason)
+                else:
+                    self.assert_denied(reason, "write only your own result file")
 
     def test_a_reviewer_cannot_write_before_it_reads_its_prompt(self) -> None:
         self.assert_denied(self.decide("Write", file_path=self.result()), "read the prompt file your task names first")

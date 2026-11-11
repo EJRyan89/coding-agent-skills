@@ -6,9 +6,11 @@ import os
 import sys
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import path_keys
 from folders_up import folders_up
 
 STOP = Path(__file__).resolve().parent / "tree"
@@ -32,12 +34,16 @@ class FoldersUpTests(unittest.TestCase):
         written = Path(f"{STOP}{os.sep}src{os.sep}..{os.sep}")
         self.assertEqual([start, STOP], list(folders_up(start, written)))
 
-    def test_a_start_differing_from_the_stop_only_in_case_is_it_where_the_platform_ignores_case(self) -> None:
+    def test_a_start_differing_from_the_stop_only_in_case_is_it_where_the_file_system_ignores_case(self) -> None:
+        # The tree's own file system decides, never the platform's name: NTFS and macOS's default APFS fold case. The
+        # tree is not there, so its names take the answer of the folder holding it.
         start = STOP / "Src"
         stop = STOP / "src"
-        ignores_case = os.path.normcase("Src") == os.path.normcase("src")
-        expected = [start] if ignores_case else to_root(start)
+        expected = [start] if path_keys.folds_case(STOP) else to_root(start)
         self.assertEqual(expected, list(folders_up(start, stop)))
+        for folds in (True, False):
+            with self.subTest(folds=folds), mock.patch.dict(path_keys._FOLDS_CASE, {str(STOP.parent): folds}):
+                self.assertEqual([start] if folds else to_root(start), list(folders_up(start, stop)))
 
     def test_a_start_outside_the_stop_walks_to_the_root(self) -> None:
         start = STOP / "elsewhere"

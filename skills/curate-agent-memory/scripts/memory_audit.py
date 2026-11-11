@@ -121,7 +121,7 @@ from git_client import GitClient, GitError
 from link_probe import is_link_or_junction, is_plain_file
 from markdown_sections import CODE_SPAN
 from path_containment import within
-from path_keys import path_key
+from path_keys import name_key, path_key
 from skill_roots import skills_directory_holding
 
 INDEX_NAME = "MEMORY.md"
@@ -382,7 +382,8 @@ def parse_index(path: Path) -> tuple[list[dict[str, str]], list[str]]:
 
 
 def target_identity(memory_dir: Path, file: str) -> str:
-    """Compare targets relative to the store, resolving ./ prefixes and normalizing case on Windows."""
+    """Compare targets relative to the store, resolving ./ prefixes and folding case where the store's file
+    system does."""
     return path_key(memory_dir / store_name(file), resolve=True)
 
 
@@ -828,7 +829,7 @@ def main_worktree(repo: Path) -> Path | None:
     top, git_dir, common = paths
     if git_dir == common:
         return top
-    if common.name == ".git":
+    if name_key(common.name, common.parent) == ".git":
         return common.parent
     # core.worktree, relative to the Git directory when relative, is git's own record of a submodule's working tree.
     # Exit 1 with nothing on stderr is git's answer that the setting is unset; any other failure raises.

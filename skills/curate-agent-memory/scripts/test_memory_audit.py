@@ -22,6 +22,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-cor
 
 import atomic_file
 import memory_audit
+import path_keys
 import skill_roots
 from executable_locator import RelativeEnvironmentPath
 from file_presence import NotAFile
@@ -2142,6 +2143,26 @@ class ResolveTests(unittest.TestCase):
         with self.assertRaises(memory_audit.UnknownMainWorktree):
             main_worktree_given(None)
 
+    def test_a_shared_git_directory_spelled_in_another_case_is_the_main_worktree_s_where_it_folds(self) -> None:
+        # git names the shared Git directory as it was given, so on a folding file system .GIT is the main
+        # worktree's own; on a case-sensitive one it is another folder, read through core.worktree.
+        main = self.root / "main"
+        common = main / ".GIT"
+        common.mkdir(parents=True)
+        paths = [self.root / "linked", common / "worktrees" / "linked", common]
+        for folds in (True, False):
+            with (
+                self.subTest(folds=folds),
+                mock.patch.dict(path_keys._FOLDS_CASE, {str(main): folds}),
+                mock.patch.object(GitClient, "rev_parse_paths", return_value=paths),
+                mock.patch.object(GitClient, "quiet_output", return_value=None),
+            ):
+                if folds:
+                    self.assertEqual(main, memory_audit.main_worktree(self.root / "linked"))
+                else:
+                    with self.assertRaises(memory_audit.UnknownMainWorktree):
+                        memory_audit.main_worktree(self.root / "linked")
+
     def test_a_used_repository_choice_states_the_block_rule(self) -> None:
         self.store(self.home / "chosen")
         project = self.repo / ".claude" / "settings.json"
@@ -2796,7 +2817,9 @@ def test_a_target_reached_through_a_linked_folder_is_the_file_it_names(tmp_path:
     assert named != memory_audit.target_identity(memory, "note.md")
 
 
-def test_a_destination_named_twice_is_read_once_and_case_counts_where_the_platform_keeps_it(tmp_path: Path) -> None:
+def test_a_destination_named_twice_is_read_once_and_case_counts_where_the_file_system_keeps_it(
+    tmp_path: Path,
+) -> None:
     real = tmp_path / "real"
     real.mkdir()
     link_folder(real, tmp_path / "linked")
@@ -2806,8 +2829,9 @@ def test_a_destination_named_twice_is_read_once_and_case_counts_where_the_platfo
     assert memory_audit.destination_files(None, named) == [notes]
     lower = real / "claude.md"
     lower.write_text("rules\n", encoding="utf-8")
-    # Windows folds the two names into one file; Linux keeps two files, and both are read.
-    expected = [notes] if sys.platform == "win32" else [notes, lower]
+    # NTFS and macOS's default APFS fold the two names into one file; a case-sensitive file system, as Linux's are,
+    # keeps two files, and both are read. The file system decides, never the platform's name.
+    expected = [notes] if path_keys.folds_case(real) else [notes, lower]
     assert memory_audit.destination_files(None, [notes, lower]) == expected
 
 

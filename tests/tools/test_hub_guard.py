@@ -27,6 +27,7 @@ import bash_agreement
 import executable_locator
 import git_client
 import git_worktrees
+import path_keys
 from bounded_process import Finished, run_bounded
 from guard_limits import PROCESS_SECONDS, process_limits_held
 from markdown_sections import CODE_SPAN, markdown_section
@@ -3192,3 +3193,40 @@ def test_git_builtins_reads_each_line_git_lists_as_one_name_and_nothing_from_a_f
             assert hub_guard.git_builtins() == expected
     hub_guard.git_builtins.cache_clear()
     assert {"grep", "diff", "status"} <= hub_guard.git_builtins()
+
+
+class GitDirectoryNameTests(unittest.TestCase):
+    def test_a_git_directory_is_named_as_its_file_system_compares_names(self) -> None:
+        # .GIT is a git directory where its folder's file system folds case, as NTFS and macOS's default APFS do,
+        # and another folder where it keeps case: the file system decides, never the platform's name.
+        with tempfile.TemporaryDirectory() as temporary:
+            place = Path(temporary).resolve()
+            (place / ".GIT").mkdir()
+            for folds in (True, False):
+                with (
+                    self.subTest(folds=folds),
+                    mock.patch.dict(path_keys._FOLDS_CASE, {str(place): folds}),
+                    mock.patch.object(hub_guard, "guarded_hub_of_repository", return_value=place) as of_repository,
+                    mock.patch.object(hub_guard, "guarded_hub_at", return_value=None),
+                ):
+                    self.assertEqual(folds, hub_guard.hub_protected(place / ".GIT" / "config"))
+                    self.assertEqual([mock.call(place / ".GIT")] if folds else [], of_repository.call_args_list)
+
+    def test_a_common_directory_spelled_in_another_case_is_the_hub_s_where_its_folder_folds_case(self) -> None:
+        # git names the common directory as it was given, so on a folding file system .GIT is the hub's.
+        with tempfile.TemporaryDirectory() as temporary:
+            place = Path(temporary).resolve()
+            common = place / ".GIT"
+            common.mkdir()
+            answer = f"{common}\n{common}\n"
+            for folds in (True, False):
+                hub_guard.guarded_hub_of_repository.cache_clear()
+                with (
+                    self.subTest(folds=folds),
+                    mock.patch.dict(path_keys._FOLDS_CASE, {str(place): folds}),
+                    mock.patch.object(worktrees.CLIENT, "output", return_value=answer),
+                    mock.patch.object(hub_guard, "guarded_hub_at", return_value=place) as hub_at,
+                ):
+                    self.assertEqual(place if folds else None, hub_guard.guarded_hub_of_repository(common))
+                    self.assertEqual([mock.call(place)] if folds else [], hub_at.call_args_list)
+            hub_guard.guarded_hub_of_repository.cache_clear()

@@ -1222,7 +1222,7 @@ def guarded_hub_of_repository(path: Path) -> Path | None:
     if not same_path(Path(lines[0]), Path(lines[1])):
         return None
     common = Path(lines[1])
-    if os.path.normcase(common.name) != ".git":
+    if platform_support.name_key(common.name, common.parent) != ".git":
         return None
     hub = guarded_hub_at(common.parent)
     return hub if hub is not None and same_path(hub, common.parent) else None
@@ -1248,7 +1248,7 @@ def hub_protected(path: Path) -> bool:
     did not run or finish, the GitError goes to the hook, which allows the edit with a note."""
     normalized = Path(os.path.normpath(path))
     for directory in (normalized, *normalized.parents):
-        if os.path.normcase(directory.name) == ".git" and directory.is_dir():
+        if platform_support.name_key(directory.name, directory.parent) == ".git" and directory.is_dir():
             try:
                 return guarded_hub_of_repository(directory) is not None
             except GitError as exc:

@@ -123,14 +123,6 @@ PYTHON = executable_locator.PYTHON
 STANDARD_COMMANDS = frozenset({"python", "powershell", "cygpath"}) if WINDOWS else frozenset({PYTHON})
 
 
-# The presence reads here that read a path they cannot stat or list as nothing there, each with why that is
-# the answer it should give.
-PRESENCE_ALLOWED = {
-    "_asked_folds_case": "None is its answer when no entry can tell whether the file system folds case, and an entry "
-    "it cannot stat is passed for the next, which the caller reads as folding case",
-}
-
-
 def ensure_supported() -> None:
     if sys.platform not in SUPPORTED_PLATFORMS:
         *others, last = SUPPORTED_PLATFORMS.values()
@@ -291,62 +283,11 @@ def same_directory(first: Path, second: Path) -> bool:
     return path_key(first, resolve=True) == path_key(second, resolve=True)
 
 
-def name_key(name: str, directory: str | os.PathLike[str] | None = None) -> str:
-    """The form in which the file system compares a name in `directory`: two names with one key are one file there.
-
-    Case sensitivity belongs to the file system, not the platform: NTFS folds case, while Linux's file systems, and a
-    Windows directory marked case-sensitive, do not. So `directory` is asked, through folds_case, and a name in one that
-    does not fold is its own key. Without a directory, case is folded, the answer that refuses more names as one.
-    """
-    if directory is not None and not folds_case(directory):
-        return name
-    return name.casefold()
-
-
-# Each directory's answer to folds_case once the file system has given one, by its absolute path.
-_FOLDS_CASE: dict[str, bool] = {}
-
-
-def folds_case(directory: str | os.PathLike[str]) -> bool:
-    """Whether the file system compares the names in `directory` without regard to case.
-
-    It is asked of an entry whose name has an ASCII letter: the entry is looked up again by the name with each such
-    letter's case swapped, and the directory folds when that finds the same file. The answer is kept for the rest of
-    the run. A directory that cannot be listed, or holds no such entry yet, is taken to fold, the answer that refuses
-    more, and is asked again next time.
-    """
-    key = os.path.abspath(directory)  # noqa: PTH100 - a lexical key, as derived paths are
-    if key in _FOLDS_CASE:
-        return _FOLDS_CASE[key]
-    answer = _asked_folds_case(Path(key))
-    if answer is None:
-        return True
-    _FOLDS_CASE[key] = answer
-    return answer
-
-
-def _asked_folds_case(directory: Path) -> bool | None:
-    """The file system's answer for `directory`, or None when no entry of it can give one."""
-    try:
-        names = sorted(entry.name for entry in os.scandir(directory))
-    except OSError:
-        return None
-    for name in names:
-        swapped = "".join(character.swapcase() if character.isascii() else character for character in name)
-        if swapped == name:
-            continue
-        try:
-            found = os.lstat(directory / name)
-        except OSError:
-            continue  # removed meanwhile
-        try:
-            other = os.lstat(directory / swapped)
-        except FileNotFoundError:
-            return False
-        except OSError:
-            continue
-        return (other.st_dev, other.st_ino) == (found.st_dev, found.st_ino)
-    return None
+# The form in which the file system compares a name in a directory, and whether a directory's file system folds case,
+# which ejryan89-skill-core holds beside path_key, since a skill script and the deployer key names and paths alike: case
+# sensitivity belongs to the file system, not the platform, so each directory is asked (see path_keys).
+name_key = path_keys.name_key
+folds_case = path_keys.folds_case
 
 
 # The device names Windows reserves in every directory, alone or before an extension: con and con.md each open the

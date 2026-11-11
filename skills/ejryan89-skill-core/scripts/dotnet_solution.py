@@ -87,8 +87,8 @@ def decode_text(data: bytes) -> str:
 
 
 def same_path(path: Path) -> str:
-    """`path` as the file system compares it, `path_keys`' lexical key: absolute, normalized, and case-folded where the
-    platform ignores case."""
+    """`path` as the file system compares it, `path_keys`' lexical key: absolute, normalized, and each name
+    case-folded where its directory's file system ignores case."""
     return path_key(path)
 
 

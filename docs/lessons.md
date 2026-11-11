@@ -695,20 +695,26 @@ removed fails validation until its pattern follows it.
 ### Two spellings are compared as their consumer compares them
 
 - **Rule:** Two spellings of one thing are compared as the program that consumes them compares them: versions by
-  number, URLs and paths in canonical form, and environment names folded as the platform folds them.
+  number, URLs and paths in canonical form, a path's or a file's name folded as its directory's file system
+  folds it, never as the platform's name says, and environment names folded as the platform folds them.
 - **Why:** A text comparison takes `1.10` for older than `1.9`, or two spellings of one path for two paths.
 - **Use:** `versions:find`, `versions:read`, and `versions:latest`, the one version reader, which reads a version's
   numbers and orders by them; `release_tags:release_order` and `release_tags:highest_release`, a release tag through
   it; `path_keys:path_key`, the one form a path is compared in, which the deployer reaches as
-  `deployer.platform_support:path_key`; `guidance_record:canonical_url`; `deployer.source:any_case` and
+  `deployer.platform_support:path_key`, with `path_keys:name_key`, a name in its directory, and
+  `path_keys:same_parts`, a path against a trusted one, asking only the trusted one's directories;
+  `guidance_record:canonical_url`; `deployer.source:any_case` and
   `deployer.source:refuse_other_spellings`, which find a name the deployer reads spelled in any case on every
   platform and refuse one spelled otherwise; `review_config:validate_repository_identity`, the one form a
   repository identity is compared in, which `review_state:validate_state` keys the state by.
 - **Guard:** `tests/validation/duplication.py::DuplicationPolicies::test_repository_copies_only_what_it_sanctions`,
   which fails a version's numbers read by hand outside the version reader, and a path case-folded by hand outside
-  the path key;
+  the path key, and os.path.normcase of a path or a name anywhere outside the path key's module;
   `skills/ejryan89-skill-core/scripts/test_versions.py::OrderTests::test_versions_order_by_number_never_as_text`,
   `skills/ejryan89-skill-core/scripts/test_path_keys.py::PathKeyTests::test_two_spellings_of_one_path_have_one_key`,
+  `skills/ejryan89-skill-core/scripts/test_path_keys.py::PathKeyTests::test_a_case_sensitive_directory_keeps_two_spellings_apart_whatever_the_platform`,
+  `skills/ejryan89-skill-core/scripts/test_path_keys.py::PathKeyTests::test_a_folding_directory_makes_two_spellings_one_whatever_the_platform`,
+  `skills/ejryan89-skill-core/scripts/test_path_containment.py::WithinTests::test_the_path_judged_is_never_asked`,
   `skills/ejryan89-skill-core/scripts/test_release_tags.py::ReleaseTagTests::test_releases_are_ordered_by_their_numbers_not_their_text`,
   `skills/ejryan89-skill-core/scripts/test_guidance_record.py::test_the_canonical_form_folds_only_raw_github_s_refs_heads_and_the_scheme_and_host_case`,
   `tests/deployer/test_source_validation.py::MetadataValidationTests::test_a_name_the_deployer_reads_spelled_in_another_case_is_refused_by_name_on_every_platform`,
@@ -716,11 +722,12 @@ removed fails validation until its pattern follows it.
   `skills/ejryan89-code-review-core/scripts/test_review_pipeline.py::BatchTests::test_a_state_holding_one_repository_under_two_spellings_is_refused`
 - **Search for:** `version in`, `.startswith(version`, `sorted(tags`, or `tags[-1]`; `int(part) for part in` or
   `map(int,` over a `.split(".")`; in a workflow, `grep` or `contains(` on a version; `==` between two paths with no
-  normalization, or `os.path.normcase` outside `path_keys.py`; a glob, `fnmatch.fnmatch(`, or `.is_file()` of a
-  fixed file name, which folds case on Windows, beside a dictionary keyed by each file's spelling on disk; a
-  dictionary read from a file and keyed by repository identity whose keys pass `validate_repository_identity(`
-  but are kept as written, while lookups use the lowercase form it returns.
-- **Examples:** #1556, #1855, #1867, #1909, #2299, #2590
+  normalization, or `os.path.normcase` outside `path_keys.py`, of a whole path or of one name such as `.git`;
+  `sys.platform == "win32"` or `os.name == "nt"` standing for a case-insensitive file system; a glob,
+  `fnmatch.fnmatch(`, or `.is_file()` of a fixed file name, which folds case on Windows, beside a dictionary keyed by
+  each file's spelling on disk; a dictionary read from a file and keyed by repository identity whose keys pass
+  `validate_repository_identity(` but are kept as written, while lookups use the lowercase form it returns.
+- **Examples:** #1556, #1855, #1867, #1909, #2299, #2590, #2614
 
 ### A child process starts from an environment built for it
 

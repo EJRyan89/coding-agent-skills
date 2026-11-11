@@ -1,9 +1,10 @@
 """The one test of whether a path lies inside a tree, for every check that keeps a path from leaving one.
 
 `within` compares two paths by text alone: each made absolute against the working directory and normalized without
-reaching the file system, then compared as the platform compares names, case-folded where it ignores case, part by part,
-each without Windows' extended-length or device-namespace prefix (`without_extended_prefix`), which `Path.resolve` may
-give one path and not the other. So a `..` that climbs out of the tree, another drive, and a sibling whose name starts
+reaching the file system, then compared part by part as the file system holding the tree compares names, which
+`path_keys.same_parts` asks of the tree's directories alone, never of the path judged, each without Windows'
+extended-length or device-namespace prefix (`without_extended_prefix`), which `Path.resolve` may give one path and not
+the other. So a `..` that climbs out of the tree, another drive, and a sibling whose name starts
 with the tree's are each outside. A caller that must follow links resolves both paths first and compares the results;
 one that must never follow them compares the paths as written. `posix_within` compares a `/`-separated name a listing
 gives, such as a repository path git lists, by text, case and all.
@@ -25,7 +26,7 @@ from pathlib import Path
 
 from device_names import is_reserved_device_name
 from link_probe import is_link_or_junction
-from path_keys import path_key
+from path_keys import same_parts
 
 StrPath = str | os.PathLike[str]
 
@@ -52,20 +53,18 @@ def without_extended_prefix(path: Path) -> Path:
     return plain if plain.drive else path
 
 
-def _compared(path: StrPath) -> Path:
-    """`path` as `within` compares it: without an extended-length prefix, then `path_keys`' textual key, absolute,
-    normalized by text alone, and case-folded where the platform ignores case."""
-    return Path(path_key(without_extended_prefix(Path(path)), textual=True))
-
-
 def within(path: StrPath, tree: StrPath, *, strict: bool = False) -> bool:
-    """Whether `path` lies in `tree`, by text alone; with `strict`, below it, so the tree itself is not within."""
-    candidate, root = _compared(path), _compared(tree)
-    return candidate.is_relative_to(root) and not (strict and candidate == root)
+    """Whether `path` lies in `tree`, by text alone; with `strict`, below it, so the tree itself is not within. The
+    path's leading parts are compared with the tree's as the tree's directories compare names, so the path judged is
+    never asked, and a spelling the tree's file system takes as the tree's is inside it."""
+    candidate, root = _plain(path).parts, _plain(tree).parts
+    if len(candidate) < len(root) + strict:
+        return False
+    return same_parts(candidate[: len(root)], root)
 
 
 def _plain(path: StrPath) -> Path:
-    """`path` as `within` reads it before case-folding: without an extended-length or device-namespace prefix, made
+    """`path` as `within` reads it before folding: without an extended-length or device-namespace prefix, made
     absolute against the working directory, and normalized by text alone."""
     return Path(os.path.normpath(Path.cwd() / without_extended_prefix(Path(path))))
 
@@ -73,12 +72,12 @@ def _plain(path: StrPath) -> Path:
 def relative_within(path: StrPath, tree: StrPath, *, strict: bool = False) -> Path | None:
     """`path` relative to `tree`, or None when `within` finds it outside, or, with `strict`, the tree itself. Which
     parts lie below the tree is decided on the same forms `within` compares, the tree's part count in its compared
-    form, so neither a prefix one side carries nor a case rule other than the platform's can disagree with it; the
-    parts themselves keep the path's own spelling. A caller that needs where a path lies in its tree takes it here,
-    never from a `relative_to` of the paths as given."""
+    form, so neither a prefix one side carries nor a case rule other than the tree's file system's can disagree with
+    it; the parts themselves keep the path's own spelling. A caller that needs where a path lies in its tree takes it
+    here, never from a `relative_to` of the paths as given."""
     if not within(path, tree, strict=strict):
         return None
-    return Path(*_plain(path).parts[len(_compared(tree).parts) :])
+    return Path(*_plain(path).parts[len(_plain(tree).parts) :])
 
 
 def posix_within(name: str, folder: str, *, strict: bool = False) -> bool:

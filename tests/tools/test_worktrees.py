@@ -20,6 +20,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "validation"))
 
 import git_client
 import git_worktrees
+import path_keys
 import skill_scripts
 from presence_denial import denied
 from worktree_fixture import (
@@ -426,3 +427,32 @@ class GuardSubcommandTests(WorktreesTestCase):
                 decision = json.loads(forwarded.stdout)["hookSpecificOutput"] if forwarded.stdout.strip() else None
                 self.assertEqual(expected, None if decision is None else decision["permissionDecision"])
         self.assertIn("hub guard skipped", errors[-1])
+
+
+class GitMarkNameTests(unittest.TestCase):
+    def test_a_git_directory_is_named_as_its_file_system_compares_names(self) -> None:
+        # .GIT is the git directory where the repository's file system folds case, as NTFS and macOS's default APFS
+        # do, and another folder where it keeps case: the file system decides, never the platform's name.
+        with tempfile.TemporaryDirectory() as temporary:
+            repository = Path(temporary).resolve() / "repository"
+            (repository / ".git").mkdir(parents=True)
+            inside = repository / ".GIT" / "objects"
+            for folds in (True, False):
+                with self.subTest(folds=folds), mock.patch.dict(path_keys._FOLDS_CASE, {str(repository): folds}):
+                    self.assertEqual(not folds, worktrees.below_a_checkout(inside))
+
+    def test_a_common_directory_spelled_in_another_case_is_a_checkout_s_where_its_folder_folds_case(self) -> None:
+        # git names the common directory as it was given, so on a folding file system .GIT marks a checkout.
+        with tempfile.TemporaryDirectory() as temporary:
+            place = Path(temporary).resolve()
+            common = place / ".GIT"
+            common.mkdir()
+            answer = git_client.GitResult(0, f"{place}\n{common}\n", "")
+            for folds in (True, False):
+                with (
+                    self.subTest(folds=folds),
+                    mock.patch.dict(path_keys._FOLDS_CASE, {str(place): folds}),
+                    mock.patch.object(worktrees, "git", return_value=answer),
+                ):
+                    expected = worktrees.Checkout(place, place) if folds else None
+                    self.assertEqual(expected, worktrees.checkout_of(place))

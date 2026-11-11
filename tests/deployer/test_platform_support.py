@@ -13,6 +13,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts"))
 
+import path_keys
 from harness import DeployerTestCase, forward, make_directory_link
 from test_presence_reads import stat_failing_at
 
@@ -840,74 +841,17 @@ class HomeDirectoryTests(unittest.TestCase):
 
 
 class NameKeyTests(unittest.TestCase):
-    def setUp(self) -> None:
-        super().setUp()
-        temporary = tempfile.TemporaryDirectory(prefix="name-key-test.")
-        self.addCleanup(temporary.cleanup)
-        self.directory = Path(temporary.name).resolve()
-        patcher = mock.patch.dict(platform_support._FOLDS_CASE, clear=True)
-        patcher.start()
-        self.addCleanup(patcher.stop)
+    """The probe and its tests live in ejryan89-skill-core's test_path_keys.py; the seam reaches the same keys."""
 
-    def swapped_case(self, same: bool) -> Any:
-        """os.lstat as a file system that does, or does not, fold case answers a case-swapped name."""
-        real = os.lstat
-
-        def lstat(path: Any) -> os.stat_result:
-            if Path(path).name == "probe.TXT":
-                if not same:
-                    raise FileNotFoundError(2, "No such file or directory", str(path))
-                return real(Path(path).with_name("PROBE.txt"))
-            return real(path)
-
-        return mock.patch.object(os, "lstat", side_effect=lstat)
-
-    def test_without_a_directory_names_compare_without_regard_to_case(self) -> None:
-        self.assertEqual(platform_support.name_key("Guide.md"), platform_support.name_key("guide.md"))
-        self.assertEqual(platform_support.name_key("ALPHA"), platform_support.name_key("alpha"))
+    def test_the_seam_keys_names_and_paths_as_skill_core_does(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="name-key-test.") as temporary:
+            directory = Path(temporary).resolve()
+            self.assertEqual(
+                path_keys.name_key("Guide.MD", directory), platform_support.name_key("Guide.MD", directory)
+            )
+            self.assertEqual(path_keys.folds_case(directory), platform_support.folds_case(directory))
+            self.assertEqual(path_keys.path_key(directory / "X"), platform_support.path_key(directory / "X"))
         self.assertEqual("guide.md", platform_support.name_key("GUIDE.MD"))
-        self.assertNotEqual(platform_support.name_key("guide.md"), platform_support.name_key("guide-md"))
-
-    def test_a_directory_that_folds_case_folds_its_names(self) -> None:
-        (self.directory / "PROBE.txt").write_bytes(b"")
-        with self.swapped_case(same=True):
-            self.assertTrue(platform_support.folds_case(self.directory))
-        self.assertEqual("guide.md", platform_support.name_key("Guide.MD", self.directory))
-
-    def test_a_case_sensitive_directory_folds_nothing(self) -> None:
-        (self.directory / "PROBE.txt").write_bytes(b"")
-        with self.swapped_case(same=False):
-            self.assertFalse(platform_support.folds_case(self.directory))
-        self.assertEqual("Guide.MD", platform_support.name_key("Guide.MD", self.directory))
-        self.assertNotEqual(
-            platform_support.name_key("Guide.md", self.directory), platform_support.name_key("guide.md", self.directory)
-        )
-
-    def test_a_directory_with_nothing_to_ask_folds_and_is_asked_again(self) -> None:
-        (self.directory / "1234").write_bytes(b"")  # no letter whose case could be swapped
-        self.assertTrue(platform_support.folds_case(self.directory))
-        self.assertTrue(platform_support.folds_case(self.directory / "missing"))
-        self.assertEqual({}, platform_support._FOLDS_CASE)
-        (self.directory / "PROBE.txt").write_bytes(b"")
-        with self.swapped_case(same=False):
-            self.assertFalse(platform_support.folds_case(self.directory))
-
-    def test_this_file_system_gives_its_own_answer(self) -> None:
-        # Asked apart from the probe: the file system refuses to create a second name differing only in case exactly
-        # when it folds case. A temporary directory is on NTFS on Windows, which folds, on a case-sensitive file
-        # system on Linux, and on APFS on macOS, which folds by default but may be formatted case-sensitive, so the
-        # answer there is the file system's, never the platform's.
-        (self.directory / "Guide.md").write_bytes(b"one")
-        try:
-            with (self.directory / "gUIDE.MD").open("xb"):
-                pass
-        except FileExistsError:
-            folds = True
-        else:
-            folds = False
-        self.assertEqual(folds, platform_support.folds_case(self.directory))
-        if sys.platform in ("win32", "linux"):
-            self.assertEqual(platform_support.WINDOWS, folds)
 
 
 class ProgramNameTests(unittest.TestCase):
