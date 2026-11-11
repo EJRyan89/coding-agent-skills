@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from . import hashing, journal, platform_support, source
+from . import hashing, journal, platform_support, source, state_files
 from .context import Context
 from .errors import DeployError, see_recovery
 from .kinds import AGENT_KIND, KINDS, SHARED, SKILL, ItemKind
@@ -28,11 +28,15 @@ def _migration_candidates(context: Context, old_entry: SourceEntry, kind: ItemKi
         if kind is SHARED:
             if context.source.shared_assets.get(name) != "owner":
                 continue
-            if not (context.paths.skills_src / name).is_file():
+            put_back = (
+                f"Put back skills/{name} in this checkout, or remove '{name}' from source.json's shared_assets, "
+                "then rerun --migrate-from."
+            )
+            # A stat that fails is refused with its reason, and something other than a file as not a file, never as
+            # a missing owner file.
+            if not state_files.is_present(context.paths.skills_src / name, f"Owned shared asset '{name}'", put_back):
                 raise DeployError(
-                    f"ERROR: Cannot migrate shared asset '{name}': source owner file is missing.",
-                    f"Put back skills/{name} in this checkout, or remove '{name}' from source.json's shared_assets, "
-                    "then rerun --migrate-from.",
+                    f"ERROR: Cannot migrate shared asset '{name}': source owner file is missing.", put_back
                 )
             if old_entry[kind.key][name].get("role") != "owner":
                 continue
