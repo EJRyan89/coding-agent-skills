@@ -201,6 +201,59 @@ class CapturedListingTests(unittest.TestCase):
             found,
         )
 
+    def test_a_codex_catalog_reads_a_plugin_skill_under_its_whole_namespaced_name(self) -> None:
+        found = discovery.parse_codex_catalog(captured("codex/debug-prompt-input-plugin-skills.json").splitlines())
+        plugins = Path(CAPTURED_HOME) / ".codex/plugins/cache"
+        self.assertEqual(
+            {
+                "skill-creator": [Listed(forward(Path(CAPTURED_HOME) / ".codex/skills/.system/skill-creator"), True)],
+                "audit-skill": [Listed(forward(Path(CAPTURED_HOME) / ".agents/skills/audit-skill"), True)],
+                "computer-use:computer-use": [
+                    Listed(forward(plugins / "openai-bundled/computer-use/26.1027.30824/skills/computer-use"), True)
+                ],
+                "presentations:Presentations": [
+                    Listed(
+                        forward(plugins / "openai-primary-runtime/presentations/26.1026.10807/skills/presentations"),
+                        True,
+                    )
+                ],
+                "spreadsheets:Spreadsheets": [
+                    Listed(
+                        forward(plugins / "openai-primary-runtime/spreadsheets/26.1026.10807/skills/spreadsheets"),
+                        True,
+                    )
+                ],
+                "spreadsheets:excel-live-control": [
+                    Listed(
+                        forward(
+                            plugins / "openai-primary-runtime/spreadsheets/26.1026.10807/skills/excel-live-control"
+                        ),
+                        True,
+                    )
+                ],
+            },
+            found,
+        )
+
+    def test_a_codex_plugin_skill_is_never_an_adapter_of_its_bare_name(self) -> None:
+        # computer-use:computer-use is listed from the adapters' own root here, so only its namespace keeps the
+        # catalog from offering it as the user-only adapter computer-use.
+        text = captured("codex/debug-prompt-input-plugin-skills.json").replace(
+            "(file: r2/computer-use/26.1027.30824/skills/computer-use/SKILL.md)", "(file: r0/computer-use/SKILL.md)"
+        )
+        catalog = discovery.parse_codex_catalog(text.splitlines())
+        adapters = Path(CAPTURED_HOME) / ".agents/skills"
+        lines = [ReportLine("computer-use", "FOUND")]
+        self.assertEqual(lines, verify.catalogued(lines, ["computer-use"], catalog, adapters))
+
+    def test_a_codex_catalog_name_of_another_namespaced_shape_is_a_listing_error(self) -> None:
+        sample = captured("codex/debug-prompt-input-plugin-skills.json")
+        for name in ("spreadsheets:excel:live-control", ":excel-live-control", "spreadsheets:", "spread sheets:x"):
+            with self.subTest(name=name):
+                text = sample.replace("- spreadsheets:excel-live-control:", f"- {name}:")
+                with self.assertRaisesRegex(ListingError, "lists a skill in a shape this reader does not know"):
+                    discovery.parse_codex_catalog(text.splitlines())
+
     def test_a_codex_catalog_skill_in_another_shape_is_a_listing_error(self) -> None:
         text = captured("codex/debug-prompt-input.json").replace(
             "(file: r2/sample-skill/SKILL.md)", "(r2/sample-skill)"
