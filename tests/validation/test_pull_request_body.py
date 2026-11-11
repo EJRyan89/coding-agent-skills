@@ -96,6 +96,11 @@ NEXT_HEADINGS = {
     # A heading indented less than the column a list item's text starts at is no longer the item's.
     "heading indented less than the numbered item above it": "1. TBD\n\n  ## Implications",
     "heading after a list item": "- TBD\n## Implications",
+    # An item whose text sits more than four columns after its marker opens with indented code, so its content starts
+    # one column after the marker, and a heading indented less than that is no longer the item's.
+    "heading indented less than an item that opens with indented code": "-      TBD\n\n ## Implications",
+    # Four columns after the marker are still the gap, so the item's content starts at column 5 and holds no heading.
+    "heading indented less than an item whose text is four columns after its marker": "-    TBD\n\n  ## Implications",
     **{
         f"HTML heading {tag!r}": f"{tag}Implications</h2>"
         for tag in ("<h1>", "<h2>", "<H2 id='i'>", "  <h2>", "<h2/>", "<h2\tid='i'>")
@@ -298,6 +303,9 @@ def test_the_section_ends_at_the_next_heading_and_a_fenced_heading_does_not_end_
         "1. an item\n\n   ## not a section",
         "10) an item\n\n    ## not a section",
         "-   an item\n\n    ## not a section",
+        # Text five or more columns after the marker is indented code, so the item's content starts at column 2.
+        "-      indented code\n\n  ## not a section",
+        "-     indented code\n\n  ## not a section",
         "- an item\n  - a nested item\n\n    ## not a section",
         "- an item\n\n  <h2>not a section</h2>",
         "- an item\n  continued\n  ---",
