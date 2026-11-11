@@ -1,8 +1,9 @@
 {
   "env": {
     "source": "Apple shell_cmds-329, FreeBSD's env, its getopt string",
-    "how": "Read from env/env.c at apple-oss-distributions/shell_cmds tag shell_cmds-329 (gh api 'repos/apple-oss-distributions/shell_cmds/contents/env/env.c?ref=shell_cmds-329'): the __APPLE__ getopt string -0C:iP:S:u:v, each letter followed by a colon taking a value; getopt takes no long option and abbreviates none. Its usage() prints the same letters. The string also lists - as a letter, which clears the environment as -i does, so a word such as --unset is that letter bundled with others; no row spells it, since -- alone ends the options, and the hub guard's reading of it is issue 2622.",
+    "how": "Read from env/env.c at apple-oss-distributions/shell_cmds tag shell_cmds-329 (gh api 'repos/apple-oss-distributions/shell_cmds/contents/env/env.c?ref=shell_cmds-329'): the __APPLE__ getopt string -0C:iP:S:u:v, each letter followed by a colon taking a value; getopt takes no long option and abbreviates none. Its usage() prints the same letters. The string also lists - as a letter, which clears the environment as -i does, so a word such as --unset is that letter bundled with others; no row spells it, since -- alone ends the options, and getopt gives the string with it. Each getopt-only build gives its string as getopt, which tests/tools/test_prefix_programs.py reads as BSD getopt reads a word.",
     "abbreviates": false,
+    "getopt": "-0C:iP:S:u:v",
     "options": [
       {"short": "-0", "long": null, "value": "none"},
       {"short": "-C", "long": null, "value": "value"},
@@ -17,6 +18,7 @@
     "source": "Apple shell_cmds-329, FreeBSD's chroot, its getopt string",
     "how": "Read from chroot/chroot.c at apple-oss-distributions/shell_cmds tag shell_cmds-329 (gh api 'repos/apple-oss-distributions/shell_cmds/contents/chroot/chroot.c?ref=shell_cmds-329'): the __APPLE__ getopt string G:g:u:, each letter followed by a colon taking a value; getopt takes no long option and abbreviates none. macOS installs it as /usr/sbin/chroot.",
     "abbreviates": false,
+    "getopt": "G:g:u:",
     "options": [
       {"short": "-G", "long": null, "value": "value"},
       {"short": "-g", "long": null, "value": "value"},
@@ -131,6 +133,7 @@
     "source": "Apple shell_cmds-329, FreeBSD's nice, its getopt string",
     "how": "Read from nice/nice.c at apple-oss-distributions/shell_cmds tag shell_cmds-329 (gh api 'repos/apple-oss-distributions/shell_cmds/contents/nice/nice.c?ref=shell_cmds-329'): the getopt string n:, after the obsolete -<number> form main reads first; getopt takes no long option and abbreviates none.",
     "abbreviates": false,
+    "getopt": "n:",
     "options": [
       {"short": "-n", "long": null, "value": "value"}
     ]
@@ -139,6 +142,7 @@
     "source": "Apple shell_cmds-329, FreeBSD's nohup, its getopt string",
     "how": "Read from nohup/nohup.c at apple-oss-distributions/shell_cmds tag shell_cmds-329 (gh api 'repos/apple-oss-distributions/shell_cmds/contents/nohup/nohup.c?ref=shell_cmds-329'): the empty getopt string, so it takes no option but --.",
     "abbreviates": false,
+    "getopt": "",
     "options": []
   },
   "sort": {
@@ -189,6 +193,7 @@
     "source": "Apple shell_cmds-329, FreeBSD's time, its getopt string",
     "how": "Read from time/time.c at apple-oss-distributions/shell_cmds tag shell_cmds-329 (gh api 'repos/apple-oss-distributions/shell_cmds/contents/time/time.c?ref=shell_cmds-329'): the getopt string ahlo:p, each letter followed by a colon taking a value; getopt takes no long option and abbreviates none. macOS installs it as /usr/bin/time, which Bash runs only where time is not its keyword.",
     "abbreviates": false,
+    "getopt": "ahlo:p",
     "options": [
       {"short": "-a", "long": null, "value": "none"},
       {"short": "-h", "long": null, "value": "none"},

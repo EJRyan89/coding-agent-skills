@@ -34,7 +34,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts"))
 
 import option_reader
-from command_wrappers import FIND_COMMANDS
+from command_wrappers import COMMAND_WRAPPERS, FIND_COMMANDS
 from guard_limits import process_limits_held
 
 from deployer import platform_support
@@ -151,6 +151,20 @@ SAFE: dict[str, set[str]] = {
         *("-v", "--verbose", "--warning", "-o", "--starting-file"),
     },
 }
+# The letters of each getopt-only build macOS installs that this suite holds safe, by Apple's manuals: env's `-`, which
+# clears the environment as -i does, its -0, -i, -u, and -v, nice's -n, and time's -p. BSD getopt reads a long option
+# word as a bundle of these letters, so a form is understood only where macOS's build refuses it or reads it alike.
+BSD_SAFE: dict[str, set[str]] = {
+    "env": {"-", "0", "i", "u", "v"},
+    "chroot": set(),
+    "nice": {"n"},
+    "nohup": set(),
+    "time": {"p"},
+}
+# A getopt string's letters, each with whether it takes a value.
+GETOPT_LETTER = re.compile(r"(.)(:?)")
+# What FreeBSD's nice reads as a niceness: strtol's whole word, in base 10.
+NICENESS = re.compile(r"\s*[+-]?[0-9]+")
 # Another build of a program the guard reads by one table, whose catalogue the fixture holds beside it.
 OTHER_BUILDS = {"bsdtar": "tar"}
 # The Windows builds, in System32, of programs the guard reads, whose options are written with a slash, and the slash
@@ -166,7 +180,12 @@ OPERANDS = {"timeout": ["5"], "chrt": ["10"], "taskset": ["3"], "chroot": ["/srv
 BEFORE = {"time": "x=1 "}
 # Forms no catalogue lists, each with whether it is understood before a command that is not git.
 EXTRA_FORMS: dict[str, list[tuple[list[str], bool]]] = {
-    "env": [(["-"], True), (["X=1"], True), (["-i", "X=1", "-"], True), (["--"], True), (["-u", "X", "Y=1"], True)],
+    "env": [
+        *((["-"], True), (["X=1"], True), (["-i", "X=1", "-"], True), (["--"], True), (["-u", "X", "Y=1"], True)),
+        # macOS's env reads --unset as `-` and -u with nset attached, so the word after it is its command there.
+        *((["--unset", "X"], False), (["-i", "--unset", "X"], False), (["--unset", "-i"], False)),
+        *((["--unset=X"], True), (["--null", "--unset=X"], True), (["--ignore-environment", "--debug"], True)),
+    ],
     "nice": [(["-5"], True), (["--5"], True), (["-n5"], True), (["-n", "5", "-n", "3"], True), (["-5x"], False)],
     "timeout": [(["-vk5"], True), (["--sig=TERM"], False), (["--"], True), (["-vI5"], False)],
     "nohup": [(["--"], True)],
@@ -408,8 +427,71 @@ def program_forms(program: str) -> list[Form]:
 
 
 def understood(form: Form, program: str) -> bool:
-    """Whether this suite holds a form understood: every option it spells is safe and spelled in full."""
-    return not form.abbreviated and form.names <= SAFE[program]
+    """Whether this suite holds a form understood: every option it spells is safe and spelled in full, and macOS's
+    build reads it alike or refuses it (macos_agrees)."""
+    return not form.abbreviated and form.names <= SAFE[program] and macos_agrees(form, program)
+
+
+def getopt_letters(program: str) -> dict[str, bool] | None:
+    """The letters of a getopt-only build macOS installs, from its catalogue entry's getopt string, each with whether it
+    takes a value; None for a program with no such build."""
+    entry = catalogue(BSD_CATALOGUES).get(program)
+    if entry is None or "getopt" not in entry:
+        return None
+    return {match[1]: bool(match[2]) for match in GETOPT_LETTER.finditer(str(entry["getopt"]))}
+
+
+def bsd_getopt(program: str, words: list[str]) -> tuple[int, list[tuple[str, str | None]]] | None:
+    """A getopt-only build's reading of its words as FreeBSD's getopt(3) reads them: where its options end, with each
+    letter it read and that letter's value; None where it refuses a word, printing its usage and running nothing. `--`
+    ends the options; a word without a dash, or a lone `-` where `-` is no letter, is the first after them; any other
+    dash word is a bundle of letters, `--unset` the letter `-` and more, a value-taking letter ending it with the rest
+    of the word or the next word as its value. nice reads an obsolete first word, -<number> or --<number>, as -n with
+    the rest attached, and refuses a niceness strtol does not read whole."""
+    letters = getopt_letters(program)
+    assert letters is not None
+    words = list(words)
+    if program == "nice" and words and words[0][:1] == "-" and words[0][1:2] in {"-", *"0123456789"}:
+        words[0] = words[0] if words[0] == "--" else "-n" + words[0][1:]
+    read: list[tuple[str, str | None]] = []
+    index = 0
+    while index < len(words):
+        word = words[index]
+        if word == "--":
+            index += 1
+            break
+        if not word.startswith("-") or (word == "-" and "-" not in letters):
+            break
+        body, taken = word[1:] or "-", 0
+        for position, letter in enumerate(body):
+            if letter not in letters:
+                return None
+            value = None
+            if letters[letter]:
+                value = body[position + 1 :]
+                if not value:
+                    if index + 1 >= len(words):
+                        return None
+                    value, taken = words[index + 1], 1
+            read.append((letter, value))
+            if value is not None:
+                break
+        index += 1 + taken
+    if program == "nice" and any(not NICENESS.fullmatch(value or "") for _, value in read):
+        return None
+    return index, read
+
+
+def macos_agrees(form: Form, program: str) -> bool:
+    """Whether macOS's getopt-only build of a runner, where it has one, refuses a form's words before its operands and
+    command, or reads them by letters BSD_SAFE holds and starts its command right after them, as the guard does."""
+    if getopt_letters(program) is None:
+        return True
+    reading = bsd_getopt(program, [*form.words, *OPERANDS.get(program, []), "ls", "-la"])
+    if reading is None:
+        return True
+    stop, read = reading
+    return stop == len(form.words) and all(letter in BSD_SAFE[program] for letter, _ in read)
 
 
 def refused(command: str) -> bool:
@@ -539,6 +621,38 @@ class RunnerFormTests(unittest.TestCase):
 
     def test_doas(self) -> None:
         self.holds("doas")
+
+
+# macOS's builds of the runners whose catalogue entry gives a getopt string, read as FreeBSD's getopt reads them.
+class MacosBuildTests(unittest.TestCase):
+    def test_a_long_option_macos_s_env_reads_as_a_bundle_never_hides_its_command(self) -> None:
+        # Apple's env reads --unset as `-` and -u with nset attached, so tar and find are the programs it runs.
+        self.assertEqual((1, [("-", None), ("u", "nset")]), bsd_getopt("env", ["--unset", "tar", "xf", "a.tar"]))
+        for command in ("env --unset tar xf a.tar", "env --unset find . -delete", "env -0 --unset tar xf a.tar"):
+            with self.subTest(command=command):
+                self.assertTrue(refused(command))
+        # A word Apple's env refuses runs nothing there, and one it reads alike is understood.
+        self.assertIsNone(bsd_getopt("env", ["--null", "ls"]))
+        for command in ("env --unset=X ls -la", "env --null --debug ls -la", "env -u X ls -la"):
+            with self.subTest(command=command):
+                self.assertFalse(refused(command))
+
+    def test_macos_s_getopt_only_builds_are_read_as_freebsd_s_getopt_reads_them(self) -> None:
+        for program, words, expected in (
+            ("env", ["-i", "-", "-u", "X", "ls"], (4, [("i", None), ("-", None), ("u", "X")])),
+            ("env", ["-iuX", "--", "ls"], (2, [("i", None), ("u", "X")])),
+            ("env", ["-S"], None),
+            ("time", ["--portability", "ls"], None),
+            ("time", ["-p", "ls"], (1, [("p", None)])),
+            ("chroot", ["/srv", "ls"], (0, [])),
+            ("nohup", ["--help", "ls"], None),
+            ("nice", ["--5", "ls"], (1, [("n", "-5")])),
+            ("nice", ["-5", "ls"], (1, [("n", "5")])),
+            ("nice", ["--adjustment", "5", "ls"], None),
+            ("nice", ["-n", "x", "ls"], None),
+        ):
+            with self.subTest(program=program, words=words):
+                self.assertEqual(expected, bsd_getopt(program, words))
 
 
 # These hold each GNU build to its allow-list; WindowsBuildTests holds the Windows builds, where sort's dash words are
@@ -768,6 +882,54 @@ class CatalogueTests(unittest.TestCase):
                 if name in kinds:
                     with self.subTest(build=build, option=name):
                         self.assertEqual(gnu[name], kinds[name])
+
+    def test_every_table_reads_dash_words_as_each_macos_build_that_takes_dash_as_a_letter(self) -> None:
+        # A build whose getopt lists `-` reads every long option word as a bundle of its letters, so each table the
+        # guard or command_wrappers reads that program by holds that build's letters and, for the guard, the ones
+        # BSD_SAFE holds; a table of any other program holds none.
+        tables = {**hub_guard.RUNNER_OPTIONS, **hub_guard.PROGRAM_OPTIONS}
+        dashed = {
+            name: {letter: "value" if takes else "none" for letter, takes in letters.items()}
+            for name in catalogue(BSD_CATALOGUES)
+            if (letters := getopt_letters(name)) is not None and "-" in letters
+        }
+        self.assertEqual(["env"], sorted(dashed))
+        for name, table in tables.items():
+            with self.subTest(program=name):
+                build = dashed.get(name)
+                self.assertEqual(build, None if table.dash_build is None else dict(table.dash_build))
+                self.assertEqual(BSD_SAFE[name] if build else set(), set(table.dash_safe))
+        for name, table in COMMAND_WRAPPERS.items():
+            with self.subTest(wrapper=name):
+                build = dashed.get(name)
+                self.assertEqual(build, None if table.dash_build is None else dict(table.dash_build))
+                self.assertEqual(set(build or ()), set(table.dash_safe))
+
+    def test_macos_s_getopt_long_builds_read_each_safe_option_as_gnu_s_do(self) -> None:
+        # Apple's find, sort, and xargs read options by name, as GNU's do: each safe option either takes its value as
+        # GNU's build does, or is no option of Apple's and no abbreviation of one, which Apple's refuses.
+        for name, entry in catalogue(BSD_CATALOGUES).items():
+            if "getopt" in entry:
+                continue
+            apple = {
+                each: option.value
+                for option in listed_options(BSD_CATALOGUES, name)
+                for each in (option.short, option.long)
+                if each
+            }
+            gnu = {
+                each: option.value
+                for option in listed_options(CATALOGUES, name)
+                for each in (option.short, option.long)
+                if each
+            }
+            for option in sorted(SAFE[name]):
+                with self.subTest(program=name, option=option):
+                    if option in apple:
+                        self.assertEqual(gnu[option], apple[option])
+                    elif entry["abbreviates"]:
+                        self.assertEqual([], [each for each in apple if each.startswith(option)])
+        self.assertEqual(["find", "sort", "xargs"], sorted(set(catalogue(BSD_CATALOGUES)) - set(BSD_SAFE)))
 
     def test_find_s_actions_that_run_a_program_are_never_safe(self) -> None:
         self.assertEqual({"-exec", "-execdir", "-ok", "-okdir"}, FIND_COMMANDS)
