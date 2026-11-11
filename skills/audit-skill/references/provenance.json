@@ -71,7 +71,7 @@
     ],
     "EXPANDS": [
       {
-        "decision": "Claude Code asks before it runs a command that expands a shell variable or a command substitution, whatever allowed-tools grants, as this source found and records under Granting tools in docs/adding-a-skill.md."
+        "decision": "Claude Code asks before it runs a command that expands a shell variable or a command substitution, whatever allowed-tools grants. No Claude Code page states this: the permissions, permission-modes, skills, and tools-reference pages match a rule against the command's text and say nothing of a matched command that expands one. The check rests on this source's hand check in Claude Code on Windows, recorded under Granting tools in docs/adding-a-skill.md, until the repository keeps a reproduction."
       }
     ],
     "GRANTED_REPOSITORY_CODE": [
@@ -269,6 +269,10 @@
       }
     ],
     "UNPAIRED_ALLOWED": [
+      {
+        "page": "https://code.claude.com/docs/en/tools-reference",
+        "passage": "On Windows, once the PowerShell tool is enabled, Claude treats PowerShell as the primary shell, and a Bash rule doesn't restrict the PowerShell tool, which has its own permission rules."
+      },
       {
         "decision": "On Windows the model may run a fence's command through its PowerShell tool rather than Bash, so a skill grants each pattern to both shells: Granting tools in this source's docs/adding-a-skill.md."
       }
