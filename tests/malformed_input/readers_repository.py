@@ -33,6 +33,7 @@ from deployer.errors import DeployError
 from tools import (
     branch_protection,
     captured_samples,
+    claude_stream,
     deployable_report,
     hub_guard,
     mutation_gate,
@@ -421,7 +422,8 @@ def _hub_guard(path: Path) -> object:
     return code
 
 
-# Each Claude Code stream reader passes over a line that is not an event it knows, so a stream from which it takes
+# Each Claude Code stream reader reads tools.claude_stream.events, which refuses a JSON line that is no object and
+# passes over a line that is not JSON, and passes over an event it does not know, so a stream from which it takes
 # nothing is its answer to one it cannot read: its caller reports that stream as a session that showed nothing.
 STREAM_PASSES_OVER = {
     "torn_line": "a line cut off part way is no event, and the events before it are read",
@@ -450,8 +452,8 @@ def _stream_models(path: Path) -> object:
     return session, subagents
 
 
-def _plugin_events(path: Path) -> object:
-    events = list(plugin_canary.stream_events(text_of(path)))
+def _stream_events(path: Path) -> object:
+    events = list(claude_stream.events(text_of(path)))
     if not events:
         raise Refused("the stream holds no event")
     return events
@@ -829,7 +831,7 @@ READERS = [
         "json-lines",
         b'{"type": "system", "subtype": "init", "skills": ["example"]}\n',
         _claude_stream,
-        (Refused,),
+        (Refused, claude_stream.StreamError),
         accepts=STREAM_PASSES_OVER,
     ),
     Reader(
@@ -843,7 +845,7 @@ READERS = [
         ).encode()
         + b"\n",
         _skills_in_stream,
-        (Refused, skill_evals_runs.StreamShapeError),
+        (Refused, claude_stream.StreamError),
         accepts=STREAM_PASSES_OVER,
     ),
     Reader(
@@ -851,15 +853,15 @@ READERS = [
         "json-lines",
         b'{"type": "assistant", "message": {"model": "claude-example"}}\n',
         _stream_models,
-        (Refused,),
+        (Refused, claude_stream.StreamError),
         accepts=STREAM_PASSES_OVER,
     ),
     Reader(
-        "tools.plugin_canary.stream_events",
+        "tools.claude_stream.events",
         "json-lines",
         b'{"type": "result", "result": "done"}\n',
-        _plugin_events,
-        (Refused,),
+        _stream_events,
+        (Refused, claude_stream.StreamError),
         accepts=STREAM_PASSES_OVER,
         open_fields="it yields each event object whole, and each check reads the fields it needs by kind",
     ),
