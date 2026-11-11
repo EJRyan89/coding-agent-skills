@@ -1089,12 +1089,17 @@ class DeployableLinuxFixtures(unittest.TestCase):
                 self.assertTrue(any(problem in found for found in problems), problems)
 
     def test_each_job_that_does_not_turn_copilots_auto_update_off_fails(self) -> None:
-        pinned = DEPLOYABLE_JOBS.replace("    env:\n", "    env:\n      COPILOT_AUTO_UPDATE: 'false'\n")
+        linux_part = DEPLOYABLE_JOBS[DEPLOYABLE_JOBS.index("  deployable-linux:") :]
+        three = DEPLOYABLE_JOBS + linux_part.replace("deployable-linux", "deployable-macos").replace(
+            "ubuntu-latest", "macos-latest"
+        )
+        pinned = three.replace("    env:\n", "    env:\n      COPILOT_AUTO_UPDATE: 'false'\n")
         self.assertEqual([], copilot_auto_update_problems(pinned))
-        linux = pinned.index("  deployable-linux:")
+        linux, macos = pinned.index("  deployable-linux:"), pinned.index("  deployable-macos:")
         for drifted, jobs in (
-            (DEPLOYABLE_JOBS, ["deployable", "deployable-linux"]),
-            (pinned[:linux] + pinned[linux:].replace("'false'", "'true'"), ["deployable-linux"]),
+            (three, ["deployable", "deployable-linux", "deployable-macos"]),
+            (pinned[:linux] + pinned[linux:macos].replace("'false'", "'true'") + pinned[macos:], ["deployable-linux"]),
+            (pinned[:macos] + pinned[macos:].replace("'false'", "'true'"), ["deployable-macos"]),
             (pinned.replace("      COPILOT_AUTO_UPDATE: 'false'\n", "", 1), ["deployable"]),
         ):
             with self.subTest(jobs=jobs):
@@ -1102,6 +1107,21 @@ class DeployableLinuxFixtures(unittest.TestCase):
                     [f"the {job} job's env does not set COPILOT_AUTO_UPDATE: 'false'" for job in jobs],
                     copilot_auto_update_problems(drifted),
                 )
+
+    def test_a_deployable_job_removed_or_renamed_fails_the_copilot_check(self) -> None:
+        linux_part = DEPLOYABLE_JOBS[DEPLOYABLE_JOBS.index("  deployable-linux:") :]
+        pinned = (
+            DEPLOYABLE_JOBS
+            + linux_part.replace("deployable-linux", "deployable-macos").replace("ubuntu-latest", "macos-latest")
+        ).replace("    env:\n", "    env:\n      COPILOT_AUTO_UPDATE: 'false'\n")
+        macos = pinned.index("  deployable-macos:")
+        for drifted, job in (
+            (pinned[:macos], "deployable-macos"),
+            (pinned.replace("  deployable-linux:", "  deployable-ubuntu:"), "deployable-linux"),
+            (pinned.replace("  deployable:\n", "  windows:\n"), "deployable"),
+        ):
+            with self.subTest(job=job):
+                self.assertEqual([f"there is no {job} job"], copilot_auto_update_problems(drifted))
 
 
 CONFIGURE_JOBS = (

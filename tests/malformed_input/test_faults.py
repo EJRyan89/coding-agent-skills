@@ -242,6 +242,8 @@ def test_the_runner_stops_a_program_a_connection_and_a_write_outside_the_tempora
     finished, record = fixture_run(body, GIT_EXIT)
     assert record["stopped"] is not None, finished
     assert record["stopped"].startswith(stopped)
+    assert not (REPOSITORY / "never-written.txt").exists()
+    assert not (REPOSITORY / "never-made").exists()
 
 
 def test_the_runner_lets_a_run_start_macos_ps_by_its_own_path_alone() -> None:
@@ -253,8 +255,6 @@ def test_the_runner_lets_a_run_start_macos_ps_by_its_own_path_alone() -> None:
     )
     finished, record = fixture_run(body, GIT_EXIT)
     assert record["stopped"] is None, finished
-    assert not (REPOSITORY / "never-written.txt").exists()
-    assert not (REPOSITORY / "never-made").exists()
 
 
 @pytest.mark.parametrize(

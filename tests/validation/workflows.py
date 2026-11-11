@@ -1503,13 +1503,15 @@ def configure_answer_problems(workflow: str, prompts: Collection[str], defaulted
 
 
 def copilot_auto_update_problems(workflow: str) -> list[str]:
-    """Report each deployable.yml job whose env does not set COPILOT_AUTO_UPDATE to false.
+    """Report each deployable.yml job whose env does not set COPILOT_AUTO_UPDATE to false, and each of the Windows job
+    and DEPLOYABLE_POSIX_JOBS the workflow does not hold, so a job removed or renamed fails rather than drops out.
 
     Copilot CLI otherwise runs the newest package it has downloaded rather than the one the job installed, so a later
     step could run a version other than the one the job checked and the README's fresh-runner column records.
     """
     jobs = _mapping(read_workflow(workflow), "jobs")
-    return [
+    missing = [f"there is no {job} job" for job in ("deployable", *DEPLOYABLE_POSIX_JOBS) if job not in jobs]
+    return missing + [
         f"the {job} job's env does not set COPILOT_AUTO_UPDATE: 'false'"
         for job in jobs
         if _mapping(jobs, job, "env").get("COPILOT_AUTO_UPDATE") != "false"

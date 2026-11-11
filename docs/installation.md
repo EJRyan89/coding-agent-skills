@@ -93,7 +93,7 @@ Codex CLI runs a skill's scripts in its sandbox, which on Linux and WSL2 is the 
 
 ### On macOS
 
-The deployer and the whole validation suite run on macOS, and the [`deployable` workflow](../.github/workflows/deployable.yml) deploys onto a fresh macOS runner; the [README](../README.md#supported-platforms-and-runtimes) says where macOS support stands. Install the tools with [Homebrew](https://brew.sh/):
+The deployer runs on macOS, and the [`deployable` workflow](../.github/workflows/deployable.yml) deploys onto a fresh macOS runner; the validation suite runs on macOS in CI, where some suites do not pass yet; the [README](../README.md#supported-platforms-and-runtimes) says where macOS support stands. Install the tools with [Homebrew](https://brew.sh/):
 
 | Tool | Homebrew | Official download |
 |---|---|---|
@@ -110,7 +110,7 @@ The deployer and the whole validation suite run on macOS, and the [`deployable` 
 
 macOS's own `/bin/bash` is a Bash 3.2 that Apple no longer updates, so install a current one with Homebrew, which puts it ahead of `/bin/bash` on `PATH`; the deployer, like the skills, uses the first `bash` on `PATH`, and the first `pwsh`. Your home is `HOME`, and a configured directory is an absolute path such as `/Users/you/GitHub`. Run every command on this page as `python3`, as in `python3 deploy.py check`, since a macOS install of Python names itself `python3`; the skills' own commands already name it so there. Codex CLI's sandbox on macOS is the system's Seatbelt, which needs no setup.
 
-macOS's default file system, APFS, compares names without regard to case, as Windows' NTFS does, though a volume may be formatted case-sensitive; the deployer asks each directory's file system rather than assuming either.
+macOS's default file system, APFS, compares names without regard to case, as Windows' NTFS does, though a volume may be formatted case-sensitive. The deployer asks a directory's file system whether two names in it are one file, but it still compares whole paths with case kept on macOS, so give a configured path, such as `REPOS_ROOT`, in the case the folder has on disk.
 
 ### After installing
 
