@@ -91,6 +91,21 @@ def test_a_row_continues_on_lines_indented_further_and_130_may_be_named() -> Non
         ("def main():\n    print('x')\n", {0, 1}),
         ("import sys\ndef main() -> int:\n    helper()\n    return 0\ndef helper():\n    sys.exit(9)\n", {0, 1, 9}),
         ("def main() -> int:\n    helper()\n    return 0\ndef helper():\n    raise SystemExit(15)\n", {0, 1, 15}),
+        ("import sys\ndef main() -> int:\n    helper()\n    return 5\ndef helper():\n    sys.exit()\n", {0, 1, 5}),
+        ("def main() -> int:\n    helper()\n    return 5\ndef helper():\n    raise SystemExit(None)\n", {0, 1, 5}),
+        ("def main() -> int:\n    helper()\n    return 5\ndef helper():\n    raise SystemExit\n", {0, 1, 5}),
+        ("def main() -> int:\n    helper()\n    return 0\ndef helper():\n    raise SystemExit(code=19)\n", {0, 1, 19}),
+        (
+            "import builtins\ndef main() -> int:\n    helper()\n    return 0\ndef helper():\n    builtins.exit(20)\n",
+            {0, 1, 20},
+        ),
+        ("import os\ndef main() -> int:\n    helper()\n    return 0\ndef helper():\n    os._exit(21)\n", {0, 1, 21}),
+        ("import sys\ndef main() -> int:\n    helper()\n    return 5\ndef helper():\n    sys.exit('no')\n", {1, 5}),
+        (
+            "import sys\nLATE = 18\ndef main() -> int:\n    helper()\n    return 5\ndef helper():\n"
+            "    code = LATE if X else find()\n    sys.exit(code)\ndef find():\n    return 17\n",
+            {1, 5, 17, 18},
+        ),
         (
             "TABLE = {'a': first}\ndef main() -> int:\n    return TABLE.get(name)(x)\ndef first(x):\n    return 16\n",
             {1, 16},
@@ -146,7 +161,9 @@ def test_an_unread_return_fails_until_an_allowance_names_it_and_an_allowance_nam
     body = "def main() -> int:\n    return thing.code\nif __name__ == '__main__':\n    run_main(main)\n"
     unread = problems({"tools/tool.py": script(f"A tool.\n\n{TABLE}", body)})
     assert len(unread) == 1
-    assert unread[0].startswith("tools/tool.py:11 returns thing.code, an exit code the exit-table reader cannot follow")
+    assert unread[0].startswith(
+        "tools/tool.py:11 returns or exits with thing.code, an exit code the exit-table reader cannot"
+    )
     allowed = "EXIT_CODES_ALLOWED = {'thing.code': 'the thing says 0 or 2'}\n"
     assert problems({"tools/tool.py": script(f"A tool.\n\n{TABLE}", allowed + body)}) == []
     stale = "EXIT_CODES_ALLOWED = {'other.code': 'nothing returns it'}\n"
@@ -155,6 +172,35 @@ def test_an_unread_return_fails_until_an_allowance_names_it_and_an_allowance_nam
         "tools/tool.py names 'other.code' in EXIT_CODES_ALLOWED, which is no return the exit-table reader cannot "
         "follow from an entry point; remove it"
     ]
+
+
+def test_an_exit_call_with_a_code_the_reader_cannot_follow_fails_until_an_allowance_names_it() -> None:
+    body = (
+        "import sys\ndef main() -> int:\n    helper()\n    return 0\ndef helper():\n    sys.exit(thing.code)\n"
+        "if __name__ == '__main__':\n    run_main(main)\n"
+    )
+    unread = problems({"tools/tool.py": script(f"A tool.\n\n{TABLE}", body)})
+    assert len(unread) == 1, unread
+    assert unread[0].startswith("tools/tool.py:15 returns or exits with thing.code, an exit code the exit-table reader")
+    allowed = "EXIT_CODES_ALLOWED = {'thing.code': 'the thing exits 0 or 2'}\n"
+    assert problems({"tools/tool.py": script(f"A tool.\n\n{TABLE}", allowed + body)}) == []
+
+
+@pytest.mark.parametrize(
+    "allowance",
+    [
+        "EXIT_CODES_ALLOWED = {'thing.code': ''}\n",
+        "EXIT_CODES_ALLOWED = {'thing.code': '   '}\n",
+        "EXIT_CODES_ALLOWED = {'thing.code': 3}\n",
+    ],
+)
+def test_an_allowance_without_a_non_empty_reason_fails(allowance: str) -> None:
+    body = "def main() -> int:\n    return thing.code\nif __name__ == '__main__':\n    run_main(main)\n"
+    found = problems({"tools/tool.py": script(f"A tool.\n\n{TABLE}", allowance + body)})
+    assert (
+        "tools/tool.py: EXIT_CODES_ALLOWED must map each expression to where its codes come from, a non-empty reason"
+        in found
+    ), found
 
 
 NO_ENTRY_POINT = (
