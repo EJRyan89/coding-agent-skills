@@ -57,7 +57,8 @@ It prints one fact per line:
   FAILED <reason>                                        the watch could not run: the record cannot be read, names no
                                                          changelog for a runtime the deployer supports, the code its
                                                          terms come from cannot be read, or the samples' provenance
-                                                         cannot be read
+                                                         cannot be read; or, last, after the findings, the --summary
+                                                         file cannot be appended to
 
 GitHub's releases API is read thirty releases a page, its default: a hundred of Codex's long release bodies no longer
 fit in the API's response time, and that page answers 504.
@@ -71,19 +72,24 @@ Exit status:
   2  a usage error
 
 It is the check .github/workflows/runtime-changelogs.yml runs weekly. It decides nothing: the guidance audit after
-each tag still judges each entry and page, starting from what the latest run lists. It starts no model, needs no
-secret, and makes only unauthenticated requests, so it stays a scheduled signal and never a required check, since what
-it lists changes whenever a runtime releases.
+each tag still judges each entry and page, starting from what the latest run lists. It starts no model and needs no
+secret, so it stays a scheduled signal and never a required check, since what it lists changes whenever a runtime
+releases. With GH_TOKEN set, as the workflow sets it to the job's own read-only token, it sends that token with each
+https request to api.github.com alone, and never on to an address a redirect names, so the releases API answers under
+the token's limit rather than the one a hosted runner's address shares with every other job on it; every other
+request, and every request without GH_TOKEN, is unauthenticated.
 """
 
 from __future__ import annotations
 
 import argparse
 import ast
+import os
 import re
 import sys
 import tempfile
 import urllib.error
+import urllib.parse
 import urllib.request
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
@@ -120,6 +126,11 @@ INDIRECTION_ALLOWED = {
 }
 DEFAULT_TIMEOUT = 30.0
 USER_AGENT = "coding-agent-skills-runtime-changelogs"
+# The one host a request carries a token to, GitHub's API, whose unauthenticated limit a hosted runner's address shares
+# with every other job on it, and the variable the token is read from, which the workflow sets to the job's own
+# read-only token, as validation's workflow policy gives a step the token.
+API_HOST = "api.github.com"
+TOKEN_VARIABLE = "GH_TOKEN"  # noqa: S105 - the name of the variable that holds the token, not a token
 # The releases one request to GitHub's releases API asks for: its default page. A hundred of Codex's long release
 # bodies no longer fit in the API's response time and answer 504, while thirty answer in seconds.
 RELEASES_PER_PAGE = 30
@@ -166,9 +177,23 @@ class Fetched:
 Fetcher = Callable[[str, float], Fetched]
 
 
+def authorization(url: str, environment: Mapping[str, str]) -> str | None:
+    """The Authorization header a request to `url` carries: the token TOKEN_VARIABLE holds, as a bearer token, for an
+    https request to API_HOST on its default port alone, and None for every other address or with no token."""
+    token = environment.get(TOKEN_VARIABLE, "")
+    parts = urllib.parse.urlsplit(url)
+    if not token or parts.scheme != "https" or parts.hostname != API_HOST or parts.port is not None:
+        return None
+    return f"Bearer {token}"
+
+
 def fetch(url: str, timeout: float) -> Fetched:
-    """GET `url`, following redirects, unauthenticated."""
+    """GET `url`, following redirects, with the token `authorization` gives it, if any, and unauthenticated
+    otherwise. The token is an unredirected header, so a redirect to any address is followed without it."""
     request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT, "Accept": "*/*"})  # noqa: S310 - https only
+    header = authorization(url, os.environ)
+    if header is not None:
+        request.add_unredirected_header("Authorization", header)
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:  # noqa: S310 - the record holds https only
             return Fetched(response.status, response.geturl(), response.read())
@@ -667,8 +692,13 @@ def main(arguments: list[str] | None = None, fetcher: Fetcher = fetch, top: Path
     for line in lines:
         print(line)
     if namespace.summary is not None:
-        with namespace.summary.open("a", encoding="utf-8") as stream:
-            stream.write(summary(lines))
+        written = summary(lines)
+        try:
+            with namespace.summary.open("a", encoding="utf-8") as stream:
+                stream.write(written)
+        except OSError as exc:
+            print(f"FAILED {single_line(f'cannot append the findings to {namespace.summary}: {exc}')}")
+            return 1
     return 1 if any(line.startswith("UNREADABLE_CHANGELOG ") for line in lines) else 0
 
 

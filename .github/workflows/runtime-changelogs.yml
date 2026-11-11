@@ -5,8 +5,10 @@ name: Runtime Changelogs
 # release the guidance record names for each, keeps the entries that mention a flag, environment variable, path, or
 # frontmatter key the repository's code uses, and requests every page of the guidance record, listing each one that
 # moved or is gone. The findings go to the step summary for the maintainer and the next guidance audit to start from.
-# A finding never fails the job; only a watch that cannot run does. It starts no model, installs no runtime, makes only
-# unauthenticated requests, and needs no secret and no sign-in.
+# A finding never fails the job; only a watch that cannot run does. It starts no model, installs no runtime, and needs
+# no secret and no sign-in. Its one command is given the job's own read-only token, as GH_TOKEN, which the watch sends
+# to api.github.com alone and never on to a redirect: read unauthenticated, the Codex releases API shares a hosted
+# runner's address limit with every other job on it, which failed weekly runs.
 
 on:
   workflow_dispatch:
@@ -25,9 +27,8 @@ jobs:
     name: Runtime changelogs and guidance pages
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    defaults:
-      run:
-        shell: bash
+    permissions:
+      contents: read
 
     steps:
       - name: Check out source
@@ -43,5 +44,8 @@ jobs:
           python-version: '3.11'
 
       - name: Watch the changelogs and the guidance pages
-        run: |
-          python3 tools/runtime_changelogs.py --summary "$GITHUB_STEP_SUMMARY"
+        env:
+          # The watch reads the token from here and sends it to api.github.com alone; this step's command is the only
+          # one of the job given it.
+          GH_TOKEN: ${{ github.token }}
+        run: python3 tools/runtime_changelogs.py --summary "$GITHUB_STEP_SUMMARY"

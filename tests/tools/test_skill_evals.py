@@ -3271,6 +3271,55 @@ class EvaluateTests(unittest.TestCase):
             ["| alpha | one | opus | 1 | 2026-01-01 | agrees |"], skill_evals_results.samples_table(written)[2]
         )
 
+    def test_a_run_whose_stream_holds_a_json_line_that_is_no_object_counts_for_nothing_by_its_line(self) -> None:
+        # Passed over, the line would leave the models judged from the events left, so the run is not counted.
+        claude = StubClaude(self)
+
+        def runner(arguments: list[str], cwd: Path, environment: dict[str, str], timeout: float) -> Any:
+            completed = claude(arguments, cwd, environment, timeout)
+            if arguments[1:] == ["--version"]:
+                return completed
+            return dataclasses.replace(completed, stdout="[]\n" + completed.stdout)
+
+        status, lines = self.evaluate(["--jobs", "1"], self.seams(runner), only=["clean-change"])
+        self.assertEqual(1, status)
+        reason = "line 1 of the session's stream is a JSON array, not an event object"
+        self.assertIn(f"NOT_COUNTED clean-change haiku record {json.dumps(reason)}", lines)
+        self.assertFalse([line for line in lines if line.startswith("PASS ")], lines)
+
+    def test_a_run_with_no_record_whose_stream_is_refused_counts_for_nothing_by_both_reasons(self) -> None:
+        # The missing record makes it a `run` failure, and the refused line is named beside it, in the FAIL lines and
+        # in the results file alike.
+        claude = StubClaude(self, review=False)
+
+        def runner(arguments: list[str], cwd: Path, environment: dict[str, str], timeout: float) -> Any:
+            completed = claude(arguments, cwd, environment, timeout)
+            if arguments[1:] == ["--version"]:
+                return completed
+            return dataclasses.replace(completed, stdout="[]\n" + completed.stdout)
+
+        status, lines = self.evaluate(["--write", "--jobs", "1"], self.seams(runner), only=["clean-change"])
+        self.assertEqual(1, status)
+        refused = "line 1 of the session's stream is a JSON array, not an event object"
+        both = f"the run recorded no review; {refused}"
+        self.assertIn(f"NOT_COUNTED clean-change haiku run {json.dumps(both)}", lines)
+        self.assertIn(f"FAIL review-prs clean-change haiku verdict APPROVED run {json.dumps(both)}", lines)
+        self.assertIn(f"| {both} |", self.results.read_text(encoding="utf-8"))
+
+    def test_a_results_file_that_cannot_be_written_fails_by_name_after_the_run_is_judged(self) -> None:
+        with unwritable(self.results):
+            status, lines = self.evaluate(
+                ["--write", "--jobs", "1"], self.seams(StubClaude(self)), only=["clean-change"]
+            )
+        self.assertEqual(1, status)
+        self.assertTrue(
+            lines[-1].startswith('FAILED "the results file cannot be written: [Errno 13] Permission denied'), lines
+        )
+        self.assertIn("CITATION END", self.output)
+        self.assertFalse([line for line in lines if line.startswith(("WROTE", "REMOVED"))], lines)
+        self.assertTrue(self.homes.is_dir())
+        self.assertEqual(RESULTS_TEXT, self.results.read_text(encoding="utf-8"))
+
     def test_a_model_none_of_whose_reviewers_ran_is_recorded_as_not_run(self) -> None:
         status, lines = self.evaluate(["--write"], self.seams(StubClaude(self, review=False, reviewer="<synthetic>")))
         self.assertEqual(1, status)
@@ -3695,7 +3744,14 @@ class EvaluateTests(unittest.TestCase):
         bare.bare = True
         unread = StubTrigger(self, {"Audit the audit-skill skill.": "audit-skill"})
         unread.unread = True
+        no_object = StubTrigger(self, {"Audit the audit-skill skill.": "audit-skill"})
+        no_object.before = "[]\n"
         cases = {
+            "no event object": (
+                no_object,
+                "run",
+                "request 1: line 1 of the session's stream is a JSON array, not an event object",
+            ),
             # Pinned as the line reads, not through the constant that writes it.
             "unread stream": (
                 unread,
@@ -4394,6 +4450,32 @@ def test_sample_read_records_the_reading_in_the_results_file_and_runs_nothing(tm
     assert (status, output.getvalue()) == (1, 'FAILED "alpha\'s sampled transcript is already read: agrees"\n')
 
 
+def unwritable(path: Path) -> Any:
+    """A patch under which writing `path` raises PermissionError and every other write is made."""
+    real = Path.write_text
+
+    def write_text(self: Path, *args: Any, **kwargs: Any) -> int:
+        if self == path:
+            raise PermissionError(errno.EACCES, "Permission denied", str(path))
+        return real(self, *args, **kwargs)
+
+    return mock.patch.object(Path, "write_text", write_text)
+
+
+def test_sample_read_of_a_results_file_that_cannot_be_written_fails_by_name(tmp_path: Path) -> None:
+    results = tmp_path / "skill-evaluations.md"
+    held = samples_text("| alpha | one | opus | 1 | 2026-01-01 | unread |")
+    results.write_text(held, encoding="utf-8")
+    output = io.StringIO()
+    with contextlib.redirect_stdout(output), unwritable(results):
+        status = skill_evals.main(["alpha", "--sample-read", "agrees"], seams=skill_evals.Seams(results=results))
+    assert status == 1
+    lines = output.getvalue().splitlines()
+    assert len(lines) == 1
+    assert lines[0].startswith('FAILED "the results file cannot be written: [Errno 13] Permission'), lines
+    assert results.read_text(encoding="utf-8") == held
+
+
 def test_sample_read_of_a_results_file_that_is_not_utf8_fails_by_name_and_writes_nothing(tmp_path: Path) -> None:
     results = tmp_path / "skill-evaluations.md"
     held = samples_text("| alpha | one | opus | 1 | 2026-01-01 | unread |").encode("utf-8") + b"\xff\n"
@@ -4574,6 +4656,8 @@ class StubTrigger:
         self.bare = False
         # A message whose content is text rather than a list of blocks, a shape the evaluation does not read.
         self.unread = False
+        # Lines the session's stream holds before its events.
+        self.before = ""
         self.calls: list[tuple[list[str], Path, dict[str, str]]] = []
 
     def __call__(self, arguments: list[str], cwd: Path, environment: dict[str, str], timeout: float) -> Any:
@@ -4596,7 +4680,7 @@ class StubTrigger:
                 "parent_tool_use_id": None,
             },
         ]
-        return runtime_canary.Completed(0, "\n".join(json.dumps(event) for event in events), "")
+        return runtime_canary.Completed(0, self.before + "\n".join(json.dumps(event) for event in events), "")
 
 
 def trigger_scenario(root: Path, spec: dict[str, Any], checkout: Path) -> Scenario:
@@ -4840,6 +4924,18 @@ def test_only_the_session_s_own_skill_tool_call_is_a_start() -> None:
         ]
     )
     assert skill_evals_runs.skills_in_stream(output) == ["demo", "other"]
+
+
+def test_a_skill_start_whose_event_holds_a_line_break_other_than_newline_is_counted() -> None:
+    # str.splitlines() would cut the event at U+2028 into two lines, neither JSON, and lose the start and the model.
+    content = [
+        {"type": "text", "text": f"a{chr(0x2028)}b"},
+        {"type": "tool_use", "name": "Skill", "input": {"skill": "demo"}},
+    ]
+    event = {"type": "assistant", "message": {"model": "claude-haiku-5-5", "content": content}}
+    output = json.dumps(event, ensure_ascii=False)
+    assert skill_evals_runs.skills_in_stream(output) == ["demo"]
+    assert skill_evals_runs.stream_models(output) == (frozenset({"claude-haiku-5-5"}), frozenset())
 
 
 @pytest.mark.parametrize(

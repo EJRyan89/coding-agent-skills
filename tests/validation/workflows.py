@@ -315,16 +315,18 @@ def _crons(on: Node) -> list[str]:
     return [str(item.get("cron")) if isinstance(item, dict) else str(item) for item in schedule]
 
 
-def _job_permission_problems(jobs: Node, token_jobs: Collection[str] = ()) -> list[str]:
+def _job_permission_problems(
+    jobs: Node, token_jobs: Collection[str] = (), token_permissions: Mapping[str, str] = TOKEN_JOB_PERMISSIONS
+) -> list[str]:
     if not isinstance(jobs, dict) or not jobs:
         return ["the workflow has no jobs"]
     problems: list[str] = []
     for name, job in jobs.items():
         permissions = job.get("permissions") if isinstance(job, dict) else None
         if name in token_jobs:
-            if permissions != TOKEN_JOB_PERMISSIONS:
+            if permissions != dict(token_permissions):
                 problems.append(
-                    f"job {name} hands a step the token, so its permissions are exactly {TOKEN_JOB_PERMISSIONS}, "
+                    f"job {name} hands a step the token, so its permissions are exactly {dict(token_permissions)}, "
                     f"not {permissions}"
                 )
             continue
@@ -447,6 +449,7 @@ def workflow_guard_problems(
     actions: set[str],
     crons: tuple[str, ...] = (),
     token_steps: Mapping[tuple[str, str], str] | None = None,
+    token_permissions: Mapping[str, str] = TOKEN_JOB_PERMISSIONS,
 ) -> list[str]:
     """Report how a workflow departs from its expected triggers, crons, and actions, a read-only token, and no secrets.
 
@@ -455,7 +458,8 @@ def workflow_guard_problems(
     docs/dependency-updates.md states and Dependabot reviews. The token reaches a step only as one of `token_steps`
     names, a (job, step name), whose env gives GH_TOKEN exactly CREDENTIAL_VALUE and nothing else, whose command is the
     one it maps to, and which has no key but TOKEN_STEP_KEYS, in a job whose permissions are exactly
-    TOKEN_JOB_PERMISSIONS, whose keys are TOKEN_JOB_KEYS on a runner GitHub hosts, and whose other steps run no command,
+    `token_permissions`, TOKEN_JOB_PERMISSIONS unless the workflow's entry in TOKEN_STEP_PERMISSIONS names others,
+    whose keys are TOKEN_JOB_KEYS on a runner GitHub hosts, and whose other steps run no command,
     in a workflow with no defaults and no env but TOKEN_WORKFLOW_ENV's. Every checkout stores no credential. The pinned
     actions that run before the token step in its job, such as actions/setup-python, which puts Python on its PATH,
     may set its environment, the checkout's post step runs after it, and every job's pinned actions take the token as
@@ -479,7 +483,7 @@ def workflow_guard_problems(
     token_steps = token_steps or {}
     token_paths, token_problems = _token_paths(tree, token_steps)
     problems += token_problems
-    problems += _job_permission_problems(tree.get("jobs"), {job for job, _ in token_steps})
+    problems += _job_permission_problems(tree.get("jobs"), {job for job, _ in token_steps}, token_permissions)
     problems += _token_job_problems(tree, {job for job, _ in token_steps})
     problems += _checkout_problems(tree)
     problems += _string_problems(tree, token_paths)
@@ -541,15 +545,26 @@ WORKFLOW_GUARDS: dict[str, tuple[list[str], set[str], tuple[str, ...]]] = {
 }
 
 
+# The changelog watch's one command, which CHANGELOG_JOB runs and TOKEN_STEPS gives the token.
+CHANGELOG_WATCH = 'python3 tools/runtime_changelogs.py --summary "$GITHUB_STEP_SUMMARY"'
+
+
 # Each step, by its job and its name, that is given the token, with the one command it runs: validate.yml's open-issue
 # query, which asks GitHub whether each issue a malformed-input known failure names is open, from a program that
-# imports none of the policy checks and starts no suite. No other step of any workflow is given it, and no other step
-# of its job runs a command.
+# imports none of the policy checks and starts no suite; and runtime-changelogs.yml's watch, which sends it to
+# api.github.com alone, so the releases API answers under the token's limit rather than a hosted runner address's
+# shared one. No other step of any workflow is given it, and no other step of its job runs a command.
 TOKEN_STEPS: dict[str, dict[tuple[str, str], str]] = {
     "validate.yml": {
         ("known-failures", "Ask whether each known failure's issue is open"): "python -B tests/known_failure_issues.py",
     },
+    "runtime-changelogs.yml": {
+        ("changelogs", "Watch the changelogs and the guidance pages"): CHANGELOG_WATCH,
+    },
 }
+# A token step's job permissions where they are not TOKEN_JOB_PERMISSIONS: the watch reads the checkout and GitHub's
+# public releases, and no issue, so its job reads `contents` alone.
+TOKEN_STEP_PERMISSIONS: dict[str, dict[str, str]] = {"runtime-changelogs.yml": {"contents": "read"}}
 
 
 # What a token step's job runs when the workflow runs on a pull request and the job's checkout takes no input but
@@ -1504,7 +1519,7 @@ def command_line_job_problems(workflow: str) -> list[str]:
 
 # What runtime-changelogs.yml's one job runs: the watch, on Ubuntu, whose findings go to the step summary and whose
 # own failure alone fails the job. It installs no runtime, since it reads changelogs and pages, not programs.
-CHANGELOG_JOB = ("changelogs", "ubuntu-latest", 'python3 tools/runtime_changelogs.py --summary "$GITHUB_STEP_SUMMARY"')
+CHANGELOG_JOB = ("changelogs", "ubuntu-latest", CHANGELOG_WATCH)
 
 
 def changelog_job_problems(workflow: str) -> list[str]:
@@ -1936,7 +1951,8 @@ class WorkflowsPolicies(unittest.TestCase):
             with self.subTest(workflow=name):
                 workflow = (workflows / name).read_text(encoding="utf-8")
                 tokens = TOKEN_STEPS.get(name, {})
-                self.assertEqual([], workflow_guard_problems(workflow, triggers, actions, crons, tokens))
+                permissions = TOKEN_STEP_PERMISSIONS.get(name, TOKEN_JOB_PERMISSIONS)
+                self.assertEqual([], workflow_guard_problems(workflow, triggers, actions, crons, tokens, permissions))
 
     def test_a_token_step_that_runs_the_pull_requests_own_code_is_described_as_doing_so(self) -> None:
         design = (REPOSITORY_ROOT / "docs" / "design.md").read_text(encoding="utf-8")

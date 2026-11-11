@@ -172,6 +172,8 @@ from deployer.errors import DeployError
 from deployer.paths import Paths
 from deployer.tools import format_version, parse_version
 from tools import checkout_trust
+from tools.claude_stream import StreamError
+from tools.claude_stream import events as claude_events
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 
@@ -741,8 +743,12 @@ UNREAD_DISCOVERY = "Claude Code's init event lists its skills as something other
 
 def discovery_failure(output: str) -> str | None:
     """Why a Claude Code session counts for nothing because it discovered no skill, or listed its skills in a shape
-    this does not read, or None. A session that printed no init event has its own failure to report."""
-    skills, _, unread = _claude_events(output)
+    this does not read, or a stream in a shape this does not read, or None. A session that printed no init event has
+    its own failure to report."""
+    try:
+        skills, _, unread = _claude_events(output)
+    except StreamError as exc:
+        return str(exc)
     if unread:
         return UNREAD_DISCOVERY
     return NOTHING_DISCOVERED if skills is not None and not skills else None
@@ -750,7 +756,7 @@ def discovery_failure(output: str) -> str | None:
 
 def claude_stream(output: str) -> tuple[set[str] | None, list[str]]:
     """The skills Claude Code's init event lists, if it printed one that lists them as names, and the permissions its
-    result denied."""
+    result denied. A stream in a shape this does not read raises StreamError, which discovery_failure names."""
     skills, denials, _ = _claude_events(output)
     return skills, denials
 
@@ -761,19 +767,15 @@ def _claude_events(output: str) -> tuple[set[str] | None, list[str], bool]:
     skills: set[str] | None = None
     unread = False
     denials: list[str] = []
-    for line in discovery.output_lines(output):
-        with contextlib.suppress(ValueError):
-            event = json_reader.loads(line)
-            if not isinstance(event, dict):
-                continue
-            if event.get("type") == "system" and event.get("subtype") == "init":
-                names = event.get("skills")
-                named = [name for name in names if isinstance(name, str)] if isinstance(names, list) else []
-                unread = not isinstance(names, list) or len(named) != len(names)
-                skills = None if unread else {name.lstrip("/") for name in named}
-            if event.get("type") == "result":
-                listed = event.get("permission_denials")
-                denials += [denied(entry) for entry in listed] if isinstance(listed, list) else []
+    for event in claude_events(output):
+        if event.get("type") == "system" and event.get("subtype") == "init":
+            names = event.get("skills")
+            named = [name for name in names if isinstance(name, str)] if isinstance(names, list) else []
+            unread = not isinstance(names, list) or len(named) != len(names)
+            skills = None if unread else {name.lstrip("/") for name in named}
+        if event.get("type") == "result":
+            listed = event.get("permission_denials")
+            denials += [denied(entry) for entry in listed] if isinstance(listed, list) else []
     return skills, denials, unread
 
 
@@ -1009,9 +1011,11 @@ def run_skill(
     lines = []
     denials: list[str] = []
     if runtime == "claude":
-        listed, denials = claude_stream(completed.stdout)
-        if listed is not None:
-            lines.append(f"DISCOVERED claude {skill}" if skill in listed else f"UNDISCOVERED claude {skill}")
+        # A stream this does not read discovers and denies nothing here: discovery_failure below fails the run with it.
+        with contextlib.suppress(StreamError):
+            listed, denials = claude_stream(completed.stdout)
+            if listed is not None:
+                lines.append(f"DISCOVERED claude {skill}" if skill in listed else f"UNDISCOVERED claude {skill}")
     try:
         probes, started = marked(read_records(probe_log), run), read_records(script_log)
     except (OSError, RecordRefused) as exc:
