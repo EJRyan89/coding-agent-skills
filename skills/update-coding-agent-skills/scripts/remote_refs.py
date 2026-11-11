@@ -89,8 +89,10 @@ def main(argv: list[str]) -> int:
     except GitError as error:
         # Only git's own answer, or its silence past the limit, is origin's failure; a git that could not run says
         # nothing of origin.
-        word = "ORIGIN_FAILED" if error.kind in ORIGIN_KINDS else "FAILED"
-        print(f"{word} {flat_text(str(error))}")
+        if error.kind in ORIGIN_KINDS:
+            print(f"ORIGIN_FAILED {flat_text(str(error))}")
+        else:
+            print(f"FAILED {flat_text(str(error))}")
         return 1
     return 0
 
