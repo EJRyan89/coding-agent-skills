@@ -19,9 +19,18 @@ from markdown_sections import FENCE_LANGUAGES, Fence, find_fences
 from suite_names import is_suite_name
 
 from . import fsops, hashing, platform_support
-from .config import DERIVED_VARIABLES, INTERPRETER_VARIABLES
+from .arguments import CONFIGURE_COMMAND_LINE
+from .config import DERIVED_SOURCES, DERIVED_VARIABLES, INTERPRETER_VARIABLES
 from .errors import DeployError
 from .source import AGENT_SKILLS_RULE, XML_TAG_REMEDY, Source, xml_tag
+
+# What a token in a fence of a language the deployer knows no escaping for asks of the skill's author.
+UNESCAPED_FENCE_REMEDY = "Write the example in a Bash, PowerShell, or Python fence."
+# What a rendered JSON or TOML file that no longer parses asks of the skill's author.
+RENDERED_PARSE_REMEDY = (
+    'Correct that file in the source so it parses with its tokens substituted; see "Template values" in '
+    "docs/adding-a-skill.md."
+)
 
 TOKEN = re.compile(r"\{\{([A-Z_][A-Z0-9_]*)\}\}")
 SUFFIX_CONTEXT = {
@@ -139,17 +148,27 @@ def _write(target: Path, content: bytes) -> None:
     fsops.write_file(target, content)
 
 
+def _value_remedy(key: str) -> str:
+    """What a value the renderer refuses asks of the user: a configured one is answered again, and a derived one is
+    taken from where the deployer derives it."""
+    if key in DERIVED_SOURCES:
+        return DERIVED_SOURCES[key][1]
+    return f"Run '{CONFIGURE_COMMAND_LINE}' to give {key} a value without it."
+
+
 def _escape(key: str, value: str, context: str, logical: str) -> str:
     # An interpreter renders as a bare command word, so it is held to its fixed set in every context, never escaped.
     if key in INTERPRETER_VARIABLES and value not in INTERPRETER_VARIABLES[key]:
         raise DeployError(
             f"ERROR: Variable {key} cannot be substituted into {logical}: {value!r} is not one of "
-            f"{', '.join(sorted(INTERPRETER_VARIABLES[key]))}"
+            f"{', '.join(sorted(INTERPRETER_VARIABLES[key]))}",
+            _value_remedy(key),
         )
     if context in UNESCAPED_CONTEXTS:
         raise DeployError(
             f"ERROR: Variable {key} cannot be substituted into {logical}: the deployer knows no escaping for a "
-            f"{context} fence; write the example in a Bash, PowerShell, or Python fence"
+            f"{context} fence",
+            UNESCAPED_FENCE_REMEDY,
         )
     if context in ("json", "toml"):
         return json_writer.dumps(value, ensure_ascii=False)[1:-1]
@@ -160,7 +179,8 @@ def _escape(key: str, value: str, context: str, logical: str) -> str:
     if offending is not None:
         raise DeployError(
             f"ERROR: Variable {key} cannot be safely substituted into {logical} "
-            f"({context} context): value contains {offending!r}"
+            f"({context} context): value contains {offending!r}",
+            _value_remedy(key),
         )
     return value
 
@@ -219,12 +239,16 @@ def render_file(logical: str, content: bytes, values: dict[str, str]) -> bytes:
         try:
             json_reader.loads(rendered)
         except ValueError as exc:  # a decoding error, the digit limit, or nesting json_reader refuses
-            raise DeployError(f"ERROR: Rendered JSON validation failed: {logical}: {exc}") from exc
+            raise DeployError(
+                f"ERROR: Rendered JSON validation failed: {logical}: {exc}", RENDERED_PARSE_REMEDY
+            ) from exc
     if rendered != text and context == "toml":
         try:
             tomllib.loads(rendered)
         except (ValueError, RecursionError) as exc:  # TOMLDecodeError is a ValueError; tomllib recurses per level
-            raise DeployError(f"ERROR: Rendered TOML validation failed: {logical}: {exc}") from exc
+            raise DeployError(
+                f"ERROR: Rendered TOML validation failed: {logical}: {exc}", RENDERED_PARSE_REMEDY
+            ) from exc
     return rendered.encode("utf-8")
 
 
@@ -241,13 +265,20 @@ def _adapter_frontmatter(skill: str, rendered: bytes) -> tuple[str, str | None, 
         hint = document.string("argument-hint")
         user_only = document.user_only()
     except (UnicodeError, frontmatter.FrontmatterError) as exc:
-        raise DeployError(f"ERROR: Skill '{skill}' frontmatter cannot be read: {exc}") from exc
+        raise DeployError(
+            f"ERROR: Skill '{skill}' frontmatter cannot be read: {exc}",
+            f'Correct the frontmatter of skills/{skill}/SKILL.md; see "Files" in docs/adding-a-skill.md.',
+        ) from exc
     if not description or not description.strip():
-        raise DeployError(f"ERROR: Skill '{skill}' has no description for its runtime adapter")
+        raise DeployError(
+            f"ERROR: Skill '{skill}' has no description for its runtime adapter",
+            f'Give skills/{skill}/SKILL.md a description; see "Description" in docs/adding-a-skill.md.',
+        )
     if len(description) > MAX_DESCRIPTION:
         raise DeployError(
             f"ERROR: Skill '{skill}' description is {len(description)} characters; "
-            f"runtime adapters allow at most {MAX_DESCRIPTION}"
+            f"runtime adapters allow at most {MAX_DESCRIPTION}",
+            f'Shorten the description in skills/{skill}/SKILL.md; see "Description" in docs/adding-a-skill.md.',
         )
     tag = xml_tag(description)
     if tag:
@@ -384,7 +415,10 @@ def _extract_units(staged: Staged, workspace: Path) -> list[ShellUnit]:
         shell = [fence for fence in find_fences(lines) if fence_context(fence) == "shell"]
         for block_number, fence in enumerate(shell, start=1):
             if fence.closer is None:
-                raise DeployError(f"ERROR: Unclosed Bash code fence in {logical}")
+                raise DeployError(
+                    f"ERROR: Unclosed Bash code fence in {logical}",
+                    "Close the fence with the characters that open it, then retry.",
+                )
             target = workspace / "blocks" / f"{len(units)}.sh"
             body = "".join(f"{fence.text(lines[index])}\n" for index in fence.body())
             _write(target, (SHELLCHECK_HEADER + body).encode("utf-8"))

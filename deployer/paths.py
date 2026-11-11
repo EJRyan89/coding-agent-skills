@@ -209,5 +209,6 @@ def validate_managed_roots(paths: Paths) -> None:
             # A component whose stat fails raises, never passing as one that is not there.
             if file_presence.is_occupied(component) and not file_presence.is_directory(component, other_is_absent=True):
                 raise DeployError(
-                    f"ERROR: Deployment path component is not a directory: {platform_support.normalize(component)}"
+                    f"ERROR: Deployment path component is not a directory: {platform_support.normalize(component)}",
+                    "Move it aside after checking it, so the deployer can make the folder there, then retry.",
                 )

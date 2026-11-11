@@ -5680,6 +5680,7 @@ def _validation_readers() -> dict[str, tuple[Callable[[Path], bool], Callable[[]
     import fsops_platform
     import kinds_table
     import markdown_links
+    import refusal_steps
     import shell_targets
     import skill_grants
     import skill_layout
@@ -5799,6 +5800,7 @@ def _validation_readers() -> dict[str, tuple[Callable[[Path], bool], Callable[[]
             lambda: suite_discovery.pool_shared_state_problems(root),
         ),
         "kinds_table._scanned_files": (at(root / "deploy.py"), lambda: kinds_table._scanned_files(root)),
+        "refusal_steps._scanned_files": (at(root / "deploy.py"), lambda: refusal_steps._scanned_files(root)),
         "fsops_platform._platform_scanned_files": (
             at(root / "tools" / "worktrees.py"),
             lambda: fsops_platform._platform_scanned_files(root),

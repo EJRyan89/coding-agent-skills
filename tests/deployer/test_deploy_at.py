@@ -720,9 +720,16 @@ class DeployAtTests(DeployerTestCase):
         with (
             patch,
             mock.patch.object(source_ref, "refuse_archive_attributes"),
-            self.assertRaisesRegex(DeployError, "git archive could not export 0{40}: fatal: "),
+            self.assertRaisesRegex(DeployError, "git archive could not export 0{40}: fatal: ") as raised,
         ):
             source_ref.export(self.source, "0" * 40)
+        self.assertEqual(
+            (
+                "Put right what Git reports in the checkout, then retry.",
+                'See "Deploying an earlier commit" in docs/recovery.md.',
+            ),
+            raised.exception.lines[1:],
+        )
         self.assertEqual(1, len(made))
         self.assertFalse(made[0].exists())
 
@@ -1134,7 +1141,13 @@ class DeployAtTests(DeployerTestCase):
             with self.subTest(name=name):
                 refusal, made = self.export_archive([(self.member("README.md"), b"kept\n"), (self.member(name), b"x")])
                 self.assertEqual(1, refusal.exit_code)
-                self.assertEqual(1, len(refusal.lines), refusal.lines)
+                self.assertEqual(
+                    (
+                        "Deploy a commit whose files all extract inside the folder they belong to.",
+                        'See "Deploying an earlier commit" in docs/recovery.md.',
+                    ),
+                    refusal.lines[1:],
+                )
                 prefix = (
                     f"ERROR: The deployer refused to extract the tree of {self.release}: {name!r} would be extracted"
                 )

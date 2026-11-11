@@ -18,6 +18,7 @@ from validation_support import (
     module_allowance,
     python_trees,
     qualified_name,
+    relative_import_aliases,
     scoped_nodes,
     statement_scope,
 )
@@ -63,21 +64,6 @@ def _scanned_files(root: Path) -> list[Path]:
         for path in files
         if file_presence.is_present(path, other_is_absent=True) and path.relative_to(root).as_posix() != KINDS_MODULE
     ]
-
-
-def _relative_import_aliases(tree: ast.Module, package: str) -> dict[str, str]:
-    """What each name a relative import binds stands for, such as deployer.kinds.SKILL for `from .kinds import SKILL`
-    in a module of the deployer package."""
-    aliases: dict[str, str] = {}
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.ImportFrom) or node.level == 0:
-            continue
-        parts = package.split(".")
-        base = ".".join(parts[: len(parts) - (node.level - 1)])
-        module = f"{base}.{node.module}" if node.module else base
-        for alias in node.names:
-            aliases[alias.asname or alias.name] = f"{module}.{alias.name}"
-    return aliases
 
 
 def _names_a_kind(node: ast.AST, aliases: dict[str, str]) -> bool:
@@ -161,7 +147,7 @@ def kind_findings(tree: ast.Module, package: str) -> list[tuple[int, str, str]]:
     module-level assignment holding it, by its target."""
     skipped = docstring_ids(tree) | _path_components(tree)
     lookups = _lookups(tree)
-    aliases = {**import_aliases(tree), **_relative_import_aliases(tree, package)}
+    aliases = {**import_aliases(tree), **relative_import_aliases(tree, package)}
     statements = [
         statement
         for statement in tree.body

@@ -13,7 +13,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -58,6 +58,16 @@ JOURNAL_ROOTS = {
 
 def forward(path: Path) -> str:
     return str(path).replace("\\", "/")
+
+
+def assert_refusal(lines: Sequence[str], error: str, *steps: str) -> None:
+    """The refusal's ERROR line among lines, printed or a DeployError's own, followed at once by each step in order."""
+    expected = [error, *steps]
+    starts = [index for index, line in enumerate(lines) if line == error]
+    assert starts, f"no line {error!r} in:\n" + "\n".join(lines)
+    assert any(list(lines[start : start + len(expected)]) == expected for start in starts), (
+        f"{error!r} is not followed by {list(steps)!r} in:\n" + "\n".join(lines)
+    )
 
 
 def make_directory_link(link: Path, target: Path) -> None:
@@ -315,6 +325,11 @@ class Deployment:
         printed = output.splitlines()
         for line in lines:
             assert line in printed, output
+
+    def assert_refusal(self, output: str, error: str, *steps: str) -> None:
+        """A refusal's ERROR line, whole, followed at once by each of its steps, so a step cannot drift from the
+        refusal it belongs to, be dropped, or be left untested by a check of the ERROR line alone."""
+        assert_refusal(output.splitlines(), error, *steps)
 
     def make_source_json(
         self,

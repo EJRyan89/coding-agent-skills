@@ -33,7 +33,7 @@ from . import (
     source_ref,
 )
 from . import selection as selection_module
-from .arguments import PROG, USAGE_ERROR, parse_command, usage_error
+from .arguments import PROG, USAGE_ERROR, command_given, parse_command, usage_error
 from .context import Context, Options
 from .errors import Cancelled, DeployError, debug_requested, fail, print_error, print_traceback, see_recovery
 from .kinds import ADAPTER_KIND, AGENT_KIND, DEPENDENCY_KINDS, KINDS, SHARED, SKILL, KindKey
@@ -362,7 +362,7 @@ def run(
     if isinstance(namespace, int):
         return namespace
     if namespace.command is not None:
-        print_error(DeployError(f"ERROR: '{namespace.command}' is a command; run it with deploy.py itself."))
+        print_error(command_given(namespace.command))
         return USAGE_ERROR
     return execute(namespace, paths, probe=probe, stdin=stdin)
 

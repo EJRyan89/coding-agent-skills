@@ -197,7 +197,9 @@ class RunToolTests(DeadlineCase):
                 [
                     f"ERROR: {Path(sys.executable).name} could not be run with an end to every process it starts: it "
                     "could not join a Windows job object: AssignProcessToJobObject failed: Access is denied. (Windows "
-                    "error 5)."
+                    "error 5).",
+                    f"The tool was {platform_support.normalize(sys.executable)}. Check that it runs by itself, then "
+                    "retry.",
                 ],
                 list(raised.exception.lines),
             )
@@ -215,7 +217,9 @@ class RunToolTests(DeadlineCase):
             self.assertEqual(
                 [
                     f"ERROR: {Path(sys.executable).name} could not be run with an end to every process it starts: it "
-                    "was not started as the leader of a process group of its own."
+                    "was not started as the leader of a process group of its own.",
+                    f"The tool was {platform_support.normalize(sys.executable)}. Check that it runs by itself, then "
+                    "retry.",
                 ],
                 list(raised.exception.lines),
             )

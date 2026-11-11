@@ -518,7 +518,10 @@ class SupportedPlatformTests(unittest.TestCase):
         ):
             platform_support.ensure_supported()
         self.assertEqual(
-            ("ERROR: The deployer runs on Windows, Linux, and macOS only (detected platform: freebsd14).",),
+            (
+                "ERROR: The deployer runs on Windows, Linux, and macOS only (detected platform: freebsd14).",
+                "Deploy from a checkout on one of those.",
+            ),
             raised.exception.lines,
         )
 

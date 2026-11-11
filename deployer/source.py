@@ -132,14 +132,16 @@ def load_source_id(paths: Paths) -> str:
     except OSError as exc:
         raise os_error(exc, "read the source's folder") from exc
     if not state_files.is_present(paths.source_file, "source.json"):
-        raise DeployError(f"ERROR: source.json not found at {platform_support.normalize(paths.tree)}")
+        raise DeployError(
+            f"ERROR: source.json not found at {platform_support.normalize(paths.tree)}", SOURCE_JSON_REMEDY
+        )
     document = _load_source_document(paths)
     source_id = document.get("id")
     shown = source_id if isinstance(source_id, str) else "null"
     if not isinstance(source_id, str) or not SOURCE_ID_PATTERN.fullmatch(source_id):
-        raise DeployError(f"ERROR: Invalid source ID format: {shown}")
+        raise DeployError(f"ERROR: Invalid source ID format: {shown}", SOURCE_JSON_REMEDY)
     if len(source_id) > SOURCE_ID_MAX_LENGTH:
-        raise DeployError(f"ERROR: Source ID exceeds {SOURCE_ID_MAX_LENGTH} characters")
+        raise DeployError(f"ERROR: Source ID exceeds {SOURCE_ID_MAX_LENGTH} characters", SOURCE_JSON_REMEDY)
     return source_id
 
 
@@ -170,7 +172,8 @@ def is_linked_worktree(source_dir: Path) -> bool:
         raise os_error(exc, "read the source's .git file") from exc
     except UnicodeError:
         raise DeployError(
-            f"ERROR: Could not read the source's .git file: {platform_support.normalize(marker)}: it is not UTF-8 text"
+            f"ERROR: Could not read the source's .git file: {platform_support.normalize(marker)}: it is not UTF-8 text",
+            "Put back the gitdir line Git wrote there, or deploy from a fresh clone.",
         ) from None
     if not text.startswith("gitdir:"):
         return False
@@ -188,8 +191,8 @@ def reject_linked_worktree(paths: Paths) -> None:
     """A deployment records its source path, so it must not come from a worktree that is removed when its task ends."""
     if is_linked_worktree(paths.source_dir):
         raise DeployError(
-            f"ERROR: {platform_support.normalize(paths.source_dir)} is a linked git worktree. Deploy from the "
-            "main checkout on main instead; --dry-run is allowed here. See docs/parallel-sessions.md."
+            f"ERROR: {platform_support.normalize(paths.source_dir)} is a linked git worktree.",
+            "Deploy from the main checkout on main instead; --dry-run is allowed here. See docs/parallel-sessions.md.",
         )
 
 
@@ -242,19 +245,25 @@ def _reject_links(skills_src: Path) -> None:
     pending = [skills_src]
     if platform_support.is_junction(skills_src):
         raise DeployError(
-            f"ERROR: Reparse point found in deployable source tree: {platform_support.normalize(skills_src)}"
+            f"ERROR: Reparse point found in deployable source tree: {platform_support.normalize(skills_src)}",
+            REAL_FOLDER,
         )
     while pending:
         directory = pending.pop()
         try:
             entries = sorted(os.scandir(directory), key=lambda entry: entry.name)
         except OSError as exc:
-            raise DeployError(f"ERROR: Could not validate reparse points in deployable source tree: {exc}") from exc
+            raise DeployError(
+                f"ERROR: Could not validate reparse points in deployable source tree: {exc}", COMPLETE_CHECKOUT
+            ) from exc
         for entry in entries:
             path = Path(entry.path)
             if platform_support.is_link_or_junction(path):
                 found = "Reparse point" if platform_support.is_junction(path) else "Symlink"
-                raise DeployError(f"ERROR: {found} found in deployable source tree: {platform_support.normalize(path)}")
+                raise DeployError(
+                    f"ERROR: {found} found in deployable source tree: {platform_support.normalize(path)}",
+                    REAL_FOLDER,
+                )
             if entry.is_dir(follow_symlinks=False):
                 pending.append(path)
 
@@ -264,7 +273,10 @@ def frontmatter_name(path: Path, owner: str) -> str:
     try:
         return frontmatter.read(path).string("name") or ""
     except (OSError, UnicodeError, frontmatter.FrontmatterError) as exc:
-        raise DeployError(f"ERROR: {owner} frontmatter cannot be read: {exc}") from exc
+        raise DeployError(
+            f"ERROR: {owner} frontmatter cannot be read: {exc}",
+            f'Correct the frontmatter of {platform_support.normalize(path)}; see "Files" in docs/adding-a-skill.md.',
+        ) from exc
 
 
 def _string_list(value: object) -> list[str] | None:
@@ -299,7 +311,11 @@ def _discover_directories(paths: Paths, metadata: set[str]) -> dict[str, Path]:
         relative = found_dir.relative_to(skills_src).parts
         shown = platform_support.normalize(skill_md)
         if len(relative) != 1:
-            raise DeployError(f"ERROR: SKILL.md must be directly under skills/<name>: {shown}")
+            raise DeployError(
+                f"ERROR: SKILL.md must be directly under skills/<name>: {shown}",
+                "Move its skill to a folder of its own directly under skills/, and group skills with a bundle instead; "
+                'see "Files" in docs/adding-a-skill.md.',
+            )
         name = found_dir.name
         if skill_md.name != SKILL_FILE:
             raise DeployError(
@@ -307,7 +323,10 @@ def _discover_directories(paths: Paths, metadata: set[str]) -> dict[str, Path]:
                 f"Rename it {SKILL_FILE}, then retry.",
             )
         if name not in metadata:
-            raise DeployError(f"ERROR: Skill '{name}' has no matching deploy-meta/{name}.json")
+            raise DeployError(
+                f"ERROR: Skill '{name}' has no matching deploy-meta/{name}.json",
+                f'Add deploy-meta/{name}.json; see "Metadata" in docs/adding-a-skill.md.',
+            )
         directories[name] = found_dir
     return directories
 
@@ -319,8 +338,15 @@ def _skill_directory(paths: Paths, name: str, directories: dict[str, Path]) -> P
     if directory is not None:
         return directory
     if file_presence.is_directory(paths.skills_src / name, other_is_absent=True):
-        raise DeployError(f"ERROR: Skill '{name}' has no {SKILL_FILE} file in skills/{name}")
-    raise DeployError(f"ERROR: deploy-meta/{name}.json has no matching skill directory")
+        raise DeployError(
+            f"ERROR: Skill '{name}' has no {SKILL_FILE} file in skills/{name}",
+            f'Add skills/{name}/{SKILL_FILE}, or remove deploy-meta/{name}.json; see "Files" in '
+            "docs/adding-a-skill.md.",
+        )
+    raise DeployError(
+        f"ERROR: deploy-meta/{name}.json has no matching skill directory",
+        f'Add skills/{name}/{SKILL_FILE}, or remove deploy-meta/{name}.json; see "Files" in docs/adding-a-skill.md.',
+    )
 
 
 def _load_skill(paths: Paths, name: str, directories: dict[str, Path]) -> Skill:
@@ -338,7 +364,11 @@ def _load_skill(paths: Paths, name: str, directories: dict[str, Path]) -> Skill:
     directory = _skill_directory(paths, name, directories)
     declared = frontmatter_name(directory / "SKILL.md", f"Skill '{name}'")
     if declared != name:
-        raise DeployError(f"ERROR: Skill '{name}' frontmatter name '{declared}' does not match directory")
+        raise DeployError(
+            f"ERROR: Skill '{name}' frontmatter name '{declared}' does not match directory",
+            f"Set name to '{name}' in skills/{name}/{SKILL_FILE}'s frontmatter; see \"Files\" in "
+            "docs/adding-a-skill.md.",
+        )
     metadata = _load_json(paths.meta_dir / f"{name}.json")
     shape_error = DeployError(f"ERROR: deploy-meta/{name}.json has an invalid metadata shape", METADATA_SHAPE)
     if not isinstance(metadata, dict):
@@ -421,37 +451,49 @@ def _load_bundles(document: dict[str, object], source: Source) -> None:
     if bundles is None:
         bundles = {}
     if not isinstance(bundles, dict):
-        raise DeployError("ERROR: source.json bundles must be an object")
+        raise DeployError("ERROR: source.json bundles must be an object", BUNDLE_SHAPE)
     for bundle in sorted(bundles):
         if not is_valid_name(bundle):
             raise DeployError(f"ERROR: Bundle name '{bundle}' is invalid", NAME_RULES)
         if bundle in source.skills:
-            raise DeployError(f"ERROR: Bundle '{bundle}' collides with a skill name")
+            raise DeployError(f"ERROR: Bundle '{bundle}' collides with a skill name", RENAME_BUNDLE)
         definition = bundles[bundle]
         members = definition.get("members") if isinstance(definition, dict) else None
         if not isinstance(members, list) or not members or not all(isinstance(member, str) for member in members):
-            raise DeployError(f"ERROR: Bundle '{bundle}' must contain a non-empty string members array")
+            raise DeployError(f"ERROR: Bundle '{bundle}' must contain a non-empty string members array", BUNDLE_SHAPE)
         duplicates = sorted({member for member in members if members.count(member) > 1})
         if duplicates:
-            raise DeployError(f"ERROR: Bundle '{bundle}' contains duplicate member '{duplicates[0]}'")
+            raise DeployError(
+                f"ERROR: Bundle '{bundle}' contains duplicate member '{duplicates[0]}'",
+                f"List '{duplicates[0]}' once in the bundle's members in source.json.",
+            )
         for member in members:
             if member not in source.skills:
-                raise DeployError(f"ERROR: Bundle '{bundle}' references unknown member '{member}'")
+                raise DeployError(
+                    f"ERROR: Bundle '{bundle}' references unknown member '{member}'",
+                    f"Remove '{member}' from the bundle's members in source.json, or add the skill.",
+                )
             if not source.skills[member].selectable:
-                raise DeployError(f"ERROR: Bundle '{bundle}' member '{member}' is not selectable")
+                raise DeployError(
+                    f"ERROR: Bundle '{bundle}' member '{member}' is not selectable",
+                    f"Set selectable to true in deploy-meta/{member}.json, or remove '{member}' from the "
+                    "bundle's members in source.json.",
+                )
             if member in source.skill_bundle:
                 raise DeployError(
-                    f"ERROR: Skill '{member}' belongs to both '{source.skill_bundle[member]}' and '{bundle}'"
+                    f"ERROR: Skill '{member}' belongs to both '{source.skill_bundle[member]}' and '{bundle}'",
+                    f"Remove '{member}' from one of the two bundles' members in source.json.",
                 )
             if source.skills[member].opt_in:
                 raise DeployError(
-                    f"ERROR: Skill '{member}' is opt-in but belongs to "
-                    f"bundle '{bundle}'; mark the bundle opt-in instead"
+                    f"ERROR: Skill '{member}' is opt-in but belongs to bundle '{bundle}'",
+                    f"Set opt_in to false in deploy-meta/{member}.json and mark the bundle opt-in instead; "
+                    'see "Opt-in skills and bundles" in docs/adding-a-skill.md.',
                 )
             source.skill_bundle[member] = bundle
         opt_in = definition.get("opt_in", False)
         if not isinstance(opt_in, bool):
-            raise DeployError(f"ERROR: Bundle '{bundle}' opt_in must be true or false")
+            raise DeployError(f"ERROR: Bundle '{bundle}' opt_in must be true or false", BUNDLE_SHAPE)
         if opt_in:
             source.opt_in_bundles.add(bundle)
         source.bundles[bundle] = list(members)
@@ -465,16 +507,23 @@ def _load_renamed(document: dict[str, object], source: Source) -> None:
     """
     renamed = document.get("renamed", {})
     if not isinstance(renamed, dict):
-        raise DeployError("ERROR: source.json renamed must be an object mapping each old skill name to its new name")
+        raise DeployError(
+            "ERROR: source.json renamed must be an object mapping each old skill name to its new name", RENAMED_SHAPE
+        )
     for old in sorted(renamed):
         new = renamed[old]
         if not is_valid_name(old):
             raise DeployError(f"ERROR: source.json renamed names an invalid old name '{old}'", NAME_RULES)
         if old in source.skills or old in source.bundles:
-            raise DeployError(f"ERROR: source.json renames '{old}', which is still a skill or bundle of this source")
+            raise DeployError(
+                f"ERROR: source.json renames '{old}', which is still a skill or bundle of this source",
+                f"Remove '{old}' from renamed in source.json, or finish the rename; "
+                'see "Renaming a skill" in docs/adding-a-skill.md.',
+            )
         if not isinstance(new, str) or new not in source.skills:
             raise DeployError(
-                f"ERROR: source.json renames '{old}' to {json_writer.dumps(new)}, which is no skill of this source"
+                f"ERROR: source.json renames '{old}' to {json_writer.dumps(new)}, which is no skill of this source",
+                RENAMED_SHAPE,
             )
     for old, new in sorted(renamed.items()):
         source.renamed[old] = new
@@ -485,9 +534,16 @@ def _validate_dependencies(source: Source) -> None:
         seen: set[str] = set()
         for dependency in source.skills[name].skill_deps:
             if dependency not in source.skills:
-                raise DeployError(f"ERROR: Skill '{name}' depends on unknown skill '{dependency}'")
+                raise DeployError(
+                    f"ERROR: Skill '{name}' depends on unknown skill '{dependency}'",
+                    f"Remove '{dependency}' from skill_deps in deploy-meta/{name}.json, or add the skill; "
+                    'see "Metadata" in docs/adding-a-skill.md.',
+                )
             if dependency in seen:
-                raise DeployError(f"ERROR: Skill '{name}' contains duplicate skill dependency '{dependency}'")
+                raise DeployError(
+                    f"ERROR: Skill '{name}' contains duplicate skill dependency '{dependency}'",
+                    f"List '{dependency}' once in skill_deps in deploy-meta/{name}.json.",
+                )
             seen.add(dependency)
     graph: graphlib.TopologicalSorter[str] = graphlib.TopologicalSorter()
     for name in sorted(source.skills):
@@ -497,7 +553,10 @@ def _validate_dependencies(source: Source) -> None:
     except graphlib.CycleError as exc:
         # graphlib lists each skill before the one that depends on it; reversed, each depends on the next.
         cycle = " ".join(reversed(exc.args[1]))
-        raise DeployError(f"ERROR: Skill dependency cycle detected: {cycle}") from exc
+        raise DeployError(
+            f"ERROR: Skill dependency cycle detected: {cycle}",
+            "Remove one of these skill_deps entries from its skill's metadata in deploy-meta/ to break the cycle.",
+        ) from exc
 
 
 def _discover_agents(paths: Paths) -> dict[str, Path]:
@@ -507,7 +566,10 @@ def _discover_agents(paths: Paths) -> dict[str, Path]:
         if not file_presence.is_directory(root):
             return {}
     except file_presence.NotADirectory:
-        raise DeployError(f"ERROR: agents is not a directory: {platform_support.normalize(root)}") from None
+        raise DeployError(
+            f"ERROR: agents is not a directory: {platform_support.normalize(root)}",
+            f"Replace it with a folder of agent definitions, or remove it; {SEE_SUBAGENTS}",
+        ) from None
     except OSError as exc:
         raise os_error(exc, "read the agents folder") from exc
     _reject_links(root)
@@ -516,17 +578,43 @@ def _discover_agents(paths: Paths) -> dict[str, Path]:
         shown = platform_support.normalize(entry)
         # An entry whose stat fails is refused here as no agent definition: the source is refused either way.
         if not entry.is_file() or entry.suffix != ".md":
-            raise DeployError(f"ERROR: agents may contain only <name>.md agent definitions: {shown}")
+            raise DeployError(
+                f"ERROR: agents may contain only <name>.md agent definitions: {shown}",
+                f"Move it out of agents/; {SEE_SUBAGENTS}",
+            )
         name = entry.stem
         if not is_valid_name(name):
             raise DeployError(f"ERROR: Agent name '{name}' does not match naming grammar", NAME_RULES)
         declared = frontmatter_name(entry, f"Agent '{name}'")
         if declared != name:
-            raise DeployError(f"ERROR: Agent '{name}' frontmatter name '{declared}' does not match its file name")
+            raise DeployError(
+                f"ERROR: Agent '{name}' frontmatter name '{declared}' does not match its file name",
+                f"Set name to '{name}' in agents/{name}.md's frontmatter; {SEE_SUBAGENTS}",
+            )
         agents[name] = entry
     return agents
 
 
+# What a refusal of the source's links, bundles, renamed skills, agents, and shared assets asks of its author.
+REAL_FOLDER = "Replace it with the file or folder it points at, or remove it, then retry."
+BUNDLE_SHAPE = (
+    "Make bundles in source.json an object mapping each bundle's name to an object with a non-empty members list "
+    'of skill names and, where present, an opt_in of true or false; see "Opt-in skills and bundles" in '
+    "docs/adding-a-skill.md."
+)
+RENAME_BUNDLE = (
+    'Rename the bundle in source.json so no skill has its name; see "Opt-in skills and bundles" in '
+    "docs/adding-a-skill.md."
+)
+RENAMED_SHAPE = (
+    "Make renamed in source.json map each old name to the name of one of the source's skills; see \"Renaming a "
+    'skill" in docs/adding-a-skill.md.'
+)
+SEE_SUBAGENTS = 'see "Subagent definitions" in docs/adding-a-skill.md.'
+SHARED_SHAPE = (
+    "Make shared_assets in source.json map each asset's file name to its role, owner or dependency; see "
+    '"Shared assets" in docs/adding-a-skill.md.'
+)
 # What a failure to read the source asks of the user.
 COMPLETE_CHECKOUT = "Check that this checkout is complete and that you can read it, then retry."
 
@@ -578,7 +666,11 @@ def _discover(paths: Paths, source_id: str) -> Source:
     for name in sorted(source.skills):
         for agent in source.skills[name].agent_deps:
             if agent not in source.agents:
-                raise DeployError(f"ERROR: Skill '{name}' depends on unknown agent '{agent}'")
+                raise DeployError(
+                    f"ERROR: Skill '{name}' depends on unknown agent '{agent}'",
+                    f"Add agents/{agent}.md, or remove '{agent}' from agent_deps in deploy-meta/{name}.json; "
+                    f"{SEE_SUBAGENTS}",
+                )
     source.shared_assets = _shared_assets(document)
     # An owned asset is read from skills/, beside each skill's folder and every other asset. An unsafe name is refused
     # by the plan before any path is built from it, and so is a name that is one with a skill's or another asset's.
@@ -593,10 +685,14 @@ def _shared_assets(document: dict[str, object]) -> dict[str, str]:
     """source.json's shared assets and their roles, refused when malformed rather than dropped or stringified."""
     shared = document.get("shared_assets", {})
     if not isinstance(shared, dict):
-        raise DeployError("ERROR: source.json shared_assets must be an object mapping each asset to its role")
+        raise DeployError(
+            "ERROR: source.json shared_assets must be an object mapping each asset to its role", SHARED_SHAPE
+        )
     for name, role in shared.items():
         if not isinstance(role, str):
-            raise DeployError(f"ERROR: source.json shared_assets '{name}' has a role that is not a string")
+            raise DeployError(
+                f"ERROR: source.json shared_assets '{name}' has a role that is not a string", SHARED_SHAPE
+            )
     return shared
 
 

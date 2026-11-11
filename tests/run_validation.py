@@ -85,6 +85,7 @@ import markdown_links
 import pull_request_body
 import pull_request_title
 import python_checks
+import refusal_steps
 import repository_hygiene
 import shell_targets
 import silent_reverts
@@ -145,6 +146,7 @@ POLICY_MODULES = (
     pull_request_body,
     pull_request_title,
     python_checks,
+    refusal_steps,
     repository_hygiene,
     shell_targets,
     silent_reverts,
