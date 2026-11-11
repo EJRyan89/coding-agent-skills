@@ -243,6 +243,28 @@ class SamePartsTests(KeyedTestCase):
         self.assertFalse(same_parts(PurePath(self.root / "nai\u0308ve" / "x").parts, missing))
         self.assertEqual(path_key(self.root / composed), path_key(self.root / decomposed))
 
+    def test_a_part_in_another_case_and_form_is_one_where_the_directory_folds_and_finds_one_entry(self) -> None:
+        # The given part is folded too before the two forms are compared, so a capital written decomposed in a folding
+        # directory is still the composed small letter the directory holds.
+        known, given = "caf\u00e9", "CAFE\u0301"
+        (self.root / known).mkdir()
+        reference = PurePath(self.root / known / "x").parts
+        other = PurePath(self.root / given / "x").parts
+        real = os.lstat
+
+        def unifying(path: Any) -> os.stat_result:
+            spelled = Path(path)
+            return real(spelled.with_name(known) if spelled.name == given else spelled)
+
+        for folds in (True, False):
+            with (
+                self.subTest(folds=folds),
+                mock.patch.dict(path_keys._FOLDS_CASE, clear=True),
+                self.answers({self.root: folds}),
+                mock.patch.object(os, "lstat", side_effect=unifying),
+            ):
+                self.assertEqual(folds, same_parts(other, reference))
+
     def test_only_the_reference_is_asked(self) -> None:
         judged = self.root / "judged"
         (judged / "deep").mkdir(parents=True)
