@@ -2817,7 +2817,9 @@ def test_a_target_reached_through_a_linked_folder_is_the_file_it_names(tmp_path:
     assert named != memory_audit.target_identity(memory, "note.md")
 
 
-def test_a_destination_named_twice_is_read_once_and_case_counts_where_the_platform_keeps_it(tmp_path: Path) -> None:
+def test_a_destination_named_twice_is_read_once_and_case_counts_where_the_file_system_keeps_it(
+    tmp_path: Path,
+) -> None:
     real = tmp_path / "real"
     real.mkdir()
     link_folder(real, tmp_path / "linked")
@@ -2827,8 +2829,9 @@ def test_a_destination_named_twice_is_read_once_and_case_counts_where_the_platfo
     assert memory_audit.destination_files(None, named) == [notes]
     lower = real / "claude.md"
     lower.write_text("rules\n", encoding="utf-8")
-    # Windows folds the two names into one file; Linux keeps two files, and both are read.
-    expected = [notes] if sys.platform == "win32" else [notes, lower]
+    # NTFS and macOS's default APFS fold the two names into one file; a case-sensitive file system, as Linux's are,
+    # keeps two files, and both are read. The file system decides, never the platform's name.
+    expected = [notes] if path_keys.folds_case(real) else [notes, lower]
     assert memory_audit.destination_files(None, [notes, lower]) == expected
 
 
