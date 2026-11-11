@@ -554,7 +554,7 @@ class ToolchainPolicies(unittest.TestCase):
         mutation_lock = (REPOSITORY_ROOT / MUTATION_LOCK).read_text(encoding="utf-8")
         self.assertEqual([], lock_problems(mutation_lock, development + mutation, locked))
         # Every workflow is read, and one that installs no lock may run no pip install.
-        expected = {"validate.yml": (("requirements-dev.txt",), 2), "mutation.yml": (("requirements-mutation.txt",), 3)}
+        expected = {"validate.yml": (("requirements-dev.txt",), 3), "mutation.yml": (("requirements-mutation.txt",), 3)}
         workflows = file_presence.matching(REPOSITORY_ROOT / ".github" / "workflows", "*.y*ml")
         self.assertLessEqual(set(expected), {workflow.name for workflow in workflows})
         for workflow in workflows:
@@ -638,9 +638,9 @@ class ToolchainPolicies(unittest.TestCase):
             workflow,
         )
         # The floor runs on every event; the latest release only on the schedule, where it cannot block a pull request,
-        # on the Windows legs and on the Linux legs.
+        # on the Windows, Linux, and macOS legs.
         self.assertEqual(
-            2,
+            3,
             workflow.count(
                 "python-version: ${{ github.event_name == 'schedule' && fromJSON('[\"3.11\", \"3.x\"]') "
                 "|| fromJSON('[\"3.11\"]') }}"

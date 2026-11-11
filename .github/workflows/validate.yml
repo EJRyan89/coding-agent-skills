@@ -347,12 +347,15 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
   # The whole validation run on macOS, dealt across its own legs by macOS's seconds as the Linux legs are by Linux's.
-  # A free account runs few macOS jobs at once, so the run is dealt across fewer legs than Linux's.
+  # A free account runs few macOS jobs at once, so the run is dealt across fewer legs than Linux's. Until every macOS
+  # leg passes, a red one fails neither the run nor the required check: the `validate` job does not need this job, and
+  # continue-on-error keeps the run's conclusion, which tools/record_job_seconds.py reads the push runs on main by.
   macos:
     # Named as the Linux legs are; tools/record_job_seconds.py reads each macOS leg's shard from the name.
     name: macOS shard ${{ matrix.shard }}, Python ${{ matrix.python-version }}
     runs-on: macos-latest
     timeout-minutes: 30
+    continue-on-error: true
     # As the Windows legs: the checkout and nothing else, and no command a step runs is given the token.
     permissions:
       contents: read

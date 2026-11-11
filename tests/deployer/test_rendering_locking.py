@@ -545,7 +545,8 @@ class RenderedExecutableTests(DeployerTestCase):
             self.assertIn("open a new terminal", result.output)
             self.assertIn('For Chocolatey, Scoop, or direct downloads, see "Installing the tools" in', result.output)
         else:
-            self.assertIn("  - ShellCheck (lints rendered Bash): sudo apt install shellcheck", result.output)
+            installer = "brew" if sys.platform == "darwin" else "sudo apt"
+            self.assertIn(f"  - ShellCheck (lints rendered Bash): {installer} install shellcheck", result.output)
             self.assertIn('or direct downloads, see "Installing the tools" in', result.output)
         self.assertNotIn("Bash (checks", result.output)
         self.assertFalse((self.skills_dir / "alpha").exists())
@@ -572,7 +573,12 @@ class RenderedExecutableTests(DeployerTestCase):
             "  - ShellCheck (lints rendered Bash): sudo apt install shellcheck",
             "  - PowerShell (parses rendered .ps1 files): sudo snap install powershell --classic",
         )
-        for line in windows if platform_support.WINDOWS else linux:
+        macos = (
+            "  - Bash (checks rendered Bash syntax): brew install bash",
+            "  - ShellCheck (lints rendered Bash): brew install shellcheck",
+            "  - PowerShell (parses rendered .ps1 files): brew install --cask powershell",
+        )
+        for line in {"win32": windows, "darwin": macos}.get(sys.platform, linux):
             self.assertIn(line, result.output)
         self.assertFalse((self.skills_dir / "alpha").exists())
 

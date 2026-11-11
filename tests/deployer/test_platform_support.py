@@ -521,19 +521,6 @@ class SupportedPlatformTests(unittest.TestCase):
             raised.exception.lines,
         )
 
-    def test_each_platform_names_its_own_package_manager_in_the_install_hints(self) -> None:
-        self.assertEqual("winget install --id koalaman.shellcheck", platform_support.WINDOWS_INSTALL_HINTS["ShellCheck"])
-        self.assertEqual("sudo apt install shellcheck", platform_support.LINUX_INSTALL_HINTS["ShellCheck"])
-        self.assertEqual("brew install shellcheck", platform_support.MACOS_INSTALL_HINTS["ShellCheck"])
-        self.assertEqual("brew install --cask powershell", platform_support.MACOS_INSTALL_HINTS["PowerShell"])
-        self.assertEqual("brew install bash", platform_support.MACOS_INSTALL_HINTS["Bash"])
-        self.assertEqual(
-            set(platform_support.LINUX_INSTALL_HINTS), set(platform_support.MACOS_INSTALL_HINTS), "the same tools"
-        )
-        expected = {"win32": "WINDOWS", "linux": "LINUX", "darwin": "MACOS"}[sys.platform]
-        self.assertIs(getattr(platform_support, f"{expected}_INSTALL_HINTS"), platform_support.INSTALL_HINTS)
-        self.assertIs(getattr(platform_support, f"{expected}_INSTALL_HELP"), platform_support.INSTALL_HELP)
-
     def test_this_platform_is_macos_only_on_macos(self) -> None:
         self.assertEqual(sys.platform == "darwin", platform_support.MACOS)
 
@@ -588,11 +575,10 @@ class AbsolutePathTests(unittest.TestCase):
             with self.subTest(root=value):
                 self.assertTrue(platform_support.is_filesystem_root(value))
         self.assertFalse(platform_support.is_filesystem_root("C:/GitHub" if platform_support.WINDOWS else "/home"))
-        expected = (
-            ("an absolute Windows path", "C:/GitHub")
-            if platform_support.WINDOWS
-            else ("an absolute path", "/home/you/GitHub")
-        )
+        expected = {
+            "win32": ("an absolute Windows path", "C:/GitHub"),
+            "darwin": ("an absolute path", "/Users/you/GitHub"),
+        }.get(sys.platform, ("an absolute path", "/home/you/GitHub"))
         self.assertEqual(expected, (platform_support.ABSOLUTE_PATH, platform_support.EXAMPLE_DIRECTORY))
 
 
@@ -696,16 +682,33 @@ class InstallHintTests(unittest.TestCase):
             },
             platform_support.LINUX_INSTALL_HINTS,
         )
-        # Every hint a caller asks for by a tool's label has an entry on both platforms.
         self.assertEqual(
-            {label.replace("Git Bash", "Bash") for label in platform_support.WINDOWS_INSTALL_HINTS},
-            set(platform_support.LINUX_INSTALL_HINTS),
+            {
+                # macOS's own /bin/bash is a Bash 3.2, so the hint installs a current one.
+                "Bash": "brew install bash",
+                "ShellCheck": "brew install shellcheck",
+                "PowerShell": "brew install --cask powershell",
+                "ruff": "python3 -m pip install --require-hashes --only-binary :all: -r requirements-dev.txt",
+                "mypy": "python3 -m pip install --require-hashes --only-binary :all: -r requirements-dev.txt",
+                "pytest": "python3 -m pip install --require-hashes --only-binary :all: -r requirements-dev.txt",
+                "PSScriptAnalyzer": "pwsh -Command 'Install-Module PSScriptAnalyzer -Scope CurrentUser -Force'",
+            },
+            platform_support.MACOS_INSTALL_HINTS,
         )
+        # Every hint a caller asks for by a tool's label has an entry on every platform.
+        for hints in (platform_support.LINUX_INSTALL_HINTS, platform_support.MACOS_INSTALL_HINTS):
+            self.assertEqual(
+                {label.replace("Git Bash", "Bash") for label in platform_support.WINDOWS_INSTALL_HINTS}, set(hints)
+            )
 
     def test_this_platform_uses_its_own_names_and_hints(self) -> None:
-        bash, hints = ("Git Bash", "winget") if platform_support.WINDOWS else ("Bash", "sudo apt")
+        bash, hints, help_ = {
+            "win32": ("Git Bash", "winget", platform_support.WINDOWS_INSTALL_HELP),
+            "darwin": ("Bash", "brew", platform_support.MACOS_INSTALL_HELP),
+        }.get(sys.platform, ("Bash", "sudo apt", platform_support.LINUX_INSTALL_HELP))
         self.assertEqual(bash, platform_support.BASH_NAME)
         self.assertTrue(platform_support.install_hint(bash).startswith(hints))
+        self.assertIs(help_, platform_support.INSTALL_HELP)
         self.assertIn('"Installing the tools"', " ".join(platform_support.INSTALL_HELP))
 
     def test_windows_help_names_git_bash_by_an_absolute_path(self) -> None:
@@ -890,16 +893,21 @@ class NameKeyTests(unittest.TestCase):
             self.assertFalse(platform_support.folds_case(self.directory))
 
     def test_this_file_system_gives_its_own_answer(self) -> None:
-        # A temporary directory is on NTFS on Windows, which folds case, and on a case-sensitive file system on Linux.
-        (self.directory / "Probe.txt").write_bytes(b"")
-        self.assertEqual(platform_support.WINDOWS, platform_support.folds_case(self.directory))
-
-    if not platform_support.WINDOWS:
-
-        def test_two_entries_whose_names_differ_only_in_case_are_two_files(self) -> None:
-            (self.directory / "Guide.md").write_bytes(b"one")
-            (self.directory / "gUIDE.MD").write_bytes(b"two")
-            self.assertFalse(platform_support.folds_case(self.directory))
+        # Asked apart from the probe: the file system refuses to create a second name differing only in case exactly
+        # when it folds case. A temporary directory is on NTFS on Windows, which folds, on a case-sensitive file
+        # system on Linux, and on APFS on macOS, which folds by default but may be formatted case-sensitive, so the
+        # answer there is the file system's, never the platform's.
+        (self.directory / "Guide.md").write_bytes(b"one")
+        try:
+            with (self.directory / "gUIDE.MD").open("xb"):
+                pass
+        except FileExistsError:
+            folds = True
+        else:
+            folds = False
+        self.assertEqual(folds, platform_support.folds_case(self.directory))
+        if sys.platform in ("win32", "linux"):
+            self.assertEqual(platform_support.WINDOWS, folds)
 
 
 class ProgramNameTests(unittest.TestCase):

@@ -9,20 +9,23 @@ A probe that cannot read a process's state never reports it gone: a process whos
 alive with no start time, which its caller treats as a holder it cannot confirm, never as one it may reclaim.
 
 A PID read from a file is read through `read_pid`, which refuses one outside the platform's range, so no value is
-truncated to another process's PID before it reaches the probe: Windows passes a PID as a 32-bit `DWORD`, and Linux
-allots none past `PID_MAX_LIMIT`, the most `/proc/sys/kernel/pid_max` may be set to. The probe itself reports a PID
-outside that range as no process.
+truncated to another process's PID before it reaches the probe: Windows passes a PID as a 32-bit `DWORD`, Linux
+allots none past `PID_MAX_LIMIT`, the most `/proc/sys/kernel/pid_max` may be set to, and macOS none past its
+`PID_MAX`. The probe itself reports a PID outside that range as no process.
 """
 
 from __future__ import annotations
 
 import functools
 import os
+import subprocess
 import sys
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from bounded_process import run_bounded
 from typed_fields import FieldReader
 
 # Where Linux reports each process: /proc/<pid>/stat, whose fields after the command name, in parentheses, start with
@@ -34,11 +37,29 @@ STAT_START_TIME = 19
 ENDED_STATES = frozenset({b"Z", b"X", b"x"})
 # The error OpenProcess sets for a PID that names no process.
 ERROR_INVALID_PARAMETER = 87
-# The largest PID each platform can give a process: OpenProcess takes a DWORD, and Linux's PID_MAX_LIMIT on a 64-bit
-# kernel, 4 * 1024 * 1024, bounds pid_max, every PID being below it.
+# The largest PID each platform can give a process: OpenProcess takes a DWORD, Linux's PID_MAX_LIMIT on a 64-bit
+# kernel, 4 * 1024 * 1024, bounds pid_max, every PID being below it, and macOS's kernel gives none at or past its
+# PID_MAX, 99999.
 WINDOWS_PID_MAXIMUM = 2**32 - 1
 LINUX_PID_MAXIMUM = 4 * 1024 * 1024 - 1
-PID_MAXIMUM = WINDOWS_PID_MAXIMUM if sys.platform == "win32" else LINUX_PID_MAXIMUM
+MACOS_PID_MAXIMUM = 99_999
+PID_MAXIMUM = {"win32": WINDOWS_PID_MAXIMUM, "darwin": MACOS_PID_MAXIMUM}.get(sys.platform, LINUX_PID_MAXIMUM)
+# macOS has no /proc, so the probe asks ps for a process's state and start: by its own path, /bin/ps, so no program
+# PATH names answers instead, with this environment, in the C locale, so the start is in English, and in UTC, so a
+# process's start reads the same whatever time zone the user changes to. A start printed in local time would read as
+# another process's after a change of zone, and the lock would take a running deployment's lock from it. job_tree
+# lists a process group's members with the same ps, environment, and time limit.
+PS_ENVIRONMENT = {"LC_ALL": "C", "TZ": "UTC0", "PATH": "/usr/bin:/bin"}
+PS_SECONDS = 10.0
+# The command ps is given: each field's header left empty, so it prints the state, then the start as `Tue Nov 10
+# 20:00:01 2026`.
+PS_FIELDS = ("-o", "stat=", "-o", "lstart=")
+MONTHS = {
+    name: number
+    for number, name in enumerate(
+        ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"), start=1
+    )
+}
 
 
 @dataclass(frozen=True)
@@ -54,14 +75,61 @@ def read_pid(value: object, path: str, reader: FieldReader | None = None) -> int
 
 
 def process_status(pid: int) -> ProcessStatus:
-    """Report whether a process is running and, when readable, its start time: its creation time on Windows, and
-    elsewhere its start in clock ticks since boot, read from /proc. A PID outside the platform's range names no
-    process."""
+    """Report whether a process is running and, when readable, its start time: its creation time on Windows, its start
+    in seconds since the epoch on macOS, read from ps, and elsewhere its start in clock ticks since boot, read from
+    /proc. A PID outside the platform's range names no process."""
     if not 0 < pid <= PID_MAXIMUM:
         return ProcessStatus(False, None)
     if sys.platform == "win32":
         return _windows_status(pid)
+    if sys.platform == "darwin":
+        return ps_status(pid)
     return proc_status(pid)
+
+
+def ps_status(pid: int) -> ProcessStatus:
+    """The process's state as ps reports it. A PID ps does not list is asked of the kernel with a signal of none, so
+    only the kernel's word that no process has it reports one gone; a ps that cannot be run, does not finish, or prints
+    what this cannot read reports the process running with no start time. A PID past macOS's range names no process."""
+    if not 0 < pid <= MACOS_PID_MAXIMUM:
+        return ProcessStatus(False, None)
+    try:
+        finished = run_bounded(
+            ["/bin/ps", *PS_FIELDS, "-p", str(pid)], PS_SECONDS, env=PS_ENVIRONMENT, output_limit=4096
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return ProcessStatus(True, None)
+    text = finished.stdout.decode("ascii", "replace").strip()
+    if not text:
+        return _signalled_status(pid)
+    return ps_line_status(text)
+
+
+def ps_line_status(line: str) -> ProcessStatus:
+    """A process's state from the line ps prints for it: the state, then the start. A process that has ended, which
+    waits only to be reaped, is gone; a start this cannot read reports it running with no start time."""
+    state, _, start = line.partition(" ")
+    if state.startswith("Z"):
+        return ProcessStatus(False, None)
+    return ProcessStatus(True, ps_start_seconds(start))
+
+
+def ps_start_seconds(text: str) -> int | None:
+    """The seconds since the epoch of a start ps prints in UTC as `Tue Nov 10 20:00:01 2026`, or None for text of
+    another shape."""
+    fields = text.split()
+    if len(fields) != 5 or fields[1] not in MONTHS:
+        return None
+    _, month, day, clock, year = fields
+    parts = clock.split(":")
+    if len(parts) != 3 or not all(number.isascii() and number.isdigit() for number in (day, year, *parts)):
+        return None
+    hour, minute, second = (int(part) for part in parts)
+    try:
+        moment = datetime(int(year), MONTHS[month], int(day), hour, minute, second, tzinfo=timezone.utc)
+    except ValueError:
+        return None
+    return int(moment.timestamp())
 
 
 def proc_status(pid: int) -> ProcessStatus:
