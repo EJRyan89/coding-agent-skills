@@ -39,7 +39,7 @@ from deployer import discovery, platform_support
 from deployer import source as deploy_source
 from deployer.errors import DEBUG_HINT, DeployError
 from deployer.paths import Paths
-from tools import checkout_trust, runtime_canary
+from tools import checkout_trust, claude_stream, runtime_canary
 from tools.runtime_canary import Completed
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
@@ -1226,6 +1226,20 @@ class RunTests(RuntimeCanaryTestCase):
         # The reason is pinned as the line reads, not through the constant that writes it.
         unread = "Claude Code's init event lists its skills as something other than a list of names"
         self.assertIn(f'RUNTIME claude {FIXTURE} FAILED "{unread}" {self.kept("claude")}', lines)
+
+    def test_a_stream_line_that_is_json_but_no_object_fails_the_session_by_its_line(self) -> None:
+        # Passed over, the line would leave the session judged from the events left.
+        init = json.dumps({"type": "system", "subtype": "init", "skills": [FIXTURE]})
+        stream = f"{init}\n[1]\n"
+        reason = "line 2 of the session's stream is a JSON array, not an event object"
+        self.assertEqual(reason, runtime_canary.discovery_failure(stream))
+        with self.assertRaises(claude_stream.StreamError):
+            runtime_canary.claude_stream(stream)
+        runner = FakeRuntimes()
+        runner.actions["claude"] = lambda *_: Completed(0, stream, "")
+        lines = self.canary(runner, runtimes=("claude",))
+        self.assertFalse([line for line in lines if "DISCOVERED claude" in line], lines)
+        self.assertIn(f'RUNTIME claude {FIXTURE} FAILED "{reason}" {self.kept("claude")}', lines)
 
     def test_a_line_holding_a_line_break_other_than_newline_is_read_whole(self) -> None:
         # JSON holds U+2028, U+0085, and the other characters str.splitlines() breaks on as they are, and a log line

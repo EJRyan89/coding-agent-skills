@@ -102,6 +102,21 @@ def test_a_reviewer_that_read_the_file_or_met_no_guard_fails(stream: list[str], 
     assert canary.failed(lines[1])
 
 
+def test_a_stream_holding_a_json_line_that_is_no_object_fails_both_guard_lines_by_its_line() -> None:
+    # Passed over, the line would leave the guard judged from the events left, which could read as a pass.
+    stream = "\n".join(
+        [
+            event("user", [result(f"1\t{MARKER}\n")]),
+            '"text"',
+            event("user", [result(DENIED, error=True)], parent="toolu_1"),
+        ]
+    )
+    reason = "line 2 of the session's stream is a JSON string, not an event object"
+    lines = canary.guard_lines(stream, AGENT, MARKER)
+    assert lines == [f'GUARD claude main-session FAILED "{reason}"', f'GUARD claude {AGENT} FAILED "{reason}"']
+    assert all(canary.failed(line) for line in lines)
+
+
 def test_a_main_session_the_guard_denied_or_that_never_read_fails() -> None:
     denied = canary.guard_lines(event("user", [result(DENIED, error=True)]), AGENT, MARKER)[0]
     assert denied.startswith('GUARD claude main-session DENIED "Code-review reviewer boundary')

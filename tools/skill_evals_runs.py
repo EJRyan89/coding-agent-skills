@@ -23,7 +23,6 @@ from skill_roots import sibling_scripts
 sys.path.insert(0, str(sibling_scripts("ejryan89-code-review-core")))
 
 import frontmatter
-import json_reader
 import json_writer
 import whole_number
 from git_client import GitClient, GitError
@@ -32,7 +31,7 @@ from review_io import PersistenceError
 
 from deployer import tools
 from deployer.platform_support import PYTHON
-from tools import runtime_canary
+from tools import claude_stream, runtime_canary
 from tools.runtime_canary import Completed, Runner
 from tools.skill_evals_records import (
     MODELS,
@@ -221,7 +220,7 @@ def trigger_command(executable: str, request: str, model: str) -> list[str]:
 UNREAD_STARTS = "the session's stream holds a message or a Skill call in a shape the evaluation does not read"
 
 
-class StreamShapeError(ValueError):
+class StreamShapeError(claude_stream.StreamError):
     """A session's stream whose skill starts cannot be read."""
 
 
@@ -230,12 +229,8 @@ def skills_in_stream(output: str) -> list[str]:
     subagent's start is not the session's. A message of the session's whose content is not a list of blocks, or a Skill
     call whose input names no skill as text, raises StreamShapeError."""
     found: list[str] = []
-    for line in output.splitlines():
-        try:
-            event = json_reader.loads(line)
-        except ValueError:
-            continue
-        if not isinstance(event, dict) or event.get("type") != "assistant" or event.get("parent_tool_use_id"):
+    for event in claude_stream.events(output):
+        if event.get("type") != "assistant" or event.get("parent_tool_use_id"):
             continue
         message = event.get("message")
         content = message.get("content") if isinstance(message, dict) else None
@@ -374,16 +369,8 @@ def stream_models(output: str) -> tuple[frozenset[str], frozenset[str]]:
     """The models the session's own messages named, and those its subagents' messages named."""
     session: set[str] = set()
     subagents: set[str] = set()
-    for line in output.splitlines():
-        try:
-            event = json_reader.loads(line)
-        except ValueError:
-            continue
-        if (
-            not isinstance(event, dict)
-            or event.get("type") != "assistant"
-            or not isinstance(event.get("message"), dict)
-        ):
+    for event in claude_stream.events(output):
+        if event.get("type") != "assistant" or not isinstance(event.get("message"), dict):
             continue
         model = event["message"].get("model")
         # A message Claude Code writes itself, such as an API error, names no model of its own.
@@ -505,12 +492,12 @@ def run_scenario(
 def trigger_failure(model: str, completed: Completed, timeout: float, skill: str) -> tuple[str, str, str] | None:
     """Why a trigger session counts for nothing, as the FAIL lines and as the results file record it, and its kind;
     or None. Its exit code is not read, since the turn limit that stops a session after it starts a skill is the
-    evaluation's own."""
-    listed, _ = runtime_canary.claude_stream(completed.stdout)
+    evaluation's own. A stream in a shape this does not read raises StreamError."""
     if completed.error:
         return completed.error, "Claude Code could not start", RUN
     if completed.timed_out:
         return f"timed out after {timeout:g} seconds", f"timed out after {timeout:g} seconds", RUN
+    listed, _ = runtime_canary.claude_stream(completed.stdout)
     if nothing := runtime_canary.discovery_failure(completed.stdout):
         return nothing, nothing, RUN
     if listed is None or skill not in listed:
@@ -541,14 +528,17 @@ def run_trigger(scenario: Scenario, model: str, home: Path, session: Session, ru
         if completed.stderr:
             transcript.with_suffix(".stderr.txt").write_text(completed.stderr, encoding="utf-8")
         transcripts.append(transcript)
-        models |= stream_models(completed.stdout)[0]
         unread: tuple[str, str, str] | None = None
         try:
+            models |= stream_models(completed.stdout)[0]
             started = skills_in_stream(completed.stdout)
-        except StreamShapeError as exc:
+        except claude_stream.StreamError as exc:
             started, unread = [], (str(exc), str(exc), RUN)
         entries.append({"request": request, "started": started})
-        problem = trigger_failure(model, completed, session.timeout, scenario.skill) or unread
+        try:
+            problem = trigger_failure(model, completed, session.timeout, scenario.skill) or unread
+        except claude_stream.StreamError:
+            problem = unread
         if failure is None and problem is not None:
             failure = (f"request {number}: {problem[0]}", f"request {number}: {problem[1]}", problem[2])
     record = {"requests": entries, "models": sorted(models)}
@@ -592,11 +582,18 @@ def _session_run(
         record = find_record(run / "tmp", RECORD_VERSION[scenario.mode])
     except RecordError as exc:
         missing = str(exc)
-    failure = run_failure(model, completed, session.timeout, scenario.skill, missing, pins=scenario.pins)
-    recorded = run_failure(model, completed, session.timeout, scenario.skill, missing, True, scenario.pins)
+    try:
+        failure = run_failure(model, completed, session.timeout, scenario.skill, missing, pins=scenario.pins)
+        recorded = run_failure(model, completed, session.timeout, scenario.skill, missing, True, scenario.pins)
+        orchestrators, reviewers = stream_models(completed.stdout)
+    except claude_stream.StreamError as exc:
+        # A stream in a shape this does not read shows neither the models nor the skills, so the run shows nothing.
+        if missing is None:
+            return Run(None, str(exc), frozenset(), frozenset(), str(exc), RECORD), transcript
+        unread, written = f"{missing}; {exc}", f"{NO_REVIEW}; {exc}"
+        return Run(None, unread, frozenset(), frozenset(), written, RUN), transcript
     if failure is None and record is not None:
         failure = recorded = unguarded(record)
-    orchestrators, reviewers = stream_models(completed.stdout)
     kind = None if failure is None else RUN if missing is not None else RECORD
     return Run(None if failure else record, failure, reviewers, orchestrators, recorded, kind), transcript
 
