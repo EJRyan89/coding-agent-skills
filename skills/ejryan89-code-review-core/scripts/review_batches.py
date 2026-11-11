@@ -5,13 +5,14 @@ from __future__ import annotations
 import sys
 from datetime import date
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal, NamedTuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
+import calendar_date
 from github_client import GitHubError
 from review_archive import ArchiveError
-from review_config import load_config, resolve_repositories
+from review_config import load_config, resolve_repositories, validate_repository_identity
 from review_io import PersistenceError, atomic_write_json, map_in_order, read_json
 from review_operation import (
     ReviewOperationError,
@@ -27,6 +28,7 @@ from review_run import EXPECTED_ERRORS, READ, PipelineError, Services, load_run,
 from review_runtime import RUNTIME_CAPABILITIES
 from review_state import StateError, default_state_path, load_state, update_state
 from skill_roots import skills_directory_holding
+from typed_fields import describe
 
 # Version 2 records each repository's deferred pull requests, which hold its watermark back.
 BATCH_SCHEMA_VERSION = 2
@@ -148,32 +150,45 @@ def enumerate_batch(
     return batch
 
 
+class WatermarkChange(NamedTuple):
+    """What `advance` did to one repository's watermark, as the state holds it once the update is written.
+
+    `moved` from `previous`, the state's date before (the batch's starting watermark when the state held none), to
+    `current`; `held` at `current`, which the state already held at or past the batch's candidate, as when a concurrent
+    run moved it further; or `failed`, its enumeration incomplete, keeping the batch's `previous`, None when that
+    watermark could not be read, and no `current`.
+    """
+
+    outcome: Literal["moved", "held", "failed"]
+    previous: str | None
+    current: str | None
+
+
 def advance_watermarks(
     batch_path: Path, *, config_path: Path | None = None, services: Services | None = None
-) -> dict[str, tuple[str | None, str | None]]:
+) -> dict[str, WatermarkChange]:
     """Advance each fully enumerated repository past the merged pull requests whose heads are now reviewed.
 
-    A repository whose enumeration failed keeps its watermark (None in the result), so no work is skipped; its
-    previous watermark is None when that watermark could not be read. The batch file is input, so a batch dated after
-    the pipeline's own today, or one that would move a watermark past it, is refused with the state unchanged: such a
-    watermark is one no merged pull request ever passes again.
+    A repository whose enumeration failed keeps its watermark, so no work is skipped. The batch file is input, so it
+    is read whole and checked before anything else, and a batch dated after the pipeline's own today, or one that would
+    move a watermark past it, is refused with the state unchanged: such a watermark is one no merged pull request ever
+    passes again. Each change is what the state holds once the update is written, never the batch's candidate alone.
     """
-    batch = _load_batch(batch_path)
+    batch = load_batch(batch_path)
     config = load_config(config_path)
     archive_root = Path(config["archive_root"])
     today = date.fromisoformat(batch["today"])
     now = (services or Services()).today()
     if today > now:
         raise PipelineError(f"{batch_path} is dated {today.isoformat()}, after today, {now.isoformat()}")
-    changes: dict[str, tuple[str | None, str | None]] = {}
+    candidates: dict[str, WatermarkChange] = {}
     for repository, entry in batch["repositories"].items():
         if not entry["complete"]:
-            changes[repository] = (entry["previous_watermark"], None)
+            candidates[repository] = WatermarkChange("failed", entry["previous_watermark"], None)
             continue
         previous = date.fromisoformat(entry["previous_watermark"])
         # A deferred merged pull request is pending like an unreviewed one, so a bounded batch skips nothing.
-        eligible = [validate_pull(pull) for pull in (*entry["eligible"], *entry["deferred"])]
-        merged = [pull for pull in eligible if pull["state"] == "MERGED"]
+        merged = [pull for pull in (*entry["eligible"], *entry["deferred"]) if pull["state"] == "MERGED"]
         heads = latest_reviewed_heads(archive_root, repository, [pull["number"] for pull in merged])
         completed = {pull["number"] for pull in merged if heads.get(pull["number"]) == pull["headRefOid"]}
         candidate = safe_watermark(previous=previous, today=today, eligible_merged=merged, completed_numbers=completed)
@@ -182,35 +197,99 @@ def advance_watermarks(
                 f"{batch_path} would move the {repository} watermark to {candidate.isoformat()}, "
                 f"after today, {now.isoformat()}"
             )
-        changes[repository] = (previous.isoformat(), candidate.isoformat())
+        candidates[repository] = WatermarkChange("moved", previous.isoformat(), candidate.isoformat())
+    changes = dict(candidates)
 
     def update(current: dict[str, Any]) -> dict[str, Any]:
-        # Only ever move forward, so a concurrent run's later watermark is never undone.
-        for repository, (_, new) in changes.items():
-            if new is None:
+        # Only ever move forward, so a concurrent run's later watermark is never undone, and report what the state
+        # then holds: a candidate at or behind it moves nothing.
+        for repository, (_, previous, new) in candidates.items():
+            if new is None:  # enumeration failed
                 continue
             recorded = current["repositories"].setdefault(repository, {})
             existing = recorded.get("merged_since")
             if existing is None or new > existing[:10]:
                 recorded["merged_since"] = new
                 recorded["updated_at"] = today.isoformat()
+                changes[repository] = WatermarkChange("moved", previous if existing is None else existing[:10], new)
+            else:
+                changes[repository] = WatermarkChange("held", existing[:10], existing[:10])
         return current
 
-    if any(new is not None for _, new in changes.values()):
+    if any(change.outcome != "failed" for change in candidates.values()):
         update_state(default_state_path(), update)
     return changes
 
 
-def _load_batch(batch_path: Path) -> dict[str, Any]:
+BATCH_FIELDS = ("schema_version", "today", "repositories")
+
+
+BATCH_ENTRY_FIELDS = ("previous_watermark", "complete", "error", "eligible", "deferred", "listing")
+
+
+LISTING_FIELDS = ("scan", "pages", "pulls", "read")
+
+
+LISTING_SCANS = ("full", "watermark")
+
+
+def _batch_date(value: object, path: str) -> str:
+    """A YYYY-MM-DD date as enumerate writes one, and nothing else `date.fromisoformat` would also take."""
+    text = READ.string(value, path)
+    if calendar_date.parse(text) is None:
+        raise READ.fail(path, "a YYYY-MM-DD date", describe(text))
+    return text
+
+
+def _batch_listing(value: object, path: str) -> dict[str, Any]:
+    listing = READ.json_object(value, path, required=LISTING_FIELDS)
+    READ.one_of(listing["scan"], f"{path}.scan", LISTING_SCANS)
+    for name in ("pages", "pulls", "read"):
+        READ.integer(listing[name], f"{path}.{name}", minimum=0)
+    return listing
+
+
+def _batch_entry(value: object, path: str) -> dict[str, Any]:
+    """One repository's entry: a complete one names the watermark it started from and no error, and an incomplete
+    one the error that stopped it."""
+    entry = READ.json_object(value, path, required=BATCH_ENTRY_FIELDS)
+    complete = READ.boolean(entry["complete"], f"{path}.complete")
+    previous = READ.optional(_batch_date, entry["previous_watermark"], f"{path}.previous_watermark")
+    error = READ.optional(READ.string, entry["error"], f"{path}.error", empty=True)
+    for name in ("eligible", "deferred"):
+        for index, pull in enumerate(READ.array(entry[name], f"{path}.{name}")):
+            validate_pull(READ.json_object(pull, f"{path}.{name}[{index}]"))
+    READ.optional(_batch_listing, entry["listing"], f"{path}.listing")
+    if complete and previous is None:
+        raise READ.fail(f"{path}.previous_watermark", "a YYYY-MM-DD date in a complete entry", "null")
+    if complete and error is not None:
+        raise READ.fail(f"{path}.error", "null in a complete entry", describe(error))
+    if not complete and error is None:
+        raise READ.fail(f"{path}.error", "a string in an incomplete entry", "null")
+    return entry
+
+
+def load_batch(batch_path: Path) -> dict[str, Any]:
+    """The batch file enumerate wrote, read whole and checked, since like any path a command is given it is input:
+    a field of another kind is a `PipelineFieldError` naming it, and its repositories are keyed by their lowercase
+    identities, two spellings of one refused. Each pull request is one `validate_pull` accepts."""
     batch = READ.json_object(read_json(batch_path), "batch")
     if READ.integer(batch.get("schema_version"), "batch.schema_version") != BATCH_SCHEMA_VERSION:
         raise PipelineError(f"{batch_path} is not a review batch file")
-    return batch
+    READ.json_object(batch, "batch", required=BATCH_FIELDS)
+    _batch_date(batch["today"], "batch.today")
+    repositories: dict[str, Any] = {}
+    for identity, entry in READ.json_object(batch["repositories"], "batch.repositories").items():
+        key = validate_repository_identity(identity, "a key of batch.repositories")
+        if key in repositories:
+            raise PipelineError(f"{batch_path} lists {key} under more than one spelling")
+        repositories[key] = _batch_entry(entry, f"batch.repositories.{identity}")
+    return {**batch, "repositories": repositories}
 
 
 def batch_selectors(batch_path: Path) -> list[str]:
     """Each pull request a batch file lists for review, in the order enumerate printed its PULL lines."""
-    batch = _load_batch(batch_path)
+    batch = load_batch(batch_path)
     selectors = []
     for repository, entry in READ.json_object(batch.get("repositories"), "batch.repositories").items():
         path = f"batch.repositories.{repository}"
