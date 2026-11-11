@@ -535,8 +535,17 @@ def fast_forward(services: Services, root: str, branch: str, old: str, new: str,
 
 
 def require_repository(root: str | Path) -> None:
-    if not (Path(root) / ".git").is_dir():
+    if not is_repository(Path(root)):
         raise CleanupError(f"{root} is not a git repository")
+
+
+def is_repository(candidate: Path) -> bool:
+    """Whether a `.git` folder is in `candidate`: a `.git` file, a linked worktree's, is none, and a `.git` whose
+    stat fails raises CleanupError naming the stat's error rather than reading as no repository."""
+    try:
+        return file_presence.is_directory(candidate / ".git", other_is_absent=True)
+    except OSError as exc:
+        raise CleanupError(f"{candidate} cannot be examined for a .git: {exc}") from exc
 
 
 # discover -------------------------------------------------------------------------------------------------------
@@ -555,12 +564,16 @@ def discover(target: str | None, repos_root: str, services: Services) -> list[st
             if target in (".", "..") or any(separator in target for separator in "/\\:"):
                 raise CleanupError(f"{target} is not a repository name or an absolute path")
             candidate = Path(repos_root) / target
-        if not (candidate / ".git").is_dir():
+        if not is_repository(candidate):
             raise CleanupError(f"{target} is not a git repository")
         repositories = [candidate]
     else:
         root = Path(repos_root)
-        if not root.is_dir():
+        try:
+            folder = file_presence.is_directory(root, other_is_absent=True)
+        except OSError as exc:
+            raise CleanupError(f"{repos_root} cannot be examined: {exc}") from exc
+        if not folder:
             raise CleanupError(f"{repos_root} is not a directory")
         entries = sorted(root.iterdir(), key=lambda path: path.name.casefold())
         repositories = [

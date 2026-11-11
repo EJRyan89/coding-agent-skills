@@ -15,13 +15,16 @@ Usage:
 
 `shadows` lists the tags on origin named like a branch the update reads, `refs/tags/main` and `refs/tags/origin/main`,
 printing `ON_ORIGIN <tag>` for each, then `CHECKED`. `fetch` fetches origin's main into `refs/remotes/origin/main`,
-with origin's tags but those two, and prints `FETCHED`. Either prints a last line `FAILED <reason>` instead, git's
-error or the time limit it ran out, on one line. `--seconds` is each command's time limit, retries of a transient
-fault included; it defaults to the client's.
+with origin's tags but those two, and prints `FETCHED`. Either prints a last line `ORIGIN_FAILED <reason>` instead
+when git ran and failed or ran out its time limit, git's error or the limit on one line, and `FAILED <reason>` for any
+failure of this script's own, such as git missing or unable to start, which `update.sh` must not report as origin's.
+`--seconds` is each command's time limit, retries of a transient fault included; it defaults to the client's.
 
 Exit status:
   0  CHECKED, after any ON_ORIGIN lines; or FETCHED
-  1  a last line FAILED <reason>: git could not reach origin, was refused, failed, or ran out its time limit
+  1  a last line ORIGIN_FAILED <reason>: git could not reach origin, was refused, failed, or ran out its time
+     limit; or a last line FAILED <reason>: git is missing or could not start, the clone is no repository, or the
+     script itself failed
   2  a usage error
 """
 
@@ -42,6 +45,8 @@ MAIN = "refs/heads/main"
 ORIGIN_MAIN = "refs/remotes/origin/main"
 # Tags git would resolve before the branches the update names by their short names, main and origin/main.
 SHADOWING_TAGS = ("refs/tags/main", "refs/tags/origin/main")
+# The GitError kinds that are origin's failure: git ran and failed, or did not finish within the time limit.
+ORIGIN_KINDS = frozenset({"git", "timeout"})
 FETCH_HELP = "fetch origin's main and its tags but those named like main or origin/main"
 
 
@@ -82,7 +87,12 @@ def main(argv: list[str]) -> int:
             fetch(git, options.clone, options.seconds)
             print("FETCHED")
     except GitError as error:
-        print(f"FAILED {flat_text(str(error))}")
+        # Only git's own answer, or its silence past the limit, is origin's failure; a git that could not run says
+        # nothing of origin.
+        if error.kind in ORIGIN_KINDS:
+            print(f"ORIGIN_FAILED {flat_text(str(error))}")
+        else:
+            print(f"FAILED {flat_text(str(error))}")
         return 1
     return 0
 

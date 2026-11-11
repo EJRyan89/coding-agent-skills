@@ -151,9 +151,14 @@ def _entries(folder: Path) -> list[os.DirEntry[str]]:
 
 
 def _folders_below(folder: Path, skip: Callable[[Path], bool]) -> list[Path]:
-    """A folder and every folder below it, entering no symbolic link to a folder and no folder `skip` names."""
-    found = [folder]
-    for entry in _entries(folder):
-        if entry.is_dir(follow_symlinks=False) and not skip(Path(entry.path)):
-            found += _folders_below(Path(entry.path), skip)
+    """A folder and every folder below it, entering no symbolic link to a folder and no folder `skip` names. It walks
+    with a stack of its own, as `folder_walk` does, so a tree nested deeper than the interpreter recurses is listed
+    too, never ended in a RecursionError; entering no link, it meets no folder twice and so needs no depth bound."""
+    found: list[Path] = []
+    pending = [folder]
+    while pending:
+        current = pending.pop()
+        found.append(current)
+        below = [Path(entry.path) for entry in _entries(current) if entry.is_dir(follow_symlinks=False)]
+        pending += reversed([path for path in below if not skip(path)])
     return found

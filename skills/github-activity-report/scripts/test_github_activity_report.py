@@ -1636,6 +1636,28 @@ def test_a_history_naming_a_folder_is_refused_before_querying(tmp_path: Path) ->
     assert f"{tmp_path} is a folder; name the history file inside it" in stderr
 
 
+@pytest.mark.parametrize("unstatable", ["history", "folder"])
+def test_a_history_or_its_folder_that_cannot_be_examined_is_refused_with_the_error_never_as_absent(
+    tmp_path: Path, unstatable: str
+) -> None:
+    # Path.is_dir answers False for a stat that fails, which read as "does not exist" for a folder that could not be
+    # examined, and passed a history file that could not be.
+    history = tmp_path / "activity.csv"
+    target = history if unstatable == "history" else tmp_path
+    real_stat = Path.stat
+
+    def stat(self: Path, *, follow_symlinks: bool = True) -> os.stat_result:
+        if self == target:
+            raise PermissionError(13, "Permission denied", str(target))
+        return real_stat(self, follow_symlinks=follow_symlinks)
+
+    github = group_github()
+    with mock.patch.object(Path, "stat", autospec=True, side_effect=stat):
+        code, stdout, stderr = run_group([*GROUP, "--history", str(history)], github, at(TODAY))
+    assert (code, stdout, github.endpoints) == (2, "", [])
+    assert f"{history} cannot be examined: [Errno 13] Permission denied: {str(target)!r}" in stderr
+
+
 def test_a_team_slug_that_is_not_one_is_refused_before_querying() -> None:
     github = group_github(members=["octo"])
     code, stdout, stderr = run_group(["--org", "acme", "--team", "core team"], github, at(TODAY))

@@ -866,8 +866,30 @@ class HandshakeTests(unittest.TestCase):
         with contextlib.redirect_stdout(output), contextlib.redirect_stderr(errors):
             code = mcp_handshake.main(["--root", str(self.root / "tools")])
         self.assertEqual(1, code)
-        self.assertEqual([f"FAILED {self.root / 'tools'} is not a Git repository"], output.getvalue().splitlines())
+        self.assertEqual(
+            [f"FAILED {self.root / 'tools'} is not a Git repository (no .git found)"], output.getvalue().splitlines()
+        )
         self.assertEqual("", errors.getvalue())
+
+    def test_a_git_marker_it_cannot_examine_fails_with_the_error_never_as_no_repository(self) -> None:
+        # Path.exists answers False for a stat that fails, which called a .git the account could not examine "not a
+        # Git repository".
+        marker = self.root / ".git"
+        real_stat = Path.stat
+
+        def stat(path: Path, *, follow_symlinks: bool = True) -> os.stat_result:
+            if path == marker:
+                raise PermissionError(13, "Permission denied", str(marker))
+            return real_stat(path, follow_symlinks=follow_symlinks)
+
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output), mock.patch.object(Path, "stat", autospec=True, side_effect=stat):
+            code = mcp_handshake.main(["--root", str(self.root)])
+        self.assertEqual(1, code)
+        reason = f"[Errno 13] Permission denied: {str(marker)!r}"
+        self.assertEqual(
+            [f"FAILED {self.root} could not be examined for a .git: {reason}"], output.getvalue().splitlines()
+        )
 
     def test_a_server_name_that_matches_nothing_fails(self) -> None:
         self._write(".mcp.json", "mcpServers", {"docs": self._stdio("ok")})

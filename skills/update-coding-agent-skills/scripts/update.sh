@@ -44,8 +44,8 @@
 #                    the clone is not a repository with deploy.py, no ejryan89-skill-core is deployed beside this
 #                    skill, `deploy.py check` printed nothing, printed only its error, or named the deployed commit or
 #                    the pin in a form the update cannot read, so whether the installation is pinned is unknown, a git
-#                    lookup or comparison failed rather than answering, git's own reason following, or another step
-#                    failed outright
+#                    lookup or comparison failed rather than answering, git's own reason following, remote_refs.py
+#                    failed or ended without its result, or another step failed outright
 # Each list of commits above that git cannot read, after any status line, is one UNLISTED <range> <reason> line in its
 # place, never an empty list.
 # A stop leaves the clone on the branch it was found on unless a "still on main:" line says otherwise; an update
@@ -335,7 +335,9 @@ ORIGIN_MAIN=refs/remotes/origin/main
 # runs git through ejryan89-skill-core's GitClient: with no prompt, no askpass helper that an inherited GIT_ASKPASS,
 # core.askPass, or SSH_ASKPASS names, no Git Credential Manager dialog, and a time limit, so a credential the helpers
 # cannot give without asking, or a remote that never answers, ends the update with FETCH_FAILED and git's reason
-# instead of holding it. Its last line is CHECKED, FETCHED, or FAILED <reason>; any other last line is a failure too.
+# instead of holding it. Its last line is CHECKED, FETCHED, or ORIGIN_FAILED <reason> for origin's failure, which alone
+# is FETCH_FAILED; FAILED <reason>, a fault of the script or of a git that could not run, and any other last line end
+# the update with FAILED naming remote_refs.py, never as a fetch origin refused.
 REMOTE_REFS="$SCRIPTS/remote_refs.py"
 REMOTE_OUT=
 remote_refs() {
@@ -348,10 +350,10 @@ remote_refs() {
       return 0
       ;;
   esac
-  echo "FETCH_FAILED"
   case "$last" in
-    "FAILED "*) printf '%s\n' "${last#FAILED }" ;;
-    *) printf 'remote_refs.py %s printed no result: %s\n' "$1" "$(one_line "$output")" ;;
+    "ORIGIN_FAILED "*) printf 'FETCH_FAILED\n%s\n' "${last#ORIGIN_FAILED }" ;;
+    "FAILED "*) printf 'FAILED remote_refs.py %s failed: %s\n' "$1" "${last#FAILED }" ;;
+    *) printf 'FAILED remote_refs.py %s printed no result: %s\n' "$1" "$(one_line "$output")" ;;
   esac
   return 1
 }

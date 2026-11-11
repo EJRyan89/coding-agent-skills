@@ -10,11 +10,13 @@ import threading
 import time
 from collections.abc import Iterator
 from pathlib import Path
+from unittest import mock
 
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+from git_client import GitClient, GitError, GitErrorKind
 from remote_refs import main
 
 COMMANDS = ("shadows", "fetch")
@@ -121,7 +123,7 @@ def test_a_remote_that_wants_a_credential_fails_at_once_with_no_helper_started(
 ) -> None:
     code, output = run(capsys, command, clone, "--seconds", "60")
     assert code == 1
-    assert output.startswith("FAILED "), output
+    assert output.startswith("ORIGIN_FAILED "), output
     assert output.count("\n") == 1, output
     assert not askpass_helpers.exists(), "an askpass helper ran"
 
@@ -138,7 +140,7 @@ def test_a_remote_that_never_answers_ends_within_the_time_limit(
     code, output = run(capsys, command, clone, "--seconds", "2")
     assert time.monotonic() - started < 60
     assert code == 1
-    assert output.startswith("FAILED "), output
+    assert output.startswith("ORIGIN_FAILED "), output
     assert "did not finish within 2 seconds" in output, output
 
 
@@ -191,7 +193,7 @@ def test_a_missing_origin_is_a_failed_line(capsys: pytest.CaptureFixture[str], c
     for command in COMMANDS:
         code, output = run(capsys, command, clone)
         assert code == 1
-        assert output.startswith("FAILED "), output
+        assert output.startswith("ORIGIN_FAILED "), output
         assert output.count("\n") == 1, output
 
 
@@ -219,3 +221,14 @@ def test_a_limit_that_is_not_a_positive_number_of_seconds_is_a_usage_error(clone
     with pytest.raises(SystemExit) as raised:
         main(["fetch", str(clone), "--seconds", seconds])
     assert raised.value.code == 2
+
+
+@pytest.mark.parametrize("command", COMMANDS)
+@pytest.mark.parametrize("kind", ["prerequisite", "execution", "not_repository"])
+def test_a_git_that_could_not_run_is_a_failed_line_never_origins_failure(
+    capsys: pytest.CaptureFixture[str], clone: Path, command: str, kind: GitErrorKind
+) -> None:
+    # A git that is missing, could not start, or found no repository said nothing of origin, so update.sh must not
+    # report it as FETCH_FAILED, which tells the user to sign in to origin.
+    with mock.patch.object(GitClient, "output", side_effect=GitError("git could not run", kind=kind)):
+        assert run(capsys, command, clone) == (1, "FAILED git could not run\n")
