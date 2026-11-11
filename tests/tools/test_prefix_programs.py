@@ -227,10 +227,10 @@ for name in "$@"; do
   "$path" -@ < /dev/null > "usage.$name" 2>&1 || :
 done"""
 # The programs the guard reads whose installed build this suite reads only where it is the one macOS installs: Apple's
-# find and sort, and bsdtar, macOS's tar, each held to its catalogue. Their GNU builds, which Git Bash and Linux
-# install, are held to the catalogue alone, since GNU find's --help lists its primaries as running text the --help
-# reader does not read.
-MACOS_CHECKED = ("find", "sort", "tar")
+# chroot, find, sort, and time, and bsdtar, macOS's tar, each held to its catalogue. Their GNU builds, which Git Bash
+# and Linux install, were catalogued from their own --help or getopt table and are held to the catalogue alone; GNU
+# find's --help lists its primaries as running text the --help reader does not read.
+MACOS_CHECKED = ("chroot", "find", "sort", "tar", "time")
 # bsdtar's --version, as libarchive prints it: `bsdtar 3.5.3 - libarchive 3.7.4 ...`.
 BSDTAR_VERSION = re.compile(r"bsdtar \d")
 # A usage synopsis's options: a bracket that opens on one option, or on options joined by |, each a long option, one
@@ -793,11 +793,17 @@ class CatalogueTests(unittest.TestCase):
     def test_the_bsd_catalogue_holds_the_runners_macos_installs_each_with_its_provenance(self) -> None:
         tables = {**hub_guard.RUNNER_OPTIONS, **hub_guard.PROGRAM_OPTIONS}
         bsd = catalogue(BSD_CATALOGUES)
-        # The runners CHECKED names that macOS installs, it has no stdbuf or timeout, and the programs the guard reads
-        # whose macOS build is Apple's: find and sort. Its tar is bsdtar, which the main catalogue holds.
-        self.assertEqual(["env", "find", "nice", "nohup", "sort", "xargs"], sorted(bsd))
+        # Every program the guard reads whose macOS build is Apple's. Its tar is bsdtar, which the main catalogue holds,
+        # and its sudo is sudo 1.9, the build the main catalogue holds. macOS installs none of the others the guard
+        # reads: stdbuf and timeout (GNU coreutils), ionice, chrt, taskset, and setsid (util-linux), strace and ltrace
+        # (Linux tracers), unbuffer (expect), chronic (moreutils), doas (OpenBSD), and rg, whose builds anywhere are the
+        # ones the main catalogue holds.
+        self.assertEqual(["chroot", "env", "find", "nice", "nohup", "sort", "time", "xargs"], sorted(bsd))
         self.assertLessEqual(set(bsd), set(tables))
-        self.assertEqual({"find", "sort", "tar"}, set(MACOS_CHECKED))
+        not_on_macos = {"stdbuf", "timeout", "ionice", "chrt", "taskset", "setsid", "strace", "ltrace", "unbuffer"}
+        not_on_macos |= {"chronic", "doas", "rg"}
+        self.assertEqual(set(tables), set(bsd) | {"tar", "sudo"} | not_on_macos)
+        self.assertEqual({"chroot", "find", "sort", "tar", "time"}, set(MACOS_CHECKED))
         self.assertEqual("tar", OTHER_BUILDS["bsdtar"])
         for name, entry in bsd.items():
             with self.subTest(program=name):
@@ -806,8 +812,11 @@ class CatalogueTests(unittest.TestCase):
                 self.assertIn(" at apple-oss-distributions/", str(entry["how"]))
         # The options Apple's builds take and GNU's do not, each one the rows try against the guard. None is safe, so
         # the guard is held to refusing every form of each: env's -P chooses the path its command is looked up on,
-        # xargs's -J builds its command, and find's -f names a path to search.
+        # xargs's -J builds its command, find's -f names a path to search, chroot's -u, -g, and -G choose who its
+        # command runs as, and time's -l and -h change only what it prints.
         bsd_only = {
+            "chroot": {"-G", "-g", "-u"},
+            "time": {"-h", "-l"},
             "env": {"-P"},
             "find": {"-Bmin", "-Bnewer", "-Btime", "-E", "-X", "-acl", "-d", "-f", "-flags", "-mnewer", "-s"},
             "sort": {"--heapsort", "--mergesort", "--mmap", "--qsort", "--radixsort"},
@@ -889,7 +898,7 @@ class CatalogueTests(unittest.TestCase):
         held = installed_catalogue(name, version)
         macos_build = held is not None and (held[0] is BSD_CATALOGUES or held[1] == "bsdtar")
         if name in MACOS_CHECKED and not macos_build:
-            # A GNU or Rust build of find, sort, or tar is held to its catalogue alone; see MACOS_CHECKED.
+            # A GNU or Rust build of one of these is held to its catalogue alone; see MACOS_CHECKED.
             return
         self.assertIsNotNone(held, f"{name}'s --version names neither GNU nor uutils: {first!r}")
         assert held is not None
@@ -913,7 +922,7 @@ class CatalogueTests(unittest.TestCase):
             with self.subTest(program=name):
                 self.lists_every_option(name)
 
-    def test_the_find_sort_and_tar_macos_installs_list_no_option_the_fixture_leaves_out(self) -> None:
+    def test_the_programs_macos_builds_of_its_own_list_no_option_the_fixture_leaves_out(self) -> None:
         for name in MACOS_CHECKED:
             with self.subTest(program=name):
                 self.lists_every_option(name)
@@ -1016,6 +1025,23 @@ class UsageOptionsTests(unittest.TestCase):
         read = names(list(help_options(help_text)))
         self.assertEqual({"-v", "-w", "-z", "--format", "--exclude", "-k", "-O"}, read)
         self.assertLessEqual(read, names(listed_options(CATALOGUES, "bsdtar")))
+
+    def test_reads_apple_chroot_s_and_time_s_synopses_each_option_in_its_row(self) -> None:
+        chroot = (
+            "chroot: illegal option -- @\nusage: chroot [-g group] [-G group,group,...] [-u user] newroot [command]\n"
+        )
+        time = "time: illegal option -- @\nusage: time [-al] [-h | -p] [-o file] utility [argument ...]\n"
+        for name, text, expected in (
+            ("chroot", chroot, {Option(each, None, "value") for each in ("-g", "-G", "-u")}),
+            (
+                "time",
+                time,
+                {*(Option(each, None, "none") for each in ("-a", "-l", "-h", "-p")), Option("-o", None, "value")},
+            ),
+        ):
+            with self.subTest(program=name):
+                self.assertEqual(expected, set(usage_options(text, name)))
+                self.assertLessEqual(expected, set(listed_options(BSD_CATALOGUES, name)))
 
     def test_reads_options_joined_by_a_bar_as_each_taking_the_value(self) -> None:
         self.assertEqual(

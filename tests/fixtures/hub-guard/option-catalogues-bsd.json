@@ -13,6 +13,16 @@
       {"short": "-v", "long": null, "value": "none"}
     ]
   },
+  "chroot": {
+    "source": "Apple shell_cmds-329, FreeBSD's chroot, its getopt string",
+    "how": "Read from chroot/chroot.c at apple-oss-distributions/shell_cmds tag shell_cmds-329 (gh api 'repos/apple-oss-distributions/shell_cmds/contents/chroot/chroot.c?ref=shell_cmds-329'): the __APPLE__ getopt string G:g:u:, each letter followed by a colon taking a value; getopt takes no long option and abbreviates none. macOS installs it as /usr/sbin/chroot.",
+    "abbreviates": false,
+    "options": [
+      {"short": "-G", "long": null, "value": "value"},
+      {"short": "-g", "long": null, "value": "value"},
+      {"short": "-u", "long": null, "value": "value"}
+    ]
+  },
   "find": {
     "source": "Apple shell_cmds-329, FreeBSD's find, its getopt string and primary table",
     "how": "Read from find/main.c and find/option.c at apple-oss-distributions/shell_cmds tag shell_cmds-329 (gh api 'repos/apple-oss-distributions/shell_cmds/contents/find/option.c?ref=shell_cmds-329'): main's getopt string EHLPXdf:sx, before the paths, and each row of option.c's options table that macOS builds (st_birthtime, st_flags, f_fstypename, and the __APPLE__ rows), each taking the next word as its value where its c_ function reads one, and -exec, -execdir, -ok, and -okdir every word to their ; or +, written here as taking a value as the other catalogues write them. The operators !, (, and ) are left out, as the GNU row leaves them. -d and -depth read the next word as a depth only when it is a sign and a digit, which is never a primary or a command, so they are written as taking none.",
@@ -173,6 +183,18 @@
       {"short": null, "long": "--random-source", "value": "value"},
       {"short": null, "long": "--sort", "value": "value"},
       {"short": null, "long": "--version", "value": "none"}
+    ]
+  },
+  "time": {
+    "source": "Apple shell_cmds-329, FreeBSD's time, its getopt string",
+    "how": "Read from time/time.c at apple-oss-distributions/shell_cmds tag shell_cmds-329 (gh api 'repos/apple-oss-distributions/shell_cmds/contents/time/time.c?ref=shell_cmds-329'): the getopt string ahlo:p, each letter followed by a colon taking a value; getopt takes no long option and abbreviates none. macOS installs it as /usr/bin/time, which Bash runs only where time is not its keyword.",
+    "abbreviates": false,
+    "options": [
+      {"short": "-a", "long": null, "value": "none"},
+      {"short": "-h", "long": null, "value": "none"},
+      {"short": "-l", "long": null, "value": "none"},
+      {"short": "-o", "long": null, "value": "value"},
+      {"short": "-p", "long": null, "value": "none"}
     ]
   },
   "xargs": {

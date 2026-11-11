@@ -437,8 +437,8 @@ removed fails validation until its pattern follows it.
   `tests/tools/test_prefix_programs.py::CatalogueTests::test_the_installed_runners_list_no_option_the_fixture_leaves_out`,
   which holds each installed runner to the catalogue of the implementation its version option names, GNU or the Rust
   coreutils, or on macOS, whose runners name none, Apple's BSD build, read from the usage synopsis it prints,
-  `tests/tools/test_prefix_programs.py::CatalogueTests::test_the_find_sort_and_tar_macos_installs_list_no_option_the_fixture_leaves_out`,
-  which holds macOS's find and sort to Apple's catalogue and its tar to bsdtar's,
+  `tests/tools/test_prefix_programs.py::CatalogueTests::test_the_programs_macos_builds_of_its_own_list_no_option_the_fixture_leaves_out`,
+  which holds macOS's chroot, find, sort, and time to Apple's catalogue and its tar to bsdtar's,
   `tests/tools/test_prefix_programs.py::CatalogueTests::test_each_safe_option_takes_its_value_as_every_implementation_reads_it`,
   `tests/tools/test_hub_guard_bash.py::RunnerTests::test_env_s_file_and_argv0_are_refused_in_every_spelling_and_neither_value_is_read_as_its_command`,
   which refuses the Rust coreutils' env options that read variables from a file and name what a multicall program
