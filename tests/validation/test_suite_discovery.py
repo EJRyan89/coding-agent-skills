@@ -51,6 +51,12 @@ from suite_discovery import (
 from toolchain import find_git_bash
 from validation_support import REPOSITORY_ROOT, SUITE_NAME_PATTERNS, is_test_script, write_fixture_tree
 
+# The operating-system names this module states on purpose, with the reason, which the platform policy reads.
+PLATFORM_ALLOWED = {
+    "sys.platform": "skips the run of GNU_RACES on macOS, which has no timeout and whose env reads no long option; a "
+    "skip whose condition reads the platform alone is what the workaround policy allows, which a seam constant is not",
+}
+
 
 def run_pytest(suite: Path, *options: str) -> subprocess.CompletedProcess[str]:
     """Run a fixture suite as the runner runs a suite, from the repository root, with its conftest.py as a plugin,

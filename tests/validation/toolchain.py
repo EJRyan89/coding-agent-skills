@@ -473,6 +473,9 @@ def outdated_prerequisites(versions: dict[str, tuple[int, ...] | None], python: 
         if label not in found:
             continue
         version = found[label]
+        if version is not None and version >= floor:
+            continue
+        # The install hint only of a tool reported, so a tool at its floor needs none.
         hint = f": {platform_support.install_hint(hints[label])}" if label in hints else ""
         if version is None:
             outdated.append(

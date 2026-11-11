@@ -146,6 +146,11 @@ class ToolchainFixtures(unittest.TestCase):
         # A missing tool is reported by missing_prerequisites, not again here.
         self.assertEqual([], outdated_prerequisites({}, (3, 14, 7)))
 
+    def test_a_tool_at_its_floor_needs_no_install_hint(self) -> None:
+        # Only a tool reported is given its install command, so a platform with none for it reports nothing.
+        with mock.patch.object(platform_support, "INSTALL_HINTS", {}):
+            self.assertEqual([], outdated_prerequisites({BASH: (5, 3, 15), "ShellCheck": (0, 9, 0)}, (3, 11, 4)))
+
     def test_a_bash_older_than_the_floor_is_reported_with_its_install_command(self) -> None:
         # macOS's own /bin/bash is a 3.2, which reads text the Bash reader is held to differently.
         with mock.patch.object(platform_support, "INSTALL_HINTS", {BASH: "brew install bash"}):
