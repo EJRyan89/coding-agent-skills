@@ -1698,10 +1698,13 @@ def engine_dependent_constructs(pattern: str) -> list[str]:
 
 
 INTEGER_PROBES = (-1, 0, 1, 2)
+# The adapter-result fields the validator checks against the request. The judge answers each probe with a request of
+# the probe's own value, so the schema and the validator still meet on every other reading of these fields.
+REQUEST_CHECKED = frozenset({"repository", "pull_number", "head_sha"})
 # The adapter-result fields the validator also checks against the request or the other findings, each of which says
-# so in its description: a candidate key must be unique, a repeats must name a finding, and a disposition must answer
-# one of the request's prior findings or comments.
-CROSS_CHECKED = frozenset({"candidate_key", "repeats", "finding_id", "comment_id"})
+# so in its description: those above must be the request's, a candidate key must be unique, a repeats must name a
+# finding, and a disposition must answer one of the request's prior findings or comments.
+CROSS_CHECKED = REQUEST_CHECKED | {"candidate_key", "repeats", "finding_id", "comment_id"}
 
 
 def schema_accepts(described: dict[str, Any], name: str, target: dict[str, Any], value: Any) -> bool:
@@ -1755,7 +1758,7 @@ def schema_constraint_problems(path: str, described: dict[str, Any], found: list
                 where = f"{path}: {name} {probe!r} in {item.fixture.name}"
                 if by_validator and not by_schema:
                     problems.append(f"{where} is accepted by the validator but refused by the schema")
-                elif by_schema and not by_validator and name not in CROSS_CHECKED:
+                elif by_schema and not by_validator and name not in CROSS_CHECKED - REQUEST_CHECKED:
                     problems.append(f"{where} is accepted by the schema but refused by the validator")
     return problems
 
@@ -1935,6 +1938,7 @@ class FormatContractTest(unittest.TestCase):
             ("pull floor", top, "pull_number", {"minimum": 2}, "pull_number 1 in published adapter-result.json is acc"),
             ("title length", findings, "title", {"maxLength": 100}, "title 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
             ("unsaid check", findings, "candidate_key", {"description": None}, "candidate_key is checked further"),
+            ("unsaid request check", top, "head_sha", {"description": None}, "head_sha is checked further"),
         ):
             with self.subTest(changed=name):
                 doctored = copy.deepcopy(described)

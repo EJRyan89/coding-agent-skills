@@ -443,7 +443,10 @@ def validate_reviewer(
     config_path: Path | None = None,
     services: Services | None = None,
 ) -> list[str]:
-    """Prove a repository reviewer works without starting a reviewer or writing anything.
+    """Prove a repository reviewer works without starting a reviewer or writing any review state.
+
+    Like prepare, it fetches a commit it reads that the configured checkout lacks into that checkout, and it
+    writes diffs and condition-script outputs only under a temporary directory it removes.
 
     Checks the manifest's structure, that every file it names exists (profiles at the trusted commit, condition
     scripts beside a local manifest), that no snapshot_exclude glob matches one of them, which include patterns

@@ -21,11 +21,12 @@
       "type": "string",
       "pattern": "^(?:(?=[A-Za-z0-9_-]{1,39}/)[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*(?:_[A-Za-z0-9]+)?|review-document\\.local)/(?!\\.+$)[A-Za-z0-9_.-]{1,100}$"
     },
-    "pull_number": { "type": "integer", "minimum": 1 },
-    "head_sha": { "type": "string", "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$" },
+    "pull_number": { "description": "The request's pull request number.", "type": "integer", "minimum": 1 },
+    "head_sha": { "description": "The request's head commit.", "type": "string", "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$" },
     "summary": { "type": "string", "minLength": 1, "pattern": "[^\\t-\\r\\u001c-\\u0020\\u0085\\u00a0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000]" },
     "reviewer": { "type": "string", "minLength": 1, "pattern": "[^\\t-\\r\\u001c-\\u0020\\u0085\\u00a0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000]" },
     "status": {
+      "description": "Only complete is accepted: a result marked partial or failed is refused.",
       "type": "string",
       "enum": ["complete", "partial", "failed"]
     },
@@ -68,7 +69,7 @@
           "evidence": { "type": "string", "minLength": 1, "pattern": "[^\\t-\\r\\u001c-\\u0020\\u0085\\u00a0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000]" },
           "source": { "type": "string", "minLength": 1, "pattern": "[^\\t-\\r\\u001c-\\u0020\\u0085\\u00a0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000]" },
           "repeats": {
-            "description": "Present only when the finding reports the same problem as another one, so it counts once: another finding's candidate_key, or the ID of a prior finding whose disposition is still_present or partially_addressed. The finding it names must be at least as severe and must not have repeats itself. A link to a finding of another category, letter case aside, is dropped, and the finding recorded as a new one.",
+            "description": "Present only when the finding reports the same defect, with the same cause, as another one, raised again or found at another place, so it counts once: another finding's candidate_key, or the ID of a prior finding whose disposition is still_present or partially_addressed. The finding it names must be at least as severe and must not have repeats itself. Another defect in the same code, even in the same method, is a finding of its own with no repeats. A link to a finding of another category, letter case aside, is dropped, and the finding recorded as a new one.",
             "type": "string",
             "minLength": 1,
             "pattern": "[^\\t-\\r\\u001c-\\u0020\\u0085\\u00a0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000]"
