@@ -2091,16 +2091,24 @@ class OutputTests(DocumentTestCase):
         recorded.write_text("# Code Review\n", encoding="utf-8")
         recorded.with_suffix(".json").write_text("{}", encoding="utf-8")
         arguments = ("report", "--fixture", str(fixture), "--report", str(recorded))
-        for path in (fixture / "pull.json", recorded.with_suffix(".json")):
+        # A directory in a file's place is not a file, never reported as no file at all.
+        built, finalized = "is not a fixture review-document built", "is not a report finalize recorded"
+        not_a_file = {
+            "pull.json": f"FAILED {fixture.resolve()} {built}: its pull.json is not a file",
+            "review.json": f"FAILED {recorded} {finalized}: the review.json beside it is not a file",
+            "review.md": f"FAILED {recorded} {finalized}: it is not a file",
+        }
+        for path in (fixture / "pull.json", recorded.with_suffix(".json"), recorded):
             original = path.read_bytes()
             with self.subTest(file=path.name, fault="a directory in its place"):
                 path.unlink()
                 path.mkdir()
                 code, lines = run_main(*arguments)
-                self.assertEqual(1, code)
-                self.assertEqual(1, len(lines))
-                self.assertIn(path.name, lines[0])
+                self.assertEqual((1, [not_a_file[path.name]]), (code, lines))
                 path.rmdir()
+            if path == recorded:
+                path.write_bytes(original)
+                continue
             with self.subTest(file=path.name, fault="its stat raises"):
                 path.write_bytes(original)
                 real_stat, denied = os.stat, os.path.normcase(path.resolve())

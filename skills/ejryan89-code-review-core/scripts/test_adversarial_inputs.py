@@ -2054,6 +2054,19 @@ class ClosingIssueTests(AdversarialFixture):
         self.assertFalse((ready["run"] / "closing-issues.json").exists())
         self.assertNotIn("closing_issues", self.request(ready)["pull_request"])
 
+    def test_a_specialist_given_closing_issues_that_is_not_routed_reads_none(self) -> None:
+        # The manifest gives the completeness specialist the closing issues, but it routes only on a fix's title, so
+        # a docs pull request plans the generic reviewer alone: no issue is read, written, or recorded as given.
+        self.github.title = "docs(core): total the items"
+        self.github.closing = [self.issue(1, "ISSUE-MARKER")]
+        self.change()
+        ready = self.prepare()
+        self.assertNotIn("completeness", self.roles(ready))
+        self.assertEqual(0, self.github.closing_reads)
+        self.assertFalse((ready["run"] / "closing-issues.json").exists())
+        self.assertNotIn("closing_issues", self.request(ready)["pull_request"])
+        self.assertEqual({}, json.loads((ready["run"] / "run.json").read_text(encoding="utf-8"))["restricted"])
+
 
 class EntrypointPromptTests(AdversarialFixture):
     SKILL = "review/SKILL.md"
