@@ -43,7 +43,7 @@ When a reason is not enough, search the run's `TRANSCRIPT` file, which is stream
 
 ## 4. Record the result
 
-`--write` replaced the skill's rows in `docs/skill-evaluations.md`, which the `WROTE` line names: commit it with the change. A `KEPT <model>` line names a model no record of which counted, whose committed row the run kept rather than replacing it with a result that measured nothing: say so in the pull request, and run again once what its `NOT_COUNTED` lines name is fixed. Paste the lines between `CITATION BEGIN` and `CITATION END` into the pull request's Validation section as they are, and add your reading of each `NOT_COUNTED` and `FAIL` line in it. Without a `REMOVED` line, the `HOME` directory keeps the transcripts; give the user its path to delete when they are done with it.
+`--write` replaced the skill's rows in `docs/skill-evaluations.md`, which the `WROTE` line names: commit it with the change. A `FAILED` line in its place means the file could not be written after the run was judged: report its reason, fix it, and run again, since the rows were not recorded. A `KEPT <model>` line names a model no record of which counted, whose committed row the run kept rather than replacing it with a result that measured nothing: say so in the pull request, and run again once what its `NOT_COUNTED` lines name is fixed. Paste the lines between `CITATION BEGIN` and `CITATION END` into the pull request's Validation section as they are, and add your reading of each `NOT_COUNTED` and `FAIL` line in it. Without a `REMOVED` line, the `HOME` directory keeps the transcripts; give the user its path to delete when they are done with it.
 
 ## 5. Read the sampled transcript
 
@@ -53,4 +53,4 @@ A script grader that passes a wrong run fails nothing, so every run with `--writ
 python -B tools/skill_evals.py review-prs --sample-read agrees
 ```
 
-Use `disagrees` instead when a `PASS` is not what the transcript shows: that is a defect of the script grader, its kind's check in `tools/skill_evals_scenarios.py` or the judging in `tools/skill_evals_judging.py`. Open a bug issue from the template against it, name it in the pull request, and do not change the skill to suit the grader. A `FAILED` line names a row already read or missing; report it. Validation fails while a committed row is still `unread`.
+Use `disagrees` instead when a `PASS` is not what the transcript shows: that is a defect of the script grader, its kind's check in `tools/skill_evals_scenarios.py` or the judging in `tools/skill_evals_judging.py`. Open a bug issue from the template against it, name it in the pull request, and do not change the skill to suit the grader. A `FAILED` line names a row already read or missing, or a results file that cannot be read or written; report it. Validation fails while a committed row is still `unread`.

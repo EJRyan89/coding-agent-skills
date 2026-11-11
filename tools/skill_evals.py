@@ -191,10 +191,12 @@ FAIL line, names it as ` run=<run>` after its model, and the lines are otherwise
                                                   run recorded no review of its own, because the session ended
                                                   before finalize, timed out, could not start, did not list the
                                                   skill, had a command denied, or its fixture or document could not
-                                                  be staged, a trigger scenario's session as above, or, with
+                                                  be staged, a trigger scenario's session as above or with a stream
+                                                  line that is JSON but no event object, or, with
                                                   --records, no record file can be read; `record`
                                                   when a record does not show the model judged: no reviewer subagent
-                                                  ran, reviewers or the session ran on another model, a reviewer no
+                                                  ran, reviewers or the session ran on another model, the session's
+                                                  stream holds a line that is JSON but no event object, a reviewer no
                                                   guard held, a record the record contract or the scenario's
                                                   review version refuses, or a trigger record of another model's
   PASS <skill> <scenario> <model> <expectation>
@@ -210,7 +212,8 @@ FAIL line, names it as ` run=<run>` after its model, and the lines are otherwise
                                                   Claude Code is missing, the checkout follows another
                                                   repository's pull request or its branch cannot be read, or
                                                   --write's existing results file cannot be read or one of its
-                                                  tables cannot be read
+                                                  tables cannot be read; or, last, in place of WROTE, after the run
+                                                  was judged and its home kept, the results file cannot be written
 A run then prints, between a `CITATION BEGIN` and a `CITATION END` line, the Markdown a pull request's Validation
 section cites it with: the command, a table with one row per scenario and one column per model, each cell the
 expectations passed of those checked over every run, followed over several runs by `(<passed>/<runs> runs)`, the
@@ -232,9 +235,9 @@ that passes a wrong run fails nothing, so only a reading of a passing transcript
 is removed, the run keeps the home while it samples one: `REMOVED` then never follows `SAMPLE <scenario>`.
 `--sample-read agrees` or `--sample-read disagrees`, given with the skill alone, runs nothing: it marks the skill's
 unread samples row with the reading, `agrees` when the transcript shows what each verdict of that run says, and prints
-`WROTE <file>`, or `FAILED "<reason>"` when the results file cannot be read, has no row of the skill, or the row was
-already read. A model none of whose reviewers ran, and of which the skill has no row, is written in the results file
-as not run with a fixed
+`WROTE <file>`, or `FAILED "<reason>"` when the results file cannot be read, has no row of the skill, the row was
+already read, or the file cannot be written. A model none of whose reviewers ran, and of which the skill has no row,
+is written in the results file as not run with a fixed
 phrase for its first reason, such as `timed out after 1800 seconds` or `denied 2 commands`, which names no path of the
 machine; the FAIL lines and the transcript keep the whole reason. --write reads the results table strictly before any
 run: the header, its separator, then rows of the header's columns, each naming a skill, and nothing else between the
@@ -477,7 +480,8 @@ def evaluate(skill: str, scenarios: Sequence[Scenario], options: Options, seams:
         else:
             written = replace_sample(written, skill, sample, seams.today())
             print(f"SAMPLE {sample[0]} {sample[1]}{run_token(sample[2])}")
-        seams.results.write_text(written, encoding="utf-8", newline="\n")
+        if not write_results(seams.results, written):
+            return 1
         print(f"WROTE {runtime_canary.forward(seams.results)}")
     if not failed and sample is None:
         fsops.remove(root)
@@ -546,9 +550,20 @@ def record_reading(skill: str, reading: str, results: Path) -> int:
     ) as exc:  # a results file missing, not UTF-8, or not as read
         print(f"FAILED {quote(str(exc))}")
         return 1
-    results.write_text(text, encoding="utf-8", newline="\n")
+    if not write_results(results, text):
+        return 1
     print(f"WROTE {runtime_canary.forward(results)}")
     return 0
+
+
+def write_results(results: Path, text: str) -> bool:
+    """Write the results file, or print FAILED naming why it cannot be written and return False."""
+    try:
+        results.write_text(text, encoding="utf-8", newline="\n")
+    except OSError as exc:
+        print(f"FAILED {quote(f'the results file cannot be written: {exc}')}")
+        return False
+    return True
 
 
 def main(argv: Sequence[str], root: Path = SCENARIO_ROOT, seams: Seams | None = None) -> int:

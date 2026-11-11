@@ -8,10 +8,13 @@ from __future__ import annotations
 
 import argparse
 import ast
+import http.client
+import io
 import json
 import sys
 import tempfile
 import unittest
+import urllib.request
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any, ClassVar
@@ -559,6 +562,14 @@ class MainTests(unittest.TestCase):
             code = watch.main(list(arguments), fetcher=StubFetcher(table), top=REPOSITORY)
         return code, printed
 
+    def test_a_summary_that_cannot_be_appended_to_fails_by_name_after_the_findings(self) -> None:
+        # A folder in the summary's place, which no file can be opened for appending at.
+        summary = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        code, lines = self.run_main(self.table(), "--summary", str(summary))
+        self.assertEqual(1, code, lines)
+        self.assertTrue(lines[-1].startswith(f"FAILED cannot append the findings to {summary}: "), lines[-1])
+        self.assertTrue(any(line.startswith("CHANGELOG codex ") for line in lines[:-1]), lines)
+
     def test_findings_are_listed_and_written_to_the_summary_and_never_fail_the_run(self) -> None:
         record = watch.read_record(REPOSITORY)
         summary = Path(self.enterContext(tempfile.TemporaryDirectory())) / "summary.md"
@@ -780,3 +791,57 @@ def test_the_python_files_never_list_a_fixtures_folder_and_refuse_another_folder
     with denied(tmp_path / "tools" / "deep", stat=False), pytest.raises(PermissionError) as raised:
         watch.python_files(tmp_path)
     assert raised.value.filename == str(tmp_path / "tools" / "deep")
+
+
+# The variable the workflow gives the watch's step the job's token in, as validation's workflow policy names it.
+TOKEN = {"GH_TOKEN": "job-token"}
+
+
+@pytest.mark.parametrize(
+    ("url", "environment", "expected"),
+    [
+        ("https://api.github.com/repos/openai/codex/releases?per_page=30&page=1", TOKEN, "Bearer job-token"),
+        ("https://API.GITHUB.COM/repos/openai/codex/releases", TOKEN, "Bearer job-token"),
+        ("https://api.github.com/repos/openai/codex/releases", {}, None),
+        ("https://api.github.com/repos/openai/codex/releases", {"GH_TOKEN": ""}, None),
+        ("https://api.github.com/repos/openai/codex/releases", {"GITHUB_TOKEN": "other"}, None),
+        ("http://api.github.com/repos/openai/codex/releases", TOKEN, None),
+        ("https://api.github.com:8443/repos/openai/codex/releases", TOKEN, None),
+        ("https://github.com/openai/codex/releases", TOKEN, None),
+        ("https://raw.githubusercontent.com/anthropics/claude-code/main/CHANGELOG.md", TOKEN, None),
+        ("https://api.github.com.example.com/repos", TOKEN, None),
+        ("https://api.github.com@example.com/repos", TOKEN, None),
+        ("https://docs.example.com/api.github.com", TOKEN, None),
+    ],
+)
+def test_the_token_goes_to_github_s_api_over_https_alone(
+    url: str, environment: dict[str, str], expected: str | None
+) -> None:
+    # A hosted runner's address shares the API's unauthenticated limit with every job on it, which failed a weekly run.
+    assert watch.authorization(url, environment) == expected
+
+
+def test_a_fetch_sends_the_token_to_the_api_and_never_on_to_a_redirect(monkeypatch: pytest.MonkeyPatch) -> None:
+    sent: list[urllib.request.Request] = []
+
+    class Response(io.BytesIO):
+        status = 200
+
+        def geturl(self) -> str:
+            return sent[-1].full_url
+
+    def opened(request: urllib.request.Request, timeout: float) -> Response:
+        sent.append(request)
+        return Response(b"[]")
+
+    monkeypatch.setenv("GH_TOKEN", "job-token")
+    monkeypatch.setattr(urllib.request, "urlopen", opened)
+    api = "https://api.github.com/repos/openai/codex/releases"
+    assert watch.fetch(api, 5.0) == Fetched(200, api, b"[]")
+    assert watch.fetch("https://github.com/openai/codex", 5.0).status == 200
+    assert [request.get_header("Authorization") for request in sent] == ["Bearer job-token", None]
+    redirected = urllib.request.HTTPRedirectHandler().redirect_request(
+        sent[0], io.BytesIO(), 302, "Found", http.client.HTTPMessage(), "https://objects.example.com/releases"
+    )
+    assert redirected is not None
+    assert redirected.get_header("Authorization") is None
