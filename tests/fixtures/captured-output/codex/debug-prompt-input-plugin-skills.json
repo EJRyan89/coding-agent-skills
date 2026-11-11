@@ -1,0 +1,13 @@
+[
+  {
+    "type": "message",
+    "id": "msg_00000000-0000-0000-0000-000000000000",
+    "role": "developer",
+    "content": [
+      {
+        "type": "input_text",
+        "text": "<skills_instructions>\n## Skills\nA skill is a set of local instructions to follow that is stored in a `SKILL.md` file. Below is the list of skills that can be used. Each entry includes a name, description, and a short path that can be expanded into an absolute path using the skill roots table.\n### Skill roots\n- `r0` = `<home>/.agents/skills`\n- `r1` = `<home>/.codex/skills/.system`\n- `r2` = `<home>/.codex/plugins/cache/openai-bundled`\n- `r3` = `<home>/.codex/plugins/cache/openai-primary-runtime`\n- `r4` = `<home>/.codex/plugins/cache/openai-primary-runtime/spreadsheets/26.1026.10807/skills`\n### Available skills\n- skill-creator: Create or update a Codex skill with appropriately scoped instructions and any needed supporting resources. (file: r1/skill-creator/SKILL.md)\n- audit-skill: Audit an agent skill's contract, grants, and cost: whether its Markdown names the lines and exit codes its scripts print, its allowed-tools grants and listing, deterministic work left to prose, token footprint, tool calls, subagents, and model. Read-only findings report. Use it when asked to audit or check a skill: whether its allowed-tools grants are too broad, whether its SKILL.md names the lines its scripts print, what it costs to run or why it is slow, or before shipping it. (file: r0/audit-skill/SKILL.md)\n- computer-use:computer-use: Control Windows apps from ChatGPT (file: r2/computer-use/26.1027.30824/skills/computer-use/SKILL.md)\n- presentations:Presentations: Read, create or edit presentations. Default to Spaces; follow the routing rules for PowerPoint/PPT/PPTX, Google Slides, templates and existing decks. (file: r3/presentations/26.1026.10807/skills/presentations/SKILL.md)\n- spreadsheets:Spreadsheets: Use skill when user requests to create, modify, analyze, visualize, or work with spreadsheet files (`.xlsx`, `.xls`, `.csv`, `.tsv`) or Google Sheets with formulas, formatting, charts, tables, and recalculation. Do not use for live controlling Microsoft Excel app or a live Excel session. (file: r4/spreadsheets/SKILL.md)\n- spreadsheets:excel-live-control: Control an open or active Microsoft Excel workbook through the ChatGPT add-in or connected session. Use when the user tags the Microsoft Excel app in Codex or follows up on an established live Excel task. Do not use for standalone spreadsheet files or Google Sheets. (file: r4/excel-live-control/SKILL.md)\n</skills_instructions>"
+      }
+    ]
+  }
+]

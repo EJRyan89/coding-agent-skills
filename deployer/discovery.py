@@ -60,8 +60,10 @@ CODEX_CATALOG = ("debug", "prompt-input")
 # Each pattern reads one line of the skills message, as output_lines splits it, whole.
 CODEX_CATALOG_ROOT = re.compile(r"- `(r\d+)` = `([^`]+)`")
 # A skill's file runs from its last "(file: " to the line's closing parenthesis, so an absolute path holding a space
-# or a parenthesis, as a home such as D:/Profiles/A Name (Work) does, is read whole.
-CODEX_CATALOG_SKILL = re.compile(r"- ([\w.-]+): .*\(file: (\S.*)\)")
+# or a parenthesis, as a home such as D:/Profiles/A Name (Work) does, is read whole. A plugin's skill is named
+# <plugin>:<skill>, as computer-use:computer-use or spreadsheets:Spreadsheets, and is read under that whole name: a
+# deployed adapter's name holds no colon, so the catalog never offers a plugin's skill as an adapter of its bare name.
+CODEX_CATALOG_SKILL = re.compile(r"- ((?:[\w.-]+:)?[\w.-]+): .*\(file: (\S.*)\)")
 # The heading of the skills message's list of skills, under which every list item is one skill.
 CODEX_CATALOG_SKILLS = "### Available skills"
 # Filesystem writes that tests/run_validation.py allows outside deployer/fsops.py, with the reason.
@@ -405,7 +407,8 @@ def parse_codex_catalog(lines: list[str]) -> Listing:
 
     Its output is a JSON list of the messages Codex would send. The skills message names each root as
     "- `r0` = `<directory>`" and each skill as "- <name>: <description> (file: r0/<name>/SKILL.md)", or, without a
-    roots table, by the file's absolute path. Output without that message, or whose message lists no skill, is
+    roots table, by the file's absolute path; a plugin's skill is named "<plugin>:<skill>" and keyed by that whole
+    name, which no deployed adapter's name can be. Output without that message, or whose message lists no skill, is
     refused: Codex lists its own system skills there, so either says Codex wrote its prompt in a shape this reader does
     not know, and an empty catalog read from it would pass every user-only adapter as kept out.
     """

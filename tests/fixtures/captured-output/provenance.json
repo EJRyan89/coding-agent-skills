@@ -95,6 +95,11 @@
       "captured": "2026-10-24",
       "how": "The same start as codex/debug-prompt-input-over-budget.json with max_context_tokens = 40: Codex then wrote its skills message without a skill roots table, naming each skill's file by its absolute path, and kept only imagegen. Cut and written as that sample is."
     },
+    "codex/debug-prompt-input-plugin-skills.json": {
+      "versions": {"codex": "0.163.0"},
+      "captured": "2026-11-10",
+      "how": "The stdout of `codex debug prompt-input`, started from the system temporary folder in a profile where Codex had installed its bundled OpenAI plugins, which it lists by namespaced names, <plugin>:<skill>. Its first message alone, with its first content item, the skills instructions, cut to one system skill, one deployed skill, and the computer-use, presentations, and spreadsheets plugins' skills, its id as zeros and its metadata passthrough left out; the profile folder is written <home>."
+    },
     "copilot/version.txt": {
       "versions": {"copilot-cli": "1.0.103"},
       "captured": "2026-10-24",
