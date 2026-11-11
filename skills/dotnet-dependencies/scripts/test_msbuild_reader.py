@@ -620,10 +620,17 @@ def nuspec_dependencies(root: Path) -> list[str]:
 
 
 def shipped_assemblies(root: Path) -> tuple[str, ...]:
-    lib = root / "Lantern.Core.1.0.0" / "lib" / "net45"
-    lib.mkdir(parents=True)
-    for name in SPELLINGS:
-        (lib / f"{name}.dll").write_text("", encoding="utf-8")
+    # The ss and K spellings ship in a folder of their own: macOS's default APFS folds the sharp s to ss and the
+    # Kelvin sign to k, so one folder there would hold one of each pair, while two folders hold every spelling on
+    # every file system.
+    for framework, names in (
+        ("net45", (SHARP_S, "Lantern.Strasz", KELVIN, CAFE)),
+        ("net48", ("Lantern.Strasse", "Lantern.Klient")),
+    ):
+        lib = root / "Lantern.Core.1.0.0" / "lib" / framework
+        lib.mkdir(parents=True)
+        for name in names:
+            (lib / f"{name}.dll").write_text("", encoding="utf-8")
     return package_assemblies(root / "Lantern.Core.1.0.0")
 
 
