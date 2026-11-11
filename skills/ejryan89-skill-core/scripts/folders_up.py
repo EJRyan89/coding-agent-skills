@@ -2,7 +2,7 @@
 
 `folders_up(start, stop)` gives `start` and then each folder above it, nearest first, and ends after the folder that
 is `stop`, compared as the file system compares paths (`dotnet_solution.same_path`: normalized, and case-folded where
-the platform ignores case), or after the file system's root. A start that is not below `stop` therefore walks to the
+the file system ignores case), or after the file system's root. A start that is not below `stop` therefore walks to the
 root, so a caller that must stay inside a tree starts inside it. Without a `stop` the walk ends at the root, as
 MSBuild's search for a `Directory.Build.props` does. The walk is lexical: it reads nothing, so a caller decides what
 each folder holds, and a link on the way is a folder like any other.

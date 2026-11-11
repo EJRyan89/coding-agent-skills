@@ -382,7 +382,8 @@ def parse_index(path: Path) -> tuple[list[dict[str, str]], list[str]]:
 
 
 def target_identity(memory_dir: Path, file: str) -> str:
-    """Compare targets relative to the store, resolving ./ prefixes and normalizing case on Windows."""
+    """Compare targets relative to the store, resolving ./ prefixes and folding case where the store's file
+    system does."""
     return path_key(memory_dir / store_name(file), resolve=True)
 
 

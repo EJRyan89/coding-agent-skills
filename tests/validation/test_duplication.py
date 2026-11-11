@@ -534,6 +534,10 @@ class SharedFactPolicy(unittest.TestCase):
             # normcase is named through the module's imports, under any alias.
             ("from os.path import normcase as fold\n\nkey = fold(path)\n", 3),
             ("import ntpath\n\nkey = ntpath.normcase(ntpath.abspath(path))\n", 3),
+            # A name folded by the platform's rule, as the hub guard's and worktrees' `.git` checks were, which missed a
+            # `.GIT` that macOS's default APFS takes as `.git`.
+            ('git = os.path.normcase(directory.name) == ".git"\n', 1),
+            ('marked = any(os.path.normcase(part) == ".git" for part in path.parts)\n', 1),
         ):
             with self.subTest(folding=folding):
                 self.assertEqual(
@@ -541,8 +545,9 @@ class SharedFactPolicy(unittest.TestCase):
                 )
         shared = (
             "key = platform_support.path_key(path)\nsame = path_key(first, resolve=True) == path_key(second)\n"
-            # A name folded against another name builds no key, nor does other text folded by str.casefold.
-            'git = os.path.normcase(directory.name) == ".git"\n'
+            # A name compared as its folder's file system compares names builds no key by hand, nor does other text
+            # folded by str.casefold.
+            'git = platform_support.name_key(directory.name, directory.parent) == ".git"\n'
             # A function or method of the module's own that shares normcase's name folds nothing of a path.
             "def normcase(text):\n    return text\n\n\nkey = normcase(path)\nlabel = self.normcase(path)\n"
             "suffix = path.suffix.casefold()\nlabel = name.lower()\n"

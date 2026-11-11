@@ -75,7 +75,7 @@ import json_writer
 from console import run_main
 from executable_locator import PYTHON
 from path_containment import relative_within, within
-from path_keys import path_key
+from path_keys import path_key, same_parts
 from skill_roots import plugin_name
 from typed_fields import FieldError, FieldReader
 
@@ -127,15 +127,6 @@ REVIEWER = "code-review-reviewer"
 PLUGIN = plugin_name()
 FIRST = "read the prompt file your task names first"
 ROLE_ID = re.compile(r"[a-z0-9][a-z0-9-]{0,63}")
-# Folds the guard makes without skills/ejryan89-skill-core/scripts/path_keys.py's path_key, with the reason.
-DUPLICATION_ALLOWED = {
-    "path_key": (
-        "the guard matches a run record's prompt file by its exact spelling on purpose, so _same folds case alone and "
-        "never normalizes that spelling as a key from skills/ejryan89-skill-core/scripts/path_keys.py would; and each "
-        "fold, in _same and the path side of _log_read, follows only _path's own normalization of the path it judges"
-    ),
-}
-
 Claim = tuple[Path, dict[str, Any]]
 
 
@@ -226,8 +217,8 @@ def _log_read(tool: str, path: Path, claim: Claim) -> None:
     entry: str | dict[str, str]
     relative = relative_within(path, snapshot)
     if tool != "Glob" and relative is not None and path.is_file():
-        # Case-folded where the platform folds case, as the snapshot's own listing names its files.
-        entry = Path(os.path.normcase(str(relative))).as_posix()
+        # As the reviewer spelled it: review_dispatch keys each entry as the snapshot's file system compares names.
+        entry = relative.as_posix()
     elif tool != "Read" and (within(path, snapshot) or within(snapshot, path)) and path.is_dir():
         entry = search_entry(tool)
     else:
@@ -267,7 +258,10 @@ def _resolve_local(path: Path) -> Path:
 
 
 def _same(first: Path, second: Path) -> bool:
-    return os.path.normcase(str(first)) == os.path.normcase(str(second))
+    """Whether `first`, a path the reviewer gave, is `second`, a path the run or this skill holds, by its exact
+    spelling, part by part, each part compared as the directory holding `second`'s compares names, so a spelling its
+    file system takes as `second` matches and none is normalized; only `second` is asked."""
+    return same_parts(first.parts, second.parts)
 
 
 def run_root(path: Path) -> Path | None:

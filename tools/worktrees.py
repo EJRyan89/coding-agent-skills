@@ -24,7 +24,6 @@ only runs it as a program.
 from __future__ import annotations
 
 import argparse
-import os
 import re
 import runpy
 import sys
@@ -51,13 +50,6 @@ TITLE_TYPES = ("feat", "fix", "docs", "test", "refactor", "chore", "ci", "build"
 # The kinds new accepts: a title type, or an investigation's, which may produce no commits and so no pull request.
 INVESTIGATION = "inv"
 KINDS = (*TITLE_TYPES, INVESTIGATION)
-# Folds made without skills/ejryan89-skill-core/scripts/path_keys.py's path_key, with the reason.
-DUPLICATION_ALLOWED = {
-    "path_key": (
-        "below_a_checkout folds one segment of a path, a name, to compare it with .git; a key from "
-        "skills/ejryan89-skill-core/scripts/path_keys.py is the key of a whole path"
-    ),
-}
 # A Claude Code session keeps the hook command it loaded when it started, so one started before the hub guard
 # moved into hub_guard.py still runs this script's guard subcommand, which runs the guard as its own program.
 HUB_GUARD = Path(__file__).with_name("hub_guard.py")
@@ -177,7 +169,7 @@ def below_a_checkout(directory: Path) -> bool:
     has no work tree to show. A `.git` whose stat fails raises GitError naming the stat's error, never reads as no
     mark."""
     absolute = directory.absolute()
-    if any(os.path.normcase(part) == ".git" for part in absolute.parts):
+    if any(platform_support.name_key(folder.name, folder.parent) == ".git" for folder in (absolute, *absolute.parents)):
         return False
     try:
         return any(file_presence.is_occupied(folder / ".git") for folder in (absolute, *absolute.parents))

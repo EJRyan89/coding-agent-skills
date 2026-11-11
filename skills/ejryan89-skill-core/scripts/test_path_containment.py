@@ -13,6 +13,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import path_containment
+import path_keys
 from path_containment import posix_within, refusal, within, written_refusal
 
 
@@ -58,10 +59,41 @@ class WithinTests(unittest.TestCase):
             self.assertFalse(within("../x", self.tree))
         self.assertFalse(within(self.tree / "a", "a"))
 
-    def test_names_compare_as_the_platform_compares_them(self) -> None:
-        folds = os.path.normcase("A") == os.path.normcase("a")
+    def test_names_compare_as_the_tree_s_file_system_compares_them(self) -> None:
+        # The temporary directory folds case on NTFS and APFS by default and keeps it on Linux: within follows the file
+        # system, never the platform's name.
+        self.tree.mkdir()
+        folds = path_keys.folds_case(self.tree.parent)
+        (self.tree.parent / "Probe").mkdir()
+        self.assertEqual(folds, (self.tree.parent / "pROBE").is_dir())
         self.assertEqual(folds, within(self.tree / "A", self.tree / "a"))
-        self.assertEqual(folds, within(Path(str(self.tree).upper()) / "x", self.tree))
+        self.assertEqual(folds, within(self.tree.parent / "TREE" / "x", self.tree))
+
+    def test_a_spelling_the_tree_s_file_system_folds_is_inside_it_whatever_the_platform(self) -> None:
+        for folds in (True, False):
+            with (
+                self.subTest(folds=folds),
+                mock.patch.dict(path_keys._FOLDS_CASE, {str(self.tree.parent): folds}),
+            ):
+                self.assertEqual(folds, within(self.tree.parent / "TREE" / "skills" / "x", self.tree))
+                self.assertEqual(folds, within(self.tree.parent / "Tree", self.tree, strict=False))
+                self.assertFalse(within(self.tree.parent / "Tree", self.tree, strict=True))
+                self.assertFalse(within(self.tree.parent / "TREE-other" / "x", self.tree))
+
+    def test_the_path_judged_is_never_asked(self) -> None:
+        judged = self.tree.parent / "judged"
+        (judged / "deep").mkdir(parents=True)
+        asked: list[str] = []
+        real = path_keys._asked_folds_case
+
+        def answer(directory: str) -> bool | None:
+            asked.append(directory)
+            return real(directory)
+
+        with mock.patch.object(path_keys, "_asked_folds_case", side_effect=answer):
+            self.assertFalse(within(judged / "deep" / "x", self.tree))
+        self.assertTrue(asked)
+        self.assertFalse([directory for directory in asked if directory.startswith(str(judged))])
 
     @unittest.skipUnless(sys.platform == "win32", "only Windows has drives")
     def test_another_drive_is_outside(self) -> None:
@@ -334,7 +366,7 @@ class RelativeWithinTests(unittest.TestCase):
             with self.subTest(path=path, tree=tree):
                 self.assertEqual(Path("tools", "calc.py"), path_containment.relative_within(path, tree))
 
-    @unittest.skipUnless(sys.platform == "win32", "only Windows ignores case in a path")
+    @unittest.skipUnless(sys.platform == "win32", "only Windows names a drive, whose root NTFS folds")
     def test_a_case_only_difference_is_judged_as_within_judges_it_and_keeps_the_path_s_spelling(self) -> None:
         self.assertEqual(Path("Tools", "X.py"), path_containment.relative_within("C:\\TREE\\Tools\\X.py", "c:\\tree"))
 
