@@ -6343,6 +6343,11 @@ class BatchTests(PipelineFixture):
                 f"{entry}.error must be a string in an incomplete entry",
             ),
             (
+                "a complete entry with an error",
+                lambda batch: batch["repositories"][REPOSITORY].update(error="boom"),
+                f"{entry}.error must be null in a complete entry",
+            ),
+            (
                 "eligible an object",
                 lambda batch: batch["repositories"][REPOSITORY].update(eligible={}),
                 f"{entry}.eligible must be an array",
@@ -6356,6 +6361,14 @@ class BatchTests(PipelineFixture):
                 "an unknown listing scan",
                 lambda batch: batch["repositories"][REPOSITORY]["listing"].update(scan="merged"),
                 f"{entry}.listing.scan must be one of",
+            ),
+            *(
+                (
+                    f"a negative listing {count}",
+                    lambda batch, count=count: batch["repositories"][REPOSITORY]["listing"].update({count: -1}),
+                    f"{entry}.listing.{count} must be an integer of at least 0",
+                )
+                for count in ("pages", "pulls", "read")
             ),
             (
                 "an unknown entry field",
