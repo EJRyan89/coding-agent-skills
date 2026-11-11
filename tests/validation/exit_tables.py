@@ -13,19 +13,21 @@ holds one table, in the form "Script results" in docs/adding-a-skill.md settles:
 
 A row's code is a whole number; the rows run in ascending order, each code once. The table names every code the
 module can exit with, and no other: 1, which run_main exits with on a failure no handler caught; 2 when the code it
-reaches parses arguments with argparse, whose usage error exits 2; each literal code an exit call or a raised
-SystemExit is given, in any function the entry point reaches; and each code the function run_main runs returns,
-read through what it returns: a number, a module constant bound to one, either branch of a conditional, a local name
-bound to one of those, and the result of a function it calls, a function of its own module or one an import names,
-by name, through a parameter given a function, or through a table of functions it indexes or looks up. A function
-that ends without a return returns None, which exits 0. Ctrl+C's 130 is run_main's alike for every entry point,
-stated once in "Script results", so a table names it only where the code gives it a meaning of its own.
+reaches parses arguments with argparse, whose usage error exits 2; each code an exit call or a raised SystemExit
+is given, in any function the entry point reaches, where none or None exits 0, a string exits 1, and any other
+argument is read as a return is; and each code the function run_main runs returns, read through what it returns: a
+number, a module constant bound to one, either branch of a conditional, a local name bound to one of those, and the
+result of a function it calls, a function of its own module or one an import names, by name, through a parameter
+given a function, or through a table of functions it indexes or looks up. A function that ends without a return
+returns None, which exits 0. Ctrl+C's 130 is run_main's alike for every entry point, stated once in "Script
+results", so a table names it only where the code gives it a meaning of its own.
 
-A return whose code the reader cannot follow, such as an attribute of an object, is named with where its codes come
-from in a module-level `EXIT_CODES_ALLOWED = {"<expression as written>": "<reason>"}` in the module that holds it
-or in the entry point; an entry point that reaches one may name codes the reader does not see, and its table is held
-only to name each code the reader does see. An entry that sanctions no return fails, read in every module, whether or
-not an entry point still reaches it. A run that finds no entry point fails, since it read no table.
+A return or an exit call whose code the reader cannot follow, such as an attribute of an object, is named with where
+its codes come from in a module-level `EXIT_CODES_ALLOWED = {"<expression as written>": "<reason>"}` in the module
+that holds it or in the entry point, each reason a non-empty string; an entry point that reaches one may name codes
+the reader does not see, and its table is held only to name each code the reader does see. An entry that sanctions
+no return fails, read in every module, whether or not an entry point still reaches it. A run that finds no entry
+point fails, since it read no table.
 """
 
 from __future__ import annotations
@@ -40,12 +42,14 @@ from pathlib import Path
 import file_presence
 import whole_number
 from path_containment import within
-from skill_scripts import RESULTS_DOC, main_blocks
+from skill_scripts import EXIT_CALLS, RESULTS_DOC, main_blocks
 from validation_support import (
     REPOSITORY_ROOT,
     UnreadablePython,
+    call_argument,
     import_aliases,
     is_test_script,
+    module_allowance,
     parse_python,
     python_source,
     qualified_name,
@@ -66,8 +70,6 @@ INTERRUPTED = 130
 # What argparse exits with on a usage error, and the calls that reach it.
 USAGE = 2
 PARSING_CALLS = frozenset({"parse_args", "parse_known_args", "parse_intermixed_args", "error"})
-# The calls that end the process with the code they are given.
-EXIT_CALLS = frozenset({"sys.exit", "exit", "quit", "os._exit", "SystemExit"})
 # The folder below the repository whose Python never runs as a program the repository ships or uses.
 NOT_SCANNED = Path("tests") / "fixtures"
 SKILL_CORE_SCRIPTS = Path("skills") / "ejryan89-skill-core" / "scripts"
@@ -172,6 +174,8 @@ class Module:
     dictionaries: dict[str, ast.Dict] = field(default_factory=dict)
     aliases: dict[str, str] = field(default_factory=dict)
     allowed: dict[str, str] = field(default_factory=dict)
+    # Whether its EXIT_CODES_ALLOWED is no literal dictionary of non-empty reasons, as module_allowance reads one.
+    allowance_malformed: bool = False
     # Each property a class of the module defines, by its name.
     properties: dict[str, list[ast.FunctionDef | ast.AsyncFunctionDef]] = field(default_factory=dict)
 
@@ -203,15 +207,9 @@ class Module:
                     module.constants[target.id] = value.value
                 elif isinstance(value, ast.Dict):
                     module.dictionaries[target.id] = value
-                    if target.id == ALLOWANCE:
-                        module.allowed = {
-                            key.value: item.value
-                            for key, item in zip(value.keys, value.values, strict=True)
-                            if isinstance(key, ast.Constant)
-                            and isinstance(key.value, str)
-                            and isinstance(item, ast.Constant)
-                            and isinstance(item.value, str)
-                        }
+        allowed = module_allowance(tree, ALLOWANCE)
+        module.allowed = allowed or {}
+        module.allowance_malformed = allowed is None
         return module
 
 
@@ -506,6 +504,15 @@ class CodeReader:
         expression = ast.unparse(node) if node is not None else "None"
         self.reading.unread.append((scope.module.path, getattr(node, "lineno", 0), expression))
 
+    def exits(self, argument: ast.expr | None, scope: Scope) -> None:
+        """Add the codes an exit call or a raised SystemExit is given: no argument or None exits 0, a string is printed
+        and exits 1, and any other argument is read as a returned expression is, so one the reader cannot follow is
+        recorded as unread."""
+        if isinstance(argument, ast.Constant) and isinstance(argument.value, str):
+            self.reading.codes.add(1)
+        else:
+            self.value(argument, scope)
+
     def reach(self, module: Module, function: Function) -> None:
         """Add the codes every function this one can call exits with or parses arguments for, followed through
         calls by name into its own module and the modules its imports name."""
@@ -513,15 +520,19 @@ class CodeReader:
             return
         self.reached.add(id(function))
         for node in _own_nodes(function):
+            if isinstance(node, ast.Raise) and node.exc is not None and not isinstance(node.exc, ast.Call):
+                # A SystemExit raised as the class, with no code, exits 0.
+                if qualified_name(node.exc, module.aliases) == "SystemExit":
+                    self.reading.codes.add(0)
+                continue
             if not isinstance(node, ast.Call):
                 continue
             for keyword in node.keywords:
                 if keyword.arg == ERROR_CODE and (number := self.code_of(module, keyword.value)) is not None:
                     self.error_codes.add(number)
             name = qualified_name(node.func, module.aliases)
-            if name in EXIT_CALLS and node.args:
-                if (number := self.code_of(module, node.args[0])) is not None:
-                    self.reading.codes.add(number)
+            if name in EXIT_CALLS:
+                self.exits(call_argument(node, 0, "status" if name == "os._exit" else "code"), Scope(module, function))
             elif isinstance(node.func, ast.Attribute) and node.func.attr in PARSING_CALLS and node.func.attr != "error":
                 self.reading.codes.add(USAGE)
                 self.parsing.add(module.path)
@@ -581,9 +592,9 @@ def table_problems(root: Path = REPOSITORY_ROOT, files: list[Path] | None = None
                 met.add((entry.path, expression))
             else:
                 problems.append(
-                    f"{path.relative_to(root).as_posix()}:{line} returns {expression}, an exit code the exit-table "
-                    f"reader cannot follow from {entry.name}; return a number, a module constant, or a function's "
-                    f"result, or name it in {ALLOWANCE} with where its codes come from; see {RESULTS_DOC}"
+                    f"{path.relative_to(root).as_posix()}:{line} returns or exits with {expression}, an exit code "
+                    f"the exit-table reader cannot follow from {entry.name}; return a number, a module constant, or a "
+                    f"function's result, or name it in {ALLOWANCE} with where its codes come from; see {RESULTS_DOC}"
                 )
         try:
             table = exit_table(ast.get_docstring(entry.tree))
@@ -606,16 +617,17 @@ def table_problems(root: Path = REPOSITORY_ROOT, files: list[Path] | None = None
     problems += [
         f"{path.relative_to(root).as_posix()} names {expression!r} in {ALLOWANCE}, which is no return the exit-table "
         "reader cannot follow from an entry point; remove it"
-        for path, allowed in sorted(allowances(root, files).items())
+        for path, allowed in sorted(allowances(root, files, problems).items())
         for expression in allowed
         if (path, expression) not in met
     ]
     return problems
 
 
-def allowances(root: Path, files: list[Path] | None = None) -> dict[Path, dict[str, str]]:
+def allowances(root: Path, files: list[Path] | None, problems: list[str]) -> dict[Path, dict[str, str]]:
     """Every module's EXIT_CODES_ALLOWED, read in each Python file the policy reads, whether or not an entry point
-    reaches it, so an allowance no return needs any longer fails wherever it is left."""
+    reaches it, so an allowance no return needs any longer fails wherever it is left; one that is no literal
+    dictionary of non-empty reasons, as module_allowance reads every policy's allowance, is a problem."""
     found: dict[Path, dict[str, str]] = {}
     for path in scanned_files(root, files):
         try:
@@ -624,6 +636,11 @@ def allowances(root: Path, files: list[Path] | None = None) -> dict[Path, dict[s
             module = Module.read(path, parse_python(path))
         except (UnreadablePython, OSError):
             continue
+        if module.allowance_malformed:
+            problems.append(
+                f"{path.relative_to(root).as_posix()}: {ALLOWANCE} must map each expression to where its codes come "
+                "from, a non-empty reason"
+            )
         if module.allowed:
             found[path] = module.allowed
     return found

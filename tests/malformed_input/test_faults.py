@@ -324,7 +324,6 @@ def test_a_run_that_never_meets_its_fault_is_not_reached() -> None:
         "it never reached the fault: the driver's arguments or inputs do not reach it",
         "it exited 0, as if nothing were wrong",
         "its output never names what failed ('bad config')",
-        "no line it printed is a refusal: none is FAILED, starts with a word its docstring names, or names what failed",
     ]
 
 
@@ -332,11 +331,21 @@ def ended(stdout: str, stderr: str = "") -> subprocess.CompletedProcess[str]:
     return subprocess.CompletedProcess([], 1, stdout, stderr)
 
 
+def test_a_run_that_never_names_its_fault_has_that_one_problem_whatever_its_lines_say() -> None:
+    record = {"exit": 1, "reached": True, "stopped": None}
+    for output in ("FAILED not a repository\n", "not a repository\n"):
+        assert judged(FIXTURE_DOCSTRING, GIT_EXIT, None, ended(output), record) == [
+            "its output never names what failed ('bad config')"
+        ], output
+
+
 @pytest.mark.parametrize(
     ("finished", "record", "problem"),
     [
         (ended("FAILED bad config\n"), {"exit": 1, "reached": True, "stopped": None}, None),
         (ended("", "ERROR: bad config\n"), {"exit": 1, "reached": True, "stopped": None}, None),
+        # The line that names what failed is the refusal whatever word leads it, and a remedy line may follow it.
+        (ended("fatal: bad config\nFix the file and rerun.\n"), {"exit": 1, "reached": True, "stopped": None}, None),
         (ended("NOTHING_FOUND\n"), {"exit": 0, "reached": True, "stopped": None}, "it exited 0"),
         (ended("FAILED bad config\n"), {"exit": 3, "reached": True, "stopped": None}, "it exited 3"),
         (ended("FAILED bad config\n"), {"exit": 97, "reached": True, "stopped": "x"}, "the harness stopped it"),

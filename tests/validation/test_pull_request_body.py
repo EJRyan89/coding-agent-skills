@@ -65,6 +65,8 @@ MISSING = {
     "HTML heading": body(None, after=f"<h2>Forms considered</h2>\n\n{FILLED}"),
     "heading inside a quote": body(None, after=f"> ## Forms considered\n\n{FILLED}"),
     "heading inside a list item": body(None, after=f"- ## Forms considered\n\n{FILLED}"),
+    "heading inside a list item's continuation": body(None, after=f"- item\n\n  ## Forms considered\n\n{FILLED}"),
+    "heading inside a numbered item's continuation": body(None, after=f"1. item\n\n   ## Forms considered\n\n{FILLED}"),
     "heading indented four spaces, a code block": body(None, after=f"    ## Forms considered\n\n{FILLED}"),
     "heading inside a comment left unclosed": body(None, after=f"<!-- later\n## Forms considered\n\n{FILLED}"),
 }
@@ -91,6 +93,9 @@ NEXT_HEADINGS = {
     "setext heading over an empty bullet": "The\n*\nimplications\n---",
     "setext heading over an empty item numbered 1": "The\n1.\nimplications\n---",
     "closed ATX heading": "## Implications ##",
+    # A heading indented less than the column a list item's text starts at is no longer the item's.
+    "heading indented less than the numbered item above it": "1. TBD\n\n  ## Implications",
+    "heading after a list item": "- TBD\n## Implications",
     **{
         f"HTML heading {tag!r}": f"{tag}Implications</h2>"
         for tag in ("<h1>", "<h2>", "<H2 id='i'>", "  <h2>", "<h2/>", "<h2\tid='i'>")
@@ -282,6 +287,30 @@ def test_the_section_ends_at_the_next_heading_and_a_fenced_heading_does_not_end_
     assert "## Inside" in section
     assert FILLED.strip() in section
     assert forms_problems(body("", after=f"## Implications\n\n{FILLED}"), True, TEMPLATE)
+
+
+@pytest.mark.parametrize(
+    "item",
+    [
+        "- an item\n\n  ## not a section",
+        "- an item\n\n   # not a section",
+        "* an item\n  ## not a section",
+        "1. an item\n\n   ## not a section",
+        "10) an item\n\n    ## not a section",
+        "-   an item\n\n    ## not a section",
+        "- an item\n  - a nested item\n\n    ## not a section",
+        "- an item\n\n  <h2>not a section</h2>",
+        "- an item\n  continued\n  ---",
+        "- an item\nlazily continued\n\n  ## not a section",
+        "- an item\n\n  ```\n  ## not a section\n  ```\n\n  ## still not a section",
+        "-\n  ## not a section",
+    ],
+)
+def test_a_heading_a_list_item_holds_does_not_end_the_section(item: str) -> None:
+    section = forms_section(body(f"{item}\n\n{FILLED}", after="## Implications\n\nAfter.\n"))
+    assert section is not None
+    assert FILLED.strip() in section, section
+    assert "After." not in section
 
 
 def test_the_first_section_is_read_when_the_heading_repeats() -> None:
