@@ -18,14 +18,21 @@ NEEDED_TO_DEPLOY = "needed to deploy"
 CODEX_SANDBOX_SECTION = '"Windows sandbox mode" in docs/codex-support.md'
 PYTHON_ALIAS_SECTION = '"Python app execution aliases" in docs/codex-support.md'
 POWERSHELL_ALIAS_SECTION = '"PowerShell app execution alias" in docs/codex-support.md'
-# What check asks for when a tool needed to deploy is missing, outdated, or both, keyed by (missing, outdated).
+# What check asks for when a tool needed to deploy is missing, outdated, or could not be located (unusable), keyed by
+# (missing, outdated, unusable): every kind of problem the deploy tools have is named, none in place of another.
 BLOCKED_LEADS = {
-    (True, False): "Install the missing tools",
-    (False, True): "Update the outdated tools",
-    (True, True): "Install the missing tools and update the outdated ones",
+    (True, False, False): "Install the missing tools",
+    (False, True, False): "Update the outdated tools",
+    (False, False, True): "Put right what each unusable tool's line names",
+    (True, True, False): "Install the missing tools and update the outdated ones",
+    (True, False, True): "Install the missing tools and put right what each unusable tool's line names",
+    (False, True, True): "Update the outdated tools and put right what each unusable tool's line names",
+    (
+        True,
+        True,
+        True,
+    ): "Install the missing tools, update the outdated ones, and put right what each unusable tool's line names",
 }
-# What check asks for when a tool needed to deploy could not be located, and none is missing or outdated.
-UNUSABLE_LEAD = "Put right what each unusable tool's line names"
 
 
 def _version_text(probe: tools.Probe) -> str:
@@ -224,9 +231,7 @@ def execute(namespace: argparse.Namespace, paths: Paths) -> int:
     warn_ignored_home(paths.home)
     print_report("CHECK", CHECK_ACTIONS, [*deploy_lines, *skill_lines])
     actions = {line.action for line in deploy_lines}
-    lead = BLOCKED_LEADS.get(("MISSING" in actions, "OUTDATED" in actions))
-    if lead is None and "UNUSABLE" in actions:
-        lead = UNUSABLE_LEAD
+    lead = BLOCKED_LEADS.get(("MISSING" in actions, "OUTDATED" in actions, "UNUSABLE" in actions))
     if lead is not None:
         print(f'{lead} before deploying; see "Installing the tools" in')
         print("docs/installation.md. Open a new terminal afterwards so the tools are on PATH.")

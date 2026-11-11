@@ -13,7 +13,7 @@ from unittest import mock
 
 from harness import DEPLOY_COMMAND, REPOSITORY_ROOT, DeployerTestCase, Result, forward, interrupting
 
-from deployer import check, configure, errors, paths, platform_support, verify
+from deployer import check, cli, configure, errors, paths, platform_support, verify
 from deployer.arguments import USAGE_ERROR, debug_given, parse_command
 
 
@@ -373,6 +373,48 @@ class CopilotHomeTests(DeployerTestCase):
         self.assertEqual(1, result.code, result.output)
         expected = "\n" + "\n".join(self.copilot_refusal("relative copilot")) + "\n\n"
         self.assertEqual(expected, result.output.replace("\r\n", "\n"))
+
+    def test_the_entry_point_reads_a_relative_copilot_home_only_once_the_command_line_parses(self) -> None:
+        # --help exits 0 and a usage error 2, as deploy.py's exit table says, whatever COPILOT_HOME holds.
+        environment = {"HOME": str(self.home), "USERPROFILE": str(self.home), "COPILOT_HOME": "relative copilot"}
+        helped = self.run_entry_point("--help", environment=environment)
+        self.assertEqual(0, helped.code, helped.output)
+        self.assertIn("usage:", helped.output)
+        self.assertNotIn("COPILOT_HOME", helped.output)
+        misused = self.run_entry_point("--no-such-option", environment=environment)
+        self.assertEqual(2, misused.code, misused.output)
+        self.assertNotIn("COPILOT_HOME", misused.output)
+
+    def test_every_command_is_refused_by_a_relative_home_or_copilot_home_after_help_and_usage_errors(self) -> None:
+        def relative_copilot_home() -> paths.Paths:
+            return paths.Paths(self.source, self.home, copilot_home=paths.copilot_home({"COPILOT_HOME": "relative"}))
+
+        def relative_home() -> paths.Paths:
+            variable = "USERPROFILE" if platform_support.WINDOWS else "HOME"
+            return paths.Paths(self.source, platform_support.home_directory({variable: "relative"}))
+
+        for build in (relative_copilot_home, relative_home):
+            with self.assertRaises(errors.DeployError) as raised:
+                build()
+            expected = "\n" + "\n".join(raised.exception.lines) + "\n\n"
+            cases = [(["--help"], 0, ""), (["--no-such-option"], 2, ""), (["configure", "--help"], 0, "")]
+            cases += [(["check"], 1, expected), (["verify"], 1, expected), (["--all", "--dry-run"], 1, expected)]
+            for arguments, code, refusal in cases:
+                with self.subTest(build=build.__name__, arguments=arguments):
+                    printed, errors_printed = io.StringIO(), io.StringIO()
+                    with (
+                        contextlib.redirect_stdout(printed),
+                        contextlib.redirect_stderr(errors_printed),
+                        mock.patch.object(check, "execute") as checked,
+                        mock.patch.object(verify, "execute") as verified,
+                    ):
+                        status = cli.main(arguments, build)
+                    self.assertEqual(code, status, errors_printed.getvalue())
+                    if refusal:
+                        self.assertEqual(refusal, errors_printed.getvalue())
+                        self.assertFalse(checked.called or verified.called)
+                    else:
+                        self.assertNotIn("relative", errors_printed.getvalue())
 
     def test_verify_refuses_a_relative_copilot_home_in_the_environment_it_starts_copilot_with(self) -> None:
         with self.assertRaises(errors.DeployError) as raised:

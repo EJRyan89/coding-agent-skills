@@ -46,8 +46,9 @@ Locally, before the pull request, run what the change directly touches and leave
 which runs it anyway:
 
 1. Each suite the change adds or changes, and each suite of a module or script it changes, one at a time, as the
-   runner starts it: a Python suite with `python -B -m pytest <suite>`, a Bash or PowerShell suite as a program, or
-   any of them through the runner with `-k <suite path>`.
+   runner starts it: a Python suite with `python -B -m pytest <suite>` under the pytest variables "Validation" in
+   `CONTRIBUTING.md` names, a Bash or PowerShell suite as a program, or any of them through the runner with
+   `-k <suite path>`.
 2. Each new regression test with the fix reverted, to see it fail without the fix, then again with the fix restored.
 3. For a changed Python file, ruff and mypy through the runner's jobs: `-k ruff`, the format and lint checks, which
    take seconds over the whole tree, and the type check of each root a changed file sits in, as in
