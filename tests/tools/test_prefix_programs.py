@@ -226,9 +226,19 @@ for name in "$@"; do
   "$path" --version < /dev/null > "version.$name" 2>&1 || :
   "$path" -@ < /dev/null > "usage.$name" 2>&1 || :
 done"""
-# A usage synopsis's options: a bracket that opens on one option, or on options joined by |, each of one letter or of
-# several letters that take no value, and the value word that follows it, when it takes one.
-USAGE_OPTION = re.compile(r"\[(-[A-Za-z0-9]+(?:\|-[A-Za-z0-9]+)*)(\s+[^\s\[\]|-][^\s\[\]|]*)?")
+# The programs the guard reads whose installed build this suite reads only where it is the one macOS installs: Apple's
+# find and sort, and bsdtar, macOS's tar, each held to its catalogue. Their GNU builds, which Git Bash and Linux
+# install, are held to the catalogue alone, since GNU find's --help lists its primaries as running text the --help
+# reader does not read.
+MACOS_CHECKED = ("find", "sort", "tar")
+# bsdtar's --version, as libarchive prints it: `bsdtar 3.5.3 - libarchive 3.7.4 ...`.
+BSDTAR_VERSION = re.compile(r"bsdtar \d")
+# A usage synopsis's options: a bracket that opens on one option, or on options joined by |, each a long option, one
+# letter, or several letters that take no value, and the value word that follows it, when it takes one.
+USAGE_OPTION = re.compile(r"\[\s*(--?[A-Za-z0-9][\w-]*(?:\s*\|\s*--?[A-Za-z0-9][\w-]*)*)(\s+[^\s\[\]|-][^\s\[\]|]*)?")
+# A synopsis's placeholder for a value, capitals and a number, as sort's POS1: alone after a dash it is sort's obsolete
+# key, `-POS2`, and after a letter it is that letter's value, `-kPOS1`.
+PLACEHOLDER = re.compile(r"[A-Z]{2,}\d+")
 WORKSPACE = tempfile.TemporaryDirectory(prefix="runner-forms.")
 
 
@@ -264,12 +274,15 @@ def listed_options(path: Path, program: str) -> list[Option]:
 
 
 def options_of(program: str) -> list[Option]:
-    """Every option any implementation's catalogue lists for a program, so the guard is held to each of them."""
+    """Every option any implementation's catalogue lists for a program, or for another build the guard reads by the
+    program's table, as it reads bsdtar, macOS's tar and Windows' tar.exe, by tar's, so the guard is held to each."""
+    builds = [program, *(build for build, of in OTHER_BUILDS.items() if of == program)]
     found = [
         option
         for path in IMPLEMENTATIONS.values()
-        if program in catalogue(path)
-        for option in listed_options(path, program)
+        for name in builds
+        if name in catalogue(path)
+        for option in listed_options(path, name)
     ]
     return list(dict.fromkeys(found))
 
@@ -291,25 +304,45 @@ def installed_implementation(version: str) -> str | None:
     return implementation(version) or ("BSD" if platform_support.MACOS else None)
 
 
+def synopsis_word(word: str, valued: bool) -> list[Option]:
+    """The options one option word of a synopsis names."""
+    if word.startswith("--"):
+        return [Option(None, word, "value" if valued else "none")]
+    body = word[1:]
+    if PLACEHOLDER.fullmatch(body):
+        return []
+    if PLACEHOLDER.fullmatch(body[1:]) or (valued and len(body) == 1):
+        return [Option(word[:2], None, "value")]
+    return [Option(f"-{letter}", None, "none") for letter in body]
+
+
 def usage_options(text: str, program: str) -> tuple[Option, ...]:
-    """The options a BSD build's usage synopsis lists, from its `usage: <program>` line and the indented lines after
-    it, each with whether it takes a value: `[-0iv]` three that take none, `[-n number]` one that takes one, and
-    `[-L|-U user]` two that each take one."""
+    """The options a BSD build's usage synopsis lists, from its `usage: <program>` line, in either case, and the
+    indented lines after it, each with whether it takes a value: `[-0iv]` three that take none, `[-n number]` one that
+    takes one, `[-L|-U user]` two that each take one, `[-H | -L | -P]` three that take none, `[--batch-size size]` a
+    long one that takes one, and `[-kPOS1[,POS2] ...]` one whose value is attached."""
     lines = text.splitlines()
-    start = next((index for index, line in enumerate(lines) if line.startswith(f"usage: {program} ")), None)
+    start = next((index for index, line in enumerate(lines) if line.casefold().startswith(f"usage: {program} ")), None)
     if start is None:
         return ()
     synopsis = [lines[start]]
     synopsis += itertools.takewhile(lambda line: line[:1].isspace(), lines[start + 1 :])
     found: list[Option] = []
     for match in USAGE_OPTION.finditer(" ".join(synopsis)):
-        valued = match.group(2) is not None
         for word in match.group(1).split("|"):
-            if valued and len(word) == 2:
-                found.append(Option(word, None, "value"))
-            else:
-                found.extend(Option(f"-{letter}", None, "none") for letter in word[1:])
+            found += synopsis_word(word.strip(), match.group(2) is not None)
     return tuple(dict.fromkeys(found))
+
+
+def installed_catalogue(name: str, version: str) -> tuple[Path, str] | None:
+    """The catalogue, and the entry in it, an installed program is held to: bsdtar's where its --version names
+    bsdtar, and otherwise the entry of its name in its implementation's catalogue; None for an implementation no
+    catalogue holds."""
+    first = (version.strip().splitlines() or [""])[0]
+    if BSDTAR_VERSION.match(first):
+        return CATALOGUES, "bsdtar"
+    build = installed_implementation(version)
+    return None if build is None else (IMPLEMENTATIONS[build], name)
 
 
 def spelled(name: str, kind: str, attach: str) -> list[tuple[str, ...]]:
@@ -423,11 +456,12 @@ def find_bash() -> str:
 
 @functools.cache
 def installed_help() -> dict[str, tuple[str, str, str]]:
-    """The --help, the --version, and the refusal of an unknown option of each runner CHECKED names that the system
-    installs."""
+    """The --help, the --version, and the refusal of an unknown option of each program CHECKED or MACOS_CHECKED names
+    that the system installs."""
     workspace = Path(WORKSPACE.name)
+    programs = (*CHECKED, *MACOS_CHECKED)
     result = platform_support.run_tool(
-        [find_bash(), "-c", DISCOVER, "discover", platform_support.normalize(workspace), *CHECKED], timeout=120
+        [find_bash(), "-c", DISCOVER, "discover", platform_support.normalize(workspace), *programs], timeout=120
     )
     if result.returncode != 0:
         raise AssertionError(f"Bash could not list the runners: {result.output.strip()}")
@@ -437,7 +471,7 @@ def installed_help() -> dict[str, tuple[str, str, str]]:
             (workspace / f"version.{name}").read_text(encoding="utf-8", errors="replace"),
             (workspace / f"usage.{name}").read_text(encoding="utf-8", errors="replace"),
         )
-        for name in CHECKED
+        for name in programs
         if (workspace / f"path.{name}").is_file()
     }
 
@@ -759,19 +793,38 @@ class CatalogueTests(unittest.TestCase):
     def test_the_bsd_catalogue_holds_the_runners_macos_installs_each_with_its_provenance(self) -> None:
         tables = {**hub_guard.RUNNER_OPTIONS, **hub_guard.PROGRAM_OPTIONS}
         bsd = catalogue(BSD_CATALOGUES)
-        # The runners CHECKED names that macOS installs: it has no stdbuf or timeout.
-        self.assertEqual(["env", "nice", "nohup", "xargs"], sorted(bsd))
+        # The runners CHECKED names that macOS installs, it has no stdbuf or timeout, and the programs the guard reads
+        # whose macOS build is Apple's: find and sort. Its tar is bsdtar, which the main catalogue holds.
+        self.assertEqual(["env", "find", "nice", "nohup", "sort", "xargs"], sorted(bsd))
         self.assertLessEqual(set(bsd), set(tables))
+        self.assertEqual({"find", "sort", "tar"}, set(MACOS_CHECKED))
+        self.assertEqual("tar", OTHER_BUILDS["bsdtar"])
         for name, entry in bsd.items():
             with self.subTest(program=name):
-                self.assertTrue(str(entry["source"]).startswith("Apple shell_cmds-"))
-                self.assertIn(f"{name}/{name}.c at apple-oss-distributions/shell_cmds tag ", str(entry["how"]))
-        # macOS's env takes -P, which chooses the path its command is looked up on, and its xargs -J, which builds the
-        # command, where GNU's take neither; neither is safe, so the rows hold the guard to refusing every form of each.
-        self.assertIn(Option("-P", None, "value"), listed_options(BSD_CATALOGUES, "env"))
-        self.assertNotIn("-P", names(listed_options(CATALOGUES, "env")) | SAFE["env"])
-        self.assertIn(Option("-J", None, "value"), listed_options(BSD_CATALOGUES, "xargs"))
-        self.assertNotIn("-J", names(listed_options(CATALOGUES, "xargs")) | SAFE["xargs"])
+                self.assertTrue(str(entry["source"]).startswith("Apple "))
+                self.assertIn(f"{name}/", str(entry["how"]))
+                self.assertIn(" at apple-oss-distributions/", str(entry["how"]))
+        # The options Apple's builds take and GNU's do not, each one the rows try against the guard. None is safe, so
+        # the guard is held to refusing every form of each: env's -P chooses the path its command is looked up on,
+        # xargs's -J builds its command, and find's -f names a path to search.
+        bsd_only = {
+            "env": {"-P"},
+            "find": {"-Bmin", "-Bnewer", "-Btime", "-E", "-X", "-acl", "-d", "-f", "-flags", "-mnewer", "-s"},
+            "sort": {"--heapsort", "--mergesort", "--mmap", "--qsort", "--radixsort"},
+            "xargs": {"-J", "-R", "-S"},
+        }
+        bsd_only["find"] |= {"-sparse", "-x", "-xattr", "-xattrname"}
+        for name in sorted(bsd):
+            with self.subTest(program=name):
+                apple = names(listed_options(BSD_CATALOGUES, name))
+                self.assertEqual(bsd_only.get(name, set()), apple - names(listed_options(CATALOGUES, name)))
+                self.assertLessEqual(apple, names(options_of(name)))
+                self.assertEqual(set(), bsd_only.get(name, set()) & SAFE[name])
+        # bsdtar's options are tar's rows too, so each bsdtar takes that GNU tar does not is tried against the guard.
+        bsdtar = names(listed_options(CATALOGUES, "bsdtar"))
+        self.assertLessEqual(bsdtar, names(options_of("tar")))
+        self.assertLessEqual({"--chroot", "--insecure", "--options", "--passphrase", "--uid"}, bsdtar)
+        self.assertEqual(set(), (bsdtar - names(listed_options(CATALOGUES, "tar"))) & SAFE["tar"])
 
     def test_a_runner_the_system_installs_is_read_as_the_build_its_version_names_or_on_macos_bsd(self) -> None:
         refused = "env: illegal option -- -\nusage: env [-0iv] [-C workdir] [-P utilpath] [-S string]\n"
@@ -833,24 +886,35 @@ class CatalogueTests(unittest.TestCase):
             self.skipTest(f"{name} is not installed here")
         text, version, usage = helps[name]
         first = (version.strip().splitlines() or [""])[0]
-        build = installed_implementation(version)
-        self.assertIsNotNone(build, f"{name}'s --version names neither GNU nor uutils: {first!r}")
-        assert build is not None
-        path = IMPLEMENTATIONS[build]
-        self.assertIn(name, catalogue(path), f"{path.name} has no catalogue of {name}, which is {first!r} here")
-        listed = names(listed_options(path, name))
-        options = usage_options(usage, name) if build == "BSD" else help_options(text)
-        if build == "BSD" and catalogue(path)[name]["options"]:
-            # A synopsis the reader finds nothing in would hold the catalogue to nothing.
-            self.assertTrue(options, f"{name} printed no usage synopsis this suite reads: {usage.strip()!r}")
+        held = installed_catalogue(name, version)
+        macos_build = held is not None and (held[0] is BSD_CATALOGUES or held[1] == "bsdtar")
+        if name in MACOS_CHECKED and not macos_build:
+            # A GNU or Rust build of find, sort, or tar is held to its catalogue alone; see MACOS_CHECKED.
+            return
+        self.assertIsNotNone(held, f"{name}'s --version names neither GNU nor uutils: {first!r}")
+        assert held is not None
+        path, entry = held
+        self.assertIn(entry, catalogue(path), f"{path.name} has no catalogue of {entry}, which is {first!r} here")
+        listed = names(listed_options(path, entry))
+        bsd = path is BSD_CATALOGUES
+        options = usage_options(usage, name) if bsd else help_options(text)
+        if macos_build and catalogue(path)[entry]["options"]:
+            # A help or synopsis the reader finds nothing in would hold the catalogue to nothing.
+            said = usage if bsd else text
+            self.assertTrue(options, f"{name} printed no options this suite reads: {said.strip()[:400]!r}")
         for option in options:
             for each in (option.short, option.long):
                 if each is not None:
                     with self.subTest(option=each):
-                        self.assertIn(each, listed, f"{first} lists an option {path.name} does not")
+                        self.assertIn(each, listed, f"{first} lists an option {path.name}'s {entry} does not")
 
     def test_the_installed_runners_list_no_option_the_fixture_leaves_out(self) -> None:
         for name in CHECKED:
+            with self.subTest(program=name):
+                self.lists_every_option(name)
+
+    def test_the_find_sort_and_tar_macos_installs_list_no_option_the_fixture_leaves_out(self) -> None:
+        for name in MACOS_CHECKED:
             with self.subTest(program=name):
                 self.lists_every_option(name)
 
@@ -892,6 +956,66 @@ class UsageOptionsTests(unittest.TestCase):
             usage_options("nice: illegal option -- @\nusage: nice [-n increment] utility [argument ...]\n", "nice"),
         )
         self.assertEqual((), usage_options("usage: nohup [--] utility [arguments]\n", "nohup"))
+
+    def test_reads_apple_find_s_and_sort_s_synopses(self) -> None:
+        find = (
+            "find: illegal option -- @\n"
+            "usage: find [-H | -L | -P] [-EXdsx] [-f path] path ... [expression]\n"
+            "       find [-H | -L | -P] [-EXdsx] -f path [path ...] [expression]\n"
+        )
+        self.assertEqual(
+            (
+                *(Option(name, None, "none") for name in ("-H", "-L", "-P", "-E", "-X", "-d", "-s", "-x")),
+                Option("-f", None, "value"),
+            ),
+            usage_options(find, "find"),
+        )
+        # text_cmds-199's usage string, which sort prints with a capital, all on one line.
+        sort = (
+            "Usage: sort [-bcCdfigMmnrsuz] [-kPOS1[,POS2] ... ] [+POS1 [-POS2]] [-S memsize] [-T tmpdir] "
+            "[-t separator] [-o outfile] [--batch-size size] [--files0-from file] [--heapsort] [--mergesort] "
+            "[--radixsort] [--qsort] [--mmap] [--parallel thread_no] [--human-numeric-sort] [--version-sort] "
+            "[--random-sort [--random-source file]] [--compress-program program] [file ...]\n"
+        )
+        read = usage_options(sort, "sort")
+        self.assertEqual(
+            {f"-{letter}" for letter in "bcCdfigMmnrsuz"} | {"-k", "-S", "-T", "-t", "-o"},
+            {option.short for option in read if option.short},
+        )
+        self.assertIn(Option("-k", None, "value"), read)
+        self.assertIn(Option(None, "--compress-program", "value"), read)
+        self.assertIn(Option(None, "--random-sort", "none"), read)
+        self.assertIn(Option(None, "--random-source", "value"), read)
+        # -POS2 is the obsolete key, never options P, O, S, and 2.
+        self.assertNotIn("-O", {option.short for option in read})
+        self.assertEqual(
+            set(),
+            names(list(read)) - names(listed_options(BSD_CATALOGUES, "sort")),
+            "Apple's sort synopsis names an option its row leaves out",
+        )
+
+    def test_bsdtar_is_held_to_its_catalogue_wherever_its_version_names_it(self) -> None:
+        version = "bsdtar 3.5.3 - libarchive 3.7.4 zlib/1.2.12 liblzma/5.4.3 bz2lib/1.0.8\n"
+        for macos in (True, False):
+            with self.subTest(macos=macos), mock.patch.object(platform_support, "MACOS", macos):
+                self.assertEqual((CATALOGUES, "bsdtar"), installed_catalogue("tar", version))
+        self.assertEqual((CATALOGUES, "tar"), installed_catalogue("tar", "tar (GNU tar) 1.35\n"))
+        with mock.patch.object(platform_support, "MACOS", True):
+            self.assertEqual((BSD_CATALOGUES, "sort"), installed_catalogue("sort", "2.3-Apple (199)\n"))
+        with mock.patch.object(platform_support, "MACOS", False):
+            self.assertIsNone(installed_catalogue("sort", "2.3-Apple (199)\n"))
+        # libarchive's own --help, whose option lines the --help reader reads, each in bsdtar's row.
+        help_text = (
+            "tar(bsdtar): manipulate archive files\nFirst option must be a mode specifier:\n"
+            "  -c Create  -r Add/Replace  -t List  -u Update  -x Extract\nCommon Options:\n"
+            "  -b #  Use # 512-byte records per I/O block\n  -f <filename>  Location of archive\n"
+            "  -v    Verbose\n  -w    Interactive\n  -z, -j, -J, --lzma  Compress archive with gzip/bzip2/xz/lzma\n"
+            "  --format {ustar|pax|cpio|shar}  Select archive format\n  --exclude <pattern>  Skip files\n"
+            "  -k    Keep (don't overwrite) existing files\n  -O    Write entries to stdout\n"
+        )
+        read = names(list(help_options(help_text)))
+        self.assertEqual({"-v", "-w", "-z", "--format", "--exclude", "-k", "-O"}, read)
+        self.assertLessEqual(read, names(listed_options(CATALOGUES, "bsdtar")))
 
     def test_reads_options_joined_by_a_bar_as_each_taking_the_value(self) -> None:
         self.assertEqual(
