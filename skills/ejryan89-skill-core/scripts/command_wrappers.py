@@ -14,7 +14,7 @@ import shlex
 from collections.abc import Mapping
 
 from executable_locator import program_name
-from option_reader import OptionTable, option_refusal, option_table
+from option_reader import MACOS_ENV_LETTERS, OptionTable, option_refusal, option_table
 
 # The commands that run the program a later word names, each with every option it takes, in getopt's spelling as
 # option_table reads it, and read by option_refusal, the one getopt reader: the program is the first word after the
@@ -41,6 +41,10 @@ COMMAND_WRAPPERS: dict[str, OptionTable] = {
             )
         ),
         assignments=True,
+        # Every letter of macOS's env places its command alike, so only a word the two builds read as taking
+        # different words leaves the program unread.
+        dash_build=MACOS_ENV_LETTERS,
+        dash_safe=MACOS_ENV_LETTERS.replace(":", ""),
     ),
     "timeout": option_table(
         "fk:ps:v", "foreground kill-after= preserve-status signal= verbose help version", operands=1

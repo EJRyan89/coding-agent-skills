@@ -456,6 +456,12 @@ removed fails validation until its pattern follows it.
   `tests/tools/test_prefix_programs.py::CatalogueTests::test_the_programs_macos_builds_of_its_own_list_no_option_the_fixture_leaves_out`,
   which holds macOS's chroot, find, sort, and time to Apple's catalogue and its tar to bsdtar's,
   `tests/tools/test_prefix_programs.py::CatalogueTests::test_each_safe_option_takes_its_value_as_every_implementation_reads_it`,
+  `tests/tools/test_prefix_programs.py::RunnerFormTests::test_env`, whose forms are understood only where macOS's
+  getopt-only build, read as FreeBSD's getopt reads it by its catalogue's getopt string, refuses them or starts the
+  same command,
+  `tests/tools/test_prefix_programs.py::CatalogueTests::test_every_table_reads_dash_words_as_each_macos_build_that_takes_dash_as_a_letter`,
+  which fails a table of a program whose macOS build lists the dash as a getopt letter that does not read its words
+  that way too,
   `tests/tools/test_hub_guard_bash.py::RunnerTests::test_env_s_file_and_argv0_are_refused_in_every_spelling_and_neither_value_is_read_as_its_command`,
   which refuses the Rust coreutils' env options that read variables from a file and name what a multicall program
   runs as,

@@ -17,6 +17,10 @@ from typing import Any
 Word = str | None
 # How an option takes its value: none, the rest of its word or the next word, or only the rest of its word.
 NO_VALUE, VALUE, OPTIONAL_VALUE = "none", "value", "optional"
+# macOS's env, Apple's build of FreeBSD's, by its getopt string, which lists `-` as a letter that clears the
+# environment as -i does; it takes no long option, so it reads GNU env's `--unset NAME` as `-`, then `-u` with `nset`
+# attached, and NAME as its command. Every table of env names it as its dash_build.
+MACOS_ENV_LETTERS = "-0C:iP:S:u:v"
 
 
 @dataclass(frozen=True)
@@ -35,7 +39,11 @@ class OptionTable:
     reads an option written with a slash in any case, as System32's sort.exe does, by its upper-case name, `+` standing
     for `/+n`, or is None for a program with no such build; dash_switches says that build may read a word that starts
     with a dash as the slash option it would read with a slash, as sort.exe's `-t` might be its `/T`, so such a word is
-    held to the slash options too (tools/hub_guard.py's slash_refusal)."""
+    held to the slash options too (tools/hub_guard.py's slash_refusal). dash_build maps each letter of another build
+    of the program, one whose getopt lists `-` as a letter, as macOS's env, FreeBSD's, does, to how it takes its value,
+    and dash_safe names the ones of them known to be safe: such a build reads a long option word as a bundle of short
+    letters, `--unset` as `-` and then `-u` with `nset` attached, so its reading is held to the table's
+    (dash_reading)."""
 
     short: Mapping[str, str] = field(default_factory=dict)
     long: Mapping[str, str] = field(default_factory=dict)
@@ -47,25 +55,40 @@ class OptionTable:
     assignments: bool = False
     slash: Mapping[str, str] | None = None
     dash_switches: bool = False
+    dash_build: Mapping[str, str] | None = None
+    dash_safe: frozenset[str] = frozenset()
 
 
 def option_table(short: str = "", long: str = "", **form: Any) -> OptionTable:
     """An OptionTable from getopt's spelling: short letters, each followed by `:` for a value or `::` for an optional
     one, and long names separated by spaces, each followed by `=` for a value or `=?` for an optional one; a slash
-    spelling, given, names the Windows build's slash options as long names are named, without their slash."""
+    spelling, given, names the Windows build's slash options as long names are named, without their slash; a
+    dash_build spelling, given, is the other build's getopt letters, spelled as short is, and dash_safe the letters of
+    it known to be safe."""
     if isinstance(form.get("slash"), str):
         form["slash"] = {
             spec.removesuffix("="): VALUE if spec.endswith("=") else NO_VALUE for spec in form["slash"].split()
         }
-    shorts: dict[str, str] = {}
-    for match in re.finditer(r"(.)(::?)?", short):
-        shorts[match[1]] = {None: NO_VALUE, ":": VALUE, "::": OPTIONAL_VALUE}[match[2]]
+    if isinstance(form.get("dash_build"), str):
+        form["dash_build"] = short_letters(form["dash_build"])
+    if isinstance(form.get("dash_safe"), str):
+        form["dash_safe"] = frozenset(form["dash_safe"])
+    shorts = short_letters(short)
     longs: dict[str, str] = {}
     for spec in long.split():
         name = spec.removesuffix("=?").removesuffix("=")
         prefix = "-" if form.get("single_dash") else "--"
         longs[prefix + name] = OPTIONAL_VALUE if spec.endswith("=?") else VALUE if spec.endswith("=") else NO_VALUE
     return OptionTable(shorts, longs, **form)
+
+
+def short_letters(short: str) -> dict[str, str]:
+    """Each letter of getopt's short spelling with how it takes its value: `:` after it for a value, `::` for an
+    optional one."""
+    shorts: dict[str, str] = {}
+    for match in re.finditer(r"(.)(::?)?", short):
+        shorts[match[1]] = {None: NO_VALUE, ":": VALUE, "::": OPTIONAL_VALUE}[match[2]]
+    return shorts
 
 
 @dataclass(frozen=True)
@@ -173,7 +196,39 @@ def next_word(arguments: list[Word], index: int) -> Word:
 def option_word(table: OptionTable, word: str) -> tuple[int, str | None, str | None] | None:
     """An option word read: how many of the following words it takes as its values, the value-taking option it holds,
     if any, and the value attached to it; or None for a word that is or may hold an option the table does not know
-    to be safe, a value given to an option that takes none among them."""
+    to be safe, a value given to an option that takes none among them. Where the table names a dash_build, a dash
+    word is also read as that build reads it, and is None unless that build refuses it or takes the same following
+    words by safe letters (dash_reading), so the two builds never start different commands."""
+    read = getopt_word(table, word)
+    if read is None or table.dash_build is None or word.startswith("/"):
+        return read
+    other = dash_reading(table, word[1:])
+    return read if other in {BUILD_REFUSES, read[0]} else None
+
+
+# What dash_reading gives for a word the other build refuses, which then prints its usage and runs nothing.
+BUILD_REFUSES = -1
+
+
+def dash_reading(table: OptionTable, letters: str) -> int | None:
+    """A dash word, after its first dash, read as the table's dash_build reads it, BSD getopt's way: a bundle of
+    letters, `-` among them, a value-taking letter ending it with the rest of the word or the next word as its value.
+    How many following words it takes; BUILD_REFUSES where a letter is none of that build's; None where a letter it
+    takes is not one dash_safe names."""
+    build = table.dash_build or {}
+    for position, letter in enumerate(letters):
+        kind = build.get(letter)
+        if kind is None:
+            return BUILD_REFUSES
+        if letter not in table.dash_safe:
+            return None
+        if kind != NO_VALUE:
+            return int(kind == VALUE and position + 1 == len(letters))
+    return 0
+
+
+def getopt_word(table: OptionTable, word: str) -> tuple[int, str | None, str | None] | None:
+    """An option word read by the table alone, as option_word reads it."""
     if table.numbered is not None and table.numbered.fullmatch(word):
         return 0, None, None
     if word.startswith("/"):
