@@ -1473,13 +1473,6 @@ def _specialist_roles(
     return roles
 
 
-def gives_closing_issues(reviewer_root: Path) -> bool:
-    """Whether a materialized specialists manifest gives any specialist the issues the pull request closes, so that
-    prepare reads them for its run."""
-    manifest, _ = load_materialized_manifest(reviewer_root)
-    return any("closing-issues" in specialist_inputs(specialist) for specialist in manifest["specialists"])
-
-
 def _generic_role(
     manifest: dict[str, Any],
     changed: list[str],
@@ -1635,6 +1628,7 @@ def build_plan(
     review_files: set[str] | None = None,
     source_commands: Callable[[str], SourceCommands] | None = None,
     document_stage: str | None = None,
+    closing_issues: Callable[[], None] | None = None,
 ) -> dict[str, Any]:
     """Plan the review roles. Without a reviewer root, the suite's generic reviewer reviews the whole change.
 
@@ -1644,6 +1638,9 @@ def build_plan(
     only gives dispositions, and a specialist with no prior finding or comment either is left out.
     `source_commands` gives a role's `source-file` command, for a lazy snapshot only, and its `source-search`.
     `document_stage`, one of DOCUMENT_STAGES, is given to each role of the suite's design-review profile.
+    `closing_issues` writes the issues the pull request closes into the request, which the plan then reads again: it is
+    called before any prompt is written, and only when a role the plan routes is given them, so a review whose
+    specialist given them is not routed never reads them.
     """
     request = _load_request(request_path)
     manifest, source_commit = _load_reviewer(reviewer_root, request["mode"])
@@ -1695,6 +1692,9 @@ def build_plan(
             role["finding_categories"] = manifest["finding_categories"]
             if "fallback_finding_category" in manifest:
                 role["fallback_finding_category"] = manifest["fallback_finding_category"]
+    if closing_issues is not None and any("closing-issues" in specialist_inputs(role) for role in roles):
+        closing_issues()
+        request = _load_request(request_path)
     if document_stage is not None:
         for role in roles:
             if role.get("profile") == DESIGN_REVIEW_PROFILE:
@@ -1828,8 +1828,13 @@ def load_role_result(
     name = role["id"]
     tools = {tool.casefold(): tool for tool in analyzer_tools}
     path = Path(role["result_file"])
-    # A path whose stat fails raises, never reported as one that is not there.
-    if not file_presence.is_present(path, other_is_absent=True):
+    # A path whose stat fails raises, never reported as one that is not there, and a directory in its place is not a
+    # file, never a missing one.
+    try:
+        present = file_presence.is_present(path)
+    except file_presence.NotAFile as exc:
+        raise SpecialistError(f"{name}: result file is not a file") from exc
+    if not present:
         raise SpecialistError(f"{name}: result file is missing")
     try:
         value = parse_json(path.read_text(encoding="utf-8-sig"))

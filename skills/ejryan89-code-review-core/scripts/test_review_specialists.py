@@ -1755,6 +1755,17 @@ class ResultFieldKindTests(unittest.TestCase):
     def test_the_result_every_case_changes_is_accepted(self) -> None:
         self.assertEqual("m", self.load(RESULT)["model"])
 
+    def test_a_result_file_that_is_missing_or_a_directory_is_named_so(self) -> None:
+        # A directory in the result file's place is not a file, never reported as a missing one.
+        with tempfile.TemporaryDirectory() as directory:
+            result_file = Path(directory) / "result.json"
+            role = {"id": "csharp-review", "result_file": str(result_file)}
+            with self.assertRaisesRegex(rs.SpecialistError, r"^csharp-review: result file is missing$"):
+                rs.load_role_result(role, {})
+            result_file.mkdir()
+            with self.assertRaisesRegex(rs.SpecialistError, r"^csharp-review: result file is not a file$"):
+                rs.load_role_result(role, {})
+
     def test_each_field_of_the_wrong_kind_is_refused_at_its_path(self) -> None:
         for result, path, expected, found in self.CASES:
             with self.subTest(path=path, found=found):

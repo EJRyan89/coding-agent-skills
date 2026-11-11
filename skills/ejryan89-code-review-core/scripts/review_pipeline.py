@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import functools
 import shutil
 import sys
 import tempfile
@@ -178,7 +179,6 @@ from review_source import source_commands
 from review_specialists import (
     assemble,
     build_plan,
-    gives_closing_issues,
     parse_unified_diff,
     renamed_from,
     render_entrypoint_prompt,
@@ -361,13 +361,15 @@ def _write_roles(
     document_stage: str | None = None,
     guarded: bool,
     default_model: str | None = None,
+    closing_issues: Callable[[], None] | None = None,
 ) -> tuple[list[RunRole], list[str], dict[str, list[str]]]:
     """Each reviewer role with its prompt written: an entrypoint's one, or the specialists plan's. Returns the roles,
     the changed files the plan leaves unreviewed, and the run's restricted paths, each with the roles that may read it.
     Every prompt names the `source-search` command, and a `lazy` snapshot's its `source-file` command too; a
     `document_stage` reaches the design-review specialist's. A role withheld a pull-request text keeps the paths it may
     read, and the closing issues' file is restricted to the roles given it, which the reviewer guard holds them to
-    when it is `guarded`; when it is not, a note says so."""
+    when it is `guarded`; when it is not, a note says so. `closing_issues` writes them into the request, which the
+    plan calls only when it routes a role given them."""
     script = command_script("review_source.py")
     if kind == "entrypoint":
         if reviewer_root is None or entrypoint is None:
@@ -403,6 +405,7 @@ def _write_roles(
         review_files=review_files,
         source_commands=lambda identity: _source_commands(run, identity, script, lazy),
         document_stage=document_stage,
+        closing_issues=closing_issues,
     )
     roles: list[RunRole] = []
     for planned in plan["roles"]:
@@ -469,6 +472,18 @@ class _Review:
 
 
 FIXTURE_PRIOR_FILE = "prior.json"
+
+
+def _run_fixture(review: _Review, run: Path) -> dict[str, Any] | None:
+    """run.json's record of a fixture canary, naming the run's copy of the prior record it was given, which this
+    writes; None for a pull request read from GitHub."""
+    if review.fixture is None:
+        return None
+    fixture: dict[str, Any] = {**review.fixture, "prior_record": None}
+    if review.prior_record is not None:
+        fixture["prior_record"] = str(run / FIXTURE_PRIOR_FILE)
+        atomic_write_json(run / FIXTURE_PRIOR_FILE, review.prior_record)
+    return fixture
 
 
 def prepare(
@@ -714,7 +729,8 @@ def _prepare_run(
             notes.append(f"Scope {describe_scope(scope_record)}.")
         request_path = run / "request.json"
         writing = services.timer()
-        _write_request(
+        write_request = functools.partial(
+            _write_request,
             request_path,
             mode=review.mode,
             repository=repository,
@@ -727,18 +743,9 @@ def _prepare_run(
             comments=comments,
             gaps=gaps,
             unreviewed_suffixes=review.unreviewed_suffixes,
-            closing_issues=(
-                review.read_closing_issues(CLOSING_ISSUES_MAXIMUM)
-                if kind == "specialists" and reviewer_root is not None and gives_closing_issues(reviewer_root)
-                else None
-            ),
         )
-        fixture = review.fixture
-        if fixture is not None:
-            fixture = {**fixture, "prior_record": None}
-            if review.prior_record is not None:
-                fixture["prior_record"] = str(run / FIXTURE_PRIOR_FILE)
-                atomic_write_json(run / FIXTURE_PRIOR_FILE, review.prior_record)
+        write_request()
+        fixture = _run_fixture(review, run)
         result_path = run / "result.json"
         roles, uncovered_files, restricted = _write_roles(
             kind,
@@ -757,6 +764,13 @@ def _prepare_run(
             document_stage=review.document_stage,
             guarded=guard_runs(runtime, dispatch),
             default_model=config["reviewer_model"],
+            # Read only once the plan routes a specialist given them, never for one the manifest names but the plan
+            # leaves out.
+            closing_issues=(
+                (lambda: write_request(closing_issues=review.read_closing_issues(CLOSING_ISSUES_MAXIMUM)))
+                if kind == "specialists" and reviewer_root is not None
+                else None
+            ),
         )
         snapshot["seconds"] = snapshot_seconds({**snapshot["seconds"], "prompts": services.timer() - writing})
         state: RunState = {
