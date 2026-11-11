@@ -421,7 +421,11 @@ MANIFEST_ALLOWED_PATHS: list[str] = [
     ".claude/agents/*.md",
 ]
 
-COPILOT_BUILTIN_NAMES: set[str] = {"code-review"}
+# Copilot CLI's built-in agents, from the "Built-in agents" table of its command reference. A custom agent named after
+# one is a collision (_copilot_agent_fields).
+COPILOT_BUILTIN_AGENTS: frozenset[str] = frozenset(
+    {"code-review", "explore", "general-purpose", "research", "rubber-duck", "security-review", "task"}
+)
 COPILOT_ROLE_BY_SURFACE: dict[str, str] = {
     "copilot_cli": "full_local_host",
     "copilot_app": "full_local_host",
@@ -1156,13 +1160,20 @@ def _copilot_agent_fields(rel: str, agent_id: str, values: dict[str, Frontmatter
         )
     if "modelPolicy" in values and _text(values, "modelPolicy") not in {"preferred", "required"}:
         findings.append(Finding("ERROR", "copilot-agent", rel, message="modelPolicy must be 'preferred' or 'required'"))
-    if agent_id.lower() in COPILOT_BUILTIN_NAMES:
-        findings.append(
-            Finding(
-                "ERROR", "collision", rel, message=f"Custom agent '{agent_id}' collides with a Copilot built-in agent"
-            )
-        )
+    # The command reference: a custom agent's name is its name field, else its ID. Copilot CLI's changelog: a custom
+    # agent sharing a built-in agent's name is not offered to the model, since delegating to that name always runs
+    # the built-in agent. Copilot CLI compares the names in their own case.
+    name = _text(values, "name").strip() or agent_id
+    if name in COPILOT_BUILTIN_AGENTS:
+        findings.append(Finding("ERROR", "collision", rel, message=_builtin_agent_collision(name)))
     return findings
+
+
+def _builtin_agent_collision(name: str) -> str:
+    return (
+        f"Custom agent '{name}' takes the name of a Copilot CLI built-in agent, which delegating to '{name}' always "
+        "runs, so Copilot CLI never offers this agent to the model; rename it"
+    )
 
 
 def _provenance(root: Path, path: Path, rel: str, kind: str, manifest_paths: set[str]) -> list[Finding]:
