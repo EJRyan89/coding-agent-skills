@@ -1,8 +1,8 @@
 """One rule settles a committed run's transient backup, whether the run's own finalization or a later recovery meets it.
 
 Each row puts the same backup on disk and runs it through pipeline._finalize and through recovery's _finish_backup,
-which must leave the same tree and give the same warnings. The last test holds that "When recovery fails" in
-docs/recovery.md names every stop recovery makes.
+which must leave the same tree and give the same warnings. The last tests hold that "When recovery fails" in
+docs/recovery.md names every stop recovery makes, and how those stops are found.
 """
 
 from __future__ import annotations
@@ -10,7 +10,6 @@ from __future__ import annotations
 import ast
 import contextlib
 import errno
-import itertools
 from collections.abc import Callable, Iterator
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
@@ -287,8 +286,9 @@ class SettlementTests(DeployerTestCase):
                     fsops.remove(outside)
 
 
-# Each stop recovery makes, by the text of the WARNING it gives before it answers False, mapped to the words "When
-# recovery fails" in docs/recovery.md names it by. A stop added without its row fails the test below.
+# Each stop recovery makes, by the text of the WARNING or the ERROR line it prints before it answers False, or, for a
+# DeployError it reports, by the function that reports it, mapped to the words "When recovery fails" in
+# docs/recovery.md names it by. A stop added without its row fails the test below.
 KEPT_STAND_IN = (
     "what stands where a copy was kept in `.backups/<run-id>/` is a link, sits under one, or is not the kind of item "
     "the run replaced"
@@ -306,7 +306,26 @@ STOPS = {
     "Backup hash mismatch for {} during rollback": "a backup changed before a rollback could put it back",
     "Both {} and {} exist during rollback": "an item and its `.deploying-bak` both exist",
     # _undo_preserve reports the DeployError prepare_backup_destination raises.
-    "_report": "the `.backups` path a rollback moves a kept copy back from is unusable",
+    "_report in _undo_preserve": "the `.backups` path a rollback moves a kept copy back from is unusable",
+    # _guarded reports each failure a step of recovery meets that a retry would meet again.
+    "_report in _guarded": "`ERROR: Recovery of run <run-id> failed at <path>`",
+    # Recovery of a committed run stops after the WARNING lines of the installs it could not verify.
+    "ERROR: Install verification failed. Retaining all backups and journal.": (
+        "an item changed or went missing after the run installed it"
+    ),
+    "ERROR: Staging run is a symlink or junction and was not replayed: {}": (
+        "`ERROR: Staging run is a symlink or junction and was not replayed`"
+    ),
+    "ERROR: The manifest is missing or cannot be read, so recovery cannot tell whether run {} was committed.": (
+        "when the manifest is missing or cannot be read, that this cannot be told"
+    ),
+    "ERROR: Recovery has unreconciled entries. Journal retained at: {}": (
+        "prints a `WARNING` line for each item it could not reconcile"
+    ),
+    "ERROR: Malformed journal entry in run {}: {}": "`Malformed journal entry`",
+    "ERROR: Journal validation failed. Retaining {} for manual inspection.": "`Malformed journal entry`",
+    "ERROR: Run {}'s journal is not a file. Retaining {} for manual inspection.": "`journal is not a file`",
+    "ERROR: Cannot list the staging runs in {}: {}": "`ERROR: Cannot list the staging runs in <path>`",
 }
 
 
@@ -318,26 +337,57 @@ def _text(node: ast.expr) -> str:
     return "".join(_text(part) if isinstance(part, ast.Constant) else "{}" for part in node.values)
 
 
-def recovery_stops() -> set[str]:
-    """Each _warn or _report in journal.py that the statement after it answers False to."""
-    tree = ast.parse((REPOSITORY_ROOT / "deployer" / "journal.py").read_text(encoding="utf-8"))
+# The words a line recovery prints itself opens with when it reports a stop.
+STOP_PREFIXES = ("ERROR:", "WARNING:")
+
+
+def recovery_stops(source: str | None = None) -> set[str]:
+    """Each stop in journal.py, or in the source given, that a block answers False to: each call in the run of calls
+    just before the block's `return False` that reports one, a _warn by its text, a print of an ERROR or WARNING line
+    by its text without its indentation, and a _report, which prints a DeployError's own lines, by the function that
+    holds it. A call between them that reports nothing, such as one printing the manual steps, is passed over."""
+    if source is None:
+        source = (REPOSITORY_ROOT / "deployer" / "journal.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    # Each statement by the innermost function that holds it; ast.walk visits an outer function before an inner one.
+    holder: dict[int, str] = {}
+    for function in ast.walk(tree):
+        if isinstance(function, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            for node in ast.walk(function):
+                holder[id(node)] = function.name
     found = set()
     for node in ast.walk(tree):
-        body = getattr(node, "body", None)
-        if not isinstance(body, list):
-            continue
-        for statement, after in itertools.pairwise(body):
-            answers_false = (
-                isinstance(after, ast.Return) and isinstance(after.value, ast.Constant) and after.value.value is False
-            )
-            call = statement.value if isinstance(statement, ast.Expr) else None
-            if not answers_false or not isinstance(call, ast.Call) or not isinstance(call.func, ast.Name):
+        for field in ("body", "orelse", "finalbody"):
+            block = getattr(node, field, None)
+            if not isinstance(block, list) or not block:
                 continue
-            if call.func.id == "_warn":
-                found.add(_text(call.args[0]))
-            elif call.func.id == "_report":
-                found.add("_report")
+            last = block[-1]
+            if not (
+                isinstance(last, ast.Return) and isinstance(last.value, ast.Constant) and last.value.value is False
+            ):
+                continue
+            for statement in reversed(block[:-1]):
+                call = statement.value if isinstance(statement, ast.Expr) else None
+                if not isinstance(call, ast.Call):
+                    break
+                stop = _stop(call, holder.get(id(statement), "<module>"))
+                if stop is not None:
+                    found.add(stop)
     return found
+
+
+def _stop(call: ast.Call, function: str) -> str | None:
+    """The stop a call reports, as recovery_stops names it, or None when it reports none."""
+    if not isinstance(call.func, ast.Name):
+        return None
+    if call.func.id == "_warn":
+        return _text(call.args[0])
+    if call.func.id == "_report":
+        return f"_report in {function}"
+    if call.func.id == "print" and call.args and isinstance(call.args[0], (ast.Constant, ast.JoinedStr)):
+        text = _text(call.args[0]).strip()
+        return text if text.startswith(STOP_PREFIXES) else None
+    return None
 
 
 class RecoveryStopsTests(DeployerTestCase):
@@ -345,7 +395,52 @@ class RecoveryStopsTests(DeployerTestCase):
         self.assertEqual(set(STOPS), recovery_stops())
         guide = (REPOSITORY_ROOT / "docs" / "recovery.md").read_text(encoding="utf-8")
         section = guide.split("## When recovery fails", 1)[1].split("\n## ", 1)[0]
-        stops = section.strip().split("\n\n", 1)[0]
         for warning, named in STOPS.items():
             with self.subTest(warning=warning):
-                self.assertIn(named, stops)
+                self.assertIn(named, section)
+
+    def test_each_stop_is_found_by_its_line_or_by_the_function_that_reports_it(self) -> None:
+        source = (
+            "import sys\n"
+            "def first(item):\n"
+            "    _warn(f'Cannot read {item}')\n"
+            "    return False\n"
+            "def second():\n"
+            "    print('  ERROR: Staging is a link', file=sys.stderr)\n"
+            "    return False\n"
+            "def third():\n"
+            "    try:\n"
+            "        step()\n"
+            "    except DeployError as exc:\n"
+            "        _report(exc)\n"
+            "        return False\n"
+            "def fourth():\n"
+            "    def inner():\n"
+            "        _report(error)\n"
+            "        return False\n"
+            "    print('Recovering')\n"
+            "    _warn('Carrying on')\n"
+            "    return True\n"
+            "def fifth(run):\n"
+            "    if ready:\n"
+            "        return True\n"
+            "    else:\n"
+            "        print(f'  ERROR: Run {run} failed', file=sys.stderr)\n"
+            "        print(f'  {see_recovery()}', file=sys.stderr)\n"
+            "        _print_manual_steps(run)\n"
+            "        return False\n"
+            "def sixth():\n"
+            "    _warn('Before the assignment')\n"
+            "    done = False\n"
+            "    return False\n"
+        )
+        self.assertEqual(
+            recovery_stops(source),
+            {
+                "Cannot read {}",
+                "ERROR: Staging is a link",
+                "_report in third",
+                "_report in inner",
+                "ERROR: Run {} failed",
+            },
+        )
