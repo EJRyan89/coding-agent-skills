@@ -107,12 +107,11 @@ def missing_folders(output: Path | None) -> list[Path]:
     if output is None:
         return []
     missing: list[Path] = []
-    current = output.resolve()
-    while not file_presence.is_occupied(current):
-        missing.append(current)
-        if current.parent == current:
+    resolved = output.resolve()
+    for current in (resolved, *resolved.parents):
+        if file_presence.is_occupied(current):
             break
-        current = current.parent
+        missing.append(current)
     return missing
 
 

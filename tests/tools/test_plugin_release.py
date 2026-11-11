@@ -9,6 +9,7 @@ import json
 import re
 import subprocess
 import sys
+import tempfile
 import zipfile
 from contextlib import redirect_stdout
 from pathlib import Path
@@ -243,6 +244,25 @@ def test_build_whose_marketplace_cannot_be_written_leaves_its_output_as_it_found
         "Checkout With Spaces",
         *(["assets"] * (given == "empty")),
     ]
+
+
+def test_build_with_no_output_whose_marketplace_cannot_be_written_leaves_no_folder_in_the_temporary_directory(
+    checkout: Path, tmp_path: Path
+) -> None:
+    # With no --output the archives go into a new folder under the temporary directory, which goes again with them.
+    temporary = tmp_path / "temporary"
+    temporary.mkdir()
+    refused = PermissionError(13, "Permission denied", str(checkout / ".claude-plugin" / "marketplace.json"))
+    with (
+        mock.patch.object(tempfile, "tempdir", str(temporary)),
+        mock.patch.object(json_writer, "write", side_effect=refused),
+    ):
+        code, lines = run(["build", "v1.2.3", "--root", str(checkout)])
+    assert code == 1
+    assert len(lines) == 1, lines
+    assert lines[0].startswith("FAILED ")
+    assert "marketplace.json" in lines[0]
+    assert list(temporary.iterdir()) == []
 
 
 def test_build_whose_tag_cannot_be_resolved_fails_with_the_error_and_its_remedy_and_no_debug_hint(
