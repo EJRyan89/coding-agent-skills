@@ -2314,7 +2314,11 @@ def artifact_hashes(record: ReviewRecord) -> Artifacts:
 def validate_record_pair(json_path: Path, markdown_path: Path) -> ReviewRecord:
     record = validate_record(read_json(json_path))
     artifacts = artifact_hashes(record)
-    markdown = markdown_path.read_text(encoding="utf-8")
+    try:
+        markdown = markdown_path.read_text(encoding="utf-8")
+    except UnicodeDecodeError as exc:
+        # Bad content, as a JSON side read_json refuses is: a RecordError its callers fail that one record with.
+        raise RecordError(f"Review Markdown {markdown_path} is not UTF-8: {exc}") from exc
     if payload_hash(record) != artifacts["payload_sha256"]:
         raise RecordError("Review JSON payload hash mismatch")
     if sha256_text(markdown) != artifacts["markdown_sha256"]:

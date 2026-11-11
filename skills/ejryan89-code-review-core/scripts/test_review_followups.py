@@ -961,14 +961,14 @@ class EnumerateBatchTests(unittest.TestCase):
                 self.assertEqual((True, None), (entry["complete"], entry["error"]))
                 self.assertEqual([1, 2], [pull["number"] for pull in entry["eligible"]])
                 self.assertEqual(
-                    {self.REPOSITORY: ("2026-03-01", "2026-03-04")},
+                    {self.REPOSITORY: review_batches.WatermarkChange("moved", "2026-03-01", "2026-03-04")},
                     review_batches.advance_watermarks(self.root / "batch.json", config_path=self.config),
                 )
                 state = json.loads(self.state_path.read_text(encoding="utf-8"))
                 self.assertEqual("2026-03-04", state["repositories"][self.REPOSITORY]["merged_since"])
         self.review(2, verdict="APPROVED")
         self.assertEqual(
-            {self.REPOSITORY: ("2026-03-01", "2026-03-10")},
+            {self.REPOSITORY: review_batches.WatermarkChange("moved", "2026-03-04", "2026-03-10")},
             review_batches.advance_watermarks(self.root / "batch.json", config_path=self.config),
         )
 

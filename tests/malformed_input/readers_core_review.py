@@ -36,6 +36,7 @@ from xml_reader import XmlRefused
 sys.path.insert(0, str(sibling_scripts("ejryan89-code-review-core")))
 
 import review_analyzers
+import review_batches
 import review_canary
 import review_config
 import review_dispatch
@@ -158,6 +159,54 @@ RUN = {
     "patches": {},
     "scope": None,
     "uncovered_files": [],
+}
+RUN_LIST = {
+    "schema_version": review_batches.RUN_LIST_SCHEMA_VERSION,
+    "options": {
+        "config": None,
+        "host": None,
+        "inline": False,
+        "force": False,
+        "canary": False,
+        "scope": None,
+        "prior": None,
+    },
+    "pending": [{"kind": "pull", "target": "example/one#13"}],
+    "runs": [{"run": "/runs/one", "selector": "example/one#12", "status": "published"}],
+}
+BATCH_PULL = {
+    "number": 12,
+    "title": "Ship stock",
+    "url": "https://github.com/example/one/pull/12",
+    "state": "MERGED",
+    "isDraft": False,
+    "baseRefName": "main",
+    "baseRefOid": "a" * 40,
+    "headRefName": "ship",
+    "headRefOid": "b" * 40,
+    "mergedAt": "2026-03-05T10:00:00Z",
+}
+BATCH = {
+    "schema_version": review_batches.BATCH_SCHEMA_VERSION,
+    "today": "2026-03-10",
+    "repositories": {
+        "example/one": {
+            "previous_watermark": "2026-03-01",
+            "complete": True,
+            "error": None,
+            "eligible": [BATCH_PULL],
+            "deferred": [],
+            "listing": {"scan": "watermark", "pages": 2, "pulls": 1, "read": 1},
+        },
+        "example/two": {
+            "previous_watermark": None,
+            "complete": False,
+            "error": "the listing failed",
+            "eligible": [],
+            "deferred": [],
+            "listing": None,
+        },
+    },
 }
 PULL = {
     "schema_version": 1,
@@ -530,6 +579,24 @@ READERS = [
         filename="review.json",
         accepts={"bom": UTF8_SIG},
         prepare=_report,
+    ),
+    Reader(
+        "review_batches.load_batch",
+        "json",
+        _json(BATCH),
+        review_batches.load_batch,
+        (PersistenceError, review_run.PipelineError, review_operation.ReviewOperationError),
+        filename="batch.json",
+        accepts={"bom": UTF8_SIG},
+    ),
+    Reader(
+        "review_batches.load_run_list",
+        "json",
+        _json(RUN_LIST),
+        review_batches.load_run_list,
+        (PersistenceError, review_run.PipelineError),
+        filename=review_batches.RUN_LIST_FILE,
+        accepts={"bom": UTF8_SIG},
     ),
     Reader(
         "review_run.load_run",

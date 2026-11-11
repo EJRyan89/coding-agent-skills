@@ -65,13 +65,21 @@ def watermark_date(identity: str, value: str) -> date:
 
 
 def validate_state(value: Any) -> dict[str, Any]:
+    """The state, its repositories keyed by their lowercase identities; a key in another case reads as that identity,
+    and two spellings of one identity are refused."""
     state = READ.json_object(value, "state", optional={"schema_version", "repositories"})
     version = READ.integer(state.get("schema_version"), "state.schema_version")
     if version != SCHEMA_VERSION:
         raise StateError(f"Unsupported state schema version: {version!r}")
     repositories = READ.json_object(state.get("repositories"), "state.repositories")
+    keyed: dict[str, Any] = {}
     for identity, entry in repositories.items():
-        validate_repository_identity(READ.string(identity, "a key of state.repositories"))
+        # Identities match ignoring case, so each entry is keyed by the lowercase form every lookup and write uses,
+        # and two spellings of one repository are refused: which one's watermark holds cannot be told.
+        key = validate_repository_identity(READ.string(identity, "a key of state.repositories"))
+        if key in keyed:
+            raise StateError(f"State repositories hold {key} under more than one spelling")
+        keyed[key] = entry
         path = f"state.repositories.{identity}"
         READ.json_object(entry, path, optional={"merged_since", "updated_at"})
         for field in ("merged_since", "updated_at"):
@@ -79,7 +87,7 @@ def validate_state(value: Any) -> dict[str, Any]:
                 READ.string(entry[field], f"{path}.{field}", empty=True)
         if "merged_since" in entry:
             watermark_date(identity, entry["merged_since"])
-    return state
+    return {**state, "repositories": keyed}
 
 
 def empty_state() -> dict[str, Any]:

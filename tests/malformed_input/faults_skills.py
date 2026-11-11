@@ -356,7 +356,7 @@ def batch(fixture: Fixture) -> None:
                 "previous_watermark": "2026-01-01",
                 "eligible": [],
                 "deferred": [],
-                "listing": {"scan": "merged", "pages": 1, "pulls": 0, "read": 0},
+                "listing": {"scan": "watermark", "pages": 1, "pulls": 0, "read": 0},
             }
         },
     }
