@@ -704,6 +704,33 @@ class TransientPresenceTests(DeployerTestCase):
             result.stderr,
         )
 
+    def test_a_backup_it_cannot_hash_after_the_commit_is_kept_once_with_the_reason_and_no_error(self) -> None:
+        transient = self.updated()
+        real_finalize, real_hash = pipeline._finalize, hashing.hash_path
+
+        def hash_path(path: Path) -> str:
+            if path == transient:
+                raise DeployError("ERROR: Cannot hash alpha: synthetic link inside", "Synthetic remedy.")
+            return real_hash(path)
+
+        def finalize(*arguments: Any) -> list[tuple[str, str]]:
+            with mock.patch.object(hashing, "hash_path", side_effect=hash_path):
+                return real_finalize(*arguments)
+
+        with mock.patch.object(pipeline, "_finalize", side_effect=finalize):
+            result = self.deploy_ok("--all")
+        kept = list((self.skills_dir / ".backups").glob("*/alpha"))
+        self.assertEqual(1, len(kept), result.output)
+        kept_at = kept[0].relative_to(self.skills_dir).as_posix()
+        warning = (
+            f"WARNING: Could not tell whether alpha's previous copy changed after run {kept[0].parent.name} planned "
+            f"it (Cannot hash alpha: synthetic link inside), so it was kept at {kept_at}."
+        )
+        self.assertEqual(1, result.stderr.count(warning), result.stderr)
+        self.assertNotIn("ERROR", result.stderr)
+        self.assertNotIn("Synthetic remedy.", result.stderr)
+        self.assertNotIn("instead of being deleted", result.stderr)
+
     def test_a_committed_backup_is_deleted_kept_or_gone_with_the_reason_a_stat_failed(self) -> None:
         self.skills_dir.mkdir(parents=True)
         transient = self.skills_dir / transient_name("alpha")
@@ -716,3 +743,10 @@ class TransientPresenceTests(DeployerTestCase):
         # An error with no reason of its own is named by its text.
         with mock.patch.object(journal, "backup_unchanged", side_effect=OSError("held")):
             self.assertEqual(("keep", "held"), journal.backup_disposition(self.paths, unkept))
+        # A copy hashing refuses is kept with the refusal's first line as its reason, never printed as an error.
+        refusal = DeployError("ERROR: Cannot hash alpha: synthetic link inside", "Synthetic remedy.")
+        printed = io.StringIO()
+        with mock.patch.object(hashing, "hash_path", side_effect=refusal), contextlib.redirect_stderr(printed):
+            disposition = journal.backup_disposition(self.paths, unkept)
+        self.assertEqual(("keep", "Cannot hash alpha: synthetic link inside"), disposition)
+        self.assertEqual("", printed.getvalue())

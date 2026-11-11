@@ -429,6 +429,26 @@ class CheckCommandTests(DeployerTestCase):
             [f"{bash} (needed to deploy; {located})"], self.report_groups(result.output, "CHECK")["UNUSABLE"]
         )
 
+    def test_an_unusable_deploy_tool_is_named_in_the_lead_beside_a_missing_or_outdated_one(self) -> None:
+        # Every kind of problem the deploy tools have is named in the lead, an unusable one beside the others.
+        refused = DeployError("ERROR: Could not find the Bash beside git: synthetic", "Synthetic remedy.")
+        unusable = "put right what each unusable tool's line names"
+        machines = [
+            (Machine(missing=("shellcheck",)), f"Install the missing tools and {unusable}"),
+            (Machine(python=(3, 11, 3)), f"Update the outdated tools and {unusable}"),
+            (
+                Machine(missing=("shellcheck",), python=(3, 11, 3)),
+                f"Install the missing tools, update the outdated ones, and {unusable}",
+            ),
+        ]
+        for machine, lead in machines:
+            with self.subTest(lead=lead):
+                with machine.patches(), mock.patch("deployer.platform_support.find_bash", side_effect=refused):
+                    result = self.run_cli("check")
+                self.assertEqual(1, result.code, result.output)
+                self.assertEqual(1, len(self.report_groups(result.output, "CHECK")["UNUSABLE"]), result.output)
+                self.assertIn(f"{lead} before deploying; see", " ".join(result.output.split()))
+
     def test_a_deploy_tool_probe_that_times_out_stops_the_check_rather_than_reporting_it_unusable(self) -> None:
         # A hung probe is ended with its processes and stops the check with the deadline's lines, as every hung probe
         # does. Though its error is a DeployError, it is no tool that cannot be located: no line reports it unusable.
