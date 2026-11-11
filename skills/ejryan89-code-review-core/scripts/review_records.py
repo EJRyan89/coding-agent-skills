@@ -704,9 +704,9 @@ def _record_finding(identifier: str, finding: AdapterFinding, identifiers: dict[
 
 def _unlink_other_categories(findings: list[Finding], prior_ledger: list[LedgerEntry], version: int) -> None:
     """Drop each `repeats` link to a finding of another category, letter case aside, so the finding opens an entry of
-    its own. A repeat is the same problem as the finding it names, which a problem of another kind is not, and a
-    wrong link hides the new problem in the old entry, to close with it. Location is no test: a repeat may be the same
-    problem at another place. A link to no known finding is left for the ledger to refuse."""
+    its own. A repeat is the same defect, with the same cause, as the finding it names, which one of another kind is
+    not, and a wrong link hides the new defect in the old entry, to close with it. Location is no test: a repeat may be
+    the same defect at another place. A link to no known finding is left for the ledger to refuse."""
     categories = {(entry["version"], entry["id"]): entry["category"] for entry in prior_ledger}
     categories.update(((version, finding["id"]), finding["category"]) for finding in findings)
     for finding in findings:

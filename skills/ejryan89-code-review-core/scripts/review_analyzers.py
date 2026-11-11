@@ -9,9 +9,10 @@ also lists the settings that decide which rules run and how severely: MSBuild an
 .globalconfig diagnostic severities, ruff and flake8 rule selections, and ShellCheck directives. Nothing here runs an
 analyzer or executes repository code. Each settings file is read whole, within the reader's size bound, and parsed in
 memory, and one that cannot be read or parsed, for any reason its parser gives on its content, is listed as present but
-unread, past the settings cap too, and names a tool only when its file name does. EditorConfig files are read one
-`key = value` per line, since the format has no continuation lines; setup.cfg and tox.ini keep configparser's, which
-are real there.
+unread, past the settings cap too, and names a tool only when its file name does. EditorConfig and global
+AnalyzerConfig files are read line by line as the compiler reads them: `=` or `:` after a key, a `#` or `;` after a
+value or a header starting a comment, and keys the compiler reads as the same, in any case, merged; the format has
+no continuation lines, while setup.cfg and tox.ini keep configparser's, which are real there.
 """
 
 from __future__ import annotations

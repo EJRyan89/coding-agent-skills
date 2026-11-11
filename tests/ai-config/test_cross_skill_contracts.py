@@ -468,6 +468,14 @@ class CrossSkillContractTests(unittest.TestCase):
             "start none, tell the user a new session loads the agent, and follow the prompt yourself", insights
         )
         self.assertNotIn("general-purpose subagent with exactly this prompt", insights)
+        # Claude Code loads an agent deployed into a watched folder with no restart; only a session started before
+        # ~/.claude/agents existed lacks the type, so no skill says that every earlier session does.
+        for text in (skill, document, insights):
+            self.assertIn("as a Claude Code session started before `~/.claude/agents` existed", text)
+            self.assertNotIn("as one started before the agent was deployed", text)
+        # wait-reviewers prints a FAILED line for a run it cannot read, and each skill that waits with it says so.
+        for text in (skill, document):
+            self.assertIn("`FAILED <run directory> <reason>` line means that run could not be read", text)
         insights_meta = json.loads((REPOSITORY_ROOT / "deploy-meta/review-insights.json").read_text(encoding="utf-8"))
         self.assertIn(
             "ejryan89-code-review-core", insights_meta["skill_deps"], "the agent comes with ejryan89-code-review-core"
@@ -844,7 +852,7 @@ class CrossSkillContractTests(unittest.TestCase):
                 REPOSITORY_ROOT / "skills/ejryan89-code-review-core/scripts/review_dispatch.py", "MAX_WAIT_SECONDS"
             ),
         )
-        self.assertIn("Its `READY` and `OVERDUE` lines mean what they mean in step 3.", workflow)
+        self.assertIn("Its `READY`, `OVERDUE`, and `FAILED` lines mean what they mean in step 3.", workflow)
         # Every mode ends by listing the runs that never reached finalize, and a denied command is a failure.
         self.assertIn(
             'run the pipeline\'s `unfinalized --runs "<run list>"` command. Report each '
