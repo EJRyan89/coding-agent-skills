@@ -414,8 +414,8 @@ class MainTests(unittest.TestCase):
             json.loads(table.read_text(encoding="utf-8")),
         )
         self.assertIn(
-            "Recorded Linux 3 jobs, 20.5 job-seconds; Windows 4 jobs, 89.3 job-seconds; macOS 3 jobs, 15.0 job-seconds, "
-            "as the median of 1 run (38) in",
+            "Recorded Linux 3 jobs, 20.5 job-seconds; Windows 4 jobs, 89.3 job-seconds; "
+            "macOS 3 jobs, 15.0 job-seconds, as the median of 1 run (38) in",
             output,
         )
         # Line feeds on every platform, so a rerun on another machine changes only the seconds.
@@ -436,8 +436,8 @@ class MainTests(unittest.TestCase):
             json.loads(table.read_text(encoding="utf-8")),
         )
         self.assertIn(
-            "Recorded Linux 2 jobs, 1.9 job-seconds; Windows 2 jobs, 19.0 job-seconds; macOS 2 jobs, 3.8 job-seconds, as "
-            "the median of 3 runs (10, 20, 30) in",
+            "Recorded Linux 2 jobs, 1.9 job-seconds; Windows 2 jobs, 19.0 job-seconds; "
+            "macOS 2 jobs, 3.8 job-seconds, as the median of 3 runs (10, 20, 30) in",
             output,
         )
         self.assertFalse(any(command[:3] == ["gh", "run", "list"] for command in stub.commands))

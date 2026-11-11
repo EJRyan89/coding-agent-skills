@@ -21,7 +21,7 @@ import os
 import subprocess
 import sys
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -126,7 +126,7 @@ def ps_start_seconds(text: str) -> int | None:
         return None
     hour, minute, second = (int(part) for part in parts)
     try:
-        moment = datetime(int(year), MONTHS[month], int(day), hour, minute, second, tzinfo=timezone.utc)
+        moment = datetime(int(year), MONTHS[month], int(day), hour, minute, second, tzinfo=UTC)
     except ValueError:
         return None
     return int(moment.timestamp())
