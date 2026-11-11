@@ -29,6 +29,7 @@ from urllib.parse import quote
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
+import file_presence
 import whole_number
 from atomic_file import replace_text
 from console import run_main
@@ -1102,11 +1103,20 @@ def _history_path(value: str) -> Path:
     holder = skills_directory_holding(path)
     if holder is not None:
         raise argparse.ArgumentTypeError(f"{value} is inside the skills directory {holder}; name a path outside it")
-    if path.is_dir():
+    if _is_folder(path, value):
         raise argparse.ArgumentTypeError(f"{value} is a folder; name the history file inside it")
-    if not path.parent.is_dir():
+    if not _is_folder(path.parent, value):
         raise argparse.ArgumentTypeError(f"the folder of {value} does not exist; the report creates no folder")
     return path
+
+
+def _is_folder(path: Path, value: str) -> bool:
+    """Whether a folder is at `path`, refusing a path whose stat fails with the stat's error, which `Path.is_dir`
+    would read as no folder."""
+    try:
+        return file_presence.is_directory(path, other_is_absent=True)
+    except OSError as exc:
+        raise argparse.ArgumentTypeError(f"{value} cannot be examined: {exc}") from exc
 
 
 def _parser() -> argparse.ArgumentParser:

@@ -66,31 +66,33 @@ SUBJECT="$INSTALLED_SKILLS/update-coding-agent-skills/scripts/update.sh" run_sub
 expect_failed "FAILED no ejryan89-skill-core release_tags.py deployed beside update.sh: " "no core beside the script"
 expect_nothing_run "no core beside the script"
 
-# A remote_refs.py that ends without its CHECKED, FETCHED, or FAILED line, here an installed copy whose import fails
-# and one that prints nothing, never reads as success: the update stops with FETCH_FAILED, names the command that
-# printed no result, and deploys nothing.
-begin_case 'remote_refs.py prints no result'
-for BROKEN in 'shadows|import not_a_module_anywhere' \
-  'fetch|import sys
+# A remote_refs.py that fails on its own, never origin's failure, here an installed copy whose import fails, one that
+# prints nothing, and one that ends with run_main's FAILED line for an unhandled error, never reads as success or as a
+# fetch origin refused: the update stops with one FAILED line naming remote_refs.py and the command, and deploys
+# nothing. FETCH_FAILED is kept for its ORIGIN_FAILED line alone.
+begin_case 'remote_refs.py fails on its own'
+CHECKS='import sys
 if sys.argv[1] == "shadows":
-    print("CHECKED")'; do
+    print("CHECKED")'
+for BROKEN in 'shadows|printed no result: |import not_a_module_anywhere' \
+  "fetch|printed no result: |$CHECKS" \
+  "fetch|failed: RuntimeError: broken|$CHECKS
+else:
+    print(\"FAILED RuntimeError: broken\")
+    sys.exit(1)"; do
   COMMAND=${BROKEN%%|*}
+  REST=${BROKEN#*|}
+  EXPECTED="FAILED remote_refs.py $COMMAND ${REST%%|*}"
   new_clone
   FETCHED=$(git -C "$CLONE" rev-parse origin/main)
-  publish "change while remote_refs.py $COMMAND prints no result"
-  INSTALLED_SKILLS="$FIXTURE/installed (broken $COMMAND)/skills"
+  publish "change while remote_refs.py $COMMAND fails on its own"
+  INSTALLED_SKILLS="$FIXTURE/installed (broken $COMMAND $(cksum <<<"$BROKEN" | cut -d' ' -f1))/skills"
   install_update "$INSTALLED_SKILLS"
-  printf '%s\n' "${BROKEN#*|}" >"$INSTALLED_SKILLS/update-coding-agent-skills/scripts/remote_refs.py"
+  printf '%s\n' "${REST#*|}" >"$INSTALLED_SKILLS/update-coding-agent-skills/scripts/remote_refs.py"
   SUBJECT="$INSTALLED_SKILLS/update-coding-agent-skills/scripts/update.sh" run_subject "$CLONE" main
-  expect_status 1 "no result from $COMMAND"
-  expect_first_line "FETCH_FAILED" "no result from $COMMAND"
-  SECOND=$(sed -n 2p <<<"$OUTPUT")
-  [[ "$SECOND" == "remote_refs.py $COMMAND printed no result"* ]] ||
-    fail "no result from $COMMAND: expected the command named as printing no result, got: $OUTPUT"
-  [ "$(wc -l <<<"$OUTPUT")" -eq 2 ] || fail "no result from $COMMAND: expected two lines, got: $OUTPUT"
-  expect_no_stderr "no result from $COMMAND"
-  [ "$(git -C "$CLONE" rev-parse origin/main)" = "$FETCHED" ] || fail "no result from $COMMAND: fetched"
-  expect_not_deployed "no result from $COMMAND"
+  expect_failed "$EXPECTED" "$COMMAND failing on its own"
+  [ "$(git -C "$CLONE" rev-parse origin/main)" = "$FETCHED" ] || fail "$COMMAND failing on its own: fetched"
+  expect_not_deployed "$COMMAND failing on its own"
 done
 
 # A release tag that cannot be read after the tags named it, here deleted by a git wrapper just before update.sh reads

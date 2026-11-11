@@ -101,6 +101,21 @@ def read_marketplace(root: Path) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     return document, plugins
 
 
+def missing_folders(output: Path | None) -> list[Path]:
+    """The folders `plugin_build.output_directory` would create for `output`, deepest first: the output, as it
+    resolves, and each folder above it that nothing is at. A stat that fails raises its OSError."""
+    if output is None:
+        return []
+    missing: list[Path] = []
+    current = output.resolve()
+    while not file_presence.is_occupied(current):
+        missing.append(current)
+        if current.parent == current:
+            break
+        current = current.parent
+    return missing
+
+
 def build(root: Path, tag: str, output: Path | None) -> list[str]:
     """Write the tag's archives into output and pin each marketplace entry to its release asset."""
     built = archives(root, tag)
@@ -120,11 +135,14 @@ def build(root: Path, tag: str, output: Path | None) -> list[str]:
     except json_writer.JsonWriteRefused as exc:
         raise ReleaseError(f"{plugin_build.MARKETPLACE.as_posix()} cannot be written: {exc}") from exc
     try:
-        # A folder output_directory makes, rather than the empty one it was given, goes again when the build fails.
-        made = output is None or not file_presence.is_occupied(output)
+        # The folders output_directory makes, rather than the empty one it was given, go again when the build fails:
+        # the output and each folder above it that was missing, deepest first.
+        made = missing_folders(output)
     except OSError as exc:
         raise ReleaseError(f"--output {output} cannot be examined: {exc}") from exc
     folder = plugin_build.output_directory(output, root)
+    if output is None:
+        made = [folder]
     lines: list[str] = []
     written: list[Path] = []
     try:
@@ -141,8 +159,8 @@ def build(root: Path, tag: str, output: Path | None) -> list[str]:
         # A marketplace or an archive that cannot be written leaves no archive behind: the output is as it was.
         for path in written:
             path.unlink(missing_ok=True)
-        if made:
-            folder.rmdir()
+        for created in made:
+            created.rmdir()
         raise
     return lines
 

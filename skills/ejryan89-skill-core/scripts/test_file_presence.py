@@ -388,6 +388,43 @@ class MatchingTests(unittest.TestCase):
         ):
             matching(self.root, "**/*.py", skip=skip)
 
+    def test_a_double_star_lists_a_tree_nested_past_the_recursion_limit_rather_than_raising_recursion_error(
+        self,
+    ) -> None:
+        # A file system's path limit stops a real tree this deep, so the listing below the root is stood in for: each
+        # folder holds one folder, `d`, down past the interpreter's recursion limit, and the deepest holds `x.py`.
+        depth = sys.getrecursionlimit() + 100
+        real_scandir = os.scandir
+
+        class Entry:
+            def __init__(self, parent: str, name: str, *, folder: bool) -> None:
+                self.name, self.path, self.folder = name, parent + os.sep + name, folder
+
+            def is_dir(self, *, follow_symlinks: bool = True) -> bool:
+                return self.folder
+
+        class Listing(list[Entry]):
+            def __enter__(self) -> Listing:
+                return self
+
+            def __exit__(self, *_: object) -> None:
+                return None
+
+        root = os.fspath(self.root)
+
+        def scandir(path: Any = ".") -> Any:
+            name = os.fspath(path)
+            if not name.startswith(root):
+                return real_scandir(path)
+            level = name[len(root) :].count(os.sep)
+            if level < depth:
+                return Listing([Entry(os.fspath(path), "d", folder=True)])
+            return Listing([Entry(os.fspath(path), "x.py", folder=False)])
+
+        with mock.patch.object(os, "scandir", scandir):
+            found = matching(self.root, "**/*.py")
+        self.assertEqual([self.root.joinpath(*["d"] * depth, "x.py")], found)
+
     def test_a_pattern_it_cannot_read_alike_on_every_python_is_refused(self) -> None:
         for pattern in ("", "/abs", "a//b", "./a", "../a", "a/..", "**", "sub/**"):
             with self.subTest(pattern=pattern), self.assertRaises(ValueError):

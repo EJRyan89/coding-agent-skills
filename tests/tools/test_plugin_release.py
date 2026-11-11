@@ -219,13 +219,14 @@ def test_build_refuses_a_marketplace_no_json_file_can_hold_before_writing_anythi
     assert not (tmp_path / "assets").exists()
 
 
-@pytest.mark.parametrize("given", ["absent", "empty"])
+@pytest.mark.parametrize("given", ["absent", "empty", "nested"])
 def test_build_whose_marketplace_cannot_be_written_leaves_its_output_as_it_found_it(
     checkout: Path, tmp_path: Path, given: str
 ) -> None:
     # The pins are written after the archives, so a pin that fails takes the archives back out: an absent --output
-    # stays absent, and an empty one stays empty.
-    assets = tmp_path / "assets"
+    # stays absent, an empty one stays empty, and one two levels below the folder that exists leaves neither of the
+    # folders above it that the build made.
+    assets = tmp_path / "parent" / "child" / "assets" if given == "nested" else tmp_path / "assets"
     if given == "empty":
         assets.mkdir()
     before = (checkout / ".claude-plugin" / "marketplace.json").read_bytes()
@@ -238,6 +239,10 @@ def test_build_whose_marketplace_cannot_be_written_leaves_its_output_as_it_found
     assert "marketplace.json" in lines[0]
     assert (checkout / ".claude-plugin" / "marketplace.json").read_bytes() == before
     assert (list(assets.iterdir()) == []) if given == "empty" else not assets.exists()
+    assert sorted(path.name for path in tmp_path.iterdir()) == [
+        "Checkout With Spaces",
+        *(["assets"] * (given == "empty")),
+    ]
 
 
 def test_build_whose_tag_cannot_be_resolved_fails_with_the_error_and_its_remedy_and_no_debug_hint(

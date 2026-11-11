@@ -614,6 +614,43 @@ class DiscoverTests(Fixture):
             with self.subTest(target=target), self.assertRaisesRegex(rc.CleanupError, re.escape(message)):
                 self.discover(target)
 
+    def test_a_target_root_or_git_folder_it_cannot_examine_is_refused_with_the_error_never_as_absent(self) -> None:
+        # Path.is_dir answers False for a stat that fails, which read as "not a git repository" or "not a directory"
+        # for a path the account could not examine.
+        error = f"[Errno 13] Permission denied: {str(self.clone / '.git')!r}"
+        for target in ("my repo", str(self.clone)):
+            with (
+                self.subTest(target=target),
+                stat_failing_at(self.clone / ".git"),
+                self.assertRaisesRegex(
+                    rc.CleanupError, f"^{re.escape(f'{self.clone} cannot be examined for a .git: {error}')}$"
+                ),
+            ):
+                self.discover(target)
+        with (
+            stat_failing_at(self.clone / ".git"),
+            self.assertRaisesRegex(
+                rc.CleanupError, f"^{re.escape(f'{self.clone} cannot be examined for a .git: {error}')}$"
+            ),
+        ):
+            rc.require_repository(self.clone)
+        refused = (
+            f"^{re.escape(f'{self.repos} cannot be examined: [Errno 13] Permission denied: {str(self.repos)!r}')}$"
+        )
+        with stat_failing_at(self.repos), self.assertRaisesRegex(rc.CleanupError, refused):
+            self.discover()
+        self.assertEqual([], self.github.calls)
+
+    def test_a_git_file_or_a_file_in_the_roots_place_is_still_no_repository_and_no_directory(self) -> None:
+        (self.repos / "linked").mkdir()
+        (self.repos / "linked" / ".git").write_text("gitdir: elsewhere\n", encoding="utf-8")
+        with self.assertRaisesRegex(rc.CleanupError, "^linked is not a git repository$"):
+            self.discover("linked")
+        root = self.root / "a file"
+        root.write_text("", encoding="utf-8")
+        with self.assertRaisesRegex(rc.CleanupError, f"^{re.escape(f'{root} is not a directory')}$"):
+            rc.discover(None, str(root), rc.Services(gh=self.github))
+
     def test_unauthenticated_github_cli_stops(self) -> None:
         self.github.authenticated = False
         with self.assertRaisesRegex(rc.CleanupError, "^GitHub CLI not authenticated — run 'gh auth login'$"):

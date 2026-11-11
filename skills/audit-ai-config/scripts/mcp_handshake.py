@@ -49,8 +49,8 @@ configuration or a server supplies is flattened onto it with ejryan89-skill-core
                                         a remote transport, a server without a command, or one a CONFIG_ERROR
                                         refused
     NO_SERVERS                          no config had a CONFIG_ERROR and none declares a server
-    FAILED <reason>                     last line: the root is not a Git repository, or no server has the
-                                        name --server gives
+    FAILED <reason>                     last line: the root is not a Git repository, its .git could not be
+                                        examined, or no server has the name --server gives
 
 Exit status:
   0  no CONFIG_ERROR was printed and no started server failed
@@ -80,6 +80,7 @@ from audit_ai_config import (
     _read_codex_mcp,
     declared_type,
     leaves_root,
+    not_a_checkout,
     read_mcp_json,
 )
 from bounded_process import Streaming, streaming
@@ -419,8 +420,9 @@ def main(arguments: list[str] | None = None) -> int:
         help="seconds per server, from its start to its stop (default 30)",
     )
     args = parser.parse_args(arguments)
-    if not (args.root / ".git").exists():
-        print(single_line(f"FAILED {args.root} is not a Git repository"))
+    refusal = not_a_checkout(args.root)
+    if refusal is not None:
+        print(single_line(f"FAILED {refusal}"))
         return 1
     root = args.root.resolve()
     groups, problems = group_servers(root, args.server)

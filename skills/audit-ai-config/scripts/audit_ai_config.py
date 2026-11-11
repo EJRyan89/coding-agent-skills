@@ -3908,6 +3908,16 @@ def print_report(report: str) -> None:
     print(report, end="")
 
 
+def not_a_checkout(root: Path) -> str | None:
+    """Why `root` is refused as a repository to audit, or None when a `.git` is in it: no `.git` at all, or a `.git`
+    whose stat fails, named with the error rather than read as none."""
+    try:
+        checkout = is_occupied(root / ".git")
+    except OSError as error:
+        return f"{root} could not be examined for a .git: {error}"
+    return None if checkout else f"{root} is not a Git repository (no .git found)"
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Read-only audit of AI agent configuration")
     parser.add_argument(
@@ -3928,14 +3938,9 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    git_marker = args.root / ".git"
-    try:
-        checkout = is_occupied(git_marker)
-    except OSError as error:
-        print(single_line(f"FAILED {args.root} could not be examined for a .git: {error}"))
-        return 1
-    if not checkout:
-        print(single_line(f"FAILED {args.root} is not a Git repository (no .git found)"))
+    refusal = not_a_checkout(args.root)
+    if refusal is not None:
+        print(single_line(f"FAILED {refusal}"))
         return 1
 
     result = audit(args.root)
