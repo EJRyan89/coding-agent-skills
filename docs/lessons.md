@@ -894,7 +894,7 @@ removed fails validation until its pattern follows it.
 - **Search for:** a sentence about a runtime's behavior in `docs/*-support.md` or `docs/installation.md` with no
   link; `always`, `never`, `only`, `cannot`, or `does not` in a support page; a `"--` flag literal in a list passed to
   `copilot`, `codex`, or `claude` that `tools/runtime_command_lines.py` does not build.
-- **Examples:** #1362, #1409, #1538, #1573, #1581, #1583, #1842, #1856
+- **Examples:** #1362, #1409, #1538, #1573, #1581, #1583, #1842, #1856, #2576
 
 ### A fix reaches every sibling of its construct
 

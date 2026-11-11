@@ -48,7 +48,7 @@ The generated adapter sends Copilot to the authoritative skill under `~/.claude/
 copilot -p '<prompt>' --add-dir "$HOME/.claude/skills"
 ```
 
-A headless session cannot start a user-only skill, such as `update-coding-agent-skills`. In the Copilot CLI releases checked, `copilot -p` does not expand a prompt that begins with `/<skill>` into the skill, and the model's own `skill` tool reports a user-only skill as not found, even though `copilot skill list` lists it as enabled. Start user-only skills from an interactive session, either by typing `/<skill>` or by passing it as the session's first prompt:
+A headless session cannot start a user-only skill, such as `update-coding-agent-skills`. In the Copilot CLI releases checked, `copilot -p` does not expand a prompt that begins with `/<skill>` into the skill, and the model's own `skill` tool refuses a user-only skill, explaining that model invocation is disabled for it, even though `copilot skill list` lists it as enabled ([the Copilot CLI changelog](https://github.com/github/copilot-cli/blob/main/changelog.md), where older releases reported the skill as not found instead). Start user-only skills from an interactive session, either by typing `/<skill>` or by passing it as the session's first prompt:
 
 ```bash
 copilot -i '/<skill> <arguments>'
