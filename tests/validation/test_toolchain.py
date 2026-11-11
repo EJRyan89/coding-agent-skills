@@ -45,6 +45,8 @@ PLATFORM_ALLOWED = {
     "the command it is given; nothing here finds or starts a program by it",
 }
 REQUIREMENT_PACKAGES = ("ruff", "mypy")
+# What validation calls the Bash it finds here: Git Bash on Windows, Bash elsewhere.
+BASH = platform_support.BASH_NAME
 CLEAN_REQUIREMENTS = "# Development dependencies.\n\nruff==0.16.10\n  # Indented comment.\nmypy==2.4.0\n"
 
 
@@ -130,19 +132,35 @@ class ToolchainFixtures(unittest.TestCase):
                 "python -m pip install --require-hashes --only-binary :all: -r requirements-dev.txt",
             ],
             outdated_prerequisites(
-                {"Git Bash": None, "ShellCheck": (0, 8, 0), "PowerShell 7 (pwsh)": None, "ruff": (0, 17, 0)},
+                {BASH: (5, 3, 15), "ShellCheck": (0, 8, 0), "PowerShell 7 (pwsh)": None, "ruff": (0, 17, 0)},
                 (3, 11, 3),
             ),
         )
         self.assertEqual(
             [],
             outdated_prerequisites(
-                {"Git Bash": None, "ShellCheck": (0, 9, 0), "PowerShell 7 (pwsh)": (7, 5, 3), "ruff": (0, 17, 3)},
+                {BASH: (5, 2), "ShellCheck": (0, 9, 0), "PowerShell 7 (pwsh)": (7, 5, 3), "ruff": (0, 17, 3)},
                 (3, 11, 4),
             ),
         )
         # A missing tool is reported by missing_prerequisites, not again here.
         self.assertEqual([], outdated_prerequisites({}, (3, 14, 7)))
+
+    def test_a_bash_older_than_the_floor_is_reported_with_its_install_command(self) -> None:
+        # macOS's own /bin/bash is a 3.2, which reads text the Bash reader is held to differently.
+        with mock.patch.object(platform_support, "INSTALL_HINTS", {BASH: "brew install bash"}):
+            self.assertEqual(
+                [f"  - {BASH} 3.2.57 is older than the floor 5.2 in docs/dependency-updates.md: brew install bash"],
+                outdated_prerequisites({BASH: (3, 2, 57)}, (3, 11, 4)),
+            )
+            self.assertEqual(
+                [
+                    f"  - {BASH}: its version could not be read; the floor is 5.2 in docs/dependency-updates.md: "
+                    "brew install bash"
+                ],
+                outdated_prerequisites({BASH: None}, (3, 11, 4)),
+            )
+            self.assertEqual([], outdated_prerequisites({BASH: (5, 2, 0)}, (3, 11, 4)))
 
     def test_tool_versions_reads_each_found_tool(self) -> None:
         def raises() -> str:

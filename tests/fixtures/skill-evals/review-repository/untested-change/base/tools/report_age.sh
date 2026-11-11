@@ -5,7 +5,7 @@ set -euo pipefail
 days_old() {
   local path="$1" now modified
   now=$(date +%s)
-  modified=$(stat -c %Y -- "$path")
+  modified=$(stat -c %Y -- "$path" 2>/dev/null || stat -f %m -- "$path")
   echo $(((now - modified) / 86400))
 }
 

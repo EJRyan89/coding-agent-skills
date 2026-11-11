@@ -1,0 +1,52 @@
+{
+  "env": {
+    "source": "Apple shell_cmds-329, FreeBSD's env, its getopt string",
+    "how": "Read from env/env.c at apple-oss-distributions/shell_cmds tag shell_cmds-329 (gh api 'repos/apple-oss-distributions/shell_cmds/contents/env/env.c?ref=shell_cmds-329'): the __APPLE__ getopt string -0C:iP:S:u:v, each letter followed by a colon taking a value; getopt takes no long option and abbreviates none. Its usage() prints the same letters. The string also lists - as a letter, which clears the environment as -i does, so a word such as --unset is that letter bundled with others; no row spells it, since -- alone ends the options, and the hub guard's reading of it is issue 2622.",
+    "abbreviates": false,
+    "options": [
+      {"short": "-0", "long": null, "value": "none"},
+      {"short": "-C", "long": null, "value": "value"},
+      {"short": "-i", "long": null, "value": "none"},
+      {"short": "-P", "long": null, "value": "value"},
+      {"short": "-S", "long": null, "value": "value"},
+      {"short": "-u", "long": null, "value": "value"},
+      {"short": "-v", "long": null, "value": "none"}
+    ]
+  },
+  "nice": {
+    "source": "Apple shell_cmds-329, FreeBSD's nice, its getopt string",
+    "how": "Read from nice/nice.c at apple-oss-distributions/shell_cmds tag shell_cmds-329 (gh api 'repos/apple-oss-distributions/shell_cmds/contents/nice/nice.c?ref=shell_cmds-329'): the getopt string n:, after the obsolete -<number> form main reads first; getopt takes no long option and abbreviates none.",
+    "abbreviates": false,
+    "options": [
+      {"short": "-n", "long": null, "value": "value"}
+    ]
+  },
+  "nohup": {
+    "source": "Apple shell_cmds-329, FreeBSD's nohup, its getopt string",
+    "how": "Read from nohup/nohup.c at apple-oss-distributions/shell_cmds tag shell_cmds-329 (gh api 'repos/apple-oss-distributions/shell_cmds/contents/nohup/nohup.c?ref=shell_cmds-329'): the empty getopt string, so it takes no option but --.",
+    "abbreviates": false,
+    "options": []
+  },
+  "xargs": {
+    "source": "Apple shell_cmds-329, FreeBSD's xargs, its getopt_long options",
+    "how": "Read from xargs/xargs.c at apple-oss-distributions/shell_cmds tag shell_cmds-329 (gh api 'repos/apple-oss-distributions/shell_cmds/contents/xargs/xargs.c?ref=shell_cmds-329'): optstr +0E:I:J:L:n:oP:pR:S:s:rtx, each letter followed by a colon taking a value, paired with the long name long_options gives it; getopt_long abbreviates a long name to any prefix no other long name shares.",
+    "abbreviates": true,
+    "options": [
+      {"short": "-0", "long": "--null", "value": "none"},
+      {"short": "-E", "long": null, "value": "value"},
+      {"short": "-I", "long": null, "value": "value"},
+      {"short": "-J", "long": null, "value": "value"},
+      {"short": "-L", "long": null, "value": "value"},
+      {"short": "-n", "long": "--max-args", "value": "value"},
+      {"short": "-o", "long": null, "value": "none"},
+      {"short": "-P", "long": "--max-procs", "value": "value"},
+      {"short": "-p", "long": "--interactive", "value": "none"},
+      {"short": "-R", "long": null, "value": "value"},
+      {"short": "-S", "long": null, "value": "value"},
+      {"short": "-s", "long": "--max-chars", "value": "value"},
+      {"short": "-r", "long": "--no-run-if-empty", "value": "none"},
+      {"short": "-t", "long": "--verbose", "value": "none"},
+      {"short": "-x", "long": "--exit", "value": "none"}
+    ]
+  }
+}

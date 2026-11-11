@@ -439,7 +439,11 @@ class LinuxJobFixtures(unittest.TestCase):
         self.assertEqual([], posix_job_problems(LINUX, 2))
 
     def test_the_macos_job_is_held_to_its_own_runner_name_and_digest_check(self) -> None:
-        macos = (
+        bash = (
+            "      - name: Install Bash\n        shell: bash\n        run: |\n          brew install bash\n"
+            '          echo "$(brew --prefix)/bin" >> "$GITHUB_PATH"\n'
+        )
+        mac = (
             LINUX.replace("  linux:\n    name: Linux shard", "  macos:\n    name: macOS shard")
             .replace("runs-on: ubuntu-latest", "runs-on: macos-latest")
             .replace(
@@ -447,9 +451,19 @@ class LinuxJobFixtures(unittest.TestCase):
                 '"$SHELLCHECK_MACOS_SHA256  $archive" | shasum --algorithm 256 --check --strict',
             )
         )
+        run = "      - name: Run\n"
+        macos = mac.replace(run, bash + run)
         self.assertEqual([], posix_job_problems(macos, 2, "macos"))
         self.assertEqual(["there is no macos job"], posix_job_problems(LINUX, 2, "macos"))
+        # The Linux image's Bash meets the floor, so the Linux job installs none.
+        self.assertNotIn("brew install bash", LINUX)
         for drifted, problem in (
+            # macOS's own /bin/bash is older than validation's Bash floor, so the legs install Homebrew's first.
+            (mac, "brew install bash"),
+            (macos.replace("          brew install bash\n", ""), "brew install bash"),
+            (macos.replace('          echo "$(brew --prefix)/bin" >> "$GITHUB_PATH"\n', ""), "brew --prefix"),
+            # A step after the validation step changes PATH for no step that runs validation.
+            (mac.replace("  validate:\n", bash + "  validate:\n"), "before validation runs"),
             (macos.replace("runs-on: macos-latest", "runs-on: ubuntu-latest"), "not macos-latest"),
             (macos.replace("name: macOS shard", "name: Linux shard"), "the macos job's legs are named"),
             (
