@@ -4710,6 +4710,11 @@ class ReviewerSourceTests(PipelineFixture):
         self.configure(self.skill_reviewer(".claude/agents/team-review.md", manifest=str(manifest)))
         with self.assertRaisesRegex(Exception, "Local condition script is missing beside the manifest: window.py"):
             self.prepare()
+        # A directory in its place is not a file, never reported as a missing one.
+        (manifest.parent / "window.py").mkdir()
+        with self.assertRaisesRegex(Exception, "Local condition script beside the manifest is not a file: window.py"):
+            self.prepare()
+        (manifest.parent / "window.py").rmdir()
         self.configure(self.skill_reviewer(".claude/agents/team-review.md", manifest=str(self.root / "absent.json")))
         with self.assertRaisesRegex(Exception, "not a regular file"):
             self.prepare()

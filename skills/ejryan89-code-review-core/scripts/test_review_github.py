@@ -297,6 +297,31 @@ class GitHubTests(unittest.TestCase):
                     [{"repository": "a/b", "number": 4, "state": "OPEN", "title": "", "body": "", "unreadable": True}],
                     issues,
                 )
+        # A field naming the issue GitHub refused leaves it out, still counted, as a reference GitHub no longer
+        # resolves is: a listed issue cannot go without its repository, number, or state.
+        withheld: list[tuple[list[Any], dict[str, Any]]] = [
+            (["repository"], {**hidden, "repository": None}),
+            (["repository", "nameWithOwner"], {**hidden, "repository": {"nameWithOwner": None}}),
+            (["number"], {**hidden, "number": None}),
+            (["state"], {**hidden, "state": None}),
+        ]
+        for fields, node in withheld:
+            with self.subTest(fields=fields):
+                connection = {"totalCount": 2, "nodes": [node, issue]}
+                data = {"repository": {"pullRequest": {"closingIssuesReferences": connection}}}
+                errors = [{"type": "NOT_FOUND", "path": [*nodes_path, 0, *fields], "message": "Could not resolve"}]
+                body = json.dumps({"data": data, "errors": errors})
+                issues, total = GitHubClient(answering(CommandResult(1, body, ""))).list_closing_issues(
+                    "a/b", 12, first=10
+                )
+                self.assertEqual(([(4, "T")], 2), ([(item["number"], item["title"]) for item in issues], total))
+        # A field naming the issue that is null with no error refusing it is still malformed, and fails the read.
+        connection = {"totalCount": 1, "nodes": [{**hidden, "state": None}]}
+        data = {"repository": {"pullRequest": {"closingIssuesReferences": connection}}}
+        errors = [{"type": "FORBIDDEN", "path": [*nodes_path, 0, "body"], "message": "Resource not accessible"}]
+        body = json.dumps({"data": data, "errors": errors})
+        with self.assertRaisesRegex(GitHubError, "state"):
+            GitHubClient(answering(CommandResult(1, body, ""))).list_closing_issues("a/b", 12, first=10)
         # Any other error, or one at a wider place than one issue's node, still fails the review.
         refused: list[list[Any]] = [
             [{"type": "INTERNAL", "path": [*nodes_path, 0], "message": "boom"}],

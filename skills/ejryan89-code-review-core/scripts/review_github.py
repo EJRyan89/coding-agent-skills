@@ -6,7 +6,7 @@ import base64
 import binascii
 import re
 import sys
-from collections.abc import Sequence
+from collections.abc import Sequence, Set
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
@@ -218,24 +218,47 @@ def _unreadable_closing_issue(error: Any) -> bool:
     )
 
 
-def _refused_nodes(answer: Any) -> set[int]:
-    """The closing issues, by their place in the nodes, a field of which GitHub refused the viewer: each error that
-    `_unreadable_closing_issue` takes whose path runs past the node into one of its fields."""
+def _refused_nodes(answer: Any) -> dict[int, set[Any]]:
+    """The fields GitHub refused the viewer, by the closing issue's place in the nodes: for each error that
+    `_unreadable_closing_issue` takes whose path runs past the node into one of its fields, that field."""
     errors = answer.get("errors") if isinstance(answer, dict) else None
-    return {
-        error["path"][len(CLOSING_NODE_PATH)]
-        for error in errors or []
-        if _unreadable_closing_issue(error) and len(error["path"]) > len(CLOSING_NODE_PATH) + 1
-    }
+    refused: dict[int, set[Any]] = {}
+    for error in errors or []:
+        if _unreadable_closing_issue(error) and len(error["path"]) > len(CLOSING_NODE_PATH) + 1:
+            node, field = error["path"][len(CLOSING_NODE_PATH) : len(CLOSING_NODE_PATH) + 2]
+            refused.setdefault(node, set()).add(field)
+    return refused
 
 
-def _closing_issue(value: Any, path: str, *, refused: bool = False) -> dict[str, Any] | None:
-    """One closing issue as a review keeps it, or None for a reference GitHub no longer resolves for the viewer. One a
-    field of which GitHub `refused` the viewer keeps its repository, number, and state, and is marked `unreadable`, its
-    title and body empty, never read as a title or a body its author left empty."""
+# The fields that name a closing issue, which a listed one cannot go without: one GitHub refused the viewer and answered
+# null leaves the issue out, still counted, as a reference GitHub no longer resolves is.
+IDENTITY_FIELDS = ("repository", "number", "state")
+
+
+def _withholds_identity(issue: dict[str, Any], refused: Set[Any]) -> bool:
+    """Whether GitHub refused the viewer a field naming the issue and answered it null, its repository's name
+    included."""
+    for field in IDENTITY_FIELDS:
+        if field not in refused:
+            continue
+        value = issue.get(field)
+        if field == "repository" and isinstance(value, dict):
+            value = value.get("nameWithOwner")
+        if value is None:
+            return True
+    return False
+
+
+def _closing_issue(value: Any, path: str, *, refused: Set[Any] = frozenset()) -> dict[str, Any] | None:
+    """One closing issue as a review keeps it, or None for a reference GitHub no longer resolves for the viewer, or for
+    one it answered without a field naming the issue, which it `refused` the viewer. One any other field of which
+    GitHub refused keeps its repository, number, and state, and is marked `unreadable`, its title and body empty, never
+    read as a title or a body its author left empty."""
     if value is None:
         return None
     issue = READ.json_object(value, path)
+    if _withholds_identity(issue, refused):
+        return None
     if refused:
         issue = {**issue, "title": "", "body": ""}
     owner = READ.json_object(issue.get("repository"), f"{path}.repository")
@@ -436,7 +459,7 @@ class GitHubClient:
         listed = READ.array(connection.get("nodes"), f"{path}.nodes", maximum=first)
         refused = _refused_nodes(answer)
         nodes = [
-            _closing_issue(node, f"{path}.nodes[{index}]", refused=index in refused)
+            _closing_issue(node, f"{path}.nodes[{index}]", refused=refused.get(index, frozenset()))
             for index, node in enumerate(listed)
         ]
         total = READ.integer(connection.get("totalCount"), f"{path}.totalCount", minimum=0)
