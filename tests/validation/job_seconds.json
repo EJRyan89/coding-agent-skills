@@ -564,6 +564,7 @@
       "tests/validation/test_validation_support.py": 9.6,
       "tests/validation/test_workarounds.py": 1.3,
       "tests/validation/test_workflows.py": 20.3
-    }
+    },
+    "macOS": {}
   }
 }

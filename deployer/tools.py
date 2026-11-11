@@ -94,6 +94,7 @@ STANDARD_COMMANDS = (
             "mv",
             "od",
             "paste",
+            "ps",
             "readlink",
             "realpath",
             "rm",

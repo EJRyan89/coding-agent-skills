@@ -74,18 +74,21 @@ SHARD_SUFFIX = re.compile(r" \[shard \d+/\d+\]$")
 # A leg's name in the log, from the workflow's matrix job names, by platform: on Windows `Windows shard <shard>, Python
 # <version>`, and before the Linux job joined the required check, `Shard <shard> on Python <version>`; on Linux
 # `Linux shard <shard>, Python <version>`, and before it was named as the Windows legs are, `Validation on Linux,
-# shard <shard>`. So the median of the latest runs spans each rename.
+# shard <shard>`; on macOS `macOS shard <shard>, Python <version>`. So the median of the latest runs spans each
+# rename.
 LEG_NAMES = (
     ("Windows", re.compile(r"^Windows shard (\d+)/(\d+), Python ")),
     ("Windows", re.compile(r"^Shard (\d+)/(\d+) on Python ")),
     ("Linux", re.compile(r"^Linux shard (\d+)/(\d+), Python ")),
     ("Linux", re.compile(r"^Validation on Linux, shard (\d+)/(\d+)$")),
+    ("macOS", re.compile(r"^macOS shard (\d+)/(\d+), Python ")),
 )
 # Before Linux was dealt, one job of this name ran every job there unsharded: one leg of one.
 UNSHARDED_LEGS = {"Validation on Linux": "Linux"}
 LEG_SHAPES = (
     "`Windows shard <n>/<count>, Python <version>`, `Shard <n>/<count> on Python <version>`, "
-    "`Linux shard <n>/<count>, Python <version>`, `Validation on Linux, shard <n>/<count>`, or `Validation on Linux`"
+    "`Linux shard <n>/<count>, Python <version>`, `Validation on Linux, shard <n>/<count>`, `Validation on Linux`, or "
+    "`macOS shard <n>/<count>, Python <version>`"
 )
 # The platforms the table records, one table each: those the deployer supports, by the names the deal reads.
 PLATFORMS = tuple(sorted(platform_support.SUPPORTED_PLATFORMS.values()))

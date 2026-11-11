@@ -28,6 +28,8 @@ LEG_4 = "Windows shard 4/4, Python 3.11\tRun repository validation\t2026-10-10T0
 LATEST = "Windows shard 1/4, Python 3.x\tUNKNOWN STEP\t2026-10-10T06:17:06.0000000Z "
 LINUX_1 = "Linux shard 1/2, Python 3.11\tRun repository validation\t2026-10-10T06:17:09.0000000Z "
 LINUX_2 = "Linux shard 2/2, Python 3.11\tUNKNOWN STEP\t2026-10-10T06:17:09.5000000Z "
+MACOS_1 = "macOS shard 1/2, Python 3.11\tRun repository validation\t2026-10-10T06:17:09.6000000Z "
+MACOS_2 = "macOS shard 2/2, Python 3.11\tRun repository validation\t2026-10-10T06:17:09.7000000Z "
 # The job that ran every job on Linux unsharded before Linux was dealt: one leg of one.
 UNSHARDED = "Validation on Linux\tRun repository validation\t2026-10-09T06:17:09.0000000Z "
 # The job beside the legs, which runs none.
@@ -57,11 +59,18 @@ LOG = "\n".join(
         f"{LINUX_2}ok    1.0s tests/deployer/test_render.py [shard 3/3]",
         f"{LINUX_1}ok    9.0s static type check (mypy skills/ejryan89-skill-core/scripts)",
         f"{LINUX_2}ok    7.0s skills/update-coding-agent-skills/scripts/test_update.sh",
+        # The macOS legs' seconds are macOS's, never added to another platform's.
+        f"{MACOS_1}ok    3.0s tests/deployer/test_render.py [shard 1/3]",
+        f"{MACOS_2}ok    1.0s tests/deployer/test_render.py [shard 2/3]",
+        f"{MACOS_2}ok    1.0s tests/deployer/test_render.py [shard 3/3]",
+        f"{MACOS_1}ok    4.0s static type check (mypy skills/ejryan89-skill-core/scripts)",
+        f"{MACOS_2}ok    6.0s skills/update-coding-agent-skills/scripts/test_update.sh",
         f"{AGGREGATE}ok    1.0s a line the aggregate job printed",
     ]
 )
 LEGS = (LEG_1, LEG_2, LEG_3, LEG_4)
 LINUX_LEGS = (LINUX_1, LINUX_2)
+MACOS_LEGS = (MACOS_1, MACOS_2)
 WINDOWS_SECONDS = {
     "static format check (ruff format --check)": 0.4,
     "skills/update-coding-agent-skills/scripts/test_update.sh": 55.7,
@@ -72,6 +81,11 @@ LINUX_SECONDS = {
     "tests/deployer/test_render.py": 4.5,
     "static type check (mypy skills/ejryan89-skill-core/scripts)": 9.0,
     "skills/update-coding-agent-skills/scripts/test_update.sh": 7.0,
+}
+MACOS_SECONDS = {
+    "tests/deployer/test_render.py": 5.0,
+    "static type check (mypy skills/ejryan89-skill-core/scripts)": 4.0,
+    "skills/update-coding-agent-skills/scripts/test_update.sh": 6.0,
 }
 # The legs as the workflow named them before the Linux job joined the required check.
 OLD_LEGS = tuple(
@@ -90,22 +104,29 @@ def log_of(
     legs: Sequence[str] = LEGS,
     linux_legs: Sequence[str] = LINUX_LEGS,
     linux: dict[str, float] | None = None,
+    macos_legs: Sequence[str] = MACOS_LEGS,
 ) -> str:
-    """A log reporting each job on the Windows legs in turn and, at `linux`'s seconds (a tenth of the Windows seconds
-    when None), on the Linux legs in turn, and a closing line from every leg."""
+    """A log reporting each job on the Windows legs in turn, at `linux`'s seconds (a tenth of the Windows seconds when
+    None) on the Linux legs in turn, and at a fifth of the Windows seconds on the macOS legs in turn, and a closing
+    line from every leg."""
     linux = {name: value / 10 for name, value in seconds.items()} if linux is None else linux
+    macos = {name: value / 5 for name, value in seconds.items()}
     lines = [
         f"{platform_legs[index % len(platform_legs)]}ok {value:5.1f}s {name}"
-        for platform_legs, jobs in ((legs, seconds), (linux_legs, linux))
+        for platform_legs, jobs in ((legs, seconds), (linux_legs, linux), (macos_legs, macos))
         if platform_legs
         for index, (name, value) in enumerate(jobs.items())
     ]
-    return "\n".join([*lines, *(f"{leg}validation passed." for leg in (*legs, *linux_legs))])
+    return "\n".join([*lines, *(f"{leg}validation passed." for leg in (*legs, *linux_legs, *macos_legs))])
 
 
 def both(seconds: dict[str, float]) -> dict[str, dict[str, float]]:
-    """The table's seconds for a log_of log: the Windows seconds, and a tenth of them on Linux."""
-    return {"Linux": {name: round(value / 10, 1) for name, value in seconds.items()}, "Windows": seconds}
+    """The table's seconds for a log_of log: the Windows seconds, a tenth of them on Linux, and a fifth on macOS."""
+    return {
+        "Linux": {name: round(value / 10, 1) for name, value in seconds.items()},
+        "Windows": seconds,
+        "macOS": {name: round(value / 5, 1) for name, value in seconds.items()},
+    }
 
 
 class Stub:
@@ -149,7 +170,8 @@ def runs_stub(logs: dict[int, str]) -> Stub:
 class ParseTests(unittest.TestCase):
     def test_a_suites_shards_are_summed_and_a_job_reported_twice_counts_at_its_mean_on_each_platform(self) -> None:
         self.assertEqual(
-            {"Windows": WINDOWS_SECONDS, "Linux": LINUX_SECONDS}, record_job_seconds.job_seconds_from_log(LOG)
+            {"Windows": WINDOWS_SECONDS, "Linux": LINUX_SECONDS, "macOS": MACOS_SECONDS},
+            record_job_seconds.job_seconds_from_log(LOG),
         )
 
     def test_a_job_the_pool_retried_is_recorded_under_its_own_name(self) -> None:
@@ -245,7 +267,7 @@ class ParseTests(unittest.TestCase):
 
     def test_the_platforms_recorded_are_those_the_deal_reads(self) -> None:
         # Pinned against the literals: the platforms the deployer supports, by the names platform_support gives them.
-        self.assertEqual(("Linux", "Windows"), record_job_seconds.PLATFORMS)
+        self.assertEqual(("Linux", "Windows", "macOS"), record_job_seconds.PLATFORMS)
 
     def test_a_job_takes_its_median_across_the_runs_that_report_it_on_its_platform(self) -> None:
         per_run = {
@@ -326,7 +348,7 @@ class ParseTests(unittest.TestCase):
             "names no one set of Linux legs", record_job_seconds.leg_problem(log_of({"tests/a.py": 1.0}, linux_legs=()))
         )
         self.assertEqual(
-            "names no one set of Linux legs; names no one set of Windows legs",
+            "names no one set of Linux legs; names no one set of Windows legs; names no one set of macOS legs",
             record_job_seconds.leg_problem("no leg\tstep\ttext"),
         )
         # The unsharded job and the Linux legs in one log are two sets of Linux legs.
@@ -350,6 +372,8 @@ class ParseTests(unittest.TestCase):
         self.assertEqual(("Windows", 3, 4), record_job_seconds.leg_of("Shard 3/4 on Python 3.11"))
         self.assertEqual(("Linux", 2, 2), record_job_seconds.leg_of("Linux shard 2/2, Python 3.11"))
         self.assertEqual(("Linux", 2, 2), record_job_seconds.leg_of("Validation on Linux, shard 2/2"))
+        self.assertEqual(("macOS", 1, 2), record_job_seconds.leg_of("macOS shard 1/2, Python 3.11"))
+        self.assertIsNone(record_job_seconds.leg_of("MacOS shard 1/2, Python 3.11"))
 
     def test_a_linux_leg_under_the_name_it_had_before_its_rename_is_a_leg(self) -> None:
         old = log_of({"tests/a.py": 40.0}, linux_legs=OLD_LINUX_LEGS)
@@ -368,7 +392,7 @@ class ParseTests(unittest.TestCase):
         self.assertIn(("Linux", 1, 1), record_job_seconds.legs_seen(old))
         self.assertEqual("", record_job_seconds.leg_problem(old))
         self.assertEqual(
-            {"Windows": {"tests/a.py": 40.0}, "Linux": {"tests/a.py": 4.0}},
+            {"Windows": {"tests/a.py": 40.0}, "Linux": {"tests/a.py": 4.0}, "macOS": {"tests/a.py": 8.0}},
             record_job_seconds.job_seconds_from_log(old),
         )
 
@@ -386,11 +410,12 @@ class MainTests(unittest.TestCase):
         # The run's state is asked for by the three fields it is judged by, as gh names them.
         self.assertIn(["gh", "run", "view", "38", "--json", "workflowName,status,conclusion"], stub.commands)
         self.assertEqual(
-            {"runs": [38], "seconds": {"Linux": LINUX_SECONDS, "Windows": WINDOWS_SECONDS}},
+            {"runs": [38], "seconds": {"Linux": LINUX_SECONDS, "Windows": WINDOWS_SECONDS, "macOS": MACOS_SECONDS}},
             json.loads(table.read_text(encoding="utf-8")),
         )
         self.assertIn(
-            "Recorded Linux 3 jobs, 20.5 job-seconds; Windows 4 jobs, 89.3 job-seconds, as the median of 1 run (38) in",
+            "Recorded Linux 3 jobs, 20.5 job-seconds; Windows 4 jobs, 89.3 job-seconds; "
+            "macOS 3 jobs, 15.0 job-seconds, as the median of 1 run (38) in",
             output,
         )
         # Line feeds on every platform, so a rerun on another machine changes only the seconds.
@@ -411,8 +436,8 @@ class MainTests(unittest.TestCase):
             json.loads(table.read_text(encoding="utf-8")),
         )
         self.assertIn(
-            "Recorded Linux 2 jobs, 1.9 job-seconds; Windows 2 jobs, 19.0 job-seconds, as the median of 3 runs "
-            "(10, 20, 30) in",
+            "Recorded Linux 2 jobs, 1.9 job-seconds; Windows 2 jobs, 19.0 job-seconds; "
+            "macOS 2 jobs, 3.8 job-seconds, as the median of 3 runs (10, 20, 30) in",
             output,
         )
         self.assertFalse(any(command[:3] == ["gh", "run", "list"] for command in stub.commands))
@@ -460,7 +485,7 @@ class MainTests(unittest.TestCase):
         code, _, errors, table = self.run_main(["1", "2", "3"], stub)
         self.assertEqual((0, ""), (code, errors))
         self.assertEqual(
-            {"Linux": {"tests/a.py": 2.0}, "Windows": {"tests/a.py": 10.0}},
+            {"Linux": {"tests/a.py": 2.0}, "Windows": {"tests/a.py": 10.0}, "macOS": {"tests/a.py": 2.0}},
             json.loads(table.read_text(encoding="utf-8"))["seconds"],
         )
 
@@ -475,7 +500,7 @@ class MainTests(unittest.TestCase):
         code, _, errors, table = self.run_main(["1", "2", "3"], stub)
         self.assertEqual((0, ""), (code, errors))
         self.assertEqual(
-            {"Linux": {"tests/a.py": 2.0}, "Windows": {"tests/a.py": 10.0}},
+            {"Linux": {"tests/a.py": 2.0}, "Windows": {"tests/a.py": 10.0}, "macOS": {"tests/a.py": 2.0}},
             json.loads(table.read_text(encoding="utf-8"))["seconds"],
         )
 
@@ -603,11 +628,13 @@ class MainTests(unittest.TestCase):
         self.assertEqual((2, False), (code, table.exists()))
         self.assertIn("no successful push run of validate.yml on main", errors)
         # Every leg ran, and none printed a job's seconds, as a run without -v does.
-        nothing = "\n".join(f"{leg}nothing printed" for leg in (*LEGS, *LINUX_LEGS))
+        nothing = "\n".join(f"{leg}nothing printed" for leg in (*LEGS, *LINUX_LEGS, *MACOS_LEGS))
         quiet = Stub({"gh run view 6 --json": SUCCESS, "gh run view 6 --log": nothing})
         code, _, errors, table = self.run_main(["6"], quiet)
         self.assertEqual((2, False), (code, table.exists()))
-        self.assertIn("run 6's Linux and Windows legs reported no passing jobs; run validation with -v", errors)
+        self.assertIn(
+            "run 6's Linux and Windows and macOS legs reported no passing jobs; run validation with -v", errors
+        )
         # One platform's legs printed theirs and the other's did not.
         half = log_of({"tests/a.py": 1.0}, linux={})
         code, _, errors, table = self.run_main(

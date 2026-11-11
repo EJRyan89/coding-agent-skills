@@ -38,8 +38,8 @@ from contextlib import contextmanager, suppress
 from pathlib import Path
 from typing import Any
 
-from bounded_process import KILL_WAIT_SECONDS
-from process_identity import ENDED_STATES, PROC, open_failure_status, stat_fields
+from bounded_process import KILL_WAIT_SECONDS, run_bounded
+from process_identity import ENDED_STATES, PROC, PS_ENVIRONMENT, PS_SECONDS, open_failure_status, stat_fields
 
 PROCESS_TERMINATE = 0x0001
 PROCESS_SET_QUOTA = 0x0100
@@ -445,6 +445,12 @@ def end_group(group: int) -> None:
         os.killpg(group, signal.SIGKILL)  # type: ignore[attr-defined, unused-ignore]  # Unix only
     except ProcessLookupError:
         return  # no process of the group is left
+    except PermissionError as error:
+        # macOS refuses to signal a group whose every process has ended and waits to be reaped, so a group it refuses
+        # is ended when no process of it is running.
+        if group_members(group):
+            raise TreeNotEnded(f"The group's processes may still run: killpg failed: {error}") from error
+        return
     except OSError as error:
         raise TreeNotEnded(f"The group's processes may still run: killpg failed: {error}") from error
     deadline = time.monotonic() + KILL_WAIT_SECONDS
@@ -464,15 +470,21 @@ INT_PARSE_ALLOWED = {
 
 def group_members(group: int) -> list[int]:
     """The IDs of the processes of `group` still running, as /proc lists them: a process that has ended and waits only
-    to be reaped holds nothing and runs nothing, so it is not one. Without /proc, the group itself is asked with a
-    signal of none, which counts such a process as running."""
+    to be reaped holds nothing and runs nothing, so it is not one. Without /proc, as on macOS, ps lists them; and
+    where ps cannot, the group itself is asked with a signal of none, which counts such a process as running, and a
+    group it may not signal as running too, so a group is ended only on the kernel's word that it has no process."""
     try:
         entries = [entry.name for entry in Path(PROC).iterdir()]
     except OSError:
+        listed = listed_members(group)
+        if listed is not None:
+            return listed
         try:
             os.killpg(group, 0)  # type: ignore[attr-defined, unused-ignore]  # Unix only
         except ProcessLookupError:
             return []
+        except PermissionError:
+            pass  # a group the kernel will not signal, which may still hold a running process
         return [group]
     running: list[int] = []
     for entry in entries:
@@ -485,6 +497,27 @@ def group_members(group: int) -> list[int]:
         fields = stat_fields(text)  # the state, the parent's ID, and the process group's ID
         if len(fields) > 2 and fields[0] not in ENDED_STATES and fields[2] == str(group).encode():
             running.append(int(entry))
+    return running
+
+
+def listed_members(group: int) -> list[int] | None:
+    """The IDs of the processes of `group` still running, as ps lists every process with its group and state, or None
+    when ps cannot be run, does not finish, fails, or prints a line this cannot read."""
+    try:
+        finished = run_bounded(["/bin/ps", "-A", "-o", "pid=,pgid=,stat="], PS_SECONDS, env=PS_ENVIRONMENT)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if finished.returncode != 0:
+        return None
+    running: list[int] = []
+    for line in finished.stdout.decode("ascii", "replace").splitlines():
+        fields = line.split()
+        if not fields:
+            continue
+        if len(fields) != 3 or not all(field.isascii() and field.isdigit() for field in fields[:2]):
+            return None
+        if int(fields[1]) == group and not fields[2].startswith("Z"):
+            running.append(int(fields[0]))
     return running
 
 

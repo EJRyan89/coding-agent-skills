@@ -558,7 +558,7 @@ READERS = [
     Reader(
         "job_selection.job_seconds",
         "json",
-        b'{"runs": [1], "seconds": {"Linux": {"job": 1.5}, "Windows": {"job": 2.5}}}',
+        b'{"runs": [1], "seconds": {"Linux": {"job": 1.5}, "Windows": {"job": 2.5}, "macOS": {"job": 2.0}}}',
         job_seconds,
         (ValueError,),
     ),

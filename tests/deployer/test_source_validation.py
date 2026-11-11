@@ -174,8 +174,8 @@ class ConfigValidationTests(DeployerTestCase):
         self.make_source_json()
         self.make_skill("alpha", "Test")
         self.make_config()
-        with mock.patch("deployer.platform_support.sys.platform", "darwin"):
-            self.deploy_fails("--all", pattern="runs on Windows and Linux only")
+        with mock.patch("deployer.platform_support.sys.platform", "freebsd14"):
+            self.deploy_fails("--all", pattern="runs on Windows, Linux, and macOS only")
         self.assertFalse((self.skills_dir / "alpha").exists())
 
     def test_missing_required_variable_names_the_skill(self) -> None:
