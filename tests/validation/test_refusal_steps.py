@@ -1,7 +1,8 @@
 """Fixture tests for tests/validation/refusal_steps.py.
 
-The policy fails on a deployer refusal built from one line without its module saying why, and passes on one that ends
-with a step, unpacks its lines, is a cancellation, or is sanctioned beside the code.
+The policy fails on a deployer refusal built from one line, or from unpacked lines it cannot follow, without its module
+saying why, and passes on one that ends with a step, unpacks lines that end with one, is a cancellation, or is
+sanctioned beside the code.
 """
 
 from __future__ import annotations
@@ -19,6 +20,11 @@ from refusal_steps import COVERED, REFUSAL, UNFOLLOWED, _Refusals, refusal_step_
 from validation_support import write_fixture_tree
 
 SUFFIX = " ends at its ERROR line; add the step to take as its next line, or state why it needs none in STEP_ALLOWED"
+UNFOLLOWED_SUFFIX = (
+    " unpacks lines this policy cannot follow, such as a parameter, a call's result, or a list changed in place, so "
+    "its step may be missing; write a literal step after them, or the step before them, or state why it needs none in "
+    "STEP_ALLOWED"
+)
 NOTHING_CHECKED = (
     "deployer/errors.py defines no DeployError class, so no deployer refusal could be read; the policy checked nothing"
 )
@@ -212,10 +218,10 @@ class RefusalStepFixtures(unittest.TestCase):
         }
         self.assertEqual([], self.problems(files))
 
-    def test_a_one_line_list_changed_in_place_or_shared_with_another_scope_is_not_read_as_one_line(self) -> None:
-        # Each list below is displayed with one line, so read from its display alone it would be refused; a subscript
-        # stored into, any list method that changes it, and a global declaration that lets another scope rebind it
-        # each make its display no longer the whole story, so the policy accepts the call unread, its named limit.
+    def test_a_one_line_list_changed_in_place_or_shared_with_another_scope_fails_as_unfollowed(self) -> None:
+        # Each list below is displayed with one line; a subscript stored into, any list method that changes it, and a
+        # global declaration that lets another scope rebind it each make its display no longer the whole story, so the
+        # policy cannot tell where the lines end and refuses the call as one it cannot follow.
         files = {
             "deployer/changed.py": (
                 "from .errors import DeployError\n"
@@ -240,7 +246,14 @@ class RefusalStepFixtures(unittest.TestCase):
                 "    raise DeployError(*SHARED)\n"
             ),
         }
-        self.assertEqual([], self.problems(files))
+        self.assertEqual(
+            [
+                "deployer/changed.py:9 DeployError in stored" + UNFOLLOWED_SUFFIX,
+                "deployer/changed.py:15 DeployError in extended" + UNFOLLOWED_SUFFIX,
+                "deployer/changed.py:20 DeployError in declared" + UNFOLLOWED_SUFFIX,
+            ],
+            self.problems(files),
+        )
 
     def test_caught_lines_are_covered_only_from_a_refusal_caught_and_kept_in_the_same_scope(self) -> None:
         refusals = {REFUSAL, "deployer.errors.Cancelled"}
@@ -268,36 +281,77 @@ class RefusalStepFixtures(unittest.TestCase):
                 )
                 self.assertEqual(expected, _Refusals(tree, "deployer/read.py", refusals).ending(call))
 
-    def test_lines_the_policy_cannot_follow_are_its_named_limit_and_pass_unread(self) -> None:
-        # The limit the policy's docstring names: lines known only when the deployer runs are accepted unread, so each
-        # of these passes although some may end at the ERROR line.
+    def test_lines_the_policy_cannot_follow_fail_unless_a_step_is_written_beside_them(self) -> None:
+        # Lines known only when the deployer runs may end at the ERROR line, so each refusal ending with them fails.
         files = {
             "deployer/unfollowed.py": (
+                "from .errors import DeployError\n"  # 1
+                "\n"  # 2
+                "\n"  # 3
+                "def grown():\n"  # 4
+                '    lines = ["ERROR: Grown"]\n'  # 5
+                '    lines.append("Retry.")\n'  # 6
+                "    raise DeployError(*lines)\n"  # 7: a list appended to
+                "\n"  # 8
+                "\n"  # 9
+                "def rebound(flag):\n"  # 10
+                '    lines = ["ERROR: One", "Retry."]\n'  # 11
+                "    if flag:\n"  # 12
+                '        lines = ["ERROR: Two"]\n'  # 13
+                "    raise DeployError(*lines)\n"  # 14: bound twice
+                "\n"  # 15
+                "\n"  # 16
+                "def given(hint):\n"  # 17
+                '    raise DeployError("ERROR: Given", *hint)\n'  # 18: a parameter
+                "\n"  # 19
+                "\n"  # 20
+                "def called():\n"  # 21
+                '    raise DeployError("ERROR: Called", *steps())\n'  # 22: a call's result
+                "\n"  # 23
+                "\n"  # 24
+                "def wider():\n"  # 25
+                "    try:\n"  # 26
+                "        pass\n"  # 27
+                "    except Exception as exc:\n"  # 28
+                "        raise DeployError(*exc.lines) from exc\n"  # 29: not caught as a refusal
+                "\n"  # 30
+                "\n"  # 31
+                "def unpacked_step(more):\n"  # 32
+                '    raise DeployError("ERROR: Unpacked", *("Retry.",), *more)\n'  # 33: no written step before more
+            ),
+        }
+        self.assertEqual(
+            [
+                f"deployer/unfollowed.py:{line} DeployError in {scope}" + UNFOLLOWED_SUFFIX
+                for line, scope in (
+                    (7, "grown"),
+                    (14, "rebound"),
+                    (18, "given"),
+                    (22, "called"),
+                    (29, "wider"),
+                    (33, "unpacked_step"),
+                )
+            ],
+            self.problems(files),
+        )
+
+    def test_lines_the_policy_cannot_follow_pass_beside_a_written_step_or_a_stated_reason(self) -> None:
+        files = {
+            "deployer/beside.py": (
+                'STEP_ALLOWED = {"reported": "printed, never raised, and its caller prints the steps after it"}\n'
                 "from .errors import DeployError\n"
                 "\n"
                 "\n"
-                "def grown():\n"
-                '    lines = ["ERROR: Grown"]\n'
-                '    lines.append("Retry.")\n'
-                "    raise DeployError(*lines)\n"  # changed in place
+                "def after(hint):\n"
+                '    raise DeployError("ERROR: After", *hint, "Retry.")\n'
                 "\n"
                 "\n"
-                "def rebound(flag):\n"
-                '    lines = ["ERROR: One", "Retry."]\n'
-                "    if flag:\n"
-                '        lines = ["ERROR: Two"]\n'
-                "    raise DeployError(*lines)\n"  # bound twice
+                "def before(step, *more):\n"
+                '    raise DeployError("ERROR: Before", step, *more)\n'
                 "\n"
                 "\n"
-                "def given(lines):\n"
-                "    raise DeployError(*lines)\n"  # a parameter
-                "\n"
-                "\n"
-                "def wider():\n"
-                "    try:\n"
-                "        pass\n"
-                "    except Exception as exc:\n"
-                "        raise DeployError(*exc.lines) from exc\n"  # not caught as a refusal
+                "def reported(more):\n"
+                '    return DeployError("ERROR: Reported", *more)\n'
             ),
         }
         self.assertEqual([], self.problems(files))
@@ -316,7 +370,8 @@ class RefusalStepFixtures(unittest.TestCase):
         }
         self.assertEqual(
             [
-                "deployer/gone.py: STEP_ALLOWED allows parse, which no longer builds a refusal from one line",
+                "deployer/gone.py: STEP_ALLOWED allows parse, which no longer builds a refusal from one line or from "
+                "lines this policy cannot follow",
                 "deployer/unexplained.py: STEP_ALLOWED must map each scope to the reason its refusals need no step",
             ],
             self.problems(files),

@@ -131,7 +131,7 @@ def load_source_id(paths: Paths) -> str:
         refuse_other_spellings(paths.tree, SOURCE_JSON, "The source file")
     except OSError as exc:
         raise os_error(exc, "read the source's folder") from exc
-    if not state_files.is_present(paths.source_file, "source.json"):
+    if not state_files.is_present(paths.source_file, "source.json", SOURCE_JSON_REMEDY):
         raise DeployError(
             f"ERROR: source.json not found at {platform_support.normalize(paths.tree)}", SOURCE_JSON_REMEDY
         )

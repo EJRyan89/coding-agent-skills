@@ -104,26 +104,29 @@ def _read_info(lock_dir: Path) -> dict[str, object]:
     return info if isinstance(info, dict) else {}
 
 
-def _holder_info(paths: Paths, hint: tuple[str, ...]) -> dict[str, object]:
+def _holder_info(paths: Paths, step: str, *more: str) -> dict[str, object]:
     """A held lock's metadata, refused by its fault: no file yet, something else where the file belongs, a file whose
-    stat or read fails, or one that is not UTF-8 or not the JSON object the deployer writes."""
+    stat or read fails, or one that is not UTF-8 or not the JSON object the deployer writes. Each refusal ends with
+    the step to take and the lines after it."""
     info_file = paths.lock_dir / "info.json"
     shown = platform_support.normalize(info_file)
     try:
         if not file_presence.is_present(info_file):
-            raise DeployError("ERROR: Lock exists but has no metadata (may be initializing).", *hint)
+            raise DeployError("ERROR: Lock exists but has no metadata (may be initializing).", step, *more)
         text = info_file.read_text(encoding="utf-8")
     except file_presence.NotAFile:
-        raise DeployError(f"ERROR: The lock's metadata at {shown} is not a file.", *hint) from None
+        raise DeployError(f"ERROR: The lock's metadata at {shown} is not a file.", step, *more) from None
     except OSError as exc:
         raise DeployError(
-            f"ERROR: Could not read the lock's metadata at {shown}: {exc.strerror or exc}.", *hint
+            f"ERROR: Could not read the lock's metadata at {shown}: {exc.strerror or exc}.", step, *more
         ) from exc
     except UnicodeError:
-        raise DeployError(f"ERROR: Lock metadata is malformed: {shown} is not UTF-8 text.", *hint) from None
+        raise DeployError(f"ERROR: Lock metadata is malformed: {shown} is not UTF-8 text.", step, *more) from None
     info = state_files.parse_json(text)
     if not isinstance(info, dict):
-        raise DeployError(f"ERROR: Lock metadata is malformed: {shown} is not a JSON object the deployer reads.", *hint)
+        raise DeployError(
+            f"ERROR: Lock metadata is malformed: {shown} is not a JSON object the deployer reads.", step, *more
+        )
     return info
 
 
@@ -134,7 +137,7 @@ def _existing_holder(paths: Paths, probe: ProcessProbe) -> tuple[int, object]:
         f"remove {platform_support.normalize(paths.lock_dir)}, then retry.",
         see_recovery(LOCK),
     )
-    info = _holder_info(paths, hint)
+    info = _holder_info(paths, *hint)
     try:
         # A PID outside the platform's range is no process's, so it is malformed, never probed as another's.
         pid = read_pid(info.get("pid"), "pid")

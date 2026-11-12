@@ -31,6 +31,15 @@ RENDERED_PARSE_REMEDY = (
     'Correct that file in the source so it parses with its tokens substituted; see "Template values" in '
     "docs/adding-a-skill.md."
 )
+# What a token left unexpanded after rendering asks of the skill's author.
+UNEXPANDED_REMEDY = (
+    "Declare each token above in its skill's required_vars, or remove it from the source, where an agent may use only "
+    'the interpreter token; see "Template values" in docs/adding-a-skill.md.'
+)
+# What a rendered Bash or PowerShell file or block that fails its syntax check or ShellCheck asks of the skill's author.
+RENDERED_CHECK_REMEDY = "Correct the source the lines above name so its rendered form passes the check, then retry."
+# What ShellCheck failing without a finding on any rendered file, such as on an error of its own, asks of the user.
+SHELLCHECK_FAILED_REMEDY = "Check that ShellCheck runs, as 'shellcheck --version' shows, then retry."
 
 TOKEN = re.compile(r"\{\{([A-Z_][A-Z0-9_]*)\}\}")
 SUFFIX_CONTEXT = {
@@ -389,7 +398,7 @@ def reject_unexpanded_tokens(staged: Staged) -> None:
             if TOKEN.search(line):
                 matches.append(f"{logical}:{number}:{line}")
     if matches:
-        raise DeployError("ERROR: Unexpanded tokens found in staged output:", *matches)
+        raise DeployError("ERROR: Unexpanded tokens found in staged output:", *matches, UNEXPANDED_REMEDY)
 
 
 @dataclass(frozen=True)
@@ -466,6 +475,7 @@ def _check_bash_syntax(units: list[ShellUnit], bash: str) -> None:
             raise DeployError(
                 f"ERROR: Rendered Bash {kind} validation failed: {unit.origin}",
                 *result.output.rstrip().splitlines(),
+                RENDERED_CHECK_REMEDY,
             )
 
 
@@ -508,9 +518,9 @@ def _run_shellcheck(units: list[ShellUnit], shellcheck: str) -> None:
         prefix = "ShellCheck failed for rendered " + ("Bash block" if first.is_block else "content")
         findings = (line for unit in failing for line in reported[platform_support.normalize(unit.path)])
         # A line that names no unit, such as ShellCheck's own error, is reported beside the findings, never dropped.
-        raise DeployError(f"ERROR: {prefix}: {first.origin}", *findings, *unattributed)
+        raise DeployError(f"ERROR: {prefix}: {first.origin}", *findings, *unattributed, RENDERED_CHECK_REMEDY)
     if failed:
-        raise DeployError("ERROR: ShellCheck failed for rendered content", *unattributed)
+        raise DeployError("ERROR: ShellCheck failed for rendered content", *unattributed, SHELLCHECK_FAILED_REMEDY)
 
 
 POWERSHELL_PARSE = (
@@ -544,7 +554,9 @@ def _parse_powershell(files: dict[str, bytes], workspace: Path, powershell: str)
     if result.returncode != 0:
         lines = result.output.strip().splitlines()
         failed = origins.get(lines[0].strip(), lines[0].strip()) if lines else "(unknown file)"
-        raise DeployError(f"ERROR: Rendered PowerShell syntax validation failed: {failed}", *lines[1:])
+        raise DeployError(
+            f"ERROR: Rendered PowerShell syntax validation failed: {failed}", *lines[1:], RENDERED_CHECK_REMEDY
+        )
 
 
 def validate_executables(staged: Staged) -> None:

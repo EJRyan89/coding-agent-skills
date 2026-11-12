@@ -50,16 +50,17 @@ def holds_lone_surrogate(text: str) -> bool:
     return True
 
 
-def is_present(path: Path, what: str, *remedy: str) -> bool:
+def is_present(path: Path, what: str, step: str, *more: str) -> bool:
     """Whether a file is at path: False when nothing is, and a refusal naming it when something else is.
 
     A directory, a link to nothing, or any other thing that is not a regular file is refused here, before anything is
     planned, so it is never read as absent; and so is a path whose stat fails with anything but "not found", such as
-    one this user may not read, naming the stat's reason.
+    one this user may not read, naming the stat's reason. The refusal ends with the step to take and the lines after
+    it.
     """
     try:
         return file_presence.is_present(path)
     except file_presence.NotAFile:
-        raise DeployError(f"ERROR: {what} at {platform_support.normalize(path)} is not a file.", *remedy) from None
+        raise DeployError(f"ERROR: {what} at {platform_support.normalize(path)} is not a file.", step, *more) from None
     except OSError as exc:
         raise os_error(exc, f"tell whether {what[:1].lower()}{what[1:]} is there") from exc

@@ -139,7 +139,8 @@ def named(error: BaseException, action: str) -> str:
 
 
 class Cancelled(DeployError):
-    """The user cancelled at a prompt, before anything was changed."""
+    """The user cancelled: at a prompt, before anything was changed, or by Ctrl+C during recovery, which the next
+    deployment finishes. A cancellation is the user's own act, so it ends without a step."""
 
     def __init__(self, *lines: str) -> None:
         super().__init__(*lines, exit_code=130)
