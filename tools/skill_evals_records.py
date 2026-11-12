@@ -49,9 +49,9 @@ class RecordError(Exception):
 class RoutePin:
     """A route of a scenario's reviewer manifest that names its own model or effort. `model` is the model's name in
     MODELS, which the pipeline starts the route's reviewer on in place of the judged model, so a run judges that
-    reviewer on it; None leaves the route on the judged model. `effort` is the manifest's effort, which a run
-    overrides: Claude Code starts a native subagent at its agent's effort, the judged model's REVIEWER_EFFORT, and
-    not at one the pipeline is given, so a row records the pin as overridden."""
+    reviewer on it; None leaves the route on the judged model. `effort` is the manifest's effort, which the session
+    starts the route's native subagent at through the Agent tool's `effort`, over the agent's, the judged model's
+    REVIEWER_EFFORT; None leaves the route at REVIEWER_EFFORT."""
 
     route: str
     model: str | None = None

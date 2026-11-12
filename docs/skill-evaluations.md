@@ -119,9 +119,9 @@ scenarios start no reviewer says `none`.
 are part of the configuration under test. A pinned model is honoured: the pipeline starts that route's reviewer on it
 whatever model the row judges, so a run counts when each reviewer ran on the judged model or on a model a route pins,
 and with `--records` each reviewer's reported model is held to its own route's pin. A pinned `inherit` pins nothing,
-and a pin of a model the evaluation names no ID for fails the scenario's load. A pinned effort is overridden: Claude
-Code starts a native subagent at its agent's effort, the row's "Reviewer effort", and not at one the pipeline is
-given, so the cell names it as `effort <effort> overridden`. A row with no pin says `none`.
+and a pin of a model the evaluation names no ID for fails the scenario's load. A pinned effort is honoured too: the
+session starts that route's reviewer at it through the Agent tool's `effort`, over the agent's effort, the row's
+"Reviewer effort", so the cell names it as `effort <effort>`. A row with no pin says `none`.
 
 A trigger scenario's result is a row like any other. Its Model ID and Session model are both the judged model, since
 its sessions run on that model, and By scenario gives its expectations passed, one per request and near miss. A skill

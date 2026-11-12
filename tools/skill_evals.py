@@ -142,8 +142,9 @@ message of the session names the session's; a run with no subagent, or one on an
 the same family, fails every expectation, since the model was not the one judged. A route's pinned `model` is
 honoured, since the pipeline starts that route's reviewer on it in place of the agent's model: the pins are the
 configuration under test. A pinned `inherit` pins nothing, and a pin of a model MODELS names no ID for fails the
-scenario's load. A route's pinned `effort` is overridden, since Claude Code starts a native subagent at its agent's
-effort, the model's reviewer effort, and not at one the pipeline is given; the results row names both kinds of pin.
+scenario's load. A route's pinned `effort` is honoured too, since the session starts that route's native subagent at
+the effort of its EFFORT line through the Agent tool's `effort`, over the agent's; the results row names both kinds
+of pin.
 Edits are accepted, standing in for the user who approves each reviewer's result file, which the reviewers write
 inside the home, and the reviewers' self-check and source commands are allowed, each by the quoted path of the home's
 deployed script as the pipeline's prompts give it, in both shells, with no wildcard in the path; the skill's

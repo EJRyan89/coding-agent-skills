@@ -3678,9 +3678,9 @@ class ProfileModelTests(PipelineFixture):
         run = Path(out.splitlines()[0].removeprefix(f"RUN {SELECTOR} "))
         state = json.loads((run / "run.json").read_text(encoding="utf-8"))
         self.assertEqual(
-            [("python-review", "sonnet", None), ("generic-review", None, None)],
+            [("python-review", "sonnet", "high"), ("generic-review", None, "high")],
             [(role["id"], role["model"], role["effort"]) for role in state["roles"]],
-            "the run records no specialist effort, so the configuration's applies when a reviewer starts",
+            "a role with no specialist effort records the configuration's, which its native subagent starts at",
         )
         code, out, err = self.run_main("workflow", "--run", str(run))
         self.assertEqual(0, code, err)
@@ -3731,18 +3731,44 @@ class ProfileModelTests(PipelineFixture):
         self.assertEqual(0, code, err)
         self.assertNotIn("EFFORT ", out)
 
-    def test_a_claude_code_session_prints_no_effort_line(self) -> None:
-        # Claude Code's reviewers take an effort through the Workflow tool, which reads it from the run.
+    def test_a_claude_code_session_starts_each_native_reviewer_at_its_effort_and_retries_carry_it(self) -> None:
+        # Claude Code's Agent tool takes an effort over the agent's own, so each role's EFFORT line names the one its
+        # native subagent starts at: the specialist's own, else the configured reviewer_effort. The Workflow script
+        # reads the same efforts from the run.
         self.services.resolve_runtime = lambda configured, host: "claude-code"
         self.trusted_profile("", model=None, effort="low")
         config = json.loads(self.config_path.read_text(encoding="utf-8"))
         write_config({**config, "reviewer_effort": "high"}, self.config_path)
         code, out, err = self.run_main("prepare", "--pull", SELECTOR)
         self.assertEqual(0, code, err)
-        self.assertNotIn("EFFORT ", out)
-        run = Path(out.splitlines()[0].removeprefix(f"RUN {SELECTOR} "))
+        lines = out.splitlines()
+        python = lines.index(next(line for line in lines if line.startswith("ROLE python-review ")))
+        generic = lines.index(next(line for line in lines if line.startswith("ROLE generic-review ")))
+        self.assertEqual(f"EFFORT {SELECTOR} python-review low", lines[python + 1])
+        self.assertEqual(f"EFFORT {SELECTOR} generic-review high", lines[generic + 1])
+        run = Path(lines[0].removeprefix(f"RUN {SELECTOR} "))
         state = json.loads((run / review_run.RUN_FILE).read_text(encoding="utf-8"))
-        self.assertEqual(["low", None], [role["effort"] for role in state["roles"]])
+        self.assertEqual(["low", "high"], [role["effort"] for role in state["roles"]])
+        code, out, err = self.run_main("workflow", "--run", str(run))
+        self.assertEqual(0, code, err)
+        _, _, roles = workflow_output(out)
+        self.assertEqual(["low", "high"], [role["effort"] for role in roles])
+        python_role, generic_role = state["roles"]
+        self.write_role_result(python_role, findings=[self.finding(line=1)])
+        self.write_role_result(generic_role)
+        code, out, _ = self.run_main("check", "--run", str(run))
+        self.assertEqual(1, code)
+        lines = out.splitlines()
+        self.assertTrue(lines[0].startswith(f"RETRY {SELECTOR} python-review "), out)
+        self.assertEqual(f"EFFORT {SELECTOR} python-review low", lines[1])
+
+    def test_a_claude_code_session_without_an_effort_names_none(self) -> None:
+        # With neither a specialist's effort nor reviewer_effort, a native reviewer starts at its agent's effort.
+        self.services.resolve_runtime = lambda configured, host: "claude-code"
+        self.trusted_profile("", model=None, effort=None)
+        code, out, err = self.run_main("prepare", "--pull", SELECTOR)
+        self.assertEqual(0, code, err)
+        self.assertNotIn("EFFORT ", out)
 
     def test_null_model_with_no_profile_model_uses_the_session_model(self) -> None:
         self.trusted_profile("", model=None, effort=None)

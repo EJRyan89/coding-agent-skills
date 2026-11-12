@@ -3507,9 +3507,9 @@ class EvaluateTests(unittest.TestCase):
         reason = "reviewers ran on claude-sonnet-5-5, not claude-haiku-5-5 or the pinned claude-opus-5-5"
         self.assertIn(f'NOT_COUNTED design-gaps haiku record "{reason}"', lines)
 
-    def test_a_route_s_pinned_effort_is_overridden_and_the_row_says_so(self) -> None:
-        # Claude Code starts a native subagent at its agent's effort, so the reviewer runs at the model's reviewer
-        # effort and the row names the pin it overrode.
+    def test_a_route_s_pinned_effort_is_honoured_and_the_row_names_it(self) -> None:
+        # The session starts the pinned route's native subagent at its EFFORT line through the Agent tool's effort, so
+        # the agent keeps the model's reviewer effort for every other route and the row names the pin as it is.
         self.pinned_design_gaps(effort="low")
         claude = StubClaude(self)
         status, lines = self.evaluate(["--write", "--jobs", "1"], self.seams(claude), only=["design-gaps"])
@@ -3520,7 +3520,7 @@ class EvaluateTests(unittest.TestCase):
                 self.assertEqual(skill_evals_records.REVIEWER_EFFORT[model], effort)
         rows = skill_evals_results.results_table(self.results.read_text(encoding="utf-8"))[2]
         self.assertIn(
-            "| review-prs | haiku | claude-haiku-5-5 | high | design-review: effort low overridden | 5/5 | 1 "
+            "| review-prs | haiku | claude-haiku-5-5 | high | design-review: effort low | 5/5 | 1 "
             "| design-gaps 5/5 | claude-opus-5-5 | 2.1.291 | 2026-10-08 |",
             rows,
         )
@@ -5121,8 +5121,7 @@ def test_a_row_names_each_route_pin_its_scenarios_measured_once() -> None:
         scenario("c"),
     ]
     assert skill_evals_results.pins_cell(scenarios) == (
-        "deployer: effort max overridden; documentation: model sonnet; "
-        "trust-boundary: model opus, effort low overridden"
+        "deployer: effort max; documentation: model sonnet; trust-boundary: model opus, effort low"
     )
     assert skill_evals_results.pins_cell([scenario("c")]) == "none"
     runs: dict[skill_evals_runs.RunKey, skill_evals_runs.Run] = {
@@ -5132,6 +5131,6 @@ def test_a_row_names_each_route_pin_its_scenarios_measured_once() -> None:
         "review-prs", scenarios[:1], ["haiku"], [outcome("a", "haiku")], runs, "2.1.291", datetime.date(2026, 10, 8)
     )
     assert row == (
-        "| review-prs | haiku | claude-haiku-5-5 | high | deployer: effort max overridden; trust-boundary: model opus, "
-        "effort low overridden | 1/1 | 1 | a 1/1 | unknown | 2.1.291 | 2026-10-08 |"
+        "| review-prs | haiku | claude-haiku-5-5 | high | deployer: effort max; trust-boundary: model opus, "
+        "effort low | 1/1 | 1 | a 1/1 | unknown | 2.1.291 | 2026-10-08 |"
     )

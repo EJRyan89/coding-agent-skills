@@ -28,7 +28,7 @@ import review_specialists
 import untested_functions
 from git_client import GitClient
 from markdown_sections import markdown_section
-from review_runtime import declared_reviewer_files, glob_matcher, validate_adapter_manifest
+from review_runtime import configured_exclusion, declared_reviewer_files, glob_matcher, validate_adapter_manifest
 from review_specialists import INPUTS, route, uncovered
 
 REPOSITORY = Path(__file__).resolve().parents[4]
@@ -38,6 +38,9 @@ CONDITION = f"{SKILL}/scripts/doc_passages.py"
 UNTESTED = f"{SKILL}/scripts/untested_functions.py"
 SKILL_CORE = "skills/ejryan89-skill-core/scripts"
 SCENARIOS = REPOSITORY / "tests" / "fixtures" / "skill-evals" / "review-repository"
+FIXTURES = "tests/fixtures/"
+# The fixtures that state what the hub guard admits rather than sample input, which the snapshot keeps.
+HUB_GUARD_FIXTURES = "tests/fixtures/hub-guard/"
 MANIFEST = validate_adapter_manifest(json.loads((REPOSITORY / MANIFEST_PATH).read_text(encoding="utf-8")))
 PIPELINE_SCRIPTS = "skills/ejryan89-code-review-core/scripts"
 INSIGHTS_SCRIPTS = "skills/review-insights/scripts"
@@ -281,9 +284,23 @@ def tracked_files() -> list[str]:
     return [path for path in listed.stdout.split("\0") if path]
 
 
+def recommended_entry() -> dict[str, Any]:
+    """The one repository entry SKILL.md's JSON fence shows, read as the configuration would hold it."""
+    text = (REPOSITORY / SKILL / "SKILL.md").read_text(encoding="utf-8")
+    fences = re.findall(r"```json\n(.*?)\n```", text, re.DOTALL)
+    if len(fences) != 1:
+        raise AssertionError(f"SKILL.md shows {len(fences)} JSON fences, not one")
+    value = json.loads("{" + fences[0] + "}")
+    if len(value) != 1:
+        raise AssertionError(f"SKILL.md's JSON fence holds {len(value)} repository entries, not one")
+    entry: dict[str, Any] = next(iter(value.values()))
+    return entry
+
+
 def reviewed_files() -> list[str]:
-    """The tracked files a reviewer can be given: every one but the fixtures, which the configuration leaves out."""
-    return [path for path in tracked_files() if not path.startswith("tests/fixtures/")]
+    """The tracked files a reviewer can be given: every one the recommended entry's snapshot_exclude leaves in."""
+    excluded = configured_exclusion(recommended_entry()["snapshot_exclude"])
+    return [path for path in tracked_files() if not excluded(path)]
 
 
 def design_trust_model_files(design: str | None = None) -> set[str]:
@@ -614,7 +631,7 @@ class ManifestTests(unittest.TestCase):
         paths = [
             path
             for path in tracked_files()
-            if path.rsplit("/", 1)[-1] in named - set(NAMED_ELSEWHERE) and not path.startswith("tests/fixtures/")
+            if path.rsplit("/", 1)[-1] in named - set(NAMED_ELSEWHERE) and not path.startswith(FIXTURES)
         ]
         self.assertEqual(named - set(NAMED_ELSEWHERE), {path.rsplit("/", 1)[-1] for path in paths})
         self.assertEqual([], [path for path in paths if "trust-boundary" not in reached([path])[path]])
@@ -626,6 +643,25 @@ class ManifestTests(unittest.TestCase):
         self.assertIn("trust-boundary", reached([path])[path])
         on_a_fix = route(MANIFEST, [path], lambda name: True, title="fix(hub-guard): refuse an option")
         self.assertEqual([path], on_a_fix.get("sibling-spellings"))
+
+    def test_the_hub_guard_s_option_catalogues_reach_the_trust_boundary_reviewers(self) -> None:
+        # Each catalogue lists a program's options, and the guard's suites hold its allowlists to every spelling of
+        # them, so a change that drops an option from one loosens what the suites prove the guard refuses. Each is read
+        # from the tree, by its folder and by its name anywhere, so a catalogue added later must be routed too, and
+        # each stays in the snapshot the recommended entry takes, past the exclusion of the other fixtures.
+        files = tracked_files()
+        catalogues = sorted(
+            path
+            for path in files
+            if path.startswith(HUB_GUARD_FIXTURES) or path.rsplit("/", 1)[-1].startswith("option-catalogues")
+        )
+        self.assertIn(f"{HUB_GUARD_FIXTURES}option-catalogues.json", catalogues)
+        self.assertIn(f"{HUB_GUARD_FIXTURES}option-catalogues-uutils.json", catalogues)
+        reviewed = set(reviewed_files())
+        self.assertEqual([], [path for path in catalogues if path not in reviewed])
+        self.assertEqual([], [path for path in catalogues if "trust-boundary" not in reached([path])[path]])
+        on_a_fix = route(MANIFEST, catalogues, lambda name: True, title="fix(hub-guard): refuse an option")
+        self.assertEqual(catalogues, on_a_fix.get("sibling-spellings"))
 
     def test_every_file_the_design_trust_model_names_reaches_the_trust_boundary_reviewer(self) -> None:
         # docs/design.md's trust model names the code that holds each boundary and the suites that hold it, so a file
@@ -805,7 +841,7 @@ class DocumentationDriftTests(unittest.TestCase):
         script = re.compile(r"[\w.-]+\.(?:py|ps1|sh)(?![\w-])")
         naming = []
         for path in tracked_files():
-            if not path.lower().endswith(".md") or path.startswith("tests/fixtures/") or path in doc_passages.RECORDS:
+            if not path.lower().endswith(".md") or path.startswith(FIXTURES) or path in doc_passages.RECORDS:
                 continue
             text = (REPOSITORY / path).read_text(encoding="utf-8", errors="replace")
             if any(script.search(span) for unit in doc_passages.units(text) for _, span in unit.spans()):
@@ -1533,14 +1569,7 @@ class SnapshotTests(unittest.TestCase):
 
 class RecommendedConfigurationTests(unittest.TestCase):
     def entry(self) -> dict[str, Any]:
-        """The one repository entry SKILL.md's JSON fence shows, read as the configuration would hold it."""
-        text = (REPOSITORY / SKILL / "SKILL.md").read_text(encoding="utf-8")
-        fences = re.findall(r"```json\n(.*?)\n```", text, re.DOTALL)
-        self.assertEqual(1, len(fences))
-        value = json.loads("{" + fences[0] + "}")
-        self.assertEqual(1, len(value))
-        entry: dict[str, Any] = next(iter(value.values()))
-        return entry
+        return recommended_entry()
 
     def test_the_entry_names_this_manifest(self) -> None:
         reviewer = self.entry()["reviewer"]
@@ -1548,13 +1577,25 @@ class RecommendedConfigurationTests(unittest.TestCase):
         self.assertEqual(MANIFEST["id"], reviewer["id"])
         self.assertEqual("repository", reviewer["scope"])
 
-    def test_the_exclusion_leaves_out_the_fixtures_and_no_file_the_reviewer_declares(self) -> None:
+    def test_the_exclusion_leaves_out_every_fixture_but_the_hub_guard_s_and_no_file_the_reviewer_declares(self) -> None:
+        # The fixtures are sample input, planted defects among them, except the hub guard's, which state what the guard
+        # admits and reach its reviewers. A fixture folder added later is left out only once the list names it.
         patterns = self.entry()["snapshot_exclude"]
-        self.assertEqual(["tests/fixtures/**"], patterns)
-        matches = glob_matcher("tests/fixtures/**")
+        self.assertEqual(
+            [
+                "tests/fixtures/*",
+                "tests/fixtures/audit-skill/**",
+                "tests/fixtures/captured-output/**",
+                "tests/fixtures/runtime-canary/**",
+                "tests/fixtures/skill-evals/**",
+            ],
+            patterns,
+        )
+        matches = configured_exclusion(patterns)
         files = tracked_files()
-        fixtures = [path for path in files if path.startswith("tests/fixtures/")]
+        fixtures = [path for path in files if path.startswith(FIXTURES) and not path.startswith(HUB_GUARD_FIXTURES)]
         self.assertTrue(fixtures)
+        self.assertTrue([path for path in files if path.startswith(HUB_GUARD_FIXTURES)])
         self.assertEqual(fixtures, [path for path in files if matches(path)])
         self.assertEqual([], [path for path in declared_reviewer_files(MANIFEST) if matches(path)])
 

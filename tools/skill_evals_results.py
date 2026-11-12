@@ -40,12 +40,12 @@ def _cell(text: str) -> str:
 
 def pins_cell(scenarios: Sequence[Scenario]) -> str:
     """The route pins the skill's scenarios measured, each once, by route: a pinned model, which its route's reviewers
-    ran on, and a pinned effort, which the run overrode with the judged model's reviewer effort; or none."""
+    ran on, and a pinned effort, which they started at; or none."""
     pins: set[RoutePin] = {pin for scenario in scenarios for pin in scenario.pins}
     described = []
     for pin in sorted(pins, key=lambda item: (item.route, item.model or "", item.effort or "")):
         parts = [f"model {pin.model}"] if pin.model else []
-        parts += [f"effort {pin.effort} overridden"] if pin.effort else []
+        parts += [f"effort {pin.effort}"] if pin.effort else []
         described.append(f"{pin.route}: {', '.join(parts)}")
     return "; ".join(described) or NO_PINS
 
