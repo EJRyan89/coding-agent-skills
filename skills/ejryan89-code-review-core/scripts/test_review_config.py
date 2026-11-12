@@ -792,7 +792,7 @@ class ReviewerRootTests(unittest.TestCase):
                 )
 
     def test_a_ref_git_resolves_into_a_pull_request_is_refused(self) -> None:
-        # #2663: a symbolic ref under refs/heads/ that git follows to a pull request's ref is judged where it lands.
+        # A symbolic ref under refs/heads/ that git follows to a pull request's ref is judged where it lands.
         git(self.rules, "update-ref", "refs/pull/42/head", "HEAD")
         git(self.rules, "symbolic-ref", "refs/heads/sym", "refs/pull/42/head")
         self.assert_refused(
@@ -809,8 +809,8 @@ class ReviewerRootTests(unittest.TestCase):
                 )
 
     def test_each_spelling_that_reaches_a_pull_request_is_refused_by_the_root_s_reader(self) -> None:
-        # #2663's table, through reviewer_root_commit as prepare and validate-reviewer --ref call it: every spelling
-        # names a commit a pull request's ref reaches here, and none is read.
+        # Through reviewer_root_commit, as prepare and validate-reviewer --ref call it: every spelling names a commit a
+        # pull request's ref reaches here, and none is read.
         git(self.rules, "commit", "--allow-empty", "-m", "pull request")
         git(self.rules, "update-ref", "refs/pull/42/head", "HEAD")
         git(self.rules, "update-ref", "refs/pull/42/merge", "HEAD")
@@ -888,7 +888,7 @@ class ReviewerRootTests(unittest.TestCase):
 class LocalManifestTests(unittest.TestCase):
     """A reviewer's local manifest, whose folder holds the condition scripts a review runs, lies outside the reviewed
     repository: validate and write refuse one inside checkout_path or inside any working tree of the same repository,
-    naming the path, and write then writes nothing (#2661)."""
+    naming the path, and write then writes nothing."""
 
     def setUp(self) -> None:
         temporary = tempfile.TemporaryDirectory()

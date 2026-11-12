@@ -38,7 +38,7 @@ from review_config import (
     REVIEWER_EFFORTS,
     REVIEWER_MODELS,
     ConfigurationError,
-    trusted_ref_commit,
+    reviewer_ref_commit,
     validate_glob_patterns,
     validate_repository_identity,
 )
@@ -885,10 +885,10 @@ def resolve_reviewer_commit(
     head_sha: str,
     runner: Runner = subprocess_runner,
 ) -> str:
-    """The commit a trusted ref names in the checkout, judged after git resolves it as `trusted_ref_commit` judges
+    """The commit a trusted ref names in the checkout, judged after git resolves it as `reviewer_ref_commit` judges
     one, and never the pull request's head."""
     try:
-        commit = trusted_ref_commit(trusted_ref, directory=checkout, where=f"in {checkout}", runner=runner)
+        commit = reviewer_ref_commit(trusted_ref, directory=checkout, where=f"in {checkout}", runner=runner)
     except ConfigurationError as exc:
         raise RuntimeContractError(str(exc)) from exc
     if commit == head_sha.lower():

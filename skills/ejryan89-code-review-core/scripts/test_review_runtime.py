@@ -1119,7 +1119,7 @@ class RuntimeContractTests(unittest.TestCase):
                 verify_checkout_remote(checkout, "different/one")
 
     def test_each_spelling_that_reaches_a_pull_request_is_refused(self) -> None:
-        # #2663: the reproduction's table. refs/pull/42/head is a commit after the trusted one, and every spelling
+        # refs/pull/42/head is a commit after the trusted one, and every spelling
         # below reaches it or the commit before it through a pull request's ref; none resolves.
         with tempfile.TemporaryDirectory() as temporary:
             checkout, trusted, head = self._repository(Path(temporary))

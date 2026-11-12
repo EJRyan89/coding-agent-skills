@@ -42,7 +42,7 @@ REPO = ("repositories", "owner/repo")
 REVIEWER = (*REPO, "reviewer")
 FIELD = "repositories.owner/repo"
 # A trusted_ref is a full ref under refs/heads/, refs/tags/, or refs/remotes/, written without revision syntax, so
-# no spelling reaches a pull request's ref or a commit through one (#2663). Each spelling the configuration refuses,
+# no spelling reaches a pull request's ref or a commit through one. Each spelling the configuration refuses,
 # with its reason.
 NOT_A_FULL_REF = "is not a full ref under refs/heads/, refs/tags/, refs/remotes/"
 REVISION_SYNTAX = "holds revision syntax, such as ~, ^, :, or @{, so it names a commit other than the ref's own"

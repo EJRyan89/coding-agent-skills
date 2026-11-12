@@ -4183,7 +4183,7 @@ class ReviewerSourceTests(PipelineFixture):
 
     def pull_request_condition(self, manifest: Path) -> Path:
         """A local manifest at `manifest` whose condition script, as a checked-out pull request rewrites it, writes a
-        marker file when it runs; the marker's path, which no review may ever write (#2661)."""
+        marker file when it runs; the marker's path, which no review may ever write."""
         marker = self.root / "marker.txt"
         self.local_manifest(path=manifest)
         (manifest.parent / "window.py").write_text(
@@ -7150,7 +7150,7 @@ class ReviewerRootTests(PipelineFixture):
 
     def test_a_local_manifest_inside_the_reviewed_checkout_fails_the_pull_request_with_a_root_too(self) -> None:
         # A pinned root covers the files it holds, never a local manifest's condition scripts, which the reviewed
-        # checkout would hold (#2661).
+        # checkout would hold.
         marker = self.root / "marker.txt"
         self.manifest = self.local_manifest(
             path=self.checkout / ".review" / "manifest.json",

@@ -466,7 +466,7 @@ def _validate_reviewer(identity: str, reviewer_value: Any) -> dict[str, Any]:
     if READ.integer(reviewer.get("protocol_version"), f"{path}.protocol_version") != 1:
         raise ConfigurationError(f"{field} protocol is unsupported")
     trusted_ref = READ.optional(READ.string, reviewer.get("trusted_ref"), f"{path}.trusted_ref")
-    refusal = None if trusted_ref is None else trusted_ref_refusal(trusted_ref)
+    refusal = None if trusted_ref is None else reviewer_ref_refusal(trusted_ref)
     if refusal is not None:
         raise ConfigurationError(f"{field}.trusted_ref {json_writer.dumps(trusted_ref)} {refusal}")
     reviewer_root = validate_absolute_path(reviewer.get("reviewer_root"), f"{field}.reviewer_root", nullable=True)
@@ -516,10 +516,10 @@ def _validate_reviewer(identity: str, reviewer_value: Any) -> dict[str, Any]:
     }
 
 
-def trusted_ref_refusal(ref: str) -> str | None:
+def reviewer_ref_refusal(ref: str) -> str | None:
     """Why `ref` cannot be a trusted ref as written, or None when its spelling may be one: a full ref under
     TRUSTED_REF_NAMESPACES with none of git's revision syntax, so the name is a ref and never a commit reached through
-    one. `trusted_ref_commit` judges the ref again after git resolves it."""
+    one. `reviewer_ref_commit` judges the ref again after git resolves it."""
     if not ref.startswith(TRUSTED_REF_NAMESPACES):
         return f"is not a full ref under {', '.join(TRUSTED_REF_NAMESPACES)}"
     if REVISION_SYNTAX.search(ref):
@@ -527,14 +527,14 @@ def trusted_ref_refusal(ref: str) -> str | None:
     return None
 
 
-def trusted_ref_commit(ref: str, *, directory: Path, where: str, runner: Runner = subprocess_runner) -> str:
+def reviewer_ref_commit(ref: str, *, directory: Path, where: str, runner: Runner = subprocess_runner) -> str:
     """The commit a trusted ref names in `directory`'s repository, judged after git resolves it: the spelling
-    `trusted_ref_refusal` allows, a name `git check-ref-format` accepts, and a full name, once git follows a symbolic
+    `reviewer_ref_refusal` allows, a name `git check-ref-format` accepts, and a full name, once git follows a symbolic
     ref, still under TRUSTED_REF_NAMESPACES, so neither a pull request's ref nor a symbolic ref to one is read.
 
     Raises ConfigurationError naming the ref and `where`, such as `in reviewer_root <path>`, for a ref refused or
     absent there, or git's reason when git cannot read it."""
-    refusal = trusted_ref_refusal(ref)
+    refusal = reviewer_ref_refusal(ref)
     if refusal is not None:
         raise ConfigurationError(f"trusted_ref {json_writer.dumps(ref)} {refusal}")
     client = GitClient(runner)
@@ -639,7 +639,7 @@ def reviewer_root_commit(root: Path, ref: str, runner: Runner = subprocess_runne
         raise ConfigurationError(f"reviewer_root {root} is not a Git checkout git can read: it named no top folder")
     if path_key(Path(top), resolve=True) != path_key(root, resolve=True):
         raise ConfigurationError(f"reviewer_root {root} is not a Git checkout's top folder; its checkout is {top}")
-    return trusted_ref_commit(ref, directory=root, where=f"in reviewer_root {root}", runner=runner)
+    return reviewer_ref_commit(ref, directory=root, where=f"in reviewer_root {root}", runner=runner)
 
 
 def check_reviewer_roots(config: dict[str, Any], runner: Runner = subprocess_runner) -> None:
