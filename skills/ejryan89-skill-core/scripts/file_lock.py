@@ -11,8 +11,11 @@ backup, an indexer, or a sync client reading the file; past its end there is not
 `lockf` would not serve, since it drops every lock a process holds on a file when any of its handles to the file
 closes. A descriptor Python opens is never inherited, so no process the holder starts holds the lock after it ends.
 
-`take` opens the file, creating it, and takes the lock without waiting; it answers None while another holds it, and
-raises `FileLockError` when the file system refuses the lock itself, as a network mount without lock support does.
+`take` opens the file, creating it, and takes the lock without waiting; it answers None while another holds it, or
+when a signal interrupted the attempt, and raises `FileLockError` when the file system refuses the lock itself. A
+refusal is `unsupported` only when its reason says the file system offers no lock at all, as a mount without lock
+support does; any other, such as a lock table that is full or a lock service that does not answer, may come while
+another process holds the lock, so the file is no one's to delete only after an unsupported refusal.
 `release` deletes the file and lets the lock go, so a run leaves nothing behind. On Linux and macOS a waiter may hold
 a descriptor of the file a release deleted and then take the lock of that deleted file, so `take` keeps a lock only
 while its path still names the file it locked. On Windows a file cannot be deleted while another handle holds it open,
@@ -38,6 +41,10 @@ else:
     import fcntl
 
     HELD_ERRNOS = frozenset({errno.EWOULDBLOCK, errno.EAGAIN})
+# A lock attempt a signal interrupted, which takes nothing, so it is tried again as one another holds is.
+RETRY_ERRNOS = frozenset({errno.EINTR})
+# The errors that say the file system offers no lock at all, so no process can hold the file's lock.
+UNSUPPORTED_ERRNOS = frozenset({errno.ENOTSUP, errno.EOPNOTSUPP, errno.ENOSYS})
 
 
 # The byte Windows locks: past the end of the empty file, within the offsets every Windows file system takes.
@@ -46,6 +53,12 @@ LOCKED_OFFSET = 2**30
 
 class FileLockError(OSError):
     """The file system refused the lock itself, rather than another process holding it."""
+
+    @property
+    def unsupported(self) -> bool:
+        """Whether the reason says the file system offers no lock at all, so no process holds this file's lock; any
+        other refusal may come while another process holds it."""
+        return self.errno in UNSUPPORTED_ERRNOS
 
 
 def open_for_lock(path: Path) -> int:
@@ -70,12 +83,13 @@ def _unlock(descriptor: int) -> None:
 
 
 def try_lock(descriptor: int) -> bool:
-    """Take the lock of an open file without waiting: True when taken, False while another holds it, and a
-    `FileLockError` with the platform's reason when the file system refuses the lock."""
+    """Take the lock of an open file without waiting: True when taken, False while another holds it or when a
+    signal interrupted the attempt, and a `FileLockError` with the platform's reason when the file system refuses the
+    lock."""
     try:
         _lock(descriptor)
     except OSError as exc:
-        if exc.errno in HELD_ERRNOS:
+        if exc.errno in HELD_ERRNOS or exc.errno in RETRY_ERRNOS:
             return False
         raise FileLockError(exc.errno, exc.strerror or str(exc)) from exc
     return True

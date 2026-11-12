@@ -252,9 +252,11 @@ def _take_file_lock(paths: Paths) -> int:
         try:
             handle = file_lock.take(paths.lock_file, fsops.open_lock_file)
         except file_lock.FileLockError as exc:
-            # No process can hold a lock the file system refuses, so the file this run opened is no one's.
-            with contextlib.suppress(OSError):
-                fsops.remove(paths.lock_file)
+            if exc.unsupported:
+                # A file system with no lock at all lets no process hold this one, so the file is no one's. Any other
+                # refusal may come while a holder runs, whose file this run must not delete.
+                with contextlib.suppress(OSError):
+                    fsops.remove(paths.lock_file)
             raise _unlockable(paths, exc) from exc
         except OSError as exc:
             raise os_error(exc, "open the deployment lock") from exc

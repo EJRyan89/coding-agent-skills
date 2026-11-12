@@ -1032,9 +1032,9 @@ class LockTests(DeployerTestCase):
         self.assertEqual(lock.LOCK_POLL_SECONDS, slept[0])
         self.assertTrue((self.skills_dir / "alpha" / "SKILL.md").is_file())
 
-    def test_a_file_system_that_refuses_the_lock_is_named_by_a_deployment_and_a_dry_run(self) -> None:
+    def test_a_file_system_with_no_lock_is_named_by_a_deployment_and_a_dry_run(self) -> None:
         self.fixture()
-        refused = OSError(errno.ENOLCK, "No locks available")
+        refused = OSError(errno.ENOTSUP, "No locks available")
         with mock.patch("file_lock._lock", side_effect=refused):
             for arguments in (("--all",), ("--all", "--dry-run")):
                 with self.subTest(arguments=arguments):
@@ -1052,6 +1052,29 @@ class LockTests(DeployerTestCase):
         self.assertFalse((self.skills_dir / "alpha").exists())
         self.paths.lock_file.unlink()
         self.assertEqual([], list(self.lock_dir.parent.glob(".deploy.lock*")))
+
+    def test_a_lock_refusal_that_may_come_beside_a_holder_removes_no_file(self) -> None:
+        # ENOLCK, a full lock table or a lock service that does not answer, may come while another process holds the
+        # file's lock, so deleting the file would let the next run lock a new one beside that holder.
+        self.fixture()
+        self.hold_the_file_lock()
+        real_remove = fsops.remove
+        removed: list[Path] = []
+
+        def remove(path: Path) -> None:
+            removed.append(path)
+            real_remove(path)
+
+        for number in (errno.ENOLCK, errno.EIO):
+            with self.subTest(errno=errno.errorcode[number]):
+                with (
+                    mock.patch("file_lock._lock", side_effect=OSError(number, "transient")),
+                    mock.patch("deployer.fsops.remove", side_effect=remove),
+                ):
+                    self.deploy_fails("--all", pattern="Could not lock")
+                self.assertNotIn(self.paths.lock_file, removed)
+                self.assertTrue(file_lock.held_elsewhere(self.paths.lock_file))
+        self.assertFalse((self.skills_dir / "alpha").exists())
 
     def test_a_lock_file_that_cannot_be_opened_is_refused_with_the_reason(self) -> None:
         self.fixture()

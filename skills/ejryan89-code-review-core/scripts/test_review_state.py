@@ -587,8 +587,8 @@ class ResourceFileLockTests(unittest.TestCase):
         self.assertFalse(lock.file_lock_path.exists())
         self.assertFalse(file_lock.held_elsewhere(lock.file_lock_path))
 
-    def test_a_file_system_that_refuses_the_file_lock_is_refused_and_leaves_no_file(self) -> None:
-        refused = OSError(errno.ENOLCK, "No locks available")
+    def test_a_file_system_with_no_file_lock_is_refused_and_leaves_no_file(self) -> None:
+        refused = OSError(errno.ENOTSUP, "No locks available")
         with (
             mock.patch.object(file_lock, "_lock", side_effect=refused),
             self.assertRaisesRegex(
@@ -597,6 +597,38 @@ class ResourceFileLockTests(unittest.TestCase):
                 "needs a folder on a file system that supports file locks, which some network and synced folders do "
                 "not$",
             ),
+        ):
+            ResourceLock(self.path).__enter__()
+        self.assertEqual([], list(self.folder.iterdir()))
+
+    def test_a_lock_refusal_that_may_come_beside_a_holder_removes_no_file(self) -> None:
+        # ENOLCK may come while another process holds the file's lock; deleting the file would let the next waiter
+        # lock a new one beside that holder.
+        lock_file = self.folder / "resource.lock.held"
+        handle = file_lock.take(lock_file)
+        assert handle is not None
+        self.addCleanup(file_lock.release, handle, lock_file)
+        for number in (errno.ENOLCK, errno.EIO):
+            with (
+                self.subTest(errno=errno.errorcode[number]),
+                mock.patch.object(file_lock, "_lock", side_effect=OSError(number, "transient")),
+                mock.patch.object(Path, "unlink", side_effect=AssertionError("deleted the lock file")),
+                self.assertRaisesRegex(PersistenceError, "^Cannot lock "),
+            ):
+                ResourceLock(self.path).__enter__()
+            self.assertTrue(file_lock.held_elsewhere(lock_file))
+
+    def test_a_first_make_that_fails_is_refused_and_lets_the_file_lock_go(self) -> None:
+        real_mkdir = Path.mkdir
+
+        def mkdir(path: Path, *arguments: object, **options: object) -> None:
+            if path == self.path:
+                raise PermissionError(errno.EACCES, "Access is denied", str(path))
+            real_mkdir(path, *arguments, **options)  # type: ignore[arg-type]  # the arguments Path.mkdir was given
+
+        with (
+            mock.patch.object(Path, "mkdir", mkdir),
+            self.assertRaisesRegex(PersistenceError, f"^Cannot acquire lock {re.escape(str(self.path))}: "),
         ):
             ResourceLock(self.path).__enter__()
         self.assertEqual([], list(self.folder.iterdir()))

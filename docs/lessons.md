@@ -617,7 +617,7 @@ removed fails validation until its pattern follows it.
   answer, so it refuses what the run would refuse.
 - **Why:** A preview that answers before the read that refuses, such as reporting a pending recovery, promises a run
   that stops, and sends the user to the step that fails.
-- **Use:** `deployer.lock:check_holder`, which judges a lock already there as `deployer.lock:acquire` does and takes nothing,
+- **Use:** `deployer.lock:check_holder`, which judges a lock already there as `deployer.lock:acquire` does and holds nothing past the call,
   `deployer.pipeline:_reject_other_checkout`, which reads the manifest and refuses another checkout, and
   `deployer.journal:check_manifest_beside_runs`, which refuses a run's journal beside no manifest: the deployment's
   checks before it recovers, which `deployer.pipeline:_dry_run` makes first too, in the deployment's order, beginning,

@@ -357,9 +357,11 @@ class ResourceLock(AbstractContextManager["ResourceLock"]):
         try:
             return file_lock.take(self.file_lock_path)
         except file_lock.FileLockError as exc:
-            # No process can hold a lock the file system refuses, so the file this one opened is no one's.
-            with contextlib.suppress(OSError):
-                self.file_lock_path.unlink()
+            if exc.unsupported:
+                # A file system with no lock at all lets no process hold this one, so the file is no one's. Any other
+                # refusal may come while a holder runs, whose file this one must not delete.
+                with contextlib.suppress(OSError):
+                    self.file_lock_path.unlink()
             raise PersistenceError(
                 f"Cannot lock {self.file_lock_path}: {exc.strerror or exc}; a review lock needs a folder on a file "
                 "system that supports file locks, which some network and synced folders do not"

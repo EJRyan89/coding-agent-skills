@@ -101,8 +101,16 @@ class FileLockTests(unittest.TestCase):
         ):
             file_lock.held_elsewhere(self.path)
 
-    def test_every_error_a_held_lock_gives_reads_as_held(self) -> None:
-        for number in sorted(file_lock.HELD_ERRNOS):
+    def test_only_a_refusal_that_says_the_file_system_has_no_lock_is_unsupported(self) -> None:
+        for number in (errno.ENOTSUP, errno.EOPNOTSUPP, errno.ENOSYS):
+            with self.subTest(errno=errno.errorcode[number]):
+                self.assertTrue(file_lock.FileLockError(number, "unsupported").unsupported)
+        for number in (errno.ENOLCK, errno.EIO, errno.EBADF, errno.EINVAL):
+            with self.subTest(errno=errno.errorcode[number]):
+                self.assertFalse(file_lock.FileLockError(number, "transient").unsupported)
+
+    def test_every_error_a_held_or_interrupted_lock_gives_reads_as_not_taken(self) -> None:
+        for number in sorted(file_lock.HELD_ERRNOS | {errno.EINTR}):
             with (
                 self.subTest(errno=errno.errorcode[number]),
                 mock.patch.object(file_lock, "_lock", side_effect=OSError(number, "held")),
