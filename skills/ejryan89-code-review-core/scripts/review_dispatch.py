@@ -53,19 +53,25 @@ from review_run import (
     run_dispatch,
     verify_seal,
 )
-from review_runtime import SOURCE_SNAPSHOT_MANIFEST, RuntimeContractError
+from review_runtime import SOURCE_SNAPSHOT_MANIFEST, RuntimeContractError, _snapshot_files
 from review_specialists import SpecialistError, check, load_materialized_manifest, parse_unified_diff
+
+# The record of what prepare wrote under a reviewer root, which lists every other file there.
+MATERIALIZATION_FILE = "materialization.json"
 
 
 def verify_reviewer(state: RunState) -> None:
     """Fail a run whose reviewer no longer holds what prepare materialized, in every dispatch mode.
 
     Reviewers follow the files under the run's reviewer root, and a specialist's suite profile where the suite keeps
-    it, when they review, while the record names the hashes prepare took. So every file is hashed again: an
-    entrypoint reviewer's by the check the Copilot CLI host runs when it starts, and a specialists reviewer's by the
-    one prepare ran, which covers its suite profiles too. The hashes the record will name must then be the
-    materialization's. A file changed, added, or gone since prepare fails the pull request with nothing recorded,
-    naming the file, as an inline run's seal does. The suite's generic reviewer has no files of its own.
+    it, when they review, while the record names the hashes prepare took. A reviewer's prompt makes every trusted file
+    under the root its instructions, so a file added there reaches it as surely as one changed. So every file is
+    hashed again: an entrypoint reviewer's by the check the Copilot CLI host runs when it starts, and a specialists
+    reviewer's by the one prepare ran, which covers its suite profiles too; and the root must hold only the files its
+    materialization lists. The hashes the record will name must then be the materialization's. A file changed, added,
+    or gone since prepare fails the pull request with nothing recorded, naming the file, as an inline run's seal does.
+    The suite's generic reviewer has no files of its own, and a run prepared before the hashes were recorded, whose
+    record names none, is held to its files alone.
     """
     if state["reviewer_root"] is None:
         return
@@ -73,12 +79,17 @@ def verify_reviewer(state: RunState) -> None:
     selector = state["selector"]
     try:
         if state["kind"] == "entrypoint":
-            materialized_reviewer_entrypoint(root)
+            materialized_reviewer_entrypoint(root)  # which also refuses a file it does not list
         else:
             load_materialized_manifest(root)
-        metadata = read_json(root / "materialization.json")
+        metadata = read_json(root / MATERIALIZATION_FILE)
+        added = sorted(_snapshot_files(root) - {*metadata["source_hashes"], MATERIALIZATION_FILE})
     except (SpecialistError, RuntimeContractError, PersistenceError, OSError) as exc:
         raise PipelineError(f"{selector}: the reviewer is not what prepare materialized: {exc}") from exc
+    if added:
+        raise PipelineError(
+            f"{selector}: the reviewer is not what prepare materialized: files it does not list: {', '.join(added)}"
+        )
     recorded = state["adapter"].get("source_hashes")
     if recorded is None:  # a run prepared before the hashes were recorded, whose record names none
         return
