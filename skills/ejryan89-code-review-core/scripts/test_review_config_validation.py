@@ -41,6 +41,38 @@ def native(path: str) -> str:
 REPO = ("repositories", "owner/repo")
 REVIEWER = (*REPO, "reviewer")
 FIELD = "repositories.owner/repo"
+# A trusted_ref is a full ref under refs/heads/, refs/tags/, or refs/remotes/, written without revision syntax, so
+# no spelling reaches a pull request's ref or a commit through one (#2663). Each spelling the configuration refuses,
+# with its reason.
+NOT_A_FULL_REF = "is not a full ref under refs/heads/, refs/tags/, refs/remotes/"
+REVISION_SYNTAX = "holds revision syntax, such as ~, ^, :, or @{, so it names a commit other than the ref's own"
+TRUSTED_REF_SPELLINGS = [
+    ("refs/pull/1/head", NOT_A_FULL_REF),
+    ("pull/42/head", NOT_A_FULL_REF),
+    ("pull/42/head~1", NOT_A_FULL_REF),
+    ("pull/42/head^", NOT_A_FULL_REF),
+    ("pull/42/merge", NOT_A_FULL_REF),
+    ("Refs/pull/42/head", NOT_A_FULL_REF),
+    ("refs/Heads/main", NOT_A_FULL_REF),
+    ("main", NOT_A_FULL_REF),
+    ("origin/main", NOT_A_FULL_REF),
+    ("HEAD", NOT_A_FULL_REF),
+    ("a" * 40, NOT_A_FULL_REF),
+    (" refs/heads/main", NOT_A_FULL_REF),
+    ("refs/heads/sym~1", REVISION_SYNTAX),
+    ("refs/heads/main^", REVISION_SYNTAX),
+    ("refs/heads/main^{commit}", REVISION_SYNTAX),
+    ("refs/heads/main@{1}", REVISION_SYNTAX),
+    ("refs/heads/main:review/SKILL.md", REVISION_SYNTAX),
+    ("refs/heads/../pull/42/head", REVISION_SYNTAX),
+    ("refs/heads/main ", REVISION_SYNTAX),
+    ("refs/heads/ma\tin", REVISION_SYNTAX),
+    ("refs/heads/m*", REVISION_SYNTAX),
+    ("refs/heads/m?", REVISION_SYNTAX),
+    ("refs/heads/[m]", REVISION_SYNTAX),
+    ("refs/heads/m\\ain", REVISION_SYNTAX),
+    ("refs/heads/m\x7f", REVISION_SYNTAX),
+]
 GENERIC_MESSAGE = (
     f"{FIELD}.reviewer generic scope must use id 'generic' without manifest_path, skill, manifest, trusted_ref, or "
     "reviewer_root"
@@ -147,7 +179,7 @@ def _full_config() -> dict[str, Any]:
                 "reviewer": {
                     "manifest": True,
                     "skill": ".claude/skills/review",
-                    "trusted_ref": " main ",
+                    "trusted_ref": "refs/heads/main",
                     "protocol_version": 1,
                     "id": "repo-review",
                 },
@@ -210,7 +242,7 @@ def _full_expected() -> dict[str, Any]:
                 "reviewer": {
                     "id": "repo-review",
                     "protocol_version": 1,
-                    "trusted_ref": " main ",
+                    "trusted_ref": "refs/heads/main",
                     "scope": "repository",
                     "manifest_path": None,
                     "skill": ".claude/skills/review",
@@ -567,9 +599,9 @@ ACCEPTED: list[tuple[str, Mutation, Mutation]] = [
         _repository_expected(manifest=native("c:\\kept\\m.json")),
     ),
     (
-        "repository reviewer with an untrimmed trusted ref",
-        _chain(REPOSITORY_REVIEWER, _set((*REVIEWER, "trusted_ref"), " refs/heads/main ")),
-        _repository_expected(trusted_ref=" refs/heads/main "),
+        "repository reviewer with a remote-tracking trusted ref",
+        _chain(REPOSITORY_REVIEWER, _set((*REVIEWER, "trusted_ref"), "refs/remotes/origin/main")),
+        _repository_expected(trusted_ref="refs/remotes/origin/main"),
     ),
     (
         "repository reviewer ids at the limits",
@@ -594,11 +626,14 @@ ACCEPTED: list[tuple[str, Mutation, Mutation]] = [
         "committed manifest read from a reviewer root",
         _chain(
             MANIFEST_PATH_REVIEWER,
-            _set((*REVIEWER, "trusted_ref"), "v1"),
+            _set((*REVIEWER, "trusted_ref"), "refs/tags/v1"),
             _set((*REVIEWER, "reviewer_root"), native("D:\\conventions")),
         ),
         _repository_expected(
-            manifest_path="review/manifest.json", skill=None, trusted_ref="v1", reviewer_root=native("D:\\conventions")
+            manifest_path="review/manifest.json",
+            skill=None,
+            trusted_ref="refs/tags/v1",
+            reviewer_root=native("D:\\conventions"),
         ),
     ),
     (
@@ -608,8 +643,8 @@ ACCEPTED: list[tuple[str, Mutation, Mutation]] = [
     ),
     (
         "committed manifest with a trusted ref",
-        _chain(MANIFEST_PATH_REVIEWER, _set((*REVIEWER, "trusted_ref"), "release")),
-        _repository_expected(manifest_path="review/manifest.json", skill=None, trusted_ref="release"),
+        _chain(MANIFEST_PATH_REVIEWER, _set((*REVIEWER, "trusted_ref"), "refs/heads/release")),
+        _repository_expected(manifest_path="review/manifest.json", skill=None, trusted_ref="refs/heads/release"),
     ),
     (
         "committed manifest path with dot and empty segments",
@@ -1098,17 +1133,20 @@ REJECTED: list[Case] = [
         )
         for value in ["", "  ", "\n", 1, False, ["main"]]
     ],
-    (
-        "trusted_ref a pull ref",
-        _chain(REPOSITORY_REVIEWER, _set((*REVIEWER, "trusted_ref"), "refs/pull/1/head")),
-        C,
-        f"{FIELD}.reviewer.trusted_ref cannot be a pull ref",
-    ),
+    *[
+        (
+            f"trusted_ref {value!r}, which {reason}",
+            _chain(REPOSITORY_REVIEWER, _set((*REVIEWER, "trusted_ref"), value)),
+            C,
+            f"{FIELD}.reviewer.trusted_ref {json.dumps(value)} {reason}",
+        )
+        for value, reason in TRUSTED_REF_SPELLINGS
+    ],
     (
         "trusted_ref a pull ref on a generic reviewer",
         _set((*REVIEWER, "trusted_ref"), "refs/pull/"),
         C,
-        f"{FIELD}.reviewer.trusted_ref cannot be a pull ref",
+        f'{FIELD}.reviewer.trusted_ref "refs/pull/" {NOT_A_FULL_REF}',
     ),
     *[
         (
@@ -1127,13 +1165,16 @@ REJECTED: list[Case] = [
             ("skill", "skills/review"),
             ("manifest", True),
             ("manifest", "C:\\manifest.json"),
-            ("trusted_ref", "main"),
+            ("trusted_ref", "refs/heads/main"),
             ("reviewer_root", native("C:\\src\\conventions")),
         ]
     ],
     (
         "generic scope with a reviewer root and its trusted ref",
-        _chain(_set((*REVIEWER, "trusted_ref"), "main"), _set((*REVIEWER, "reviewer_root"), native("C:\\src\\rules"))),
+        _chain(
+            _set((*REVIEWER, "trusted_ref"), "refs/heads/main"),
+            _set((*REVIEWER, "reviewer_root"), native("C:\\src\\rules")),
+        ),
         C,
         GENERIC_MESSAGE,
     ),
@@ -1153,7 +1194,7 @@ REJECTED: list[Case] = [
         "reviewer root a relative path",
         _chain(
             REPOSITORY_REVIEWER,
-            _set((*REVIEWER, "trusted_ref"), "main"),
+            _set((*REVIEWER, "trusted_ref"), "refs/heads/main"),
             _set((*REVIEWER, "reviewer_root"), "conventions"),
         ),
         C,
@@ -1863,7 +1904,13 @@ STAGES: list[Case] = [
         "pull ref",
         _set((*REVIEWER, "trusted_ref"), "refs/pull/1/head"),
         C,
-        f"{FIELD}.reviewer.trusted_ref cannot be a pull ref",
+        f'{FIELD}.reviewer.trusted_ref "refs/pull/1/head" {NOT_A_FULL_REF}',
+    ),
+    (
+        "revision syntax",
+        _set((*REVIEWER, "trusted_ref"), "refs/heads/main~1"),
+        C,
+        f'{FIELD}.reviewer.trusted_ref "refs/heads/main~1" {REVISION_SYNTAX}',
     ),
     (
         "scope",
@@ -2286,6 +2333,8 @@ VALUE_VARIANTS = {
     "unreviewed_suffixes[0] must be a non-empty string of at most 32 characters",
     " twice",
     "verdict_policy.request_changes_for[1] ",
+    NOT_A_FULL_REF,
+    REVISION_SYNTAX,
 }
 
 

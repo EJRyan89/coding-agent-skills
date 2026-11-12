@@ -2331,7 +2331,16 @@ class RepositoryReviewerTests(PrepareFixture):
         self.assertEqual(
             [
                 g("rev-parse", "--verify", "--quiet", "--end-of-options", "<base>^{commit}"),
-                g("rev-parse", "--verify", "refs/heads/reviewers^{commit}"),
+                g("check-ref-format", "refs/heads/reviewers"),
+                g(
+                    "rev-parse",
+                    "--verify",
+                    "--quiet",
+                    "--symbolic-full-name",
+                    "--end-of-options",
+                    "refs/heads/reviewers",
+                ),
+                g("rev-parse", "--verify", "--quiet", "--end-of-options", "refs/heads/reviewers^{commit}"),
                 g("ls-tree", "-z", "<trusted>", "--", "review/specialists.json"),
                 g("cat-file", "blob", blob(BASE_FILES["review/specialists.json"])),
                 g("rev-parse", "--verify", "<base>^{commit}"),
