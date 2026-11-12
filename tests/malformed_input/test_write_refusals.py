@@ -54,11 +54,13 @@ import mcp_handshake
 import memory_audit
 import powershell_commands
 import review_config
+import review_dispatch
 import review_document
 import review_guard
 import review_insights
 import review_io
 import review_pipeline
+import review_run
 import review_runtime
 import review_source
 from dashboard_pipeline import main as dashboard_main
@@ -278,6 +280,12 @@ def _atomic_write_json(folder: Path) -> object:
     return forward(
         raised(review_io.PersistenceError, lambda: review_io.atomic_write_json(path, {})), folder
     ), path.exists()
+
+
+def _reviewer_refusals(folder: Path) -> object:
+    """verify_reviewer on an entrypoint run, whose first check is the one refusing."""
+    state = cast(review_run.RunState, {"selector": "owner/name#1", "kind": "entrypoint", "reviewer_root": str(folder)})
+    return raised(review_run.PipelineError, lambda: review_dispatch.verify_reviewer(state))
 
 
 def _expected_errors_of_the_pipeline(folder: Path) -> object:
@@ -529,6 +537,12 @@ REFUSALS: tuple[Row, ...] = (
         '{"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny", '
         '"permissionDecisionReason": "fixed"}}',
         once=True,
+    ),
+    Row(
+        "review_dispatch.REVIEWER_REFUSALS",
+        "review_dispatch.materialized_reviewer_entrypoint",
+        _reviewer_refusals,
+        f"PipelineError: owner/name#1: the reviewer is not what prepare materialized: {REASON}",
     ),
     Row("review_guard._log_read", DUMPS, _log_read, ""),
     Row(
