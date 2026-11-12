@@ -46,7 +46,7 @@ END = "<!-- code-review-pr-tracker:end -->"
 
 
 def pull_node(number: int, **changes: Any) -> dict[str, Any]:
-    node = {
+    node: dict[str, Any] = {
         "number": number,
         "url": f"https://github.com/example/one/pull/{number}",
         "title": f"Change {number}",
@@ -64,6 +64,10 @@ def pull_node(number: int, **changes: Any) -> dict[str, Any]:
         "reviews": {"nodes": []},
     }
     node.update(changes)
+    if "decidingReviews" not in changes:
+        # The latest review GitHub returns is the latest deciding one when it decided, as the collection reads them.
+        deciding = [{"state": review["state"]} for review in node["reviews"]["nodes"] if review["state"] != "COMMENTED"]
+        node["decidingReviews"] = {"nodes": deciding[-1:]}
     return node
 
 
@@ -340,6 +344,7 @@ class CollectTests(TrackerPipelineFixture):
                 "review_decision": None,
                 "user_review_state": None,
                 "user_review_sha": None,
+                "user_review_decision": None,
                 "reviewed_head_sha": None,
                 "reviewed_incomplete": False,
                 "ai_review": None,
@@ -348,7 +353,10 @@ class CollectTests(TrackerPipelineFixture):
         )
         second = items["example/one#2"]
         self.assertIsNone(second["author_name"], "a blank display name is unset")
-        self.assertEqual(("CHANGES_REQUESTED", USER_REVIEWED), (second["user_review_state"], second["user_review_sha"]))
+        self.assertEqual(
+            ("CHANGES_REQUESTED", USER_REVIEWED, "CHANGES_REQUESTED"),
+            (second["user_review_state"], second["user_review_sha"], second["user_review_decision"]),
+        )
         self.assertEqual(OLD_HEAD, second["reviewed_head_sha"])
         self.assertEqual("CHANGES_REQUESTED", second["ai_review"]["verdict"])
         self.assertEqual({"MUST_FIX": 1, "SHOULD_FIX": 0, "SUGGESTION": 0}, second["ai_review"]["counts"])
@@ -492,6 +500,43 @@ class CollectTests(TrackerPipelineFixture):
         code, out, _ = self.run_main("collect", "--repository", "example/one", "--output", str(self.input))
         self.assertEqual(1, code)
         self.assertIn("user_review_sha is required for APPROVED", out)
+
+    def test_collect_reads_the_user_s_latest_deciding_review_beside_the_latest_review(self) -> None:
+        commented = {"state": "COMMENTED", "commit": {"oid": USER_REVIEWED}}
+        nodes = [
+            pull_node(1, reviews={"nodes": [commented]}, decidingReviews={"nodes": [{"state": "APPROVED"}]}),
+            pull_node(2, reviews={"nodes": [commented]}, decidingReviews={"nodes": []}),
+            pull_node(3),
+        ]
+        self.github.pages["example/one"] = [page(nodes)]
+        code, _, err = self.run_main("collect", "--repository", "example/one", "--output", str(self.input))
+        self.assertEqual(0, code, err)
+        graphql = next(call for call in self.github.calls if call[:3] == ["gh", "api", "graphql"])
+        self.assertIn("states: [APPROVED, CHANGES_REQUESTED, DISMISSED]", " ".join(graphql))
+        items = json.loads(self.input.read_text(encoding="utf-8"))
+        self.assertEqual(
+            [("COMMENTED", "APPROVED"), ("COMMENTED", None), (None, None)],
+            [(value["user_review_state"], value["user_review_decision"]) for value in items],
+        )
+
+    def test_a_deciding_review_that_is_not_the_latest_deciding_one_fails_its_repository(self) -> None:
+        approved = pull_node(
+            1,
+            reviews={"nodes": [{"state": "APPROVED", "commit": {"oid": HEAD}}]},
+            decidingReviews={"nodes": [{"state": "CHANGES_REQUESTED"}]},
+        )
+        self.github.pages["example/one"] = [page([approved])]
+        code, out, _ = self.run_main("collect", "--repository", "example/one", "--output", str(self.input))
+        self.assertEqual(1, code)
+        self.assertIn("user_review_decision must be APPROVED", out)
+
+    def test_a_pull_request_without_its_deciding_reviews_fails_its_repository(self) -> None:
+        node = pull_node(1)
+        del node["decidingReviews"]
+        self.github.pages["example/one"] = [page([node])]
+        code, out, _ = self.run_main("collect", "--repository", "example/one", "--output", str(self.input))
+        self.assertEqual(1, code)
+        self.assertIn("REPOSITORY_FAILED example/one example/one pull-request data has an unexpected shape", out)
 
     def test_rate_limit_stops_the_collection(self) -> None:
         for limited in ("example/one", "example/two"):  # first or later repository; both are collected at once
@@ -661,11 +706,16 @@ class UpdateTests(TrackerPipelineFixture):
         self.assertTrue(content.startswith(f"# Mine\n{START}\n"))
         self.assertTrue(content.endswith(f"{END}\nNotes stay.\n"))
         self.assertNotIn("old rows", content)
-        self.assertIn("[#1 Change 1](https://github.com/example/one/pull/1)", content, "home repository is short")
+        self.assertIn("| example/one | [#1 Change 1](https://github.com/example/one/pull/1) | Open |", content)
         self.assertIn("### Awaiting Response (1)", content)
-        self.assertIn("| Robert Tables | [#2 Change 2]", content, "configured name replaces a blank profile name")
+        self.assertIn(
+            "| Robert Tables | example/one | [#2 Change 2](https://github.com/example/one/pull/2) | "
+            "Changes Requested |",
+            content,
+            "configured name replaces a blank profile name",
+        )
         self.assertIn("### On Hold (1)", content)
-        self.assertIn("[two#5 Change 5]", content)
+        self.assertIn("| example/two | [#5 Change 5](https://github.com/example/two/pull/5) | Open |", content)
         self.assertIn(f"vscode://file/{self.config_path.as_posix().replace(' ', '%20')}", content)
         self.assertIn("### My PRs (1)", content)
         missing = {"state": "missing", "reviewed_head_sha": None}
