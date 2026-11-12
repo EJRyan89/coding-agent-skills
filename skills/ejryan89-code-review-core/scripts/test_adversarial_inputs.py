@@ -35,6 +35,7 @@ from xml.parsers import expat
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
+import executable_locator
 import review_batches
 import review_canary
 import review_dispatch
@@ -43,7 +44,6 @@ import review_guard as guard
 import review_hosts
 import review_io
 import review_pipeline as rp
-import review_process
 import review_run
 import review_runtime
 import review_source
@@ -2287,8 +2287,8 @@ class CopilotCommandLineTests(AdversarialFixture):
                         "or the GitHub release",
                         str(refused.exception),
                     )
-            self.assertTrue(review_process.shell_script("C:/tools/copilot.ps1"))
-            self.assertFalse(review_process.shell_script("C:/tools/copilot.exe"))
+            self.assertTrue(executable_locator.shell_script("C:/tools/copilot.ps1"))
+            self.assertFalse(executable_locator.shell_script("C:/tools/copilot.exe"))
 
             winget = local / "Microsoft" / "WinGet" / "Links" / "copilot.exe"
             winget.parent.mkdir(parents=True)
@@ -2341,7 +2341,7 @@ class CopilotCommandLineTests(AdversarialFixture):
             with mock.patch.dict(os.environ, {"PATH": str(shims)}):
                 self.assertEqual(str(shim), review_hosts.find_copilot())
             for name in ("copilot.cmd", "copilot.bat", "copilot.ps1", "copilot"):
-                self.assertFalse(review_process.shell_script(f"/tools/{name}"), name)
+                self.assertFalse(executable_locator.shell_script(f"/tools/{name}"), name)
 
         def test_the_lookup_takes_the_first_program_on_path_and_passes_over_a_file_it_cannot_run(self) -> None:
             first = self.root / "first folder"
