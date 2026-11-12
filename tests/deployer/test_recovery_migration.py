@@ -163,6 +163,22 @@ class RecoveryTests(RecoveryTestCase):
         self.assertNotIn("corrupted", self.skill_text("alpha"))
         self.assertFalse((self.skills_dir / "alpha.deploying-bak").exists())
 
+    def test_a_rollback_that_restored_the_replaced_copy_finishes_the_installed_copys_deletion_leftover(self) -> None:
+        # An earlier rollback's deletion of the installed copy failed partway and left part of it under the deletion
+        # name, and that rollback then put the replaced copy back. The next rollback finds the replaced copy at alpha
+        # with no backup beside it, and finishes the deletion the earlier one left.
+        self.deployed(("alpha", "Alpha content"))
+        original = hashing.hash_path(self.skills_dir / "alpha")
+        leftover = self.skills_dir / deletion_name("alpha")
+        self.write(leftover / "notes.md", "part of the copy the run installed\n")
+        run = "20260101-000000-restored"
+        self.write_journal(run, backup_entry("alpha", original), install_entry("alpha", ZERO_HASH))
+        result = self.deploy_ok("--all")
+        self.assertIn(f"Recovering uncommitted run {run} (rolling back)...\n  Recovery complete.", result.output)
+        self.assertNotIn("WARNING", result.output)
+        self.assertFalse(leftover.exists())
+        self.assertIn("Alpha content", self.skill_text("alpha"))
+
     def test_a_rollback_killed_partway_through_deleting_the_installed_copy_is_finished_by_the_next(self) -> None:
         # The rollback deletes what the run installed. A kill partway through that deletion leaves part of the copy,
         # which matches neither hash where the copy stood; under its deletion name the next rollback finishes it.
