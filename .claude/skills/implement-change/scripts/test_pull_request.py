@@ -4,13 +4,11 @@ import argparse
 import contextlib
 import io
 import os
-import shutil
-import stat
 import subprocess
 import sys
 import tempfile
 import unittest
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from functools import partial
 from pathlib import Path
 from types import MappingProxyType
@@ -20,9 +18,12 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[4] / "skills" / "ejryan89-skill-core" / "scripts"))
+# The git fixture template and the folder removal the repository-skill and tools suites share.
+sys.path.insert(0, str(Path(__file__).resolve().parents[4] / "tests" / "tools"))
 
 import pull_request
 import whole_number
+from fixture_template import FixtureTemplate, remove_tree, repository_shape
 from git_client import GitClient, GitError, GitResult, subprocess_runner
 from github_client import CommandResult, GitHubClient
 
@@ -62,17 +63,6 @@ FILLED = (
 AWKWARD_TITLE = (
     'fix(skills): grant each skill\'s scripts by name, keep `$HOME` and "$(x)", and \u2018quote\u2019 \u201atwice\u201b'
 )
-
-
-def remove_tree(path: Path) -> None:
-    def writable(function: Callable[..., object], target: str, *_: object) -> None:
-        Path(target).chmod(stat.S_IWRITE)
-        function(target)
-
-    if sys.version_info >= (3, 12):
-        shutil.rmtree(path, onexc=writable)
-    else:
-        shutil.rmtree(path, onerror=writable)
 
 
 def git(directory: Path, *arguments: str) -> str:
@@ -289,6 +279,46 @@ class TemplateLookupTests(unittest.TestCase):
         )
 
 
+def build_repository(root: Path) -> None:
+    """A bare origin whose main holds the template, and its clone `work tree` on a branch with one commit of its own."""
+    origin = root / "origin.git"
+    git(root, "init", "--quiet", "--bare", str(origin))
+    clone = root / "work tree"
+    git(root, "clone", "--quiet", str(origin), str(clone))
+    (clone / ".github").mkdir()
+    (clone / ".github" / "pull_request_template.md").write_text(TEMPLATE, encoding="utf-8")
+    git(clone, "add", "--all")
+    git(clone, "commit", "--quiet", "-m", "template")
+    git(clone, "push", "--quiet", "origin", "main")
+    git(clone, "switch", "--quiet", "-c", "fix/title")
+    (clone / "tool.py").write_text("print('title')\n", encoding="utf-8")
+    git(clone, "add", "--all")
+    git(clone, "commit", "--quiet", "-m", "change")
+
+
+# Building the origin and its clone starts nine git processes, so each process builds them once and each test gets a
+# copy, whose clone names the copy's own origin.
+REPOSITORY_TEMPLATE = FixtureTemplate("implement-change", build_repository)
+
+
+class FixtureTemplateTests(unittest.TestCase):
+    git_config = GIT_CONFIG
+
+    def test_a_copy_matches_a_fresh_build_and_a_push_from_it_reaches_only_its_own_origin(self) -> None:
+        fresh, copied = (Path(tempfile.mkdtemp(prefix="implement-change-template-")).resolve() for _ in range(2))
+        self.addCleanup(remove_tree, fresh)
+        self.addCleanup(remove_tree, copied)
+        build_repository(fresh)
+        REPOSITORY_TEMPLATE.copy(copied)
+        repositories = ["origin.git", "work tree"]
+        self.assertEqual(repository_shape(fresh, repositories), repository_shape(copied, repositories))
+        template_main = git(REPOSITORY_TEMPLATE.root / "origin.git", "rev-parse", "main")
+        git(copied / "work tree", "push", "--quiet", "origin", "fix/title:main")
+        pushed = git(copied / "work tree", "rev-parse", "HEAD")
+        self.assertEqual(pushed, git(copied / "origin.git", "rev-parse", "main"))
+        self.assertEqual(template_main, git(REPOSITORY_TEMPLATE.root / "origin.git", "rev-parse", "main"))
+
+
 class Repository(unittest.TestCase):
     """A clone of a bare origin whose main holds the template, on a branch with one commit of its own."""
 
@@ -297,17 +327,8 @@ class Repository(unittest.TestCase):
     def setUp(self) -> None:
         self.temporary = Path(tempfile.mkdtemp(prefix="implement-change-test-")).resolve()
         self.addCleanup(remove_tree, self.temporary)
-        origin = self.temporary / "origin.git"
-        git(self.temporary, "init", "--quiet", "--bare", str(origin))
+        REPOSITORY_TEMPLATE.copy(self.temporary)
         self.root = self.temporary / "work tree"
-        git(self.temporary, "clone", "--quiet", str(origin), str(self.root))
-        (self.root / ".github").mkdir()
-        (self.root / ".github" / "pull_request_template.md").write_text(TEMPLATE, encoding="utf-8")
-        self.commit("template")
-        git(self.root, "push", "--quiet", "origin", "main")
-        git(self.root, "switch", "--quiet", "-c", "fix/title")
-        (self.root / "tool.py").write_text("print('title')\n", encoding="utf-8")
-        self.commit("change")
         self.files = self.temporary / "files"
         self.files.mkdir()
         self.title = self.files / "title.txt"

@@ -16,6 +16,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts"))
 
 import git_client
+from fixture_template import FixtureTemplate, remove_tree, repository_shape
 
 from tools import release_notes
 
@@ -137,40 +138,79 @@ class BodyEntriesTests(unittest.TestCase):
         self.assertEqual([], release_notes.body_entries(body.replace("## Upgrade note \t", " ## Upgrade note")))
 
 
+def fixture_git(root: Path, *arguments: str) -> str:
+    return subprocess.run(
+        ["git", "-C", str(root), *arguments], check=True, capture_output=True, text=True, encoding="utf-8"
+    ).stdout
+
+
+def fixture_commit(root: Path, subject: str, body: str = "", notes: str | None = None, change: str = "a") -> None:
+    """Commit a change to `change`.txt, and `notes` as the upgrade notes when given, with the message read from a file
+    beside the repository."""
+    if notes is not None:
+        (root / "docs").mkdir(exist_ok=True)
+        (root / NOTES).write_bytes(notes.encode("utf-8"))
+    (root / f"{change}.txt").write_text(f"{subject}\n", encoding="utf-8")
+    fixture_git(root, "add", ".")
+    message = root.parent / "message.txt"
+    message.write_bytes(f"{subject}\n\n{body}".encode())
+    fixture_git(root, "commit", "-q", "-F", str(message))
+
+
+def build_release(root: Path) -> None:
+    """A repository on main whose one commit, tagged v0.1.0, released one upgrade-note entry."""
+    fixture_git(root, "init", "-q", "-b", "main")
+    (root / "docs").mkdir()
+    (root / "docs" / "releasing.md").write_text(RELEASING, encoding="utf-8")
+    fixture_commit(root, "Release v0.1.0 (#1)", notes=f"{INTRO}\n## Unreleased\n\n{RELEASED}")
+    fixture_git(root, "tag", "v0.1.0")
+
+
+def build_history(root: Path) -> None:
+    """The release, then a change written by hand under Unreleased, one from a body, one that asks nothing, and a
+    hand edit."""
+    RELEASE.copy(root)
+    fixture_commit(root, "Fix a thing (#2)", notes=f"{INTRO}\n## Unreleased\n\n{HAND_ENTRY}\n{RELEASED}")
+    fixture_commit(root, "Add a skill (#3)", body=BODY)
+    fixture_commit(root, "Tidy the documents (#4)", body="## Upgrade note\n\nNone\n")
+    edited = HAND_ENTRY.replace("A fix.", "A fix, worded again.")
+    fixture_commit(root, "Reword a note (#5)", notes=f"{INTRO}\n## Unreleased\n\n{edited}\n{RELEASED}")
+
+
+# Building the repositories starts a dozen git processes, so each process builds each once and each test gets a copy.
+RELEASE = FixtureTemplate("repository with spaces", build_release)
+HISTORY = FixtureTemplate("repository with spaces", build_history)
+
+
+class FixtureTemplateTests(unittest.TestCase):
+    def test_each_copied_repository_matches_a_freshly_built_one(self) -> None:
+        for template, build in ((RELEASE, build_release), (HISTORY, build_history)):
+            with self.subTest(build=build.__name__):
+                fresh, copied = (Path(tempfile.mkdtemp(prefix="release-notes-template-")).resolve() for _ in "ab")
+                self.addCleanup(remove_tree, fresh)
+                self.addCleanup(remove_tree, copied)
+                (fresh / "repository").mkdir()
+                build(fresh / "repository")
+                template.copy(copied / "repository")
+                self.assertEqual(repository_shape(fresh, ["repository"]), repository_shape(copied, ["repository"]))
+
+
 class FixtureRepository(unittest.TestCase):
     def setUp(self) -> None:
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
-        self.root = Path(temporary.name) / "repository with spaces"
-        self.root.mkdir()
-        self.git("init", "-q", "-b", "main")
-        (self.root / "docs").mkdir()
-        (self.root / "docs" / "releasing.md").write_text(RELEASING, encoding="utf-8")
-        self.commit("Release v0.1.0 (#1)", notes=f"{INTRO}\n## Unreleased\n\n{RELEASED}")
-        self.git("tag", "v0.1.0")
+        self.root = RELEASE.copy(Path(temporary.name) / "repository with spaces")
 
     def git(self, *arguments: str) -> str:
-        return subprocess.run(
-            ["git", "-C", str(self.root), *arguments], check=True, capture_output=True, text=True, encoding="utf-8"
-        ).stdout
+        return fixture_git(self.root, *arguments)
 
     def commit(self, subject: str, body: str = "", notes: str | None = None, change: str = "a") -> None:
-        if notes is not None:
-            (self.root / "docs").mkdir(exist_ok=True)
-            (self.root / NOTES).write_bytes(notes.encode("utf-8"))
-        (self.root / f"{change}.txt").write_text(f"{subject}\n", encoding="utf-8")
-        self.git("add", ".")
-        message = self.root.parent / "message.txt"
-        message.write_bytes(f"{subject}\n\n{body}".encode())
-        self.git("commit", "-q", "-F", str(message))
+        fixture_commit(self.root, subject, body, notes, change)
 
     def history(self) -> None:
-        """A change written by hand under Unreleased, one from a body, one that asks nothing, then a hand edit."""
-        self.commit("Fix a thing (#2)", notes=f"{INTRO}\n## Unreleased\n\n{HAND_ENTRY}\n{RELEASED}")
-        self.commit("Add a skill (#3)", body=BODY)
-        self.commit("Tidy the documents (#4)", body="## Upgrade note\n\nNone\n")
-        edited = HAND_ENTRY.replace("A fix.", "A fix, worded again.")
-        self.commit("Reword a note (#5)", notes=f"{INTRO}\n## Unreleased\n\n{edited}\n{RELEASED}")
+        """Replace the release with a copy of the history after it."""
+        remove_tree(self.root)
+        HISTORY.copy(self.root)
 
     def run_main(self, *arguments: str) -> tuple[int, str, str]:
         out, err = io.StringIO(), io.StringIO()
