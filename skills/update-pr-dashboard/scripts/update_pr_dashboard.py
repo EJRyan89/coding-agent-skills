@@ -65,18 +65,28 @@ REQUIRED_FIELDS = {
 }
 USER_REVIEW_STATES = {None, "APPROVED", "CHANGES_REQUESTED", "COMMENTED", "DISMISSED"}
 ACTIVE_REVIEW_STATES = {"APPROVED", "CHANGES_REQUESTED", "COMMENTED"}
+# The states of the user's latest deciding review: one that decided, or whose decision was dismissed. A later
+# comment-only review leaves it standing.
+DECIDING_REVIEW_STATES = ("APPROVED", "CHANGES_REQUESTED", "DISMISSED")
+USER_REVIEW_DECISIONS = {None, *DECIDING_REVIEW_STATES}
 SECTION_TO_REVIEW = DASHBOARD_SECTION_TO_REVIEW
 SECTION_AWAITING = DASHBOARD_SECTION_AWAITING
 SECTION_MINE = DASHBOARD_SECTION_MINE
 SECTION_DRAFTS = DASHBOARD_SECTION_DRAFTS
-OPTIONAL_FIELDS = {"reviewed_incomplete", "author_name", "review_decision", "ai_review"}
+OPTIONAL_FIELDS = {"reviewed_incomplete", "author_name", "review_decision", "user_review_decision", "ai_review"}
 LEDGER_KEYS = {"ledger", "flagged", "since_review"}
 REVIEW_DECISIONS = {None, "APPROVED", "CHANGES_REQUESTED", "REVIEW_REQUIRED"}
 AI_VERDICTS = {"APPROVED": "Approved", "CHANGES_REQUESTED": "Changes Requested", "INCOMPLETE": "Incomplete"}
+# A row's Status: a decision on the pull request, GitHub's for one the user authored and the user's own for any other.
+DECISION_STATUSES = {"APPROVED": "Approved", "CHANGES_REQUESTED": "Changes Requested"}
+STATUS_DRAFT = "Draft"
+STATUS_OPEN = "Open"
+STATUS_COMMENTED = "Reviewed with Comments"
 SECTION_SUMMARIES = {
     SECTION_TO_REVIEW: "PRs you are asked to review or are reviewing where action is needed — new PR, "
-    "or the author has responded to your feedback.",
-    SECTION_AWAITING: "PRs where you have left a review; waiting for the author to respond or push changes.",
+    "or the author has responded to your feedback. Status reflects your own latest review.",
+    SECTION_AWAITING: "PRs where you have left a review; waiting for the author to respond or push changes. Status "
+    "reflects your own latest review.",
     SECTION_DRAFTS: "Draft PRs you are asked to review or are reviewing; no action needed until the author "
     "marks them ready.",
     SECTION_MINE: "PRs you authored. Status reflects GitHub's review decision on the PR.",
@@ -195,6 +205,9 @@ def _validate_presentation(item: dict[str, Any], path: str) -> None:
     key = f"{item.get('repository')}#{item.get('number')}"
     READ.optional(READ.string, item["author_name"], f"{path}.author_name")
     READ.optional(READ.one_of, item["review_decision"], f"{path}.review_decision", REVIEW_DECISIONS - {None})
+    READ.optional(
+        READ.one_of, item["user_review_decision"], f"{path}.user_review_decision", USER_REVIEW_DECISIONS - {None}
+    )
     # An input collected before reviews kept a finding ledger has no ledger key, and one collected before the tracker
     # read flags and the user's last review has no flagged or since_review keys.
     path = f"{path}.ai_review"
@@ -231,9 +244,19 @@ def validate_items(value: Any) -> list[dict[str, Any]]:
 
 
 def _with_defaults(item: Any, path: str) -> dict[str, Any]:
-    """The item with its optional fields defaulted ahead of its own, once its fields match the contract."""
+    """The item with its optional fields defaulted ahead of its own, once its fields match the contract. An input
+    collected before the user's deciding review was read has no `user_review_decision`, which is then the latest
+    review's state when that review decided, as it must be then, and null otherwise."""
     READ.json_object(item, path, required=REQUIRED_FIELDS, optional=OPTIONAL_FIELDS)
-    return {"reviewed_incomplete": False, "author_name": None, "review_decision": None, "ai_review": None, **item}
+    latest = item["user_review_state"]
+    return {
+        "reviewed_incomplete": False,
+        "author_name": None,
+        "review_decision": None,
+        "user_review_decision": latest if latest in DECIDING_REVIEW_STATES else None,
+        "ai_review": None,
+        **item,
+    }
 
 
 def _validate_incomplete(item: dict[str, Any], path: str) -> None:
@@ -269,6 +292,12 @@ def _validate_review_state(item: dict[str, Any], key: str, path: str) -> None:
         raise TrackerError(f"Tracker item {key}.user_review_sha requires a review state")
     if review_state in ACTIVE_REVIEW_STATES and item["user_review_sha"] is None:
         raise TrackerError(f"Tracker item {key}.user_review_sha is required for {review_state}")
+    # The latest review is the latest deciding one when it decided, and there is no deciding review without a review.
+    decision = item["user_review_decision"]
+    if review_state is None and decision is not None:
+        raise TrackerError(f"Tracker item {key}.user_review_decision requires a review state")
+    if review_state in DECIDING_REVIEW_STATES and decision != review_state:
+        raise TrackerError(f"Tracker item {key}.user_review_decision must be {review_state}, its latest review's")
 
 
 INT_PARSE_ALLOWED = {
@@ -577,23 +606,36 @@ def _file_url(path: str) -> str:
     return f"vscode://file/{quote(path.replace(chr(92), '/'), safe='/:')}"
 
 
-def _pull_link(row: Row, home_repositories: set[str]) -> str:
-    """The pull request's link, its title literal text whatever the author wrote, so it cannot add a marker, open a
-    comment, or add a cell; a URL that is not absolute HTTPS leaves the text unlinked."""
-    repository = row.item["repository"]
-    prefix = "" if repository in home_repositories else repository.split("/", 1)[1]
-    text = f"{prefix}#{row.item['number']} {markdown_line(row.item['title'])}"
+def _pull_cells(row: Row) -> list[str]:
+    """The Repository and PR cells: the repository's identity, and the pull request's number and title linking to it.
+    Both are literal text whatever the repository is named or the author wrote, so neither can add a marker, open a
+    comment, or add a cell; a URL that is not absolute HTTPS leaves the number and title unlinked. The owner and name
+    are literal on each side of the slash, which stays readable since it is never Markdown on its own."""
+    repository = "/".join(markdown_line(part) for part in row.item["repository"].split("/"))
+    text = f"#{row.item['number']} {markdown_line(row.item['title'])}"
     url = navigation_url(row.item["url"])
-    return f"[{text}]({url})" if url else text
+    return [repository, f"[{text}]({url})" if url else text]
 
 
-def _my_status(item: dict[str, Any]) -> str:
+def _status(row: Row) -> str:
+    """The row's Status: Draft, else the decision standing on the pull request, which is GitHub's review decision on
+    one the user authored and the user's latest deciding review on any other. A user whose reviews decided nothing,
+    or whose decision was dismissed, reviewed it with comments; with no review it is Open."""
+    item = row.item
     if item["draft"]:
-        return "Draft"
-    return {"APPROVED": "Approved", "CHANGES_REQUESTED": "Changes Requested"}.get(item["review_decision"], "Open")
+        return STATUS_DRAFT
+    if row.relationship == "authored":
+        return DECISION_STATUSES.get(item["review_decision"], STATUS_OPEN)
+    if item["user_review_decision"] in DECISION_STATUSES:
+        return DECISION_STATUSES[item["user_review_decision"]]
+    return STATUS_OPEN if item["user_review_state"] is None else STATUS_COMMENTED
 
 
-def _section_lines(section: str, members: list[Row], summary: str, home: set[str]) -> list[str]:
+def _table_row(cells: list[str]) -> str:
+    return "| " + " | ".join(cells) + " |"
+
+
+def _section_lines(section: str, members: list[Row], summary: str) -> list[str]:
     lines = [
         f"### {markdown_line(section)} ({len(members)})",
         "",
@@ -601,12 +643,13 @@ def _section_lines(section: str, members: list[Row], summary: str, home: set[str
         f"<summary>{summary}</summary>",
         "",
     ]
+    columns = ["Repository", "PR", "Status", "AI Result", "Findings", "AI Review"]
     if section == SECTION_MINE:
-        lines += ["| PR | Status | AI Result | Findings | AI Review |", "| :--- | :--- | :--- | :--- | :--- |"]
+        lines += [_table_row(columns), _table_row([":---"] * len(columns))]
         for row in sorted(members, key=lambda r: (not r.item["draft"], r.item["repository"], r.item["number"])):
-            lines.append("| " + " | ".join([_pull_link(row, home), _my_status(row.item), *_ai_cells(row)]) + " |")
+            lines.append(_table_row([*_pull_cells(row), _status(row), *_ai_cells(row)]))
     else:
-        lines += ["| Requestor | PR | AI Result | Findings | AI Review |", "| :--- | :--- | :--- | :--- | :--- |"]
+        lines += [_table_row(["Requestor", *columns]), _table_row([":---"] * (len(columns) + 1))]
 
         def name(r: Row) -> str:
             author: str = r.item["author_name"] or r.item["author"]
@@ -616,7 +659,7 @@ def _section_lines(section: str, members: list[Row], summary: str, home: set[str
         for row in sorted(members, key=lambda r: (name(r).casefold(), r.item["repository"], r.item["number"])):
             requestor = markdown_line(name(row)) if name(row).casefold() != previous else ""
             previous = name(row).casefold()
-            lines.append(f"| {requestor} | " + " | ".join([_pull_link(row, home), *_ai_cells(row)]) + " |")
+            lines.append(_table_row([requestor, *_pull_cells(row), _status(row), *_ai_cells(row)]))
     return [*lines, "", "</details>", ""]
 
 
@@ -625,13 +668,11 @@ def render(
     *,
     start_marker: str = START_MARKER,
     end_marker: str = END_MARKER,
-    home_repositories: set[str] | None = None,
     config_path: str | None = None,
 ) -> str:
     """Render the owned section: collapsible sections, rows grouped by requestor, AI verdict and findings. Pinned rows
     share a section when their statuses have one `dashboard_status_key`, that is when their headings are the same
     ignoring case, headed as `dashboard_status_heading` writes the first of them in row order."""
-    home = {repository.lower() for repository in (home_repositories or set())}
     lines = [start_marker, ""]
     if rows:
         lines.extend([FINDINGS_LEGEND, ""])
@@ -659,7 +700,7 @@ def render(
         _computed_section(SECTION_MINE, rows),
     ]:
         if members:
-            lines += _section_lines(heading, members, summary, home)
+            lines += _section_lines(heading, members, summary)
     if not rows:
         lines.extend(["_No matching open pull requests_", ""])
     lines.append(end_marker)
@@ -717,7 +758,6 @@ def update_dashboard_rows(
     overrides: dict[str, str] | None = None,
     author_names: dict[str, str] | None = None,
     removals: set[str] | list[str] | None = None,
-    home_repositories: set[str] | list[str] | None = None,
     config_path: str | None = None,
     record: Path | None = None,
 ) -> list[Row]:
@@ -761,7 +801,6 @@ def update_dashboard_rows(
         rows,
         start_marker=start_marker,
         end_marker=end_marker,
-        home_repositories=set(home_repositories or []),
         config_path=config_path,
     )
     # The GitHub calls above take seconds; read the dashboard again so edits saved meanwhile outside the owned

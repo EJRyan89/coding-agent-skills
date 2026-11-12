@@ -161,31 +161,45 @@ class LayoutTests(unittest.TestCase):
         mine_open.update(author="reviewer", review_decision="APPROVED")
         draft = item(number=6)
         draft.update(author="carol", draft=True)
-        content, _ = run([first, second, third, mine_draft, mine_open, draft], home_repositories={"owner/repo"})
+        content, _ = run([first, second, third, mine_draft, mine_open, draft])
         self.assertIn("### To Review (3)\n\n<details open>\n<summary>", content)
+        header = "| Requestor | Repository | PR | Status | AI Result | Findings | AI Review |\n" + "| :--- " * 7 + "|"
+        self.assertEqual(2, content.count(header), "the To Review and Drafts tables")
         self.assertIn(
-            "| Requestor | PR | AI Result | Findings | AI Review |\n| :--- | :--- | :--- | :--- | :--- |", content
-        )
-        self.assertIn(
-            "| Ada Lovelace | [#3 Improve &#124; "
-            "behavior](https://github.com/owner/repo/pull/3) | Changes Requested | 1M 2H open | "
+            "| Ada Lovelace | owner/repo | [#3 Improve &#124; "
+            "behavior](https://github.com/owner/repo/pull/3) | Open | Changes Requested | 1M 2H open | "
             "[AI Review](vscode://file/C:/Reviews/a%20b/review.md) (stale) |",
             content,
         )
         self.assertIn(
-            "|  | [#7 Improve &#124; behavior](https://github.com/owner/repo/pull/7) | Approved | 2S open | "
-            "[AI Review](vscode://file/C:/Reviews/a%20b/review.md) |",
+            "|  | owner/repo | [#7 Improve &#124; behavior](https://github.com/owner/repo/pull/7) | Open | Approved | "
+            "2S open | [AI Review](vscode://file/C:/Reviews/a%20b/review.md) |",
             content,
         )
         self.assertIn(
-            "| bob | [other#5 Improve &#124; behavior](https://github.com/owner/other/pull/5) | - | - | - |", content
+            "| bob | owner/other | [#5 Improve &#124; behavior](https://github.com/owner/other/pull/5) | Open | - | - "
+            "| - |",
+            content,
         )
         self.assertIn("### Drafts (1)\n\n<details>\n", content)
+        self.assertIn(
+            "| carol | owner/repo | [#6 Improve &#124; behavior](https://github.com/owner/repo/pull/6) | Draft | - | - "
+            "| (stale) |",
+            content,
+        )
         mine = content[content.index("### My PRs (2)") :]
-        self.assertIn("| PR | Status | AI Result | Findings | AI Review |", mine)
+        self.assertIn("| Repository | PR | Status | AI Result | Findings | AI Review |\n" + "| :--- " * 6 + "|", mine)
         self.assertLess(mine.index("#9 "), mine.index("#8 "))
-        self.assertIn("| Draft | Incomplete | none open | - |", mine)
-        self.assertIn("| Approved | - | - | (stale) |", mine)
+        self.assertIn(
+            "| owner/repo | [#9 Improve &#124; behavior](https://github.com/owner/repo/pull/9) | Draft | Incomplete | "
+            "none open | - |",
+            mine,
+        )
+        self.assertIn(
+            "| owner/repo | [#8 Improve &#124; behavior](https://github.com/owner/repo/pull/8) | Approved | - | - | "
+            "(stale) |",
+            mine,
+        )
         self.assertNotIn("Awaiting Response", content)
         self.assertLess(content.index("### Drafts"), content.index("### My PRs"))
 
@@ -234,7 +248,6 @@ class LayoutTests(unittest.TestCase):
         bare.update(author="carol")
         content, _ = run(
             [profiled, unnamed, kept, bare],
-            home_repositories={"owner/repo"},
             author_names={"ada": "Ada Lovelace", "ZED": "Aaron Zed"},
         )
         requestors = [
@@ -519,9 +532,9 @@ class TrackerTests(unittest.TestCase):
         )
         content, _ = run([awaiting_but_stale, merged_only, missing], detector)
         self.assertEqual(["owner/repo#1"], sections(content)["Awaiting Response"])
-        self.assertRegex(content, r"owner/repo/pull/1\) \| - \| - \| \(stale\) \|")
-        self.assertRegex(content, r"owner/repo/pull/2\) \| - \| - \| - \|")
-        self.assertRegex(content, r"owner/repo/pull/3\) \| - \| - \| - \|")
+        self.assertRegex(content, r"owner/repo/pull/1\) \| Changes Requested \| - \| - \| \(stale\) \|")
+        self.assertRegex(content, r"owner/repo/pull/2\) \| Open \| - \| - \| - \|")
+        self.assertRegex(content, r"owner/repo/pull/3\) \| Open \| - \| - \| - \|")
 
     def test_explicit_row_removal_is_one_run_and_does_not_create_override(self) -> None:
         content, candidates = run([item()], removals=["OWNER/REPO#1"])
@@ -992,7 +1005,7 @@ class PullRequestTextTests(unittest.TestCase):
         rows = [line for line in owned.split("\n") if line.startswith("| ") and "/pull/" in line]
         self.assertEqual(2, len(rows), owned)
         for row in rows:
-            self.assertEqual(6, row.count("|"), row)
+            self.assertEqual(8, row.count("|"), row)
         self.assertNotIn("<!--", owned)
         self.assertNotIn("-->", owned)
         self.assertNotIn("\\", owned)
@@ -1030,13 +1043,13 @@ class PullRequestTextTests(unittest.TestCase):
         first = item(number=1)
         first["title"] = "Fix <!-- a | b \\| c\u2028d"
         content, _ = run([first])
-        self.assertIn("[repo#1 Fix &lt;&#33;&#45;&#45; a &#124; b &#92;&#124; c d](", content)
+        self.assertIn("| owner/repo | [#1 Fix &lt;&#33;&#45;&#45; a &#124; b &#92;&#124; c d](", content)
 
     def test_a_link_destination_that_is_not_absolute_https_leaves_the_title_unlinked(self) -> None:
         first = item(number=1)
         first["url"] = "javascript:alert(1) --> |"
         content, _ = run([first])
-        self.assertIn("| someone | repo#1 Improve &#124; behavior | - | - | (stale) |", content)
+        self.assertIn("| someone | owner/repo | #1 Improve &#124; behavior | Open | - | - | (stale) |", content)
         self.assertNotIn("javascript", content)
 
     def test_a_link_destination_s_delimiters_are_percent_encoded(self) -> None:
@@ -1044,6 +1057,219 @@ class PullRequestTextTests(unittest.TestCase):
         first["url"] = "https://github.com/owner/repo/pull/1?a=(b)|<c>"
         content, _ = run([first])
         self.assertIn("](https://github.com/owner/repo/pull/1?a=%28b%29%7C%3Cc%3E) |", content)
+
+    def test_a_repository_name_markdown_reads_specially_is_literal_in_both_tables(self) -> None:
+        repository = "owner/_hidden-repo_.v2"
+        theirs = item(repository, 1)
+        mine = item(repository, 2) | {"author": "reviewer"}
+        content, _ = run([theirs, mine])
+        literal = "owner/&#95;hidden&#45;repo&#95;&#46;v2"
+        self.assertIn(
+            f"| someone | {literal} | [#1 Improve &#124; behavior](https://github.com/{repository}/pull/1) |", content
+        )
+        self.assertIn(
+            f"\n| {literal} | [#2 Improve &#124; behavior](https://github.com/{repository}/pull/2) |", content
+        )
+        self.assertEqual({"To Review": [f"{repository}#1"], "My PRs": [f"{repository}#2"]}, sections(content))
+
+
+def statuses(content: str) -> dict[int, str]:
+    """Each row's Status cell by its pull request's number: the cell after the one linking the pull request."""
+    found: dict[int, str] = {}
+    for line in content.splitlines():
+        cells = [cell.strip() for cell in line.strip().strip("|").split(" | ")]
+        for index, cell in enumerate(cells):
+            number = re.search(r"/pull/(\d+)\)", cell)
+            if line.startswith("| ") and number:
+                found[int(number[1])] = cells[index + 1]
+    return found
+
+
+def decided(number: int, state: str, decision: str | None, **changes: Any) -> dict[str, Any]:
+    """A pull request the user reviewed last with `state`, whose latest deciding review is `decision`."""
+    return reviewed(number, state) | {"user_review_decision": decision, **changes}
+
+
+class StatusTests(unittest.TestCase):
+    """Every table has a Status column filled for every row: the user's own latest deciding review on a pull request
+    someone else authored, and GitHub's review decision on one the user authored."""
+
+    def test_each_status_of_a_pull_request_awaiting_the_user(self) -> None:
+        rows = [
+            (item(number=1), "Open"),
+            (decided(2, "COMMENTED", None), "Reviewed with Comments"),
+            (decided(3, "COMMENTED", "DISMISSED"), "Reviewed with Comments"),
+            (decided(4, "DISMISSED", "DISMISSED"), "Reviewed with Comments"),
+            (decided(5, "CHANGES_REQUESTED", "CHANGES_REQUESTED"), "Changes Requested"),
+            (decided(6, "COMMENTED", "CHANGES_REQUESTED"), "Changes Requested"),
+            (decided(7, "APPROVED", "APPROVED"), "Approved"),
+            (decided(8, "COMMENTED", "APPROVED"), "Approved"),
+            (decided(9, "APPROVED", "APPROVED", draft=True), "Draft"),
+            (item(number=10) | {"draft": True}, "Draft"),
+            # GitHub's decision on someone else's pull request is not the user's.
+            (item(number=11) | {"review_decision": "APPROVED"}, "Open"),
+        ]
+        # Every review is followed by new commits, so even an approved pull request is shown again.
+        content, _ = run([value for value, _ in rows])
+        self.assertEqual({value["number"]: status for value, status in rows}, statuses(content))
+        self.assertEqual(
+            {
+                "To Review": [f"owner/repo#{number}" for number in (1, 2, 3, 4, 5, 6, 7, 8, 11)],
+                "Drafts": ["owner/repo#9", "owner/repo#10"],
+            },
+            sections(content),
+        )
+
+    def test_a_status_is_shown_in_the_awaiting_response_table_too(self) -> None:
+        detector = FakeDetector({(1, USER_REVIEWED): UNCHANGED, (2, USER_REVIEWED): UNCHANGED})
+        rows = [decided(1, "COMMENTED", None), decided(2, "COMMENTED", "CHANGES_REQUESTED")]
+        content, _ = run(rows, detector)
+        self.assertEqual({"Awaiting Response": ["owner/repo#1", "owner/repo#2"]}, sections(content))
+        self.assertEqual({1: "Reviewed with Comments", 2: "Changes Requested"}, statuses(content))
+
+    def test_each_status_of_a_pull_request_the_user_authored(self) -> None:
+        mine = {"author": "reviewer"}
+        rows = [
+            (item(number=1) | mine, "Open"),
+            (item(number=2) | mine | {"review_decision": "REVIEW_REQUIRED"}, "Open"),
+            (item(number=3) | mine | {"review_decision": "APPROVED"}, "Approved"),
+            (item(number=4) | mine | {"review_decision": "CHANGES_REQUESTED"}, "Changes Requested"),
+            (item(number=5) | mine | {"review_decision": "APPROVED", "draft": True}, "Draft"),
+            # The user's own reviews of their pull request decide nothing; GitHub's decision does.
+            (decided(6, "COMMENTED", None) | mine, "Open"),
+        ]
+        content, _ = run([value for value, _ in rows])
+        self.assertEqual({value["number"]: status for value, status in rows}, statuses(content))
+        self.assertEqual({"My PRs": [f"owner/repo#{number}" for number in (5, 1, 2, 3, 4, 6)]}, sections(content))
+
+    def test_a_pinned_row_shows_its_status_whoever_authored_it(self) -> None:
+        rows = [
+            decided(1, "COMMENTED", "APPROVED"),
+            item(number=2) | {"author": "reviewer", "review_decision": "APPROVED"},
+        ]
+        content, _ = run(rows, overrides={"owner/repo#1": "on hold", "owner/repo#2": "on hold"})
+        # A pinned section groups its rows by requestor, and the user's own login sorts ahead of someone.
+        self.assertEqual({"On Hold": ["owner/repo#2", "owner/repo#1"]}, sections(content))
+        self.assertEqual({1: "Approved", 2: "Approved"}, statuses(content))
+
+    def test_an_input_collected_before_deciding_reviews_were_read_takes_its_latest_deciding_review(self) -> None:
+        for state, decision in (
+            (None, None),
+            ("COMMENTED", None),
+            ("APPROVED", "APPROVED"),
+            ("CHANGES_REQUESTED", "CHANGES_REQUESTED"),
+            ("DISMISSED", "DISMISSED"),
+        ):
+            with self.subTest(state=state):
+                sha = None if state is None else USER_REVIEWED
+                [result] = validate_items([item() | {"user_review_state": state, "user_review_sha": sha}])
+                self.assertEqual(decision, result["user_review_decision"])
+
+    def test_a_deciding_review_must_be_the_latest_review_when_that_decided(self) -> None:
+        key = "Tracker item owner/repo#1"
+        for state in ("APPROVED", "CHANGES_REQUESTED", "DISMISSED"):
+            for decision in ("APPROVED", "CHANGES_REQUESTED", "DISMISSED", None):
+                value = decided(1, state, decision)
+                with self.subTest(state=state, decision=decision):
+                    if decision == state:
+                        self.assertEqual(decision, validate_items([value])[0]["user_review_decision"])
+                    else:
+                        self.assertEqual(
+                            ("TrackerError", f"{key}.user_review_decision must be {state}, its latest review's"),
+                            refusal([value]),
+                        )
+        for decision in ("APPROVED", "CHANGES_REQUESTED", "DISMISSED", None):
+            with self.subTest(state="COMMENTED", decision=decision):
+                self.assertEqual(
+                    decision, validate_items([decided(1, "COMMENTED", decision)])[0]["user_review_decision"]
+                )
+
+
+# The owned section as the version before the Repository and Status columns wrote it for PREVIOUS_ITEMS.
+PREVIOUS_SECTION = f"""{START_MARKER}
+
+{LEGEND}
+
+### To Review (1)
+
+<details open>
+<summary>{SECTION_SUMMARIES[SECTION_TO_REVIEW]}</summary>
+
+| Requestor | PR | AI Result | Findings | AI Review |
+| :--- | :--- | :--- | :--- | :--- |
+| someone | [#1 Improve &#124; behavior](https://github.com/owner/repo/pull/1) | Approved | none open | (stale) |
+
+</details>
+
+### Awaiting Response (1)
+
+<details open>
+<summary>PRs where you have left a review; waiting for the author to respond or push changes.</summary>
+
+| Requestor | PR | AI Result | Findings | AI Review |
+| :--- | :--- | :--- | :--- | :--- |
+| someone | [other#2 Improve &#124; behavior](https://github.com/owner/other/pull/2) | - | - | - |
+
+</details>
+
+### My PRs (1)
+
+<details open>
+<summary>PRs you authored. Status reflects GitHub's review decision on the PR.</summary>
+
+| PR | Status | AI Result | Findings | AI Review |
+| :--- | :--- | :--- | :--- | :--- |
+| [#3 Improve &#124; behavior](https://github.com/owner/repo/pull/3) | Approved | - | - | (stale) |
+
+</details>
+
+{END_MARKER}"""
+
+
+class PreviousVersionTests(unittest.TestCase):
+    """A dashboard, tracker record, and input the previous version wrote update to the new layout and nothing else."""
+
+    def test_a_tracker_the_previous_version_wrote_changes_only_its_layout(self) -> None:
+        # Collected before deciding reviews were read: no item has user_review_decision.
+        previous_items = [
+            reviewed(1, "COMMENTED") | {"ai_review": ai("APPROVED", report=None)},
+            item("owner/other", 2)
+            | {"reviewed_head_sha": None, "user_review_state": "CHANGES_REQUESTED", "user_review_sha": USER_REVIEWED},
+            item(number=3) | {"author": "reviewer", "review_decision": "APPROVED"},
+        ]
+        detector = FakeDetector({(2, USER_REVIEWED): UNCHANGED})
+        record_value = {
+            "schema_version": 2,
+            "pulls": ["owner/other#2", "owner/repo#1", "owner/repo#3"],
+            "reviews": {
+                "owner/other#2": {"state": "missing", "reviewed_head_sha": None},
+                "owner/repo#1": {"state": "stale", "reviewed_head_sha": AI_REVIEWED},
+                "owner/repo#3": {"state": "stale", "reviewed_head_sha": AI_REVIEWED},
+            },
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            document = f"# Notes\n{PREVIOUS_SECTION}\nKept.\n".encode()
+            source, dashboard = dashboard_files(root, document, previous_items)
+            record = root / "tracker.json"
+            record.write_text(json.dumps(record_value), encoding="utf-8")
+            update_dashboard_rows(source, dashboard, "reviewer", detector=detector, record=record)
+            updated = dashboard.read_bytes()
+            self.assertEqual(outside(document), outside(updated))
+            content = updated.decode()
+            self.assertEqual(sections(PREVIOUS_SECTION), sections(content), "every row keeps its section")
+            for line in (
+                "| someone | owner/repo | [#1 Improve &#124; behavior](https://github.com/owner/repo/pull/1) | "
+                "Reviewed with Comments | Approved | none open | (stale) |",
+                "| someone | owner/other | [#2 Improve &#124; behavior](https://github.com/owner/other/pull/2) | "
+                "Changes Requested | - | - | - |",
+                "| owner/repo | [#3 Improve &#124; behavior](https://github.com/owner/repo/pull/3) | Approved | "
+                "- | - | (stale) |",
+            ):
+                self.assertIn(f"\n{line}\n", content)
+            self.assertEqual(record_value, json.loads(record.read_text(encoding="utf-8")))
+            update_dashboard_rows(source, dashboard, "reviewer", detector=detector, record=record)
+            self.assertEqual(updated, dashboard.read_bytes(), "a second update changes nothing")
 
 
 def raised(call: Callable[[], object]) -> tuple[str, str]:
@@ -1069,6 +1295,7 @@ TEXT = "a non-empty string"
 TEXT_OR_NULL = "a non-empty string or null"
 USER_REVIEW_STATES = 'one of "APPROVED", "CHANGES_REQUESTED", "COMMENTED", "DISMISSED" or null'
 REVIEW_DECISIONS = 'one of "APPROVED", "CHANGES_REQUESTED", "REVIEW_REQUIRED" or null'
+USER_REVIEW_DECISIONS = 'one of "APPROVED", "CHANGES_REQUESTED", "DISMISSED" or null'
 VERDICTS = 'one of "APPROVED", "CHANGES_REQUESTED", "INCOMPLETE"'
 SECOND = "tracker input[1]"
 REVIEW = "tracker input[0].ai_review"
@@ -1117,6 +1344,7 @@ class ValidateItemsSequenceTests(unittest.TestCase):
                 "reviewed_incomplete",
                 "author_name",
                 "review_decision",
+                "user_review_decision",
                 "ai_review",
                 "repository",
                 "number",
@@ -1140,6 +1368,7 @@ class ValidateItemsSequenceTests(unittest.TestCase):
                 "reviewed_incomplete": False,
                 "author_name": None,
                 "review_decision": None,
+                "user_review_decision": None,
                 "ai_review": None,
                 **original,
                 "repository": "owner/repo",
@@ -1154,11 +1383,15 @@ class ValidateItemsSequenceTests(unittest.TestCase):
             "author_name": "Someone Else",
             "reviewed_incomplete": True,
             "review_decision": "APPROVED",
+            "user_review_decision": "APPROVED",
+            "user_review_state": "COMMENTED",
+            "user_review_sha": USER_REVIEWED,
         }
         [result] = validate_items([source])
         self.assertEqual(source, result)
         self.assertEqual(
-            ["reviewed_incomplete", "author_name", "review_decision", "ai_review", *list(item())], list(result)
+            ["reviewed_incomplete", "author_name", "review_decision", "user_review_decision", "ai_review", *item()],
+            list(result),
         )
 
     def test_items_keep_their_order(self) -> None:
@@ -1175,6 +1408,19 @@ class ValidateItemsSequenceTests(unittest.TestCase):
             ("author_name", 5, wrong(f"{SECOND}.author_name", TEXT_OR_NULL, "integer 5")),
             ("review_decision", "MERGED", wrong(f"{SECOND}.review_decision", REVIEW_DECISIONS, 'string "MERGED"')),
             ("review_decision", True, wrong(f"{SECOND}.review_decision", REVIEW_DECISIONS, "boolean true")),
+            *(
+                ("user_review_decision", value, wrong(f"{SECOND}.user_review_decision", USER_REVIEW_DECISIONS, found))
+                for value, found in (
+                    ("COMMENTED", 'string "COMMENTED"'),
+                    ("approved", 'string "approved"'),
+                    (1, "integer 1"),
+                )
+            ),
+            (
+                "user_review_decision",
+                "APPROVED",
+                ("TrackerError", f"{key}.user_review_decision requires a review state"),
+            ),
             ("ai_review", [], wrong(f"{SECOND}.ai_review", "an object or null", "an array")),
             ("reviewed_incomplete", 1, wrong(f"{SECOND}.reviewed_incomplete", "a boolean", "integer 1")),
             ("repository", "owner", ("ConfigurationError", "Invalid repository identity: 'owner'")),
@@ -1360,6 +1606,7 @@ class ValidateItemsSequenceTests(unittest.TestCase):
         stages: list[tuple[str, object, object]] = [
             ("author_name", "", None),
             ("review_decision", "MERGED", None),
+            ("user_review_decision", "PENDING", None),
             ("ai_review", [], None),
             ("reviewed_incomplete", "yes", False),
             ("repository", "Owner", "Owner/Repo"),
@@ -1389,6 +1636,8 @@ class ValidateItemsSequenceTests(unittest.TestCase):
                 f"{first}.author_name must be a non-empty string or null, found an empty string",
                 f'{first}.review_decision must be one of "APPROVED", "CHANGES_REQUESTED", "REVIEW_REQUIRED" or null, '
                 'found string "MERGED"',
+                f'{first}.user_review_decision must be one of "APPROVED", "CHANGES_REQUESTED", "DISMISSED" or null, '
+                'found string "PENDING"',
                 f"{first}.ai_review must be an object or null, found an array",
                 f'{first}.reviewed_incomplete must be a boolean, found string "yes"',
                 "Invalid repository identity: 'Owner'",

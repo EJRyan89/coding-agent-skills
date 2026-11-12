@@ -113,6 +113,9 @@ query($owner: String!, $name: String!, $login: String!, $after: String) {
         reviews(last: 1, author: $login, states: [APPROVED, CHANGES_REQUESTED, COMMENTED, DISMISSED]) {
           nodes { state commit { oid } }
         }
+        decidingReviews: reviews(last: 1, author: $login, states: [APPROVED, CHANGES_REQUESTED, DISMISSED]) {
+          nodes { state }
+        }
       }
     }
   }
@@ -261,6 +264,7 @@ def tracker_item(
         author = node["author"] or {"login": GHOST_LOGIN}
         name = author.get("name")
         latest = node["reviews"]["nodes"][-1] if node["reviews"]["nodes"] else None
+        deciding = node["decidingReviews"]["nodes"][-1] if node["decidingReviews"]["nodes"] else None
         item = {
             "repository": repository,
             "number": number,
@@ -277,6 +281,7 @@ def tracker_item(
             "review_decision": node["reviewDecision"],
             "user_review_state": latest["state"] if latest else None,
             "user_review_sha": (latest["commit"] or {}).get("oid") if latest else None,
+            "user_review_decision": deciding["state"] if deciding else None,
         }
     except CollectionError as exc:
         raise CollectionError(f"{repository}#{node.get('number')} {exc}") from exc
@@ -441,8 +446,8 @@ def update(
     config_path: Path | None = None,
     services: Services | None = None,
 ) -> tuple[Path, list[Row], list[str]]:
-    """Render the owned section with the configured dashboard, login, markers, overrides, author names, and
-    home repositories, and return the dashboard, its rows, and the pull requests whose review went stale since the
+    """Render the owned section with the configured dashboard, login, markers, overrides, and author names, and
+    return the dashboard, its rows, and the pull requests whose review went stale since the
     update that wrote the tracker record (see `stale_since`). Without a configured login, GitHub is asked for it only
     after the refusals `update_dashboard_rows` makes before asking anything."""
     services = services or Services()
@@ -461,7 +466,6 @@ def update(
         overrides=config["dashboard"]["status_overrides"],
         author_names=config["dashboard"]["author_names"],
         removals=removals or [],
-        home_repositories=config["repository_sets"][config["default_repository_set"]],
         config_path=str(config_path),
         record=record,
     )
