@@ -23,10 +23,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[4] / "skills" / "ejryan8
 # The validation runner's pool, whose own reports the log tests judge, and the repository root its imports need.
 sys.path.insert(0, str(Path(__file__).resolve().parents[4]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[4] / "tests" / "validation"))
+# The git fixture template the repository-skill and tools suites share.
+sys.path.insert(0, str(Path(__file__).resolve().parents[4] / "tests" / "tools"))
 
 import premerge_review
 import shepherd_pull_requests as shepherd
 import whole_number
+from fixture_template import FixtureTemplate, remove_tree, repository_shape
 from git_client import GitClient, GitError, GitResult, subprocess_runner
 from git_worktrees import list_worktrees
 from github_client import Backoff, CommandResult, GitHubClient, GitHubError
@@ -495,6 +498,44 @@ def git(*arguments: str, directory: Path) -> str:
     ).stdout.strip()
 
 
+def build_hub(root: Path) -> None:
+    """A bare `origin.git` and a `hub` on main whose origin URL names a GitHub repository and fetches from it."""
+    origin, hub = root / "origin.git", root / "hub"
+    subprocess.run(["git", "init", "--bare", "-q", str(origin)], check=True)
+    subprocess.run(["git", "init", "-q", str(hub)], check=True)
+    (hub / "README.md").write_text("hub\n", encoding="utf-8")
+    git("add", "README.md", directory=hub)
+    git("commit", "-q", "-m", "first", directory=hub)
+    git("remote", "add", "origin", REMOTE_URL, directory=hub)
+    git("config", f"url.{origin.as_posix()}.insteadOf", REMOTE_URL, directory=hub)
+    git("push", "-q", "origin", "main", directory=hub)
+    git("fetch", "-q", "origin", directory=hub)
+
+
+# Building the hub and its origin starts eight git processes, so each process builds them once and each test gets a
+# copy, whose insteadOf names the copy's own origin.
+HUB_TEMPLATE = FixtureTemplate("shepherd", build_hub)
+
+
+class FixtureTemplateTests(unittest.TestCase):
+    git_config = GIT_CONFIG
+
+    def test_a_copy_matches_a_fresh_build_and_a_push_from_it_reaches_only_its_own_origin(self) -> None:
+        fresh, copied = (Path(os.path.realpath(tempfile.mkdtemp(prefix="shepherd-template-"))) for _ in range(2))
+        self.addCleanup(remove_tree, fresh)
+        self.addCleanup(remove_tree, copied)
+        build_hub(fresh)
+        HUB_TEMPLATE.copy(copied)
+        repositories = ["origin.git", "hub"]
+        self.assertEqual(repository_shape(fresh, repositories), repository_shape(copied, repositories))
+        template_main = git("rev-parse", "main", directory=HUB_TEMPLATE.root / "origin.git")
+        git("commit", "-q", "--allow-empty", "-m", "only in this copy", directory=copied / "hub")
+        git("push", "-q", "origin", "main", directory=copied / "hub")
+        pushed = git("rev-parse", "HEAD", directory=copied / "hub")
+        self.assertEqual(pushed, git("rev-parse", "main", directory=copied / "origin.git"))
+        self.assertEqual(template_main, git("rev-parse", "main", directory=HUB_TEMPLATE.root / "origin.git"))
+
+
 class FixtureTestCase(unittest.TestCase):
     """A hub on main whose origin URL names a GitHub repository and fetches from a bare repository beside it."""
 
@@ -507,15 +548,7 @@ class FixtureTestCase(unittest.TestCase):
         self.root = Path(os.path.realpath(temporary.name))
         self.origin = self.root / "origin.git"
         self.hub = self.root / "hub"
-        subprocess.run(["git", "init", "--bare", "-q", str(self.origin)], check=True)
-        subprocess.run(["git", "init", "-q", str(self.hub)], check=True)
-        (self.hub / "README.md").write_text("hub\n", encoding="utf-8")
-        git("add", "README.md", directory=self.hub)
-        git("commit", "-q", "-m", "first", directory=self.hub)
-        git("remote", "add", "origin", REMOTE_URL, directory=self.hub)
-        git("config", f"url.{self.origin.as_posix()}.insteadOf", REMOTE_URL, directory=self.hub)
-        git("push", "-q", "origin", "main", directory=self.hub)
-        git("fetch", "-q", "origin", directory=self.hub)
+        HUB_TEMPLATE.copy(self.root)
 
     def advance_origin(self) -> str:
         """Push a commit to origin's main from a second clone, and return it."""
@@ -663,42 +696,8 @@ class HubTest(FixtureTestCase):
         self.assertIn("bad config line 1", lines[0])
 
 
-class ListingTest(FixtureTestCase):
-    def test_each_open_pull_request_that_is_not_a_draft_gets_one_line_oldest_first(self) -> None:
-        gh = StubGh([pull(12), pull(11, draft=True), pull(10, state="PENDING"), pull(13, state="MISSING")])
-        status, lines = self.tick(gh)
-        self.assertEqual(0, status)
-        self.assertEqual(
-            [
-                "PR #10 fix/topic-10 CLEAN auto-merge on head aaaaaaa Validation PENDING none",
-                "PR #12 fix/topic-12 CLEAN auto-merge on head aaaaaaa Validation SUCCESS none",
-                "PR #13 fix/topic-13 CLEAN auto-merge on head aaaaaaa Validation MISSING none",
-            ],
-            [line for line in lines if line.startswith("PR ")],
-        )
-        self.assertEqual("REMAINING 3", lines[-1])
-        self.assertEqual([], gh.writes())
-        listing = next(call for call in gh.calls if call[1:3] == ["pr", "list"])
-        self.assertEqual(REPOSITORY, listing[listing.index("--repo") + 1])
-
-    def test_auto_merge_is_armed_as_a_squash_where_it_is_unarmed(self) -> None:
-        gh = StubGh([pull(10, armed=False), pull(11)])
-        _, lines = self.tick(gh)
-        self.assertEqual([["pr", "merge", "10", "--repo", REPOSITORY, "--auto", "--squash"]], gh.writes())
-        self.assertTrue(self.line(lines, "PR #10 ").endswith("auto-merge off head aaaaaaa Validation SUCCESS armed"))
-        self.assertTrue(self.line(lines, "PR #11 ").endswith(" none"))
-
-    def test_more_open_pull_requests_than_one_tick_lists_ends_the_tick_naming_the_cap(self) -> None:
-        gh = StubGh([pull(10), pull(11), pull(12)])
-        with mock.patch.object(shepherd, "OPEN_LISTED", 2):
-            status, lines = self.tick(gh)
-        self.assertEqual(1, status)
-        self.assertEqual(
-            "FAILED cannot list the open pull requests: more than 2 are open, more than one tick lists", lines[-1]
-        )
-        self.assertEqual([], gh.writes())
-        listing = next(call for call in gh.calls if call[1:3] == ["pr", "list"])
-        self.assertEqual("3", listing[listing.index("--limit") + 1])
+class ReaderTest(unittest.TestCase):
+    """What the shepherd reads from gh's answers and a pull request's paths, which needs no hub."""
 
     def test_files_that_cannot_be_read_whole_are_an_incomplete_answer(self) -> None:
         files = [f"docs/page-{index}.md" for index in range(150)]
@@ -739,6 +738,81 @@ class ListingTest(FixtureTestCase):
             gh.calls,
         )
 
+    def test_the_required_check_is_pending_while_its_legs_run_and_missing_without_them(self) -> None:
+        self.assertEqual(shepherd.Check("PENDING", RUN), shepherd.required_check(rollup("PENDING")))
+        self.assertEqual(shepherd.Check("MISSING", None), shepherd.required_check(rollup("MISSING")))
+        self.assertEqual(shepherd.Check("FAILURE", RUN, 1.0), shepherd.required_check(rollup("FAILURE")))
+        self.assertEqual(shepherd.Check("MISSING", None), shepherd.required_check(None))
+
+    def test_a_rerun_of_the_required_check_in_the_same_run_is_read_by_its_latest_start(self) -> None:
+        # The first attempt passed, the rerun after it failed, and gh may list either first.
+        passed = check_run("Validation", status="COMPLETED", conclusion="SUCCESS", startedAt="2026-10-16T05:00:00Z")
+        failed = check_run("Validation", status="COMPLETED", conclusion="FAILURE", startedAt="2026-10-16T07:00:00Z")
+        running = check_run("Validation", startedAt="2026-10-16T08:00:00Z")
+        for listed in ([passed, failed], [failed, passed]):
+            with self.subTest(first=listed[0]["conclusion"]):
+                self.assertEqual(shepherd.Check("FAILURE", RUN, 1.0), shepherd.required_check(listed))
+        for listed in ([failed, running], [running, failed]):
+            with self.subTest(first=listed[0]["status"]):
+                self.assertEqual("PENDING", shepherd.required_check(listed).state)
+        self.assertEqual(shepherd.Check("MISSING", None), shepherd.required_check([]))
+        self.assertEqual(shepherd.Check("MISSING", None), shepherd.required_check(None))
+
+    def test_a_run_id_past_the_digit_limit_or_in_other_digits_is_malformed(self) -> None:
+        # The pattern's `\d` admits an Arabic-Indic three, which is no run id either.
+        for run in ("1" * 5000, chr(0x0663)):
+            url = f"https://github.com/o/r/actions/runs/{run}/job/2"
+            with self.subTest(run=run[:4]), self.assertRaises(GitHubError) as raised:
+                shepherd.run_of({"detailsUrl": url})
+            self.assertEqual(
+                ("malformed", f"GitHub returned a run id that is not at most {whole_number.DIGIT_LIMIT} ASCII digits"),
+                (raised.exception.kind, str(raised.exception)),
+            )
+        self.assertEqual(RUN, shepherd.run_of({"detailsUrl": f"https://github.com/o/r/actions/runs/{RUN}/job/2"}))
+        self.assertIsNone(shepherd.run_of({"detailsUrl": None}))
+
+    def test_other_test_paths_hold_nothing(self) -> None:
+        self.assertIsNone(shepherd.holding_path(["tests/validation_notes.md", "tests/run_validation.pyc", "x.py"]))
+        self.assertEqual("tests/validation/x.py", shepherd.holding_path(["a", "tests/validation/x.py"]))
+
+
+class ListingTest(FixtureTestCase):
+    def test_each_open_pull_request_that_is_not_a_draft_gets_one_line_oldest_first(self) -> None:
+        gh = StubGh([pull(12), pull(11, draft=True), pull(10, state="PENDING"), pull(13, state="MISSING")])
+        status, lines = self.tick(gh)
+        self.assertEqual(0, status)
+        self.assertEqual(
+            [
+                "PR #10 fix/topic-10 CLEAN auto-merge on head aaaaaaa Validation PENDING none",
+                "PR #12 fix/topic-12 CLEAN auto-merge on head aaaaaaa Validation SUCCESS none",
+                "PR #13 fix/topic-13 CLEAN auto-merge on head aaaaaaa Validation MISSING none",
+            ],
+            [line for line in lines if line.startswith("PR ")],
+        )
+        self.assertEqual("REMAINING 3", lines[-1])
+        self.assertEqual([], gh.writes())
+        listing = next(call for call in gh.calls if call[1:3] == ["pr", "list"])
+        self.assertEqual(REPOSITORY, listing[listing.index("--repo") + 1])
+
+    def test_auto_merge_is_armed_as_a_squash_where_it_is_unarmed(self) -> None:
+        gh = StubGh([pull(10, armed=False), pull(11)])
+        _, lines = self.tick(gh)
+        self.assertEqual([["pr", "merge", "10", "--repo", REPOSITORY, "--auto", "--squash"]], gh.writes())
+        self.assertTrue(self.line(lines, "PR #10 ").endswith("auto-merge off head aaaaaaa Validation SUCCESS armed"))
+        self.assertTrue(self.line(lines, "PR #11 ").endswith(" none"))
+
+    def test_more_open_pull_requests_than_one_tick_lists_ends_the_tick_naming_the_cap(self) -> None:
+        gh = StubGh([pull(10), pull(11), pull(12)])
+        with mock.patch.object(shepherd, "OPEN_LISTED", 2):
+            status, lines = self.tick(gh)
+        self.assertEqual(1, status)
+        self.assertEqual(
+            "FAILED cannot list the open pull requests: more than 2 are open, more than one tick lists", lines[-1]
+        )
+        self.assertEqual([], gh.writes())
+        listing = next(call for call in gh.calls if call[1:3] == ["pr", "list"])
+        self.assertEqual("3", listing[listing.index("--limit") + 1])
+
     def test_exactly_as_many_open_pull_requests_as_one_tick_lists_are_all_judged(self) -> None:
         with mock.patch.object(shepherd, "OPEN_LISTED", 2):
             status, lines = self.tick(StubGh([pull(10), pull(11)]))
@@ -758,12 +832,6 @@ class ListingTest(FixtureTestCase):
             [line for line in lines if line.startswith("PR_FAILED")],
         )
         self.assertEqual("REMAINING 2", lines[-1])
-
-    def test_the_required_check_is_pending_while_its_legs_run_and_missing_without_them(self) -> None:
-        self.assertEqual(shepherd.Check("PENDING", RUN), shepherd.required_check(rollup("PENDING")))
-        self.assertEqual(shepherd.Check("MISSING", None), shepherd.required_check(rollup("MISSING")))
-        self.assertEqual(shepherd.Check("FAILURE", RUN, 1.0), shepherd.required_check(rollup("FAILURE")))
-        self.assertEqual(shepherd.Check("MISSING", None), shepherd.required_check(None))
 
 
 class FieldTest(FixtureTestCase):
@@ -1046,20 +1114,6 @@ class UpdateTest(FixtureTestCase):
             shepherd.Check("NEUTRAL", RUN, 1.0), shepherd.required_check([{**ended, "conclusion": "neutral"}])
         )
 
-    def test_a_rerun_of_the_required_check_in_the_same_run_is_read_by_its_latest_start(self) -> None:
-        # The first attempt passed, the rerun after it failed, and gh may list either first.
-        passed = check_run("Validation", status="COMPLETED", conclusion="SUCCESS", startedAt="2026-10-16T05:00:00Z")
-        failed = check_run("Validation", status="COMPLETED", conclusion="FAILURE", startedAt="2026-10-16T07:00:00Z")
-        running = check_run("Validation", startedAt="2026-10-16T08:00:00Z")
-        for listed in ([passed, failed], [failed, passed]):
-            with self.subTest(first=listed[0]["conclusion"]):
-                self.assertEqual(shepherd.Check("FAILURE", RUN, 1.0), shepherd.required_check(listed))
-        for listed in ([failed, running], [running, failed]):
-            with self.subTest(first=listed[0]["status"]):
-                self.assertEqual("PENDING", shepherd.required_check(listed).state)
-        self.assertEqual(shepherd.Check("MISSING", None), shepherd.required_check([]))
-        self.assertEqual(shepherd.Check("MISSING", None), shepherd.required_check(None))
-
     def test_nothing_is_updated_while_an_armed_current_pull_request_is_green_or_pending(self) -> None:
         for state in ("SUCCESS", "PENDING"):
             with self.subTest(state=state):
@@ -1248,10 +1302,6 @@ class UpdateTest(FixtureTestCase):
         gh = StubGh([pull(11, files=[f"docs/page-{index}.md" for index in range(100)])])
         self.tick(gh)
         self.assertEqual([], [call for call in gh.calls if call[1] == "api"])
-
-    def test_other_test_paths_hold_nothing(self) -> None:
-        self.assertIsNone(shepherd.holding_path(["tests/validation_notes.md", "tests/run_validation.pyc", "x.py"]))
-        self.assertEqual("tests/validation/x.py", shepherd.holding_path(["a", "tests/validation/x.py"]))
 
 
 class OutOfStepTest(FixtureTestCase):
@@ -1651,19 +1701,6 @@ class JudgementTest(FixtureTestCase):
                 )
                 self.assertEqual([], gh.writes())
                 self.assertFalse(any(line.startswith(("RERUN", "DEFECT")) for line in lines))
-
-    def test_a_run_id_past_the_digit_limit_or_in_other_digits_is_malformed(self) -> None:
-        # The pattern's `\d` admits an Arabic-Indic three, which is no run id either.
-        for run in ("1" * 5000, chr(0x0663)):
-            url = f"https://github.com/o/r/actions/runs/{run}/job/2"
-            with self.subTest(run=run[:4]), self.assertRaises(GitHubError) as raised:
-                shepherd.run_of({"detailsUrl": url})
-            self.assertEqual(
-                ("malformed", f"GitHub returned a run id that is not at most {whole_number.DIGIT_LIMIT} ASCII digits"),
-                (raised.exception.kind, str(raised.exception)),
-            )
-        self.assertEqual(RUN, shepherd.run_of({"detailsUrl": f"https://github.com/o/r/actions/runs/{RUN}/job/2"}))
-        self.assertIsNone(shepherd.run_of({"detailsUrl": None}))
 
     def test_the_newest_run_on_a_head_decides_its_check(self) -> None:
         newer_pending = [*rollup("CANCELLED"), *rollup("PENDING", RUN + 1)]

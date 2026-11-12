@@ -22,6 +22,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts"))
 
 import json_writer
+from fixture_template import FixtureTemplate, repository_shape
 from presence_denial import denied
 
 from deployer import source_ref
@@ -45,10 +46,8 @@ def marketplace(root: Path) -> dict[str, Any]:
     return found
 
 
-@pytest.fixture
-def checkout(tmp_path: Path) -> Path:
-    """A checkout of a one-skill source, its release v1.2.3 tagged, under a folder whose name has spaces."""
-    root = tmp_path / "Checkout With Spaces"
+def build_checkout(root: Path) -> None:
+    """A checkout of a one-skill source, its release v1.2.3 tagged."""
     write(root, "source.json", json.dumps({"id": "test/fixture-skills"}))
     write(
         root, "skills/alpha/SKILL.md", "---\nname: alpha\ndescription: Does alpha. Use it when asked.\n---\n\nBody.\n"
@@ -63,7 +62,23 @@ def checkout(tmp_path: Path) -> Path:
     git(root, "add", "-A")
     git(root, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.com", "commit", "-q", "-m", "release")
     git(root, "tag", "v1.2.3")
-    return root
+
+
+# Building the checkout starts four git processes, so each process builds it once and each test gets a copy.
+CHECKOUT = FixtureTemplate("Checkout With Spaces", build_checkout)
+
+
+@pytest.fixture
+def checkout(tmp_path: Path) -> Path:
+    """A copy of the checkout under a folder whose name has spaces."""
+    return CHECKOUT.copy(tmp_path / "Checkout With Spaces")
+
+
+def test_a_copied_checkout_matches_a_freshly_built_one(tmp_path: Path) -> None:
+    (tmp_path / "fresh" / "checkout").mkdir(parents=True)
+    build_checkout(tmp_path / "fresh" / "checkout")
+    CHECKOUT.copy(tmp_path / "copied" / "checkout")
+    assert repository_shape(tmp_path / "fresh", ["checkout"]) == repository_shape(tmp_path / "copied", ["checkout"])
 
 
 def run(arguments: list[str]) -> tuple[int, list[str]]:

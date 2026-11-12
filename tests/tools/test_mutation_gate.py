@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import ast
 import contextlib
+import functools
 import importlib
 import io
 import itertools
@@ -31,6 +32,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "tests" / "validation"))
 
+import job_selection
+from fixture_template import FixtureTemplate, repository_shape
 from fsops_platform import PLATFORM_TOKENS
 from git_client import GitClient
 from job_selection import importers, python_imports, reached_suites
@@ -2559,6 +2562,8 @@ def git(root: Path, *arguments: str) -> str:
 
 
 def fixture_repository(root: Path) -> None:
+    """A repository whose main holds a README, on a branch `feature` that adds tools/calc.py, its suite, and a
+    document."""
     (root / "tools").mkdir(parents=True)
     (root / "tests" / "tools").mkdir(parents=True)
     (root / "README.md").write_text("fixture\n", encoding="utf-8")
@@ -2571,6 +2576,21 @@ def fixture_repository(root: Path) -> None:
     (root / "docs.md").write_text("not a module\n", encoding="utf-8")
     git(root, "add", ".")
     git(root, "commit", "--quiet", "-m", "change")
+
+
+# Building the repository starts six git processes, so each process builds it once and each test gets a copy; the
+# repository names no other by path, so a copy needs nothing rewritten.
+FIXTURE = FixtureTemplate("repository with spaces", fixture_repository)
+
+
+class FixtureTemplateTests(unittest.TestCase):
+    def test_a_copied_repository_matches_a_freshly_built_one(self) -> None:
+        with tempfile.TemporaryDirectory() as fresh, tempfile.TemporaryDirectory() as copied:
+            fixture_repository(Path(fresh) / "repository")
+            FIXTURE.copy(Path(copied) / "repository")
+            self.assertEqual(
+                repository_shape(Path(fresh), ["repository"]), repository_shape(Path(copied), ["repository"])
+            )
 
 
 def stub_generator(module: str, source: str, lines: frozenset[int]) -> list[str]:
@@ -2610,7 +2630,7 @@ class WholeRunFixtures(unittest.TestCase):
     def test_a_pull_requests_module_is_mutated_in_worktrees_and_the_survivor_reported(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary) / "repository with spaces"
-            fixture_repository(root)
+            FIXTURE.copy(root)
             gate = Gate(root, "main", 5, 2, GitClient(), stub_generator, stub_reach, measure=measured)
             result = gate.report()
             text = result.text
@@ -2635,7 +2655,7 @@ class WholeRunFixtures(unittest.TestCase):
         times = itertools.chain([0.0], itertools.repeat(10_000.0))
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary) / "repository"
-            fixture_repository(root)
+            FIXTURE.copy(root)
             result = Gate(
                 root, "main", 5, 2, GitClient(), stub_generator, stub_reach, clock=lambda: next(times), measure=measured
             ).report()
@@ -2648,7 +2668,7 @@ class WholeRunFixtures(unittest.TestCase):
     def test_a_changed_sanction_table_is_named_with_its_policy_and_its_modules_other_lines_still_run(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary) / "repository"
-            fixture_repository(root)
+            FIXTURE.copy(root)
             (root / "tests" / "validation").mkdir()
             (root / "tests" / "validation" / "policy.py").write_text(POLICY, encoding="utf-8")
             git(root, "add", ".")
@@ -2671,7 +2691,7 @@ class WholeRunFixtures(unittest.TestCase):
     def test_a_mutant_on_a_line_the_pull_request_did_not_change_is_not_run(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary) / "repository"
-            fixture_repository(root)
+            FIXTURE.copy(root)
             git(root, "switch", "--quiet", "-c", "only-double", "feature")
             change_calc(root, CALC.replace("return a * 2", "return a * 2 + 0"))
             asked: dict[str, frozenset[int]] = {}
@@ -2693,7 +2713,7 @@ class WholeRunFixtures(unittest.TestCase):
     def test_a_mutant_on_a_continuation_line_runs_against_the_suite_that_executed_its_statement(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary) / "repository"
-            fixture_repository(root)
+            FIXTURE.copy(root)
             change_calc(root, MULTILINE_CALC)
             (root / "tests" / "tools" / "test_calc.py").write_text(
                 SUITE.replace("calc.add(2, 3)", "calc.scaled(1)").replace("5,", "3,"), encoding="utf-8"
@@ -2717,7 +2737,7 @@ class WholeRunFixtures(unittest.TestCase):
     def test_a_mutant_runs_the_tests_that_ran_its_line_or_whose_call_started_the_process_that_did(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary) / "repository"
-            fixture_repository(root)
+            FIXTURE.copy(root)
             context_tree(root)
             git(root, "add", ".")
             git(root, "commit", "--quiet", "-m", "contexts")
@@ -2760,7 +2780,7 @@ class WholeRunFixtures(unittest.TestCase):
     def test_a_changed_module_with_no_mutant_is_named_and_no_suite_runs(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary) / "repository"
-            fixture_repository(root)
+            FIXTURE.copy(root)
             git(root, "switch", "--quiet", "-c", "comment", "feature")
             change_calc(root, CALC + "# A comment, which mutmut does not mutate.\n")
             text = Gate(root, "feature", 5, 2, GitClient(), stub_generator, refuse_reach).report().text
@@ -2772,7 +2792,7 @@ class WholeRunFixtures(unittest.TestCase):
     def test_a_change_with_no_module_writes_one_line_and_makes_no_worktree(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary) / "repository"
-            fixture_repository(root)
+            FIXTURE.copy(root)
             git(root, "switch", "--quiet", "-c", "documentation", "main")
             (root / "docs.md").write_text("only documentation\n", encoding="utf-8")
             git(root, "add", ".")
@@ -2789,7 +2809,7 @@ class WholeRunFixtures(unittest.TestCase):
     def test_a_generator_that_fails_its_canary_stops_the_run_before_any_worktree(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary) / "repository"
-            fixture_repository(root)
+            FIXTURE.copy(root)
             gate = Gate(root, "main", 5, 2, GitClient(), lambda module, source, lines: [], stub_reach)
             with self.assertRaisesRegex(RuntimeError, "no longer turns"):
                 gate.report()
@@ -2816,7 +2836,7 @@ class WholeRunFixtures(unittest.TestCase):
             asked: list[str] = []
             with self.subTest(failing=failing), tempfile.TemporaryDirectory() as temporary:
                 root = Path(temporary) / "repository"
-                fixture_repository(root)
+                FIXTURE.copy(root)
                 # No `measure` is given: the gate's own canary runs.
                 gate = Gate(root, "main", 5, 2, GitClient(), stub_generator, self.canary_aware(failing, asked))
                 if failing:
@@ -2841,7 +2861,7 @@ class WholeRunFixtures(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary) / "repository"
-            fixture_repository(root)
+            FIXTURE.copy(root)
             gate = Gate(root, "main", 5, 2, GitClient(), stub_generator, refuse_reach, measure=unmeasured)
             with self.assertRaisesRegex(RuntimeError, "a process its test started"):
                 gate.report()
@@ -2866,7 +2886,7 @@ class SplitRunFixtures(unittest.TestCase):
     def test_a_mutant_that_survives_the_linux_leg_and_the_windows_leg_kills_reads_as_killed(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary) / "repository"
-            fixture_repository(root)
+            FIXTURE.copy(root)
             change_calc(root, CALC + "\n\ndef probe():\n    import device_names\n")
             # A folder whose parent does not exist yet, as the workflow's does not.
             folder = Path(temporary) / "handed" / "on"
@@ -2906,7 +2926,7 @@ class SplitRunFixtures(unittest.TestCase):
     def test_a_module_off_the_windows_rule_runs_on_linux_alone_and_needs_no_windows_outcomes(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary) / "repository"
-            fixture_repository(root)
+            FIXTURE.copy(root)
             folder = Path(temporary) / "handed on"
             outputs = Path(temporary) / "outputs.txt"
             gate = Gate(root, "main", 5, 2, GitClient(), stub_generator, refuse_reach)
@@ -2929,7 +2949,7 @@ class SplitRunFixtures(unittest.TestCase):
     def test_a_leg_at_another_commit_than_the_select_steps_or_without_one_stops_before_any_suite(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary) / "repository"
-            fixture_repository(root)
+            FIXTURE.copy(root)
             folder = Path(temporary) / "handed on"
             mutation_gate.select_step(Gate(root, "main", 5, 2, GitClient(), stub_generator, refuse_reach), folder, {})
             selected = read_selection(folder / "mutants.json")
@@ -2958,7 +2978,7 @@ class SplitRunFixtures(unittest.TestCase):
     def test_the_select_step_selects_nothing_without_a_module_and_stops_on_a_failed_generator_canary(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary) / "repository"
-            fixture_repository(root)
+            FIXTURE.copy(root)
             with self.assertRaisesRegex(RuntimeError, "no longer turns"):
                 Gate(root, "main", 5, 2, GitClient(), lambda module, source, lines: [], refuse_reach).selection()
             git(root, "switch", "--quiet", "-c", "documentation", "main")
@@ -3144,6 +3164,30 @@ def validation_modules(folder: Path) -> list[str]:
     )
 
 
+@functools.cache
+def checkout_imports() -> dict[str, set[str]]:
+    """What each Python file of this checkout imports, read once per process: parsing every file is most of what a
+    suite selection costs."""
+    files = [path.relative_to(REPOSITORY).as_posix() for path in repository_files(REPOSITORY)]
+    return python_imports(REPOSITORY, files)
+
+
+def checkout_reached_suites(paths: list[str]) -> set[str]:
+    """The suites of this checkout reached_suites selects for `paths`, over the import graph read once."""
+
+    def imports(root: Path, names: object) -> dict[str, set[str]]:
+        assert root == REPOSITORY, root
+        return checkout_imports()
+
+    with mock.patch.object(job_selection, "python_imports", imports):
+        return {suite.relative_to(REPOSITORY).as_posix() for suite in reached_suites(REPOSITORY, paths)}
+
+
+def test_the_checkouts_suite_selection_over_the_graph_read_once_is_the_selection_read_afresh() -> None:
+    expected = {suite.relative_to(REPOSITORY).as_posix() for suite in reached_suites(REPOSITORY, [POLICY_PROBE])}
+    assert checkout_reached_suites([POLICY_PROBE]) == expected
+
+
 def test_every_validation_program_is_mutated_and_its_own_suite_reaches_it() -> None:
     # The catalogue is the programs directly under tests/, read from the folder, so a program added later is held too.
     programs = validation_modules(REPOSITORY / "tests")
@@ -3151,8 +3195,7 @@ def test_every_validation_program_is_mutated_and_its_own_suite_reaches_it() -> N
     for program in programs:
         module = f"tests/{program}"
         assert is_gate_module(module), module
-        reached = {suite.relative_to(REPOSITORY).as_posix() for suite in reached_suites(REPOSITORY, [module])}
-        assert f"tests/test_{program}" in reached, module
+        assert f"tests/test_{program}" in checkout_reached_suites([module]), module
 
 
 def test_every_validation_policy_is_mutated_and_its_fixture_suite_reaches_it() -> None:
@@ -3160,16 +3203,14 @@ def test_every_validation_policy_is_mutated_and_its_fixture_suite_reaches_it() -
     policies = validation_modules(REPOSITORY / "tests" / "validation")
     assert "job_selection.py" in policies
     # reached_suites selects every suite that imports a changed module, directly or through others, from the import
-    # graph of the checkout, which is read once here rather than once for each policy.
-    files = [path.relative_to(REPOSITORY).as_posix() for path in repository_files(REPOSITORY)]
-    graph = python_imports(REPOSITORY, files)
+    # graph of the checkout, which is read once for the suite rather than once for each policy.
+    graph = checkout_imports()
     for policy in policies:
         module = f"tests/validation/{policy}"
         assert is_gate_module(module), module
         assert f"tests/validation/test_{policy}" in importers([module], graph), module
     # One policy goes through reached_suites itself, so the shortcut above stays the selection the gate makes.
-    reached = {suite.relative_to(REPOSITORY).as_posix() for suite in reached_suites(REPOSITORY, [POLICY_PROBE])}
-    assert "tests/validation/test_upgrade_notes.py" in reached
+    assert "tests/validation/test_upgrade_notes.py" in checkout_reached_suites([POLICY_PROBE])
 
 
 POLICY_SOURCE = "def problems(a, b):\n    return a + b\n"
@@ -3498,7 +3539,7 @@ class UnrunFixtures(unittest.TestCase):
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name) / "repository"
         self.folder = Path(temporary.name) / "run artifacts"
-        fixture_repository(self.root)
+        FIXTURE.copy(self.root)
         self.seen: list[str] = []
         platform = mock.patch.object(platform_support, "PLATFORM_NAME", LINUX_LEG)
         platform.start()
@@ -4389,7 +4430,7 @@ class CarryFixtures(unittest.TestCase):
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name) / "repository"
         self.folder = Path(temporary.name) / "handed on"
-        fixture_repository(self.root)
+        FIXTURE.copy(self.root)
         self.gate = Gate(self.root, "main", 5, 2, GitClient(), stub_generator, refuse_reach)
 
     def commit(self, files: dict[str, str], message: str = "later") -> None:
@@ -4583,7 +4624,7 @@ class SaveVerdictFixtures(unittest.TestCase):
         self.root = Path(temporary.name) / "repository"
         self.folder = Path(temporary.name) / "handed on"
         self.outputs = Path(temporary.name) / "outputs.txt"
-        fixture_repository(self.root)
+        FIXTURE.copy(self.root)
         self.gate = Gate(self.root, "main", 5, 2, GitClient(), stub_generator, refuse_reach)
         with mock.patch("sys.stdout", io.StringIO()):
             mutation_gate.select_step(self.gate, self.folder, {})

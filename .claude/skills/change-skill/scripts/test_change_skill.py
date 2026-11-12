@@ -6,7 +6,6 @@ import io
 import json
 import os
 import shutil
-import stat
 import subprocess
 import sys
 import tempfile
@@ -21,8 +20,11 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[4] / "skills" / "ejryan89-skill-core" / "scripts"))
+# The git fixture template and the folder removal the repository-skill and tools suites share.
+sys.path.insert(0, str(Path(__file__).resolve().parents[4] / "tests" / "tools"))
 
 import change_skill
+from fixture_template import FixtureTemplate, remove_tree, repository_shape
 
 SCRIPT = Path(__file__).resolve().parent / "change_skill.py"
 REPOSITORY = Path(__file__).resolve().parents[4]
@@ -52,17 +54,6 @@ BASE_FILES = {
     "skills/runtime-compatibility.md": "Shared guidance.\n",
     "docs/guide.md": "# Guide\n",
 }
-
-
-def remove_tree(path: Path) -> None:
-    def writable(function: Callable[..., object], target: str, *_: object) -> None:
-        Path(target).chmod(stat.S_IWRITE)
-        function(target)
-
-    if sys.version_info >= (3, 12):
-        shutil.rmtree(path, onexc=writable)
-    else:
-        shutil.rmtree(path, onerror=writable)
 
 
 def git(directory: Path, *arguments: str) -> str:
@@ -189,18 +180,54 @@ def test_reach_follows_skill_deps_through_a_chain_past_a_cycle_and_an_unreadable
     assert not change_skill.unreadable_in(change_skill.reach("delta", {**meta, "gamma": {}}), {**meta, "gamma": {}})
 
 
+def build_source_tree(root: Path) -> None:
+    """A source tree holding BASE_FILES committed on main, on a branch `work` from it."""
+    write(root, BASE_FILES)
+    git(root, "init", "-q")
+    git(root, "add", "-A")
+    git(root, "commit", "-q", "-m", "base")
+    git(root, "switch", "-q", "-c", "work")
+
+
+# Building the source tree starts four git processes, so each process builds it once and each test gets a copy.
+SOURCE_TREE = FixtureTemplate("source tree", build_source_tree)
+
+
+class FixtureTemplateTests(unittest.TestCase):
+    git_config = GIT_CONFIG
+
+    def test_a_copied_source_tree_matches_a_freshly_built_one(self) -> None:
+        fresh, copied = (Path(tempfile.mkdtemp(prefix="change-skill-template-")).resolve() for _ in range(2))
+        self.addCleanup(remove_tree, fresh)
+        self.addCleanup(remove_tree, copied)
+        build_source_tree(fresh / "source tree")
+        SOURCE_TREE.copy(copied / "source tree")
+        self.assertEqual(repository_shape(fresh, ["source tree"]), repository_shape(copied, ["source tree"]))
+
+
+class UserOnlyTests(unittest.TestCase):
+    def test_user_only_reads_the_key_as_the_shared_reader_does(self) -> None:
+        # A true in any case is user-only, as the deployer writes the adapter; frontmatter that cannot be read is not.
+        cases = {
+            "---\nname: z\ndisable-model-invocation: TRUE\n---\n": True,
+            "---\nname: z\ndisable-model-invocation: false\n---\n": False,
+            "---\nname: z\ndisable-model-invocation: [true]\n---\n": False,
+            "---\nname: z\n": False,
+            "# No frontmatter\n": False,
+        }
+        for text, expected in cases.items():
+            with self.subTest(text=text):
+                self.assertIs(expected, change_skill.user_only(text))
+        self.assertFalse(change_skill.user_only(None))
+
+
 class GateTests(unittest.TestCase):
     git_config = GIT_CONFIG
 
     def setUp(self) -> None:
         temporary = Path(tempfile.mkdtemp(prefix="change-skill-gates-"))
         self.addCleanup(remove_tree, temporary)
-        self.root = temporary / "source tree"
-        write(self.root, BASE_FILES)
-        git(self.root, "init", "-q")
-        git(self.root, "add", "-A")
-        git(self.root, "commit", "-q", "-m", "base")
-        git(self.root, "switch", "-q", "-c", "work")
+        self.root = SOURCE_TREE.copy(temporary / "source tree")
 
     def gates(
         self, committed: Mapping[str, str] | None = None, uncommitted: Mapping[str, str] | None = None
@@ -298,20 +325,6 @@ class GateTests(unittest.TestCase):
             ],
             self.gates(uncommitted=new),
         )
-
-    def test_user_only_reads_the_key_as_the_shared_reader_does(self) -> None:
-        # A true in any case is user-only, as the deployer writes the adapter; frontmatter that cannot be read is not.
-        cases = {
-            "---\nname: z\ndisable-model-invocation: TRUE\n---\n": True,
-            "---\nname: z\ndisable-model-invocation: false\n---\n": False,
-            "---\nname: z\ndisable-model-invocation: [true]\n---\n": False,
-            "---\nname: z\n": False,
-            "# No frontmatter\n": False,
-        }
-        for text, expected in cases.items():
-            with self.subTest(text=text):
-                self.assertIs(expected, change_skill.user_only(text))
-        self.assertFalse(change_skill.user_only(None))
 
     def test_a_grant_change_owes_the_canary(self) -> None:
         changed = skill_text("Alpha does a thing. Use it when asked.", grants='["Read", "Grep"]')
