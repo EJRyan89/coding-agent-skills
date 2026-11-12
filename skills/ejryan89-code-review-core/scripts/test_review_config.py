@@ -784,12 +784,90 @@ class ReviewerRootTests(unittest.TestCase):
         )
 
     def test_a_ref_that_does_not_resolve_is_refused(self) -> None:
-        for ref in ("refs/heads/absent", "-main", f"{self.commit}:review/python.md"):
+        for ref in ("refs/heads/absent", "refs/tags/absent", "refs/remotes/origin/absent"):
             with self.subTest(ref=ref):
                 self.assert_refused(
                     self.config(self.rules, ref),
                     f"trusted_ref {ref} does not resolve to a commit in reviewer_root {self.rules}",
                 )
+
+    def test_a_ref_git_resolves_into_a_pull_request_is_refused(self) -> None:
+        # A symbolic ref under refs/heads/ that git follows to a pull request's ref is judged where it lands.
+        git(self.rules, "update-ref", "refs/pull/42/head", "HEAD")
+        git(self.rules, "symbolic-ref", "refs/heads/sym", "refs/pull/42/head")
+        self.assert_refused(
+            self.config(self.rules, "refs/heads/sym"),
+            f"trusted_ref refs/heads/sym resolves to refs/pull/42/head, which is not a ref under refs/heads/, "
+            f"refs/tags/, refs/remotes/ in reviewer_root {self.rules}",
+        )
+
+    def test_a_name_git_check_ref_format_refuses_is_refused(self) -> None:
+        for ref in ("refs/heads/.hidden", "refs/heads/main.lock", "refs/heads//main", "refs/heads/main/"):
+            with self.subTest(ref=ref):
+                self.assert_refused(
+                    self.config(self.rules, ref), f"trusted_ref {ref} is not a ref name git check-ref-format accepts"
+                )
+
+    def test_a_name_git_check_ref_format_refuses_is_refused_without_a_root_too(self) -> None:
+        # The configuration holds the whole spelling rule wherever the reviewer is read from.
+        for ref in ("refs/heads/.hidden", "refs/heads/main.lock", "refs/heads//main", "refs/heads/main/"):
+            with self.subTest(ref=ref):
+                config = self.config(self.rules, ref)
+                del config["repositories"]["example/one"]["reviewer"]["reviewer_root"]
+                self.assert_refused(config, f"trusted_ref {ref} is not a ref name git check-ref-format accepts")
+
+    def test_a_trusted_ref_git_cannot_check_is_refused(self) -> None:
+        def missing(command: Any, timeout: float) -> GitResult:
+            raise GitError("git is not installed")
+
+        with self.assertRaises(ConfigurationError) as caught:
+            review_config.check_reviewer_ref_names(validate_config(self.config(self.rules)), missing)
+        self.assertEqual(
+            "repositories.example/one.reviewer: trusted_ref refs/heads/main cannot be checked: git is not installed",
+            str(caught.exception),
+        )
+
+    def test_a_reviewer_without_a_trusted_ref_starts_no_git_for_it(self) -> None:
+        def refuse(command: Any, timeout: float) -> GitResult:
+            raise AssertionError(f"unexpected git call: {command}")
+
+        review_config.check_reviewer_ref_names(validate_config(valid_config()), refuse)
+
+    def test_each_spelling_that_reaches_a_pull_request_is_refused_by_the_root_s_reader(self) -> None:
+        # Through reviewer_root_commit, as prepare and validate-reviewer --ref call it: every spelling names a commit a
+        # pull request's ref reaches here, and none is read.
+        git(self.rules, "commit", "--allow-empty", "-m", "pull request")
+        git(self.rules, "update-ref", "refs/pull/42/head", "HEAD")
+        git(self.rules, "update-ref", "refs/pull/42/merge", "HEAD")
+        git(self.rules, "reset", "--hard", "HEAD~1")
+        git(self.rules, "symbolic-ref", "refs/heads/sym", "refs/pull/42/head")
+        pull = git(self.rules, "rev-parse", "refs/pull/42/head")
+        outside = "is not a full ref under refs/heads/, refs/tags/, refs/remotes/"
+        syntax = "holds revision syntax, such as ~, ^, :, or @{, so it names a commit other than the ref's own"
+        for ref, reason in (
+            ("pull/42/head~1", outside),
+            ("pull/42/head^", outside),
+            ("pull/42/merge", outside),
+            ("pull/42/head", outside),
+            ("Refs/pull/42/head", outside),
+            ("refs/pull/42/head", outside),
+            (pull, outside),
+            ("main", outside),
+            ("refs/heads/sym~1", syntax),
+            ("refs/heads/sym^", syntax),
+            ("refs/heads/main@{0}", syntax),
+        ):
+            with self.subTest(ref=ref), self.assertRaises(ConfigurationError) as caught:
+                review_config.reviewer_root_commit(self.rules, ref)
+            self.assertEqual(f"trusted_ref {json.dumps(ref)} {reason}", str(caught.exception))
+
+    def test_a_remote_tracking_head_and_a_tag_resolve_to_their_commits(self) -> None:
+        git(self.rules, "update-ref", "refs/remotes/origin/main", "HEAD")
+        git(self.rules, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main")
+        git(self.rules, "tag", "-a", "v1", "-m", "release")
+        for ref in ("refs/remotes/origin/HEAD", "refs/tags/v1"):
+            with self.subTest(ref=ref):
+                self.assertEqual(self.commit, review_config.reviewer_root_commit(self.rules, ref))
 
     def test_git_that_cannot_run_or_prints_no_top_folder_is_refused(self) -> None:
         def missing(command: Any, timeout: float) -> GitResult:
@@ -805,13 +883,13 @@ class ReviewerRootTests(unittest.TestCase):
             return GitResult(128, "", "fatal: bad config line 1 in file .git/config\n")
 
         with self.assertRaisesRegex(ConfigurationError, "is not a Git checkout git can read: git is not installed"):
-            review_config.reviewer_root_commit(self.rules, "main", missing)
+            review_config.reviewer_root_commit(self.rules, "refs/heads/main", missing)
         with self.assertRaisesRegex(ConfigurationError, "is not a Git checkout git can read: it named no top folder"):
-            review_config.reviewer_root_commit(self.rules, "main", silent)
+            review_config.reviewer_root_commit(self.rules, "refs/heads/main", silent)
         with self.assertRaisesRegex(
-            ConfigurationError, "trusted_ref main cannot be read in reviewer_root .*: .*bad config line 1"
+            ConfigurationError, "trusted_ref refs/heads/main cannot be read in reviewer_root .*: .*bad config line 1"
         ):
-            review_config.reviewer_root_commit(self.rules, "main", broken_ref)
+            review_config.reviewer_root_commit(self.rules, "refs/heads/main", broken_ref)
 
     def test_only_reviewers_with_a_root_are_checked(self) -> None:
         # The generic reviewer and a repository reviewer read from its own checkout start no git.
@@ -820,8 +898,165 @@ class ReviewerRootTests(unittest.TestCase):
 
         config = valid_config()
         config["repositories"]["example/two"] = {
-            "reviewer": {"id": "own", "protocol_version": 1, "skill": "review/SKILL.md", "trusted_ref": "main"},
+            "reviewer": {
+                "id": "own",
+                "protocol_version": 1,
+                "skill": "review/SKILL.md",
+                "trusted_ref": "refs/heads/main",
+            },
             "checkout_path": native("C:\\Repos\\Two"),
         }
         config["repository_sets"]["primary"].append("example/two")
         review_config.check_reviewer_roots(validate_config(config), refuse)
+
+
+class LocalManifestTests(unittest.TestCase):
+    """A reviewer's local manifest, whose folder holds the condition scripts a review runs, lies outside the reviewed
+    repository: validate and write refuse one inside checkout_path or inside any working tree of the same repository,
+    naming the path, and write then writes nothing."""
+
+    def setUp(self) -> None:
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name).resolve() / "manifest root"
+        self.checkout = self.root / "reviewed checkout"
+        self.checkout.mkdir(parents=True)
+        git(self.checkout, "init", "-b", "main")
+        (self.checkout / "README.md").write_text("Reviewed\n", encoding="utf-8")
+        git(self.checkout, "add", ".")
+        git(self.checkout, "commit", "-m", "reviewed")
+        self.worktree = self.root / "other worktree"
+        git(self.checkout, "worktree", "add", "-b", "other", str(self.worktree))
+        self.common = Path(git(self.checkout, "rev-parse", "--path-format=absolute", "--git-common-dir"))
+
+    def config(self, manifest: Path | bool, checkout: Path | None = None) -> dict[str, Any]:
+        config = valid_config()
+        config["repositories"]["example/one"] = {
+            "reviewer": {
+                "id": "team",
+                "protocol_version": 1,
+                "scope": "repository",
+                "skill": "review/SKILL.md",
+                "manifest": manifest if manifest is True else str(manifest),
+            },
+            "checkout_path": str(checkout or self.checkout),
+        }
+        return config
+
+    def run_main(self, *arguments: str) -> tuple[int, str, str]:
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = review_config._main(list(arguments))
+        return code, out.getvalue(), err.getvalue()
+
+    def commands(self, config: dict[str, Any], candidate: Path) -> list[tuple[str, tuple[int, str, str], Path]]:
+        """Each command's result for `config` written to `candidate`, with the file write was to write."""
+        candidate.parent.mkdir(parents=True, exist_ok=True)
+        candidate.write_text(json.dumps(config), encoding="utf-8")
+        output = candidate.with_name("written.json")
+        return [
+            ("validate", self.run_main("validate", str(candidate)), output),
+            ("write", self.run_main("write", str(candidate), "--output", str(output)), output),
+        ]
+
+    def assert_refused(self, config: dict[str, Any], reason: str, candidate: Path | None = None) -> None:
+        expected = f"FAILED repositories.example/one.reviewer: {reason}\n"
+        for command, result, output in self.commands(config, candidate or self.root / "candidate.json"):
+            with self.subTest(command=command):
+                self.assertEqual((1, expected, ""), result)
+                self.assertFalse(output.exists())
+
+    def assert_accepted(self, config: dict[str, Any], candidate: Path | None = None) -> None:
+        for command, (code, out, err), _ in self.commands(config, candidate or self.root / "candidate.json"):
+            with self.subTest(command=command):
+                self.assertEqual((0, ""), (code, err), out)
+
+    def inside(self, manifest: Path, checkout: Path | None = None) -> str:
+        return (
+            f"manifest {manifest} lies inside checkout_path {checkout or self.checkout}; keep it outside the repository"
+        )
+
+    def in_worktree(self, manifest: Path, checkout: Path | None = None) -> str:
+        return (
+            f"manifest {manifest} lies inside a working tree of the repository checkout_path "
+            f"{checkout or self.checkout} holds, whose Git directory is {self.common}; keep it outside the repository"
+        )
+
+    def test_a_manifest_inside_the_checkout_is_refused(self) -> None:
+        for manifest in (
+            self.checkout / ".review" / "manifest.json",
+            self.checkout / "manifest.json",
+            self.checkout / ".git" / "review" / "manifest.json",
+            self.checkout / "not yet" / "made" / "manifest.json",
+        ):
+            with self.subTest(manifest=manifest):
+                self.assert_refused(self.config(manifest), self.inside(manifest))
+
+    def test_a_manifest_inside_another_working_tree_of_the_repository_is_refused(self) -> None:
+        for manifest in (self.worktree / ".review" / "manifest.json", self.worktree / "not yet" / "manifest.json"):
+            with self.subTest(manifest=manifest):
+                self.assert_refused(self.config(manifest), self.in_worktree(manifest))
+        # The same holds from a linked worktree's side: the main checkout shares its Git directory.
+        manifest = self.checkout / "review" / "manifest.json"
+        self.assert_refused(self.config(manifest, self.worktree), self.in_worktree(manifest, self.worktree))
+
+    def test_the_default_manifest_beside_a_configuration_inside_the_checkout_is_refused(self) -> None:
+        candidate = self.checkout / "config" / "config.json"
+        manifest = self.checkout / "config" / "reviewers" / "example" / "one" / "manifest.json"
+        self.assert_refused(self.config(True), self.inside(manifest), candidate)
+        self.assert_accepted(self.config(True), self.root / "outside" / "config.json")
+
+    def test_a_manifest_outside_the_repository_is_accepted(self) -> None:
+        unrelated = self.root / "unrelated"
+        unrelated.mkdir()
+        git(unrelated, "init", "-b", "main")
+        for manifest in (
+            self.root / "manifests" / "manifest.json",
+            unrelated / "review" / "manifest.json",
+            self.root / "reviewed checkout sibling" / "manifest.json",
+        ):
+            with self.subTest(manifest=manifest):
+                self.assert_accepted(self.config(manifest))
+
+    def test_a_checkout_not_yet_cloned_is_compared_by_path_alone(self) -> None:
+        # A checkout_path git cannot be asked about yet still refuses a manifest inside it, and the review compares
+        # Git directories once the checkout is there.
+        absent = self.root / "absent checkout"
+        self.assert_accepted(self.config(self.worktree / "manifest.json", absent))
+        self.assert_refused(
+            self.config(absent / "manifest.json", absent),
+            self.inside(absent / "manifest.json", absent),
+            self.root / "refused" / "candidate.json",
+        )
+
+    def test_git_or_a_folder_that_cannot_be_examined_refuses_the_manifest(self) -> None:
+        manifest = self.root / "manifests" / "manifest.json"
+        config = validate_config(self.config(manifest))
+
+        def missing(command: Any, timeout: float) -> GitResult:
+            raise GitError("git is not installed")
+
+        prefix = f"repositories.example/one.reviewer: manifest {manifest} cannot be checked against checkout_path "
+        with self.assertRaises(ConfigurationError) as caught:
+            review_config.check_local_manifests(config, self.root / "config.json", missing)
+        self.assertEqual(f"{prefix}{self.checkout}: git is not installed", str(caught.exception))
+        with (
+            mock.patch.object(file_presence, "is_directory", side_effect=PermissionError("denied")),
+            self.assertRaises(ConfigurationError) as caught,
+        ):
+            review_config.check_local_manifests(config, self.root / "config.json")
+        self.assertEqual(f"{prefix}{self.checkout}: denied", str(caught.exception))
+
+    def test_only_reviewers_with_a_local_manifest_are_checked(self) -> None:
+        # The generic reviewer, a skill run alone, and a default manifest no folder can hold start no git.
+        def refuse(command: Any, timeout: float) -> GitResult:
+            raise AssertionError(f"unexpected git call: {command}")
+
+        config = valid_config()
+        for identity, reviewer in (
+            ("example/two", {"id": "own", "protocol_version": 1, "skill": "review/SKILL.md"}),
+            ("example/con", {"id": "own", "protocol_version": 1, "skill": "review/SKILL.md", "manifest": True}),
+        ):
+            config["repositories"][identity] = {"reviewer": reviewer, "checkout_path": str(self.checkout)}
+            config["repository_sets"]["primary"].append(identity)
+        review_config.check_local_manifests(validate_config(config), self.root / "config.json", refuse)

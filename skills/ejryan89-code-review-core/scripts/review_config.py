@@ -31,6 +31,7 @@ from executable_locator import absolute_home
 from flat_text import LINE_UNSAFE, flat_text, single_line
 from git_client import GitClient, GitError, Runner, output_line, subprocess_runner
 from github_logins import LOGIN, is_login
+from path_containment import within
 from path_keys import path_key
 from review_io import CONTENT_ERRORS, PersistenceError, atomic_write_json, read_json
 from review_vocabularies import SEVERITIES, Severity
@@ -98,6 +99,13 @@ OPERATIONS = {"review-prs", "update-pr-dashboard", "review-insights"}
 # An operation a skill rename retired, with the name it has now: a configuration still naming it is refused with both
 # names, as any unknown operation is refused, so the user renames the key rather than losing its set silently.
 RENAMED_OPERATIONS = {"update-pr-tracker": "update-pr-dashboard"}
+# The namespaces a reviewer's trusted_ref may name a ref in: a branch, a tag, or a remote-tracking branch. A pull
+# request's own refs, refs/pull/, lie outside them, and so does every other spelling git would resolve, such as a
+# short name, which git may find under refs/pull/.
+TRUSTED_REF_NAMESPACES = ("refs/heads/", "refs/tags/", "refs/remotes/")
+# What git reads in a name as revision syntax, reaching a commit other than the ref's own (`~1`, `^`, `:path`, `@{0}`),
+# or never allows in a ref name at all (`..`, a wildcard, a backslash, whitespace, a control character).
+REVISION_SYNTAX = re.compile(r"[~^:?*\[\\\s\x00-\x1f\x7f]|@\{|\.\.")
 REPOSITORY_KEYS = {"reviewer", "checkout_path", "snapshot_exclude", "unreviewed_suffixes", "batch_size"}
 # A repository's snapshot_exclude: glob patterns over snapshot-relative paths, matched as review_runtime's
 # configured_exclusion matches them.
@@ -458,8 +466,9 @@ def _validate_reviewer(identity: str, reviewer_value: Any) -> dict[str, Any]:
     if READ.integer(reviewer.get("protocol_version"), f"{path}.protocol_version") != 1:
         raise ConfigurationError(f"{field} protocol is unsupported")
     trusted_ref = READ.optional(READ.string, reviewer.get("trusted_ref"), f"{path}.trusted_ref")
-    if trusted_ref is not None and trusted_ref.startswith("refs/pull/"):
-        raise ConfigurationError(f"{field}.trusted_ref cannot be a pull ref")
+    refusal = None if trusted_ref is None else reviewer_ref_refusal(trusted_ref)
+    if refusal is not None:
+        raise ConfigurationError(f"{field}.trusted_ref {json_writer.dumps(trusted_ref)} {refusal}")
     reviewer_root = validate_absolute_path(reviewer.get("reviewer_root"), f"{field}.reviewer_root", nullable=True)
     scope = READ.one_of(reviewer.get("scope", "repository"), f"{path}.scope", ("generic", "repository"))
     manifest_path = READ.optional(READ.string, reviewer.get("manifest_path"), f"{path}.manifest_path")
@@ -507,6 +516,132 @@ def _validate_reviewer(identity: str, reviewer_value: Any) -> dict[str, Any]:
     }
 
 
+def reviewer_ref_refusal(ref: str) -> str | None:
+    """Why `ref` cannot be a trusted ref as written, or None when its spelling may be one: a full ref under
+    TRUSTED_REF_NAMESPACES with none of git's revision syntax, so the name is a ref and never a commit reached through
+    one. `reviewer_ref_commit` judges the ref again after git resolves it."""
+    if not ref.startswith(TRUSTED_REF_NAMESPACES):
+        return f"is not a full ref under {', '.join(TRUSTED_REF_NAMESPACES)}"
+    if REVISION_SYNTAX.search(ref):
+        return "holds revision syntax, such as ~, ^, :, or @{, so it names a commit other than the ref's own"
+    return None
+
+
+def _check_ref_format(client: GitClient, ref: str, directory: Path | None) -> None:
+    """Refuses a name `git check-ref-format` does not accept as a ref, such as `refs/heads/main.lock`,
+    `refs/heads/.hidden`, `refs/heads//main`, or `refs/heads/main/`. It reads no repository, so `directory` may be
+    None. check-ref-format exits 1, silently, for a name it refuses; any other failure is git's own and raises
+    GitError."""
+    if client.quiet_output(["check-ref-format", ref], directory=directory) is None:
+        raise ConfigurationError(f"trusted_ref {ref} is not a ref name git check-ref-format accepts")
+
+
+def check_reviewer_ref_names(config: dict[str, Any], runner: Runner = subprocess_runner) -> None:
+    """Each configured trusted_ref is a name `git check-ref-format` accepts, as `reviewer_ref_commit` judges it when
+    the ref is read, so validate and write hold the whole spelling rule with or without a reviewer_root; the first
+    that is not raises ConfigurationError naming its repository."""
+    client = GitClient(runner)
+    for identity, entry in config["repositories"].items():
+        ref = entry["reviewer"]["trusted_ref"]
+        if ref is None:
+            continue
+        try:
+            _check_ref_format(client, ref, None)
+        except GitError as exc:
+            raise ConfigurationError(
+                f"repositories.{identity}.reviewer: trusted_ref {ref} cannot be checked: {exc}"
+            ) from exc
+        except ConfigurationError as exc:
+            raise ConfigurationError(f"repositories.{identity}.reviewer: {exc}") from exc
+
+
+def reviewer_ref_commit(ref: str, *, directory: Path, where: str, runner: Runner = subprocess_runner) -> str:
+    """The commit a trusted ref names in `directory`'s repository, judged after git resolves it: the spelling
+    `reviewer_ref_refusal` allows, a name `git check-ref-format` accepts, and a full name, once git follows a symbolic
+    ref, still under TRUSTED_REF_NAMESPACES, so neither a pull request's ref nor a symbolic ref to one is read.
+
+    Raises ConfigurationError naming the ref and `where`, such as `in reviewer_root <path>`, for a ref refused or
+    absent there, or git's reason when git cannot read it."""
+    refusal = reviewer_ref_refusal(ref)
+    if refusal is not None:
+        raise ConfigurationError(f"trusted_ref {json_writer.dumps(ref)} {refusal}")
+    client = GitClient(runner)
+    try:
+        _check_ref_format(client, ref, directory)
+        found = client.quiet_output(
+            ["rev-parse", "--verify", "--quiet", "--symbolic-full-name", "--end-of-options", ref], directory=directory
+        )
+        full = output_line(found or "")
+        if full and not full.startswith(TRUSTED_REF_NAMESPACES):
+            raise ConfigurationError(
+                f"trusted_ref {ref} resolves to {flat_text(full)}, which is not a ref under "
+                f"{', '.join(TRUSTED_REF_NAMESPACES)} {where}"
+            )
+        commit = client.commit_of(full, directory=directory) if full else None
+    except GitError as exc:
+        raise ConfigurationError(f"trusted_ref {ref} cannot be read {where}: {exc}") from exc
+    if commit is None:
+        raise ConfigurationError(f"trusted_ref {ref} does not resolve to a commit {where}")
+    return commit.lower()
+
+
+def _nearest_folder(path: Path) -> Path:
+    """The folder `path` names, or the nearest one above it, which git can be asked about before the path exists; the
+    path itself when none is, which git then fails to read, refusing it."""
+    return next((folder for folder in (path, *path.parents) if file_presence.is_directory(folder)), path)
+
+
+def check_local_manifest(manifest: Path, checkout: Path, runner: Runner = subprocess_runner) -> None:
+    """A local reviewer manifest lies outside the reviewed repository. Its folder holds the condition scripts and
+    files a review runs and reads from the file system, so a folder inside `checkout`, or inside any working tree of the
+    same repository, which git names by the Git directory every worktree shares, would let a checked-out pull request
+    rewrite them. Both folders are compared once links are resolved.
+
+    Raises ConfigurationError naming the manifest and the checkout for a manifest inside, or when git or the file
+    system cannot tell."""
+    folder, tree = manifest.parent.resolve(), checkout.resolve()
+    if within(folder, tree):
+        raise ConfigurationError(
+            f"manifest {manifest} lies inside checkout_path {checkout}; keep it outside the repository"
+        )
+    client = GitClient(runner)
+    try:
+        theirs = client.rev_parse_path("--git-common-dir", directory=_nearest_folder(folder))
+        ours = (
+            client.rev_parse_path("--git-common-dir", directory=tree)
+            if theirs is not None and file_presence.is_directory(tree)
+            else None
+        )
+    except (GitError, OSError) as exc:
+        raise ConfigurationError(
+            f"manifest {manifest} cannot be checked against checkout_path {checkout}: {flat_text(str(exc))}"
+        ) from exc
+    if theirs is not None and ours is not None and path_key(theirs, resolve=True) == path_key(ours, resolve=True):
+        raise ConfigurationError(
+            f"manifest {manifest} lies inside a working tree of the repository checkout_path {checkout} holds, whose "
+            f"Git directory is {ours}; keep it outside the repository"
+        )
+
+
+def check_local_manifests(config: dict[str, Any], config_path: Path, runner: Runner = subprocess_runner) -> None:
+    """Each repository reviewer's local manifest lies outside its repository, as `check_local_manifest` judges it,
+    `true` naming the manifest beside `config_path`; the first that does not raises ConfigurationError naming its
+    repository."""
+    for identity, entry in config["repositories"].items():
+        manifest = entry["reviewer"].get("manifest")
+        if manifest is None:  # validation requires a checkout_path of every reviewer that names one
+            continue
+        try:
+            # An identity no folder can hold names no default manifest; reviewing it fails with that reason.
+            location = default_manifest_path(config_path, identity) if manifest is True else Path(manifest)
+        except ConfigurationError:
+            continue
+        try:
+            check_local_manifest(location, Path(entry["checkout_path"]), runner)
+        except ConfigurationError as exc:
+            raise ConfigurationError(f"repositories.{identity}.reviewer: {exc}") from exc
+
+
 def reviewer_root_commit(root: Path, ref: str, runner: Runner = subprocess_runner) -> str:
     """The commit a reviewer root's trusted ref names, once the root is the top folder of a Git checkout; the review
     reads the root's files from that commit's objects, never from its working tree.
@@ -530,13 +665,7 @@ def reviewer_root_commit(root: Path, ref: str, runner: Runner = subprocess_runne
         raise ConfigurationError(f"reviewer_root {root} is not a Git checkout git can read: it named no top folder")
     if path_key(Path(top), resolve=True) != path_key(root, resolve=True):
         raise ConfigurationError(f"reviewer_root {root} is not a Git checkout's top folder; its checkout is {top}")
-    try:
-        commit = client.commit_of(ref, directory=root)
-    except GitError as exc:
-        raise ConfigurationError(f"trusted_ref {ref} cannot be read in reviewer_root {root}: {exc}") from exc
-    if commit is None:
-        raise ConfigurationError(f"trusted_ref {ref} does not resolve to a commit in reviewer_root {root}")
-    return commit.lower()
+    return reviewer_ref_commit(ref, directory=root, where=f"in reviewer_root {root}", runner=runner)
 
 
 def check_reviewer_roots(config: dict[str, Any], runner: Runner = subprocess_runner) -> None:
@@ -804,12 +933,18 @@ def _main(arguments: list[str] | None = None) -> int:
     try:
         if args.command == "validate":
             path = args.path or default_config_path()
-            check_reviewer_roots(load_config(path))
+            config = load_config(path)
+            check_reviewer_ref_names(config)
+            check_reviewer_roots(config)
+            check_local_manifests(config, path)
             print(single_line(f"VALID {path}"))
         else:
             path = args.output or default_config_path()
             value = json_reader.loads(args.input.read_text(encoding="utf-8-sig"))
-            check_reviewer_roots(validate_config(value))
+            config = validate_config(value)
+            check_reviewer_ref_names(config)
+            check_reviewer_roots(config)
+            check_local_manifests(config, path)
             write_config(value, path)
             print(single_line(f"WROTE {path}"))
         return 0

@@ -719,7 +719,7 @@ def config_fixtures() -> list[dict[str, Any]]:
                 "reviewer": {
                     "id": "one-review",
                     "protocol_version": 1,
-                    "trusted_ref": "main",
+                    "trusted_ref": "refs/heads/main",
                     "scope": "repository",
                     "manifest_path": None,
                     "skill": ".claude/skills/review/SKILL.md",
