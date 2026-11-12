@@ -18,12 +18,15 @@
              print the `review-prs` arguments for the candidates the user confirmed, read from that record and the
              configuration's overrides, or name the confirmed stale ones when the re-review scope is still to be asked
 
-Every command prints machine-readable lines.
+Every command prints machine-readable lines. `collect` names a failed search for untracked repositories on an
+UNTRACKED_CHECK_FAILED <reason> line, which alone leaves the exit 0: the selected repositories were still collected.
 
 Exit status:
   0  the command succeeded
   1  a last line FAILED <reason>, a collection in which any repository failed and an update in which any pull
-     request's comparison failed included
+     request's comparison failed included, each failure named before it on its own line: REPOSITORY_FAILED
+     <owner/repo> <reason> for a repository collect could not read, and PULL_FAILED <owner/repo#number> <reason>
+     for a comparison update could not make
   2  a usage error
 """
 

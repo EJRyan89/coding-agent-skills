@@ -77,7 +77,7 @@ class SkillShimsTestCase(unittest.TestCase):
         self.assertEqual(
             (
                 1,
-                ".claude/skills/widget-check/SKILL.md has no .agents/skills/widget-check/SKILL.md shim; "
+                "STALE .claude/skills/widget-check/SKILL.md has no .agents/skills/widget-check/SKILL.md shim; "
                 "run python tools/skill_shims.py --write\n",
             ),
             self.run_main(),
@@ -88,7 +88,7 @@ class SkillShimsTestCase(unittest.TestCase):
         self.write(SHIM_PATH.as_posix(), SHIM)
         self.write(".claude/skills/widget-check/SKILL.md", SKILL.replace("Use it when asked.", "Use it often."))
         stale = (
-            ".agents/skills/widget-check/SKILL.md differs from what python tools/skill_shims.py --write writes; "
+            "STALE .agents/skills/widget-check/SKILL.md differs from what python tools/skill_shims.py --write writes; "
             "run it\n"
         )
         self.assertEqual((1, stale), self.run_main())
@@ -111,7 +111,7 @@ class SkillShimsTestCase(unittest.TestCase):
         self.write(SHIM_PATH.as_posix(), SHIM)
         self.write(".agents/skills/retired/SKILL.md", "---\nname: retired\n---\n")
         self.assertEqual(
-            (1, ".agents/skills/retired/SKILL.md has no .claude/skills/retired/SKILL.md; delete it\n"),
+            (1, "STALE .agents/skills/retired/SKILL.md has no .claude/skills/retired/SKILL.md; delete it\n"),
             self.run_main("--write"),
         )
         self.assertTrue((self.root / ".agents/skills/retired/SKILL.md").is_file())
@@ -119,7 +119,7 @@ class SkillShimsTestCase(unittest.TestCase):
     def test_a_skill_without_closed_frontmatter_gets_no_shim(self) -> None:
         self.write(".claude/skills/widget-check/SKILL.md", "---\nname: widget-check\n\n# Never closed\n")
         self.assertEqual(
-            (1, ".claude/skills/widget-check/SKILL.md has no closed frontmatter for its shim to carry\n"),
+            (1, "STALE .claude/skills/widget-check/SKILL.md has no closed frontmatter for its shim to carry\n"),
             self.run_main("--write"),
         )
         self.assertFalse((self.root / SHIM_PATH).exists())
@@ -135,7 +135,7 @@ class SkillShimsTestCase(unittest.TestCase):
                 self.write(".claude/skills/widget-check/SKILL.md", f"---\n{frontmatter_lines}---\n\n# Widget\n")
                 code, output = self.run_main("--write")
                 self.assertEqual(1, code)
-                prefix = ".claude/skills/widget-check/SKILL.md has frontmatter its shim cannot carry: "
+                prefix = "STALE .claude/skills/widget-check/SKILL.md has frontmatter its shim cannot carry: "
                 self.assertTrue(output.startswith(prefix + key), output)
                 self.assertFalse((self.root / SHIM_PATH).exists())
 
@@ -258,12 +258,12 @@ class SkillShimsTestCase(unittest.TestCase):
         self.assertEqual((0, ""), self.run_main())
         (self.root / policy).write_text("policy:\n  allow_implicit_invocation: true\n", encoding="utf-8")
         self.assertEqual(
-            (1, f"{policy.as_posix()} differs from what python tools/skill_shims.py --write writes; run it\n"),
+            (1, f"STALE {policy.as_posix()} differs from what python tools/skill_shims.py --write writes; run it\n"),
             self.run_main(),
         )
         (self.root / policy).unlink()
         self.assertEqual(
-            (1, f"{policy.as_posix()} is missing from the shim; run python tools/skill_shims.py --write\n"),
+            (1, f"STALE {policy.as_posix()} is missing from the shim; run python tools/skill_shims.py --write\n"),
             self.run_main(),
         )
         self.assertEqual((0, f"WROTE {policy.as_posix()}\n"), self.run_main("--write"))
@@ -276,10 +276,10 @@ class SkillShimsTestCase(unittest.TestCase):
         self.assertEqual(
             (
                 1,
-                ".agents/skills/widget-check/agents/openai.yaml is no file python tools/skill_shims.py --write writes; "
-                "delete it\n"
-                ".agents/skills/widget-check/scripts/tool.py is no file python tools/skill_shims.py --write writes; "
-                "delete it\n",
+                "STALE .agents/skills/widget-check/agents/openai.yaml is no file python tools/skill_shims.py --write "
+                "writes; delete it\n"
+                "STALE .agents/skills/widget-check/scripts/tool.py is no file python tools/skill_shims.py --write "
+                "writes; delete it\n",
             ),
             self.run_main("--write"),
         )
@@ -292,8 +292,8 @@ class SkillShimsTestCase(unittest.TestCase):
         self.assertEqual(
             (
                 1,
-                ".agents/skills/notes.md is not a shim folder; delete it\n"
-                ".agents/skills/orphan-folder has no .claude/skills/orphan-folder/SKILL.md; delete it\n",
+                "STALE .agents/skills/notes.md is not a shim folder; delete it\n"
+                "STALE .agents/skills/orphan-folder has no .claude/skills/orphan-folder/SKILL.md; delete it\n",
             ),
             self.run_main(),
         )

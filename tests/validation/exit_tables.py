@@ -43,7 +43,7 @@ import file_presence
 import python_reader
 import whole_number
 from path_containment import within
-from skill_scripts import EXIT_CALLS, PARSER_CLASS, RESULTS_DOC, _is_parser, main_blocks
+from skill_scripts import EXIT_CALLS, PARSER_CLASS, RESULTS_DOC, _is_parser, binding, main_blocks
 from validation_support import (
     REPOSITORY_ROOT,
     UnreadablePython,
@@ -232,9 +232,9 @@ def is_parser_annotation(annotation: ast.expr | None, aliases: dict[str, str]) -
 
 
 def parser_names(tree: ast.Module, aliases: dict[str, str]) -> set[str]:
-    """The names a module binds to an argument parser, in any scope: one assigned argparse.ArgumentParser(...), a
-    subcommand's add_parser(...), or a call of its own function annotated to return a parser, and a parameter or a
-    name annotated as one."""
+    """The names and attribute chains, such as self.cli, a module binds to an argument parser, in any scope: one
+    assigned argparse.ArgumentParser(...), a subcommand's add_parser(...), or a call of its own function annotated to
+    return a parser, and a parameter, name, or attribute annotated as one."""
     builders = {
         node.name
         for node in ast.walk(tree)
@@ -244,12 +244,8 @@ def parser_names(tree: ast.Module, aliases: dict[str, str]) -> set[str]:
     for node in ast.walk(tree):
         if isinstance(node, ast.arg) and is_parser_annotation(node.annotation, aliases):
             found.add(node.arg)
-        elif (
-            isinstance(node, ast.AnnAssign)
-            and isinstance(node.target, ast.Name)
-            and is_parser_annotation(node.annotation, aliases)
-        ):
-            found.add(node.target.id)
+        elif isinstance(node, ast.AnnAssign) and is_parser_annotation(node.annotation, aliases):
+            found.add(binding(node.target))
         if not isinstance(node, (ast.Assign, ast.AnnAssign)) or not isinstance(node.value, ast.Call):
             continue
         callee = node.value.func
@@ -259,8 +255,8 @@ def parser_names(tree: ast.Module, aliases: dict[str, str]) -> set[str]:
             or (isinstance(callee, ast.Name) and callee.id in builders)
         ):
             targets = node.targets if isinstance(node, ast.Assign) else [node.target]
-            found.update(target.id for target in targets if isinstance(target, ast.Name))
-    return found
+            found.update(binding(target) for target in targets)
+    return found - {""}
 
 
 def relative_aliases(tree: ast.Module, package: str) -> dict[str, str]:

@@ -2073,25 +2073,32 @@ EXIT_CALLS = frozenset({"sys.exit", "exit", "quit", "builtins.exit", "builtins.q
 PARSER_CLASS = "argparse.ArgumentParser"
 
 
+def binding(target: ast.expr) -> str:
+    """The spelling an assignment target binds, as a receiver reads it: a name, or an attribute chain on one, such as
+    self.cli; "" for a target that is neither, such as a subscript or a tuple."""
+    return qualified_name(target, {})
+
+
 def _parser_names(tree: ast.Module, resolver: CallableResolver) -> set[str]:
-    """The names the module binds to an argparse.ArgumentParser it builds, in any scope."""
+    """The names and attribute chains, such as self.cli, the module binds to an argparse.ArgumentParser it builds, in
+    any scope."""
     return {
-        target.id
+        binding(target)
         for node in ast.walk(tree)
         if isinstance(node, (ast.Assign, ast.AnnAssign))
         and isinstance(node.value, ast.Call)
         and resolver.name(node.value.func) == PARSER_CLASS
         for target in (node.targets if isinstance(node, ast.Assign) else [node.target])
-        if isinstance(target, ast.Name)
-    }
+    } - {""}
 
 
 def _is_parser(receiver: ast.expr, parsers: set[str]) -> bool:
-    """Whether a receiver is an argument parser: a name or attribute named for one, or a name bound to one."""
+    """Whether a receiver is an argument parser: a name or attribute named for one, or a name or attribute chain bound
+    to one."""
     name = (
         receiver.id if isinstance(receiver, ast.Name) else receiver.attr if isinstance(receiver, ast.Attribute) else ""
     )
-    return "parser" in name.casefold() or name in parsers
+    return "parser" in name.casefold() or binding(receiver) in parsers
 
 
 def _call_breaches(node: ast.Call, resolver: CallableResolver, parsers: set[str], in_handler: bool) -> list[str]:

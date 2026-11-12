@@ -167,6 +167,13 @@ PARSER_ERROR_TAIL = "    return 0\nif __name__ == '__main__':\n    run_main(main
         ),
         ("def main() -> int:\n    made: 'argparse.ArgumentParser' = get()\n    made.error('no')\n", {0, 1, 2}),
         ("def main() -> int:\n    self.parser.error('no')\n", {0, 1, 2}),
+        # A parser bound to an attribute chain is one on a receiver of that chain, and on no other.
+        ("def main() -> int:\n    self.cli = argparse.ArgumentParser()\n    self.cli.error('no')\n", {0, 1, 2}),
+        ("def main() -> int:\n    self.cli: argparse.ArgumentParser = get()\n    self.cli.error('no')\n", {0, 1, 2}),
+        ("def main() -> int:\n    self.cli = argparse.ArgumentParser()\n    other.cli.error('no')\n", {0, 1}),
+        ("def main() -> int:\n    self.cli = argparse.ArgumentParser()\n    self.log.error('no')\n", {0, 1}),
+        ("def main() -> int:\n    cli = argparse.ArgumentParser()\n    self.cli.error('no')\n", {0, 1}),
+        ("def main() -> int:\n    holder[0] = argparse.ArgumentParser()\n    made().error('no')\n", {0, 1}),
         # Every parsing call argparse offers exits 2 on a usage error.
         ("def main() -> int:\n    got.parse_known_intermixed_args()\n", {0, 1, 2}),
         # A quoted annotation that does not parse names no parser.
@@ -192,6 +199,18 @@ def test_a_parser_s_error_is_the_usage_exit_and_another_object_s_error_is_none(b
 def test_an_entry_point_whose_only_usage_exit_is_parser_error_names_2() -> None:
     body = (
         "def main() -> int:\n    parser = argparse.ArgumentParser()\n    if X:\n        parser.error('no')\n"
+        "    return 0\n"
+        'if __name__ == "__main__":\n    run_main(main)\n'
+    )
+    assert problems({"tools/tool.py": script(f"A tool.\n\n{TABLE}", body)}) == []
+    found = problems({"tools/tool.py": script("A tool.\n\nExit status:\n  0  done\n  1  failed\n", body)})
+    assert len(found) == 1, found
+    assert found[0].startswith("tools/tool.py can exit 2, which its exit table does not name"), found
+
+
+def test_an_entry_point_whose_only_usage_exit_is_an_attribute_parser_s_error_names_2() -> None:
+    body = (
+        "def main() -> int:\n    self.cli = argparse.ArgumentParser()\n    if X:\n        self.cli.error('no')\n"
         "    return 0\n"
         'if __name__ == "__main__":\n    run_main(main)\n'
     )

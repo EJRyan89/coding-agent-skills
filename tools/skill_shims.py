@@ -1,7 +1,7 @@
 """Keep each repository skill's .agents/skills shim in step with the skill under .claude/skills.
 
 Usage:
-  python tools/skill_shims.py           report every missing, stale, or stray shim file
+  python tools/skill_shims.py           report every missing, stale, or stray shim file, each on a STALE <file> line
   python tools/skill_shims.py --write   write each missing or stale shim file from its skill's frontmatter
 
 Codex and Copilot CLI find this repository's own skills through .agents/skills/<name>/. A shim folder holds SKILL.md,
@@ -22,7 +22,7 @@ UTF-8 included, ends the run with a FAILED line.
 
 Exit status:
   0  every shim is current, or --write wrote them
-  1  a missing, stale, or stray shim file, or a last line FAILED <reason>
+  1  a STALE line for a missing, stale, or stray shim file, or a last line FAILED <reason>
   2  a usage error, or a FAILED line when a file cannot be read or written
 """
 
@@ -249,7 +249,7 @@ def main(argv: list[str] | None = None) -> int:
     for path in written:
         print(f"WROTE {path.as_posix()}")
     for problem in found:
-        print(problem)
+        print(f"STALE {problem}")
     return 1 if found else 0
 
 
