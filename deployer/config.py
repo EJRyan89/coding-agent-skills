@@ -6,6 +6,8 @@ import os
 import re
 from pathlib import Path
 
+import file_presence
+
 from . import fsops, platform_support, state_files
 from .arguments import CONFIGURE_COMMAND_LINE
 from .errors import STATE_FILE, DeployError, os_error, see_recovery
@@ -162,7 +164,15 @@ def _validate_absolute_directory(key: str, value: str) -> None:
         raise DeployError(f"ERROR: {key} must be {platform_support.ABSOLUTE_PATH} (got: {value})")
     if platform_support.is_filesystem_root(value):
         raise DeployError(f"ERROR: {key} must not be a filesystem root (got: {value})")
-    if not Path(value).is_dir():
+    # A stat that fails is refused with its reason, and something other than a folder as not a directory, never as
+    # missing. The refusal is one line, since validate_directories' callers add the step.
+    try:
+        present = file_presence.is_directory(Path(value))
+    except file_presence.NotADirectory:
+        raise DeployError(f"ERROR: {key} is not a directory: {value}") from None
+    except OSError as exc:
+        raise DeployError(os_error(exc, f"tell whether the {key} directory is there").lines[0]) from exc
+    if not present:
         raise DeployError(f"ERROR: {key} directory does not exist: {value}")
     try:
         canonical = platform_support.canonical_directory(value)
