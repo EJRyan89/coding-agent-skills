@@ -25,6 +25,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
 import file_presence
+import json_writer
 import process_identity
 import review_batches
 import review_canary
@@ -7109,6 +7110,18 @@ class ReviewerRootTests(PipelineFixture):
             "the reviewer is not what prepare materialized: files it does not list: .claude/agents/approve.md, "
             "notes.md",
         )
+
+    def test_a_reviewer_check_whose_refusal_the_json_writer_refuses_fails_the_run(self) -> None:
+        # A check words its refusal through json_writer, which refuses a name it cannot write, such as one holding a
+        # lone surrogate: that is the run failing, never a traceback.
+        ready = self.prepare()
+        for role in ready["roles"]:
+            self.write_role_result(role)
+        refused = json_writer.JsonWriteRefused("the value holds a lone surrogate U+D800, which UTF-8 cannot encode")
+        with mock.patch.object(review_dispatch, "_snapshot_files", side_effect=refused):
+            self.assert_reviewer_refused(
+                Path(ready["run"]), f"the reviewer is not what prepare materialized: {refused}"
+            )
 
     def test_a_reviewer_file_a_codex_reviewer_rewrites_fails_the_run(self) -> None:
         # A Codex reviewer runs with no guard, so it can rewrite the files the record would name.

@@ -58,6 +58,15 @@ from review_specialists import SpecialistError, check, load_materialized_manifes
 
 # The record of what prepare wrote under a reviewer root, which lists every other file there.
 MATERIALIZATION_FILE = "materialization.json"
+# What the reviewer's checks raise when a file is not what prepare materialized, a refusal they word through
+# json_writer, as of a name a lone surrogate holds, included.
+REVIEWER_REFUSALS: tuple[type[Exception], ...] = (
+    SpecialistError,
+    RuntimeContractError,
+    PersistenceError,
+    OSError,
+    *json_writer.CONTENT_ERRORS,
+)
 
 
 def verify_reviewer(state: RunState) -> None:
@@ -85,7 +94,7 @@ def verify_reviewer(state: RunState) -> None:
             load_materialized_manifest(root)
         metadata = read_json(root / MATERIALIZATION_FILE)
         added = sorted(_snapshot_files(root) - {*metadata["source_hashes"], MATERIALIZATION_FILE})
-    except (SpecialistError, RuntimeContractError, PersistenceError, OSError) as exc:
+    except REVIEWER_REFUSALS as exc:
         raise PipelineError(f"{selector}: the reviewer is not what prepare materialized: {exc}") from exc
     if added:
         raise PipelineError(
