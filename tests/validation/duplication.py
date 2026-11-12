@@ -357,13 +357,15 @@ def _compares_git_name(
     refused: `==` or `!=` between `.git` and anything but name_key's result; a membership test of anything but that
     result in a list, tuple, or set display holding `.git`, or in frozenset, set, tuple, or list called on one, or of
     `.git` itself in anything, as `".git" in parts`; and str.startswith or str.endswith given `.git`, alone or in such
-    a collection. An exact test joined by `and` to a
-    name_key comparison with `.git` only narrows what the folder is asked about, as folder_walk's `is_checkout_marker`
-    does, and is not refused.
+    a collection. A comparison or a membership test joined by `and` to a name_key comparison with `.git` only narrows
+    what the folder is asked about, as folder_walk's `is_checkout_marker` does, and is not refused; a startswith or
+    endswith call is refused even there.
 
-    The limit: membership in a collection held under a module-level name, such as a walk's skip list
+    The limits: membership in a collection held under a module-level name, such as a walk's skip list
     `frozenset({".git", "node_modules"})`, is not read, since the collection's other names are matched exactly by
-    design and the policy cannot tell a skip list from a test for the Git directory."""
+    design and the policy cannot tell a skip list from a test for the Git directory; and a match statement's case
+    patterns, such as `case ".git":` or `case ".git" | ".hg":`, are not read yet, a form no module uses, filed in the
+    backlog to be read here."""
     gits = _held_git_names(resolver)
     if isinstance(node, ast.Call):
         return _calls_git_affix(node, resolver, gits)

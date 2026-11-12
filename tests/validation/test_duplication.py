@@ -210,11 +210,17 @@ class DuplicatedDefinitionPolicy(unittest.TestCase):
                 # An annotated binding, and a name unpacked from a tuple, are bindings too.
                 f"tools/annotated.py:2 binds LIMIT {again.format(first=1)}",
                 f"tools/annotated.py:3 binds OTHER {again.format(first=2)}",
+                # Two separate ifs may both run, so their branches are no alternatives to each other.
+                f"tools/separate.py:4 binds FLAG {again.format(first=2)}",
+                # A with block runs as the module does, so it holds no branch.
+                f"tools/within.py:3 binds HELD {again.format(first=1)}",
             ],
             self.problems(
                 {
                     "skills/s/scripts/inventory.py": 'SENTENCE_END = r"[.!?]"\nSENTENCE_END = r"[.;!?]"\n',
                     "tools/annotated.py": "LIMIT: int = 1\nLIMIT, OTHER = 2, 3\nOTHER = 4\n",
+                    "tools/separate.py": "if first:\n    FLAG = 1\nif second:\n    FLAG = 2\n",
+                    "tools/within.py": "HELD = 1\nwith context:\n    HELD = 2\n",
                     "deployer/branch.py": 'import sys\nMODE = "one"\nif sys.platform == "win32":\n    MODE = "two"\n',
                     "deployer/sequence.py": (
                         "try:\n    VALUE = 1\nexcept OSError:\n    VALUE = 2\nelse:\n    VALUE = 3\n"
@@ -650,8 +656,14 @@ class SharedFactPolicy(unittest.TestCase):
             ('GIT = ".git"\n\n\ndef check(name):\n    return name == GIT\n', 5),
             ('GIT: str = ".git"\n\n\ndef check(name):\n    return name.startswith(GIT)\n', 5),
             ('GIT = ".git"\n\n\ndef check(name):\n    return name in (GIT, ".hg")\n', 5),
-            # An exact test joined by `and` to anything but a keyed one decides by itself.
+            # An exact test joined by `and` to anything but a keyed one decides by itself, and a prefix test is refused
+            # even beside a keyed one.
             ('found = name.casefold() == ".git" and folder.is_dir()\n', 1),
+            (
+                "from path_keys import name_key\n\n"
+                'found = name.startswith(".git") and name_key(name, folder) == ".git"\n',
+                3,
+            ),
             # A function of the module's own that shares name_key's name asks no file system.
             ('def name_key(name, folder):\n    return name\n\n\nfound = name_key(name, folder) == ".git"\n', 5),
         ):
