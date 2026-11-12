@@ -572,6 +572,18 @@ class InsertSectionTests(unittest.TestCase):
         notes = f"{INTRO}\n## v\u0663.0.0\n"
         self.assertEqual(f"{notes}\n## v0.1.0\n", release_notes.insert_section(notes, "v0.1.0", "## v0.1.0\n"))
 
+    def test_a_version_heading_inside_a_fence_is_neither_a_section_nor_the_place_to_insert(self) -> None:
+        fenced = f"{INTRO}\n```text\n## v0.2.0\n## v0.1.0\n```\n\n"
+        notes = f"{fenced}## v0.1.0\n\nOld.\n"
+        self.assertEqual(
+            f"{fenced}## v0.2.0\n\n## v0.1.0\n\nOld.\n", release_notes.insert_section(notes, "v0.2.0", "## v0.2.0\n")
+        )
+        self.assertEqual(
+            f"{fenced.rstrip()}\n\n## v0.1.0\n", release_notes.insert_section(fenced, "v0.1.0", "## v0.1.0\n")
+        )
+        with self.assertRaises(release_notes.ReleaseNotesError):
+            release_notes.insert_section(notes, "v0.1.0", "## v0.1.0\n")
+
 
 class ReleaseProcedureTests(unittest.TestCase):
     def test_the_release_procedure_writes_the_section_before_tagging(self) -> None:

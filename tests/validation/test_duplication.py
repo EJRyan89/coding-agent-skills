@@ -201,6 +201,9 @@ class DuplicatedDefinitionPolicy(unittest.TestCase):
             [
                 # A binding in a module-level if or try block binds the module's name.
                 f"deployer/branch.py:4 binds MODE {again.format(first=2)}",
+                # A try's else runs after its body, and its finally after every branch, so neither is an alternative.
+                f"deployer/sequence.py:6 binds VALUE {again.format(first=2)}",
+                f"deployer/sequence.py:8 binds VALUE {again.format(first=2)}",
                 # Two top-level patterns under one name, as audit-skill's inventory once held SENTENCE_END.
                 f"skills/s/scripts/inventory.py:2 binds SENTENCE_END {again.format(first=1)}",
                 f"tests/validation/caught.py:5 binds FALLBACK {again.format(first=1)}",
@@ -213,6 +216,10 @@ class DuplicatedDefinitionPolicy(unittest.TestCase):
                     "skills/s/scripts/inventory.py": 'SENTENCE_END = r"[.!?]"\nSENTENCE_END = r"[.;!?]"\n',
                     "tools/annotated.py": "LIMIT: int = 1\nLIMIT, OTHER = 2, 3\nOTHER = 4\n",
                     "deployer/branch.py": 'import sys\nMODE = "one"\nif sys.platform == "win32":\n    MODE = "two"\n',
+                    "deployer/sequence.py": (
+                        "try:\n    VALUE = 1\nexcept OSError:\n    VALUE = 2\nelse:\n    VALUE = 3\n"
+                        "finally:\n    VALUE = 4\n"
+                    ),
                     "tests/validation/caught.py": (
                         'FALLBACK = "a"\ntry:\n    import tomllib\nexcept ImportError:\n    FALLBACK = "b"\n'
                     ),
@@ -227,6 +234,15 @@ class DuplicatedDefinitionPolicy(unittest.TestCase):
                 {
                     # An annotation alone binds nothing, a function's own name is its scope's, an augmented
                     # assignment updates rather than repeats a binding, and a test suite is not read.
+                    # Bindings in different branches of one if, or in a try's body and its except handlers, are
+                    # alternatives one run picks between.
+                    "tools/branches.py": (
+                        "import sys\n"
+                        "if sys.platform == 'win32':\n    MODE = 'a'\nelif sys.platform == 'darwin':\n    MODE = 'b'\n"
+                        "else:\n    MODE = 'c'\n"
+                        "try:\n    import tomllib\n    READER = tomllib\nexcept ImportError:\n    READER = None\n"
+                        "except OSError:\n    READER = False\n"
+                    ),
                     "tools/once.py": (
                         "LIMIT: int\nLIMIT = 1\nNAMES = []\nNAMES += ['a']\nholder.VALUE = 1\nholder.VALUE = 2\n"
                         "\n\ndef read():\n    LIMIT = 2\n    LIMIT = 3\n    return LIMIT\n"
@@ -626,6 +642,11 @@ class SharedFactPolicy(unittest.TestCase):
             ('listed = ".git" in names\n', 1),
             ('found = name.startswith(".git")\n', 1),
             ('found = path.name.endswith((".hg", ".git"))\n', 1),
+            # A collection built by a builtin from a display holds what the display holds.
+            ('found = name in frozenset({".git", ".hg"})\n', 1),
+            ('found = name in set((".git",))\n', 1),
+            ('found = name not in tuple([".git"])\n', 1),
+            ('found = name.endswith(tuple([".hg", ".git"]))\n', 1),
             ('GIT = ".git"\n\n\ndef check(name):\n    return name == GIT\n', 5),
             ('GIT: str = ".git"\n\n\ndef check(name):\n    return name.startswith(GIT)\n', 5),
             ('GIT = ".git"\n\n\ndef check(name):\n    return name in (GIT, ".hg")\n', 5),
@@ -644,6 +665,7 @@ class SharedFactPolicy(unittest.TestCase):
             'other = ".git" != platform_support.name_key(common.name, common.parent)\n'
             'also = path_keys.name_key(part, checkout) == ".git"\n'
             'keyed = name_key(name, folder) in (".git", ".hg")\n'
+            'built = name_key(name, folder) in frozenset({".git"})\n'
             # An exact test that only spares the folder a question before name_key decides, as folder_walk's is.
             'GIT = ".git"\nmarker = name.casefold() == GIT and name_key(name, folder) == GIT\n'
             # Other operators and other names are not a name compared with .git.
@@ -662,6 +684,8 @@ class SharedFactPolicy(unittest.TestCase):
             ],
             self.problems({canary: 'OTHER = ".git"\nOTHER = ".hg"\nfound = name == OTHER\n'}),
         )
+        # A name an augmented assignment binds again holds a value no literal shows, so it is not read as `.git`.
+        self.assertEqual([], self.problems({canary: 'GIT = ".git"\nGIT += "x"\nfound = name == GIT\n'}))
 
     def test_the_owner_and_the_suites_may_hold_the_fact(self) -> None:
         literal = 'PATTERNS = ("test_*", "*_test")\nOPTIONS = ("-c", "-C", "--git-dir", "--work-tree")\n'

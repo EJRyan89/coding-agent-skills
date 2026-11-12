@@ -171,16 +171,15 @@ class _Refusals:
         bound = value.value.id
         node = self.parents.get(call)
         while node is not None and not isinstance(node, DEFINITIONS):
-            if isinstance(node, ast.ExceptHandler) and node.name == bound:
+            # A bare `except:` binds no name, so only a clause with a type can bind the one the lines are read from.
+            if isinstance(node, ast.ExceptHandler) and node.name == bound and node.type is not None:
                 caught = node.type.elts if isinstance(node.type, ast.Tuple) else [node.type]
                 rebound = any(
                     isinstance(child, ast.Name) and child.id == bound and isinstance(child.ctx, ast.Store)
                     for statement in node.body
                     for child in ast.walk(statement)
                 )
-                return not rebound and all(
-                    expression is not None and self.called(expression) in self.refusals for expression in caught
-                )
+                return not rebound and all(self.called(expression) in self.refusals for expression in caught)
             node = self.parents.get(node)
         return False
 

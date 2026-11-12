@@ -301,13 +301,18 @@ def last_release_before(root: Path, ref: str) -> str:
 
 
 def insert_section(notes: str, version: str, section: str) -> str:
-    """The notes with the section above the newest version's section, or at the end when there is none."""
-    if re.search(rf"^## {re.escape(version)}[ \t]*$", notes, re.MULTILINE):
+    """The notes with the section above the newest version's section, or at the end when there is none. A heading-shaped
+    line inside a fence is the fence's text, as GitHub renders it, so it is neither a version's section nor the place
+    the new one goes."""
+    lines = notes.split("\n")
+    fenced = {index for fence in find_fences(lines) for index in fence.lines()}
+    headings = [index for index, line in enumerate(lines) if index not in fenced and VERSION_HEADING.fullmatch(line)]
+    if any(re.fullmatch(rf"## {re.escape(version)}[ \t]*", lines[index]) for index in headings):
         raise ReleaseNotesError(f"{UPGRADE_NOTES} already has a ## {version} section")
-    newest = VERSION_HEADING.search(notes)
-    if newest is None:
+    if not headings:
         return notes.rstrip("\n") + "\n\n" + section
-    return notes[: newest.start()] + section + "\n" + notes[newest.start() :]
+    start = sum(len(line) + 1 for line in lines[: headings[0]])
+    return notes[:start] + section + "\n" + notes[start:]
 
 
 def missing_entries(root: Path, version: str, start: str, end: str) -> list[SourcedEntry]:

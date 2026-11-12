@@ -355,8 +355,9 @@ def _compares_git_name(
 
     `.git` is the literal, or a module-level name the module binds once to it, such as `GIT = ".git"`. The forms
     refused: `==` or `!=` between `.git` and anything but name_key's result; a membership test of anything but that
-    result in a list, tuple, or set display holding `.git`, or of `.git` itself in anything, as `".git" in parts`; and
-    str.startswith or str.endswith given `.git`, alone or in a tuple display. An exact test joined by `and` to a
+    result in a list, tuple, or set display holding `.git`, or in frozenset, set, tuple, or list called on one, or of
+    `.git` itself in anything, as `".git" in parts`; and str.startswith or str.endswith given `.git`, alone or in such
+    a collection. An exact test joined by `and` to a
     name_key comparison with `.git` only narrows what the folder is asked about, as folder_walk's `is_checkout_marker`
     does, and is not refused.
 
@@ -365,7 +366,7 @@ def _compares_git_name(
     design and the policy cannot tell a skip list from a test for the Git directory."""
     gits = _held_git_names(resolver)
     if isinstance(node, ast.Call):
-        return _calls_git_affix(node, gits)
+        return _calls_git_affix(node, resolver, gits)
     if not isinstance(node, ast.Compare) or _narrows_keyed_test(node, resolver, gits):
         return False
     return any(_exact_git_test(test, resolver, gits) for test in _comparisons(node))
@@ -402,20 +403,35 @@ def _exact_git_test(
             for side, other in ((first, second), (second, first))
         )
     if isinstance(operator, (ast.In, ast.NotIn)):
-        listed_git = isinstance(second, (ast.List, ast.Tuple, ast.Set)) and any(
-            _is_git(member, gits) for member in second.elts
-        )
+        listed_git = any(_is_git(member, gits) for member in _collection_members(second, resolver) or [])
         return _is_git(first, gits) or (listed_git and not _keyed_by_folder(first, resolver))
     return False
 
 
-def _calls_git_affix(node: ast.Call, gits: frozenset[str]) -> bool:
-    """Whether the call is str.startswith or str.endswith given `.git`, alone or in a tuple display."""
+def _calls_git_affix(node: ast.Call, resolver: CallableResolver, gits: frozenset[str]) -> bool:
+    """Whether the call is str.startswith or str.endswith given `.git`, alone or in a collection."""
     if _called_name(node) not in AFFIX_TESTS or not node.args:
         return False
     affix = node.args[0]
-    affixes = affix.elts if isinstance(affix, ast.Tuple) else [affix]
+    affixes = _collection_members(affix, resolver) or [affix]
     return any(_is_git(member, gits) for member in affixes)
+
+
+# The builtins that build a collection from the display they are given, as `frozenset({".git"})` does.
+COLLECTION_BUILDERS = frozenset({"frozenset", "set", "tuple", "list"})
+
+
+def _collection_members(node: ast.expr, resolver: CallableResolver) -> list[ast.expr] | None:
+    """The members of a list, tuple, or set display, or of one a collection builtin is called on, through any number
+    of such calls; None for anything else."""
+    while (
+        isinstance(node, ast.Call)
+        and resolver.name(node.func) in COLLECTION_BUILDERS
+        and len(node.args) == 1
+        and not node.keywords
+    ):
+        node = node.args[0]
+    return list(node.elts) if isinstance(node, (ast.List, ast.Tuple, ast.Set)) else None
 
 
 def _narrows_keyed_test(node: ast.Compare, resolver: CallableResolver, gits: frozenset[str]) -> bool:
@@ -601,16 +617,56 @@ def _restatement_problems(
     return found, problems
 
 
+# Where a module-level statement runs: for each if or try that holds it, by node identity, the branch it is in. An if's
+# body and its else are branches 0 and 1; a try's body and its else are branch 0, since the else runs only after the
+# body, and each except handler is a branch of its own. A with block, and a try's finally, which runs after whichever
+# branch ran, add none.
+Branches = tuple[tuple[int, int], ...]
+
+
+def _module_bindings(body: list[ast.stmt], branches: Branches = ()) -> Iterator[tuple[ast.stmt, Branches]]:
+    """Each statement that runs at module level, the blocks module_statements reads included, with its branches."""
+    for node in body:
+        yield node, branches
+        within = (*branches, (id(node), 0))
+        blocks: list[tuple[list[ast.stmt], Branches]]
+        if isinstance(node, ast.If):
+            blocks = [(node.body, within), (node.orelse, (*branches, (id(node), 1)))]
+        elif isinstance(node, (ast.Try, ast.TryStar)):
+            handlers = [
+                (handler.body, (*branches, (id(node), 1 + index))) for index, handler in enumerate(node.handlers)
+            ]
+            blocks = [(node.body, within), *handlers, (node.orelse, within), (node.finalbody, branches)]
+        elif isinstance(node, ast.With):
+            blocks = [(node.body, branches)]
+        else:
+            blocks = []
+        for block, held in blocks:
+            yield from _module_bindings(block, held)
+
+
+def _exclusive(first: Branches, second: Branches) -> bool:
+    """Whether two statements sit in different branches of one if or try, so one run binds at most one of them."""
+    for (node, branch), (other, other_branch) in zip(first, second, strict=False):
+        if node != other:
+            return False
+        if branch != other_branch:
+            return True
+    return False
+
+
 def _rebound_names(name: str, tree: ast.Module) -> list[str]:
     """Each module-level name an assignment or an annotated assignment binds after another already bound it, in a
     statement at the top or in a module-level if, try, or with block, as module_statements reads them.
 
     The later binding silently replaces the first for every caller, as a second SENTENCE_END once replaced the
     documented one in audit-skill's inventory. Ruff's F811 reports a function or an import defined again, never an
-    assignment, so this reads assignments only; an annotation without a value binds nothing."""
-    first: dict[str, int] = {}
+    assignment, so this reads assignments only; an annotation without a value binds nothing. Bindings in different
+    branches of one if, or in a try's body and one of its except handlers, are alternatives a run picks between, as a
+    platform's value or a fallback when an import fails, so neither replaces the other and they are not reported."""
+    earlier: dict[str, list[tuple[int, Branches]]] = {}
     found: list[str] = []
-    for statement in module_statements(tree.body):
+    for statement, branches in _module_bindings(tree.body):
         if isinstance(statement, ast.Assign):
             targets = statement.targets
         elif isinstance(statement, ast.AnnAssign) and statement.value is not None:
@@ -621,13 +677,14 @@ def _rebound_names(name: str, tree: ast.Module) -> list[str]:
             for node in ast.walk(target):
                 if not (isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store)):
                     continue
-                if node.id in first:
+                bindings = earlier.setdefault(node.id, [])
+                replaced = next((line for line, other in bindings if not _exclusive(other, branches)), None)
+                if replaced is not None:
                     found.append(
-                        f"{name}:{node.lineno} binds {node.id} again at module level after line {first[node.id]}, "
+                        f"{name}:{node.lineno} binds {node.id} again at module level after line {replaced}, "
                         "which replaces the first value for every caller; keep one binding"
                     )
-                else:
-                    first[node.id] = node.lineno
+                bindings.append((node.lineno, branches))
     return found
 
 
