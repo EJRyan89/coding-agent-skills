@@ -15,7 +15,7 @@ from collections import defaultdict
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath, PureWindowsPath
-from typing import TextIO, overload
+from typing import TextIO, TypeVar, overload
 
 import file_presence
 import json_reader
@@ -390,10 +390,45 @@ def _unread_start(words: Sequence[str | None]) -> set[str]:
     return {f"{UNREAD_PROGRAM}{' '.join(word if word is not None else '<value>' for word in words)}"}
 
 
-@functools.cache
+Primed = TypeVar("Primed")
+
+# What each PowerShell script a start-up runs has been read to, for this process, by _powershell_script_reading or
+# prime. Each reading is the one powershell_readings gives the script, so a reading held here is never replaced.
+_SCRIPT_READINGS: dict[str, PowerShellReading] = {}
+
+# The texts each prime collects while it runs a read: a script _powershell_script_reading lacks is added to the last
+# list rather than read, and the read is run again once prime has read them all in one pwsh start.
+_DEFERRED: list[list[str]] = []
+
+
 def _powershell_script_reading(script: str) -> PowerShellReading:
     """What one PowerShell script a start-up runs, read once for each text in a validation run."""
-    return powershell_readings([script])[0]
+    if (reading := _SCRIPT_READINGS.get(script)) is not None:
+        return reading
+    if _DEFERRED:
+        # Read as running nothing until prime runs the read again with the script read.
+        _DEFERRED[-1].append(script)
+        return PowerShellReading(frozenset(), ())
+    reading = _SCRIPT_READINGS[script] = powershell_readings([script])[0]
+    return reading
+
+
+def prime(read: Callable[[], Primed]) -> Primed:
+    """What `read` gives once every PowerShell script it reaches through _powershell_script_reading is held in this
+    process's readings: run it, deferring each script not yet read, read those in one powershell_readings call, which
+    is one pwsh start for them all, and run it again until it defers none. A script a deferred script starts is read
+    the same way before it, so a nesting takes a pwsh start for each level rather than one for each script. The
+    readings are what a single source's call gives, so priming changes no result, only how many times pwsh starts."""
+    while True:
+        _DEFERRED.append([])
+        try:
+            result = read()
+        finally:
+            deferred = _DEFERRED.pop()
+        if not deferred:
+            return result
+        texts = list(dict.fromkeys(deferred))
+        _SCRIPT_READINGS.update(zip(texts, prime(functools.partial(powershell_readings, texts)), strict=True))
 
 
 class _TimeKeyword:

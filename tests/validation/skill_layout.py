@@ -22,7 +22,7 @@ from markdown_sections import EXECUTABLE_FENCES, markdown_section
 from path_containment import within
 from skill_menu import PLUGIN_HOOKS, PLUGIN_MANIFEST
 from skill_roots import SKILL_CORE
-from skill_scripts import powershell_readings, powershell_script_commands
+from skill_scripts import powershell_script_commands
 from suite_names import is_suite_name
 from validation_support import (
     CODE_SPAN,
@@ -220,15 +220,16 @@ def own_needs(root: Path, name: str) -> set[str]:
 def script_git_subcommands(script: Path) -> set[str]:
     """The git subcommands one of a skill's scripts runs, by ejryan89-skill-core's git_subcommands, the reader
     audit-skill's runtime-support derivation shares: a Bash script's, a PowerShell script's as powershell_readings
-    lists its commands, and a Python script's git calls; any other file runs none this reads."""
+    lists its commands, read once for each text in a validation run as powershell_script_commands holds it, and a
+    Python script's git calls; any other file runs none this reads."""
     import runtime_support
 
     suffix = script.suffix.casefold()
     if suffix in (".sh", ".bash"):
         return git_subcommands.bash_git_subcommands(script.read_text(encoding="utf-8-sig"), powershell_script_commands)
     if suffix == ".ps1":
-        (reading,) = powershell_readings([script.read_text(encoding="utf-8-sig")])
-        return git_subcommands.powershell_git_subcommands(reading.commands, powershell_script_commands)
+        commands = powershell_script_commands(script.read_text(encoding="utf-8-sig"))
+        return git_subcommands.powershell_git_subcommands(commands, powershell_script_commands)
     if suffix == ".py":
         return runtime_support.python_git_subcommands(script.read_text(encoding="utf-8"))
     return set()

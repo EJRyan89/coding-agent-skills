@@ -7,6 +7,7 @@ the policies that read these, so that suite fits its shards.
 from __future__ import annotations
 
 import ast
+import functools
 import sys
 import unittest
 from pathlib import Path
@@ -22,7 +23,7 @@ import powershell_commands
 import skill_scripts
 import toolchain
 from command_wrappers import UNREAD_PROGRAM
-from skill_scripts import CommandReader, shell_commands
+from skill_scripts import CommandReader, PowerShellReading, shell_commands
 
 
 def shell_git_subcommands(script: str) -> set[str]:
@@ -312,18 +313,19 @@ def test_the_command_policy_reads_a_python_list_s_shell_script_among_its_options
 
 # A start-up of pwsh or Windows PowerShell runs the script its -Command, -CommandWithArgs, or Windows PowerShell's
 # first positional word holds; the policy reads that script's commands as PowerShell's parser reads them.
-@pytest.mark.parametrize(
-    "script",
-    [
-        "pwsh -Command 'jq .'",
-        "pwsh -NoProfile -c 'jq .'",
-        "powershell 'jq .'",
-        "powershell.exe -ExecutionPolicy Bypass jq .",
-        "pwsh -cwa 'jq $args' .",
-        "env pwsh -c 'jq .'",
-        "pwsh -c 'Invoke-Expression \"jq .\"'",
-    ],
+POWERSHELL_START_UP_SCRIPTS = (
+    "pwsh -Command 'jq .'",
+    "pwsh -NoProfile -c 'jq .'",
+    "powershell 'jq .'",
+    "powershell.exe -ExecutionPolicy Bypass jq .",
+    "pwsh -cwa 'jq $args' .",
+    "env pwsh -c 'jq .'",
+    "pwsh -c 'Invoke-Expression \"jq .\"'",
 )
+
+
+@pytest.mark.usefixtures("primed_bash_scripts")
+@pytest.mark.parametrize("script", POWERSHELL_START_UP_SCRIPTS)
 def test_the_command_policy_reads_the_script_a_powershell_start_up_runs(script: str) -> None:
     assert "jq" in shell_commands(script)
 
@@ -403,23 +405,24 @@ def test_the_command_policy_reads_the_script_a_powershell_source_starts_powershe
 
 # A git command inside a script a command starts is read for its subcommand too: eval's, a shell's -c, the script a
 # pwsh or Windows PowerShell start-up runs, and what that script starts in turn.
-@pytest.mark.parametrize(
-    "script",
-    [
-        "bash -c 'git push'",
-        "sh -ec 'git -C dir push'",
-        "eval 'git push'",
-        "eval git push",
-        "env bash -c 'git push'",
-        "find . -exec bash -c 'git push' {} ';'",
-        "x=$(bash -c 'git push')",
-        "pwsh -c 'git push'",
-        "powershell -NoProfile -Command 'git -C $directory push'",
-        "pwsh -c 'bash -c \"git push\"'",
-        "pwsh -c 'Start-Process git -ArgumentList push'",
-        "pwsh -c \"pwsh -c 'git push'\"",
-    ],
+STARTED_GIT_PUSH_SCRIPTS = (
+    "bash -c 'git push'",
+    "sh -ec 'git -C dir push'",
+    "eval 'git push'",
+    "eval git push",
+    "env bash -c 'git push'",
+    "find . -exec bash -c 'git push' {} ';'",
+    "x=$(bash -c 'git push')",
+    "pwsh -c 'git push'",
+    "powershell -NoProfile -Command 'git -C $directory push'",
+    "pwsh -c 'bash -c \"git push\"'",
+    "pwsh -c 'Start-Process git -ArgumentList push'",
+    "pwsh -c \"pwsh -c 'git push'\"",
 )
+
+
+@pytest.mark.usefixtures("primed_bash_scripts")
+@pytest.mark.parametrize("script", STARTED_GIT_PUSH_SCRIPTS)
 def test_the_git_subcommand_reader_reads_the_git_command_a_started_script_runs(script: str) -> None:
     assert shell_git_subcommands(script) == {"push"}
 
@@ -498,63 +501,75 @@ POWERSHELL_WRAPPED_GIT_PUSH_SOURCES = (
 )
 
 
-def _powershell_git_subcommands(source: str) -> set[str]:
+def _powershell_git_subcommands(reading: PowerShellReading) -> set[str]:
     """The subcommand of each git command a PowerShell source runs, as the runtime-support policy reads it:
     ejryan89-skill-core's git_subcommands over the commands powershell_readings lists."""
-    (reading,) = skill_scripts.powershell_readings([source])
     return git_subcommands.powershell_git_subcommands(reading.commands, skill_scripts.powershell_script_commands)
 
 
 @pytest.mark.parametrize("source", POWERSHELL_WRAPPED_GIT_PUSH_SOURCES)
-def test_the_powershell_reader_reads_the_git_command_a_wrapper_runs(source: str) -> None:
-    assert "git" in skill_scripts.powershell_commands([source])[0]
-    assert _powershell_git_subcommands(source) == {"push"}
+def test_the_powershell_reader_reads_the_git_command_a_wrapper_runs(
+    source: str, powershell_reading: dict[str, PowerShellReading]
+) -> None:
+    assert "git" in powershell_reading[source].programs
+    assert _powershell_git_subcommands(powershell_reading[source]) == {"push"}
 
 
 # Git named by a path is no declared tool's name, so the command policy reads no program of it, but it runs git, so
 # the runtime-support reader reads its subcommand.
-@pytest.mark.parametrize(
-    "source", ["& 'C:/Program Files/Git/cmd/git' push", "C:\\Git\\cmd\\git.exe push", "/usr/bin/git push"]
+POWERSHELL_GIT_PATH_SOURCES = (
+    "& 'C:/Program Files/Git/cmd/git' push",
+    "C:\\Git\\cmd\\git.exe push",
+    "/usr/bin/git push",
 )
-def test_the_powershell_reader_reads_the_git_command_a_path_names(source: str) -> None:
-    assert skill_scripts.powershell_commands([source])[0] == set()
-    assert _powershell_git_subcommands(source) == {"push"}
+
+
+@pytest.mark.parametrize("source", POWERSHELL_GIT_PATH_SOURCES)
+def test_the_powershell_reader_reads_the_git_command_a_path_names(
+    source: str, powershell_reading: dict[str, PowerShellReading]
+) -> None:
+    assert set(powershell_reading[source].programs) == set()
+    assert _powershell_git_subcommands(powershell_reading[source]) == {"push"}
 
 
 # The issue's forms: the program a wrapper or find's action runs is among a PowerShell source's programs, so the
 # declared-tool policy holds it, and a wrapper that runs none, or only looks one up, adds none.
-@pytest.mark.parametrize(
-    ("source", "programs"),
-    [
-        ("env gh pr list", {"env", "gh"}),
-        ("xargs gh pr list", {"xargs", "gh"}),
-        ("find . -exec gh pr list '{}' +", {"find", "gh"}),
-        ("xargs -n $count gh pr list", {"xargs", "gh"}),
-        ("nohup env timeout 5 gh pr list", {"nohup", "env", "timeout", "gh"}),
-        ("command -v gh", {"command"}),
-        ("xargs echo gh", {"xargs", "echo"}),
-        ("env", {"env"}),
-    ],
+POWERSHELL_WRAPPER_PROGRAMS = (
+    ("env gh pr list", {"env", "gh"}),
+    ("xargs gh pr list", {"xargs", "gh"}),
+    ("find . -exec gh pr list '{}' +", {"find", "gh"}),
+    ("xargs -n $count gh pr list", {"xargs", "gh"}),
+    ("nohup env timeout 5 gh pr list", {"nohup", "env", "timeout", "gh"}),
+    ("command -v gh", {"command"}),
+    ("xargs echo gh", {"xargs", "echo"}),
+    ("env", {"env"}),
 )
-def test_the_powershell_reader_reads_the_program_a_wrapper_runs(source: str, programs: set[str]) -> None:
-    assert skill_scripts.powershell_commands([source]) == [programs]
+
+
+@pytest.mark.parametrize(("source", "programs"), POWERSHELL_WRAPPER_PROGRAMS)
+def test_the_powershell_reader_reads_the_program_a_wrapper_runs(
+    source: str, programs: set[str], powershell_reading: dict[str, PowerShellReading]
+) -> None:
+    assert set(powershell_reading[source].programs) == programs
 
 
 # A program a wrapper or find's action runs that no literal names, and a shell or start-up a wrapper runs on a script
 # that is no literal, is refused as unread rather than passed unseen.
-@pytest.mark.parametrize(
-    ("source", "unread"),
-    [
-        ("env $tool", "<value>"),
-        ("xargs $tool pr list", "<value> pr list"),
-        ("find . -exec $tool '{}' +", "<value> {}"),
-        ("env pwsh -c $script", "pwsh -c <value>"),
-        ("env bash -c $script", "bash -c <value>"),
-        ("env --unknown gh", "env --unknown"),
-    ],
+POWERSHELL_UNREAD_WRAPPED_PROGRAMS = (
+    ("env $tool", "<value>"),
+    ("xargs $tool pr list", "<value> pr list"),
+    ("find . -exec $tool '{}' +", "<value> {}"),
+    ("env pwsh -c $script", "pwsh -c <value>"),
+    ("env bash -c $script", "bash -c <value>"),
+    ("env --unknown gh", "env --unknown"),
 )
-def test_the_powershell_reader_refuses_a_wrapped_program_it_cannot_read(source: str, unread: str) -> None:
-    assert f"{UNREAD_PROGRAM}{unread}" in skill_scripts.powershell_commands([source])[0]
+
+
+@pytest.mark.parametrize(("source", "unread"), POWERSHELL_UNREAD_WRAPPED_PROGRAMS)
+def test_the_powershell_reader_refuses_a_wrapped_program_it_cannot_read(
+    source: str, unread: str, powershell_reading: dict[str, PowerShellReading]
+) -> None:
+    assert f"{UNREAD_PROGRAM}{unread}" in powershell_reading[source].programs
 
 
 # A wrapper that runs no git command, or only looks git up, gives no subcommand; find's second action is read apart
@@ -575,16 +590,17 @@ def test_the_git_subcommand_reader_reads_only_the_command_a_wrapper_runs(script:
 
 
 # A started script that runs no git command gives no subcommand, though a word of it is one.
-@pytest.mark.parametrize(
-    "script",
-    [
-        "bash -c 'echo push'",
-        "bash ./push.sh",
-        "eval 'echo git push'",
-        "pwsh -c 'Write-Output push'",
-        "pwsh -File push.ps1 git push",
-    ],
+STARTED_SCRIPTS_RUNNING_NO_GIT = (
+    "bash -c 'echo push'",
+    "bash ./push.sh",
+    "eval 'echo git push'",
+    "pwsh -c 'Write-Output push'",
+    "pwsh -File push.ps1 git push",
 )
+
+
+@pytest.mark.usefixtures("primed_bash_scripts")
+@pytest.mark.parametrize("script", STARTED_SCRIPTS_RUNNING_NO_GIT)
 def test_the_git_subcommand_reader_finds_none_where_a_started_script_runs_no_git(script: str) -> None:
     assert shell_git_subcommands(script) == set()
 
@@ -604,14 +620,15 @@ def test_the_git_subcommand_reader_reads_past_a_quoted_or_escaped_semicolon(scri
 
 
 # A subcommand no literal names is recorded as its word: the Bash text, or UNREAD_WORD for PowerShell's.
-@pytest.mark.parametrize(
-    ("script", "subcommand"),
-    [
-        ("bash -c 'git \"$sub\"'", "$sub"),
-        ("pwsh -c 'git $sub'", powershell_commands.UNREAD_WORD),
-        ("pwsh -c 'Start-Process git -ArgumentList $arguments'", powershell_commands.UNREAD_WORD),
-    ],
+UNNAMED_SUBCOMMAND_SCRIPTS = (
+    ("bash -c 'git \"$sub\"'", "$sub"),
+    ("pwsh -c 'git $sub'", powershell_commands.UNREAD_WORD),
+    ("pwsh -c 'Start-Process git -ArgumentList $arguments'", powershell_commands.UNREAD_WORD),
 )
+
+
+@pytest.mark.usefixtures("primed_bash_scripts")
+@pytest.mark.parametrize(("script", "subcommand"), UNNAMED_SUBCOMMAND_SCRIPTS)
 def test_the_git_subcommand_reader_records_a_subcommand_no_literal_names_as_its_word(
     script: str, subcommand: str
 ) -> None:
@@ -620,60 +637,67 @@ def test_the_git_subcommand_reader_records_a_subcommand_no_literal_names_as_its_
 
 # Start-Process starts pwsh or Windows PowerShell with the script its -ArgumentList holds, in any spelling of the
 # parameters PowerShell binds, as a list, an array, or one string; and its twin, a Bash shell started with -c.
-@pytest.mark.parametrize(
-    ("source", "programs"),
-    [
-        ("Start-Process pwsh -ArgumentList '-Command','jq .'", {"pwsh", "jq"}),
-        ("Start-Process pwsh -ArgumentList '-NoProfile -Command jq .'", {"pwsh", "jq"}),
-        ("Start-Process -FilePath powershell -ArgumentList @('-NoProfile', '-Command', 'jq .')", {"powershell", "jq"}),
-        ("Start-Process pwsh '-c', 'jq .'", {"pwsh", "jq"}),
-        ("Start-Process -FilePath pwsh '-c', 'jq .'", {"pwsh", "jq"}),
-        ("Start-Process -Fi pwsh -Args ('-c jq .')", {"pwsh", "jq"}),
-        ("Start-Process pwsh -Wait -Arg '-c jq .'", {"pwsh", "jq"}),
-        ("Start-Process pwsh -ArgumentList:'-c jq .'", {"pwsh", "jq"}),
-        ("Start-Process -Verb RunAs pwsh '-c jq .'", {"pwsh", "jq"}),
-        ("Start-Process -Verbose pwsh '-c jq .'", {"pwsh", "jq"}),
-        ("saps pwsh -ArgumentList '-Command \"jq .\"'", {"pwsh", "jq"}),
-        # A switch by its alias takes no value, so the program after it is still the program.
-        ("Start-Process -vb pwsh '-c jq .'", {"pwsh", "jq"}),
-        ("Start-Process -db pwsh '-c jq .'", {"pwsh", "jq"}),
-        ("Start-Process -wi pwsh '-c jq .'", {"pwsh", "jq"}),
-        ("Start-Process -cf pwsh '-c jq .'", {"pwsh", "jq"}),
-        ("Start-Process -nnw -Lup pwsh '-c jq .'", {"pwsh", "jq"}),
-        ("Start-Process -ea Stop pwsh '-c jq .'", {"pwsh", "jq"}),
-        ("Start-Process bash -ArgumentList '-c', '\"jq .\"'", {"bash", "jq"}),
-    ],
+START_PROCESS_STARTED_SCRIPTS = (
+    ("Start-Process pwsh -ArgumentList '-Command','jq .'", {"pwsh", "jq"}),
+    ("Start-Process pwsh -ArgumentList '-NoProfile -Command jq .'", {"pwsh", "jq"}),
+    ("Start-Process -FilePath powershell -ArgumentList @('-NoProfile', '-Command', 'jq .')", {"powershell", "jq"}),
+    ("Start-Process pwsh '-c', 'jq .'", {"pwsh", "jq"}),
+    ("Start-Process -FilePath pwsh '-c', 'jq .'", {"pwsh", "jq"}),
+    ("Start-Process -Fi pwsh -Args ('-c jq .')", {"pwsh", "jq"}),
+    ("Start-Process pwsh -Wait -Arg '-c jq .'", {"pwsh", "jq"}),
+    ("Start-Process pwsh -ArgumentList:'-c jq .'", {"pwsh", "jq"}),
+    ("Start-Process -Verb RunAs pwsh '-c jq .'", {"pwsh", "jq"}),
+    ("Start-Process -Verbose pwsh '-c jq .'", {"pwsh", "jq"}),
+    ("saps pwsh -ArgumentList '-Command \"jq .\"'", {"pwsh", "jq"}),
+    # A switch by its alias takes no value, so the program after it is still the program.
+    ("Start-Process -vb pwsh '-c jq .'", {"pwsh", "jq"}),
+    ("Start-Process -db pwsh '-c jq .'", {"pwsh", "jq"}),
+    ("Start-Process -wi pwsh '-c jq .'", {"pwsh", "jq"}),
+    ("Start-Process -cf pwsh '-c jq .'", {"pwsh", "jq"}),
+    ("Start-Process -nnw -Lup pwsh '-c jq .'", {"pwsh", "jq"}),
+    ("Start-Process -ea Stop pwsh '-c jq .'", {"pwsh", "jq"}),
+    ("Start-Process bash -ArgumentList '-c', '\"jq .\"'", {"bash", "jq"}),
 )
+
+
+@pytest.mark.parametrize(("source", "programs"), START_PROCESS_STARTED_SCRIPTS)
 def test_the_command_policy_reads_the_script_start_process_starts_powershell_to_run(
-    source: str, programs: set[str]
+    source: str, programs: set[str], powershell_reading: dict[str, PowerShellReading]
 ) -> None:
-    assert skill_scripts.powershell_commands([source]) == [programs]
+    assert set(powershell_reading[source].programs) == programs
 
 
 # An argument list that is no literal, or holds an item that is not one where the script stands, is refused, as an
 # -EncodedCommand is.
-@pytest.mark.parametrize(
-    ("source", "program", "unread"),
-    [
-        ("Start-Process pwsh -ArgumentList $arguments", "pwsh", "pwsh <value>"),
-        ("Start-Process pwsh -ArgumentList '-c', $script", "pwsh", "pwsh -c <value>"),
-        ("Start-Process -FilePath powershell -ArgumentList @($arguments)", "powershell", "powershell <value>"),
-        ("Start-Process pwsh @options", "pwsh", "pwsh <value>"),
-        ("Start-Process pwsh -ArgumentList '-c \"jq .'", "pwsh", "pwsh <value>"),
-    ],
+START_PROCESS_UNREAD_ARGUMENT_LISTS = (
+    ("Start-Process pwsh -ArgumentList $arguments", "pwsh", "pwsh <value>"),
+    ("Start-Process pwsh -ArgumentList '-c', $script", "pwsh", "pwsh -c <value>"),
+    ("Start-Process -FilePath powershell -ArgumentList @($arguments)", "powershell", "powershell <value>"),
+    ("Start-Process pwsh @options", "pwsh", "pwsh <value>"),
+    ("Start-Process pwsh -ArgumentList '-c \"jq .'", "pwsh", "pwsh <value>"),
 )
+
+
+@pytest.mark.parametrize(("source", "program", "unread"), START_PROCESS_UNREAD_ARGUMENT_LISTS)
 def test_the_command_policy_refuses_a_start_process_argument_list_it_cannot_read(
-    source: str, program: str, unread: str
+    source: str, program: str, unread: str, powershell_reading: dict[str, PowerShellReading]
 ) -> None:
-    assert skill_scripts.powershell_commands([source]) == [{program, f"{UNREAD_PROGRAM}{unread}"}]
+    assert set(powershell_reading[source].programs) == {program, f"{UNREAD_PROGRAM}{unread}"}
 
 
 # A parameter Start-Process does not have, or a prefix of more than one, leaves its program unread rather than guessed.
-@pytest.mark.parametrize(
-    "source", ["Start-Process -Bogus x pwsh '-c jq .'", "Start-Process -W pwsh '-c jq .'", "start -Re x rg foo"]
+START_PROCESS_UNPLACED_PARAMETERS = (
+    "Start-Process -Bogus x pwsh '-c jq .'",
+    "Start-Process -W pwsh '-c jq .'",
+    "start -Re x rg foo",
 )
-def test_the_command_policy_refuses_a_start_process_parameter_it_cannot_place(source: str) -> None:
-    assert skill_scripts.powershell_commands([source]) == [{f"{UNREAD_PROGRAM}{source}"}]
+
+
+@pytest.mark.parametrize("source", START_PROCESS_UNPLACED_PARAMETERS)
+def test_the_command_policy_refuses_a_start_process_parameter_it_cannot_place(
+    source: str, powershell_reading: dict[str, PowerShellReading]
+) -> None:
+    assert set(powershell_reading[source].programs) == {f"{UNREAD_PROGRAM}{source}"}
 
 
 START_PROCESS_LISTING = (
@@ -699,11 +723,17 @@ class StartProcessTable(unittest.TestCase):
 
 # Start-Process with no argument list, or one that runs a file, starts PowerShell running no script the source holds.
 # The policy reads a -File's script in its own file, as it does for `pwsh -File`, never as a script here.
-@pytest.mark.parametrize(
-    "source", ["Start-Process pwsh", "Start-Process pwsh -ArgumentList '-File', './run.ps1', '-c', 'jq .'"]
+START_PROCESS_FILE_OR_NOTHING = (
+    "Start-Process pwsh",
+    "Start-Process pwsh -ArgumentList '-File', './run.ps1', '-c', 'jq .'",
 )
-def test_start_process_starting_powershell_on_a_file_or_nothing_runs_only_powershell(source: str) -> None:
-    assert skill_scripts.powershell_commands([source]) == [{"pwsh"}]
+
+
+@pytest.mark.parametrize("source", START_PROCESS_FILE_OR_NOTHING)
+def test_start_process_starting_powershell_on_a_file_or_nothing_runs_only_powershell(
+    source: str, powershell_reading: dict[str, PowerShellReading]
+) -> None:
+    assert set(powershell_reading[source].programs) == {"pwsh"}
 
 
 @pytest.mark.parametrize(
@@ -723,3 +753,99 @@ def test_start_process_words_are_its_argument_list_joined_and_split_as_windows_d
     arguments: list[str | None], words: list[str | None]
 ) -> None:
     assert powershell_commands.started_process_words(arguments) == words
+
+
+# Every PowerShell source a row above reads, each once.
+POWERSHELL_SOURCES = tuple(
+    dict.fromkeys(
+        [
+            *POWERSHELL_WRAPPED_GIT_PUSH_SOURCES,
+            *POWERSHELL_GIT_PATH_SOURCES,
+            *(source for source, _ in POWERSHELL_WRAPPER_PROGRAMS),
+            *(source for source, _ in POWERSHELL_UNREAD_WRAPPED_PROGRAMS),
+            *(source for source, _ in START_PROCESS_STARTED_SCRIPTS),
+            *(source for source, _, _ in START_PROCESS_UNREAD_ARGUMENT_LISTS),
+            *START_PROCESS_UNPLACED_PARAMETERS,
+            *START_PROCESS_FILE_OR_NOTHING,
+        ]
+    )
+)
+
+
+@pytest.fixture(scope="module")
+def powershell_reading() -> dict[str, PowerShellReading]:
+    """Each PowerShell row's reading, by its source: powershell_readings over every row's source in one call, with each
+    script a source starts primed first, so the module starts pwsh once for its rows and once for each level of the
+    scripts they start, rather than once for each row."""
+    sources = list(POWERSHELL_SOURCES)
+    readings = skill_scripts.prime(functools.partial(skill_scripts.powershell_readings, sources))
+    return dict(zip(sources, readings, strict=True))
+
+
+@pytest.fixture(scope="module")
+def primed_bash_scripts() -> None:
+    """Prime the PowerShell script each Bash row that starts PowerShell runs, as both Bash readers reach it, so those
+    rows read it from the one batched read."""
+    scripts = [
+        *POWERSHELL_START_UP_SCRIPTS,
+        *STARTED_GIT_PUSH_SCRIPTS,
+        *STARTED_SCRIPTS_RUNNING_NO_GIT,
+        *(script for script, _ in UNNAMED_SUBCOMMAND_SCRIPTS),
+    ]
+    skill_scripts.prime(lambda: [(shell_commands(script), shell_git_subcommands(script)) for script in scripts])
+
+
+# One source from each table above, at a different place in the batch: its own single-source read is the batched one.
+SINGLE_SOURCES = (
+    POWERSHELL_WRAPPED_GIT_PUSH_SOURCES[-1],
+    POWERSHELL_GIT_PATH_SOURCES[0],
+    POWERSHELL_WRAPPER_PROGRAMS[4][0],
+    POWERSHELL_UNREAD_WRAPPED_PROGRAMS[3][0],
+    START_PROCESS_STARTED_SCRIPTS[0][0],
+    START_PROCESS_UNREAD_ARGUMENT_LISTS[1][0],
+    START_PROCESS_UNPLACED_PARAMETERS[2],
+    START_PROCESS_FILE_OR_NOTHING[1],
+)
+
+
+def test_the_batched_reading_is_each_source_s_single_reading(powershell_reading: dict[str, PowerShellReading]) -> None:
+    for source in SINGLE_SOURCES:
+        assert skill_scripts.powershell_readings([source]) == [powershell_reading[source]], source
+
+
+class _CountedReadings:
+    """skill_scripts.powershell_readings, recording the sources of each call, each a pwsh start."""
+
+    def __init__(self) -> None:
+        self.calls: list[list[str]] = []
+        self.read = skill_scripts.powershell_readings
+
+    def __call__(self, sources: list[str]) -> list[PowerShellReading]:
+        self.calls.append(list(sources))
+        return self.read(sources)
+
+
+# A Bash script that starts PowerShell on a script that starts PowerShell in turn, and one that starts it once.
+NESTED_STARTS = ("pwsh -c \"pwsh -c 'jq .'\"", "pwsh -c 'rg x'", "pwsh -c 'rg x'")
+
+
+def _nested_programs() -> list[set[str]]:
+    return [shell_commands(script) for script in NESTED_STARTS]
+
+
+def test_prime_reads_each_level_of_started_scripts_in_one_pwsh_start(monkeypatch: pytest.MonkeyPatch) -> None:
+    counted = _CountedReadings()
+    monkeypatch.setattr(skill_scripts, "powershell_readings", counted)
+    monkeypatch.setattr(skill_scripts, "_SCRIPT_READINGS", {})
+    primed = skill_scripts.prime(_nested_programs)
+    # The scripts the Bash scripts start, deferred in one list, whose own started script is read before them.
+    assert counted.calls == [["pwsh -c 'jq .'", "rg x"], ["jq ."], ["pwsh -c 'jq .'", "rg x"]]
+    assert primed == [{"pwsh", "jq"}, {"pwsh", "rg"}, {"pwsh", "rg"}]
+    # Primed, a read starts no pwsh, and gives what the prime gave.
+    assert _nested_programs() == primed
+    assert len(counted.calls) == 3
+    # Unprimed, each script is read on its own, once, and gives the same.
+    monkeypatch.setattr(skill_scripts, "_SCRIPT_READINGS", {})
+    counted.calls.clear()
+    assert _nested_programs() == primed
+    assert counted.calls == [["pwsh -c 'jq .'"], ["jq ."], ["rg x"]]
