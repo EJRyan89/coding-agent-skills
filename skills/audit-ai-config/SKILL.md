@@ -13,10 +13,10 @@ Assess a repository's AI agent configuration across Claude Code, Codex, and Copi
 Confirm the target is a Git repository (`git rev-parse --show-toplevel`); if it is not, ask the user with `AskUserQuestion` which repository to audit. Then run, from anywhere:
 
 ```bash
-{{PYTHON}} -B "${CLAUDE_SKILL_DIR}/scripts/audit_ai_config.py" --root "<repository root>"
+{{PYTHON}} -B "${CLAUDE_SKILL_DIR}/scripts/audit_ai_config.py" --relay --root "<repository root>"
 ```
 
-Add `--json` when the user wants machine-readable output, and `--provenance` when they ask why a finding holds or what guidance a check follows: the report then names, for each check its findings name, the published page and the passage the check rests on, or this source's decision where no page governs it. Cite that source beside the finding.
+Relay its lines as printed: they are the repository's name (`REPOSITORY`), the authority (`AUTHORITY`), the scope status (`SCOPE`), the result, the `SUMMARY` counts per severity and of `INFO` findings per check, and a `FINDING` line, tab-separated as severity, check, path, line, and message, for every `ERROR` and `WARNING` finding and every `limitation` finding, which names a documented limitation that applies to this repository. Run it again without `--relay` for the full Markdown report, which lists every `INFO` finding too, only when the user asks for those; it writes each path's and message's punctuation as character entities, such as `&#46;` for `.`. Use `--json` instead of `--relay` when the user wants machine-readable output. Add `--provenance` when they ask why a finding holds or what guidance a check follows: the relay then adds a `SOURCE` line, tab-separated as check, page or `decision`, and passage, for each check its findings name, naming the published page and the passage the check rests on, or this source's decision where no page governs it. Cite that source beside the finding.
 
 The report states its result on one line, before the `SUMMARY` lines; report by that line, not the exit code:
 
@@ -29,7 +29,7 @@ The report states its result on one line, before the `SUMMARY` lines; report by 
 
 With `--json` there is no `RESULT` line: a non-conforming `authority` is inconclusive, otherwise `exitCode` `1` means errors found.
 
-The Markdown report writes the punctuation of each path and message as character entities, such as `&#46;` for `.`, so the repository's text cannot break its table; relay them as the characters they stand for. Relay the report's authority and scope status, every `ERROR` and `WARNING` finding, and every finding whose check is `limitation`, which names a documented limitation that applies to this repository. For the remaining `INFO` findings, relay only the engine's `SUMMARY` lines, which count findings per severity and `INFO` findings per check; give the full `INFO` list only when the user asks. `${CLAUDE_SKILL_DIR}/references/audit-policy.md` explains what every check covers, `${CLAUDE_SKILL_DIR}/references/report-schema.md` the finding format, `${CLAUDE_SKILL_DIR}/references/generated-layout.md` the generated files a conforming repository holds, and `${CLAUDE_SKILL_DIR}/references/known-limitations.md` the limitations in full; read them only to answer a question the report raises.
+`${CLAUDE_SKILL_DIR}/references/audit-policy.md` explains what every check covers, `${CLAUDE_SKILL_DIR}/references/report-schema.md` the finding format, `${CLAUDE_SKILL_DIR}/references/generated-layout.md` the generated files a conforming repository holds, and `${CLAUDE_SKILL_DIR}/references/known-limitations.md` the limitations in full; read them only to answer a question the report raises.
 
 ## 2. Review instruction content (judgment)
 
