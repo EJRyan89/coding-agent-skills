@@ -31,6 +31,7 @@ import path_keys
 from bounded_process import Finished, run_bounded
 from guard_limits import PROCESS_SECONDS, process_limits_held
 from markdown_sections import CODE_SPAN, markdown_section
+from resident_pwsh import resident_reads
 from worktree_fixture import GUARD_SCRIPT, HUB, REPOSITORY_ROOT, TREE, HubTestCase, isolated_environment
 
 from deployer import platform_support
@@ -62,11 +63,14 @@ class GuardTestCase(HubTestCase):
     """A test that hands the hook one event, as Claude Code does, and reads the guard's decision.
 
     The guard runs in this process unless the class sets `end_to_end`, which starts `tools/hub_guard.py` as the hook
-    does; `EndToEndTests` holds that both give the same decisions.
+    does; `EndToEndTests` holds that both give the same decisions. In this process the guard reads a PowerShell command
+    through this process's resident pwsh unless the class clears `resident_pwsh`, which leaves each read a pwsh start of
+    its own, as the hook's is; tests/tools/test_hub_guard_pwsh.py holds that both read every node sample alike.
     """
 
     script = GUARD_SCRIPT
     end_to_end = False
+    resident_pwsh = True
 
     def setUp(self) -> None:
         super().setUp()
@@ -78,6 +82,8 @@ class GuardTestCase(HubTestCase):
         # Each process a reading starts, git or pwsh, gets a limit no loaded runner reaches rather than what is left of
         # the reading time, so a slow start never ends a reading either; self.asked holds the limits the guard asked.
         self.asked = self.enterContext(process_limits_held())
+        if self.resident_pwsh:
+            self.enterContext(resident_reads())
         # Bash checks every text a test hands the Bash reader at once, when the test ends, rather than one at a time.
         self.bash_texts: list[str] = []
         self.addCleanup(lambda: bash_agreement.assert_reader_agrees(self.bash_texts))
@@ -460,7 +466,10 @@ class UnstatablePlaceTests(GuardTestCase):
 
 class EndToEndTests(GuardTestCase):
     """tools/hub_guard.py started as its own process, as the hook starts it, decides each kind of event as the
-    in-process call the other tests make does, with the same reason and the same notes."""
+    in-process call the other tests make does, with the same reason and the same notes. The in-process call reads a
+    PowerShell command in a pwsh start of its own here, as the hook's own process does."""
+
+    resident_pwsh = False
 
     def both(self, event: Mapping[str, object] | str, environment: dict[str, str] | None = None) -> str | None:
         decisions = []
@@ -1102,6 +1111,8 @@ class HookCommandTests(GuardTestCase):
     all, and with what, without depending on which Python the machine has.
     """
 
+    resident_pwsh = False
+
     def run_hook(
         self, variables: Mapping[str, str] | None = None, note: str = "", status: int = 0
     ) -> tuple[int, list[str] | None]:
@@ -1238,6 +1249,8 @@ class HookCommandUnderPowerShellTests(GuardTestCase):
     `Bash`, PowerShell commands included. PowerShell must parse the command and end it at its own `exit 0`, so a
     Copilot call is never denied by a hook that errored, and never judged by the Bash reader.
     """
+
+    resident_pwsh = False
 
     def run_hook(self, mode: str) -> tuple[subprocess.CompletedProcess[str], bool]:
         pwsh = platform_support.find_pwsh(self.environment["PATH"])
