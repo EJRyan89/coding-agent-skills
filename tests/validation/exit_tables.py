@@ -40,9 +40,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import file_presence
+import python_reader
 import whole_number
 from path_containment import within
-from skill_scripts import EXIT_CALLS, RESULTS_DOC, main_blocks
+from skill_scripts import EXIT_CALLS, PARSER_CLASS, RESULTS_DOC, _is_parser, main_blocks
 from validation_support import (
     REPOSITORY_ROOT,
     UnreadablePython,
@@ -69,7 +70,11 @@ RUNNER_FAILURE = 1
 INTERRUPTED = 130
 # What argparse exits with on a usage error, and the calls that reach it.
 USAGE = 2
-PARSING_CALLS = frozenset({"parse_args", "parse_known_args", "parse_intermixed_args", "error"})
+PARSING_CALLS = frozenset({"parse_args", "parse_known_args", "parse_intermixed_args", "parse_known_intermixed_args"})
+# A parser's own usage error, which exits 2 too. Loggers and other objects have an error method, so a call of it is
+# read as the usage exit only on a receiver skill_scripts reads as a parser, or one the module binds to a parser.
+USAGE_ERROR_CALL = "error"
+SUBPARSER_CALL = "add_parser"
 # The folder below the repository whose Python never runs as a program the repository ships or uses.
 NOT_SCANNED = Path("tests") / "fixtures"
 SKILL_CORE_SCRIPTS = Path("skills") / "ejryan89-skill-core" / "scripts"
@@ -178,10 +183,13 @@ class Module:
     allowance_malformed: bool = False
     # Each property a class of the module defines, by its name.
     properties: dict[str, list[ast.FunctionDef | ast.AsyncFunctionDef]] = field(default_factory=dict)
+    # The names it binds to an argument parser, in any scope.
+    parsers: set[str] = field(default_factory=set)
 
     @classmethod
     def read(cls, path: Path, tree: ast.Module, package: str = "") -> Module:
         module = cls(path, tree, aliases={**relative_aliases(tree, package), **import_aliases(tree)})
+        module.parsers = parser_names(tree, module.aliases)
         for node in tree.body:
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 module.functions[node.name] = node
@@ -211,6 +219,48 @@ class Module:
         module.allowed = allowed or {}
         module.allowance_malformed = allowed is None
         return module
+
+
+def is_parser_annotation(annotation: ast.expr | None, aliases: dict[str, str]) -> bool:
+    """Whether an annotation names argparse's parser, as a name or a quoted one."""
+    if isinstance(annotation, ast.Constant) and isinstance(annotation.value, str):
+        try:
+            annotation = python_reader.parse_expression(annotation.value).body
+        except python_reader.PythonRefused:
+            return False
+    return annotation is not None and qualified_name(annotation, aliases) == PARSER_CLASS
+
+
+def parser_names(tree: ast.Module, aliases: dict[str, str]) -> set[str]:
+    """The names a module binds to an argument parser, in any scope: one assigned argparse.ArgumentParser(...), a
+    subcommand's add_parser(...), or a call of its own function annotated to return a parser, and a parameter or a
+    name annotated as one."""
+    builders = {
+        node.name
+        for node in ast.walk(tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and is_parser_annotation(node.returns, aliases)
+    }
+    found: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.arg) and is_parser_annotation(node.annotation, aliases):
+            found.add(node.arg)
+        elif (
+            isinstance(node, ast.AnnAssign)
+            and isinstance(node.target, ast.Name)
+            and is_parser_annotation(node.annotation, aliases)
+        ):
+            found.add(node.target.id)
+        if not isinstance(node, (ast.Assign, ast.AnnAssign)) or not isinstance(node.value, ast.Call):
+            continue
+        callee = node.value.func
+        if (
+            qualified_name(callee, aliases) == PARSER_CLASS
+            or (isinstance(callee, ast.Attribute) and callee.attr == SUBPARSER_CALL)
+            or (isinstance(callee, ast.Name) and callee.id in builders)
+        ):
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            found.update(target.id for target in targets if isinstance(target, ast.Name))
+    return found
 
 
 def relative_aliases(tree: ast.Module, package: str) -> dict[str, str]:
@@ -533,7 +583,10 @@ class CodeReader:
             name = qualified_name(node.func, module.aliases)
             if name in EXIT_CALLS:
                 self.exits(call_argument(node, 0, "status" if name == "os._exit" else "code"), Scope(module, function))
-            elif isinstance(node.func, ast.Attribute) and node.func.attr in PARSING_CALLS and node.func.attr != "error":
+            elif isinstance(node.func, ast.Attribute) and (
+                node.func.attr in PARSING_CALLS
+                or (node.func.attr == USAGE_ERROR_CALL and _is_parser(node.func.value, module.parsers))
+            ):
                 self.reading.codes.add(USAGE)
                 self.parsing.add(module.path)
             named = self.function_named(module, node.func) if isinstance(node.func, (ast.Name, ast.Attribute)) else None

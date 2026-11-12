@@ -145,6 +145,62 @@ def test_the_reader_follows_returns_through_conditionals_constants_locals_calls_
         assert reader.reading.unread == []
 
 
+PARSER_ERROR_TAIL = "    return 0\nif __name__ == '__main__':\n    run_main(main)\n"
+
+
+@pytest.mark.parametrize(
+    ("body", "codes"),
+    [
+        # A parser's error exits 2 like a usage error, on every receiver read as a parser.
+        ("def main() -> int:\n    check(argparse.ArgumentParser())\n", {0, 1, 2}),
+        ("def main() -> int:\n    built = argparse.ArgumentParser()\n    built.error('no')\n", {0, 1, 2}),
+        ("from argparse import ArgumentParser as P\ndef main() -> int:\n    b = P()\n    b.error('no')\n", {0, 1, 2}),
+        (
+            "def main() -> int:\n    commands = argparse.ArgumentParser().add_subparsers()\n"
+            "    one = commands.add_parser('one')\n    one.error('no')\n",
+            {0, 1, 2},
+        ),
+        (
+            "def build() -> argparse.ArgumentParser:\n    return argparse.ArgumentParser()\n"
+            "def main() -> int:\n    made = build()\n    made.error('no')\n",
+            {0, 1, 2},
+        ),
+        ("def main() -> int:\n    made: 'argparse.ArgumentParser' = get()\n    made.error('no')\n", {0, 1, 2}),
+        ("def main() -> int:\n    self.parser.error('no')\n", {0, 1, 2}),
+        # Every parsing call argparse offers exits 2 on a usage error.
+        ("def main() -> int:\n    got.parse_known_intermixed_args()\n", {0, 1, 2}),
+        # A quoted annotation that does not parse names no parser.
+        ("def main() -> int:\n    made: 'not a (type' = get()\n    made.error('no')\n", {0, 1}),
+        # An error method of anything else, a logger's, is no usage exit.
+        ("import logging\ndef main() -> int:\n    log = logging.getLogger()\n    log.error('no')\n", {0, 1}),
+        ("def main() -> int:\n    logging.error('no')\n", {0, 1}),
+    ],
+)
+def test_a_parser_s_error_is_the_usage_exit_and_another_object_s_error_is_none(body: str, codes: set[int]) -> None:
+    source = f"from console import run_main\nimport argparse\n{body}{PARSER_ERROR_TAIL}"
+    if "check(" in body:
+        source += "def check(given: argparse.ArgumentParser) -> None:\n    given.error('no')\n"
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        path = root / "tool.py"
+        path.write_text(source, encoding="utf-8")
+        reader = exit_tables.read_codes(root, exit_tables.EntryPoint("tool.py", path, ast.parse(source)))
+    assert reader.reading.codes == codes
+    assert reader.reading.unread == []
+
+
+def test_an_entry_point_whose_only_usage_exit_is_parser_error_names_2() -> None:
+    body = (
+        "def main() -> int:\n    parser = argparse.ArgumentParser()\n    if X:\n        parser.error('no')\n"
+        "    return 0\n"
+        'if __name__ == "__main__":\n    run_main(main)\n'
+    )
+    assert problems({"tools/tool.py": script(f"A tool.\n\n{TABLE}", body)}) == []
+    found = problems({"tools/tool.py": script("A tool.\n\nExit status:\n  0  done\n  1  failed\n", body)})
+    assert len(found) == 1, found
+    assert found[0].startswith("tools/tool.py can exit 2, which its exit table does not name"), found
+
+
 def test_the_reader_follows_an_import_into_a_module_beside_the_entry_point() -> None:
     body = "from helpers import run\ndef main() -> int:\n    return run()\n"
     body += "if __name__ == '__main__':\n    run_main(main)\n"
