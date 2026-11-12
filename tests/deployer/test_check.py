@@ -1429,7 +1429,7 @@ class SkillToolLocatorTests(LocatorFixture):
                 self.assertEqual(str(on_path), {**tools.SKILL_TOOLS, **tools.VERIFY_TOOLS}[name].locate())
                 self.assertEqual(str(on_path), self.skill_program(name), "PATH comes first")
 
-    @unittest.skipUnless(platform_support.WINDOWS, "only Windows starts a .bat, .cmd, or .ps1 file through a shell")
+    @unittest.skipUnless(sys.platform == "win32", "only Windows starts a .bat, .cmd, or .ps1 file through a shell")
     def test_a_shell_script_first_on_path_is_neither_reported_nor_run_and_alone_is_reported_missing(self) -> None:
         os.environ["PATHEXT"] = ".COM;.EXE;.BAT;.CMD;.PS1"
         catalogue = {**tools.SKILL_TOOLS, "git": tools.GIT}

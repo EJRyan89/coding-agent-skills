@@ -410,7 +410,7 @@ class EnvironmentPathTests(unittest.TestCase):
                 self.assertIsNone(executable_locator.environment_path(self.VARIABLE, {self.VARIABLE: value}))
 
 
-@unittest.skipUnless(WINDOWS, "only Windows starts a .cmd or .bat file through cmd.exe")
+@unittest.skipUnless(sys.platform == "win32", "only Windows starts a .cmd or .bat file through cmd.exe")
 class ClientsRunNoShellScriptTests(unittest.TestCase):
     """An echo-only `git.cmd` and `gh.cmd` first on PATH, each leaving a mark when it runs: GitClient and GitHubClient
     pass over them, so an argument such as a search pattern a reviewer wrote never reaches cmd.exe as a command."""
