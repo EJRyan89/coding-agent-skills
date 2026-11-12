@@ -25,7 +25,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-cor
 import file_presence
 import versions
 from bounded_process import run_bounded, without_repository_variables
-from executable_locator import find_executables
+from executable_locator import find_executables, find_program
 from job_tree import JobRefused, process_tree
 from path_containment import within
 from process_identity import ProcessStatus, read_pid
@@ -39,7 +39,7 @@ from review_io import (
     read_diff,
     read_json,
 )
-from review_process import same_process, shell_script
+from review_process import same_process
 from review_runtime import (
     READ,
     SOURCE_SNAPSHOT_MANIFEST,
@@ -276,10 +276,10 @@ def find_copilot() -> str:
     """Copilot CLI's own program: the first ejryan89-skill-core's locator finds, on PATH and then in WinGet's Links
     folder, that is no shell script. An npm install puts a `copilot.cmd` shim on PATH, which Windows would start through
     cmd.exe, so the lookup passes over every shell script, wherever it stands on PATH, and never returns one."""
-    found = find_executables("copilot")
-    program = next((path for path in found if not shell_script(path)), None)
+    program = find_program("copilot")
     if program is not None:
         return program
+    found = find_executables("copilot")
     if found:
         raise RuntimeContractError(
             "GitHub Copilot CLI on PATH is a shell script, which Windows starts through a shell: "

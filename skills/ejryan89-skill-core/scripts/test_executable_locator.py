@@ -7,6 +7,8 @@ import shutil
 import sys
 import tempfile
 import unittest
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from unittest import mock
 
@@ -14,6 +16,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import executable_locator
 from executable_locator import find_executable, find_executables, link_folders, located_command, path_programs
+from git_client import MISSING_GIT, GitClient, GitError
+from github_client import MISSING_CLI, GitHubClient, GitHubError
 
 # A name no machine's PATH holds, so only the fixture's folders can answer it.
 PROGRAM = "fixture-locator-tool"
@@ -199,6 +203,65 @@ class LocatedCommandTests(LocatorTestCase):
         self.assertEqual(PROGRAM, raised.exception.filename)
 
 
+class ShellScriptTests(LocatorTestCase):
+    def test_windows_starts_a_bat_cmd_or_ps1_file_through_a_shell_in_any_case(self) -> None:
+        self.assertEqual(frozenset({".bat", ".cmd", ".ps1"}), executable_locator.SHELL_SCRIPT_SUFFIXES)
+        with mock.patch.object(sys, "platform", "win32"):
+            for name in ("git.cmd", "git.CMD", "gh.bat", "gh.Bat", "copilot.ps1", "C:/tools folder/git.cmd"):
+                self.assertTrue(executable_locator.shell_script(name), name)
+            for name in ("git.exe", "git.com", "git", "git.cmd.exe", "C:/cmd folder.cmd/git.exe"):
+                self.assertFalse(executable_locator.shell_script(name), name)
+
+    def test_elsewhere_the_kernel_starts_a_script_and_no_shell_parses_its_command_line(self) -> None:
+        with mock.patch.object(sys, "platform", "linux"):
+            for name in ("git.cmd", "gh.bat", "copilot.ps1", "/tools/git"):
+                self.assertFalse(executable_locator.shell_script(name), name)
+
+    if WINDOWS:
+
+        def scripts(self, folder: Path) -> list[Path]:
+            scripts = [folder / f"{PROGRAM}{suffix}" for suffix in (".bat", ".cmd", ".ps1")]
+            for script in scripts:
+                script.write_text("@echo off\r\n", encoding="utf-8")
+            return scripts
+
+        def test_a_program_passes_over_every_shell_script_before_it_on_path(self) -> None:
+            os.environ["PATHEXT"] = ".COM;.EXE;.BAT;.CMD;.PS1"
+            shims = self.scripts(self.path_folder)
+            later = self.path_folder.parent / "later on path"
+            later.mkdir()
+            program = self.program(later)
+            os.environ["PATH"] = os.pathsep.join((str(self.path_folder), str(later)))
+            self.assertEqual(str(shims[0]).casefold(), (executable_locator.find_executable(PROGRAM) or "").casefold())
+            self.assertEqual(str(program).casefold(), (executable_locator.find_program(PROGRAM) or "").casefold())
+            self.assertEqual(str(program).casefold(), located_command([PROGRAM, "a&b"])[0].casefold())
+
+        def test_a_program_in_the_links_folder_is_taken_over_a_shell_script_on_path(self) -> None:
+            os.environ["PATHEXT"] = ".COM;.EXE;.BAT;.CMD"
+            self.scripts(self.path_folder)
+            linked = self.program(self.links)
+            self.assertEqual(str(linked), executable_locator.find_program(PROGRAM))
+
+        def test_only_shell_scripts_is_no_program_and_starting_one_is_refused_as_missing(self) -> None:
+            os.environ["PATHEXT"] = ".COM;.EXE;.BAT;.CMD;.PS1"
+            self.scripts(self.path_folder)
+            self.assertEqual(3, len(find_executables(PROGRAM)), "found, so a caller can name what it passed over")
+            self.assertIsNone(executable_locator.find_program(PROGRAM))
+            kept: executable_locator.Found = {}
+            with self.assertRaises(FileNotFoundError) as raised:
+                located_command([PROGRAM, "x&echo.INJECTED&rem"], kept=kept)
+            self.assertEqual(PROGRAM, raised.exception.filename)
+            self.assertEqual({}, kept, "nothing kept, so a program installed later is found")
+
+    else:
+
+        def test_a_script_is_the_program_since_the_kernel_hands_it_its_arguments(self) -> None:
+            program = self.program(self.path_folder)
+            program.write_bytes(b"#!/bin/sh\n")
+            self.assertEqual(str(program), executable_locator.find_program(PROGRAM))
+            self.assertEqual(str(program), located_command([PROGRAM, "a&b"])[0])
+
+
 class PathProgramsTests(unittest.TestCase):
     if not WINDOWS:
 
@@ -345,3 +408,81 @@ class EnvironmentPathTests(unittest.TestCase):
                 self.assertEqual((self.VARIABLE, value), (raised.exception.variable, raised.exception.value))
                 self.assertEqual(f"{self.VARIABLE} is {value!r}, which is not an absolute path", str(raised.exception))
                 self.assertIsNone(executable_locator.environment_path(self.VARIABLE, {self.VARIABLE: value}))
+
+
+@unittest.skipUnless(WINDOWS, "only Windows starts a .cmd or .bat file through cmd.exe")
+class ClientsRunNoShellScriptTests(unittest.TestCase):
+    """An echo-only `git.cmd` and `gh.cmd` first on PATH, each leaving a mark when it runs: GitClient and GitHubClient
+    pass over them, so an argument such as a search pattern a reviewer wrote never reaches cmd.exe as a command."""
+
+    PAYLOAD = "x&echo.INJECTED&rem"
+
+    def setUp(self) -> None:
+        temporary = tempfile.TemporaryDirectory(prefix="shell script shims ")
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+        self.shims = self.root / "shims folder"
+        self.shims.mkdir()
+        self.mark = self.shims / "ran.txt"
+        for name in ("git.cmd", "gh.cmd"):
+            (self.shims / name).write_text(
+                '@echo off\r\necho SHIM-ARGS: %*\r\necho %~nx0>> "%~dp0ran.txt"\r\n', encoding="utf-8"
+            )
+        self.real_git = executable_locator.find_program("git")
+        self.local = self.root / "local app data"
+        self.local.mkdir()
+
+    @contextmanager
+    def environment(self, *folders: Path) -> Iterator[None]:
+        """PATH with the shims' folder first, then `folders`, and no WinGet Links folder to answer instead."""
+        path = os.pathsep.join(str(folder) for folder in (self.shims, *folders))
+        variables = {"PATH": path, "PATHEXT": ".BAT;.CMD;.COM;.EXE", "LOCALAPPDATA": str(self.local)}
+        with mock.patch.dict(os.environ, variables):
+            yield
+
+    def assert_no_shim_ran(self) -> None:
+        ran = self.mark.read_text(encoding="utf-8") if self.mark.exists() else ""
+        self.assertEqual("", ran, "a shell script ran")
+
+    def test_with_only_a_shell_script_on_path_git_run_is_a_missing_prerequisite(self) -> None:
+        with self.environment():
+            self.assertEqual(str(self.shims / "git.cmd").casefold(), (shutil.which("git") or "").casefold())
+            with self.assertRaises(GitError) as ran:
+                GitClient().run(["grep", "-n"], directory=self.root, pattern=self.PAYLOAD)
+            self.assertEqual(("prerequisite", MISSING_GIT), (ran.exception.kind, str(ran.exception)))
+        self.assert_no_shim_ran()
+
+    def test_with_only_a_shell_script_on_path_git_stream_is_a_missing_prerequisite(self) -> None:
+        with self.environment():
+            with (
+                self.assertRaises(GitError) as streamed,
+                GitClient().stream(["grep", "-n"], directory=self.root, pattern=self.PAYLOAD),
+            ):
+                pass
+            self.assertEqual(("prerequisite", MISSING_GIT), (streamed.exception.kind, str(streamed.exception)))
+        self.assert_no_shim_ran()
+
+    def test_with_only_a_shell_script_on_path_gh_is_a_missing_prerequisite(self) -> None:
+        with self.environment():
+            self.assertEqual(str(self.shims / "gh.cmd").casefold(), (shutil.which("gh") or "").casefold())
+            with self.assertRaises(GitHubError) as searched:
+                GitHubClient().run(["search", "code", self.PAYLOAD], retry=False)
+            self.assertEqual(("prerequisite", MISSING_CLI), (searched.exception.kind, str(searched.exception)))
+        self.assert_no_shim_ran()
+
+    def test_git_later_on_path_runs_and_takes_the_pattern_as_one_argument(self) -> None:
+        self.assertIsNotNone(self.real_git, "validation needs Git")
+        repository = self.root / "repository"
+        repository.mkdir()
+        (repository / "file.txt").write_bytes(f"{self.PAYLOAD}\n".encode())
+        search = ["grep", "-n", "-F", "--untracked"]
+        with self.environment(Path(self.real_git or "").parent):
+            client = GitClient()
+            self.assertEqual(0, client.run(["init", "-q"], directory=repository).returncode)
+            found = client.run(search, directory=repository, pattern=self.PAYLOAD)
+            self.assertEqual((0, f"file.txt:1:{self.PAYLOAD}\n"), (found.returncode, found.stdout))
+            with client.stream(search, directory=repository, pattern=self.PAYLOAD) as running:
+                running.stdin.close()
+                line = running.readline()
+                self.assertEqual((f"file.txt:1:{self.PAYLOAD}\n".encode(), 0), (line, running.wait()))
+        self.assert_no_shim_ran()
