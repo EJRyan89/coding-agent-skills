@@ -28,7 +28,7 @@ from path_keys import path_key
 from process_identity import ProcessStatus, process_status
 from review_archive import ArchiveError
 from review_canary import FixtureError
-from review_config import ConfigurationError, load_config
+from review_config import ConfigurationError
 from review_flags import FlagError
 from review_github import GitHubClient
 from review_hosts import Runner as CopilotRunner
@@ -275,11 +275,11 @@ def apply_default_model(roles: list[RunRole], configured: str | None) -> None:
             role["model"] = model
 
 
-def _write_run(run: Path, state: RunState) -> None:
+def _write_run(run: Path, state: RunState, *, default_effort: str | None = None) -> None:
     """Write a prepared run's run.json. A run that cannot start a role on the model it asks for first notes that model
     in place of its `MODEL` line, so the role runs on the session's model; a run whose reviewers start at an effort
-    they are given records each role's, its specialist's else the configuration's; an inline run then seals every
-    file prepare wrote."""
+    they are given records each role's, its specialist's else `default_effort`, the configuration's `reviewer_effort`
+    that prepare read; an inline run then seals every file prepare wrote."""
     reason = _unapplied_model_reason(state["runtime"], state["dispatch"])
     if reason is not None:
         for role in state["roles"]:
@@ -287,7 +287,6 @@ def _write_run(run: Path, state: RunState) -> None:
                 state["notes"].append(f"{role['id']} asks for model {role['model']}; {reason}")
                 role["model"] = None
     if _starts_at_given_effort(state["runtime"], state["dispatch"]):
-        default_effort = load_config(Path(state["config_path"])).get("reviewer_effort")
         for role in state["roles"]:
             role["effort"] = role.get("effort") or default_effort
     if state["dispatch"] == "inline":

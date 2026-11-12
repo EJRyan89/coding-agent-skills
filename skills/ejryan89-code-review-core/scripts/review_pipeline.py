@@ -810,7 +810,7 @@ def _prepare_run(
             # Each file only some roles are given, with those roles, which the reviewer guard holds the others from.
             "restricted": restricted,
         }
-        _write_run(run, state)
+        _write_run(run, state, default_effort=config["reviewer_effort"])
     except BaseException:
         if created:
             remove_run(run, ignore_errors=True)
