@@ -27,6 +27,7 @@ import json_writer
 from device_names import is_reserved_device_name
 from diff_paths import MAX_SEGMENT_UNITS, unsafe_snapshot_name
 from executable_locator import find_executable
+from flat_text import flat_text
 from git_client import OBJECT_NAME as GIT_OBJECT_ID
 from git_client import GitClient, GitError, GitResult, GitStream, Runner, command_name, output_line, subprocess_runner
 from github_client import GitHubClient, GitHubError, replace_undecodable
@@ -36,6 +37,8 @@ from path_containment import posix_within, within
 from review_config import (
     REVIEWER_EFFORTS,
     REVIEWER_MODELS,
+    ConfigurationError,
+    reviewer_ref_commit,
     validate_glob_patterns,
     validate_repository_identity,
 )
@@ -787,7 +790,7 @@ def git_in(checkout: Path, runner: Runner, *arguments: str) -> GitResult:
 # A full object id, alone or peeled to a kind: what it names cannot change while the object exists.
 FULL_OBJECT_NAME = re.compile(r"(?:[0-9a-f]{40}|[0-9a-f]{64})(?:\^\{(?:commit|tree|blob)\})?")
 # The git subcommands that only read: run through a PrepareGitRunner, they leave its kept answers in place.
-READ_ONLY_GIT = frozenset({"cat-file", "ls-remote", "ls-tree", "rev-parse"})
+READ_ONLY_GIT = frozenset({"cat-file", "check-ref-format", "ls-remote", "ls-tree", "rev-parse"})
 
 
 def _reused_query(arguments: Sequence[str]) -> bool:
@@ -882,13 +885,33 @@ def resolve_reviewer_commit(
     head_sha: str,
     runner: Runner = subprocess_runner,
 ) -> str:
-    if not trusted_ref or trusted_ref.startswith("refs/pull/"):
-        raise RuntimeContractError("Pull-request refs cannot be trusted reviewer sources")
-    commit = output_line(_run_git(checkout, runner, "rev-parse", "--verify", f"{trusted_ref}^{{commit}}"))
-    if not re.fullmatch(r"[0-9a-fA-F]{40,64}", commit):
-        raise RuntimeContractError("Trusted ref did not resolve to a commit")
-    if commit.lower() == head_sha.lower():
+    """The commit a trusted ref names in the checkout, judged after git resolves it as `reviewer_ref_commit` judges
+    one, and never the pull request's head."""
+    try:
+        commit = reviewer_ref_commit(trusted_ref, directory=checkout, where=f"in {checkout}", runner=runner)
+    except ConfigurationError as exc:
+        raise RuntimeContractError(str(exc)) from exc
+    if commit == head_sha.lower():
         raise RuntimeContractError("Trusted reviewer ref resolves to the pull-request head")
+    return commit
+
+
+def resolve_base_commit(
+    checkout: Path,
+    base_sha: str,
+    *,
+    head_sha: str,
+    runner: Runner = subprocess_runner,
+) -> str:
+    """The pull request's base commit, a full object name GitHub reports, once the checkout holds it, and never the
+    pull request's head. No configured value reaches it: a trusted ref goes through `resolve_reviewer_commit`."""
+    if not GIT_OBJECT_ID.fullmatch(base_sha.lower()):
+        raise RuntimeContractError(f"The base {flat_text(base_sha)} is not a full commit name")
+    commit = output_line(_run_git(checkout, runner, "rev-parse", "--verify", f"{base_sha}^{{commit}}"))
+    if not re.fullmatch(r"[0-9a-fA-F]{40,64}", commit):
+        raise RuntimeContractError("The base did not resolve to a commit")
+    if commit.lower() == head_sha.lower():
+        raise RuntimeContractError("The base resolves to the pull-request head")
     return commit.lower()
 
 

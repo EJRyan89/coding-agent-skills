@@ -17,6 +17,7 @@ from flat_text import flat_text
 from git_client import output_lines
 from review_config import (
     ConfigurationError,
+    check_local_manifest,
     default_config_path,
     load_config,
     reviewer_root_commit,
@@ -47,6 +48,7 @@ from review_runtime import (
     materialize_source_snapshot,
     measure_source_snapshot,
     negotiate_capabilities,
+    resolve_base_commit,
     resolve_reviewer_commit,
     verify_checkout_remote,
 )
@@ -128,6 +130,19 @@ def _root_commit(root: Path, ref: str, *, head: str, services: Services) -> str:
     return commit
 
 
+def _check_local_manifest(
+    reviewer: dict[str, Any], checkout: Path, config_path: Path, repository: str, services: Services
+) -> None:
+    """Refuses, as configuration validation does, a local manifest inside the reviewed repository, whose condition
+    scripts a checked-out pull request could otherwise rewrite before they run."""
+    try:
+        local = manifest_location(reviewer, config_path, repository)
+        if local is not None:
+            check_local_manifest(local, checkout, services.git)
+    except ConfigurationError as exc:
+        raise PipelineError(f"repositories.{repository}.reviewer: {exc}") from exc
+
+
 def _resolve_reviewer_source(
     reviewer: dict[str, Any],
     *,
@@ -155,8 +170,13 @@ def _resolve_reviewer_source(
             reviewer, checkout=root, commit=commit, config_path=config_path, repository=repository, runner=services.git
         )
         return "reviewer-root", commit, resolved
-    source = "trusted-ref" if reviewer["trusted_ref"] else "base"
-    commit = resolve_reviewer_commit(checkout, reviewer["trusted_ref"] or base, head_sha=head, runner=services.git)
+    if reviewer["trusted_ref"]:
+        source, commit = (
+            "trusted-ref",
+            resolve_reviewer_commit(checkout, reviewer["trusted_ref"], head_sha=head, runner=services.git),
+        )
+    else:
+        source, commit = "base", resolve_base_commit(checkout, base, head_sha=head, runner=services.git)
     resolve = functools.partial(
         resolve_reviewer,
         reviewer,
@@ -219,6 +239,7 @@ def _materialize_reviewer(
         return _generic_reviewer(runtime, inline, "generic")
     if checkout is None:  # validate_config requires a checkout for a repository reviewer
         raise PipelineError(f"{repository} has a repository reviewer but no checkout_path")
+    _check_local_manifest(reviewer, checkout, config_path, repository, services)
     ensure_local_commit(checkout, pull["baseRefOid"], f"refs/heads/{pull['baseRefName']}", services.git)
     found = _resolve_reviewer_source(
         reviewer,
@@ -320,6 +341,7 @@ def _repository_reviewer(
         raise PipelineError(f"{repository} uses the suite's generic reviewer; it has no repository reviewer")
     checkout = Path(entry["checkout_path"])
     verify_checkout_remote(checkout, repository, services.git)
+    _check_local_manifest(entry["reviewer"], checkout, config_path, repository, services)
     return config_path, repository, entry, checkout, config["runtime"]
 
 

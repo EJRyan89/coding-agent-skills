@@ -41,6 +41,7 @@ from review_runtime import (
     materialize_reviewer,
     materialize_source_snapshot,
     negotiate_capabilities,
+    resolve_base_commit,
     resolve_reviewer_commit,
     resolve_runtime,
     validate_adapter_manifest,
@@ -263,8 +264,9 @@ class RuntimeContractTests(unittest.TestCase):
             root = Path(temporary)
             checkout, trusted, head = self._repository(root)
             verify_checkout_remote(checkout, "example/one")
-            resolved = resolve_reviewer_commit(checkout, trusted, head_sha=head)
-            self.assertEqual(trusted, resolved)
+            self._git(checkout, "update-ref", "refs/heads/trusted", trusted)
+            self.assertEqual(trusted, resolve_reviewer_commit(checkout, "refs/heads/trusted", head_sha=head))
+            self.assertEqual(trusted, resolve_base_commit(checkout, trusted.upper(), head_sha=head))
             manifest = load_manifest_from_commit(checkout, trusted, ".review/adapter.json")
             destination = root / "materialized"
             hashes = materialize_reviewer(checkout, trusted, manifest, destination)
@@ -1109,12 +1111,64 @@ class RuntimeContractTests(unittest.TestCase):
     def test_pull_ref_head_and_remote_mismatch_are_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             checkout, _, head = self._repository(Path(temporary))
-            with self.assertRaisesRegex(RuntimeContractError, "Pull-request refs"):
+            with self.assertRaisesRegex(RuntimeContractError, "is not a full ref under"):
                 resolve_reviewer_commit(checkout, "refs/pull/1/head", head_sha=head)
             with self.assertRaisesRegex(RuntimeContractError, "pull-request head"):
-                resolve_reviewer_commit(checkout, "HEAD", head_sha=head)
+                resolve_reviewer_commit(checkout, "refs/heads/main", head_sha=head)
             with self.assertRaisesRegex(RuntimeContractError, "origin mismatch"):
                 verify_checkout_remote(checkout, "different/one")
+
+    def test_each_spelling_that_reaches_a_pull_request_is_refused(self) -> None:
+        # refs/pull/42/head is a commit after the trusted one, and every spelling
+        # below reaches it or the commit before it through a pull request's ref; none resolves.
+        with tempfile.TemporaryDirectory() as temporary:
+            checkout, trusted, head = self._repository(Path(temporary))
+            self._git(checkout, "update-ref", "refs/pull/42/head", head)
+            self._git(checkout, "update-ref", "refs/pull/42/merge", head)
+            self._git(checkout, "update-ref", "refs/heads/main", trusted)
+            self._git(checkout, "symbolic-ref", "refs/heads/sym", "refs/pull/42/head")
+            outside = "is not a full ref under refs/heads/, refs/tags/, refs/remotes/"
+            syntax = "holds revision syntax, such as ~, ^, :, or @{, so it names a commit other than the ref's own"
+            for ref, message in (
+                ("pull/42/head~1", f'trusted_ref "pull/42/head~1" {outside}'),
+                ("pull/42/head^", f'trusted_ref "pull/42/head^" {outside}'),
+                ("pull/42/merge", f'trusted_ref "pull/42/merge" {outside}'),
+                ("pull/42/head", f'trusted_ref "pull/42/head" {outside}'),
+                ("Refs/pull/42/head", f'trusted_ref "Refs/pull/42/head" {outside}'),
+                (trusted, f'trusted_ref "{trusted}" {outside}'),
+                ("refs/heads/sym~1", f'trusted_ref "refs/heads/sym~1" {syntax}'),
+                ("refs/heads/sym^", f'trusted_ref "refs/heads/sym^" {syntax}'),
+                (
+                    "refs/heads/sym",
+                    "trusted_ref refs/heads/sym resolves to refs/pull/42/head, which is not a ref under refs/heads/, "
+                    f"refs/tags/, refs/remotes/ in {checkout}",
+                ),
+                (
+                    "refs/heads/main.lock",
+                    "trusted_ref refs/heads/main.lock is not a ref name git check-ref-format accepts",
+                ),
+                ("refs/heads/absent", f"trusted_ref refs/heads/absent does not resolve to a commit in {checkout}"),
+            ):
+                with self.subTest(ref=ref), self.assertRaises(RuntimeContractError) as caught:
+                    resolve_reviewer_commit(checkout, ref, head_sha="0" * 40)
+                self.assertEqual(message, str(caught.exception))
+            self.assertEqual(trusted, resolve_reviewer_commit(checkout, "refs/heads/main", head_sha=head))
+
+    def test_the_base_is_a_full_commit_name_never_the_head(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            checkout, trusted, head = self._repository(Path(temporary))
+            for base in ("refs/heads/main", trusted[:12], f"{trusted}~1", ""):
+                with self.subTest(base=base), self.assertRaises(RuntimeContractError) as caught:
+                    resolve_base_commit(checkout, base, head_sha=head)
+                self.assertEqual(f"The base {base} is not a full commit name", str(caught.exception))
+            with self.assertRaisesRegex(RuntimeContractError, "^The base resolves to the pull-request head$"):
+                resolve_base_commit(checkout, head, head_sha=head)
+
+        def answers(command: Any, timeout: float) -> GitResult:
+            return GitResult(0, "refs/heads/main\n", "")
+
+        with self.assertRaisesRegex(RuntimeContractError, "^The base did not resolve to a commit$"):
+            resolve_base_commit(Path("C:/checkout"), FULL_COMMIT, head_sha="", runner=answers)
 
 
 class AnsweringGit:
@@ -1200,6 +1254,7 @@ class PrepareGitRunnerTests(unittest.TestCase):
     # Reads whose answer a ref, an abbreviation, or the network can change, or that no prepare repeats.
     ASKED_EACH_TIME = (
         ("rev-parse", "--verify", "refs/heads/reviewers^{commit}"),
+        ("check-ref-format", "refs/heads/reviewers"),
         ("rev-parse", "--verify", "abc1234^{blob}"),
         ("rev-parse", "--verify", f"{FULL_COMMIT[:39]}^{{commit}}"),
         ("rev-parse", "--verify", f"{FULL_COMMIT}~1"),
@@ -1319,9 +1374,9 @@ class PrepareGitRunnerTests(unittest.TestCase):
         verify_checkout_remote(checkout, "example/one", runner)
         with self.assertRaisesRegex(RuntimeContractError, "origin mismatch: expected other/repo, found example/one"):
             verify_checkout_remote(checkout, "other/repo", runner)
-        self.assertEqual(FULL_COMMIT, resolve_reviewer_commit(checkout, FULL_COMMIT, head_sha="4" * 40, runner=runner))
+        self.assertEqual(FULL_COMMIT, resolve_base_commit(checkout, FULL_COMMIT, head_sha="4" * 40, runner=runner))
         with self.assertRaisesRegex(RuntimeContractError, "resolves to the pull-request head"):
-            resolve_reviewer_commit(checkout, FULL_COMMIT, head_sha=FULL_COMMIT, runner=runner)
+            resolve_base_commit(checkout, FULL_COMMIT, head_sha=FULL_COMMIT, runner=runner)
         self.assertEqual(
             [in_checkout(*self.ORIGIN, checkout=str(checkout)), in_checkout(*self.COMMIT, checkout=str(checkout))],
             git.calls,

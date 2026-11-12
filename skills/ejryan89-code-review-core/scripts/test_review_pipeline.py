@@ -1518,9 +1518,8 @@ class WaitReviewersTests(PipelineFixture):
         self.write({"review/specialists.json": json.dumps(manifest)})
         git(self.checkout, "add", ".")
         git(self.checkout, "commit", "-m", "two specialists")
-        trusted = git(self.checkout, "rev-parse", "HEAD")
         git(self.checkout, "switch", "feature")
-        self.configure({**self.repository_reviewer("review/specialists.json"), "trusted_ref": trusted})
+        self.configure({**self.repository_reviewer("review/specialists.json"), "trusted_ref": "refs/heads/trusted"})
         self.github.pulls[13] = rest_pull(13, self.head, self.base)
         first, second = self.start(SELECTOR, "example/one#13")
         # The generic reviewer covers the changed files no specialist routes, which nobody reviewed before.
@@ -3640,7 +3639,7 @@ class ProfileModelTests(PipelineFixture):
         git(self.checkout, "commit", "-m", "profile model")
         trusted = git(self.checkout, "rev-parse", "HEAD")
         git(self.checkout, "switch", "feature")
-        self.configure({**self.repository_reviewer("review/specialists.json"), "trusted_ref": trusted})
+        self.configure({**self.repository_reviewer("review/specialists.json"), "trusted_ref": "refs/heads/trusted"})
         return trusted
 
     def test_the_manifest_model_and_effort_win_for_that_specialist(self) -> None:
@@ -4070,7 +4069,7 @@ class ReviewerSourceTests(PipelineFixture):
         self.configure(self.skill_reviewer(".claude/agents/team-review.md"))
         with self.assertRaisesRegex(Exception, r"starts its own subagents \(line 7: 2\. For each changed Python"):
             self.prepare()
-        code, out, err = self.run_main("inspect-reviewer", "--repository", REPOSITORY, "--ref", "main")
+        code, out, err = self.run_main("inspect-reviewer", "--repository", REPOSITORY, "--ref", "refs/heads/main")
         self.assertEqual(0, code, err)
         lines = out.splitlines()
         self.assertIn("SKILL .claude/agents/team-review.md", lines)
@@ -4103,7 +4102,7 @@ class ReviewerSourceTests(PipelineFixture):
                 "--repository",
                 REPOSITORY,
                 "--ref",
-                "feature",
+                "refs/heads/feature",
             ],
             capture_output=True,
             env={**os.environ, "PYTHONIOENCODING": "cp1252"},
@@ -4128,7 +4127,9 @@ class ReviewerSourceTests(PipelineFixture):
         prompt = Path(ready["roles"][0]["prompt_file"]).read_text(encoding="utf-8")
         self.assertIn(f"\nREVIEWER_ROOT={root}\n", prompt)
         self.assertIn("Follow REVIEWER_ROOT/review/solo.md,", prompt)
-        lines = self.run_main("inspect-reviewer", "--repository", REPOSITORY, "--ref", "main")[1].splitlines()
+        lines = self.run_main("inspect-reviewer", "--repository", REPOSITORY, "--ref", "refs/heads/main")[
+            1
+        ].splitlines()
         self.assertIn("TOOLS Read, Grep, Glob", lines)
         self.assertIn("DELEGATES no its tool list grants neither Agent nor Task", lines)
         self.assertEqual("VERDICT entrypoint-ok", lines[-1])
@@ -4174,9 +4175,62 @@ class ReviewerSourceTests(PipelineFixture):
         metadata = json.loads((root / "materialization.json").read_text(encoding="utf-8"))
         self.assertEqual(["window.py"], metadata["local_files"])
         self.assertEqual(self.base, ready["adapter"]["source_commit"])
-        lines = self.run_main("inspect-reviewer", "--repository", REPOSITORY, "--ref", "main")[1].splitlines()
+        lines = self.run_main("inspect-reviewer", "--repository", REPOSITORY, "--ref", "refs/heads/main")[
+            1
+        ].splitlines()
         self.assertIn(f"MANIFEST local {default} present", lines)
         self.assertEqual("VERDICT manifest-configured", lines[-1])
+
+    def pull_request_condition(self, manifest: Path) -> Path:
+        """A local manifest at `manifest` whose condition script, as a checked-out pull request rewrites it, writes a
+        marker file when it runs; the marker's path, which no review may ever write."""
+        marker = self.root / "marker.txt"
+        self.local_manifest(path=manifest)
+        (manifest.parent / "window.py").write_text(
+            f"from pathlib import Path\nPath({str(marker)!r}).write_text('PR CODE RAN')\n", encoding="utf-8"
+        )
+        return marker
+
+    def refusal(self) -> str | None:
+        """What prepare refused the pull request with, or None when it prepared it."""
+        try:
+            self.prepare()
+        except review_run.PipelineError as exc:
+            return str(exc)
+        return None
+
+    def test_a_local_manifest_inside_the_checkout_never_runs_its_condition_script(self) -> None:
+        manifest = self.checkout / ".review" / "manifest.json"
+        marker = self.pull_request_condition(manifest)
+        self.configure(self.skill_reviewer(".claude/agents/team-review.md", manifest=str(manifest)))
+        reason = (
+            f"repositories.{REPOSITORY}.reviewer: manifest {manifest} lies inside checkout_path {self.checkout}; "
+            "keep it outside the repository"
+        )
+        refused = self.refusal()
+        self.assertFalse(marker.exists(), "the pull request's condition script ran")
+        self.assertEqual(reason, refused)
+        for command in ("inspect-reviewer", "validate-reviewer"):
+            with self.subTest(command=command):
+                code, out, err = self.run_main(command, "--repository", REPOSITORY, "--ref", "refs/heads/main")
+                self.assertFalse(marker.exists(), "the pull request's condition script ran")
+                self.assertEqual((1, f"FAILED {reason}\n", ""), (code, out, err))
+
+    def test_a_local_manifest_in_another_worktree_of_the_repository_never_runs_its_condition_script(self) -> None:
+        worktree = self.root / "second worktree"
+        git(self.checkout, "worktree", "add", "-b", "second", str(worktree), self.base)
+        manifest = worktree / ".review" / "manifest.json"
+        marker = self.pull_request_condition(manifest)
+        self.configure(self.skill_reviewer(".claude/agents/team-review.md", manifest=str(manifest)))
+        common = git(self.checkout, "rev-parse", "--path-format=absolute", "--git-common-dir")
+        refused = self.refusal()
+        self.assertFalse(marker.exists(), "the pull request's condition script ran")
+        self.assertEqual(
+            f"repositories.{REPOSITORY}.reviewer: manifest {manifest} lies inside a working tree of the repository "
+            f"checkout_path {self.checkout} holds, whose Git directory is {Path(common)}; keep it outside the "
+            "repository",
+            refused,
+        )
 
     def test_a_condition_snapshot_folder_it_cannot_stat_raises_rather_than_being_taken_again(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -4215,15 +4269,21 @@ class ReviewerSourceTests(PipelineFixture):
         self.local_manifest(path=default)
         self.configure(self.skill_reviewer(".claude/agents/team-review.md", manifest=True))
         with unstatable(default):
-            lines = self.run_main("inspect-reviewer", "--repository", REPOSITORY, "--ref", "main")[1].splitlines()
+            lines = self.run_main("inspect-reviewer", "--repository", REPOSITORY, "--ref", "refs/heads/main")[
+                1
+            ].splitlines()
         (manifest,) = [line for line in lines if line.startswith("MANIFEST local ")]
         self.assertTrue(manifest.startswith(f"MANIFEST local {default} unreadable "), manifest)
         self.assertIn("Permission denied", manifest)
         default.unlink()
-        lines = self.run_main("inspect-reviewer", "--repository", REPOSITORY, "--ref", "main")[1].splitlines()
+        lines = self.run_main("inspect-reviewer", "--repository", REPOSITORY, "--ref", "refs/heads/main")[
+            1
+        ].splitlines()
         self.assertIn(f"MANIFEST local {default} missing", lines)
         default.mkdir()
-        lines = self.run_main("inspect-reviewer", "--repository", REPOSITORY, "--ref", "main")[1].splitlines()
+        lines = self.run_main("inspect-reviewer", "--repository", REPOSITORY, "--ref", "refs/heads/main")[
+            1
+        ].splitlines()
         self.assertIn(f"MANIFEST local {default} unreadable [Errno {errno.EISDIR}] not a file: {str(default)!r}", lines)
 
     def test_validate_reviewer_proves_files_patterns_and_routing(self) -> None:
@@ -4266,14 +4326,14 @@ class ReviewerSourceTests(PipelineFixture):
         self.assertIsNone(latest_record(self.archive, REPOSITORY, 12), "validation writes nothing")
         self.assertEqual([], self.leftovers(), "validation leaves no files behind")
 
-        code, out, _ = self.run_main("validate-reviewer", "--repository", REPOSITORY, "--ref", "main")
+        code, out, _ = self.run_main("validate-reviewer", "--repository", REPOSITORY, "--ref", "refs/heads/main")
         self.assertEqual((0, "VALID"), (code, out.splitlines()[-1]))
         self.assertFalse(any(line.startswith("PULL ") for line in out.splitlines()))
 
         payload = json.loads(manifest.read_text(encoding="utf-8"))
         payload["specialists"][0]["profile"] = ".claude/agents/missing.md"
         manifest.write_text(json.dumps(payload), encoding="utf-8")
-        code, out, err = self.run_main("validate-reviewer", "--repository", REPOSITORY, "--ref", "main")
+        code, out, err = self.run_main("validate-reviewer", "--repository", REPOSITORY, "--ref", "refs/heads/main")
         self.assertEqual((1, ""), (code, err))
         self.assertIn("FAILED Declared reviewer file is missing: .claude/agents/missing.md", out)
 
@@ -4790,9 +4850,10 @@ class ValidateReviewerSequenceTests(PipelineFixture):
     def validate(self, **options: Any) -> tuple[list[str], list[tuple[Any, ...]], list[str]]:
         """The lines, the target calls in order, and the GitHub endpoints read in order."""
         events: list[tuple[Any, ...]] = []
-        ensure, resolve, default = (
+        ensure, resolve, base, default = (
             review_snapshot.ensure_local_commit,
             review_runtime.resolve_reviewer_commit,
+            review_runtime.resolve_base_commit,
             review_reviewer_setup._reviewer_commit,
         )
 
@@ -4804,6 +4865,10 @@ class ValidateReviewerSequenceTests(PipelineFixture):
             events.append(("resolve", trusted_ref, head_sha))
             return resolve(checkout, trusted_ref, head_sha=head_sha, runner=runner)
 
+        def resolve_base_commit(checkout: Path, base_sha: str, *, head_sha: str, runner: Any) -> str:
+            events.append(("resolve", base_sha, head_sha))
+            return base(checkout, base_sha, head_sha=head_sha, runner=runner)
+
         def reviewer_commit(
             checkout: Path, reviewer: dict[str, Any], ref: str | None, services: review_run.Services
         ) -> str:
@@ -4814,6 +4879,7 @@ class ValidateReviewerSequenceTests(PipelineFixture):
             mock.patch.object(review_snapshot, "ensure_local_commit", ensure_local_commit),
             mock.patch.object(review_reviewer_setup, "ensure_local_commit", ensure_local_commit),
             mock.patch.object(review_reviewer_setup, "resolve_reviewer_commit", resolve_reviewer_commit),
+            mock.patch.object(review_reviewer_setup, "resolve_base_commit", resolve_base_commit),
             mock.patch.object(review_reviewer_setup, "_reviewer_commit", reviewer_commit),
         ):
             lines = review_reviewer_setup.validate_reviewer(
@@ -4842,10 +4908,10 @@ class ValidateReviewerSequenceTests(PipelineFixture):
         self.assertEqual(
             (
                 [self.reviewer_line(), "FILES 3 found", f"SNAPSHOT {self.base[:12]} {self.BASE_SNAPSHOT}", "VALID"],
-                [("default", "main"), ("resolve", "main", "")],
+                [("default", "refs/heads/main"), ("resolve", "refs/heads/main", "")],
                 [],
             ),
-            self.validate(ref="main"),
+            self.validate(ref="refs/heads/main"),
         )
 
     def test_without_a_ref_the_trusted_ref_is_resolved(self) -> None:
@@ -4864,7 +4930,8 @@ class ValidateReviewerSequenceTests(PipelineFixture):
         with self.assertRaises(review_run.PipelineError) as caught:
             self.validate()
         self.assertEqual(
-            f"Cannot resolve refs/remotes/origin/HEAD in {self.checkout}; pass --ref: fatal: Needed a single revision",
+            f"Cannot resolve refs/remotes/origin/HEAD in {self.checkout}; pass --ref: trusted_ref "
+            f"refs/remotes/origin/HEAD does not resolve to a commit in {self.checkout}",
             str(caught.exception),
         )
 
@@ -4890,7 +4957,7 @@ class ValidateReviewerSequenceTests(PipelineFixture):
 
     def test_a_ref_is_ignored_when_pull_requests_are_named(self) -> None:
         self.use()
-        lines, events, _reads = self.validate(pulls=[12], ref="feature")
+        lines, events, _reads = self.validate(pulls=[12], ref="refs/heads/feature")
         self.assertEqual(
             [self.reviewer_line(), "FILES 3 found", *self.pull_lines(12, self.head, 2, self.HEAD_SNAPSHOT, 1), "VALID"],
             lines,
@@ -5713,7 +5780,7 @@ class SnapshotSizeTests(PipelineFixture):
     def test_validate_reviewer_reports_the_snapshot_of_the_default_branch_and_of_each_pull(self) -> None:
         # Without a pull request nothing is changed, so the lazy snapshot writes nothing and lists every file. The
         # pull request routes a specialist whose condition declares no reads, so its snapshot is whole.
-        code, out, err = self.run_main("validate-reviewer", "--repository", REPOSITORY, "--ref", "main")
+        code, out, err = self.run_main("validate-reviewer", "--repository", REPOSITORY, "--ref", "refs/heads/main")
         self.assertEqual(0, code, err)
         files, size = self.kept(self.base)
         self.assertIn(
@@ -5748,7 +5815,7 @@ class SnapshotSizeTests(PipelineFixture):
         tree = plumbing("mktree", "-z", data=plumbing("ls-tree", "-z", self.base) + added).decode("ascii")
         commit = plumbing("commit-tree", tree, "-p", self.base, "-m", "unsafe names").decode("ascii")
         plumbing("update-ref", "refs/heads/unsafe", commit)
-        code, out, err = self.run_main("validate-reviewer", "--repository", REPOSITORY, "--ref", "unsafe")
+        code, out, err = self.run_main("validate-reviewer", "--repository", REPOSITORY, "--ref", "refs/heads/unsafe")
         self.assertEqual(0, code, err)
         files, _ = self.kept(self.base)
         self.assertIn(
@@ -5760,7 +5827,7 @@ class SnapshotSizeTests(PipelineFixture):
     def test_validate_reviewer_counts_configured_exclusions(self) -> None:
         reviewer = self.skill_reviewer(".claude/agents/team-review.md", manifest=str(self.local_manifest()))
         self.configure(reviewer, snapshot_exclude=["review/*.JSON", "**/solo.md"])
-        code, out, err = self.run_main("validate-reviewer", "--repository", REPOSITORY, "--ref", "main")
+        code, out, err = self.run_main("validate-reviewer", "--repository", REPOSITORY, "--ref", "refs/heads/main")
         self.assertEqual(0, code, err)
         files, _ = self.kept(self.base)
         snapshot = [line for line in out.splitlines() if line.startswith("SNAPSHOT ")]
@@ -5790,7 +5857,7 @@ class SnapshotSizeTests(PipelineFixture):
     def test_validate_reviewer_refuses_a_configured_exclusion_over_a_file_the_reviewer_declares(self) -> None:
         reviewer = self.skill_reviewer(".claude/agents/team-review.md", manifest=str(self.local_manifest()))
         self.configure(reviewer, snapshot_exclude=["app/**", "**/*.MD", "window.py"])
-        code, out, err = self.run_main("validate-reviewer", "--repository", REPOSITORY, "--ref", "main")
+        code, out, err = self.run_main("validate-reviewer", "--repository", REPOSITORY, "--ref", "refs/heads/main")
         self.assertEqual((1, ""), (code, err))
         self.assertEqual(
             f"FAILED snapshot_exclude of {REPOSITORY} matches a file its reviewer declares, which a review must be "
@@ -5863,7 +5930,7 @@ class SnapshotSizeTests(PipelineFixture):
         # The lazy snapshot writes none of them, but lists every one, and each counts.
         files, _ = self.kept(self.base)
         with mock.patch("review_runtime.MAX_SOURCE_SNAPSHOT_FILES", files - 1):
-            code, out, err = self.run_main("validate-reviewer", "--repository", REPOSITORY, "--ref", "main")
+            code, out, err = self.run_main("validate-reviewer", "--repository", REPOSITORY, "--ref", "refs/heads/main")
         self.assertEqual((1, ""), (code, err))
         self.assertIn(f"it would hold {files} files, over the {files - 1}-file limit", out)
 
@@ -7081,6 +7148,23 @@ class ReviewerRootTests(PipelineFixture):
         self.assertTrue(out.splitlines()[-1].startswith(f"FAILED {SELECTOR} "), out)
         self.assertIn(reason, out)
 
+    def test_a_local_manifest_inside_the_reviewed_checkout_fails_the_pull_request_with_a_root_too(self) -> None:
+        # A pinned root covers the files it holds, never a local manifest's condition scripts, which the reviewed
+        # checkout would hold.
+        marker = self.root / "marker.txt"
+        self.manifest = self.local_manifest(
+            path=self.checkout / ".review" / "manifest.json",
+            specialists=[{**CONVENTION_SPECIALIST, "when": "window"}],
+        )
+        (self.manifest.parent / "window.py").write_text(
+            f"from pathlib import Path\nPath({str(marker)!r}).write_text('PR CODE RAN')\n", encoding="utf-8"
+        )
+        self.configure(self.reviewer())
+        code, out, _ = self.run_main("prepare", "--pull", SELECTOR)
+        self.assertFalse(marker.exists(), "the pull request's condition script ran")
+        self.assertEqual(1, code)
+        self.assertIn(f"manifest {self.manifest} lies inside checkout_path {self.checkout}", out)
+
     def test_a_root_moved_away_since_validation_fails_the_pull_request(self) -> None:
         self.conventions.rename(self.root / "moved")
         self.assert_pull_failed(f"reviewer_root {self.conventions} does not exist")
@@ -7101,10 +7185,13 @@ class ReviewerRootTests(PipelineFixture):
         # A root that is a clone of the reviewed repository could name the pull request's own head.
         clone = self.root / "clone"
         copy_checkout(clone)
-        self.configure(self.reviewer(root=clone, ref=self.head))
+        git(clone, "update-ref", "refs/heads/reviewed", self.head)
+        self.configure(self.reviewer(root=clone, ref="refs/heads/reviewed"))
         code, out, _ = self.run_main("prepare", "--pull", SELECTOR)
         self.assertEqual(1, code)
-        self.assertIn(f"trusted_ref {self.head} in reviewer_root {clone} resolves to the pull-request head", out)
+        self.assertIn(
+            f"trusted_ref refs/heads/reviewed in reviewer_root {clone} resolves to the pull-request head", out
+        )
 
     def test_a_skill_the_ref_lacks_fails_with_no_fallback(self) -> None:
         self.configure(self.reviewer(skill="review/absent.md"))
@@ -7135,7 +7222,7 @@ class ReviewerRootTests(PipelineFixture):
             "protocol_version": 1,
             "scope": "repository",
             "manifest_path": "review/shared.json",
-            "trusted_ref": "main",
+            "trusted_ref": "refs/heads/main",
             "reviewer_root": str(self.conventions),
         }
         self.configure(reviewer)
