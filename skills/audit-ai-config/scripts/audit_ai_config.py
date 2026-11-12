@@ -8,12 +8,16 @@ references/generated-layout.md where a repository's own ai_config.py generator
 produced one.
 
 Usage:
-    python audit_ai_config.py [--json] [--provenance] [--root <path>]
+    python audit_ai_config.py [--json | --relay] [--provenance] [--root <path>]
+
+With --relay the report is the plain lines the skill relays as printed: REPOSITORY, AUTHORITY, and SCOPE lines, the
+RESULT and SUMMARY lines, and a tab-separated FINDING line for every ERROR, WARNING, and limitation finding, its
+path and message as plain text on one line.
 
 With --provenance the report also names, for each check its findings name, the guidance the check derives from, read
 from references/provenance.json: a published page and the passage it rests on, or this source's decision.
 
-The Markdown report states its result on one line, before the SUMMARY lines:
+The Markdown and relay reports state the result on one line, before the SUMMARY lines:
 
     RESULT COMPLIANT      compliant within statically verifiable scope
     RESULT ERRORS         one or more ERROR-level findings
@@ -55,7 +59,7 @@ from agent_skills import CODEX_METADATA, MAX_DESCRIPTION, MAX_NAME, RESERVED_WOR
 from check_provenance import Source
 from console import run_main
 from file_presence import NotAFile, is_directory, is_occupied, is_present
-from flat_text import flat_text, single_line
+from flat_text import fact_line, flat_text, single_line
 from folder_walk import LINKED, SKIPPED_FOLDERS, UNEXAMINED, UNLISTABLE
 from frontmatter import (
     COMMENT,
@@ -95,6 +99,7 @@ CHECKS = frozenset(
         "claude-settings",
         "claude-skill",
         "codex-agent",
+        "codex-config",
         "codex-hook",
         "codex-rule",
         "codex-skill",
@@ -351,9 +356,17 @@ def regular_files(root: Path, listing: Listing) -> Listing:
     return files
 
 
-def walk_files(root: Path, base: Path, wanted: Callable[[str], bool], skipped: frozenset[str] = frozenset()) -> Listing:
+def walk_files(
+    root: Path,
+    base: Path,
+    wanted: Callable[[str], bool],
+    skipped: frozenset[str] = frozenset(),
+    *,
+    keep_unexamined: bool = False,
+) -> Listing:
     """Every file below `base` whose name `wanted` accepts, outside folders named in `skipped` and nested checkouts,
-    in the order of ejryan89-skill-core's folder walk.
+    in the order of ejryan89-skill-core's folder walk. With `keep_unexamined`, an entry that cannot be examined, which
+    may be such a file and whose read reports itself, is kept among the paths too, as regular_files keeps one.
 
     A folder or wanted file that leads out of the root is neither entered nor read: the link it is, or lies behind when
     `base` does, goes in `outside`. A link that
@@ -371,6 +384,10 @@ def walk_files(root: Path, base: Path, wanted: Callable[[str], bool], skipped: f
     )
     for path in walk.files:
         listing.add(root, path)
+    if keep_unexamined:
+        for entry in walk.not_entered:
+            if entry.kind == UNEXAMINED and wanted(entry.path.name):
+                listing.add(root, entry.path)
     return listing
 
 
@@ -753,13 +770,11 @@ def _inventory_agent_directories(root: Path) -> list[Finding]:
     for agent_dir in (".github/agents", ".claude/agents"):
         d = root / agent_dir
         try:
-            if not is_directory(d):
-                continue
-            listing = regular_files(root, list_directory(root, d))
+            listing = agent_files(root, d)
         except OSError as error:
             findings.append(_unreadable_finding(root, d, error))
             continue
-        agents = [p.name for p in listing.paths]
+        agents = [p.relative_to(d).as_posix() for p in listing.paths]
         if agents:
             findings.append(_inventory_finding(agent_dir, f"Custom agent files found: {', '.join(sorted(agents))}"))
         findings.extend(outside_link_findings(root, listing))
@@ -1084,9 +1099,21 @@ def _is_tool_list(tools: FrontmatterValue) -> bool:
     return isinstance(tools, str) and not tools.startswith("[")
 
 
-def _identifier_from_agent_filename(path: Path) -> str:
-    name = path.name
-    return name[:-9] if name.endswith(".agent.md") else name[:-3]
+def _agent_id(agents: Path, path: Path) -> str:
+    """Copilot's ID for the custom agent at `path` below the agents folder `agents`. Its custom-agents page: the file
+    name without its .agent.md or .md extension, and for a file in a subfolder the folder names before it, the
+    separator replaced with '--', so agents/team/reviewer.agent.md is team--reviewer."""
+    *folders, name = path.relative_to(agents).parts
+    return "--".join([*folders, name[:-9] if name.endswith(".agent.md") else name[:-3]])
+
+
+def agent_files(root: Path, agents: Path) -> Listing:
+    """The files below an agents folder, in its subfolders too, since Copilot CLI and Claude Code read both folders'
+    agents recursively, never through a link that leads out of the root, an entry that cannot be examined kept too, as
+    regular_files keeps one; raises OSError when the folder cannot be examined, or a file is in its place."""
+    if not is_directory(agents):
+        return Listing()
+    return regular_files(root, walk_files(root, agents, lambda _name: True, keep_unexamined=True))
 
 
 def _validate_skill(path: Path, root: Path) -> list[Finding]:
@@ -1110,15 +1137,21 @@ def _validate_skill(path: Path, root: Path) -> list[Finding]:
     return findings
 
 
-def _validate_agent(path: Path, root: Path) -> list[Finding]:
+def _validate_agent(path: Path, root: Path, agents: Path) -> list[Finding]:
     rel = path.relative_to(root).as_posix()
     findings: list[Finding] = []
     if not (path.name.endswith(".agent.md") or path.suffix == ".md"):
         return [Finding("ERROR", "copilot-agent", rel, message="Custom agent filenames must end in .md or .agent.md")]
-    agent_id = _identifier_from_agent_filename(path)
+    agent_id = _agent_id(agents, path)
     if not agent_id or not re.fullmatch(r"[A-Za-z0-9._-]+", agent_id):
         findings.append(
-            Finding("ERROR", "copilot-agent", rel, message="Custom agent filename contains unsupported characters")
+            Finding(
+                "ERROR",
+                "copilot-agent",
+                rel,
+                message=f"Custom agent ID '{agent_id}', which Copilot takes from the file's path, holds characters "
+                "other than letters, digits, '.', '_', and '-'",
+            )
         )
     values, frontmatter_findings = _frontmatter(root, path)
     for finding in frontmatter_findings:
@@ -1222,22 +1255,21 @@ def check_copilot_configuration(root: Path, manifest: dict[str, Any]) -> list[Fi
     for agent_dir in (".github/agents", ".claude/agents"):
         directory = root / agent_dir
         try:
-            if not is_directory(directory):
-                continue
-            listing = regular_files(root, list_directory(root, directory))
+            listing = agent_files(root, directory)
         except OSError as error:
             findings.append(_unlistable_finding(agent_dir, error))
             continue
         findings.extend(outside_link_findings(root, listing))
-        for path in listing.paths:  # the inventory reports an entry it cannot examine, whose read reports itself
+        # The inventory reports a subfolder it cannot list and an entry it cannot examine, whose read reports itself.
+        for path in listing.paths:
             if agent_dir == ".claude/agents":
                 # Claude Code's sub-agents page reads a project agent from a Markdown file here, and Copilot CLI's
                 # command reference reads its custom agents from here after .github/agents.
                 if path.suffix != ".md":
                     continue
-                findings.extend(_validate_claude_agent(path, root))
+                findings.extend(_validate_claude_agent(path, root, directory))
             else:
-                findings.extend(_validate_agent(path, root))
+                findings.extend(_validate_agent(path, root, directory))
             findings.extend(_provenance(root, path, path.relative_to(root).as_posix(), "agent", manifest_paths))
     return findings
 
@@ -1392,7 +1424,7 @@ def _codex_implicit_invocation(root: Path, policy: Path) -> tuple[bool, str | No
 CLAUDE_AGENT_NAME_MAX = 256
 
 
-def _validate_claude_agent(path: Path, root: Path) -> list[Finding]:
+def _validate_claude_agent(path: Path, root: Path, agents: Path) -> list[Finding]:
     """A Claude Code project agent, read with the fields Claude Code's sub-agents page gives it, and an INFO naming
     what it may do: its tools, model, and hooks; then with the fields Copilot CLI, which reads this folder too, gives a
     custom agent."""
@@ -1404,7 +1436,7 @@ def _validate_claude_agent(path: Path, root: Path) -> list[Finding]:
         return findings  # unreadable, or no frontmatter to judge
     return [
         *_claude_agent_fields(rel, values, findings),
-        *_copilot_agent_fields(rel, _identifier_from_agent_filename(path), values),
+        *_copilot_agent_fields(rel, _agent_id(agents, path), values),
     ]
 
 
@@ -2981,6 +3013,8 @@ class HookRules:
     skipped_types: frozenset[str]
     # Events whose handlers default to a short timeout; every other handler without one runs up to DEFAULT_HOOK_TIMEOUT.
     short_timeout_events: frozenset[str]
+    # Events whose handlers take a timeout of at most so many seconds, by event.
+    timeout_limits: dict[str, int]
     long_timeout_types: frozenset[str]
     on_failure: bool
     # Events whose hooks guard the operation, which a hook run in the background, with async set, cannot block.
@@ -3040,6 +3074,7 @@ CLAUDE_HOOKS = HookRules(
     short_timeout_events=frozenset(
         {"UserPromptSubmit", "PreModelSwitch", "PostModelSwitch", "MessageDisplay", "SessionEnd"}
     ),
+    timeout_limits={},
     long_timeout_types=frozenset({"command", "http", "mcp_tool"}),
     on_failure=True,
     guard_events=frozenset(),
@@ -3188,6 +3223,14 @@ def _hook_handler_problems(rules: HookRules, event: str, handler: Any) -> list[t
             )
     elif not _positive_seconds(timeout):
         problems.append(("ERROR", f"Hook on '{event}': timeout must be a positive number of seconds"))
+    elif event in rules.timeout_limits and FIELDS.number(timeout, "timeout") > rules.timeout_limits[event]:
+        problems.append(
+            (
+                "WARNING",
+                f"Hook on '{event}' sets a timeout of {timeout} seconds, over the {rules.timeout_limits[event]} "
+                f"seconds {rules.runtime} supports for {event} hooks",
+            )
+        )
     on_failure = handler.get("onFailure")
     if rules.on_failure and on_failure is not None:
         if kind not in ON_FAILURE_TYPES:
@@ -3362,6 +3405,8 @@ CODEX_HOOKS = HookRules(
     types={"command": ("command",), "mcp_tool": ("server", "tool"), "prompt": (), "agent": ()},
     skipped_types=frozenset({"prompt", "agent"}),
     short_timeout_events=frozenset({"SessionEnd", "Interrupt"}),
+    # "SessionEnd and Interrupt use 1 second by default and support up to 3 seconds."
+    timeout_limits={"SessionEnd": 3, "Interrupt": 3},
     long_timeout_types=frozenset({"command", "mcp_tool"}),
     on_failure=False,
     guard_events=frozenset({"PreToolUse", "PermissionRequest", "UserPromptSubmit", "Stop"}),
@@ -3371,12 +3416,56 @@ CODEX_HOOKS = HookRules(
 CODEX_AGENT_REQUIRED = ("name", "description", "developer_instructions")
 CODEX_AGENT_IGNORED = ("sandbox_mode", "approval_policy", "model_provider", "mcp_servers")
 CODEX_RULE_DECISIONS = ("allow", "prompt", "forbidden")
+# The approval_policy values Codex's configuration reference no longer takes, with the severity and the reason each
+# draws: "untrusted is unsupported, and on-failure is deprecated", and its approvals page says the retired untrusted
+# "can prevent either client from starting".
+CODEX_RETIRED_APPROVALS = {
+    "untrusted": ("ERROR", "Codex no longer supports it, and the retired setting can prevent Codex from starting"),
+    "on-failure": ("WARNING", "Codex has deprecated it"),
+}
+# The configuration reference says not to combine default_permissions with either of these.
+CODEX_LEGACY_SANDBOX = {"sandbox_mode": "sandbox_mode", "sandbox_workspace_write": "a [sandbox_workspace_write] table"}
 
 
 def check_codex(root: Path) -> list[Finding]:
-    """Codex's project configuration under .codex beside config.toml: its hooks, custom agents, and rules, each of
-    which Codex loads once the project's .codex layer is trusted."""
-    return [*_codex_hooks(root), *_codex_agents(root), *_codex_rules(root)]
+    """Codex's project configuration under .codex: the settings of config.toml, and its hooks, custom agents, and
+    rules, each of which Codex loads once the project's .codex layer is trusted."""
+    return [*_codex_settings(root), *_codex_hooks(root), *_codex_agents(root), *_codex_rules(root)]
+
+
+def _codex_settings(root: Path) -> list[Finding]:
+    """The session settings of .codex/config.toml the configuration reference retires or says not to combine: a
+    retired approval_policy, and default_permissions beside sandbox_mode or a [sandbox_workspace_write] table. Its
+    profiles are not read, since the reference says Codex ignores profiles in a project's config. check_mcp reports a
+    config.toml that does not parse."""
+    config = _codex_config(root)
+    findings: list[Finding] = []
+    approval = config.get("approval_policy")
+    if isinstance(approval, str) and approval in CODEX_RETIRED_APPROVALS:
+        severity, reason = CODEX_RETIRED_APPROVALS[approval]
+        findings.append(
+            Finding(
+                severity,
+                "codex-config",
+                CODEX_CONFIG,
+                message=f"approval_policy = '{approval}': {reason}; use 'on-request' for interactive runs or 'never' "
+                "for non-interactive runs",
+            )
+        )
+    if "default_permissions" in config:
+        findings.extend(
+            Finding(
+                "WARNING",
+                "codex-config",
+                CODEX_CONFIG,
+                message=f"default_permissions is set together with {label}, which Codex's configuration reference "
+                "says not to combine; set either default_permissions and its [permissions] tables, or sandbox_mode "
+                "and [sandbox_workspace_write]",
+            )
+            for key, label in CODEX_LEGACY_SANDBOX.items()
+            if key in config
+        )
+    return findings
 
 
 def _codex_hooks(root: Path) -> list[Finding]:
@@ -3882,6 +3971,38 @@ def format_markdown(result: AuditResult, sources: dict[str, tuple[Source, ...]] 
     return "\n".join(lines) + "\n"
 
 
+def relayed(finding: Finding) -> bool:
+    """Whether the relay names a finding: every ERROR and WARNING, and each applicable limitation, whose INFO the
+    SUMMARY lines alone would hide."""
+    return finding.severity != "INFO" or finding.check == "limitation"
+
+
+def format_relay(result: AuditResult, sources: dict[str, tuple[Source, ...]] | None = None) -> str:
+    """The report the skill relays as printed: the authority and scope, the RESULT and SUMMARY lines, a FINDING line
+    for each finding `relayed` keeps, and with `sources` a SOURCE line for each source of a check the findings name.
+    Every field the repository controls is plain text on its line, through flat_text, never a character entity."""
+    lines = [
+        fact_line("REPOSITORY", result.repository),
+        fact_line("AUTHORITY", result.authority),
+        fact_line("SCOPE", _validated_scope_status(result.scope_status)),
+        f"RESULT {result.result}",
+    ]
+    sorted_findings = result.sorted_findings()
+    lines += summary_lines(sorted_findings)
+    lines += [
+        fact_line("FINDING", f.severity, f.check, f.path or "", "" if f.line is None else f.line, f.message)
+        for f in sorted_findings
+        if relayed(f)
+    ]
+    if sources is not None:
+        lines += [
+            fact_line("SOURCE", check, source.page or "decision", source.text)
+            for check, found in sources.items()
+            for source in found
+        ]
+    return "\n".join(lines) + "\n"
+
+
 def format_json(result: AuditResult, sources: dict[str, tuple[Source, ...]] | None = None) -> str:
     output: dict[str, Any] = {
         "repository": result.repository,
@@ -3920,10 +4041,17 @@ def not_a_checkout(root: Path) -> str | None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Read-only audit of AI agent configuration")
-    parser.add_argument(
+    output = parser.add_mutually_exclusive_group()
+    output.add_argument(
         "--json",
         action="store_true",
         help="output JSON instead of Markdown",
+    )
+    output.add_argument(
+        "--relay",
+        action="store_true",
+        help="output the plain lines the skill relays: authority, scope, result, summary, and every ERROR, WARNING, "
+        "and limitation finding",
     )
     parser.add_argument(
         "--provenance",
@@ -3964,6 +4092,8 @@ def main() -> int:
             print(single_line(f"FAILED the JSON report cannot hold a value the audit found: {exc}"))
             return 1
         print_report(report)
+    elif args.relay:
+        print_report(format_relay(result, sources))
     else:
         print_report(format_markdown(result, sources))
 

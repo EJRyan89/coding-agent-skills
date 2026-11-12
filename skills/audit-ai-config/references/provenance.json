@@ -79,10 +79,20 @@
         "passage": "A project's custom agents are TOML files under .codex/agents that must define name, description, and developer_instructions, and sandbox_mode, approval_policy, model_provider, and mcp_servers in such a file don't override the parent configuration."
       }
     ],
+    "codex-config": [
+      {
+        "page": "https://learn.chatgpt.com/docs/config-file/config-reference",
+        "passage": "approval_policy takes on-request or never, untrusted is unsupported, and on-failure is deprecated; default_permissions names the default permissions profile, and must not be combined with sandbox_mode or [sandbox_workspace_write]; Codex ignores profile and profiles in a project's config."
+      },
+      {
+        "page": "https://learn.chatgpt.com/docs/agent-approvals-security",
+        "passage": "Codex no longer supports approval_policy = \"untrusted\", and the retired setting can prevent the client from starting, so remove it from user or project configuration."
+      }
+    ],
     "codex-hook": [
       {
         "page": "https://learn.chatgpt.com/docs/hooks",
-        "passage": "Codex loads a trusted project's hooks from .codex/hooks.json or the [hooks] tables of .codex/config.toml, merging both with a warning, under the events PreToolUse, PermissionRequest, PostToolUse, PreCompact, PostCompact, UserPromptSubmit, SubagentStop, and Stop during a turn, PreModelRequest and PostModelRequest for each model request attempt, Interrupt, SessionStart, SubagentStart, and SessionEnd, and a hook without a timeout runs up to 600 seconds, or 1 second on SessionEnd and Interrupt."
+        "passage": "Codex loads a trusted project's hooks from .codex/hooks.json or the [hooks] tables of .codex/config.toml, merging both with a warning, under the events PreToolUse, PermissionRequest, PostToolUse, PreCompact, PostCompact, UserPromptSubmit, SubagentStop, and Stop during a turn, PreModelRequest and PostModelRequest for each model request attempt, Interrupt, SessionStart, SubagentStart, and SessionEnd, and a hook without a timeout runs up to 600 seconds, while SessionEnd and Interrupt use 1 second by default and support up to 3 seconds."
       },
       {
         "page": "https://learn.chatgpt.com/docs/hooks",
@@ -132,7 +142,7 @@
       },
       {
         "page": "https://docs.github.com/en/copilot/how-tos/copilot-cli/customize-copilot/create-custom-agents-for-cli",
-        "passage": "Copilot CLI reads a repository's custom agents from .github/agents and personal ones from ~/.copilot/agents."
+        "passage": "Copilot CLI reads a repository's custom agents from .github/agents and personal ones from ~/.copilot/agents, and for a file in a subdirectory of agents the subdirectory name is included in the ID, the separator replaced with --, so agents/security/security-auditor.agent.md has the ID security--security-auditor."
       },
       {
         "page": "https://docs.github.com/en/copilot/reference/copilot-cli-reference/cli-command-reference",
