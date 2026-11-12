@@ -119,9 +119,9 @@ scenarios start no reviewer says `none`.
 are part of the configuration under test. A pinned model is honoured: the pipeline starts that route's reviewer on it
 whatever model the row judges, so a run counts when each reviewer ran on the judged model or on a model a route pins,
 and with `--records` each reviewer's reported model is held to its own route's pin. A pinned `inherit` pins nothing,
-and a pin of a model the evaluation names no ID for fails the scenario's load. A pinned effort is overridden: Claude
-Code starts a native subagent at its agent's effort, the row's "Reviewer effort", and not at one the pipeline is
-given, so the cell names it as `effort <effort> overridden`. A row with no pin says `none`.
+and a pin of a model the evaluation names no ID for fails the scenario's load. A pinned effort is honoured too: the
+session starts that route's reviewer at it through the Agent tool's `effort`, over the agent's effort, the row's
+"Reviewer effort", so the cell names it as `effort <effort>`. A row with no pin says `none`.
 
 A trigger scenario's result is a row like any other. Its Model ID and Session model are both the judged model, since
 its sessions run on that model, and By scenario gives its expectations passed, one per request and near miss. A skill
@@ -146,9 +146,9 @@ session model and the judged one. A skill with no row has not been run since its
 | review-prs | haiku | claude-haiku-5-5 | high | none | 25/28 | 1 | clean-change 2/2, description 5/6, design-clean 1/2, design-gaps 5/5, planted-defects 4/5, re-review 8/8 | claude-haiku-5-5, claude-opus-5-5 | 2.1.317 | 2026-11-10 |
 | review-prs | sonnet | claude-sonnet-5-5 | high | none | 28/28 | 1 | clean-change 2/2, description 6/6, design-clean 2/2, design-gaps 5/5, planted-defects 5/5, re-review 8/8 | claude-opus-5-5, claude-sonnet-5-5 | 2.1.317 | 2026-11-10 |
 | review-prs | opus | claude-opus-5-5 | high | none | 28/28 | 1 | clean-change 2/2, description 6/6, design-clean 2/2, design-gaps 5/5, planted-defects 5/5, re-review 8/8 | claude-opus-5-5 | 2.1.317 | 2026-11-10 |
-| review-repository | haiku | claude-haiku-5-5 | high | none | 17/18 | 1 | branch-name-command 0/1, build-grant 1/1, closed-spellings 2/2, drifted-guide 2/2, missed-sibling 1/1, misstated-exit-status 1/1, open-spelling 2/2, tested-change 2/2, text-read-policy 1/1, undocumented-change 2/2, unnoted-flag-rename 1/1, untested-change 1/1, write-before-refusal 1/1 | claude-opus-5-5 | 2.1.317 | 2026-11-05 |
-| review-repository | sonnet | claude-sonnet-5-5 | high | none | 18/18 | 1 | branch-name-command 1/1, build-grant 1/1, closed-spellings 2/2, drifted-guide 2/2, missed-sibling 1/1, misstated-exit-status 1/1, open-spelling 2/2, tested-change 2/2, text-read-policy 1/1, undocumented-change 2/2, unnoted-flag-rename 1/1, untested-change 1/1, write-before-refusal 1/1 | claude-opus-5-5 | 2.1.317 | 2026-11-05 |
-| review-repository | opus | claude-opus-5-5 | high | none | 17/18 | 1 | branch-name-command 1/1, build-grant 1/1, closed-spellings 1/2, drifted-guide 2/2, missed-sibling 1/1, misstated-exit-status 1/1, open-spelling 2/2, tested-change 2/2, text-read-policy 1/1, undocumented-change 2/2, unnoted-flag-rename 1/1, untested-change 1/1, write-before-refusal 1/1 | claude-opus-5-5 | 2.1.317 | 2026-11-05 |
+| review-repository | haiku | claude-haiku-5-5 | high | none | 16/18 | 1 | branch-name-command 0/1, build-grant 1/1, closed-spellings 1/2, drifted-guide 2/2, missed-sibling 1/1, misstated-exit-status 1/1, open-spelling 2/2, tested-change 2/2, text-read-policy 1/1, undocumented-change 2/2, unnoted-flag-rename 1/1, untested-change 1/1, write-before-refusal 1/1 | claude-opus-5-5 | 2.1.317 | 2026-11-12 |
+| review-repository | sonnet | claude-sonnet-5-5 | high | none | 18/18 | 1 | branch-name-command 1/1, build-grant 1/1, closed-spellings 2/2, drifted-guide 2/2, missed-sibling 1/1, misstated-exit-status 1/1, open-spelling 2/2, tested-change 2/2, text-read-policy 1/1, undocumented-change 2/2, unnoted-flag-rename 1/1, untested-change 1/1, write-before-refusal 1/1 | claude-opus-5-5 | 2.1.317 | 2026-11-12 |
+| review-repository | opus | claude-opus-5-5 | high | none | 16/18 | 1 | branch-name-command 1/1, build-grant 1/1, closed-spellings 1/2, drifted-guide 2/2, missed-sibling 1/1, misstated-exit-status 1/1, open-spelling 2/2, tested-change 1/2, text-read-policy 1/1, undocumented-change 2/2, unnoted-flag-rename 1/1, untested-change 1/1, write-before-refusal 1/1 | claude-opus-5-5 | 2.1.317 | 2026-11-12 |
 <!-- skill-evals:end -->
 
 ### Notes
@@ -182,5 +182,5 @@ fails while a committed row is still `unread`, so the reading travels with the r
 | review-document | committed-edit | opus | 1 | 2026-11-10 | agrees |
 | review-insights | description | haiku | 1 | 2026-11-10 | agrees |
 | review-prs | clean-change | sonnet | 1 | 2026-11-10 | agrees |
-| review-repository | missed-sibling | opus | 1 | 2026-11-05 | agrees |
+| review-repository | misstated-exit-status | haiku | 1 | 2026-11-12 | agrees |
 <!-- skill-evals-samples:end -->

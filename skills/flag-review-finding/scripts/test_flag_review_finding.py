@@ -159,18 +159,18 @@ class FlagCliTests(unittest.TestCase):
     def assert_result(self, result: subprocess.CompletedProcess[str], code: int, stdout: str) -> None:
         self.assertEqual((code, stdout, ""), (result.returncode, result.stdout, result.stderr))
 
-    def assert_refusal_preserves_store_and_locks(self, reason: str, *arguments: str) -> None:
+    def store_folder_snapshot(self) -> dict[Path, tuple[bytes | None, int]]:
+        """Every path under the store's folder, the folder included, with its bytes when a file and its mtime."""
         root = Path(self.store).parent
+        return {
+            path.relative_to(root): (path.read_bytes() if path.is_file() else None, path.stat().st_mtime_ns)
+            for path in (root, *root.rglob("*"))
+        }
 
-        def snapshot() -> dict[Path, tuple[bytes | None, int]]:
-            return {
-                path.relative_to(root): (path.read_bytes() if path.is_file() else None, path.stat().st_mtime_ns)
-                for path in (root, *root.rglob("*"))
-            }
-
-        before = snapshot()
+    def assert_refusal_preserves_store_and_locks(self, reason: str, *arguments: str) -> None:
+        before = self.store_folder_snapshot()
         self.assert_result(self.store_cli(*arguments), 1, f"FAILED {reason}\n")
-        self.assertEqual(before, snapshot())
+        self.assertEqual(before, self.store_folder_snapshot())
 
     def test_add_requires_a_nonblank_category_without_changing_the_store(self) -> None:
         for existing in (False, True):
@@ -195,22 +195,14 @@ class FlagCliTests(unittest.TestCase):
     def assert_usage_preserves_store_and_locks(self, option: str, value: str, *arguments: str) -> None:
         """A usage error that names the option and the value, exits 2, prints nothing to stdout, and leaves the
         store's folder as it was."""
-        root = Path(self.store).parent
-
-        def snapshot() -> dict[Path, tuple[bytes | None, int]]:
-            return {
-                path.relative_to(root): (path.read_bytes() if path.is_file() else None, path.stat().st_mtime_ns)
-                for path in (root, *root.rglob("*"))
-            }
-
-        before = snapshot()
+        before = self.store_folder_snapshot()
         result = self.store_cli(*arguments)
         self.assertEqual((2, ""), (result.returncode, result.stdout))
         self.assertEqual(
             f"argument {option}: must be a whole number of at least 1 in ASCII digits, not {value!r}",
             result.stderr.splitlines()[-1].split(" error: ", 1)[1],
         )
-        self.assertEqual(before, snapshot())
+        self.assertEqual(before, self.store_folder_snapshot())
 
     def test_add_requires_a_positive_pull_in_ascii_digits_before_reading_the_archive_or_changing_the_store(
         self,

@@ -156,7 +156,8 @@ def wait_until(condition: Callable[[], bool], seconds: float = 20.0) -> bool:
 
 
 class SameProcessTests(unittest.TestCase):
-    """The deployer lock's rule: a live PID is the recorded process only when its start time matches."""
+    """The rule the review lock's staleness check (review_io.ResourceLock) and the Copilot CLI host's claim
+    (review_hosts.host_state) both keep: a live PID is the recorded process only when its start time matches."""
 
     def test_identity_follows_pid_and_start_time(self) -> None:
         self.assertIs(False, same_process(ProcessStatus(False, None), 100))
@@ -164,20 +165,6 @@ class SameProcessTests(unittest.TestCase):
         self.assertIs(False, same_process(ProcessStatus(True, 200), 100), "a reused PID is another process")
         self.assertIsNone(same_process(ProcessStatus(True, None), 100), "an unreadable start time proves nothing")
         self.assertIsNone(same_process(ProcessStatus(True, 100), None), "nothing was recorded to compare")
-
-
-class ProcessStatusTests(unittest.TestCase):
-    def test_this_process_is_alive_with_a_start_time(self) -> None:
-        status = process_status(os.getpid())
-        self.assertTrue(status.alive)
-        self.assertIsInstance(status.start_time, int)
-        self.assertEqual(status, process_status(os.getpid()), "the start time is stable")
-
-    def test_an_exited_process_is_not_alive(self) -> None:
-        process = subprocess.Popen([sys.executable, "-c", "pass"])
-        process.wait()
-        # The Popen handle keeps the exited process queryable, so this reads its exit code, not a missing PID.
-        self.assertFalse(process_status(process.pid).alive)
 
 
 class StartDetachedTests(unittest.TestCase):

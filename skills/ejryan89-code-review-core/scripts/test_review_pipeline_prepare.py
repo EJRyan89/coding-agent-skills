@@ -2183,8 +2183,14 @@ def entrypoint_state(
             "source_commit": "<base>",
             "source_hashes": hashes,
         },
+        # A Claude Code subagent starts at the effort the run records: none here, so the agent's own.
         roles=[
-            {"id": identity, "prompt_file": "<root>/run/reviewer.prompt.md", "result_file": "<root>/run/result.json"}
+            {
+                "id": identity,
+                "prompt_file": "<root>/run/reviewer.prompt.md",
+                "result_file": "<root>/run/result.json",
+                "effort": None,
+            }
         ],
         attempts={identity: 0},
         dispatched_at={identity: NOW},

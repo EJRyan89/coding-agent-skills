@@ -78,7 +78,7 @@ TOP_LEVEL_KEYS = {
 # A model identifier reviewers report (up to the 200 characters a record allows) and the shorter name reports show.
 MODEL_IDENTIFIER_MAXIMUM_LENGTH = 200
 MODEL_NAME_MAXIMUM_LENGTH = 100
-# Reasoning effort for reviewers the Workflow tool starts; null keeps the session's effort.
+# Reasoning effort for the reviewers a session starts and the Copilot CLI host; null keeps the session's effort.
 REVIEWER_EFFORTS = {"low", "medium", "high", "xhigh", "max"}
 # The model aliases every way of starting a Claude subagent accepts (the Agent tool takes no other value; on Bedrock
 # a bare model name can be silently ignored). The configuration's `reviewer_model` and a specialist's `model` also

@@ -1380,6 +1380,7 @@ class RunListCommandTests(RunListCase):
                 "ALL_VALID example/app#1\n"
                 "FAILED example/app#4 x bad\n"
                 "RETRY example/app#5 x x.md bad\n"
+                "EFFORT example/app#5 x high\n"
                 "RUNNING example/app#7 x 4s\n"
                 "FAILED run h run h is not a prepared review run\n",
                 "",

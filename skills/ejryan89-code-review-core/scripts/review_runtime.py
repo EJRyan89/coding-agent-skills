@@ -174,9 +174,10 @@ DEFAULT_PULL_REQUEST_INPUTS = ("description", "comments")
 # identifiers, so there a reviewer starts on the session's model.
 MODEL_ALIAS_RUNTIMES = frozenset({"claude-code"})
 # The runtimes whose native delegation starts a subagent at a reasoning effort it is given, in the values
-# REVIEWER_EFFORTS names: Codex's spawn_agent takes `reasoning_effort`. Claude Code's reviewers take theirs through
-# the Workflow tool, and the Copilot CLI host takes `--reasoning-effort`.
-NATIVE_EFFORT_RUNTIMES = frozenset({"codex"})
+# REVIEWER_EFFORTS names: Claude Code's Agent tool takes `effort`, over the agent's own, and Codex's spawn_agent takes
+# `reasoning_effort`. The Workflow tool reads a role's effort from the run, and the Copilot CLI host takes
+# `--reasoning-effort`.
+NATIVE_EFFORT_RUNTIMES = frozenset({"claude-code", "codex"})
 GENERIC_SPECIALIST = "generic-review"
 # Profiles the suite ships, which a specialist names as `suite:<name>` in place of a repository path. Each is read from
 # this skill's references folder, never from the repository, and only the names here resolve, so a manifest can reach
