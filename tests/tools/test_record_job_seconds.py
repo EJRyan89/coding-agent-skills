@@ -617,13 +617,13 @@ class MainTests(unittest.TestCase):
         stub.answers["gh run view 2 --log"] = 1
         code, _, errors, table = self.run_main(["1", "2"], stub)
         self.assertEqual((2, False), (code, table.exists()))
-        self.assertIn("Cannot read the validate runs", errors)
+        self.assertIn("ERROR: cannot read the validate runs", errors)
         self.assertIn("Not Found", errors)
 
     def test_a_run_gh_cannot_read_or_with_no_passing_jobs_writes_nothing(self) -> None:
         code, _, errors, table = self.run_main(["5"], Stub({"gh run view 5": 1}))
         self.assertEqual((2, False), (code, table.exists()))
-        self.assertIn("Cannot read the validate runs", errors)
+        self.assertIn("ERROR: cannot read the validate runs", errors)
         code, _, errors, table = self.run_main([], Stub({"gh run list": "[]"}))
         self.assertEqual((2, False), (code, table.exists()))
         self.assertIn("no successful push run of validate.yml on main", errors)
@@ -658,7 +658,7 @@ class MainTests(unittest.TestCase):
             with self.subTest(name):
                 code, output, errors, table = self.run_main(arguments, Stub(dict(answers)))
                 self.assertEqual((2, "", False), (code, output, table.exists()), errors)
-                self.assertTrue(errors.startswith(f"Cannot read the validate runs: {message}"), errors)
+                self.assertTrue(errors.startswith(f"ERROR: cannot read the validate runs: {message}"), errors)
 
     def test_the_table_it_writes_is_the_one_validation_reads(self) -> None:
         table = record_job_seconds.TABLE.relative_to(record_job_seconds.REPOSITORY_ROOT)

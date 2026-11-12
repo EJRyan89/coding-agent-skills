@@ -21,8 +21,8 @@ between milestones, and the release procedure in docs/releasing.md runs it with 
 Exit status:
   0  SYNCED, or IN_SYNC with --check
   1  DRIFTED, or a last line FAILED <reason>
-  2  a usage error, or `gh` cannot read or change the board, the board has no Release field, or its answer lacks a
-     field the query asks for or holds one of another kind
+  2  a usage error, or an ERROR: line when `gh` cannot read or change the board, the board has no Release field, or
+     its answer lacks a field the query asks for or holds one of another kind
 """
 
 from __future__ import annotations

@@ -90,14 +90,43 @@ def test_the_program_loads_the_query_s_modules_and_no_policy_or_suite() -> None:
     assert result.stdout.splitlines() == LOADED
 
 
-@pytest.mark.parametrize(("problems", "status"), [([], 0), (["#1 is CLOSED", "#2 cannot be asked"], 1)])
-def test_it_prints_each_problem_and_fails_on_one(problems: list[str], status: int) -> None:
+def test_it_prints_each_problem_and_fails_on_one() -> None:
+    problems = ["#1 is CLOSED", "#2 cannot be asked"]
     out = io.StringIO()
     with mock.patch.object(known_failures, "open_issue_problems", return_value=problems):
-        assert known_failure_issues.main([], out=out) == status
-    lines = out.getvalue().splitlines()
-    assert lines[:-1] == [f"FAILED {problem}" for problem in problems]
-    assert lines[-1] == f"Known-failure issues: {len(problems)} not shown open."
+        assert known_failure_issues.main([], out=out) == 1
+    assert out.getvalue().splitlines() == [
+        "FAILED #1 is CLOSED",
+        "FAILED #2 cannot be asked",
+        "Known-failure issues: 2 not shown open.",
+    ]
+
+
+def owed(*issues: int) -> list[known_failures.OwedIssue]:
+    return [
+        known_failures.OwedIssue(issue, "known_failures.json", f"lists case {index}")
+        for index, issue in enumerate(issues)
+    ]
+
+
+@pytest.mark.parametrize(
+    ("named", "last"),
+    [
+        ([], "Known-failure issues: none named, so GitHub was not asked."),
+        # Two entries under one issue are one issue asked about.
+        (owed(7, 7, 9), "Known-failure issues: all 2 named shown open."),
+    ],
+)
+def test_its_last_line_tells_a_list_naming_nothing_from_one_whose_every_issue_is_open(
+    named: list[known_failures.OwedIssue], last: str
+) -> None:
+    out = io.StringIO()
+    with (
+        mock.patch.object(known_failures, "open_issue_problems", return_value=[]),
+        mock.patch.object(known_failures, "owed_issues", return_value=named),
+    ):
+        assert known_failure_issues.main([], out=out) == 0
+    assert out.getvalue().splitlines() == [last]
 
 
 @pytest.mark.parametrize("argument", ["--full", "-k", "--known-failure-issues", "extra"])
