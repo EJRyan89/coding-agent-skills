@@ -480,7 +480,7 @@ a row decides it.
   `tests/tools/test_prefix_programs.py` holds each allow-list to every option the program's `--help` or getopt table
   lists, pinned in `tests/fixtures/hub-guard/option-catalogues.json`, for the programs the Rust coreutils replace,
   in `tests/fixtures/hub-guard/option-catalogues-uutils.json`, and for macOS's builds of `chroot`, `env`, `find`,
-  `nice`, `nohup`, `sort`, `time`, and `xargs`, Apple's builds of FreeBSD's, in
+  `nice`, `nohup`, `sort`, `stdbuf`, `time`, and `xargs`, Apple's builds of FreeBSD's, in
   `tests/fixtures/hub-guard/option-catalogues-bsd.json`, every option any build lists, in each spelling, `tar`'s rows
   holding bsdtar's options too, as macOS's and Windows' `tar` is bsdtar. It holds each of `env`, `nice`, `nohup`,
   `stdbuf`, `timeout`, and `xargs` the system installs to the catalogue of the implementation its `--version` names,

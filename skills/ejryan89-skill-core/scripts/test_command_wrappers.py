@@ -58,6 +58,14 @@ def test_the_catalogue_names_each_wrapper_and_find_s_actions() -> None:
         (["env", "--split-string=-u B git push"], ["git", "push"]),
         # Its value attached, --unset places the program alike on macOS's env, where it is -u with nset=B attached.
         (["env", "--unset=B", "--null", "git"], ["git"]),
+        # The Rust coreutils' env sets variables from the file -f or --file names, and runs the program after it.
+        (["env", "-f", "vars", "git", "status"], ["git", "status"]),
+        (["env", "--file=vars", "git", "status"], ["git", "status"]),
+        (["env", "--file", "vars", "git", "status"], ["git", "status"]),
+        (["env", "-ifvars", "git"], ["git"]),
+        # Their -h and -V run nothing, so the word after them is read as a program that never runs.
+        (["nice", "-h", "git"], ["git"]),
+        (["timeout", "-V", "5", "git"], ["git"]),
         (["timeout", "--signal", "TERM", "5", "git"], ["git"]),
         (["nice", "-5", "git"], ["git"]),
         (["nice", "-n", "5", "git"], ["git"]),

@@ -103,8 +103,12 @@ one_line() {
 
 # Bash keeps its script open while running, and Windows refuses to rename a directory holding an open
 # file, so the deploy below could not back up this skill's own directory. Run from a temporary copy.
+# Every temporary file is named from a template under TMPDIR, as macOS's mktemp, given no template, takes the user's
+# temporary folder ahead of TMPDIR.
+TEMPLATE="${TMPDIR:-/tmp}"
+TEMPLATE="${TEMPLATE%/}/update-skills.XXXXXXXXXX"
 if [ "${UPDATE_SKILLS_COPY:-}" != "$0" ]; then
-  if ! COPY=$(mktemp 2>&1); then
+  if ! COPY=$(mktemp "$TEMPLATE" 2>&1); then
     echo "FAILED cannot create a temporary copy of update.sh: $(one_line "$COPY")"
     exit 1
   fi
@@ -122,13 +126,13 @@ SCRIPTS=$UPDATE_SKILLS_SCRIPTS
 unset UPDATE_SKILLS_COPY UPDATE_SKILLS_SCRIPTS
 
 # The deployer's stderr is kept in a file before it is shown, so its refusal to replace a pin can be read below.
-if ! DEPLOY_ERRORS=$(mktemp 2>&1); then
+if ! DEPLOY_ERRORS=$(mktemp "$TEMPLATE" 2>&1); then
   echo "FAILED cannot create a temporary file for the deployer's errors: $(one_line "$DEPLOY_ERRORS")"
   DEPLOY_ERRORS=
   exit 1
 fi
 # git's stderr is kept apart from its output, so git_quiet below can tell git's "no" from its failure.
-if ! GIT_ERRORS=$(mktemp 2>&1); then
+if ! GIT_ERRORS=$(mktemp "$TEMPLATE" 2>&1); then
   echo "FAILED cannot create a temporary file for git's errors: $(one_line "$GIT_ERRORS")"
   GIT_ERRORS=
   exit 1
