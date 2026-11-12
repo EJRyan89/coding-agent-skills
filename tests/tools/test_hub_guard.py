@@ -3084,6 +3084,37 @@ class ReadOnlyFormTests(GuardTestCase):
         self.assertIsNone(self.bash("git merge --ff-only origin/main", self.hub))
         self.assertIsNone(self.bash("git pull --ff-only origin main", self.hub))
 
+    def test_a_fast_forward_is_refused_when_the_guard_cannot_list_the_refs_it_may_follow(self) -> None:
+        self.git(self.hub, "update-ref", "refs/remotes/origin/main", "main")
+        real = hub_guard.git
+
+        def failing(stderr: str) -> Any:
+            def git(cwd: Path, *arguments: str) -> git_client.GitResult:
+                if arguments[:1] == ("for-each-ref",):
+                    return git_client.GitResult(128, "", stderr)
+                return real(cwd, *arguments)
+
+            return git
+
+        for stderr, said in (
+            ("fatal: cannot\n  read refs\n", "(fatal: cannot read refs)."),
+            ("", "(git for-each-ref exited with 128)."),
+        ):
+            with self.subTest(stderr=stderr), mock.patch.object(hub_guard, "git", failing(stderr)):
+                for shell in (self.bash, self.powershell):
+                    self.assertEqual("deny", shell("git merge --ff-only origin/main", self.hub))
+                    self.assertIn("the guard could not list the refs it may follow " + said, self.reason)
+        self.assertIsNone(self.bash("git merge --ff-only origin/main", self.hub))
+
+    def test_the_branch_row_deletes_any_local_branch_and_with_r_any_remote_tracking_ref_as_it_says(self) -> None:
+        # The guard holds no delete to a task's <kind>/<name> branch, and the row's reason says so (#2483).
+        for command in ("git branch -D scratch", "git branch -d feat/demo", "git branch -r -d origin/feature"):
+            with self.subTest(command=command):
+                self.assertIsNone(self.bash(command, self.hub))
+        reason = hub_guard.READ_ONLY_FORMS["branch"].reason
+        self.assertIn("deletes any local branch git will delete, not only a task's", reason)
+        self.assertIn("with -r any remote-tracking ref", reason)
+
     def test_an_operand_a_row_takes_none_of_and_a_delete_naming_no_branch_are_refused(self) -> None:
         for command, reason in (
             ("git remote -v origin", "it takes no operand"),
