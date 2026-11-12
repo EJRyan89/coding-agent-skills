@@ -141,9 +141,10 @@ def _read_journal(path: Path) -> object:
 
 
 def _read_lock(path: Path) -> object:
-    # The holder is not running, so a readable PID is judged stale and returned; an unreadable one is refused.
+    # The holder is not running, so a readable PID is judged stale; an unreadable one is refused.
     paths = Paths(source_dir=path.parents[3], home=path.parents[3])
-    return lock._existing_holder(paths, lambda pid: ProcessStatus(alive=False, start_time=None))
+    lock._existing_holder(paths, lambda pid: ProcessStatus(alive=False, start_time=None))
+    return None
 
 
 def _read_source_id(path: Path) -> object:
@@ -334,7 +335,7 @@ READERS = [
         filename="home/.claude/deployer/.deploy.lock.d/info.json",
         accepts={
             "wrong_type:start_time": "the holder is not running, so its start time is never read",
-            "wrong_type:token": "the token is compared whole with the one the reclaim reads back, never read as text",
+            "wrong_type:token": "judging a record never reads its token; only its holder compares it with its own",
         },
     ),
     Reader(

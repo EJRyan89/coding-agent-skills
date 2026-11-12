@@ -861,27 +861,53 @@ class LockRemedyTests(RemedyTestCase):
             SEE_LOCK,
         )
 
-    def test_failed_stale_lock_reclaim_says_to_retry(self) -> None:
+    def test_a_stale_lock_that_cannot_be_removed_says_to_delete_it(self) -> None:
         self.fixture()
         self.write_lock({"pid": 99998, "token": "stale-token", "start_time": 1})
-        real_move = fsops.move
+        real_remove = fsops.remove
 
-        def failing_move(source: Path, destination: Path) -> None:
-            if source == self.lock_dir:
-                raise OSError("synthetic move failure")
-            real_move(source, destination)
+        def failing_remove(path: Path) -> None:
+            if path == self.lock_dir:
+                raise OSError(13, "synthetic remove failure")
+            real_remove(path)
 
-        with mock.patch("deployer.fsops.move", side_effect=failing_move):
+        with mock.patch("deployer.fsops.remove", side_effect=failing_remove):
             result = self.deploy_fails(
-                "--all", pattern="Failed to reclaim stale lock", probe=probe_returning(False, None)
+                "--all", pattern="Could not remove the stale lock", probe=probe_returning(False, None)
             )
-        self.assert_lines(result.output, "Retry the deployment.", SEE_LOCK)
+        self.assert_lines(
+            result.output,
+            f"ERROR: Could not remove the stale lock {forward(self.lock_dir)}: synthetic remove failure.",
+            "Delete it once no deployment is running, then retry.",
+            SEE_LOCK,
+        )
 
-        with contended_lock(self.lock_dir):
+    def test_a_record_that_cannot_be_made_names_the_reason(self) -> None:
+        self.fixture()
+        real_make_directory = fsops.make_directory
+
+        def denied(path: Path) -> None:
+            if path == self.lock_dir:
+                raise PermissionError(13, "Access is denied", str(path))
+            real_make_directory(path)
+
+        with mock.patch("deployer.fsops.make_directory", side_effect=denied):
+            result = self.deploy_fails("--all", pattern="make the deployment lock's record")
+        self.assertIn(
+            f"ERROR: Could not make the deployment lock's record: {forward(self.lock_dir)}: Access is denied\n",
+            result.output,
+        )
+        self.assertFalse(self.paths.lock_file.exists())
+
+    def test_a_record_an_older_deployer_makes_meanwhile_says_to_wait(self) -> None:
+        self.fixture()
+        with contended_lock(self.lock_dir, {"pid": 5151, "token": "older-token", "start_time": 9}):
             result = self.deploy_fails(
-                "--all", pattern="after stale reclaim", probe=probe_returning(False, None), changes_home=TAKES_THE_LOCK
+                "--all", pattern="Another deployment is running", changes_home="an older deployer makes its record"
             )
-        self.assert_lines(result.output, "Retry the deployment.", SEE_LOCK)
+        self.assert_lines(
+            result.output, "ERROR: Another deployment is running (PID 5151).", "Wait for it to finish, then retry."
+        )
 
 
 class RecoveryGuideTests(unittest.TestCase):

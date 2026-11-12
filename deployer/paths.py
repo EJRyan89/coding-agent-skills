@@ -92,6 +92,10 @@ class Paths:
         return self.deployer_dir / "staging"
 
     @property
+    def lock_file(self) -> Path:
+        return self.deployer_dir / ".deploy.lock"
+
+    @property
     def lock_dir(self) -> Path:
         return self.deployer_dir / ".deploy.lock.d"
 

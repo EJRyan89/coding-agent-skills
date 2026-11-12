@@ -14,6 +14,7 @@ import tempfile
 from collections.abc import Callable
 from pathlib import Path
 
+import file_lock
 import file_presence
 from atomic_file import ReadOnlyTargetError, is_read_only
 
@@ -29,7 +30,7 @@ PLATFORM_ALLOWED = {
 def move(source: Path, destination: Path) -> None:
     """Rename without ever replacing an existing destination: a FileExistsError leaves both as they were.
 
-    Journal finalization, recovery, and the lock reclaim rely on it, so platform_support refuses an existing destination
+    Journal finalization and recovery rely on it, so platform_support refuses an existing destination
     where the platform's rename would replace it.
     """
     platform_support.refuse_existing_destination(destination)
@@ -38,6 +39,11 @@ def move(source: Path, destination: Path) -> None:
 
 def make_directory(path: Path) -> None:
     path.mkdir()
+
+
+def open_lock_file(path: Path) -> int:
+    """Open the deployment lock's file, creating it, for ejryan89-skill-core's file_lock to lock."""
+    return file_lock.open_for_lock(path)
 
 
 def make_directories(path: Path) -> None:
