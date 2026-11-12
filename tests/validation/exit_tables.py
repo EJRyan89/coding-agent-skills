@@ -69,7 +69,7 @@ RUNNER_FAILURE = 1
 INTERRUPTED = 130
 # What argparse exits with on a usage error, and the calls that reach it.
 USAGE = 2
-PARSING_CALLS = frozenset({"parse_args", "parse_known_args", "parse_intermixed_args"})
+PARSING_CALLS = frozenset({"parse_args", "parse_known_args", "parse_intermixed_args", "parse_known_intermixed_args"})
 # A parser's own usage error, which exits 2 too. Loggers and other objects have an error method, so a call of it is
 # read as the usage exit only on a receiver skill_scripts reads as a parser, or one the module binds to a parser.
 USAGE_ERROR_CALL = "error"

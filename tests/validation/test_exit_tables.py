@@ -167,6 +167,10 @@ PARSER_ERROR_TAIL = "    return 0\nif __name__ == '__main__':\n    run_main(main
         ),
         ("def main() -> int:\n    made: 'argparse.ArgumentParser' = get()\n    made.error('no')\n", {0, 1, 2}),
         ("def main() -> int:\n    self.parser.error('no')\n", {0, 1, 2}),
+        # Every parsing call argparse offers exits 2 on a usage error.
+        ("def main() -> int:\n    got.parse_known_intermixed_args()\n", {0, 1, 2}),
+        # A quoted annotation that does not parse names no parser.
+        ("def main() -> int:\n    made: 'not a (type' = get()\n    made.error('no')\n", {0, 1}),
         # An error method of anything else, a logger's, is no usage exit.
         ("import logging\ndef main() -> int:\n    log = logging.getLogger()\n    log.error('no')\n", {0, 1}),
         ("def main() -> int:\n    logging.error('no')\n", {0, 1}),
