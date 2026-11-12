@@ -948,7 +948,7 @@ class ConsoleTests(unittest.TestCase):
             # A stub the tool lookup finds, so the run reaches the file list, whose path it then prints.
             tools = Path(temporary) / "tools"
             tools.mkdir()
-            for name in ("dotnet-format.cmd", "dotnet-format"):
+            for name in ("dotnet-format.exe", "dotnet-format"):
                 (tools / name).write_text("exit 1\n", encoding="utf-8")
                 (tools / name).chmod(0o755)
             file_list = Path(temporary) / "files → ✓.txt"

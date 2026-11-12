@@ -26,6 +26,7 @@ sys.path.insert(0, str(sibling_scripts("ejryan89-code-review-core")))
 sys.path.insert(0, str(sibling_scripts("dotnet-format")))
 
 import bounded_process
+import git_client
 import github_client
 import review_documents
 import review_hosts
@@ -141,12 +142,8 @@ class Machine:
 
     def patches(self) -> contextlib.ExitStack:
         stack = contextlib.ExitStack()
-        stack.enter_context(
-            mock.patch(
-                "deployer.platform_support.find_executable",
-                side_effect=self.find_executable,
-            )
-        )
+        for lookup in ("find_executable", "find_program"):
+            stack.enter_context(mock.patch(f"deployer.platform_support.{lookup}", side_effect=self.find_executable))
         for flag in ("HAS_APP_EXECUTION_ALIASES", "CODEX_NEEDS_SANDBOX_SETTING"):
             stack.enter_context(mock.patch.object(platform_support, flag, self.settings))
         stack.enter_context(
@@ -1407,6 +1404,8 @@ class SkillToolLocatorTests(LocatorFixture):
 
     def skill_program(self, name: str) -> str | None:
         """The program the skill that runs `name` finds, and, where it starts one, the one it starts."""
+        if name == "git":
+            return self.started(git_client, lambda: git_client.subprocess_runner(["git", "--version"], 60))
         if name == "gh":
             return self.started(github_client, lambda: github_client.subprocess_runner(["gh", "--version"]))
         if name in ("dotnet", "dotnet-format"):
@@ -1429,6 +1428,29 @@ class SkillToolLocatorTests(LocatorFixture):
                 on_path = self.install(self.path_folder, name)
                 self.assertEqual(str(on_path), {**tools.SKILL_TOOLS, **tools.VERIFY_TOOLS}[name].locate())
                 self.assertEqual(str(on_path), self.skill_program(name), "PATH comes first")
+
+    @unittest.skipUnless(sys.platform == "win32", "only Windows starts a .bat, .cmd, or .ps1 file through a shell")
+    def test_a_shell_script_first_on_path_is_neither_reported_nor_run_and_alone_is_reported_missing(self) -> None:
+        os.environ["PATHEXT"] = ".COM;.EXE;.BAT;.CMD;.PS1"
+        catalogue = {**tools.SKILL_TOOLS, "git": tools.GIT}
+        for name in ("git", "gh", "dotnet", "dotnet-format"):
+            for suffix in (".bat", ".cmd", ".ps1"):
+                with self.subTest(name=name, suffix=suffix), mock.patch.dict(git_client.FOUND, clear=True):
+                    for old in (*self.path_folder.iterdir(), *self.links.iterdir()):
+                        old.unlink()
+                    (self.path_folder / f"{name}{suffix}").write_text("@echo off\r\n", encoding="utf-8")
+                    self.assertIsNone(catalogue[name].locate(), "a host with only a shell script lacks the tool")
+                    if name in ("dotnet", "dotnet-format"):
+                        self.assertIsNone(run_dotnet_format.Services().which(name))
+                        with self.assertRaises(FileNotFoundError):
+                            run_dotnet_format.subprocess_runner([name, "--version"], Path.cwd(), 60)
+                    else:
+                        with self.assertRaises((git_client.GitError, github_client.GitHubError)) as missing:
+                            self.skill_program(name)
+                        self.assertEqual("prerequisite", getattr(missing.exception, "kind", None))
+                    program = self.install(self.links, name)
+                    self.assertEqual(str(program), catalogue[name].locate(), "the program after the shell script")
+                    self.assertEqual(str(program), self.skill_program(name))
 
     def test_a_runtime_cli_check_reports_is_one_the_code_review_skills_detect(self) -> None:
         catalogue = {tool.name: tool for tool in (*tools.VERIFY_TOOLS.values(), *tools.REPORTED_TOOLS)}

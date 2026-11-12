@@ -117,18 +117,16 @@ class SourceCommitTests(DeployerTestCase):
         self.assertEqual(second, self.recorded())
 
     def test_a_source_that_is_not_a_git_checkout_records_no_commit_and_never_runs_git(self) -> None:
-        with mock.patch(
-            "deployer.platform_support.find_executable", wraps=platform_support.find_executable
-        ) as find_executable:
+        with mock.patch("deployer.platform_support.find_program", wraps=platform_support.find_program) as find_program:
             self.deploy_ok("--all")
-        self.assertNotIn(mock.call("git"), find_executable.call_args_list)
+        self.assertNotIn(mock.call("git"), find_program.call_args_list)
         self.assertNotIn("source_commit", self.manifest()["sources"][SOURCE_ID])
 
     def cannot(self, reason: str) -> str:
         """The first line of the refusal of a checkout whose commit git cannot name, for this reason."""
         return f"ERROR: Cannot read the commit checked out in {platform_support.normalize(self.source)}: {reason}"
 
-    def refuses_keeping_the_recorded_commit(self, run_tool: Any = None, find_executable: Any = None) -> str:
+    def refuses_keeping_the_recorded_commit(self, run_tool: Any = None, find_program: Any = None) -> str:
         """Deploy once, then redeploy and dry-run with git patched; each refuses, the home kept byte for byte.
 
         The harness compares the home before and after each refusal, so the manifest still records the first commit.
@@ -139,8 +137,8 @@ class SourceCommitTests(DeployerTestCase):
         patches = []
         if run_tool is not None:
             patches.append(mock.patch("deployer.platform_support.run_tool", side_effect=run_tool))
-        if find_executable is not None:
-            patches.append(mock.patch("deployer.platform_support.find_executable", side_effect=find_executable))
+        if find_program is not None:
+            patches.append(mock.patch("deployer.platform_support.find_program", side_effect=find_program))
         cannot = re.escape(f"ERROR: Cannot read the commit checked out in {platform_support.normalize(self.source)}: ")
         outputs = []
         for arguments in (("--all",), ("--all", "--dry-run")):
@@ -159,9 +157,9 @@ class SourceCommitTests(DeployerTestCase):
         return outputs[0]
 
     def test_a_redeployment_without_git_on_path_refuses_and_keeps_the_recorded_commit(self) -> None:
-        real = platform_support.find_executable
+        real = platform_support.find_program
         output = self.refuses_keeping_the_recorded_commit(
-            find_executable=lambda name: None if name == "git" else real(name)
+            find_program=lambda name: None if name == "git" else real(name)
         )
         self.assert_lines(
             output,
