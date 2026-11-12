@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import copy
+import errno
 import io
 import json
 import os
@@ -21,6 +22,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
+import file_lock
 import process_identity
 import review_io
 from process_identity import ProcessStatus
@@ -503,3 +505,153 @@ class StateAndLockTests(unittest.TestCase):
             self.assertEqual({"answer": 42}, read_json(path))
             if os.name != "nt":  # Windows keeps no permission bits but read-only
                 self.assertEqual(0o644, path.stat().st_mode & 0o777)
+
+
+class ResourceFileLockTests(unittest.TestCase):
+    """The file lock every holder takes before it reads, reclaims, or makes the lock directory."""
+
+    def setUp(self) -> None:
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.folder = Path(temporary.name)
+        self.path = self.folder / "resource.lock"
+
+    def stale_lock(self) -> None:
+        self.path.mkdir()
+        atomic_write_json(self.path / "owner.json", {"pid": 4242, "token": "a" * 32, "start_time": 1234})
+
+    @staticmethod
+    def probe(pid: int) -> ProcessStatus:
+        """The stale holder 4242 has exited; every other process runs."""
+        return ProcessStatus(pid != 4242, 1)
+
+    def test_no_session_takes_the_lock_while_another_reclaims_a_stale_one(self) -> None:
+        """#2658: A judges a dead PID's lock stale; B enters just before A moves the stale lock aside, and C just
+        after. Only A may hold the lock, so B and C wait and time out."""
+        self.stale_lock()
+        outcomes: dict[str, str] = {}
+        holders: list[ResourceLock] = []
+
+        def contend(name: str, timeout_seconds: float) -> None:
+            lock = ResourceLock(self.path, timeout_seconds=timeout_seconds, probe=self.probe)
+            try:
+                lock.__enter__()
+            except PersistenceError as exc:
+                outcomes[name] = "refused" if str(exc).startswith("Timed out waiting for lock") else str(exc)
+            else:
+                holders.append(lock)
+                outcomes[name] = "held"
+
+        real_rename = Path.rename
+        arrived: list[str] = []
+
+        def rename(source: Path, target: Path) -> Path:
+            if source != self.path or arrived:
+                return real_rename(source, target)
+            arrived.append(str(target))
+            contend("B", 0.2)
+            try:
+                return real_rename(source, target)
+            finally:
+                contend("C", 0.2)
+
+        with contextlib.redirect_stderr(io.StringIO()), mock.patch.object(Path, "rename", rename):
+            contend("A", 1.0)
+        try:
+            self.assertEqual(1, len(arrived))
+            self.assertEqual({"A": "held", "B": "refused", "C": "refused"}, outcomes)
+            self.assertEqual(holders[0].token, read_json(self.path / "owner.json")["token"])
+        finally:
+            for lock in holders:
+                with contextlib.suppress(PersistenceError):
+                    lock.__exit__(None, None, None)
+        self.assertEqual([], list(self.folder.iterdir()))
+
+    def test_a_holder_keeps_the_file_lock_until_its_release_deletes_it(self) -> None:
+        lock = ResourceLock(self.path)
+        with lock:
+            self.assertEqual(self.folder / "resource.lock.held", lock.file_lock_path)
+            self.assertIsNone(file_lock.take(lock.file_lock_path))
+            with self.assertRaisesRegex(
+                PersistenceError, f"^Timed out waiting for lock {re.escape(str(self.path))}: another review holds it$"
+            ):
+                ResourceLock(self.path, timeout_seconds=0.01).__enter__()
+        self.assertEqual([], list(self.folder.iterdir()))
+
+    def test_a_release_whose_ownership_changed_still_lets_the_file_lock_go(self) -> None:
+        lock = ResourceLock(self.path)
+        lock.__enter__()
+        atomic_write_json(self.path / "owner.json", {"pid": os.getpid(), "token": "b" * 32})
+        with self.assertRaisesRegex(PersistenceError, "Lock ownership changed before release"):
+            lock.__exit__(None, None, None)
+        self.assertFalse(lock.file_lock_path.exists())
+        self.assertFalse(file_lock.held_elsewhere(lock.file_lock_path))
+
+    def test_a_file_system_that_refuses_the_file_lock_is_refused_and_leaves_no_file(self) -> None:
+        refused = OSError(errno.ENOLCK, "No locks available")
+        with (
+            mock.patch.object(file_lock, "_lock", side_effect=refused),
+            self.assertRaisesRegex(
+                PersistenceError,
+                f"^Cannot lock {re.escape(str(self.folder / 'resource.lock.held'))}: No locks available; a review lock "
+                "needs a folder on a file system that supports file locks, which some network and synced folders do "
+                "not$",
+            ),
+        ):
+            ResourceLock(self.path).__enter__()
+        self.assertEqual([], list(self.folder.iterdir()))
+
+    def test_a_file_lock_that_cannot_be_opened_is_refused_with_the_reason(self) -> None:
+        denied = PermissionError(errno.EACCES, "Access is denied")
+        with (
+            mock.patch.object(file_lock, "take", side_effect=denied),
+            self.assertRaisesRegex(PersistenceError, "^Cannot open lock .*resource\\.lock\\.held: .*Access is denied"),
+        ):
+            ResourceLock(self.path).__enter__()
+
+    def test_a_failed_owner_write_lets_the_file_lock_go_and_leaves_nothing(self) -> None:
+        with (
+            mock.patch.object(review_io, "atomic_write_json", side_effect=PersistenceError("synthetic owner failure")),
+            self.assertRaisesRegex(PersistenceError, "^synthetic owner failure$"),
+        ):
+            ResourceLock(self.path).__enter__()
+        self.assertEqual([], list(self.folder.iterdir()))
+
+    def test_a_directory_an_older_holder_makes_after_a_reclaim_is_waited_for(self) -> None:
+        # A holder from before the file lock takes only the directory, between this holder's reclaim and its make.
+        self.stale_lock()
+        reclaimed: list[bool] = []
+
+        def older_holder_takes_it(lock: ResourceLock) -> bool:
+            reclaimed.append(True)
+            return True  # the directory is there again, as the older holder made it
+
+        with (
+            mock.patch.object(ResourceLock, "_reclaim_stale", older_holder_takes_it),
+            self.assertRaisesRegex(
+                PersistenceError, f"^Timed out waiting for lock {re.escape(str(self.path))}; delete it if no review"
+            ),
+        ):
+            ResourceLock(self.path, timeout_seconds=0.01, probe=self.probe).__enter__()
+        self.assertTrue(reclaimed)
+        self.assertEqual(["resource.lock"], [item.name for item in self.folder.iterdir()])
+
+    def test_a_make_that_fails_after_a_reclaim_is_refused_and_lets_the_file_lock_go(self) -> None:
+        self.stale_lock()
+        real_mkdir = Path.mkdir
+        made: list[Path] = []
+
+        def mkdir(path: Path, *arguments: object, **options: object) -> None:
+            if path == self.path:
+                made.append(path)
+                if len(made) == 2:
+                    raise PermissionError(errno.EACCES, "Access is denied", str(path))
+            real_mkdir(path, *arguments, **options)  # type: ignore[arg-type]  # the arguments Path.mkdir was given
+
+        with (
+            contextlib.redirect_stderr(io.StringIO()),
+            mock.patch.object(Path, "mkdir", mkdir),
+            self.assertRaisesRegex(PersistenceError, f"^Cannot acquire lock {re.escape(str(self.path))}: "),
+        ):
+            ResourceLock(self.path, probe=self.probe).__enter__()
+        self.assertEqual([], list(self.folder.iterdir()))

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import contextlib
+import errno
 import json
 import os
 import re
@@ -8,6 +10,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import time
 from collections.abc import Callable
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -16,13 +19,13 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
 
+import file_lock
 import process_identity
 from bash_agreement import assert_value_quoted, rendered_fragments
 from harness import (
     REPOSITORY_ROOT,
     TAKES_THE_LOCK,
     DeployerTestCase,
-    contended_lock,
     failing_lock_metadata_write,
     forward,
     probe_returning,
@@ -33,7 +36,11 @@ from suite_names import is_suite_name
 from test_presence_reads import stat_failing_at
 
 from deployer import fsops, hashing, lock, platform_support
+from deployer.errors import DeployError
 from deployer.paths import Paths
+
+# The first line of the refusal while another deployment holds the lock, with or without the PID its record names.
+RUNNING = "ERROR: Another deployment is running"
 
 
 class RenderedExecutableTests(DeployerTestCase):
@@ -651,13 +658,19 @@ class LockTests(DeployerTestCase):
         with lock.acquire(paths):
             self.assertTrue(self.lock_dir.is_dir())
         self.assertFalse(self.lock_dir.exists())
+        self.assertFalse(paths.lock_file.exists())
         with self.assertRaises(KeyboardInterrupt), lock.acquire(paths):
             raise KeyboardInterrupt
         self.assertFalse(self.lock_dir.exists())
         with lock.acquire(paths) as held:
+            self.assertTrue(paths.lock_file.is_file())
+            self.assertIsNone(file_lock.take(paths.lock_file))
             held.retain()
         self.assertTrue((self.lock_dir / "token").is_file())
         self.assertTrue((self.lock_dir / "info.json").is_file())
+        # A retained lock keeps its record for the next run to judge; its file lock ends with the run.
+        self.assertFalse(paths.lock_file.exists())
+        self.assertFalse(file_lock.held_elsewhere(paths.lock_file))
 
     def test_pid_reuse_is_detected_and_stale_lock_reclaimed(self) -> None:
         self.fixture()
@@ -850,83 +863,6 @@ class LockTests(DeployerTestCase):
         self.deploy_ok("--all")
         self.assertIn("Updated alpha", self.skill_text("alpha"))
 
-    def test_double_contention_cleans_renamed_stale_lock(self) -> None:
-        self.fixture()
-        lock_dir = self.write_lock({"pid": 99998, "token": "stale-token", "start_time": 1})
-        with contended_lock(lock_dir):
-            self.deploy_fails(
-                "--all",
-                pattern="Failed to acquire lock after stale reclaim",
-                probe=probe_returning(False, None),
-                changes_home=TAKES_THE_LOCK,
-            )
-        self.assertEqual([], list((self.home / ".claude" / "deployer").glob(".deploy.lock.stale.*")))
-        self.assertTrue(lock_dir.is_dir())
-
-    def reclaimed_before_the_move(self, lock_dir: Path, fail_move_back: bool = False) -> Callable[[Path, Path], None]:
-        """A move that lets another deployment reclaim the stale lock and take a fresh one just before it runs."""
-        real_move = fsops.move
-        state = {"reclaimed": False}
-
-        def move(source: Path, destination: Path) -> None:
-            if source == lock_dir and not state["reclaimed"]:
-                state["reclaimed"] = True
-                shutil.rmtree(lock_dir)
-                self.write_lock({"pid": 5151, "token": "fresh-token", "start_time": 9})
-            elif destination == lock_dir and fail_move_back:
-                raise OSError("synthetic move-back failure")
-            real_move(source, destination)
-
-        return move
-
-    def assert_fresh_lock(self, directory: Path) -> None:
-        self.assertEqual("fresh-token", (directory / "token").read_text(encoding="utf-8"))
-        info = json.loads((directory / "info.json").read_text(encoding="utf-8"))
-        self.assertEqual({"pid": 5151, "token": "fresh-token", "start_time": 9}, info)
-
-    def test_a_lock_reclaimed_between_the_judgment_and_the_move_is_put_back(self) -> None:
-        self.fixture()
-        lock_dir = self.write_lock({"pid": 4242, "token": "stale-token", "start_time": 1})
-        with mock.patch("deployer.fsops.move", side_effect=self.reclaimed_before_the_move(lock_dir)):
-            result = self.deploy_fails(
-                "--all",
-                pattern="Failed to acquire lock after stale reclaim",
-                probe=probe_returning(False, None),
-                changes_home=TAKES_THE_LOCK,
-            )
-        self.assertIn(
-            "ERROR: Failed to acquire lock after stale reclaim (contention).\n"
-            "Retry the deployment.\n"
-            'See "The deployment lock" in docs/recovery.md.\n',
-            result.output,
-        )
-        self.assert_fresh_lock(lock_dir)
-        self.assertEqual([], list((self.home / ".claude" / "deployer").glob(".deploy.lock.stale.*")))
-        self.assertFalse((self.skills_dir / "alpha").exists())
-
-    def test_a_reclaimed_lock_that_cannot_be_put_back_is_kept_and_named(self) -> None:
-        self.fixture()
-        lock_dir = self.write_lock({"pid": 4242, "token": "stale-token", "start_time": 1})
-        move = self.reclaimed_before_the_move(lock_dir, fail_move_back=True)
-        with mock.patch("deployer.fsops.move", side_effect=move):
-            result = self.deploy_fails(
-                "--all",
-                pattern="Failed to acquire lock after stale reclaim",
-                probe=probe_returning(False, None),
-                changes_home=TAKES_THE_LOCK,
-            )
-        stale = self.home / ".claude" / "deployer" / f".deploy.lock.stale.{os.getpid()}"
-        self.assertIn(
-            "ERROR: Failed to acquire lock after stale reclaim (contention).\n"
-            f"Another deployment's lock was moved to {forward(stale)} and could not be moved back to "
-            f"{forward(lock_dir)}: synthetic move-back failure. Delete it once no deployment is running.\n"
-            'See "The deployment lock" in docs/recovery.md.\n',
-            result.output,
-        )
-        self.assert_fresh_lock(stale)
-        self.assertFalse(lock_dir.exists())
-        self.assertFalse((self.skills_dir / "alpha").exists())
-
     def denied_at(self, path: Path) -> mock._patch[mock.MagicMock | mock.AsyncMock]:
         real_remove = fsops.remove
 
@@ -953,23 +889,215 @@ class LockTests(DeployerTestCase):
         self.assertIn("Stale lock detected", result.output)
         self.assertFalse(lock_dir.exists())
 
-    def test_a_reclaimed_stale_lock_that_cannot_be_deleted_is_reported_and_kept(self) -> None:
-        self.fixture()
+    def acquire_as(self, pid: int, probe: lock.ProcessProbe) -> lock.Lock:
+        """Acquire the lock as the process `pid`, as a separate deployment would, waiting for no holder."""
+        with (
+            mock.patch("deployer.platform_support.current_process_id", return_value=pid),
+            mock.patch("deployer.lock.LOCK_WAIT_SECONDS", 0, create=True),
+        ):
+            return lock.acquire(self.paths, probe)
+
+    def test_no_deployment_takes_the_lock_while_another_reclaims_a_stale_one(self) -> None:
+        """#2658: A judges a dead PID's lock stale; B's whole acquire runs just before A removes or moves the stale
+        lock, and C's just after. Only A may hold the lock, so B and C are refused."""
         self.write_lock({"pid": 4242, "token": "stale-token", "start_time": 1})
-        stale = self.home / ".claude" / "deployer" / f".deploy.lock.stale.{os.getpid()}"
-        with self.denied_at(stale):
-            result = self.deploy_ok("--all", probe=probe_returning(False, None))
-        self.assertIn(
-            f"WARNING: Could not delete the stale lock moved to {forward(stale)}: Access is denied. "
-            "Delete it once no deployment is running.\n",
-            result.output,
-        )
-        self.assertTrue((stale / "info.json").is_file())
+
+        def probe(pid: int) -> platform_support.ProcessStatus:
+            return platform_support.ProcessStatus(pid != 4242, pid)
+
+        outcomes: dict[str, str] = {}
+        holders: list[lock.Lock] = []
+
+        def contend(name: str, pid: int) -> None:
+            try:
+                holders.append(self.acquire_as(pid, probe))
+            except DeployError as exc:
+                outcomes[name] = "refused" if exc.lines[0].startswith(RUNNING) else exc.lines[0]
+            else:
+                outcomes[name] = "held"
+
+        real_move, real_remove = fsops.move, fsops.remove
+        arrived = {"done": False}
+
+        def around(real: Callable[..., None]) -> Callable[..., None]:
+            def step(source: Path, *rest: Path) -> None:
+                if source != self.lock_dir or arrived["done"]:
+                    real(source, *rest)
+                    return
+                arrived["done"] = True
+                contend("B", 2002)
+                try:
+                    real(source, *rest)
+                finally:
+                    contend("C", 3003)
+
+            return step
+
+        with (
+            mock.patch("deployer.fsops.move", around(real_move)),
+            mock.patch("deployer.fsops.remove", around(real_remove)),
+        ):
+            try:
+                holders.append(self.acquire_as(1001, probe))
+                outcomes["A"] = "held"
+            except DeployError as exc:
+                outcomes["A"] = exc.lines[0]
+        try:
+            self.assertTrue(arrived["done"])
+            self.assertEqual({"A": "held", "B": "refused", "C": "refused"}, outcomes)
+            self.assertEqual([holders[0].token], [(self.lock_dir / "token").read_text(encoding="utf-8")])
+        finally:
+            for held in holders:
+                held.release()
+        self.assertEqual([], list(self.lock_dir.parent.glob(".deploy.lock*")))
+
+    def test_a_run_arriving_at_any_step_of_another_s_acquire_never_holds_the_lock_beside_it(self) -> None:
+        self.write_lock({"pid": 4242, "token": "stale-token", "start_time": 1})
+        steps = ("make_directories", "open_lock_file", "remove", "make_directory", "write_atomic")
+
+        def probe(pid: int) -> platform_support.ProcessStatus:
+            return platform_support.ProcessStatus(pid != 4242, pid)
+
+        for arriving in steps:
+            with self.subTest(step=arriving):
+                if not self.lock_dir.exists():
+                    self.write_lock({"pid": 4242, "token": "stale-token", "start_time": 1})
+                holders: list[lock.Lock] = []
+                real = getattr(fsops, arriving)
+                arrived = {"done": False}
+
+                def step(
+                    *arguments: Any,
+                    real: Callable[..., Any] = real,
+                    arrived: dict[str, bool] = arrived,
+                    holders: list[lock.Lock] = holders,
+                ) -> Any:
+                    if not arrived["done"]:
+                        arrived["done"] = True
+                        with contextlib.suppress(DeployError):
+                            holders.append(self.acquire_as(2002, probe))
+                    return real(*arguments)
+
+                with mock.patch(f"deployer.fsops.{arriving}", step), contextlib.suppress(DeployError):
+                    holders.append(self.acquire_as(1001, probe))
+                try:
+                    self.assertTrue(arrived["done"])
+                    self.assertEqual(1, len(holders), [held.token for held in holders])
+                    self.assertEqual(holders[0].token, (self.lock_dir / "token").read_text(encoding="utf-8"))
+                finally:
+                    for held in holders:
+                        held.release()
+
+    def hold_the_file_lock(self) -> None:
+        """Hold the deployment's file lock as another process would, until the test ends."""
+        self.paths.deployer_dir.mkdir(parents=True, exist_ok=True)
+        handle = file_lock.take(self.paths.lock_file)
+        assert handle is not None
+        self.addCleanup(file_lock.release, handle, self.paths.lock_file)
+
+    def test_a_held_file_lock_refuses_a_deployment_and_a_dry_run_naming_the_holder_its_record_names(self) -> None:
+        self.fixture()
+        self.hold_the_file_lock()
+        with mock.patch("deployer.lock.LOCK_WAIT_SECONDS", 0):
+            for arguments in (("--all",), ("--all", "--dry-run")):
+                with self.subTest(arguments=arguments):
+                    result = self.deploy_fails(*arguments, pattern="Another deployment is running")
+                    self.assertIn(
+                        "ERROR: Another deployment is running.\nWait for it to finish, then retry.\n", result.output
+                    )
+            # The record names the holder, whatever its process; the file lock alone says it is held.
+            self.write_lock({"pid": 4242, "token": "held-token", "start_time": 1})
+            result = self.deploy_fails(
+                "--all", pattern="Another deployment is running", probe=probe_returning(False, None)
+            )
+            self.assertIn("ERROR: Another deployment is running (PID 4242).\n", result.output)
+        self.assertTrue((self.lock_dir / "info.json").is_file())
+        self.assertFalse((self.skills_dir / "alpha").exists())
+
+    def test_a_deployment_waits_for_a_holder_that_lets_the_lock_go(self) -> None:
+        self.fixture()
+        self.paths.deployer_dir.mkdir(parents=True, exist_ok=True)
+        handle = file_lock.take(self.paths.lock_file)
+        assert handle is not None
+        slept: list[float] = []
+
+        def sleep(seconds: float) -> None:
+            # The holder lets the lock go while the run waits; any later sleep is left alone.
+            slept.append(seconds)
+            if len(slept) == 1:
+                file_lock.release(handle, self.paths.lock_file)
+
+        with mock.patch("deployer.lock.time.sleep", sleep):
+            self.deploy_ok("--all")
+        self.assertEqual(lock.LOCK_POLL_SECONDS, slept[0])
         self.assertTrue((self.skills_dir / "alpha" / "SKILL.md").is_file())
 
-    def test_a_failed_metadata_write_during_a_reclaim_deletes_the_lock_moved_aside(self) -> None:
+    def test_a_file_system_that_refuses_the_lock_is_named_by_a_deployment_and_a_dry_run(self) -> None:
         self.fixture()
-        lock_dir = self.write_lock({"pid": 4242, "token": "stale-token", "start_time": 1})
+        refused = OSError(errno.ENOLCK, "No locks available")
+        with mock.patch("file_lock._lock", side_effect=refused):
+            for arguments in (("--all",), ("--all", "--dry-run")):
+                with self.subTest(arguments=arguments):
+                    if "--dry-run" in arguments:
+                        self.paths.lock_file.parent.mkdir(parents=True, exist_ok=True)
+                        self.paths.lock_file.touch()
+                    result = self.deploy_fails(*arguments, pattern="Could not lock")
+                    self.assertIn(
+                        f"ERROR: Could not lock {forward(self.paths.lock_file)}: No locks available.\n"
+                        "The deployment lock needs a folder on a file system that supports file locks, which some "
+                        "network and synced folders do not; keep the home on a local disk.\n"
+                        'See "The deployment lock" in docs/recovery.md.\n',
+                        result.output,
+                    )
+        self.assertFalse((self.skills_dir / "alpha").exists())
+        self.paths.lock_file.unlink()
+        self.assertEqual([], list(self.lock_dir.parent.glob(".deploy.lock*")))
+
+    def test_a_lock_file_that_cannot_be_opened_is_refused_with_the_reason(self) -> None:
+        self.fixture()
+        denied = PermissionError(13, "Access is denied", str(self.paths.lock_file))
+        with mock.patch("deployer.fsops.open_lock_file", side_effect=denied):
+            result = self.deploy_fails("--all", pattern="Could not open the deployment lock")
+        self.assertIn(
+            f"ERROR: Could not open the deployment lock: {forward(self.paths.lock_file)}: Access is denied\n",
+            result.output,
+        )
+
+    def test_a_lock_file_a_stopped_run_left_is_taken_and_removed(self) -> None:
+        self.fixture()
+        self.paths.lock_file.parent.mkdir(parents=True, exist_ok=True)
+        self.paths.lock_file.write_bytes(b"")
+        self.deploy_ok("--all")
+        self.assertFalse(self.paths.lock_file.exists())
+        self.assertFalse(self.lock_dir.exists())
+
+    def test_a_record_without_metadata_past_the_grace_period_is_removed_with_a_warning(self) -> None:
+        self.fixture()
+        self.lock_dir.mkdir(parents=True)
+        age = int(lock.RECORD_GRACE_SECONDS) + 30
+        then = time.time() - age
+        os.utime(self.lock_dir, (then, then))
+        result = self.deploy_ok("--all", "--dry-run")
+        self.assertRegex(result.output, r"WARNING: Stale lock detected \(no metadata for \d+ seconds\)\.")
+        self.assertTrue(self.lock_dir.is_dir())
+        result = self.deploy_ok("--all")
+        found = re.search(r"WARNING: Stale lock detected \(no metadata for (\d+) seconds\)\.", result.output)
+        assert found is not None, result.output
+        self.assertGreaterEqual(int(found.group(1)), age)
+        self.assertFalse(self.lock_dir.exists())
+        self.assertTrue((self.skills_dir / "alpha" / "SKILL.md").is_file())
+
+    def test_a_record_whose_metadata_is_not_a_file_is_judged_by_it_whatever_its_age(self) -> None:
+        self.fixture()
+        (self.lock_dir / "info.json").mkdir(parents=True)
+        then = time.time() - lock.RECORD_GRACE_SECONDS - 30
+        os.utime(self.lock_dir, (then, then))
+        self.deploy_fails("--all", pattern="metadata at .* is not a file")
+        self.assertTrue((self.lock_dir / "info.json").is_dir())
+
+    def test_a_failed_metadata_write_after_removing_a_stale_lock_leaves_no_record(self) -> None:
+        self.fixture()
+        self.write_lock({"pid": 4242, "token": "stale-token", "start_time": 1})
         with failing_lock_metadata_write():
             result = self.deploy_fails(
                 "--all",
@@ -981,68 +1109,36 @@ class LockTests(DeployerTestCase):
             "ERROR: Failed to initialize deployment lock: synthetic metadata write failure\nRetry the deployment.\n",
             result.output,
         )
-        self.assertEqual([], list((self.home / ".claude" / "deployer").glob(".deploy.lock.stale.*")))
-        self.assertFalse(lock_dir.exists())
+        self.assertEqual([], list(self.lock_dir.parent.glob(".deploy.lock*")))
         self.assertFalse((self.skills_dir / "alpha").exists())
-        self.write_lock({"pid": 4242, "token": "stale-token", "start_time": 1})
-        self.deploy_ok("--all", probe=probe_returning(False, None))
+        self.deploy_ok("--all")
         self.assertTrue((self.skills_dir / "alpha" / "SKILL.md").is_file())
 
-    def test_a_lock_moved_aside_that_cannot_be_deleted_after_a_failed_reclaim_is_named(self) -> None:
+    def test_a_lock_an_earlier_deployer_left_aside_is_named_and_left_where_it_is(self) -> None:
+        self.fixture()
+        aside = self.home / ".claude" / "deployer" / ".deploy.lock.stale.4141"
+        self.write(aside / "info.json", json.dumps({"pid": 4141, "token": "older-token", "start_time": 1}))
+        warning = (
+            f"WARNING: An earlier deployer left a lock moved aside at {forward(aside)}. "
+            "Delete it once no deployment is running.\n"
+        )
+        self.assertIn(warning, self.deploy_ok("--all", "--dry-run").output)
+        self.assertIn(warning, self.deploy_ok("--all").output)
+        self.assertTrue((aside / "info.json").is_file())
+        self.assertTrue((self.skills_dir / "alpha" / "SKILL.md").is_file())
+
+    def test_a_record_whose_stat_fails_is_refused_with_the_reason(self) -> None:
         self.fixture()
         self.write_lock({"pid": 4242, "token": "stale-token", "start_time": 1})
-        stale = self.home / ".claude" / "deployer" / f".deploy.lock.stale.{os.getpid()}"
-        with failing_lock_metadata_write(), self.denied_at(stale):
+        with stat_failing_at(self.lock_dir):
             result = self.deploy_fails(
-                "--all",
-                pattern="Failed to initialize deployment lock",
-                probe=probe_returning(False, None),
-                changes_home=TAKES_THE_LOCK,
+                "--all", pattern="read the deployment lock's record", probe=probe_returning(False, None)
             )
         self.assertIn(
-            "ERROR: Failed to initialize deployment lock: synthetic metadata write failure\n"
-            "Retry the deployment.\n"
-            f"Could not delete the stale lock moved to {forward(stale)}: Access is denied. "
-            "Delete it once no deployment is running.\n",
+            f"ERROR: Could not read the deployment lock's record: {forward(self.lock_dir)}: Access is denied\n",
             result.output,
         )
-        self.assertTrue((stale / "info.json").is_file())
-
-    def test_a_lock_left_aside_by_an_earlier_reclaim_is_named_instead_of_reported_as_contention(self) -> None:
-        self.fixture()
-        lock_dir = self.write_lock({"pid": 4242, "token": "stale-token", "start_time": 1})
-        stale = self.home / ".claude" / "deployer" / f".deploy.lock.stale.{os.getpid()}"
-        self.write(stale / "info.json", json.dumps({"pid": 4141, "token": "older-token", "start_time": 1}))
-        result = self.deploy_fails(
-            "--all", pattern="moved aside by an earlier reclaim", probe=probe_returning(False, None)
-        )
-        self.assertIn(
-            f"ERROR: The lock moved aside by an earlier reclaim is still at {forward(stale)}.\n"
-            "Delete it once no deployment is running, then retry.\n"
-            'See "The deployment lock" in docs/recovery.md.\n',
-            result.output,
-        )
-        self.assertNotIn("another process may have claimed it", result.output)
-        self.assertTrue((lock_dir / "info.json").is_file())
-        self.assertTrue((stale / "info.json").is_file())
-        self.assertFalse((self.skills_dir / "alpha").exists())
-
-    def test_a_lock_left_aside_whose_stat_fails_is_refused_with_the_reason_rather_than_moved_onto(self) -> None:
-        self.fixture()
-        lock_dir = self.write_lock({"pid": 4242, "token": "stale-token", "start_time": 1})
-        stale = self.home / ".claude" / "deployer" / f".deploy.lock.stale.{os.getpid()}"
-        self.write(stale / "info.json", json.dumps({"pid": 4141, "token": "older-token", "start_time": 1}))
-        with stat_failing_at(stale):
-            result = self.deploy_fails(
-                "--all", pattern="earlier reclaim left a lock", probe=probe_returning(False, None)
-            )
-        self.assertIn(
-            "ERROR: Could not tell whether an earlier reclaim left a lock moved aside: "
-            f"{forward(stale)}: Access is denied\n",
-            result.output,
-        )
-        self.assertTrue((lock_dir / "info.json").is_file())
-        self.assertTrue((stale / "info.json").is_file())
+        self.assertTrue((self.lock_dir / "info.json").is_file())
 
     def test_manifest_ownership_is_loaded_after_lock_acquisition(self) -> None:
         self.make_source_json("test/source-a")
