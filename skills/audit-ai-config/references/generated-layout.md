@@ -78,8 +78,9 @@ The generator writes none of the runtimes' own project configuration, so the aud
 | Claude Code | `.claude/CLAUDE.md`, `CLAUDE.local.md` | The project's `CLAUDE.md` where it lives in `.claude`, which counts as the authority's `CLAUDE.md`, and the personal one; their length and `@path` imports |
 | Claude Code | `.claude/settings.json` | Its shared `permissions` and its `hooks` |
 | Claude Code | `.claude/rules/**/*.md` | Each rule's `paths` scope and length |
-| Claude Code | `.claude/agents/*.md` | Each subagent's `name` and `description`, and its tools, model, and hooks |
+| Claude Code | `.claude/agents/**/*.md` | Each subagent's `name` and `description`, and its tools, model, and hooks |
 | Codex | `.agents/skills/*/agents/openai.yaml` | Whether a user-only skill sets `policy.allow_implicit_invocation: false` |
+| Codex | `.codex/config.toml` | Its `approval_policy`, and `default_permissions` beside `sandbox_mode` or `[sandbox_workspace_write]` |
 | Codex | `.codex/hooks.json`, the `[hooks]` tables of `.codex/config.toml` | Each hook's event, shape, and timeout |
 | Codex | `.codex/agents/*.toml` | Each custom agent's required fields and the session settings it cannot set |
 | Codex | `.codex/rules/*.rules` | Each `prefix_rule`'s pattern and decision |
