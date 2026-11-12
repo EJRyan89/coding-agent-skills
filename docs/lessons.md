@@ -743,6 +743,9 @@ removed fails validation until its pattern follows it.
   `skills/ejryan89-skill-core/scripts/test_path_keys.py::PathKeyTests::test_two_spellings_of_one_path_have_one_key`,
   `skills/ejryan89-skill-core/scripts/test_path_keys.py::PathKeyTests::test_a_case_sensitive_directory_keeps_two_spellings_apart_whatever_the_platform`,
   `skills/ejryan89-skill-core/scripts/test_path_keys.py::PathKeyTests::test_a_folding_directory_makes_two_spellings_one_whatever_the_platform`,
+  `skills/ejryan89-skill-core/scripts/test_path_keys.py::CaseSensitiveFolderTests::test_two_hard_links_spelled_in_another_case_leave_the_folder_keeping_case`,
+  `skills/ejryan89-skill-core/scripts/test_path_keys.py::NormalizationFormLinkTests::test_two_hard_links_spelled_in_two_forms_are_two_entries`,
+  `skills/ejryan89-code-review-core/scripts/test_review_guard.py::WriteTests::test_a_result_spelled_in_another_case_is_refused_where_two_hard_links_share_a_case_sensitive_folder`,
   `skills/ejryan89-skill-core/scripts/test_path_containment.py::WithinTests::test_the_path_judged_is_never_asked`,
   `skills/ejryan89-skill-core/scripts/test_release_tags.py::ReleaseTagTests::test_releases_are_ordered_by_their_numbers_not_their_text`,
   `skills/ejryan89-skill-core/scripts/test_guidance_record.py::test_the_canonical_form_folds_only_raw_github_s_refs_heads_and_the_scheme_and_host_case`,
@@ -759,8 +762,10 @@ removed fails validation until its pattern follows it.
   or `Strasse` and `Straße`, which macOS's default APFS also folds together; a glob,
   `fnmatch.fnmatch(`, or `.is_file()` of a fixed file name, which folds case on Windows, beside a dictionary keyed by
   each file's spelling on disk; a dictionary read from a file and keyed by repository identity whose keys pass
-  `validate_repository_identity(` but are kept as written, while lookups use the lowercase form it returns.
-- **Examples:** #1556, #1855, #1867, #1909, #2299, #2590, #2614, #2615, #2620
+  `validate_repository_identity(` but are kept as written, while lookups use the lowercase form it returns; two
+  names whose `(st_dev, st_ino)`, `os.path.samestat`, or `samefile` agree taken for one name, which two hard links
+  also give.
+- **Examples:** #1556, #1855, #1867, #1909, #2299, #2590, #2614, #2615, #2620, #2662
 
 ### A child process starts from an environment built for it
 
