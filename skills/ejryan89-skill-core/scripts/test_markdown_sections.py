@@ -119,6 +119,11 @@ class MarkdownSectionTests(unittest.TestCase):
             "### Inner\n<!-- comment -->\n# Title\n##Two\n ## Two\nkept\t", markdown_section(text, "## One")
         )
 
+    def test_a_second_level_line_inside_a_fence_is_neither_the_heading_nor_the_end(self) -> None:
+        text = "```\n## One\nfenced\n```\n## One\nfirst\n~~~text\n## not a heading\n~~~\nlast\n## End\noutside"
+        self.assertEqual("first\n~~~text\n## not a heading\n~~~\nlast", markdown_section(text, "## One"))
+        self.assertIsNone(markdown_section("```\n## One\nfenced", "## One"))
+
     def test_crlf_is_normalized_without_stripping_body_whitespace_or_final_newlines(self) -> None:
         text = "## One \t\r\n\r\nfirst  \r\nlast\t\r\n"
         self.assertEqual("\nfirst  \nlast\t\n", markdown_section(text, "## One"))

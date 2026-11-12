@@ -121,6 +121,15 @@ class BodyEntriesTests(unittest.TestCase):
         self.assertEqual([], release_notes.body_entries("## Changes\n\n### A heading\n\n- Level: minor.\n"))
         self.assertEqual([], release_notes.body_entries(""))
 
+    def test_a_second_level_line_in_a_fence_stays_in_the_entry(self) -> None:
+        body = (
+            "## Upgrade note\n\n### Thing\n\n- Level: patch, because.\n- Contract: none\n- User action: run\n\n"
+            "```text\n## not a heading\n```\n\n## Validation\n"
+        )
+        entries = release_notes.body_entries(body)
+        self.assertEqual(1, len(entries))
+        self.assertTrue(entries[0].text.endswith("```text\n## not a heading\n```"), entries[0].text)
+
     def test_heading_whitespace_and_crlf_keep_the_same_section_boundaries(self) -> None:
         body = BODY.replace("## Upgrade note\r\n", "## Upgrade note \t\r\n")
         body = body.replace("## Validation\r\n", "## Validation \t\r\n")

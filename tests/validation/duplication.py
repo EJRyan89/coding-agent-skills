@@ -5,6 +5,7 @@ among it the one containment test of a path in a tree.
 from __future__ import annotations
 
 import ast
+import functools
 import re
 import string
 import sys
@@ -45,6 +46,10 @@ from validation_support import (
 INDIRECTION_ALLOWED = {
     "_flags": "reads the value of the re flag a pattern's call names, a member of re.RegexFlag, and runs no code by "
     "its name",
+}
+DUPLICATION_ALLOWED = {
+    "name_key": "the `.git` matcher compares parsed literals with `.git`, the literal it looks for, and names no "
+    "folder on any file system, so skills/ejryan89-skill-core/scripts/path_keys.py has no key to give it",
 }
 # A module sanctions a copy beside the code it excuses, as a module-level DUPLICATION_ALLOWED = {name: reason}, and
 # every module holding the copy states it under its own name for the copy. Nothing sanctions a whole module: shared
@@ -344,25 +349,122 @@ def _folds_path_case(
 def _compares_git_name(
     node: ast.AST, _members: frozenset[str], _imports_owner: bool, _name: str, resolver: CallableResolver
 ) -> bool:
-    """A name compared with `.git` by hand: `==` or `!=` between the literal and anything but path_keys' name_key, as
-    an exact match, which misses a `.GIT` a folding file system takes for `.git`, or a str.casefold, which takes it
-    on a case-sensitive one too. name_key asks the folder's file system, so `.GIT` is the Git directory only where the
-    folder folds case."""
-    if not isinstance(node, ast.Compare):
+    """A name compared with `.git` by hand, which misses a `.GIT` a folding file system takes for `.git` when the test
+    is exact, or takes it on a case-sensitive one too after a str.casefold. name_key asks the folder's file system, so
+    `.GIT` is the Git directory only where the folder folds case, and a comparison of its result is never refused.
+
+    `.git` is the literal, or a module-level name the module binds once to it, such as `GIT = ".git"`. The forms
+    refused: `==` or `!=` between `.git` and anything but name_key's result; a membership test of anything but that
+    result in a list, tuple, or set display holding `.git`, or of `.git` itself in anything, as `".git" in parts`; and
+    str.startswith or str.endswith given `.git`, alone or in a tuple display. An exact test joined by `and` to a
+    name_key comparison with `.git` only narrows what the folder is asked about, as folder_walk's `is_checkout_marker`
+    does, and is not refused.
+
+    The limit: membership in a collection held under a module-level name, such as a walk's skip list
+    `frozenset({".git", "node_modules"})`, is not read, since the collection's other names are matched exactly by
+    design and the policy cannot tell a skip list from a test for the Git directory."""
+    gits = _held_git_names(resolver)
+    if isinstance(node, ast.Call):
+        return _calls_git_affix(node, gits)
+    if not isinstance(node, ast.Compare) or _narrows_keyed_test(node, resolver, gits):
         return False
-    operands = [node.left, *node.comparators]
-    for index, operator in enumerate(node.ops):
-        if not isinstance(operator, (ast.Eq, ast.NotEq)):
-            continue
-        first, second = operands[index], operands[index + 1]
-        for side, other in ((first, second), (second, first)):
-            if isinstance(side, ast.Constant) and side.value == GIT_DIRECTORY and not _keyed_by_folder(other, resolver):
-                return True
-    return False
+    return any(_exact_git_test(test, resolver, gits) for test in _comparisons(node))
 
 
 # The Git directory's name, which _compares_git_name looks for as a literal.
 GIT_DIRECTORY = ".git"
+# The str methods that test a name's start or end, which a `.git` test may be written with.
+AFFIX_TESTS = frozenset({"startswith", "endswith"})
+
+
+def _comparisons(node: ast.Compare) -> Iterator[tuple[ast.cmpop, ast.expr, ast.expr]]:
+    """Each operator of a comparison chain with its two operands."""
+    operands = [node.left, *node.comparators]
+    for index, operator in enumerate(node.ops):
+        yield operator, operands[index], operands[index + 1]
+
+
+def _is_git(node: ast.AST, gits: frozenset[str]) -> bool:
+    """Whether the node is `.git`: the literal, or a module-level name the module binds once to it."""
+    if isinstance(node, ast.Constant):
+        return node.value == GIT_DIRECTORY
+    return isinstance(node, ast.Name) and node.id in gits
+
+
+def _exact_git_test(
+    test: tuple[ast.cmpop, ast.expr, ast.expr], resolver: CallableResolver, gits: frozenset[str]
+) -> bool:
+    """Whether one comparison tests a name against `.git` by hand."""
+    operator, first, second = test
+    if isinstance(operator, (ast.Eq, ast.NotEq)):
+        return any(
+            _is_git(side, gits) and not _keyed_by_folder(other, resolver)
+            for side, other in ((first, second), (second, first))
+        )
+    if isinstance(operator, (ast.In, ast.NotIn)):
+        listed_git = isinstance(second, (ast.List, ast.Tuple, ast.Set)) and any(
+            _is_git(member, gits) for member in second.elts
+        )
+        return _is_git(first, gits) or (listed_git and not _keyed_by_folder(first, resolver))
+    return False
+
+
+def _calls_git_affix(node: ast.Call, gits: frozenset[str]) -> bool:
+    """Whether the call is str.startswith or str.endswith given `.git`, alone or in a tuple display."""
+    if _called_name(node) not in AFFIX_TESTS or not node.args:
+        return False
+    affix = node.args[0]
+    affixes = affix.elts if isinstance(affix, ast.Tuple) else [affix]
+    return any(_is_git(member, gits) for member in affixes)
+
+
+def _narrows_keyed_test(node: ast.Compare, resolver: CallableResolver, gits: frozenset[str]) -> bool:
+    """Whether the comparison is an operand of an `and` that also compares name_key's result with `.git`, so the exact
+    test only spares the folder a question and name_key decides."""
+    parent = _module_parents(resolver).get(id(node))
+    if not (isinstance(parent, ast.BoolOp) and isinstance(parent.op, ast.And)):
+        return False
+    return any(
+        isinstance(value, ast.Compare)
+        and any(
+            isinstance(operator, (ast.Eq, ast.NotEq))
+            and any(_is_git(side, gits) and _keyed_by_folder(other, resolver) for side, other in ((a, b), (b, a)))
+            for operator, a, b in _comparisons(value)
+        )
+        for value in parent.values
+        if value is not node
+    )
+
+
+@functools.lru_cache(maxsize=1)
+def _module_parents(resolver: CallableResolver) -> dict[int, ast.AST]:
+    """Each node of the resolver's module by identity, with the node that holds it."""
+    return {id(child): parent for parent in ast.walk(resolver.tree) for child in ast.iter_child_nodes(parent)}
+
+
+@functools.lru_cache(maxsize=1)
+def _held_git_names(resolver: CallableResolver) -> frozenset[str]:
+    """The module-level names the resolver's module binds once, and to the `.git` literal."""
+    bound: dict[str, list[ast.expr | None]] = {}
+    for statement in module_statements(resolver.tree.body):
+        pairs: list[tuple[ast.expr, ast.expr | None]]
+        if isinstance(statement, ast.Assign):
+            pairs = [(target, statement.value) for target in statement.targets]
+        elif isinstance(statement, ast.AnnAssign) and statement.value is not None:
+            pairs = [(statement.target, statement.value)]
+        elif isinstance(statement, ast.AugAssign):
+            # An augmented assignment binds the name again, to a value no literal shows.
+            pairs = [(statement.target, None)]
+        else:
+            continue
+        for target, value in pairs:
+            if isinstance(target, ast.Name):
+                bound.setdefault(target.id, []).append(value)
+    return frozenset(
+        name
+        for name, values in bound.items()
+        if len(values) == 1 and isinstance(values[0], ast.Constant) and values[0].value == GIT_DIRECTORY
+    )
 
 
 def _keyed_by_folder(node: ast.AST, resolver: CallableResolver) -> bool:
@@ -499,13 +601,44 @@ def _restatement_problems(
     return found, problems
 
 
+def _rebound_names(name: str, tree: ast.Module) -> list[str]:
+    """Each module-level name an assignment or an annotated assignment binds after another already bound it, in a
+    statement at the top or in a module-level if, try, or with block, as module_statements reads them.
+
+    The later binding silently replaces the first for every caller, as a second SENTENCE_END once replaced the
+    documented one in audit-skill's inventory. Ruff's F811 reports a function or an import defined again, never an
+    assignment, so this reads assignments only; an annotation without a value binds nothing."""
+    first: dict[str, int] = {}
+    found: list[str] = []
+    for statement in module_statements(tree.body):
+        if isinstance(statement, ast.Assign):
+            targets = statement.targets
+        elif isinstance(statement, ast.AnnAssign) and statement.value is not None:
+            targets = [statement.target]
+        else:
+            continue
+        for target in targets:
+            for node in ast.walk(target):
+                if not (isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store)):
+                    continue
+                if node.id in first:
+                    found.append(
+                        f"{name}:{node.lineno} binds {node.id} again at module level after line {first[node.id]}, "
+                        "which replaces the first value for every caller; keep one binding"
+                    )
+                else:
+                    first[node.id] = node.lineno
+    return found
+
+
 def duplicated_definition_problems(root: Path) -> list[str]:
     """Report a module-level function or class defined identically in two files, a module-level literal or compiled
-    pattern assigned identically in two files, a shared fact restated outside its owner, and allowances no longer
-    needed.
+    pattern assigned identically in two files, a shared fact restated outside its owner, a module-level name one file
+    binds twice, and allowances no longer needed.
 
     Copied helpers began identical and then drifted, and so did copied patterns; a copy caught while it is still
-    identical is caught before it diverges. Two scripts of one skill count, because one can import the other.
+    identical is caught before it diverges. Two scripts of one skill count, because one can import the other. A name
+    bound twice in one file is a copy that has already diverged, and the second binding wins.
     """
     copies: dict[str, list[Copy]] = {}
     allowances: dict[str, dict[str, str]] = {}
@@ -518,8 +651,10 @@ def duplicated_definition_problems(root: Path) -> list[str]:
     ]
     ordered = sorted(files, key=lambda path: path.relative_to(root).as_posix())
     trees: list[tuple[str, ast.Module]] = []
+    found: list[str] = []
     for _, name, tree in python_trees(ordered, root, problems):
         trees.append((name, tree))
+        found += _rebound_names(name, tree)
         allowed = module_allowance(tree, DUPLICATION_ALLOWANCE)
         if allowed is None:
             problems.append(f"{name}: {DUPLICATION_ALLOWANCE} must map each name to the reason it is allowed")
@@ -527,7 +662,6 @@ def duplicated_definition_problems(root: Path) -> list[str]:
         allowances[name] = allowed
         for key, place in _module_copies(name, tree):
             copies.setdefault(key, []).append(place)
-    found: list[str] = []
     copied: dict[str, set[str]] = {}
     for key, group in copies.items():
         modules = sorted({module for module, _, _ in group})

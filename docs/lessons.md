@@ -198,7 +198,9 @@ removed fails validation until its pattern follows it.
   `deployer.source:SOURCE_JSON_REMEDY`
 - **Guard:** `tests/validation/refusal_steps.py::RefusalStepPolicies::test_every_deployer_refusal_ends_with_a_step`,
   `tests/deployer/test_remedies.py::RefusalStepTests`
-- **Search for:** a `DeployError(` with one positional argument under `deployer/`, which the guard reads, and a
+- **Search for:** a `DeployError(` with one positional argument under `deployer/`, or unpacked lines the guard follows
+  to one, which it reads; unpacked lines it cannot follow, such as a parameter or a list grown by append, which it
+  accepts unread; and a
   `STEP_ALLOWED` entry whose caller no longer adds the step; a step written after a semicolon or a full stop inside an
   `ERROR:` line; a new caller of a function its module's `STEP_ALLOWED` names, which must add the step too.
 - **Examples:** #2545, #2563

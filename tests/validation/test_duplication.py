@@ -194,6 +194,49 @@ class DuplicatedDefinitionPolicy(unittest.TestCase):
             ),
         )
 
+    def test_a_module_level_name_bound_twice_in_one_file_fails(self) -> None:
+        again = "again at module level after line {first}, which replaces the first value for every caller; "
+        again += "keep one binding"
+        self.assertEqual(
+            [
+                # A binding in a module-level if or try block binds the module's name.
+                f"deployer/branch.py:4 binds MODE {again.format(first=2)}",
+                # Two top-level patterns under one name, as audit-skill's inventory once held SENTENCE_END.
+                f"skills/s/scripts/inventory.py:2 binds SENTENCE_END {again.format(first=1)}",
+                f"tests/validation/caught.py:5 binds FALLBACK {again.format(first=1)}",
+                # An annotated binding, and a name unpacked from a tuple, are bindings too.
+                f"tools/annotated.py:2 binds LIMIT {again.format(first=1)}",
+                f"tools/annotated.py:3 binds OTHER {again.format(first=2)}",
+            ],
+            self.problems(
+                {
+                    "skills/s/scripts/inventory.py": 'SENTENCE_END = r"[.!?]"\nSENTENCE_END = r"[.;!?]"\n',
+                    "tools/annotated.py": "LIMIT: int = 1\nLIMIT, OTHER = 2, 3\nOTHER = 4\n",
+                    "deployer/branch.py": 'import sys\nMODE = "one"\nif sys.platform == "win32":\n    MODE = "two"\n',
+                    "tests/validation/caught.py": (
+                        'FALLBACK = "a"\ntry:\n    import tomllib\nexcept ImportError:\n    FALLBACK = "b"\n'
+                    ),
+                }
+            ),
+        )
+
+    def test_a_name_bound_once_at_module_level_passes_whatever_else_shares_it(self) -> None:
+        self.assertEqual(
+            [],
+            self.problems(
+                {
+                    # An annotation alone binds nothing, a function's own name is its scope's, an augmented
+                    # assignment updates rather than repeats a binding, and a test suite is not read.
+                    "tools/once.py": (
+                        "LIMIT: int\nLIMIT = 1\nNAMES = []\nNAMES += ['a']\nholder.VALUE = 1\nholder.VALUE = 2\n"
+                        "\n\ndef read():\n    LIMIT = 2\n    LIMIT = 3\n    return LIMIT\n"
+                    ),
+                    "tools/test_once.py": "LIMIT = 1\nLIMIT = 2\n",
+                    "tools/other.py": "LIMIT = 2\n",
+                }
+            ),
+        )
+
 
 class DuplicatedConstantPolicy(unittest.TestCase):
     FIX = " hold the same value; import one copy, or sanction it in each copy's module with DUPLICATION_ALLOWED"
@@ -560,8 +603,8 @@ class SharedFactPolicy(unittest.TestCase):
             # folded by str.casefold.
             'git = platform_support.name_key(directory.name, directory.parent) == ".git"\n'
             # A function or method of the module's own that shares normcase's name folds nothing of a path.
-            "def normcase(text):\n    return text\n\n\nkey = normcase(path)\nlabel = self.normcase(path)\n"
-            "suffix = path.suffix.casefold()\nlabel = name.lower()\n"
+            "def normcase(text):\n    return text\n\n\nown = normcase(path)\nlabel = self.normcase(path)\n"
+            "suffix = path.suffix.casefold()\nlowered = name.lower()\n"
         )
         self.assertEqual([], self.problems({canary: shared}))
 
@@ -575,6 +618,19 @@ class SharedFactPolicy(unittest.TestCase):
             ('found = common.name.casefold() == ".git"\n', 1),
             ('other = ".git" != name.lower()\n', 1),
             ('found = "" < name == ".git"\n', 1),
+            # A membership test, a prefix or suffix test, and `.git` held in a module-level name are the same exact
+            # test written another way.
+            ('found = name in (".git", ".hg")\n', 1),
+            ('found = child.name not in [".svn", ".git"]\n', 1),
+            ('found = name in {".git"}\n', 1),
+            ('listed = ".git" in names\n', 1),
+            ('found = name.startswith(".git")\n', 1),
+            ('found = path.name.endswith((".hg", ".git"))\n', 1),
+            ('GIT = ".git"\n\n\ndef check(name):\n    return name == GIT\n', 5),
+            ('GIT: str = ".git"\n\n\ndef check(name):\n    return name.startswith(GIT)\n', 5),
+            ('GIT = ".git"\n\n\ndef check(name):\n    return name in (GIT, ".hg")\n', 5),
+            # An exact test joined by `and` to anything but a keyed one decides by itself.
+            ('found = name.casefold() == ".git" and folder.is_dir()\n', 1),
             # A function of the module's own that shares name_key's name asks no file system.
             ('def name_key(name, folder):\n    return name\n\n\nfound = name_key(name, folder) == ".git"\n', 5),
         ):
@@ -587,10 +643,25 @@ class SharedFactPolicy(unittest.TestCase):
             'found = name_key(child.name, child.parent) == ".git"\n'
             'other = ".git" != platform_support.name_key(common.name, common.parent)\n'
             'also = path_keys.name_key(part, checkout) == ".git"\n'
+            'keyed = name_key(name, folder) in (".git", ".hg")\n'
+            # An exact test that only spares the folder a question before name_key decides, as folder_walk's is.
+            'GIT = ".git"\nmarker = name.casefold() == GIT and name_key(name, folder) == GIT\n'
             # Other operators and other names are not a name compared with .git.
-            'listed = ".git" in names\nignored = path.suffix == ".gitignore"\n'
+            'ignored = path.suffix == ".gitignore"\nprefixed = name.startswith(".github")\n'
+            # The policy's named limit: a collection held under a module-level name, such as a walk's skip list, whose
+            # other names are matched exactly by design.
+            'SKIPPED = frozenset({".git", "node_modules"})\nskipped = folder.name in SKIPPED\n'
         )
         self.assertEqual([], self.problems({canary: keyed}))
+        # A name bound twice at module level may not hold `.git` where it is compared, so it is not read as `.git`;
+        # the second binding is refused by itself.
+        self.assertEqual(
+            [
+                f"{canary}:2 binds OTHER again at module level after line 1, which replaces the first value for every "
+                "caller; keep one binding"
+            ],
+            self.problems({canary: 'OTHER = ".git"\nOTHER = ".hg"\nfound = name == OTHER\n'}),
+        )
 
     def test_the_owner_and_the_suites_may_hold_the_fact(self) -> None:
         literal = 'PATTERNS = ("test_*", "*_test")\nOPTIONS = ("-c", "-C", "--git-dir", "--work-tree")\n'
