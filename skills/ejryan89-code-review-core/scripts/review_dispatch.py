@@ -69,7 +69,8 @@ def verify_reviewer(state: RunState) -> None:
     hashed again: an entrypoint reviewer's by the check the Copilot CLI host runs when it starts, and a specialists
     reviewer's by the one prepare ran, which covers its suite profiles too; and the root must hold only the files its
     materialization lists. The hashes the record will name must then be the materialization's. A file changed, added,
-    or gone since prepare fails the pull request with nothing recorded, naming the file, as an inline run's seal does.
+    or gone since prepare fails the pull request with nothing recorded, as an inline run's seal does, naming a changed
+    or missing file, and an added one for a specialists reviewer; an entrypoint reviewer's check names no added file.
     The suite's generic reviewer has no files of its own, and a run prepared before the hashes were recorded, whose
     record names none, is held to its files alone.
     """
