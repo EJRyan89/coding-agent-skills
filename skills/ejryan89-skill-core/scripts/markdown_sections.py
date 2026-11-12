@@ -191,11 +191,20 @@ def prose_code_spans(lines: list[str]) -> list[tuple[int, str]]:
 def markdown_section(text: str, heading: str) -> str | None:
     """The lines under the first exact heading, ignoring its trailing spaces and tabs, up to the next `## ` heading.
 
-    CRLF becomes LF; body whitespace and comments are otherwise preserved. None means the heading is absent.
+    A line inside a fenced code block is the block's text, as GitHub renders it, so it is neither the heading nor the
+    section's end: a section whose body holds a fenced `## ` line runs past it. CRLF becomes LF; body whitespace and
+    comments are otherwise preserved. None means the heading is absent.
     """
     lines = text.replace("\r\n", "\n").split("\n")
-    start = next((index + 1 for index, line in enumerate(lines) if line.rstrip(LINE_END) == heading), None)
+    fenced = {index for fence in find_fences(lines) for index in fence.lines()}
+    start = next(
+        (index + 1 for index, line in enumerate(lines) if index not in fenced and line.rstrip(LINE_END) == heading),
+        None,
+    )
     if start is None:
         return None
-    end = next((index for index in range(start, len(lines)) if lines[index].startswith("## ")), len(lines))
+    end = next(
+        (index for index in range(start, len(lines)) if index not in fenced and lines[index].startswith("## ")),
+        len(lines),
+    )
     return "\n".join(lines[start:end])

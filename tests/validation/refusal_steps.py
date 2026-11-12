@@ -1,5 +1,11 @@
 """Every deployer refusal ends with the step to take, on a line of its own, except where its module says why not
 beside the code.
+
+A refusal's lines unpacked from elsewhere are followed to where they are written (`_Refusals.ending`): a list or tuple
+display, a name its function or its module binds once to one and never changes in place, or a caught refusal's own
+lines, and a refusal whose followed lines are one is refused like a refusal written with one. The limit: lines unpacked
+from anything else, such as a parameter, a call's result, or a list grown by append, are known only when the deployer
+runs, so the policy accepts such a call unread rather than guess where its step is.
 """
 
 from __future__ import annotations
@@ -80,16 +86,126 @@ def _defines_refusal(trees: list[tuple[str, ast.Module]]) -> bool:
     )
 
 
-def _ends_with_a_step(call: ast.Call) -> bool:
-    """Whether a refusal's lines can hold a step after its first: a second positional argument, or an unpacking that
-    may give one, such as `*lines`."""
-    return len(call.args) > 1 or any(isinstance(argument, ast.Starred) for argument in call.args)
+# How a refusal's lines end, as _Refusals.ending reads them.
+STEP, ONE_LINE, COVERED, UNFOLLOWED = "step", "one line", "covered", "unfollowed"
+# A list method that changes the list in place, so its display no longer shows its last line.
+LIST_MUTATORS = frozenset({"append", "extend", "insert", "remove", "pop", "clear", "sort", "reverse"})
+# The definitions whose bodies an `except` clause around them does not reach.
+DEFINITIONS = (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef)
+
+
+class _Refusals:
+    """How one module's refusal calls are read: which class a name stands for, and where an unpacked argument's lines
+    come from."""
+
+    def __init__(self, tree: ast.Module, name: str, refusals: set[str]) -> None:
+        self.aliases = _aliases(tree, name)
+        self.module = _module_name(name)
+        self.refusals = refusals
+        self.parents = {child: parent for parent in ast.walk(tree) for child in ast.iter_child_nodes(parent)}
+
+    def called(self, node: ast.expr) -> str | None:
+        """The dotted class or function a call's target names, a bare name standing for its own module's."""
+        called = qualified_name(node, self.aliases)
+        return f"{self.module}.{called}" if called and "." not in called else called
+
+    def ending(self, call: ast.Call) -> str:
+        """How a refusal's lines end: STEP, ONE_LINE, COVERED, or UNFOLLOWED.
+
+        The last positional argument is the refusal's last line, and a step when another argument comes before it to
+        give the ERROR line. An unpacked last argument is followed to its lines: a list or tuple display is read
+        element by element, and so is a name its function binds once to such a display, or, when the function neither
+        binds nor changes it, one the module binds once to one, and that nothing changes in place. `*exc.lines` in an
+        `except` clause that catches only refusals is COVERED: that refusal was built where this policy reads it, so
+        its lines already end with a step, or its module states why they need none. Anything else unpacked, such as a
+        parameter, a call's result, or a list grown by append, is UNFOLLOWED: its lines are known only when the
+        deployer runs, so this policy cannot tell whether they end with a step, and that is its limit.
+        """
+        arguments = list(call.args)
+        followed: set[str] = set()
+        while arguments and isinstance(arguments[-1], ast.Starred):
+            value = arguments[-1].value
+            elements = self._displayed(value, call, followed)
+            if elements is not None:
+                arguments = [*arguments[:-1], *elements]
+            elif self._caught_lines(value, call):
+                return COVERED
+            else:
+                return UNFOLLOWED
+        return STEP if len(arguments) > 1 else ONE_LINE
+
+    def _displayed(self, value: ast.expr, call: ast.Call, followed: set[str]) -> list[ast.expr] | None:
+        """The elements an unpacked value holds, read from its display, or None when they cannot be read there."""
+        if isinstance(value, (ast.List, ast.Tuple)):
+            return list(value.elts)
+        if not isinstance(value, ast.Name) or value.id in followed:
+            return None
+        followed.add(value.id)
+        holder = self._enclosing(call, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.Module))
+        bindings = self._bindings(holder, value.id)
+        if bindings == [] and not isinstance(holder, ast.Module):
+            # A name the function neither binds nor changes is the module's, such as a remedy held in a constant.
+            bindings = self._bindings(self._enclosing(holder, (ast.Module,)), value.id)
+        statement = self.parents.get(bindings[0]) if bindings and len(bindings) == 1 else None
+        if isinstance(statement, (ast.Assign, ast.AnnAssign)) and isinstance(statement.value, (ast.List, ast.Tuple)):
+            return list(statement.value.elts)
+        return None
+
+    @staticmethod
+    def _bindings(holder: ast.AST, name: str) -> list[ast.Name] | None:
+        """Each place the holder binds the name, or None when it changes the name's list in place or takes it as a
+        parameter, whose lines no display shows."""
+        bindings: list[ast.Name] = []
+        for node in ast.walk(holder):
+            if isinstance(node, ast.Name) and node.id == name and isinstance(node.ctx, (ast.Store, ast.Del)):
+                bindings.append(node)
+            elif _changes_in_place(node, name):
+                return None
+        return bindings
+
+    def _caught_lines(self, value: ast.expr, call: ast.Call) -> bool:
+        """Whether the value is `<name>.lines` of the innermost `except` clause holding the call that binds the name,
+        when that clause catches only refusals and does not bind the name again."""
+        if not (isinstance(value, ast.Attribute) and value.attr == "lines" and isinstance(value.value, ast.Name)):
+            return False
+        bound = value.value.id
+        node = self.parents.get(call)
+        while node is not None and not isinstance(node, DEFINITIONS):
+            # A bare `except:` binds no name, so only a clause with a type can bind the one the lines are read from.
+            if isinstance(node, ast.ExceptHandler) and node.name == bound and node.type is not None:
+                caught = node.type.elts if isinstance(node.type, ast.Tuple) else [node.type]
+                rebound = any(
+                    isinstance(child, ast.Name) and child.id == bound and isinstance(child.ctx, ast.Store)
+                    for statement in node.body
+                    for child in ast.walk(statement)
+                )
+                return not rebound and all(self.called(expression) in self.refusals for expression in caught)
+            node = self.parents.get(node)
+        return False
+
+    def _enclosing(self, node: ast.AST, kinds: tuple[type[ast.AST], ...]) -> ast.AST:
+        """The innermost ancestor of one of the kinds; the module holds every node."""
+        while not isinstance(node, kinds):
+            node = self.parents[node]
+        return node
+
+
+def _changes_in_place(node: ast.AST, name: str) -> bool:
+    """Whether the node changes the list the name holds in place: a mutating method, a subscript stored or deleted, or
+    a global or nonlocal declaration that lets another scope do so."""
+    if isinstance(node, (ast.Global, ast.Nonlocal)):
+        return name in node.names
+    if isinstance(node, ast.Attribute):
+        return isinstance(node.value, ast.Name) and node.value.id == name and node.attr in LIST_MUTATORS
+    if isinstance(node, ast.Subscript):
+        return isinstance(node.value, ast.Name) and node.value.id == name and isinstance(node.ctx, (ast.Store, ast.Del))
+    return isinstance(node, ast.arg) and node.arg == name
 
 
 def stepless_refusals(tree: ast.Module, name: str, refusals: set[str]) -> list[tuple[int, str, str]]:
-    """Each refusal a module builds from one line, as (line, scope, class), ignoring its allowance."""
-    aliases = _aliases(tree, name)
-    module = _module_name(name)
+    """Each refusal a module builds from one line, written or followed, as (line, scope, class), ignoring its
+    allowance."""
+    reader = _Refusals(tree, name, refusals)
     statements = [
         statement
         for statement in tree.body
@@ -99,10 +215,10 @@ def stepless_refusals(tree: ast.Module, name: str, refusals: set[str]) -> list[t
     for node, scope in scoped_nodes(statements):
         if not isinstance(node, ast.Call):
             continue
-        called = qualified_name(node.func, aliases)
-        if called and "." not in called:
-            called = f"{module}.{called}"
-        if called in refusals and called not in STEPLESS and not _ends_with_a_step(node):
+        called = reader.called(node.func)
+        if called not in refusals or called in STEPLESS:
+            continue
+        if reader.ending(node) == ONE_LINE:
             found.append((node.lineno, scope, called.rsplit(".", 1)[-1]))
     return found
 
