@@ -3,8 +3,9 @@
 A run holds `.deploy.lock` through ejryan89-skill-core's `file_lock`, which the operating system releases when the run
 ends, however it ends, so no run ever judges whether another's lock is stale. Beside it, the record `.deploy.lock.d`
 holds the run's PID, start time, and token: it names the holder when another run is refused, and it keeps out a
-deployer from before the file lock, which takes only the record. Only the holder of the file lock reads, removes, or
-makes the record, so a record left by a run that ended is judged and removed by one run at a time.
+deployer from before the file lock, which takes only the record. Only the holder of the file lock removes or makes
+the record, so a record left by a run that ended is removed by one run at a time; a dry run, and a run refused the
+lock, only read it to name or judge the holder.
 """
 
 from __future__ import annotations
