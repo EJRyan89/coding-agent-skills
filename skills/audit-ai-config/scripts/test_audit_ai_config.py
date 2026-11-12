@@ -6621,6 +6621,29 @@ class UnlistableDirectoryTests(unittest.TestCase):
         (message,) = [f.message for f in result.findings if f.path == ".github/agents"]
         self.assertEqual(f"{UNREAD} the folder cannot be listed: Access is denied", message)
 
+    def test_an_agent_the_walk_cannot_examine_is_still_listed_and_checked(self) -> None:
+        # The folder walk leaves an entry whose stat fails out of its files; the agents walk keeps it, since it may be
+        # an agent, so the inventory names it, with the ERROR for the stat it could not make, and the Copilot check
+        # still reads it: a stat that fails need not stop a read, so the agent's own ERROR, its missing description,
+        # shows it was checked.
+        agent = self.root / ".github/agents/reviewer.md"
+        agent.write_text("---\nname: reviewer\n---\n", encoding="utf-8")
+        with stat_denied(agent, older=True):
+            inventory = audit.check_inventory(self.root)
+            copilot = audit.check_copilot_configuration(self.root, {})
+        self.assertIn(
+            ("INFO", "inventory", ".github/agents", "Custom agent files found: reviewer.md"),
+            _finding_rows(inventory),
+        )
+        self.assertIn(
+            ("ERROR", "inventory", ".github/agents/reviewer.md"),
+            [row[:3] for row in _finding_rows(inventory)],
+        )
+        self.assertEqual(
+            [("ERROR", "copilot-agent", ".github/agents/reviewer.md", "Agent frontmatter requires description")],
+            [row for row in _finding_rows(copilot) if row[0] == "ERROR"],
+        )
+
 
 def _link_directory(target: Path, link: Path) -> None:
     """A link to a directory: a junction on Windows, which needs no privilege, else a symbolic link."""
