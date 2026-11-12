@@ -157,7 +157,13 @@ def canary_home(value: str) -> Path:
     home = Path(value)
     if platform_support.is_link_or_junction(home):
         raise usage_error(f"--canary-home must not be a symlink or junction: {platform_support.normalize(home)}")
-    if not home.is_dir():
+    # A stat that fails is refused with its reason, never as a missing directory.
+    try:
+        is_folder = file_presence.is_directory(home, other_is_absent=True)
+    except OSError as exc:
+        remedy = "Choose an empty directory you can read under the temporary directory, then retry."
+        raise os_error(exc, "tell whether --canary-home is a directory", remedy) from exc
+    if not is_folder:
         raise usage_error(f"--canary-home must be an existing directory: {platform_support.normalize(home)}")
     temporary = Path(platform_support.canonical_directory(tempfile.gettempdir()))
     resolved = Path(platform_support.canonical_directory(home))
