@@ -176,29 +176,37 @@ def reads_its_reader(command: Sequence[str]) -> bool:
     return list(command[1:]) == [*READER_OPTIONS, hub_guard.powershell_reader()]
 
 
-@contextlib.contextmanager
-def resident_reads() -> Iterator[list[str]]:
-    """Hands the guard's reader starts to the resident pwsh while it lasts, and yields the malfunctions met.
+class ResidentReads:
+    """What hub_guard.run_bounded is while resident_reads lasts, and the malfunctions it met."""
 
-    Every other command hub_guard.run_bounded is given runs as it would. On leaving, a malfunction met fails the caller
-    with an AssertionError, whatever decision the guard made of it.
-    """
-    malfunctions: list[str] = []
+    def __init__(self) -> None:
+        self.malfunctions: list[str] = []
 
-    def bounded(command: Sequence[str], timeout: float, **options: Any) -> Finished:
+    def run_bounded(self, command: Sequence[str], timeout: float, **options: Any) -> Finished:
+        """The guard's reader start, read in the resident; every other command run as run_bounded runs it."""
         if not reads_its_reader(command) or set(options) - {"input_bytes", "env", "output_limit", "tree"}:
             return bounded_process.run_bounded(command, timeout, **options)
         with _LOCK:
             try:
                 return resident(command[0]).read(options["input_bytes"], timeout, options.get("output_limit"))
             except Malfunction as exc:
-                malfunctions.append(str(exc))
+                self.malfunctions.append(str(exc))
                 raise OSError(f"the resident pwsh failed ({exc})") from exc
             except subprocess.TimeoutExpired:
-                malfunctions.append(f"the resident pwsh did not answer within {timeout} seconds")
+                self.malfunctions.append(f"the resident pwsh did not answer within {timeout} seconds")
                 raise
 
-    with mock.patch.object(hub_guard, "run_bounded", side_effect=bounded):
-        yield malfunctions
-    if malfunctions:
-        raise AssertionError(f"the resident pwsh malfunctioned: {malfunctions}")
+
+@contextlib.contextmanager
+def resident_reads() -> Iterator[ResidentReads]:
+    """Hands the guard's reader starts to the resident pwsh while it lasts, and yields what hub_guard.run_bounded is
+    meanwhile.
+
+    Every other command hub_guard.run_bounded is given runs as it would. On leaving, a malfunction met fails the caller
+    with an AssertionError, whatever decision the guard made of it.
+    """
+    reads = ResidentReads()
+    with mock.patch.object(hub_guard, "run_bounded", side_effect=reads.run_bounded):
+        yield reads
+    if reads.malfunctions:
+        raise AssertionError(f"the resident pwsh malfunctioned: {reads.malfunctions}")

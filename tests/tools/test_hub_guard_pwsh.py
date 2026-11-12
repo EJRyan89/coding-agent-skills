@@ -528,9 +528,9 @@ class ResidentReaderTests(unittest.TestCase):
                 self.subTest(command=command[-1][:20], options=sorted(options)),
                 mock.patch.object(bounded_process, "run_bounded", return_value=real) as bounded,
                 mock.patch.object(resident_pwsh, "resident", side_effect=AssertionError("not the reader")),
-                resident_pwsh.resident_reads(),
+                resident_pwsh.resident_reads() as reads,
             ):
-                self.assertEqual(real, hub_guard.run_bounded(command, 5.0, **options))
+                self.assertEqual(real, reads.run_bounded(command, 5.0, **options))
                 bounded.assert_called_once_with(command, 5.0, **options)
 
     def test_a_read_that_leaves_a_global_behind_is_a_malfunction(self) -> None:
