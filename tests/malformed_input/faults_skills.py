@@ -11,6 +11,7 @@ from pathlib import Path
 
 from fault_table import (
     DIRECTORY,
+    GH_FAILURE,
     MISSING,
     OPENED_ONLY,
     REPOSITORY,
@@ -722,6 +723,11 @@ DRIVERS: list[Driver] = [
             "{work}/.claude/settings.json",
         ),
         not_run={MISSING: ABSENT_CONFIGURATION},
+        refusal_gaps=dict.fromkeys(
+            (UNREADABLE, DIRECTORY, STAT_RAISES),
+            "#2638 the file it cannot read is an ERROR finding inside the JSON report, whose lines lead with a JSON "
+            "key, not a FAILED or documented line",
+        ),
     ),
     Driver(
         AUDIT_AI_CONFIG,
@@ -1234,6 +1240,10 @@ DRIVERS: list[Driver] = [
         inputs=(CONFIG,),
         gh=True,
         outputs=("{root}/collected",),
+        refusal_gaps={
+            GH_FAILURE: "#2638 gh's answer is named on its REPOSITORY_FAILED and UNTRACKED_CHECK_FAILED lines, which "
+            "the module's docstring does not name, and its FAILED line counts the repositories without the answer"
+        },
     ),
     Driver(
         DASHBOARD,

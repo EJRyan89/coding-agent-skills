@@ -63,7 +63,8 @@ WRITES = {
     "shutil.copytree": (1,),
     "shutil.move": (1,),
 }
-READS = frozenset({"open", "os.listdir", "os.scandir"})
+# The listings a run reads a folder through; an open is a read too, which the hook judges in a branch of its own.
+LISTINGS = frozenset({"os.listdir", "os.scandir"})
 WRITE_FLAGS = os.O_WRONLY | os.O_RDWR | os.O_CREAT | os.O_APPEND | os.O_TRUNC
 GIT_NAMES = frozenset({"git", "git.exe"})
 # The process probe a run may start: macOS's ps, by its own path alone, which ejryan89-skill-core's process_identity
@@ -170,10 +171,10 @@ class Run:
             found = key(path)
             if writes and found is not None and found != self.null and not self.may_write(found):
                 self.stop(f"wrote outside the run's folders: {found}")
-        elif event in READS:
+        elif event in LISTINGS:
             self.touches(arguments[0] if arguments else None)
             # A missing file is met by listing the folder that would hold it, as a glob or a walk finds files.
-            if event != "open" and self.fault == "missing" and self.target is not None:
+            if self.fault == "missing" and self.target is not None:
                 listed = key(arguments[0] if arguments and arguments[0] is not None else ".")
                 self.reached = self.reached or any(listed == key(Path(each).parent) for each in self.targets)
         elif event in WRITES:

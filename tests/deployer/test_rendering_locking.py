@@ -26,6 +26,7 @@ from harness import (
     failing_lock_metadata_write,
     forward,
     probe_returning,
+    tree_state,
 )
 from markdown_sections import find_fences
 from suite_names import is_suite_name
@@ -671,6 +672,16 @@ class LockTests(DeployerTestCase):
         self.write_lock({"pid": 4242, "token": "old-token", "start_time": 1})
         result = self.deploy_ok("--all", probe=probe_returning(False, None))
         self.assertIn("Stale lock detected (PID 4242 not running)", result.output)
+
+    def test_a_dry_run_beside_a_stale_lock_warns_plans_and_changes_nothing(self) -> None:
+        self.fixture()
+        self.write_lock({"pid": 4242, "token": "old-token", "start_time": 1})
+        before = tree_state(self.home)
+        result = self.deploy_ok("--all", "--dry-run", probe=probe_returning(False, None))
+        self.assertIn("Stale lock detected (PID 4242 not running)", result.output)
+        self.assertEqual({"FRESH INSTALL": ["alpha"]}, self.report_groups(result.output, "DRY RUN"))
+        # The lock stays as it was, never reclaimed or moved aside, and nothing else in the home changes.
+        self.assertEqual(before, tree_state(self.home))
 
     def test_matching_process_identity_blocks_contention(self) -> None:
         self.fixture()

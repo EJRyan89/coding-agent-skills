@@ -4,10 +4,10 @@ fault in a throwaway fixture, and judged.
 fault_runner.py runs the command under the fault and stops it, past any handler, if it starts a program other than
 git, opens a network connection, or writes outside the temporary folder or inside this checkout, even where the
 temporary folder holds it. A run must reach its fault and end with a nonzero exit its docstring's exit table names,
-output that names what failed, the line naming it being its refusal whatever word leads it, no traceback, and the
-home, the work folder, and the outputs the driver names as it found them. The suites test_faults_<group>.py run every
-driver's runs of their group of faults, so the runner deals each group to a leg of its own; test_faults.py holds the
-coverage and the harness's own tests.
+a line that names what failed and is its refusal, FAILED, led by a word its docstring names, or argparse's usage
+error at exit 2, which a remedy line may follow, no traceback, and the home, the work folder, and the outputs the
+driver names as it found them. The suites test_faults_<group>.py run every driver's runs of their group of faults,
+so the runner deals each group to a leg of its own; test_faults.py holds the coverage and the harness's own tests.
 """
 
 from __future__ import annotations
@@ -60,6 +60,8 @@ NOT_INHERITED = re.compile(
     r"^(?:CLAUDE|CODEX|COPILOT|CODE_REVIEW|GITHUB|GH|GIT|ANTHROPIC|OPENAI)_|^HOME$|^USERPROFILE$"
 )
 Run = tuple[Driver, str, str | None]
+# argparse's usage error, as ArgumentParser.error prints it: the program's name, then `error:` and the message.
+USAGE_ERROR = re.compile(r"^\S+: error: \S")
 
 
 def runs_of(*kinds: str) -> list[Run]:
@@ -184,11 +186,18 @@ def evidence(fault: str, target: Path | None) -> tuple[str, ...]:
 
 
 def judged(
-    docstring: str, fault: str, target: Path | None, finished: subprocess.CompletedProcess[str], record: dict[str, Any]
+    docstring: str,
+    fault: str,
+    target: Path | None,
+    finished: subprocess.CompletedProcess[str],
+    record: dict[str, Any],
+    gap: str = "",
 ) -> list[str]:
     """What is wrong with a run's end, judged against its entry point's docstring: a stop, a fault never reached, an
-    exit 0 or one the table does not name, a traceback, or output that never names what failed, whose line naming it is
-    the refusal."""
+    exit 0 or one the table does not name, a traceback, output that never names what failed, or no line naming it
+    that is a refusal, as refuses reads one. A run its driver's refusal_gaps names, with the open
+    issue that gives it a refusal line, is held to every check but the last, and fails once that check passes, so the
+    gaps only shrink."""
     problems: list[str] = []
     if record["stopped"]:
         problems.append(f"the harness stopped it: {record['stopped']}")
@@ -207,13 +216,40 @@ def judged(
     if TRACEBACK in output:
         problems.append("it printed a traceback")
     words = evidence(fault, target)
-    if not any(word.casefold() in output.casefold() for word in words):
-        problems.append(f"its output never names what failed ({' or '.join(map(repr, words))})")
-    # The line that names what failed is the run's refusal, whatever word leads it, and a remedy line may follow it,
-    # as the deployer's does, so no check of the refusal's form or place is made beyond it.
-    if not output.strip():
+    lines = [line for line in output.splitlines() if line.strip()]
+    naming = [line for line in lines if named(line, words)]
+    if not lines:
         problems.append("it printed nothing")
+    elif not naming:
+        problems.append(f"its output never names what failed ({' or '.join(map(repr, words))})")
+    else:
+        refused = any(refuses(line, docstring, record["exit"]) for line in naming)
+        if not refused and not gap:
+            problems.append(
+                "no line naming what failed is its refusal: none is FAILED, starts with a word its docstring names, "
+                "or is argparse's usage error at exit 2"
+            )
+        elif refused and gap:
+            problems.append(f"its refusal gap is closed, so the driver's refusal_gaps entry goes: {gap}")
     return problems
+
+
+def refuses(line: str, docstring: str, code: int) -> bool:
+    """Whether a line is a refusal's form: a FAILED line, one led by an upper-case word its docstring names, such as
+    ERROR or a finding's, or, for a run that exits 2, argparse's usage error, `<program>: error: <message>`, which
+    run_main passes through and every exit table names as a usage error. A remedy line may follow it, as the
+    deployer's does, so it need not be the last."""
+    first = line.split()[0].rstrip(":")
+    return (
+        first == "FAILED"
+        or (first.isupper() and re.search(rf"(?<![\w-]){re.escape(first)}(?![\w-])", docstring) is not None)
+        or (code == exit_tables.USAGE and USAGE_ERROR.match(line) is not None)
+    )
+
+
+def named(line: str, words: tuple[str, ...]) -> bool:
+    """Whether a line names what failed: any one of the fault's evidence words."""
+    return any(word.casefold() in line.casefold() for word in words)
 
 
 def shown(name: str, root: Path) -> str:
@@ -316,7 +352,7 @@ def check(driver: Driver, fault: str, path: str | None) -> None:
                 )
                 after = {str(each): tree(each) for each in watched if each != target}
             docstring = ast.get_docstring(parse_python(REPOSITORY / driver.entry)) or ""
-            problems = judged(docstring, fault, target, finished, record)
+            problems = judged(docstring, fault, target, finished, record, driver.refusal_gap(fault, path))
             problems += changes(before, after, target, root)
     assert problems == [], (
         f"{driver.name} under {fault} ({FAULTS[fault]}){f' at {path}' if path else ''}: {'; '.join(problems)}\n"
