@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import ast
 import atexit
+import re
 import stat
 import subprocess
 import sys
@@ -28,6 +29,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "validation"))
 import corpus
 import exit_tables
 import fault_check
+import fault_runner
 import faults
 from fault_check import REPOSITORY, TRACEBACK, changes, environment, judged, placed, run_entry
 from fault_table import (
@@ -317,6 +319,18 @@ def test_a_run_under_a_fault_other_than_git_s_starts_the_real_git() -> None:
     assert finished.stdout.splitlines()[0] == "git"
 
 
+def test_each_audit_event_the_hook_judges_has_one_branch_and_a_listing_meets_a_missing_file() -> None:
+    # An open is judged in a branch of its own, so the listing branch holds only the listings, and its test of a
+    # missing file applies to every event it holds.
+    branches = [fault_runner.STARTS, {"socket.connect"}, {"open"}, fault_runner.LISTINGS, set(fault_runner.WRITES)]
+    events = [event for branch in branches for event in branch]
+    assert len(events) == len(set(events)), "an audit event the hook judges in two branches reaches only the first"
+    assert {"os.listdir", "os.scandir"} == fault_runner.LISTINGS
+    body = "import os\nos.listdir('.')\nprint('FAILED input.txt')\nreturn 1"
+    finished, record = fixture_run(body, MISSING, "input.txt")
+    assert record == {"exit": 1, "reached": True, "stopped": None}, finished
+
+
 def test_a_run_that_never_meets_its_fault_is_not_reached() -> None:
     finished, record = fixture_run("print('DONE')", GIT_EXIT)
     assert record == {"exit": 0, "reached": False, "stopped": None}
@@ -344,8 +358,13 @@ def test_a_run_that_never_names_its_fault_has_that_one_problem_whatever_its_line
     [
         (ended("FAILED bad config\n"), {"exit": 1, "reached": True, "stopped": None}, None),
         (ended("", "ERROR: bad config\n"), {"exit": 1, "reached": True, "stopped": None}, None),
-        # The line that names what failed is the refusal whatever word leads it, and a remedy line may follow it.
-        (ended("fatal: bad config\nFix the file and rerun.\n"), {"exit": 1, "reached": True, "stopped": None}, None),
+        # A remedy line may follow the refusal.
+        (ended("ERROR: bad config\nFix the file and rerun.\n"), {"exit": 1, "reached": True, "stopped": None}, None),
+        # The line naming what failed is the refusal: FAILED or led by a word the docstring names, never another word.
+        (ended("fatal: bad config\n"), {"exit": 1, "reached": True, "stopped": None}, "no line naming what failed"),
+        (ended("Cannot read: bad config\n"), {"exit": 1, "reached": True, "stopped": None}, "is its refusal"),
+        (ended("NOTICE bad config\n"), {"exit": 1, "reached": True, "stopped": None}, "is its refusal"),
+        (ended("FAILED x\nbad config\n"), {"exit": 1, "reached": True, "stopped": None}, "is its refusal"),
         (ended("NOTHING_FOUND\n"), {"exit": 0, "reached": True, "stopped": None}, "it exited 0"),
         (ended("FAILED bad config\n"), {"exit": 3, "reached": True, "stopped": None}, "it exited 3"),
         (ended("FAILED bad config\n"), {"exit": 97, "reached": True, "stopped": "x"}, "the harness stopped it"),
@@ -357,11 +376,74 @@ def test_a_run_that_never_names_its_fault_has_that_one_problem_whatever_its_line
 def test_judged_names_each_way_a_run_ends_other_than_a_refusal_of_its_fault(
     finished: subprocess.CompletedProcess[str], record: dict[str, Any], problem: str | None
 ) -> None:
-    found = judged(FIXTURE_DOCSTRING, GIT_EXIT, None, finished, record)
+    # A docstring that names its ERROR lines, so one leads a refusal.
+    docstring = (
+        f"A fixture that prints an ERROR line for a file it cannot read.\n\n{FIXTURE_DOCSTRING.split(chr(10), 2)[2]}"
+    )
+    found = judged(docstring, GIT_EXIT, None, finished, record)
     if problem is None:
         assert found == []
     else:
         assert any(problem in each for each in found), found
+
+
+def test_a_lead_word_is_a_refusal_only_where_the_docstring_names_it() -> None:
+    record = {"exit": 1, "reached": True, "stopped": None}
+    found = judged(FIXTURE_DOCSTRING, GIT_EXIT, None, ended("", "ERROR: bad config\n"), record)
+    assert len(found) == 1, found
+    assert found[0].startswith("no line naming what failed is its refusal"), found
+
+
+def test_argparse_s_usage_error_is_a_refusal_at_exit_2_alone() -> None:
+    docstring = f"{FIXTURE_DOCSTRING}  2  a usage error\n"
+    usage = ended("", "usage: tool.py [-h]\ntool.py: error: argument --config: bad config\n")
+    assert judged(docstring, GIT_EXIT, None, usage, {"exit": 2, "reached": True, "stopped": None}) == []
+    found = judged(docstring, GIT_EXIT, None, usage, {"exit": 1, "reached": True, "stopped": None})
+    assert len(found) == 1, found
+    assert found[0].startswith("no line naming what failed is its refusal"), found
+    # Only argparse's own form: a line that merely holds "error:" further on is none.
+    other = ended("", "reading bad config: error: it failed\n")
+    assert judged(docstring, GIT_EXIT, None, other, {"exit": 2, "reached": True, "stopped": None}) != []
+
+
+def test_a_refusal_gap_excuses_only_the_refusal_s_form_and_fails_once_the_gap_is_closed() -> None:
+    record = {"exit": 1, "reached": True, "stopped": None}
+    gap = "#1 gives it a FAILED line"
+    assert judged(FIXTURE_DOCSTRING, GIT_EXIT, None, ended("fatal: bad config\n"), record, gap) == []
+    assert judged(FIXTURE_DOCSTRING, GIT_EXIT, None, ended("fatal: bad config\n"), {**record, "exit": 0}, gap) == [
+        "it exited 0, as if nothing were wrong"
+    ]
+    assert judged(FIXTURE_DOCSTRING, GIT_EXIT, None, ended("fatal: other\n"), record, gap) == [
+        "its output never names what failed ('bad config')"
+    ]
+    assert judged(FIXTURE_DOCSTRING, GIT_EXIT, None, ended("FAILED bad config\n"), record, gap) == [
+        f"its refusal gap is closed, so the driver's refusal_gaps entry goes: {gap}"
+    ]
+
+
+def test_a_driver_names_its_refusal_gap_by_input_before_fault() -> None:
+    driver = Driver("e.py", "", (), refusal_gaps={MISSING: "#1 all", f"{DIRECTORY} a.txt": "#2 one"})
+    assert driver.refusal_gap(MISSING, "b.txt") == "#1 all"
+    assert driver.refusal_gap(DIRECTORY, "a.txt") == "#2 one"
+    assert driver.refusal_gap(DIRECTORY, "b.txt") == ""
+    assert driver.refusal_gap(GIT_EXIT, None) == ""
+
+
+def test_each_refusal_gap_names_a_run_its_driver_makes_and_the_issue_that_closes_it() -> None:
+    stale = [
+        f"{driver.name}: {name}"
+        for driver in faults.DRIVERS
+        for name in driver.refusal_gaps
+        if not any(name in (fault, f"{fault} {path}") for fault, path in driver.runs())
+    ]
+    assert stale == [], "a refusal gap names no run of its driver"
+    unnamed = [
+        f"{driver.name}: {name}"
+        for driver in faults.DRIVERS
+        for name, reason in driver.refusal_gaps.items()
+        if not re.match(r"#\d+ \S", reason)
+    ]
+    assert unnamed == [], "a refusal gap opens with the open issue that closes it, then says what it lacks"
 
 
 def test_changes_names_a_write_and_leaves_the_faults_own_path_aside() -> None:
