@@ -199,9 +199,10 @@ removed fails validation until its pattern follows it.
 - **Guard:** `tests/validation/refusal_steps.py::RefusalStepPolicies::test_every_deployer_refusal_ends_with_a_step`,
   `tests/deployer/test_remedies.py::RefusalStepTests`
 - **Search for:** a `DeployError(` with one positional argument under `deployer/`, or unpacked lines the guard follows
-  to one, which it reads; unpacked lines it cannot follow, such as a parameter or a list grown by append, which it
-  accepts unread; and a
-  `STEP_ALLOWED` entry whose caller no longer adds the step; a step written after a semicolon or a full stop inside an
+  to one, which it reads; unpacked lines it cannot follow, such as a parameter, a call's result, or a list grown by
+  append, with no step written beside them, which it refuses too; a function that takes the step its refusal ends with
+  as optional, as `*remedy` does, rather than as a parameter of its own; a `STEP_ALLOWED` entry whose caller no longer
+  adds the step; a step written after a semicolon or a full stop inside an
   `ERROR:` line; a new caller of a function its module's `STEP_ALLOWED` names, which must add the step too.
 - **Examples:** #2545, #2563
 
@@ -751,7 +752,8 @@ removed fails validation until its pattern follows it.
 - **Search for:** `version in`, `.startswith(version`, `sorted(tags`, or `tags[-1]`; `int(part) for part in` or
   `map(int,` over a `.split(".")`; in a workflow, `grep` or `contains(` on a version; `==` between two paths with no
   normalization, or `os.path.normcase` outside `path_keys.py`, of a whole path or of one name such as `.git`; a
-  name compared with `.git`, or with a constant that holds it, exactly or after `str.casefold`;
+  name compared with `.git`, or with a constant or a class attribute that holds it, exactly or after `str.casefold`,
+  or matched by a `case` pattern holding it;
   `sys.platform == "win32"` or `os.name == "nt"` standing for a case-insensitive file system, in a test as in code;
   a fixture that writes two names into one folder that a folding file system makes one, such as `K.dll` and `k.dll`,
   or `Strasse` and `Straße`, which macOS's default APFS also folds together; a glob,

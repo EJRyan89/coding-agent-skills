@@ -523,6 +523,9 @@ class SharedFactPolicy(unittest.TestCase):
             'flag = document.string("disable-model-invocation")\n': 1,
             'user_only = values.get(USER_ONLY_KEY) == "True"\n': 1,
             'user_only = frontmatter.parse(text).value(frontmatter.USER_ONLY_KEY) != "false"\n': 1,
+            # A match statement on the key's value judges it as a comparison does.
+            'match values.get(USER_ONLY_KEY):\n    case "true":\n        user_only = True\n': 2,
+            'match values["disable-model-invocation"]:\n    case " True " | "yes":\n        user_only = True\n': 2,
         }
         for reading, line in readings.items():
             with self.subTest(reading=reading):
@@ -533,6 +536,9 @@ class SharedFactPolicy(unittest.TestCase):
         writes = (
             'user_only = frontmatter.parse(text).user_only()\nLINES = ["disable-model-invocation: true"]\n'
             'lines.append("disable-model-invocation: true")\nvalue = values.get(USER_ONLY_KEY)\n'
+            # A match on another value, or on the key's value with no true or false case, judges no user-only key.
+            'match mode:\n    case "true":\n        enabled = True\n'
+            'match values.get(USER_ONLY_KEY):\n    case "always":\n        always = True\n'
         )
         self.assertEqual([], self.problems({reference: writes}))
 
@@ -656,6 +662,20 @@ class SharedFactPolicy(unittest.TestCase):
             ('GIT = ".git"\n\n\ndef check(name):\n    return name == GIT\n', 5),
             ('GIT: str = ".git"\n\n\ndef check(name):\n    return name.startswith(GIT)\n', 5),
             ('GIT = ".git"\n\n\ndef check(name):\n    return name in (GIT, ".hg")\n', 5),
+            # A match statement's case is the same exact test, as a value, an alternative, an element of a sequence,
+            # or a value it captures, and a class's attribute bound once to `.git` is `.git` there and in a comparison.
+            ('match name:\n    case ".git":\n        found = True\n', 2),
+            ('match name:\n    case ".git" | ".hg":\n        found = True\n', 2),
+            ('match path.parts:\n    case [*_, ".git"]:\n        found = True\n', 2),
+            ('match name:\n    case (".git" as found):\n        pass\n', 2),
+            ('class Names:\n    GIT = ".git"\n\n\nmatch name:\n    case Names.GIT:\n        found = True\n', 6),
+            ('class Names:\n    GIT = ".git"\n\n\nfound = name == Names.GIT\n', 5),
+            # A case is refused even when its guard asks name_key, as a prefix test is beside a keyed one.
+            (
+                "from path_keys import name_key\n\n"
+                'match name:\n    case ".git" if name_key(name, folder) == ".git":\n        found = True\n',
+                4,
+            ),
             # An exact test joined by `and` to anything but a keyed one decides by itself, and a prefix test is refused
             # even beside a keyed one.
             ('found = name.casefold() == ".git" and folder.is_dir()\n', 1),
@@ -678,6 +698,11 @@ class SharedFactPolicy(unittest.TestCase):
             'also = path_keys.name_key(part, checkout) == ".git"\n'
             'keyed = name_key(name, folder) in (".git", ".hg")\n'
             'built = name_key(name, folder) in frozenset({".git"})\n'
+            # A match on name_key's result asks the folder's file system, and a case of another name is no .git test.
+            'match name_key(name, folder):\n    case ".git" | ".hg":\n        matched = True\n'
+            'match name:\n    case ".github":\n        hosted = True\n'
+            # A class's attribute bound twice may not hold `.git` where it is compared, so it is not read as `.git`.
+            'class Twice:\n    GIT = ".git"\n    GIT = ".hg"\n\n\ntwice = name == Twice.GIT\n'
             # An exact test that only spares the folder a question before name_key decides, as folder_walk's is.
             'GIT = ".git"\nmarker = name.casefold() == GIT and name_key(name, folder) == GIT\n'
             # Other operators and other names are not a name compared with .git.

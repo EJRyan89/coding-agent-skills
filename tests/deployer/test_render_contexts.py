@@ -320,6 +320,7 @@ class ShellCheckBatchTests(unittest.TestCase):
                 "ERROR: ShellCheck failed for rendered Bash block: s/SKILL.md block 2",
                 "s/SKILL.md block 2:3:7: warning: Double quote to prevent globbing. [SC2086]",
                 "s/SKILL.md block 5:3:7: warning: Double quote to prevent globbing. [SC2086]",
+                render.RENDERED_CHECK_REMEDY,
             ),
             raised.exception.lines,
         )
@@ -354,6 +355,7 @@ class ShellCheckBatchTests(unittest.TestCase):
             (
                 "ERROR: ShellCheck failed for rendered content: s/scripts/run.sh",
                 "s/scripts/run.sh:2:1: error: Parsing stopped. [SC1073]",
+                render.RENDERED_CHECK_REMEDY,
             ),
             raised.exception.lines,
         )
@@ -374,6 +376,77 @@ class ShellCheckBatchTests(unittest.TestCase):
                 "ERROR: ShellCheck failed for rendered content: s/scripts/run.sh",
                 "s/scripts/run.sh:2:1: error: Parsing stopped. [SC1073]",
                 "C:/work/files/gone.sh: openBinaryFile: does not exist (No such file or directory)",
+                render.RENDERED_CHECK_REMEDY,
+            ),
+            raised.exception.lines,
+        )
+
+    def test_a_failure_naming_no_unit_ends_with_the_step_to_check_shellcheck_itself(self) -> None:
+        units = [render.ShellUnit(Path("C:/work/files/run.sh"), "s/scripts/run.sh", False)]
+        output = "shellcheck: internal error\n"
+        with (
+            mock.patch.object(platform_support, "run_tool", return_value=platform_support.ToolResult(2, output)),
+            self.assertRaises(DeployError) as raised,
+        ):
+            render._run_shellcheck(units, "shellcheck")
+        self.assertEqual(
+            (
+                "ERROR: ShellCheck failed for rendered content",
+                "shellcheck: internal error",
+                render.SHELLCHECK_FAILED_REMEDY,
+            ),
+            raised.exception.lines,
+        )
+
+
+class RenderedRefusalStepTests(unittest.TestCase):
+    """Each refusal of what rendering left behind ends with the step to take after the lines it reports."""
+
+    def test_unexpanded_tokens_are_listed_then_the_step_to_declare_or_remove_them(self) -> None:
+        staged = render.Staged(skills={"s": {"SKILL.md": b"Run it.\nUse {{UNDECLARED}} here.\n"}})
+        with self.assertRaises(DeployError) as raised:
+            render.reject_unexpanded_tokens(staged)
+        self.assertEqual(
+            (
+                "ERROR: Unexpanded tokens found in staged output:",
+                "s/SKILL.md:2:Use {{UNDECLARED}} here.",
+                render.UNEXPANDED_REMEDY,
+            ),
+            raised.exception.lines,
+        )
+
+    def test_a_bash_syntax_failure_reports_bash_then_the_step(self) -> None:
+        units = [render.ShellUnit(Path("C:/work/files/run.sh"), "s/scripts/run.sh", False)]
+        result = platform_support.ToolResult(2, "C:/work/files/run.sh: line 2: syntax error\n")
+        with (
+            mock.patch.object(render, "run_bash_syntax_check", return_value=result),
+            self.assertRaises(DeployError) as raised,
+        ):
+            render._check_bash_syntax(units, "bash")
+        self.assertEqual(
+            (
+                "ERROR: Rendered Bash syntax validation failed: s/scripts/run.sh",
+                "C:/work/files/run.sh: line 2: syntax error",
+                render.RENDERED_CHECK_REMEDY,
+            ),
+            raised.exception.lines,
+        )
+
+    def test_a_powershell_parse_failure_reports_the_parser_then_the_step(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = Path(temporary)
+            target = str(workspace / "powershell" / "s" / "run.ps1")
+            result = platform_support.ToolResult(1, f"{target}\nMissing closing '}}' in statement block.\n")
+            with (
+                mock.patch.object(platform_support, "run_tool", return_value=result),
+                self.assertRaises(DeployError) as raised,
+            ):
+                render._parse_powershell({"s/run.ps1": b"function Broken {\n"}, workspace, "pwsh")
+        self.assertEqual(
+            (
+                "ERROR: Rendered PowerShell syntax validation failed: s/run.ps1",
+                "Missing closing '}' in statement block.",
+                render.RENDERED_CHECK_REMEDY,
             ),
             raised.exception.lines,
         )

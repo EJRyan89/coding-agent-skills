@@ -664,7 +664,8 @@ class ExecuteTests(unittest.TestCase):
                     see = ['See "When recovery fails" in docs/recovery.md.'] if code == 1 else []
                     lines = [*opening, *states, *see]
                     with self.subTest(recovery_error=recovery_error, runs=runs, debug=debug):
-                        printed_error = DeployError(*lines, exit_code=code)
+                        # Ctrl+C is a cancellation, the user's own act, which exits 130 and asks no step.
+                        printed_error = Cancelled(*lines) if code == 130 else DeployError(*lines, exit_code=code)
                         tracebacks = [f"print_traceback({printed_error!r})"] if debug else []
                         self.assertEqual(
                             (
@@ -697,7 +698,8 @@ class ExecuteTests(unittest.TestCase):
                     see = ['See "When recovery fails" in docs/recovery.md.'] if code == 1 else []
                     lines = [*opening, *states, *see]
                     with self.subTest(recovery_error=recovery_error, runs=runs, debug=debug):
-                        printed_error = DeployError(*lines, exit_code=code)
+                        # Ctrl+C is a cancellation, the user's own act, which exits 130 and asks no step.
+                        printed_error = Cancelled(*lines) if code == 130 else DeployError(*lines, exit_code=code)
                         tracebacks = [f"print_traceback({printed_error!r})"] if debug else []
                         before_recovery = ["print_traceback(DeployError('ERROR: apply failed'))"] if debug else []
                         self.assertEqual(

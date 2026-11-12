@@ -552,7 +552,7 @@ def _stopped_recovery(exc: BaseException, debug: bool, paths: Paths) -> int:
     Recovery replays its journal, which stays on disk until a run is reconciled, so the next deployment finishes it.
     """
     if isinstance(exc, KeyboardInterrupt):
-        error = DeployError(RECOVERY_CANCELLED, *_run_states(paths), exit_code=130)
+        error: DeployError = Cancelled(RECOVERY_CANCELLED, *_run_states(paths))
     else:
         error = DeployError(
             errors.named(exc, "finish recovery"),
