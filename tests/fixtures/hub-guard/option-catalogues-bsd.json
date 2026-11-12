@@ -145,6 +145,17 @@
     "getopt": "",
     "options": []
   },
+  "stdbuf": {
+    "source": "Apple shell_cmds-329, FreeBSD's stdbuf, its getopt string",
+    "how": "Read from stdbuf/stdbuf.c at apple-oss-distributions/shell_cmds tag shell_cmds-329 (gh api 'repos/apple-oss-distributions/shell_cmds/contents/stdbuf/stdbuf.c?ref=shell_cmds-329'): the getopt string e:i:o:, each letter followed by a colon taking a value; getopt takes no long option and abbreviates none. Each value is only set in the environment as _STDBUF_E, _STDBUF_I, or _STDBUF_O, and the __APPLE__ build preloads no library, so main then runs its command by execvp. macOS installs it as /usr/bin/stdbuf.",
+    "abbreviates": false,
+    "getopt": "e:i:o:",
+    "options": [
+      {"short": "-e", "long": null, "value": "value"},
+      {"short": "-i", "long": null, "value": "value"},
+      {"short": "-o", "long": null, "value": "value"}
+    ]
+  },
   "sort": {
     "source": "Apple text_cmds-199, FreeBSD's sort, its getopt_long options",
     "how": "Read from sort/sort.c at apple-oss-distributions/text_cmds tag text_cmds-199 (gh api 'repos/apple-oss-distributions/text_cmds/contents/sort/sort.c?ref=text_cmds-199'): OPTIONS bcCdfghik:Mmno:RrsS:t:T:uVz, each letter followed by a colon taking a value, and long_options, paired with its letter where it names one; --parallel is built, since xcconfigs/sort.xcconfig defines SORT_THREADS. The entry check=silent|quiet is left out, since a name holding = is never matched whole: --check=silent reaches --check with its value. getopt_long abbreviates a long name to any prefix no other long name shares. The obsolete +POS1 -POS2 keys are read before getopt_long, as a + word and a - word of digits.",

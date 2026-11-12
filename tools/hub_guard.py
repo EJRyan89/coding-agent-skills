@@ -1999,8 +1999,9 @@ READ_ONLY_FORMS: dict[str, ReadOnlyForm] = {
         operands=no_operands,
     ),
     "branch": ReadOnlyForm(
-        "lists branches, and deletes a task's, which git refuses for a branch a worktree has checked out; never "
-        "creates, renames, copies, or forces one, nor sets an upstream",
+        "lists branches, and deletes any local branch git will delete, not only a task's, or with -r any "
+        "remote-tracking ref; git refuses to delete a branch a worktree has checked out; never creates, renames, "
+        "copies, or forces one, nor sets an upstream",
         flags=options(
             "-v --verbose -q --quiet -r --remotes -a --all -d --delete -D -l --list --show-current -i --ignore-case "
             "--no-color --omit-empty"

@@ -21,23 +21,25 @@ from option_reader import MACOS_ENV_LETTERS, OptionTable, option_refusal, option
 # options, after the assignments env takes, and after the duration timeout takes. A long option is placed only spelled
 # in full, and a word the table does not settle, an abbreviation or an option the table does not list, leaves the
 # program unread (UNREAD_PROGRAM) rather than taken for the program. command -v and -V only look a program up. Each
-# program's table beyond the shell's builtins and coreutils' is its getopt table, as the hub guard's option catalogue
-# records it; sudo also takes assignments, and chrt, taskset, and
+# program's table beyond the shell's builtins is its getopt table, as the hub guard's option catalogue records it, and
+# a coreutils program's every option GNU's build or the Rust coreutils' lists, as env's -f and --file, -a and --argv0,
+# and the -h and -V of the Rust coreutils' runners (tests/tools/test_prefix_programs.py holds each row to the
+# catalogues); sudo also takes assignments, and chrt, taskset, and
 # chroot take one operand, a priority, a CPU mask, or a new root, before the program. Every reader of a command's
 # program reads these, so a reader that needs another wrapper adds it here.
 COMMAND_WRAPPERS: dict[str, OptionTable] = {
     "command": option_table("pvV"),
     "builtin": option_table(),
     "exec": option_table("cla:"),
-    "nohup": option_table("", "help version"),
+    "nohup": option_table("hV", "help version"),
     "time": option_table("af:o:pqvV", "append format= output= portability quiet verbose help version"),
-    "nice": option_table("n:", "adjustment= help version", numbered=re.compile(r"-[+-]?[0-9]+")),
+    "nice": option_table("hn:V", "adjustment= help version", numbered=re.compile(r"-[+-]?[0-9]+")),
     "env": option_table(
-        "0a:C:iS:u:v",
+        "0a:C:f:hiS:u:vV",
         " ".join(
             (
-                "null argv0= chdir= ignore-environment split-string= unset= debug block-signal=? default-signal=?",
-                "ignore-signal=? list-signal-handling help version",
+                "null argv0= chdir= file= ignore-environment split-string= unset= debug block-signal=?",
+                "default-signal=? ignore-signal=? list-signal-handling help version",
             )
         ),
         assignments=True,
@@ -47,9 +49,9 @@ COMMAND_WRAPPERS: dict[str, OptionTable] = {
         dash_safe=MACOS_ENV_LETTERS.replace(":", ""),
     ),
     "timeout": option_table(
-        "fk:ps:v", "foreground kill-after= preserve-status signal= verbose help version", operands=1
+        "fhk:ps:vV", "foreground kill-after= preserve-status signal= verbose help version", operands=1
     ),
-    "stdbuf": option_table("i:o:e:", "input= output= error= help version"),
+    "stdbuf": option_table("hi:o:e:V", "input= output= error= help version"),
     "xargs": option_table(
         "0a:d:E:e::I:i::L:l::n:oP:prs:tx",
         " ".join(
@@ -85,7 +87,7 @@ COMMAND_WRAPPERS: dict[str, OptionTable] = {
         operands=1,
     ),
     "taskset": option_table("acphV", "all-tasks cpu-list pid help version", operands=1),
-    "chroot": option_table("", "groups= userspec= skip-chdir help version", operands=1),
+    "chroot": option_table("hV", "groups= userspec= skip-chdir help version", operands=1),
     "unbuffer": option_table("p"),
     "chronic": option_table("ev"),
     "strace": option_table(
