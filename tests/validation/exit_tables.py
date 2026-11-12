@@ -40,6 +40,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import file_presence
+import python_reader
 import whole_number
 from path_containment import within
 from skill_scripts import EXIT_CALLS, PARSER_CLASS, RESULTS_DOC, _is_parser, main_blocks
@@ -224,8 +225,8 @@ def is_parser_annotation(annotation: ast.expr | None, aliases: dict[str, str]) -
     """Whether an annotation names argparse's parser, as a name or a quoted one."""
     if isinstance(annotation, ast.Constant) and isinstance(annotation.value, str):
         try:
-            annotation = ast.parse(annotation.value, mode="eval").body
-        except SyntaxError:
+            annotation = python_reader.parse_expression(annotation.value).body
+        except python_reader.PythonRefused:
             return False
     return annotation is not None and qualified_name(annotation, aliases) == PARSER_CLASS
 
