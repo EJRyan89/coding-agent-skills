@@ -416,6 +416,13 @@ def find_executables(name: str) -> list[str]:
     return executable_locator.find_executables(name)
 
 
+def find_program(name: str) -> str | None:
+    """The program `name` runs that is no shell script, by ejryan89-skill-core's locator, the one `located_command`
+    starts: for git, gh, dotnet, and dotnet-format, which the skills start with arguments their callers do not control,
+    so `check` reports the program a skill runs and the deployer's own git is never started through cmd.exe."""
+    return executable_locator.find_program(name)
+
+
 def find_bash() -> str | None:
     """Find the Bash that checks rendered scripts: on Windows Git for Windows' Bash, never another bash on PATH, such
     as WSL's, and elsewhere the system's, the first bash on PATH. On Windows GIT_BASH, then Git under the Program Files
@@ -449,7 +456,7 @@ def _bash_beside_git() -> str | None:
     """Locate the Bash shipped with the git the locator finds, as Scoop and per-user Git installs place it. Something
     other than a file there is no Bash, and a path whose metadata cannot be read raises its OSError. A git that cannot
     name its exec path is refused with its reason, never read as no Bash beside it; only no git at all is none."""
-    git = find_executable("git")
+    git = find_program("git")
     if git is None:
         return None
     # stderr apart, so a warning git prints is never read as the path, and a failure's reason is git's own.

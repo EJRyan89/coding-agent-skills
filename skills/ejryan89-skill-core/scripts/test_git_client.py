@@ -981,9 +981,7 @@ class WorkingDirectoryTests(unittest.TestCase):
         program = git()
         with (
             mock.patch.dict(git_client.FOUND, clear=True),
-            mock.patch.object(
-                executable_locator, "find_executable", wraps=executable_locator.find_executable
-            ) as lookup,
+            mock.patch.object(executable_locator, "find_program", wraps=executable_locator.find_program) as lookup,
             mock.patch.object(git_client, "run_bounded", return_value=finished) as run,
         ):
             GitClient().run(["status"])

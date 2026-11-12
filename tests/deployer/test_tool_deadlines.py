@@ -97,10 +97,12 @@ def run_with_deadline(stub: str, seconds: float) -> Any:
 
 
 def found(name: str, path: str) -> Any:
-    """find_executable, finding `path` for `name` and every other tool where it is."""
-    real = platform_support.find_executable
-    return mock.patch.object(
-        platform_support, "find_executable", side_effect=lambda wanted: path if wanted == name else real(wanted)
+    """find_executable and find_program, finding `path` for `name` and every other tool where it is."""
+    executable, program = platform_support.find_executable, platform_support.find_program
+    return mock.patch.multiple(
+        platform_support,
+        find_executable=mock.Mock(side_effect=lambda wanted: path if wanted == name else executable(wanted)),
+        find_program=mock.Mock(side_effect=lambda wanted: path if wanted == name else program(wanted)),
     )
 
 
