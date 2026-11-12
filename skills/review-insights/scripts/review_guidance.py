@@ -153,8 +153,9 @@ class Guidance:
 def reviewer_sources(
     repositories: list[str], records: Mapping[Path, Mapping[str, Any]]
 ) -> dict[str, dict[str, Source]]:
-    """Each repository's repository-scoped reviewers, each with the latest record it wrote, anywhere in the archive.
-    `records` holds every validated record of the repositories by its path."""
+    """Each repository's repository-scoped reviewers, each with the latest record it wrote, anywhere in the archive,
+    and none of the files of one read from another checkout. `records` holds every validated record of the
+    repositories by its path."""
     latest: dict[str, dict[str, Source]] = {repository.lower(): {} for repository in repositories}
     for path in sorted(records):
         record = records[path]
@@ -164,7 +165,15 @@ def reviewer_sources(
             continue
         stamp = review["reviewed_at"]
         if adapter["name"] not in by_name or by_name[adapter["name"]].stamp < stamp:
-            hashes = {key: value for key, value in adapter["source_hashes"].items() if not is_suite_profile(key)}
+            # A reviewer read from another checkout, its `reviewer_root`, was built from that checkout's files, which
+            # the reviewed repository neither holds nor can change, so none of them is its guidance; its record still
+            # stands as the reviewer's latest, so an earlier record's files are not taken for current ones.
+            outside = adapter.get("source") == "reviewer-root"
+            hashes = {
+                key: value
+                for key, value in adapter["source_hashes"].items()
+                if not outside and not is_suite_profile(key)
+            }
             by_name[adapter["name"]] = Source(stamp, adapter.get("source_commit"), hashes)
     return latest
 

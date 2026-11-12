@@ -17,9 +17,11 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import file_presence
 import review_config
 import review_flags
 from executable_locator import RelativeEnvironmentPath
+from git_client import GitError, GitResult
 from review_config import (
     ConfigurationError,
     ConfigurationFieldError,
@@ -664,3 +666,152 @@ class ConfigurationTests(unittest.TestCase):
                 config["dashboard"] = {"author_names": names}
                 with self.assertRaisesRegex(ConfigurationError, message):
                     validate_config(config)
+
+
+def git(directory: Path, *arguments: str) -> str:
+    result = subprocess.run(
+        [
+            "git",
+            "-C",
+            str(directory),
+            "-c",
+            "user.name=Fixture",
+            "-c",
+            "user.email=fixture@example.invalid",
+            *arguments,
+        ],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=False,
+    )
+    if result.returncode != 0:
+        raise AssertionError(result.stderr)
+    return result.stdout.strip()
+
+
+class ReviewerRootTests(unittest.TestCase):
+    """A reviewer read from another checkout: validate and write refuse a root that is missing, not a folder, not a
+    Git checkout's top folder, or whose trusted ref does not resolve there, naming the repository, and write then
+    writes nothing."""
+
+    def setUp(self) -> None:
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name).resolve() / "reviewer root"
+        self.rules = self.root / "conventions repo"
+        self.rules.mkdir(parents=True)
+        git(self.rules, "init", "-b", "main")
+        (self.rules / "review").mkdir()
+        (self.rules / "review" / "python.md").write_text("Python profile\n", encoding="utf-8")
+        git(self.rules, "add", ".")
+        git(self.rules, "commit", "-m", "rules")
+        self.commit = git(self.rules, "rev-parse", "HEAD")
+
+    def config(self, root: Path | str, ref: str = "refs/heads/main") -> dict[str, Any]:
+        config = valid_config()
+        config["repositories"]["example/one"]["reviewer"] = {
+            "id": "conventions",
+            "protocol_version": 1,
+            "scope": "repository",
+            "skill": "review/python.md",
+            "trusted_ref": ref,
+            "reviewer_root": str(root),
+        }
+        return config
+
+    def run_main(self, *arguments: str) -> tuple[int, str, str]:
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = review_config._main(list(arguments))
+        return code, out.getvalue(), err.getvalue()
+
+    def assert_refused(self, config: dict[str, Any], reason: str) -> None:
+        """Both commands print the reason as one FAILED line, and write leaves no configuration behind."""
+        candidate = self.root / "candidate.json"
+        candidate.write_text(json.dumps(config), encoding="utf-8")
+        output = self.root / "written.json"
+        expected = f"FAILED repositories.example/one.reviewer: {reason}"
+        for arguments in (("validate", str(candidate)), ("write", str(candidate), "--output", str(output))):
+            with self.subTest(command=arguments[0]):
+                code, out, err = self.run_main(*arguments)
+                self.assertEqual((1, ""), (code, err))
+                self.assertTrue(out.startswith(expected), out)
+                self.assertEqual(1, len(out.splitlines()), out)
+                self.assertFalse(output.exists())
+
+    def test_a_checkout_whose_ref_resolves_is_valid_and_written(self) -> None:
+        candidate = self.root / "candidate.json"
+        candidate.write_text(json.dumps(self.config(self.rules)), encoding="utf-8")
+        output = self.root / "written.json"
+        self.assertEqual((0, f"VALID {candidate}\n", ""), self.run_main("validate", str(candidate)))
+        self.assertEqual((0, f"WROTE {output}\n", ""), self.run_main("write", str(candidate), "--output", str(output)))
+        reviewer = json.loads(output.read_text(encoding="utf-8"))["repositories"]["example/one"]["reviewer"]
+        self.assertEqual((str(self.rules), "refs/heads/main"), (reviewer["reviewer_root"], reviewer["trusted_ref"]))
+        self.assertEqual(self.commit, review_config.reviewer_root_commit(self.rules, "refs/heads/main"))
+
+    def test_the_commit_is_the_ref_s_never_the_working_tree_s(self) -> None:
+        # A branch checked out in the root, with uncommitted edits, does not move the trusted ref's commit.
+        git(self.rules, "switch", "-c", "elsewhere")
+        (self.rules / "review" / "python.md").write_text("Edited\n", encoding="utf-8")
+        git(self.rules, "commit", "-am", "elsewhere")
+        (self.rules / "review" / "python.md").write_text("Uncommitted\n", encoding="utf-8")
+        self.assertEqual(self.commit, review_config.reviewer_root_commit(self.rules, "refs/heads/main"))
+
+    def test_a_missing_root_is_refused(self) -> None:
+        absent = self.root / "absent"
+        self.assert_refused(self.config(absent), f"reviewer_root {absent} does not exist")
+
+    def test_a_file_in_place_of_the_root_is_refused(self) -> None:
+        file = self.root / "file"
+        file.write_text("not a folder\n", encoding="utf-8")
+        self.assert_refused(self.config(file), f"reviewer_root {file} is not a folder")
+
+    def test_a_root_that_cannot_be_examined_is_refused(self) -> None:
+        with mock.patch.object(file_presence, "is_directory", side_effect=PermissionError("denied")):
+            self.assert_refused(self.config(self.rules), f"reviewer_root {self.rules} cannot be read: denied")
+
+    def test_a_folder_that_is_not_a_git_checkout_is_refused(self) -> None:
+        plain = self.root / "plain"
+        plain.mkdir()
+        self.assert_refused(self.config(plain), f"reviewer_root {plain} is not a Git checkout: ")
+
+    def test_a_folder_inside_a_checkout_is_refused(self) -> None:
+        # git would read the checkout around it, which is not the folder configured.
+        inner = self.rules / "review"
+        self.assert_refused(
+            self.config(inner), f"reviewer_root {inner} is not a Git checkout's top folder; its checkout is "
+        )
+
+    def test_a_ref_that_does_not_resolve_is_refused(self) -> None:
+        for ref in ("refs/heads/absent", "-main", f"{self.commit}:review/python.md"):
+            with self.subTest(ref=ref):
+                self.assert_refused(
+                    self.config(self.rules, ref),
+                    f"trusted_ref {ref} does not resolve to a commit in reviewer_root {self.rules}",
+                )
+
+    def test_git_that_cannot_run_or_prints_no_top_folder_is_refused(self) -> None:
+        def missing(command: Any, timeout: float) -> GitResult:
+            raise GitError("git is not installed")
+
+        def silent(command: Any, timeout: float) -> GitResult:
+            return GitResult(0, "", "")
+
+        with self.assertRaisesRegex(ConfigurationError, "cannot be read with git: git is not installed"):
+            review_config.reviewer_root_commit(self.rules, "main", missing)
+        with self.assertRaisesRegex(ConfigurationError, "is not a Git checkout: git rev-parse --show-toplevel failed"):
+            review_config.reviewer_root_commit(self.rules, "main", silent)
+
+    def test_only_reviewers_with_a_root_are_checked(self) -> None:
+        # The generic reviewer and a repository reviewer read from its own checkout start no git.
+        def refuse(command: Any, timeout: float) -> GitResult:
+            raise AssertionError(f"unexpected git call: {command}")
+
+        config = valid_config()
+        config["repositories"]["example/two"] = {
+            "reviewer": {"id": "own", "protocol_version": 1, "skill": "review/SKILL.md", "trusted_ref": "main"},
+            "checkout_path": native("C:\\Repos\\Two"),
+        }
+        config["repository_sets"]["primary"].append("example/two")
+        review_config.check_reviewer_roots(validate_config(config), refuse)

@@ -45,7 +45,16 @@ STATUS_KIND = 'one of "complete", "partial", "failed"'
 VERDICT_KIND = 'one of "APPROVED", "CHANGES_REQUESTED", "INCOMPLETE"'
 DISPATCH_KIND = 'one of "subagents", "copilot-host", "inline"'
 SNAPSHOT_SOURCE_KIND = 'one of "checkout", "checkout-lazy", "tarball"'
-ADAPTER_SOURCE_KIND = 'one of "generic", "trusted-ref", "base", "default-branch", "generic-fallback"'
+ADAPTER_SOURCE_KIND = 'one of "generic", "trusted-ref", "reviewer-root", "base", "default-branch", "generic-fallback"'
+# A reviewer read from another checkout, as a record names it: its source, the checkout, and the commit.
+ROOT_ADAPTER = (
+    ("scope", "repository"),
+    ("source", "reviewer-root"),
+    ("source_root", "C:\\src\\conventions repo"),
+    ("source_commit", "b" * 40),
+)
+ROOT_MESSAGE = "Review adapter names a source_root exactly when its source is reviewer-root"
+ROOT_FIELD = "record.review.adapter.source_root"
 # What an analyzer without its fields is refused with, after its path.
 ANALYZER_MISSING = "must be an object with fields coverage, rule, tool, found an object without them"
 NOT_HEX = "a string with a character that is not a lowercase hexadecimal digit"
@@ -390,6 +399,11 @@ ACCEPTED: list[tuple[str, Callable[[], dict[str, Any]], Mutation]] = [
             ),
         )
         for source in ("trusted-ref", "base", "default-branch")
+    ),
+    (
+        "a repository reviewer read from its reviewer root",
+        _record,
+        _chain(*(_set((*ADAPTER, key), value) for key, value in ROOT_ADAPTER)),
     ),
     (
         "no findings",
@@ -962,6 +976,38 @@ REJECTED: list[tuple[str, Mutation, type[Exception], str]] = [
         R,
         "Review adapter source is invalid for a repository reviewer",
     ),
+    (
+        "a source_root with another source",
+        _chain(
+            *(_set((*ADAPTER, key), value) for key, value in ROOT_ADAPTER), _set((*ADAPTER, "source"), "trusted-ref")
+        ),
+        R,
+        ROOT_MESSAGE,
+    ),
+    (
+        "a reviewer-root source without its source_root",
+        _chain(*(_set((*ADAPTER, key), value) for key, value in ROOT_ADAPTER if key != "source_root")),
+        R,
+        ROOT_MESSAGE,
+    ),
+    ("a source_root on a record that names no source", _set((*ADAPTER, "source_root"), "C:\\src"), R, ROOT_MESSAGE),
+    *(
+        (
+            f"a source_root {value!r}",
+            _chain(
+                *(_set((*ADAPTER, key), item) for key, item in ROOT_ADAPTER), _set((*ADAPTER, "source_root"), value)
+            ),
+            F,
+            f"{ROOT_FIELD} must be a non-empty trimmed single-line string, found {found}",
+        )
+        for value, found in (
+            ("", "an empty string"),
+            (" C:\\src", "a string with whitespace around it"),
+            ("C:\\a\nb", "a string of more than one line"),
+            (1, "integer 1"),
+            (None, "null"),
+        )
+    ),
     *_blank_and_non_string((*ADAPTER, "name")),
     *_blank_and_non_string((*ADAPTER, "reviewer")),
     (
@@ -1430,6 +1476,13 @@ STAGES: list[tuple[str, Mutation, type[Exception], str]] = [
         _wrong("record.review.adapter.source", ADAPTER_SOURCE_KIND, "head"),
     ),
     ("adapter source scope", _set((*ADAPTER, "source"), "base"), R, GENERIC_SOURCE),
+    (
+        "adapter source_root kind",
+        _set((*ADAPTER, "source_root"), 1),
+        F,
+        f"{ROOT_FIELD} must be a non-empty trimmed single-line string, found integer 1",
+    ),
+    ("adapter source_root without its source", _set((*ADAPTER, "source_root"), "C:\\src"), R, ROOT_MESSAGE),
     ("adapter name", _set((*ADAPTER, "name"), ""), F, _wrong("record.review.adapter.name", TEXT, "")),
     ("adapter reviewer", _set((*ADAPTER, "reviewer"), ""), F, _wrong("record.review.adapter.reviewer", TEXT, "")),
     (

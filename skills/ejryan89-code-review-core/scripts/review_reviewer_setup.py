@@ -15,7 +15,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-cor
 import file_presence
 from flat_text import flat_text
 from git_client import output_lines
-from review_config import default_config_path, load_config, validate_repository_identity
+from review_config import (
+    ConfigurationError,
+    default_config_path,
+    load_config,
+    reviewer_root_commit,
+    validate_repository_identity,
+)
 from review_guard import RUN_PREFIX
 from review_io import atomic_write_text
 from review_operation import validate_canary_pull
@@ -104,6 +110,24 @@ def _default_branch_tip(checkout: Path, services: Services) -> tuple[str, str]:
     return branch, tip
 
 
+def _reviewer_root(reviewer: dict[str, Any]) -> Path | None:
+    """The other checkout a repository reviewer's files are read from, when its configuration names one."""
+    root = reviewer.get("reviewer_root")
+    return None if root is None else Path(root)
+
+
+def _root_commit(root: Path, ref: str, *, head: str, services: Services) -> str:
+    """The commit a reviewer root's trusted ref names, once the root is still a checkout's top folder and the ref
+    still resolves there, as configuration validation found them; never the reviewed pull request's head."""
+    try:
+        commit = reviewer_root_commit(root, ref, services.git)
+    except ConfigurationError as exc:
+        raise PipelineError(str(exc)) from exc
+    if commit == head.lower():
+        raise PipelineError(f"trusted_ref {ref} in reviewer_root {root} resolves to the pull-request head")
+    return commit
+
+
 def _resolve_reviewer_source(
     reviewer: dict[str, Any],
     *,
@@ -119,8 +143,18 @@ def _resolve_reviewer_source(
     A configured skill the base predates, with no trusted ref, is read from the default branch's tip instead
     (`default-branch`). None, with a note, when the tip lacks it too or is the pull request's head: the suite's
     generic reviewer then reviews the pull request, since the head never supplies its own reviewer.
+
+    A reviewer configured with a `reviewer_root` is read from that checkout at its trusted ref (`reviewer-root`), and
+    a file it lacks there fails the pull request, with no fallback.
     """
     head, base = pull["headRefOid"].lower(), pull["baseRefOid"]
+    root = _reviewer_root(reviewer)
+    if root is not None:
+        commit = _root_commit(root, reviewer["trusted_ref"], head=head, services=services)
+        resolved = resolve_reviewer(
+            reviewer, checkout=root, commit=commit, config_path=config_path, repository=repository, runner=services.git
+        )
+        return "reviewer-root", commit, resolved
     source = "trusted-ref" if reviewer["trusted_ref"] else "base"
     commit = resolve_reviewer_commit(checkout, reviewer["trusted_ref"] or base, head_sha=head, runner=services.git)
     resolve = functools.partial(
@@ -211,13 +245,15 @@ def _materialize_reviewer(
     # A specialists manifest that lists agent-delegation keeps its specialists off an inline review.
     negotiate_capabilities(runtime, manifest["required_capabilities"], dispatch=dispatch)
     reviewer_root = run / "reviewer"
+    other = _reviewer_root(reviewer)
     hashes = materialize_reviewer(
-        checkout,
+        checkout if other is None else other,
         reviewer_commit,
         manifest,
         reviewer_root,
         runner=services.git,
-        guideline_commit=pull["baseRefOid"],
+        # The base is a commit of the reviewed repository, which another checkout's guidelines are never read from.
+        guideline_commit=pull["baseRefOid"] if other is None else None,
         local_root=resolved.local_root,
     )
     adapter = {
@@ -226,6 +262,7 @@ def _materialize_reviewer(
         "source": source,
         "source_commit": reviewer_commit,
         "source_hashes": hashes,
+        **({} if other is None else {"source_root": str(other)}),
     }
     return kind, adapter, reviewer_root, manifest["entrypoint"] if kind == "entrypoint" else None, dispatch
 
@@ -287,7 +324,11 @@ def _repository_reviewer(
 
 
 def _reviewer_commit(checkout: Path, reviewer: dict[str, Any], ref: str | None, services: Services) -> str:
-    """The commit a reviewer is read from without a pull request: --ref, the trusted ref, or origin's default."""
+    """The commit a reviewer is read from without a pull request: --ref, the trusted ref, or origin's default, in its
+    reviewer root when it names one, which always has a trusted ref."""
+    root = _reviewer_root(reviewer)
+    if root is not None:
+        return _root_commit(root, ref or reviewer["trusted_ref"], head="", services=services)
     candidate = ref or reviewer["trusted_ref"] or "refs/remotes/origin/HEAD"
     try:
         return resolve_reviewer_commit(checkout, candidate, head_sha="", runner=services.git)
@@ -316,7 +357,7 @@ def inspect_reviewer(
     lines = [f"REVIEWER {reviewer['id']} {repository} commit={commit}"]
     if reviewer["manifest_path"]:
         return [*lines, f"MANIFEST repository {reviewer['manifest_path']}", "VERDICT manifest-configured"]
-    inspection = inspect_configured_skill(checkout, commit, reviewer["skill"], services.git)
+    inspection = inspect_configured_skill(_reviewer_root(reviewer) or checkout, commit, reviewer["skill"], services.git)
     lines.append(f"SKILL {inspection.skill}")
     lines.append("TOOLS " + (", ".join(inspection.tools) if inspection.tools is not None else "inherited (all)"))
     lines.append(f"DELEGATES {inspection.delegates} {inspection.reason}")
@@ -482,15 +523,18 @@ def validate_reviewer(
                 continue
             commit, manifest = target.commit, target.resolved.manifest
             root = scratch / f"reviewer-{index}"
+            other = _reviewer_root(reviewer)
             hashes = materialize_reviewer(
-                checkout,
+                checkout if other is None else other,
                 commit,
                 manifest,
                 root,
                 runner=services.git,
-                guideline_commit=pull["baseRefOid"] if pull else None,
+                guideline_commit=pull["baseRefOid"] if pull and other is None else None,
                 local_root=target.resolved.local_root,
             )
+            # The reviewed repository's own commit: the reviewer's, unless the reviewer is another checkout's.
+            reviewed = commit if other is None else _reviewed_commit(checkout, pull, services)
             kind = "specialists" if manifest.get("kind") == "specialists" else "entrypoint"
             excluded = _excluded_reviewer_files(manifest, exclude)
             if excluded:
@@ -504,14 +548,16 @@ def validate_reviewer(
                     f"REVIEWER {manifest['id']} {kind} source={target.resolved.source} {target.resolved.location} "
                     f"commit={commit}"
                 )
+                lines.extend([] if other is None else [f"ROOT {other}"])
                 lines.append(f"FILES {len(hashes)} found")
-                lines.extend(_unmatched_patterns(manifest, repository_files(checkout, commit, services.git)))
+                # Include patterns are written for the reviewed repository's layout, wherever the reviewer comes from.
+                lines.extend(_unmatched_patterns(manifest, repository_files(checkout, reviewed, services.git)))
             # Only an entrypoint reviewer can run on the Copilot CLI host, whose snapshot is whole.
             dispatch = choose_dispatch(services.resolve_runtime(runtime, host), kind) if kind == "entrypoint" else None
             reads = _route_reads(dispatch, manifest, changed, renamed)
             lines.extend(pull_lines)
             if pull is None:
-                lines.append(_snapshot_line(checkout, commit, [], services, exclude, reads, suffixes))
+                lines.append(_snapshot_line(checkout, reviewed, [], services, exclude, reads, suffixes))
                 continue
             lines.append(_snapshot_line(checkout, pull["headRefOid"], changed, services, exclude, reads, suffixes))
             if kind == "entrypoint":
@@ -534,6 +580,17 @@ def validate_reviewer(
             lines.extend(_routing_lines(manifest, changed, renamed, routing))
     lines.append("VALID")
     return lines
+
+
+def _reviewed_commit(checkout: Path, pull: dict[str, Any] | None, services: Services) -> str:
+    """The reviewed repository's commit validate-reviewer measures for a reviewer read from another checkout: the pull
+    request's base, or without one origin's default branch as the checkout records it."""
+    if pull is not None:
+        return str(pull["baseRefOid"]).lower()
+    try:
+        return resolve_reviewer_commit(checkout, "refs/remotes/origin/HEAD", head_sha="", runner=services.git)
+    except RuntimeContractError as exc:
+        raise PipelineError(f"Cannot resolve origin's default branch in {checkout}: {exc}") from exc
 
 
 def _pull_changes(
@@ -688,7 +745,7 @@ def _validation_targets(
         commit = _reviewer_commit(checkout, reviewer, ref, services)
         resolved = resolve_reviewer(
             reviewer,
-            checkout=checkout,
+            checkout=_reviewer_root(reviewer) or checkout,
             commit=commit,
             config_path=config_path,
             repository=repository,

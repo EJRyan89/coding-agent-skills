@@ -248,6 +248,26 @@ class ReadTests(unittest.TestCase):
             ["owner/repo"], self.records, {"owner/repo": self.checkout} if checkouts is None else checkouts
         )
 
+    def test_a_reviewer_read_from_another_checkout_supplies_none_of_the_repository_s_guidance(self) -> None:
+        # The checkout holds docs/conventions.md, but the later record read it from a reviewer root, another
+        # checkout the repository cannot change; it still stands as the reviewer's latest, so the earlier record's
+        # files are not taken for the reviewer's current guidance.
+        outside = reviewed("style", "2026-01-04T00:00:00+00:00", {"docs/conventions.md": CONVENTIONS}, "c" * 40)
+        outside["review"]["adapter"].update({"source": "reviewer-root", "source_root": "/src/conventions"})
+        self.records[Path("c.json")] = outside
+        self.assertEqual(
+            {"owner/repo": {"security": sorted(self.files), "style": []}},
+            {
+                repository: {name: sorted(source.hashes) for name, source in by_name.items()}
+                for repository, by_name in rg.reviewer_sources(["owner/repo"], self.records).items()
+            },
+        )
+        self.assertEqual({"owner/repo": sorted(self.files)}, rg.guidance_files(["owner/repo"], self.records))
+        del self.records[Path("a.json")]
+        guidance = self.read()
+        self.assertEqual({"owner/repo": []}, guidance.files)
+        self.assertEqual([], guidance.lines)
+
     def test_each_repository_s_candidates_and_stopped_search_are_kept_beside_the_others(self) -> None:
         # Two repositories with the same guidance: the second's search adds to the first's, never replaces it.
         both = {

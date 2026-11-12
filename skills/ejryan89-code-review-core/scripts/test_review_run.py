@@ -198,13 +198,20 @@ def test_a_run_prepared_before_every_optional_field_loads_without_them(tmp_path:
     assert state == review_run.load_run(tmp_path)
     assert set(OPTIONAL_FIELDS) == review_run.RUN_OPTIONAL_FIELDS
     assert {"model", "effort", "reads"} == review_run.ROLE_OPTIONAL_FIELDS
-    assert {"source", "source_commit", "source_hashes"} == review_run.ADAPTER_OPTIONAL_FIELDS
+    assert {"source", "source_root", "source_commit", "source_hashes"} == review_run.ADAPTER_OPTIONAL_FIELDS
     assert {"prior_record"} == review_run.FIXTURE_OPTIONAL_FIELDS
 
 
 # A fixture canary's paths as prepare writes them for a re-review, and as a run prepared before the copy of the prior
 # record was kept has them.
 FIXTURE = {"directory": "/fixtures/one", "prior": "/records/v1.json", "prior_record": "/run/prior-record.json"}
+
+
+def test_a_reviewer_read_from_another_checkout_loads_with_its_root(tmp_path: Path) -> None:
+    state = prepared_state()
+    state["adapter"] = {**state["adapter"], "source": "reviewer-root", "source_root": "C:\\src\\conventions repo"}
+    write_run(tmp_path, state)
+    assert state == review_run.load_run(tmp_path)
 
 
 @pytest.mark.parametrize(
@@ -293,9 +300,14 @@ DAMAGED = [
     ),
     pytest.param(
         _set("adapter", "source", value="head"),
-        'run.adapter.source must be one of "generic", "trusted-ref", "base", "default-branch", "generic-fallback", '
-        'found string "head"',
+        'run.adapter.source must be one of "generic", "trusted-ref", "reviewer-root", "base", "default-branch", '
+        '"generic-fallback", found string "head"',
         id="adapter-source",
+    ),
+    pytest.param(
+        _set("adapter", "source_root", value="C:\\a\nb"),
+        "run.adapter.source_root must be a non-empty trimmed single-line string, found a string of more than one line",
+        id="adapter-root",
     ),
     pytest.param(
         _set("adapter", "source_commit", value="F" * 40),

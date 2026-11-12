@@ -42,7 +42,8 @@ REPO = ("repositories", "owner/repo")
 REVIEWER = (*REPO, "reviewer")
 FIELD = "repositories.owner/repo"
 GENERIC_MESSAGE = (
-    f"{FIELD}.reviewer generic scope must use id 'generic' without manifest_path, skill, manifest, or trusted_ref"
+    f"{FIELD}.reviewer generic scope must use id 'generic' without manifest_path, skill, manifest, trusted_ref, or "
+    "reviewer_root"
 )
 MARKERS_MESSAGE = "dashboard markers must be distinct"
 SHARE_MESSAGE = "re_review_scope.full_share must be a number above 0 and at most 1"
@@ -104,6 +105,7 @@ def _expected() -> dict[str, Any]:
                     "manifest_path": None,
                     "skill": None,
                     "manifest": None,
+                    "reviewer_root": None,
                 },
                 "checkout_path": None,
                 "snapshot_exclude": [],
@@ -157,6 +159,7 @@ def _full_config() -> dict[str, Any]:
                     "scope": "repository",
                     "skill": "skills/review",
                     "manifest": native("C:/manifests/./tools.json"),
+                    "reviewer_root": None,
                 },
                 "checkout_path": native("C:\\src\\tools"),
             },
@@ -212,6 +215,7 @@ def _full_expected() -> dict[str, Any]:
                     "manifest_path": None,
                     "skill": ".claude/skills/review",
                     "manifest": True,
+                    "reviewer_root": None,
                 },
                 "checkout_path": native("C:\\src\\repo"),
                 "snapshot_exclude": [],
@@ -227,6 +231,7 @@ def _full_expected() -> dict[str, Any]:
                     "manifest_path": None,
                     "skill": "skills/review",
                     "manifest": native("C:\\manifests\\tools.json"),
+                    "reviewer_root": None,
                 },
                 "checkout_path": native("C:\\src\\tools"),
                 "snapshot_exclude": [],
@@ -242,6 +247,7 @@ def _full_expected() -> dict[str, Any]:
                     "manifest_path": "review/manifest.json",
                     "skill": None,
                     "manifest": None,
+                    "reviewer_root": None,
                 },
                 "checkout_path": native("C:\\src\\committed"),
                 "snapshot_exclude": [],
@@ -257,6 +263,7 @@ def _full_expected() -> dict[str, Any]:
                     "manifest_path": None,
                     "skill": None,
                     "manifest": None,
+                    "reviewer_root": None,
                 },
                 "checkout_path": native("D:\\src\\generic"),
                 "snapshot_exclude": [],
@@ -387,6 +394,7 @@ def _repository_expected(**reviewer: Any) -> Mutation:
         "manifest_path": None,
         "skill": "skills/review",
         "manifest": None,
+        "reviewer_root": None,
     }
     fields.update(reviewer)
     return _set(
@@ -572,6 +580,31 @@ ACCEPTED: list[tuple[str, Mutation, Mutation]] = [
         "repository reviewer with a one-character id",
         _chain(REPOSITORY_REVIEWER, _set((*REVIEWER, "id"), "z")),
         _repository_expected(id="z"),
+    ),
+    (
+        "skill read from a reviewer root at a trusted ref",
+        _chain(
+            REPOSITORY_REVIEWER,
+            _set((*REVIEWER, "trusted_ref"), "refs/heads/main"),
+            _set((*REVIEWER, "reviewer_root"), native("C:/src/rules/../conventions/")),
+        ),
+        _repository_expected(trusted_ref="refs/heads/main", reviewer_root=native("C:\\src\\conventions")),
+    ),
+    (
+        "committed manifest read from a reviewer root",
+        _chain(
+            MANIFEST_PATH_REVIEWER,
+            _set((*REVIEWER, "trusted_ref"), "v1"),
+            _set((*REVIEWER, "reviewer_root"), native("D:\\conventions")),
+        ),
+        _repository_expected(
+            manifest_path="review/manifest.json", skill=None, trusted_ref="v1", reviewer_root=native("D:\\conventions")
+        ),
+    ),
+    (
+        "generic reviewer with an explicit null reviewer root",
+        _set((*REVIEWER, "reviewer_root"), None),
+        _chain(),
     ),
     (
         "committed manifest with a trusted ref",
@@ -1095,7 +1128,45 @@ REJECTED: list[Case] = [
             ("manifest", True),
             ("manifest", "C:\\manifest.json"),
             ("trusted_ref", "main"),
+            ("reviewer_root", native("C:\\src\\conventions")),
         ]
+    ],
+    (
+        "generic scope with a reviewer root and its trusted ref",
+        _chain(_set((*REVIEWER, "trusted_ref"), "main"), _set((*REVIEWER, "reviewer_root"), native("C:\\src\\rules"))),
+        C,
+        GENERIC_MESSAGE,
+    ),
+    (
+        "reviewer root without a trusted ref",
+        _chain(REPOSITORY_REVIEWER, _set((*REVIEWER, "reviewer_root"), native("C:\\src\\conventions"))),
+        C,
+        f"{FIELD}.reviewer sets reviewer_root, so it needs trusted_ref, the ref its files are read at",
+    ),
+    (
+        "reviewer root and a committed manifest without a trusted ref",
+        _chain(MANIFEST_PATH_REVIEWER, _set((*REVIEWER, "reviewer_root"), native("C:\\src\\conventions"))),
+        C,
+        f"{FIELD}.reviewer sets reviewer_root, so it needs trusted_ref, the ref its files are read at",
+    ),
+    (
+        "reviewer root a relative path",
+        _chain(
+            REPOSITORY_REVIEWER,
+            _set((*REVIEWER, "trusted_ref"), "main"),
+            _set((*REVIEWER, "reviewer_root"), "conventions"),
+        ),
+        C,
+        f"{FIELD}.reviewer.reviewer_root must be {ABSOLUTE_PATH}",
+    ),
+    *[
+        (
+            f"reviewer root {value!r}",
+            _chain(REPOSITORY_REVIEWER, _set((*REVIEWER, "reviewer_root"), value)),
+            F,
+            _wrong(f"{FIELD}.reviewer.reviewer_root", "a non-empty string or null", value),
+        )
+        for value in ["", 1, True, [native("C:\\src")]]
     ],
     (
         "generic scope with manifest False",
@@ -2153,10 +2224,44 @@ MANIFEST_PATH_STAGES: list[Case] = [
         f"{FIELD}.checkout_path is required for a repository reviewer",
     ),
 ]
+# The skill reviewer read from another checkout at its trusted ref.
+ROOT_REVIEWER = _chain(
+    REPOSITORY_REVIEWER,
+    _set((*REVIEWER, "trusted_ref"), "refs/heads/main"),
+    _set((*REVIEWER, "reviewer_root"), native("C:\\src\\conventions")),
+)
+ROOT_STAGES: list[Case] = [
+    (
+        "reviewer_root not a string",
+        _set((*REVIEWER, "reviewer_root"), 1),
+        F,
+        _wrong(f"{FIELD}.reviewer.reviewer_root", "a non-empty string or null", 1),
+    ),
+    (
+        "reviewer_root relative",
+        _set((*REVIEWER, "reviewer_root"), "relative"),
+        C,
+        f"{FIELD}.reviewer.reviewer_root must be {ABSOLUTE_PATH}",
+    ),
+    (
+        "reviewer_root without a trusted ref",
+        _delete((*REVIEWER, "trusted_ref")),
+        C,
+        f"{FIELD}.reviewer sets reviewer_root, so it needs trusted_ref, the ref its files are read at",
+    ),
+    ("skill unsafe", _set((*REVIEWER, "skill"), "../x"), C, f"{FIELD}.reviewer.skill is unsafe"),
+    (
+        "checkout required",
+        _delete((*REPO, "checkout_path")),
+        C,
+        f"{FIELD}.checkout_path is required for a repository reviewer",
+    ),
+]
 ORDERED: list[tuple[str, Callable[[], dict[str, Any]], list[Case]]] = [
     ("generic", _config, STAGES),
     ("skill", lambda: REPOSITORY_REVIEWER(_config()), SKILL_STAGES),
     ("manifest_path", lambda: MANIFEST_PATH_REVIEWER(_config()), MANIFEST_PATH_STAGES),
+    ("reviewer_root", lambda: ROOT_REVIEWER(_config()), ROOT_STAGES),
 ]
 
 # Refusals whose check a stage already orders, with another value or field name in the message. A field of the wrong

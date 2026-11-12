@@ -1098,6 +1098,15 @@ class LedgerReportTests(unittest.TestCase):
                 self.assertIs(review, validate_record(review))
                 report = render_markdown(review, record_payload_hash="0" * 64, prior_records=[first, second])
                 self.assertIn(f"| **Adapter** | `generic` ({scope}) |\n| **Reviewer source** | {line} |\n", report)
+        # A reviewer read from another checkout names that checkout beside the commit.
+        adapter.update({"scope": "repository", "source": "reviewer-root", "source_commit": commit})
+        adapter["source_root"] = "/src/conventions repo"
+        self.assertIs(review, validate_record(review))
+        report = render_markdown(review, record_payload_hash="0" * 64, prior_records=[first, second])
+        self.assertIn(
+            "| **Reviewer source** | the configured trusted ref of `/src/conventions repo`, at `0123456789ab` |\n",
+            report,
+        )
 
     def test_an_earlier_record_without_snapshot_or_reads_reads_as_absent(self) -> None:
         first, second, third = review_fixture.commit_fixture(self.archive)
