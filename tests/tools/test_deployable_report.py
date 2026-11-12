@@ -781,6 +781,42 @@ class DeployableReportTests(unittest.TestCase):
                 self.assertEqual(2, raised.exception.code)
                 self.assertIn("the following arguments are required", errors.getvalue())
 
+    def test_help_and_a_usage_error_never_read_a_relative_home_and_a_command_refuses_it(self) -> None:
+        variable = "USERPROFILE" if platform_support.WINDOWS else "HOME"
+        with mock.patch.dict("os.environ", {variable: "relative home"}):
+            for arguments in (["--help"], ["layout", "--help"], ["pin", "--help"]):
+                with (
+                    self.subTest(arguments=arguments),
+                    contextlib.redirect_stdout(io.StringIO()),
+                    self.assertRaises(SystemExit) as raised,
+                ):
+                    report.main(arguments)
+                self.assertEqual(0, raised.exception.code)
+            errors = io.StringIO()
+            with (
+                contextlib.redirect_stderr(errors),
+                self.assertRaises(SystemExit) as raised,
+            ):
+                report.main(["layout", "--results", str(self.results_file)])
+            self.assertEqual(2, raised.exception.code)
+            self.assertIn("error: the following arguments are required: --label", errors.getvalue())
+            code, output = self.run_main("layout", "--label", "first", "--results", str(self.results_file))
+        self.assertEqual(1, code, output)
+        self.assertTrue(output.startswith(f"ERROR: {variable}"), output)
+        self.assertFalse(self.results_file.exists())
+        # The home given on the command line is read as given, whatever the variable holds.
+        with mock.patch.dict("os.environ", {variable: "relative home"}):
+            code, output = self.run_main(
+                "leftovers",
+                "--results",
+                str(self.results_file),
+                "--home",
+                str(self.home),
+                "--source",
+                str(self.paths.source_dir),
+            )
+        self.assertNotIn(f"ERROR: {variable}", output)
+
     def test_pin_help_says_what_each_option_takes(self) -> None:
         output = io.StringIO()
         with contextlib.redirect_stdout(output), self.assertRaises(SystemExit):
