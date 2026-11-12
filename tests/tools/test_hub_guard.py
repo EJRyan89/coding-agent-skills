@@ -3107,7 +3107,8 @@ class ReadOnlyFormTests(GuardTestCase):
         self.assertIsNone(self.bash("git merge --ff-only origin/main", self.hub))
 
     def test_the_branch_row_deletes_any_local_branch_and_with_r_any_remote_tracking_ref_as_it_says(self) -> None:
-        # The guard holds no delete to a task's <kind>/<name> branch, and the row's reason says so (#2483).
+        # The guard holds no delete to a task's <kind>/<name> branch, since retirement deletes others too, and the row's
+        # reason says so.
         for command in ("git branch -D scratch", "git branch -d feat/demo", "git branch -r -d origin/feature"):
             with self.subTest(command=command):
                 self.assertIsNone(self.bash(command, self.hub))
