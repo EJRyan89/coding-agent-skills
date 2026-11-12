@@ -305,7 +305,7 @@ WINDOWS_LEG = "Windows"
 LEGS = (LINUX_LEG, WINDOWS_LEG)
 # The modules a module's behavior differs on Windows through by design: the platform seam, and the ejryan89-skill-core
 # modules CLAUDE.md names as its exceptions, which find a program, hold a process tree, probe a process, name a reserved
-# device, probe a link or a junction, key a path by its text, and hint how to install the PDF tool.
+# device, probe a link or a junction, key a path by its text, hint how to install the PDF tool, and hold a file lock.
 PLATFORM_MODULES = frozenset(
     {
         "platform_support",
@@ -316,6 +316,7 @@ PLATFORM_MODULES = frozenset(
         "link_probe",
         "path_keys",
         "pdf_tool",
+        "file_lock",
     }
 )
 # The values Python gives each platform its own of, which PLATFORM_TOKENS does not catalogue, since reading them is

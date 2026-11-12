@@ -898,8 +898,9 @@ class LockTests(DeployerTestCase):
             return lock.acquire(self.paths, probe)
 
     def test_no_deployment_takes_the_lock_while_another_reclaims_a_stale_one(self) -> None:
-        """#2658: A judges a dead PID's lock stale; B's whole acquire runs just before A removes or moves the stale
-        lock, and C's just after. Only A may hold the lock, so B and C are refused."""
+        """Two reclaimers must never both hold the lock: A judges a dead PID's lock stale; B's whole acquire runs just
+        before A removes or moves the stale lock, and C's just after. Only A may hold the lock, so B and C are
+        refused."""
         self.write_lock({"pid": 4242, "token": "stale-token", "start_time": 1})
 
         def probe(pid: int) -> platform_support.ProcessStatus:

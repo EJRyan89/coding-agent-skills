@@ -1504,10 +1504,10 @@ class SummaryFixtures(unittest.TestCase):
             "\n- On Linux, 4 workers ran for 10 of its 40 minutes; a mutant ran against the suites that executed its "
             "statement unmutated, fastest first, until one failed.\n"
             "- The Linux leg runs every module's mutants, and the Windows leg those of each module that is or imports "
-            "`deployer/platform_support.py`, `device_names`, `executable_locator`, `job_tree`, `link_probe`, "
-            "`path_keys`, `pdf_tool`, or `process_identity`, holds a `PLATFORM_ALLOWED` table, or reads a platform "
-            "name in any expression, such as `sys.platform`, `msvcrt`, `creationflags`, or `os.altsep`; a mutant "
-            "either leg killed counts as killed.\n\n"
+            "`deployer/platform_support.py`, `device_names`, `executable_locator`, `file_lock`, `job_tree`, "
+            "`link_probe`, `path_keys`, `pdf_tool`, or `process_identity`, holds a `PLATFORM_ALLOWED` table, or "
+            "reads a platform name in any expression, such as `sys.platform`, `msvcrt`, `creationflags`, or "
+            "`os.altsep`; a mutant either leg killed counts as killed.\n\n"
             "| Module | Legs | Changed lines | Mutants | Killed | Timed out | Timed out unconfirmed | Survived "
             "| Not reached | Not run | Errored | Kill ratio |\n|---|---|---|---|---|---|---|---|---|---|---|---|\n",
             text,

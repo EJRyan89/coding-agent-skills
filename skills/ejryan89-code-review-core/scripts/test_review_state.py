@@ -526,8 +526,8 @@ class ResourceFileLockTests(unittest.TestCase):
         return ProcessStatus(pid != 4242, 1)
 
     def test_no_session_takes_the_lock_while_another_reclaims_a_stale_one(self) -> None:
-        """#2658: A judges a dead PID's lock stale; B enters just before A moves the stale lock aside, and C just
-        after. Only A may hold the lock, so B and C wait and time out."""
+        """Two reclaimers must never both hold the lock: A judges a dead PID's lock stale; B enters just before A moves
+        the stale lock aside, and C just after. Only A may hold the lock, so B and C wait and time out."""
         self.stale_lock()
         outcomes: dict[str, str] = {}
         holders: list[ResourceLock] = []

@@ -61,7 +61,7 @@ class FileLockTests(unittest.TestCase):
 
     def test_the_lock_of_a_holder_that_is_killed_is_released_by_the_operating_system(self) -> None:
         child = subprocess.Popen(
-            [sys.executable, "-I", "-c", HOLDER, str(self.path)], stdout=subprocess.PIPE, text=True
+            [sys.executable, "-I", "-c", HOLDER, str(self.path)], stdout=subprocess.PIPE, text=True, encoding="utf-8"
         )
         self.addCleanup(child.wait)
         self.addCleanup(child.kill)

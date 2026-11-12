@@ -30,6 +30,11 @@ from .paths import Paths
 
 ProcessProbe = Callable[[int], platform_support.ProcessStatus]
 LOCK = "The deployment lock"
+# The presence reads here that read a path they cannot stat as nothing there, each with why that is the answer.
+PRESENCE_ALLOWED = {
+    "_abandoned_while_initializing": "None hands the record to _holder_info, which reads its metadata again and "
+    "refuses a stat or read that fails, naming the path",
+}
 # How long a run waits for the file lock another process holds before it refuses: long enough for a dry run's check,
 # which takes the lock for a moment, and for Windows, which may release a lock a little after its holder ends.
 LOCK_WAIT_SECONDS = 5.0
