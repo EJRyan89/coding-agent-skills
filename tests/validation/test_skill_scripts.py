@@ -1634,6 +1634,9 @@ class SkillScriptsFixtures(unittest.TestCase):
                 'PROGRAMS = path_programs("ruby")\n',
                 "skills/alpha/scripts/candidates.py": "import executable_locator\n\n"
                 'FOUND = executable_locator.find_executables("lua")\n',
+                # Its lookup that passes over a shell script finds the program the script runs too.
+                "skills/alpha/scripts/program.py": "from executable_locator import find_program\n\n"
+                'PROGRAM = find_program("tcl")\n',
                 # A command whose program the locator names by its path runs the program the command names.
                 "skills/alpha/scripts/located.py": "from bounded_process import run_bounded\n"
                 "from executable_locator import located_command\n\n"
@@ -1651,7 +1654,7 @@ class SkillScriptsFixtures(unittest.TestCase):
                     "skill alpha runs gh without declaring it in tools",
                     *(
                         f"skill alpha runs {name}, which a standard install lacks; see {doc}"
-                        for name in ("jq", "lua", "node", "perl", "rg", "ruby", "swift", "yq")
+                        for name in ("jq", "lua", "node", "perl", "rg", "ruby", "swift", "tcl", "yq")
                     ),
                 ],
                 skill_command_problems(root, {"copilot", "dotnet-format", "gh"}, {"git", "python"}),
