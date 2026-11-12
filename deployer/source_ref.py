@@ -21,7 +21,7 @@ from release_tags import TAGS, last_release
 
 from . import fsops, platform_support, tools
 from .arguments import usage_error
-from .errors import DeployError, see_recovery
+from .errors import DeployError, os_error, see_recovery
 from .source_commit import COMMIT_PATTERN
 
 # What --at accepts, and what the manifest records as source_ref: a branch, a tag, a commit name, or a revision
@@ -127,8 +127,13 @@ def resolve(source_dir: Path, ref: str) -> Pin:
     """
     check_ref(ref)
     shown = platform_support.normalize(source_dir)
-    # A .git whose stat fails is refused as no checkout: its False stops --at before anything runs, as git would.
-    if not (source_dir / ".git").exists():
+    # A .git whose stat fails is refused with its reason, never as no checkout. A .git file, which a linked worktree
+    # holds, and a link count as there: git itself then says whether they make a checkout.
+    try:
+        checkout = file_presence.is_occupied(source_dir / ".git")
+    except OSError as exc:
+        raise os_error(exc, "tell whether the source is a Git checkout") from exc
+    if not checkout:
         raise DeployError(f"ERROR: --at needs a Git checkout, and {shown} is not one.", AT_FROM_CLONE)
     # commit_of ends the options before the ref, so a ref is never read as an option even if the pattern above ever
     # let one through, and answers None only when git says the ref names no commit.
