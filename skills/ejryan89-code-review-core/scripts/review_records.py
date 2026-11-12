@@ -51,11 +51,13 @@ RECORD_SCHEMA_VERSION = 2
 READABLE_RECORD_VERSIONS = (1, RECORD_SCHEMA_VERSION)
 # Where the reviewer that ran came from, as its record's `review.adapter.source` says, with each one's scope: the
 # suite's generic reviewer the repository is configured with; a repository reviewer read at its trusted ref, at the pull
-# request's base, or at the default branch's tip because the base predates its review skill; or the generic reviewer
-# in place of a review skill that neither the base nor the tip could supply.
+# request's base, or at the default branch's tip because the base predates its review skill; a repository reviewer
+# read from another checkout, its `reviewer_root`, at its trusted ref; or the generic reviewer in place of a review
+# skill that neither the base nor the tip could supply.
 ADAPTER_SOURCES = {
     "generic": "generic",
     "trusted-ref": "repository",
+    "reviewer-root": "repository",
     "base": "repository",
     "default-branch": "repository",
     "generic-fallback": "generic",
@@ -324,6 +326,8 @@ class Adapter(TypedDict):
     protocol_version: int
     scope: str
     source: NotRequired[str]
+    # The checkout a `reviewer-root` reviewer was read from, and present with that source alone.
+    source_root: NotRequired[str]
     source_commit: str | None
     source_hashes: dict[str, str]
     reviewer: str
@@ -993,6 +997,8 @@ def build_record(
     # Absent from runs prepared before the source was recorded.
     if "source" in request["adapter"]:
         adapter["source"] = request["adapter"]["source"]
+    if "source_root" in request["adapter"]:
+        adapter["source_root"] = request["adapter"]["source_root"]
     record: ReviewRecord = {
         "schema_version": RECORD_SCHEMA_VERSION,
         "repository": request["repository"],
@@ -1154,6 +1160,7 @@ def describe_reviewer_source(adapter: Adapter) -> str:
     return {
         "generic": "the suite's generic reviewer",
         "trusted-ref": f"the configured trusted ref, at {commit}",
+        "reviewer-root": f"the configured trusted ref of {_code(adapter.get('source_root', ''))}, at {commit}",
         "base": f"the pull request's base, {commit}",
         "default-branch": f"the default branch's tip, {commit}, because the base predates the review skill",
         "generic-fallback": "the suite's generic reviewer, in place of a review skill the base predates",
@@ -1675,7 +1682,7 @@ def _validate_adapter(value: object) -> None:
     recorded have no `source`."""
     path = "record.review.adapter"
     fields = {"name", "protocol_version", "scope", "source_commit", "source_hashes", "reviewer", "status", "usage"}
-    adapter = READ.json_object(value, path, required=fields, optional={"source"})
+    adapter = READ.json_object(value, path, required=fields, optional={"source", "source_root"})
     if READ.integer(adapter["protocol_version"], f"{path}.protocol_version") != ADAPTER_PROTOCOL_VERSION:
         raise RecordError("Review adapter protocol is unsupported")
     scope = READ.one_of(adapter["scope"], f"{path}.scope", ("generic", "repository"))
@@ -1684,6 +1691,11 @@ def _validate_adapter(value: object) -> None:
         source = READ.one_of(adapter["source"], f"{path}.source", tuple(ADAPTER_SOURCES))
         if ADAPTER_SOURCES[source] != scope or (adapter["source_commit"] is None) != (scope == "generic"):
             raise RecordError(f"Review adapter source is invalid for a {scope} reviewer")
+    # The checkout a reviewer was read from, a single line of text, is named exactly when it was another one.
+    if "source_root" in adapter:
+        READ.string(adapter["source_root"], f"{path}.source_root", single_line=True, trimmed=True)
+    if ("source_root" in adapter) != (adapter.get("source") == "reviewer-root"):
+        raise RecordError("Review adapter names a source_root exactly when its source is reviewer-root")
     for field in ("name", "reviewer"):
         READ.string(adapter[field], f"{path}.{field}")
     READ.one_of(adapter["status"], f"{path}.status", ("complete", "partial", "failed"))

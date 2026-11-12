@@ -22,13 +22,16 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
+import file_presence
 import json_reader
 import json_writer
 from console import run_main
 from device_names import is_reserved_device_name
 from executable_locator import absolute_home
-from flat_text import LINE_UNSAFE, single_line
+from flat_text import LINE_UNSAFE, flat_text, single_line
+from git_client import GitClient, GitError, Runner, output_line, subprocess_runner
 from github_logins import LOGIN, is_login
+from path_keys import path_key
 from review_io import CONTENT_ERRORS, PersistenceError, atomic_write_json, read_json
 from review_vocabularies import SEVERITIES, Severity
 from typed_fields import FieldError, FieldReader, describe
@@ -106,7 +109,16 @@ MAX_SNAPSHOT_EXCLUDE_PATTERN_LENGTH = 200
 MAX_UNREVIEWED_SUFFIXES = 100
 MAX_UNREVIEWED_SUFFIX_LENGTH = 32
 UNREVIEWED_SUFFIX = re.compile(r"(?:\.[a-z0-9][a-z0-9_+-]*)+")
-REVIEWER_KEYS = {"id", "protocol_version", "trusted_ref", "scope", "manifest_path", "skill", "manifest"}
+REVIEWER_KEYS = {
+    "id",
+    "protocol_version",
+    "trusted_ref",
+    "scope",
+    "manifest_path",
+    "skill",
+    "manifest",
+    "reviewer_root",
+}
 DASHBOARD_KEYS = {"start_marker", "end_marker", "status_overrides", "author_names", "ignored_repositories"}
 # The repositories update-pr-dashboard's `collect` never names as untracked: each entry an `owner/repo` identity, or a
 # pattern of one whose owner and name are each matched on their own, ignoring case, where `*` stands for any run of
@@ -448,6 +460,7 @@ def _validate_reviewer(identity: str, reviewer_value: Any) -> dict[str, Any]:
     trusted_ref = READ.optional(READ.string, reviewer.get("trusted_ref"), f"{path}.trusted_ref")
     if trusted_ref is not None and trusted_ref.startswith("refs/pull/"):
         raise ConfigurationError(f"{field}.trusted_ref cannot be a pull ref")
+    reviewer_root = validate_absolute_path(reviewer.get("reviewer_root"), f"{field}.reviewer_root", nullable=True)
     scope = READ.one_of(reviewer.get("scope", "repository"), f"{path}.scope", ("generic", "repository"))
     manifest_path = READ.optional(READ.string, reviewer.get("manifest_path"), f"{path}.manifest_path")
     skill = READ.optional(READ.string, reviewer.get("skill"), f"{path}.skill")
@@ -459,11 +472,15 @@ def _validate_reviewer(identity: str, reviewer_value: Any) -> dict[str, Any]:
             raise READ.fail(exc.path, "true, a non-empty string, or null", exc.found) from None
     if scope == "generic":
         if reviewer_id != "generic" or any(
-            value is not None for value in (manifest_path, trusted_ref, skill, manifest)
+            value is not None for value in (manifest_path, trusted_ref, skill, manifest, reviewer_root)
         ):
             raise ConfigurationError(
-                f"{field} generic scope must use id 'generic' without manifest_path, skill, manifest, or trusted_ref"
+                f"{field} generic scope must use id 'generic' without manifest_path, skill, manifest, trusted_ref, or "
+                "reviewer_root"
             )
+    elif reviewer_root is not None and trusted_ref is None:
+        # Another checkout's working tree is whatever branch it has checked out, so it is read only at a pinned ref.
+        raise ConfigurationError(f"{field} sets reviewer_root, so it needs trusted_ref, the ref its files are read at")
     elif manifest_path is not None:
         # A manifest committed to the repository describes its reviewer on its own.
         if skill is not None or manifest is not None:
@@ -486,7 +503,53 @@ def _validate_reviewer(identity: str, reviewer_value: Any) -> dict[str, Any]:
         "manifest_path": manifest_path,
         "skill": skill,
         "manifest": manifest,
+        "reviewer_root": reviewer_root,
     }
+
+
+def reviewer_root_commit(root: Path, ref: str, runner: Runner = subprocess_runner) -> str:
+    """The commit a reviewer root's trusted ref names, once the root is the top folder of a Git checkout; the review
+    reads the root's files from that commit's objects, never from its working tree.
+
+    Raises ConfigurationError for a root that is missing or not a folder, a folder that is not a checkout's top (git
+    refuses it, or it is a folder inside another checkout, which git would otherwise read in its place), or a ref that
+    does not resolve to a commit there."""
+    try:
+        if not file_presence.is_directory(root):
+            raise ConfigurationError(f"reviewer_root {root} does not exist")
+    except file_presence.NotADirectory as exc:
+        raise ConfigurationError(f"reviewer_root {root} is not a folder") from exc
+    except OSError as exc:
+        raise ConfigurationError(f"reviewer_root {root} cannot be read: {flat_text(str(exc))}") from exc
+    client = GitClient(runner)
+    try:
+        top = output_line(client.output(["rev-parse", "--show-toplevel"], directory=root))
+    except GitError as exc:
+        raise ConfigurationError(f"reviewer_root {root} is not a Git checkout git can read: {exc}") from exc
+    if not top:
+        raise ConfigurationError(f"reviewer_root {root} is not a Git checkout git can read: it named no top folder")
+    if path_key(Path(top), resolve=True) != path_key(root, resolve=True):
+        raise ConfigurationError(f"reviewer_root {root} is not a Git checkout's top folder; its checkout is {top}")
+    try:
+        commit = client.commit_of(ref, directory=root)
+    except GitError as exc:
+        raise ConfigurationError(f"trusted_ref {ref} cannot be read in reviewer_root {root}: {exc}") from exc
+    if commit is None:
+        raise ConfigurationError(f"trusted_ref {ref} does not resolve to a commit in reviewer_root {root}")
+    return commit.lower()
+
+
+def check_reviewer_roots(config: dict[str, Any], runner: Runner = subprocess_runner) -> None:
+    """Each configured reviewer root is a Git checkout's top folder whose trusted ref resolves to a commit, as
+    `reviewer_root_commit` reads it; the first one that is not raises ConfigurationError naming its repository."""
+    for identity, entry in config["repositories"].items():
+        reviewer = entry["reviewer"]
+        if reviewer["reviewer_root"] is None:
+            continue
+        try:
+            reviewer_root_commit(Path(reviewer["reviewer_root"]), reviewer["trusted_ref"], runner)
+        except ConfigurationError as exc:
+            raise ConfigurationError(f"repositories.{identity}.reviewer: {exc}") from exc
 
 
 def _check_configured_repositories(
@@ -741,11 +804,12 @@ def _main(arguments: list[str] | None = None) -> int:
     try:
         if args.command == "validate":
             path = args.path or default_config_path()
-            load_config(path)
+            check_reviewer_roots(load_config(path))
             print(single_line(f"VALID {path}"))
         else:
             path = args.output or default_config_path()
             value = json_reader.loads(args.input.read_text(encoding="utf-8-sig"))
+            check_reviewer_roots(validate_config(value))
             write_config(value, path)
             print(single_line(f"WROTE {path}"))
         return 0

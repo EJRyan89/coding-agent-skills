@@ -200,7 +200,7 @@ ROLE_FIELDS, ROLE_OPTIONAL_FIELDS = _fields(RunRole)
 # The reviewer adapter the record will name. A run prepared before its source, commit, and hashes were recorded lacks
 # them, and the record then takes no source, no commit, and no hashes.
 ADAPTER_FIELDS = frozenset({"name", "scope"})
-ADAPTER_OPTIONAL_FIELDS = frozenset({"source", "source_commit", "source_hashes"})
+ADAPTER_OPTIONAL_FIELDS = frozenset({"source", "source_root", "source_commit", "source_hashes"})
 # A fixture canary's directory, the prior record it was given, and the run's copy of that record, which a run
 # prepared before the copy was kept lacks.
 FIXTURE_FIELDS = frozenset({"directory", "prior"})
@@ -389,6 +389,8 @@ def _read_adapter(value: object, path: str) -> dict[str, Any]:
     }
     if "source" in adapter:
         read["source"] = READ.one_of(adapter["source"], f"{path}.source", tuple(ADAPTER_SOURCES))
+    if "source_root" in adapter:
+        read["source_root"] = READ.string(adapter["source_root"], f"{path}.source_root", single_line=True, trimmed=True)
     if "source_commit" in adapter:
         read["source_commit"] = READ.optional(
             READ.hex_digest, adapter["source_commit"], f"{path}.source_commit", 40, 64

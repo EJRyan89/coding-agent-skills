@@ -554,8 +554,8 @@ def _result(findings: list[dict[str, Any]], dispositions: Sequence[dict[str, Any
 
 def record_fixtures() -> list[ReviewRecord]:
     """An initial review with every optional field; a re-review by a repository reviewer that judges each of its
-    entries with a different disposition, and the same re-review when it could not compare with v1; and a
-    re-review recorded before ledgers."""
+    entries with a different disposition, the same re-review by a reviewer read from another checkout, and the same
+    re-review when it could not compare with v1; and a re-review recorded before ledgers."""
     initial = build_record(
         _record_request(
             "initial",
@@ -680,6 +680,11 @@ def record_fixtures() -> list[ReviewRecord]:
         reviewed_at="2026-10-02T09:00:00+00:00",
         prior_ledger=initial["ledger"],
     )
+    # The same review by a reviewer read from another checkout, which the record names beside the commit.
+    rooted = copy.deepcopy(rereview)
+    rooted["review"]["adapter"].update(
+        {"source": "reviewer-root", "source_root": native("C:\\Repos\\Conventions"), "source_commit": "f" * 40}
+    )
     uncompared = copy.deepcopy(rereview)
     uncompared["review"]["scope"].update(
         {"used": "full", "reason": "v1 has no patch fingerprints", "files_changed": None, "lines_changed": None}
@@ -695,17 +700,18 @@ def record_fixtures() -> list[ReviewRecord]:
     older["schema_version"] = 1  # written before unreviewed files were recorded
     older["review"].update({"version": 2, "mode": "re-review"})
     older["prior_dispositions"] = [_disposition("F001", "addressed")]
-    return [initial, rereview, uncompared, older]
+    return [initial, rereview, rooted, uncompared, older]
 
 
 def config_fixtures() -> list[dict[str, Any]]:
     """Every field: a repository reviewer named by skill and a local manifest, one named by a committed manifest,
-    and generic reviewers with and without their optional fields. And a configuration with only what it needs."""
+    one read from another checkout, and generic reviewers with and without their optional fields. And a
+    configuration with only what it needs."""
     full = {
         "schema_version": 1,
         "default_repository_set": "primary",
         "repository_sets": {
-            "primary": ["example/one", "example/two", "example/five"],
+            "primary": ["example/one", "example/two", "example/five", "example/six"],
             "tracked": ["example/three", "example/four"],
         },
         "repositories": {
@@ -744,6 +750,18 @@ def config_fixtures() -> list[dict[str, Any]]:
                     "manifest": None,
                 },
                 "checkout_path": native("C:\\Repos\\Two"),
+            },
+            "example/six": {
+                "reviewer": {
+                    "id": "six-review",
+                    "protocol_version": 1,
+                    "scope": "repository",
+                    "skill": "review/SKILL.md",
+                    "manifest": True,
+                    "trusted_ref": "refs/heads/main",
+                    "reviewer_root": native("C:\\Repos\\Conventions"),
+                },
+                "checkout_path": native("C:\\Repos\\Six"),
             },
             "example/three": {"reviewer": {"id": "generic", "protocol_version": 1, "scope": "generic"}},
             "example/four": {
@@ -1793,7 +1811,13 @@ class FormatContractTest(unittest.TestCase):
             "record": [
                 Fixture(name, value, record)
                 for name, value in zip(
-                    ("initial record", "re-review record", "uncompared re-review record", "older record"),
+                    (
+                        "initial record",
+                        "re-review record",
+                        "re-review record from a reviewer root",
+                        "uncompared re-review record",
+                        "older record",
+                    ),
                     records,
                     strict=True,
                 )
