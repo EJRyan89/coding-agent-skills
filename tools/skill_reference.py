@@ -1,7 +1,7 @@
 """Keep docs/skills.md, the skill reference, in step with each skill's frontmatter and deploy metadata.
 
 Usage:
-  python tools/skill_reference.py           report every stale or missing part
+  python tools/skill_reference.py           report every stale or missing part, each on a STALE <part> line
   python tools/skill_reference.py --write   regenerate the generated blocks and add a section for each new skill
 
 docs/skills.md holds a generated summary table, a generated runtime support table, and one section per selectable
@@ -15,7 +15,7 @@ error, a directory that does not hold source.json and .claude/skills, or that li
 
 Exit status:
   0  the reference is current, or --write regenerated it
-  1  a stale or missing part, or a last line FAILED <reason>
+  1  a STALE line for a stale or missing part, or a last line FAILED <reason>
   2  a usage error, or a FAILED line when a skill or the reference cannot be read or written
 """
 
@@ -416,7 +416,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"FAILED {exc}", file=sys.stderr)
         return 2
     for problem in found:
-        print(problem)
+        print(f"STALE {problem}")
     return 1 if found else 0
 
 

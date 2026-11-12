@@ -306,10 +306,6 @@ DRIVERS: list[Driver] = [
         ),
         from_checkout=True,
         outputs=("{checkout}/docs/skills.md",),
-        refusal_gaps={
-            f"{MISSING} {{checkout}}/README.md": "#2638 a README that is gone is a stale part, a finding line led by "
-            "the file's path, not a FAILED or documented line"
-        },
     ),
     Driver(
         "tools/skill_shims.py",
@@ -318,10 +314,6 @@ DRIVERS: list[Driver] = [
         inputs=("{checkout}/.claude/skills/change-skill/SKILL.md",),
         from_checkout=True,
         outputs=("{checkout}/.agents",),
-        refusal_gaps={
-            MISSING: "#2638 a skill whose SKILL.md is gone is read as removed, so its shim is a stray file on a "
-            "finding line led by the shim's path, not a FAILED or documented line"
-        },
     ),
     Driver("tools/worktrees.py", "list", ("list",), prepare=hub, git=True),
     Driver(

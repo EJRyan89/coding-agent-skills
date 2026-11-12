@@ -11,7 +11,6 @@ from pathlib import Path
 
 from fault_table import (
     DIRECTORY,
-    GH_FAILURE,
     MISSING,
     OPENED_ONLY,
     REPOSITORY,
@@ -57,7 +56,7 @@ SCRIPT_TEXT = 'print("DEMO_OK")\n'
 # Why a fault is not run where it cannot apply, or where the command's contract makes it the empty case.
 ABSENT_CONFIGURATION = (
     "each input is a configuration file a repository may lack, and the audit reports which it found: a removed one "
-    "is a repository without it, as the docstring's RESULT INCONCLUSIVE (unconfigured) says"
+    "is a repository without it, and CLAUDE.md gone leaves an unconfigured one, the docstring's RESULT INCONCLUSIVE"
 )
 NO_MCP_CONFIGURATION = "a repository with no MCP configuration declares no server: the docstring's NO_SERVERS, exit 0"
 LISTED = (
@@ -71,19 +70,30 @@ NOT_READ = "locate finds a skill's SKILL.md by its stat and never reads it, so a
 MCP_TEXT = '{"mcpServers": {"remote": {"type": "http", "url": "https://example.invalid/mcp"}}}\n'
 
 
+CONFIGURED_FILES = {
+    "CLAUDE.md": "# Instructions\n\nRun the tests before a pull request.\n",
+    "AGENTS.md": "Read CLAUDE.md.\n",
+    ".mcp.json": MCP_TEXT,
+    ".claude/settings.json": '{"permissions": {"allow": []}}\n',
+    ".claude/skills/demo/SKILL.md": SKILL_TEXT,
+    ".claude/skills/demo/references/guide.md": GUIDE_TEXT,
+    ".claude/skills/demo/scripts/demo.py": SCRIPT_TEXT,
+}
+# The section that, beside CLAUDE.md itself, makes a repository's authority conforming, which the audit needs before it
+# runs any check that reads .mcp.json or .claude/settings.json.
+MAINTAINING = "\n## Maintaining AI Agent Config\n\nCLAUDE.md is the source.\n"
+
+
 def configured_repository(fixture: Fixture) -> None:
     """A repository with agent instructions, settings, an MCP configuration naming a remote server, and a skill."""
-    fixture.repository(
-        {
-            "CLAUDE.md": "# Instructions\n\nRun the tests before a pull request.\n",
-            "AGENTS.md": "Read CLAUDE.md.\n",
-            ".mcp.json": MCP_TEXT,
-            ".claude/settings.json": '{"permissions": {"allow": []}}\n',
-            ".claude/skills/demo/SKILL.md": SKILL_TEXT,
-            ".claude/skills/demo/references/guide.md": GUIDE_TEXT,
-            ".claude/skills/demo/scripts/demo.py": SCRIPT_TEXT,
-        }
-    )
+    fixture.repository(CONFIGURED_FILES)
+
+
+def conforming_repository(fixture: Fixture) -> None:
+    """configured_repository whose CLAUDE.md holds MAINTAINING, so the audit runs every check, those that read
+    .mcp.json and .claude/settings.json included. Where the authority is not conforming no check reads either file, so
+    neither one's read failure is a finding."""
+    fixture.repository({**CONFIGURED_FILES, "CLAUDE.md": CONFIGURED_FILES["CLAUDE.md"] + MAINTAINING})
 
 
 SKILL = "{work}/.claude/skills/demo"
@@ -711,11 +721,15 @@ def dashboard_fixture(fixture: Fixture) -> None:
 
 DRIVERS: list[Driver] = [
     # audit-ai-config and audit-skill
+    # The relay, which the skill runs: a file it cannot read is a FINDING line, its ERROR severity and its path in
+    # tab-separated fields. The --json report builds the same findings into one JSON document, whose lines lead with a
+    # key, never a word a line judge reads as a refusal. The repository's authority is conforming, so every check runs
+    # and reads the files only a check reads, .mcp.json and .claude/settings.json among them.
     Driver(
         AUDIT_AI_CONFIG,
         "",
-        ("--json", "--root", "{work}"),
-        prepare=configured_repository,
+        ("--relay", "--root", "{work}"),
+        prepare=conforming_repository,
         inputs=(
             "{work}/CLAUDE.md",
             "{work}/AGENTS.md",
@@ -723,11 +737,6 @@ DRIVERS: list[Driver] = [
             "{work}/.claude/settings.json",
         ),
         not_run={MISSING: ABSENT_CONFIGURATION},
-        refusal_gaps=dict.fromkeys(
-            (UNREADABLE, DIRECTORY, STAT_RAISES),
-            "#2638 the file it cannot read is an ERROR finding inside the JSON report, whose lines lead with a JSON "
-            "key, not a FAILED or documented line",
-        ),
     ),
     Driver(
         AUDIT_AI_CONFIG,
@@ -1240,10 +1249,6 @@ DRIVERS: list[Driver] = [
         inputs=(CONFIG,),
         gh=True,
         outputs=("{root}/collected",),
-        refusal_gaps={
-            GH_FAILURE: "#2638 gh's answer is named on its REPOSITORY_FAILED and UNTRACKED_CHECK_FAILED lines, which "
-            "the module's docstring does not name, and its FAILED line counts the repositories without the answer"
-        },
     ),
     Driver(
         DASHBOARD,

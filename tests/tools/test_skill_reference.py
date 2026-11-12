@@ -391,7 +391,7 @@ class SkillReferenceTestCase(unittest.TestCase):
         stdout = io.StringIO()
         with contextlib.redirect_stdout(stdout):
             code = skill_reference.main(["--root", str(self.root)])
-        self.assertEqual((1, "README.md does not exist\n"), (code, stdout.getvalue()))
+        self.assertEqual((1, "STALE README.md does not exist\n"), (code, stdout.getvalue()))
 
     def test_a_reference_or_readme_misplaced_or_unexamined_ends_the_run_as_failed_never_as_missing(self) -> None:
         not_a_file, denied = f"[Errno {errno.EISDIR}] not a file", f"[Errno {errno.EACCES}] Access is denied"

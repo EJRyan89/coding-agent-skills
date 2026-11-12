@@ -169,9 +169,10 @@ DRIVERS: list[Driver] = [
         configured_home,
         (CONFIG,),
         from_checkout=True,
-        refusal_gaps={
-            MISSING: "#2638 a configuration that is gone starts a fresh one, which the run's empty input cancels at "
-            "exit 130 after a Config: line names the file; no FAILED or documented line says the input ended"
+        not_run={
+            MISSING: "configure writes the configuration, so one that is not there is a first run, which asks for "
+            "each value, not a file it fails to read; tests/deployer/test_configure.py drives its prompts and the "
+            "end of input"
         },
     ),
     Driver(

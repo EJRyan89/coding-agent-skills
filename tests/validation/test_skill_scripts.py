@@ -2171,6 +2171,12 @@ PRINTS_JSON = f"prints JSON; print one fact per line; see {SCRIPT_RESULTS_DOC}"
             f"reports a failure through parser.error; print FAILED <reason> and exit 1; see {SCRIPT_RESULTS_DOC}",
             id="parser.error",
         ),
+        pytest.param(
+            "import argparse\ndef main(self):\n    self.cli = argparse.ArgumentParser()\n    try:\n        pass\n"
+            "    except OSError as e:\n        self.cli.error(str(e))\n",
+            f"reports a failure through parser.error; print FAILED <reason> and exit 1; see {SCRIPT_RESULTS_DOC}",
+            id="parser.error on an attribute bound to a parser",
+        ),
     ],
 )
 def test_script_contract_policy_reads_each_report_through_the_module_s_names(
@@ -2179,6 +2185,26 @@ def test_script_contract_policy_reads_each_report_through_the_module_s_names(
     write_fixture_tree(tmp_path, {"skills/alpha/scripts/run.py": source})
     problems = script_contract_problems(mark_skills(tmp_path))
     assert [breach] == [problem.split(" ", 1)[1] for problem in problems]
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        # Another attribute chain than the one bound to a parser is no parser.
+        "import argparse\ndef main(self):\n    self.cli = argparse.ArgumentParser()\n    try:\n        pass\n"
+        "    except OSError as e:\n        self.log.error(str(e))\n",
+        # A name bound to a parser does not make an attribute of the same last name one.
+        "import argparse\ndef main(self):\n    cli = argparse.ArgumentParser()\n    try:\n        pass\n"
+        "    except OSError as e:\n        self.cli.error(str(e))\n",
+        # A subscript binds no spelling, so a receiver that has none, such as a call's result, is no parser.
+        "import argparse\ndef main(holder):\n    holder[0] = argparse.ArgumentParser()\n    try:\n        pass\n"
+        "    except OSError as e:\n        made().error(str(e))\n",
+    ],
+    ids=["another attribute", "an attribute named as a parser's name", "a subscript target"],
+)
+def test_script_contract_policy_reads_no_other_receiver_as_a_parser(tmp_path: Path, source: str) -> None:
+    write_fixture_tree(tmp_path, {"skills/alpha/scripts/run.py": source})
+    assert script_contract_problems(mark_skills(tmp_path)) == []
 
 
 @pytest.mark.parametrize("label", ["zsh", "console", "dash", "fish", "cmd", "bat"])
