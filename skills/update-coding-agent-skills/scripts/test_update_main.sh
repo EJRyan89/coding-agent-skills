@@ -257,13 +257,25 @@ run_subject "$CLONE" main
 expect_failed "FAILED git status failed: " "status failed"
 expect_not_deployed "status failed"
 
-# A script that cannot make its temporary copy stops before any Git command.
+# A script that cannot make its temporary copy stops before any Git command. TMPDIR names a folder that does not
+# exist, and a mktemp wrapper does what macOS's mktemp does: given no template, it makes the file in a folder of its
+# own, the user's temporary folder there, ahead of TMPDIR. So the copy fails on every platform only while update.sh
+# names its files from a template under TMPDIR.
 begin_case 'no temporary copy'
 new_clone
+DARWIN_MKTEMP="$FIXTURE/darwin mktemp wrapper"
+mkdir -p "$DARWIN_MKTEMP" "$FIXTURE/darwin user temp"
+cat >"$DARWIN_MKTEMP/mktemp" <<EOF
+#!/usr/bin/env bash
+[ \$# -ne 0 ] || set -- "$FIXTURE/darwin user temp/tmp.XXXXXXXXXX"
+exec "$(command -v mktemp)" "\$@"
+EOF
+chmod +x "$DARWIN_MKTEMP/mktemp"
 export FAKE_DEPLOY_LOG="$FIXTURE/deploy-$case_number.log"
 : >"$FAKE_DEPLOY_LOG"
 set +e
-OUTPUT=$(TMPDIR="$FIXTURE/absent temporary directory" bash "$SUBJECT" "$CLONE" main 2>"$FIXTURE/stderr")
+OUTPUT=$(TMPDIR="$FIXTURE/absent temporary directory" PATH="$DARWIN_MKTEMP:$PATH" bash "$SUBJECT" "$CLONE" main \
+  2>"$FIXTURE/stderr")
 status=$?
 set -e
 expect_failed "FAILED cannot create a temporary copy of update.sh: " "no temporary copy"

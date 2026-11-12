@@ -152,13 +152,15 @@ SAFE: dict[str, set[str]] = {
     },
 }
 # The letters of each getopt-only build macOS installs that this suite holds safe, by Apple's manuals: env's `-`, which
-# clears the environment as -i does, its -0, -i, -u, and -v, nice's -n, and time's -p. BSD getopt reads a long option
-# word as a bundle of these letters, so a form is understood only where macOS's build refuses it or reads it alike.
+# clears the environment as -i does, its -0, -i, -u, and -v, nice's -n, stdbuf's -e, -i, and -o, and time's -p. BSD
+# getopt reads a long option word as a bundle of these letters, so a form is understood only where macOS's build
+# refuses it or reads it alike.
 BSD_SAFE: dict[str, set[str]] = {
     "env": {"-", "0", "i", "u", "v"},
     "chroot": set(),
     "nice": {"n"},
     "nohup": set(),
+    "stdbuf": {"e", "i", "o"},
     "time": {"p"},
 }
 # A getopt string's letters, each with whether it takes a value.
@@ -650,6 +652,8 @@ class MacosBuildTests(unittest.TestCase):
             ("nice", ["-5", "ls"], (1, [("n", "5")])),
             ("nice", ["--adjustment", "5", "ls"], None),
             ("nice", ["-n", "x", "ls"], None),
+            ("stdbuf", ["-oL", "-e", "0", "ls"], (3, [("o", "L"), ("e", "0")])),
+            ("stdbuf", ["--output=L", "ls"], None),
         ):
             with self.subTest(program=program, words=words):
                 self.assertEqual(expected, bsd_getopt(program, words))
@@ -848,6 +852,28 @@ class WindowsBuildTests(unittest.TestCase):
 
 
 class CatalogueTests(unittest.TestCase):
+    def test_each_wrapper_row_reads_every_option_its_gnu_and_rust_builds_list_as_they_take_it(self) -> None:
+        # command_wrappers.py places a wrapper's program past every option either build takes, so its row holds the
+        # union of the two catalogues, each option taking its value as both list it. findutils' getopt table takes
+        # --max-lines's value as optional, though its --help, which the catalogue records, writes it as taking one.
+        exceptions = {("xargs", "--max-lines"): "optional"}
+        kinds = {"value": option_reader.VALUE, "none": option_reader.NO_VALUE, "optional": option_reader.OPTIONAL_VALUE}
+        held = [name for name in COMMAND_WRAPPERS if name in catalogues() or name in catalogue(RUST_CATALOGUES)]
+        self.assertLessEqual({"env", "nice", "nohup", "stdbuf", "timeout", "chroot", "xargs"}, set(held))
+        for name in held:
+            with self.subTest(program=name):
+                table = COMMAND_WRAPPERS[name]
+                row = {f"-{letter}": kind for letter, kind in table.short.items()} | dict(table.long)
+                listed: dict[str, str] = {}
+                for path in (CATALOGUES, RUST_CATALOGUES):
+                    if name in catalogue(path):
+                        for option in listed_options(path, name):
+                            for each in (option.short, option.long):
+                                if each:
+                                    kind = exceptions.get((name, each), option.value)
+                                    self.assertEqual(kinds[kind], listed.setdefault(each, kinds[kind]), each)
+                self.assertEqual(listed, row)
+
     def test_every_program_the_guard_reads_options_of_has_a_catalogue_a_test_and_its_safe_options(self) -> None:
         tables = {**hub_guard.RUNNER_OPTIONS, **hub_guard.PROGRAM_OPTIONS}
         self.assertEqual(sorted(tables), sorted(set(catalogues()) - set(OTHER_BUILDS) - set(WINDOWS_BUILDS)))
@@ -955,14 +981,14 @@ class CatalogueTests(unittest.TestCase):
     def test_the_bsd_catalogue_holds_the_runners_macos_installs_each_with_its_provenance(self) -> None:
         tables = {**hub_guard.RUNNER_OPTIONS, **hub_guard.PROGRAM_OPTIONS}
         bsd = catalogue(BSD_CATALOGUES)
-        # Every program the guard reads whose macOS build is Apple's. Its tar is bsdtar, which the main catalogue holds,
-        # and its sudo is sudo 1.9, the build the main catalogue holds. macOS installs none of the others the guard
-        # reads: stdbuf and timeout (GNU coreutils), ionice, chrt, taskset, and setsid (util-linux), strace and ltrace
-        # (Linux tracers), unbuffer (expect), chronic (moreutils), doas (OpenBSD), and rg, whose builds anywhere are the
-        # ones the main catalogue holds.
-        self.assertEqual(["chroot", "env", "find", "nice", "nohup", "sort", "time", "xargs"], sorted(bsd))
+        # Every program the guard reads whose macOS build is Apple's, FreeBSD's stdbuf included. Its tar is bsdtar,
+        # which the main catalogue holds, and its sudo is sudo 1.9, the build the main catalogue holds. macOS installs
+        # none of the others the guard reads: timeout (GNU coreutils), ionice, chrt, taskset, and setsid (util-linux),
+        # strace and ltrace (Linux tracers), unbuffer (expect), chronic (moreutils), doas (OpenBSD), and rg, whose
+        # builds anywhere are the ones the main catalogue holds.
+        self.assertEqual(["chroot", "env", "find", "nice", "nohup", "sort", "stdbuf", "time", "xargs"], sorted(bsd))
         self.assertLessEqual(set(bsd), set(tables))
-        not_on_macos = {"stdbuf", "timeout", "ionice", "chrt", "taskset", "setsid", "strace", "ltrace", "unbuffer"}
+        not_on_macos = {"timeout", "ionice", "chrt", "taskset", "setsid", "strace", "ltrace", "unbuffer"}
         not_on_macos |= {"chronic", "doas", "rg"}
         self.assertEqual(set(tables), set(bsd) | {"tar", "sudo"} | not_on_macos)
         self.assertEqual({"chroot", "find", "sort", "tar", "time"}, set(MACOS_CHECKED))
@@ -973,9 +999,9 @@ class CatalogueTests(unittest.TestCase):
                 self.assertIn(f"{name}/", str(entry["how"]))
                 self.assertIn(" at apple-oss-distributions/", str(entry["how"]))
         # The options Apple's builds take and GNU's do not, each one the rows try against the guard. None is safe, so
-        # the guard is held to refusing every form of each: env's -P chooses the path its command is looked up on,
-        # xargs's -J builds its command, find's -f names a path to search, chroot's -u, -g, and -G choose who its
-        # command runs as, and time's -l and -h change only what it prints.
+        # the guard is held to refusing every form of each, and stdbuf's are GNU's letters alone: env's -P chooses the
+        # path its command is looked up on, xargs's -J builds its command, find's -f names a path to search, chroot's
+        # -u, -g, and -G choose who its command runs as, and time's -l and -h change only what it prints.
         bsd_only = {
             "chroot": {"-G", "-g", "-u"},
             "time": {"-h", "-l"},
@@ -1193,8 +1219,13 @@ class UsageOptionsTests(unittest.TestCase):
             "chroot: illegal option -- @\nusage: chroot [-g group] [-G group,group,...] [-u user] newroot [command]\n"
         )
         time = "time: illegal option -- @\nusage: time [-al] [-h | -p] [-o file] utility [argument ...]\n"
+        stdbuf = (
+            "stdbuf: illegal option -- @\n"
+            "usage: stdbuf [-e 0|L|B|<sz>] [-i 0|L|B|<sz>] [-o 0|L|B|<sz>] <cmd> [args ...]\n"
+        )
         for name, text, expected in (
             ("chroot", chroot, {Option(each, None, "value") for each in ("-g", "-G", "-u")}),
+            ("stdbuf", stdbuf, {Option(each, None, "value") for each in ("-e", "-i", "-o")}),
             (
                 "time",
                 time,
