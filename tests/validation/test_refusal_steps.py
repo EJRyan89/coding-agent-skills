@@ -6,6 +6,7 @@ with a step, unpacks its lines, is a cancellation, or is sanctioned beside the c
 
 from __future__ import annotations
 
+import ast
 import sys
 import tempfile
 import unittest
@@ -14,7 +15,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts"))
 
-from refusal_steps import refusal_step_problems
+from refusal_steps import COVERED, REFUSAL, UNFOLLOWED, _Refusals, refusal_step_problems
 from validation_support import write_fixture_tree
 
 SUFFIX = " ends at its ERROR line; add the step to take as its next line, or state why it needs none in STEP_ALLOWED"
@@ -141,6 +142,162 @@ class RefusalStepFixtures(unittest.TestCase):
                 "\n"
                 "def other():\n"
                 '    return print("ERROR: not a refusal")\n'
+            ),
+        }
+        self.assertEqual([], self.problems(files))
+
+    def test_unpacked_lines_that_follow_to_one_line_fail(self) -> None:
+        files = {
+            "deployer/unpacked.py": (
+                "from .errors import DeployError\n"  # 1
+                "\n"  # 2
+                'BARE = ("ERROR: Bare",)\n'  # 3
+                "\n"  # 4
+                "\n"  # 5
+                "def one_line():\n"  # 6
+                '    lines = ["ERROR: Bare"]\n'  # 7
+                "    raise DeployError(*lines)\n"  # 8: a name bound to a display of one line
+                "\n"  # 9
+                "\n"  # 10
+                "def literal():\n"  # 11
+                '    raise DeployError(*["ERROR: Bare"])\n'  # 12: an unpacked display of one line
+                "\n"  # 13
+                "\n"  # 14
+                "def held():\n"  # 15
+                "    raise DeployError(*BARE)\n"  # 16: a module-level display of one line
+                "\n"  # 17
+                "\n"  # 18
+                "def empty_step():\n"  # 19
+                '    raise DeployError("ERROR: Bare", *())\n'  # 20: an empty unpacking adds no step
+            ),
+        }
+        self.assertEqual(
+            [
+                "deployer/unpacked.py:8 DeployError in one_line" + SUFFIX,
+                "deployer/unpacked.py:12 DeployError in literal" + SUFFIX,
+                "deployer/unpacked.py:16 DeployError in held" + SUFFIX,
+                "deployer/unpacked.py:20 DeployError in empty_step" + SUFFIX,
+            ],
+            self.problems(files),
+        )
+
+    def test_unpacked_lines_that_end_with_a_step_or_re_raise_a_caught_refusal_pass(self) -> None:
+        files = {
+            "deployer/followed.py": (
+                "from .errors import DeployError\n"
+                "\n"
+                'REMEDY = ("Run configure again.",)\n'
+                "\n"
+                "\n"
+                "def built(stuck):\n"
+                '    lines: list[str] = [*(f"ERROR: {run}" for run in stuck), "Reconcile it by hand."]\n'
+                "    raise DeployError(*lines)\n"
+                "\n"
+                "\n"
+                "def nested():\n"
+                '    step = ("Retry.",)\n'
+                '    raise DeployError(*["ERROR: Nested", *step])\n'
+                "\n"
+                "\n"
+                "def held():\n"
+                '    raise DeployError("ERROR: Malformed", *REMEDY)\n'
+                "\n"
+                "\n"
+                "def re_raised():\n"
+                "    try:\n"
+                "        pass\n"
+                "    except (DeployError,) as exc:\n"
+                "        raise DeployError(*exc.lines) from exc\n"
+            ),
+        }
+        self.assertEqual([], self.problems(files))
+
+    def test_a_one_line_list_changed_in_place_or_shared_with_another_scope_is_not_read_as_one_line(self) -> None:
+        # Each list below is displayed with one line, so read from its display alone it would be refused; a subscript
+        # stored into, any list method that changes it, and a global declaration that lets another scope rebind it
+        # each make its display no longer the whole story, so the policy accepts the call unread, its named limit.
+        files = {
+            "deployer/changed.py": (
+                "from .errors import DeployError\n"
+                "\n"
+                'SHARED = ["ERROR: Shared"]\n'
+                "\n"
+                "\n"
+                "def stored():\n"
+                '    lines = ["ERROR: Stored"]\n'
+                '    lines[0] = "ERROR: Replaced"\n'
+                "    raise DeployError(*lines)\n"
+                "\n"
+                "\n"
+                "def extended():\n"
+                '    lines = ["ERROR: Extended"]\n'
+                '    lines.extend(["Retry."])\n'
+                "    raise DeployError(*lines)\n"
+                "\n"
+                "\n"
+                "def declared():\n"
+                "    global SHARED\n"
+                "    raise DeployError(*SHARED)\n"
+            ),
+        }
+        self.assertEqual([], self.problems(files))
+
+    def test_caught_lines_are_covered_only_from_a_refusal_caught_and_kept_in_the_same_scope(self) -> None:
+        refusals = {REFUSAL, "deployer.errors.Cancelled"}
+        for label, body, expected in (
+            ("caught", "    except DeployError as exc:\n        raise DeployError(*exc.lines)\n", COVERED),
+            (
+                "rebound",
+                "    except DeployError as exc:\n        exc = other()\n        raise DeployError(*exc.lines)\n",
+                UNFOLLOWED,
+            ),
+            ("bare", "    except:\n        raise DeployError(*exc.lines)\n", UNFOLLOWED),
+            (
+                "nested",
+                "    except DeployError as exc:\n        def later():\n            raise DeployError(*exc.lines)\n",
+                UNFOLLOWED,
+            ),
+        ):
+            with self.subTest(label):
+                source = f"from deployer.errors import DeployError\n\n\ndef read():\n    try:\n        pass\n{body}"
+                tree = ast.parse(source)
+                call = next(
+                    node
+                    for node in ast.walk(tree)
+                    if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "DeployError"
+                )
+                self.assertEqual(expected, _Refusals(tree, "deployer/read.py", refusals).ending(call))
+
+    def test_lines_the_policy_cannot_follow_are_its_named_limit_and_pass_unread(self) -> None:
+        # The limit the policy's docstring names: lines known only when the deployer runs are accepted unread, so each
+        # of these passes although some may end at the ERROR line.
+        files = {
+            "deployer/unfollowed.py": (
+                "from .errors import DeployError\n"
+                "\n"
+                "\n"
+                "def grown():\n"
+                '    lines = ["ERROR: Grown"]\n'
+                '    lines.append("Retry.")\n'
+                "    raise DeployError(*lines)\n"  # changed in place
+                "\n"
+                "\n"
+                "def rebound(flag):\n"
+                '    lines = ["ERROR: One", "Retry."]\n'
+                "    if flag:\n"
+                '        lines = ["ERROR: Two"]\n'
+                "    raise DeployError(*lines)\n"  # bound twice
+                "\n"
+                "\n"
+                "def given(lines):\n"
+                "    raise DeployError(*lines)\n"  # a parameter
+                "\n"
+                "\n"
+                "def wider():\n"
+                "    try:\n"
+                "        pass\n"
+                "    except Exception as exc:\n"
+                "        raise DeployError(*exc.lines) from exc\n"  # not caught as a refusal
             ),
         }
         self.assertEqual([], self.problems(files))

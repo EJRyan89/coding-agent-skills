@@ -121,6 +121,15 @@ class BodyEntriesTests(unittest.TestCase):
         self.assertEqual([], release_notes.body_entries("## Changes\n\n### A heading\n\n- Level: minor.\n"))
         self.assertEqual([], release_notes.body_entries(""))
 
+    def test_a_second_level_line_in_a_fence_stays_in_the_entry(self) -> None:
+        body = (
+            "## Upgrade note\n\n### Thing\n\n- Level: patch, because.\n- Contract: none\n- User action: run\n\n"
+            "```text\n## not a heading\n```\n\n## Validation\n"
+        )
+        entries = release_notes.body_entries(body)
+        self.assertEqual(1, len(entries))
+        self.assertTrue(entries[0].text.endswith("```text\n## not a heading\n```"), entries[0].text)
+
     def test_heading_whitespace_and_crlf_keep_the_same_section_boundaries(self) -> None:
         body = BODY.replace("## Upgrade note\r\n", "## Upgrade note \t\r\n")
         body = body.replace("## Validation\r\n", "## Validation \t\r\n")
@@ -562,6 +571,18 @@ class InsertSectionTests(unittest.TestCase):
         # Arabic-Indic three is a digit to `\d` but not to release_tags, so the section goes at the end, not above it.
         notes = f"{INTRO}\n## v\u0663.0.0\n"
         self.assertEqual(f"{notes}\n## v0.1.0\n", release_notes.insert_section(notes, "v0.1.0", "## v0.1.0\n"))
+
+    def test_a_version_heading_inside_a_fence_is_neither_a_section_nor_the_place_to_insert(self) -> None:
+        fenced = f"{INTRO}\n```text\n## v0.2.0\n## v0.1.0\n```\n\n"
+        notes = f"{fenced}## v0.1.0\n\nOld.\n"
+        self.assertEqual(
+            f"{fenced}## v0.2.0\n\n## v0.1.0\n\nOld.\n", release_notes.insert_section(notes, "v0.2.0", "## v0.2.0\n")
+        )
+        self.assertEqual(
+            f"{fenced.rstrip()}\n\n## v0.1.0\n", release_notes.insert_section(fenced, "v0.1.0", "## v0.1.0\n")
+        )
+        with self.assertRaises(release_notes.ReleaseNotesError):
+            release_notes.insert_section(notes, "v0.1.0", "## v0.1.0\n")
 
 
 class ReleaseProcedureTests(unittest.TestCase):

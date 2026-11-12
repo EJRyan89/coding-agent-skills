@@ -54,7 +54,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "ejryan8
 
 from console import run_main
 from git_client import GitClient, GitError, GitResult, output_lines
-from markdown_sections import HTML_COMMENT, MARKDOWN_SPACE, list_item, markdown_section
+from markdown_sections import HTML_COMMENT, MARKDOWN_SPACE, find_fences, list_item, markdown_section
 from release_levels import RELEASING_DOC, VERSION, largest_level, versioning_levels
 from release_tags import is_release_tag, last_release
 
@@ -65,12 +65,12 @@ UNRELEASED_HEADING = "## Unreleased"
 RELEASE_BRANCH = "origin/main"
 VERSION_HEADING = re.compile(rf"^## {VERSION.pattern}[ \t]*$", re.MULTILINE)
 NOTES_FIELD = re.compile(r"^- (Level|Contract|User action|Pull request):[ \t]*(.*?)[ \t]*$", re.MULTILINE)
-NOTES_ENTRY_START = re.compile(r"^(?=#{1,3} )", re.MULTILINE)
+# A line outside every fence that starts an entry, or a heading above one that ends it.
+NOTES_ENTRY_START = re.compile(r"#{1,3} ")
 # A line that starts a Markdown block of its own, which no wrapped line continues: a heading, a quote, or a table row;
-# a list item and a fence are read by markdown_sections' rules and FENCE. Only spaces and tabs are Markdown's
+# a list item and a fence are read by markdown_sections' rules. Only spaces and tabs are Markdown's
 # whitespace, as markdown_sections reads it.
 BLOCK_START = re.compile(r"^[ \t]*(?:#{1,6}[ \t]|>|\|)")
-FENCE = re.compile(r"^[ \t]*(?:`{3,}|~{3,})")
 SQUASH_TITLE_NUMBER = re.compile(r"\(#([0-9]+)\)[ \t]*$")
 # What git log -z writes after each of a commit's name, subject, and message: NUL, which git refuses in a commit message
 # and cuts a message at, so no message text can end a field early.
@@ -130,26 +130,38 @@ def unwrapped(block: str) -> list[str]:
     starts its own line below another, and below any other text only where CommonMark lets a list interrupt a
     paragraph: at a bullet or an item numbered 1.
     """
+    raw = [line.rstrip(MARKDOWN_SPACE + "\r") for line in block.strip(MARKDOWN_SPACE + "\r\n").split("\n")]
+    fenced = {index for fence in find_fences(raw) for index in fence.lines()}
     lines: list[str] = []
-    fenced = False
-    for line in (line.rstrip(MARKDOWN_SPACE + "\r") for line in block.strip(MARKDOWN_SPACE + "\r\n").split("\n")):
-        starts_fence = bool(FENCE.match(line))
+    for index, line in enumerate(raw):
         previous = lines[-1] if lines else ""
         starts_block = BLOCK_START.match(line) is not None or (
             list_item(line, interrupting=list_item(previous) is None) is not None
         )
-        if previous and line and not fenced and not starts_fence and not starts_block:
+        if previous and line and not {index - 1, index} & fenced and not starts_block:
             lines[-1] = f"{previous} {line.strip(MARKDOWN_SPACE)}"
         else:
             lines.append(line)
-        fenced ^= starts_fence
     return lines
+
+
+def notes_blocks(text: str) -> list[str]:
+    """The text cut before each line outside every fence that opens a heading of the first three levels, as an entry
+    or a heading above one starts; a heading-shaped line inside a fence is the fence's text, as GitHub renders it."""
+    lines = text.split("\n")
+    fenced = {index for fence in find_fences(lines) for index in fence.lines()}
+    blocks: list[list[str]] = [[]]
+    for index, line in enumerate(lines):
+        if index not in fenced and NOTES_ENTRY_START.match(line):
+            blocks.append([])
+        blocks[-1].append(line)
+    return ["\n".join(block) for block in blocks]
 
 
 def notes_entries(text: str | None) -> list[NotesEntry]:
     """The upgrade-notes entries: each ### heading with its field lines, read with wrapped lines joined."""
     entries: list[NotesEntry] = []
-    for block in NOTES_ENTRY_START.split(text or ""):
+    for block in notes_blocks(text or ""):
         if block.startswith("### "):
             heading, *body = unwrapped(block)
             fields = {match.group(1): match.group(2) for match in NOTES_FIELD.finditer("\n".join(body))}
@@ -289,13 +301,18 @@ def last_release_before(root: Path, ref: str) -> str:
 
 
 def insert_section(notes: str, version: str, section: str) -> str:
-    """The notes with the section above the newest version's section, or at the end when there is none."""
-    if re.search(rf"^## {re.escape(version)}[ \t]*$", notes, re.MULTILINE):
+    """The notes with the section above the newest version's section, or at the end when there is none. A heading-shaped
+    line inside a fence is the fence's text, as GitHub renders it, so it is neither a version's section nor the place
+    the new one goes."""
+    lines = notes.split("\n")
+    fenced = {index for fence in find_fences(lines) for index in fence.lines()}
+    headings = [index for index, line in enumerate(lines) if index not in fenced and VERSION_HEADING.fullmatch(line)]
+    if any(re.fullmatch(rf"## {re.escape(version)}[ \t]*", lines[index]) for index in headings):
         raise ReleaseNotesError(f"{UPGRADE_NOTES} already has a ## {version} section")
-    newest = VERSION_HEADING.search(notes)
-    if newest is None:
+    if not headings:
         return notes.rstrip("\n") + "\n\n" + section
-    return notes[: newest.start()] + section + "\n" + notes[newest.start() :]
+    start = sum(len(line) + 1 for line in lines[: headings[0]])
+    return notes[:start] + section + "\n" + notes[start:]
 
 
 def missing_entries(root: Path, version: str, start: str, end: str) -> list[SourcedEntry]:
