@@ -67,7 +67,7 @@ Once the change is in place, name what it owes. This reads the files changed sin
 python -B .claude/skills/change-skill/scripts/change_skill.py gates
 ```
 
-- Run the command of each `REGENERATE` line: `python tools/skill_reference.py --write`, then `python tools/skill_reference.py` without `--write` to list anything still missing; `python tools/skill_shims.py --write`, which prints `WROTE <path>` for each shim file it writes; or `python tools/runtime_prompts.py --write`. Validation fails while a reference, shim, or sample is stale.
+- Run the command of each `REGENERATE` line: `python tools/skill_reference.py --write`, then `python tools/skill_reference.py` without `--write`, which prints a `STALE <part>` line for each part still missing: write the hand-written part it names (below); `python tools/skill_shims.py --write`, which prints `WROTE <path>` for each shim file it writes and a `STALE <file>` line for a stray shim or file it leaves, which you delete as the line says; or `python tools/runtime_prompts.py --write`. Validation fails while a reference, shim, or sample is stale.
 - Update the hand-written part of the skill's section in `docs/skills.md` to match what shipped: what each argument means, what it does without them, and an example.
 - A new skill, or bundle, gets a row in the "Included skills" table in `README.md`, linking its section in `docs/skills.md`.
 - A code-review skill's configuration or records belong in `docs/code-review-operations.md`.
