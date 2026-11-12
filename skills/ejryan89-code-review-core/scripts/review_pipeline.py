@@ -86,6 +86,7 @@ from review_dispatch import (
     unfinalized_selector,
     unguarded_roles,
     validate_result,
+    verify_reviewer,
     wait_for_host,
     wait_for_reviewers,
     workflow_script,
@@ -856,6 +857,7 @@ def finalize(run: Path, services: Services | None = None) -> dict[str, Any]:
     state = load_run(run)
     if run_dispatch(state) == "inline":
         verify_seal(run, state)
+    verify_reviewer(state)  # in every dispatch mode, before the adapter result is committed
     errors = role_errors(run, state)
     errors.update(unguarded_roles(run, state, [role["id"] for role in state["roles"] if role["id"] not in errors]))
     if errors:

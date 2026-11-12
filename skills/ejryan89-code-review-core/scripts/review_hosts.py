@@ -344,18 +344,21 @@ def copilot_variable(name: str) -> bool:
 
 
 def materialized_reviewer_entrypoint(materialized_root: Path) -> Path:
+    """The entrypoint of a materialized entrypoint reviewer, once every file its metadata hashes still has that hash
+    and nothing else is under the root. The Copilot CLI host checks it when it starts, and check and finalize before
+    any result counts, on every runtime."""
     metadata_path = materialized_root / "materialization.json"
     try:
         metadata = parse_json(metadata_path.read_text(encoding="utf-8-sig"))
     except (OSError, *CONTENT_ERRORS) as exc:
-        raise RuntimeContractError(f"Copilot reviewer materialization metadata is invalid: {exc}") from exc
+        raise RuntimeContractError(f"Reviewer materialization metadata is invalid: {exc}") from exc
     READ.json_object(
         metadata,
         "materialization",
         required={"schema_version", "adapter_id", "entrypoint", "source_commit", "source_hashes"},
     )
     if READ.integer(metadata["schema_version"], "materialization.schema_version") != 1:
-        raise RuntimeContractError("Copilot reviewer materialization schema version is unsupported")
+        raise RuntimeContractError("Reviewer materialization schema version is unsupported")
     READ.string(metadata["adapter_id"], "materialization.adapter_id")
     READ.hex_digest(metadata["source_commit"], "materialization.source_commit", 40, 64)
     relative_value = _safe_relative_path(metadata["entrypoint"], "materialization.entrypoint")
@@ -363,25 +366,25 @@ def materialized_reviewer_entrypoint(materialized_root: Path) -> Path:
     materialized_resolved = materialized_root.resolve(strict=True)
     source_hashes = READ.json_object(metadata["source_hashes"], "materialization.source_hashes")
     if relative_value not in source_hashes:
-        raise RuntimeContractError("Copilot reviewer materialization source hashes are invalid")
+        raise RuntimeContractError("Reviewer materialization source hashes are invalid")
     expected_files = {"materialization.json"}
     for declared_path, expected_hash in source_hashes.items():
         normalized = _safe_relative_path(declared_path, "a key of materialization.source_hashes")
         # In any case, since a case-insensitive file system holds the record itself at each spelling.
         if normalized != declared_path or declared_path.casefold() == "materialization.json":
-            raise RuntimeContractError(f"Copilot reviewer materialization path is invalid: {declared_path!r}")
+            raise RuntimeContractError(f"Reviewer materialization path is invalid: {declared_path!r}")
         READ.hex_digest(expected_hash, f"materialization.source_hashes.{declared_path}", 64)
         target = materialized_root.joinpath(*PurePosixPath(declared_path).parts)
         _require_safe_snapshot_path(materialized_root, target)
         if not target.is_file() or not within(target.resolve(strict=True), materialized_resolved):
-            raise RuntimeContractError(f"Copilot reviewer materialization file is invalid: {declared_path}")
+            raise RuntimeContractError(f"Reviewer materialization file is invalid: {declared_path}")
         actual_hash = hashlib.sha256(target.read_bytes()).hexdigest()
         if actual_hash != expected_hash:
-            raise RuntimeContractError(f"Copilot reviewer materialization hash does not match: {declared_path}")
+            raise RuntimeContractError(f"Reviewer materialization hash does not match: {declared_path}")
         expected_files.add(declared_path)
     actual_files = _snapshot_files(materialized_root)
     if actual_files != expected_files:
-        raise RuntimeContractError("Copilot reviewer materialization file set does not match its hashes")
+        raise RuntimeContractError("Reviewer materialization file set does not match its hashes")
     return materialized_root.joinpath(*relative.parts).resolve(strict=True)
 
 
