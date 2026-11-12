@@ -527,6 +527,34 @@ def reviewer_ref_refusal(ref: str) -> str | None:
     return None
 
 
+def _check_ref_format(client: GitClient, ref: str, directory: Path | None) -> None:
+    """Refuses a name `git check-ref-format` does not accept as a ref, such as `refs/heads/main.lock`,
+    `refs/heads/.hidden`, `refs/heads//main`, or `refs/heads/main/`. It reads no repository, so `directory` may be
+    None. check-ref-format exits 1, silently, for a name it refuses; any other failure is git's own and raises
+    GitError."""
+    if client.quiet_output(["check-ref-format", ref], directory=directory) is None:
+        raise ConfigurationError(f"trusted_ref {ref} is not a ref name git check-ref-format accepts")
+
+
+def check_reviewer_ref_names(config: dict[str, Any], runner: Runner = subprocess_runner) -> None:
+    """Each configured trusted_ref is a name `git check-ref-format` accepts, as `reviewer_ref_commit` judges it when
+    the ref is read, so validate and write hold the whole spelling rule with or without a reviewer_root; the first
+    that is not raises ConfigurationError naming its repository."""
+    client = GitClient(runner)
+    for identity, entry in config["repositories"].items():
+        ref = entry["reviewer"]["trusted_ref"]
+        if ref is None:
+            continue
+        try:
+            _check_ref_format(client, ref, None)
+        except GitError as exc:
+            raise ConfigurationError(
+                f"repositories.{identity}.reviewer: trusted_ref {ref} cannot be checked: {exc}"
+            ) from exc
+        except ConfigurationError as exc:
+            raise ConfigurationError(f"repositories.{identity}.reviewer: {exc}") from exc
+
+
 def reviewer_ref_commit(ref: str, *, directory: Path, where: str, runner: Runner = subprocess_runner) -> str:
     """The commit a trusted ref names in `directory`'s repository, judged after git resolves it: the spelling
     `reviewer_ref_refusal` allows, a name `git check-ref-format` accepts, and a full name, once git follows a symbolic
@@ -539,9 +567,7 @@ def reviewer_ref_commit(ref: str, *, directory: Path, where: str, runner: Runner
         raise ConfigurationError(f"trusted_ref {json_writer.dumps(ref)} {refusal}")
     client = GitClient(runner)
     try:
-        # check-ref-format exits 1, silently, for a name it refuses; any other failure is git's own.
-        if client.quiet_output(["check-ref-format", ref], directory=directory) is None:
-            raise ConfigurationError(f"trusted_ref {ref} is not a ref name git check-ref-format accepts")
+        _check_ref_format(client, ref, directory)
         found = client.quiet_output(
             ["rev-parse", "--verify", "--quiet", "--symbolic-full-name", "--end-of-options", ref], directory=directory
         )
@@ -908,6 +934,7 @@ def _main(arguments: list[str] | None = None) -> int:
         if args.command == "validate":
             path = args.path or default_config_path()
             config = load_config(path)
+            check_reviewer_ref_names(config)
             check_reviewer_roots(config)
             check_local_manifests(config, path)
             print(single_line(f"VALID {path}"))
@@ -915,6 +942,7 @@ def _main(arguments: list[str] | None = None) -> int:
             path = args.output or default_config_path()
             value = json_reader.loads(args.input.read_text(encoding="utf-8-sig"))
             config = validate_config(value)
+            check_reviewer_ref_names(config)
             check_reviewer_roots(config)
             check_local_manifests(config, path)
             write_config(value, path)

@@ -808,6 +808,31 @@ class ReviewerRootTests(unittest.TestCase):
                     self.config(self.rules, ref), f"trusted_ref {ref} is not a ref name git check-ref-format accepts"
                 )
 
+    def test_a_name_git_check_ref_format_refuses_is_refused_without_a_root_too(self) -> None:
+        # The configuration holds the whole spelling rule wherever the reviewer is read from.
+        for ref in ("refs/heads/.hidden", "refs/heads/main.lock", "refs/heads//main", "refs/heads/main/"):
+            with self.subTest(ref=ref):
+                config = self.config(self.rules, ref)
+                del config["repositories"]["example/one"]["reviewer"]["reviewer_root"]
+                self.assert_refused(config, f"trusted_ref {ref} is not a ref name git check-ref-format accepts")
+
+    def test_a_trusted_ref_git_cannot_check_is_refused(self) -> None:
+        def missing(command: Any, timeout: float) -> GitResult:
+            raise GitError("git is not installed")
+
+        with self.assertRaises(ConfigurationError) as caught:
+            review_config.check_reviewer_ref_names(validate_config(self.config(self.rules)), missing)
+        self.assertEqual(
+            "repositories.example/one.reviewer: trusted_ref refs/heads/main cannot be checked: git is not installed",
+            str(caught.exception),
+        )
+
+    def test_a_reviewer_without_a_trusted_ref_starts_no_git_for_it(self) -> None:
+        def refuse(command: Any, timeout: float) -> GitResult:
+            raise AssertionError(f"unexpected git call: {command}")
+
+        review_config.check_reviewer_ref_names(validate_config(valid_config()), refuse)
+
     def test_each_spelling_that_reaches_a_pull_request_is_refused_by_the_root_s_reader(self) -> None:
         # Through reviewer_root_commit, as prepare and validate-reviewer --ref call it: every spelling names a commit a
         # pull request's ref reaches here, and none is read.
