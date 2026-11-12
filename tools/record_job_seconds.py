@@ -27,7 +27,7 @@ a pull request's live timings.
 Exit status:
   0  the table was written
   1  a last line FAILED <reason>
-  2  a usage error, or the runs could not be read
+  2  a usage error, or an ERROR: line when the runs could not be read
 """
 
 from __future__ import annotations
@@ -256,7 +256,7 @@ def main(arguments: list[str] | None = None, client: GitHubClient | None = None,
         runs = sorted(set(options.runs)) if options.runs else latest_runs(client, options.count)
         per_run = {run: run_seconds(client, run) for run in runs}
     except (GitHubError, FieldError) as error:
-        print(f"Cannot read the validate runs: {error}", file=sys.stderr)
+        print(f"ERROR: cannot read the validate runs: {error}", file=sys.stderr)
         return 2
     seconds = combine(per_run)
     table.write_text(render_table(runs, seconds), encoding="utf-8", newline="\n")

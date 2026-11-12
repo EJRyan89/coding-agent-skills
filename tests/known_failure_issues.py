@@ -6,7 +6,9 @@ This is the one part of validation that reads GitHub, so it is a program of its 
 issue tests/malformed_input/known_failures.json or PENDING in tests/malformed_input/readers.py names is an open issue,
 prints a FAILED line for each that is not, is a pull request, or gh cannot answer about; it asks nothing while both
 are empty. A list it cannot read, or a git that cannot read the checkout's origin, is
-a FAILED line too, never an empty list. Its last line is `Known-failure issues: <count> not shown open.` It imports
+a FAILED line too, never an empty list. Its last line is `Known-failure issues: <count> not shown open.` after a
+FAILED line, `Known-failure issues: all <count> named shown open.` when every issue named is open, and
+`Known-failure issues: none named, so GitHub was not asked.` when neither list names one. It imports
 tests/validation/known_failures.py and what that imports, and none of the policy checks or suites
 tests/run_validation.py runs, so the token validate.yml gives the one step that runs it reaches this program and the
 modules it imports alone; tests/test_known_failure_issues.py pins the set it loads. On a pull request they are the
@@ -44,8 +46,15 @@ def main(argv: list[str] | None = None, *, out: TextIO | None = None) -> int:
     problems = known_failures.open_issue_problems(REPOSITORY_ROOT)
     for problem in problems:
         print(f"FAILED {problem}", file=out)
-    print(f"Known-failure issues: {len(problems)} not shown open.", file=out)
-    return 1 if problems else 0
+    if problems:
+        print(f"Known-failure issues: {len(problems)} not shown open.", file=out)
+        return 1
+    named = len({item.issue for item in known_failures.owed_issues(REPOSITORY_ROOT)})
+    if named:
+        print(f"Known-failure issues: all {named} named shown open.", file=out)
+    else:
+        print("Known-failure issues: none named, so GitHub was not asked.", file=out)
+    return 0
 
 
 if __name__ == "__main__":

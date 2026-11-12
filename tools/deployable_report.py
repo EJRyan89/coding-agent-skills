@@ -42,8 +42,8 @@ Nothing here starts a model.
 
 Exit status:
   0  the command's check passed, or its record or summary was written
-  1  verify judged a failure, layout failed, leftovers named an entry, pin found another version, or a last line
-     FAILED <reason>
+  1  verify judged a failure, layout failed, leftovers named an entry, pin found another version, an ERROR: line for
+     a home that is no absolute path, or a last line FAILED <reason>
   2  a usage error, or an ERROR: line for a results file or a deployed directory it cannot read or write
 """
 
@@ -503,7 +503,8 @@ def main(argv: list[str] | None = None) -> int:
     for name in ("verify", "layout", "leftovers", "summary"):
         command = commands.add_parser(name)
         command.add_argument("--results", required=True, help="the JSON file that collects each pass")
-        command.add_argument("--home", default=str(platform_support.home_directory()), help=argparse.SUPPRESS)
+        # The home is read once the command line parses, so --help and a usage error never depend on it.
+        command.add_argument("--home", default=None, help=argparse.SUPPRESS)
         command.add_argument("--source", default=str(REPOSITORY_ROOT), help=argparse.SUPPRESS)
     for name in ("verify", "layout"):
         commands.choices[name].add_argument("--label", required=True)
@@ -520,6 +521,12 @@ def main(argv: list[str] | None = None) -> int:
     pin.add_argument("--program", required=True, help="the runtime's command, such as claude")
     pin.add_argument("--wanted", required=True, help="the version the workflow installed, or latest")
     arguments = parser.parse_args(argv)
+    if arguments.command != "pin" and arguments.home is None:
+        try:
+            arguments.home = str(platform_support.home_directory())
+        except DeployError as exc:
+            report_error(exc)
+            return exc.exit_code
     handlers = {"verify": _verify, "layout": _layout, "leftovers": _leftovers, "summary": _summary, "pin": _pin}
     return handlers[arguments.command](arguments)
 

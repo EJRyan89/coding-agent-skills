@@ -138,10 +138,17 @@ class Driver:
     environment: Mapping[str, str] = field(default_factory=dict)
     from_checkout: bool = False
     outputs: tuple[str, ...] = ()
+    # Each run whose refusal is a line led by a word its docstring does not name, by its fault, or `<fault> <input>`
+    # for one input alone, with the open issue that gives it a FAILED or documented line.
+    refusal_gaps: Mapping[str, str] = field(default_factory=dict)
 
     @property
     def name(self) -> str:
         return f"{self.entry} {self.command}".strip()
+
+    def refusal_gap(self, fault: str, path: str | None) -> str:
+        """The refusal gap refusal_gaps names for one run, by its input or its fault, or "" for none."""
+        return self.refusal_gaps.get(f"{fault} {path}", "") or self.refusal_gaps.get(fault, "")
 
     def runs(self) -> list[tuple[str, str | None]]:
         """Each fault the driver runs, with the input it is placed at, or None for git's and gh's."""
