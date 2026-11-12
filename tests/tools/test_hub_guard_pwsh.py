@@ -5,19 +5,24 @@ here until a row decides it."""
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
+from typing import Any
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts"))
 
+import bounded_process
 import option_reader
-from bounded_process import Finished
+import resident_pwsh
+from bounded_process import CUT_NOTE, Finished
 from guard_limits import process_limits_held
 
 from deployer import platform_support
@@ -282,9 +287,10 @@ class CommandNameTests(unittest.TestCase):
 
 
 def powershell_reading(command: str) -> hub_guard.Reading:
-    """The guard's reading of a PowerShell command, as data: pwsh only parses it."""
+    """The guard's reading of a PowerShell command, as data: pwsh only parses it, in this process's resident pwsh,
+    which ResidentReaderTests holds to a real start."""
     reading = hub_guard.Reading({"PATH": os.environ.get("PATH", "")}, command)
-    with process_limits_held():
+    with process_limits_held(), resident_pwsh.resident_reads():
         hub_guard.read_powershell(command, Path.cwd(), reading)
     return reading
 
@@ -458,3 +464,171 @@ class RunnerOptionTests(unittest.TestCase):
             ):
                 self.assertEqual([], read(command).unread)
                 self.assertTrue(helper.called)
+
+
+def found_pwsh() -> str:
+    found = platform_support.find_pwsh(os.environ.get("PATH", ""))
+    if found is None:
+        raise AssertionError("pwsh is not installed, and the guard's reader runs in it")
+    return found
+
+
+# Commands beyond the node samples whose reading takes another path: a parse error, which the reader answers with
+# its message, text past ASCII, which travels base64-encoded, and a lone surrogate, which has no JSON form.
+EDGE_SAMPLES = ("if (", "Get-Date |", "git commit -m 'café ü€'", "git commit -m \ud800", "")
+
+
+class ResidentReaderTests(unittest.TestCase):
+    """The resident pwsh the in-process tests read PowerShell through reads every command as the guard's own pwsh
+    start does, keeps nothing from one read to the next, and fails the test that meets it misbehaving."""
+
+    def read(self, command: str) -> tuple[dict[str, Any] | None, list[str], list[str]]:
+        reading = hub_guard.Reading({"PATH": os.environ.get("PATH", "")}, command)
+        with process_limits_held():
+            events = hub_guard.powershell_events(command, reading)
+        return events, reading.notes, reading.unread
+
+    def test_the_resident_reads_every_node_sample_as_a_real_pwsh_start_does(self) -> None:
+        samples = [*NODE_SAMPLES.values(), *EDGE_SAMPLES]
+        # No read below starts a pwsh of its own: were powershell_events to start its reader in a way
+        # resident_pwsh.reads_its_reader no longer knows, every in-process read would quietly start pwsh again.
+        started = AssertionError("a read started a pwsh of its own rather than reading in the resident")
+        with (
+            mock.patch.object(bounded_process, "run_bounded", side_effect=started),
+            resident_pwsh.resident_reads(),
+        ):
+            resident = {sample: self.read(sample) for sample in samples}
+            # The same samples read again in the other order: no read is shaped by the ones before it.
+            again = {sample: self.read(sample) for sample in reversed(samples)}
+        self.assertEqual(resident, again)
+        for name, sample in [*NODE_SAMPLES.items(), *(("edge", sample) for sample in EDGE_SAMPLES)]:
+            with self.subTest(type=name, sample=sample):
+                self.assertEqual(self.read(sample), resident[sample])
+                events = resident[sample][0]
+                if name in NODE_SAMPLES and name not in UNSAMPLED:
+                    self.assertIsNotNone(events)
+                    self.assertIn(name, (events or {}).get("nodes", []))
+        self.assertIn("PowerShell would not parse the command", " ".join(resident["if ("][1]))
+        self.assertIn("could not hand pwsh the command", " ".join(resident["git commit -m \ud800"][2]))
+
+    def test_only_the_reader_s_own_start_goes_to_the_resident(self) -> None:
+        reader = [found_pwsh(), *resident_pwsh.READER_OPTIONS, hub_guard.powershell_reader()]
+        self.assertTrue(resident_pwsh.reads_its_reader(reader))
+        self.assertFalse(resident_pwsh.reads_its_reader([*reader[:-1], "Get-Date"]))
+        self.assertFalse(resident_pwsh.reads_its_reader([reader[0], "-NoProfile", *reader[2:]]))
+        real = Finished(0, b"real", b"")
+        rows: tuple[tuple[list[str], dict[str, Any]], ...] = (
+            (["git", "status"], {"input_bytes": b"x"}),
+            ([*reader[:-1], "Get-Date"], {"input_bytes": b"x"}),
+            # A start with an option powershell_events does not pass runs as it is.
+            (reader, {"input_bytes": b"x", "cwd": Path.cwd()}),
+        )
+        for command, options in rows:
+            with (
+                self.subTest(command=command[-1][:20], options=sorted(options)),
+                mock.patch.object(bounded_process, "run_bounded", return_value=real) as bounded,
+                mock.patch.object(resident_pwsh, "resident", side_effect=AssertionError("not the reader")),
+                resident_pwsh.resident_reads() as reads,
+            ):
+                self.assertEqual(real, reads.run_bounded(command, 5.0, **options))
+                bounded.assert_called_once_with(command, 5.0, **options)
+
+    def test_a_read_that_leaves_a_global_behind_is_a_malfunction(self) -> None:
+        for reader, kept in (("$global:kept = 1", "variable kept"), ("function global:Kept { }", "function Kept")):
+            with self.subTest(reader=reader):
+                resident = resident_pwsh.ResidentPwsh(found_pwsh(), reader)
+                self.addCleanup(resident.close)
+                with self.assertRaisesRegex(resident_pwsh.Malfunction, kept):
+                    resident.read(b"", 600.0, None)
+
+    def test_a_reader_s_own_variables_and_errors_end_with_its_read(self) -> None:
+        # The reader's own preference makes its error stop it, as the guard's reader sets it; what it wrote before
+        # the error is kept on stdout, and the error is on stderr, as pwsh writes them.
+        reader = "$ErrorActionPreference = 'Stop'; $mine = [Console]::In.ReadToEnd(); Write-Output $mine; Write-Error x"
+        resident = resident_pwsh.ResidentPwsh(found_pwsh(), reader)
+        self.addCleanup(resident.close)
+        for payload in (b"first", b"second"):
+            with self.subTest(payload=payload):
+                finished = resident.read(payload, 600.0, None)
+                self.assertEqual((1, payload + b"\n"), (finished.returncode, finished.stdout))
+                self.assertIn(b"x", finished.stderr)
+        silent = resident_pwsh.ResidentPwsh(found_pwsh(), "")
+        self.addCleanup(silent.close)
+        self.assertEqual(Finished(0, b"", b""), silent.read(b"", 600.0, None))
+
+    def test_a_resident_that_does_not_answer_in_time_is_ended(self) -> None:
+        resident = resident_pwsh.ResidentPwsh(found_pwsh(), "Start-Sleep 60")
+        self.addCleanup(resident.close)
+        with self.assertRaises(subprocess.TimeoutExpired):
+            resident.read(b"", 1.0, None)
+        self.assertIsNotNone(resident.process.poll())
+
+    def test_an_answer_that_is_not_one_is_a_malfunction(self) -> None:
+        for answer, said in ((b"garbage\n", "answered b'garbage"), (b"READ x\n", "answered b'READ x"), (b"", "ended")):
+            with self.subTest(answer=answer):
+                resident = resident_pwsh.ResidentPwsh(found_pwsh(), "")
+                self.addCleanup(resident.close)
+                resident.answers.put(answer)
+                with self.assertRaisesRegex(resident_pwsh.Malfunction, said):
+                    resident.read(b"", 600.0, None)
+
+    def test_a_resident_that_takes_no_input_is_a_malfunction(self) -> None:
+        resident = resident_pwsh.ResidentPwsh(found_pwsh(), "")
+        resident.close()
+        with self.assertRaisesRegex(resident_pwsh.Malfunction, "took no input"):
+            resident.read(b"", 600.0, None)
+
+    def test_a_malfunction_or_a_time_out_fails_the_test_that_met_it_whatever_the_guard_decided(self) -> None:
+        class Broken:
+            def __init__(self, failure: Exception) -> None:
+                self.failure = failure
+
+            def read(self, payload: bytes, timeout: float, output_limit: int | None) -> Finished:
+                raise self.failure
+
+        failures: tuple[tuple[Exception, str], ...] = (
+            (resident_pwsh.Malfunction("it broke"), "it broke"),
+            (subprocess.TimeoutExpired("pwsh", 5), "did not answer within"),
+        )
+        for failure, met in failures:
+            with self.subTest(failure=type(failure).__name__):
+                reads: list[tuple[dict[str, Any] | None, list[str], list[str]]] = []
+                with (
+                    self.assertRaisesRegex(AssertionError, f"the resident pwsh malfunctioned: .*{met}"),
+                    mock.patch.object(resident_pwsh, "resident", return_value=Broken(failure)),
+                    resident_pwsh.resident_reads(),
+                ):
+                    reads.append(self.read("git status"))
+                # The guard read nothing, as it reads nothing from a pwsh that failed, and the test fails anyway.
+                [(events, _, unread)] = reads
+                self.assertIsNone(events)
+                self.assertTrue(unread)
+
+    def test_a_resident_that_ended_is_started_again_at_the_next_read(self) -> None:
+        program = found_pwsh()
+        first = resident_pwsh.resident(program)
+        first.close()
+        second = resident_pwsh.resident(program)
+        self.assertIsNot(first, second)
+        self.assertIs(second, resident_pwsh.resident(program))
+        with resident_pwsh.resident_reads():
+            self.assertIsNotNone(self.read("Get-Date")[0])
+
+    def test_a_folder_the_first_read_stood_in_can_be_removed_while_the_resident_runs(self) -> None:
+        # The in-process guard reads from inside a test's temporary folder, which the test removes as it ends.
+        resident_pwsh.close_all()
+        with tempfile.TemporaryDirectory() as folder, contextlib.chdir(folder):
+            running = resident_pwsh.resident(found_pwsh())
+        self.assertIsNone(running.process.poll())
+        self.assertFalse(Path(folder).exists())
+
+    def test_the_process_ending_ends_every_resident(self) -> None:
+        running = resident_pwsh.resident(found_pwsh())
+        resident_pwsh.close_all()
+        self.assertIsNotNone(running.process.poll())
+        self.assertIsNot(running, resident_pwsh.resident(found_pwsh()))
+
+    def test_each_stream_is_kept_to_the_output_limit_as_run_bounded_keeps_it(self) -> None:
+        self.assertEqual(b"abc", resident_pwsh.kept(b"abc", None))
+        self.assertEqual(b"abc", resident_pwsh.kept(b"abc", 3))
+        self.assertEqual(b"ab" + CUT_NOTE.format(cut=1, limit=2).encode(), resident_pwsh.kept(b"abc", 2))
