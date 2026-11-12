@@ -204,6 +204,25 @@ class PresenceReadTests(DeployerTestCase):
                 )
                 self.assertNotIn(absence, "\n".join(raised.exception.lines))
 
+    def test_migrating_beside_a_folder_in_the_manifests_place_is_refused_as_not_a_file_never_as_no_manifest(
+        self,
+    ) -> None:
+        self.paths.manifest_file.mkdir(parents=True)
+        recorded = cast(
+            Context, SimpleNamespace(paths=self.paths, manifest=SimpleNamespace(sources={"old/source": {}}))
+        )
+        with self.assertRaises(DeployError) as raised:
+            migrate.migrate(recorded, "old/source")
+        self.assertEqual(
+            (
+                f"ERROR: The manifest at {forward(self.paths.manifest_file)} is not a file.",
+                "Put back a copy you trust, or move it out of the skills folder and rerun with --dry-run.",
+                'See "A state file that does not read" in docs/recovery.md.',
+            ),
+            tuple(raised.exception.lines),
+        )
+        self.assertNotIn("without an existing manifest", "\n".join(raised.exception.lines))
+
     def test_a_configured_directory_that_is_a_file_is_refused_as_not_a_directory(self) -> None:
         file = self.root / "repos"
         file.write_text("", encoding="utf-8")
