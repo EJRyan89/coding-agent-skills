@@ -1425,6 +1425,39 @@ class ReviewerSourceTests(AdversarialFixture):
                 report = (pull_directory(self.archive, REPOSITORY, NUMBER) / "review.md").read_text(encoding="utf-8")
                 self.assertIn("| **Reviewer source** |", report)
 
+    def test_a_reviewer_that_rewrites_its_own_instructions_records_nothing(self) -> None:
+        # A Codex reviewer runs with no guard; hostile content persuades it to approve and to rewrite the skill it
+        # follows, so the record would name the trusted hash of instructions it did not follow.
+        self.services.resolve_runtime = lambda configured, host: "codex"
+        base, _ = self.pull_request(
+            {**BASE, **files({"app/new.py": b"x = 1\n"})}, {**BASE, **files({self.SKILL: self.TRUSTED})}
+        )
+        self.tip = base
+        ready, _ = self.prepared()
+        self.assertEqual(("codex", "entrypoint", "base"), (ready["runtime"], ready["kind"], ready["adapter"]["source"]))
+        result = {
+            "protocol_version": 1,
+            "repository": REPOSITORY,
+            "pull_number": NUMBER,
+            "head_sha": self.github.head,
+            "summary": "Looks fine.",
+            "reviewer": "team",
+            "status": "complete",
+            "findings": [],
+            "prior_dispositions": [],
+            "usage": None,
+        }
+        Path(ready["result_path"]).write_text(json.dumps(result), encoding="utf-8")
+        (ready["run"] / "reviewer" / self.SKILL).write_bytes(self.HOSTILE)
+        run = ready["run"]
+        reason = (
+            f"{SELECTOR}: the reviewer is not what prepare materialized: Reviewer materialization hash does not match: "
+            f"{self.SKILL}"
+        )
+        self.assertEqual((1, f"FAILED {run} {reason}\n", ""), self.main("check", "--run", str(run)))
+        self.assertEqual((1, f"FAILED {run} {reason}\n", ""), self.main("finalize", "--run", str(run)))
+        self.assertIsNone(latest_record(self.archive, REPOSITORY, NUMBER), "nothing is recorded")
+
 
 class LazySnapshotTests(AdversarialFixture):
     def source(self, ready: dict[str, Any], command: str, value: str) -> tuple[int, list[str]]:
