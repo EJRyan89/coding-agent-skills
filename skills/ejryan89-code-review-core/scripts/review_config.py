@@ -523,24 +523,20 @@ def reviewer_root_commit(root: Path, ref: str, runner: Runner = subprocess_runne
         raise ConfigurationError(f"reviewer_root {root} cannot be read: {flat_text(str(exc))}") from exc
     client = GitClient(runner)
     try:
-        top = client.run(["rev-parse", "--show-toplevel"], directory=root)
-        if top.returncode != 0 or not output_line(top.stdout):
-            reason = flat_text(top.stderr) or "git rev-parse --show-toplevel failed"
-            raise ConfigurationError(f"reviewer_root {root} is not a Git checkout: {reason}")
-        found = Path(output_line(top.stdout))
-        if path_key(found, resolve=True) != path_key(root, resolve=True):
-            raise ConfigurationError(
-                f"reviewer_root {root} is not a Git checkout's top folder; its checkout is {found}"
-            )
-        resolved = client.run(
-            ["rev-parse", "--verify", "--quiet", "--end-of-options", f"{ref}^{{commit}}"], directory=root
-        )
+        top = output_line(client.output(["rev-parse", "--show-toplevel"], directory=root))
     except GitError as exc:
-        raise ConfigurationError(f"reviewer_root {root} cannot be read with git: {exc}") from exc
-    commit = output_line(resolved.stdout).lower()
-    if resolved.returncode != 0 or not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", commit):
+        raise ConfigurationError(f"reviewer_root {root} is not a Git checkout git can read: {exc}") from exc
+    if not top:
+        raise ConfigurationError(f"reviewer_root {root} is not a Git checkout git can read: it named no top folder")
+    if path_key(Path(top), resolve=True) != path_key(root, resolve=True):
+        raise ConfigurationError(f"reviewer_root {root} is not a Git checkout's top folder; its checkout is {top}")
+    try:
+        commit = client.commit_of(ref, directory=root)
+    except GitError as exc:
+        raise ConfigurationError(f"trusted_ref {ref} cannot be read in reviewer_root {root}: {exc}") from exc
+    if commit is None:
         raise ConfigurationError(f"trusted_ref {ref} does not resolve to a commit in reviewer_root {root}")
-    return commit
+    return commit.lower()
 
 
 def check_reviewer_roots(config: dict[str, Any], runner: Runner = subprocess_runner) -> None:

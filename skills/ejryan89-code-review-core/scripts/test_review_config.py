@@ -774,7 +774,7 @@ class ReviewerRootTests(unittest.TestCase):
     def test_a_folder_that_is_not_a_git_checkout_is_refused(self) -> None:
         plain = self.root / "plain"
         plain.mkdir()
-        self.assert_refused(self.config(plain), f"reviewer_root {plain} is not a Git checkout: ")
+        self.assert_refused(self.config(plain), f"reviewer_root {plain} is not a Git checkout git can read: ")
 
     def test_a_folder_inside_a_checkout_is_refused(self) -> None:
         # git would read the checkout around it, which is not the folder configured.
@@ -798,10 +798,20 @@ class ReviewerRootTests(unittest.TestCase):
         def silent(command: Any, timeout: float) -> GitResult:
             return GitResult(0, "", "")
 
-        with self.assertRaisesRegex(ConfigurationError, "cannot be read with git: git is not installed"):
+        def broken_ref(command: Any, timeout: float) -> GitResult:
+            # The root is a checkout, and git fails reading the ref for a reason of its own, not an absent ref.
+            if "--show-toplevel" in command:
+                return GitResult(0, f"{self.rules.as_posix()}\n", "")
+            return GitResult(128, "", "fatal: bad config line 1 in file .git/config\n")
+
+        with self.assertRaisesRegex(ConfigurationError, "is not a Git checkout git can read: git is not installed"):
             review_config.reviewer_root_commit(self.rules, "main", missing)
-        with self.assertRaisesRegex(ConfigurationError, "is not a Git checkout: git rev-parse --show-toplevel failed"):
+        with self.assertRaisesRegex(ConfigurationError, "is not a Git checkout git can read: it named no top folder"):
             review_config.reviewer_root_commit(self.rules, "main", silent)
+        with self.assertRaisesRegex(
+            ConfigurationError, "trusted_ref main cannot be read in reviewer_root .*: .*bad config line 1"
+        ):
+            review_config.reviewer_root_commit(self.rules, "main", broken_ref)
 
     def test_only_reviewers_with_a_root_are_checked(self) -> None:
         # The generic reviewer and a repository reviewer read from its own checkout start no git.
