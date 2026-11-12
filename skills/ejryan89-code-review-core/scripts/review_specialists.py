@@ -352,8 +352,9 @@ def load_materialized_manifest(reviewer_root: Path) -> tuple[dict[str, Any], str
         target = reviewer_root.joinpath(*PurePosixPath(relative).parts)
         if not target.is_file() or hashlib.sha256(target.read_bytes()).hexdigest() != hashes[relative]:
             raise SpecialistError(f"Reviewer file does not match its materialized hash: {relative}")
-    # A suite profile is read where the suite keeps it, so it is checked against the hash taken when the reviewer was
-    # materialized: a deployment that changed it since would otherwise hand later roles other instructions.
+    # A suite profile is read where the suite keeps it, outside the run and any inline seal, so it is checked against
+    # the hash taken when the reviewer was materialized. Prepare, each inline hand-out, check, and finalize all run
+    # this check (review_dispatch.verify_reviewer), so a deployment that changed it before then fails the pull request.
     suite = READ.json_object(materialization.get("suite_profiles", {}), "materialization.suite_profiles")
     if set(suite) != set(suite_profiles(manifest)):
         raise SpecialistError("Reviewer materialization suite profiles do not match the manifest")

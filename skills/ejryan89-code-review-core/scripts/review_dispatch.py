@@ -23,6 +23,7 @@ from review_hosts import (
     host_lock,
     host_log_path,
     host_state,
+    materialized_reviewer_entrypoint,
     new_claim,
     record_host_process,
     run_copilot,
@@ -52,8 +53,44 @@ from review_run import (
     run_dispatch,
     verify_seal,
 )
-from review_runtime import SOURCE_SNAPSHOT_MANIFEST
-from review_specialists import check, parse_unified_diff
+from review_runtime import SOURCE_SNAPSHOT_MANIFEST, RuntimeContractError
+from review_specialists import SpecialistError, check, load_materialized_manifest, parse_unified_diff
+
+
+def verify_reviewer(state: RunState) -> None:
+    """Fail a run whose reviewer no longer holds what prepare materialized, in every dispatch mode.
+
+    Reviewers follow the files under the run's reviewer root, and a specialist's suite profile where the suite keeps
+    it, when they review, while the record names the hashes prepare took. So every file is hashed again: an
+    entrypoint reviewer's by the check the Copilot CLI host runs when it starts, and a specialists reviewer's by the
+    one prepare ran, which covers its suite profiles too. The hashes the record will name must then be the
+    materialization's. A file changed, added, or gone since prepare fails the pull request with nothing recorded,
+    naming the file, as an inline run's seal does. The suite's generic reviewer has no files of its own.
+    """
+    if state["reviewer_root"] is None:
+        return
+    root = Path(state["reviewer_root"])
+    selector = state["selector"]
+    try:
+        if state["kind"] == "entrypoint":
+            materialized_reviewer_entrypoint(root)
+        else:
+            load_materialized_manifest(root)
+        metadata = read_json(root / "materialization.json")
+    except (SpecialistError, RuntimeContractError, PersistenceError, OSError) as exc:
+        raise PipelineError(f"{selector}: the reviewer is not what prepare materialized: {exc}") from exc
+    recorded = state["adapter"].get("source_hashes")
+    if recorded is None:  # a run prepared before the hashes were recorded, whose record names none
+        return
+    materialized = {**metadata["source_hashes"], **metadata.get("suite_profiles", {})}
+    differing = sorted(
+        path for path in materialized.keys() | recorded.keys() if materialized.get(path) != recorded.get(path)
+    )
+    if differing:
+        raise PipelineError(
+            f"{selector}: the reviewer hashes the record would name are not the materialized reviewer's: "
+            + ", ".join(differing)
+        )
 
 
 def role_errors(run: Path, state: RunState) -> dict[str, str]:
@@ -196,6 +233,7 @@ def next_role(run: Path, services: Services) -> tuple[str, RunRole | None]:
     if run_dispatch(state) != "inline":
         raise PipelineError(f"{state['selector']} is not reviewed inline; dispatch its roles as prepare printed them")
     verify_seal(run, state)
+    verify_reviewer(state)  # a suite profile lies outside the seal
     following = None
     for role in state["roles"]:
         result = Path(role["result_file"])
@@ -239,6 +277,7 @@ def check_run(run: Path, services: Services | None = None) -> dict[str, Any]:
 
 
 def _check_roles(run: Path, state: RunState) -> dict[str, Any]:
+    verify_reviewer(state)  # before any result counts
     errors = role_errors(run, state)
     errors.update(unguarded_roles(run, state, [role["id"] for role in state["roles"] if role["id"] not in errors]))
     retry: list[RunRole] = []

@@ -258,7 +258,7 @@ REFUSED: list[tuple[str, Mutation, Outcome]] = [
     (
         "a materialization of another schema",
         _change("materialization_schema", 2),
-        (RuntimeContractError, "Copilot reviewer materialization schema version is unsupported", 0, None),
+        (RuntimeContractError, "Reviewer materialization schema version is unsupported", 0, None),
     ),
     *(
         (
@@ -1058,7 +1058,7 @@ class MaterializationRecordTests(unittest.TestCase):
         self.write(_materialization(source_hashes={"SKILL.md": _sha(SKILL), "rules": _sha(SKILL)}))
         with self.assertRaises(RuntimeContractError) as raised:
             review_hosts.materialized_reviewer_entrypoint(self.root)
-        self.assertEqual("Copilot reviewer materialization file is invalid: rules", str(raised.exception))
+        self.assertEqual("Reviewer materialization file is invalid: rules", str(raised.exception))
 
     def test_a_declared_file_at_the_record_in_any_case_is_refused_by_name(self) -> None:
         # A case-insensitive file system holds the record itself at each of these names.
@@ -1067,15 +1067,13 @@ class MaterializationRecordTests(unittest.TestCase):
                 self.write(_materialization(source_hashes={"SKILL.md": _sha(SKILL), name: _sha(SKILL)}))
                 with self.assertRaises(RuntimeContractError) as raised:
                     review_hosts.materialized_reviewer_entrypoint(self.root)
-                self.assertEqual(f"Copilot reviewer materialization path is invalid: {name!r}", str(raised.exception))
+                self.assertEqual(f"Reviewer materialization path is invalid: {name!r}", str(raised.exception))
 
     def test_a_record_the_parser_refuses_is_refused_as_invalid(self) -> None:
         for reason, content in {**UNPARSEABLE_JSON, "a lone surrogate": LONE_SURROGATE}.items():
             with self.subTest(reason):
                 (self.root / "materialization.json").write_bytes(content)
-                with self.assertRaisesRegex(
-                    RuntimeContractError, r"\ACopilot reviewer materialization metadata is invalid: ."
-                ):
+                with self.assertRaisesRegex(RuntimeContractError, r"\AReviewer materialization metadata is invalid: ."):
                     review_hosts.materialized_reviewer_entrypoint(self.root)
 
     def test_each_field_of_the_wrong_kind_is_refused(self) -> None:
