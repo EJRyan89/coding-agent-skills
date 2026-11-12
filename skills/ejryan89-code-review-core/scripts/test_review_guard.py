@@ -28,6 +28,7 @@ import review_run
 import review_runtime
 from executable_locator import PYTHON
 from review_source import source_commands
+from test_path_keys import case_sensitive_folder, hard_link_pair
 from test_review_archive import unstatable
 from test_review_io import UNPARSEABLE_JSON
 from test_review_runtime_validation import directory_link
@@ -634,6 +635,23 @@ class WriteTests(GuardFixture):
                     self.assertIsNone(reason)
                 else:
                     self.assert_denied(reason, "write only your own result file")
+
+    @unittest.skipUnless(sys.platform in ("win32", "linux"), "only a separate volume keeps case on macOS")
+    def test_a_result_spelled_in_another_case_is_refused_where_two_hard_links_share_a_case_sensitive_folder(
+        self,
+    ) -> None:
+        # Two hard links spelled in each other's case find one file, as one name would in a folder that folds case;
+        # the folder still keeps case, so RESULT.JSON is another file and never the role's result.json.
+        run = make_run(self.root / "code-review-run-ghi", ["csharp-review"])
+        out = case_sensitive_folder(run / "out")
+        hard_link_pair(out, "0A.txt", "0a.TXT")
+        manifest = json.loads((run / "run.json").read_text(encoding="utf-8"))
+        manifest["roles"][0]["result_file"] = str(out / "result.json")
+        (run / "run.json").write_text(json.dumps(manifest), encoding="utf-8")
+        self.enterContext(mock.patch.dict(path_keys._FOLDS_CASE, clear=True))
+        self.claim(run=run)
+        self.assert_denied(self.decide("Write", file_path=str(out / "RESULT.JSON")), "write only your own result file")
+        self.assertIsNone(self.decide("Write", file_path=str(out / "result.json")))
 
     def test_a_reviewer_cannot_write_before_it_reads_its_prompt(self) -> None:
         self.assert_denied(self.decide("Write", file_path=self.result()), "read the prompt file your task names first")
