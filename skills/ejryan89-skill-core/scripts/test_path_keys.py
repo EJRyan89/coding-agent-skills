@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import contextlib
 import os
+import stat
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -42,6 +44,26 @@ def measured_folds(directory: Path) -> bool:
             with contextlib.suppress(FileNotFoundError):
                 (directory / name).unlink()
     return False
+
+
+def case_sensitive_folder(folder: Path) -> Path:
+    """`folder`, made to keep two names differing only in case apart: marked case-sensitive on Windows, which needs
+    no privilege, and as made on Linux, whose file systems keep case; it fails rather than hand back a folder that
+    folds case. macOS's default APFS volume folds case, and only a separate case-sensitive volume would not."""
+    folder.mkdir()
+    if sys.platform == "win32":
+        subprocess.run(
+            ["fsutil", "file", "setCaseSensitiveInfo", str(folder), "enable"], check=True, capture_output=True
+        )
+    if measured_folds(folder):
+        raise AssertionError(f"{folder} folds case")
+    return folder
+
+
+def hard_link_pair(folder: Path, name: str, other: str) -> None:
+    """An empty file `name` in `folder` and a second hard link to it named `other`."""
+    (folder / name).write_bytes(b"")
+    os.link(folder / name, folder / other)
 
 
 class KeyedTestCase(unittest.TestCase):
@@ -347,6 +369,29 @@ class FoldsCaseTests(KeyedTestCase):
         self.assertEqual(2, len(looked))
         self.assertNotIn(str(self.root), path_keys._FOLDS_CASE)
 
+    def test_an_entry_with_a_second_link_is_passed_over_since_that_link_may_be_the_swapped_name(self) -> None:
+        # A case-sensitive folder can gain a hard link spelled in the other case after its listing was read; a lookup
+        # by that spelling then finds the entry's own file, though the folder keeps case.
+        (self.root / "PROBE.txt").write_bytes(b"")
+        elsewhere = self.root.parent / f"{self.root.name}.link"
+        os.link(self.root / "PROBE.txt", elsewhere)
+        try:
+            with self.swapped_case(same=True):
+                self.assertIsNone(path_keys._asked_folds_case(str(self.root)))
+        finally:
+            elsewhere.unlink()
+        with self.swapped_case(same=True):
+            self.assertTrue(path_keys._asked_folds_case(str(self.root)))
+
+    def test_a_folder_is_asked_whatever_its_link_count(self) -> None:
+        # Linux and macOS count each subfolder's `..` among a folder's links, so a folder's count shows no hard link.
+        def status(mode: int, links: int) -> os.stat_result:
+            return os.stat_result((mode, 1, 1, links, 0, 0, 0, 0, 0, 0))
+
+        self.assertFalse(path_keys._hard_linked(status(stat.S_IFDIR | 0o755, 3)))
+        self.assertTrue(path_keys._hard_linked(status(stat.S_IFREG | 0o644, 2)))
+        self.assertFalse(path_keys._hard_linked(status(stat.S_IFREG | 0o644, 1)))
+
     def test_a_directory_with_nothing_to_ask_takes_the_answer_above_and_is_asked_again(self) -> None:
         (self.root / "1234").write_bytes(b"")  # no letter whose case could be swapped
         for folds in (True, False):
@@ -370,3 +415,60 @@ class FoldsCaseTests(KeyedTestCase):
         self.assertEqual(folds, folds_case(self.root))
         if sys.platform in ("win32", "linux"):
             self.assertEqual(sys.platform == "win32", folds)
+
+
+@unittest.skipUnless(sys.platform in ("win32", "linux"), "only a separate volume keeps case on macOS")
+class CaseSensitiveFolderTests(KeyedTestCase):
+    def test_two_hard_links_spelled_in_another_case_leave_the_folder_keeping_case(self) -> None:
+        # The two names find one file, as one name spelled two ways would in a folder that folds case, but the folder
+        # lists each as its own entry, which only a folder that keeps case can.
+        folder = case_sensitive_folder(self.root / "work")
+        hard_link_pair(folder, "0A.txt", "0a.TXT")
+        self.assertFalse(folds_case(folder))
+        self.assertNotEqual(path_key(folder / "result.json"), path_key(folder / "RESULT.JSON"))
+        reference = PurePath(folder / "result.json").parts
+        self.assertFalse(same_parts(PurePath(folder / "RESULT.JSON").parts, reference))
+        self.assertTrue(same_parts(reference, reference))
+
+    def test_a_swapped_name_listed_as_its_own_entry_keeps_case_whatever_a_lookup_finds(self) -> None:
+        folder = case_sensitive_folder(self.root / "work")
+        (folder / "PROBE.txt").write_bytes(b"")
+        (folder / "probe.TXT").write_bytes(b"")
+        real = os.lstat
+
+        def unifying(path: Any) -> os.stat_result:
+            given = Path(path)
+            return real(given.with_name("PROBE.txt") if given.name == "probe.TXT" else given)
+
+        with mock.patch.object(os, "lstat", side_effect=unifying):
+            self.assertFalse(path_keys._asked_folds_case(str(folder)))
+
+
+@unittest.skipUnless(sys.platform in ("win32", "linux"), "APFS finds one entry under both forms")
+class NormalizationFormLinkTests(KeyedTestCase):
+    composed, decomposed = "caf\u00e9", "cafe\u0301"
+
+    def test_two_hard_links_spelled_in_two_forms_are_two_entries(self) -> None:
+        hard_link_pair(self.root, self.composed, self.decomposed)
+        reference = PurePath(self.root / self.composed).parts
+        self.assertFalse(same_parts(PurePath(self.root / self.decomposed).parts, reference))
+
+    def test_a_second_link_missing_from_the_listing_still_keeps_the_forms_apart(self) -> None:
+        # A link made after the listing was read is listed nowhere the comparison saw, but its file has two links.
+        hard_link_pair(self.root, self.composed, self.decomposed)
+        reference = PurePath(self.root / self.composed).parts
+        with mock.patch.object(path_keys, "_names", return_value={self.composed}):
+            self.assertFalse(same_parts(PurePath(self.root / self.decomposed).parts, reference))
+
+    def test_both_forms_listed_are_two_entries_whatever_a_lookup_finds(self) -> None:
+        (self.root / self.composed).write_bytes(b"")
+        (self.root / self.decomposed).write_bytes(b"")
+        real = os.lstat
+
+        def unifying(path: Any) -> os.stat_result:
+            given = Path(path)
+            return real(given.with_name(self.composed) if given.name == self.decomposed else given)
+
+        reference = PurePath(self.root / self.composed).parts
+        with mock.patch.object(os, "lstat", side_effect=unifying):
+            self.assertFalse(same_parts(PurePath(self.root / self.decomposed).parts, reference))
