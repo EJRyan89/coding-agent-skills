@@ -542,11 +542,11 @@ EXECUTABLE_RUNNERS = frozenset(name for name, start in PROCESS_STARTS.items() if
 CLIENT_CLASSES = {"git_client.GitClient": "git", "github_client.GitHubClient": "gh"}
 # shutil.which finds the program a script then runs. A script that takes it as an injected service calls it by its
 # own name, such as services.which("dotnet"), so a call of any function named which counts too, and so do
-# ejryan89-skill-core's locator's find_executable, which the deployer's platform_support also names, find_executables,
-# which lists every match in its search order, and path_programs, which lists every match on PATH. A lookup takes the
-# program's name first, or by one of LOOKUP_KEYWORDS.
+# ejryan89-skill-core's locator's find_executable and find_program, which the deployer's platform_support also names,
+# find_executables, which lists every match in its search order, and path_programs, which lists every match on PATH. A
+# lookup takes the program's name first, or by one of LOOKUP_KEYWORDS.
 COMMAND_LOOKUP = "shutil.which"
-LOOKUP_NAMES = frozenset({"which", "path_programs", "find_executable", "find_executables"})
+LOOKUP_NAMES = frozenset({"which", "path_programs", "find_executable", "find_executables", "find_program"})
 LOOKUP_KEYWORDS = frozenset({"cmd", "name"})
 # Calls whose result names the program their first argument does: a path or text conversion, a copy into a list or a
 # tuple, a split or a join of a command, and ejryan89-skill-core's located_command, which names a command's program by

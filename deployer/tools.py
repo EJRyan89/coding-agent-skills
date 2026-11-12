@@ -164,15 +164,15 @@ SKILL_TOOLS = {
     tool.name: tool
     for tool in (
         # 2.48.0 added `gh api --paginate --slurp`, which skill scripts use to parse paginated output as JSON.
-        Tool("gh", "gh", lambda: platform_support.find_executable("gh"), minimum=(2, 48, 0)),
+        Tool("gh", "gh", lambda: platform_support.find_program("gh"), minimum=(2, 48, 0)),
         COPILOT,
         # The deprecated dotnet-format global tool, which formats only a .sln holding a project older than SDK-style,
         # so a skill that runs it declares it optional.
-        Tool("dotnet-format", "dotnet-format", lambda: platform_support.find_executable("dotnet-format")),
+        Tool("dotnet-format", "dotnet-format", lambda: platform_support.find_program("dotnet-format")),
         # The .NET SDK's `dotnet format` formats a .slnx solution, which the dotnet-format global tool cannot open,
         # and a .sln of SDK-style projects, whose analyzers the global tool cannot load, so a skill that formats
         # declares it required; 9.0.200 is the first SDK that reads .slnx.
-        Tool("dotnet", "dotnet", lambda: platform_support.find_executable("dotnet"), minimum=(9, 0, 200)),
+        Tool("dotnet", "dotnet", lambda: platform_support.find_program("dotnet"), minimum=(9, 0, 200)),
         # Shared maintained-release policy; check and each extraction use the same locator and bounded vendor probe.
         Tool(
             "pdftotext",
@@ -189,7 +189,7 @@ SKILL_TOOLS = {
 VERIFY_TOOLS = {tool.name: tool for tool in (CODEX, COPILOT)}
 
 # Git, which every skill runs and a deployment from a Git checkout needs to record its commit. It has no floor.
-GIT = Tool("git", "Git", lambda: platform_support.find_executable("git"), other_uses=("every skill",))
+GIT = Tool("git", "Git", lambda: platform_support.find_program("git"), other_uses=("every skill",))
 
 # Tools `deploy.py check` reports so that its output alone answers a bug report: Git, and Claude Code, which no
 # deployment needs. 2.1.295 is the first Claude Code that honors a hook's

@@ -91,7 +91,7 @@ class PresenceReadTests(DeployerTestCase):
         result = SimpleNamespace(returncode=0, output=f"{exec_path}\n")
         return mock.patch.multiple(
             platform_support,
-            find_executable=mock.DEFAULT,
+            find_program=mock.DEFAULT,
             run_tool=mock.Mock(return_value=result),
         )
 

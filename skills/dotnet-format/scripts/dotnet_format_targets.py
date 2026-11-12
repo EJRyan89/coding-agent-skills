@@ -77,7 +77,7 @@ from dotnet_solution import (
     same_path,
     solution_projects,
 )
-from executable_locator import find_executable
+from executable_locator import find_program
 from file_presence import ABSENT, NotAFile, is_present
 from flat_text import fact_line, flat_text
 from folder_walk import LINKED, LOOP, NESTED_CHECKOUT, walk_files
@@ -129,7 +129,7 @@ class Services:
     git: GitClient = field(default_factory=GitClient)
     gh: Callable[[Path], GhRunner] = gh_runner_in
     # ejryan89-skill-core's locator, which finds a tool where `deploy.py check` does.
-    which: Callable[[str], str | None] = field(default=find_executable)
+    which: Callable[[str], str | None] = field(default=find_program)
 
 
 class Stop(Exception):

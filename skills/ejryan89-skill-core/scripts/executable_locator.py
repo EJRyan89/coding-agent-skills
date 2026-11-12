@@ -4,8 +4,15 @@ A tool `check` reports as installed is then the one a skill finds and runs under
 PATH names, else one in a folder the platform's package manager links the commands it installs into, which PATH may
 not include. A skill runs the path found here, never the bare name: process creation would look the name up on PATH
 alone elsewhere, and on Windows in the working directory before PATH, and neither searches the link folders. Nothing
-here depends on the working directory. The deployer reaches it through `platform_support.find_executable`; it holds
-the platform's link folders itself because a skill's script runs without the deployer.
+here depends on the working directory. The deployer reaches it through `platform_support.find_executable` and
+`find_program`; it holds the platform's link folders itself because a skill's script runs without the deployer.
+
+Two lookups answer differently on Windows only when a shell script, a `.bat`, `.cmd`, or `.ps1` file, comes before the
+program: `find_program` passes over it, and `find_executable` does not. git, gh, dotnet, and dotnet-format, which a
+skill starts with arguments through `located_command`, are found by `find_program` in `check`, the skills, and the
+deployer alike, so `check` reports such a host as missing the tool when it has only a shell script. The runtime CLIs,
+which npm installs as `.cmd` scripts and which are started with arguments the repository writes, are found by
+`find_executable`.
 """
 
 from __future__ import annotations
@@ -156,14 +163,38 @@ def find_executables(name: str) -> list[str]:
 
 
 def find_executable(name: str) -> str | None:
-    """The program `name` runs: the first PATH names, else the first link folder's, or None when neither has it."""
+    """The program `name` runs: the first PATH names, else the first link folder's, or None when neither has it. A
+    shell script is found here like any program, since npm installs Claude Code, Codex, and Copilot CLI on Windows as
+    `.cmd` scripts, which `deploy.py check` and `verify` start with arguments the repository writes; a program started
+    with arguments its caller does not control is found with `find_program` instead."""
     return next(iter(find_executables(name)), None)
 
 
+# What Windows starts through a shell rather than as a program: cmd.exe runs a .bat or .cmd file and parses its whole
+# command line by its own rules, which Python's argument quoting does not hold against, and PowerShell runs a .ps1.
+SHELL_SCRIPT_SUFFIXES = frozenset({".bat", ".cmd", ".ps1"})
+
+
+def shell_script(path: str) -> bool:
+    """Whether Windows would start `path` through a shell, as it does npm's `copilot.cmd`, rather than as a program.
+    Elsewhere none is: the kernel starts a script by its `#!` line and hands it the arguments as they are, so no shell
+    parses its command line."""
+    return sys.platform == "win32" and Path(path).suffix.casefold() in SHELL_SCRIPT_SUFFIXES
+
+
+def find_program(name: str) -> str | None:
+    """The first program `find_executables` finds for `name` that is no shell script, wherever a shell script stands
+    before it, or None when it finds none. cmd.exe would read `&`, `|`, `^`, `%`, `<`, `>`, and `"` in an argument as
+    its own syntax, so an argument such as a search pattern a reviewer wrote could run a second command; a program
+    found here receives its arguments as they are."""
+    return next((path for path in find_executables(name) if not shell_script(path)), None)
+
+
 def located_command(command: Sequence[str], *, kept: Found | None = None) -> list[str]:
-    """`command` with its program named by the path the locator finds for it, so the program run is the one `check`
-    reports; a program already given as a path is left as it is. Raises FileNotFoundError, as starting a missing
-    program does, when the locator finds none.
+    """`command` with its program named by the path `find_program` finds for it, so the program run is the one `check`
+    reports and never a shell script, since the caller's arguments, such as a search pattern for git or gh, may hold
+    text no caller controls; a program already given as a path is left as it is. Raises FileNotFoundError, as starting
+    a missing program does, when the locator finds none, or finds only shell scripts.
 
     With `kept`, a program found is kept there and reused until one of LOOKUP_VARIABLES changes, so a caller that
     starts the same program many times walks PATH once rather than for each command."""
@@ -173,7 +204,7 @@ def located_command(command: Sequence[str], *, kept: Found | None = None) -> lis
     key = (program, *(os.environ.get(variable) for variable in LOOKUP_VARIABLES))
     found = None if kept is None else kept.get(key)
     if found is None:
-        found = find_executable(program)
+        found = find_program(program)
         if found is None:
             raise FileNotFoundError(errno.ENOENT, os.strerror(errno.ENOENT), program)
         if kept is not None:

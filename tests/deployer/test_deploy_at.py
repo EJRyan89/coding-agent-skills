@@ -60,7 +60,7 @@ class RefValidationTests(unittest.TestCase):
             # A warning git prints on stderr beside the answer, such as an ambiguous name's, is no part of the answer.
             result = platform_support.ToolResult(0, f"{commit}\n", "warning: refname 'v1.0.0' is ambiguous.\n")
             with (
-                mock.patch.object(platform_support, "find_executable", return_value="git"),
+                mock.patch.object(platform_support, "find_program", return_value="git"),
                 mock.patch.object(platform_support, "run_tool", return_value=result) as run_tool,
             ):
                 self.assertEqual(source_ref.Pin("v1.0.0", commit), source_ref.resolve(checkout, "v1.0.0"))
@@ -77,7 +77,7 @@ class RefValidationTests(unittest.TestCase):
             for output in ("abc1234\n", "0123456789abcdef0123456789abcdef01234567\nsecond line\n", ""):
                 with (
                     self.subTest(output=output),
-                    mock.patch.object(platform_support, "find_executable", return_value="git"),
+                    mock.patch.object(platform_support, "find_program", return_value="git"),
                     mock.patch.object(
                         platform_support, "run_tool", return_value=platform_support.ToolResult(0, output)
                     ),
@@ -109,7 +109,7 @@ class RefValidationTests(unittest.TestCase):
             for (code, output), expected in failures.items():
                 with (
                     self.subTest(code=code, output=output),
-                    mock.patch.object(platform_support, "find_executable", return_value="git"),
+                    mock.patch.object(platform_support, "find_program", return_value="git"),
                     mock.patch.object(
                         platform_support, "run_tool", return_value=platform_support.ToolResult(code, "", output)
                     ),
@@ -310,7 +310,7 @@ class DeployAtTests(DeployerTestCase):
         # Its stdout is the answer and its stderr apart from it.
         ran = platform_support.ToolResult(0, "listed\n", "warning: aside\n")
         with (
-            mock.patch.object(platform_support, "find_executable", return_value="git"),
+            mock.patch.object(platform_support, "find_program", return_value="git"),
             mock.patch.object(platform_support, "run_tool", return_value=ran) as run_tool,
         ):
             result = source_ref._git_runner(["git", "-C", str(self.source), "for-each-ref"], 7.0)
@@ -695,13 +695,13 @@ class DeployAtTests(DeployerTestCase):
         self.deploy_fails("--all", "--at", "main", source=plain, pattern=r"--at needs a Git checkout")
 
     def test_a_machine_without_git_is_refused_with_the_install_remedy_before_anything_runs(self) -> None:
-        real = platform_support.find_executable
+        real = platform_support.find_program
 
-        def find_executable(name: str) -> str | None:
+        def find_program(name: str) -> str | None:
             return None if name == "git" else real(name)
 
         with (
-            mock.patch.object(platform_support, "find_executable", side_effect=find_executable),
+            mock.patch.object(platform_support, "find_program", side_effect=find_program),
             mock.patch.object(platform_support, "run_tool") as run_tool,
         ):
             result = self.deploy_fails("--all", "--at", "v1.0.0", pattern=r"--at needs Git")

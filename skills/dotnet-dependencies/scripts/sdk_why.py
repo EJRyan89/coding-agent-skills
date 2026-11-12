@@ -26,7 +26,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
 from bounded_process import non_interactive_environment, run_bounded
-from executable_locator import find_executable, located_command
+from executable_locator import find_program, located_command
 from ordinal_case import ordinal_fold
 
 ANSI = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
@@ -80,7 +80,7 @@ class Services:
     """External effects, replaceable in tests."""
 
     run: Runner = subprocess_runner
-    which: Callable[[str], str | None] = field(default=find_executable)
+    which: Callable[[str], str | None] = field(default=find_program)
 
 
 @dataclass(frozen=True)
