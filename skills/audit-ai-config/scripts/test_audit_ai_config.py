@@ -1246,6 +1246,72 @@ class BuiltInAgentCollisionTests(unittest.TestCase):
             ),
         )
 
+    def test_an_agent_in_a_subfolder_takes_the_folder_into_its_id(self) -> None:
+        # Copilot's custom-agents page: an agent in a subdirectory of agents includes the subdirectory name in its ID,
+        # the separator replaced with --, so team/explore.agent.md is team--explore, which no built-in agent is.
+        self.assertEqual(
+            [
+                ("ERROR", "collision", ".github/agents/team/named.agent.md", builtin_collision("task")),
+                ("ERROR", "collision", ".claude/agents/deep/er/reviewer.md", builtin_collision("research")),
+            ],
+            runtime_rows(
+                {
+                    ".github/agents/team/explore.agent.md": "---\ndescription: Mine.\n---\n",
+                    ".github/agents/team/named.agent.md": "---\nname: task\ndescription: Mine.\n---\n",
+                    ".claude/agents/deep/er/reviewer.md": "---\nname: research\ndescription: Mine.\n---\n",
+                },
+                ("collision",),
+            ),
+        )
+
+    def test_the_id_of_an_agent_in_a_subfolder_joins_its_folders_with_two_hyphens(self) -> None:
+        agents = Path("repo/.github/agents")
+        self.assertEqual("team--reviewer", audit._agent_id(agents, agents / "team/reviewer.agent.md"))
+        self.assertEqual("a--b--c", audit._agent_id(agents, agents / "a/b/c.md"))
+        self.assertEqual("reviewer", audit._agent_id(agents, agents / "reviewer.md"))
+
+    def test_an_id_a_subfolder_gives_characters_copilot_does_not_take_is_an_error(self) -> None:
+        self.assertEqual(
+            [
+                (
+                    "ERROR",
+                    "copilot-agent",
+                    ".github/agents/my team/reviewer.agent.md",
+                    "Custom agent ID 'my team--reviewer', which Copilot takes from the file's path, holds characters "
+                    "other than letters, digits, '.', '_', and '-'",
+                )
+            ],
+            runtime_rows(
+                {
+                    ".github/agents/my team/reviewer.agent.md": "---\ndescription: Mine.\n---\n",
+                    ".github/agents/team/reviewer.agent.md": "---\ndescription: Mine.\n---\n",
+                },
+                ("copilot-agent",),
+            ),
+        )
+
+    def test_an_agent_in_a_subfolder_is_checked_like_one_at_the_top(self) -> None:
+        self.assertEqual(
+            [
+                (
+                    "ERROR",
+                    "copilot-agent",
+                    ".github/agents/team/reviewer.agent.md",
+                    "Agent frontmatter requires description",
+                ),
+                ("ERROR", "copilot-agent", ".github/agents/team/reviewer.agent.md", "infer must be a boolean"),
+                ("ERROR", "claude-agent", ".claude/agents/team/unnamed.md", "Agent frontmatter requires name"),
+            ],
+            runtime_rows(
+                {
+                    ".github/agents/team/reviewer.agent.md": "---\ninfer: sometimes\n---\n",
+                    ".claude/agents/team/unnamed.md": "---\ndescription: Mine.\n---\n",
+                    ".claude/agents/team/notes.txt": "not an agent",
+                },
+                ("copilot-agent", "claude-agent"),
+            ),
+        )
+
     def test_an_empty_name_falls_back_to_the_id(self) -> None:
         self.assertEqual(
             [("ERROR", "collision", ".github/agents/rubber-duck.agent.md", builtin_collision("rubber-duck"))],
@@ -1339,7 +1405,7 @@ class CopilotConfigurationTests(unittest.TestCase):
         for text, expected in cases.items():
             with self.subTest(text=text):
                 agent.write_text(text, encoding="utf-8")
-                found = audit._validate_agent(agent, self.root)
+                found = audit._validate_agent(agent, self.root, agent.parent)
                 self.assertEqual(expected, [(finding.line, finding.message) for finding in found])
 
     def test_an_empty_allowed_tools_list_is_an_error_like_an_empty_value(self) -> None:
@@ -1388,7 +1454,7 @@ class CopilotConfigurationTests(unittest.TestCase):
             "modelPolicy: required # pinned\n---\n",
             encoding="utf-8",
         )
-        self.assertEqual([], audit._validate_agent(agent, self.root))
+        self.assertEqual([], audit._validate_agent(agent, self.root, agent.parent))
 
     def test_frontmatter_the_shared_reader_would_accept_or_refuse_is_judged_line_by_line(self) -> None:
         # Pinned while _frontmatter keeps its own line walk beside ejryan89-skill-core's reader; see the comment above
@@ -1451,7 +1517,7 @@ class CopilotConfigurationTests(unittest.TestCase):
         for text, expected in agents.items():
             with self.subTest(text=text):
                 agent.write_text(text, encoding="utf-8")
-                found = audit._validate_agent(agent, self.root)
+                found = audit._validate_agent(agent, self.root, agent.parent)
                 self.assertEqual(expected, [(finding.line, finding.message) for finding in found])
 
     def test_quoted_scalars_lists_and_nested_mappings_are_read_as_yaml_reads_them(self) -> None:
@@ -3978,7 +4044,14 @@ INVENTORY_EXPECTED: dict[str, list[tuple[str, str, str | None, str]]] = {
         ("ERROR", "inventory", ".github", f"{UNREAD} [Errno {errno.ENOTDIR}] not a directory: <path>"),
     ],
     "agent_directories": [
-        ("INFO", "inventory", ".github/agents", "Custom agent files found: Reviewer.md, author.agent.md"),
+        # Copilot CLI and Claude Code read the agents in a subfolder too.
+        (
+            "INFO",
+            "inventory",
+            ".github/agents",
+            "Custom agent files found: Reviewer.md, author.agent.md, nested/inner.md",
+        ),
+        ("INFO", "inventory", ".claude/agents", "Custom agent files found: only-a-folder/inner.md"),
     ],
     "agent_directory_is_empty": [],
     "agent_directory_is_a_file": [
@@ -4193,6 +4266,21 @@ class ReportSchemaReferenceTests(unittest.TestCase):
     def test_the_markdown_example_is_the_report_the_engine_prints(self) -> None:
         self.assertEqual(self._fence("### Markdown (default)", "markdown"), audit.format_markdown(self._example()))
 
+    def test_the_relay_table_names_each_key_the_relay_prints_in_its_order(self) -> None:
+        text = self.REFERENCE.read_text(encoding="utf-8")
+        section = text[text.index("### Relay (for the skill)") : text.index("### JSON (for CI integration)")]
+        documented = [line.split("|")[1].strip().strip("`") for line in section.splitlines() if line.startswith("| `")]
+        sources: dict[str, tuple[check_provenance.Source, ...]] = {
+            "mcp": (check_provenance.Source(page="https://example.test", text="A passage."),)
+        }
+        printed: list[str] = []
+        for line in audit.format_relay(self._example(), sources).splitlines():
+            key = re.split(r"[\t ]", line)[0]
+            if key not in printed:
+                printed.append(key)
+        self.assertEqual(["REPOSITORY", "AUTHORITY", "SCOPE", "RESULT", "SUMMARY", "FINDING", "SOURCE"], documented)
+        self.assertEqual(documented, printed)
+
     def test_the_json_example_is_the_report_the_engine_prints(self) -> None:
         self.assertEqual(
             json.loads(self._fence("### JSON (for CI integration)", "json")),
@@ -4237,6 +4325,7 @@ class AuditPolicyReferenceTests(unittest.TestCase):
             "claude-skill",
             "claude-agent",
             "codex-skill",
+            "codex-config",
             "codex-hook",
             "codex-agent",
             "codex-rule",
@@ -4280,6 +4369,50 @@ class ReportFormatTests(unittest.TestCase):
                 "| INFO | scope |  |  | No scope |",
             ],
             rows,
+        )
+
+    def test_the_relay_prints_the_relayed_findings_as_plain_lines(self) -> None:
+        result = audit.AuditResult(
+            repository="my\nrepo",
+            authority="conforming",
+            scope_status="file-derived",
+            findings=[
+                audit.Finding("INFO", "inventory", "CLAUDE.md", message="Found CLAUDE.md"),
+                audit.Finding("INFO", "limitation", ".github/instructions", message="Not checked"),
+                audit.Finding("WARNING", "mcp", message="Cannot validate statically"),
+                audit.Finding("ERROR", "mcp", "a|b c.json", 3, "Server 'a|b\nc': bad\u2028more"),
+            ],
+        )
+        self.assertEqual(
+            "REPOSITORY\tmy repo\n"
+            "AUTHORITY\tconforming\n"
+            "SCOPE\tfile-derived\n"
+            "RESULT ERRORS\n"
+            "SUMMARY ERROR 1\n"
+            "SUMMARY WARNING 1\n"
+            "SUMMARY INFO 2\n"
+            "SUMMARY INFO inventory 1\n"
+            "SUMMARY INFO limitation 1\n"
+            # A path holding punctuation and a message holding line breaks, each as plain text on its one line.
+            "FINDING\tERROR\tmcp\ta|b c.json\t3\tServer 'a|b c': bad more\n"
+            "FINDING\tWARNING\tmcp\t\t\tCannot validate statically\n"
+            "FINDING\tINFO\tlimitation\t.github/instructions\t\tNot checked\n",
+            audit.format_relay(result),
+        )
+
+    def test_the_relay_of_a_clean_audit_has_no_finding_lines(self) -> None:
+        result = audit.AuditResult(repository="r", authority="conforming", scope_status="no-declared-scope")
+        self.assertEqual(
+            [
+                "REPOSITORY\tr",
+                "AUTHORITY\tconforming",
+                "SCOPE\tno-declared-scope",
+                "RESULT COMPLIANT",
+                "SUMMARY ERROR 0",
+                "SUMMARY WARNING 0",
+                "SUMMARY INFO 0",
+            ],
+            audit.format_relay(result).splitlines(),
         )
 
     def test_json_findings_carry_no_detail(self) -> None:
@@ -5513,6 +5646,130 @@ class CodexConfigurationTests(unittest.TestCase):
             ),
         )
 
+    def test_a_session_end_or_interrupt_hook_timeout_over_three_seconds_is_a_warning(self) -> None:
+        # The hooks page: "SessionEnd and Interrupt use 1 second by default and support up to 3 seconds."
+        def hook(event: str, timeout: str) -> str:
+            return f'[[hooks.{event}]]\n[[hooks.{event}.hooks]]\ntype = "command"\ncommand = "x"\ntimeout = {timeout}\n'
+
+        def over(event: str, timeout: str) -> list[tuple[str, str, str | None, int | None, str]]:
+            return [
+                (
+                    "WARNING",
+                    "codex-hook",
+                    ".codex/config.toml",
+                    None,
+                    f"Hook on '{event}' sets a timeout of {timeout} seconds, over the 3 seconds Codex supports for "
+                    f"{event} hooks",
+                )
+            ]
+
+        cases = {
+            ("SessionEnd", "30"): over("SessionEnd", "30"),
+            ("SessionEnd", "3"): [],
+            ("SessionEnd", "1"): [],
+            ("Interrupt", "3.5"): over("Interrupt", "3.5"),
+            ("Interrupt", "3.0"): [],
+            # Other events run up to the long default, so a long timeout there is theirs to set.
+            ("Stop", "30"): [],
+        }
+        for (event, timeout), expected in cases.items():
+            with self.subTest(event=event, timeout=timeout):
+                self.assertEqual(expected, codex_rows({".codex/config.toml": hook(event, timeout)}))
+        self.assertEqual(
+            [
+                (
+                    "WARNING",
+                    "codex-hook",
+                    ".codex/hooks.json",
+                    None,
+                    "Hook on 'SessionEnd' sets a timeout of 30 seconds, over the 3 seconds Codex supports for "
+                    "SessionEnd hooks",
+                )
+            ],
+            codex_rows(
+                {
+                    ".codex/hooks.json": json.dumps(
+                        {"hooks": {"SessionEnd": [{"hooks": [{"type": "command", "command": "x", "timeout": 30}]}]}}
+                    )
+                }
+            ),
+        )
+
+    def test_claude_code_sets_no_such_limit_on_its_session_end_hooks(self) -> None:
+        hooks = {"SessionEnd": [{"hooks": [{"type": "command", "command": "x", "timeout": 30}]}]}
+        self.assertEqual([], audit.hook_problems(audit.CLAUDE_HOOKS, hooks))
+
+    def test_a_retired_approval_policy_is_reported_by_how_far_codex_has_retired_it(self) -> None:
+        # The configuration reference: "untrusted is unsupported, and on-failure is deprecated; use on-request for
+        # interactive runs or never for non-interactive runs." The approvals page: the retired untrusted "can prevent
+        # either client from starting".
+        cases: dict[str, list[tuple[str, str, str | None, int | None, str]]] = {
+            '"untrusted"': [
+                (
+                    "ERROR",
+                    "codex-config",
+                    ".codex/config.toml",
+                    None,
+                    "approval_policy = 'untrusted': Codex no longer supports it, and the retired setting can prevent "
+                    "Codex from starting; use 'on-request' for interactive runs or 'never' for non-interactive runs",
+                )
+            ],
+            '"on-failure"': [
+                (
+                    "WARNING",
+                    "codex-config",
+                    ".codex/config.toml",
+                    None,
+                    "approval_policy = 'on-failure': Codex has deprecated it; use 'on-request' for interactive runs "
+                    "or 'never' for non-interactive runs",
+                )
+            ],
+            '"on-request"': [],
+            '"never"': [],
+            "{ granular = { sandbox_approval = true } }": [],
+        }
+        for value, expected in cases.items():
+            with self.subTest(value=value):
+                self.assertEqual(expected, codex_rows({".codex/config.toml": f"approval_policy = {value}\n"}))
+
+    def test_a_profile_in_a_projects_config_is_not_read_since_codex_ignores_it(self) -> None:
+        # The configuration reference: Codex ignores profile and profiles in a project's config.
+        self.assertEqual(
+            [],
+            codex_rows({".codex/config.toml": '[profiles.strict]\napproval_policy = "untrusted"\n'}),
+        )
+
+    def test_default_permissions_with_the_legacy_sandbox_settings_is_a_warning(self) -> None:
+        # The configuration reference, at default_permissions: "Don't combine with sandbox_mode or
+        # [sandbox_workspace_write]."
+        def combined(label: str) -> tuple[str, str, str | None, int | None, str]:
+            return (
+                "WARNING",
+                "codex-config",
+                ".codex/config.toml",
+                None,
+                f"default_permissions is set together with {label}, which Codex's configuration reference says not to "
+                "combine; set either default_permissions and its [permissions] tables, or sandbox_mode and "
+                "[sandbox_workspace_write]",
+            )
+
+        permissions = 'default_permissions = ":workspace"\n'
+        mode = 'sandbox_mode = "workspace-write"\n'
+        table = "[sandbox_workspace_write]\nnetwork_access = true\n"
+        cases = {
+            "with sandbox_mode": (permissions + mode, [combined("sandbox_mode")]),
+            "with the table": (permissions + table, [combined("a [sandbox_workspace_write] table")]),
+            "with both": (
+                permissions + mode + table,
+                [combined("sandbox_mode"), combined("a [sandbox_workspace_write] table")],
+            ),
+            "default_permissions alone": (permissions, []),
+            "sandbox_mode and its table alone": (mode + table, []),
+        }
+        for name, (config, expected) in cases.items():
+            with self.subTest(name=name):
+                self.assertEqual(expected, codex_rows({".codex/config.toml": config}))
+
     def test_a_custom_agent_needs_its_fields_and_sets_no_session_setting(self) -> None:
         self.assertEqual([], codex_rows({".codex/agents/explorer.toml": CODEX_AGENT}))
         self.assertEqual(
@@ -6353,15 +6610,8 @@ class UnlistableDirectoryTests(unittest.TestCase):
         self.temp.cleanup()
 
     def test_a_permission_error_listing_agents_is_an_error_at_the_directory(self) -> None:
-        listed = Path.iterdir
-
-        def iterdir(path: Path) -> Iterator[Path]:
-            # The audit resolves its root, which can spell the temporary directory differently from self.root.
-            if path.parts[-2:] == (".github", "agents"):
-                raise PermissionError(13, "Access is denied", str(path))
-            return listed(path)
-
-        with mock.patch.object(Path, "iterdir", iterdir):
+        # The agents folder is walked, its subfolders too, so it is refused as every walk and listing meets it.
+        with listing_denied(self.root / ".github/agents"):
             result = audit.audit(self.root)
         # The inventory reports it first, and audit() keeps one such ERROR per path.
         self.assertEqual(
@@ -6369,7 +6619,7 @@ class UnlistableDirectoryTests(unittest.TestCase):
             [(f.severity, f.check) for f in result.findings if f.path == ".github/agents"],
         )
         (message,) = [f.message for f in result.findings if f.path == ".github/agents"]
-        self.assertTrue(message.startswith(f"{UNREAD} [Errno 13] Access is denied: "), message)
+        self.assertEqual(f"{UNREAD} the folder cannot be listed: Access is denied", message)
 
 
 def _link_directory(target: Path, link: Path) -> None:
@@ -7129,6 +7379,25 @@ class ProvenanceTests(unittest.TestCase):
             ],
             data["provenance"]["authority"],
         )
+
+    def test_the_relay_names_the_sources_of_the_checks_it_reports_only_when_asked(self) -> None:
+        code, plain = self._main("--relay")
+        self.assertEqual(1, code)
+        self.assertNotIn("SOURCE\t", plain)
+        code, report = self._main("--relay", "--provenance")
+        self.assertEqual(1, code)
+        self.assertEqual(plain, report[: len(plain)])
+        self.assertEqual(
+            "SOURCE\tauthority\tdecision\tA repository counts as generated from CLAUDE.md only on the signals check 2 "
+            "of references/audit-policy.md names, the layout of this source's retired init-ai-config generator, so a "
+            "repository that keeps its instructions another way is never reported as drifted.\n",
+            report[len(plain) :],
+        )
+
+    def test_the_relay_and_json_reports_are_one_or_the_other(self) -> None:
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as raised:
+            self._main("--relay", "--json")
+        self.assertEqual(2, raised.exception.code)
 
     def test_a_report_without_findings_says_no_check_has_a_source(self) -> None:
         self.assertEqual(
