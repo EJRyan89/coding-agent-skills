@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import errno
 import os
+import shutil
 import stat
 import sys
 import tempfile
@@ -14,7 +15,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts"))
 
 import path_keys
-from harness import DeployerTestCase, forward, make_directory_link
+from harness import REPOSITORY_ROOT, DeployerTestCase, forward, make_directory_link
 from test_presence_reads import stat_failing_at
 
 from deployer import platform_support
@@ -41,9 +42,11 @@ if platform_support.WINDOWS:
 
         def which(self, git: str | None) -> Any:
             wsl_bash = r"C:\Windows\System32\bash.exe"
-            return mock.patch(
-                "deployer.platform_support.find_executable",
-                side_effect=lambda name: {"git": git, "bash": wsl_bash}.get(name),
+            found = {"git": git, "bash": wsl_bash}
+            return mock.patch.multiple(
+                "deployer.platform_support",
+                find_executable=mock.Mock(side_effect=found.get),
+                find_program=mock.Mock(side_effect=found.get),
             )
 
         def test_git_bash_variable_wins(self) -> None:
@@ -237,6 +240,7 @@ class GitBashVariableTests(DeployerTestCase):
         for patcher in (
             mock.patch.object(platform_support, "WINDOWS", True),
             mock.patch("deployer.platform_support.find_executable", return_value=None),
+            mock.patch("deployer.platform_support.find_program", return_value=None),
         ):
             patcher.start()
             self.addCleanup(patcher.stop)
@@ -294,7 +298,7 @@ class BashBesideGitTests(DeployerTestCase):
 
     def bash_beside(self, result: platform_support.ToolResult) -> str | None:
         with (
-            mock.patch.object(platform_support, "find_executable", return_value=self.GIT),
+            mock.patch.object(platform_support, "find_program", return_value=self.GIT),
             mock.patch.object(platform_support, "run_tool", return_value=result) as run_tool,
         ):
             found = platform_support._bash_beside_git()
@@ -922,3 +926,61 @@ class TerminationStatusTests(unittest.TestCase):
         for returncode in (0, 1, 2, 127, 255, 2_147_483_647):
             with self.subTest(returncode=returncode):
                 self.assertIsNone(platform_support.termination_status(returncode))
+
+
+@unittest.skipUnless(sys.platform == "win32", "only Windows starts a .bat or .cmd file through cmd.exe")
+class DeployerGitShellScriptTests(unittest.TestCase):
+    """An echo-only `git.cmd` that leaves a mark when it runs, first on PATH before the real git: the deployer's own
+    git, for `--at`, the deployed commit, and the Bash beside git, starts the real git and never the shell script."""
+
+    def setUp(self) -> None:
+        temporary = tempfile.TemporaryDirectory(prefix="deployer git shim ")
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name)
+        self.shims = root / "shims folder"
+        self.shims.mkdir()
+        self.mark = self.shims / "ran.txt"
+        (self.shims / "git.cmd").write_text(
+            '@echo off\r\necho SHIM-ARGS: %*\r\necho %~nx0>> "%~dp0ran.txt"\r\n', encoding="utf-8"
+        )
+        real = platform_support.find_program("git")
+        self.assertIsNotNone(real, "validation needs Git")
+        self.real_folder = Path(real or "").parent
+        self.local = root / "local app data"
+        self.local.mkdir()
+
+    def on_path(self, *folders: Path) -> Any:
+        path = os.pathsep.join(str(folder) for folder in folders)
+        return mock.patch.dict(
+            os.environ, {"PATH": path, "PATHEXT": ".BAT;.CMD;.COM;.EXE", "LOCALAPPDATA": str(self.local)}
+        )
+
+    def test_the_deployer_runs_the_git_after_a_shell_script_on_path(self) -> None:
+        from deployer import source_commit, source_ref
+
+        with self.on_path(self.real_folder):
+            expected = (
+                source_commit.head_commit(REPOSITORY_ROOT),
+                platform_support._bash_beside_git(),
+            )
+        with self.on_path(self.shims, self.real_folder):
+            self.assertEqual(str(self.shims / "git.cmd").casefold(), (shutil.which("git") or "").casefold())
+            self.assertEqual(
+                str(self.real_folder / "git.exe").casefold(), (platform_support.find_program("git") or "").casefold()
+            )
+            self.assertTrue(source_ref._run_git(["--version"]).output.startswith("git version"))
+            self.assertEqual(
+                expected, (source_commit.head_commit(REPOSITORY_ROOT), platform_support._bash_beside_git())
+            )
+        self.assertFalse(self.mark.exists(), "the shell script ran")
+
+    def test_a_shell_script_alone_is_no_git(self) -> None:
+        from deployer import source_ref
+
+        with self.on_path(self.shims):
+            self.assertIsNone(platform_support.find_program("git"))
+            self.assertIsNone(platform_support._bash_beside_git())
+            with self.assertRaises(DeployError) as refused:
+                source_ref._run_git(["--version"])
+            self.assertEqual("ERROR: --at needs Git, which was not found.", refused.exception.lines[0])
+        self.assertFalse(self.mark.exists(), "the shell script ran")

@@ -79,7 +79,7 @@ def _run_git(
     separate_errors: bool = False,
     index_file: Path | None = None,
 ) -> platform_support.ToolResult:
-    git = platform_support.find_executable("git")
+    git = platform_support.find_program("git")
     if git is None:
         raise DeployError(
             "ERROR: --at needs Git, which was not found.",

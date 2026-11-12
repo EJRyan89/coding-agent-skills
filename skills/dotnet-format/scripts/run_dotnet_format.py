@@ -76,7 +76,7 @@ from dotnet_format_targets import (
     solution_refusal,
     write_refusal,
 )
-from executable_locator import find_executable, located_command
+from executable_locator import find_program, located_command
 from flat_text import fact_line, flat_text
 from seconds_option import positive_seconds
 
@@ -141,7 +141,7 @@ class Services:
     """External effects, replaceable in tests."""
 
     run: Runner = subprocess_runner
-    which: Callable[[str], str | None] = field(default=find_executable)
+    which: Callable[[str], str | None] = field(default=find_program)
     clock: Callable[[], float] = field(default=time.monotonic)
 
 

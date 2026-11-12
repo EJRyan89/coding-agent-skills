@@ -44,7 +44,7 @@ def _description(source_dir: Path, commit: str) -> str | None:
     git's reason."""
     if not is_checkout(source_dir):
         return None
-    git = platform_support.find_executable("git")
+    git = platform_support.find_program("git")
     if git is None:
         return None
     cannot = f"ERROR: Cannot describe the deployed commit {commit} in {platform_support.normalize(source_dir)}"
@@ -82,7 +82,7 @@ def head_commit(source_dir: Path) -> str | None:
     if not is_checkout(source_dir):
         return None
     cannot = f"ERROR: Cannot read the commit checked out in {platform_support.normalize(source_dir)}"
-    git = platform_support.find_executable("git")
+    git = platform_support.find_program("git")
     if git is None:
         raise DeployError(
             f"{cannot}: Git was not found.",
