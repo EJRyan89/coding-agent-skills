@@ -6602,7 +6602,9 @@ class UnlistableDirectoryTests(unittest.TestCase):
 
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
-        self.root = Path(self.temp.name)
+        # The audit resolves its root, so a path the listing or stat refuses is spelled as the resolved root spells
+        # it, which differs where the temporary directory is spelled with a short 8.3 name, as on a CI runner.
+        self.root = Path(self.temp.name).resolve()
         _setup_conforming_repo(self.root)
         _write_fixture(self.root, {".github/agents/reviewer.md": "---\ndescription: Reviews.\n---\n"})
 
