@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import functools
 import os
 import re
@@ -19,6 +20,7 @@ from typing import IO, Any, TypeVar
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
+import file_lock
 import file_presence
 import json_reader
 import json_writer
@@ -52,7 +54,7 @@ Value = TypeVar("Value")
 # The presence reads and removals here that read a path they cannot stat, list, or remove as nothing there,
 # each with why that is the answer it should give.
 PRESENCE_ALLOWED = {
-    "ResourceLock.__enter__": "removes the lock folder it just made when writing its owner failed, before raising that"
+    "ResourceLock._claim": "removes the lock folder it just made when writing its owner failed, before raising that"
     " failure, which an error of the removal must not replace",
     "ResourceLock._reclaim_stale": "removes a stale lock already moved aside under a name no lock takes; what a failed"
     " removal leaves is debris, never a lock",
@@ -280,14 +282,21 @@ RELEASED = LockIdentity()
 
 
 class ResourceLock(AbstractContextManager["ResourceLock"]):
-    """Short-lived mkdir lock with token-checked release and conservative recovery.
+    """Short-lived lock: an operating-system file lock beside a lock directory, with token-checked release.
 
-    The owner file records the holder's PID and start time. A lock is reclaimed, with a warning on stderr, when its
-    holder is provably gone (not running, or its PID now names a process with a different start time), or when it
+    The holder takes ejryan89-skill-core's file lock on `<directory>.held`, which the operating system releases when
+    the holder ends, then makes the directory and its owner file. Only the holder of the file lock reads, reclaims, or
+    makes the directory, so two waiters never reclaim at once; the directory keeps out a holder from before the file
+    lock, which takes only the directory. A file system that refuses the file lock is refused, never served by the
+    directory alone.
+
+    The owner file records the holder's PID and start time. A directory is reclaimed, with a warning on stderr, when
+    its holder is provably gone (not running, or its PID now names a process with a different start time), or when it
     has had no valid owner file (none, or one torn) for `owner_grace_seconds`. A live PID whose identity cannot be
-    checked, and an owner file that cannot be opened, keep the lock, as the deployer's lock does. A waiter reads the
-    owner file through open_shared, so it never stops the holder releasing the lock; a release that cannot remove
-    the lock all the same warns and returns, since the holder's work is done and the lock is stale once it exits.
+    checked, and an owner file that cannot be opened, keep it, as the deployer's lock does. A reclaimer reads the owner
+    file through open_shared, so it never stops a holder from before the file lock releasing its directory; a release
+    that cannot remove the directory all the same warns and returns, since the holder's work is done and the directory
+    is stale once it exits.
     """
 
     def __init__(
@@ -304,10 +313,16 @@ class ResourceLock(AbstractContextManager["ResourceLock"]):
         self.owner_grace_seconds = owner_grace_seconds
         self.token = secrets.token_hex(16)
         self._held = False
+        self._handle: int | None = None
 
     @property
     def owner_path(self) -> Path:
         return self.directory / "owner.json"
+
+    @property
+    def file_lock_path(self) -> Path:
+        """The file whose operating-system lock a holder takes before it reads, removes, or makes the lock directory."""
+        return self.directory.with_name(f"{self.directory.name}.held")
 
     def __enter__(self) -> ResourceLock:
         deadline = time.monotonic() + self.timeout_seconds
@@ -317,34 +332,73 @@ class ResourceLock(AbstractContextManager["ResourceLock"]):
             raise PersistenceError(f"Cannot prepare lock parent {self.directory.parent}: {exc}") from exc
         start_time = self.probe(os.getpid()).start_time
         while True:
+            handle = self._take_file_lock()
+            if handle is not None:
+                try:
+                    claimed = self._claim(start_time)
+                except BaseException:
+                    file_lock.release(handle, self.file_lock_path)
+                    raise
+                if claimed:
+                    self._handle = handle
+                    self._held = True
+                    return self
+                file_lock.release(handle, self.file_lock_path)
+            if time.monotonic() >= deadline:
+                if handle is None:
+                    raise PersistenceError(f"Timed out waiting for lock {self.directory}: another review holds it")
+                raise PersistenceError(
+                    f"Timed out waiting for lock {self.directory}; delete it if no review is running"
+                )
+            time.sleep(0.05)
+
+    def _take_file_lock(self) -> int | None:
+        """The descriptor holding the file lock, or None while another process holds it."""
+        try:
+            return file_lock.take(self.file_lock_path)
+        except file_lock.FileLockError as exc:
+            if exc.unsupported:
+                # A file system with no lock at all lets no process hold this one, so the file is no one's. Any other
+                # refusal may come while a holder runs, whose file this one must not delete.
+                with contextlib.suppress(OSError):
+                    self.file_lock_path.unlink()
+            raise PersistenceError(
+                f"Cannot lock {self.file_lock_path}: {exc.strerror or exc}; a review lock needs a folder on a file "
+                "system that supports file locks, which some network and synced folders do not"
+            ) from exc
+        except OSError as exc:
+            raise PersistenceError(f"Cannot open lock {self.file_lock_path}: {exc}") from exc
+
+    def _claim(self, start_time: int | None) -> bool:
+        """Make the lock directory and its owner file, holding the file lock, after reclaiming a stale directory;
+        False while the directory may belong to a holder from before the file lock, which takes only the directory."""
+        try:
+            self.directory.mkdir()
+        except FileExistsError:
+            if not self._reclaim_stale():
+                return False
             try:
                 self.directory.mkdir()
             except FileExistsError:
-                if self._reclaim_stale():
-                    continue
-                if time.monotonic() >= deadline:
-                    raise PersistenceError(
-                        f"Timed out waiting for lock {self.directory}; delete it if no review is running"
-                    ) from None
-                time.sleep(0.05)
-                continue
+                return False
             except OSError as exc:
                 raise PersistenceError(f"Cannot acquire lock {self.directory}: {exc}") from exc
-            try:
-                atomic_write_json(
-                    self.owner_path,
-                    {
-                        "pid": os.getpid(),
-                        "token": self.token,
-                        "created_unix": time.time(),
-                        "start_time": start_time,
-                    },
-                )
-            except PersistenceError:
-                shutil.rmtree(self.directory, ignore_errors=True)
-                raise
-            self._held = True
-            return self
+        except OSError as exc:
+            raise PersistenceError(f"Cannot acquire lock {self.directory}: {exc}") from exc
+        try:
+            atomic_write_json(
+                self.owner_path,
+                {
+                    "pid": os.getpid(),
+                    "token": self.token,
+                    "created_unix": time.time(),
+                    "start_time": start_time,
+                },
+            )
+        except PersistenceError:
+            shutil.rmtree(self.directory, ignore_errors=True)
+            raise
+        return True
 
     @staticmethod
     def _inspect(directory: Path) -> tuple[LockIdentity, dict[str, Any]] | None:
@@ -408,8 +462,9 @@ class ResourceLock(AbstractContextManager["ResourceLock"]):
         """Whether the lock may be free now: released while it was inspected, or stale and moved aside and deleted
         with a warning. False while the lock may still be held.
 
-        Moving the directory aside is the one atomic step, so the check that it held the lock judged stale comes
-        after it: a lock another process took in between is moved back.
+        Only the holder of the file lock reclaims, so no other reclaim of this version races it. A holder from before
+        the file lock takes the directory without it, so the check that what was moved aside is the lock judged stale
+        still comes after the move, and a lock such a holder took in between is moved back.
         """
         inspected = self._inspect(self.directory)
         if inspected is None:
@@ -442,13 +497,21 @@ class ResourceLock(AbstractContextManager["ResourceLock"]):
     def __exit__(self, exc_type: object, exc: object, traceback: object) -> None:
         if not self._held:
             return
+        self._held = False
+        handle, self._handle = self._handle, None
+        try:
+            self._remove_directory()
+        finally:
+            if handle is not None:
+                file_lock.release(handle, self.file_lock_path)
+
+    def _remove_directory(self) -> None:
         try:
             owner = READ.json_object(read_json(self.owner_path, maximum_bytes=OWNER_MAXIMUM_BYTES), "lock owner")
         except FieldError as exc:
             raise PersistenceError(f"Lock ownership changed before release: {self.directory}") from exc
         if owner.get("token") != self.token or owner.get("pid") != os.getpid():
             raise PersistenceError(f"Lock ownership changed before release: {self.directory}")
-        self._held = False
         try:
             self.owner_path.unlink()
             self.directory.rmdir()

@@ -36,6 +36,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
 import executable_locator
+import file_lock
 import review_batches
 import review_canary
 import review_dispatch
@@ -2558,36 +2559,28 @@ class ConcurrentReviewTests(AdversarialFixture):
         self.write_results(second)
         start = threading.Barrier(2)
         outcomes: dict[str, BaseException | None] = {}
-        # Force the interleaving that left the lock behind: the session holding the pull request's lock waits
-        # until the other is reading its owner file, and that read stays open until the lock is released.
-        reading, released = threading.Event(), threading.Event()
-        held: list[Path] = []
-        open_shared, enter, exit_ = (
-            review_io.open_shared,
-            review_io.ResourceLock.__enter__,
-            review_io.ResourceLock.__exit__,
-        )
+        # Force the overlap: the session holding the pull request's lock waits until the other is refused its file
+        # lock. The waiting session never reads the holder's owner file, which on Windows once kept the holder from
+        # releasing the lock, since only a holder of the file lock reads it.
+        waiting = threading.Event()
+        read: list[Path] = []
+        open_shared, take, enter = review_io.open_shared, file_lock.take, review_io.ResourceLock.__enter__
 
-        def enter_until_read(lock: review_io.ResourceLock) -> review_io.ResourceLock:
+        def enter_until_waited(lock: review_io.ResourceLock) -> review_io.ResourceLock:
             entered = enter(lock)
             if lock.directory.parent.name == ".locks":
-                reading.wait(30)
+                waiting.wait(30)
             return entered
 
-        def read_until_released(path: Path) -> IO[bytes]:
-            released.clear()
-            stream = open_shared(path)
-            if not reading.is_set():
-                held.append(path)
-                reading.set()
-                released.wait(30)
-            return stream
+        def take_or_wait(path: Path, *rest: Any) -> int | None:
+            handle = take(path, *rest)
+            if handle is None and path.parent.name == ".locks":
+                waiting.set()
+            return handle
 
-        def exit_and_signal(lock: review_io.ResourceLock, *details: Any) -> None:
-            try:
-                exit_(lock, *details)
-            finally:
-                released.set()
+        def recorded_read(path: Path) -> IO[bytes]:
+            read.append(path)
+            return open_shared(path)
 
         def finalize(name: str, ready: dict[str, Any]) -> None:
             start.wait()
@@ -2599,16 +2592,17 @@ class ConcurrentReviewTests(AdversarialFixture):
 
         threads = [threading.Thread(target=finalize, args=item) for item in (("first", first), ("second", second))]
         with (
-            mock.patch.object(review_io.ResourceLock, "__enter__", enter_until_read),
-            mock.patch.object(review_io.ResourceLock, "__exit__", exit_and_signal),
-            mock.patch.object(review_io, "open_shared", read_until_released),
+            mock.patch.object(review_io.ResourceLock, "__enter__", enter_until_waited),
+            mock.patch.object(file_lock, "take", take_or_wait),
+            mock.patch.object(review_io, "open_shared", recorded_read),
         ):
             for thread in threads:
                 thread.start()
             for thread in threads:
                 thread.join(60)
         self.assertEqual(2, len(outcomes), "both sessions ended")
-        self.assertEqual(1, len(held), "the lock was released while the waiting session read its owner file")
+        self.assertTrue(waiting.is_set(), "one session waited for the file lock the other held")
+        self.assertEqual([], [path for path in read if path.parent.parent.name == ".locks"])
         failed = [name for name, error in outcomes.items() if error is not None]
         self.assertEqual(1, len(failed), outcomes)
         self.assertRegex(str(outcomes[failed[0]]), "^Review version changed concurrently", "it took the lock")

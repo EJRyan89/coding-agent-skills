@@ -232,17 +232,16 @@ def failing_lock_metadata_write() -> mock._patch[mock.MagicMock | mock.AsyncMock
     return mock.patch("deployer.fsops.write_atomic", side_effect=failing_write)
 
 
-def contended_lock(lock_dir: Path) -> mock._patch[mock.MagicMock | mock.AsyncMock]:
-    """Let another deployment take the lock at lock_dir just before this one's second attempt to make it."""
+def contended_lock(lock_dir: Path, info: dict[str, Any]) -> mock._patch[mock.MagicMock | mock.AsyncMock]:
+    """Let a deployer from before the file lock, which takes only the record, make the record at lock_dir with info
+    just before this run makes it."""
     real_make_directory = fsops.make_directory
-    calls = {"count": 0}
 
     def contended(path: Path) -> None:
         if path == lock_dir:
-            calls["count"] += 1
-            if calls["count"] == 2:
-                real_make_directory(path)
-                raise FileExistsError(str(path))
+            real_make_directory(path)
+            (path / "info.json").write_text(json.dumps(info), encoding="utf-8")
+            raise FileExistsError(str(path))
         real_make_directory(path)
 
     return mock.patch("deployer.fsops.make_directory", side_effect=contended)

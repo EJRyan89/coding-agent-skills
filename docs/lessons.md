@@ -617,7 +617,7 @@ removed fails validation until its pattern follows it.
   answer, so it refuses what the run would refuse.
 - **Why:** A preview that answers before the read that refuses, such as reporting a pending recovery, promises a run
   that stops, and sends the user to the step that fails.
-- **Use:** `deployer.lock:check_holder`, which judges a lock already there as `deployer.lock:acquire` does and takes nothing,
+- **Use:** `deployer.lock:check_holder`, which judges a lock already there as `deployer.lock:acquire` does and holds nothing past the call,
   `deployer.pipeline:_reject_other_checkout`, which reads the manifest and refuses another checkout, and
   `deployer.journal:check_manifest_beside_runs`, which refuses a run's journal beside no manifest: the deployment's
   checks before it recovers, which `deployer.pipeline:_dry_run` makes first too, in the deployment's order, beginning,
@@ -817,6 +817,22 @@ removed fails validation until its pattern follows it.
   request; an `is_<owner>` function that returns `False` from an `except`; a confirmed deletion admitted by what a
   plan planned to offer rather than by the offer it recorded, such as `branch["action"] ==` in an eligibility set.
 - **Examples:** #1686, #1719, #1778, #2209
+
+### A lock is one the operating system releases
+
+- **Rule:** Mutual exclusion between processes is held by an operating-system file lock that ends with its holder,
+  never by a file or folder whose holder a later process judges gone and then reclaims.
+- **Why:** No filesystem step deletes or moves a path only while it still holds what was judged, so two reclaimers
+  each take a lock the other made, and two deployments or review writers run at once.
+- **Use:** `file_lock:take`, `file_lock:release`, `file_lock:held_elsewhere`
+- **Guard:** `tests/deployer/test_rendering_locking.py::LockTests::test_no_deployment_takes_the_lock_while_another_reclaims_a_stale_one`,
+  `skills/ejryan89-code-review-core/scripts/test_review_state.py::ResourceFileLockTests::test_no_session_takes_the_lock_while_another_reclaims_a_stale_one`,
+  `skills/ejryan89-skill-core/scripts/test_file_lock.py::FileLockTests`
+- **Search for:** `.mkdir()` or `make_directory` whose `FileExistsError` means another holds a lock; `os.O_EXCL`
+  or `open(..., "x")` used as a lock; a `stale` or `reclaim` path that moves, renames, or deletes a lock another
+  process may hold; a lock file deleted on Linux or macOS while a waiter may hold it open, with no check that the
+  path still names the file locked.
+- **Examples:** #2658
 
 ### A decision about merged, retired, or owned is made by identity
 
