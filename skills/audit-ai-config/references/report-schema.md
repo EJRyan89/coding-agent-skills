@@ -9,13 +9,13 @@ Finding format, severities, and output modes for the audit engine.
 - Severities
 - Exit Codes
 - Ordering
-- Output Formats: Markdown (default), JSON (for CI integration)
+- Output Formats: Markdown (default), Relay (for the skill), JSON (for CI integration)
 - Manual-Verification Warnings
 - No Remediation
 
 ## Report Envelope
 
-The Markdown and JSON report include repository `authority` plus `scopeStatus`.
+The Markdown, relay, and JSON reports include repository `authority` plus `scopeStatus`.
 `scopeStatus` is one of these values:
 
 - `independently-derived` when literal generator target declarations were read and statically compared to the
@@ -39,8 +39,8 @@ Each finding contains:
 |---|---|---|
 | `severity` | enum | `ERROR`, `WARNING`, or `INFO` |
 | `check` | string | Which audit check produced this finding (e.g., `parity`, `orphan`, `mcp`, or `limitation` for an applicable known limitation) |
-| `path` | string | File path relative to repo root (when applicable; JSON `null` and an empty Markdown cell otherwise) |
-| `line` | int | Line number (when applicable, 1-indexed; JSON `null` and an empty Markdown cell otherwise) |
+| `path` | string | File path relative to repo root (when applicable; JSON `null`, an empty Markdown cell, and an empty relay field otherwise) |
+| `line` | int | Line number (when applicable, 1-indexed; JSON `null`, an empty Markdown cell, and an empty relay field otherwise) |
 | `message` | string | Human-readable description of the finding |
 
 ## Severities
@@ -53,7 +53,7 @@ Each finding contains:
 
 ## Exit Codes
 
-The Markdown report names its result on one `RESULT` line, before the `SUMMARY` lines. Key on that line, not on
+The Markdown and relay reports name the result on one `RESULT` line, before the `SUMMARY` lines. Key on that line, not on
 the exit code, which `ERRORS` and `INCONCLUSIVE` share:
 
 | Result line | Code | Meaning |
@@ -106,6 +106,26 @@ an HTML comment included, that would hide the rows after it; the JSON output car
 The `SUMMARY` lines come before the findings: one per severity, always in `ERROR`, `WARNING`, `INFO` order and
 printed even when the count is `0`, then one per check that produced an `INFO` finding, sorted by check name. JSON
 output has no summary; count its `findings` instead.
+
+### Relay (for the skill)
+
+`--relay` prints the report the skill relays as it is: one fact per line, each a key and then its fields, separated by
+tab characters where the table says so, in this order.
+
+| Key | Fields |
+|---|---|
+| `REPOSITORY` | The repository's folder name, tab-separated |
+| `AUTHORITY` | The authority, as the JSON `authority`, tab-separated |
+| `SCOPE` | The scope status, as the JSON `scopeStatus`, tab-separated |
+| `RESULT` | The result, space-separated, as the Markdown report's |
+| `SUMMARY` | The counts, space-separated, as the Markdown report's, every one printed |
+| `FINDING` | Severity, check, path, line, and message, tab-separated, for every `ERROR` and `WARNING` finding and every `limitation` finding, in the report's order; the other `INFO` findings are counted by the `SUMMARY` lines alone |
+| `SOURCE` | With `--provenance`, the check, its page or `decision`, and the passage, tab-separated, a line per source of each check the findings name |
+
+A path, a message, and the repository's name are text the audited repository controls, so each is printed through
+ejryan89-skill-core's `flat_text.fact_line`: a control character or line break in it, such as a newline, becomes a
+space, and each run of whitespace one space, so each fact stays on its line; its punctuation stays as it is, never a
+character entity. The full Markdown report, with every `INFO` finding, is the default output.
 
 ### JSON (for CI integration)
 
