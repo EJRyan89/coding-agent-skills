@@ -52,11 +52,6 @@ INDIRECTION_ALLOWED = {
     "parse_arguments": "builds Options from every dest argparse parsed, so an option deployer/arguments.py adds "
     "reaches Options without a second list of its names",
 }
-# The refusals that need no step of their own, as tests/validation/refusal_steps.py reads them.
-STEP_ALLOWED = {
-    "_stopped_recovery": "a Ctrl+C during recovery is the user's own act, which asks nothing of them, as a "
-    "cancellation does, and RECOVERY_CANCELLED already says that the next deployment finishes recovering",
-}
 TAKE_OVER_SOURCE = "--take-over-source"
 
 
@@ -557,7 +552,7 @@ def _stopped_recovery(exc: BaseException, debug: bool, paths: Paths) -> int:
     Recovery replays its journal, which stays on disk until a run is reconciled, so the next deployment finishes it.
     """
     if isinstance(exc, KeyboardInterrupt):
-        error = DeployError(RECOVERY_CANCELLED, *_run_states(paths), exit_code=130)
+        error: DeployError = Cancelled(RECOVERY_CANCELLED, *_run_states(paths))
     else:
         error = DeployError(
             errors.named(exc, "finish recovery"),
