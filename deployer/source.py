@@ -576,8 +576,12 @@ def _discover_agents(paths: Paths) -> dict[str, Path]:
     agents: dict[str, Path] = {}
     for entry in sorted(root.iterdir(), key=lambda path: path.name):
         shown = platform_support.normalize(entry)
-        # An entry whose stat fails is refused here as no agent definition: the source is refused either way.
-        if not entry.is_file() or entry.suffix != ".md":
+        # An entry whose stat fails is refused with its reason, never as something other than an agent definition.
+        try:
+            is_file = file_presence.is_present(entry, other_is_absent=True)
+        except OSError as exc:
+            raise os_error(exc, "examine an entry of the agents folder") from exc
+        if not is_file or entry.suffix != ".md":
             raise DeployError(
                 f"ERROR: agents may contain only <name>.md agent definitions: {shown}",
                 f"Move it out of agents/; {SEE_SUBAGENTS}",
