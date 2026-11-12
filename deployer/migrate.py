@@ -8,7 +8,7 @@ from . import hashing, journal, platform_support, source, state_files
 from .context import Context
 from .errors import DeployError, see_recovery
 from .kinds import AGENT_KIND, KINDS, SHARED, SKILL, ItemKind
-from .manifest import SourceEntry, source_entry
+from .manifest import MANIFEST_REMEDY, SourceEntry, source_entry
 from .report import ReportLine, members_recorded, print_report, requested_members
 
 KINDS_ALLOWED = {
@@ -114,9 +114,9 @@ def _carry_requests(
 
 def migrate(context: Context, old: str) -> None:
     paths, data = context.paths, context.manifest
-    # A manifest whose stat fails is refused here as missing: the migration stops before it changes anything either way.
-    # So is the empty one a failed first deployment leaves, which records no source, as a missing one reads.
-    if not paths.manifest_file.is_file() or not data.sources:
+    # A manifest whose stat fails is refused with its reason, and a directory in its place as not a file, never as
+    # missing. The empty one a failed first deployment leaves, which records no source, is refused as a missing one.
+    if not state_files.is_present(paths.manifest_file, "The manifest", *MANIFEST_REMEDY) or not data.sources:
         raise DeployError(
             "ERROR: Cannot migrate without an existing manifest.",
             "Nothing is deployed in this home, so there is nothing to take over: deploy without --migrate-from.",

@@ -21,9 +21,11 @@ import file_presence
 from harness import SOURCE_ID, DeployerTestCase, backup_entry, forward, install_entry, journal_line
 
 from deployer import (
+    config,
     fsops,
     hashing,
     journal,
+    migrate,
     paths,
     pipeline,
     platform_support,
@@ -33,6 +35,7 @@ from deployer import (
     source_ref,
     verify,
 )
+from deployer.context import Context
 from deployer.errors import DeployError
 from deployer.kinds import AGENT_KIND, SKILL
 from deployer.names import BACKUP_SUFFIX, transient_name
@@ -151,6 +154,81 @@ class PresenceReadTests(DeployerTestCase):
                 self.assertEqual(
                     f"ERROR: Could not {action}: {forward(path)}: Access is denied", raised.exception.lines[0]
                 )
+
+    def test_a_refusal_after_a_stat_that_fails_names_the_path_unexaminable_never_missing(self) -> None:
+        repos = self.root / "repos"
+        repos.mkdir()
+        canary = self.root / "canary"
+        canary.mkdir()
+        self.paths.agents_src.mkdir(parents=True, exist_ok=True)
+        agent = self.paths.agents_src / "reviewer.md"
+        agent.write_text("---\nname: reviewer\n---\n", encoding="utf-8")
+        self.paths.manifest_file.parent.mkdir(parents=True, exist_ok=True)
+        self.paths.manifest_file.write_text("{}\n", encoding="utf-8")
+        recorded = cast(
+            Context, SimpleNamespace(paths=self.paths, manifest=SimpleNamespace(sources={"old/source": {}}))
+        )
+        cases: list[tuple[Path, Callable[[], object], str, str]] = [
+            (
+                repos,
+                lambda: config._validate_absolute_directory("REPOS_ROOT", forward(repos)),
+                "tell whether the REPOS_ROOT directory is there",
+                "does not exist",
+            ),
+            (canary, lambda: paths.canary_home(str(canary)), "tell whether --canary-home is a directory", "existing"),
+            (
+                self.source / ".git",
+                lambda: source_ref.resolve(self.source, "main"),
+                "tell whether the source is a Git checkout",
+                "is not one",
+            ),
+            (
+                agent,
+                lambda: source._discover_agents(self.paths),
+                "examine an entry of the agents folder",
+                "may contain only",
+            ),
+            (
+                self.paths.manifest_file,
+                lambda: migrate.migrate(recorded, "old/source"),
+                "tell whether the manifest is there",
+                "without an existing manifest",
+            ),
+        ]
+        for path, read, action, absence in cases:
+            with self.subTest(action=action):
+                with stat_failing_at(path), self.assertRaises(DeployError) as raised:
+                    read()
+                self.assertEqual(
+                    f"ERROR: Could not {action}: {forward(path)}: Access is denied", raised.exception.lines[0]
+                )
+                self.assertNotIn(absence, "\n".join(raised.exception.lines))
+
+    def test_migrating_beside_a_folder_in_the_manifests_place_is_refused_as_not_a_file_never_as_no_manifest(
+        self,
+    ) -> None:
+        self.paths.manifest_file.mkdir(parents=True)
+        recorded = cast(
+            Context, SimpleNamespace(paths=self.paths, manifest=SimpleNamespace(sources={"old/source": {}}))
+        )
+        with self.assertRaises(DeployError) as raised:
+            migrate.migrate(recorded, "old/source")
+        self.assertEqual(
+            (
+                f"ERROR: The manifest at {forward(self.paths.manifest_file)} is not a file.",
+                "Put back a copy you trust, or move it out of the skills folder and rerun with --dry-run.",
+                'See "A state file that does not read" in docs/recovery.md.',
+            ),
+            tuple(raised.exception.lines),
+        )
+        self.assertNotIn("without an existing manifest", "\n".join(raised.exception.lines))
+
+    def test_a_configured_directory_that_is_a_file_is_refused_as_not_a_directory(self) -> None:
+        file = self.root / "repos"
+        file.write_text("", encoding="utf-8")
+        with self.assertRaises(DeployError) as raised:
+            config._validate_absolute_directory("REPOS_ROOT", forward(file))
+        self.assertEqual((f"ERROR: REPOS_ROOT is not a directory: {forward(file)}",), tuple(raised.exception.lines))
 
     def test_a_staging_root_that_cannot_be_stat_ed_reports_no_runs_rather_than_none_committed(self) -> None:
         self.paths.staging_root.mkdir(parents=True)
