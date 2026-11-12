@@ -15,8 +15,8 @@ one file there; NTFS and Linux's file systems keep them apart, where the key mer
 A directory can rarely be asked, since it seldom holds a name the two forms spell differently, and a key is only
 compared, so it composes everywhere. `same_parts`, which decides containment and the reviewer guard's exact match, has
 the trusted path's own entry in hand, so it asks: it takes the two forms as one only where that directory finds one
-entry under both, and keeps them apart where it does not or cannot be asked, so a spelling that names another folder
-on NTFS or Linux is never taken for an admitted one.
+entry under both, never two hard links listed under each, and keeps them apart where it does not or cannot be asked,
+so a spelling that names another folder on NTFS or Linux is never taken for an admitted one.
 
 Asking never leaves the path's own text or reaches past it: a key asks only the directories it reaches from the anchor
 without following a symbolic link or junction, never the path's last name, and nothing under a network or device
@@ -39,6 +39,7 @@ these through `platform_support`, its platform seam, and skill scripts and `tool
 from __future__ import annotations
 
 import os
+import stat
 import unicodedata
 from collections.abc import Sequence
 from pathlib import Path, PurePath
@@ -50,8 +51,9 @@ from link_probe import is_plain_directory
 PRESENCE_ALLOWED = {
     "_asked_folds_case": "None is its answer when no entry can tell whether the file system folds case, and an entry "
     "it cannot stat is passed for the next, which the caller reads as the answer of the directory above",
-    "_one_entry": "a name it cannot stat is not shown to be the trusted entry, so the two spellings stay apart, the "
-    "answer an exact-spelling match and an admitting containment check refuse on",
+    "_one_entry": "a directory it cannot list or a name it cannot stat is not shown to hold the trusted entry under "
+    "both names, so the two spellings stay apart, the answer an exact-spelling match and an admitting containment "
+    "check refuse on",
     "_still_there": "an entry it cannot stat any more is passed over, so the probe reads no case rule from a lookup "
     "that missed a vanished entry and asks the next entry instead",
 }
@@ -78,11 +80,12 @@ def folds_case(directory: str | os.PathLike[str]) -> bool:
     """Whether the file system compares the names in `directory` without regard to case.
 
     It is asked of an entry whose name has an ASCII letter: the entry is looked up again by the name with each such
-    letter's case swapped, and the directory folds when that finds the same file. The answer is kept for the rest of
-    the run. A directory that cannot be listed, does not exist, or holds no such entry yet takes the answer of the
-    nearest directory above it that gives one, on whose file system it is made, and is asked again next time; one
-    under a network or device anchor is never asked, and where nothing gives an answer, case is folded, the answer that
-    refuses more.
+    letter's case swapped, and the directory folds when that finds the same file, the swapped name is not listed as
+    an entry of its own, and the file has no second link, so two hard links never pass for one name. The answer is
+    kept for the rest of the run. A directory that cannot be listed, does not exist, or holds no such entry yet takes
+    the answer of the nearest directory above it that gives one, on whose file system it is made, and is asked again
+    next time; one under a network or device anchor is never asked, and where nothing gives an answer, case is folded,
+    the answer that refuses more.
     """
     current = os.path.abspath(directory)  # noqa: PTH100 - a lexical key, as derived paths are
     if not _asks(PurePath(current).anchor):
@@ -132,7 +135,7 @@ def same_parts(parts: Sequence[str], reference: Sequence[str]) -> bool:
             continue
         if fold(given, folds) != fold(known, folds):
             return False
-        if not (asked and _one_entry(os.path.join(*reference[:index]), given, known)):  # noqa: PTH118 - text
+        if not (asked and _one_entry(os.path.join(*reference[:index]), given, known, folds)):  # noqa: PTH118 - text
             return False
     return True
 
@@ -179,15 +182,36 @@ def _cased(name: str, folds: bool) -> str:
     return name.lower() if folds else name
 
 
-def _one_entry(directory: str, given: str, known: str) -> bool:
-    """Whether `directory` finds one entry under both names, neither followed if a link; False when either is missing
-    or cannot be read, so a spelling the directory cannot show to be the known one is not taken for it."""
+def _one_entry(directory: str, given: str, known: str, folds: bool) -> bool:
+    """Whether `directory`, which compares names as `folds` says, finds one entry under both names, neither followed
+    if a link; False when either is missing or cannot be read, so a spelling the directory cannot show to be the known
+    one is not taken for it.
+
+    Two hard links are two entries that share one file, so finding one file under both names shows one entry only
+    where the listing holds no separate entry under each spelling, and the file has no second link: a second link
+    made after the listing was read is reached by its own spelling and listed nowhere this saw."""
     try:
+        listed = {_cased(name, folds) for name in _names(directory)}
         known_entry = os.lstat(os.path.join(directory, known))  # noqa: PTH118 - text, as the parts were
         given_entry = os.lstat(os.path.join(directory, given))  # noqa: PTH118 - text, as the parts were
     except OSError:
         return False
+    if {_cased(given, folds), _cased(known, folds)} <= listed or _hard_linked(given_entry):
+        return False
     return (given_entry.st_dev, given_entry.st_ino) == (known_entry.st_dev, known_entry.st_ino)
+
+
+def _names(directory: str) -> set[str]:
+    """The names `directory` lists, as its file system spells them; OSError when it cannot be listed."""
+    with os.scandir(directory) as listing:
+        return {entry.name for entry in listing}
+
+
+def _hard_linked(status: os.stat_result) -> bool:
+    """Whether a file other than a folder has a second name, as a hard link gives it, so that finding it under two
+    spellings shows nothing of how its directory compares names. A folder is never passed over: Linux and macOS count
+    each subfolder's `..` among a folder's links, and no file system this runs on lets a user link a folder twice."""
+    return not stat.S_ISDIR(status.st_mode) and status.st_nlink > 1
 
 
 def _asks(anchor: str) -> bool:
@@ -212,30 +236,41 @@ def _answer(directory: str) -> bool | None:
 
 def _asked_folds_case(directory: str) -> bool | None:
     """The file system's answer for `directory`, from its first entry that can give one, or None when none can. Any
-    entry serves, since one directory compares all its names alike, so the listing stops at the first."""
+    entry serves, since one directory compares all its names alike.
+
+    The answer is the file system's case rule, never a coincidence of links: two hard links are two entries sharing
+    one file, so a case-swapped name that finds the entry's file shows the directory folds case only where the swapped
+    name is not listed as an entry of its own and the file has no second link. A directory listing both spellings
+    keeps case. A file with a second link is passed over rather than asked, since that link may be the swapped name,
+    made after the listing was read; the probe never makes a file of its own to ask with, so it writes nothing in the
+    directory it judges, which may be read-only or a reviewer's run."""
     try:
-        with os.scandir(directory) as entries:
-            for entry in entries:
-                swapped = "".join(
-                    character.swapcase() if character.isascii() else character for character in entry.name
-                )
-                if swapped == entry.name:
-                    continue
-                try:
-                    found = os.lstat(entry.path)
-                except OSError:
-                    continue  # removed meanwhile
-                try:
-                    other = os.lstat(os.path.join(directory, swapped))  # noqa: PTH118 - text, as the entry's path is
-                except FileNotFoundError:
-                    if _still_there(entry.path, found):
-                        return False
-                    continue  # removed meanwhile, so a folding file system misses the swapped name too
-                except OSError:
-                    continue
-                return (other.st_dev, other.st_ino) == (found.st_dev, found.st_ino)
+        with os.scandir(directory) as listing:
+            entries = list(listing)
     except OSError:
         return None
+    names = {entry.name for entry in entries}
+    for entry in entries:
+        swapped = "".join(character.swapcase() if character.isascii() else character for character in entry.name)
+        if swapped == entry.name:
+            continue
+        if swapped in names:
+            return False
+        try:
+            found = os.lstat(entry.path)
+        except OSError:
+            continue  # removed meanwhile
+        if _hard_linked(found):
+            continue
+        try:
+            other = os.lstat(os.path.join(directory, swapped))  # noqa: PTH118 - text, as the entry's path is
+        except FileNotFoundError:
+            if _still_there(entry.path, found):
+                return False
+            continue  # removed meanwhile, so a folding file system misses the swapped name too
+        except OSError:
+            continue
+        return (other.st_dev, other.st_ino) == (found.st_dev, found.st_ino)
     return None
 
 
