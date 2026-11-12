@@ -21,6 +21,7 @@ from harness import SOURCE_ID, ZERO_HASH, DeployerTestCase, install_entry, journ
 from deployer import discovery, fsops, manifest, platform_support, render, state_files
 from deployer.errors import DeployError
 from deployer.journal import Journal, valid_entry
+from deployer.source import SOURCE_JSON_REMEDY
 
 # An integer past the digit limit and lists nested past the recursion limit, each of which json_reader refuses as a
 # ValueError, and tomllib raises ValueError and RecursionError for.
@@ -54,9 +55,9 @@ class ReaderTests(DeployerTestCase):
 
     def test_a_file_is_present_nothing_is_absent_and_anything_else_is_refused_by_name(self) -> None:
         path = self.root / "state.json"
-        self.assertFalse(state_files.is_present(path, "The state"))
+        self.assertFalse(state_files.is_present(path, "The state", "Move it aside."))
         path.write_text("{}", encoding="utf-8")
-        self.assertTrue(state_files.is_present(path, "The state"))
+        self.assertTrue(state_files.is_present(path, "The state", "Move it aside."))
         path.unlink()
         path.mkdir()
         with self.assertRaises(DeployError) as raised:
@@ -86,7 +87,7 @@ class ReaderTests(DeployerTestCase):
         path = self.root / "state.json"
         denied = PermissionError(errno.EACCES, "Permission denied", str(path))
         with mock.patch.object(Path, "stat", side_effect=denied), self.assertRaises(DeployError) as raised:
-            state_files.is_present(path, "The manifest")
+            state_files.is_present(path, "The manifest", "Move it aside.")
         self.assertEqual(
             (
                 f"ERROR: Could not tell whether the manifest is there: {platform_support.normalize(path)}: "
@@ -98,7 +99,7 @@ class ReaderTests(DeployerTestCase):
         )
         self.assertIs(denied, raised.exception.__cause__)
         with self.assertRaises(DeployError) as raised:
-            state_files.is_present(self.root / "state\0.json", "The manifest")
+            state_files.is_present(self.root / "state\0.json", "The manifest", "Move it aside.")
         self.assertIn("NUL character", raised.exception.lines[0])
 
 
@@ -424,7 +425,9 @@ class StateFileTests(DeployerTestCase):
                 self.deploy_fails("--all", "--dry-run", pattern=refusal)
         source_json.unlink()
         source_json.mkdir()
-        self.deploy_fails("--all", "--dry-run", pattern=f"ERROR: source.json at {shown(source_json)} is not a file.")
+        refusal = f"ERROR: source.json at {shown(source_json)} is not a file."
+        # The refusal ends with the step to put source.json back, which is_present no longer lets a caller leave out.
+        self.deploy_fails("--all", "--dry-run", pattern=f"{refusal}\n{re.escape(SOURCE_JSON_REMEDY)}")
 
 
 class RenderedAndListedTests(DeployerTestCase):

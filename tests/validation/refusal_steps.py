@@ -3,9 +3,11 @@ beside the code.
 
 A refusal's lines unpacked from elsewhere are followed to where they are written (`_Refusals.ending`): a list or tuple
 display, a name its function or its module binds once to one and never changes in place, or a caught refusal's own
-lines, and a refusal whose followed lines are one is refused like a refusal written with one. The limit: lines unpacked
-from anything else, such as a parameter, a call's result, or a list grown by append, are known only when the deployer
-runs, so the policy accepts such a call unread rather than guess where its step is.
+lines, and a refusal whose followed lines are one is refused like a refusal written with one. Lines unpacked from
+anything else, such as a parameter, a call's result, or a list grown by append, are known only when the deployer runs,
+so a refusal whose step could be among them is refused too, with its own message, unless its module states why in
+STEP_ALLOWED: end it with a literal step after them, or write the step before them, as `DeployError(error, step,
+*more)` does, whose lines are two at the least.
 """
 
 from __future__ import annotations
@@ -118,8 +120,9 @@ class _Refusals:
         binds nor changes it, one the module binds once to one, and that nothing changes in place. `*exc.lines` in an
         `except` clause that catches only refusals is COVERED: that refusal was built where this policy reads it, so
         its lines already end with a step, or its module states why they need none. Anything else unpacked, such as a
-        parameter, a call's result, or a list grown by append, is UNFOLLOWED: its lines are known only when the
-        deployer runs, so this policy cannot tell whether they end with a step, and that is its limit.
+        parameter, a call's result, or a list grown by append, cannot be read: the refusal is STEP when the arguments
+        before it are two lines at the least, an ERROR line and a step, and UNFOLLOWED otherwise, since its lines are
+        known only when the deployer runs and this policy cannot tell whether they end with a step.
         """
         arguments = list(call.args)
         followed: set[str] = set()
@@ -131,7 +134,8 @@ class _Refusals:
             elif self._caught_lines(value, call):
                 return COVERED
             else:
-                return UNFOLLOWED
+                written = [argument for argument in arguments[:-1] if not isinstance(argument, ast.Starred)]
+                return STEP if len(written) > 1 else UNFOLLOWED
         return STEP if len(arguments) > 1 else ONE_LINE
 
     def _displayed(self, value: ast.expr, call: ast.Call, followed: set[str]) -> list[ast.expr] | None:
@@ -202,30 +206,46 @@ def _changes_in_place(node: ast.AST, name: str) -> bool:
     return isinstance(node, ast.arg) and node.arg == name
 
 
-def stepless_refusals(tree: ast.Module, name: str, refusals: set[str]) -> list[tuple[int, str, str]]:
-    """Each refusal a module builds from one line, written or followed, as (line, scope, class), ignoring its
-    allowance."""
+def stepless_refusals(tree: ast.Module, name: str, refusals: set[str]) -> list[tuple[int, str, str, str]]:
+    """Each refusal a module builds from one line, written or followed, or from lines this policy cannot follow, as
+    (line, scope, class, ending), where the ending is ONE_LINE or UNFOLLOWED, ignoring its allowance."""
     reader = _Refusals(tree, name, refusals)
     statements = [
         statement
         for statement in tree.body
         if not (isinstance(statement, (ast.Assign, ast.AnnAssign)) and statement_scope(statement) == STEP_ALLOWANCE)
     ]
-    found: list[tuple[int, str, str]] = []
+    found: list[tuple[int, str, str, str]] = []
     for node, scope in scoped_nodes(statements):
         if not isinstance(node, ast.Call):
             continue
         called = reader.called(node.func)
         if called not in refusals or called in STEPLESS:
             continue
-        if reader.ending(node) == ONE_LINE:
-            found.append((node.lineno, scope, called.rsplit(".", 1)[-1]))
+        ending = reader.ending(node)
+        if ending in {ONE_LINE, UNFOLLOWED}:
+            found.append((node.lineno, scope, called.rsplit(".", 1)[-1], ending))
     return found
 
 
+def _finding(name: str, line: int, scope: str, called: str, ending: str) -> str:
+    """The report of one refusal that ends at its ERROR line, or whose lines this policy cannot follow."""
+    if ending == UNFOLLOWED:
+        return (
+            f"{name}:{line} {called} in {scope} unpacks lines this policy cannot follow, such as a parameter, a "
+            "call's result, or a list changed in place, so its step may be missing; write a literal step after them, "
+            f"or the step before them, or state why it needs none in {STEP_ALLOWANCE}"
+        )
+    return (
+        f"{name}:{line} {called} in {scope} ends at its ERROR line; add the step to take as its "
+        f"next line, or state why it needs none in {STEP_ALLOWANCE}"
+    )
+
+
 def refusal_step_problems(root: Path) -> list[str]:
-    """Report each deployer refusal built from one line, which ends at its ERROR line, without stating why in its
-    module's STEP_ALLOWED, and each allowance no longer needed.
+    """Report each deployer refusal built from one line, which ends at its ERROR line, or from lines unpacked from
+    where this policy cannot follow them, without stating why in its module's STEP_ALLOWED, and each allowance no
+    longer needed.
 
     A refusal that names what is wrong and not what to do leaves its reader stuck, so each one ends with the step to
     take on a line of its own, or its module says why it need not: every caller adds the step, or it is caught beside
@@ -249,14 +269,14 @@ def refusal_step_problems(root: Path) -> list[str]:
             allowed = {}
         findings = stepless_refusals(tree, name, refusals)
         found += [
-            f"{name}:{line} {called} in {scope} ends at its ERROR line; add the step to take as its "
-            f"next line, or state why it needs none in {STEP_ALLOWANCE}"
-            for line, scope, called in findings
+            _finding(name, line, scope, called, ending)
+            for line, scope, called, ending in findings
             if scope not in allowed
         ]
         problems += [
-            f"{name}: {STEP_ALLOWANCE} allows {scope}, which no longer builds a refusal from one line"
-            for scope in sorted(set(allowed) - {scope for _, scope, _ in findings})
+            f"{name}: {STEP_ALLOWANCE} allows {scope}, which no longer builds a refusal from one line or from lines "
+            "this policy cannot follow"
+            for scope in sorted(set(allowed) - {scope for _, scope, _, _ in findings})
         ]
     return found + problems
 

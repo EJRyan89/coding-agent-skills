@@ -90,6 +90,9 @@ PRESENCE_ALLOWED = {
 STEP_ALLOWED = {
     "keep_backup": "its refusal is caught in the same function, whose warning names the step: move the kept copy out "
     "of the root after checking it",
+    "_recovery_failure": "its refusal is never raised: _report prints it in recovery's report, and the run it fails "
+    "returns False to _recover_run or recover_incomplete, which print the run's manual steps "
+    "(_print_manual_steps) after it",
 }
 
 

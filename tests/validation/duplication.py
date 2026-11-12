@@ -234,23 +234,31 @@ def _names_key(node: ast.AST, members: frozenset[str], name: str) -> bool:
 
 
 def _reads_key(
-    node: ast.AST, members: frozenset[str], _imports_owner: bool, name: str, _resolver: CallableResolver
+    node: ast.AST, members: frozenset[str], _imports_owner: bool, name: str, resolver: CallableResolver
 ) -> bool:
     """A reading of a key outside its owner's: the key's literal passed to a call, as a reader looks it up, or the key
-    compared, after any call, with true or false, as a reader judges its value."""
+    compared, after any call, with true or false, as a reader judges its value, by an operator or by a match statement
+    on it whose case holds true or false as a value."""
     if isinstance(node, ast.Call):
         arguments = [*node.args, *(keyword.value for keyword in node.keywords)]
         return any(isinstance(argument, ast.Constant) and argument.value in members for argument in arguments)
+    if isinstance(_module_parents(resolver).get(id(node)), ast.MatchValue):
+        subject = _match_subject(node, resolver)
+        return _is_truth_word(node) and any(_names_key(inner, members, name) for inner in ast.walk(subject))
     if not isinstance(node, ast.Compare):
         return False
     operands = [node.left, *node.comparators]
-    judged = any(
-        isinstance(operand, ast.Constant)
-        and isinstance(operand.value, str)
-        and operand.value.strip().casefold() in {"true", "false"}
-        for operand in operands
-    )
+    judged = any(_is_truth_word(operand) for operand in operands)
     return judged and any(_names_key(inner, members, name) for operand in operands for inner in ast.walk(operand))
+
+
+def _is_truth_word(node: ast.AST) -> bool:
+    """Whether the node is a string literal reading true or false, in any case and with any surrounding space."""
+    return (
+        isinstance(node, ast.Constant)
+        and isinstance(node.value, str)
+        and node.value.strip().casefold() in {"true", "false"}
+    )
 
 
 def _patterns_member(
@@ -353,22 +361,26 @@ def _compares_git_name(
     is exact, or takes it on a case-sensitive one too after a str.casefold. name_key asks the folder's file system, so
     `.GIT` is the Git directory only where the folder folds case, and a comparison of its result is never refused.
 
-    `.git` is the literal, or a module-level name the module binds once to it, such as `GIT = ".git"`. The forms
-    refused: `==` or `!=` between `.git` and anything but name_key's result; a membership test of anything but that
-    result in a list, tuple, or set display holding `.git`, or in frozenset, set, tuple, or list called on one, or of
-    `.git` itself in anything, as `".git" in parts`; and str.startswith or str.endswith given `.git`, alone or in such
-    a collection. A comparison or a membership test joined by `and` to a name_key comparison with `.git` only narrows
-    what the folder is asked about, as folder_walk's `is_checkout_marker` does, and is not refused; a startswith or
-    endswith call is refused even there.
+    `.git` is the literal, a module-level name the module binds once to it, such as `GIT = ".git"`, or an attribute
+    a module-level class binds once to it in its body, such as `Names.GIT`. The forms refused: `==` or `!=` between
+    `.git` and anything but name_key's result; a membership test of anything but that result in a list, tuple, or set
+    display holding `.git`, or in frozenset, set, tuple, or list called on one, or of `.git` itself in anything, as
+    `".git" in parts`; str.startswith or str.endswith given `.git`, alone or in such a collection; and a match
+    statement on anything but name_key's result with a case whose pattern holds `.git` as a value, as `case ".git":`,
+    `case ".git" | ".hg":`, `case [*_, ".git"]:`, or `case Names.GIT:` do. A bare name in a case captures the subject
+    rather than comparing it, so a held name reaches a case only through a class's attribute. A comparison or a
+    membership test joined by `and` to a name_key comparison with `.git` only narrows what the folder is asked about,
+    as folder_walk's `is_checkout_marker` does, and is not refused; a startswith or endswith call, and a case whose
+    guard asks name_key, are refused even there.
 
-    The limits: membership in a collection held under a module-level name, such as a walk's skip list
+    The limit: membership in a collection held under a module-level name, such as a walk's skip list
     `frozenset({".git", "node_modules"})`, is not read, since the collection's other names are matched exactly by
-    design and the policy cannot tell a skip list from a test for the Git directory; and a match statement's case
-    patterns, such as `case ".git":` or `case ".git" | ".hg":`, are not read yet, a form no module uses, filed in the
-    backlog to be read here."""
+    design and the policy cannot tell a skip list from a test for the Git directory."""
     gits = _held_git_names(resolver)
     if isinstance(node, ast.Call):
         return _calls_git_affix(node, resolver, gits)
+    if isinstance(_module_parents(resolver).get(id(node)), ast.MatchValue):
+        return _is_git(node, gits) and not _keyed_by_folder(_match_subject(node, resolver), resolver)
     if not isinstance(node, ast.Compare) or _narrows_keyed_test(node, resolver, gits):
         return False
     return any(_exact_git_test(test, resolver, gits) for test in _comparisons(node))
@@ -388,10 +400,22 @@ def _comparisons(node: ast.Compare) -> Iterator[tuple[ast.cmpop, ast.expr, ast.e
 
 
 def _is_git(node: ast.AST, gits: frozenset[str]) -> bool:
-    """Whether the node is `.git`: the literal, or a module-level name the module binds once to it."""
+    """Whether the node is `.git`: the literal, a module-level name the module binds once to it, or a module-level
+    class's attribute bound once to it."""
     if isinstance(node, ast.Constant):
         return node.value == GIT_DIRECTORY
+    if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name):
+        return f"{node.value.id}.{node.attr}" in gits
     return isinstance(node, ast.Name) and node.id in gits
+
+
+def _match_subject(node: ast.AST, resolver: CallableResolver) -> ast.expr:
+    """The subject of the match statement whose case pattern holds the node."""
+    parents = _module_parents(resolver)
+    holder = parents[id(node)]
+    while not isinstance(holder, ast.Match):
+        holder = parents[id(holder)]
+    return holder.subject
 
 
 def _exact_git_test(
@@ -462,9 +486,19 @@ def _module_parents(resolver: CallableResolver) -> dict[int, ast.AST]:
 
 @functools.lru_cache(maxsize=1)
 def _held_git_names(resolver: CallableResolver) -> frozenset[str]:
-    """The module-level names the resolver's module binds once, and to the `.git` literal."""
-    bound: dict[str, list[ast.expr | None]] = {}
+    """The module-level names the resolver's module binds once, and to the `.git` literal, and each attribute a
+    module-level class binds once to it in its body, by its dotted name, such as `Names.GIT`."""
+    held = set(_bound_to_git(resolver.tree.body))
     for statement in module_statements(resolver.tree.body):
+        if isinstance(statement, ast.ClassDef):
+            held |= {f"{statement.name}.{name}" for name in _bound_to_git(statement.body)}
+    return frozenset(held)
+
+
+def _bound_to_git(body: list[ast.stmt]) -> Iterator[str]:
+    """The names a block binds once, and to the `.git` literal, counting a binding in its if, try, or with blocks."""
+    bound: dict[str, list[ast.expr | None]] = {}
+    for statement in module_statements(body):
         pairs: list[tuple[ast.expr, ast.expr | None]]
         if isinstance(statement, ast.Assign):
             pairs = [(target, statement.value) for target in statement.targets]
@@ -478,7 +512,7 @@ def _held_git_names(resolver: CallableResolver) -> frozenset[str]:
         for target, value in pairs:
             if isinstance(target, ast.Name):
                 bound.setdefault(target.id, []).append(value)
-    return frozenset(
+    return (
         name
         for name, values in bound.items()
         if len(values) == 1 and isinstance(values[0], ast.Constant) and values[0].value == GIT_DIRECTORY
