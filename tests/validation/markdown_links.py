@@ -288,7 +288,11 @@ def _guard_problem(root: Path, index: _TestIndex, document: str, span: str) -> s
             return f"cites {span}, which names no heading of {step.group(1)}"
         return None
     if workflow.fullmatch(span):
-        present = file_presence.is_present(root / span, other_is_absent=True)
+        # As for a skill step: a stat that fails raises, and a workflow of the wrong kind is named so.
+        try:
+            present = file_presence.is_present(root / span)
+        except file_presence.NotAFile:
+            return f"cites {span}, but {span} is not a file"
         return None if present else f"cites {span}, but {span} does not exist"
     return f"names {span}, which is not a test ID, a skill's step, or a workflow by its path from the repository root"
 

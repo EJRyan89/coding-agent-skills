@@ -281,6 +281,14 @@ class LessonsLedgerPolicy(unittest.TestCase):
             ],
             self.problems(ledger, {".claude/skills/b/SKILL.md/inner.md": ""}),
         )
+        workflow = f"# Lessons\n\n## Patterns\n\n### Folder\n\n{self.ENTRY}- **Guard:** `.github/workflows/ci.yml`\n"
+        self.assertEqual(
+            [
+                "docs/lessons.md:10 the pattern 'Folder' cites .github/workflows/ci.yml, but "
+                ".github/workflows/ci.yml is not a file"
+            ],
+            self.problems(workflow, {".github/workflows/ci.yml/inner.yml": ""}),
+        )
 
     def test_a_guard_that_does_not_resolve_fails(self) -> None:
         ledger = (
