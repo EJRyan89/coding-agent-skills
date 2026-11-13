@@ -544,6 +544,41 @@ class UpgradeNotesPolicy(unittest.TestCase):
                     self.problems({"docs/upgrade-notes.md": notes}, self.body()),
                 )
 
+    def test_a_second_level_line_in_a_fence_of_a_released_entry_is_no_section(self) -> None:
+        self.release()
+        for opener, closer in (("```markdown", "```"), ("~~~", "~~~"), ("````text\n```", "```\n````")):
+            with self.subTest(opener=opener):
+                notes = (
+                    f"{self.NOTES}\n### Moved a heading\n\n- Level: patch.\n- Contract: none\n- User action: write "
+                    f"it as:\n\n{opener}\n## Unreleased\n{closer}\n"
+                )
+                self.assertEqual([], self.problems({"docs/upgrade-notes.md": notes}, self.body()))
+
+    def test_a_body_entry_whose_heading_an_entry_since_the_tag_has_fails_naming_both(self) -> None:
+        self.release()
+        self.commit(f"Change the manifest (#8)\n\n{self.body(self.entry('none'))}")
+        self.merged()
+        problems = self.problems({}, self.body(self.entry("none")))
+        self.assertEqual(1, len(problems), problems)
+        self.assertTrue(
+            problems[0].startswith(
+                "the pull request body's ## Upgrade note entry 'A contract changed' shares its heading with the "
+                "entry in commit "
+            ),
+            problems[0],
+        )
+        self.assertTrue(
+            problems[0].endswith(
+                "give this change's entry a heading of its own, since the release section keeps one entry per heading"
+            ),
+            problems[0],
+        )
+        renamed = self.entry("none").replace("A contract changed", "Another contract changed")
+        self.assertEqual([], self.problems({}, self.body(renamed)))
+        twice = self.problems({}, self.body(renamed, renamed))
+        self.assertEqual(1, len(twice), twice)
+        self.assertIn("shares its heading with the entry in the pull request body's ## Upgrade note;", twice[0])
+
     def test_generated_summaries_do_not_become_entries_and_the_policy_accepts_them(self) -> None:
         self.release()
         for value in ("patch", "minor", "major", None):

@@ -23,6 +23,7 @@ from validation_support import (
     OPERATIONS_CONTRACT,
     REPOSITORY_ROOT,
     PullRequestChecks,
+    find_fences,
     is_skill_file,
     listed,
     markdown_section,
@@ -65,7 +66,7 @@ FORMATS_DOC = OPERATIONS_CONTRACT
 FORMATS_HEADING = "## Formats"
 NOTES_FIELDS = ("Level", "Contract", "User action")
 # The only sections the notes file has below its title are versions', which tools/release_notes.py writes.
-NOTES_SECTION = re.compile(r"^## (.*)$", re.MULTILINE)
+NOTES_SECTION = re.compile(r"## (.*)")
 PULL_REQUESTS = re.compile(r"#\d+(?:,? (?:and )?#\d+)*")
 
 
@@ -309,14 +310,41 @@ def notes_entry_problems(item: SourcedEntry, levels: list[str]) -> list[str]:
     return problems
 
 
+def notes_sections(notes: str) -> list[str]:
+    """The heading of each `## ` section of the notes file, read outside every code fence: a fenced `## ` line is the
+    fence's text, as GitHub renders it and tools/release_notes.py reads it inside an entry."""
+    lines = notes.replace("\r\n", "\n").split("\n")
+    fenced = {index for fence in find_fences(lines) for index in fence.lines()}
+    matches = (NOTES_SECTION.fullmatch(line) for index, line in enumerate(lines) if index not in fenced)
+    return [match.group(1) for match in matches if match is not None]
+
+
 def notes_layout_problems(notes: str | None) -> list[str]:
     """A section of the notes file that is not a version's: entries now live in pull request bodies."""
     return [
         f"{UPGRADE_NOTES} has a '## {heading}' section; an entry goes under {BODY_HEADING} in the pull request "
         "body, and tools/release_notes.py writes each version's section from the merged commits when it is released"
-        for heading in NOTES_SECTION.findall(notes or "")
+        for heading in notes_sections(notes or "")
         if not VERSION.fullmatch(heading.strip())
     ]
+
+
+def shared_heading_problems(sourced: list[SourcedEntry], body: list[SourcedEntry]) -> list[str]:
+    """Each entry of the pull request body whose heading an entry since the tag, or an earlier one of the body, already
+    has: tools/release_notes.py keeps both, and the release preparer must merge them, so the author names the change
+    under a heading of its own."""
+    seen = {item.entry.heading: item.where for item in reversed(sourced)}
+    problems: list[str] = []
+    for item in body:
+        heading = item.entry.heading
+        if heading in seen:
+            problems.append(
+                f"{item.where} entry '{heading}' shares its heading with the entry in {seen[heading]}; give this "
+                "change's entry a heading of its own, since the release section keeps one entry per heading"
+            )
+        else:
+            seen[heading] = item.where
+    return problems
 
 
 def upgrade_notes_problems(root: Path, body: str | None = None) -> list[str]:
@@ -349,10 +377,12 @@ def upgrade_notes_problems(root: Path, body: str | None = None) -> list[str]:
     except ReleaseNotesError as error:
         return [*problems, f"the upgrade-notes check cannot read the commits and the tree since {tag}: {error}"]
     if body is not None:
-        sourced += [
+        given = [
             SourcedEntry(entry, f"the pull request body's {BODY_HEADING}", None, from_notes=False)
             for entry in body_entries(body)
         ]
+        problems += shared_heading_problems(sourced, given)
+        sourced += given
     problems += [problem for item in sourced for problem in notes_entry_problems(item, levels)]
     named = {item for sourced_entry in sourced for item in sourced_entry.entry.contract_items}
     problems += [

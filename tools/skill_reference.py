@@ -36,6 +36,7 @@ import json_writer
 import runtime_support
 import skill_menu
 from console import run_main
+from markdown_sections import find_fences, markdown_section
 
 from deployer import source as deploy_source
 from deployer.config import CONFIGURED_VARIABLES, OPTIONAL_VARIABLES
@@ -264,8 +265,15 @@ def _replace_block(text: str, block: str, content: str) -> str | None:
 
 
 def _split(document: str) -> tuple[str, list[Section]]:
+    """The reference's preamble and its skill sections, each cut at a skill's `## ` heading outside every code fence:
+    a fenced one is the fence's text, as GitHub renders it, such as an example in a section's hand-written prose."""
     lines = document.split("\n")
-    headings = [(index, match.group(1)) for index, line in enumerate(lines) if (match := SECTION_HEADING.match(line))]
+    fenced = {index for fence in find_fences(lines) for index in fence.lines()}
+    headings = [
+        (index, match.group(1))
+        for index, line in enumerate(lines)
+        if index not in fenced and (match := SECTION_HEADING.match(line))
+    ]
     preamble = "\n".join(lines[: headings[0][0]] if headings else lines)
     sections = []
     for position, (start, name) in enumerate(headings):
@@ -314,10 +322,10 @@ def regenerate(document: str, skills: list[Entry]) -> str:
 
 def readme_problems(readme: str, roots: list[str], skills: list[str]) -> list[str]:
     """What keeps the README's 'Included skills' table from having one row per menu item, linked to live sections."""
-    match = re.search(r"^## Included skills\n(.*?)(?=^## |\Z)", readme, re.MULTILINE | re.DOTALL)
-    if match is None:
+    # markdown_section reads a fenced `## ` line as the fence's text, never as the section's end.
+    section = markdown_section(readme, "## Included skills")
+    if section is None:
         return [f"{README.as_posix()}: no 'Included skills' section"]
-    section = match.group(1)
     # A row is named by the first code span in its first cell; the header and separator rows have none.
     rows = [
         found.group(1)
