@@ -5,12 +5,14 @@ Each policy fails on a violating input and passes on a conforming one.
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 import tempfile
 import unittest
 from collections.abc import Mapping
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts"))
@@ -61,6 +63,18 @@ class MarkdownLinkPolicy(unittest.TestCase):
             ["docs/guide.md:3 links to ../missing.md, which does not exist"],
             self.problems({"docs/guide.md": "# Guide\n\nSee [gone](../missing.md).\n"}),
         )
+
+    def test_a_link_to_something_neither_a_file_nor_a_folder_is_named_so_never_as_missing(self) -> None:
+        # A pipe, as the stat of pipe.md answers it, is there but is neither a file nor a folder.
+        real_stat = Path.stat
+        pipe = os.stat_result((0o010644, 0, 0, 1, 0, 0, 0, 0, 0, 0))
+
+        def stat(path: Path, *, follow_symlinks: bool = True) -> os.stat_result:
+            return pipe if path.name == "pipe.md" else real_stat(path, follow_symlinks=follow_symlinks)
+
+        with mock.patch.object(Path, "stat", stat):
+            found = self.problems({"docs/guide.md": "# Guide\n\nSee [odd](pipe.md).\n", "docs/pipe.md": ""})
+        self.assertEqual(["docs/guide.md:3 links to pipe.md, which is neither a file nor a folder"], found)
 
     def test_a_fragment_that_names_no_heading_fails(self) -> None:
         self.assertEqual(
@@ -188,6 +202,16 @@ class CitedTestPolicy(unittest.TestCase):
                 "guide.md:2 cites test_gone.py::test_alone, but any file named test_gone.py does not exist",
             ],
             self.problems({"guide.md": guide}),
+        )
+
+    def test_a_folder_in_a_cited_suite_s_place_is_no_file_never_a_missing_suite(self) -> None:
+        guide = "`tests/test_dir.py::test_alone`, and the `GuardTests` cases in `tests/test_dir.py`.\n"
+        self.assertEqual(
+            [
+                "guide.md:1 cites tests/test_dir.py::test_alone, but tests/test_dir.py is not a file",
+                "guide.md:1 cites GuardTests in tests/test_dir.py, which is not a file",
+            ],
+            self.problems({"guide.md": guide, "tests/test_dir.py/inner.py": ""}),
         )
 
     def test_the_threat_model_names_its_suites_under_the_code_review_scripts(self) -> None:
@@ -499,7 +523,6 @@ class TrustModelAreaPolicy(unittest.TestCase):
 class LinkDestinationStatTests(unittest.TestCase):
     def test_a_link_destination_whose_stat_fails_is_refused_never_reported_missing(self) -> None:
         import contextlib
-        import os
         from unittest import mock
 
         import markdown_links

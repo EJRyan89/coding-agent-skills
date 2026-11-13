@@ -76,7 +76,12 @@ def markdown_link_problems(root: Path) -> list[str]:
                 # A destination whose stat fails raises, never reads as one that does not exist or holds no heading.
                 is_file = file_presence.is_present(destination, other_is_absent=True)
                 if not is_file and not file_presence.is_directory(destination, other_is_absent=True):
-                    problems.append(f"{name}:{number} links to {target}, which does not exist")
+                    # Something that is neither a file nor a folder, a link to nothing included, is named so, never as
+                    # nothing there.
+                    state = (
+                        "is neither a file nor a folder" if file_presence.is_occupied(destination) else "does not exist"
+                    )
+                    problems.append(f"{name}:{number} links to {target}, which {state}")
                 elif (
                     fragment
                     and is_file
@@ -184,12 +189,17 @@ class _TestIndex:
                 self.read[path] = _suite_tests(tree)
         return self.read[path]
 
-    def locations(self, document: str, suite: str) -> tuple[str, list[Path]]:
-        """Where a document's cited suite is, as the citation's message names it, and the files there."""
+    def locations(self, document: str, suite: str) -> tuple[str, list[Path], bool]:
+        """Where a document's cited suite is, as the citation's message names it, the files there, and whether
+        something other than a file stands at a named location. A stat that fails raises."""
         if "/" in suite or document in BARE_SUITE_HOMES:
             location = suite if "/" in suite else f"{BARE_SUITE_HOMES[document]}/{suite}"
-            return location, [self.root / location] if file_presence.is_present(self.root / location) else []
-        return f"any file named {suite}", [path for path in self.python if path.name == suite]
+            try:
+                present = file_presence.is_present(self.root / location)
+            except file_presence.NotAFile:
+                return location, [], True
+            return location, [self.root / location] if present else [], False
+        return f"any file named {suite}", [path for path in self.python if path.name == suite], False
 
     def defined_anywhere(self, name: str) -> bool:
         return any(self.suite(path).defines(name) for path in self.python)
@@ -211,7 +221,9 @@ def _sentences(line: str) -> Iterator[list[str]]:
 
 def _id_problem(index: _TestIndex, document: str, citation: re.Match[str]) -> str | None:
     suite, name, test = citation.groups()
-    location, paths = index.locations(document, suite)
+    location, paths, wrong_kind = index.locations(document, suite)
+    if wrong_kind:
+        return f"cites {citation.group(0)}, but {location} is not a file"
     if not paths:
         return f"cites {citation.group(0)}, but {location} does not exist"
     for path in paths:
@@ -228,9 +240,11 @@ def _name_problem(index: _TestIndex, document: str, name: str, files: list[str])
             return None
         return f"cites {name}, which no Python file defines as a test or a test class"
     located = [index.locations(document, file) for file in files]
-    paths = [path for _, found in located for path in found]
+    paths = [path for _, found, _ in located for path in found]
+    if wrong := [location for location, _, wrong_kind in located if wrong_kind]:
+        return f"cites {name} in {listed(wrong)}, which is not a file"
     if not paths:
-        return f"cites {name} in {listed([location for location, _ in located])}, which does not exist"
+        return f"cites {name} in {listed([location for location, _, _ in located])}, which does not exist"
     if any(index.suite(path).defines(name) for path in paths):
         return None
     return f"cites {name} in {listed(files)}, where no test or test class has that name"
