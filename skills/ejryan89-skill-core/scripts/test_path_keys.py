@@ -17,6 +17,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import path_keys
+from path_containment import within
 from path_keys import folds_case, name_key, path_key, same_parts
 
 
@@ -151,6 +152,39 @@ class PathKeyTests(KeyedTestCase):
                 self.assertEqual(path_keys.fold(lower, True), path_keys.fold(upper, True))
                 self.assertEqual(lower, path_keys.fold(upper, True))
         self.assertEqual("\u00df", path_keys.fold("\u00df", True))
+
+    def test_a_sign_canonically_equivalent_to_a_letter_has_its_key_while_same_parts_keeps_them_apart(self) -> None:
+        # The Kelvin, Angstrom, and Ohm signs decompose to K, the capital a with ring, and the capital omega, so a key,
+        # which composes every name, merges each with its letter in any directory: the side that refuses more names as
+        # one. NTFS keeps them apart, so same_parts, which admits, takes them as one only where the directory finds one
+        # entry under both.
+        for sign, letter in (("\u212a", "K"), ("\u212b", "\u00c5"), ("\u2126", "\u03a9")):
+            with self.subTest(sign=sign):
+                for folds in (True, False):
+                    self.assertEqual(path_keys.fold(letter, folds), path_keys.fold(sign, folds))
+                self.assertEqual(letter.lower(), path_keys.fold(sign, True))
+                self.assertEqual(letter, path_keys.fold(sign, False))
+                for folds in (True, False):
+                    with mock.patch.dict(path_keys._FOLDS_CASE, clear=True), self.answers({self.root: folds}):
+                        self.assertEqual(name_key(letter, self.root), name_key(sign, self.root))
+                self.assertEqual(name_key(letter), name_key(sign))
+                folder = self.root / f"{letter}-sign"
+                folder.mkdir()
+                with mock.patch.object(os, "lstat", side_effect=self.missing(f"{sign}-sign")):
+                    self.assertFalse(same_parts(PurePath(self.root / f"{sign}-sign").parts, PurePath(folder).parts))
+                    self.assertFalse(within(self.root / f"{sign}-sign" / "x", folder))
+
+    @staticmethod
+    def missing(name: str) -> Any:
+        """os.lstat as a file system that keeps `name` apart from every other spelling answers it."""
+        real = os.lstat
+
+        def lstat(path: Any) -> os.stat_result:
+            if Path(path).name == name:
+                raise FileNotFoundError(2, "No such file or directory", str(path))
+            return real(path)
+
+        return lstat
 
     def test_each_name_folds_as_the_directory_holding_it_does(self) -> None:
         # A case-sensitive folder inside one that folds, as a case-sensitive volume mounted under a folding one.

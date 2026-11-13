@@ -8,18 +8,21 @@ case-sensitive, and a Windows directory marked case-sensitive do not. So each di
 `folds_case`, and a name in one that folds is folded one letter to one letter by each letter's simple uppercase, as
 NTFS's upcase table compares names, so `C:\\Work` and `c:\\work` are one path on NTFS and `/Users/you/Work` and
 `/users/YOU/work` are one on APFS, while a case-sensitive directory keeps them apart. A letter whose case mapping does
-not lead back to it, such as the Kelvin sign, whose lowercase is `k` but whose uppercase is itself, is kept, as NTFS
-keeps it apart from `K`. The anchor, a drive letter or a network share's name, is folded on every platform, since no
-file system holds it.
+not lead back to it, such as the Greek theta symbol `ϴ`, whose lowercase is `θ` but whose uppercase is itself, is
+kept, as NTFS keeps it apart from `Θ`. The anchor, a drive letter or a network share's name, is folded on every
+platform, since no file system holds it.
 
 A key also composes each name to Unicode's NFC form on every file system. APFS and HFS+ ignore the difference
 between a composed and a decomposed spelling, so `é` written as one code point or as `e` and a combining accent names
 one file there; NTFS and Linux's file systems keep them apart, where the key merges two names that differ only in it.
 A directory can rarely be asked, since it seldom holds a name the two forms spell differently, and a key is only
-compared, so it composes everywhere. `same_parts`, which decides containment and the reviewer guard's exact match, has
-the trusted path's own entry in hand, so it asks: it takes the two forms as one only where that directory finds one
-entry under both, never two hard links listed under each, and keeps them apart where it does not or cannot be asked,
-so a spelling that names another folder on NTFS or Linux is never taken for an admitted one.
+compared, so it composes everywhere. The Kelvin, Angstrom, and Ohm signs are canonically equivalent to `K`, `Å`, and
+`Ω`, which they decompose and compose to, so a key merges each with its letter, as it merges any two forms, though
+NTFS keeps them apart: a key refuses more names as one there, deliberately. `same_parts`, which decides containment
+and the reviewer guard's exact match, has the trusted path's own entry in hand, so it asks: it takes the two forms as
+one only where that directory finds one entry under both, never two hard links listed under each, and keeps them apart
+where it does not or cannot be asked, so a spelling that names another folder on NTFS or Linux, a sign among them, is
+never taken for an admitted one.
 
 Asking never leaves the path's own text or reaches past it: a key asks only the directories it reaches from the anchor
 without following a symbolic link or junction, never the path's last name, and nothing under a network or device
@@ -81,9 +84,11 @@ def fold(name: str, folds: bool) -> str:
     """`name` as a directory compares it: composed to NFC, and case-folded first when the directory `folds` case.
 
     Folding decomposes before it folds and composes after, so two spellings of one character compare equal whatever
-    form each was written in. It folds each letter by `_folded`, as NTFS's upcase table maps one letter to one letter,
-    never by `str.lower`, which takes the Kelvin sign to `k`, or `str.casefold` or `str.upper`, which expand `ß` to
-    `ss`, each merging two folders NTFS keeps apart."""
+    form each was written in; a sign canonically equivalent to a letter, as the Kelvin sign is to `K`, is that letter
+    once decomposed, so the key merges the two, on the side that refuses more. It folds each letter by `_folded`, as
+    NTFS's upcase table maps one letter to one letter, never by `str.lower`, which takes the theta symbol `ϴ` to `θ`
+    and the capital sharp s to `ß`, or `str.casefold` or `str.upper`, which expand `ß` to `ss`, each merging two
+    folders NTFS keeps apart that no normalization form merges."""
     if folds:
         name = "".join(_folded(character) for character in unicodedata.normalize("NFD", name))
     return unicodedata.normalize("NFC", name)
@@ -200,8 +205,9 @@ def _folded(character: str) -> str:
     """`character` as a directory that folds case compares it, after NTFS's upcase table: its simple uppercase, as
     `ordinal_case.simple_uppercase` gives .NET's ordinal comparison, shown as the lowercase letter that maps back to
     it. A character whose simple uppercase cannot be told is kept, as is one whose full uppercase is more than one
-    letter, as `ß`'s is `SS`, and an uppercase whose lowercase does not map back to it, as the Kelvin sign's `k` maps
-    to `K`, so none merges with a letter NTFS keeps apart from it."""
+    letter, as `ß`'s is `SS`, and an uppercase whose lowercase does not map back to it, as the theta symbol's `θ` maps
+    to `Θ`, so none merges with a letter NTFS keeps apart from it. `fold` decomposes first, so a sign canonically
+    equivalent to a letter, as the Kelvin sign is to `K`, reaches this as that letter."""
     upper = simple_uppercase(character) or character
     lower = upper.lower()
     return lower if len(lower) == 1 and simple_uppercase(lower) == upper else upper
