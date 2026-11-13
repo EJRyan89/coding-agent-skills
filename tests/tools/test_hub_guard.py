@@ -1107,33 +1107,57 @@ class NestedAliasTests(GuardTestCase):
 class HookCommandTests(GuardTestCase):
     """The hook command in the tracked .claude/settings.json, run in Git Bash as Claude Code runs it.
 
-    A `python` shim first on PATH records its arguments, so a test sees whether the command would start Python at
-    all, and with what, without depending on which Python the machine has.
+    A shim first on PATH for each Python name the test gives, `python` unless it says otherwise, records its
+    arguments, so a test sees whether the command would start Python at all, by which name, and with what, without
+    depending on which Python the machine has. A test that holds a name absent runs the command with a PATH of
+    shims alone, `git`, `env`, and `awk` among them each running the program Bash finds, so no Python of the
+    machine's is found by any name.
     """
 
     resident_pwsh = False
 
-    def run_hook(
-        self, variables: Mapping[str, str] | None = None, note: str = "", status: int = 0
-    ) -> tuple[int, list[str] | None]:
+    def start_hook(
+        self,
+        variables: Mapping[str, str] | None = None,
+        status: int = 0,
+        pythons: Sequence[str] = ("python",),
+        machine_path: bool = True,
+    ) -> tuple[subprocess.CompletedProcess[str], dict[str, list[str]]]:
+        """Run the tracked hook command in Bash; return its result and the arguments each Python shim was given."""
         bash = platform_support.find_bash()
         if bash is None:
             raise AssertionError("Git Bash was not found; it is required for repository validation.")
         settings = json.loads((REPOSITORY_ROOT / ".claude" / "settings.json").read_text(encoding="utf-8"))
         [group] = settings["hooks"]["PreToolUse"]
         [hook] = group["hooks"]
-        shims = self.root / "shims"
-        shims.mkdir(exist_ok=True)
-        record = self.root / "python-arguments.txt"
-        record.unlink(missing_ok=True)
-        shim = f'#!/bin/sh\nprintf \'%s\\n\' "$@" > "$SHIM_RECORD"\nexit {status}\n'
-        (shims / "python").write_text(shim, encoding="utf-8")
-        (shims / "python").chmod(0o755)  # Bash runs a program off Windows only when it is executable
+        shims = self.root / ("shims" if machine_path else "shims-alone")
+        shutil.rmtree(shims, ignore_errors=True)
+        shims.mkdir()
+        records = self.root / "python-arguments"
+        shutil.rmtree(records, ignore_errors=True)
+        records.mkdir()
+        programs = {
+            name: f'#!/bin/sh\nprintf \'%s\\n\' "$@" > "$SHIM_RECORDS/{name}"\nexit {status}\n' for name in pythons
+        }
+        if not machine_path:
+            found = subprocess.run(
+                [bash, "-c", "command -v git env awk"],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                env=self.environment,
+                check=True,
+            ).stdout.splitlines()
+            for name, program in zip(("git", "env", "awk"), found, strict=True):
+                programs[name] = f"#!/bin/sh\nexec '{program}' \"$@\"\n"
+        for name, text in programs.items():
+            (shims / name).write_text(text, encoding="utf-8")
+            (shims / name).chmod(0o755)  # Bash runs a program off Windows only when it is executable
         environment = {
             **self.environment,
             "CLAUDE_PROJECT_DIR": str(self.hub),
-            "SHIM_RECORD": str(record),
-            "PATH": str(shims) + os.pathsep + self.environment["PATH"],
+            "SHIM_RECORDS": str(records),
+            "PATH": str(shims) + (os.pathsep + self.environment["PATH"] if machine_path else ""),
             **(variables or {}),
         }
         event = json.dumps({"tool_name": "Bash", "tool_input": {"command": "git status"}, "cwd": str(self.hub)})
@@ -1147,9 +1171,17 @@ class HookCommandTests(GuardTestCase):
             env=environment,
             check=False,
         )
+        started = {record.name: record.read_text(encoding="utf-8").splitlines() for record in records.iterdir()}
+        return completed, started
+
+    def run_hook(
+        self, variables: Mapping[str, str] | None = None, note: str = "", status: int = 0
+    ) -> tuple[int, list[str] | None]:
+        """Run the hook with a `python` shim; return its status and the shim's arguments, None when it did not run."""
+        completed, started = self.start_hook(variables, status)
         self.assertEqual(note, completed.stderr)
-        arguments = record.read_text(encoding="utf-8").splitlines() if record.exists() else None
-        return completed.returncode, arguments
+        self.assertLessEqual(started.keys(), {"python"})
+        return completed.returncode, started.get("python")
 
     def test_a_clone_that_has_not_opted_in_starts_no_python(self) -> None:
         for value in (None, "false", "0"):
@@ -1164,6 +1196,37 @@ class HookCommandTests(GuardTestCase):
                 code, arguments = self.run_hook()
                 self.assertEqual(0, code)
                 self.assertEqual(["-B", f"{self.hub}/tools/hub_guard.py"], arguments)
+
+    def test_an_opted_in_clone_with_only_python3_runs_the_guard_with_python3(self) -> None:
+        # Homebrew's Python on macOS, and Linux without python-is-python3, name Python `python3` alone (#2742).
+        self.enable("true")
+        completed, started = self.start_hook(pythons=("python3",), machine_path=False)
+        outcome = (completed.returncode, completed.stderr, started)
+        self.assertEqual((0, "", {"python3": ["-B", f"{self.hub}/tools/hub_guard.py"]}), outcome)
+
+    def test_python_is_run_before_python3_where_both_resolve(self) -> None:
+        # Windows installers name Python `python`, and a `python3` there may be the Microsoft Store's alias.
+        self.enable("true")
+        for machine_path in (True, False):
+            with self.subTest(machine_path=machine_path):
+                completed, started = self.start_hook(pythons=("python", "python3"), machine_path=machine_path)
+                outcome = (completed.returncode, completed.stderr, started)
+                self.assertEqual((0, "", {"python": ["-B", f"{self.hub}/tools/hub_guard.py"]}), outcome)
+
+    def test_a_clone_that_has_not_opted_in_needs_no_python_by_any_name(self) -> None:
+        for value in (None, "false"):
+            with self.subTest(value=value):
+                self.enable(value)
+                completed, started = self.start_hook(pythons=(), machine_path=False)
+                self.assertEqual((0, "", "", {}), (completed.returncode, completed.stdout, completed.stderr, started))
+
+    def test_an_opted_in_clone_with_no_python_by_either_name_fails_the_hook_naming_python3(self) -> None:
+        # The hook declares onFailure: block, so a guarded clone with no Python is blocked, never left unguarded.
+        self.enable("true")
+        completed, started = self.start_hook(pythons=(), machine_path=False)
+        self.assertEqual({}, started)
+        self.assertNotEqual(0, completed.returncode)
+        self.assertIn("python3", completed.stderr)
 
     def test_the_hook_blocks_on_a_failure_only_where_the_clone_has_opted_in(self) -> None:
         # The hook declares onFailure: block, so Claude Code blocks a command when the hook fails or times out; the
@@ -1263,7 +1326,7 @@ class HookCommandUnderPowerShellTests(GuardTestCase):
         record = self.root / "started.txt"
         record.unlink(missing_ok=True)
         # Each program the command would start after its exit, under the name PowerShell would find it by.
-        for program in ("python", "git", "env", "awk", "test"):
+        for program in ("python", "python3", "git", "env", "awk", "test", "command", "exec"):
             (shims / f"{program}.cmd").write_text(f'@echo {program}>>"%SHIM_RECORD%"\r\n', encoding="utf-8")
             (shims / program).write_text(f'#!/bin/sh\necho {program} >> "$SHIM_RECORD"\n', encoding="utf-8")
             (shims / program).chmod(0o755)  # pwsh runs a program off Windows only when it is executable

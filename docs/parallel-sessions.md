@@ -181,9 +181,14 @@ The hook command reads the setting itself, in Bash, and exits before starting Py
 in: when git reports the setting unset or false, it exits in silence, and when git cannot read it at all, as with a
 value that is no boolean or a configuration file git cannot parse, it lets git's own message through and adds a note
 on stderr that names git's exit status, so an opted-in clone left unguarded is never passed unseen. Elsewhere the hook
-is inert and costs one `awk`, one `env`, and one `git config` call per tool call: `python`
-never runs, so a `python` that still resolves to the Microsoft Store alias cannot fail the hook. In an opted-in clone
-it runs `tools/hub_guard.py` under `$CLAUDE_PROJECT_DIR`, which checks the same setting again. Neither read can be
+is inert and costs one `awk`, one `env`, and one `git config` call per tool call: no Python
+starts, so it needs none, and a `python` that still resolves to the Microsoft Store alias cannot fail the hook. In an
+opted-in clone it runs `tools/hub_guard.py` under `$CLAUDE_PROJECT_DIR`, which checks the same setting again, with
+`python` when the shell finds a program of that name on `PATH` and with `python3` when it does not. `python` comes
+first because the Windows installers give Python that name, and a `python3` there may be the Microsoft Store alias;
+`python3` is the only name Homebrew and the python.org installer give it on macOS, and the name most Linux
+distributions give it. The hook therefore needs `python` or `python3` on the `PATH` Claude Code runs it with, starting
+a Python as new as [Requirements](installation.md#requirements) names. Neither read can be
 pointed at another repository's setting or outranked: each reads only the repository's own file, with
 `git config --local`, which passes over the command-line configuration `GIT_CONFIG_PARAMETERS` and `GIT_CONFIG_COUNT`
 carry; the hook command runs its call through `env -u` for each of `GIT_DIR`, `GIT_WORK_TREE`, `GIT_COMMON_DIR`, and
@@ -197,7 +202,9 @@ The command is also written to end at once under PowerShell, for the runtime tha
 them into `set exit 0`, which only sets the positional parameters, and goes on, while PowerShell reads `set \` as
 setting a variable named `\` and then exits with status 0. PowerShell parses a whole command before it runs any of
 it, so the rest is written in what both shells parse, `test` rather than `[`, `env -u` rather than a loop of
-`unset`, and `awk` printing to `/dev/stderr` rather than `>&2`, which PowerShell refuses to parse.
+`unset`, `awk` printing to `/dev/stderr` rather than `>&2`, which PowerShell refuses to parse, and `exec "$p"` to
+start the Python the hook chose rather than `"$p"` alone, which PowerShell reads as an expression and refuses at the
+option after it.
 `HookCommandUnderPowerShellTests` in `tests/tools/test_hub_guard.py` runs the tracked command under `pwsh`, opted in,
 not, and with an opt-in git cannot read, and holds that it exits 0 with no output and starts no program. The hook
 declares `onFailure: "block"`, which [The guard's contract](#the-guards-contract) explains.
@@ -585,7 +592,10 @@ exits with an error, rather than letting it run unseen. The hook command reads t
 starts the guard and exits 0 on every path where the clone has not opted in, git's answer that the setting is unset
 or false and a setting git cannot read among them, so a block can fall only where the clone is guarded, and there it
 is the refusal a failure is owed. One case blocks a clone that has not opted in: a `git config` that does not answer
-within the hook's own timeout, which leaves the hook timed out before it can exit.
+within the hook's own timeout, which leaves the hook timed out before it can exit. In an opted-in clone where neither
+`python` nor `python3` is on the `PATH` Claude Code runs the hook with, the hook cannot start the guard, so every tool
+call it matches is blocked, the edit that would fix it included. Install Python, or turn the guard off, from a terminal
+outside the session, then restart Claude Code so the hook runs with the new `PATH`.
 
 #### What it does not see
 
