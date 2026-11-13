@@ -40,6 +40,10 @@ BODY = (
     "### A skill is added\r\n\r\n- Level: minor. Additive: a new skill.\r\n- Contract: `skills/beta`\r\n"
     "- User action: none\r\n\r\n## Validation\r\n\r\n- [x] Validation passes\r\n"
 )
+# An entry two pull requests each wrote under one heading, with their own text.
+SHARED_ENTRY = (
+    "### Refusals end with the step to take\n\n- Level: minor. {text}\n- Contract: none\n- User action: none\n"
+)
 
 
 class BodyEntriesTests(unittest.TestCase):
@@ -130,6 +134,23 @@ class BodyEntriesTests(unittest.TestCase):
         entries = release_notes.body_entries(body)
         self.assertEqual(1, len(entries))
         self.assertTrue(entries[0].text.endswith("```text\n## not a heading\n```"), entries[0].text)
+
+    def test_a_field_line_in_a_fence_is_the_fences_text_and_no_field(self) -> None:
+        for opener, closer in (("```markdown", "```"), ("~~~~", "~~~~"), ("- ```text", "  ```")):
+            with self.subTest(opener=opener):
+                body = (
+                    "## Upgrade note\n\n### X\n\n- Level: patch, a documentation fix.\n- Contract: none.\n"
+                    f"- User action: none. Example:\n\n{opener}\n- Level: major, an example.\n"
+                    f"- Pull request: #99\n{closer}\n\n## Validation\n"
+                )
+                [entry] = release_notes.body_entries(body)
+                self.assertEqual(
+                    {"Level": "patch, a documentation fix.", "Contract": "none.", "User action": "none. Example:"},
+                    entry.fields,
+                )
+                self.assertIn("- Level: major, an example.", entry.text)
+                sourced = release_notes.SourcedEntry(entry, "a body", "#7", from_notes=False)
+                self.assertTrue(sourced.rendered().endswith("\n- Pull request: #7"), sourced.rendered())
 
     def test_heading_whitespace_and_crlf_keep_the_same_section_boundaries(self) -> None:
         body = BODY.replace("## Upgrade note\r\n", "## Upgrade note \t\r\n")
@@ -297,6 +318,24 @@ class RangeEntriesTests(FixtureRepository):
                 self.assertRaisesRegex(release_notes.ReleaseNotesError, "a listing that is not whole commits"),
             ):
                 release_notes.commits(self.root, "v0.1.0", "HEAD")
+
+    def test_two_pull_requests_whose_entries_share_a_heading_both_reach_the_section_and_are_named(self) -> None:
+        older = SHARED_ENTRY.format(text="Refusals of the configuration end with the step.")
+        newer = SHARED_ENTRY.format(text="Refusals of the journal end with the step.")
+        self.commit("Older refusals (#2)", body=f"## Upgrade note\n\n{older}", change="older")
+        self.commit("Newer refusals (#3)", body=f"## Upgrade note\n\n{newer}", change="newer")
+        entries = release_notes.range_entries(self.root, "v0.1.0", "HEAD")
+        self.assertEqual(["#3", "#2"], [item.pull_request for item in entries])
+        self.assertEqual([newer.rstrip("\n"), older.rstrip("\n")], [item.entry.text for item in entries])
+        code, printed, error = self.run_main("v0.2.0")
+        self.assertEqual(0, code)
+        self.assertIn(f"{newer}- Pull request: #3\n\n{older}- Pull request: #2\n", printed)
+        newest, oldest = (self.git("rev-parse", "--short=7", ref).strip() for ref in ("HEAD", "HEAD^"))
+        self.assertEqual(
+            f'SHARED "Refusals end with the step to take": commit {newest}\'s ## Upgrade note; '
+            f"commit {oldest}'s ## Upgrade note\n",
+            error,
+        )
 
     def test_an_entry_released_with_the_previous_tag_is_not_read_again(self) -> None:
         self.commit("Move a heading (#2)", notes=f"{INTRO}\n## Unreleased\n\n{RELEASED.replace('## v0.1.0', '')}")
@@ -559,6 +598,17 @@ class CheckTests(FixtureRepository):
         )
         (self.root / NOTES).write_bytes(carried.encode())
         self.commit("Carry the late entry (#9)")
+        self.git("update-ref", "refs/remotes/origin/main", "main")
+        self.assertEqual(0, self.run_main("v0.2.0", "--check")[0])
+
+    def test_a_section_merging_the_entries_that_share_a_heading_into_one_is_current(self) -> None:
+        # The release preparer merges the entries a SHARED line names into one entry under their heading.
+        self.commit("Older (#2)", body="## Upgrade note\n\n" + SHARED_ENTRY.format(text="Old."), change="older")
+        self.commit("Newer (#3)", body="## Upgrade note\n\n" + SHARED_ENTRY.format(text="New."), change="newer")
+        merged = SHARED_ENTRY.format(text="Old and new.") + "- Pull request: #2, #3\n"
+        section = f"## v0.2.0\n\nLevel: minor.\n\n{merged}\n"
+        (self.root / NOTES).write_bytes(f"{INTRO}\n{section}{RELEASED}".encode())
+        self.commit("Release v0.2.0 (#7)", body="## Upgrade note\n\nNone\n")
         self.git("update-ref", "refs/remotes/origin/main", "main")
         self.assertEqual(0, self.run_main("v0.2.0", "--check")[0])
 
