@@ -3793,7 +3793,11 @@ def test_each_path_refusal_names_the_wrong_kind_never_as_not_found(tmp_path: Pat
     pipe = os.stat_result((0o010644, 0, 0, 1, 0, 0, 0, 0, 0, 0))
 
     def stat(path: Path, *, follow_symlinks: bool = True) -> os.stat_result:
-        return pipe if path == file else real(path, follow_symlinks=follow_symlinks)
+        return pipe if path in (file, other) else real(path, follow_symlinks=follow_symlinks)
 
+    other = tmp_path / "other.md"
+    other.write_text("Other.\n", encoding="utf-8")
     with mock.patch.object(Path, "stat", autospec=True, side_effect=stat):
-        assert (1, [f"FAILED not a file: {file.as_posix()}"]) == run("scan", str(file))[:2]
+        assert (1, [f"FAILED not a file: {file.as_posix()}, {other.as_posix()}"]) == run("scan", str(file), str(other))[
+            :2
+        ]

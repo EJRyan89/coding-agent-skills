@@ -164,6 +164,15 @@ class RuntimeHostTests(unittest.TestCase):
                     f"Copilot {label} {folder} cannot be examined: Permission denied", str(raised.exception)
                 )
 
+    def test_copilot_command_refuses_a_relative_root_by_its_rule(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            for name, label in (("materialized_root", "materialized root"), ("run_directory", "run directory")):
+                arguments: dict[str, Any] = {"run_directory": root, "materialized_root": root, name: Path("relative")}
+                with self.subTest(name), self.assertRaises(RuntimeContractError) as raised:
+                    copilot_command("copilot", version=(1, 0, 103), result_path=root / "result.json", **arguments)
+                self.assertEqual(f"Copilot {label} must be an existing absolute directory", str(raised.exception))
+
     def test_copilot_rejects_result_outside_run_directory(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()

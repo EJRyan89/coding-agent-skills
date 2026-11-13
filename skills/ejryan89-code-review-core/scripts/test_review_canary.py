@@ -490,6 +490,23 @@ class FixtureChangeTests(unittest.TestCase):
             pass
         self.assertEqual([], list(self.temporary.iterdir()))
 
+    def test_a_tree_that_is_a_link_is_refused_by_name(self) -> None:
+        directory = write_fixture(self.root / "fixture", {"a.txt": b"a\n"}, {"a.txt": b"b\n"})
+        real = is_link_or_junction
+        with (
+            mock.patch.object(
+                review_canary,
+                "is_link_or_junction",
+                lambda path, metadata=None: path.name == "head" or real(path, metadata),
+            ),
+            self.assertRaisesRegex(
+                FixtureError, r"^The fixture's head/ tree is a link, which has no place in a fixture$"
+            ),
+            fixture_change(directory, subprocess_runner),
+        ):
+            pass
+        self.assertEqual([], list(self.temporary.iterdir()))
+
     def test_a_link_or_special_file_in_a_tree_is_refused(self) -> None:
         directory = write_fixture(self.root / "fixture", {"a.txt": b"a\n"}, {"a.txt": b"b\n", "link": b"a.txt"})
         real = is_link_or_junction

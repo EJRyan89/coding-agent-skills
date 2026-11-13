@@ -38,6 +38,7 @@ from worktree_fixture import (
     run_script,
 )
 
+from deployer import platform_support
 from tools import worktrees
 
 
@@ -336,11 +337,17 @@ class CheckoutFailureTests(unittest.TestCase):
             hub, tree, absent = Path(folder) / "hub", Path(folder) / "tree", Path(folder) / "absent"
             tree.write_text("", encoding="utf-8")
             with mock.patch.object(worktrees, "git", side_effect=AssertionError("counted a tree that is not one")):
-                states = [
-                    worktrees.row(hub, git_worktrees.Worktree(str(path), "abc", "feat/x", False)).state
+                rows = [
+                    worktrees.row(hub, git_worktrees.Worktree(str(path), "abc", "feat/x", False))
                     for path in (tree, absent)
                 ]
-            self.assertEqual(["not a folder", "missing"], states)
+            self.assertEqual(
+                [
+                    worktrees.Row("feat/x", state, "-", "-", "-", platform_support.normalize(path))
+                    for state, path in (("not a folder", tree), ("missing", absent))
+                ],
+                rows,
+            )
 
     def test_list_counts_each_worktree_from_the_hub_under_the_client_s_own_limit(self) -> None:
         row, calls = self.counted_row("abc", git_client.GitResult(0, "2\t3\n", ""))

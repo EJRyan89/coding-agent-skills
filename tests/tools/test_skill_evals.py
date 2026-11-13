@@ -1816,6 +1816,14 @@ class ReviewerScenarioTests(unittest.TestCase):
             self.refusal(checkout=checkout),
         )
 
+    def test_a_reviewer_skill_file_of_the_wrong_kind_is_named_so_never_as_no_repository_skill(self) -> None:
+        checkout = self.root / "checkout"
+        (checkout / REVIEWER_FOLDER / "SKILL.md").mkdir(parents=True)
+        write_reviewer_scenario(self.root, reviewer_spec())
+        self.assertEqual(
+            f"case: the checkout's {REVIEWER_FOLDER}/SKILL.md is not a file", self.refusal(checkout=checkout)
+        )
+
     def test_a_declared_file_of_the_wrong_kind_is_named_so_never_as_lacking(self) -> None:
         checkout = self.root / "checkout"
         shutil.copytree(skill_evals_scenarios.REPOSITORY_ROOT / REVIEWER_FOLDER, checkout / REVIEWER_FOLDER)

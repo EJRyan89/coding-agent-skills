@@ -5429,6 +5429,7 @@ PRESENCE_LISTINGS = {
 PRESENCE_REFUSAL_SHAPES = {
     "if not P: raise": "def f(p):\n    if not {call}:\n        raise OSError(f'{{p}} is missing')\n    return 1\n",
     "if not P or Q: raise": "def f(p, q):\n    if q or not {call}:\n        raise ValueError(p)\n    return 1\n",
+    "if not (Q and P): raise": "def f(p, q):\n    if not (q and {call}):\n        raise ValueError(p)\n    return 1\n",
     "if not P: message, raise": (
         "def f(p):\n    if not {call}:\n        message = f'{{p}} not found'\n        raise LookupError(message)\n"
         "    return 1\n"
@@ -5512,6 +5513,10 @@ PRESENCE_PASSED = {
     "a refusal on a file_presence test that lets another kind through": (
         "import file_presence\n\n\ndef f(p):\n    if not file_presence.is_present(p):\n        raise OSError(p)\n"
         "    return 1\n"
+    ),
+    "a raise on a predicate's True": "def f(p):\n    if p.exists():\n        raise OSError(p)\n    return 1\n",
+    "a raise on an or holding no predicate": (
+        "def f(p, q, r):\n    if q or not r:\n        raise OSError(p)\n    return 1\n"
     ),
     "a refusal on other_is_absent=False": (
         "import file_presence\n\n\ndef f(p):\n    if not file_presence.is_directory(p, other_is_absent=False):\n"
@@ -5634,6 +5639,25 @@ PRESENCE_PASSED = {
     ),
     "limit: a link test, which the link-test policy holds": "def f(p):\n    return p.is_symlink()\n",
 }
+
+
+def test_presence_policy_names_the_test_a_refusal_turns_on_and_the_helper_that_names_each_cause() -> None:
+    source = (
+        "import file_presence\n\n\ndef f(p):\n    if not file_presence.is_present(p, other_is_absent=True):\n"
+        "        raise OSError(p)\n    return 1\n"
+    )
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        path = root / "skills" / "alpha" / "scripts" / "alpha.py"
+        path.parent.mkdir(parents=True)
+        path.write_text(source, encoding="utf-8")
+        found = python_checks.presence_problems(root, [path])
+    assert found == [
+        "skills/alpha/scripts/alpha.py:5 refuses on file_presence.is_present(other_is_absent=True)'s False, which it "
+        "also answers for a path of another kind or, for a path's predicate, one it cannot stat, so the refusal names "
+        "either as missing; call ejryan89-skill-core's file_presence.refusal_reason, which names each cause, or state "
+        "why in PRESENCE_ALLOWED"
+    ], found
 
 
 @pytest.mark.parametrize(
