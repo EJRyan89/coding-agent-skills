@@ -22,6 +22,7 @@ from workflows import (
     IMAGE_MODULE_LINES,
     IMAGE_MODULE_STEP,
     PINNED_TOOL_LINES,
+    POWERSHELL_PACKAGE_LINES,
     PULL_REQUEST_CODE_STATEMENT,
     RETIRED_TOKEN_CLAIMS,
     SAME_REPOSITORY_STATEMENT,
@@ -48,6 +49,7 @@ from workflows import (
     pinned_tool_problems,
     posix_job_problems,
     posix_verify_log_problems,
+    powershell_package_problems,
     provisional_job_problems,
     read_workflow,
     required_check_problems,
@@ -1057,6 +1059,67 @@ class CodexSettingsFixtures(unittest.TestCase):
         ):
             with self.subTest(problem=problem, workflow=workflow, guide=guide):
                 problems = codex_settings_problems(workflow, guide)
+                self.assertTrue(any(problem in found for found in problems), problems)
+
+
+_PACKAGE_SCRIPT = "\n".join(
+    [
+        "          if command -v pwsh > /dev/null; then",
+        '            echo "pwsh is provided by the runner image"',
+        "          else",
+        '            case "$(uname -m)" in',
+        *(f"              {line}" for line in POWERSHELL_PACKAGE_LINES[:2]),
+        "            esac",
+        *(f"            {line}" for line in POWERSHELL_PACKAGE_LINES[2:]),
+        "          fi",
+    ]
+)
+POWERSHELL_PACKAGE_JOB = (
+    "jobs:\n"
+    "  deployable-macos:\n"
+    "    runs-on: macos-latest\n"
+    "    steps:\n"
+    "      - name: Install the prerequisites\n"
+    "        env:\n"
+    "          POWERSHELL_VERSION: '7.6.6'\n"
+    f"          POWERSHELL_MACOS_ARM64_SHA256: '{'a' * 64}'\n"
+    f"          POWERSHELL_MACOS_X64_SHA256: '{'b' * 64}'\n"
+    "        run: |\n"
+    f"{_PACKAGE_SCRIPT}\n"
+    "      - name: Deploy\n"
+    "        run: python3 deploy.py --all\n"
+)
+
+
+class PowerShellPackageFixtures(unittest.TestCase):
+    def test_the_macos_job_installs_powershell_only_from_the_pinned_package_after_checking_its_digest(self) -> None:
+        self.assertEqual([], powershell_package_problems(POWERSHELL_PACKAGE_JOB))
+        check = 'echo "$digest  $package" | shasum --algorithm 256 --check --strict'
+        install = 'sudo installer -pkg "$package" -target /'
+        swapped = POWERSHELL_PACKAGE_JOB.replace(check, "CHECK").replace(install, check).replace("CHECK", install)
+        for drifted, problem in (
+            (POWERSHELL_PACKAGE_JOB.replace("deployable-macos", "deployable-linux"), "has 0 steps named"),
+            (
+                POWERSHELL_PACKAGE_JOB.replace("      - name: Deploy\n", "      - name: Install the prerequisites\n"),
+                "has 2 steps named",
+            ),
+            (POWERSHELL_PACKAGE_JOB.replace(install, "brew install --cask powershell"), "does not run 'sudo installer"),
+            (POWERSHELL_PACKAGE_JOB.replace(check, "true"), "does not run 'echo \"$digest"),
+            (swapped, "in that order"),
+            (POWERSHELL_PACKAGE_JOB.replace("'7.6.6'", "latest"), "pins POWERSHELL_VERSION as 'latest'"),
+            (
+                POWERSHELL_PACKAGE_JOB.replace("          POWERSHELL_VERSION: '7.6.6'\n", ""),
+                "pins POWERSHELL_VERSION as None",
+            ),
+            (POWERSHELL_PACKAGE_JOB.replace("a" * 64, "a" * 63), "pins POWERSHELL_MACOS_ARM64_SHA256"),
+            (POWERSHELL_PACKAGE_JOB.replace("b" * 64, "B" * 64), "pins POWERSHELL_MACOS_X64_SHA256"),
+            (
+                POWERSHELL_PACKAGE_JOB.replace('digest="$POWERSHELL_MACOS_X64_SHA256"', 'digest=""'),
+                "does not run 'x86_64)",
+            ),
+        ):
+            with self.subTest(problem=problem):
+                problems = powershell_package_problems(drifted)
                 self.assertTrue(any(problem in found for found in problems), problems)
 
 

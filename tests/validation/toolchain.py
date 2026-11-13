@@ -507,6 +507,33 @@ def report_prerequisite_problems(versions: dict[str, tuple[int, ...] | None]) ->
     return bool(missing or outdated)
 
 
+# Homebrew commands that install a package by naming it, the current form and the retired `brew cask install` alike,
+# each followed by the rest of its command: up to a list operator, a pipe, or a Markdown cell or code span's end.
+BREW_INSTALL = re.compile(r"\bbrew\s+(?:cask\s+)?(?:install|reinstall|upgrade)\b(?P<arguments>[^\n|`;&]*)")
+# The packages Homebrew no longer has, as a brew command names them, bare or by their tap. Homebrew dropped its
+# PowerShell cask, and with no formula of that name a bare `brew install powershell` fails the same way; the preview
+# cask that remains installs pwsh-preview, which the deployer and the skills never look for.
+REMOVED_BREW_PACKAGES = {"powershell": "install Microsoft's .pkg from PowerShell's GitHub releases instead"}
+
+
+def removed_install_problems(text: str) -> list[str]:
+    """Report each command in `text` that installs, with Homebrew, a package REMOVED_BREW_PACKAGES names: a document,
+    an install hint, or a workflow that holds one sends a person or a runner to a command that fails. A line a backslash
+    continues is read with the next, as the shell reads it, and reported by its first line; a backtick is not read as a
+    continuation, since a Markdown line ends with one wherever it ends with a code span."""
+    problems: list[str] = []
+    for number, line in continued_lines(text, "\\"):
+        for match in BREW_INSTALL.finditer(line):
+            for word in match["arguments"].split():
+                package = word.strip("'\"").rsplit("/", 1)[-1]
+                if package in REMOVED_BREW_PACKAGES:
+                    problems.append(
+                        f"line {number}: {match.group(0).strip()!r} installs Homebrew's {package}, which Homebrew no "
+                        f"longer has; {REMOVED_BREW_PACKAGES[package]}"
+                    )
+    return problems
+
+
 class ToolchainPolicies(unittest.TestCase):
     def test_validation_floors_are_the_documented_versions(self) -> None:
         self.assertIn(platform_support.BASH_NAME, ("Git Bash", "Bash"))
@@ -593,6 +620,25 @@ class ToolchainPolicies(unittest.TestCase):
                 with self.subTest(hint=hints[package]):
                     self.assertEqual(1, len(pip_installs(hints[package])))
                     self.assertEqual([], hash_install_problems(hints[package], (DEVELOPMENT_LOCK,)))
+
+    def test_no_document_or_install_hint_names_a_package_homebrew_removed(self) -> None:
+        documents = [path for path in repository_files(REPOSITORY_ROOT) if path.suffix == ".md"]
+        # The document that holds the install tables is among those read, so an empty listing cannot pass.
+        self.assertIn("docs/installation.md", {path.relative_to(REPOSITORY_ROOT).as_posix() for path in documents})
+        for path in documents:
+            with self.subTest(document=path.relative_to(REPOSITORY_ROOT).as_posix()):
+                self.assertEqual([], removed_install_problems(path.read_text(encoding="utf-8")))
+        platforms = {
+            "Windows": (platform_support.WINDOWS_INSTALL_HINTS, platform_support.WINDOWS_INSTALL_HELP),
+            "Linux": (platform_support.LINUX_INSTALL_HINTS, platform_support.LINUX_INSTALL_HELP),
+            "macOS": (platform_support.MACOS_INSTALL_HINTS, platform_support.MACOS_INSTALL_HELP),
+        }
+        for platform, (hints, help_lines) in platforms.items():
+            with self.subTest(platform=platform):
+                # Each platform's hints, PowerShell's among them, and its help lines are read, never an empty text.
+                self.assertIn("PowerShell", hints)
+                self.assertTrue(help_lines)
+                self.assertEqual([], removed_install_problems("\n".join([*hints.values(), *help_lines])))
 
     def test_each_documented_copy_of_a_floor_is_the_floor_and_the_dependency_document_names_it(self) -> None:
         catalogue = {**tools.SKILL_TOOLS, **tools.VERIFY_TOOLS}

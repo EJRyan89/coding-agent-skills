@@ -476,7 +476,14 @@ jobs:
 
       # The install commands are the ones docs/installation.md lists. The runner image already provides some of these
       # tools, so each is installed only when it is missing; the verify step below records what was found.
+      # Homebrew has no PowerShell cask, so where the image lacks pwsh the step installs Microsoft's package of the
+      # pinned release, refused unless its SHA-256 is the pinned digest for the runner's architecture
+      # (docs/dependency-updates.md).
       - name: Install the prerequisites
+        env:
+          POWERSHELL_VERSION: '7.6.6'
+          POWERSHELL_MACOS_ARM64_SHA256: '64950d0f9a11f890c57199ec5e0f340f8f5fe2bbc9df43c35aed66e3d16d76bb'
+          POWERSHELL_MACOS_X64_SHA256: '68fd85010f02e5e16634f811da8d72a5ee58e01c24b353df5bf4acd3a645f56e'
         run: |
           for command in git shellcheck gh; do
             if command -v "$command" > /dev/null; then
@@ -488,7 +495,16 @@ jobs:
           if command -v pwsh > /dev/null; then
             echo "pwsh is provided by the runner image"
           else
-            brew install --cask powershell
+            case "$(uname -m)" in
+              arm64) architecture=arm64 digest="$POWERSHELL_MACOS_ARM64_SHA256" ;;
+              x86_64) architecture=x64 digest="$POWERSHELL_MACOS_X64_SHA256" ;;
+              *) echo "::error::PowerShell has no macOS package for $(uname -m)"; exit 1 ;;
+            esac
+            release="https://github.com/PowerShell/PowerShell/releases/download/v$POWERSHELL_VERSION"
+            package="$RUNNER_TEMP/powershell.pkg"
+            curl --fail --silent --show-error --location --retry 3 --output "$package" "$release/powershell-$POWERSHELL_VERSION-osx-$architecture.pkg"
+            echo "$digest  $package" | shasum --algorithm 256 --check --strict
+            sudo installer -pkg "$package" -target /
           fi
 
       - name: Install Claude Code, Codex CLI, and GitHub Copilot CLI
