@@ -22,6 +22,7 @@ from markdown_literal import navigation_url as _navigation_url
 from review_config import (
     VerdictPolicy,
     is_unreviewed_suffix,
+    read_source_root,
     safe_repository_path,
     validate_repository_identity,
     verdict_policy,
@@ -1693,7 +1694,7 @@ def _validate_adapter(value: object) -> None:
             raise RecordError(f"Review adapter source is invalid for a {scope} reviewer")
     # The checkout a reviewer was read from, a single line of text, is named exactly when it was another one.
     if "source_root" in adapter:
-        READ.string(adapter["source_root"], f"{path}.source_root", single_line=True, trimmed=True)
+        read_source_root(READ, adapter["source_root"], f"{path}.source_root")
     if ("source_root" in adapter) != (adapter.get("source") == "reviewer-root"):
         raise RecordError("Review adapter names a source_root exactly when its source is reviewer-root")
     for field in ("name", "reviewer"):
