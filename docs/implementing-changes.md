@@ -37,10 +37,10 @@ a worktree is retired.
 ## Validation
 
 Validation is continuous integration's job: the `Validation` check runs `python -B tests/run_validation.py`, split
-across its Windows legs and across its Linux legs, in full on every push and on every pull request that is not
+across its Windows legs, its Linux legs, and its macOS legs, in full on every push and on every pull request that is not
 documentation-only. A documentation-only pull request runs the subset the runner selects (the policy checks, the suites
 that name a changed file, and, when a changed file is Markdown, the Markdown fence checks), and a pull request merges
-only when the check passes on both platforms.
+only when the check passes on every platform.
 
 Locally, before the pull request, run what the change directly touches and leave the rest to continuous integration,
 which runs it anyway:

@@ -8,7 +8,7 @@ python -B tests/run_validation.py
 
 ## Validation tools
 
-`tests/run_validation.py` stops before running any test when one of these tools is missing or older than its floor, and names the tool, the version it found, and the floor. CI's Windows legs and its Linux legs install ShellCheck, PSScriptAnalyzer, ruff, mypy, and pytest at their floors, so each of those floors is exercised on every run on both platforms, and Python at the newest release of its floor's minor version, as the Python row says. Each leg's verify step prints every tool's version and fails unless the ShellCheck validation runs and the PSScriptAnalyzer it loads are the pins.
+`tests/run_validation.py` stops before running any test when one of these tools is missing or older than its floor, and names the tool, the version it found, and the floor. CI's Windows, Linux, and macOS legs install ShellCheck, PSScriptAnalyzer, ruff, mypy, and pytest at their floors, so each of those floors is exercised on every run on every platform, and Python at the newest release of its floor's minor version, as the Python row says. Each leg's verify step prints every tool's version and fails unless the ShellCheck validation runs and the PSScriptAnalyzer it loads are the pins.
 
 | Tool | Floor | Declared in | How it is reviewed |
 |---|---|---|---|

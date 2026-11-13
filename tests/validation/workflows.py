@@ -915,25 +915,13 @@ def leg_problems(workflow: str, legs: int) -> list[str]:
     return problems
 
 
-def provisional_job_problems(workflow: str, job: str) -> list[str]:
-    """Report how validate.yml's `job` departs from a leg that is not yet a gate: it goes on after an error, so a red
-    leg leaves the run's conclusion as it was, and the `validate` job, the required check, does not need it. A job
-    that joins the required check drops both together, and its test moves to `required_check_problems`."""
-    tree = read_workflow(workflow)
-    problems: list[str] = []
-    if _mapping(tree, "jobs", job).get("continue-on-error") != "true":
-        problems.append(f"the {job} job does not set continue-on-error: true, so a red leg fails the run")
-    needs = _mapping(tree, "jobs", "validate").get("needs")
-    if job in ([needs] if isinstance(needs, str) else needs if isinstance(needs, list) else []):
-        problems.append(f"the validate job needs the {job} job, which goes on after an error and so cannot gate")
-    return problems
-
-
 def required_check_problems(workflow: str, jobs: tuple[str, ...]) -> list[str]:
     """Report how validate.yml's `validate` job departs from the one required check over `jobs`: named `Validation`,
     as branch protection requires it, needing each of them, running when one fails, since a skipped required check
-    counts as passing, and failing unless each one's result is success."""
-    validate = _mapping(read_workflow(workflow), "jobs", "validate")
+    counts as passing, and failing unless each one's result is success. None of them goes on after an error, since a
+    job that does keeps the run's conclusion when one of its legs fails."""
+    tree = read_workflow(workflow)
+    validate = _mapping(tree, "jobs", "validate")
     problems: list[str] = []
     if validate.get("name") != "Validation":
         problems.append(f"the validate job is named {validate.get('name')!r}, not the required check 'Validation'")
@@ -949,6 +937,8 @@ def required_check_problems(workflow: str, jobs: tuple[str, ...]) -> list[str]:
         names = [name for step in steps for name, value in _mapping(step, "env").items() if value == result]
         if not any(f'test "${name}" = success' in str(step.get("run", "")) for step in steps for name in names):
             problems.append(f"no step of the validate job fails unless the {job} job's result is success")
+        if "continue-on-error" in _mapping(tree, "jobs", job):
+            problems.append(f"the {job} job sets continue-on-error, so a red leg would not fail the run")
     return problems
 
 
@@ -2185,7 +2175,7 @@ class WorkflowsPolicies(unittest.TestCase):
         # The image ships the pinned analyzer, so the cache and the install run only on an image that lacks it.
         self.assertEqual([], image_module_problems(workflow, "linux"))
         # Every supported platform gates a merge through the one check branch protection requires.
-        self.assertEqual([], required_check_problems(workflow, ("suite", "linux", "known-failures")))
+        self.assertEqual([], required_check_problems(workflow, ("suite", "linux", "macos", "known-failures")))
 
     def test_validate_workflow_runs_the_whole_run_on_macos(self) -> None:
         workflow = (REPOSITORY_ROOT / ".github/workflows/validate.yml").read_text(encoding="utf-8")
@@ -2208,9 +2198,6 @@ class WorkflowsPolicies(unittest.TestCase):
         self.assertEqual([], pinned_tool_problems(workflow, "macos"))
         self.assertEqual([], mypy_cache_problems(workflow, "macos"))
         self.assertEqual([], image_module_problems(workflow, "macos"))
-        # Not yet a gate: the legs that still fail on macOS are tracked on the port's issue, and the job joins the
-        # required check once every leg passes.
-        self.assertEqual([], provisional_job_problems(workflow, "macos"))
 
     def test_deployable_workflow_installs_the_runtime_versions_the_readme_lists_for_the_fresh_runner(self) -> None:
         workflow = (REPOSITORY_ROOT / ".github/workflows/deployable.yml").read_text(encoding="utf-8")
