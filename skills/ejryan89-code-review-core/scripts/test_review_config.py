@@ -1053,6 +1053,31 @@ class LocalManifestTests(unittest.TestCase):
             with self.subTest(manifest=manifest):
                 self.assert_accepted(self.config(manifest))
 
+    def test_a_top_folder_git_names_that_cannot_end_the_walk_refuses_the_manifest(self) -> None:
+        # git names an enclosing repository whose top folder does not hold the folder it was asked from, or no top
+        # folder at all: the walk would end there, so the manifest is refused rather than accepted.
+        manifest = self.root / "manifests" / "manifest.json"
+        elsewhere = self.root / "elsewhere"
+        prefix = f"manifest {manifest} cannot be checked against checkout_path {self.checkout}: "
+        for answer, reason in (
+            (GitResult(0, f"{elsewhere.as_posix()}\n", ""), "which does not hold it"),
+            (GitResult(128, "", "fatal: not a git repository (or any of the parent directories): .git\n"), "no top"),
+        ):
+
+            def scripted(command: Any, timeout: float, answer: GitResult = answer) -> GitResult:
+                if "--show-toplevel" in command:
+                    return answer
+                if "--absolute-git-dir" in command:
+                    return GitResult(0, f"{(elsewhere / '.git').as_posix()}\n{(elsewhere / '.git').as_posix()}\n", "")
+                return GitResult(0, f"{self.common.as_posix()}\n", "")
+
+            with self.subTest(reason=reason), self.assertRaises(ConfigurationError) as caught:
+                review_config.check_local_manifest(manifest, self.checkout, scripted)
+            message = str(caught.exception)
+            self.assertTrue(message.startswith(prefix), message)
+            self.assertIn(reason, message)
+            self.assertIn(str(self.root), message)
+
     def test_the_default_manifest_beside_a_configuration_inside_the_checkout_is_refused(self) -> None:
         candidate = self.checkout / "config" / "config.json"
         manifest = self.checkout / "config" / "reviewers" / "example" / "one" / "manifest.json"

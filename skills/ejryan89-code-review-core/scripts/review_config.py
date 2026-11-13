@@ -610,7 +610,9 @@ def _enclosing_common_dirs(folder: Path, client: GitClient) -> Iterable[Path]:
             outside = git_dir.resolve().parent
         else:
             top = client.rev_parse_path("--show-toplevel", directory=directory)
-            if top is None or not within(directory, top.resolve()):
+            if top is None:
+                raise GitError(f"git named no top folder for {directory}, inside a repository's working tree")
+            if not within(directory, top.resolve()):
                 raise GitError(f"git named the top folder {top} for {directory}, which does not hold it")
             outside = top.resolve().parent
         if not within(directory, outside, strict=True):  # the file system's root holds the last repository
