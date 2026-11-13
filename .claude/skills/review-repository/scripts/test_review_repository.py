@@ -891,6 +891,7 @@ class DocumentationDriftTests(unittest.TestCase):
                 f"{SKILL_CORE}/link_probe.py",
                 f"{SKILL_CORE}/markdown_sections.py",
                 f"{SKILL_CORE}/nesting_depth.py",
+                f"{SKILL_CORE}/ordinal_case.py",
                 f"{SKILL_CORE}/path_containment.py",
                 f"{SKILL_CORE}/path_keys.py",
                 f"{SKILL_CORE}/python_reader.py",

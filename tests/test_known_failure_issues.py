@@ -47,6 +47,7 @@ LOADED = sorted(
                 "markdown_sections",
                 "module_assignments",
                 "nesting_depth",
+                "ordinal_case",
                 "path_containment",
                 "path_keys",
                 "process_identity",

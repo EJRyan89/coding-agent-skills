@@ -20,6 +20,7 @@
     "skills/ejryan89-skill-core/scripts/link_probe.py",
     "skills/ejryan89-skill-core/scripts/markdown_sections.py",
     "skills/ejryan89-skill-core/scripts/nesting_depth.py",
+    "skills/ejryan89-skill-core/scripts/ordinal_case.py",
     "skills/ejryan89-skill-core/scripts/path_containment.py",
     "skills/ejryan89-skill-core/scripts/path_keys.py",
     "skills/ejryan89-skill-core/scripts/python_reader.py",
