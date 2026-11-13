@@ -22,7 +22,7 @@ Portable agent skills for Claude Code, Codex, and GitHub Copilot CLI, with a gua
 | Platform | Where it stands |
 |---|---|
 | Windows | Supported. |
-| Linux, WSL included | The deployer and the whole validation suite run there, and the `deployable` workflow below deploys onto a fresh Ubuntu runner and checks discovery. Not yet supported: no model has run a skill on Linux through the runtime canary. |
+| Linux, WSL included | Supported: the whole validation suite runs there as part of the required check, the `deployable` workflow below deploys onto a fresh Ubuntu runner and checks discovery, and the maintainer's WSL2 Ubuntu ran the skills through the runtime canary in each runtime below. |
 | macOS | Supported: the whole validation suite runs there as part of the required check, the `deployable` workflow below deploys onto a fresh macOS runner and checks discovery, and the maintainer's Apple-silicon Mac ran the skills through the runtime canary in each runtime below. |
 
 Install the runtimes you use. None of them is needed to deploy, so you can use the skills from Codex or Copilot without installing Claude Code; [Runtime support](docs/skills.md#runtime-support) says which skills run there in part.
@@ -30,10 +30,10 @@ Install the runtimes you use. None of them is needed to deploy, so you can use t
 | Runtime | Maintainer's machines | Fresh Windows runner | Start a skill with |
 |---|---|---|---|
 | Claude Code | 2.1.323 | 2.1.319 | `/<skill>` |
-| Codex CLI | 0.167.2 | 0.167.0 | `$<skill>` |
+| Codex CLI | 0.168.0 | 0.167.0 | `$<skill>` |
 | GitHub Copilot CLI | 1.0.110 | 1.0.107 | `/<skill>` |
 
-The maintainer's machines, on Windows and macOS, ran the [runtime canary](tools/runtime_canary.py) and real skill and review runs; the column gives the versions of the latest canary run, on the Mac. The fresh runner is the [`deployable` workflow](.github/workflows/deployable.yml), which runs weekly and on dispatch; its last dispatched release run passed on 2026-11-09: on a clean GitHub-hosted Windows runner it installs the prerequisites and each CLI, deploys, checks that Codex and Copilot find every skill, uninstalls, and deploys again. Claude Code reads the deployed files directly and cannot list its skills without a session, so for it the runner checks the installed version and that every deployed skill and agent is in place. It starts no model, so it does not show a skill running; that stays a manual check through the canary. The workflow runs the same versions the same way on a fresh Ubuntu runner, where the same dispatched release run passed. See [Releasing](docs/releasing.md#before-tagging).
+The maintainer's machines, on Windows, macOS, and Linux, ran the [runtime canary](tools/runtime_canary.py) and real skill and review runs; the column gives the versions of the latest canary run, in WSL2 Ubuntu. The fresh runner is the [`deployable` workflow](.github/workflows/deployable.yml), which runs weekly and on dispatch; its last dispatched release run passed on 2026-11-09: on a clean GitHub-hosted Windows runner it installs the prerequisites and each CLI, deploys, checks that Codex and Copilot find every skill, uninstalls, and deploys again. Claude Code reads the deployed files directly and cannot list its skills without a session, so for it the runner checks the installed version and that every deployed skill and agent is in place. It starts no model, so it does not show a skill running; that stays a manual check through the canary. The workflow runs the same versions the same way on a fresh Ubuntu runner, where the same dispatched release run passed. See [Releasing](docs/releasing.md#before-tagging).
 
 ## Quick start
 
