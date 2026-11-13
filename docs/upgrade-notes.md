@@ -17,6 +17,220 @@ An entry is a `###` heading saying what changed, followed by these fields:
 
 A pull request whose change no user meets writes `None` under its `## Upgrade note`.
 
+## v0.14.0
+
+Level: minor.
+
+### Linux is a supported platform
+
+- Level: minor, a platform the deployer and the skills now support.
+- Contract: none.
+- User action: none. On Linux or WSL, follow "On Linux" in `docs/installation.md` and run the commands as `python3`.
+- Pull request: #2682
+
+### macOS is a supported platform
+
+- Level: minor, a platform the deployer and the skills now support.
+- Contract: none.
+- User action: none. On macOS, follow "On macOS" in `docs/installation.md` and run the commands as `python3`.
+- Pull request: #2681
+
+### The macOS PowerShell install route is Microsoft's package
+
+- Level: patch, documentation and install-hint wording only.
+- Contract: none.
+- User action: none. On macOS, install PowerShell 7 from the `.pkg` on PowerShell's GitHub releases page (`osx-arm64` for Apple silicon, `osx-x64` for Intel), as `docs/installation.md` now says; Homebrew no longer has a `powershell` cask.
+- Pull request: #2680
+
+### The generic reviewer's instructions are hashed at prepare, and a run fails when they change mid-review
+
+- Level: patch. It closes a gap where a redeployment mid-review changed what the generic reviewer followed without anyone noticing.
+- Contract: the `ejryan89-code-review-core` refusals of `review_pipeline.py check`, `finalize`, and `next-role` for generic reviewer instructions that changed since prepare or whose hash prepare did not record; and the record's `review.adapter.source_hashes`, which now names `suite:generic-review` whenever the generic reviewer had a role.
+- User action: do not redeploy the suite while a review is between `prepare` and `finalize`. A run prepared before this update that plans a generic role, or one that fails this way, is prepared again.
+- Pull request: #2678
+
+### A deployment no longer deletes a lock record a deployer from before the file lock took while it was removing a stale one
+
+- Level: patch, a defect fix in the deployment lock.
+- Contract: none.
+- User action: none. A `~/.claude/deployer/.deploy.lock.stale.<token>` folder that a deployment could not delete gets a warning on each run; delete it once no deployment is running.
+- Pull request: #2677
+
+### A local reviewer manifest in a repository nested in another working tree is refused
+
+- Level: patch, a refusal the documentation already promised now reaches nested repositories.
+- Contract: none.
+- User action: if a configured `manifest` lies inside a submodule, clone, or other repository nested in a working tree of the reviewed repository, move it outside the repository and update the configuration.
+- Pull request: #2676
+
+### A reviewer file or suite profile changed after prepare now fails the pull request in every dispatch mode
+
+- Level: patch. It closes a gap where a non-inline run, or any run after a suite redeployment, could record hashes its reviewers did not follow.
+- Contract: the `ejryan89-code-review-core` refusals of `review_pipeline.py check`, `finalize`, and `next-role` for a reviewer that is not what prepare materialized, and the entrypoint check's refusals, now worded "Reviewer materialization …" instead of "Copilot reviewer materialization …".
+- User action: do not redeploy the suite while a review is between `prepare` and `finalize`. A run that fails this way is prepared again.
+- Pull request: #2664
+
+### A reviewer's `trusted_ref` must be a full branch, tag, or remote-tracking ref, and a local `manifest` must lie outside the reviewed repository
+
+- Level: minor. A configuration that loaded before can now be refused, which after `1.0.0` would be major.
+- Contract: the code-review configuration file's `trusted_ref` and `manifest` fields in `docs/code-review-operations-contract.md`.
+- User action: run `review_config.py validate`. Rewrite a `trusted_ref` such as `main` as `refs/heads/main`, a tag as `refs/tags/<tag>`, and a commit's object name as a branch or tag that holds it. Pass `--ref` to `inspect-reviewer` and `validate-reviewer` the same way. Move a local `manifest`, and the condition scripts beside it, out of the reviewed repository's checkout and its other worktrees.
+- Pull request: #2672
+
+### Deployments and reviews hold an operating-system lock, and two manual lock recoveries go away
+
+- Level: patch, a defect fix whose arguments, status lines, and exit codes are unchanged.
+- Contract: none
+- User action: none. Deployments and reviews now hold an operating-system file lock, which ends with the process, so a crashed or killed run no longer leaves a lock to delete by hand. While a deployment runs, `~/.claude/deployer/.deploy.lock` exists beside `.deploy.lock.d`. A lock with no metadata is removed with a warning once it is a minute old. A `.deploy.lock.stale.<pid>` folder an earlier deployer left is only named with a warning; delete it once no deployment is running. A home, review archive, or state folder on a network or synced folder that refuses file locks now stops with `Could not lock` or `Cannot lock`; move it to a local disk.
+- Pull request: #2671
+
+### Skills no longer start a git or gh wrapper script on Windows
+
+- Level: patch, a defect fix that changes no command, argument, or output a skill documents.
+- Contract: none.
+- User action: none, unless the only `git`, `gh`, `dotnet`, or `dotnet-format` on `PATH` is a `.cmd`, `.bat`, or `.ps1` wrapper, which `deploy.py check` now reports as missing; then install the program itself, from its installer or WinGet, or put its folder on `PATH`.
+- Pull request: #2665
+
+### The pull request dashboard has Repository, PR, and Status columns in every table
+
+- Level: minor. The dashboard layout a user keeps changes on the first update, with nothing to do.
+- Contract: none.
+- User action: none. The next `update-pr-dashboard` run rewrites the owned section with separate Repository and PR columns and a Status column in every table. Status shows your own latest review on others' pull requests (`Approved`, `Changes Requested`, `Reviewed with Comments`, or `Open`) and GitHub's decision on yours. Repositories in the default set are now written as `owner/repo` too. Anything that reads the dashboard's table columns by position should expect the new ones.
+- Pull request: #2669
+
+### A repository's reviewer can be read from another checkout with `reviewer_root`
+
+- Level: minor, a new optional configuration key and a new record field and source value; existing configurations and records read as before.
+- Contract: `reviewer_root`, `source_root`, `reviewer-root`.
+- User action: none. To use specialists kept in another repository, set the reviewer's `reviewer_root` to a local clone's top folder and `trusted_ref` to the ref to read it at, keep the `include` patterns in the repository's local manifest, and run `review_config.py validate`; see "A reviewer kept in another checkout" in `docs/code-review-operations.md`. Fetch that clone yourself to move its ref. A reader of review records outside this suite meets a new `review.adapter.source` value, `reviewer-root`, and the `source_root` field beside it.
+- Pull request: #2655
+
+### Repository tools mark each finding STALE
+
+- Level: patch, since only contributors' tool output changes.
+- Contract: none.
+- User action: none. A contributor who reads `python tools/skill_reference.py` or `python tools/skill_shims.py` sees each finding led by `STALE `.
+- Pull request: #2653
+
+### More deployer refusals end with the step to take
+
+- Level: patch, refusal and remedy wording only.
+- Contract: none.
+- User action: none. A deployment stopped by unexpanded tokens, by the Bash or PowerShell syntax check of a rendered skill, or by ShellCheck now ends with the step to take. A `source.json` that is not a file now points at `git show HEAD:source.json` for the copy to put back.
+- Pull request: #2652
+
+### Claude Code's native reviewer subagents start at the configured effort
+
+- Level: minor. A configured effort that Claude Code's native path used to drop now applies there, and `prepare` and `check` print `EFFORT` lines on Claude Code.
+- Contract: `review-prs` `EFFORT`, `review-document` `EFFORT`.
+- User action: none for a configuration that leaves `reviewer_effort` null and pins no specialist `effort`. Otherwise, Claude Code reviewers started one by one now run at that effort, as Workflow-started ones already did; clear the setting to keep the reviewer agent's effort.
+- Pull request: #2650
+
+### This repository's reviewer snapshots the hub guard's option catalogues
+
+- Level: patch. It fixes a route that no catalogue change could reach.
+- Contract: none.
+- User action: on each machine that reviews this repository with `review-repository`, replace the entry's `snapshot_exclude` in the code-review configuration with the list `.claude/skills/review-repository/SKILL.md` now shows. Until then, a change to `tests/fixtures/hub-guard/` stays `INCOMPLETE` and reaches no reviewer, as before.
+- Pull request: #2650
+
+### audit-ai-config reads nested agents and Codex's retired settings, and relays plain lines
+
+- Level: minor, a skill gains checks, an option, and the lines that option prints, and nothing it printed before changes.
+- Contract: `audit_ai_config.py`'s new `--relay` option, exclusive with `--json`, and its `REPOSITORY`, `AUTHORITY`, `SCOPE`, `FINDING`, and `SOURCE` lines, beside the `RESULT` and `SUMMARY` lines the Markdown report already prints.
+- User action: none for the skill, which runs `--relay` itself. A script that runs the engine directly and parses its default Markdown or `--provenance` output keeps getting that output, with its character entities; it gets the plain, tab-separated lines only by passing `--relay`. A repository whose `.codex/config.toml` sets `approval_policy = "untrusted"` now draws an `ERROR`; replace it with `on-request` or `never`, as Codex's configuration reference says.
+- Pull request: #2646
+
+### `update-coding-agent-skills` keeps `FETCH_FAILED` for origin's failure
+
+- Level: patch. It fixes a status that reported a local failure as origin's.
+- Contract: `update-coding-agent-skills` `FETCH_FAILED`, `update-coding-agent-skills` `FAILED`.
+- User action: none. A failure of the update's own `remote_refs.py`, such as a broken installation, now ends with `FAILED remote_refs.py <command> ...` instead of `FETCH_FAILED`; redeploy or repair the installation rather than signing in.
+- Pull request: #2636
+
+### A path the skills cannot examine is refused with the reason
+
+- Level: patch. It fixes refusals that reported a failed stat as a missing path.
+- Contract: none.
+- User action: none. `repo-cleanup`, `github-activity-report --history`, and `audit-ai-config`'s MCP handshake now say a path `cannot be examined` with the operating system's error where they said it was not a repository, not a directory, or did not exist.
+- Pull request: #2636
+
+### A review reads closing issues only for a routed specialist, and keeps a refused issue counted
+
+- Level: patch, a fix that brings the behavior to what the contract states.
+- Contract: none.
+- User action: none.
+- Pull request: #2640
+
+### A `.git` folder spelled in another case is recognized as its file system does
+
+- Level: patch, a defect fix in comparisons the skills already promised.
+- Contract: none
+- User action: none
+- Pull request: #2628
+
+### audit-ai-config reports every Copilot CLI built-in agent name as a collision
+
+- Level: patch, a defect fix that brings an existing check to the runtime's documented behavior.
+- Contract: none.
+- User action: rename a custom agent the audit now reports, or give it another `name`. Copilot CLI never offers it to the model under a built-in agent's name.
+- Pull request: #2625
+
+### Paths and names compare as their file system compares them
+
+- Level: patch, a defect fix in the comparison the deployer and the skills' scripts already promised.
+- Contract: none
+- User action: none, in almost every case. A `repo-cleanup` plan or record saved before the update whose path lies in a Windows folder marked case-sensitive, or holds a name written in decomposed Unicode, is named by a different seal now, so the script refuses to read it until you run the sweep again and save it anew.
+- Pull request: #2619
+
+### The adapter result schema describes the checks the validator already makes
+
+- Level: patch, descriptions only; the accepted results are unchanged.
+- Contract: `skills/ejryan89-code-review-core/references/review-adapter.schema.json`, `docs/code-review-operations-contract.md`.
+- User action: none. An entrypoint reviewer that writes a `status` other than `complete`, or a `pull_number` or `head_sha` other than the request's, was already refused.
+- Pull request: #2608
+
+### audit-ai-config no longer reports a skill named code-review as a collision
+
+- Level: patch. A defect fix: the finding contradicted GitHub's own advice for code review skills.
+- Contract: none.
+- User action: none. A repository that kept a review skill under another name only to pass the audit may name it `code-review`, which GitHub's code review page says makes code review more likely to use it; a custom agent named `code-review` is still an `ERROR`.
+- Pull request: #2607
+
+### The deployer runs on macOS
+
+- Level: minor, a new platform the deployer accepts where it refused before.
+- Contract: none.
+- User action: none on Windows or Linux. On macOS, install the tools in "On macOS" in `docs/installation.md` and run the commands as `python3`. macOS support is not claimed until the runtime canary runs there.
+- Pull request: #2618
+
+### `advance` reports the watermark the state holds and refuses a malformed batch file
+
+- Level: patch, a defect fix: the lines now say what the state holds, and a malformed batch file gets the `FAILED` line `advance` already promised for its input.
+- Contract: `review-prs` `WATERMARK`, which gains `WATERMARK <repository> unchanged: the state holds <date>` for a repository whose state already held that date or a later one, and whose `<from>` in a moved line is now the date the state held.
+- User action: none. A script that reads `advance`'s lines should expect the new `unchanged: the state holds <date>` form. A review state edited by hand with a repository key in another case is now read as that repository and written back in lowercase; one with two spellings of a repository fails with `State repositories hold <repository> under more than one spelling` until you keep one.
+- Pull request: #2609
+
+### The canaries and skill evaluations refuse a Claude stream line that is no event, and the changelog watch reads GitHub's API with the job's token
+
+- Level: patch, defect fixes in the repository's development tools.
+- Contract: none.
+- User action: none. A contributor running the runtime canary, the plugin canary, or `tools/skill_evals.py` sees a session whose stream holds a JSON line that is no object fail by that line, rather than being judged from the rest. `tools/skill_evals.py --write` or `--sample-read` whose results file cannot be written ends with `FAILED "<reason>"` in place of `WROTE`. `tools/runtime_changelogs.py` sends `GH_TOKEN`, when set, to `api.github.com` alone.
+- Pull request: #2610
+
+### deploy.py verify reads Codex's catalog when Codex has plugin skills
+
+- Level: patch, a defect fix in a reader of Codex's output.
+- Contract: none.
+- User action: none. Where `verify` failed Codex with `its prompt input lists a skill in a shape this reader does not know: - computer-use:computer-use: ...`, it now reports each adapter.
+- Pull request: #2603
+
+### The Copilot CLI review host ignores your exported Copilot CLI settings
+
+- Level: patch, a defect fix bringing the host to its documented isolation.
+- Contract: none.
+- User action: none. A `COPILOT_*` or `GITHUB_COPILOT_*` variable you export, such as `COPILOT_MODEL`, no longer reaches a code review that runs on the Copilot CLI host; `COPILOT_GITHUB_TOKEN` and `COPILOT_GH_HOST` still sign it in.
+- Pull request: #2601
+
 ## v0.13.0
 
 Level: minor.
