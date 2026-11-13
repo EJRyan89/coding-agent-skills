@@ -119,7 +119,7 @@ tab characters where the table says so, in this order.
 | `SCOPE` | The scope status, as the JSON `scopeStatus`, tab-separated |
 | `RESULT` | The result, space-separated, as the Markdown report's |
 | `SUMMARY` | The counts, space-separated, as the Markdown report's, every one printed |
-| `FINDING` | Severity, check, path, line, and message, tab-separated, for every `ERROR` and `WARNING` finding and every `limitation` finding, in the report's order; the other `INFO` findings are counted by the `SUMMARY` lines alone |
+| `FINDING` | Severity, check, path, line, and message, tab-separated, for every `ERROR` and `WARNING` finding and every `limitation` and `layering` finding, the `layering` ones naming each surface's effective sources, in the report's order; the other `INFO` findings are counted by the `SUMMARY` lines alone |
 | `SOURCE` | With `--provenance`, the check, its page or `decision`, and the passage, tab-separated, a line per source of each check the findings name |
 
 A path, a message, and the repository's name are text the audited repository controls, so each is printed through
