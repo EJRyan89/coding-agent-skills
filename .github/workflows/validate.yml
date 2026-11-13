@@ -347,15 +347,14 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
   # The whole validation run on macOS, dealt across its own legs by macOS's seconds as the Linux legs are by Linux's.
-  # A free account runs few macOS jobs at once, so the run is dealt across fewer legs than Linux's. Until every macOS
-  # leg passes, a red one fails neither the run nor the required check: the `validate` job does not need this job, and
-  # continue-on-error keeps the run's conclusion, which tools/record_job_seconds.py reads the push runs on main by.
+  # A free account runs few macOS jobs at once, so the run is dealt across fewer legs than Linux's. The `validate` job
+  # needs it as it needs the Windows and Linux legs, so a red macOS leg fails the required check and the run, and
+  # tools/record_job_seconds.py, which reads only the successful push runs on main, leaves that run out.
   macos:
     # Named as the Linux legs are; tools/record_job_seconds.py reads each macOS leg's shard from the name.
     name: macOS shard ${{ matrix.shard }}, Python ${{ matrix.python-version }}
     runs-on: macos-latest
     timeout-minutes: 30
-    continue-on-error: true
     # As the Windows legs: the checkout and nothing else, and no command a step runs is given the token.
     permissions:
       contents: read
@@ -542,7 +541,7 @@ jobs:
   validate:
     name: Validation
     if: ${{ !cancelled() }}
-    needs: [suite, linux, known-failures]
+    needs: [suite, linux, macos, known-failures]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -550,9 +549,11 @@ jobs:
         env:
           WINDOWS: ${{ needs.suite.result }}
           LINUX: ${{ needs.linux.result }}
+          MACOS: ${{ needs.macos.result }}
           ISSUES: ${{ needs.known-failures.result }}
         run: |
-          echo "Windows legs: $WINDOWS; Linux legs: $LINUX; known-failure issues: $ISSUES"
+          echo "Windows legs: $WINDOWS; Linux legs: $LINUX; macOS legs: $MACOS; known-failure issues: $ISSUES"
           test "$WINDOWS" = success
           test "$LINUX" = success
+          test "$MACOS" = success
           test "$ISSUES" = success

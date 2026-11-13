@@ -93,7 +93,7 @@ Codex CLI runs a skill's scripts in its sandbox, which on Linux and WSL2 is the 
 
 ### On macOS
 
-The deployer runs on macOS, and the [`deployable` workflow](../.github/workflows/deployable.yml) deploys onto a fresh macOS runner; the validation suite runs on macOS in CI, where some suites do not pass yet; the [README](../README.md#supported-platforms-and-runtimes) says where macOS support stands. Install the tools with [Homebrew](https://brew.sh/):
+macOS is supported: the validation suite runs on macOS as part of the required check, the [`deployable` workflow](../.github/workflows/deployable.yml) deploys onto a fresh macOS runner, and the runtime canary has run the skills on a Mac; the [README](../README.md#supported-platforms-and-runtimes) gives the versions. Install the tools with [Homebrew](https://brew.sh/):
 
 | Tool | Homebrew | Official download |
 |---|---|---|

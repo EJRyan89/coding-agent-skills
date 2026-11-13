@@ -50,7 +50,6 @@ from workflows import (
     posix_job_problems,
     posix_verify_log_problems,
     powershell_package_problems,
-    provisional_job_problems,
     read_workflow,
     required_check_problems,
     shared_pin_problems,
@@ -829,30 +828,19 @@ def test_an_analyzer_restored_or_installed_whatever_the_image_has_fails(drifted:
 
 REQUIRED_CHECK = (
     "jobs:\n  suite:\n    runs-on: windows-latest\n  linux:\n    runs-on: ubuntu-latest\n"
-    "  validate:\n    name: Validation\n    if: ${{ !cancelled() }}\n    needs: [suite, linux]\n    steps:\n"
+    "  macos:\n    runs-on: macos-latest\n"
+    "  validate:\n    name: Validation\n    if: ${{ !cancelled() }}\n    needs: [suite, linux, macos]\n    steps:\n"
     "      - name: Require every leg to pass\n        env:\n          WINDOWS: ${{ needs.suite.result }}\n"
-    "          LINUX: ${{ needs.linux.result }}\n        run: |\n"
-    '          test "$WINDOWS" = success\n          test "$LINUX" = success\n'
+    "          LINUX: ${{ needs.linux.result }}\n          MACOS: ${{ needs.macos.result }}\n        run: |\n"
+    '          test "$WINDOWS" = success\n          test "$LINUX" = success\n          test "$MACOS" = success\n'
 )
+# The platforms whose legs the one required check needs: Windows, Linux, and macOS.
+REQUIRED_PLATFORM_JOBS = ("suite", "linux", "macos")
 
 
 class RequiredCheckFixtures(unittest.TestCase):
     def test_the_one_required_check_fails_unless_every_platform_passes(self) -> None:
-        self.assertEqual([], required_check_problems(REQUIRED_CHECK, ("suite", "linux")))
-
-    def test_a_provisional_leg_goes_on_after_an_error_and_is_left_out_of_the_required_check(self) -> None:
-        provisional = REQUIRED_CHECK.replace(
-            "  validate:\n", "  macos:\n    runs-on: macos-latest\n    continue-on-error: true\n  validate:\n"
-        )
-        self.assertEqual([], provisional_job_problems(provisional, "macos"))
-        for drifted, problem in (
-            (provisional.replace("    continue-on-error: true\n", ""), "does not set continue-on-error: true"),
-            (provisional.replace("continue-on-error: true", "continue-on-error: false"), "a red leg fails the run"),
-            (provisional.replace("needs: [suite, linux]", "needs: [suite, linux, macos]"), "needs the macos job"),
-            (provisional.replace("needs: [suite, linux]", "needs: macos"), "needs the macos job"),
-        ):
-            with self.subTest(problem=problem):
-                self.assertTrue(any(problem in found for found in provisional_job_problems(drifted, "macos")))
+        self.assertEqual([], required_check_problems(REQUIRED_CHECK, REQUIRED_PLATFORM_JOBS))
 
 
 @pytest.mark.parametrize(
@@ -860,16 +848,49 @@ class RequiredCheckFixtures(unittest.TestCase):
     [
         # The shape before the Linux job joined the check: it reported, and a red run could still merge.
         pytest.param(
-            REQUIRED_CHECK.replace("    needs: [suite, linux]\n", "    needs: suite\n")
+            REQUIRED_CHECK.replace("    needs: [suite, linux, macos]\n", "    needs: suite\n")
             .replace("          LINUX: ${{ needs.linux.result }}\n", "")
             .replace('          test "$LINUX" = success\n', ""),
             "does not need the linux job",
             id="the suite job alone",
         ),
         pytest.param(
-            REQUIRED_CHECK.replace("    needs: [suite, linux]\n", "    needs: linux\n"),
+            REQUIRED_CHECK.replace("    needs: [suite, linux, macos]\n", "    needs: linux\n"),
             "the suite job",
             id="the linux job alone",
+        ),
+        # The shape before the macOS job joined the check: its legs went on after an error, and the check did not need
+        # them, so a red macOS leg could still merge.
+        pytest.param(
+            REQUIRED_CHECK.replace("    needs: [suite, linux, macos]\n", "    needs: [suite, linux]\n")
+            .replace("          MACOS: ${{ needs.macos.result }}\n", "")
+            .replace('          test "$MACOS" = success\n', ""),
+            "does not need the macos job",
+            id="the macos job left out",
+        ),
+        pytest.param(
+            REQUIRED_CHECK.replace("    needs: [suite, linux, macos]\n", "    needs: [suite, linux]\n"),
+            "does not need the macos job",
+            id="the macos job not needed",
+        ),
+        pytest.param(
+            REQUIRED_CHECK.replace('          test "$MACOS" = success\n', ""),
+            "macos job's result",
+            id="the macos result unchecked",
+        ),
+        pytest.param(
+            REQUIRED_CHECK.replace(
+                "    runs-on: macos-latest\n", "    runs-on: macos-latest\n    continue-on-error: true\n"
+            ),
+            "the macos job sets continue-on-error",
+            id="the macos job goes on after an error",
+        ),
+        pytest.param(
+            REQUIRED_CHECK.replace(
+                "    runs-on: ubuntu-latest\n", "    runs-on: ubuntu-latest\n    continue-on-error: false\n"
+            ),
+            "the linux job sets continue-on-error",
+            id="continue-on-error set at all",
         ),
         pytest.param(
             REQUIRED_CHECK.replace('          test "$LINUX" = success\n', ""),
@@ -900,7 +921,7 @@ class RequiredCheckFixtures(unittest.TestCase):
     ],
 )
 def test_a_required_check_that_passes_without_every_platform_fails(drifted: str, problem: str) -> None:
-    problems = required_check_problems(drifted, ("suite", "linux"))
+    problems = required_check_problems(drifted, REQUIRED_PLATFORM_JOBS)
     assert any(problem in found for found in problems), problems
 
 
