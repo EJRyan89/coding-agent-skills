@@ -2584,6 +2584,47 @@ class AdapterRequestArgumentTests(unittest.TestCase):
                 self.assertIs(F, type(caught.exception))
                 self.assertEqual(message, str(caught.exception))
 
+    def test_each_file_argument_names_a_folder_or_nothing_in_its_place_and_an_absent_optional_one_passes(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            diff, body, issues, folder = root / "pull.diff", root / "body.md", root / "issues.json", root / "folder"
+            for path in (diff, body, issues):
+                path.write_text("", encoding="utf-8")
+            folder.mkdir()
+            account = {"state": "complete"}
+            arguments: dict[str, Any] = {
+                "mode": "initial",
+                "repository": "owner/repo",
+                "pull_number": 7,
+                "base_ref": "main",
+                "base_sha": "b" * 40,
+                "head_sha": HEAD,
+                "title": "Title",
+                "url": "https://github.com/owner/repo/pull/7",
+                "diff_path": diff,
+                "source_snapshot_root": root / "source",
+                "snapshot": _snapshot().metadata,
+            }
+            # A body or closing_issues left out is checked for nothing.
+            self.assertEqual(7, review_runtime.build_adapter_request(**arguments)["pull_number"])
+            # Each name's own file is checked: a folder in its place is named so, and nothing there keeps its rule.
+            cases: dict[str, tuple[dict[str, Any], dict[str, Any]]] = {
+                "diff_path": ({"diff_path": folder}, {"diff_path": root / "absent.diff"}),
+                "body": ({"body": (folder, 4)}, {"body": (root / "absent.md", 4)}),
+                "closing_issues": (
+                    {"closing_issues": (folder, account)},
+                    {"closing_issues": (root / "absent", account)},
+                ),
+            }
+            for name, (wrong, absent) in cases.items():
+                for given, message in (
+                    (wrong, f"{name} {folder} is not a file"),
+                    (absent, f"{name} must name an existing absolute file"),
+                ):
+                    with self.subTest(name=name, message=message), self.assertRaises(RuntimeContractError) as caught:
+                        review_runtime.build_adapter_request(**{**arguments, **given})
+                    self.assertEqual(message, str(caught.exception))
+
 
 def _listing(**entry: Any) -> dict[str, Any]:
     """A GitHub tree listing of one blob, with the given fields of the entry replaced."""

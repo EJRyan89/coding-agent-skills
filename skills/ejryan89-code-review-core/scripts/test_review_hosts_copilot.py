@@ -256,6 +256,22 @@ REFUSED: list[tuple[str, Mutation, Outcome]] = [
         _argument("request_path", "missing"),
         (RuntimeContractError, "Copilot request must exist and be absolute", 0, None),
     ),
+    # Each input of the wrong kind is named so, never as one that is not there.
+    (
+        "a file as the run directory",
+        _argument("run_directory", "file"),
+        (RuntimeContractError, "Copilot run directory {request} is not a folder", 0, None),
+    ),
+    (
+        "a file as the materialized root",
+        _argument("materialized_root", "file"),
+        (RuntimeContractError, "Copilot materialized root {request} is not a folder", 0, None),
+    ),
+    (
+        "a folder as the request",
+        _argument("request_path", "folder"),
+        (RuntimeContractError, "Copilot request {source} is not a file", 0, None),
+    ),
     (
         "a materialization of another schema",
         _change("materialization_schema", 2),
@@ -674,6 +690,8 @@ class CopilotHostTests(unittest.TestCase):
                 "relative": Path("relative") / name,
                 "outside": paths["root"] / "outside-staging.json",
                 "unresolved": paths["run"] / ".." / "trusted",
+                "file": paths["request"],
+                "folder": paths["source"],
             }[mode]
         with mock.patch.object(review_hosts, "find_copilot", find_copilot):
             try:
