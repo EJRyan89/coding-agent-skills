@@ -318,6 +318,31 @@ class CommandLineTests(unittest.TestCase):
         self.assertTrue(lines[0].startswith("FAILED the JSON report cannot hold a value the audit found: "), lines)
         self.assertEqual("", errors)
 
+    def test_the_relay_of_a_conforming_repository_names_each_surfaces_effective_sources(self) -> None:
+        # The skill's step 2 reads the files the layering findings list as effective sources, from the relay alone.
+        _setup_conforming_repo(self.root)
+        (self.root / ".git").mkdir()
+        manifest_path = self.root / ".github/ai-config-manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["surfaces"] = ["copilot_cli", "code_review"]
+        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+        layering = [
+            f"FINDING\t{f.severity}\tlayering\t{f.path or ''}\t{'' if f.line is None else f.line}\t{f.message}"
+            for f in audit.audit(self.root).sorted_findings()
+            if f.check == "layering"
+        ]
+        _, lines, errors = self._main("--relay", "--root", str(self.root))
+        self.assertEqual("", errors)
+        self.assertIn(
+            "FINDING\tINFO\tlayering\t\t\t"
+            "Copilot CLI/app: effective sources: CLAUDE.md, AGENTS.md, .github/copilot-instructions.md",
+            lines,
+        )
+        self.assertEqual(
+            1, sum(line.startswith("FINDING\tINFO\tlayering\t\t\tCode review: effective sources: ") for line in lines)
+        )
+        self.assertEqual(layering, [line for line in lines if "\tlayering\t" in line])
+
     def test_an_inconclusive_audit_prints_its_result_line_and_exits_1(self) -> None:
         (self.root / ".git").mkdir()
         code, lines, errors = self._main("--root", str(self.root))
@@ -1017,6 +1042,20 @@ class InstructionLayeringTests(unittest.TestCase):
             if f.check == "parity" and f.severity == "ERROR" and f.path == ".github/copilot-instructions.md"
         ]
         self.assertEqual(0, len(parity_errors), parity_errors)
+
+    def test_a_heading_inside_a_code_fence_does_not_split_a_section(self) -> None:
+        claude_content = (
+            "# CLAUDE.md\n\n"
+            "## Overview\n\nAn example:\n\n```markdown\n## Not a heading\n\nStill the overview.\n```\n\n"
+            "~~~\n## Nor this\n~~~\n\nEnd of the overview.\n\n"
+            "## Formatting Rules\n\nUse tabs.\n"
+        )
+        self.assertEqual(
+            "## Overview\n\nAn example:\n\n```markdown\n## Not a heading\n\nStill the overview.\n```\n\n"
+            "~~~\n## Nor this\n~~~\n\nEnd of the overview.",
+            audit._extract_sections(claude_content, ["Overview"]),
+        )
+        self.assertEqual("", audit._extract_sections(claude_content, ["Not a heading", "Nor this"]))
 
     def test_parity_uses_manifest_declared_copilot_sections(self) -> None:
         manifest_path = self.root / ".github/ai-config-manifest.json"
@@ -4400,6 +4439,21 @@ class ReportFormatTests(unittest.TestCase):
             audit.format_relay(result),
         )
 
+    def test_the_relay_names_the_layering_findings_and_counts_the_other_info_ones(self) -> None:
+        result = audit.AuditResult(
+            repository="r",
+            authority="conforming",
+            scope_status="no-declared-scope",
+            findings=[
+                audit.Finding("INFO", "inventory", "CLAUDE.md", message="Found CLAUDE.md"),
+                audit.Finding("INFO", "layering", message="Copilot CLI/app: effective sources: CLAUDE.md"),
+            ],
+        )
+        self.assertEqual(
+            ["FINDING\tINFO\tlayering\t\t\tCopilot CLI/app: effective sources: CLAUDE.md"],
+            [line for line in audit.format_relay(result).splitlines() if line.startswith("FINDING")],
+        )
+
     def test_the_relay_of_a_clean_audit_has_no_finding_lines(self) -> None:
         result = audit.AuditResult(repository="r", authority="conforming", scope_status="no-declared-scope")
         self.assertEqual(
@@ -4590,6 +4644,50 @@ class RepositoryWalkTests(unittest.TestCase):
             {"src/AGENTS.md", "src/AGENTS.override.md", "src/.mcp.json"},
             {path for path in reported if path.rsplit("/", 1)[-1] in ("AGENTS.md", "AGENTS.override.md", ".mcp.json")},
         )
+
+    def _not_audited(self, result: audit.AuditResult) -> list[tuple[str, str, str | None]]:
+        return sorted(
+            (f.severity, f.check, f.path) for f in result.findings if f.message.startswith(audit.SKIPPED_FOLDER)
+        )
+
+    def test_a_nested_checkout_in_a_configuration_folder_is_named_as_not_audited(self) -> None:
+        checkouts = (
+            ".github/agents/shared",
+            ".claude/agents/team/shared",
+            ".claude/rules/shared",
+            ".github/instructions/shared",
+            ".claude/skills/shared",
+        )
+        _write_fixture(
+            self.root,
+            {
+                ".github/agents/shared/x.agent.md": "---\nname: x\n---\n",
+                ".claude/agents/team/shared/y.md": "---\nname: y\n---\n",
+                ".claude/rules/shared/rule.md": "A rule.\n",
+                ".github/instructions/shared/a.instructions.md": "---\napplyTo: '**'\n---\nA.\n",
+                ".claude/skills/shared/SKILL.md": "---\nname: shared\ndescription: Shared.\n---\n",
+                # A nested checkout below the root is another repository's, which the repository walk skips silently.
+                "vendor/clone/AGENTS.md": "# Nested\n",
+            },
+        )
+        for checkout in (*checkouts, "vendor/clone"):
+            (self.root / checkout / ".git").write_text("gitdir: elsewhere\n", encoding="utf-8")
+        result = audit.audit(self.root)
+        self.assertEqual(sorted(("WARNING", "inventory", path) for path in checkouts), self._not_audited(result))
+        message = next(f.message for f in result.findings if f.path == ".github/agents/shared")
+        self.assertEqual(f"{audit.SKIPPED_FOLDER}{folder_walk.NESTED_CHECKOUT_REASON}", message)
+        # Nothing behind a checkout is listed or validated as the repository's own.
+        for finding in result.findings:
+            self.assertNotIn("x.agent.md", finding.message, finding)
+            self.assertFalse((finding.path or "").startswith(tuple(f"{path}/" for path in checkouts)), finding)
+
+    def test_a_link_back_into_an_agents_folder_is_named_as_not_audited(self) -> None:
+        _write_fixture(self.root, {".claude/agents/team/reviewer.md": "---\nname: r\ndescription: R.\n---\n"})
+        _link_directory(self.root / ".claude/agents", self.root / ".claude/agents/team/back")
+        result = audit.audit(self.root)
+        self.assertEqual([("WARNING", "inventory", ".claude/agents/team/back")], self._not_audited(result))
+        message = next(f.message for f in result.findings if f.path == ".claude/agents/team/back")
+        self.assertEqual(f"{audit.SKIPPED_FOLDER}{folder_walk.LOOP_REASON}", message)
 
     def test_the_skipped_directories_are_version_control_dependency_and_build_directories(self) -> None:
         self.assertEqual(

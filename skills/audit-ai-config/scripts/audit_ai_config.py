@@ -60,7 +60,7 @@ from check_provenance import Source
 from console import run_main
 from file_presence import NotAFile, is_directory, is_occupied, is_present
 from flat_text import fact_line, flat_text, single_line
-from folder_walk import LINKED, SKIPPED_FOLDERS, UNEXAMINED, UNLISTABLE
+from folder_walk import LINKED, LOOP, NESTED_CHECKOUT, SKIPPED_FOLDERS, UNEXAMINED, UNLISTABLE
 from frontmatter import (
     COMMENT,
     NESTED_KEY,
@@ -313,12 +313,15 @@ def leaves_root(root: Path, path: Path) -> bool:
 
 @dataclass
 class Listing:
-    """The paths a walk or listing found inside the root, the links it did not follow because they lead out, and each
-    folder it could not list or entry it could not examine, with the reason, which the inventory reports."""
+    """The paths a walk or listing found inside the root, the links it did not follow because they lead out, each
+    folder it could not list or entry it could not examine, with the reason, and each folder a walk did not enter
+    because it holds another checkout or leads back into a folder the walk is inside, with the reason, which the
+    inventory reports."""
 
     paths: list[Path] = field(default_factory=list)
     outside: list[Path] = field(default_factory=list)
     unread: list[tuple[Path, str]] = field(default_factory=list)
+    skipped: list[tuple[Path, str]] = field(default_factory=list)
 
     def add(self, root: Path, path: Path) -> None:
         (self.outside if leaves_root(root, path) else self.paths).append(path)
@@ -343,7 +346,7 @@ def regular_files(root: Path, listing: Listing) -> Listing:
     """The entries of a listing a check reads as files: each regular file, and each entry whose stat fails, which may
     be one and whose read reports itself, also kept in `unread` with the reason for the inventory. An entry that is
     something else, a folder or a link to nothing, is no such file."""
-    files = Listing(outside=listing.outside, unread=list(listing.unread))
+    files = Listing(outside=listing.outside, unread=list(listing.unread), skipped=list(listing.skipped))
     for path in listing.paths:
         try:
             if is_present(path):
@@ -372,6 +375,7 @@ def walk_files(
     `base` does, goes in `outside`. A link that
     stays inside the root is followed, but never back into a folder the walk is inside. A folder that cannot be
     listed, `base` included, and an entry that cannot be examined go in `unread` with the reason, never read as empty.
+    A nested checkout, and a link back into a folder the walk is inside, go in `skipped` with the reason.
     """
     listing = Listing()
     if leaves_root(root, base):
@@ -381,6 +385,9 @@ def walk_files(
     listing.outside.extend(entry.path for entry in walk.not_entered if entry.kind == LINKED)
     listing.unread.extend(
         (entry.path, entry.reason) for entry in walk.not_entered if entry.kind in (UNLISTABLE, UNEXAMINED)
+    )
+    listing.skipped.extend(
+        (entry.path, entry.reason) for entry in walk.not_entered if entry.kind in (NESTED_CHECKOUT, LOOP)
     )
     for path in walk.files:
         listing.add(root, path)
@@ -410,6 +417,19 @@ def unread_findings(root: Path, listing: Listing) -> list[Finding]:
     """One inventory ERROR per folder a walk or listing could not list and entry it could not examine; audit() keeps
     one per path."""
     return [_unreadable_finding(root, path, reason) for path, reason in listing.unread]
+
+
+SKIPPED_FOLDER = "Folder not audited: "
+
+
+def skipped_folder_findings(root: Path, listing: Listing) -> list[Finding]:
+    """One inventory WARNING per folder a walk of a configuration folder did not enter, a nested checkout or a link
+    back into a folder the walk is inside, whose files a runtime may read but the audit does not, so a report with
+    nothing found there is told from one that did not look."""
+    return [
+        Finding("WARNING", "inventory", path.relative_to(root).as_posix(), message=f"{SKIPPED_FOLDER}{reason}")
+        for path, reason in listing.skipped
+    ]
 
 
 def outside_link_finding(root: Path, link: Path) -> Finding:
@@ -779,6 +799,7 @@ def _inventory_agent_directories(root: Path) -> list[Finding]:
             findings.append(_inventory_finding(agent_dir, f"Custom agent files found: {', '.join(sorted(agents))}"))
         findings.extend(outside_link_findings(root, listing))
         findings.extend(unread_findings(root, listing))
+        findings.extend(skipped_folder_findings(root, listing))
     return findings
 
 
@@ -793,7 +814,7 @@ def _inventory_claude_rules(root: Path) -> list[Finding]:
     walk = walk_files(root, base, _is_markdown)
     rules = sorted(path.relative_to(base).as_posix() for path in walk.paths)
     found = [_inventory_finding(".claude/rules", f"Rules found: {', '.join(rules)}")] if rules else []
-    return [*found, *unread_findings(root, walk)]
+    return [*found, *unread_findings(root, walk), *skipped_folder_findings(root, walk)]
 
 
 def _inventory_codex_folders(root: Path) -> list[Finding]:
@@ -827,7 +848,7 @@ def _inventory_path_instructions(root: Path) -> list[Finding]:
     except OSError as error:
         return [_unreadable_finding(root, instructions_dir, error)]
     walk = walk_files(root, instructions_dir, _is_path_instructions)
-    findings = [*outside_link_findings(root, walk), *unread_findings(root, walk)]
+    findings = [*outside_link_findings(root, walk), *unread_findings(root, walk), *skipped_folder_findings(root, walk)]
     if walk.paths:
         findings.insert(
             0, _inventory_finding(".github/instructions", f"{len(walk.paths)} path-specific instruction file(s)")
@@ -1246,6 +1267,8 @@ def check_copilot_configuration(root: Path, manifest: dict[str, Any]) -> list[Fi
             Finding("ERROR", "copilot-config", path.relative_to(root).as_posix(), message=f"{UNREAD}{reason}")
             for path, reason in walk.unread
         )
+        # A skill in a nested checkout, which the inventory's one-level listing names but this walk does not enter.
+        findings.extend(skipped_folder_findings(root, walk))
         for path in sorted(walk.paths):
             findings.extend(_validate_skill(path, root))
             if skill_dir == ".github/skills":
@@ -1964,12 +1987,14 @@ COPILOT_BANNER = "> AUTO-GENERATED from CLAUDE.md. Do not edit directly — upda
 
 
 def _extract_sections(content: str, section_names: list[str]) -> str:
-    """Extract named H2 sections from Markdown content."""
+    """Extract named H2 sections from Markdown content. A heading-shaped line inside a fenced code block is the fence's
+    text, as markdown_sections reads it, never a heading."""
     lines = content.splitlines()
+    fenced = {index for fence in find_fences(lines) for index in fence.lines()}
     sections: dict[str, list[str]] = {}
     current: str | None = None
-    for line in lines:
-        m = re.match(r"^## (.+)$", line)
+    for index, line in enumerate(lines):
+        m = None if index in fenced else re.match(r"^## (.+)$", line)
         if m:
             current = m.group(1).strip()
             if current not in sections:
@@ -3971,10 +3996,15 @@ def format_markdown(result: AuditResult, sources: dict[str, tuple[Source, ...]] 
     return "\n".join(lines) + "\n"
 
 
+# The INFO findings the relay names too, which the SUMMARY lines alone would hide: each applicable limitation, and the
+# layering findings, whose effective sources for each surface the skill's step 2 reads.
+RELAYED_INFO_CHECKS = frozenset({"limitation", "layering"})
+
+
 def relayed(finding: Finding) -> bool:
-    """Whether the relay names a finding: every ERROR and WARNING, and each applicable limitation, whose INFO the
-    SUMMARY lines alone would hide."""
-    return finding.severity != "INFO" or finding.check == "limitation"
+    """Whether the relay names a finding: every ERROR and WARNING, and each INFO finding of a check in
+    RELAYED_INFO_CHECKS."""
+    return finding.severity != "INFO" or finding.check in RELAYED_INFO_CHECKS
 
 
 def format_relay(result: AuditResult, sources: dict[str, tuple[Source, ...]] | None = None) -> str:
