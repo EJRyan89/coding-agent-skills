@@ -3728,6 +3728,22 @@ class MainFileCaseTests(TemporaryTestCase):
                 self.assertEqual("main" if folds else "doc", skill_inventory.category(Path("skill.md"), folder))
                 self.assertEqual(folder if folds else None, skill_inventory.skill_folder(folder / "notes.md"))
 
+    def test_scan_and_inventory_take_a_lowercase_skill_md_as_main_only_where_the_folder_folds_case(self) -> None:
+        # scanned_files, inventory, and data_settings pass the skill folder to category, which asks it.
+        folder = self.folder("skill.md")
+        lowered = folder / "skill.md"
+        with mock.patch.dict(path_keys._FOLDS_CASE, {str(folder): True}):
+            self.assertEqual([lowered, folder / "notes.md"], skill_inventory.scanned_files(folder))
+            lines = skill_inventory.inventory(folder)
+            self.assertIn("FILE main", next(line for line in lines if line.endswith(" skill.md")))
+            self.assertNotIn("NO_MAIN", lines)
+        with mock.patch.dict(path_keys._FOLDS_CASE, {str(folder): False}):
+            with self.assertRaisesRegex(skill_inventory.InputError, f"^no SKILL.md in {folder.as_posix()}$"):
+                skill_inventory.scanned_files(folder)
+            lines = skill_inventory.inventory(folder)
+            self.assertIn("FILE doc", next(line for line in lines if line.endswith(" skill.md")))
+            self.assertIn("NO_MAIN", lines)
+
     def test_exactly_skill_md_is_the_main_file_either_way(self) -> None:
         folder = self.folder("SKILL.md")
         for folds in (True, False):
