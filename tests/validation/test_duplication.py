@@ -407,6 +407,7 @@ class SharedFactPolicy(unittest.TestCase):
     SKILL_LAYOUT = "tests/validation/skill_layout.py"
     VERSIONS = "skills/ejryan89-skill-core/scripts/versions.py"
     PATH_KEYS = "skills/ejryan89-skill-core/scripts/path_keys.py"
+    EXIT_CALLS = "skills/ejryan89-skill-core/scripts/exit_calls.py"
     OWNERS: ClassVar[dict[str, str]] = {
         GIT_CLIENT: (
             'GLOBAL_VALUE_OPTIONS = frozenset({"-c", "-C", "--attr-source", "--config-env", "--git-dir", '
@@ -438,6 +439,10 @@ class SharedFactPolicy(unittest.TestCase):
             "def path_key(path):\n    return os.path.normcase(os.path.abspath(path))\n\n\n"
             "def name_key(name, directory=None):\n    return name.casefold()\n"
         ),
+        EXIT_CALLS: (
+            'EXIT_CALLS = frozenset({"sys.exit", "exit", "quit", "builtins.exit", "builtins.quit", "os._exit", '
+            '"SystemExit"})\n'
+        ),
     }
 
     def problems(self, files: Mapping[str, str]) -> list[str]:
@@ -462,6 +467,24 @@ class SharedFactPolicy(unittest.TestCase):
         # A command that passes two of the options is a call, not a copy of the vocabulary.
         command = 'def run(path, setting):\n    return ["git", "-C", path, "-c", setting, "status"]\n'
         self.assertEqual([], self.problems({guard: imported + command}))
+
+    def test_a_copy_of_the_exit_calls_by_dotted_name_or_last_part_fails_and_an_imported_one_passes(self) -> None:
+        # skill_inventory.py kept {"exit", "_exit", "SystemExit"} beside validation's dotted names, and missed quit,
+        # which validation's exit tables read.
+        inventory = "skills/audit-skill/scripts/skill_inventory.py"
+        policy = "tests/validation/skill_scripts.py"
+        self.assertEqual(
+            [self.restated(inventory, 2, "EXIT_CALLS", self.EXIT_CALLS)],
+            self.problems({inventory: '# Inventory.\nEXIT_CALLS = frozenset({"exit", "_exit", "SystemExit"})\n'}),
+        )
+        self.assertEqual(
+            [self.restated(policy, 1, "EXIT_CALLS", self.EXIT_CALLS)],
+            self.problems({policy: 'ENDS = ("sys.exit", "os._exit", "SystemExit")\n'}),
+        )
+        imported = "import exit_calls\n\n\ndef ends(name):\n    return name in exit_calls.EXIT_CALLS\n"
+        # Two of the names, as a reader of one call compares them, are not a copy of the calls.
+        two = 'def ends(name):\n    return name in ("exit", "quit")\n'
+        self.assertEqual([], self.problems({inventory: imported, policy: two}))
 
     def test_a_re_derived_suite_pattern_fails_and_the_shared_rule_passes(self) -> None:
         discovery = "tests/validation/suite_discovery.py"

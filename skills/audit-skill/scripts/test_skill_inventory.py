@@ -21,6 +21,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
 import check_provenance
+import path_keys
 import powershell_commands
 import skill_inventory
 from file_presence import NotAFile
@@ -72,7 +73,7 @@ class LocateTests(TemporaryTestCase):
         return run("locate", name, "--home", str(self.home), *extra)
 
     def test_single_user_skill_reports_file_directory_and_scope(self) -> None:
-        skill = write(self.user_skills / "alpha" / "skill.md", "x")
+        skill = write(self.user_skills / "alpha" / "SKILL.md", "x")
         code, lines, _ = self.locate("alpha", "--repo", str(self.repo))
         self.assertEqual(0, code)
         self.assertEqual(
@@ -233,7 +234,7 @@ class LocateTests(TemporaryTestCase):
 
     def test_missing_skill_lists_available_skills_per_scope(self) -> None:
         write(self.user_skills / "Beta" / "SKILL.md", "x")
-        write(self.user_skills / "alpha" / "skill.md", "x")
+        write(self.user_skills / "alpha" / "SKILL.md", "x")
         (self.user_skills / "empty").mkdir()
         write(self.repo / ".agents" / "skills" / "gamma" / "SKILL.md", "x")
         code, lines, _ = self.locate("missing", "--repo", str(self.repo))
@@ -1894,6 +1895,43 @@ class StatusLineTests(TemporaryTestCase):
             [f"EXIT_MISMATCH {(folder / 'SKILL.md').as_posix()} 4 2"], self.status(folder), "no argparse, no 2"
         )
 
+    def test_quit_a_code_keyword_a_bare_system_exit_and_a_message_exit_as_validation_reads_them(self) -> None:
+        # The exit calls were exit, _exit, and SystemExit given a positional code, so each of these was a false
+        # EXIT_MISMATCH: quit, a code given by its keyword, a SystemExit raised as the class, which exits 0, and a
+        # message, which Python prints and exits 1 for.
+        folder = self.skill(
+            "It exits 0 when nothing is stale.\nIt exits 1 with a message.\n"
+            "It exits 3, exits 4, or exits 5 on each refusal.\n",
+            "import os\nimport sys\n\n"
+            "def done() -> None:\n    raise SystemExit\n\n"
+            "def stale() -> None:\n    sys.exit('the plan is stale')\n\n"
+            "def refuse() -> None:\n    quit(3)\n\n"
+            "def held() -> None:\n    sys.exit(code=4)\n\n"
+            "def gone() -> None:\n    os._exit(status=5)\n",
+        )
+        self.assertEqual([], self.status(folder))
+
+    def test_a_code_an_exit_call_does_not_name_as_a_literal_is_not_read(self) -> None:
+        folder = self.skill(
+            "It exits 3 or exits 4.\n",
+            "import sys\n\nOPTIONS = {'code': 4}\n\n"
+            "def refuse(code: str) -> None:\n    sys.exit(code=3)\n    sys.exit(**OPTIONS)\n    sys.exit(*code)\n",
+        )
+        self.assertEqual([f"EXIT_MISMATCH {(folder / 'SKILL.md').as_posix()} 4 4"], self.status(folder))
+
+    def test_an_exit_call_is_read_by_the_name_its_imports_resolve_never_by_a_methods_name(self) -> None:
+        # The calls were matched by their last name, so stack.exit(5) read as an exit with 5, and an exit imported
+        # under another name, such as os._exit as leave, was not read at all.
+        folder = self.skill(
+            "It exits 3, exits 4, or exits 5 on a refusal.\n",
+            "import sys as system\nfrom os import _exit as leave\n\n"
+            "def close(smtp, stack, parser) -> None:\n"
+            "    smtp.quit(5)\n    stack.exit(5)\n    parser.exit(status=5, message='usage')\n\n"
+            "def refuse() -> None:\n    system.exit(3)\n\n"
+            "def stop() -> None:\n    leave(status=4)\n",
+        )
+        self.assertEqual([f"EXIT_MISMATCH {(folder / 'SKILL.md').as_posix()} 4 5"], self.status(folder))
+
     def test_a_shell_script_prints_what_it_echoes_and_exits_with_what_it_exits(self) -> None:
         folder = self.skill(
             '```bash\nbash "${CLAUDE_SKILL_DIR}/scripts/update.sh"\n```\n\n'
@@ -2323,6 +2361,11 @@ class SourceTreeTestCase(TemporaryTestCase):
         return [line for line in lines if line.startswith(prefixes)]
 
 
+# The built-in subagents and the "Other" helper agents of Claude Code's sub-agents page, typed here rather than read
+# from the constant under test: https://code.claude.com/docs/en/sub-agents
+BUILT_IN_AGENTS = ("general-purpose", "Explore", "Plan", "claude", "statusline-setup", "claude-code-guide")
+
+
 class AgentTests(SourceTreeTestCase):
     def test_inventory_declares_agents_with_the_skill_that_declares_them_and_tools(self) -> None:
         skill = self.skill(
@@ -2468,6 +2511,15 @@ class AgentTests(SourceTreeTestCase):
         self.assertEqual(
             [f"AGENT_UNDEFINED {skill.as_posix()} 4 missing", f"AGENT_UNDECLARED {skill.as_posix()} 6 orphan"], lines
         )
+
+    def test_the_built_in_types_are_the_sub_agents_pages(self) -> None:
+        self.assertEqual(frozenset(BUILT_IN_AGENTS), skill_inventory.BUILTIN_AGENTS)
+
+    def test_no_built_in_type_is_undefined(self) -> None:
+        # The list was general-purpose, Explore, and Plan, so a skill delegating to claude-code-guide drew a false
+        # AGENT_UNDEFINED.
+        skill = self.skill("".join(f"Start a `{name}` subagent to look.\n" for name in BUILT_IN_AGENTS))
+        self.assertEqual([], self.lines("scan", skill.parent, ("AGENT_UNDEFINED", "AGENT_UNDECLARED")))
 
     def test_outside_a_source_tree_a_named_type_needs_only_its_definition(self) -> None:
         home = self.root / "home"
@@ -2780,14 +2832,16 @@ class RuntimeSupportTests(SourceTreeTestCase):
         skill = self.root / "skills" / "alpha" / "SKILL.md"
         lowered = skill.with_name("skill.md")
         skill.rename(lowered)
-        self.assertEqual(
-            [
-                "RUNTIME claude-code full needs=none",
-                "RUNTIME codex full needs=none",
-                "RUNTIME copilot-cli full needs=none",
-            ],
-            self.runtime(lowered),
-        )
+        # The main file in another case, which only a folder that folds case takes for SKILL.md.
+        with mock.patch.dict(path_keys._FOLDS_CASE, {str(lowered.parent): True}):
+            self.assertEqual(
+                [
+                    "RUNTIME claude-code full needs=none",
+                    "RUNTIME codex full needs=none",
+                    "RUNTIME copilot-cli full needs=none",
+                ],
+                self.runtime(lowered),
+            )
 
     def test_a_missing_or_malformed_declaration_and_a_skill_outside_a_source_tree(self) -> None:
         self.assertEqual(["RUNTIME_UNDECLARED"], self.runtime(self.skill("Body.\n")))
@@ -3653,3 +3707,69 @@ def test_folder_files_never_lists_a_skipped_folder_so_one_it_cannot_list_inside_
     with unlistable(skill / "node_modules" / "deep"):
         listed = [path.relative_to(skill).as_posix() for path in skill_inventory.folder_files(skill)]
     assert listed == ["SKILL.md"]
+
+
+class MainFileCaseTests(TemporaryTestCase):
+    """A skill's main file is SKILL.md as its folder's file system compares names, as the runtime that opens it finds
+    it: in any case where the folder folds case, and exactly SKILL.md where it does not. It was SKILL.md in any case
+    everywhere, so in a case-sensitive folder skill.md passed for the main file, and both spellings were returned."""
+
+    def folder(self, name: str) -> Path:
+        folder = self.root / "skills" / "alpha"
+        write(folder / name, "---\nname: alpha\n---\nBody.\n")
+        write(folder / "notes.md", "Notes.\n")
+        return folder
+
+    def test_skill_md_in_another_case_is_the_main_file_only_where_the_folder_folds_case(self) -> None:
+        folder = self.folder("skill.md")
+        for folds in (True, False):
+            with self.subTest(folds=folds), mock.patch.dict(path_keys._FOLDS_CASE, {str(folder): folds}):
+                self.assertEqual([folder / "skill.md"] if folds else [], skill_inventory.main_files(folder))
+                self.assertEqual("main" if folds else "doc", skill_inventory.category(Path("skill.md"), folder))
+                self.assertEqual(folder if folds else None, skill_inventory.skill_folder(folder / "notes.md"))
+
+    def test_scan_and_inventory_take_a_lowercase_skill_md_as_main_only_where_the_folder_folds_case(self) -> None:
+        # scanned_files, inventory, and data_settings pass the skill folder to category, which asks it.
+        folder = self.folder("skill.md")
+        lowered = folder / "skill.md"
+        with mock.patch.dict(path_keys._FOLDS_CASE, {str(folder): True}):
+            self.assertEqual([lowered, folder / "notes.md"], skill_inventory.scanned_files(folder))
+            lines = skill_inventory.inventory(folder)
+            self.assertIn("FILE main", next(line for line in lines if line.endswith(" skill.md")))
+            self.assertNotIn("NO_MAIN", lines)
+        with mock.patch.dict(path_keys._FOLDS_CASE, {str(folder): False}):
+            with self.assertRaisesRegex(skill_inventory.InputError, f"^no SKILL.md in {folder.as_posix()}$"):
+                skill_inventory.scanned_files(folder)
+            lines = skill_inventory.inventory(folder)
+            self.assertIn("FILE doc", next(line for line in lines if line.endswith(" skill.md")))
+            self.assertIn("NO_MAIN", lines)
+
+    def test_exactly_skill_md_is_the_main_file_either_way(self) -> None:
+        folder = self.folder("SKILL.md")
+        for folds in (True, False):
+            with self.subTest(folds=folds), mock.patch.dict(path_keys._FOLDS_CASE, {str(folder): folds}):
+                self.assertEqual([folder / "SKILL.md"], skill_inventory.main_files(folder))
+                self.assertEqual("main", skill_inventory.category(Path("SKILL.md"), folder))
+                self.assertEqual(folder, skill_inventory.skill_folder(folder / "notes.md"))
+
+    def test_a_case_sensitive_folder_holding_both_spellings_has_one_main_file(self) -> None:
+        # Two names a case-sensitive folder holds apart, which a folding file system cannot hold, so each is judged
+        # by its name.
+        folder = self.folder("SKILL.md")
+        with mock.patch.dict(path_keys._FOLDS_CASE, {str(folder): False}):
+            self.assertTrue(skill_inventory.is_main_file(folder / "SKILL.md"))
+            self.assertFalse(skill_inventory.is_main_file(folder / "skill.md"))
+            self.assertFalse(skill_inventory.is_main_file(folder / "Skill.MD"))
+        with mock.patch.dict(path_keys._FOLDS_CASE, {str(folder): True}):
+            self.assertTrue(skill_inventory.is_main_file(folder / "Skill.MD"))
+            self.assertFalse(skill_inventory.is_main_file(folder / "notes.md"))
+
+    def test_a_skill_with_a_lowercase_skill_md_is_located_only_where_its_folder_folds_case(self) -> None:
+        home = self.root / "home"
+        folder = home / ".claude" / "skills" / "alpha"
+        skill = write(folder / "skill.md", "x")
+        for folds in (True, False):
+            with self.subTest(folds=folds), mock.patch.dict(path_keys._FOLDS_CASE, {str(folder): folds}):
+                code, lines, _ = run("locate", "alpha", "--home", str(home))
+                expected = (0, f"SKILL_FILE {skill.as_posix()}") if folds else (1, "NOT_FOUND alpha")
+                self.assertEqual(expected, (code, lines[1]))

@@ -1,5 +1,6 @@
 """What every policy module shares: the repository's roots, how a regression suite and a skill script are
-recognized, the reader of a module's imports, the Markdown fence and section readers, and the fixture-tree writer.
+recognized, the reader of a module's imports, which ejryan89-skill-core's python_names holds, the Markdown fence and
+section readers, and the fixture-tree writer.
 
 The modules of tests/validation import the deployer, so whatever imports them first puts the repository root on
 sys.path: tests/run_validation.py, or a fixture suite beside them.
@@ -30,6 +31,10 @@ from markdown_sections import find_fences as find_fences
 from markdown_sections import markdown_section as markdown_section
 from markdown_sections import prose_code_spans as prose_code_spans
 from path_containment import posix_within
+from python_names import ModuleImport as ModuleImport
+from python_names import import_aliases as import_aliases
+from python_names import module_imports as module_imports
+from python_names import qualified_name as qualified_name
 from skill_menu import MenuEntry, SourceMenu, expand
 from suite_names import SUITE_EXTENSIONS as SUITE_EXTENSIONS
 from suite_names import SUITE_NAME_PATTERNS as SUITE_NAME_PATTERNS
@@ -295,38 +300,6 @@ def python_trees(paths: Iterable[Path], root: Path, problems: list[str]) -> Iter
         yield path, name, tree
 
 
-@dataclass(frozen=True)
-class ModuleImport:
-    """One module an import statement imports, and what it binds each name to: `import a.b as c` imports a.b and
-    binds c to a.b, `import a.b` binds a to a, and `from a import b as c` imports a and binds c to a.b."""
-
-    line: int
-    module: str
-    bindings: tuple[tuple[str, str], ...]
-
-
-def module_imports(tree: ast.AST) -> list[ModuleImport]:
-    """Every absolute import anywhere in a module, in the order ast.walk meets it. Every policy that reads what a
-    module imports reads it here; a relative import names no module these policies can find, so it is left out."""
-    found: list[ModuleImport] = []
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            for alias in node.names:
-                top = alias.name.split(".")[0]
-                binding = (alias.asname, alias.name) if alias.asname else (top, top)
-                found.append(ModuleImport(node.lineno, alias.name, (binding,)))
-        elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
-            bindings = tuple((alias.asname or alias.name, f"{node.module}.{alias.name}") for alias in node.names)
-            found.append(ModuleImport(node.lineno, node.module, bindings))
-    return found
-
-
-def import_aliases(tree: ast.AST) -> dict[str, str]:
-    """What each name a module binds by import stands for, anywhere in it: `import shutil as sh` binds sh to shutil,
-    `from tempfile import TemporaryFile as T` binds T to tempfile.TemporaryFile, and `import os.path` binds os."""
-    return {name: target for found in module_imports(tree) for name, target in found.bindings}
-
-
 def relative_import_aliases(tree: ast.Module, package: str) -> dict[str, str]:
     """What each name a relative import binds stands for, such as deployer.kinds.SKILL for `from .kinds import SKILL`
     in a module of the deployer package."""
@@ -340,17 +313,6 @@ def relative_import_aliases(tree: ast.Module, package: str) -> dict[str, str]:
         for alias in node.names:
             aliases[alias.asname or alias.name] = f"{module}.{alias.name}"
     return aliases
-
-
-def qualified_name(node: ast.AST, aliases: dict[str, str]) -> str:
-    """The dotted name an expression stands for through the module's imports, such as shutil.rmtree for sh.rmtree
-    after `import shutil as sh`, or "" when it is not a dotted name. A name bound otherwise stands for itself."""
-    if isinstance(node, ast.Name):
-        return aliases.get(node.id, node.id)
-    if isinstance(node, ast.Attribute):
-        base = qualified_name(node.value, aliases)
-        return f"{base}.{node.attr}" if base else ""
-    return ""
 
 
 def _unpacked(keyword: ast.keyword) -> ast.Starred:

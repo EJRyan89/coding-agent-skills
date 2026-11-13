@@ -35,6 +35,7 @@ from command_wrappers import (
 from device_names import is_reserved_device_name
 from diff_paths import DRIVE
 from duplication import SKILL_CORE_SCRIPTS
+from exit_calls import EXIT_CALLS, code_keyword
 from gh_shorthands import GH_VALUE_SHORTHANDS, shorthands
 from git_subcommands import powershell_program
 from markdown_sections import SHELL_FENCES
@@ -2008,19 +2009,17 @@ ENTRY_FUNCTIONS = frozenset({"main", "_main"})
 
 def _unguarded_main_lines(tree: ast.Module, aliases: dict[str, str]) -> list[int]:
     """The lines of each module-level statement outside every __main__ block that runs main, or run_main, as the
-    program, itself or as what sys.exit or SystemExit is given, so it runs whenever the module is imported."""
+    program, itself or as what an exit call of ejryan89-skill-core's exit_calls is given, by position or keyword, so
+    it runs whenever the module is imported."""
     guarded = {id(node) for block in main_blocks(tree) for node in ast.walk(block)}
     lines: list[int] = []
     for statement in module_statements(tree.body):
         if id(statement) in guarded:
             continue
         call = statement.value if isinstance(statement, ast.Expr) else getattr(statement, "exc", None)
-        if (
-            isinstance(call, ast.Call)
-            and qualified_name(call.func, aliases) in {"sys.exit", "SystemExit"}
-            and call.args
-        ):
-            call = call.args[0]
+        function = qualified_name(call.func, aliases) if isinstance(call, ast.Call) else ""
+        if isinstance(call, ast.Call) and function in EXIT_CALLS:
+            call = call_argument(call, 0, code_keyword(function))
         if isinstance(call, ast.Call) and (
             (isinstance(call.func, ast.Name) and call.func.id in ENTRY_FUNCTIONS)
             or qualified_name(call.func, aliases) == CONSOLE_FUNCTION
@@ -2100,11 +2099,10 @@ def _mentions_failed(node: ast.expr) -> bool:
     )
 
 
-# The standard streams, by every name sys gives them, and what ends the process with a code: sys.exit, the exit and
-# quit builtins, os._exit, and raising SystemExit.
+# The standard streams, by every name sys gives them. What ends the process with a code is ejryan89-skill-core's
+# exit_calls.EXIT_CALLS.
 STANDARD_ERROR = frozenset({"sys.stderr", "sys.__stderr__"})
 STANDARD_OUTPUT = frozenset({"sys.stdout", "sys.__stdout__"})
-EXIT_CALLS = frozenset({"sys.exit", "exit", "quit", "builtins.exit", "builtins.quit", "os._exit", "SystemExit"})
 PARSER_CLASS = "argparse.ArgumentParser"
 
 
@@ -2147,7 +2145,7 @@ def _call_breaches(node: ast.Call, resolver: CallableResolver, parsers: set[str]
         and _is_parser(node.func.value, parsers)
     ):
         breaches.append("reports a failure through parser.error; print FAILED <reason> and exit 1")
-    code = call_argument(node, 0, "status" if function == "os._exit" else "code") if function in EXIT_CALLS else None
+    code = call_argument(node, 0, code_keyword(function)) if function in EXIT_CALLS else None
     if isinstance(code, ast.Constant) and type(code.value) is int and code.value not in CONTRACT_EXIT_CODES:
         breaches.append(f"exits {code.value}; scripts exit only 0, 1, or 2")
     stream: ast.expr | None = None
