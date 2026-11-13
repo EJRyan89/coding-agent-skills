@@ -960,9 +960,8 @@ class LockTests(DeployerTestCase):
         self.write_lock({"pid": 2002, "token": "older-token", "start_time": 2002})
         shutil.rmtree(aside)
 
-    def acquire_after_judgment(self, between: Callable[[], None]) -> DeployError:
-        """Acquire as PID 1001, running `between` right after the judgment of the record already there, and answer
-        the refusal; a run that holds the lock instead fails the test."""
+    def acquire_running_after_judgment(self, between: Callable[[], None]) -> lock.Lock:
+        """Acquire as PID 1001, running `between` right after the judgment of the record already there."""
 
         def probe(pid: int) -> platform_support.ProcessStatus:
             return platform_support.ProcessStatus(pid != 4242, pid)
@@ -975,10 +974,15 @@ class LockTests(DeployerTestCase):
             return judged
 
         with mock.patch("deployer.lock._judge_left_record", judge_then):
-            try:
-                held = self.acquire_as(1001, probe)
-            except DeployError as exc:
-                return exc
+            return self.acquire_as(1001, probe)
+
+    def acquire_after_judgment(self, between: Callable[[], None]) -> DeployError:
+        """Acquire as acquire_running_after_judgment does, and answer the refusal; a run that holds the lock instead
+        fails the test."""
+        try:
+            held = self.acquire_running_after_judgment(between)
+        except DeployError as exc:
+            return exc
         held.release()
         raise self.failureException("the run held the lock beside the record another deployer took")
 
@@ -1006,6 +1010,29 @@ class LockTests(DeployerTestCase):
         refusal = self.acquire_after_judgment(initialized)
         self.assertEqual(f"{RUNNING} (PID 2002).", refusal.lines[0])
         self.assert_only_the_older_record_is_left()
+
+    def test_a_record_moved_aside_whose_metadata_does_not_read_is_moved_back_and_refused(self) -> None:
+        """What was moved aside cannot be told to be the record judged stale, so it is never deleted."""
+        self.write_lock({"pid": 4242, "token": "stale-token", "start_time": 1})
+
+        def metadata_unreadable() -> None:
+            (self.lock_dir / "info.json").unlink()
+            (self.lock_dir / "info.json").mkdir()
+
+        refusal = self.acquire_after_judgment(metadata_unreadable)
+        self.assertEqual([f"{RUNNING}.", "Wait for it to finish, then retry."], list(refusal.lines))
+        self.assertTrue((self.lock_dir / "info.json").is_dir())
+        self.assertEqual("stale-token", (self.lock_dir / "token").read_text(encoding="utf-8"))
+        self.assertEqual([self.lock_dir], list(self.lock_dir.parent.glob(".deploy.lock*")))
+
+    def test_a_stale_record_gone_before_it_is_moved_aside_leaves_the_lock_to_the_run(self) -> None:
+        self.write_lock({"pid": 4242, "token": "stale-token", "start_time": 1})
+        held = self.acquire_running_after_judgment(lambda: shutil.rmtree(self.lock_dir))
+        try:
+            self.assertEqual(held.token, (self.lock_dir / "token").read_text(encoding="utf-8"))
+            self.assertEqual([], list(self.lock_dir.parent.glob(".deploy.lock.stale.*")))
+        finally:
+            held.release()
 
     def test_a_record_taken_meanwhile_that_cannot_be_moved_back_is_named_where_it_was_moved(self) -> None:
         self.write_lock({"pid": 4242, "token": "stale-token", "start_time": 1})
