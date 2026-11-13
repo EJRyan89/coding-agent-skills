@@ -90,6 +90,30 @@ class WithinTests(unittest.TestCase):
             one = False
         self.assertEqual(one, within(self.tree.parent / decomposed / "x", tree))
 
+    def test_a_sibling_spelled_with_a_sign_lowercase_merges_is_outside_where_the_file_system_keeps_it_apart(
+        self,
+    ) -> None:
+        # str.lower takes the Kelvin, Angstrom, and Ohm signs to k, the small a with ring, and the small omega, but
+        # NTFS and Linux's file systems keep each apart from those letters, so a folder spelled with the sign is
+        # another folder, outside the tree, wherever the tree's own directory does not find one entry under both.
+        for sign, letter in (("\u212a", "K"), ("\u212b", "\u00c5"), ("\u2126", "\u03a9")):
+            tree = self.tree.parent / f"{letter}x"
+            tree.mkdir()
+            sibling = self.tree.parent / f"{sign}x"
+            try:
+                one = os.path.samestat(os.lstat(sibling), os.lstat(tree))
+            except FileNotFoundError:
+                one = False
+            with self.subTest(sign=sign):
+                self.assertEqual(one, within(sibling / "evil", tree))
+                if sys.platform in ("win32", "linux"):
+                    self.assertFalse(within(sibling / "evil", tree))
+
+    def test_a_tree_on_a_network_share_holds_only_its_own_spelling(self) -> None:
+        # Nothing answers for a share, which may keep case, so another case below its anchor is outside.
+        self.assertFalse(within("//srv/share/TREE/x", "//srv/share/tree"))
+        self.assertTrue(within("//srv/share/tree/x", "//srv/share/tree"))
+
     def test_the_path_judged_is_never_asked(self) -> None:
         judged = self.tree.parent / "judged"
         (judged / "deep").mkdir(parents=True)
