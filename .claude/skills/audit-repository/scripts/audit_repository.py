@@ -111,6 +111,7 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).resolve().parents[4] / "skills" / "ejryan89-skill-core" / "scripts"))
 
 import calendar_date
+import file_presence
 import guidance_record
 import json_reader
 import json_writer
@@ -1579,13 +1580,14 @@ def remove_briefs(directory: Path) -> list[str]:
     reached through no link, holding the BRIEFS_MARKER that names it and otherwise only Markdown files. Anything else
     is refused and left as it is. The marker goes last, so a removal that fails part way can be run again."""
     temporary = Path(tempfile.gettempdir()).resolve()
+    # A folder a stat cannot examine is named so, never as one this script did not make. A plain directory, no link
+    # or junction, resolves to a directory.
+    try:
+        file_presence.is_occupied(directory)
+    except OSError as exc:
+        raise AuditError(f"{directory.as_posix()} cannot be examined: {exc.strerror or exc}") from exc
     resolved = directory.resolve()
-    if (
-        not is_plain_directory(directory)
-        or not resolved.is_dir()
-        or resolved.parent != temporary
-        or not resolved.name.startswith(BRIEFS_PREFIX)
-    ):
+    if not is_plain_directory(directory) or resolved.parent != temporary or not resolved.name.startswith(BRIEFS_PREFIX):
         raise AuditError(f"{directory.as_posix()} is not a briefs directory this script made in {temporary.as_posix()}")
     marker = resolved / BRIEFS_MARKER
     if not names_directory(marker, resolved):

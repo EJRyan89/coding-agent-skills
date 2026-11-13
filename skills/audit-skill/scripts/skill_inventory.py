@@ -180,7 +180,7 @@ import skill_menu
 import whole_number
 from console import run_main
 from executable_locator import RelativeEnvironmentPath, absolute_home
-from file_presence import NotAFile, is_directory, is_occupied, is_present, matching
+from file_presence import NotADirectory, NotAFile, is_directory, is_occupied, is_present, matching
 from flat_text import flat_text, single_line
 from git_client import GitClient, GitError
 from markdown_sections import (
@@ -627,6 +627,18 @@ def posix(path: Path) -> str:
     return path.as_posix()
 
 
+def require_kind(path: Path, what: str, shown: str, *, folder: bool) -> None:
+    """Refuse `path` unless a file, or with `folder` a folder, is there: as `<what> not found: <shown>` only when
+    nothing is, and as `<what> <shown> is not a file` or `is not a folder` when something else is, never as missing.
+    A stat that fails raises its OSError, which main reports as a path it cannot read, as it does for every read."""
+    try:
+        present = is_directory(path) if folder else is_present(path)
+    except (NotADirectory, NotAFile):
+        raise InputError(f"{what} {shown} is not a {'folder' if folder else 'file'}") from None
+    if not present:
+        raise InputError(f"{what} not found: {shown}")
+
+
 def read_text(path: Path) -> str | None:
     """Return a file's UTF-8 text, or None for binary or undecodable content."""
     data = path.read_bytes()
@@ -1071,9 +1083,7 @@ def search_roots(home: Path, repo: Path | None, plugin: str, folder: Path | None
     """Where locate looks: the plugins under a folder the user names, or the skill roots and then Claude Code's plugin
     cache, which alone is searched for a skill named with its plugin."""
     if folder is not None:
-        # A path whose stat fails raises, never reported as one that is not there.
-        if not is_directory(folder, other_is_absent=True):
-            raise InputError(f"plugin folder not found: {posix(folder)}")
+        require_kind(folder, "plugin folder", posix(folder), folder=True)
         return plugin_skill_roots(folder, plugin)
     cache = plugin_skill_roots(home / PLUGIN_CACHE, plugin)
     return cache if plugin else [*skill_roots(home, repo), *cache]
@@ -1226,9 +1236,7 @@ def folder_files(directory: Path) -> list[Path]:
 
 
 def inventory(directory: Path) -> list[str]:
-    # A path whose stat fails raises, never reported as one that is not there.
-    if not is_directory(directory, other_is_absent=True):
-        raise InputError(f"skill directory not found: {directory}")
+    require_kind(directory, "skill directory", str(directory), folder=True)
     files = folder_files(directory)
     lines: list[str] = []
     totals = {name: [0, 0, 0] for name in CATEGORIES}
@@ -1623,9 +1631,7 @@ def affirmed(pattern: re.Pattern[str], line: str) -> bool:
 
 
 def tools(path: Path) -> list[str]:
-    # A path whose stat fails raises, never reported as one that is not there.
-    if not is_present(path, other_is_absent=True):
-        raise InputError(f"skill file not found: {path}")
+    require_kind(path, "skill file", str(path), folder=False)
     lines = require_text(path).splitlines()
     try:
         found = frontmatter.split(lines)
@@ -1791,7 +1797,8 @@ def decomposes_a_value(line: str) -> bool:
 
 def scanned_files(path: Path) -> list[Path]:
     """A file as given, or a skill folder's main file followed by every doc file inventory lists."""
-    if not path.is_dir():
+    # A folder whose stat fails raises, never read as a file to scan.
+    if not is_directory(path, other_is_absent=True):
         return [path]
     files = folder_files(path)
     main = [file for file in files if category(file.relative_to(path), path) == "main"]
@@ -1802,6 +1809,9 @@ def scanned_files(path: Path) -> list[Path]:
 
 def scan(given: list[Path]) -> list[str]:
     paths = [file for path in given for file in scanned_files(path)]
+    # Something other than a file is named so, never as not found, and a stat that fails raises.
+    if wrong := [posix(path) for path in paths if is_occupied(path) and not is_present(path, other_is_absent=True)]:
+        raise InputError("not a file: " + ", ".join(wrong))
     missing = [posix(path) for path in paths if not is_present(path, other_is_absent=True)]
     if missing:
         raise InputError("file not found: " + ", ".join(missing))

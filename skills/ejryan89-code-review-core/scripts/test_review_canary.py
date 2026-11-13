@@ -27,6 +27,7 @@ from git_client import subprocess_runner
 from link_probe import is_link_or_junction
 from review_canary import FixtureError, FixtureFieldError, fixture_change, validate_fixture_pull, validate_prior_record
 from review_operation import PULL_FIELDS, validate_canary_pull
+from test_review_archive import unstatable
 from test_review_runtime_validation import directory_link
 from typed_fields import FieldError
 
@@ -468,6 +469,26 @@ class FixtureChangeTests(unittest.TestCase):
                 with self.assertRaisesRegex(FixtureError, message), fixture_change(directory, subprocess_runner):
                     pass
                 self.assertEqual([], list(self.temporary.iterdir()))
+
+    def test_a_tree_of_the_wrong_kind_or_one_a_stat_cannot_examine_is_named_so_never_as_missing(self) -> None:
+        directory = write_fixture(self.root / "file", {"a.txt": b"a\n"}, {"a.txt": b"b\n"})
+        head = directory / "head"
+        (head / "a.txt").unlink()
+        head.rmdir()
+        head.write_bytes(b"")
+        with (
+            self.assertRaisesRegex(FixtureError, r"^The fixture's head/ tree is not a folder$"),
+            fixture_change(directory, subprocess_runner),
+        ):
+            pass
+        directory = write_fixture(self.root / "unstatable", {"a.txt": b"a\n"}, {"a.txt": b"b\n"})
+        with (
+            unstatable(directory / "base"),
+            self.assertRaisesRegex(FixtureError, r"^The fixture's base/ tree cannot be examined: Permission denied$"),
+            fixture_change(directory, subprocess_runner),
+        ):
+            pass
+        self.assertEqual([], list(self.temporary.iterdir()))
 
     def test_a_link_or_special_file_in_a_tree_is_refused(self) -> None:
         directory = write_fixture(self.root / "fixture", {"a.txt": b"a\n"}, {"a.txt": b"b\n", "link": b"a.txt"})

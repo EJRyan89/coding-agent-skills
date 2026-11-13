@@ -77,9 +77,10 @@ def _run(run: Path, role: str) -> tuple[Path | None, str, str, Path]:
     run = run.resolve()
     if not run.name.startswith(RUN_PREFIX):
         raise SourceError(f"{run} is not a review run")
-    # A run.json it cannot stat is the stat's OSError, never a folder that holds no run.
-    if not file_presence.is_present(run / RUN_FILE, other_is_absent=True):
-        raise SourceError(f"{run} is not a review run: it holds no {RUN_FILE} file")
+    # A run.json it cannot stat, or a folder in its place, is named so, never a folder that holds no run.
+    file_presence.require(
+        run / RUN_FILE, SourceError, f"{run} is not a review run: it holds no {RUN_FILE} file", f"{run}'s {RUN_FILE}"
+    )
     try:
         state = READ.json_object(read_json(run / RUN_FILE), "run")
         request = READ.json_object(

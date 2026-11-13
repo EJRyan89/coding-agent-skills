@@ -1096,9 +1096,10 @@ def synthesize(
 
 def _existing_report_lock(report_path: Path, services: Services) -> AbstractContextManager[Any]:
     """The lock of a report that exists: a lock is a directory beside the report, so a mistyped report path fails
-    instead of creating directories there."""
-    if not report_path.is_file():
-        raise InsightError(f"Cannot read insights report {report_path}: no such file")
+    instead of creating directories there. A report a stat cannot examine, or one that is not a file, is named so,
+    never as missing."""
+    if reason := file_presence.refusal_reason(report_path):
+        raise InsightError(f"Cannot read insights report {report_path}: it {reason}")
     return services.report_lock(report_path)
 
 

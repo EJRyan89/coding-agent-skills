@@ -1420,6 +1420,22 @@ class PoolSharedStatePolicy(unittest.TestCase):
             "tests/validation/beta.py: a policy module tests/run_validation.py runs is missing", problems[1]
         )
 
+    def test_a_policy_module_of_the_wrong_kind_is_named_so_never_as_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            write_fixture_tree(
+                root,
+                {
+                    "tests/run_validation.py": self.RUNNER,
+                    "tests/validation/alpha.py": "",
+                    "tests/validation/beta.py/inner.py": "",
+                },
+            )
+            problems = pool_shared_state_problems(root)
+        self.assertEqual(
+            ["tests/validation/beta.py: a policy module tests/run_validation.py runs is not a file"], problems
+        )
+
     def test_reading_the_state_or_taking_it_as_a_parameter_passes(self) -> None:
         alpha = (
             "import io\n"

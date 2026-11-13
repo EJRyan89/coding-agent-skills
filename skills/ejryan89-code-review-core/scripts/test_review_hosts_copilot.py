@@ -4,6 +4,7 @@ CLI host checks before it starts Copilot, how it bounds each run, or when it pro
 
 from __future__ import annotations
 
+import contextlib
 import copy
 import hashlib
 import json
@@ -342,7 +343,8 @@ REFUSED: list[tuple[str, Mutation, Outcome]] = [
     (
         "a diff that is a directory",
         _request("diff_path", "{run}/source"),
-        (RuntimeContractError, "Copilot request diff must be a file inside the run directory", 0, None),
+        # A folder in the diff's place is named so, never as a diff that is not there.
+        (RuntimeContractError, "Copilot request diff {source} is not a file", 0, None),
     ),
     (
         "a source snapshot outside the run directory",
@@ -1058,7 +1060,7 @@ class MaterializationRecordTests(unittest.TestCase):
         self.write(_materialization(source_hashes={"SKILL.md": _sha(SKILL), "rules": _sha(SKILL)}))
         with self.assertRaises(RuntimeContractError) as raised:
             review_hosts.materialized_reviewer_entrypoint(self.root)
-        self.assertEqual("Reviewer materialization file is invalid: rules", str(raised.exception))
+        self.assertEqual("Reviewer materialization file rules is not a file", str(raised.exception))
 
     def test_a_declared_file_at_the_record_in_any_case_is_refused_by_name(self) -> None:
         # A case-insensitive file system holds the record itself at each of these names.
@@ -1339,3 +1341,29 @@ class IsolationRootStatTests(unittest.TestCase):
                 review_hosts.isolated_copilot_environment(root)
             self.assertEqual(str(root), raised.exception.filename)
             self.assertEqual(["stale.txt"], [path.name for path in root.iterdir()])
+
+
+class ResultFileTests(unittest.TestCase):
+    def test_a_result_file_of_the_wrong_kind_or_one_a_stat_cannot_examine_is_named_so_never_as_missing(self) -> None:
+        clean = ProcessResult(0, "", "")
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            staging, diagnostic = root / "result.staging.json", root / "diagnostic.log"
+            cases = (
+                ("missing", "GitHub Copilot CLI did not produce the result file"),
+                ("folder", f"GitHub Copilot CLI's result file {staging} is not a file"),
+                ("unstatable", f"GitHub Copilot CLI's result file {staging} cannot be examined: Permission denied"),
+            )
+            for case, message in cases:
+                with self.subTest(case):
+                    if case == "folder":
+                        staging.mkdir()
+                    elif case == "unstatable":
+                        staging.rmdir()
+                        staging.write_text("{}", encoding="utf-8")
+                    with (
+                        unstatable(staging) if case == "unstatable" else contextlib.nullcontext(),
+                        self.assertRaises(RuntimeContractError) as raised,
+                    ):
+                        review_hosts._require_copilot_result(clean, staging, diagnostic)
+                    self.assertEqual(message, str(raised.exception))

@@ -6,6 +6,8 @@ a regular file for no file at all, and reports the repository as having no such 
 `is_present` tells the three apart, and raises `NotAFile`, an `OSError`, for the third, so a reader that already turns
 an `OSError` from its read into its own refusal refuses this one alike. `is_directory` answers the same for a folder,
 raising `NotADirectory`, and `is_occupied` whether anything at all, a link to nothing included, is at a path.
+`refusal_reason` words why a file or folder a caller needs is not there, missing, of another kind, or not
+examinable, and `require` raises the caller's own error with it, so a refusal never names the last two as missing.
 `matching` lists what a glob pattern matches below a folder, as `Path.glob` does, but raises for a folder it cannot
 list, where `Path.glob` matches nothing in it from Python 3.15 on, so a reader takes no unreadable folder for an empty
 one.
@@ -90,6 +92,39 @@ def is_directory(path: Path, *, other_is_absent: bool = False) -> bool:
     if other_is_absent:
         return False
     raise NotADirectory(path)
+
+
+# What `refusal_reason` answers for a path where nothing is, so a caller that words a missing path its own way can
+# tell that answer from the others.
+MISSING = "is missing"
+
+
+def refusal_reason(path: Path, *, folder: bool = False) -> str | None:
+    """None when a regular file, or with `folder` a folder, is at `path`, following links; otherwise why not, worded to
+    follow the path in a refusal: `MISSING` when nothing is there, "is not a file" or "is not a folder" when something
+    else is, and "cannot be examined: <reason>" with the operating system's reason when a stat cannot tell. A caller
+    that refuses a path it needs raises on any answer but None, so it never names a path it could not examine, or one
+    of the wrong kind, as missing."""
+    try:
+        present = is_directory(path) if folder else is_present(path)
+    except NotADirectory:
+        return "is not a folder"
+    except NotAFile:
+        return "is not a file"
+    except OSError as exc:
+        return f"cannot be examined: {exc.strerror or exc}"
+    return None if present else MISSING
+
+
+def require(path: Path, error: Callable[[str], Exception], missing: str, subject: str, *, folder: bool = False) -> None:
+    """Return when a regular file, or with `folder` a folder, is at `path`. Otherwise raise the caller's `error`:
+    with `missing` when nothing is there, and with `subject` followed by `refusal_reason`'s reason when something
+    else is there or a stat cannot examine it, so neither is ever reported as missing."""
+    reason = refusal_reason(path, folder=folder)
+    if reason == MISSING:
+        raise error(missing)
+    if reason is not None:
+        raise error(f"{subject} {reason}")
 
 
 def is_occupied(path: Path) -> bool:

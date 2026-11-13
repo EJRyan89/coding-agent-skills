@@ -331,6 +331,17 @@ class CheckoutFailureTests(unittest.TestCase):
                 worktrees.row(hub, git_worktrees.Worktree(str(tree), "abc", "feat/x", False))
             self.assertEqual(str(tree), raised.exception.filename)
 
+    def test_list_shows_a_file_in_a_worktree_s_place_as_not_a_folder_never_as_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            hub, tree, absent = Path(folder) / "hub", Path(folder) / "tree", Path(folder) / "absent"
+            tree.write_text("", encoding="utf-8")
+            with mock.patch.object(worktrees, "git", side_effect=AssertionError("counted a tree that is not one")):
+                states = [
+                    worktrees.row(hub, git_worktrees.Worktree(str(path), "abc", "feat/x", False)).state
+                    for path in (tree, absent)
+                ]
+            self.assertEqual(["not a folder", "missing"], states)
+
     def test_list_counts_each_worktree_from_the_hub_under_the_client_s_own_limit(self) -> None:
         row, calls = self.counted_row("abc", git_client.GitResult(0, "2\t3\n", ""))
         self.assertEqual([(True, ("rev-list", "--left-right", "--count", "main...abc"), None)], calls)

@@ -3773,3 +3773,27 @@ class MainFileCaseTests(TemporaryTestCase):
                 code, lines, _ = run("locate", "alpha", "--home", str(home))
                 expected = (0, f"SKILL_FILE {skill.as_posix()}") if folds else (1, "NOT_FOUND alpha")
                 self.assertEqual(expected, (code, lines[1]))
+
+
+def test_each_path_refusal_names_the_wrong_kind_never_as_not_found(tmp_path: Path) -> None:
+    file, folder = tmp_path / "file.md", tmp_path / "folder"
+    file.write_text("For each item.\n", encoding="utf-8")
+    folder.mkdir()
+    home = tmp_path / "home"
+    home.mkdir()
+    cases = [
+        (("inventory", str(file)), f"FAILED skill directory {file} is not a folder"),
+        (("tools", str(folder)), f"FAILED skill file {folder} is not a file"),
+        (("locate", f"alpha {file}", "--home", str(home)), f"FAILED plugin folder {file.as_posix()} is not a folder"),
+    ]
+    for arguments, line in cases:
+        assert (1, [line]) == run(*arguments)[:2], arguments
+    # Something other than a file or a folder, as a pipe, given to scan is named as no file, never as not found.
+    real = Path.stat
+    pipe = os.stat_result((0o010644, 0, 0, 1, 0, 0, 0, 0, 0, 0))
+
+    def stat(path: Path, *, follow_symlinks: bool = True) -> os.stat_result:
+        return pipe if path == file else real(path, follow_symlinks=follow_symlinks)
+
+    with mock.patch.object(Path, "stat", autospec=True, side_effect=stat):
+        assert (1, [f"FAILED not a file: {file.as_posix()}"]) == run("scan", str(file))[:2]

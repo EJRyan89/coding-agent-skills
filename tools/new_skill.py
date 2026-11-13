@@ -304,8 +304,12 @@ def _current_reference(root: Path, source: deploy_source.Source) -> str:
     """The skill reference's text, once it is known to hold every generated block and the reference check can read
     everything it reads, so a scaffold never stops after writing for want of them."""
     reference = root / skill_reference.REFERENCE
-    # A path whose stat fails raises, never reported as one that is not there.
-    if not file_presence.is_present(reference, other_is_absent=True):
+    # A path whose stat fails raises, and one of the wrong kind is named so, never reported as one that is not there.
+    try:
+        present = file_presence.is_present(reference)
+    except file_presence.NotAFile:
+        raise ScaffoldError(f"{skill_reference.REFERENCE.as_posix()} is not a file") from None
+    if not present:
         raise ScaffoldError(f"{skill_reference.REFERENCE.as_posix()} does not exist")
     try:
         document = reference.read_text(encoding="utf-8")

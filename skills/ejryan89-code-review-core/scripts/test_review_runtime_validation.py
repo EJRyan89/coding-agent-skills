@@ -309,7 +309,13 @@ REJECTED: list[tuple[str, Mutation, type[Exception], Message]] = [
     ),
     ("a relative root", _attribute("root", "relative"), RuntimeContractError, ROOT_RULE),
     ("a missing root", _attribute("root", "missing"), RuntimeContractError, ROOT_RULE),
-    ("a root that is a file", _attribute("root", "file"), RuntimeContractError, ROOT_RULE),
+    # A file in the root's place is named so, never as a root that is not there.
+    (
+        "a root that is a file",
+        _attribute("root", "file"),
+        RuntimeContractError,
+        lambda root: f"Source snapshot root {root} is not a folder",
+    ),
     ("a root that is a reparse point", _reparse("."), RuntimeContractError, ROOT_RULE),
     (
         "no manifest",
@@ -2378,7 +2384,8 @@ class AdapterManifestValidationTests(unittest.TestCase):
             large = root / "large.json"
             large.write_bytes(b" " * (review_runtime.MAX_LOCAL_MANIFEST_BYTES + 1))
             for path, message in (
-                (folder, f"Local reviewer manifest is not a regular file: {folder}"),
+                (folder, f"Local reviewer manifest {folder} is not a file"),
+                (root / "absent.json", f"Local reviewer manifest is missing: {root / 'absent.json'}"),
                 (large, f"Local reviewer manifest is too large: {large}"),
             ):
                 with self.subTest(message=message), self.assertRaises(RuntimeContractError) as caught:

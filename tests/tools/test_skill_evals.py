@@ -517,6 +517,20 @@ class LoaderTests(unittest.TestCase):
         message = self.load_error(scenario_spec(mode="re-review", prior="prior.json"))
         self.assertIn("prior record prior.json is missing", message)
 
+    def test_a_prior_record_a_stat_cannot_examine_is_named_so_never_as_missing(self) -> None:
+        directory = write_scenario(self.root, "case", scenario_spec(mode="re-review", prior="prior.json"))
+        (directory / "prior.json").write_text("{}", encoding="utf-8")
+        real_stat = Path.stat
+
+        def stat(path: Path, *, follow_symlinks: bool = True) -> os.stat_result:
+            if path == directory / "prior.json":
+                raise PermissionError(13, "denied")
+            return real_stat(path, follow_symlinks=follow_symlinks)
+
+        with mock.patch.object(Path, "stat", stat):
+            message = self.load_error(scenario_spec(mode="re-review", prior="prior.json"))
+        self.assertIn("prior record prior.json cannot be examined: denied", message)
+
     def test_re_review_scenario_loads_its_prior(self) -> None:
         directory = write_scenario(self.root, "again", scenario_spec(mode="re-review", prior="prior.json"))
         (directory / "prior.json").write_text("{}", encoding="utf-8")
@@ -548,6 +562,19 @@ class LoaderTests(unittest.TestCase):
         directory = write_scenario(self.root, "case", scenario_spec())
         (directory / "head").rmdir()
         with self.assertRaisesRegex(ScenarioError, "case: has no head/ tree"):
+            skill_evals_scenarios.load_scenarios("demo", root=self.root)
+
+    def test_a_tree_or_pull_json_of_the_wrong_kind_is_named_so_never_as_missing(self) -> None:
+        directory = write_scenario(self.root, "case", scenario_spec())
+        (directory / "head").rmdir()
+        (directory / "head").write_text("", encoding="utf-8")
+        with self.assertRaisesRegex(ScenarioError, "case: its head/ tree is not a folder$"):
+            skill_evals_scenarios.load_scenarios("demo", root=self.root)
+        (directory / "head").unlink()
+        (directory / "head").mkdir()
+        (directory / "pull.json").unlink()
+        (directory / "pull.json").mkdir()
+        with self.assertRaisesRegex(ScenarioError, "case: its pull.json is not a file$"):
             skill_evals_scenarios.load_scenarios("demo", root=self.root)
 
     def test_pull_json_is_required(self) -> None:
@@ -1789,6 +1816,16 @@ class ReviewerScenarioTests(unittest.TestCase):
             self.refusal(checkout=checkout),
         )
 
+    def test_a_declared_file_of_the_wrong_kind_is_named_so_never_as_lacking(self) -> None:
+        checkout = self.root / "checkout"
+        shutil.copytree(skill_evals_scenarios.REPOSITORY_ROOT / REVIEWER_FOLDER, checkout / REVIEWER_FOLDER)
+        (checkout / "docs" / "design.md").mkdir(parents=True)
+        write_reviewer_scenario(self.root, reviewer_spec())
+        self.assertEqual(
+            "case: review-repository declares docs/design.md, and the checkout's docs/design.md is not a file",
+            self.refusal(checkout=checkout),
+        )
+
     def test_the_reviewer_s_scenario_shape_is_held(self) -> None:
         cases: list[tuple[dict[str, Any], str, str]] = [
             (
@@ -1921,14 +1958,16 @@ class ReviewerScenarioTests(unittest.TestCase):
         write_reviewer_scenario(self.root, reviewer_spec())
         reviewer = skill_evals_scenarios.REPOSITORY_ROOT / REVIEWER_FOLDER
         references = reviewer / "references"
-        # A file whose stat fails is still one the run places, so the check of the checkout's files refuses it.
+        # A file whose stat fails is still one the run places, so the check of the checkout's files refuses it, naming
+        # it as one it cannot examine, never as one the checkout lacks.
         script = next(path for path in sorted((reviewer / "scripts").iterdir()) if path.suffix == ".py")
+        declared = f"{REVIEWER_FOLDER}/scripts/{script.name}"
         rows: list[tuple[Path, bool, str]] = [
             (references, False, f"case: cannot read {references}: [Errno {errno.EACCES}] Access is denied"),
             (
                 script,
                 True,
-                f"case: review-repository declares {REVIEWER_FOLDER}/scripts/{script.name}, which the checkout",
+                f"case: review-repository declares {declared}, and the checkout's {declared} cannot be examined: ",
             ),
         ]
         for path, stat, message in rows:
@@ -2478,6 +2517,12 @@ class RunPieceTests(unittest.TestCase):
         (self.root / skill_evals_runs.GUARD).unlink()
         with self.assertRaisesRegex(
             skill_evals_runs.AgentError, "the home has no .claude/skills/ejryan89-code-review-core/"
+        ):
+            skill_evals_runs.reviewer_agents(self.root)
+        # A folder in the guard's place is named so, never as no guard.
+        (self.root / skill_evals_runs.GUARD).mkdir()
+        with self.assertRaisesRegex(
+            skill_evals_runs.AgentError, "the home's .claude/skills/ejryan89-code-review-core/.* is not a file$"
         ):
             skill_evals_runs.reviewer_agents(self.root)
         home = self.root / "it's"
@@ -4199,6 +4244,7 @@ def test_re_review_kinds_need_a_re_review(spec: dict[str, Any]) -> None:
             id="outside the scenarios",
         ),
         pytest.param({"document": "missing.md"}, "document missing.md is missing", id="a missing document"),
+        pytest.param({"document": "folder.md"}, "document folder.md is not a file", id="a folder as the document"),
         pytest.param({"document": "draft.md", "base": "gone.md"}, "base gone.md is missing", id="a missing base"),
         pytest.param({"document": "/draft.md"}, "document must be a relative path", id="a rooted path"),
         pytest.param({"document": "C:/draft.md"}, "document must be a relative path", id="a drive path"),
@@ -4219,6 +4265,7 @@ def test_a_document_is_a_file_among_the_scenarios_and_reviewed_once(
     directory = write_scenario(tmp_path, "case", scenario_spec(**fields))
     (directory / "draft.md").write_text("# Draft\n", encoding="utf-8")
     (directory / "prior.json").write_text("{}", encoding="utf-8")
+    (directory / "folder.md").mkdir()
     with pytest.raises(ScenarioError) as raised:
         skill_evals_scenarios.load_scenarios("demo", ["case"], root=tmp_path)
     assert message in str(raised.value)
@@ -4824,6 +4871,10 @@ def test_a_trigger_session_that_counts_for_nothing_is_reported_and_recorded_in_t
 def test_a_trigger_scenario_s_skill_is_a_shipped_one_the_model_may_start(tmp_path: Path) -> None:
     with pytest.raises(ScenarioError, match="the checkout has no skills/demo"):
         trigger_scenario(tmp_path, TRIGGER_SPEC, tmp_path / "empty")
+    folder = tmp_path / "folder"
+    (folder / "skills" / "demo" / "SKILL.md").mkdir(parents=True)
+    with pytest.raises(ScenarioError, match=r"the checkout's skills/demo/SKILL.md is not a file$"):
+        trigger_scenario(tmp_path, TRIGGER_SPEC, folder)
     user_only = demo_checkout(tmp_path, "disable-model-invocation: true\n")
     with pytest.raises(ScenarioError, match="demo sets disable-model-invocation"):
         trigger_scenario(tmp_path, TRIGGER_SPEC, user_only)

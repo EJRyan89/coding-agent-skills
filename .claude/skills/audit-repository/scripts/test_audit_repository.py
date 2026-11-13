@@ -1161,6 +1161,21 @@ class RemoveBriefsTests(Fixture, BriefsRemoval):
             self.assertTrue((directory / "brief.md").exists())
         self.assertTrue((self.root / "README.md").exists())
 
+    def test_a_directory_a_stat_cannot_examine_is_named_so_never_as_one_it_did_not_make(self) -> None:
+        directory = Path(tempfile.mkdtemp(prefix=audit.BRIEFS_PREFIX))
+        self.addCleanup(remove_tree, directory)
+        real_stat = Path.stat
+
+        def stat(path: Path, *, follow_symlinks: bool = True) -> os.stat_result:
+            if path == directory:
+                raise PermissionError(13, "denied")
+            return real_stat(path, follow_symlinks=follow_symlinks)
+
+        with mock.patch.object(Path, "stat", stat):
+            code, lines = self.remove(directory)
+        self.assertEqual((1, [f"FAILED {directory.as_posix()} cannot be examined: denied"]), (code, lines))
+        self.assertTrue(directory.is_dir())
+
     def test_refuses_a_marked_directory_holding_more_than_briefs_and_leaves_it(self) -> None:
         _, lines = self.run_main("release", "--since", "v0.1.0")
         directory = Path(next(line for line in lines if line.startswith("BRIEFS ")).split(" ", 1)[1].strip('"'))

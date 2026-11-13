@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import file_presence
+
 from . import hashing, journal, platform_support, source, state_files
 from .context import Context
 from .errors import DeployError, see_recovery
@@ -49,7 +51,9 @@ def _migration_candidates(context: Context, old_entry: SourceEntry, kind: ItemKi
         subject = f"{kind.label} '{name}'" if kind.label else f"'{name}'"
         destination = journal.root_directory(context.paths, kind.root) / name
         if not kind.has_expected_type(destination):
-            raise DeployError(f"ERROR: Cannot migrate {subject}: destination is missing.", *restore)
+            # Something of the other kind at the destination is named so, as the plan names it, never as missing.
+            state = f"is not {kind.type_name}" if file_presence.is_occupied(destination) else "is missing"
+            raise DeployError(f"ERROR: Cannot migrate {subject}: destination {state}.", *restore)
         if hashing.hash_path(destination) != expected:
             raise DeployError(f"ERROR: Cannot migrate {subject}: destination differs from the old manifest.", *restore)
         candidates.append(name)

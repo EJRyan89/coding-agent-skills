@@ -1009,12 +1009,14 @@ class CommandTests(LazySnapshotFixture):
         self.assertEqual(1, len(lines))
         self.assertTrue(lines[0].startswith("FAILED ") and "Permission denied" in lines[0], lines)
         self.assertIn("run.json", lines[0])
-        # A run.json removed, or a folder in its place, is a folder that holds no run, which the line names.
-        no_run = (1, [f"FAILED {self.run_directory.resolve()} is not a review run: it holds no run.json file"])
+        # A run.json removed is a folder that holds no run, and a folder in its place is named so, never as no run.
+        run_root = self.run_directory.resolve()
         state.unlink()
-        self.assertEqual(no_run, self.main(*arguments))
+        self.assertEqual(
+            (1, [f"FAILED {run_root} is not a review run: it holds no run.json file"]), self.main(*arguments)
+        )
         state.mkdir()
-        self.assertEqual(no_run, self.main(*arguments))
+        self.assertEqual((1, [f"FAILED {run_root}'s run.json is not a file"]), self.main(*arguments))
 
     def test_source_search_on_a_run_with_no_source_repository_searches_the_snapshot_s_files(self) -> None:
         # The run names no repository, as a whole snapshot's run does, so only the files the snapshot's manifest

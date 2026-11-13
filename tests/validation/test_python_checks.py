@@ -5424,11 +5424,40 @@ PRESENCE_LISTINGS = {
         for listing in ("p.iterdir()", "os.scandir(p)", "os.listdir(p)")
     },
 }
+# The forms whose False goes straight to a refusal of its own, which names a path of another kind, or for a path's
+# predicate one it cannot stat, as missing: each predicate, and each file_presence test given other_is_absent=True.
+PRESENCE_REFUSAL_SHAPES = {
+    "if not P: raise": "def f(p):\n    if not {call}:\n        raise OSError(f'{{p}} is missing')\n    return 1\n",
+    "if not P or Q: raise": "def f(p, q):\n    if q or not {call}:\n        raise ValueError(p)\n    return 1\n",
+    "if not P: message, raise": (
+        "def f(p):\n    if not {call}:\n        message = f'{{p}} not found'\n        raise LookupError(message)\n"
+        "    return 1\n"
+    ),
+    "if P: ... else: raise": (
+        "def f(p):\n    if {call}:\n        x = 1\n    else:\n        raise OSError(p)\n    return x\n"
+    ),
+    "if Q and P: ... else: raise": (
+        "def f(p, q):\n    if q and {call}:\n        return 1\n    else:\n        raise OSError(p)\n"
+    ),
+}
+PRESENCE_ABSENT_OTHERS = {
+    "file_presence.is_present": "file_presence.is_present(p, other_is_absent=True)",
+    "file_presence.is_directory": "file_presence.is_directory(p, other_is_absent=True)",
+    "an imported is_directory": "is_directory(p, other_is_absent=True)",
+}
 PRESENCE_REFUSED = {
     **{
         f"{shape} by {predicate}": _presence_form(shape, call, "None")
         for shape in PRESENCE_SHAPES
         for predicate, call in PRESENCE_PREDICATE_CALLS.items()
+    },
+    **{
+        f"{shape} by {predicate}": (
+            "import os\nimport file_presence\nfrom file_presence import is_directory\n\n\n"
+            + PRESENCE_REFUSAL_SHAPES[shape].format(call=call)
+        )
+        for shape in PRESENCE_REFUSAL_SHAPES
+        for predicate, call in {**PRESENCE_PREDICATE_CALLS, **PRESENCE_ABSENT_OTHERS}.items()
     },
     **{
         f"a return of {empty or 'nothing'}": _presence_form("if not P: return E", "p.is_file()", empty)
@@ -5472,9 +5501,25 @@ PRESENCE_PASSED = {
     ),
     "a TemporaryDirectory": "import tempfile\n\n\ndef f():\n    return tempfile.TemporaryDirectory()\n",
     "filter given None": "def f(ps):\n    return list(filter(None, ps))\n",
-    # A predicate whose False leads to a refusal, a value, or more work is no empty answer, and an `if` whose True
-    # branch does the work and that has no else goes on to the code after it, which meets the same path.
-    "a refusal": "def f(p):\n    if not p.is_file():\n        raise OSError(p)\n    return 1\n",
+    # A predicate whose False leads to a value or more work is no empty answer, and an `if` whose True branch does
+    # the work and that has no else goes on to the code after it, which meets the same path. A bare raise passes on
+    # the error being handled, and a file_presence test that lets something of another kind through, or a refusal
+    # through file_presence.require, names each cause.
+    "a bare raise": (
+        "def f(p):\n    try:\n        p.write_text('')\n    except OSError:\n        if not p.is_file():\n"
+        "            raise\n    return 1\n"
+    ),
+    "a refusal on a file_presence test that lets another kind through": (
+        "import file_presence\n\n\ndef f(p):\n    if not file_presence.is_present(p):\n        raise OSError(p)\n"
+        "    return 1\n"
+    ),
+    "a refusal on other_is_absent=False": (
+        "import file_presence\n\n\ndef f(p):\n    if not file_presence.is_directory(p, other_is_absent=False):\n"
+        "        raise OSError(p)\n    return 1\n"
+    ),
+    "file_presence.require": (
+        "import file_presence\n\n\ndef f(p):\n    file_presence.require(p, OSError, 'missing', str(p))\n    return 1\n"
+    ),
     "a value": "def f(p):\n    return p.read_text() if p.is_file() else 'default'\n",
     "more work": "def f(p):\n    if not p.is_dir():\n        p.mkdir()\n        return None\n    return 1\n",
     "an operand of a wider test": "def f(p, q):\n    if q and p.is_file():\n        return 1\n    return 2\n",
@@ -5586,9 +5631,6 @@ PRESENCE_PASSED = {
     "limit: a warn imported from warnings": (
         "from warnings import warn\n\n\ndef f(p):\n    if not p.is_file():\n        warn('missing')\n"
         "        return None\n    return 1\n"
-    ),
-    "limit: a refusal with a not-found reason": (
-        "def f(p):\n    if not p.is_file():\n        raise ValueError(f'{p} not found')\n    return p.read_text()\n"
     ),
     "limit: a link test, which the link-test policy holds": "def f(p):\n    return p.is_symlink()\n",
 }

@@ -313,8 +313,12 @@ def _guard_hook(lines: Sequence[str], home: Path) -> dict[str, Any]:
     if command.count(PROFILE_GUARD) != 1:
         raise AgentError(f"its hook does not name {PROFILE_GUARD} once")
     guard = home / GUARD
-    if not guard.is_file():
-        raise AgentError(f"the home has no {GUARD.as_posix()} for its hook to run")
+    file_presence.require(
+        guard,
+        AgentError,
+        f"the home has no {GUARD.as_posix()} for its hook to run",
+        f"the home's {GUARD.as_posix()} for its hook to run",
+    )
     if UNQUOTABLE.search(runtime_canary.forward(home)):
         raise AgentError(f"its hook cannot quote the home's path {runtime_canary.forward(home)}")
     timeout = _nested(lines, "timeout")

@@ -15,7 +15,17 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import path_keys
-from file_presence import NotADirectory, NotAFile, is_directory, is_occupied, is_present, matching
+from file_presence import (
+    MISSING,
+    NotADirectory,
+    NotAFile,
+    is_directory,
+    is_occupied,
+    is_present,
+    matching,
+    refusal_reason,
+    require,
+)
 
 # The errno values Python gives a directory and an invalid argument on Windows and on Linux alike, written out so the
 # refusal is held to them, not to the constants it uses.
@@ -230,6 +240,57 @@ class OccupiedTests(unittest.TestCase):
         ) as made:
             self.assertTrue(is_occupied(self.root / "entry"))
         made.assert_called_once_with(follow_symlinks=False)
+
+
+class RefusalReasonTests(unittest.TestCase):
+    def setUp(self) -> None:
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+        (self.root / "file").write_text("", encoding="utf-8")
+        (self.root / "folder").mkdir()
+
+    def test_each_cause_is_named_and_only_nothing_there_is_missing(self) -> None:
+        # The wording is written out, not taken from the module, so a changed refusal fails here.
+        cases = [
+            ("file", False, None),
+            ("folder", True, None),
+            ("absent", False, "is missing"),
+            ("absent", True, "is missing"),
+            ("folder", False, "is not a file"),
+            ("file", True, "is not a folder"),
+        ]
+        for name, folder, expected in cases:
+            with self.subTest(name=name, folder=folder):
+                self.assertEqual(expected, refusal_reason(self.root / name, folder=folder))
+        self.assertEqual("is missing", MISSING)
+
+    def test_a_stat_that_fails_is_named_with_its_reason_never_as_missing(self) -> None:
+        for folder in (False, True):
+            with (
+                self.subTest(folder=folder),
+                mock.patch.object(Path, "stat", side_effect=PermissionError(errno.EACCES, "denied")),
+            ):
+                self.assertEqual("cannot be examined: denied", refusal_reason(self.root / "file", folder=folder))
+
+    def test_require_raises_the_callers_error_naming_each_cause_and_passes_the_right_kind(self) -> None:
+        require(self.root / "file", LookupError, "gone", "the file")
+        require(self.root / "folder", LookupError, "gone", "the folder", folder=True)
+        cases = [
+            ("absent", False, "gone"),
+            ("folder", False, "the subject is not a file"),
+            ("file", True, "the subject is not a folder"),
+        ]
+        for name, folder, message in cases:
+            with self.subTest(name=name, folder=folder), self.assertRaises(LookupError) as raised:
+                require(self.root / name, LookupError, "gone", "the subject", folder=folder)
+            self.assertEqual((message,), raised.exception.args)
+        with (
+            mock.patch.object(Path, "stat", side_effect=PermissionError(errno.EACCES, "denied")),
+            self.assertRaises(LookupError) as raised,
+        ):
+            require(self.root / "file", LookupError, "gone", "the subject")
+        self.assertEqual(("the subject cannot be examined: denied",), raised.exception.args)
 
 
 class EveryHelperTests(unittest.TestCase):

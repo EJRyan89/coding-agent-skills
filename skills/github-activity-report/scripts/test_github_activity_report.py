@@ -1636,6 +1636,20 @@ def test_a_history_naming_a_folder_is_refused_before_querying(tmp_path: Path) ->
     assert f"{tmp_path} is a folder; name the history file inside it" in stderr
 
 
+def test_a_history_whose_folder_is_a_file_is_refused_as_no_folder_never_as_missing(tmp_path: Path) -> None:
+    notes = tmp_path / "notes.txt"
+    notes.write_text("", encoding="utf-8")
+    history = notes / "activity.csv"
+    github = group_github()
+    code, stdout, stderr = run_group([*GROUP, "--history", str(history)], github, at(TODAY))
+    assert (code, stdout, github.endpoints) == (2, "", [])
+    assert f"the folder of {history} is not a folder; name a history file in a folder" in stderr
+    missing = tmp_path / "absent" / "activity.csv"
+    code, stdout, stderr = run_group([*GROUP, "--history", str(missing)], github, at(TODAY))
+    assert (code, stdout, github.endpoints) == (2, "", [])
+    assert f"the folder of {missing} does not exist; the report creates no folder" in stderr
+
+
 @pytest.mark.parametrize("unstatable", ["history", "folder"])
 def test_a_history_or_its_folder_that_cannot_be_examined_is_refused_with_the_error_never_as_absent(
     tmp_path: Path, unstatable: str

@@ -272,6 +272,16 @@ class LessonsLedgerPolicy(unittest.TestCase):
             self.problems(ledger),
         )
 
+    def test_a_guard_naming_a_skill_file_of_the_wrong_kind_is_named_so_never_as_missing(self) -> None:
+        ledger = f"# Lessons\n\n## Patterns\n\n### Folder\n\n{self.ENTRY}- **Guard:** `.claude/skills/b/SKILL.md#a`\n"
+        self.assertEqual(
+            [
+                "docs/lessons.md:10 the pattern 'Folder' cites .claude/skills/b/SKILL.md#a, but "
+                ".claude/skills/b/SKILL.md is not a file"
+            ],
+            self.problems(ledger, {".claude/skills/b/SKILL.md/inner.md": ""}),
+        )
+
     def test_a_guard_that_does_not_resolve_fails(self) -> None:
         ledger = (
             f"# Lessons\n\n## Patterns\n\n### Gone\n\n{self.ENTRY}- **Guard:**"
@@ -379,6 +389,8 @@ class LessonsLedgerPolicy(unittest.TestCase):
 
     def test_a_missing_catalogue_section_or_an_empty_one_fails(self) -> None:
         self.assertEqual(["docs/lessons.md does not exist"], self.problems(None))
+        # A folder in the catalogue's place is named so, never as a catalogue that does not exist.
+        self.assertEqual(["docs/lessons.md is not a file"], self.problems(None, {"docs/lessons.md/inner.md": ""}))
         self.assertEqual(["docs/lessons.md has no '## Patterns' section"], self.problems("# Lessons\n\nProse.\n"))
         self.assertEqual(
             ["docs/lessons.md has no pattern under '## Patterns'"],

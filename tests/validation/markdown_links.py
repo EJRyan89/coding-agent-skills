@@ -276,9 +276,13 @@ def _guard_problem(root: Path, index: _TestIndex, document: str, span: str) -> s
         return _id_problem(index, document, citation)
     if step := skill_step.fullmatch(span):
         path = root / step.group(1)
-        # A file whose stat fails raises, never reported as one that does not exist.
-        if not file_presence.is_present(path, other_is_absent=True):
+        # Only a file with nothing there does not exist: one of the wrong kind, or one a stat cannot examine, is
+        # named so.
+        reason = file_presence.refusal_reason(path)
+        if reason == file_presence.MISSING:
             return f"cites {span}, but {step.group(1)} does not exist"
+        if reason is not None:
+            return f"cites {span}, but {step.group(1)} {reason}"
         if step.group(2) not in heading_slugs(path.read_text(encoding="utf-8")):
             return f"cites {span}, which names no heading of {step.group(1)}"
         return None
@@ -434,9 +438,13 @@ def lessons_ledger_problems(root: Path) -> list[str]:
     and a name it binds, `<module>:<name>` or `<module>:<class>.<name>`."""
     document = "docs/lessons.md"
     path = root / document
-    # A path whose stat fails raises, never reported as one that is not there.
-    if not file_presence.is_present(path, other_is_absent=True):
+    # Only a document with nothing there does not exist: one of the wrong kind, or one a stat cannot examine, is
+    # named so.
+    reason = file_presence.refusal_reason(path)
+    if reason == file_presence.MISSING:
         return [f"{document} does not exist"]
+    if reason is not None:
+        return [f"{document} {reason}"]
     lines = _outside_fences(path.read_text(encoding="utf-8"))
     start = next((number for number, line in enumerate(lines) if line.rstrip() == "## Patterns"), None)
     if start is None:

@@ -292,6 +292,11 @@ class NewSkillTestCase(FixtureRepositoryTestCase):
         with self.assertRaisesRegex(new_skill.ScaffoldError, "does not exist"):
             new_skill.scaffold(self.root, "fresh", "Fresh. Use it when testing.")
         self.assertFalse((self.root / "skills" / "fresh").exists())
+        # A folder in the reference's place is named so, never as a reference that does not exist.
+        (self.root / "docs" / "skills.md").mkdir()
+        with self.assertRaisesRegex(new_skill.ScaffoldError, "^docs/skills.md is not a file$"):
+            new_skill.scaffold(self.root, "fresh", "Fresh. Use it when testing.")
+        self.assertFalse((self.root / "skills" / "fresh").exists())
 
     def test_a_reference_without_a_generated_block_is_refused_before_anything_is_written(self) -> None:
         reference = self.root / "docs" / "skills.md"

@@ -634,13 +634,15 @@ class LooseFileTests(DocumentTestCase):
         self.assertEqual((1, ["FAILED --base committed needs a file inside a git checkout"]), (code, lines))
 
     def test_binary_empty_and_missing_files_are_refused(self) -> None:
-        binary, empty = self.root / "design.bin", self.root / "empty.md"
+        binary, empty, folder = self.root / "design.bin", self.root / "empty.md", self.root / "folder.md"
         binary.write_bytes(b"%PDF-1.7\n\0\0rest")
         empty.write_bytes(b" \r\n")
+        folder.mkdir()
         for path, reason in (
             (binary, "is not a text file, a Word document, or a PDF"),
             (empty, "is empty"),
-            (self.root / "missing.md", "is not a file"),
+            (self.root / "missing.md", "is missing"),
+            (folder, "is not a file"),
         ):
             with self.subTest(path.name):
                 code, lines = run_main("build", str(path), "--output", str(self.output))
@@ -648,6 +650,20 @@ class LooseFileTests(DocumentTestCase):
                 self.assertEqual(1, len(lines), lines)
                 self.assertTrue(lines[0].startswith(f"FAILED {path} {reason}"), lines)
         self.assertFalse(self.output.exists())
+
+    def test_a_document_a_stat_cannot_examine_is_named_so_never_as_missing(self) -> None:
+        document = self.root / "plan.md"
+        document.write_bytes(b"# Plan\n")
+        real_stat = Path.stat
+
+        def stat(path: Path, *, follow_symlinks: bool = True) -> os.stat_result:
+            if path == document:
+                raise PermissionError(13, "denied")
+            return real_stat(path, follow_symlinks=follow_symlinks)
+
+        with mock.patch.object(Path, "stat", stat):
+            code, lines = run_main("build", str(document), "--output", str(self.output))
+        self.assertEqual((1, [f"FAILED {document} cannot be examined: denied"]), (code, lines))
 
     def test_the_binary_refusal_is_the_snapshots_own_test(self) -> None:
         # A NUL past the snapshot's probe is text to both, and one inside it is binary to both, so build never

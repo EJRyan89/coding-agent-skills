@@ -354,8 +354,11 @@ def load_materialized_manifest(reviewer_root: Path) -> tuple[dict[str, Any], str
         raise SpecialistError("Reviewer materialization hashes do not match the declared files")
     for relative in declared:
         target = reviewer_root.joinpath(*PurePosixPath(relative).parts)
-        if not target.is_file() or hashlib.sha256(target.read_bytes()).hexdigest() != hashes[relative]:
-            raise SpecialistError(f"Reviewer file does not match its materialized hash: {relative}")
+        mismatch = f"Reviewer file does not match its materialized hash: {relative}"
+        # A reviewer file of the wrong kind, or one a stat cannot examine, is named so, never as a changed one.
+        file_presence.require(target, SpecialistError, mismatch, f"Reviewer file {relative}")
+        if hashlib.sha256(target.read_bytes()).hexdigest() != hashes[relative]:
+            raise SpecialistError(mismatch)
     # A suite profile is read where the suite keeps it, outside the run and any inline seal, so it is checked against
     # the hash taken when the reviewer was materialized. Prepare, each inline hand-out, check, and finalize all run
     # this check (review_dispatch.verify_reviewer), so a deployment that changed it before then fails the pull request.
