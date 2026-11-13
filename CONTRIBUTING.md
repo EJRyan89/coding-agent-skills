@@ -28,7 +28,7 @@ Validation reads both: the runner compares with `origin/main` to find a document
 
 ## Development environment
 
-Development and deployment are supported on Windows, and the whole validation runs on Linux too, where [Validating on Linux](#validating-on-linux) sets it up; the README says where Linux support stands. Contributors need:
+Development and deployment are supported on Windows, macOS, and Linux, and the whole validation runs on each; on Linux, [Validating on Linux](#validating-on-linux) sets it up. Contributors need:
 
 - Python 3.11.4 or newer;
 - Git for Windows, for Git Bash, or on Linux Git and the system's Bash, or on macOS Git and Homebrew's Bash (`brew install bash`) ahead of `/bin/bash` on `PATH`, a Bash at or above the floor in [Dependency updates](docs/dependency-updates.md#validation-tools);

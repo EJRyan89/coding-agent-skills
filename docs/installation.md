@@ -71,7 +71,7 @@ The deployer finds Git Bash in `C:\Program Files\Git`, or next to the `git` on y
 
 ### On Linux
 
-The deployer and the whole validation suite run on Linux, and the [`deployable` workflow](../.github/workflows/deployable.yml) deploys onto a fresh Ubuntu runner; the [README](../README.md#supported-platforms-and-runtimes) says where Linux support stands. Install the tools from your distribution's archive where it has them, or from the vendor's own package repository where it does not:
+Linux, WSL included, is supported: the validation suite runs on Linux as part of the required check, the [`deployable` workflow](../.github/workflows/deployable.yml) deploys onto a fresh Ubuntu runner, and the runtime canary has run the skills in WSL2 Ubuntu; the [README](../README.md#supported-platforms-and-runtimes) gives the versions. Install the tools from your distribution's archive where it has them, or from the vendor's own package repository where it does not:
 
 | Tool | Debian and Ubuntu (`sudo apt install`) | Fedora (`sudo dnf install`) | Official download |
 |---|---|---|---|
