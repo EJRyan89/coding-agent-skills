@@ -952,9 +952,136 @@ class LockTests(DeployerTestCase):
                 held.release()
         self.assertEqual([], list(self.lock_dir.parent.glob(".deploy.lock*")))
 
+    def older_deployer_takes_the_record(self) -> None:
+        """What a deployer from before the file lock does to a stale record, holding no file lock: move it aside, make
+        and initialize its own record, and delete the one aside."""
+        aside = self.lock_dir.parent / ".deploy.lock.stale.2002"
+        self.lock_dir.rename(aside)
+        self.write_lock({"pid": 2002, "token": "older-token", "start_time": 2002})
+        shutil.rmtree(aside)
+
+    def acquire_running_after_judgment(self, between: Callable[[], None]) -> lock.Lock:
+        """Acquire as PID 1001, running `between` right after the judgment of the record already there."""
+
+        def probe(pid: int) -> platform_support.ProcessStatus:
+            return platform_support.ProcessStatus(pid != 4242, pid)
+
+        real_judge = lock._judge_left_record
+
+        def judge_then(paths: Paths, probe: lock.ProcessProbe) -> Any:
+            judged = real_judge(paths, probe)
+            between()
+            return judged
+
+        with mock.patch("deployer.lock._judge_left_record", judge_then):
+            return self.acquire_as(1001, probe)
+
+    def acquire_after_judgment(self, between: Callable[[], None]) -> DeployError:
+        """Acquire as acquire_running_after_judgment does, and answer the refusal; a run that holds the lock instead
+        fails the test."""
+        try:
+            held = self.acquire_running_after_judgment(between)
+        except DeployError as exc:
+            return exc
+        held.release()
+        raise self.failureException("the run held the lock beside the record another deployer took")
+
+    def assert_only_the_older_record_is_left(self) -> None:
+        self.assertEqual("older-token", (self.lock_dir / "token").read_text(encoding="utf-8"))
+        self.assertEqual([self.lock_dir], list(self.lock_dir.parent.glob(".deploy.lock*")))
+
+    def test_a_deployer_from_before_the_file_lock_taking_the_record_after_the_judgment_keeps_it(self) -> None:
+        """An older deployer reclaims the stale record between this run's judgment and its removal: the run moves the
+        older deployer's record aside, sees it is not the one judged, moves it back, and is refused."""
+        self.write_lock({"pid": 4242, "token": "stale-token", "start_time": 1})
+        refusal = self.acquire_after_judgment(self.older_deployer_takes_the_record)
+        self.assertEqual(f"{RUNNING} (PID 2002).", refusal.lines[0])
+        self.assert_only_the_older_record_is_left()
+
+    def test_a_record_without_metadata_that_gains_it_after_the_judgment_is_kept(self) -> None:
+        self.lock_dir.mkdir(parents=True)
+        then = time.time() - lock.RECORD_GRACE_SECONDS - 30
+        os.utime(self.lock_dir, (then, then))
+
+        def initialized() -> None:
+            self.write(self.lock_dir / "token", "older-token")
+            self.write(self.lock_dir / "info.json", json.dumps({"pid": 2002, "token": "older-token"}))
+
+        refusal = self.acquire_after_judgment(initialized)
+        self.assertEqual(f"{RUNNING} (PID 2002).", refusal.lines[0])
+        self.assert_only_the_older_record_is_left()
+
+    def test_a_record_moved_aside_whose_metadata_does_not_read_is_moved_back_and_refused(self) -> None:
+        """What was moved aside cannot be told to be the record judged stale, so it is never deleted."""
+        self.write_lock({"pid": 4242, "token": "stale-token", "start_time": 1})
+
+        def metadata_unreadable() -> None:
+            (self.lock_dir / "info.json").unlink()
+            (self.lock_dir / "info.json").mkdir()
+
+        refusal = self.acquire_after_judgment(metadata_unreadable)
+        self.assertEqual([f"{RUNNING}.", "Wait for it to finish, then retry."], list(refusal.lines))
+        self.assertTrue((self.lock_dir / "info.json").is_dir())
+        self.assertEqual("stale-token", (self.lock_dir / "token").read_text(encoding="utf-8"))
+        self.assertEqual([self.lock_dir], list(self.lock_dir.parent.glob(".deploy.lock*")))
+
+    def test_a_stale_record_gone_before_it_is_moved_aside_leaves_the_lock_to_the_run(self) -> None:
+        self.write_lock({"pid": 4242, "token": "stale-token", "start_time": 1})
+        held = self.acquire_running_after_judgment(lambda: shutil.rmtree(self.lock_dir))
+        try:
+            self.assertEqual(held.token, (self.lock_dir / "token").read_text(encoding="utf-8"))
+            self.assertEqual([], list(self.lock_dir.parent.glob(".deploy.lock.stale.*")))
+        finally:
+            held.release()
+
+    def test_a_record_taken_meanwhile_that_cannot_be_moved_back_is_named_where_it_was_moved(self) -> None:
+        self.write_lock({"pid": 4242, "token": "stale-token", "start_time": 1})
+        real_move = fsops.move
+
+        def back_fails(source: Path, destination: Path) -> None:
+            if destination == self.lock_dir:
+                raise OSError(13, "synthetic move failure")
+            real_move(source, destination)
+
+        with mock.patch("deployer.fsops.move", back_fails):
+            refusal = self.acquire_after_judgment(self.older_deployer_takes_the_record)
+        (aside,) = self.lock_dir.parent.glob(".deploy.lock.stale.1001-*")
+        self.assertEqual(
+            [
+                f"ERROR: Another deployment's lock was moved to {forward(aside)} and could not be moved back to "
+                f"{forward(self.lock_dir)}: synthetic move failure.",
+                "Delete it once no deployment is running, then retry.",
+            ],
+            list(refusal.lines[:2]),
+        )
+        self.assertEqual("older-token", (aside / "token").read_text(encoding="utf-8"))
+        self.assertFalse(self.lock_dir.exists())
+
+    def test_a_stale_record_moved_aside_that_cannot_be_deleted_is_named_and_the_run_goes_on(self) -> None:
+        self.fixture()
+        self.write_lock({"pid": 4242, "token": "stale-token", "start_time": 1})
+        real_remove = fsops.remove
+
+        def aside_stays(path: Path) -> None:
+            if path.name.startswith(".deploy.lock.stale."):
+                raise OSError(13, "synthetic remove failure")
+            real_remove(path)
+
+        with mock.patch("deployer.fsops.remove", aside_stays):
+            result = self.deploy_ok("--all", probe=probe_returning(False, None))
+        (aside,) = self.lock_dir.parent.glob(".deploy.lock.stale.*")
+        self.assertIn(
+            f"WARNING: Could not remove the stale lock moved aside to {forward(aside)}: synthetic remove failure. "
+            "Delete it once no deployment is running.\n",
+            result.output,
+        )
+        self.assertEqual("stale-token", (aside / "token").read_text(encoding="utf-8"))
+        self.assertFalse(self.lock_dir.exists())
+        self.assertTrue((self.skills_dir / "alpha" / "SKILL.md").is_file())
+
     def test_a_run_arriving_at_any_step_of_another_s_acquire_never_holds_the_lock_beside_it(self) -> None:
         self.write_lock({"pid": 4242, "token": "stale-token", "start_time": 1})
-        steps = ("make_directories", "open_lock_file", "remove", "make_directory", "write_atomic")
+        steps = ("make_directories", "open_lock_file", "move", "remove", "make_directory", "write_atomic")
 
         def probe(pid: int) -> platform_support.ProcessStatus:
             return platform_support.ProcessStatus(pid != 4242, pid)
@@ -1143,7 +1270,7 @@ class LockTests(DeployerTestCase):
         aside = self.home / ".claude" / "deployer" / ".deploy.lock.stale.4141"
         self.write(aside / "info.json", json.dumps({"pid": 4141, "token": "older-token", "start_time": 1}))
         warning = (
-            f"WARNING: An earlier deployer left a lock moved aside at {forward(aside)}. "
+            f"WARNING: An earlier deployment left a lock moved aside at {forward(aside)}. "
             "Delete it once no deployment is running.\n"
         )
         self.assertIn(warning, self.deploy_ok("--all", "--dry-run").output)

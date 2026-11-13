@@ -5,12 +5,15 @@ ends, however it ends, so no run ever judges whether another's lock is stale. Be
 holds the run's PID, start time, and token: it names the holder when another run is refused, and it keeps out a
 deployer from before the file lock, which takes only the record. Only the holder of the file lock removes or makes
 the record, so a record left by a run that ended is removed by one run at a time; a dry run, and a run refused the
-lock, only read it to name or judge the holder.
+lock, only read it to name or judge the holder. A deployer from before the file lock may still take the record
+between the judgment and the removal, so the record is moved aside first and removed only when it is still the one
+judged stale; otherwise it is moved back and the run is refused.
 """
 
 from __future__ import annotations
 
 import contextlib
+import os
 import secrets
 import sys
 import time
@@ -35,6 +38,8 @@ LOCK = "The deployment lock"
 PRESENCE_ALLOWED = {
     "_abandoned_while_initializing": "None hands the record to _holder_info, which reads its metadata again and "
     "refuses a stat or read that fails, naming the path",
+    "_moved_record": "None reads as a record other than the one judged stale, which is moved back and refused, so a "
+    "stat or read that fails never removes a record",
 }
 # How long a run waits for the file lock another process holds before it refuses: long enough for a dry run's check,
 # which takes the lock for a moment, and for Windows, which may release a lock a little after its holder ends.
@@ -43,8 +48,23 @@ LOCK_POLL_SECONDS = 0.1
 # How long a record may stay without its metadata before it is taken for one a run stopped while making it left: a
 # run writes the metadata at once, and only a deployer from before the file lock makes the record without holding it.
 RECORD_GRACE_SECONDS = 60.0
-# The name an earlier deployer moved a stale record aside to while it reclaimed it; this one moves nothing aside.
+# The names a stale record is moved aside to while it is removed: `.deploy.lock.stale.<pid>` by a deployer from before
+# the file lock, `.deploy.lock.stale.<token>` by this one. One left behind is named until it is deleted.
 LEFT_ASIDE = ".deploy.lock.stale.*"
+
+
+@dataclass(frozen=True)
+class Judged:
+    """Which record a judgment found stale: the PID and token its metadata gave, or, for a record with no metadata,
+    its folder's device, file ID, and modification time."""
+
+    pid: object = None
+    token: object = None
+    unowned: tuple[int, int, int] | None = None
+
+
+def _unowned(status: os.stat_result) -> Judged:
+    return Judged(unowned=(status.st_dev, status.st_ino, status.st_mtime_ns))
 
 
 @dataclass
@@ -164,30 +184,35 @@ def _holder_info(paths: Paths, step: str, *more: str) -> dict[str, object]:
     return info
 
 
-def _abandoned_while_initializing(paths: Paths) -> int | None:
-    """The age in whole seconds of a record with no metadata older than the grace period, or None: a record whose
-    metadata is there, or something else where it belongs, or whose stat fails, is judged by its metadata instead."""
+def _abandoned_while_initializing(paths: Paths) -> tuple[int, Judged] | None:
+    """The age in whole seconds of a record with no metadata older than the grace period, with the record it judged,
+    or None: a record whose metadata is there, or something else where it belongs, or whose stat fails, is judged by
+    its metadata instead."""
     try:
         if file_presence.is_present(paths.lock_dir / "info.json"):
             return None
-        age = time.time() - paths.lock_dir.stat().st_mtime
+        status = paths.lock_dir.stat()
     except (file_presence.NotAFile, OSError):
         return None
-    return int(age) if age > RECORD_GRACE_SECONDS else None
+    age = time.time() - status.st_mtime
+    return (int(age), _unowned(status)) if age > RECORD_GRACE_SECONDS else None
 
 
-def _existing_holder(paths: Paths, probe: ProcessProbe) -> None:
-    """Fail while the record may belong to a running deployment; warn when it is stale."""
+def _existing_holder(paths: Paths, probe: ProcessProbe) -> Judged:
+    """Fail while the record may belong to a running deployment; warn when it is stale, answering which record it
+    judged."""
     hint = (
         "If no deployment is running, the lock is stale: "
         f"remove {platform_support.normalize(paths.lock_dir)}, then retry.",
         see_recovery(LOCK),
     )
-    age = _abandoned_while_initializing(paths)
-    if age is not None:
+    abandoned = _abandoned_while_initializing(paths)
+    if abandoned is not None:
+        age, judged = abandoned
         print(f"WARNING: Stale lock detected (no metadata for {age} seconds).", file=sys.stderr)
-        return
+        return judged
     info = _holder_info(paths, *hint)
+    judged = Judged(info.get("pid"), info.get("token"))
     try:
         # A PID outside the platform's range is no process's, so it is malformed, never probed as another's.
         pid = read_pid(info.get("pid"), "pid")
@@ -197,7 +222,7 @@ def _existing_holder(paths: Paths, probe: ProcessProbe) -> None:
     status = probe(pid)
     if not status.alive:
         print(f"WARNING: Stale lock detected (PID {pid} not running).", file=sys.stderr)
-        return
+        return judged
     if not isinstance(recorded, int) or isinstance(recorded, bool):
         raise DeployError(f"ERROR: Lock PID {pid} is alive but its process identity cannot be verified.", *hint)
     if status.start_time is None:
@@ -205,6 +230,7 @@ def _existing_holder(paths: Paths, probe: ProcessProbe) -> None:
     if status.start_time == recorded:
         raise _running(pid)
     print(f"WARNING: Stale lock detected (PID {pid} was reused).", file=sys.stderr)
+    return judged
 
 
 def _running(pid: object = None) -> DeployError:
@@ -222,20 +248,19 @@ def _unlockable(paths: Paths, error: file_lock.FileLockError) -> DeployError:
     )
 
 
-def _judge_left_record(paths: Paths, probe: ProcessProbe) -> bool:
-    """Judge what earlier runs left beside a free file lock, changing nothing: name each record an earlier deployer
-    moved aside, refuse a record that may belong to a running deployment, and warn of a stale one, answering whether
-    there is one to remove. A stat that fails raises its OSError rather than reading as no record."""
+def _judge_left_record(paths: Paths, probe: ProcessProbe) -> Judged | None:
+    """Judge what earlier runs left beside a free file lock, changing nothing: name each record an earlier deployment
+    moved aside, refuse a record that may belong to a running deployment, and warn of a stale one, answering which
+    record is there to remove, or None. A stat that fails raises its OSError rather than reading as no record."""
     for left in file_presence.matching(paths.deployer_dir, LEFT_ASIDE):
         print(
-            f"WARNING: An earlier deployer left a lock moved aside at {platform_support.normalize(left)}. "
+            f"WARNING: An earlier deployment left a lock moved aside at {platform_support.normalize(left)}. "
             "Delete it once no deployment is running.",
             file=sys.stderr,
         )
     if not file_presence.is_occupied(paths.lock_dir):
-        return False
-    _existing_holder(paths, probe)
-    return True
+        return None
+    return _existing_holder(paths, probe)
 
 
 def check_holder(paths: Paths, probe: ProcessProbe = platform_support.process_status) -> None:
@@ -273,22 +298,68 @@ def _take_file_lock(paths: Paths) -> int:
         time.sleep(LOCK_POLL_SECONDS)
 
 
-def _make_record(paths: Paths, token: str, probe: ProcessProbe) -> None:
-    """Remove a stale record, then make and initialize this run's, holding the file lock throughout."""
+def _moved_record(aside: Path) -> Judged | None:
+    """Which record was moved aside, read as the judgment reads it, or None when that cannot be told."""
     try:
-        stale = _judge_left_record(paths, probe)
+        if file_presence.is_present(aside / "info.json"):
+            info = _read_info(aside)
+            return Judged(info.get("pid"), info.get("token"))
+        return _unowned(aside.stat())
+    except OSError:  # file_presence.NotAFile included: such a record is not the one judged, so it is moved back
+        return None
+
+
+def _remove_stale(paths: Paths, token: str, judged: Judged) -> None:
+    """Remove the record judged stale, holding the file lock.
+
+    A deployer from before the file lock takes the record without it, so it may reclaim the stale record and take its
+    own between the judgment and the removal. No filesystem step removes a folder only while it holds what was judged,
+    so the record is moved aside first, under a name no deployer takes as the lock, and removed only when what was
+    moved is the record judged stale; a record taken meanwhile is moved back, and the run is refused as contention.
+    """
+    aside = paths.deployer_dir / (LEFT_ASIDE.removesuffix("*") + token)
+    try:
+        fsops.move(paths.lock_dir, aside)
+    except FileNotFoundError:
+        return  # Gone meanwhile; making this run's record decides whether another deployer took it.
     except OSError as exc:
-        raise os_error(exc, "read the deployment lock's record") from exc
-    if stale:
+        raise DeployError(
+            f"ERROR: Could not remove the stale lock {platform_support.normalize(paths.lock_dir)}: "
+            f"{exc.strerror or exc}.",
+            "Delete it once no deployment is running, then retry.",
+            see_recovery(LOCK),
+        ) from exc
+    moved = _moved_record(aside)
+    if moved != judged:
         try:
-            fsops.remove(paths.lock_dir)
+            fsops.move(aside, paths.lock_dir)
         except OSError as exc:
             raise DeployError(
-                f"ERROR: Could not remove the stale lock {platform_support.normalize(paths.lock_dir)}: "
-                f"{exc.strerror or exc}.",
+                f"ERROR: Another deployment's lock was moved to {platform_support.normalize(aside)} and could not be "
+                f"moved back to {platform_support.normalize(paths.lock_dir)}: {exc.strerror or exc}.",
                 "Delete it once no deployment is running, then retry.",
                 see_recovery(LOCK),
             ) from exc
+        raise _running(moved.pid if moved is not None else None)
+    try:
+        fsops.remove(aside)
+    except OSError as exc:
+        # The record is out of the lock's place, so this run goes on; only the leftover needs the user.
+        print(
+            f"WARNING: Could not remove the stale lock moved aside to {platform_support.normalize(aside)}: "
+            f"{exc.strerror or exc}. Delete it once no deployment is running.",
+            file=sys.stderr,
+        )
+
+
+def _make_record(paths: Paths, token: str, probe: ProcessProbe) -> None:
+    """Remove a stale record, then make and initialize this run's, holding the file lock throughout."""
+    try:
+        judged = _judge_left_record(paths, probe)
+    except OSError as exc:
+        raise os_error(exc, "read the deployment lock's record") from exc
+    if judged is not None:
+        _remove_stale(paths, token, judged)
     try:
         fsops.make_directory(paths.lock_dir)
     except FileExistsError:
