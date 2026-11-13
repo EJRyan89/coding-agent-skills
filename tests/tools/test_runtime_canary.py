@@ -2465,6 +2465,16 @@ class RecordRefusalTests(RuntimeCanaryTestCase):
         records.write_bytes(b'{"run": "kept \xff"}\n')
         self.assertEqual([{"run": "kept �"}], runtime_canary.read_records(records))
 
+    def test_a_json_line_that_is_no_object_is_refused_by_its_line_and_kind_not_skipped(self) -> None:
+        records = self.root / "probe.jsonl"
+        for line, kind in (("[]", "array"), ('"x"', "string"), ("1", "number"), ("true", "boolean"), ("null", "null")):
+            with self.subTest(kind=kind):
+                records.write_text('{"run": "kept"}\n' + line + "\n", encoding="utf-8")
+                with self.assertRaises(runtime_canary.RecordRefused) as raised:
+                    runtime_canary.read_records(records)
+                self.assertEqual(records, raised.exception.path)
+                self.assertEqual(f"line 2: the line is a JSON {kind}, not a record object", raised.exception.reason)
+
     def test_a_python_recorder_line_for_a_path_that_is_not_utf8_is_refused_by_name_not_skipped(self) -> None:
         # The Python recorder writes with json.dumps, as RECORDER's _write does, so a working folder that is not
         # UTF-8 on Linux, held as a lone surrogate, is written as its escape: a path the canary cannot compare.
