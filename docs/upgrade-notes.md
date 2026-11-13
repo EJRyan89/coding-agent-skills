@@ -21,6 +21,55 @@ A pull request whose change no user meets writes `None` under its `## Upgrade no
 
 Level: minor.
 
+### Refusals name a path that cannot be examined, or one of the wrong kind, instead of calling it missing
+
+- Level: patch, refusal wording only.
+- Contract: none.
+- User action: none. `review-document` refuses a document with nothing there as `<path> is missing` (was `is not a file`), `review-insights` refuses a report as `Cannot read insights report <path>: it is missing` (was `no such file`), `dotnet-dependencies` refuses a `--root` with nothing there as `<path> is missing` (was `is neither a solution file nor a directory`), and `curate-agent-memory` refuses a memory directory it cannot examine as `FAILED memory directory <path> cannot be examined: <reason>`. Elsewhere a refusal that called a folder in a file's place, a file in a folder's place, or a path a stat could not examine missing now says `is not a file`, `is not a folder`, or `cannot be examined: <reason>`, `--migrate-from` says `destination is not a directory` or `a file`, and `python tools/worktrees.py list` shows a file in a worktree's place as `not a folder`.
+- Pull request: #2714
+
+### The reviewer guard refuses a folder spelled with a sign NTFS keeps apart from a letter
+
+- Level: patch, a defect fix that narrows what the reviewer guard admits to what the file system takes as one folder.
+- Contract: none.
+- User action: none. A reviewer that writes its result through a folder spelled with the Kelvin, Angstrom, or Ohm sign in place of the run's `K`, `Å`, or `Ω`, or in another case below a network share, is now refused.
+- Pull request: #2711
+
+### audit-skill reads built-in agents, SKILL.md, and exit calls as the runtime and validation do
+
+- Level: patch, a fix of false findings with no contract change.
+- Contract: none.
+- User action: none. On a case-sensitive file system, rename a skill's `skill.md` to `SKILL.md` if `audit-skill` no longer finds it. The runtime does not open it under that name either.
+- Pull request: #2713
+
+### code-review refuses a `reviewer_root` that ends in whitespace or holds a line break
+
+- Level: patch. It moves a refusal every run already hit to configuration time.
+- Contract: none.
+- User action: none for most users. If `review_config.py validate` now refuses your `reviewer_root` with "must be a non-empty trimmed single-line string", rename or move that checkout to a path without trailing whitespace or a line break and update `reviewer_root` to match.
+- Pull request: #2710
+
+### audit-ai-config's relay names the effective sources, and a configuration folder the audit skips is named
+
+- Level: minor, a new output line: the relay prints a `FINDING` line for every `layering` finding, and the inventory a new `WARNING` for a folder it does not audit; nothing is asked of the user.
+- Contract: `audit-ai-config` `FINDING`.
+- User action: none. The relayed report now includes a `FINDING` line for every `layering` finding, so the skill reads each surface's effective sources from it. A nested checkout, such as a submodule, or a link back into a folder, below `.github/agents`, `.claude/agents`, `.claude/rules`, `.github/instructions`, or a skill folder, is reported as an inventory `WARNING`, `Folder not audited: <reason>`, since the audit does not read the agents, rules, or skills inside it.
+- Pull request: #2707
+
+### Release notes keep every pull request's upgrade note, and a body's entry heading must be new since the tag
+
+- Level: patch. A fix for contributors: an older pull request's upgrade note that shared a heading with a newer one was dropped from the release section, and a fenced example line was read as an entry's field.
+- Contract: none.
+- User action: none for a user who deploys. A maintainer who sees a `SHARED` line from `tools/release_notes.py` merges the entries it names into one. A contributor whose body reuses an upgrade-note heading from since the last tag gives the entry a heading of its own.
+- Pull request: #2709
+
+### The runtime canary refuses a records line that is JSON but no object
+
+- Level: patch, a defect fix in a repository development tool.
+- Contract: none.
+- User action: none. A contributor running the runtime canary sees a run whose records file holds such a line fail by its line, rather than being judged from the rest.
+- Pull request: #2706
+
 ### Linux is a supported platform
 
 - Level: minor, a platform the deployer and the skills now support.
