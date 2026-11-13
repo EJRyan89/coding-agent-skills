@@ -182,6 +182,16 @@ class SkillReferenceTestCase(unittest.TestCase):
         skill_reference.write(self.root)
         self.assertEqual(before, self.reference.read_bytes())
 
+    def test_a_skill_heading_inside_a_fence_of_the_prose_is_the_fences_text(self) -> None:
+        skill_reference.write(self.root)
+        self.add_prose("alpha", "Alpha's flag explained, as in:\n\n```markdown\n## `beta`\n\nA quoted section.\n```")
+        self.add_prose("beta", "Beta explained.")
+        before = self.reference.read_bytes()
+
+        self.assertEqual([], skill_reference.problems(self.root))
+        skill_reference.write(self.root)
+        self.assertEqual(before, self.reference.read_bytes())
+
     def test_a_frontmatter_change_makes_the_reference_stale_until_written(self) -> None:
         self.written_and_explained()
         skill_md = self.root / "skills" / "alpha" / "SKILL.md"
@@ -281,6 +291,18 @@ class SkillReferenceTestCase(unittest.TestCase):
             ],
             skill_reference.problems(self.root),
         )
+
+    def test_a_second_level_line_in_a_fence_does_not_end_the_readmes_skill_table(self) -> None:
+        self.written_and_explained()
+        readme = self.root / "README.md"
+        readme.write_text(
+            readme.read_text(encoding="utf-8").replace(
+                "## Included skills\n", "## Included skills\n\n~~~markdown\n## Not a section\n~~~\n", 1
+            ),
+            encoding="utf-8",
+        )
+
+        self.assertEqual([], skill_reference.problems(self.root))
 
     def test_a_readme_row_for_a_removed_skill_is_reported(self) -> None:
         self.written_and_explained()
