@@ -864,20 +864,20 @@ class LockRemedyTests(RemedyTestCase):
     def test_a_stale_lock_that_cannot_be_removed_says_to_delete_it(self) -> None:
         self.fixture()
         self.write_lock({"pid": 99998, "token": "stale-token", "start_time": 1})
-        real_remove = fsops.remove
+        real_move = fsops.move
 
-        def failing_remove(path: Path) -> None:
-            if path == self.lock_dir:
-                raise OSError(13, "synthetic remove failure")
-            real_remove(path)
+        def failing_move(source: Path, destination: Path) -> None:
+            if source == self.lock_dir:
+                raise OSError(13, "synthetic move failure")
+            real_move(source, destination)
 
-        with mock.patch("deployer.fsops.remove", side_effect=failing_remove):
+        with mock.patch("deployer.fsops.move", side_effect=failing_move):
             result = self.deploy_fails(
                 "--all", pattern="Could not remove the stale lock", probe=probe_returning(False, None)
             )
         self.assert_lines(
             result.output,
-            f"ERROR: Could not remove the stale lock {forward(self.lock_dir)}: synthetic remove failure.",
+            f"ERROR: Could not remove the stale lock {forward(self.lock_dir)}: synthetic move failure.",
             "Delete it once no deployment is running, then retry.",
             SEE_LOCK,
         )

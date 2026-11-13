@@ -826,13 +826,15 @@ removed fails validation until its pattern follows it.
   each take a lock the other made, and two deployments or review writers run at once.
 - **Use:** `file_lock:take`, `file_lock:release`, `file_lock:held_elsewhere`
 - **Guard:** `tests/deployer/test_rendering_locking.py::LockTests::test_no_deployment_takes_the_lock_while_another_reclaims_a_stale_one`,
+  `tests/deployer/test_rendering_locking.py::LockTests::test_a_deployer_from_before_the_file_lock_taking_the_record_after_the_judgment_keeps_it`,
   `skills/ejryan89-code-review-core/scripts/test_review_state.py::ResourceFileLockTests::test_no_session_takes_the_lock_while_another_reclaims_a_stale_one`,
   `skills/ejryan89-skill-core/scripts/test_file_lock.py::FileLockTests`
 - **Search for:** `.mkdir()` or `make_directory` whose `FileExistsError` means another holds a lock; `os.O_EXCL`
   or `open(..., "x")` used as a lock; a `stale` or `reclaim` path that moves, renames, or deletes a lock another
   process may hold; a lock file deleted on Linux or macOS while a waiter may hold it open, with no check that the
-  path still names the file locked.
-- **Examples:** #2658
+  path still names the file locked; a record a holder from before the file lock may take, removed after it was
+  judged stale without first moving it aside and comparing it with what was judged.
+- **Examples:** #2658, #2674
 
 ### A decision about merged, retired, or owned is made by identity
 
