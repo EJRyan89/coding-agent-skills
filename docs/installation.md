@@ -100,7 +100,7 @@ The deployer runs on macOS, and the [`deployable` workflow](../.github/workflows
 | Python | `brew install python`, or the installer from python.org | [python.org](https://www.python.org/downloads/macos/) |
 | Git and Bash | `brew install git bash` | [git-scm.com](https://git-scm.com/downloads/mac) |
 | ShellCheck | `brew install shellcheck` | [GitHub releases](https://github.com/koalaman/shellcheck/releases) |
-| PowerShell 7 | `brew install --cask powershell` | [GitHub releases](https://github.com/PowerShell/PowerShell/releases), the `.pkg` |
+| PowerShell 7 | none: Homebrew has no `powershell` cask, and its `powershell@preview` installs as `pwsh-preview`, which the deployer never looks for | the `.pkg` from [GitHub releases](https://github.com/PowerShell/PowerShell/releases), `osx-arm64` for Apple silicon or `osx-x64` for Intel, which installs `pwsh` ([Install PowerShell on macOS](https://learn.microsoft.com/powershell/scripting/install/install-powershell-on-macos)) |
 | GitHub CLI | `brew install gh` | [cli.github.com](https://cli.github.com/) |
 | Node.js, for the npm installs below | `brew install node` | [nodejs.org](https://nodejs.org/) |
 | Claude Code | none | `npm install -g @anthropic-ai/claude-code` with Node.js |

@@ -695,7 +695,9 @@ class InstallHintTests(unittest.TestCase):
                 # macOS's own /bin/bash is a Bash 3.2, so the hint installs a current one.
                 "Bash": "brew install bash",
                 "ShellCheck": "brew install shellcheck",
-                "PowerShell": "brew install --cask powershell",
+                # Homebrew has no PowerShell cask, so the hint is Microsoft's own package.
+                "PowerShell": "the .pkg for your Mac, osx-arm64 for Apple silicon or osx-x64 for Intel, from "
+                "https://github.com/PowerShell/PowerShell/releases",
                 "ruff": "python3 -m pip install --require-hashes --only-binary :all: -r requirements-dev.txt",
                 "mypy": "python3 -m pip install --require-hashes --only-binary :all: -r requirements-dev.txt",
                 "pytest": "python3 -m pip install --require-hashes --only-binary :all: -r requirements-dev.txt",

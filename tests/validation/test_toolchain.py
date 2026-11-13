@@ -33,6 +33,7 @@ from toolchain import (
     outdated_prerequisites,
     powershell_json,
     read_tool_version,
+    removed_install_problems,
     requirements_problems,
     tool_versions,
 )
@@ -477,6 +478,36 @@ def run_script(result: platform_support.ToolResult) -> tuple[list[object], list[
         mock.patch.object(platform_support, "run_tool", side_effect=fake),
     ):
         return powershell_json("Get-Thing", ["a", 1], "INPUTS", "Could not run", {"FLOOR": "1.0"}), seen
+
+
+class RemovedInstallFixtures(unittest.TestCase):
+    def test_a_homebrew_install_of_a_removed_package_is_reported_wherever_it_sits(self) -> None:
+        for text in (
+            "brew install --cask powershell codex copilot-cli",
+            "| PowerShell 7 | `brew install --cask powershell` | the `.pkg` |",
+            "brew install powershell",
+            "brew install --cask 'powershell'",
+            "brew reinstall homebrew/cask/powershell",
+            "  run: |\n    brew update\n    brew install --cask powershell --no-quarantine\n",
+        ):
+            with self.subTest(text=text):
+                problems = removed_install_problems(text)
+                self.assertEqual(1, len(problems), problems)
+                self.assertIn("installs Homebrew's powershell, which Homebrew no longer has", problems[0])
+        self.assertIn("line 3:", removed_install_problems("a\nb\nbrew install --cask powershell\n")[0])
+
+    def test_an_install_that_still_works_is_not_reported(self) -> None:
+        for text in (
+            "brew install bash shellcheck gh",
+            "brew install --cask codex copilot-cli",
+            "sudo snap install powershell --classic",
+            "winget install --id Microsoft.PowerShell --installer-type wix",
+            "brew install --cask codex | grep powershell",
+            "brew install gh; echo powershell",
+            "the `.pkg` from PowerShell's releases; Homebrew's `powershell@preview` installs `pwsh-preview`",
+        ):
+            with self.subTest(text=text):
+                self.assertEqual([], removed_install_problems(text))
 
 
 class PowerShellJsonRunner(unittest.TestCase):

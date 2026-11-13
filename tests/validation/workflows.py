@@ -12,6 +12,7 @@ from pathlib import Path
 
 import file_presence
 from python_checks import MYPY_CACHE_VARIABLE
+from toolchain import removed_install_problems
 from validation_support import REPOSITORY_ROOT, repository_files
 
 from deployer import config
@@ -1383,6 +1384,59 @@ def deployable_posix_problems(workflow: str, job: str = "deployable-linux") -> l
     return problems
 
 
+# The step of deployable.yml's macOS job that installs PowerShell where the image lacks pwsh. Homebrew has no PowerShell
+# cask, so the step installs Microsoft's package of the pinned release: these lines, in this order, choose the package
+# for the runner's architecture with its pinned digest, download it, refuse it unless its SHA-256 is that digest, and
+# only then install it.
+POWERSHELL_PACKAGE_STEP = "Install the prerequisites"
+POWERSHELL_PACKAGE_LINES = (
+    'arm64) architecture=arm64 digest="$POWERSHELL_MACOS_ARM64_SHA256" ;;',
+    'x86_64) architecture=x64 digest="$POWERSHELL_MACOS_X64_SHA256" ;;',
+    'release="https://github.com/PowerShell/PowerShell/releases/download/v$POWERSHELL_VERSION"',
+    'package="$RUNNER_TEMP/powershell.pkg"',
+    'curl --fail --silent --show-error --location --retry 3 --output "$package" '
+    '"$release/powershell-$POWERSHELL_VERSION-osx-$architecture.pkg"',
+    'echo "$digest  $package" | shasum --algorithm 256 --check --strict',
+    'sudo installer -pkg "$package" -target /',
+)
+# The pins the step's env holds, by name: the pattern each value must match.
+POWERSHELL_PACKAGE_PINS = {
+    "POWERSHELL_VERSION": re.compile(r"\d+\.\d+\.\d+"),
+    "POWERSHELL_MACOS_ARM64_SHA256": re.compile(r"[0-9a-f]{64}"),
+    "POWERSHELL_MACOS_X64_SHA256": re.compile(r"[0-9a-f]{64}"),
+}
+
+
+def powershell_package_problems(workflow: str, job: str = "deployable-macos") -> list[str]:
+    """Report how deployable.yml's `job` departs from installing PowerShell, where the image lacks pwsh, from
+    Microsoft's package of the release its prerequisite step pins, checked against the pinned digest for the runner's
+    architecture before `installer` runs: the pins in the step's env, and POWERSHELL_PACKAGE_LINES in order."""
+    steps = [step for step in _steps(_mapping(read_workflow(workflow), "jobs", job)) if step.get("name")]
+    found = [step for step in steps if step.get("name") == POWERSHELL_PACKAGE_STEP]
+    if len(found) != 1:
+        return [f"the {job} job has {len(found)} steps named {POWERSHELL_PACKAGE_STEP!r}, not one"]
+    step = found[0]
+    env = _mapping(step, "env")
+    problems = [
+        f"the step {POWERSHELL_PACKAGE_STEP!r} pins {name} as {env.get(name)!r}, not a value matching {pattern.pattern}"
+        for name, pattern in POWERSHELL_PACKAGE_PINS.items()
+        if not (isinstance(env.get(name), str) and pattern.fullmatch(str(env.get(name))))
+    ]
+    lines = _script_lines(step)
+    positions = [lines.index(line) if line in lines else -1 for line in POWERSHELL_PACKAGE_LINES]
+    problems.extend(
+        f"the step {POWERSHELL_PACKAGE_STEP!r} does not run {line!r}"
+        for line, position in zip(POWERSHELL_PACKAGE_LINES, positions, strict=True)
+        if position < 0
+    )
+    if all(position >= 0 for position in positions) and positions != sorted(positions):
+        problems.append(
+            f"the step {POWERSHELL_PACKAGE_STEP!r} does not run {list(POWERSHELL_PACKAGE_LINES)} in that order, so "
+            "the package could be installed before its digest is checked"
+        )
+    return problems
+
+
 # The file docs/codex-support.md tells a user to write the settings to, ~/.codex/config.toml, as the parts the Codex
 # step's $config is joined from: the runner's profile folder, then each folder and the file under it.
 CODEX_CONFIG_PARTS = ("$env:USERPROFILE", ".codex", "config.toml")
@@ -1988,6 +2042,17 @@ class WorkflowsPolicies(unittest.TestCase):
         for job in DEPLOYABLE_POSIX_JOBS:
             with self.subTest(job=job):
                 self.assertEqual([], deployable_posix_problems(workflow, job))
+
+    def test_the_deployable_macos_job_installs_powershell_from_microsofts_pinned_and_checked_package(self) -> None:
+        workflow = (REPOSITORY_ROOT / ".github/workflows/deployable.yml").read_text(encoding="utf-8")
+        self.assertEqual([], powershell_package_problems(workflow))
+
+    def test_no_workflow_installs_a_package_homebrew_removed(self) -> None:
+        workflows = file_presence.matching(REPOSITORY_ROOT / WORKFLOWS_DIRECTORY, "*.y*ml")
+        self.assertIn("deployable.yml", {workflow.name for workflow in workflows})
+        for workflow in workflows:
+            with self.subTest(workflow=workflow.name):
+                self.assertEqual([], removed_install_problems(workflow.read_text(encoding="utf-8")))
 
     def test_deployable_workflow_writes_the_codex_settings_the_codex_guide_gives(self) -> None:
         workflow = (REPOSITORY_ROOT / ".github/workflows/deployable.yml").read_text(encoding="utf-8")

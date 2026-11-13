@@ -584,7 +584,8 @@ class RenderedExecutableTests(DeployerTestCase):
         macos = (
             "  - Bash (checks rendered Bash syntax): brew install bash",
             "  - ShellCheck (lints rendered Bash): brew install shellcheck",
-            "  - PowerShell (parses rendered .ps1 files): brew install --cask powershell",
+            "  - PowerShell (parses rendered .ps1 files): the .pkg for your Mac, osx-arm64 for Apple silicon or "
+            "osx-x64 for Intel, from https://github.com/PowerShell/PowerShell/releases",
         )
         for line in {"win32": windows, "darwin": macos}.get(sys.platform, linux):
             self.assertIn(line, result.output)
