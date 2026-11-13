@@ -23,8 +23,8 @@
       ],
       "source": {
         "source": "archive",
-        "url": "https://github.com/EJRyan89/coding-agent-skills/releases/download/v0.13.0/coding-agent-skills.zip",
-        "sha256": "815a65917208831616f54f09eb71ccb8983e1d5249e5c77ea4c09a2da293615a"
+        "url": "https://github.com/EJRyan89/coding-agent-skills/releases/download/v0.14.0/coding-agent-skills.zip",
+        "sha256": "a8e64f9d36344d4ae21bf2e89571a23affaf05bf609ab4bb62925a8865990748"
       }
     },
     {
@@ -44,8 +44,8 @@
       ],
       "source": {
         "source": "archive",
-        "url": "https://github.com/EJRyan89/coding-agent-skills/releases/download/v0.13.0/coding-agent-skills-dotnet.zip",
-        "sha256": "60ba03d1d1e537c963e5541bc608546d176c9122b15fa3c87296e5376a80227f"
+        "url": "https://github.com/EJRyan89/coding-agent-skills/releases/download/v0.14.0/coding-agent-skills-dotnet.zip",
+        "sha256": "581d05a9c8644ae6df90a402f62b82c101ee5b51642f2af6545ba2f44c052a96"
       }
     }
   ]
