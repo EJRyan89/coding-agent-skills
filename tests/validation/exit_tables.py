@@ -42,7 +42,7 @@ from pathlib import Path
 import file_presence
 import python_reader
 import whole_number
-from exit_calls import EXIT_CALLS, NO_CODE, SYSTEM_EXIT, code_keyword, fixed_code
+from exit_calls import CALL_NAMES, EXIT_CALLS, NO_CODE, SYSTEM_EXIT, code_keyword, fixed_code
 from path_containment import within
 from skill_scripts import PARSER_CLASS, RESULTS_DOC, _is_parser, binding, main_blocks
 from validation_support import (
@@ -346,7 +346,8 @@ def _falls_through(body: list[ast.stmt]) -> bool:
         isinstance(last, ast.Expr)
         and isinstance(last.value, ast.Call)
         and isinstance(last.value.func, (ast.Name, ast.Attribute))
-        and (last.value.func.id if isinstance(last.value.func, ast.Name) else last.value.func.attr) in {"exit", "_exit"}
+        and (last.value.func.id if isinstance(last.value.func, ast.Name) else last.value.func.attr)
+        in CALL_NAMES - {SYSTEM_EXIT}
     )
 
 

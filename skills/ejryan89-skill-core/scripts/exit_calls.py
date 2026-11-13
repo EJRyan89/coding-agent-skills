@@ -11,9 +11,9 @@ from __future__ import annotations
 import ast
 
 # What ends the process with a code, by the dotted name a module's imports resolve it to: sys.exit, the exit and quit
-# builtins, os._exit, and SystemExit, called or raised.
+# builtins, os._exit, and SystemExit, called or raised. tests/validation/duplication.py fails a copy of them.
+EXIT_CALLS = frozenset({"sys.exit", "exit", "quit", "builtins.exit", "builtins.quit", "os._exit", "SystemExit"})
 SYSTEM_EXIT = "SystemExit"
-EXIT_CALLS = frozenset({"sys.exit", "exit", "quit", "builtins.exit", "builtins.quit", "os._exit", SYSTEM_EXIT})
 # The same calls by the last part of their names, for a reader that does not resolve a module's imports.
 CALL_NAMES = frozenset(name.rpartition(".")[2] for name in EXIT_CALLS)
 # What an exit given no code, or None, exits with, as a SystemExit raised as the class does, and what one given a
