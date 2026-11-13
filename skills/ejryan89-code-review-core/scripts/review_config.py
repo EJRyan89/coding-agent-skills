@@ -234,6 +234,12 @@ def validate_absolute_path(value: Any, field: str, *, nullable: bool = False) ->
     return normalized
 
 
+def read_source_root(reader: FieldReader, value: object, path: str) -> str:
+    """The checkout a repository reviewer is read from, as configuration accepts its `reviewer_root` and every run and
+    record names it as `source_root`: one trimmed line, so a root validation accepts is one each reader reads back."""
+    return reader.string(value, path, single_line=True, trimmed=True)
+
+
 def _posix_absolute_path(path: str, field: str) -> str:
     # POSIX leaves a path that starts with two slashes to the system, so one slash it is.
     normalized = posixpath.normpath(path)
@@ -456,6 +462,13 @@ def validate_glob_patterns(
     return patterns
 
 
+def _configured_reviewer_root(value: Any, field: str) -> str | None:
+    """A reviewer's `reviewer_root`: an absolute path that prepare writes into the run as `source_root`, which check
+    and finalize read back, so it is held to that reader's rule too."""
+    root = validate_absolute_path(value, f"{field}.reviewer_root", nullable=True)
+    return None if root is None else read_source_root(READ, root, f"config.{field}.reviewer_root")
+
+
 def _validate_reviewer(identity: str, reviewer_value: Any) -> dict[str, Any]:
     field = f"repositories.{identity}.reviewer"
     path = f"config.{field}"
@@ -469,7 +482,7 @@ def _validate_reviewer(identity: str, reviewer_value: Any) -> dict[str, Any]:
     refusal = None if trusted_ref is None else reviewer_ref_refusal(trusted_ref)
     if refusal is not None:
         raise ConfigurationError(f"{field}.trusted_ref {json_writer.dumps(trusted_ref)} {refusal}")
-    reviewer_root = validate_absolute_path(reviewer.get("reviewer_root"), f"{field}.reviewer_root", nullable=True)
+    reviewer_root = _configured_reviewer_root(reviewer.get("reviewer_root"), field)
     scope = READ.one_of(reviewer.get("scope", "repository"), f"{path}.scope", ("generic", "repository"))
     manifest_path = READ.optional(READ.string, reviewer.get("manifest_path"), f"{path}.manifest_path")
     skill = READ.optional(READ.string, reviewer.get("skill"), f"{path}.skill")

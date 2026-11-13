@@ -20,6 +20,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import file_presence
 import review_config
 import review_flags
+import review_records
+import review_run
 from executable_locator import RelativeEnvironmentPath
 from git_client import GitError, GitResult
 from review_config import (
@@ -34,6 +36,8 @@ from review_io import PersistenceError
 from review_state import default_state_path
 from test_review_config_validation import ABSOLUTE_PATH, CONTAINER_CASES, _config, native
 from test_review_io import UNPARSEABLE_JSON
+from test_review_record_validation import ROOT_ADAPTER
+from test_review_record_validation import _record as record_fixture
 from test_review_records import field_pattern
 
 SCRIPT_DIRECTORY = Path(__file__).resolve().parent
@@ -761,6 +765,58 @@ class ReviewerRootTests(unittest.TestCase):
     def test_a_missing_root_is_refused(self) -> None:
         absent = self.root / "absent"
         self.assert_refused(self.config(absent), f"reviewer_root {absent} does not exist")
+
+    def test_a_root_a_run_cannot_read_back_is_refused_naming_the_rule(self) -> None:
+        # Prepare writes the root into the run as source_root, which check and finalize read as one trimmed line, so
+        # validate and write refuse a name ending in a space or holding a line separator before any run is prepared.
+        cases = {
+            "trailing space": (f"{self.rules} ", "a string with whitespace around it"),
+            "line separator": (f"{self.rules}\u2028copy", "a string of more than one line"),
+        }
+        candidate = self.root / "candidate.json"
+        output = self.root / "written.json"
+        rule = "config.repositories.example/one.reviewer.reviewer_root must be a non-empty trimmed single-line string"
+        for case, (root, found) in cases.items():
+            candidate.write_text(json.dumps(self.config(root)), encoding="utf-8")
+            for arguments in (("validate", str(candidate)), ("write", str(candidate), "--output", str(output))):
+                with self.subTest(case=case, command=arguments[0]):
+                    self.assertEqual((1, f"FAILED {rule}, found {found}\n", ""), self.run_main(*arguments))
+                    self.assertFalse(output.exists())
+
+    def test_each_run_and_record_reader_reads_back_every_root_validation_accepts(self) -> None:
+        # One rule on both sides: a root is accepted by configuration exactly when the run and record readers take
+        # it as source_root.
+        roots = (str(self.rules), f"{self.rules} ", f" {self.rules}", f"{self.rules}\u2028copy", f"{self.rules}\x85")
+        for root in roots:
+            with self.subTest(root=root):
+                self.assertEqual(
+                    (self.configuration_accepts(root),) * 2, (self.run_reads(root), self.record_reads(root))
+                )
+
+    def configuration_accepts(self, root: str) -> bool:
+        try:
+            validate_config(self.config(root))
+        except ConfigurationError:
+            return False
+        return True
+
+    @staticmethod
+    def run_reads(root: str) -> bool:
+        try:
+            review_run._read_adapter({"name": "conventions", "scope": "repository", "source_root": root}, "run.adapter")
+        except review_run.PipelineError:
+            return False
+        return True
+
+    @staticmethod
+    def record_reads(root: str) -> bool:
+        record = record_fixture()
+        record["review"]["adapter"].update({**dict(ROOT_ADAPTER), "source_root": root})
+        try:
+            review_records.validate_record(record)
+        except review_records.RecordError:
+            return False
+        return True
 
     def test_a_file_in_place_of_the_root_is_refused(self) -> None:
         file = self.root / "file"
