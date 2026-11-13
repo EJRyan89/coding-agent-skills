@@ -25,6 +25,12 @@ from deployer import discovery
 KINDS = {list: "array", str: "string", int: "number", float: "number", bool: "boolean", type(None): "null"}
 
 
+def json_kind(value: object) -> str:
+    """How a JSON value that is no object is named in a refusal, by this reader and tools/runtime_canary.py's
+    read_records alike."""
+    return KINDS.get(type(value), type(value).__name__)
+
+
 class StreamError(ValueError):
     """A line of the stream that is JSON but no event object: a stream in a shape this does not read."""
 
@@ -41,6 +47,7 @@ def events(output: str) -> Iterator[dict[str, Any]]:
         except ValueError:
             continue
         if not isinstance(event, dict):
-            kind = KINDS.get(type(event), type(event).__name__)
-            raise StreamError(f"line {number} of the session's stream is a JSON {kind}, not an event object")
+            raise StreamError(
+                f"line {number} of the session's stream is a JSON {json_kind(event)}, not an event object"
+            )
         yield event
