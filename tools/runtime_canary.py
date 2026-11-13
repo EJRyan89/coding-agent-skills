@@ -172,7 +172,7 @@ from deployer.errors import DeployError
 from deployer.paths import Paths
 from deployer.tools import format_version, parse_version
 from tools import checkout_trust
-from tools.claude_stream import StreamError
+from tools.claude_stream import StreamError, json_kind
 from tools.claude_stream import events as claude_events
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
@@ -473,8 +473,10 @@ def read_records(path: Path) -> list[dict[str, Any]]:
     """The JSON objects in a JSON Lines file, skipping any line a crashed writer left incomplete. The canary creates
     each records file empty before the run, so an empty or missing file is a run that recorded nothing, which the
     verdict reports as no marker; a directory or anything else in the file's place raises NotAFile, an OSError, which
-    the run reports as a record it cannot read. A line that is JSON json_reader refuses, or holds an integer past
-    Python's digit limit, raises RecordRefused, naming the file and the line."""
+    the run reports as a record it cannot read. A line that is JSON json_reader refuses, holds an integer past
+    Python's digit limit, or is JSON of another kind than an object raises RecordRefused, naming the file and the
+    line: every record the recorders write is an object, so passing such a line over would judge the run from the
+    records left."""
     records = []
     if is_present(path):
         for number, line in enumerate(discovery.output_lines(path.read_bytes().decode("utf-8", "replace")), 1):
@@ -484,8 +486,9 @@ def read_records(path: Path) -> list[dict[str, Any]]:
                 continue
             except ValueError as exc:
                 raise RecordRefused(path, f"line {number}: {exc}") from exc
-            if isinstance(record, dict):
-                records.append(record)
+            if not isinstance(record, dict):
+                raise RecordRefused(path, f"line {number}: the line is a JSON {json_kind(record)}, not a record object")
+            records.append(record)
     return records
 
 
