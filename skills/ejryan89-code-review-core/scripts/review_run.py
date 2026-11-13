@@ -28,7 +28,7 @@ from path_keys import path_key
 from process_identity import ProcessStatus, process_status
 from review_archive import ArchiveError
 from review_canary import FixtureError
-from review_config import ConfigurationError
+from review_config import ConfigurationError, read_source_root
 from review_flags import FlagError
 from review_github import GitHubClient
 from review_hosts import Runner as CopilotRunner
@@ -390,7 +390,7 @@ def _read_adapter(value: object, path: str) -> dict[str, Any]:
     if "source" in adapter:
         read["source"] = READ.one_of(adapter["source"], f"{path}.source", tuple(ADAPTER_SOURCES))
     if "source_root" in adapter:
-        read["source_root"] = READ.string(adapter["source_root"], f"{path}.source_root", single_line=True, trimmed=True)
+        read["source_root"] = read_source_root(READ, adapter["source_root"], f"{path}.source_root")
     if "source_commit" in adapter:
         read["source_commit"] = READ.optional(
             READ.hex_digest, adapter["source_commit"], f"{path}.source_commit", 40, 64
