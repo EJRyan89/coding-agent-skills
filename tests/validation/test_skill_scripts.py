@@ -1882,6 +1882,10 @@ class SkillScriptsFixtures(unittest.TestCase):
                 "skills/demo/scripts/in_try.py": f"{body}try:\n"
                 '    if __name__ == "__main__":\n        main()\nexcept ImportError:\n    pass\n',
                 "skills/demo/scripts/unguarded.py": f"import sys\n\n\n{body}sys.exit(main())\n",
+                # Any exit call runs main as what it is given, by position or by its keyword.
+                "skills/demo/scripts/quit.py": f"{body}quit(main())\n",
+                "skills/demo/scripts/keyword.py": f"import sys\n\n\n{body}sys.exit(code=main())\n",
+                "skills/demo/scripts/os_exit.py": f"import os\n\n\n{body}os._exit(status=main())\n",
                 "skills/demo/scripts/control.py": f'{body}if __name__ == "__main__":\n    main()\n',
                 "skills/demo/scripts/good.py": f"from console import run_main\n\n\n{body}"
                 'if "__main__" == __name__:\n    run_main(main)\n',
@@ -1890,14 +1894,19 @@ class SkillScriptsFixtures(unittest.TestCase):
             mark_skills(root)
             doc = '"Script results" in docs/adding-a-skill.md'
             late = f"does not call ejryan89-skill-core's run_main() first in its __main__ block; see {doc}"
+            unguarded = (
+                'runs main outside an `if __name__ == "__main__":` block, so importing it runs it; run '
+                f"ejryan89-skill-core's run_main(main) first in that block instead; see {doc}"
+            )
             self.assertEqual(
                 [
                     f"skills/demo/scripts/control.py:5 {late}",
                     f"skills/demo/scripts/in_try.py:6 {late}",
+                    f"skills/demo/scripts/keyword.py:8 {unguarded}",
+                    f"skills/demo/scripts/os_exit.py:8 {unguarded}",
+                    f"skills/demo/scripts/quit.py:5 {unguarded}",
                     f"skills/demo/scripts/reversed.py:5 {late}",
-                    'skills/demo/scripts/unguarded.py:8 runs main outside an `if __name__ == "__main__":` block, so '
-                    "importing it runs it; run ejryan89-skill-core's run_main(main) first in that block instead; "
-                    f"see {doc}",
+                    f"skills/demo/scripts/unguarded.py:8 {unguarded}",
                 ],
                 sorted(console_setup_problems(root)),
             )
@@ -2156,6 +2165,11 @@ PRINTS_JSON = f"prints JSON; print one fact per line; see {SCRIPT_RESULTS_DOC}"
             "import os\ndef main():\n    os._exit(3)\n",
             f"exits 3; scripts exit only 0, 1, or 2; see {SCRIPT_RESULTS_DOC}",
             id="os._exit",
+        ),
+        pytest.param(
+            "import os\ndef main():\n    os._exit(status=3)\n",
+            f"exits 3; scripts exit only 0, 1, or 2; see {SCRIPT_RESULTS_DOC}",
+            id="os._exit by its status keyword",
         ),
         pytest.param(
             "def main():\n    exit(4)\n",

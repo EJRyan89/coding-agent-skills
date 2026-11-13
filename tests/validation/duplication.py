@@ -193,6 +193,25 @@ def _shares_members(
     return len(held & members) >= MINIMUM_SHARED_MEMBERS
 
 
+def _shares_call_names(
+    node: ast.AST, members: frozenset[str], imports_owner: bool, name: str, resolver: CallableResolver
+) -> bool:
+    """A tuple, list, or set literal holding several of the fact's calls, each by its dotted name or by the last part
+    of it, as a reader that resolves no imports names them: `{"exit", "_exit", "SystemExit"}` is a copy of the calls
+    that exit as much as the dotted names are."""
+    if not isinstance(node, (ast.Tuple, ast.List, ast.Set)):
+        return False
+    last_parts = frozenset(member.rpartition(".")[2] for member in members)
+    held = ast.Set(
+        elts=[
+            ast.Constant(item.value.rpartition(".")[2])
+            for item in node.elts
+            if isinstance(item, ast.Constant) and isinstance(item.value, str)
+        ]
+    )
+    return _shares_members(held, last_parts, imports_owner, name, resolver)
+
+
 def _holds_member(
     node: ast.AST, members: frozenset[str], _imports_owner: bool, _name: str, _resolver: CallableResolver
 ) -> bool:
@@ -554,6 +573,7 @@ def _shared_facts() -> tuple[SharedFact, ...]:
         SharedFact(f"{SKILL_CORE_SCRIPTS}/versions.py", "SEPARATOR", _reads_version_numbers),
         SharedFact(f"{SKILL_CORE_SCRIPTS}/path_keys.py", "path_key", _folds_path_case),
         SharedFact(f"{SKILL_CORE_SCRIPTS}/path_keys.py", "name_key", _compares_git_name),
+        SharedFact(f"{SKILL_CORE_SCRIPTS}/exit_calls.py", "EXIT_CALLS", _shares_call_names),
     )
 
 

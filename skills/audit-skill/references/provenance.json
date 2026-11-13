@@ -22,6 +22,10 @@
     "AGENT_UNDEFINED": [
       {
         "page": "https://code.claude.com/docs/en/sub-agents",
+        "passage": "Claude Code's built-in subagents are Explore, Plan, and general-purpose, and its helper agents claude, statusline-setup, and claude-code-guide, so a session has each of these types without a definition."
+      },
+      {
+        "page": "https://code.claude.com/docs/en/sub-agents",
         "passage": "The general-purpose subagent has every tool available to subagents, where a defined subagent has the tools, model, and hooks its definition gives."
       },
       {

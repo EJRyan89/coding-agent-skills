@@ -50,6 +50,7 @@ LOADED = sorted(
                 "path_containment",
                 "path_keys",
                 "process_identity",
+                "python_names",
                 "python_reader",
                 "release_levels",
                 "release_tags",

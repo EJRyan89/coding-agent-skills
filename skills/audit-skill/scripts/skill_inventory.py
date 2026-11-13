@@ -169,6 +169,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-cor
 
 import check_provenance
 import command_wrappers
+import exit_calls
 import frontmatter
 import git_subcommands
 import json_reader
@@ -193,11 +194,13 @@ from markdown_sections import (
 )
 from module_assignments import assigned_names, sole_assignment
 from path_containment import within
-from path_keys import path_key
+from path_keys import name_key, path_key
 from powershell_startup import POWERSHELL_PROGRAMS, StartupCommand, startup_command
+from python_names import import_aliases, qualified_name
 from suite_names import is_suite_name
 
-MAIN_NAME = "skill.md"
+# A skill's main file, which a runtime opens by this name: found in any case only where its folder folds case.
+MAIN_FILE = "SKILL.md"
 # Where Claude Code keeps the plugins it installs, under the home: each under its marketplace and version, so a plugin
 # root lies PLUGIN_DEPTH folders down, as deep as locate searches any plugin folder.
 PLUGIN_CACHE = Path(".claude") / "plugins" / "cache"
@@ -545,9 +548,9 @@ SHELL_PRINT = re.compile(
 SHELL_EXIT = re.compile(r"\bexit\s+(\d+)\b")
 STATUS_SCRIPT_SUFFIXES = frozenset({".py", ".sh", ".bash", ".ps1"})
 SKILL_DIR_PREFIX = "${CLAUDE_SKILL_DIR}/"
-# The calls that print a line or add one to the lines a command prints, and those that exit with a code.
+# The calls that print a line or add one to the lines a command prints. Those that exit with a code are
+# ejryan89-skill-core's exit_calls, which validation's exit tables read too.
 PRINTING_CALLS = frozenset({"print", "write", "append", "insert", "extend", "emit", "echo"})
-EXIT_CALLS = frozenset({"exit", "_exit", "SystemExit"})
 # What every entry point gets from ejryan89-skill-core's run_main, a FAILED line and exits 1 and 130, and from argparse,
 # 2.
 RUN_MAIN_CODES = frozenset({1, 130})
@@ -573,11 +576,12 @@ TRIGGER_SCENARIOS = Path("tests") / "fixtures" / "skill-evals"
 SAMPLE_SOURCE_PATH = re.compile(r"<source>[\\/]([^\s\"'`<>]+)")
 # A relative Markdown path that leaves the skill folder, such as `../shared.md`. With a ${CLAUDE_SKILL_DIR}
 # prefix it resolves against the skill folder instead of the file that names it.
-# Where agent definitions sit beside a skills folder, and the subagent types a session has without one: the sub-agents
-# page (https://code.claude.com/docs/en/sub-agents) names Explore, Plan, and the general-purpose agent, which has every
-# tool. A type a delegation line names: "of type `x`", "`x` type", "`x` subagent", or subagent_type x.
+# Where agent definitions sit beside a skills folder, and the subagent types a session has without one: the built-in
+# subagents of the sub-agents page (https://code.claude.com/docs/en/sub-agents), Explore, Plan, and the general-purpose
+# agent, which has every tool, and the helper agents its "Other" table lists, claude, statusline-setup, and
+# claude-code-guide. A type a delegation line names: "of type `x`", "`x` type", "`x` subagent", or subagent_type x.
 AGENTS_FOLDER = "agents"
-BUILTIN_AGENTS = frozenset({"general-purpose", "Explore", "Plan"})
+BUILTIN_AGENTS = frozenset({"general-purpose", "Explore", "Plan", "claude", "statusline-setup", "claude-code-guide"})
 # A plugin's agent is named under the plugin, as <plugin>:<agent>.
 AGENT_NAME = r"[A-Za-z][A-Za-z0-9-]*(?::[A-Za-z][A-Za-z0-9-]*)?"
 TYPED_AGENT = re.compile(
@@ -986,10 +990,19 @@ def listed_in_folders(folder: Path, name: str) -> list[Path]:
     )
 
 
+def is_main_file(path: Path) -> bool:
+    """Whether `path` is named as its folder's SKILL.md, as the folder's file system compares names: SKILL.md in any
+    case where the folder folds case, and exactly SKILL.md where it does not, as the runtime that opens it finds it.
+    Only a name that is SKILL.md in some case asks the folder."""
+    return path.name.casefold() == MAIN_FILE.casefold() and name_key(path.name, path.parent) == name_key(
+        MAIN_FILE, path.parent
+    )
+
+
 def main_files(directory: Path) -> list[Path]:
     if not is_directory(directory):
         return []
-    return sorted(path for path in directory.iterdir() if path.name.casefold() == MAIN_NAME and is_listed_file(path))
+    return sorted(path for path in directory.iterdir() if is_main_file(path) and is_listed_file(path))
 
 
 def skill_roots(home: Path, repo: Path | None) -> list[tuple[str, Path]]:
@@ -1166,8 +1179,9 @@ def git_toplevel(directory: Path, git: GitClient | None = None) -> Path | None:
 # --- inventory ------------------------------------------------------------------------------------
 
 
-def category(relative: Path) -> str:
-    if len(relative.parts) == 1 and relative.name.casefold() == MAIN_NAME:
+def category(relative: Path, directory: Path) -> str:
+    """What a file of the skill folder `directory` is, by its path relative to the folder."""
+    if len(relative.parts) == 1 and is_main_file(directory / relative):
         return "main"
     suffix = relative.suffix.casefold()
     if suffix in HELPER_SUFFIXES:
@@ -1223,7 +1237,7 @@ def inventory(directory: Path) -> list[str]:
     unreadable: list[str] = []
     for path in files:
         relative = path.relative_to(directory)
-        kind = category(relative)
+        kind = category(relative, directory)
         size = path.stat().st_size
         text = read_text(path)
         if text is None and kind in ("main", "doc"):
@@ -1639,7 +1653,7 @@ def tools(path: Path) -> list[str]:
                     first_implied.setdefault(name, start + offset + 1)
     invocation = next(line.split()[1] for line in listed if line.startswith("INVOCATION "))
     output = [f"MODEL {model or 'none'}"]
-    if path.name.casefold() == MAIN_NAME:
+    if is_main_file(path):
         output += setting_lines(path.parent)
     output += [*listed, *trigger_scenario_lines(path.parent, invocation)]
     output += runtime_lines(path.parent, allowed or [], invocation != "model")
@@ -1780,10 +1794,10 @@ def scanned_files(path: Path) -> list[Path]:
     if not path.is_dir():
         return [path]
     files = folder_files(path)
-    main = [file for file in files if category(file.relative_to(path)) == "main"]
+    main = [file for file in files if category(file.relative_to(path), path) == "main"]
     if not main:
         raise InputError(f"no SKILL.md in {posix(path)}")
-    return [*main, *(file for file in files if category(file.relative_to(path)) == "doc")]
+    return [*main, *(file for file in files if category(file.relative_to(path), path) == "doc")]
 
 
 def scan(given: list[Path]) -> list[str]:
@@ -1922,7 +1936,7 @@ def skill_folder(path: Path) -> Path | None:
     file is, so a relative path stays relative."""
     for folder in path.parents:
         folder = folder if folder.name else folder.resolve()
-        if any(child.name.casefold() == MAIN_NAME and is_listed_file(child) for child in folder.iterdir()):
+        if any(is_main_file(child) and is_listed_file(child) for child in folder.iterdir()):
             return folder
     return None
 
@@ -2049,9 +2063,23 @@ def string_facts(facts: ScriptFacts, node: ast.Constant, value: str, parents: di
             facts.lines.setdefault(match.group(1), node.lineno)
 
 
+def exit_argument(call: ast.Call, function: str) -> ast.expr | None:
+    """The argument that gives an exit call, `function` by its dotted name, its code, by position or by its keyword,
+    or None when the call gives none; a `**` unpacking, which may hold the keyword, comes back as what it unpacks,
+    which reads as no literal."""
+    if call.args:
+        return call.args[0]
+    keyword = exit_calls.code_keyword(function)
+    return next((given.value for given in call.keywords if given.arg in (keyword, None)), None)
+
+
 def exit_codes(tree: ast.Module) -> set[int]:
     """The literal codes a script exits with: what a function annotated to return an int returns, and what an exit
-    call or SystemExit takes, each a number or a module-level name bound to one."""
+    call or SystemExit takes, read by ejryan89-skill-core's exit_calls as validation's exit tables read it: no code,
+    or a SystemExit raised as the class, exits 0, a message exits 1, and otherwise a number or a module-level name
+    bound to one. A call is an exit call by the dotted name the module's imports resolve it to, so `from sys import
+    exit as leave` is one and a method such as `smtp.quit()` or `parser.exit()` is not."""
+    aliases = import_aliases(tree)
     constants = {
         target.id: node.value.value
         for node in tree.body
@@ -2073,8 +2101,16 @@ def exit_codes(tree: ast.Module) -> set[int]:
             for inner in ast.walk(node):
                 if isinstance(inner, ast.Return) and inner.value is not None:
                     codes.update(literal(inner.value))
-        elif call_name(node) in EXIT_CALLS and isinstance(node, ast.Call) and node.args:
-            codes.update(literal(node.args[0]))
+        elif isinstance(node, ast.Raise) and node.exc is not None and not isinstance(node.exc, ast.Call):
+            raised = qualified_name(node.exc, aliases)
+            codes.update([exit_calls.NO_CODE] if raised == exit_calls.SYSTEM_EXIT else [])
+        elif isinstance(node, ast.Call) and (function := qualified_name(node.func, aliases)) in exit_calls.EXIT_CALLS:
+            argument = exit_argument(node, function)
+            fixed = exit_calls.fixed_code(argument)
+            if fixed is not None:
+                codes.add(fixed)
+            elif argument is not None:
+                codes.update(literal(argument))
     return codes
 
 
@@ -2708,7 +2744,7 @@ def data_settings(folders: list[Path]) -> list[tuple[str, Path, int, str]]:
         for path in folder_files(folder):
             relative = path.relative_to(folder)
             text = read_text(path)
-            kind = category(relative)
+            kind = category(relative, folder)
             if text is None or kind == "main" or is_suite_name(path.name):
                 continue
             if kind == "doc":
