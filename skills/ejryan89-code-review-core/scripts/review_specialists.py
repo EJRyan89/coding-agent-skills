@@ -42,6 +42,7 @@ from review_io import (
     read_json,
 )
 from review_records import (
+    SUITE_PROFILE_PREFIX,
     TITLE_MAXIMUM_LENGTH,
     RecordError,
     is_suite_profile,
@@ -106,6 +107,9 @@ RESULT_FIELDS = {"model", "summary", "findings", "prior_dispositions", "comment_
 FINDING_FIELDS = {"path", "line", "severity", "title", "category", "body", "analyzer", "repeats"}
 SOURCE_TAG = re.compile(r"^\s*\[[^\]]+\]\s*")
 DEFAULT_GENERIC_INSTRUCTIONS = Path(__file__).resolve().parents[1] / "references" / "generic-reviewer.md"
+# The generic reviewer's role follows these instructions where the suite keeps them, as a specialist follows a suite
+# profile, so the record keys their hash by a `suite:` reference beside the reviewer's other files.
+GENERIC_INSTRUCTIONS_KEY = f"{SUITE_PROFILE_PREFIX}{GENERIC_SPECIALIST}"
 
 
 class SpecialistError(ValueError):
@@ -1298,6 +1302,25 @@ def specialist_model(specialist: dict[str, Any], reviewer_root: Path) -> tuple[s
     return profile_model(specialist["profile"], text)
 
 
+def generic_instructions_hashes(roles: Iterable[str]) -> dict[str, str]:
+    """The hash of the generic reviewer's instructions, keyed GENERIC_INSTRUCTIONS_KEY, when `roles`, the identities a
+    plan gives work, include the generic reviewer's; otherwise none."""
+    if GENERIC_SPECIALIST not in set(roles):
+        return {}
+    return {GENERIC_INSTRUCTIONS_KEY: hashlib.sha256(DEFAULT_GENERIC_INSTRUCTIONS.read_bytes()).hexdigest()}
+
+
+def verify_generic_instructions(recorded: Mapping[str, str]) -> None:
+    """Refuse generic reviewer instructions that are not the ones whose hash prepare recorded in `recorded`, a run's
+    `adapter.source_hashes`, naming the file: a redeployment since prepare changed what the role follows."""
+    path = DEFAULT_GENERIC_INSTRUCTIONS
+    expected = recorded.get(GENERIC_INSTRUCTIONS_KEY)
+    if expected is None:
+        raise SpecialistError(f"Prepare recorded no hash of the generic reviewer's instructions: {path}")
+    if hashlib.sha256(path.read_bytes()).hexdigest() != expected:
+        raise SpecialistError(f"Generic reviewer instructions do not match their hash at prepare: {path}")
+
+
 def _load_request(request_path: Path) -> dict[str, Any]:
     """The adapter request, refused unless it is protocol 1 in a supported mode."""
     request = READ.json_object(read_json(request_path), "request")
@@ -1622,7 +1645,7 @@ def build_plan(
     reviewer_root: Path | None,
     work: Path,
     *,
-    generic_instructions: Path = DEFAULT_GENERIC_INSTRUCTIONS,
+    generic_instructions: Path | None = None,
     self_check: Callable[[str], str] | None = None,
     snapshot: dict[str, Any] | None = None,
     local_checkout: Path | None = None,
@@ -1631,7 +1654,8 @@ def build_plan(
     document_stage: str | None = None,
     closing_issues: Callable[[], None] | None = None,
 ) -> dict[str, Any]:
-    """Plan the review roles. Without a reviewer root, the suite's generic reviewer reviews the whole change.
+    """Plan the review roles. Without a reviewer root, the suite's generic reviewer reviews the whole change, following
+    `generic_instructions`, by default DEFAULT_GENERIC_INSTRUCTIONS, the file `generic_instructions_hashes` hashes.
 
     `snapshot` is for a caller that materialized the snapshot itself, moments earlier: the manifest its
     materialization verified. Without it the snapshot is verified here, contents included.
@@ -1679,7 +1703,7 @@ def build_plan(
         unowned=unowned,
         unowned_comments=unowned_comments,
         review_files=review_files,
-        generic_instructions=generic_instructions,
+        generic_instructions=DEFAULT_GENERIC_INSTRUCTIONS if generic_instructions is None else generic_instructions,
         notes=notes,
     )
     if generic is not None:

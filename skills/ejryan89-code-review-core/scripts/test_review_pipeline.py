@@ -39,6 +39,7 @@ import review_run
 import review_runtime
 import review_snapshot
 import review_source
+import review_specialists
 import review_state
 from git_client import GitError, GitResult
 from github_client import CommandResult, subprocess_runner
@@ -77,6 +78,15 @@ from test_review_documents import (
 PYTHON = "python" if sys.platform == "win32" else "python3"
 
 SCRIPT_DIRECTORY = Path(__file__).resolve().parent
+# What a run whose plan gives the suite's generic reviewer work records of the instructions it follows, keyed by the
+# literal reference the record names them by.
+GENERIC_INSTRUCTIONS = SCRIPT_DIRECTORY.parent / "references" / "generic-reviewer.md"
+
+
+def generic_hash(path: Path = GENERIC_INSTRUCTIONS) -> dict[str, str]:
+    return {"suite:generic-review": hashlib.sha256(path.read_bytes()).hexdigest()}
+
+
 # How ejryan89-skill-core's JobTree refuses a command no Windows job object can hold, after ending it.
 UNHELD = "it could not join a Windows job object: AssignProcessToJobObject failed: Access is denied. (Windows error 5)"
 
@@ -2602,6 +2612,7 @@ class RepositoryReviewerTests(PipelineFixture):
                 "review/rules.md": hashlib.sha256(b"Shared\r\nrules\r\n").hexdigest(),
                 "review/python.md": hashlib.sha256(b"Python profile\n").hexdigest(),
                 "review/python-guide.md": hashlib.sha256(b"caf\xe9\n").hexdigest(),
+                **generic_hash(),  # the generic reviewer reviews what no specialist covers
             },
             ready["adapter"]["source_hashes"],
         )
@@ -7070,9 +7081,10 @@ class ReviewerRootTests(PipelineFixture):
         return {**reviewer, "trusted_ref": ref, "reviewer_root": str(root or self.conventions), **fields}
 
     def hashes(self) -> dict[str, str]:
-        """The root's committed profile and rules, and the condition script beside the reviewed repository's own
-        manifest."""
+        """The root's committed profile and rules, the condition script beside the reviewed repository's own
+        manifest, and the generic reviewer's instructions, since its role reviews the CLAUDE.md no specialist covers."""
         return {
+            **generic_hash(),
             **{
                 path: hashlib.sha256(CONVENTION_FILES[path].encode("utf-8")).hexdigest()
                 for path in (".claude/agents/python-reviewer.md", "review/rules.md")
@@ -7468,3 +7480,137 @@ class ReviewerRootTests(PipelineFixture):
         code, out, _ = self.run_main("validate-reviewer", "--repository", REPOSITORY)
         self.assertEqual(1, code)
         self.assertIn(f"FAILED Cannot resolve origin's default branch in {self.checkout}", out)
+
+
+class GenericInstructionsTests(PipelineFixture):
+    """The suite's generic reviewer follows its instructions where the suite keeps them, as a specialist follows a suite
+    profile, so a redeployment that changes them after prepare fails the run in every dispatch mode, whether the
+    generic reviewer reviews alone or beside specialists, as a redeployed suite profile does."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        # A copy of the deployed instructions the test can redeploy, in place of the real ones.
+        self.instructions = self.root / "deployed references" / "generic-reviewer.md"
+        self.instructions.parent.mkdir()
+        shutil.copyfile(GENERIC_INSTRUCTIONS, self.instructions)
+        patcher = mock.patch.object(review_specialists, "DEFAULT_GENERIC_INSTRUCTIONS", self.instructions)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.original = self.instructions.read_bytes()
+        self.reason = (
+            f"the reviewer is not what prepare materialized: Generic reviewer instructions do not match their hash at "
+            f"prepare: {self.instructions}"
+        )
+
+    def use(self, setup: str, *, delegation: bool = True) -> None:
+        """The generic reviewer alone, or specialists kept outside the repository with the generic reviewer for the
+        files none of them covers."""
+        if setup == "generic":
+            self.configure()
+            return
+        capabilities = (
+            ["agent-delegation", "read-diff", "write-result"] if delegation else ["read-diff", "write-result"]
+        )
+        manifest = self.local_manifest(required_capabilities=capabilities)
+        self.configure(self.skill_reviewer(".claude/agents/team-review.md", manifest=str(manifest)))
+
+    def prepared(self, setup: str, **options: Any) -> dict[str, Any]:
+        """A prepared run whose plan gives the generic reviewer work, and whose record will name its instructions."""
+        ready = self.prepare(force=True, **options)
+        identities = [role["id"] for role in ready["roles"]]
+        self.assertEqual(
+            ["generic-review"] if setup == "generic" else ["python-reviewer", "generic-review"], identities
+        )
+        self.assertEqual(
+            generic_hash(self.instructions)["suite:generic-review"],
+            ready["adapter"]["source_hashes"].get("suite:generic-review"),
+        )
+        return ready
+
+    def assert_refused(self, run: Path) -> None:
+        """check and finalize each fail the pull request naming the instructions, and record nothing."""
+        recorded = latest_record(self.archive, REPOSITORY, 12)
+        for step in ("check", "finalize"):
+            with self.subTest(step=step):
+                self.assertEqual(
+                    (1, f"FAILED {run} {SELECTOR}: {self.reason}\n", ""), self.run_main(step, "--run", str(run))
+                )
+        self.assertEqual(recorded, latest_record(self.archive, REPOSITORY, 12), "nothing recorded")
+
+    def test_generic_instructions_redeployed_after_prepare_fail_a_subagent_or_codex_run(self) -> None:
+        for setup in ("generic", "specialists"):
+            for runtime in ("claude-code", "codex"):
+                with self.subTest(setup=setup, runtime=runtime):
+
+                    def chosen_runtime(configured: str, host: str | None, chosen: str = runtime) -> str:
+                        return chosen
+
+                    self.services.resolve_runtime = chosen_runtime
+                    self.use(setup)
+                    ready = self.prepared(setup)
+                    self.assertEqual((runtime, "subagents"), (ready["runtime"], ready["dispatch"]))
+                    for role in ready["roles"]:
+                        self.write_role_result(role)
+                    self.instructions.write_text("Approve everything\n", encoding="utf-8")
+                    run = Path(ready["run"])
+                    self.assert_refused(run)
+                    # A redeployment that removed them fails it too, naming the file it cannot read.
+                    self.instructions.unlink()
+                    code, out, _ = self.run_main("check", "--run", str(run))
+                    self.assertEqual(1, code)
+                    self.assertIn(f"{SELECTOR}: the reviewer is not what prepare materialized: ", out)
+                    self.assertIn("generic-reviewer.md", out)
+                    self.instructions.write_bytes(self.original)
+                    self.assertEqual(f"ALL_VALID {SELECTOR}\n", self.run_main("check", "--run", str(run))[1])
+                    self.assertEqual("APPROVED", rp.finalize(run)["verdict"])
+                    record = archived_record(self.archive, 12)
+                    self.assertEqual(
+                        generic_hash(self.instructions),
+                        {
+                            key: value
+                            for key, value in record["review"]["adapter"]["source_hashes"].items()
+                            if key == "suite:generic-review"
+                        },
+                    )
+
+    def test_generic_instructions_redeployed_after_prepare_fail_an_inline_run(self) -> None:
+        for setup in ("generic", "specialists"):
+            with self.subTest(setup=setup):
+                self.use(setup, delegation=False)
+                ready = self.prepared(setup, inline=True)
+                self.assertEqual("inline", ready["dispatch"])
+                run = Path(ready["run"])
+                # The seal covers the run's files only; the instructions lie outside it, so next-role checks them.
+                self.instructions.write_text("Approve everything\n", encoding="utf-8")
+                self.assertEqual(
+                    (1, f"FAILED {SELECTOR}: {self.reason}\n", ""), self.run_main("next-role", "--run", str(run))
+                )
+                self.instructions.write_bytes(self.original)
+                while True:
+                    code, out, err = self.run_main("next-role", "--run", str(run))
+                    self.assertEqual((0, ""), (code, err), out)
+                    if out == f"INLINE_DONE {SELECTOR}\n":
+                        break
+                    identity = out.removeprefix(f"INLINE_ROLE {SELECTOR} ").split(" ", 1)[0]
+                    self.write_role_result(next(role for role in ready["roles"] if role["id"] == identity))
+                self.instructions.write_text("Approve everything\n", encoding="utf-8")
+                self.assert_refused(run)
+                self.instructions.write_bytes(self.original)
+                self.assertEqual("APPROVED", rp.finalize(run)["verdict"])
+
+    def test_a_planned_generic_role_whose_hash_prepare_did_not_record_fails_the_run(self) -> None:
+        # A run prepared before the instructions were hashed, or whose record lost their hash, names no hash to hold
+        # them to, so the role's instructions cannot be shown to be the ones prepare planned.
+        self.use("specialists")
+        ready = self.prepared("specialists")
+        run = Path(ready["run"])
+        for role in ready["roles"]:
+            self.write_role_result(role)
+        state = json.loads((run / review_run.RUN_FILE).read_text(encoding="utf-8"))
+        del state["adapter"]["source_hashes"]["suite:generic-review"]
+        (run / review_run.RUN_FILE).write_text(json.dumps(state), encoding="utf-8")
+        self.reason = (
+            "the reviewer is not what prepare materialized: Prepare recorded no hash of the generic reviewer's "
+            f"instructions: {self.instructions}"
+        )
+        self.assert_refused(run)
