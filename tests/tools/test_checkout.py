@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import os
 import re
 import sys
 import tempfile
@@ -62,6 +63,29 @@ class CheckoutTestCase(unittest.TestCase):
                 )
                 with self.assertRaisesRegex(argparse.ArgumentTypeError, "is not a checkout of this repository"):
                     checkout_root(str(root))
+
+    def test_a_marker_of_the_wrong_kind_or_one_a_stat_cannot_examine_is_named_so_never_as_lacking(self) -> None:
+        root = make_checkout(self.base / "Repo")
+        (root / "source.json").unlink()
+        (root / "source.json").mkdir()
+        self.assertEqual(
+            f"{root} is not a checkout of this repository: its source.json is not a file", checkout_problem(root)
+        )
+        (root / "source.json").rmdir()
+        (root / "source.json").write_text("{}\n", encoding="utf-8")
+        skills = root / ".claude" / "skills"
+        real_stat = Path.stat
+
+        def stat(path: Path, *, follow_symlinks: bool = True) -> os.stat_result:
+            if path == skills:
+                raise PermissionError(13, "denied")
+            return real_stat(path, follow_symlinks=follow_symlinks)
+
+        with mock.patch.object(Path, "stat", stat):
+            self.assertEqual(
+                f"{root} is not a checkout of this repository: its .claude/skills cannot be examined: denied",
+                checkout_problem(root),
+            )
 
     def test_a_home_holding_the_markers_is_refused_for_its_deployed_skills(self) -> None:
         (self.home / "source.json").write_text("{}\n", encoding="utf-8")

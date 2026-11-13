@@ -1106,6 +1106,9 @@ def _history_path(value: str) -> Path:
     if _is_folder(path, value):
         raise argparse.ArgumentTypeError(f"{value} is a folder; name the history file inside it")
     if not _is_folder(path.parent, value):
+        # A file in the folder's place is named so, never as a folder that does not exist.
+        if file_presence.is_occupied(path.parent):
+            raise argparse.ArgumentTypeError(f"the folder of {value} is not a folder; name a history file in a folder")
         raise argparse.ArgumentTypeError(f"the folder of {value} does not exist; the report creates no folder")
     return path
 

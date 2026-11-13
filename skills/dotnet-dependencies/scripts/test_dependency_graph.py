@@ -2928,7 +2928,20 @@ class EntryPointTests(Fixture):
         self.assertEqual(2, result.returncode)
         result = self.run_script("why", "Lantern.Json", "--root", str(self.root / "missing"))
         self.assertEqual(1, result.returncode)
-        self.assertTrue(result.stdout.rstrip().endswith(b"is neither a solution file nor a directory"), result.stdout)
+        self.assertTrue(result.stdout.rstrip().endswith(b"missing is missing"), result.stdout)
+        # Something that is neither a file nor a folder, as a pipe, is named so, never as missing.
+        real_stat = Path.stat
+        pipe = os.stat_result((0o010644, 0, 0, 1, 0, 0, 0, 0, 0, 0))
+        odd = (self.root / "odd").resolve()
+
+        def stat(path: Path, *, follow_symlinks: bool = True) -> os.stat_result:
+            return pipe if path == odd else real_stat(path, follow_symlinks=follow_symlinks)
+
+        with (
+            mock.patch.object(Path, "stat", stat),
+            self.assertRaisesRegex(dependency_graph.Failed, "odd is not a folder$"),
+        ):
+            dependency_graph.resolve_root(odd, [])
 
 
 class SkillContractTests(unittest.TestCase):

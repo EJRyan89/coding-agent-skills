@@ -153,6 +153,9 @@ class SectionTests(unittest.TestCase):
                 code, lines = run(["section", "Files", "--document", document], self.root)
                 self.assertEqual(1, code)
                 self.assertEqual([f"FAILED {document} is not a Markdown file in this checkout"], lines)
+        (self.root / "docs" / "folder.md").mkdir(parents=True)
+        code, lines = run(["section", "Files", "--document", "docs/folder.md"], self.root)
+        self.assertEqual((1, ["FAILED docs/folder.md is not a file"]), (code, lines))
 
     def test_the_script_prints_a_section_of_this_checkout_as_a_program(self) -> None:
         completed = subprocess.run(

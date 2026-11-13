@@ -15,6 +15,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
+import file_presence
 import json_writer
 from console import failed_line
 from diff_paths import header_path, snapshot_path, unquote
@@ -78,9 +79,10 @@ class MissingEvidence(Exception):
 
 
 def require_snapshot(root: Path) -> None:
-    """Raise MissingEvidence unless the snapshot at `root` is a directory."""
-    if not root.is_dir():
-        raise MissingEvidence(f"the snapshot {json_writer.dumps(root.as_posix())} is not a directory")
+    """Raise MissingEvidence unless the snapshot at `root` is a directory, naming why: it is missing, it is not a
+    folder, or a stat cannot examine it."""
+    if reason := file_presence.refusal_reason(root, folder=True):
+        raise MissingEvidence(f"the snapshot {json_writer.dumps(root.as_posix())} {reason}")
 
 
 def snapshot_exclusions(root: Path) -> dict[str, str]:

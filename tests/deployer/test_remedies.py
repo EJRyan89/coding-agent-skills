@@ -575,6 +575,16 @@ class OwnershipRemedyTests(RemedyTestCase):
             "then rerun --migrate-from.",
             SEE_OWNERSHIP,
         )
+        # A file in the skill folder's place is named as the wrong kind, never as missing.
+        (self.skills_dir / "beta").write_text("", encoding="utf-8")
+        result = self.deploy_fails("--migrate-from", "old/source", pattern="destination is not a directory")
+        self.assert_lines(
+            result.output,
+            "ERROR: Cannot migrate 'beta': destination is not a directory.",
+            "Restore the copy the old source deployed, for example by deploying from that source again, "
+            "then rerun --migrate-from.",
+            SEE_OWNERSHIP,
+        )
 
     def test_migrating_a_shared_asset_whose_owner_file_the_source_lacks_is_refused(self) -> None:
         self.make_source_json("old/source", shared_assets={"guide.md": "owner"})
@@ -670,6 +680,14 @@ class BackupRemedyTests(RemedyTestCase):
             ),
             raised.exception.lines,
         )
+        self.skills_dir.parent.mkdir(parents=True, exist_ok=True)
+        self.skills_dir.write_text("", encoding="utf-8")
+        with self.assertRaises(DeployError) as raised:
+            journal.prepare_backup_destination(self.paths, "run-1", "alpha", "claude")
+        self.assertEqual(
+            f"ERROR: Deployment destination is not a directory: {forward(self.skills_dir)}", raised.exception.lines[0]
+        )
+        self.skills_dir.unlink()
         self.skills_dir.mkdir(parents=True)
         for run_id, item, problem in (
             ("..", "alpha", "ERROR: journal run ID '..' is a dot segment"),

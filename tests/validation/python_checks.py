@@ -782,17 +782,20 @@ def link_test_problems(root: Path, files: list[Path]) -> list[str]:
 # ignores the folders it cannot list, a removal that discards its errors, and an except clause or a contextlib.suppress
 # that answers a failed stat or listing with nothing. An if on a predicate with no else is left out unless its branch
 # returns a value and its False goes on to an empty return or the function's end, since its False otherwise goes on to
-# code that meets the same path or gives a value. Any such site outside file_presence and link_probe states why in a
-# module-level PRESENCE_ALLOWED = {scope: reason}, as where the caller just made the path.
+# code that meets the same path or gives a value. A predicate whose False goes straight to a raise of an error of its
+# own is refused too, as is a file_presence test given other_is_absent=True whose False does: that refusal names a path
+# of another kind, or for a path's predicate one it cannot stat, as missing, where file_presence.refusal_reason and
+# require name each cause. Any such site outside file_presence and link_probe states why in a module-level
+# PRESENCE_ALLOWED = {scope: reason}, as where the caller just made the path.
 # Stated limits, which the policy's next widening reads: `if not P and Q: return None`; a predicate handed to map, as
 # `any(map(os.path.exists, ps))`; a predicate bound to a name this does not follow or reached through getattr; a
 # returned sentinel name, as `result = []` then `if not P: return result`; `P == False` and `P is False`; an rmtree
 # onerror or onexc that swallows the error; a read whose OSError handler answers nothing; a branch that does work other
 # than logging before its empty answer, read as recording the case; an `if P:` with no else guarding work whose result
 # is an answer, as `if path.is_file(): tokens.update(...)`; an except naming its exceptions through a name bound to a
-# tuple, as `ERRS = (OSError,)` then `except ERRS:`, which this does not follow; a refusal whose reason says the path is
-# not there, as `if not P: raise Error("not found")`, read as any refusal though it reports a failed stat as absent; and
-# a `warn(...)` imported by `from warnings import warn`, which this does not read as a log, so a branch or handler
+# tuple, as `ERRS = (OSError,)` then `except ERRS:`, which this does not follow; a refusal returned as a value or
+# printed rather than raised, as `if not P: return f"{p} is missing"`; a refusal on `not P` as an operand of an `and`;
+# and a `warn(...)` imported by `from warnings import warn`, which this does not read as a log, so a branch or handler
 # holding one passes. The link tests are no presence predicates here: LINK_TESTS refuses each outside link_probe however
 # its answer is used, and link_probe lets a failed stat through.
 PRESENCE_PREDICATES = frozenset(
@@ -801,6 +804,9 @@ PRESENCE_PREDICATES = frozenset(
 PRESENCE_FUNCTIONS = frozenset(
     {"os.path.exists", "os.path.lexists", "os.path.isfile", "os.path.isdir", "os.path.ismount", "os.access"}
 )
+# The file_presence tests that read something of another kind as nothing there when given other_is_absent=True, which
+# a refusal on their False reports as missing.
+OTHER_IS_ABSENT_TESTS = frozenset({"file_presence.is_present", "file_presence.is_directory"})
 PRESENCE_HOMES = frozenset({"skills/ejryan89-skill-core/scripts/file_presence.py", LINK_PROBE})
 PRESENCE_ALLOWANCE = "PRESENCE_ALLOWED"
 # The listings that raise for a folder they cannot list, which a presence test before them in an `and` passes by.
@@ -927,6 +933,47 @@ class _PresenceReader:
             return self.reference(node.args[0])
         return None
 
+    def refusal(self, node: ast.AST) -> str | None:
+        """The presence test whose False an if answers with a raise of a new error: `if not P: raise E`, `if P: ...
+        else: raise E`, or either with `file_presence.is_present` or `is_directory` given `other_is_absent=True` as
+        P. A bare `raise` passes on the error being handled, which words nothing as missing."""
+        if not isinstance(node, ast.If):
+            return None
+        if _raises_anew(node.body) and (found := self._refused(node.test, negated=True)):
+            return found
+        if _raises_anew(node.orelse):
+            return self._refused(node.test, negated=False)
+        return None
+
+    def _refused(self, test: ast.expr, *, negated: bool) -> str | None:
+        """The presence test a test reads as absent when `negated`, as `negated` reads it, or as present otherwise,
+        as `affirmed` reads it, counting a file_presence test given `other_is_absent=True` as one."""
+        if negated and isinstance(test, ast.UnaryOp) and isinstance(test.op, ast.Not):
+            return self._presence_held(test.operand)
+        if isinstance(test, ast.BoolOp) and isinstance(test.op, ast.Or if negated else ast.And):
+            return next((found for value in test.values if (found := self._refused(value, negated=negated))), None)
+        return None if negated else self._presence_held(test)
+
+    def _presence_held(self, node: ast.expr) -> str | None:
+        """The presence test an expression holds unnegated, as `held` reads it, or a file_presence test given
+        `other_is_absent=True`, named with that keyword."""
+        if found := self.call(node):
+            return found
+        if (
+            isinstance(node, ast.Call)
+            and qualified_name(node.func, self.aliases) in OTHER_IS_ABSENT_TESTS
+            and any(
+                keyword.arg == "other_is_absent"
+                and isinstance(keyword.value, ast.Constant)
+                and keyword.value.value is True
+                for keyword in node.keywords
+            )
+        ):
+            return f"{qualified_name(node.func, self.aliases)}(other_is_absent=True)"
+        if isinstance(node, ast.BoolOp):
+            return next((found for value in node.values if (found := self._presence_held(value))), None)
+        return None
+
     def branch(self, node: ast.If | ast.IfExp) -> str | None:
         """The predicate whose False an if or a conditional expression answers with an empty value or a `continue`."""
         if isinstance(node, ast.If):
@@ -938,6 +985,11 @@ class _PresenceReader:
         if (found := self.affirmed(node.test)) and _empty(node.orelse):
             return found
         return found if (found := self.negated(node.test)) and _empty(node.body) else None
+
+
+def _raises_anew(block: list[ast.stmt]) -> bool:
+    """Whether a block ends by raising an error of its own, not a bare `raise` of the one being handled."""
+    return bool(block) and isinstance(block[-1], ast.Raise) and block[-1].exc is not None
 
 
 def _empty(node: ast.expr | None) -> bool:
@@ -1260,6 +1312,14 @@ def _presence_answers(tree: ast.Module, aliases: dict[str, str]) -> Iterator[tup
                 f"reads {predicate}'s False as nothing there, which it also answers for a path it cannot stat; call "
                 "ejryan89-skill-core's file_presence (is_present, is_directory, or is_occupied), which lets a failed "
                 "stat through",
+            )
+        elif refused := reader.refusal(node):
+            yield (
+                node,
+                scope,
+                f"refuses on {refused}'s False, which it also answers for a path of another kind or, for a path's "
+                "predicate, one it cannot stat, so the refusal names either as missing; call ejryan89-skill-core's "
+                "file_presence.refusal_reason, which names each cause",
             )
         elif listing := _listing_answer(node, aliases):
             yield node, scope, listing

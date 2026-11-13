@@ -10,7 +10,7 @@ import sys
 import tempfile
 import time
 import unittest
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, ClassVar
 from unittest import mock
 
@@ -3103,6 +3103,28 @@ class SuiteProfileTests(SpecialistFixture, unittest.TestCase):
                 for role in others:
                     self.assertNotIn("document_stage", role)
                     self.assertNotIn("Document stage:", Path(role["prompt_file"]).read_text(encoding="utf-8"))
+
+    def test_a_reviewer_file_of_the_wrong_kind_is_named_so_never_as_a_changed_one(self) -> None:
+        root, _hashes = self.suite_reviewer()
+        metadata = json.loads((root / "materialization.json").read_text(encoding="utf-8"))
+        relative = sorted(metadata["source_hashes"])[0]
+        target = root.joinpath(*PurePosixPath(relative).parts)
+        target.unlink()
+        target.mkdir()
+        write_adapter_request(self.request_path, build_adapter_request(mode="initial", **self.request_args))
+        with self.assertRaisesRegex(rs.SpecialistError, f"^Reviewer file {re.escape(relative)} is not a file$"):
+            rs.build_plan(self.request_path, root, self.root / "work-folder")
+
+    def test_a_reviewer_file_with_nothing_there_does_not_match_its_hash(self) -> None:
+        root, _hashes = self.suite_reviewer()
+        metadata = json.loads((root / "materialization.json").read_text(encoding="utf-8"))
+        relative = sorted(metadata["source_hashes"])[0]
+        root.joinpath(*PurePosixPath(relative).parts).unlink()
+        write_adapter_request(self.request_path, build_adapter_request(mode="initial", **self.request_args))
+        with self.assertRaisesRegex(
+            rs.SpecialistError, f"^Reviewer file does not match its materialized hash: {re.escape(relative)}$"
+        ):
+            rs.build_plan(self.request_path, root, self.root / "work-absent")
 
     def test_a_suite_profile_that_no_longer_matches_its_hash_fails_the_plan(self) -> None:
         root, _hashes = self.suite_reviewer()

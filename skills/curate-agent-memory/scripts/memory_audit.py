@@ -110,6 +110,7 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
+import file_presence
 import json_reader
 import json_writer
 from atomic_file import is_read_only, replace_text
@@ -1294,9 +1295,12 @@ def run(args: argparse.Namespace) -> tuple[int, list[str]]:
         refused = output_refusal(args.output, args.memory_dir, projects)
         if refused:
             return 1, [f"FAILED {refused}"]
-    # A path whose stat fails raises, never reported as one that is not there.
-    if not is_directory(args.memory_dir, other_is_absent=True):
+    # Only a directory with nothing there is not found: a file in its place, or one a stat cannot examine, is named so.
+    reason = file_presence.refusal_reason(args.memory_dir, folder=True)
+    if reason == file_presence.MISSING:
         return 1, [f"FAILED memory directory not found: {args.memory_dir}"]
+    if reason is not None:
+        return 1, [f"FAILED memory directory {args.memory_dir} {reason}"]
     refused = store_refusal(args.memory_dir)
     if refused:
         return 1, [f"FAILED {refused}"]

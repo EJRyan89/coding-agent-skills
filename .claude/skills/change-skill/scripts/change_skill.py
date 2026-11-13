@@ -60,6 +60,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[4] / "skills" / "ejryan89-skill-core" / "scripts"))
 
+import file_presence
 import frontmatter
 import json_reader
 from console import run_main
@@ -174,8 +175,13 @@ def document_path(root: Path, relative: str) -> Path:
     outside the checkout it ships in."""
     top = root.resolve()
     path = (top / relative).resolve()
-    if path.suffix.lower() != ".md" or not within(path, top) or not path.is_file():
-        raise StepError(f"{flat_text(relative)} is not a Markdown file in this checkout")
+    refused = f"{flat_text(relative)} is not a Markdown file in this checkout"
+    if path.suffix.lower() != ".md" or not within(path, top):
+        raise StepError(refused)
+    # A folder in the document's place, or one a stat cannot examine, is named so, never as no such document.
+    reason = file_presence.refusal_reason(path)
+    if reason is not None:
+        raise StepError(refused if reason == file_presence.MISSING else f"{flat_text(relative)} {reason}")
     return path
 
 

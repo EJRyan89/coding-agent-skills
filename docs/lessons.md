@@ -45,7 +45,9 @@ removed fails validation until its pattern follows it.
 - **Why:** An unreadable path, a failed command, or a git error read as "not found" otherwise reads as a clean pass.
 - **Use:** `file_presence:is_present`, which tells a file, nothing, and something else apart, and lets a stat that
   fails with anything but "not found" through as the error the stat raised; `file_presence:is_directory`, which
-  answers the same for a folder; `file_presence:is_occupied`, which answers whether anything is at a path, a link
+  answers the same for a folder; `file_presence:refusal_reason` and `file_presence:require`, which name a file or
+  folder a caller needs as missing, of another kind, or not examinable, never the last two as missing;
+  `file_presence:is_occupied`, which answers whether anything is at a path, a link
   to nothing included, in place of lexists; `file_presence:matching`, which lists what a glob pattern matches but
   raises for a folder it cannot list;
   `link_probe:is_link_or_junction`, which lets the error of an unreadable path through; and
@@ -54,8 +56,10 @@ removed fails validation until its pattern follows it.
   `git_client:GitClient.commit_of` for a ref, `git_client:GitClient.file_at` for a file at a commit, and
   `git_client:GitClient.quiet_output` for any command run quiet, each None only for what git reports as absent.
 - **Guard:** `tests/validation/python_checks.py::PythonChecksPolicies::test_file_presence_is_the_one_reader_of_absence`,
-  which refuses a presence predicate whose False is the answer, a glob, an os.walk with no onerror, and a removal
-  that discards its errors, outside file_presence unless its module states why,
+  which refuses a presence predicate whose False is the answer or goes straight to a refusal, a file_presence test
+  given other_is_absent=True whose False does, a glob, an os.walk with no onerror, and a removal that discards its
+  errors, outside file_presence unless its module states why,
+  `skills/ejryan89-skill-core/scripts/test_file_presence.py::RefusalReasonTests`,
   `tests/deployer/test_invariants.py::TreeStateTests::test_a_folder_that_cannot_be_listed_fails_the_state_and_a_root_nothing_is_at_holds_nothing`,
   which holds the deployer harness's walk, in the tests that policy leaves out, to failing on a folder it cannot list,
   `skills/ejryan89-skill-core/scripts/test_file_presence.py::MatchingTests`,

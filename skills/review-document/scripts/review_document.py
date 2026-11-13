@@ -181,9 +181,10 @@ def over_limit(name: str) -> DocumentError:
 
 def document_bytes(path: Path, form: str | None) -> bytes:
     """The document's bytes, as `checked_content` keeps them. Refused when it is not a file or is over the size a
-    review reads, read no further than one byte past it."""
-    if not path.is_file():
-        raise DocumentError(f"{path} is not a file")
+    review reads, read no further than one byte past it. A path with nothing at it is refused as missing, something
+    else as not a file, and one a stat cannot examine with the stat's reason."""
+    if reason := file_presence.refusal_reason(path):
+        raise DocumentError(f"{path} {reason}")
     with path.open("rb") as source:
         content = source.read(MAX_CHANGED_FILE_BYTES + 1)
     if len(content) > MAX_CHANGED_FILE_BYTES:

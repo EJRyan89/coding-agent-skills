@@ -1053,7 +1053,10 @@ def load_manifest_from_file(path: Path) -> dict[str, Any]:
     if not path.is_absolute():
         raise RuntimeContractError(f"Local reviewer manifest path must be absolute: {path}")
     try:
-        if not path.is_file() or is_link_or_junction(path):
+        file_presence.require(
+            path, RuntimeContractError, f"Local reviewer manifest is missing: {path}", f"Local reviewer manifest {path}"
+        )
+        if is_link_or_junction(path):
             raise RuntimeContractError(f"Local reviewer manifest is not a regular file: {path}")
         if path.stat().st_size > MAX_LOCAL_MANIFEST_BYTES:
             raise RuntimeContractError(f"Local reviewer manifest is too large: {path}")
@@ -1503,8 +1506,12 @@ def _verify_snapshot(
 ) -> tuple[dict[str, Any], _SnapshotTree, int, str]:
     """`verify_source_snapshot`'s manifest, the walk the file set was checked against, the bytes the files it holds
     total, and the SHA-256 of the manifest's bytes."""
-    if not root.is_absolute() or not root.is_dir() or is_link_or_junction(root):
-        raise RuntimeContractError("Source snapshot root must be an existing absolute non-reparse directory")
+    refused = "Source snapshot root must be an existing absolute non-reparse directory"
+    if not root.is_absolute():
+        raise RuntimeContractError(refused)
+    file_presence.require(root, RuntimeContractError, refused, f"Source snapshot root {root}", folder=True)
+    if is_link_or_junction(root):
+        raise RuntimeContractError(refused)
     metadata, manifest_digest = _read_snapshot_metadata(root)
     require_snapshot_source(metadata, expected_repository, expected_commit)
     hashes, excluded, fetchable = _snapshot_maps(metadata)
@@ -2693,11 +2700,14 @@ def build_adapter_request(
     READ.integer(pull_number, "request.pull_number", minimum=1)
     for value, name in ((base_sha, "base_sha"), (head_sha, "head_sha")):
         READ.hex_digest(value, f"request.pull_request.{name}", 40, 64)
-    if not diff_path.is_absolute() or not diff_path.is_file():
-        raise RuntimeContractError("diff_path must name an existing absolute file")
-    for given, name in ((body, "body"), (closing_issues, "closing_issues")):
-        if given is not None and not (given[0].is_absolute() and given[0].is_file()):
-            raise RuntimeContractError(f"{name} must name an existing absolute file")
+    given = ((diff_path, "diff_path"), (body[0] if body else None, "body"))
+    for path, name in (*given, (closing_issues[0] if closing_issues else None, "closing_issues")):
+        if path is None:
+            continue
+        refused = f"{name} must name an existing absolute file"
+        if not path.is_absolute():
+            raise RuntimeContractError(refused)
+        file_presence.require(path, RuntimeContractError, refused, f"{name} {path}")
     if body is not None:
         READ.integer(body[1], "request.pull_request.body_characters", minimum=0)
     if snapshot is None:

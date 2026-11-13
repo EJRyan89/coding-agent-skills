@@ -76,7 +76,7 @@ Ask which groups to apply with a multi-select `AskUserQuestion`, one option per 
   {{PYTHON}} -B "${CLAUDE_SKILL_DIR}/scripts/memory_audit.py" delete --memory-dir "<memory dir>" "<file>.md" ...
   ```
 
-  It prints `DELETED <file>` for each file it deletes. A lone `FAILED <memory dir> ...` line, here or from `reindex`, means the directory holds no `MEMORY.md` or lies inside a skills directory, so it changed nothing; show it and go back to Step 1. `FAILED <file>: <reason>` lines with no `DELETED` line mean it refused those names and deleted nothing; show the reasons and fix the list. A `FAILED` line after `DELETED` lines means the deletion stopped part way: the `DELETED` files are gone and the rest remain, so show the reason and rerun with the remaining files.
+  It prints `DELETED <file>` for each file it deletes. A lone `FAILED <memory dir> ...` or `FAILED memory directory ...` line, here or from `reindex`, means the directory is missing, is not a folder, cannot be examined, holds no `MEMORY.md`, or lies inside a skills directory, so it changed nothing; show it and go back to Step 1. `FAILED <file>: <reason>` lines with no `DELETED` line mean it refused those names and deleted nothing; show the reasons and fix the list. A `FAILED` line after `DELETED` lines means the deletion stopped part way: the `DELETED` files are gone and the rest remain, so show the reason and rerun with the remaining files.
 - For review findings, invoke `flag-review-finding` through the `Skill` tool with the memory's substance; delete the memory the same way once the finding is recorded.
 - When any memory changed or the "Rebuild index" group was approved, rebuild `MEMORY.md` last instead of editing it by hand:
 

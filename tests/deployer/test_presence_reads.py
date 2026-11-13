@@ -713,7 +713,7 @@ class RecoveryEdgeTests(DeployerTestCase):
         with self.assertRaises(DeployError) as raised:
             journal.prepare_backup_destination(self.paths, self.RUN, "alpha", "claude")
         self.assertEqual(
-            f"ERROR: Deployment destination is missing: {forward(self.skills_dir)}", raised.exception.lines[0]
+            f"ERROR: Deployment destination is not a directory: {forward(self.skills_dir)}", raised.exception.lines[0]
         )
         # A stray file among the runs is no run.
         self.paths.staging_root.mkdir(parents=True)

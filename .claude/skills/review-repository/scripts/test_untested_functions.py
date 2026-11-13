@@ -567,7 +567,7 @@ class ConditionTests(unittest.TestCase):
         clean = {key: value for key, value in os.environ.items() if not key.startswith("CODE_REVIEW_")}
         for root, reason in (
             (self.root, 'the snapshot holds no "app/service.py", which the diff leaves at the head'),
-            (self.root / "absent", f"the snapshot {json.dumps((self.root / 'absent').as_posix())} is not a directory"),
+            (self.root / "absent", f"the snapshot {json.dumps((self.root / 'absent').as_posix())} is missing"),
         ):
             with self.subTest(reason=reason):
                 finished = subprocess.run(

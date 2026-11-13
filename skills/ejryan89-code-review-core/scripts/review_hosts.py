@@ -376,8 +376,10 @@ def materialized_reviewer_entrypoint(materialized_root: Path) -> Path:
         READ.hex_digest(expected_hash, f"materialization.source_hashes.{declared_path}", 64)
         target = materialized_root.joinpath(*PurePosixPath(declared_path).parts)
         _require_safe_snapshot_path(materialized_root, target)
-        if not target.is_file() or not within(target.resolve(strict=True), materialized_resolved):
-            raise RuntimeContractError(f"Reviewer materialization file is invalid: {declared_path}")
+        invalid = f"Reviewer materialization file is invalid: {declared_path}"
+        file_presence.require(target, RuntimeContractError, invalid, f"Reviewer materialization file {declared_path}")
+        if not within(target.resolve(strict=True), materialized_resolved):
+            raise RuntimeContractError(invalid)
         actual_hash = hashlib.sha256(target.read_bytes()).hexdigest()
         if actual_hash != expected_hash:
             raise RuntimeContractError(f"Reviewer materialization hash does not match: {declared_path}")
@@ -418,10 +420,11 @@ def copilot_command(
     negotiate_capabilities("copilot-cli", ["isolated-added-root", "read-diff", "write-result"])
     if effort is not None and effort not in REVIEWER_EFFORTS:
         raise RuntimeContractError(f"Copilot reasoning effort must be one of {', '.join(sorted(REVIEWER_EFFORTS))}")
-    if not materialized_root.is_absolute() or not materialized_root.is_dir():
-        raise RuntimeContractError("Copilot materialized root must be an existing absolute directory")
-    if not run_directory.is_absolute() or not run_directory.is_dir():
-        raise RuntimeContractError("Copilot run directory must be an existing absolute directory")
+    for folder, label in ((materialized_root, "materialized root"), (run_directory, "run directory")):
+        refused = f"Copilot {label} must be an existing absolute directory"
+        if not folder.is_absolute():
+            raise RuntimeContractError(refused)
+        file_presence.require(folder, RuntimeContractError, refused, f"Copilot {label} {folder}", folder=True)
     if not result_path.is_absolute():
         raise RuntimeContractError("Copilot result path must be absolute")
     run_directory_resolved = run_directory.resolve(strict=True)
@@ -526,13 +529,15 @@ def _copilot_reviewer(
     diagnostic_path: Path,
 ) -> tuple[Path, Path]:
     """The resolved materialized root and trusted entrypoint, once the inputs exist and every path is absolute."""
-    for path, label in (
-        (run_directory, "run directory"),
-        (materialized_root, "materialized root"),
-        (request_path, "request"),
+    for path, label, folder in (
+        (run_directory, "run directory", True),
+        (materialized_root, "materialized root", True),
+        (request_path, "request", False),
     ):
-        if not path.is_absolute() or not path.exists():
-            raise RuntimeContractError(f"Copilot {label} must exist and be absolute")
+        refused = f"Copilot {label} must exist and be absolute"
+        if not path.is_absolute():
+            raise RuntimeContractError(refused)
+        file_presence.require(path, RuntimeContractError, refused, f"Copilot {label} {path}", folder=folder)
     materialized_resolved = materialized_root.resolve(strict=True)
     entrypoint_resolved = materialized_reviewer_entrypoint(materialized_root)
     for path, label in ((result_path, "result"), (staging_path, "staging"), (diagnostic_path, "diagnostic")):
@@ -578,8 +583,10 @@ def _verified_copilot_source(run_directory: Path, request: _CopilotRequest, stam
         diff_resolved = request.diff_path.resolve(strict=True)
     except OSError as exc:
         raise RuntimeContractError(f"Copilot request artifacts are invalid: {exc}") from exc
-    if not diff_resolved.is_file() or not within(diff_resolved, run_resolved):
-        raise RuntimeContractError("Copilot request diff must be a file inside the run directory")
+    refused = "Copilot request diff must be a file inside the run directory"
+    file_presence.require(diff_resolved, RuntimeContractError, refused, f"Copilot request diff {diff_resolved}")
+    if not within(diff_resolved, run_resolved):
+        raise RuntimeContractError(refused)
     if not within(source_resolved, run_resolved):
         raise RuntimeContractError("Copilot source snapshot must be inside the run directory")
     if request.source_manifest != request.source_root / SOURCE_SNAPSHOT_MANIFEST:
@@ -648,8 +655,12 @@ def _require_copilot_result(result: ProcessResult, staging_path: Path, diagnosti
         raise RuntimeContractError(
             f"GitHub Copilot CLI failed with exit code {result.returncode}; see {diagnostic_path}"
         )
-    if not staging_path.is_file():
-        raise RuntimeContractError("GitHub Copilot CLI did not produce the result file")
+    file_presence.require(
+        staging_path,
+        RuntimeContractError,
+        "GitHub Copilot CLI did not produce the result file",
+        f"GitHub Copilot CLI's result file {staging_path}",
+    )
     try:
         parsed = parse_json(staging_path.read_text(encoding="utf-8-sig"))
     except (OSError, *CONTENT_ERRORS) as exc:

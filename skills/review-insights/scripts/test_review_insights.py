@@ -1183,8 +1183,16 @@ class DecideTests(InsightFixture):
             self.decide(json_path.with_name("absent.json"), "REC-001", "Style", "none", "rejected"), "absent.json"
         )
         mistyped = self.root / "no such directory" / "insights.json"
-        self.assertFailed(self.decide(mistyped, "REC-001", "Style", "none", "rejected"), "no such file")
+        self.assertFailed(self.decide(mistyped, "REC-001", "Style", "none", "rejected"), "it is missing")
         self.assertFalse(mistyped.parent.exists(), "the report's lock is never made beside a missing report")
+        folder = self.root / "folder.json"
+        folder.mkdir()
+        self.assertFailed(self.decide(folder, "REC-001", "Style", "none", "rejected"), "it is not a file")
+        with unstatable(json_path):
+            self.assertFailed(
+                self.decide(json_path, "REC-001", "Style", "none", "rejected"),
+                f"Cannot read insights report {json_path}: it cannot be examined: Permission denied",
+            )
 
 
 class AnalyzerTests(InsightFixture):

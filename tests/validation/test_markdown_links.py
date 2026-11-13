@@ -5,12 +5,14 @@ Each policy fails on a violating input and passes on a conforming one.
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 import tempfile
 import unittest
 from collections.abc import Mapping
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts"))
@@ -61,6 +63,18 @@ class MarkdownLinkPolicy(unittest.TestCase):
             ["docs/guide.md:3 links to ../missing.md, which does not exist"],
             self.problems({"docs/guide.md": "# Guide\n\nSee [gone](../missing.md).\n"}),
         )
+
+    def test_a_link_to_something_neither_a_file_nor_a_folder_is_named_so_never_as_missing(self) -> None:
+        # A pipe, as the stat of pipe.md answers it, is there but is neither a file nor a folder.
+        real_stat = Path.stat
+        pipe = os.stat_result((0o010644, 0, 0, 1, 0, 0, 0, 0, 0, 0))
+
+        def stat(path: Path, *, follow_symlinks: bool = True) -> os.stat_result:
+            return pipe if path.name == "pipe.md" else real_stat(path, follow_symlinks=follow_symlinks)
+
+        with mock.patch.object(Path, "stat", stat):
+            found = self.problems({"docs/guide.md": "# Guide\n\nSee [odd](pipe.md).\n", "docs/pipe.md": ""})
+        self.assertEqual(["docs/guide.md:3 links to pipe.md, which is neither a file nor a folder"], found)
 
     def test_a_fragment_that_names_no_heading_fails(self) -> None:
         self.assertEqual(
@@ -190,6 +204,16 @@ class CitedTestPolicy(unittest.TestCase):
             self.problems({"guide.md": guide}),
         )
 
+    def test_a_folder_in_a_cited_suite_s_place_is_no_file_never_a_missing_suite(self) -> None:
+        guide = "`tests/test_dir.py::test_alone`, and the `GuardTests` cases in `tests/test_dir.py`.\n"
+        self.assertEqual(
+            [
+                "guide.md:1 cites tests/test_dir.py::test_alone, but tests/test_dir.py is not a file",
+                "guide.md:1 cites GuardTests in tests/test_dir.py, which is not a file",
+            ],
+            self.problems({"guide.md": guide, "tests/test_dir.py/inner.py": ""}),
+        )
+
     def test_the_threat_model_names_its_suites_under_the_code_review_scripts(self) -> None:
         # The contract's suites named alone are under THREAT_MODEL_SUITES, so tests/test_a.py does not hold its
         # citation.
@@ -270,6 +294,24 @@ class LessonsLedgerPolicy(unittest.TestCase):
                 "reason no guard is possible",
             ],
             self.problems(ledger),
+        )
+
+    def test_a_guard_naming_a_skill_file_of_the_wrong_kind_is_named_so_never_as_missing(self) -> None:
+        ledger = f"# Lessons\n\n## Patterns\n\n### Folder\n\n{self.ENTRY}- **Guard:** `.claude/skills/b/SKILL.md#a`\n"
+        self.assertEqual(
+            [
+                "docs/lessons.md:10 the pattern 'Folder' cites .claude/skills/b/SKILL.md#a, but "
+                ".claude/skills/b/SKILL.md is not a file"
+            ],
+            self.problems(ledger, {".claude/skills/b/SKILL.md/inner.md": ""}),
+        )
+        workflow = f"# Lessons\n\n## Patterns\n\n### Folder\n\n{self.ENTRY}- **Guard:** `.github/workflows/ci.yml`\n"
+        self.assertEqual(
+            [
+                "docs/lessons.md:10 the pattern 'Folder' cites .github/workflows/ci.yml, but "
+                ".github/workflows/ci.yml is not a file"
+            ],
+            self.problems(workflow, {".github/workflows/ci.yml/inner.yml": ""}),
         )
 
     def test_a_guard_that_does_not_resolve_fails(self) -> None:
@@ -379,6 +421,8 @@ class LessonsLedgerPolicy(unittest.TestCase):
 
     def test_a_missing_catalogue_section_or_an_empty_one_fails(self) -> None:
         self.assertEqual(["docs/lessons.md does not exist"], self.problems(None))
+        # A folder in the catalogue's place is named so, never as a catalogue that does not exist.
+        self.assertEqual(["docs/lessons.md is not a file"], self.problems(None, {"docs/lessons.md/inner.md": ""}))
         self.assertEqual(["docs/lessons.md has no '## Patterns' section"], self.problems("# Lessons\n\nProse.\n"))
         self.assertEqual(
             ["docs/lessons.md has no pattern under '## Patterns'"],
@@ -479,7 +523,6 @@ class TrustModelAreaPolicy(unittest.TestCase):
 class LinkDestinationStatTests(unittest.TestCase):
     def test_a_link_destination_whose_stat_fails_is_refused_never_reported_missing(self) -> None:
         import contextlib
-        import os
         from unittest import mock
 
         import markdown_links

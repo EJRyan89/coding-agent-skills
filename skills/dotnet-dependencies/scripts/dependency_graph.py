@@ -301,8 +301,9 @@ def resolve_root(path: Path, graph_unreadable: list[tuple[Path, str]]) -> tuple[
             else:
                 graph_unreadable.append((candidate, "listed by the solution but not found"))
         return path, path.parent, projects
-    if not path.is_dir():
-        raise Failed(f"{path} is neither a solution file nor a directory")
+    # Neither a file nor a folder: missing, something else, or a path a stat cannot examine, each named so.
+    if reason := file_presence.refusal_reason(path, folder=True):
+        raise Failed(f"{path} {reason}")
     solutions = sorted(
         child
         for child in path.iterdir()

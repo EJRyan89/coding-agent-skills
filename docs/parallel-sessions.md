@@ -40,7 +40,7 @@ The kind is a pull request title type, which the title check then holds the bran
 
 | Column | Meaning |
 |---|---|
-| state | `hub`, `in progress`, `no commits`, `missing`, `unreadable` when git cannot read the checkout, or `unknown` when git cannot count its commits against `main` |
+| state | `hub`, `in progress`, `no commits`, `missing`, `not a folder` when a file stands in the worktree's place, `unreadable` when git cannot read the checkout, or `unknown` when git cannot count its commits against `main` |
 | ahead/behind | Relative to `main`; `?` when git cannot count them. |
 | dirty | Number of paths with uncommitted changes, untracked files included and a rename counted once. |
 

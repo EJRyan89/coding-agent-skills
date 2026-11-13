@@ -166,6 +166,35 @@ class SnapshotExclusionTests(unittest.TestCase):
         self.assertTrue(str(raised.exception).startswith(unreadable), str(raised.exception))
 
 
+class RequireSnapshotTests(unittest.TestCase):
+    def setUp(self) -> None:
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+
+    def refusal(self, root: Path) -> str:
+        with self.assertRaises(conditions.MissingEvidence) as raised:
+            conditions.require_snapshot(root)
+        return str(raised.exception)
+
+    def test_each_cause_is_named_and_only_a_snapshot_with_nothing_there_is_missing(self) -> None:
+        conditions.require_snapshot(self.root)
+        absent, file = self.root / "absent", self.root / "file"
+        file.write_bytes(b"")
+        self.assertEqual(f'the snapshot "{absent.as_posix()}" is missing', self.refusal(absent))
+        self.assertEqual(f'the snapshot "{file.as_posix()}" is not a folder', self.refusal(file))
+        real_stat = Path.stat
+
+        def stat(path: Path, *, follow_symlinks: bool = True) -> os.stat_result:
+            if path == self.root:
+                raise PermissionError(13, "denied")
+            return real_stat(path, follow_symlinks=follow_symlinks)
+
+        with mock.patch.object(Path, "stat", stat):
+            message = self.refusal(self.root)
+        self.assertEqual(f'the snapshot "{self.root.as_posix()}" cannot be examined: denied', message)
+
+
 @pytest.mark.parametrize(
     "path",
     [

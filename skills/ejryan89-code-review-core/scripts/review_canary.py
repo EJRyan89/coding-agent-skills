@@ -33,6 +33,7 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
+import file_presence
 from git_client import GitClient, GitError, Runner, command_name, output_line, output_lines
 from github_client import replace_undecodable
 from link_probe import is_link_or_junction
@@ -168,8 +169,11 @@ def _tree_files(root: Path) -> list[tuple[str, Path]]:
 
     Each entry is judged from the metadata its folder's listing already holds, reparse flag included, so the walk
     makes no file-system call per entry, and the POSIX path is built as a string rather than through pathlib."""
-    if not root.is_dir() or is_link_or_junction(root):
-        raise FixtureError(f"The fixture has no {root.name}/ tree")
+    file_presence.require(
+        root, FixtureError, f"The fixture has no {root.name}/ tree", f"The fixture's {root.name}/ tree", folder=True
+    )
+    if is_link_or_junction(root):
+        raise FixtureError(f"The fixture's {root.name}/ tree is a link, which has no place in a fixture")
     files: list[tuple[str, Path]] = []
     folders = [("", str(root))]
     while folders:

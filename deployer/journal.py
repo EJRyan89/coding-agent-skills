@@ -313,9 +313,15 @@ def prepare_backup_destination(paths: Paths, run_id: str, item: str, root: str) 
         problem = safe_name_problem(name, context)
         if problem is not None:
             raise DeployError(problem, RECONCILE_BY_HAND, see_recovery("When recovery fails"))
-    if not file_presence.is_directory(base, other_is_absent=True):
+    # Something else in the folder's place is named as not a directory, never as missing, and a stat that fails reaches
+    # the caller with its reason.
+    try:
+        state = "is missing" if not file_presence.is_directory(base) else None
+    except file_presence.NotADirectory:
+        state = "is not a directory"
+    if state is not None:
         raise DeployError(
-            f"ERROR: Deployment destination is missing: {platform_support.normalize(base)}",
+            f"ERROR: Deployment destination {state}: {platform_support.normalize(base)}",
             "Put the folder back, or reconcile the run by hand, then rerun with --dry-run.",
             see_recovery("When recovery fails"),
         )

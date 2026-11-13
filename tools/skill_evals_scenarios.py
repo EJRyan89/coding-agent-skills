@@ -378,17 +378,20 @@ def _document(directory: Path, value: object, what: str) -> Path:
     path = (directory / value).resolve()
     if not within(path, root):
         raise ScenarioError(f"{what} {value} is outside the scenarios under {root}")
-    if not path.is_file():
-        raise ScenarioError(f"{what} {value} is missing")
+    _require(path, f"{what} {value} is missing", f"{what} {value}")
     return path
+
+
+def _require(path: Path, missing: str, what: str, *, folder: bool = False) -> None:
+    """Raise ScenarioError `missing` when nothing is at `path`, and `<what> <reason>` when something other than a
+    file, or with `folder` a folder, is there, or a stat cannot examine it, so neither is reported as missing."""
+    file_presence.require(path, ScenarioError, missing, what, folder=folder)
 
 
 def _fixture(directory: Path) -> None:
     for tree in ("base", "head"):
-        if not (directory / tree).is_dir():
-            raise ScenarioError(f"has no {tree}/ tree")
-    if not (directory / "pull.json").is_file():
-        raise ScenarioError("has no pull.json")
+        _require(directory / tree, f"has no {tree}/ tree", f"its {tree}/ tree", folder=True)
+    _require(directory / "pull.json", "has no pull.json", "its pull.json")
 
 
 def _fixture_in_place(directory: Path) -> None:
@@ -538,8 +541,11 @@ def reviewer_files(reviewer: str, directory: Path, checkout: Path) -> tuple[str,
     among them: they name what the script reads of the reviewed tree, the fixture's own. Raise ScenarioError when the
     reviewer or one of its files is missing from the checkout, or the fixture already holds a file the run places."""
     folder = REPOSITORY_SKILLS / reviewer
-    if not (checkout / folder / "SKILL.md").is_file():
-        raise ScenarioError(f"no repository skill {reviewer}: the checkout has no {folder}/SKILL.md")
+    _require(
+        checkout / folder / "SKILL.md",
+        f"no repository skill {reviewer}: the checkout has no {folder}/SKILL.md",
+        f"the checkout's {folder}/SKILL.md",
+    )
     manifest_path = _manifest_path(directory)
     if manifest_path is None or not within(PurePosixPath(manifest_path), folder):
         raise ScenarioError(f"pull.json's manifest_path must name {reviewer}'s manifest under {folder}/")
@@ -547,8 +553,11 @@ def reviewer_files(reviewer: str, directory: Path, checkout: Path) -> tuple[str,
     own = [str(folder / "SKILL.md"), *_reviewer_folder(checkout, folder), manifest_path]
     files = tuple(dict.fromkeys([*own, *declared_reviewer_files(manifest)]))
     for relative in files:
-        if not (checkout / relative).is_file():
-            raise ScenarioError(f"{reviewer} declares {relative}, which the checkout lacks")
+        _require(
+            checkout / relative,
+            f"{reviewer} declares {relative}, which the checkout lacks",
+            f"{reviewer} declares {relative}, and the checkout's {relative}",
+        )
         for tree in ("base", "head"):
             if _occupied(directory / tree / relative):
                 raise ScenarioError(f"its {tree}/ tree holds {relative}, which the run places from the checkout")
@@ -640,10 +649,11 @@ def load_trigger(skill: str, directory: Path, spec: Mapping[str, object], checko
     if spec["skill"] != skill:
         raise ScenarioError(f"scenario.json names skill {quote(str(spec['skill']))}, not {skill}")
     skill_file = checkout / SHIPPED_SKILLS / skill / "SKILL.md"
-    if not skill_file.is_file():
-        raise ScenarioError(
-            f"a trigger scenario's skill is a shipped one, and the checkout has no {SHIPPED_SKILLS}/{skill}"
-        )
+    _require(
+        skill_file,
+        f"a trigger scenario's skill is a shipped one, and the checkout has no {SHIPPED_SKILLS}/{skill}",
+        f"the checkout's {SHIPPED_SKILLS}/{skill}/SKILL.md",
+    )
     if runtime_canary.starts_only_by_user(skill_file):
         raise ScenarioError(f"{skill} sets disable-model-invocation, so no request can start it")
     requests, neighbours = _requests(spec["requests"], "requests"), _requests(spec["near_misses"], "near_misses")
@@ -713,8 +723,7 @@ def review_scenario(skill: str, directory: Path, spec: Mapping[str, object], mod
     prior = None
     if mode == "re-review":
         prior = directory / _path(spec["prior"])
-        if not prior.is_file():
-            raise ScenarioError(f"prior record {spec['prior']} is missing")
+        _require(prior, f"prior record {spec['prior']} is missing", f"prior record {spec['prior']}")
     if not isinstance(spec["expectations"], list) or not spec["expectations"]:
         raise ScenarioError("expectations must be a non-empty list")
     expectations = tuple(expectation(item, mode) for item in spec["expectations"])

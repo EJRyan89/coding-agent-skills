@@ -2669,7 +2669,23 @@ def test_a_memory_directory_whose_stat_fails_is_refused_rather_than_not_found(
     locked.mkdir()
     command, *rest = arguments
     with stat_failing_at(locked):
-        assert (1, f"FAILED Permission denied: {locked}\n", "") == run_main(command, "--memory-dir", str(locked), *rest)
+        assert (1, f"FAILED memory directory {locked} cannot be examined: Permission denied\n", "") == run_main(
+            command, "--memory-dir", str(locked), *rest
+        )
+
+
+@pytest.mark.parametrize(
+    "arguments", [["audit"], ["reindex"], ["delete", "keep.md"]], ids=["audit", "reindex", "delete"]
+)
+def test_a_file_in_the_memory_directory_place_is_not_a_folder_rather_than_not_found(
+    tmp_path: Path, arguments: list[str]
+) -> None:
+    file = tmp_path / "memory file"
+    file.write_text("", encoding="utf-8")
+    command, *rest = arguments
+    assert (1, f"FAILED memory directory {file} is not a folder\n", "") == run_main(
+        command, "--memory-dir", str(file), *rest
+    )
 
 
 # Pinned while parse_frontmatter is kept instead of ejryan89-skill-core's frontmatter.py; see the comment above it.

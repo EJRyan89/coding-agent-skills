@@ -404,9 +404,7 @@ class ConditionTests(unittest.TestCase):
         self.root.rmdir()
         code, out, _ = self.run_condition(diff)
         self.assertEqual(2, code)
-        self.assertEqual(
-            f"FAILED MissingEvidence: the snapshot {json.dumps(self.root.as_posix())} is not a directory\n", out
-        )
+        self.assertEqual(f"FAILED MissingEvidence: the snapshot {json.dumps(self.root.as_posix())} is missing\n", out)
 
     def test_a_condition_run_without_its_inputs_fails_the_review(self) -> None:
         code, out, written = self.run_condition("", environment={})

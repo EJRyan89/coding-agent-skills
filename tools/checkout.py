@@ -17,6 +17,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "ejryan89-skill-core" / "scripts"))
 
+import file_presence
 from skill_roots import skills_directory_holding
 
 ROOT_HELP = (
@@ -28,7 +29,12 @@ ROOT_HELP = (
 def checkout_problem(root: Path) -> str | None:
     """Why root is not a checkout of this repository a tool may write into, or None when it is one."""
     skills = root / ".claude" / "skills"
-    if not (root / "source.json").is_file() or not skills.is_dir():
+    # A marker of the wrong kind, or one a stat cannot examine, is named so, never as one the directory lacks.
+    reasons = [file_presence.refusal_reason(root / "source.json"), file_presence.refusal_reason(skills, folder=True)]
+    for marker, reason in zip(("source.json", ".claude/skills"), reasons, strict=True):
+        if reason not in (None, file_presence.MISSING):
+            return f"{root} is not a checkout of this repository: its {marker} {reason}"
+    if any(reasons):
         return (
             f"{root} is not a checkout of this repository: it needs a source.json file and a .claude/skills directory"
         )

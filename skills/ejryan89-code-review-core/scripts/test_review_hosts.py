@@ -14,6 +14,7 @@ import tempfile
 import unittest
 from collections.abc import Mapping, Sequence
 from pathlib import Path
+from typing import Any
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -28,6 +29,7 @@ from review_hosts import (
     run_copilot,
 )
 from review_runtime import SOURCE_SNAPSHOT_MANIFEST, RuntimeContractError
+from test_review_archive import unstatable
 
 
 class RuntimeHostTests(unittest.TestCase):
@@ -138,6 +140,38 @@ class RuntimeHostTests(unittest.TestCase):
                 ["view", "grep", "glob", "edit", "create"], command[available_tools + 1 : available_tools + 6]
             )
             self.assertIn(f"--allow-tool=write({(root / 'result.json').as_posix()})", command)
+
+    def test_copilot_command_names_a_root_of_the_wrong_kind_or_one_it_cannot_examine_never_as_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            file = root / "file.txt"
+            file.write_text("", encoding="utf-8")
+            for name, label in (("materialized_root", "materialized root"), ("run_directory", "run directory")):
+                arguments: dict[str, Any] = {"run_directory": root, "materialized_root": root, name: file}
+                with self.subTest(name), self.assertRaises(RuntimeContractError) as raised:
+                    copilot_command("copilot", version=(1, 0, 103), result_path=root / "result.json", **arguments)
+                self.assertEqual(f"Copilot {label} {file} is not a folder", str(raised.exception))
+                folder = root / name
+                folder.mkdir()
+                arguments = {"run_directory": root, "materialized_root": root, name: folder}
+                with (
+                    self.subTest(f"{name} unstatable"),
+                    unstatable(folder),
+                    self.assertRaises(RuntimeContractError) as raised,
+                ):
+                    copilot_command("copilot", version=(1, 0, 103), result_path=root / "result.json", **arguments)
+                self.assertEqual(
+                    f"Copilot {label} {folder} cannot be examined: Permission denied", str(raised.exception)
+                )
+
+    def test_copilot_command_refuses_a_relative_root_by_its_rule(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            for name, label in (("materialized_root", "materialized root"), ("run_directory", "run directory")):
+                arguments: dict[str, Any] = {"run_directory": root, "materialized_root": root, name: Path("relative")}
+                with self.subTest(name), self.assertRaises(RuntimeContractError) as raised:
+                    copilot_command("copilot", version=(1, 0, 103), result_path=root / "result.json", **arguments)
+                self.assertEqual(f"Copilot {label} must be an existing absolute directory", str(raised.exception))
 
     def test_copilot_rejects_result_outside_run_directory(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
