@@ -397,13 +397,15 @@ removed fails validation until its pattern follows it.
   when the listing leaves it out, so an absent field is never read as the answer that permits the write, and
   `tools.hub_guard:judge_option`, which refuses a shell option neither table of the guard's names, and
   `tools.claude_stream:events`, the one reader of Claude Code's stream-json output, which refuses a line that is JSON
-  but no event object, by its line, and `review_batches:load_batch`, which reads a batch file whole before the
+  but no event object, by its line, and `tools.runtime_canary:read_records`, which refuses a records line that is
+  JSON but no record object the same way, and `review_batches:load_batch`, which reads a batch file whole before the
   advance or prepare command uses any field of it.
 - **Guard:** `skills/ejryan89-skill-core/scripts/test_typed_fields.py::FieldReaderTests::test_an_object_holds_its_required_fields_and_no_unknown_one`,
   `tests/malformed_input/test_malformed_input.py::test_each_reader_refuses_or_documents_accepting_each_case`, which
   fails a reader that answers on a field or a list item of another type it does not document taking,
   `tests/malformed_input/test_malformed_input.py::test_a_field_case_changes_one_field_of_the_readers_own_document`,
   `tests/tools/test_claude_stream.py::test_a_json_line_that_is_no_object_is_refused_by_its_line_and_kind`,
+  `tests/tools/test_runtime_canary.py::RecordRefusalTests::test_a_json_line_that_is_no_object_is_refused_by_its_line_and_kind_not_skipped`,
   `.claude/skills/shepherd-pull-requests/scripts/test_shepherd_pull_requests.py::ShapeTest::test_a_pull_request_member_the_listing_leaves_out_or_nulls_is_malformed_never_a_default`,
   which holds a written-out row for every member the shepherd lists, absent and null, and fails when the listing
   gains a member without one, and
