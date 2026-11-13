@@ -42,8 +42,9 @@ from pathlib import Path
 import file_presence
 import python_reader
 import whole_number
+from exit_calls import EXIT_CALLS, NO_CODE, SYSTEM_EXIT, code_keyword, fixed_code
 from path_containment import within
-from skill_scripts import EXIT_CALLS, PARSER_CLASS, RESULTS_DOC, _is_parser, binding, main_blocks
+from skill_scripts import PARSER_CLASS, RESULTS_DOC, _is_parser, binding, main_blocks
 from validation_support import (
     REPOSITORY_ROOT,
     UnreadablePython,
@@ -552,10 +553,10 @@ class CodeReader:
 
     def exits(self, argument: ast.expr | None, scope: Scope) -> None:
         """Add the codes an exit call or a raised SystemExit is given: no argument or None exits 0, a string is printed
-        and exits 1, and any other argument is read as a returned expression is, so one the reader cannot follow is
-        recorded as unread."""
-        if isinstance(argument, ast.Constant) and isinstance(argument.value, str):
-            self.reading.codes.add(1)
+        and exits 1, as exit_calls.fixed_code reads them, and any other argument is read as a returned expression is,
+        so one the reader cannot follow is recorded as unread."""
+        if (code := fixed_code(argument)) is not None:
+            self.reading.codes.add(code)
         else:
             self.value(argument, scope)
 
@@ -568,8 +569,8 @@ class CodeReader:
         for node in _own_nodes(function):
             if isinstance(node, ast.Raise) and node.exc is not None and not isinstance(node.exc, ast.Call):
                 # A SystemExit raised as the class, with no code, exits 0.
-                if qualified_name(node.exc, module.aliases) == "SystemExit":
-                    self.reading.codes.add(0)
+                if qualified_name(node.exc, module.aliases) == SYSTEM_EXIT:
+                    self.reading.codes.add(NO_CODE)
                 continue
             if not isinstance(node, ast.Call):
                 continue
@@ -578,7 +579,7 @@ class CodeReader:
                     self.error_codes.add(number)
             name = qualified_name(node.func, module.aliases)
             if name in EXIT_CALLS:
-                self.exits(call_argument(node, 0, "status" if name == "os._exit" else "code"), Scope(module, function))
+                self.exits(call_argument(node, 0, code_keyword(name)), Scope(module, function))
             elif isinstance(node.func, ast.Attribute) and (
                 node.func.attr in PARSING_CALLS
                 or (node.func.attr == USAGE_ERROR_CALL and _is_parser(node.func.value, module.parsers))
