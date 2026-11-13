@@ -7,10 +7,14 @@ Each pull request states what it asks of a user who updates under a `## Upgrade 
 repository squash-merges with the body as the commit message, so every merged change carries its entry into the
 history. This script reads the entries of the commits between two refs (merge commits left out), newest first: the
 `###` entries of each message's `## Upgrade note` section, and, for a commit made while entries were still written
-by hand, the entries it added under `## Unreleased` in docs/upgrade-notes.md. An entry whose heading a newer commit
-already gave is the older text of that entry and is left out. An entry is read with each hard-wrapped heading, list
-item, or paragraph joined into one line, since a squash commit's message may be wrapped. Each entry keeps that text
-and gains `- Pull request: #N` from the commit's squash title when it names none.
+by hand, the entries it added under `## Unreleased` in docs/upgrade-notes.md. An entry a commit added to that file
+whose heading a newer commit added there too is the older text of that entry, reworded in the file, and is left out.
+Every entry a pull request body carries is kept, even one whose heading another entry shares: for each heading two kept
+entries share, a `SHARED "<heading>": <where>; <where>` line on stderr names where each was read, so the release
+preparer merges them into one entry or gives each a heading of its own. An entry is read with each hard-wrapped
+heading, list item, or paragraph joined into one line, since a squash commit's message may be wrapped. Its fields are
+its field list items outside every code fence, so a fenced `- Level:` line is an example's text, as GitHub renders it.
+Each entry keeps that text and gains `- Pull request: #N` from the commit's squash title when it names none.
 
 --from defaults to the last release before --to, the highest release tag reachable from --to's parent as
 ejryan89-skill-core's release_tags.py defines a release tag (vMAJOR.MINOR.PATCH and nothing after it), and --to to HEAD,
@@ -20,7 +24,8 @@ section opens with the largest leading Level word of its entries, ordered by doc
 no upgrade-note entries.
 
 --check compares the `## VERSION` section of docs/upgrade-notes.md as --to holds it with the entries the commits in
-the range carry, by heading, and fetches nothing. The release pull request is squash-merged, so the commit the
+the range carry, by heading, and fetches nothing, so the one entry a release preparer merges from the entries a
+SHARED line names holds each of them. The release pull request is squash-merged, so the commit the
 section was written at never reaches main, and a pull request merged into main or into the release branch after the
 section was written is in the tag and in no section. It prints `CURRENT` when the section holds every entry, and
 otherwise `BEHIND <n> entries` and each entry the section lacks, ready to carry into it. An entry the section holds
@@ -64,7 +69,7 @@ BODY_HEADING = "## Upgrade note"
 UNRELEASED_HEADING = "## Unreleased"
 RELEASE_BRANCH = "origin/main"
 VERSION_HEADING = re.compile(rf"^## {VERSION.pattern}[ \t]*$", re.MULTILINE)
-NOTES_FIELD = re.compile(r"^- (Level|Contract|User action|Pull request):[ \t]*(.*?)[ \t]*$", re.MULTILINE)
+NOTES_FIELD = re.compile(r"- (Level|Contract|User action|Pull request):[ \t]*(.*?)[ \t]*")
 # A line outside every fence that starts an entry, or a heading above one that ends it.
 NOTES_ENTRY_START = re.compile(r"#{1,3} ")
 # A line that starts a Markdown block of its own, which no wrapped line continues: a heading, a quote, or a table row;
@@ -158,13 +163,21 @@ def notes_blocks(text: str) -> list[str]:
     return ["\n".join(block) for block in blocks]
 
 
+def entry_fields(body: list[str]) -> dict[str, str]:
+    """An entry's fields: each field line outside every code fence, the last of a name holding. A field-shaped line
+    inside a fence is the fence's text, as GitHub renders it, such as an example of another entry."""
+    fenced = {index for fence in find_fences(body) for index in fence.lines()}
+    matches = (NOTES_FIELD.fullmatch(line) for index, line in enumerate(body) if index not in fenced)
+    return {match.group(1): match.group(2) for match in matches if match is not None}
+
+
 def notes_entries(text: str | None) -> list[NotesEntry]:
     """The upgrade-notes entries: each ### heading with its field lines, read with wrapped lines joined."""
     entries: list[NotesEntry] = []
     for block in notes_blocks(text or ""):
         if block.startswith("### "):
             heading, *body = unwrapped(block)
-            fields = {match.group(1): match.group(2) for match in NOTES_FIELD.finditer("\n".join(body))}
+            fields = entry_fields(body)
             entries.append(NotesEntry(heading[4:].strip(MARKDOWN_SPACE), fields, "\n".join([heading, *body])))
     return entries
 
@@ -248,10 +261,15 @@ def notes_commits(root: Path, start: str, end: str) -> set[str]:
 
 
 def range_entries(root: Path, start: str, end: str) -> list[SourcedEntry]:
-    """Every entry the commits between two refs carry, newest first, each heading once."""
+    """Every entry the commits between two refs carry, newest first.
+
+    An entry a commit added to the notes file is left out when a newer commit added one with its heading there: the
+    file held one entry per heading, so the newer is the same entry reworded. An entry from a pull request body is that
+    pull request's own and is always kept, so two entries may share a heading; shared_headings names them.
+    """
     touched = notes_commits(root, start, end)
     found: list[SourcedEntry] = []
-    seen: set[str] = set()
+    reworded: set[str] = set()
     for commit in commits(root, start, end):
         short = commit.sha[:7]
         sourced = [
@@ -264,10 +282,20 @@ def range_entries(root: Path, start: str, end: str) -> list[SourcedEntry]:
                 for entry in added_unreleased_entries(root, commit.sha)
             ]
         for item in sourced:
-            if item.entry.heading not in seen:
-                seen.add(item.entry.heading)
+            if not item.from_notes:
+                found.append(item)
+            elif item.entry.heading not in reworded:
+                reworded.add(item.entry.heading)
                 found.append(item)
     return found
+
+
+def shared_headings(entries: list[SourcedEntry]) -> list[str]:
+    """A `SHARED` line for each heading two or more of the entries share, naming where each was read, in their order."""
+    places: dict[str, list[str]] = {}
+    for item in entries:
+        places.setdefault(item.entry.heading, []).append(item.where)
+    return [f'SHARED "{heading}": {"; ".join(where)}' for heading, where in places.items() if len(where) > 1]
 
 
 def version_section(version: str, entries: list[SourcedEntry], levels: list[str]) -> str:
@@ -378,10 +406,13 @@ def main(argv: list[str] | None = None, root: Path = REPOSITORY_ROOT) -> int:
         return _check(root, options.version, start, options.end)
     try:
         levels = versioning_levels(_read_releasing(root))
-        section = version_section(options.version, range_entries(root, start, options.end), levels)
+        entries = range_entries(root, start, options.end)
+        section = version_section(options.version, entries, levels)
     except (OSError, ReleaseNotesError) as error:
         print(f"ERROR: {error}", file=sys.stderr)
         return 2
+    for line in shared_headings(entries):
+        print(line, file=sys.stderr)
     if not options.write:
         print(section, end="")
         return 0
