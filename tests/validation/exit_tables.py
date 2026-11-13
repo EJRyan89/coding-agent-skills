@@ -42,7 +42,7 @@ from pathlib import Path
 import file_presence
 import python_reader
 import whole_number
-from exit_calls import CALL_NAMES, EXIT_CALLS, NO_CODE, SYSTEM_EXIT, code_keyword, fixed_code
+from exit_calls import EXIT_CALLS, NO_CODE, SYSTEM_EXIT, code_keyword, fixed_code
 from path_containment import within
 from skill_scripts import PARSER_CLASS, RESULTS_DOC, _is_parser, binding, main_blocks
 from validation_support import (
@@ -326,28 +326,27 @@ def _assigned(function: Function, name: str) -> list[tuple[ast.expr, int | None]
     return found
 
 
-def _falls_through(body: list[ast.stmt]) -> bool:
-    """Whether a block can end without a return or a raise, read by its last statement."""
+def _falls_through(body: list[ast.stmt], aliases: dict[str, str]) -> bool:
+    """Whether a block can end without a return or a raise, read by its last statement: an exit call, by the dotted
+    name the module's imports resolve it to, ends it, and a method of the same name, such as `smtp.quit()`, does not."""
     if not body:
         return True
     last = body[-1]
     if isinstance(last, (ast.Return, ast.Raise)):
         return False
     if isinstance(last, ast.If):
-        return _falls_through(last.body) or _falls_through(last.orelse)
+        return _falls_through(last.body, aliases) or _falls_through(last.orelse, aliases)
     if isinstance(last, ast.Try):
         ends = [last.body if not last.orelse else last.orelse, *(handler.body for handler in last.handlers)]
-        return any(_falls_through(block) for block in ends) and _falls_through(last.finalbody)
+        return any(_falls_through(block, aliases) for block in ends) and _falls_through(last.finalbody, aliases)
     if isinstance(last, (ast.With, ast.AsyncWith)):
-        return _falls_through(last.body)
+        return _falls_through(last.body, aliases)
     if isinstance(last, ast.Match):
         return True
     return not (
         isinstance(last, ast.Expr)
         and isinstance(last.value, ast.Call)
-        and isinstance(last.value.func, (ast.Name, ast.Attribute))
-        and (last.value.func.id if isinstance(last.value.func, ast.Name) else last.value.func.attr)
-        in CALL_NAMES - {SYSTEM_EXIT}
+        and qualified_name(last.value.func, aliases) in EXIT_CALLS - {SYSTEM_EXIT}
     )
 
 
@@ -504,7 +503,7 @@ class CodeReader:
         for node in _own_nodes(function):
             if isinstance(node, ast.Return):
                 self.value(node.value, scope, element)
-        if _falls_through(function.body) and element is None:
+        if _falls_through(function.body, module.aliases) and element is None:
             self.reading.codes.add(0)
 
     def value(self, node: ast.expr | None, scope: Scope, element: int | None = None) -> None:

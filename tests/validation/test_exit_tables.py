@@ -92,6 +92,9 @@ def test_a_row_continues_on_lines_indented_further_and_130_may_be_named() -> Non
         # A function that ends in any exit call never falls through to return None, quit included.
         ("def main():\n    print('x')\n    quit(4)\n", {1, 4}),
         ("import sys\ndef main():\n    print('x')\n    sys.exit(4)\n", {1, 4}),
+        # os._exit takes its code as status=, and a method of an exit call's name is no exit call.
+        ("import os\ndef main():\n    print('x')\n    os._exit(status=4)\n", {1, 4}),
+        ("def main():\n    print('x')\n    smtp.quit()\n", {0, 1}),
         ("import sys\ndef main() -> int:\n    helper()\n    return 0\ndef helper():\n    sys.exit(9)\n", {0, 1, 9}),
         ("def main() -> int:\n    helper()\n    return 0\ndef helper():\n    raise SystemExit(15)\n", {0, 1, 15}),
         ("import sys\ndef main() -> int:\n    helper()\n    return 5\ndef helper():\n    sys.exit()\n", {0, 1, 5}),

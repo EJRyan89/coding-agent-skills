@@ -25,10 +25,14 @@ class ExitCallTests(unittest.TestCase):
             {"sys.exit", "exit", "quit", "builtins.exit", "builtins.quit", "os._exit", "SystemExit"},
             exit_calls.EXIT_CALLS,
         )
-        self.assertEqual({"exit", "quit", "_exit", "SystemExit"}, exit_calls.CALL_NAMES)
 
     def test_os_exit_takes_its_code_as_status_and_every_other_call_as_code(self) -> None:
-        for function, keyword in (("os._exit", "status"), ("_exit", "status"), ("sys.exit", "code"), ("quit", "code")):
+        for function, keyword in (
+            ("os._exit", "status"),
+            ("sys.exit", "code"),
+            ("quit", "code"),
+            ("builtins.exit", "code"),
+        ):
             with self.subTest(function=function):
                 self.assertEqual(keyword, exit_calls.code_keyword(function))
 

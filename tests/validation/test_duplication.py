@@ -481,7 +481,7 @@ class SharedFactPolicy(unittest.TestCase):
             [self.restated(policy, 1, "EXIT_CALLS", self.EXIT_CALLS)],
             self.problems({policy: 'ENDS = ("sys.exit", "os._exit", "SystemExit")\n'}),
         )
-        imported = "import exit_calls\n\n\ndef ends(name):\n    return name in exit_calls.CALL_NAMES\n"
+        imported = "import exit_calls\n\n\ndef ends(name):\n    return name in exit_calls.EXIT_CALLS\n"
         # Two of the names, as a reader of one call compares them, are not a copy of the calls.
         two = 'def ends(name):\n    return name in ("exit", "quit")\n'
         self.assertEqual([], self.problems({inventory: imported, policy: two}))

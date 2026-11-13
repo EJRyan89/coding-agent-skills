@@ -2009,19 +2009,17 @@ ENTRY_FUNCTIONS = frozenset({"main", "_main"})
 
 def _unguarded_main_lines(tree: ast.Module, aliases: dict[str, str]) -> list[int]:
     """The lines of each module-level statement outside every __main__ block that runs main, or run_main, as the
-    program, itself or as what sys.exit or SystemExit is given, so it runs whenever the module is imported."""
+    program, itself or as what an exit call of ejryan89-skill-core's exit_calls is given, by position or keyword, so
+    it runs whenever the module is imported."""
     guarded = {id(node) for block in main_blocks(tree) for node in ast.walk(block)}
     lines: list[int] = []
     for statement in module_statements(tree.body):
         if id(statement) in guarded:
             continue
         call = statement.value if isinstance(statement, ast.Expr) else getattr(statement, "exc", None)
-        if (
-            isinstance(call, ast.Call)
-            and qualified_name(call.func, aliases) in {"sys.exit", "SystemExit"}
-            and call.args
-        ):
-            call = call.args[0]
+        function = qualified_name(call.func, aliases) if isinstance(call, ast.Call) else ""
+        if isinstance(call, ast.Call) and function in EXIT_CALLS:
+            call = call_argument(call, 0, code_keyword(function))
         if isinstance(call, ast.Call) and (
             (isinstance(call.func, ast.Name) and call.func.id in ENTRY_FUNCTIONS)
             or qualified_name(call.func, aliases) == CONSOLE_FUNCTION

@@ -1,5 +1,7 @@
 """The one reading of what ends a Python program with a code: the calls that exit, the keyword each takes its code by,
-and the code an argument gives whatever the program holds.
+and the code an argument gives whatever the program holds. A reader compares a call with EXIT_CALLS by the dotted name
+the module's imports resolve it to (ejryan89-skill-core's python_names), never by its last part, which a method such
+as `smtp.quit()` shares.
 
 Validation's exit tables (`tests/validation/exit_tables.py`) and its script-results policy
 (`tests/validation/skill_scripts.py`) read a script's exits by it, and so does audit-skill's inventory
@@ -14,8 +16,6 @@ import ast
 # builtins, os._exit, and SystemExit, called or raised. tests/validation/duplication.py fails a copy of them.
 EXIT_CALLS = frozenset({"sys.exit", "exit", "quit", "builtins.exit", "builtins.quit", "os._exit", "SystemExit"})
 SYSTEM_EXIT = "SystemExit"
-# The same calls by the last part of their names, for a reader that does not resolve a module's imports.
-CALL_NAMES = frozenset(name.rpartition(".")[2] for name in EXIT_CALLS)
 # What an exit given no code, or None, exits with, as a SystemExit raised as the class does, and what one given a
 # message, which Python prints, exits with.
 NO_CODE = 0
@@ -23,8 +23,8 @@ MESSAGE_CODE = 1
 
 
 def code_keyword(function: str) -> str:
-    """The keyword an exit call, named either way, takes its code by: os._exit's status, and every other's code."""
-    return "status" if function.rpartition(".")[2] == "_exit" else "code"
+    """The keyword an exit call, by its dotted name, takes its code by: os._exit's status, and every other's code."""
+    return "status" if function == "os._exit" else "code"
 
 
 def fixed_code(argument: ast.expr | None) -> int | None:

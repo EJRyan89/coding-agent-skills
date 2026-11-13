@@ -1919,6 +1919,19 @@ class StatusLineTests(TemporaryTestCase):
         )
         self.assertEqual([f"EXIT_MISMATCH {(folder / 'SKILL.md').as_posix()} 4 4"], self.status(folder))
 
+    def test_an_exit_call_is_read_by_the_name_its_imports_resolve_never_by_a_methods_name(self) -> None:
+        # The calls were matched by their last name, so stack.exit(5) read as an exit with 5, and an exit imported
+        # under another name, such as os._exit as leave, was not read at all.
+        folder = self.skill(
+            "It exits 3, exits 4, or exits 5 on a refusal.\n",
+            "import sys as system\nfrom os import _exit as leave\n\n"
+            "def close(smtp, stack, parser) -> None:\n"
+            "    smtp.quit(5)\n    stack.exit(5)\n    parser.exit(status=5, message='usage')\n\n"
+            "def refuse() -> None:\n    system.exit(3)\n\n"
+            "def stop() -> None:\n    leave(status=4)\n",
+        )
+        self.assertEqual([f"EXIT_MISMATCH {(folder / 'SKILL.md').as_posix()} 4 5"], self.status(folder))
+
     def test_a_shell_script_prints_what_it_echoes_and_exits_with_what_it_exits(self) -> None:
         folder = self.skill(
             '```bash\nbash "${CLAUDE_SKILL_DIR}/scripts/update.sh"\n```\n\n'

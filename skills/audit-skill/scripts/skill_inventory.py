@@ -196,6 +196,7 @@ from module_assignments import assigned_names, sole_assignment
 from path_containment import within
 from path_keys import name_key, path_key
 from powershell_startup import POWERSHELL_PROGRAMS, StartupCommand, startup_command
+from python_names import import_aliases, qualified_name
 from suite_names import is_suite_name
 
 # A skill's main file, which a runtime opens by this name: found in any case only where its folder folds case.
@@ -2062,12 +2063,13 @@ def string_facts(facts: ScriptFacts, node: ast.Constant, value: str, parents: di
             facts.lines.setdefault(match.group(1), node.lineno)
 
 
-def exit_argument(call: ast.Call) -> ast.expr | None:
-    """The argument that gives an exit call its code, by position or by its keyword, or None when the call gives
-    none; a `**` unpacking, which may hold the keyword, comes back as what it unpacks, which reads as no literal."""
+def exit_argument(call: ast.Call, function: str) -> ast.expr | None:
+    """The argument that gives an exit call, `function` by its dotted name, its code, by position or by its keyword,
+    or None when the call gives none; a `**` unpacking, which may hold the keyword, comes back as what it unpacks,
+    which reads as no literal."""
     if call.args:
         return call.args[0]
-    keyword = exit_calls.code_keyword(call_name(call))
+    keyword = exit_calls.code_keyword(function)
     return next((given.value for given in call.keywords if given.arg in (keyword, None)), None)
 
 
@@ -2075,7 +2077,9 @@ def exit_codes(tree: ast.Module) -> set[int]:
     """The literal codes a script exits with: what a function annotated to return an int returns, and what an exit
     call or SystemExit takes, read by ejryan89-skill-core's exit_calls as validation's exit tables read it: no code,
     or a SystemExit raised as the class, exits 0, a message exits 1, and otherwise a number or a module-level name
-    bound to one."""
+    bound to one. A call is an exit call by the dotted name the module's imports resolve it to, so `from sys import
+    exit as leave` is one and a method such as `smtp.quit()` or `parser.exit()` is not."""
+    aliases = import_aliases(tree)
     constants = {
         target.id: node.value.value
         for node in tree.body
@@ -2097,11 +2101,11 @@ def exit_codes(tree: ast.Module) -> set[int]:
             for inner in ast.walk(node):
                 if isinstance(inner, ast.Return) and inner.value is not None:
                     codes.update(literal(inner.value))
-        elif isinstance(node, ast.Raise) and isinstance(node.exc, ast.Name | ast.Attribute):
-            raised = node.exc.id if isinstance(node.exc, ast.Name) else node.exc.attr
+        elif isinstance(node, ast.Raise) and node.exc is not None and not isinstance(node.exc, ast.Call):
+            raised = qualified_name(node.exc, aliases)
             codes.update([exit_calls.NO_CODE] if raised == exit_calls.SYSTEM_EXIT else [])
-        elif isinstance(node, ast.Call) and call_name(node) in exit_calls.CALL_NAMES:
-            argument = exit_argument(node)
+        elif isinstance(node, ast.Call) and (function := qualified_name(node.func, aliases)) in exit_calls.EXIT_CALLS:
+            argument = exit_argument(node, function)
             fixed = exit_calls.fixed_code(argument)
             if fixed is not None:
                 codes.add(fixed)
