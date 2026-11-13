@@ -489,12 +489,18 @@ class RemovedInstallFixtures(unittest.TestCase):
             "brew install --cask 'powershell'",
             "brew reinstall homebrew/cask/powershell",
             "  run: |\n    brew update\n    brew install --cask powershell --no-quarantine\n",
+            # A command the shell reads across a backslash, and the retired `brew cask install` form.
+            "  run: |\n    brew install --cask \\\n      powershell\n",
+            "brew install --cask codex \\\n  copilot-cli \\\n  powershell",
+            "brew cask install powershell",
         ):
             with self.subTest(text=text):
                 problems = removed_install_problems(text)
                 self.assertEqual(1, len(problems), problems)
                 self.assertIn("installs Homebrew's powershell, which Homebrew no longer has", problems[0])
         self.assertIn("line 3:", removed_install_problems("a\nb\nbrew install --cask powershell\n")[0])
+        # A continued command is reported by its first line.
+        self.assertIn("line 2:", removed_install_problems("a\nbrew install --cask \\\n  powershell\n")[0])
 
     def test_an_install_that_still_works_is_not_reported(self) -> None:
         for text in (
@@ -505,6 +511,10 @@ class RemovedInstallFixtures(unittest.TestCase):
             "brew install --cask codex | grep powershell",
             "brew install gh; echo powershell",
             "the `.pkg` from PowerShell's releases; Homebrew's `powershell@preview` installs `pwsh-preview`",
+            # A line that ends a command, or a Markdown code span, does not carry it onto the next.
+            "brew install --cask codex\npowershell",
+            "| Codex CLI | `brew install --cask codex`\npowershell |",
+            "brew cask list\nbrew install powershell@preview",
         ):
             with self.subTest(text=text):
                 self.assertEqual([], removed_install_problems(text))
