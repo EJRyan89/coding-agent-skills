@@ -4814,7 +4814,8 @@ class ReviewerSourceTests(PipelineFixture):
             self.prepare()
         (manifest.parent / "window.py").rmdir()
         self.configure(self.skill_reviewer(".claude/agents/team-review.md", manifest=str(self.root / "absent.json")))
-        with self.assertRaisesRegex(Exception, "not a regular file"):
+        # A manifest with nothing there is missing, never named as a file of another kind.
+        with self.assertRaisesRegex(Exception, "Local reviewer manifest is missing: "):
             self.prepare()
         clash = self.local_manifest(
             specialists=[

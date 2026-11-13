@@ -276,13 +276,14 @@ def _guard_problem(root: Path, index: _TestIndex, document: str, span: str) -> s
         return _id_problem(index, document, citation)
     if step := skill_step.fullmatch(span):
         path = root / step.group(1)
-        # Only a file with nothing there does not exist: one of the wrong kind, or one a stat cannot examine, is
-        # named so.
-        reason = file_presence.refusal_reason(path)
-        if reason == file_presence.MISSING:
+        # A file whose stat fails raises, and one of the wrong kind is named so, never reported as one that does not
+        # exist.
+        try:
+            present = file_presence.is_present(path)
+        except file_presence.NotAFile:
+            return f"cites {span}, but {step.group(1)} is not a file"
+        if not present:
             return f"cites {span}, but {step.group(1)} does not exist"
-        if reason is not None:
-            return f"cites {span}, but {step.group(1)} {reason}"
         if step.group(2) not in heading_slugs(path.read_text(encoding="utf-8")):
             return f"cites {span}, which names no heading of {step.group(1)}"
         return None
@@ -438,13 +439,13 @@ def lessons_ledger_problems(root: Path) -> list[str]:
     and a name it binds, `<module>:<name>` or `<module>:<class>.<name>`."""
     document = "docs/lessons.md"
     path = root / document
-    # Only a document with nothing there does not exist: one of the wrong kind, or one a stat cannot examine, is
-    # named so.
-    reason = file_presence.refusal_reason(path)
-    if reason == file_presence.MISSING:
+    # A path whose stat fails raises, and one of the wrong kind is named so, never reported as one that is not there.
+    try:
+        present = file_presence.is_present(path)
+    except file_presence.NotAFile:
+        return [f"{document} is not a file"]
+    if not present:
         return [f"{document} does not exist"]
-    if reason is not None:
-        return [f"{document} {reason}"]
     lines = _outside_fences(path.read_text(encoding="utf-8"))
     start = next((number for number, line in enumerate(lines) if line.rstrip() == "## Patterns"), None)
     if start is None:
