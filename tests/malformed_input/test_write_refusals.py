@@ -284,7 +284,17 @@ def _atomic_write_json(folder: Path) -> object:
 
 def _reviewer_refusals(folder: Path) -> object:
     """verify_reviewer on an entrypoint run, whose first check is the one refusing."""
-    state = cast(review_run.RunState, {"selector": "owner/name#1", "kind": "entrypoint", "reviewer_root": str(folder)})
+    state = cast(
+        review_run.RunState,
+        {
+            "selector": "owner/name#1",
+            "kind": "entrypoint",
+            "reviewer_root": str(folder),
+            # Every run records its adapter and roles; an entrypoint reviewer's one role is never the generic one.
+            "adapter": {"name": "reviewer", "scope": "repository", "source_hashes": {}},
+            "roles": [{"id": "reviewer", "prompt_file": "", "result_file": ""}],
+        },
+    )
     return raised(review_run.PipelineError, lambda: review_dispatch.verify_reviewer(state))
 
 
