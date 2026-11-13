@@ -136,6 +136,22 @@ class PathKeyTests(KeyedTestCase):
         # A name compared with no directory folds fully, the answer that refuses more names as one.
         self.assertEqual(name_key("Stra\u00dfe"), name_key("STRASSE"))
 
+    def test_a_folding_directory_keeps_a_letter_apart_whose_case_mapping_does_not_lead_back_to_it(self) -> None:
+        # NTFS's upcase table leaves the Greek theta symbol and the capital sharp s as they are, while str.lower takes
+        # them to the small theta and to sharp s, the letters NTFS keeps apart from them. A letter beyond ASCII never
+        # folds onto an ASCII one, as the dotless i's and the long s's uppercase would take them to I and S.
+        pairs = (("\u03f4", "\u03b8"), ("\u03f4", "\u0398"), ("\u1e9e", "\u00df"), ("\u0131", "i"), ("\u017f", "s"))
+        for sign, letter in pairs:
+            with self.subTest(sign=sign, letter=letter):
+                self.assertNotEqual(path_keys.fold(sign, True), path_keys.fold(letter, True))
+                self.assertEqual(sign, path_keys.fold(sign, True))
+        # A letter whose case maps one to one folds, outside ASCII too.
+        for upper, lower in (("\u00c4", "\u00e4"), ("\u0398", "\u03b8"), ("\u0416", "\u0436")):
+            with self.subTest(upper=upper):
+                self.assertEqual(path_keys.fold(lower, True), path_keys.fold(upper, True))
+                self.assertEqual(lower, path_keys.fold(upper, True))
+        self.assertEqual("\u00df", path_keys.fold("\u00df", True))
+
     def test_each_name_folds_as_the_directory_holding_it_does(self) -> None:
         # A case-sensitive folder inside one that folds, as a case-sensitive volume mounted under a folding one.
         sensitive = self.root / "cs"
@@ -288,6 +304,94 @@ class SamePartsTests(KeyedTestCase):
                 ):
                     self.assertEqual(folds, same_parts(other, reference))
 
+    def test_a_sign_folding_to_a_letter_outside_ascii_rules_is_one_only_where_the_directory_finds_one_entry(
+        self,
+    ) -> None:
+        # str.lower takes the Kelvin sign to k, the Angstrom sign to the small a with ring, and the Ohm sign to the
+        # small omega, but NTFS keeps each apart from those letters: a folding directory's ASCII rule says nothing of
+        # them, so the directory is asked, and a sibling spelled with the sign is never taken for the trusted folder.
+        # Each of those three signs is canonically equivalent to its capital, so a directory that finds one entry
+        # under both, as APFS may, makes them one; the capital sharp s and the theta symbol are equivalent to nothing,
+        # so they stay apart from the letter whatever a lookup finds.
+        real = os.lstat
+        signs = (("\u212a", "K"), ("\u212a", "k"), ("\u212b", "\u00c5"), ("\u212b", "\u00e5"), ("\u2126", "\u03a9"))
+        pairs = [(sign, letter, True) for sign, letter in (*signs, ("\u2126", "\u03c9"))]
+        pairs += [("\u1e9e", "\u00df", False), ("\u03f4", "\u03b8", False)]
+        for index, (sign, letter, equivalent) in enumerate(pairs):
+            folder = self.root / f"signs-{index}"
+            (folder / f"{letter}x").mkdir(parents=True)
+            (folder / f"{sign}y").mkdir()
+            for given, known in ((f"{sign}x", f"{letter}x"), (f"{letter}y", f"{sign}y")):
+                reference = PurePath(folder / known / "result.json").parts
+                other = PurePath(folder / given / "result.json").parts
+
+                def apart(path: Any, given: str = given) -> os.stat_result:
+                    if Path(path).name == given:
+                        raise FileNotFoundError(2, "No such file or directory", str(path))
+                    return real(path)
+
+                def unifying(path: Any, given: str = given, known: str = known) -> os.stat_result:
+                    spelled = Path(path)
+                    return real(spelled.with_name(known) if spelled.name == given else spelled)
+
+                for lstat, expected in ((apart, False), (unifying, equivalent)):
+                    with (
+                        self.subTest(given=given, known=known, expected=expected),
+                        mock.patch.dict(path_keys._FOLDS_CASE, clear=True),
+                        self.answers({folder: True}),
+                        mock.patch.object(os, "lstat", side_effect=lstat),
+                    ):
+                        self.assertEqual(expected, same_parts(other, reference))
+                try:
+                    one = os.path.samestat(os.lstat(folder / given), os.lstat(folder / known))
+                except FileNotFoundError:
+                    one = False
+                # This file system's own answer: NTFS and Linux's keep the two apart.
+                with self.subTest(given=given, known=known, real=True), mock.patch.dict(path_keys._FOLDS_CASE):
+                    self.assertEqual(one and equivalent, same_parts(other, reference))
+                    if sys.platform in ("win32", "linux"):
+                        self.assertFalse(one)
+
+    def test_a_letter_in_another_case_outside_ascii_is_one_where_the_directory_finds_one_entry(self) -> None:
+        (self.root / "\u00c4rger").mkdir()
+        reference = PurePath(self.root / "\u00c4rger" / "x").parts
+        other = PurePath(self.root / "\u00e4RGER" / "x").parts
+        try:
+            one = os.path.samestat(os.lstat(self.root / "\u00e4rger"), os.lstat(self.root / "\u00c4rger"))
+        except FileNotFoundError:
+            one = False
+        self.assertEqual(one, same_parts(other, reference))
+        if sys.platform == "win32":
+            self.assertTrue(one)
+        # A directory that keeps case keeps them apart, however a lookup answers.
+        with self.answers({self.root: False}), mock.patch.dict(path_keys._FOLDS_CASE, clear=True):
+            self.assertFalse(same_parts(other, reference))
+
+    def test_names_under_a_network_share_compare_as_written_and_are_never_asked(self) -> None:
+        # Nothing answers for a share, which may keep case, so a containment check that folded there would admit a
+        # spelling the share takes as another folder; a key still folds, the answer that refuses more.
+        share = PurePath(f"{os.sep}{os.sep}host{os.sep}share{os.sep}tree{os.sep}result.json")
+        other = PurePath(f"{os.sep}{os.sep}host{os.sep}share{os.sep}TREE{os.sep}result.json")
+        with (
+            mock.patch.object(path_keys, "_asked_folds_case", side_effect=AssertionError("never asked")),
+            mock.patch.object(os, "lstat", side_effect=AssertionError("never asked")),
+        ):
+            self.assertFalse(same_parts(other.parts, share.parts))
+            self.assertTrue(same_parts(share.parts, share.parts))
+            self.assertEqual(path_key(share), path_key(other))
+            if sys.platform == "win32":
+                # A share's own name is in the anchor, which no file system holds and which folds everywhere.
+                anchored = PurePath(str(share).replace("host", "HOST").replace("share", "Share", 1))
+                self.assertTrue(same_parts(anchored.parts, share.parts))
+
+    def test_where_no_directory_answers_parts_compare_as_written(self) -> None:
+        # A key folds where nothing answers, the answer that refuses more, but an admitting comparison does not.
+        with mock.patch.object(os, "scandir", side_effect=PermissionError(13, "Permission denied")):
+            reference = PurePath(self.root / "Name").parts
+            self.assertFalse(same_parts(PurePath(self.root / "nAME").parts, reference))
+            self.assertTrue(same_parts(reference, reference))
+            self.assertEqual(path_key(self.root / "Name"), path_key(self.root / "nAME"))
+
     @unittest.skipUnless(
         sys.platform == "win32", "only Windows names a share, which may hold a non-ASCII name, in an anchor"
     )
@@ -340,6 +444,39 @@ class FoldsCaseTests(KeyedTestCase):
         with self.swapped_case(same=True):
             self.assertTrue(folds_case(self.root))
         self.assertEqual("guide.md", name_key("Guide.MD", self.root))
+
+    def test_a_folding_directory_keys_a_name_one_letter_to_one_and_none_keys_it_fully(self) -> None:
+        # NTFS keeps Stra\u00dfe and Strasse apart, so a folding directory keys them apart; with no directory, a name
+        # folds fully, the answer that refuses more names as one.
+        with self.answers({self.root: True}):
+            self.assertNotEqual(name_key("Stra\u00dfe", self.root), name_key("Strasse", self.root))
+            self.assertEqual(name_key("STRA\u00dfE", self.root), name_key("stra\u00dfe", self.root))
+            self.assertNotEqual(name_key("\u03f4", self.root), name_key("\u03b8", self.root))
+        self.assertEqual(name_key("Stra\u00dfe"), name_key("Strasse"))
+
+    def test_a_link_made_between_the_two_lookups_is_passed_over(self) -> None:
+        # A case-sensitive folder can gain a hard link by the swapped spelling after the entry's own lookup; the
+        # swapped lookup then finds the entry's own file, now with a second link, though the folder keeps case.
+        (self.root / "PROBE.txt").write_bytes(b"")
+        elsewhere = self.root.parent / f"{self.root.name}.link"
+        real = os.lstat
+        linked: list[Path] = []
+
+        def lstat(path: Any) -> os.stat_result:
+            spelled = Path(path)
+            if spelled.name == "probe.TXT" and not linked:
+                try:
+                    os.link(self.root / "PROBE.txt", spelled)
+                    linked.append(spelled)
+                except FileExistsError:  # a folding folder already finds the entry by this spelling
+                    os.link(self.root / "PROBE.txt", elsewhere)
+                    linked.append(elsewhere)
+                self.addCleanup(linked[0].unlink)
+            return real(path)
+
+        with mock.patch.object(os, "lstat", side_effect=lstat):
+            self.assertIsNone(path_keys._asked_folds_case(str(self.root)))
+        self.assertTrue(linked)
 
     def test_a_case_sensitive_directory_folds_nothing(self) -> None:
         (self.root / "PROBE.txt").write_bytes(b"")

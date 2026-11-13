@@ -653,6 +653,33 @@ class WriteTests(GuardFixture):
         self.assert_denied(self.decide("Write", file_path=str(out / "RESULT.JSON")), "write only your own result file")
         self.assertIsNone(self.decide("Write", file_path=str(out / "result.json")))
 
+    def test_a_result_below_a_folder_spelled_with_the_kelvin_sign_is_refused_where_the_run_keeps_it_apart(
+        self,
+    ) -> None:
+        # str.lower takes the Kelvin sign to k, but NTFS and Linux's file systems keep it apart from K, so a folder
+        # spelled with it is a sibling the reviewer would create, never the folder holding its result, even where the
+        # run folds the case of ASCII letters.
+        run = make_run(self.root / "code-review-run-kel", ["csharp-review"])
+        out = run / "Kx"
+        out.mkdir()
+        manifest = json.loads((run / "run.json").read_text(encoding="utf-8"))
+        manifest["roles"][0]["result_file"] = str(out / "result.json")
+        (run / "run.json").write_text(json.dumps(manifest), encoding="utf-8")
+        sibling = run / "\u212ax"
+        try:
+            one = os.path.samestat(os.lstat(sibling), os.lstat(out))
+        except FileNotFoundError:
+            one = False
+        self.enterContext(mock.patch.dict(path_keys._FOLDS_CASE, {str(run): True}))
+        self.claim(run=run)
+        reason = self.decide("Write", file_path=str(sibling / "result.json"))
+        if one:
+            self.assertIsNone(reason)
+        else:
+            self.assert_denied(reason, "write only your own result file")
+        self.assertIsNone(self.decide("Write", file_path=str(run / "kX" / "result.json")))
+        self.assertIsNone(self.decide("Write", file_path=str(out / "result.json")))
+
     def test_a_reviewer_cannot_write_before_it_reads_its_prompt(self) -> None:
         self.assert_denied(self.decide("Write", file_path=self.result()), "read the prompt file your task names first")
 
