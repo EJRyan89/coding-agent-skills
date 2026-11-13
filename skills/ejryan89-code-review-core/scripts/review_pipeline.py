@@ -180,6 +180,7 @@ from review_source import source_commands
 from review_specialists import (
     assemble,
     build_plan,
+    generic_instructions_hashes,
     parse_unified_diff,
     renamed_from,
     render_entrypoint_prompt,
@@ -774,6 +775,10 @@ def _prepare_run(
             ),
         )
         snapshot["seconds"] = snapshot_seconds({**snapshot["seconds"], "prompts": services.timer() - writing})
+        # A generic role, alone or beside specialists, follows the suite's instructions where the suite keeps them, so
+        # their hash joins the reviewer's, which check, finalize, and next-role hold them to.
+        generic = generic_instructions_hashes(role["id"] for role in roles)
+        adapter = {**adapter, "source_hashes": {**adapter["source_hashes"], **generic}} if generic else adapter
         state: RunState = {
             "schema_version": RUN_SCHEMA_VERSION,
             "selector": review.selector,

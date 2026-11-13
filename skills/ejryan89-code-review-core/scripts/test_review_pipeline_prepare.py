@@ -1042,12 +1042,17 @@ READS = [
     ("get_pull", REPOSITORY, NUMBER),
     ("list_open_review_threads", REPOSITORY, NUMBER),
 ]
+# A run whose plan gives the generic reviewer a role records the hash of the instructions it follows, by the literal
+# reference the record names them by.
+GENERIC_HASHES = {
+    "suite:generic-review": hashlib.sha256((CORE / "references" / "generic-reviewer.md").read_bytes()).hexdigest()
+}
 GENERIC_ADAPTER: dict[str, Any] = {
     "name": "generic",
     "scope": "generic",
     "source": "generic",
     "source_commit": None,
-    "source_hashes": {},
+    "source_hashes": GENERIC_HASHES,
 }
 
 
@@ -2149,7 +2154,7 @@ def specialist_state(**changes: Any) -> dict[str, Any]:
             "scope": "repository",
             "source": "base",
             "source_commit": "<base>",
-            "source_hashes": SPECIALIST_HASHES,
+            "source_hashes": {**SPECIALIST_HASHES, **GENERIC_HASHES},
         },
         roles=[
             {
@@ -2310,7 +2315,7 @@ class RepositoryReviewerTests(PrepareFixture):
     def test_a_trusted_ref_supplies_the_reviewer_and_the_base_its_guidelines(self) -> None:
         self.configure(self.repository("review/specialists.json", trusted_ref="refs/heads/reviewers"))
         result, _ = self.prepare()
-        hashes = {**SPECIALIST_HASHES, "review/rules.md": sha("Trusted rules\n")}
+        hashes = {**SPECIALIST_HASHES, "review/rules.md": sha("Trusted rules\n"), **GENERIC_HASHES}
         self.assertEqual(
             {
                 "name": "fixture-specialists",
