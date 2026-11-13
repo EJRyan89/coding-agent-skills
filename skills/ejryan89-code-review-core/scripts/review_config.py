@@ -591,11 +591,41 @@ def _nearest_folder(path: Path) -> Path:
     return next((folder for folder in (path, *path.parents) if file_presence.is_directory(folder)), path)
 
 
+def _enclosing_common_dirs(folder: Path, client: GitClient) -> Iterable[Path]:
+    """The Git directory every worktree shares of each repository holding `folder`, nearest first: the repository git
+    finds from the folder, then each one git finds from the folder above that repository, until git finds none. A
+    repository nested in another, such as a submodule, a clone, or a bare repository inside a working tree, is left
+    by its top folder, or by its Git directory when `folder` lies in that directory or the repository is bare.
+
+    Raises GitError when git cannot read a repository on the way or names a top folder that does not hold the folder
+    it was asked from, which would otherwise end the walk early."""
+    directory = _nearest_folder(folder)
+    while True:
+        paths = client.rev_parse_paths(["--git-common-dir", "--absolute-git-dir"], directory=directory)
+        if paths is None:
+            return
+        common, git_dir = paths
+        yield common
+        if within(directory, git_dir.resolve()):
+            outside = git_dir.resolve().parent
+        else:
+            top = client.rev_parse_path("--show-toplevel", directory=directory)
+            if top is None or not within(directory, top.resolve()):
+                raise GitError(f"git named the top folder {top} for {directory}, which does not hold it")
+            outside = top.resolve().parent
+        if not within(directory, outside, strict=True):  # the file system's root holds the last repository
+            return
+        directory = outside
+
+
 def check_local_manifest(manifest: Path, checkout: Path, runner: Runner = subprocess_runner) -> None:
     """A local reviewer manifest lies outside the reviewed repository. Its folder holds the condition scripts and
     files a review runs and reads from the file system, so a folder inside `checkout`, or inside any working tree of the
     same repository, which git names by the Git directory every worktree shares, would let a checked-out pull request
-    rewrite them. Both folders are compared once links are resolved.
+    rewrite them. That holds for a folder in a repository nested inside such a working tree too, such as a submodule,
+    the working tree's checkout of the repository's submodule, or an untracked clone, so every repository enclosing
+    the folder, as `_enclosing_common_dirs` walks out to them, is compared with the checkout's. Both folders are
+    compared once links are resolved.
 
     Raises ConfigurationError naming the manifest and the checkout for a manifest inside, or when git or the file
     system cannot tell."""
@@ -606,17 +636,16 @@ def check_local_manifest(manifest: Path, checkout: Path, runner: Runner = subpro
         )
     client = GitClient(runner)
     try:
-        theirs = client.rev_parse_path("--git-common-dir", directory=_nearest_folder(folder))
-        ours = (
-            client.rev_parse_path("--git-common-dir", directory=tree)
-            if theirs is not None and file_presence.is_directory(tree)
-            else None
+        ours = client.rev_parse_path("--git-common-dir", directory=tree) if file_presence.is_directory(tree) else None
+        shared = ours is not None and any(
+            path_key(theirs, resolve=True) == path_key(ours, resolve=True)
+            for theirs in _enclosing_common_dirs(folder, client)
         )
     except (GitError, OSError) as exc:
         raise ConfigurationError(
             f"manifest {manifest} cannot be checked against checkout_path {checkout}: {flat_text(str(exc))}"
         ) from exc
-    if theirs is not None and ours is not None and path_key(theirs, resolve=True) == path_key(ours, resolve=True):
+    if shared:
         raise ConfigurationError(
             f"manifest {manifest} lies inside a working tree of the repository checkout_path {checkout} holds, whose "
             f"Git directory is {ours}; keep it outside the repository"

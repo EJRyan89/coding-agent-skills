@@ -1000,6 +1000,59 @@ class LocalManifestTests(unittest.TestCase):
         manifest = self.checkout / "review" / "manifest.json"
         self.assert_refused(self.config(manifest, self.worktree), self.in_worktree(manifest, self.worktree))
 
+    def library(self) -> Path:
+        """A repository with one commit, outside the reviewed one, to nest as a submodule or a clone."""
+        library = self.root / "library"
+        library.mkdir()
+        git(library, "init", "-b", "main")
+        (library / "lib.txt").write_text("Library\n", encoding="utf-8")
+        git(library, "add", ".")
+        git(library, "commit", "-m", "library")
+        return library
+
+    def test_a_manifest_in_a_submodule_of_another_working_tree_is_refused(self) -> None:
+        library = self.library()
+        git(self.worktree, "-c", "protocol.file.allow=always", "submodule", "add", str(library), "nested")
+        manifest = self.worktree / "nested" / "review" / "manifest.json"
+        self.assert_refused(self.config(manifest), self.in_worktree(manifest))
+
+    def test_a_manifest_in_a_clone_inside_another_working_tree_is_refused(self) -> None:
+        library = self.library()
+        git(self.root, "clone", str(library), str(self.worktree / "untracked clone"))
+        git(self.root, "init", "--bare", str(self.worktree / "bare"))
+        for manifest in (
+            self.worktree / "untracked clone" / "review" / "manifest.json",
+            self.worktree / "untracked clone" / ".git" / "review" / "manifest.json",
+            self.worktree / "bare" / "review" / "manifest.json",
+        ):
+            with self.subTest(manifest=manifest):
+                self.assert_refused(self.config(manifest), self.in_worktree(manifest))
+
+    def test_a_manifest_in_a_working_trees_checkout_of_the_repositorys_submodule_is_refused(self) -> None:
+        library = self.library()
+        git(self.checkout, "-c", "protocol.file.allow=always", "submodule", "add", str(library), "lib")
+        git(self.checkout, "commit", "-m", "submodule")
+        linked = self.root / "submodule worktree"
+        git(self.checkout, "worktree", "add", "-b", "with-submodule", str(linked))
+        git(linked, "-c", "protocol.file.allow=always", "submodule", "update", "--init")
+        manifest = linked / "lib" / "review" / "manifest.json"
+        self.assert_refused(self.config(manifest), self.in_worktree(manifest))
+
+    def test_a_manifest_in_a_repository_nested_in_an_unrelated_one_is_accepted(self) -> None:
+        library = self.library()
+        unrelated = self.root / "unrelated"
+        unrelated.mkdir()
+        git(unrelated, "init", "-b", "main")
+        git(self.root, "clone", str(library), str(unrelated / "nested clone"))
+        git(self.root, "init", "--bare", str(unrelated / "bare"))
+        for manifest in (
+            unrelated / "nested clone" / "review" / "manifest.json",
+            unrelated / "nested clone" / ".git" / "review" / "manifest.json",
+            unrelated / "bare" / "review" / "manifest.json",
+        ):
+            with self.subTest(manifest=manifest):
+                self.assert_accepted(self.config(manifest))
+
     def test_the_default_manifest_beside_a_configuration_inside_the_checkout_is_refused(self) -> None:
         candidate = self.checkout / "config" / "config.json"
         manifest = self.checkout / "config" / "reviewers" / "example" / "one" / "manifest.json"
