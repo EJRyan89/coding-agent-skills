@@ -19,7 +19,8 @@ writes there asks `is_occupied` before the write, or writes through a call that 
 rename, never one that follows it.
 `matching` lists what a glob pattern matches below a folder, as `Path.glob` does, but raises for a folder it cannot
 list, where `Path.glob` matches nothing in it from Python 3.15 on, so a reader takes no unreadable folder for an empty
-one.
+one, and for a pattern it cannot read relative to its folder on every platform, such as one naming a drive, so a
+reader takes no pattern it never looked for as matching nothing.
 
 A stat it cannot make is a fourth answer, that it could not tell, and reaches the caller as the `OSError` the stat
 raised: `Path.is_file`, `os.path.exists`, and `os.path.lexists` return False on every `OSError` from Python 3.14 on,
@@ -35,7 +36,12 @@ import fnmatch
 import os
 import stat
 from collections.abc import Callable
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
+
+PLATFORM_ALLOWED = {
+    "pathlib.PureWindowsPath": "refuses a glob pattern Windows reads as naming a drive, a root, or a network share, on "
+    "every platform, so a pattern means the same names below its folder on each"
+}
 
 # The errors a stat raises when nothing is at the path: the path or a folder above it is missing, or a folder above
 # it is a file. Every other error is one the reader cannot read as absence.
@@ -165,8 +171,9 @@ def matching(folder: Path, pattern: str, *, skip: Callable[[Path], bool] = _neve
     and `[...]` within one name, in the case the platform reads names in, and a `**` part before another any depth of
     folders, the folder itself included, without entering a symbolic link to a folder. Nothing when nothing is at
     `folder`, a link to nothing included, `NotADirectory` when something else is, and the `OSError` of a folder it
-    cannot list, where `Path.glob` matches nothing in it from Python 3.15 on. A pattern that is empty, absolute, ends
-    in `**`, whose matches differ between Python versions, or holds an empty, `.`, or `..` part raises ValueError.
+    cannot list, where `Path.glob` matches nothing in it from Python 3.15 on. A pattern not of the one form
+    `_pattern_parts` accepts raises ValueError, so a pattern it never looked for is never read as matching
+    nothing.
 
     `skip` names the folders below `folder` a caller leaves out, such as `node_modules` or a folder of fixtures: one it
     answers True for is never listed or entered, so a folder it cannot list inside a skipped one is never met, while
@@ -176,9 +183,7 @@ def matching(folder: Path, pattern: str, *, skip: Callable[[Path], bool] = _neve
     Each path is kept once by its spelling as the listing gave it, never by `Path` equality, which on Windows lowers
     each name with `str.lower` and so takes two names the file system keeps apart, such as the Kelvin sign and K, for
     one."""
-    parts = pattern.split("/")
-    if parts[-1] == "**" or any(part in ("", ".", "..") for part in parts):
-        raise ValueError(f"{pattern!r} is no relative glob pattern this reads")
+    parts = _pattern_parts(pattern)
     if not is_directory(folder):
         return []
     found = [folder]
@@ -194,6 +199,26 @@ def matching(folder: Path, pattern: str, *, skip: Callable[[Path], bool] = _neve
             if fnmatch.fnmatch(entry.name, part) and (last or (entry.is_dir() and not skip(Path(entry.path))))
         ]
     return sorted({os.fspath(path): path for path in found}.values())
+
+
+def _pattern_parts(pattern: str) -> tuple[str, ...]:
+    """The parts of a glob pattern `matching` reads, split on `/`, or ValueError for any other pattern. It accepts one
+    form, rather than refusing the spellings found so far: a pattern in which Windows path rules read no anchor, so
+    no drive, root, or network share, and whose `/`-separated parts are exactly the parts both POSIX and Windows path
+    rules read in it, so no part is empty or `.` or holds a backslash, and the pattern means the same names below its
+    folder on every platform. Of those parts, none is `..`, which climbs out of the folder, and the last is not `**`,
+    whose matches differ between Python versions."""
+    parts = tuple(pattern.split("/"))
+    windows = PureWindowsPath(pattern)
+    if (
+        windows.anchor
+        or windows.parts != parts
+        or PurePosixPath(pattern).parts != parts
+        or ".." in parts
+        or parts[-1] == "**"
+    ):
+        raise ValueError(f"{pattern!r} is no relative glob pattern this reads")
+    return parts
 
 
 def _entries(folder: Path) -> list[os.DirEntry[str]]:

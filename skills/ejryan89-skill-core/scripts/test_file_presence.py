@@ -535,6 +535,47 @@ class MatchingTests(unittest.TestCase):
             with self.subTest(pattern=pattern), self.assertRaises(ValueError):
                 matching(self.root, pattern)
 
+    def test_a_pattern_one_platform_reads_as_more_than_names_below_the_folder_is_refused_on_every_platform(
+        self,
+    ) -> None:
+        # A drive with its root, by either separator; a drive alone and a drive before a name, which Windows reads
+        # from that drive's current folder; a root by a backslash; a network share by backslashes; and a backslash
+        # inside a part, which Windows reads as a separator. POSIX reads each as names below the folder and Windows
+        # does not, so each is refused on both, before the folder is examined: a missing folder refuses it too
+        # rather than answering that nothing matched.
+        for pattern in (
+            "C:/Windows",
+            "C:\\Windows",
+            "C:",
+            "C:x",
+            "c:*.py",
+            "\\abs",
+            "\\\\server\\share\\x",
+            "sub\\c.py",
+        ):
+            for folder in (self.root, self.root / "missing"):
+                with (
+                    self.subTest(pattern=pattern, folder=folder.name),
+                    self.assertRaises(ValueError),
+                ):
+                    matching(folder, pattern)
+
+    def test_below_a_link_to_nothing_nothing_is_listed_and_a_pattern_it_cannot_read_is_still_refused(self) -> None:
+        # The stat a link to nothing gives on every platform, Windows included, as in FilePresenceTests.
+        link = os.stat_result((0o120777, 0, 0, 1, 0, 0, 0, 0, 0, 0))
+
+        def answer(follow_symlinks: bool = True) -> os.stat_result:
+            if follow_symlinks:
+                raise FileNotFoundError(errno.ENOENT, "missing")
+            return link
+
+        folder = self.root / "linked"
+        with mock.patch.object(Path, "stat", side_effect=answer), mock.patch.object(os, "scandir") as listed:
+            self.assertEqual([], matching(folder, "**/*.py"))
+            with self.assertRaises(ValueError):
+                matching(folder, "C:/x")
+        listed.assert_not_called()
+
     @unittest.skipIf(sys.platform == "win32", "a symbolic link to a folder needs a privilege on Windows")
     def test_a_double_star_enters_no_link_to_a_folder_but_a_wildcard_part_does(self) -> None:
         (self.root / "linked").symlink_to(self.root / "sub", target_is_directory=True)
