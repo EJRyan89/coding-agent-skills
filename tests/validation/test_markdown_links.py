@@ -363,6 +363,14 @@ class LessonsLedgerPolicy(unittest.TestCase):
             self.problems(ledger, {"docs/guide.md": "# A\n"}),
         )
 
+    def test_a_folder_named_like_a_mechanism_s_module_is_no_candidate_never_a_refusal_or_an_ambiguity(self) -> None:
+        # core_a.py is a folder at the repository root, so the module resolves to the skill's file alone.
+        ledger = (
+            f"# Lessons\n\n## Patterns\n\n### A folder beside\n\n{self.ENTRY}- **Use:** `core_a:LIMIT`.\n"
+            "- **No guard:** A reader cannot tell it from the code.\n"
+        )
+        self.assertEqual([], self.problems(ledger, {"core_a.py/notes.txt": ""}))
+
     def test_a_mechanism_that_does_not_resolve_fails(self) -> None:
         ledger = (
             f"# Lessons\n\n## Patterns\n\n### Gone\n\n{self.ENTRY}- **Use:**"

@@ -478,10 +478,10 @@ class Evaluation:
             self.not_read(written, refused)
             return
         try:
-            present = is_present(path, other_is_absent=True)
+            present = is_present(path)
         except OSError as error:
-            # A file it cannot stat is reported with the stat's reason, as import_nearest reports one, never as not
-            # found.
+            # A file it cannot stat, or something other than a file, such as a folder, is reported with the stat's
+            # reason or as not a file, as import_nearest reports one, never as not found.
             self.reports.append(os_unreadable(error, path))
             self.state.unsettle()
             return

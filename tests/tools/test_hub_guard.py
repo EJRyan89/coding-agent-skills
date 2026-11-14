@@ -479,6 +479,28 @@ class UnstatablePlaceTests(GuardTestCase):
         self.assertEqual(hub_guard.DENY_REASON, self.reason)
 
 
+class AliasLookupPlaceTests(unittest.TestCase):
+    """alias_lookups reads no alias at a place the text does not settle, or at one where no folder is, before it looks
+    for the checkout there: each runs nothing, so it has no configuration to read."""
+
+    def setUp(self) -> None:
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+
+    def test_a_place_the_text_does_not_settle_reads_no_alias(self) -> None:
+        self.assertEqual([], hub_guard.alias_lookups(hub_guard.Place(None, None)))
+
+    def test_a_place_where_nothing_is_reads_no_alias(self) -> None:
+        missing = self.root / "missing"
+        self.assertEqual([], hub_guard.alias_lookups(hub_guard.Place(missing, missing)))
+
+    def test_a_place_where_a_file_is_reads_no_alias(self) -> None:
+        file = self.root / "file"
+        file.write_text("", encoding="utf-8")
+        self.assertEqual([], hub_guard.alias_lookups(hub_guard.Place(file, file)))
+
+
 class EndToEndTests(GuardTestCase):
     """tools/hub_guard.py started as its own process, as the hook starts it, decides each kind of event as the
     in-process call the other tests make does, with the same reason and the same notes. The in-process call reads a

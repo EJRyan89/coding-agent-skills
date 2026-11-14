@@ -11,9 +11,11 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
+import file_presence
 import msbuild_evaluation
 from msbuild_evaluation import ProjectFile, Sources, Unsettled, read_project
 from msbuild_reader import PackageRef, Unreadable, parse_xml
+from test_msbuild_reader import failing_without_a_file
 
 LEGACY_PROJECT = """<?xml version="1.0" encoding="utf-8"?>
 <Project ToolsVersion="15.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
@@ -386,6 +388,45 @@ class EvaluationTests(unittest.TestCase):
             " which the reader does not leave, so every property is unsettled after it"
         )
         self.assertEqual([(path, reason)], [(report.file, report.reason) for report in found.reports])
+
+    def test_exists_holds_for_a_file_or_a_folder_and_not_for_nothing(self) -> None:
+        # MSBuild's Exists() answers true for a folder as well as a file, and false, never a report, for nothing there.
+        self.write("src/App/marker.file", "")
+        (self.root / "src" / "App" / "marker.folder").mkdir()
+        groups = "".join(
+            f"<ItemGroup Condition=\"Exists('marker.{kind}')\">"
+            f'<PackageReference Include="Lantern.{kind}" Version="1.0.0" /></ItemGroup>'
+            for kind in ("file", "folder", "nothing")
+        )
+        project = self.read("src/App/App.csproj", f'<Project Sdk="Microsoft.NET.Sdk">{groups}</Project>')
+        self.assertEqual(
+            (["Lantern.file", "Lantern.folder"], []), ([package.id for package in project.packages], project.reports)
+        )
+
+    def test_a_stat_error_naming_no_file_is_reported_against_the_import_or_the_exists_path(self) -> None:
+        text = (
+            '<Project Sdk="Microsoft.NET.Sdk"><Import Project="Local.props" />'
+            "<ItemGroup Condition=\"Exists('extra.marker')\">"
+            '<PackageReference Include="Quill.Extra" Version="1.0.0" /></ItemGroup></Project>'
+        )
+        self.write("src/App/Local.props", "<Project />")
+        self.write("src/App/extra.marker", "")
+        for name in ("Local.props", "extra.marker"):
+            target = self.root / "src" / "App" / name
+            with self.subTest(name):
+                with failing_without_a_file(msbuild_evaluation, "is_present", target):
+                    project = self.read("src/App/App.csproj", text)
+                self.assertEqual([(target, "Access is denied")], [(item.file, item.reason) for item in project.reports])
+
+    def test_an_import_naming_a_folder_is_reported_as_not_a_file_never_as_not_found(self) -> None:
+        # MSBuild cannot import a folder, so what follows is unsettled, but the report names what stands there.
+        folder = self.root / "src" / "App" / "Local.props"
+        folder.mkdir(parents=True)
+        project = self.read(
+            "src/App/App.csproj", '<Project Sdk="Microsoft.NET.Sdk"><Import Project="Local.props" /></Project>'
+        )
+        expected = file_presence.NotAFile(folder, directory=True)
+        self.assertEqual([(folder, expected.strerror)], [(item.file, item.reason) for item in project.reports])
 
     def test_sdk_element_and_sdk_import_count_as_sdk_style(self) -> None:
         for text in (

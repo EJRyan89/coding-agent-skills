@@ -7206,3 +7206,22 @@ def test_indirection_catalogues_hold_each_construct() -> None:
     assert {"skills/ejryan89-skill-core/scripts/path_containment.py"} == set(owners["os.path.commonpath"])
     reader = {"skills/ejryan89-skill-core/scripts/json_reader.py"}
     assert reader == set(owners["json.loads"]) == set(owners["json.load"]) == set(owners["json.JSONDecoder"])
+
+
+class SiblingImportFixtures(unittest.TestCase):
+    def test_a_dotted_import_is_a_sibling_import_when_its_first_part_is_a_module_beside_it(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            folder = Path(temporary)
+            write_fixture_tree(folder, {"helper.py": "", "sub.py": "", "test_a.py": "import helper.sub\n"})
+            source = folder / "test_a.py"
+            self.assertTrue(python_checks.imports_a_sibling(source, ast.parse(source.read_text(encoding="utf-8"))))
+            # Only the first part names the sibling: a later part beside the module is no sibling import.
+            source.write_text("import other.sub\n", encoding="utf-8")
+            self.assertFalse(python_checks.imports_a_sibling(source, ast.parse(source.read_text(encoding="utf-8"))))
+
+    def test_a_folder_named_like_a_module_beside_it_is_no_sibling_never_a_refusal(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            folder = Path(temporary)
+            write_fixture_tree(folder, {"helper.py/notes.txt": "", "test_a.py": "import helper\n"})
+            source = folder / "test_a.py"
+            self.assertFalse(python_checks.imports_a_sibling(source, ast.parse(source.read_text(encoding="utf-8"))))

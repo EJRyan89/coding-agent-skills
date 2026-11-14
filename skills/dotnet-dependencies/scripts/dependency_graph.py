@@ -351,18 +351,19 @@ def read_configs(graph: Graph, project: Project) -> None:
     list, or a config it cannot stat, is reported against itself, and the rest of the graph is still answered."""
     folder = project.file.path.parent
     try:
-        configs = [
-            candidate
-            for candidate in sorted(folder.iterdir())
-            if ordinal_fold(candidate.name) in CONFIG_FILES
-            and file_presence.is_present(candidate, other_is_absent=True)
-        ]
+        entries = sorted(folder.iterdir())
     except OSError as error:
         graph.refuse(os_unreadable(error, folder))
         return
-    for candidate in configs:
+    for candidate in entries:
+        if ordinal_fold(candidate.name) not in CONFIG_FILES:
+            continue
         try:
+            if not file_presence.is_present(candidate, other_is_absent=True):
+                continue
             project.file.redirects += read_redirects(candidate)
+        except OSError as error:
+            graph.refuse(os_unreadable(error, candidate))
         except Unreadable as error:
             graph.refuse(error)
 
@@ -379,10 +380,14 @@ def nuget_cache() -> list[Path]:
         folders.append(absolute_home() / ".nuget" / "packages")
     except RelativeEnvironmentPath as error:
         raise Failed(f"{error}, so the NuGet cache under the home folder is not known") from None
-    try:
-        return [folder for folder in folders if file_presence.is_directory(folder, other_is_absent=True)]
-    except OSError as error:
-        raise os_unreadable(error, folders[0]) from None
+    found: list[Path] = []
+    for folder in folders:
+        try:
+            if file_presence.is_directory(folder, other_is_absent=True):
+                found.append(folder)
+        except OSError as error:
+            raise os_unreadable(error, folder) from None
+    return found
 
 
 def packages_folder(project_dir: Path, stop: Path) -> Path | None:
@@ -403,22 +408,31 @@ def package_directory(folders: Sequence[Path], package: str, version: str) -> Pa
     stat raises Unreadable naming it, never reads as a package that is not unpacked there."""
     for folder in folders:
         wanted = {ordinal_fold(f"{package}.{version}"), ordinal_fold(f"{package}/{version}")}
-        try:
-            for child in folder.iterdir():
-                if ordinal_fold(child.name) == ordinal_fold(f"{package}.{version}") and _folder(child):
-                    return child
-                if ordinal_fold(child.name) == ordinal_fold(package) and _folder(child):
-                    for inner in child.iterdir():
-                        if ordinal_fold(f"{child.name}/{inner.name}") in wanted and _folder(inner):
-                            return inner
-        except OSError as error:
-            raise os_unreadable(error, folder) from None
+        for child in _entries(folder):
+            if ordinal_fold(child.name) == ordinal_fold(f"{package}.{version}") and _folder(child):
+                return child
+            if ordinal_fold(child.name) == ordinal_fold(package) and _folder(child):
+                for inner in _entries(child):
+                    if ordinal_fold(f"{child.name}/{inner.name}") in wanted and _folder(inner):
+                        return inner
     return None
 
 
+def _entries(folder: Path) -> list[Path]:
+    """What a folder holds, or Unreadable naming the folder when it cannot be listed."""
+    try:
+        return list(folder.iterdir())
+    except OSError as error:
+        raise os_unreadable(error, folder) from None
+
+
 def _folder(path: Path) -> bool:
-    """Whether a folder is at path: False for nothing or something else there, and the stat's OSError otherwise."""
-    return file_presence.is_directory(path, other_is_absent=True)
+    """Whether a folder is at path: False for nothing or something else there, and Unreadable naming the path when
+    its stat fails."""
+    try:
+        return file_presence.is_directory(path, other_is_absent=True)
+    except OSError as error:
+        raise os_unreadable(error, path) from None
 
 
 def nuspec_node(graph: Graph, folders: Sequence[Path], reference: PackageRef) -> PackageNode | None:

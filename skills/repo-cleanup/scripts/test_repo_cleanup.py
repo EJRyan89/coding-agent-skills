@@ -599,6 +599,10 @@ class DiscoverTests(Fixture):
         git(self.clone, "worktree", "add", "--quiet", "-b", "linked", str(self.repos / "linked worktree"))
         self.assertEqual([self.clone.as_posix()], self.discover())
 
+    def test_sweep_passes_over_a_file_among_the_root_s_entries(self) -> None:
+        (self.repos / "notes.txt").write_text("not a repository\n", encoding="utf-8")
+        self.assertEqual([self.clone.as_posix()], self.discover())
+
     def test_target_by_name_or_absolute_path(self) -> None:
         for target in ("my repo", str(self.clone)):
             with self.subTest(target=target):

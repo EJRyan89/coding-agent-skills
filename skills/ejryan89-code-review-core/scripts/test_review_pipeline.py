@@ -3282,6 +3282,25 @@ class HostClaimPidTests(unittest.TestCase):
         self.assertEqual(("running", 4242), (state.status, state.pid))
 
 
+class HostClaimAttemptTests(unittest.TestCase):
+    """A new claim's attempt follows every earlier one, so its isolation folder is never one an earlier host used."""
+
+    def test_a_new_claim_counts_the_isolation_folders_of_earlier_attempts_with_no_claim_left(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            run = Path(temporary)
+            (run / "copilot-isolation-1").mkdir()
+            (run / "copilot-isolation-2").mkdir()
+            (run / "copilot-outcome-2.json").write_text("{}", encoding="utf-8")
+            self.assertEqual(3, new_claim(run, generation=0, now=0.0)["attempt"])
+
+    def test_a_new_claim_follows_the_previous_claim_when_it_names_a_later_attempt(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            run = Path(temporary)
+            (run / "copilot-isolation-1").mkdir()
+            atomic_write_json(run / HOST_CLAIM, {**new_claim(run, generation=0, now=0.0), "attempt": 4})
+            self.assertEqual(5, new_claim(run, generation=0, now=0.0)["attempt"])
+
+
 class UnstatableRunStateTests(unittest.TestCase):
     """A run's state file or folder whose stat fails is the OSError check, wait, and unfinalized report, never read as
     missing: a read log as no reads, a run as recorded, a host's claim or outcome as no host or none yet."""

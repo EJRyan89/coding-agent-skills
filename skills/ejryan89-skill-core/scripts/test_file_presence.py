@@ -535,6 +535,12 @@ class MatchingTests(unittest.TestCase):
             with self.subTest(pattern=pattern), self.assertRaises(ValueError):
                 matching(self.root, pattern)
 
+    def test_a_refused_pattern_is_named_in_the_refusal(self) -> None:
+        # A caller that reports the refusal names the pattern it never looked for, quoted as Python writes it.
+        with self.assertRaises(ValueError) as raised:
+            matching(self.root, "../a b")
+        self.assertEqual("'../a b' is no relative glob pattern this reads", str(raised.exception))
+
     def test_a_pattern_one_platform_reads_as_more_than_names_below_the_folder_is_refused_on_every_platform(
         self,
     ) -> None:

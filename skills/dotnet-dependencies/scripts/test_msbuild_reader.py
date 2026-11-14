@@ -236,6 +236,17 @@ class ReaderTests(unittest.TestCase):
             nearest_file(self.root / "src" / "App", "Directory.Packages.props")
         self.assertEqual((nearer, "Access is denied"), (raised.exception.file, raised.exception.reason))
 
+    def test_a_stat_error_naming_no_file_is_refused_against_the_candidate_the_search_checked(self) -> None:
+        self.write("Directory.Packages.props", "<Project />")
+        (self.root / "src" / "App").mkdir(parents=True)
+        nearer = self.root / "src" / "Directory.Packages.props"
+        with (
+            failing_without_a_file(msbuild_reader, "is_present", nearer),
+            self.assertRaises(msbuild_reader.Unreadable) as raised,
+        ):
+            nearest_file(self.root / "src" / "App", "Directory.Packages.props")
+        self.assertEqual((nearer, "Access is denied"), (raised.exception.file, raised.exception.reason))
+
     def test_packages_config_lists_each_package_with_its_version_and_framework(self) -> None:
         self.assertEqual(
             [
@@ -269,6 +280,11 @@ class ReaderTests(unittest.TestCase):
         self.write("pkg/tools/Other.dll", "")
         self.assertEqual(("Lantern.Json", "Lantern.Json.Extras"), package_assemblies(self.root / "pkg"))
         self.assertEqual((), package_assemblies(self.root / "nowhere"))
+
+    def test_package_assemblies_are_in_the_order_of_their_ordinal_fold_whatever_their_case(self) -> None:
+        for stem in ("beta", "Alpha", "Gamma"):
+            self.write(f"pkg/lib/net45/{stem}.dll", "")
+        self.assertEqual(("Alpha", "beta", "Gamma"), package_assemblies(self.root / "pkg"))
 
     def test_a_lib_that_is_no_folder_or_cannot_be_looked_at_is_unreadable_rather_than_empty(self) -> None:
         lib = self.write("file/lib", "")
@@ -737,4 +753,19 @@ def stat_failing_at(target: Path) -> Iterator[None]:
             stack.enter_context(mock.patch.object(Path, name, answering_false(getattr(Path, name))))
         for name in ("exists", "lexists", "isfile", "isdir"):
             stack.enter_context(mock.patch.object(os.path, name, answering_false(getattr(os.path, name))))
+        yield
+
+
+@contextlib.contextmanager
+def failing_without_a_file(owner: object, name: str, target: Path) -> Iterator[None]:
+    """`owner.<name>` called on `target` alone raises PermissionError naming no file, so a report of it names the path
+    its caller checked, never one the error carries; every other call is answered as it is."""
+    real = getattr(owner, name)
+
+    def call(path: Any, *rest: Any, **options: Any) -> Any:
+        if path == target:
+            raise PermissionError(errno.EACCES, "Access is denied")
+        return real(path, *rest, **options)
+
+    with mock.patch.object(owner, name, call):
         yield

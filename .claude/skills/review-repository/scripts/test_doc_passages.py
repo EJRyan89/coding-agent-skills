@@ -442,6 +442,14 @@ class ConditionTests(unittest.TestCase):
         listed = [relative for relative, _ in doc_passages.documents(self.root)]
         self.assertEqual(["README.md", "docs/guide.md"], listed)
 
+    def test_a_folder_a_documents_glob_matches_is_passed_over_and_its_documents_still_searched(self) -> None:
+        # A folder named like a document, such as `docs/archive.md`, is no document, but those below it are.
+        self.document("docs/guide.md", "# Guide\n")
+        self.document("docs/archive.md/old.md", "# Old\n")
+        (self.root / "notes.md").mkdir()
+        listed = [relative for relative, _ in doc_passages.documents(self.root)]
+        self.assertEqual(["docs/archive.md/old.md", "docs/guide.md"], listed)
+
     @unittest.skipIf(sys.platform == "win32", "creating a symbolic link on Windows needs a privilege a run may lack")
     def test_a_link_to_a_folder_is_not_followed_into_its_documents(self) -> None:
         # A `**` step reaches the folders below, as a glob does, but never through a link out of the snapshot.
