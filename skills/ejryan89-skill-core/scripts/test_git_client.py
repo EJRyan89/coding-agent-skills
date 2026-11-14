@@ -2122,7 +2122,18 @@ LOCAL_FAILURES = {
     "fatal: failed to write object\nfatal: unpack-objects failed\n",
     "full disk": "fatal: write error: No space left on device\nfatal: index-pack failed\n",
     "broken config": "fatal: bad config line 3 in file .git/config\n",
+    "broken global config": "fatal: bad config line 1 in file /home/u/.gitconfig\n",
     "dubious ownership": "fatal: detected dubious ownership in repository at '/srv/clone'\n",
+    "unwritable FETCH_HEAD": "error: cannot open '.git/FETCH_HEAD': Permission denied\n",
+    "unwritable reflog": "error: cannot update the ref 'refs/remotes/origin/main': unable to append to "
+    "'.git/logs/refs/remotes/origin/main': Permission denied\n",
+    "stale shallow lock": "fatal: Unable to create '/home/u/clone/.git/shallow.lock': File exists.\n\nAnother git "
+    "process seems to be running in this repository, or the lock file may be stale\n",
+    "unwritable pack folder": "fatal: Unable to create temporary file '/home/u/clone/.git/objects/pack/tmp_pack_XXXXXX'"
+    ": Permission denied\nfatal: fetch-pack: invalid index-pack output\n",
+    "a Windows path": "error: cannot open 'C:\\Users\\u\\clone\\.git\\FETCH_HEAD': Permission denied\n",
+    "a path of another spelling": "error: could not open '/home/u/clone/.git/packed-refs.new' for writing: Read-only "
+    "file system\n",
 }
 # The remote's failures, which name nothing of the local repository, among them a remote's own lock on its line.
 REMOTE_FAILURES = {
@@ -2136,6 +2147,19 @@ REMOTE_FAILURES = {
     "9 after 0 ms: Couldn't connect to server\n",
     "remote's lock": "remote: error: cannot lock ref 'refs/heads/main': Unable to create 'main.lock': File exists.\n"
     "fatal: the remote end hung up unexpectedly\n",
+    # A remote's git over ssh or a local path writes its own lines unprefixed, and git's verdict follows them.
+    "remote's own unprefixed lines": "fatal: Unable to create '/srv/origin/.git/index.lock': File exists.\n"
+    "fatal: Could not read from remote repository.\n\nPlease make sure you have the correct access rights\nand the "
+    "repository exists.\n",
+    # Text the remote chose, which git quotes on lines of its own.
+    "remote error echoed": "fatal: remote error: unable to write '.git/FETCH_HEAD': bad config, no space left on "
+    "device\n",
+    "rpc failure echoed": "error: RPC failed; HTTP 500 curl 22 cannot lock ref '.git/refs/heads/main'\nfatal: "
+    "expected flush after ref listing\n",
+    "a remote URL holding .git/": "fatal: unable to access 'https://example.invalid/r/.git/': Could not resolve host: "
+    "example.invalid\n",
+    "a missing repository at a URL holding .git/": "remote: Repository not found.\nfatal: repository "
+    "'https://example.invalid/r/.git/' not found\n",
 }
 
 

@@ -497,22 +497,35 @@ PERMANENT_MARKERS = (
     "ssl certificate problem",
     "returned error: 4",
 )
-# Lowered markers of a command that reached a remote but failed in the local repository: a ref it could not lock or
-# update, an object or a file it could not write, a disk that is full, or a configuration or ownership git refuses
-# there. Like the transient markers they count only on git's own lines, so a remote's `remote:` line naming its own
-# lock is never the local repository's fault.
+# What tells a command that reached a remote but failed in the local repository from the remote's failure (see
+# `local_failure`). In a repository whose git directory is a `.git` folder, as a clone's is, every local fault git
+# reports while it writes what it fetched names the path it could not write, relative or absolute, inside that folder:
+# a ref or its lock, FETCH_HEAD, a reflog, a pack or a temporary file beside it, the shallow file, the config.
+LOCAL_GIT_PATH = re.compile(r"(?:^|[\s'\"/\\])\.git[/\\]")
+# A URL a line quotes, such as the one `unable to access` names, whose path may hold `.git/` on the remote's side.
+QUOTED_URL = re.compile(r"[a-z][a-z0-9+.-]*://\S*")
+# Lowered markers of the local faults git reports without such a path: a ref it could not lock or update in a git
+# directory of another name, a disk that is full, a configuration file outside the repository it cannot parse, or a
+# repository it refuses as another user's.
 LOCAL_FAILURE_MARKERS = (
     "cannot lock ref",
     "unable to update local ref",
     "update_ref failed",
     "insufficient permission for adding an object",
-    "failed to write object",
-    "unable to write",
-    "unable to create",
-    "could not write",
     "no space left on device",
     "bad config",
     "dubious ownership",
+)
+# Lowered text of git's own verdict that the remote end failed, or of a line that carries what the remote said. A
+# remote's git, reached over ssh or a local path, writes its own `fatal:` lines into this stderr with no `remote:`
+# before them, and git then says it could not read from the remote; over HTTP git says it could not access the URL,
+# and quotes the remote's own message after `remote error:` or in an `RPC failed` line. Any of these makes the failure
+# the remote's, whatever local-looking text the remote chose to send.
+REMOTE_VERDICTS = (
+    "could not read from remote repository",
+    "remote error:",
+    "rpc failed",
+    "unable to access '",
 )
 
 
@@ -691,10 +704,22 @@ def transient_failure(result: GitResult) -> bool:
 
 
 def local_failure(stderr: str) -> bool:
-    """Whether a failed command's stderr names a fault of the local repository rather than of a remote: one of git's
-    own lines holds a `LOCAL_FAILURE_MARKERS` marker."""
-    own = [line for line in stderr.casefold().splitlines() if line.lstrip().startswith(GIT_LINE_PREFIXES)]
-    return any(marker in line for line in own for marker in LOCAL_FAILURE_MARKERS)
+    """Whether a failed command's stderr names a fault of the local repository rather than of a remote.
+
+    It does when git gives no verdict that the remote failed (`REMOTE_VERDICTS`) and one of git's own `fatal:` or
+    `error:` lines names a path inside a `.git` folder, a URL it quotes left out, or holds a `LOCAL_FAILURE_MARKERS`
+    marker. A `remote:` line is never git's own. What a remote cannot be kept from is a transfer it breaks after
+    writing local-looking lines of its own, with none of git's verdicts after them: that failure reads as local, and
+    either reading stops the caller.
+    """
+    lowered = stderr.casefold()
+    if any(verdict in lowered for verdict in REMOTE_VERDICTS):
+        return False
+    own = [line for line in lowered.splitlines() if line.lstrip().startswith(("fatal:", "error:"))]
+    return any(
+        LOCAL_GIT_PATH.search(QUOTED_URL.sub("", line)) or any(marker in line for marker in LOCAL_FAILURE_MARKERS)
+        for line in own
+    )
 
 
 def transient_wait(retry: int) -> float:
