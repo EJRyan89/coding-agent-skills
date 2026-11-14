@@ -759,6 +759,28 @@ class UpgradeNotesPolicy(unittest.TestCase):
             problem,
         )
 
+    def commits_read_as(self, entries: list[release_notes.SourcedEntry]) -> contextlib.AbstractContextManager[object]:
+        return mock.patch.object(upgrade_notes, "range_entries", return_value=entries)
+
+    def test_a_head_that_never_meets_origin_main_is_a_problem_line(self) -> None:
+        # The tag, its tree, and the commits read, and only the merge base git cannot find: a branch whose history
+        # shares no commit with origin/main.
+        self.release()
+        self.git("checkout", "-q", "--orphan", "unrelated")
+        self.commit("An unrelated root", self.MANIFEST_CHANGE)
+        # Without a body the branch's own commits are read first, and an unrelated root has no parent to read the
+        # notes file at, so that read stands aside for the merge base to be the one git cannot answer.
+        for body, reading in ((self.body(), contextlib.nullcontext()), (None, self.commits_read_as([]))):
+            with self.subTest(body=body is not None), reading:
+                [problem] = upgrade_notes_problems(self.root, body)
+                self.assertTrue(
+                    problem.startswith(
+                        "the upgrade-notes check cannot read the commits and the tree since v0.1.0: "
+                        "git merge-base HEAD origin/main failed"
+                    ),
+                    problem,
+                )
+
     def test_a_missing_origin_main_fails_with_the_fetch_command(self) -> None:
         self.release()
         self.git("update-ref", "-d", "refs/remotes/origin/main")
