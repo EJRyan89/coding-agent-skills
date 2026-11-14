@@ -2287,7 +2287,7 @@ class CopilotAddedRootTests(CopilotHostFixture):
         self.assertEqual([], [path.name for path in run.iterdir() if path.name in {".github", ".agents", ".claude"}])
         [_, workspace] = self.folders
         top = subprocess.run(
-            ["git", "rev-parse", "--show-toplevel"], cwd=workspace, capture_output=True, text=True, check=True
+            ["git", "rev-parse", "--show-toplevel"], cwd=workspace, capture_output=True, encoding="utf-8", check=True
         )
         self.assertEqual(workspace.resolve(), Path(top.stdout.strip()).resolve(), "Copilot's search ends there")
 
