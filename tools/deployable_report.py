@@ -127,6 +127,7 @@ COMMANDS_ALLOWED = {
 PRESENCE_ALLOWED = {
     "check_runtimes": "removes its throwaway work folder under the temporary directory once the runtimes are judged; "
     "nothing reads it after",
+    "_verify_log": ("an empty log names no runtime, so a deploy.py verify that failed counts as a failure of its own"),
 }
 
 

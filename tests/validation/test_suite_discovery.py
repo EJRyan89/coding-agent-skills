@@ -23,6 +23,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts"))
 
+import file_presence
 import job_pool
 import suite_discovery
 import validation_support
@@ -418,6 +419,26 @@ class SuiteDiscoveryFixtures(unittest.TestCase):
                     },
                 )
                 + recorded_cost_problems(root, {"tests/test_costly.py": {"Slow::test_long": 0}}),
+            )
+
+    def test_a_recorded_suite_a_stat_cannot_examine_is_named_so_never_as_no_suite(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            denied = PermissionError(13, "Permission denied")
+            with mock.patch.object(file_presence, "is_present", side_effect=denied):
+                problems = recorded_cost_problems(Path(temporary), {"tests/test_denied.py": {"Slow::test_long": 4}})
+            self.assertEqual(
+                ["tests/test_denied.py records test costs but cannot be examined: Permission denied"], problems
+            )
+
+    def test_a_recorded_suite_of_another_kind_is_named_so_never_as_no_suite(self) -> None:
+        # A folder where a recorded suite belongs is not a file, which the problem says, rather than reading it as
+        # a suite that is not there.
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "tests" / "test_folder.py").mkdir(parents=True)
+            self.assertEqual(
+                ["tests/test_folder.py records test costs but is not a file"],
+                recorded_cost_problems(root, {"tests/test_folder.py": {"Slow::test_long": 4}}),
             )
 
     def test_a_test_a_block_of_its_class_body_holds_is_counted_and_never_recorded(self) -> None:

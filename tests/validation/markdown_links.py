@@ -32,6 +32,13 @@ URL_SCHEME = re.compile(r"^(?:[A-Za-z][A-Za-z0-9+.-]*:|//)")
 SLUG_REMOVED = re.compile(r"[^\w\- ]")
 
 
+PRESENCE_ALLOWED = {
+    "markdown_link_problems": (
+        "names each case: is_there tells something of another kind from nothing there, and a stat that fails raises"
+    ),
+}
+
+
 def _outside_fences(text: str) -> list[str]:
     """The Markdown's lines, with fenced code blocks blanked so their text is never read as a link or heading."""
     lines = text.splitlines()

@@ -116,6 +116,14 @@ GIT_WRITING_OPTIONS: dict[str, frozenset[str]] = {
 GIT_DEFAULT_WRITES = frozenset({"bugreport", "clone", "diagnose", "format-patch", "init", "init-db", "unpack-file"})
 
 
+PRESENCE_ALLOWED = {
+    "moved_to": (
+        "a target it cannot stat leaves both places open, as one that is no directory does, so a failed stat never "
+        "settles where the shell is"
+    ),
+}
+
+
 @dataclass(frozen=True)
 class OperandWriter:
     """How a git subcommand writes a file at a path its operands name, read by operand_writes.
@@ -1274,7 +1282,7 @@ def protecting_hub(path: Path) -> Path | None:
     answers neither, which hub_protected reads as a protected path when git answered."""
     normalized = Path(os.path.normpath(path))
     for directory in (normalized, *normalized.parents):
-        if platform_support.name_key(directory.name, directory.parent) == ".git" and directory.is_dir():
+        if platform_support.name_key(directory.name, directory.parent) == ".git" and worktrees.is_folder(directory):
             return guarded_hub_of_repository(directory)
     hub = guarded_hub_at(normalized)
     if hub is None:

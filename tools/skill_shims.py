@@ -70,6 +70,14 @@ PROTECTED_WRITES = (
 )
 
 
+PRESENCE_ALLOWED = {
+    "_stray_problems": (
+        "an entry iterdir listed is there, so the test's False names something other than a folder, which the "
+        "problem says"
+    ),
+}
+
+
 def shim_path(name: str) -> Path:
     return SHIMS / name / SKILL_FILE
 

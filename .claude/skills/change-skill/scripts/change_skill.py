@@ -126,6 +126,14 @@ RUNTIME_PROMPTS = "python tools/runtime_prompts.py --write"
 UNREADABLE = object()  # a frontmatter or metadata value that cannot be read, which equals no other value
 
 
+PRESENCE_ALLOWED = {
+    "metadata_file": (
+        "None is its answer for metadata it cannot read, which head_metadata reports as unreadable and reviews "
+        "counts as a review owed, never as metadata that is not there"
+    ),
+}
+
+
 class StepError(Exception):
     """A step the script refuses, with the reason its FAILED line gives."""
 

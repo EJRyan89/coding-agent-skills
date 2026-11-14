@@ -1160,8 +1160,11 @@ def coverage_reach(tree: Path, suite: str, modules: Sequence[str], timeout: floa
                 return f"failed in {code(step)} with exit code {done.returncode}" + (
                     f": {code(output)}" if output else ""
                 )
-        if not report.is_file():
+        reason = file_presence.refusal_reason(report)
+        if reason == file_presence.MISSING:
             return f"failed in {code('coverage json')}, which wrote no report"
+        if reason is not None:
+            return f"failed in {code('coverage json')}, whose report {reason}"
         recorded = read_report(report)
         if isinstance(recorded, str):
             return f"failed in {code('coverage json')}, whose report {recorded}"

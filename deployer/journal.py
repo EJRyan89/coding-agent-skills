@@ -85,6 +85,10 @@ PRESENCE_ALLOWED = {
     " says nothing about what is installed",
     "recover_incomplete": "a staging root it cannot list is reported as an ERROR and recovery answers False, that a "
     "run needs inspection, never that none was interrupted",
+    "pending_runs": (
+        "a journal it cannot stat, or one of another kind, is pending and needs inspection, as one it cannot read "
+        "is; none is read as finished"
+    ),
 }
 # The refusals caught beside them, which never reach the user.
 STEP_ALLOWED = {

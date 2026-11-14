@@ -73,6 +73,18 @@ WRITE_HINT = "run python tools/runtime_prompts.py --write"
 PLACEHOLDER_PATH = re.compile(r"(<temp>|<source>)([\\/][^\s`'\"<>]*)")
 
 
+PRESENCE_ALLOWED = {
+    "_prepared_prompts": (
+        "a throwaway folder's cleanup in a finally, which an error of the stat must not replace; the folder's own "
+        "removal after the render repeats it"
+    ),
+    "copilot_entrypoint": (
+        "a throwaway folder's cleanup in a finally, which an error of the stat must not replace; the folder's own "
+        "removal after the render repeats it"
+    ),
+}
+
+
 class RenderError(RuntimeError):
     pass
 

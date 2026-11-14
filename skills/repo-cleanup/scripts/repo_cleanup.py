@@ -244,6 +244,14 @@ GIT_STATUS_ALLOWED = {
 }
 
 
+PRESENCE_ALLOWED = {
+    "prune_empty_parents": (
+        "a parent it cannot stat is passed over for the one above, whose rmdir removes only an empty folder, so a "
+        "failed stat never removes anything"
+    ),
+}
+
+
 class CleanupError(Exception):
     """An expected problem with one repository: report it and skip the repository."""
 
@@ -576,12 +584,9 @@ def discover(target: str | None, repos_root: str, services: Services) -> list[st
         repositories = [candidate]
     else:
         root = Path(repos_root)
-        try:
-            folder = file_presence.is_directory(root, other_is_absent=True)
-        except OSError as exc:
-            raise CleanupError(f"{repos_root} cannot be examined: {exc}") from exc
-        if not folder:
-            raise CleanupError(f"{repos_root} is not a directory")
+        # Nothing there, something else, and a stat that fails are each named so, never one as another.
+        if (reason := file_presence.refusal_reason(root, folder=True)) is not None:
+            raise CleanupError(f"--repos-root {repos_root} {reason}")
         entries = sorted(root.iterdir(), key=lambda path: path.name.casefold())
         repositories = [
             path

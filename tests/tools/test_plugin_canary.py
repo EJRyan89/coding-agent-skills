@@ -573,6 +573,16 @@ def test_a_result_the_guard_claimed_or_no_result_fails_the_check(tmp_path: Path)
     assert canary.failed(silent[0])
 
 
+def test_a_result_of_another_kind_fails_the_check_naming_its_kind_never_as_no_result(tmp_path: Path) -> None:
+    session = unguarded_session(tmp_path, False, False, [])
+    (tmp_path / canary.UNGUARDED_RUN / f"{canary.UNGUARDED_ROLE}.json").mkdir(parents=True)
+    lines = canary.unguarded(session, "claude", {}, "p")
+    assert lines[0] == (
+        'UNGUARDED claude p:code-review-reviewer FAILED "the reviewer left a result that is not a file: the reviewer '
+        'reports"'
+    )
+
+
 # -- canary() and main() ----------------------------------------------------------------------------------------
 
 

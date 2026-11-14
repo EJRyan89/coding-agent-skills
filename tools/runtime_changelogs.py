@@ -159,6 +159,11 @@ YAML_KEY = re.compile(r"^\s*(?P<key>[A-Za-z_][\w-]*):", re.MULTILINE)
 KINDS = ("flag", "variable", "path", "frontmatter")
 
 
+PRESENCE_ALLOWED = {
+    "python_files": ("a root it cannot stat is handed to file_presence.matching, which raises for it"),
+}
+
+
 class WatchError(Exception):
     """The watch cannot run: its record, a changelog, or the code its terms come from cannot be read."""
 

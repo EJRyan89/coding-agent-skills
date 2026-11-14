@@ -15,6 +15,13 @@ from . import fsops, platform_support
 from .arguments import usage_error
 from .errors import DeployError, os_error
 
+PRESENCE_ALLOWED = {
+    "canary_home": (
+        "names the requirement, an existing directory, which nothing there and a file there both fail alike; a stat "
+        "that fails is refused with its reason before it"
+    ),
+}
+
 
 @dataclass(frozen=True)
 class Paths:

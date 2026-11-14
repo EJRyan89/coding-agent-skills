@@ -79,6 +79,14 @@ HEXADECIMAL = re.compile(r"0[xX]([0-9A-Fa-f]+)")
 INT32_BITS = 32
 
 
+PRESENCE_ALLOWED = {
+    "called": (
+        "MSBuild's Exists() condition, answered by the FileSystem the evaluation hands it, whose exists reads "
+        "through file_presence and reports a stat that fails, never answering it as not there"
+    ),
+}
+
+
 def union(*values: Value) -> Value:
     """Every value any of `values` may hold, each once, in the order met."""
     return tuple(dict.fromkeys(value for each in values for value in each))

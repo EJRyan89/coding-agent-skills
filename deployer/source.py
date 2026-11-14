@@ -49,6 +49,22 @@ SKILL_FILE = "SKILL.md"
 METADATA_SUFFIX = ".json"
 
 
+PRESENCE_ALLOWED = {
+    "checkout_gone": (
+        "something other than a folder in a recorded checkout's place is no checkout, which 'no longer exists' "
+        "says, and a stat that fails is named with its reason"
+    ),
+    "_reject_links": (
+        "a DirEntry's is_dir, which answers from the listing and raises every error but not found, as "
+        "file_presence's own listing does, so a failed stat is never read as no folder"
+    ),
+    "_discover_agents": (
+        "names what agents/ may hold, only <name>.md agent definitions, which an entry of another kind breaks as "
+        "much as a misnamed one; a stat that fails is refused with its reason before it"
+    ),
+}
+
+
 @dataclass(frozen=True, kw_only=True)
 class Skill:
     name: str

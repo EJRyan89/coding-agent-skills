@@ -27,6 +27,14 @@ PLATFORM_ALLOWED = {
 }
 
 
+PRESENCE_ALLOWED = {
+    "write_atomic": (
+        "removes its own temporary file before raising again the failure that stopped the write, which an error of "
+        "the stat must not replace"
+    ),
+}
+
+
 def move(source: Path, destination: Path) -> None:
     """Rename without ever replacing an existing destination: a FileExistsError leaves both as they were.
 

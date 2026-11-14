@@ -57,10 +57,9 @@ removed fails validation until its pattern follows it.
   `git_client:GitClient.commit_of` for a ref, `git_client:GitClient.file_at` for a file at a commit, and
   `git_client:GitClient.quiet_output` for any command run quiet, each None only for what git reports as absent.
 - **Guard:** `tests/validation/python_checks.py::PythonChecksPolicies::test_file_presence_is_the_one_reader_of_absence`,
-  which refuses a presence predicate whose False is the answer or goes straight to a refusal, a file_presence test
-  given other_is_absent=True whose False does, a search for a path either finds absent that a refusal answers, a
-  glob, an os.walk with no onerror, and a removal that discards its errors, outside file_presence unless its module
-  states why,
+  which refuses every presence predicate however its answer is used, a refusal a file_presence test given
+  other_is_absent=True reaches on its False, a glob, a walk or a removal that passes over its errors, and a handler
+  that answers a failed stat, listing, or read with nothing, outside file_presence unless its module states why,
   `skills/ejryan89-skill-core/scripts/test_file_presence.py::RefusalReasonTests`,
   `tests/deployer/test_invariants.py::TreeStateTests::test_a_folder_that_cannot_be_listed_fails_the_state_and_a_root_nothing_is_at_holds_nothing`,
   which holds the deployer harness's walk, in the tests that policy leaves out, to failing on a folder it cannot list,
@@ -1010,13 +1009,16 @@ removed fails validation until its pattern follows it.
   keeping a short marker list only for the faults git reports with no path; `file_presence:_pattern_parts`, which
   accepts a glob pattern only when Windows path rules read in it exactly the parts a forward slash separates and
   each part is one name in its folder, with `file_presence:_is_one_name`, rather than refusing a list of absolute
-  spellings.
+  spellings; `tests.validation.python_checks:presence_problems`, which refuses every presence predicate outside
+  file_presence however its answer is used, rather than the spellings of its False found so far, and follows a
+  file_presence test's answer through its bindings and comparisons to each refusal it reaches.
 - **Guard:**
   `tests/validation/test_workflows.py::DeployableBashFixtures::test_each_job_checks_its_bash_in_one_exact_step_and_the_macos_job_installs_homebrews`,
   `skills/ejryan89-skill-core/scripts/test_file_presence.py::MatchingTests::test_a_pattern_one_platform_reads_as_more_than_names_below_the_folder_is_refused_on_every_platform`,
   `skills/ejryan89-skill-core/scripts/test_git_client.py::test_a_fetch_that_failed_in_the_local_repository_is_not_the_remote_s_failure`,
   `skills/ejryan89-skill-core/scripts/test_git_client.py::test_a_fetch_whose_failure_names_nothing_local_is_the_remote_s_failure`,
-  `skills/ejryan89-skill-core/scripts/test_git_client.py::test_only_a_timeout_among_the_failures_git_never_answered_is_the_remote_s`
+  `skills/ejryan89-skill-core/scripts/test_git_client.py::test_only_a_timeout_among_the_failures_git_never_answered_is_the_remote_s`,
+  `tests/validation/test_python_checks.py::test_presence_policy_refuses_each_empty_answer_form`
 - **Search for:** a regular expression of alternatives that refuses spellings of one effect, such as
   `re.compile(r"set\s+(?:\+e|`, which the next combined flag walks past; a tuple of message substrings named
   `*_MARKERS` or `*_SPELLINGS` that decides a classification; a fix commit whose diff only adds one more alternative
@@ -1027,7 +1029,9 @@ removed fails validation until its pattern follows it.
 - **Examples:** #2751, where four review rounds each found one more local-failure wording until the classifier read
   git's write-error line by its shape; #2759, where refusing errexit spellings gave way to pinning the check step's
   exact form; #2468, whose hub guard was rebuilt as an allow-list after three outside passes in a row found leaks;
-  #2733, where `file_presence.matching` refused empty, `.`, and `..` parts and matched nothing for a drive pattern.
+  #2733, where `file_presence.matching` refused empty, `.`, and `..` parts and matched nothing for a drive pattern;
+  #2285, where each review of the presence policy found one more spelling of a predicate's False until the policy
+  refused every presence predicate outside file_presence.
 
 ### A check reads its subject through its consumer's reader
 

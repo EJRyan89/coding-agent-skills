@@ -354,7 +354,11 @@ def recorded_cost_problems(
     problems: list[str] = []
     for name, tests in recorded.items():
         path = root / name
-        if not (path.is_file() and is_test_script(path) and path.suffix == ".py"):
+        reason = file_presence.refusal_reason(path)
+        if reason not in (None, file_presence.MISSING):
+            problems.append(f"{name} records test costs but {reason}")
+            continue
+        if reason is not None or not (is_test_script(path) and path.suffix == ".py"):
             problems.append(f"{name} records test costs but is not a regression suite")
             continue
         try:

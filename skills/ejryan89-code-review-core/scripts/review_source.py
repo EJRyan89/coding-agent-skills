@@ -51,6 +51,14 @@ FILE_COMMAND = PYTHON + ' -B "{script}" source-file --run "{run}" --role "{role}
 SEARCH_COMMAND = PYTHON + ' -B "{script}" source-search --run "{run}" --role "{role}" --pattern="<pattern>"'
 
 
+PRESENCE_ALLOWED = {
+    "_count": (
+        "counts a read the guard already allowed; a log it cannot stat goes uncounted, as an unguarded reviewer's "
+        "reads do, and never fails the read"
+    ),
+}
+
+
 class SourceError(ValueError):
     pass
 

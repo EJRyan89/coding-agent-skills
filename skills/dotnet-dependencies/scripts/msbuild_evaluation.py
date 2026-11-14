@@ -128,6 +128,14 @@ NOT_APPLIED = {"Include": "it is left out", "Update": "the Update is not applied
 Decision = bool | str
 
 
+PRESENCE_ALLOWED = {
+    "Evaluation.__init__": (
+        "hands the evaluation's own Exists() reader, which reads through file_presence and reports a stat that "
+        "fails, to the FileSystem its conditions read"
+    ),
+}
+
+
 def evaluation_root(path: Path) -> Element:
     """The root of the MSBuild file at `path`, `Unreadable` when it cannot be read or MSBuild refuses its Choose. The
     evaluation walks into each Choose it enters, a few frames a level, and `parse_xml` refuses elements nested past

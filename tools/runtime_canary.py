@@ -397,6 +397,13 @@ fi
 """
 
 
+PRESENCE_ALLOWED = {
+    "remove_home": (
+        "deletes only a home the canary made, so a path it cannot stat is refused as not one, which deletes nothing"
+    ),
+}
+
+
 @dataclass(frozen=True)
 class Completed:
     returncode: int
