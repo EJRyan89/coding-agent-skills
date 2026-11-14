@@ -349,6 +349,15 @@ class CheckoutFailureTests(unittest.TestCase):
                 rows,
             )
 
+    @unittest.skipIf(sys.platform == "win32", "a symbolic link to a folder needs a privilege on Windows")
+    def test_list_shows_a_link_to_nothing_in_a_worktree_s_place_as_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            hub, tree = Path(folder) / "hub", Path(folder) / "tree"
+            tree.symlink_to(Path(folder) / "nowhere", target_is_directory=True)
+            with mock.patch.object(worktrees, "git", side_effect=AssertionError("counted a tree that is not one")):
+                row = worktrees.row(hub, git_worktrees.Worktree(str(tree), "abc", "feat/x", False))
+            self.assertEqual(worktrees.Row("feat/x", "missing", "-", "-", "-", platform_support.normalize(tree)), row)
+
     def test_list_counts_each_worktree_from_the_hub_under_the_client_s_own_limit(self) -> None:
         row, calls = self.counted_row("abc", git_client.GitResult(0, "2\t3\n", ""))
         self.assertEqual([(True, ("rev-list", "--left-right", "--count", "main...abc"), None)], calls)

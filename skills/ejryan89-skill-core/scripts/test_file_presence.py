@@ -22,6 +22,7 @@ from file_presence import (
     is_directory,
     is_occupied,
     is_present,
+    is_there,
     matching,
     refusal_reason,
     require,
@@ -101,6 +102,7 @@ class FilePresenceTests(unittest.TestCase):
         with self.assertRaises(LookupError) as raised:
             require(path, LookupError, "gone", "the subject")
         self.assertEqual(("gone",), raised.exception.args)
+        self.assertFalse(is_there(path))
         self.assertTrue(is_occupied(path))
         self.assertFalse(os.path.lexists(target))
 
@@ -179,7 +181,7 @@ STAT_FAILURES = (
     OSError(errno.ENAMETOOLONG, "file name too long"),
     OSError(errno.EINVAL, "invalid argument"),
 )
-HELPERS = (is_present, is_directory, is_occupied)
+HELPERS = (is_present, is_directory, is_there, is_occupied)
 
 
 class DirectoryTests(unittest.TestCase):
@@ -252,6 +254,36 @@ class OccupiedTests(unittest.TestCase):
         ) as made:
             self.assertTrue(is_occupied(self.root / "entry"))
         made.assert_called_once_with(follow_symlinks=False)
+
+
+class ThereTests(unittest.TestCase):
+    def setUp(self) -> None:
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+
+    def test_a_file_a_folder_or_something_else_is_there_and_nothing_is_not(self) -> None:
+        (self.root / "file").write_text("", encoding="utf-8")
+        (self.root / "folder").mkdir()
+        self.assertTrue(is_there(self.root / "file"))
+        self.assertTrue(is_there(self.root / "folder"))
+        self.assertFalse(is_there(self.root / "missing"))
+        self.assertFalse(is_there(self.root / "file" / "below"))
+        pipe = os.stat_result((0o010644, 0, 0, 1, 0, 0, 0, 0, 0, 0))
+        with mock.patch.object(Path, "stat", return_value=pipe):
+            self.assertTrue(is_there(self.root / "pipe"))
+
+    def test_a_link_to_nothing_is_not_there_for_a_reader_though_it_occupies_its_place(self) -> None:
+        link = os.stat_result((0o120777, 0, 0, 1, 0, 0, 0, 0, 0, 0))
+
+        def answer(follow_symlinks: bool = True) -> os.stat_result:
+            if follow_symlinks:
+                raise FileNotFoundError(errno.ENOENT, "missing")
+            return link
+
+        with mock.patch.object(Path, "stat", side_effect=answer):
+            self.assertFalse(is_there(self.root / "entry"))
+            self.assertTrue(is_occupied(self.root / "entry"))
 
 
 class RefusalReasonTests(unittest.TestCase):

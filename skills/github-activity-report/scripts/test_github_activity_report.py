@@ -1650,6 +1650,19 @@ def test_a_history_whose_folder_is_a_file_is_refused_as_no_folder_never_as_missi
     assert f"the folder of {missing} does not exist; the report creates no folder" in stderr
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="a symbolic link to a folder needs a privilege on Windows")
+def test_a_history_whose_folder_is_a_link_to_nothing_is_refused_as_a_folder_that_does_not_exist(tmp_path: Path) -> None:
+    # Nothing can be read through a link to nothing, so the folder does not exist, never is of another kind.
+    folder = tmp_path / "linked"
+    folder.symlink_to(tmp_path / "nowhere", target_is_directory=True)
+    history = folder / "activity.csv"
+    github = group_github()
+    code, stdout, stderr = run_group([*GROUP, "--history", str(history)], github, at(TODAY))
+    assert (code, stdout, github.endpoints) == (2, "", [])
+    assert f"the folder of {history} does not exist; the report creates no folder" in stderr
+    assert not (tmp_path / "nowhere").exists()
+
+
 @pytest.mark.parametrize("unstatable", ["history", "folder"])
 def test_a_history_or_its_folder_that_cannot_be_examined_is_refused_with_the_error_never_as_absent(
     tmp_path: Path, unstatable: str

@@ -37,6 +37,7 @@ from fault_check import (
     changes,
     environment,
     judged,
+    named_another_kind,
     nowhere,
     placed,
     read_as_absent,
@@ -502,6 +503,37 @@ def test_a_link_to_nothing_is_placed_and_a_write_through_it_is_named_and_cleared
         assert path.read_bytes() == b"{}"
         assert sorted(entry.name for entry in Path(temporary).iterdir()) == ["input.json"]
     assert written_through(MISSING, path) == []
+
+
+def test_an_input_handed_to_a_writer_is_never_one_whose_absence_is_an_answer() -> None:
+    reason = "a missing result is the role handed out"
+    driver = Driver(
+        "e.py", "", (), inputs=("a.json", "b.json"), not_run={MISSING: reason}, handed_to_writer=("b.json",)
+    )
+    assert driver.absent_is_an_answer("a.json")
+    assert not driver.absent_is_an_answer("b.json")
+    assert not Driver("e.py", "", (), inputs=("a.json",)).absent_is_an_answer("a.json")
+
+
+def test_each_input_a_driver_hands_to_a_writer_is_one_of_its_inputs() -> None:
+    stray = [
+        f"{driver.name}: {path}"
+        for driver in faults.DRIVERS
+        for path in driver.handed_to_writer
+        if path not in driver.inputs
+    ]
+    assert stray == [], "an input handed to a writer is one the driver places faults at"
+
+
+def test_a_link_to_nothing_named_as_another_kind_is_a_problem_in_either_stream_and_any_case() -> None:
+    expected = ["it named the link to nothing 'not a file', never reading it as the file missing"]
+    assert named_another_kind(LINK_TO_NOTHING, ended("FAILED x is not a file\n")) == expected
+    assert named_another_kind(LINK_TO_NOTHING, ended("", "FAILED X IS NOT A FILE\n")) == expected
+    assert named_another_kind(LINK_TO_NOTHING, ended("", "x is Not A Directory\n")) == [
+        "it named the link to nothing 'not a directory', never reading it as the file missing"
+    ]
+    assert named_another_kind(LINK_TO_NOTHING, ended("FAILED x is missing\n")) == []
+    assert named_another_kind(MISSING, ended("FAILED x is not a file\n")) == []
 
 
 def test_a_run_that_reads_its_input_as_absent_may_succeed_but_not_stop_or_print_a_traceback() -> None:

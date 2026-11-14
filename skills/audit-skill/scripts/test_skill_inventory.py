@@ -2437,6 +2437,22 @@ class AgentTests(SourceTreeTestCase):
         )
         self.assertIsNone(skill_inventory.declared_agents(skill.parent))
 
+    @unittest.skipIf(sys.platform == "win32", "a symbolic link to a file needs a privilege on Windows")
+    def test_a_dependencys_metadata_that_is_a_link_to_nothing_is_no_metadata_never_unreadable(self) -> None:
+        # Nothing can be read through a link to nothing, so the dependency has no metadata, as with no file at all.
+        skill = self.skill("Body.\n", {"skill_deps": ["beta"]})
+        self.skill("Body.\n", {}, name="beta")
+        beta = self.root / "deploy-meta" / "beta.json"
+        beta.unlink()
+        beta.symlink_to(self.root / "nowhere.json")
+        code, lines, error = run("inventory", str(skill.parent))
+        self.assertEqual(0, code, error)
+        self.assertEqual(["DECLARED skill beta"], [line for line in lines if line.startswith("DECLARED")])
+        self.assertFalse(skill_inventory.unreadable_metadata(self.root, "beta"))
+        # A .git that is a link to nothing is no repository for the skill's commands to run from either.
+        (self.root / ".git").symlink_to(self.root / "no-git")
+        self.assertNotEqual(self.root, skill_inventory.repository_root(skill.parent))
+
     def test_metadata_whose_name_list_is_of_another_kind_is_unreadable(self) -> None:
         for key in ("shared_deps", "skill_deps", "agent_deps", "tools", "optional_tools"):
             for value in ("ejryan89-skill-core", [1], {"name": "x"}):

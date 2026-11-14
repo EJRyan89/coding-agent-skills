@@ -5,15 +5,16 @@ A reader that checks `is_file()` before it reads takes a directory or any other 
 no file at all, and reports the repository as having no such configuration, a pass by absence. `is_present` tells a
 file, nothing, and something else apart, and raises `NotAFile`, an `OSError`, for the third, so a reader that already
 turns an `OSError` from its read into its own refusal refuses this one alike. `is_directory` answers the same for a
-folder, raising `NotADirectory`. `refusal_reason` words why a file or folder a caller needs is not there, missing, of
-another kind, or not examinable, and `require` raises the caller's own error with it, so a refusal never names the
-last two as missing.
+folder, raising `NotADirectory`, and `is_there` whether anything a reader meets is there at all. `refusal_reason`
+words why a file or folder a caller needs is not there, missing, of another kind, or not examinable, and `require`
+raises the caller's own error with it, so a refusal never names the last two as missing.
 
 A symbolic link whose target does not exist, a link to nothing, is read two ways on purpose. A reader asks what it can
-read there, and nothing can be read through such a link, so `is_present`, `is_directory`, and `refusal_reason` answer
-for it as for a missing path: no file, no folder, `MISSING`. A writer asks whether its write would land on something,
-and writing to such a link creates its target wherever it points, so `is_occupied`, which a writer asks before it
-creates or moves anything into a place, counts the link as occupying it. A caller that reads a path as missing and then
+read there, and nothing can be read through such a link, so `is_present`, `is_directory`, `is_there`, and
+`refusal_reason` answer for it as for a missing path: no file, no folder, nothing there, `MISSING`. A writer asks
+whether its write would land on something, and writing to such a link creates its target wherever it points, so
+`is_occupied`, which a writer asks before it creates or moves anything into a place, counts the link as occupying it,
+and a reader never asks it. A caller that reads a path as missing and then
 writes there asks `is_occupied` before the write, or writes through a call that replaces the link itself, such as a
 rename, never one that follows it.
 `matching` lists what a glob pattern matches below a folder, as `Path.glob` does, but raises for a folder it cannot
@@ -132,6 +133,14 @@ def require(path: Path, error: Callable[[str], Exception], missing: str, subject
         raise error(missing)
     if reason is not None:
         raise error(f"{subject} {reason}")
+
+
+def is_there(path: Path) -> bool:
+    """Whether anything a reader meets is at `path`, following links: a file, a folder, or anything else, but False
+    when nothing is, a link to nothing included, and the stat's `OSError` when it cannot tell. It is the reader's
+    question `is_occupied` answers for a writer, for a reader that names something of another kind apart from nothing
+    there."""
+    return _mode(path) is not None
 
 
 def is_occupied(path: Path) -> bool:

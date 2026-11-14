@@ -585,6 +585,18 @@ class OwnershipRemedyTests(RemedyTestCase):
             "then rerun --migrate-from.",
             SEE_OWNERSHIP,
         )
+        if sys.platform != "win32":  # a symbolic link needs a privilege on Windows
+            # A link to nothing in the skill folder's place is missing, since nothing can be read through it.
+            (self.skills_dir / "beta").unlink()
+            (self.skills_dir / "beta").symlink_to(self.root / "nowhere", target_is_directory=True)
+            result = self.deploy_fails("--migrate-from", "old/source", pattern="destination is missing")
+            self.assert_lines(
+                result.output,
+                "ERROR: Cannot migrate 'beta': destination is missing.",
+                "Restore the copy the old source deployed, for example by deploying from that source again, "
+                "then rerun --migrate-from.",
+                SEE_OWNERSHIP,
+            )
 
     def test_migrating_a_shared_asset_whose_owner_file_the_source_lacks_is_refused(self) -> None:
         self.make_source_json("old/source", shared_assets={"guide.md": "owner"})

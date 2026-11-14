@@ -142,6 +142,11 @@ class Driver:
     environment: Mapping[str, str] = field(default_factory=dict)
     from_checkout: bool = False
     outputs: tuple[str, ...] = ()
+    # Each input the command reads missing as an answer and then hands to a writer, such as a role's result file
+    # next-role hands to the reviewer that writes it: a link to nothing there is refused, as a missing file is
+    # elsewhere, since the writer's write would follow the link and create the file it leads to. Each is formatted as
+    # the arguments are.
+    handed_to_writer: tuple[str, ...] = ()
     # Each run whose refusal is a line led by a word its docstring does not name, by its fault, or `<fault> <input>`
     # for one input alone, with the open issue that gives it a FAILED or documented line.
     refusal_gaps: Mapping[str, str] = field(default_factory=dict)
@@ -159,9 +164,9 @@ class Driver:
 
     def absent_is_an_answer(self, path: str) -> bool:
         """Whether the command reads the input missing as an answer rather than a fault: `not_run` names the missing
-        fault for it, with the reason. A link to nothing at such an input is held only to never being written
-        through."""
-        return MISSING in self.not_run or f"{MISSING} {path}" in self.not_run
+        fault for it, with the reason, and it hands no writer the path. A link to nothing at such an input is held only
+        to never being written through."""
+        return (MISSING in self.not_run or f"{MISSING} {path}" in self.not_run) and path not in self.handed_to_writer
 
     def runs(self) -> list[tuple[str, str | None]]:
         """Each fault the driver runs, with the input it is placed at, or None for git's and gh's."""

@@ -144,8 +144,8 @@ def deploy_variable_problems(
     shared = json_reader.loads((root / "source.json").read_text(encoding="utf-8")).get("shared_assets", {})
     for asset in sorted(shared):
         path = root / "skills" / asset
-        # A declared asset that is not there is named; one whose stat fails raises.
-        if not file_presence.is_occupied(path):
+        # A declared asset that is not there, a link to nothing included, is named; one whose stat fails raises.
+        if not file_presence.is_there(path):
             problems.append(f"source.json declares shared asset {asset}, which skills/ does not hold")
             continue
         # A shared asset is a file or a folder; a folder's files are read where its skills are.
