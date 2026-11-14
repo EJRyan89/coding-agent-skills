@@ -451,6 +451,20 @@ class BuilderTests(RuntimeCommandLinesTestCase):
             self.assertIn("--sync-session", line.flags)
             self.assertNotIn("--no-remote", line.flags)
 
+    def test_the_review_host_line_adds_only_the_run_directory_with_the_reviewer_and_isolation_inside_it(self) -> None:
+        root = self.root / "review"
+        review = next(
+            line for line in lines.command_lines("copilot", "copilot", root, {}, None) if line.name == "review-host"
+        )
+        run = root / "review-run"
+        self.assertEqual([f"--add-dir={run}"], [argument for argument in review.arguments if "--add-dir" in argument])
+        self.assertEqual(run / "copilot-isolation-1" / "workspace", review.cwd)
+        self.assertTrue((run / "reviewer").is_dir(), "the reviewer is below the run directory, never added")
+        self.assertTrue((review.cwd / ".git").is_dir(), "the workspace is a git repository of its own")
+        settings = json.loads((run / "copilot-isolation-1" / "copilot-home" / "settings.json").read_text("utf-8"))
+        self.assertEqual({str(run), str(run.resolve())}, set(settings["ignoredSkillsLocations"]))
+        self.assertEqual(str(run / "copilot-isolation-1" / "copilot-home"), review.environment["COPILOT_HOME"])
+
     def test_the_deployer_commands_come_from_its_exported_builders(self) -> None:
         self.assertEqual(["codex", "app-server"], discovery.listing_command("codex", "codex"))
         self.assertEqual(["copilot", "skill", "list", "--json"], discovery.listing_command("copilot", "copilot"))
