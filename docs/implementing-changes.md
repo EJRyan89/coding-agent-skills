@@ -214,9 +214,15 @@ pull request body (the Versioning section of [releasing.md](releasing.md) holds 
 - a provider-specific PDF tool floor in `skills/ejryan89-skill-core/scripts/pdf_tool.py`, referenced by the catalogue's
   `provider_minimum`.
 
-The upgrade-notes check in `tests/validation/upgrade_notes.py` compares every item above at the last tag except the
-arguments, the status lines, and the exit codes, which no file holds, and fails while this list or the Versioning
-section of [releasing.md](releasing.md) leaves out a file or directory it reads.
+The upgrade-notes check in `tests/validation/upgrade_notes.py` compares every item above except the arguments, the
+status lines, and the exit codes, which no file holds, in the working tree with two commits: the commit where `HEAD`
+meets `origin/main`, against which the differences are the pull request's own changes, and the last tag. Each item the
+pull request changes is named in backticks under `- Contract:` in the pull request's own entry, the body's given with
+`--pr-body` and otherwise one in the branch's commit messages since that commit, even when an entry merged since the
+tag already names it: that entry covers the earlier change, and the release notes tell a user of each one, so an entry
+whose `Contract:` is `none` or names another item fails. An item that differs only from the tag is named by any
+upgrade note since the tag. The check also fails while this list or the Versioning section of
+[releasing.md](releasing.md) leaves out a file or directory it reads.
 
 ## Pull requests
 
