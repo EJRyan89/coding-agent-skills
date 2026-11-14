@@ -135,9 +135,7 @@ removed fails validation until its pattern follows it.
   `skills/audit-ai-config/scripts/test_audit_ai_config.py::test_a_repository_whose_files_show_nothing_says_the_checks_did_not_run`,
   `tests/tools/test_hub_guard.py::test_an_event_that_names_no_command_or_file_is_allowed_with_a_note_never_unseen`,
   `tests/tools/test_hub_guard.py::ReadingBoundTests`,
-  `.claude/skills/evaluate-skill/SKILL.md#5-read-the-sampled-transcript`,
-  `skills/update-coding-agent-skills/scripts/test_update_refs.sh`, whose case with no local main and no deployed
-  commit holds that a list of commits with nothing to start from is an `UNLISTED` line
+  `.claude/skills/evaluate-skill/SKILL.md#5-read-the-sampled-transcript`
 - **Search for:** `rg -n "os\.walk\(" | rg -v onerror`, a walk that skips what it cannot read; `if not <input>:`
   followed by `return True` or `return 0`; a count, verdict, or summary computed over a list that is empty because its
   step never ran; a skill-evaluation scenario that holds `no_finding_above` and no `verdict`; `"timeout"` in a hook
