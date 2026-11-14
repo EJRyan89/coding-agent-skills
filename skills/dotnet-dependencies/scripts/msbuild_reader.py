@@ -160,11 +160,15 @@ def examined_tree(base: Path) -> Path:
     """The tree a run reads the paths files name in: the checkout holding `base`, the solution's directory or the
     directory searched, which is the nearest folder at or above it holding `CHECKOUT_MARKER`, else `base` itself. A
     marker that is a link to nothing marks no checkout, since git reads nothing through it. A marker it cannot stat
-    raises its OSError, which the command refuses, never read as no checkout there, which would take a folder above or
-    the base for the tree."""
+    raises `Unreadable` naming that marker, which the command refuses, never read as no checkout there, which would
+    take a folder above or the base for the tree."""
     for folder in folders_up(base):
-        if is_there(folder / CHECKOUT_MARKER):
-            return folder
+        marker = folder / CHECKOUT_MARKER
+        try:
+            if is_there(marker):
+                return folder
+        except OSError as error:
+            raise os_unreadable(error, marker) from None
     return base
 
 
