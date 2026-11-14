@@ -784,7 +784,7 @@ class DeployableReportTests(unittest.TestCase):
     def test_help_and_a_usage_error_never_read_a_relative_home_and_a_command_refuses_it(self) -> None:
         variable = "USERPROFILE" if platform_support.WINDOWS else "HOME"
         with mock.patch.dict("os.environ", {variable: "relative home"}):
-            for arguments in (["--help"], ["layout", "--help"], ["pin", "--help"]):
+            for arguments in (["--help"], ["layout", "--help"], ["pin", "--help"], ["bash", "--help"]):
                 with (
                     self.subTest(arguments=arguments),
                     contextlib.redirect_stdout(io.StringIO()),
@@ -845,6 +845,87 @@ class DeployableReportTests(unittest.TestCase):
                 code, output = self.pin(wanted, "Claude Code", **kwargs)
                 self.assertEqual(1, code, output)
                 self.assertTrue(output.endswith(expected), output)
+
+    # -- bash -----------------------------------------------------------------------------------------------
+
+    def bash(
+        self, floor: str, reported: str, *, code: int = 0, found: str | None = "/usr/local/bin/bash"
+    ) -> tuple[int, str]:
+        """Run `bash` for a Bash the deployer finds at `found` that reports `reported` and exits `code`."""
+        with (
+            mock.patch.object(platform_support, "find_bash", return_value=found) as find,
+            mock.patch.object(report, "_run_version", return_value=(code, reported)) as run,
+        ):
+            result = self.run_main("bash", "--at-least", floor)
+        find.assert_called_once_with()
+        if found is not None:
+            run.assert_called_once_with([found, "--version"])
+        return result
+
+    def test_bash_passes_the_floor_and_newer_and_prints_where_it_found_bash(self) -> None:
+        for reported in (
+            "GNU bash, version 5.2.0(1)-release (x86_64-pc-linux-gnu)\nCopyright (C) 2022\n",
+            "GNU bash, version 5.3.20(1)-release (aarch64-apple-darwin25.6.0)\n",
+            "GNU bash, version 10.0.0(1)-release\n",
+        ):
+            with self.subTest(reported=reported):
+                code, output = self.bash("5.2", reported)
+                first = reported.splitlines()[0]
+                self.assertEqual((0, f"{platform_support.BASH_NAME}: /usr/local/bin/bash: {first}\n"), (code, output))
+
+    def test_bash_fails_macos_own_bash_and_any_older_than_the_floor_compared_as_numbers(self) -> None:
+        # As text, 5.10 sorts before 5.2 and 5.9 after 5.10; as numbers neither does.
+        self.assertEqual(0, self.bash("5.2", "GNU bash, version 5.10.0(1)-release")[0])
+        for floor, reported, found in (
+            ("5.2", "GNU bash, version 3.2.57(1)-release (arm64-apple-darwin25)", "3.2.57"),
+            ("5.2", "GNU bash, version 5.1.16(1)-release", "5.1.16"),
+            ("5.10", "GNU bash, version 5.9.0(1)-release", "5.9.0"),
+        ):
+            with self.subTest(reported=reported):
+                code, output = self.bash(floor, reported)
+                self.assertEqual(1, code, output)
+                self.assertTrue(
+                    output.endswith(
+                        f"::error::{platform_support.BASH_NAME} at /usr/local/bin/bash is {found}, older than {floor}\n"
+                    ),
+                    output,
+                )
+
+    def test_bash_fails_no_bash_a_failing_or_versionless_one_and_a_floor_that_is_no_version(self) -> None:
+        name = platform_support.BASH_NAME
+        for kwargs, floor, reported, expected in (
+            ({"found": None}, "5.2", "", f"::error::{platform_support.BASH_MISSING}\n"),
+            ({"code": 2}, "5.2", "GNU bash, version 5.3.0", f"::error::{name} at /usr/local/bin/bash exits 2\n"),
+            ({}, "5.2", "", f"::error::{name} at /usr/local/bin/bash reports '', which names no version\n"),
+            (
+                {},
+                "v5.2",
+                "GNU bash, version 5.3.0",
+                f"::error::{name} at /usr/local/bin/bash is held to v5.2, which is not a version\n",
+            ),
+            (
+                {},
+                "5",
+                "GNU bash, version 5.3.0",
+                f"::error::{name} at /usr/local/bin/bash is held to 5, which is not a version\n",
+            ),
+        ):
+            with self.subTest(floor=floor, kwargs=kwargs):
+                code, output = self.bash(floor, reported, **kwargs)
+                self.assertEqual(1, code, output)
+                self.assertTrue(output.endswith(expected), output)
+
+    def test_bash_requires_the_floor_and_its_help_says_what_it_takes(self) -> None:
+        errors = io.StringIO()
+        with contextlib.redirect_stderr(errors), self.assertRaises(SystemExit) as raised:
+            report.main(["bash"])
+        self.assertEqual(2, raised.exception.code)
+        self.assertIn("the following arguments are required: --at-least", errors.getvalue())
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output), self.assertRaises(SystemExit):
+            report.main(["bash", "--help"])
+        flat = " ".join(output.getvalue().split())
+        self.assertIn("--at-least AT_LEAST the oldest Bash version the deployment may run on", flat)
 
     # -- summary --------------------------------------------------------------------------------------------
 
@@ -914,11 +995,21 @@ class DeployableReportTests(unittest.TestCase):
         def run(arguments: list[str]) -> tuple[int, str]:
             return (1, "boom") if "codex" in arguments[0] else (0, f"{Path(arguments[0]).stem} version 9.8.7\n")
 
-        versions = dict(report.tool_versions(find, run))
+        versions = dict(report.tool_versions(find, run, lambda: "/opt/homebrew/opt/bash/bin/bash"))
+        self.assertEqual("9.8.7 at `/opt/homebrew/opt/bash/bin/bash`", versions[platform_support.BASH_NAME])
         self.assertEqual("not installed", versions["Copilot CLI"])
         self.assertEqual("version could not be read", versions["Codex CLI"])
         self.assertEqual("9.8.7", versions["Node.js"])
         self.assertEqual("9.8.7", versions["Claude Code"])
+        self.assertEqual(
+            "not installed", dict(report.tool_versions(find, run, lambda: None))[platform_support.BASH_NAME]
+        )
+        self.assertEqual(
+            "version could not be read at `/bin/bash`",
+            dict(report.tool_versions(find, lambda arguments: (1, "boom"), lambda: "/bin/bash"))[
+                platform_support.BASH_NAME
+            ],
+        )
 
 
 @pytest.mark.parametrize(
