@@ -5330,6 +5330,7 @@ PRESENCE_STAT_CALLS = {
     "os.fwalk": "list(os.fwalk(p, onerror=fail))",
     "file_presence.is_directory": "file_presence.is_directory(p)",
     "file_presence.is_occupied": "file_presence.is_occupied(p)",
+    "file_presence.is_there": "file_presence.is_there(p)",
     "os.path.getsize": "os.path.getsize(p)",
     "os.path.getmtime": "os.path.getmtime(p)",
     "os.path.getatime": "os.path.getatime(p)",
@@ -5707,8 +5708,8 @@ def test_presence_policy_sanctions_by_scope_and_leaves_file_presence_alone() -> 
     )
     assert found == [
         f"{alpha}:5 reads is_file's False as nothing there, which it also answers for a path it cannot stat; call "
-        "ejryan89-skill-core's file_presence (is_present, is_directory, or is_occupied), which lets a failed stat "
-        "through, or state why in PRESENCE_ALLOWED",
+        "ejryan89-skill-core's file_presence (is_present, is_directory, or is_there, which a reader asks; "
+        "is_occupied only before a write), which lets a failed stat through, or state why in PRESENCE_ALLOWED",
         f"{alpha}: PRESENCE_ALLOWED allows stale, which holds nothing it sanctions; remove the entry",
         "tools/broken.py: PRESENCE_ALLOWED must map each function, class, or assignment to its reason",
     ]

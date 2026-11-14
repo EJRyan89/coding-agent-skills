@@ -1135,7 +1135,7 @@ STATTING_FUNCTIONS = frozenset(
         "os.path.getctime",
     }
 )
-FILE_PRESENCE_READERS = frozenset({"is_present", "is_directory", "is_occupied", "matching"})
+FILE_PRESENCE_READERS = frozenset({"is_present", "is_directory", "is_there", "is_occupied", "matching"})
 # The exceptions whose handler takes a failed stat or listing, beyond "not found": OSError, its aliases and the
 # subclass a denied stat raises, and the classes above it.
 SWALLOWING_ERRORS = frozenset(
@@ -1310,8 +1310,8 @@ def _presence_answers(tree: ast.Module, aliases: dict[str, str]) -> Iterator[tup
                 node,
                 scope,
                 f"reads {predicate}'s False as nothing there, which it also answers for a path it cannot stat; call "
-                "ejryan89-skill-core's file_presence (is_present, is_directory, or is_occupied), which lets a failed "
-                "stat through",
+                "ejryan89-skill-core's file_presence (is_present, is_directory, or is_there, which a reader asks; "
+                "is_occupied only before a write), which lets a failed stat through",
             )
         elif refused := reader.refusal(node):
             yield (

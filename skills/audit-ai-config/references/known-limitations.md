@@ -114,7 +114,7 @@ artifacts rather than authority sources.
 
 ## Git repository check is CLI-only
 
-The CLI checks that something is at `args.root / ".git"`, through ejryan89-skill-core's `file_presence.is_occupied` (not equivalent to `git rev-parse --show-toplevel`), and refuses a root whose `.git` cannot be examined. The `audit()` library function does not enforce repository identity.
+The CLI checks that something is at `args.root / ".git"`, through ejryan89-skill-core's `file_presence.is_there` (not equivalent to `git rev-parse --show-toplevel`): a `.git` that is a link to nothing is refused as no Git repository, since nothing can be read through it, and a root whose `.git` cannot be examined is refused naming the reason. The `audit()` library function does not enforce repository identity.
 
 ## Read-only contract
 

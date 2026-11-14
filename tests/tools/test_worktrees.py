@@ -468,6 +468,18 @@ class GitMarkNameTests(unittest.TestCase):
                 with self.subTest(folds=folds), mock.patch.dict(path_keys._FOLDS_CASE, {str(repository): folds}):
                     self.assertEqual(not folds, worktrees.below_a_checkout(inside))
 
+    @unittest.skipIf(sys.platform == "win32", "a symbolic link to a folder needs a privilege on Windows")
+    def test_a_git_that_is_a_link_to_nothing_marks_no_checkout(self) -> None:
+        # Git reads nothing through a link to nothing, so the folder holding it is part of no checkout.
+        with tempfile.TemporaryDirectory() as temporary:
+            repository = Path(temporary).resolve() / "repository"
+            (repository / "src").mkdir(parents=True)
+            (repository / ".git").symlink_to(Path(temporary) / "nowhere", target_is_directory=True)
+            self.assertFalse(worktrees.below_a_checkout(repository / "src"))
+            (repository / ".git").unlink()
+            (repository / ".git").mkdir()
+            self.assertTrue(worktrees.below_a_checkout(repository / "src"))
+
     def test_a_common_directory_spelled_in_another_case_is_a_checkout_s_where_its_folder_folds_case(self) -> None:
         # git names the common directory as it was given, so on a folding file system .GIT marks a checkout.
         with tempfile.TemporaryDirectory() as temporary:
