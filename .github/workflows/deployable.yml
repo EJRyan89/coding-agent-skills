@@ -130,7 +130,12 @@ jobs:
             python tools/deployable_report.py pin --program $command --wanted $wanted
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           }
-          # The Bash the deployer will run, found as it finds one, no older than the floor docs/dependency-updates.md gives.
+
+      # The Bash the deployer will run, found as it finds one, no older than the floor docs/dependency-updates.md
+      # gives. The check is a step of its own, in the job's default shell with nothing before it, so nothing in the
+      # step can let its failure pass; validation holds it to that form.
+      - name: Check the Bash the deployer finds
+        run: |
           python tools/deployable_report.py bash --at-least 5.2
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
@@ -356,7 +361,12 @@ jobs:
           for pin in "claude $CLAUDE_VERSION" "codex $CODEX_VERSION" "copilot $COPILOT_VERSION"; do
             python3 tools/deployable_report.py pin --program "${pin%% *}" --wanted "${pin#* }"
           done
-          # The Bash the deployer will run, found as it finds one, no older than the floor docs/dependency-updates.md gives.
+
+      # The Bash the deployer will run, found as it finds one, no older than the floor docs/dependency-updates.md
+      # gives. The check is a step of its own, in the job's default shell with nothing before it, so nothing in the
+      # step can let its failure pass; validation holds it to that form.
+      - name: Check the Bash the deployer finds
+        run: |
           python3 tools/deployable_report.py bash --at-least 5.2
 
       - name: Check the deployer's prerequisites
@@ -539,7 +549,12 @@ jobs:
           for pin in "claude $CLAUDE_VERSION" "codex $CODEX_VERSION" "copilot $COPILOT_VERSION"; do
             python3 tools/deployable_report.py pin --program "${pin%% *}" --wanted "${pin#* }"
           done
-          # The Bash the deployer will run, found as it finds one, no older than the floor docs/dependency-updates.md gives.
+
+      # The Bash the deployer will run, found as it finds one, no older than the floor docs/dependency-updates.md
+      # gives. The check is a step of its own, in the job's default shell with nothing before it, so nothing in the
+      # step can let its failure pass; validation holds it to that form.
+      - name: Check the Bash the deployer finds
+        run: |
           python3 tools/deployable_report.py bash --at-least 5.2
 
       - name: Check the deployer's prerequisites
