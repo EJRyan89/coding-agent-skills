@@ -511,13 +511,19 @@ class PathBoundTests(unittest.TestCase):
         base.mkdir(parents=True)
         marker = ".dotnet-dependencies-test-checkout"
         (self.root / marker).mkdir()
-        with (
-            mock.patch.object(msbuild_reader, "CHECKOUT_MARKER", marker),
-            stat_failing_at(self.root / "repo" / marker),
-            self.assertRaises(PermissionError) as raised,
+        locked = self.root / "repo" / marker
+        for name, failing in (
+            ("naming the marker", stat_failing_at(locked)),
+            ("naming no file", failing_without_a_file(msbuild_reader, "is_there", locked)),
         ):
-            examined_tree(base)
-        self.assertEqual(str(self.root / "repo" / marker), raised.exception.filename)
+            with (
+                self.subTest(name),
+                mock.patch.object(msbuild_reader, "CHECKOUT_MARKER", marker),
+                failing,
+                self.assertRaises(msbuild_reader.Unreadable) as raised,
+            ):
+                examined_tree(base)
+            self.assertEqual((locked, "Access is denied"), (raised.exception.file, raised.exception.reason))
 
     def test_a_read_takes_a_regular_file_within_the_bound_and_refuses_any_other(self) -> None:
         path = self.root / "Lib.csproj"
