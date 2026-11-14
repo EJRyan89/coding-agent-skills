@@ -46,11 +46,12 @@ from tools.release_notes import (
 )
 
 # The upgrade-notes guard: the contract files the Versioning section of docs/releasing.md judges a release by, read at
-# the last tag and in the working tree. Each is compared by its contract value, so an edit that leaves the value alone
-# needs no entry. The entries are the upgrade notes tools/release_notes.py reads from the commits since the tag, and
-# the pull request body the runner was given with --pr-body. Every git call runs through tools/release_notes.py's
-# git and release_reaching, both over its one GitClient, so the tag lookup and the commit range read the same
-# repository whatever GIT_DIR the shell exported.
+# the last tag, at the commit where HEAD meets origin/main, and in the working tree. Each is compared by its contract
+# value, so an edit that leaves the value alone needs no entry. The entries are the upgrade notes tools/release_notes.py
+# reads from the commits since the tag, and the pull request body the runner was given with --pr-body; an item the
+# pull request itself changes is covered only by the pull request's own entries, never by an earlier one since the
+# tag. Every git call runs through tools/release_notes.py's git and release_reaching, both over its one GitClient, so
+# the tag lookup and the commit range read the same repository whatever GIT_DIR the shell exported.
 PROFILE_DOC = "docs/implementing-changes.md"
 CONTRACT_FILES_HEADING = "## Contract files"
 MANIFEST_MODULE = "deployer/manifest.py"
@@ -72,7 +73,7 @@ PULL_REQUESTS = re.compile(r"#\d+(?:,? (?:and )?#\d+)*")
 
 @dataclass(frozen=True)
 class Snapshot:
-    """A tree's file names and a reader for their text: the working tree, or a tag read through git show."""
+    """A tree's file names and a reader for their text: the working tree, or a commit read through git show."""
 
     names: frozenset[str]
     read: Callable[[str], str]
@@ -107,11 +108,13 @@ def working_snapshot(root: Path) -> Snapshot:
     return Snapshot(names, lambda name: (root / name).read_text(encoding="utf-8"))
 
 
-def tag_snapshot(root: Path, tag: str) -> Snapshot:
-    """The tag's tree; listing it, and reading a file from it, raise ReleaseNotesError when git cannot."""
-    listed = git_output(root, "ls-tree", "-r", "--name-only", "-z", tag)
+def revision_snapshot(root: Path, revision: str) -> Snapshot:
+    """A commit's tree, the tag's or the merge base's; listing it, and reading a file from it, raise ReleaseNotesError
+    when git cannot."""
+    listed = git_output(root, "ls-tree", "-r", "--name-only", "-z", revision)
     return Snapshot(
-        frozenset(name for name in listed.split("\0") if name), lambda name: git_output(root, "show", f"{tag}:{name}")
+        frozenset(name for name in listed.split("\0") if name),
+        lambda name: git_output(root, "show", f"{revision}:{name}"),
     )
 
 
@@ -347,16 +350,44 @@ def shared_heading_problems(sourced: list[SourcedEntry], body: list[SourcedEntry
     return problems
 
 
+def _entry_advice(item: str, levels: list[str]) -> str:
+    return (
+        f"add an entry under {BODY_HEADING} in the pull request body naming `{item}` with its level ({listed(levels)}, "
+        f"per the Versioning section of {RELEASING_DOC}) and the user action or none (a local run reads the body from "
+        "--pr-body <file>, and otherwise the branch's commit messages)"
+    )
+
+
+def own_change_problems(
+    changed: list[tuple[str, str]], own: list[SourcedEntry], base: str, tag: str, levels: list[str]
+) -> list[str]:
+    """Each contract item the pull request itself changes, against the commit where HEAD meets origin/main, that the
+    pull request's own entries do not name in backticks in '- Contract:'. That one form is accepted: an entry merged
+    since the tag that names the item covers that earlier change, and a `none`, a prose mention, or an entry for
+    another item covers nothing, so the release notes tell a user each time the item changes."""
+    named = {item for sourced_entry in own for item in sourced_entry.entry.contract_items}
+    return [
+        f"{item}: {description} changed in this pull request, against {base[:7]} where HEAD meets {RELEASE_BRANCH}, "
+        f"and the pull request's own upgrade note does not name it, whatever an entry since {tag} names; "
+        + _entry_advice(item, levels)
+        for item, description in changed
+        if item not in named
+    ]
+
+
 def upgrade_notes_problems(root: Path, body: str | None = None) -> list[str]:
-    """Report each contract item changed since the last tag that no upgrade note since then names.
+    """Report each contract item the pull request changes that its own upgrade note does not name, and each other
+    contract item changed since the last tag that no upgrade note since then names.
 
     The last tag is the highest release tag reachable from origin/main, as ejryan89-skill-core's release_tags defines
     one; with none reachable, nothing has been released and every change is free. The notes are the entries
     tools/release_notes.py reads from the commits since the tag and, given a pull request body, from its
     `## Upgrade note`. With a body, the commits are origin/main's,
     because the body, not the branch's own commit messages, becomes the squash commit's message; without one, they
-    are HEAD's, so a local run reads the branch's commits. Each entry must give its level in the Versioning section's
-    own words.
+    are HEAD's, so a local run reads the branch's commits. The pull request's own changes are the working tree's
+    against the merge base of HEAD and origin/main, so a branch behind origin/main is not charged with main's later
+    changes, and its own entries are the body's, or without one the branch's commits since that merge base. Each
+    entry must give its level in the Versioning section's own words.
     """
     try:
         current = working_snapshot(root)
@@ -373,25 +404,28 @@ def upgrade_notes_problems(root: Path, body: str | None = None) -> list[str]:
         return [f"{RELEASING_DOC} has no **Levels** list under {VERSIONING_HEADING} for upgrade-notes entries to use"]
     try:
         sourced = range_entries(root, tag, RELEASE_BRANCH if body is not None else "HEAD")
-        changed = changed_contract_items(tag_snapshot(root, tag), current)
+        changed = changed_contract_items(revision_snapshot(root, tag), current)
+        base = output_line(git_output(root, "merge-base", "HEAD", RELEASE_BRANCH))
+        own_changed = changed_contract_items(revision_snapshot(root, base), current)
+        own = [] if body is not None else range_entries(root, base, "HEAD")
     except ReleaseNotesError as error:
         return [*problems, f"the upgrade-notes check cannot read the commits and the tree since {tag}: {error}"]
     if body is not None:
-        given = [
+        own = [
             SourcedEntry(entry, f"the pull request body's {BODY_HEADING}", None, from_notes=False)
             for entry in body_entries(body)
         ]
-        problems += shared_heading_problems(sourced, given)
-        sourced += given
+        problems += shared_heading_problems(sourced, own)
+        sourced += own
     problems += [problem for item in sourced for problem in notes_entry_problems(item, levels)]
+    problems += own_change_problems(own_changed, own, base, tag, levels)
+    charged = {item for item, _ in own_changed}
     named = {item for sourced_entry in sourced for item in sourced_entry.entry.contract_items}
     problems += [
-        f"{item}: {description} changed since {tag}, and no upgrade note since then names it; add an entry under "
-        f"{BODY_HEADING} in the pull request body naming `{item}` with its level ({listed(levels)}, per the "
-        f"Versioning section of {RELEASING_DOC}) and the user action or none (a local run reads the body from "
-        "--pr-body <file>, and otherwise the branch's commit messages)"
+        f"{item}: {description} changed since {tag}, and no upgrade note since then names it; "
+        + _entry_advice(item, levels)
         for item, description in changed
-        if item not in named
+        if item not in named and item not in charged
     ]
     return problems
 
