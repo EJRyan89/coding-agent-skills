@@ -2111,3 +2111,95 @@ def test_output_line_takes_off_only_the_newline_that_ends_a_line() -> None:
         assert git_client.output_line(f"{name}\n") == name
         assert git_client.output_line(name) == name
     assert git_client.output_line("a\n\n") == "a\n"
+
+
+# Literal stderr of a fetch that reached the remote but failed in the local repository, as git prints it.
+LOCAL_FAILURES = {
+    "stale ref lock": "error: cannot lock ref 'refs/remotes/origin/main': Unable to create "
+    "'/home/u/clone/.git/refs/remotes/origin/main.lock': File exists.\n\nAnother git process seems to be running in "
+    "this repository, or the lock file may be stale\n",
+    "unwritable objects": "error: insufficient permission for adding an object to repository database .git/objects\n"
+    "fatal: failed to write object\nfatal: unpack-objects failed\n",
+    "full disk": "fatal: write error: No space left on device\nfatal: index-pack failed\n",
+    "broken config": "fatal: bad config line 3 in file .git/config\n",
+    "broken global config": "fatal: bad config line 1 in file /home/u/.gitconfig\n",
+    "dubious ownership": "fatal: detected dubious ownership in repository at '/srv/clone'\n",
+    "unwritable FETCH_HEAD": "error: cannot open '.git/FETCH_HEAD': Permission denied\n",
+    "unwritable reflog": "error: cannot update the ref 'refs/remotes/origin/main': unable to append to "
+    "'.git/logs/refs/remotes/origin/main': Permission denied\n",
+    "stale shallow lock": "fatal: Unable to create '/home/u/clone/.git/shallow.lock': File exists.\n\nAnother git "
+    "process seems to be running in this repository, or the lock file may be stale\n",
+    "unwritable pack folder": "fatal: Unable to create temporary file '/home/u/clone/.git/objects/pack/tmp_pack_XXXXXX'"
+    ": Permission denied\nfatal: fetch-pack: invalid index-pack output\n",
+    "a Windows path": "error: cannot open 'C:\\Users\\u\\clone\\.git\\FETCH_HEAD': Permission denied\n",
+    "a path of another spelling": "error: could not open '/home/u/clone/.git/packed-refs.new' for writing: Read-only "
+    "file system\n",
+    # git says `unable to access` of a local file it cannot read, as of a URL it cannot reach.
+    "unreadable repository config": "warning: unable to access '.git/config': Permission denied\nfatal: unable to "
+    "access '.git/config': Permission denied\n",
+    "unreadable global config": "warning: unable to access '/home/u/.gitconfig': Permission denied\nfatal: unknown "
+    "error occurred while reading the configuration files\n",
+    # write_or_die's line for a received pack names no path, whatever the file system answered.
+    "pack write, ENOSPC": "fatal: write error: No space left on device\nfatal: fetch-pack: invalid index-pack output\n",
+    "pack write, EDQUOT": "fatal: write error: Disk quota exceeded\nfatal: fetch-pack: invalid index-pack output\n",
+    "pack write, EROFS": "fatal: write error: Read-only file system\nfatal: fetch-pack: invalid index-pack output\n",
+    "pack write, EIO": "fatal: write error: Input/output error\nfatal: fetch-pack: invalid index-pack output\n",
+    "pack write, another reason": "fatal: write error: File too large\nfatal: fetch-pack: invalid index-pack output\n",
+    "a temporary file with no path": "error: unable to create temporary file: Too many open files\n",
+}
+# The remote's failures, which name nothing of the local repository, among them a remote's own lock on its line.
+REMOTE_FAILURES = {
+    **PERMANENT,
+    "early eof": EARLY_EOF,
+    "unresolved": UNRESOLVED,
+    "hung up": HUNG_UP,
+    "missing origin": "fatal: '/srv/missing.git' does not appear to be a git repository\n"
+    "fatal: Could not read from remote repository.\n",
+    "refused connection": "fatal: unable to access 'https://127.0.0.1:9/x.git/': Failed to connect to 127.0.0.1 port "
+    "9 after 0 ms: Couldn't connect to server\n",
+    "remote's lock": "remote: error: cannot lock ref 'refs/heads/main': Unable to create 'main.lock': File exists.\n"
+    "fatal: the remote end hung up unexpectedly\n",
+    # A remote's git over ssh or a local path writes its own lines unprefixed, and git's verdict follows them.
+    "remote's own unprefixed lines": "fatal: Unable to create '/srv/origin/.git/index.lock': File exists.\n"
+    "fatal: Could not read from remote repository.\n\nPlease make sure you have the correct access rights\nand the "
+    "repository exists.\n",
+    # Text the remote chose, which git quotes on lines of its own.
+    "remote error echoed": "fatal: remote error: unable to write '.git/FETCH_HEAD': bad config, no space left on "
+    "device\n",
+    "rpc failure echoed": "error: RPC failed; HTTP 500 curl 22 cannot lock ref '.git/refs/heads/main'\nfatal: "
+    "expected flush after ref listing\n",
+    "a remote URL holding .git/": "fatal: unable to access 'https://example.invalid/r/.git/': Could not resolve host: "
+    "example.invalid\n",
+    "an HTTP remote that refuses the connection": "fatal: unable to access 'https://127.0.0.1:9/x.git/': Failed to "
+    "connect to 127.0.0.1 port 9 after 0 ms: Couldn't connect to server\n",
+    # A write to the remote names the remote or the connection fault.
+    "a write to the remote": "fatal: unable to write to remote: Broken pipe\n",
+    "a write the connection cut": "fatal: write error: Connection reset by peer\n",
+    "a write error beside a remote verdict": "fatal: write error: Disk quota exceeded\nfatal: Could not read from "
+    "remote repository.\n",
+    "a missing repository at a URL holding .git/": "remote: Repository not found.\nfatal: repository "
+    "'https://example.invalid/r/.git/' not found\n",
+}
+
+
+@pytest.mark.parametrize("stderr", [pytest.param(stderr, id=name) for name, stderr in LOCAL_FAILURES.items()])
+def test_a_fetch_that_failed_in_the_local_repository_is_not_the_remote_s_failure(stderr: str) -> None:
+    assert git_client.local_failure(stderr)
+    assert not GitError(stderr.strip(), kind=classify_failure(stderr)).origin_failed
+
+
+@pytest.mark.parametrize("stderr", [pytest.param(stderr, id=name) for name, stderr in REMOTE_FAILURES.items()])
+def test_a_fetch_whose_failure_names_nothing_local_is_the_remote_s_failure(stderr: str) -> None:
+    assert not git_client.local_failure(stderr)
+    assert GitError(stderr.strip(), kind=classify_failure(stderr)).origin_failed
+
+
+def test_only_a_timeout_among_the_failures_git_never_answered_is_the_remote_s() -> None:
+    answered = {kind: GitError("git said nothing", kind=kind).origin_failed for kind in get_args(GitErrorKind)}
+    assert answered == {
+        "git": True,
+        "timeout": True,
+        "prerequisite": False,
+        "execution": False,
+        "not_repository": False,
+    }
