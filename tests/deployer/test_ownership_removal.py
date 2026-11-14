@@ -464,8 +464,8 @@ class ManifestValidationTests(DeployerTestCase):
 
     def test_a_recorded_name_too_long_or_a_device_name_is_rejected_in_a_selection_and_as_an_item(self) -> None:
         # A manifest reads names under the grammar before consecutive hyphens were refused, still within the length
-        # limit and never a Windows device name. A selection field reaches only that rule; an item key is also held
-        # to the safe-name rule, which refuses a device name before it.
+        # limit and never a Windows device name. _is_recorded_name refuses a long name and a device name in each
+        # selection field; an item key is also held to the safe-name rule, which refuses a device name before it.
         self.deployed()
         original = self.manifest()
         for name in ("a" * 65, "con"):
