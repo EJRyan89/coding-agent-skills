@@ -274,19 +274,59 @@ class DeployAtTests(DeployerTestCase):
                 entry = self.manifest()["sources"][SOURCE_ID]
                 self.assertEqual((self.head, "main"), (entry["source_commit"], entry["source_ref"]))
 
-    def test_another_ref_over_a_release_pin_a_later_release_on_its_commit_overtook_is_refused(self) -> None:
-        # A later release tagged on the pinned commit makes refs/tags/v1.0.0 no longer the last release that commit
-        # holds, so the pin reads as the user's, as update-coding-agent-skills reads it.
+    def test_a_later_release_tagged_on_the_pinned_commit_leaves_the_pin_the_updates_own_to_the_next_release(
+        self,
+    ) -> None:
+        # update-coding-agent-skills deploys the later release at the same commit, which records its ref over the
+        # update's own, and the next release, on a new commit, moves the pin without --unpin.
         self.deploy_ok("--all", "--at", "refs/tags/v1.0.0")
         git(self.source, "tag", "v1.0.1", self.release)
-        self.deploy_fails("--all", "--at", "main", pattern=r"ERROR: Refusing to replace the deployment pinned")
-        self.assertEqual("refs/tags/v1.0.0", self.manifest()["sources"][SOURCE_ID]["source_ref"])
-
-    def test_a_release_pin_is_the_full_name_of_the_last_release_its_commit_holds(self) -> None:
+        self.assertNotIn("Replaced", self.deploy_ok("--all", "--at", "refs/tags/v1.0.1").output)
+        entry = self.manifest()["sources"][SOURCE_ID]
+        self.assertEqual((self.release, "refs/tags/v1.0.1"), (entry["source_commit"], entry["source_ref"]))
         git(self.source, "tag", "v1.1.0")
-        self.assertTrue(source_ref.is_release_pin(self.source, "refs/tags/v1.0.0", self.release))
-        self.assertTrue(source_ref.is_release_pin(self.source, "refs/tags/v1.1.0", self.head))
-        for ref, commit in (("v1.0.0", self.release), ("refs/tags/v1.0.0", self.head), ("refs/heads/main", self.head)):
+        self.assertIn(
+            "\nReplaced the deployment pinned with --at refs/tags/v1.0.1 to ",
+            self.deploy_ok("--all", "--at", "refs/tags/v1.1.0").output,
+        )
+        entry = self.manifest()["sources"][SOURCE_ID]
+        self.assertEqual((self.head, "refs/tags/v1.1.0"), (entry["source_commit"], entry["source_ref"]))
+
+    def test_a_later_release_on_the_pinned_commit_and_the_next_release_move_the_updates_own_pin_in_one_run(
+        self,
+    ) -> None:
+        # Both releases are tagged before the update runs again, so the pin it replaces names an older release on its
+        # commit: still the update's own, which the next release's --at moves without --unpin.
+        self.deploy_ok("--all", "--at", "refs/tags/v1.0.0")
+        git(self.source, "tag", "v1.0.1", self.release)
+        git(self.source, "tag", "v1.1.0")
+        self.assertIn(
+            "\nReplaced the deployment pinned with --at refs/tags/v1.0.0 to ",
+            self.deploy_ok("--all", "--at", "refs/tags/v1.1.0").output,
+        )
+        entry = self.manifest()["sources"][SOURCE_ID]
+        self.assertEqual((self.head, "refs/tags/v1.1.0"), (entry["source_commit"], entry["source_ref"]))
+
+    def test_a_release_pin_is_the_full_name_of_any_release_naming_its_commit(self) -> None:
+        git(self.source, "tag", "v1.1.0")
+        git(self.source, "tag", "v0.9.0", self.release)
+        git(self.source, "tag", "-a", "-m", "annotated", "v1.0.1", self.release)
+        git(self.source, "tag", "v1.0.2-rc.1", self.release)
+        for ref, commit in (
+            ("refs/tags/v0.9.0", self.release),
+            ("refs/tags/v1.0.0", self.release),
+            ("refs/tags/v1.0.1", self.release),
+            ("refs/tags/v1.1.0", self.head),
+        ):
+            with self.subTest(ref=ref, commit=commit):
+                self.assertTrue(source_ref.is_release_pin(self.source, ref, commit))
+        for ref, commit in (
+            ("v1.0.0", self.release),
+            ("refs/tags/v1.0.2-rc.1", self.release),
+            ("refs/tags/v1.0.0", self.head),
+            ("refs/tags/v1.1.0", self.release),
+            ("refs/heads/main", self.head),
+        ):
             with self.subTest(ref=ref, commit=commit):
                 self.assertFalse(source_ref.is_release_pin(self.source, ref, commit))
         # A pin whose tags Git cannot read is neither owner's: the caller hears Git's reason.
@@ -294,9 +334,10 @@ class DeployAtTests(DeployerTestCase):
             source_ref.is_release_pin(self.source, "refs/tags/v1.0.0", self.release)
         self.assertEqual("fatal: refused by the test", str(raised.exception))
 
-    def test_a_release_pin_asks_release_tags_for_the_last_release(self) -> None:
-        # The one definition of the last release a commit holds answers, through the deployer's own git runner.
-        with mock.patch.object(source_ref, "last_release", return_value="v9.0.0") as asked:
+    def test_a_release_pin_asks_release_tags_for_the_releases_naming_its_commit(self) -> None:
+        # The one definition of the releases naming a commit answers, through the deployer's own git runner.
+        with mock.patch.object(source_ref, "releases_naming", return_value=["v8.0.0", "v9.0.0"]) as asked:
+            self.assertTrue(source_ref.is_release_pin(self.source, "refs/tags/v8.0.0", self.release))
             self.assertTrue(source_ref.is_release_pin(self.source, "refs/tags/v9.0.0", self.release))
             self.assertFalse(source_ref.is_release_pin(self.source, "refs/tags/v1.0.0", self.release))
         client, repository, commit = asked.call_args.args
@@ -346,7 +387,7 @@ class DeployAtTests(DeployerTestCase):
         self.assertEqual(1, result.code)
         self.assertIn(
             f"\nERROR: Refusing to replace the deployment pinned with --at refs/tags/v1.0.0 to v1.0.0 ({self.release})"
-            ": Git could not read the release tags reaching it, so whether it is update-coding-agent-skills' own pin "
+            ": Git could not read the release tags naming it, so whether it is update-coding-agent-skills' own pin "
             "is unknown: fatal: refused by the test\n"
             "Put right what Git reports in the checkout, then retry; nothing was replaced.\n"
             'See "Deploying an earlier commit" in docs/recovery.md.\n',
@@ -420,6 +461,7 @@ class DeployAtTests(DeployerTestCase):
         self.assertIn('RELEASE_REF="refs/tags/$TARGET"', text)
         self.assertIn('DEPLOY_OPTIONS+=(--at "$RELEASE_REF")', text)
         self.assertIn('[ "$PIN_REF" = "refs/tags/$PINNED_RELEASE" ]', text)
+        self.assertIn('"$PYTHON" "$RELEASE_TAGS" --naming "$CLONE" "$1"', text)
         self.deploy_ok("--all", "--at", "refs/tags/v1.0.0")
         self.assertEqual("refs/tags/v1.0.0", self.manifest()["sources"][SOURCE_ID]["source_ref"])
         self.assertIn(
@@ -523,14 +565,17 @@ class DeployAtTests(DeployerTestCase):
         self.assertEqual((self.release, recorded), (entry["source_commit"], entry["source_ref"]))
 
     def test_the_recorded_ref_and_its_owner_for_every_pin_transition(self) -> None:
-        # Every combination of the recorded pin (none, the update's own, or a user's by short name or by commit), the
-        # form of --at's ref, whether it names the recorded commit, and --unpin. A user's pin keeps its ref only at its
-        # own commit without --unpin, and is refused at another commit without it (_refuse_unpinning), so the pipeline
-        # never records those runs; every other run records --at's ref, whose form then names the owner.
+        # Every combination of the recorded pin (none, the update's own at the last release its commit holds or at an
+        # older release on it, or a user's by short name or by commit), the form of --at's ref, whether it names the
+        # recorded commit, and --unpin. A user's pin keeps its ref only at its own commit without --unpin, and is
+        # refused at another commit without it (_refuse_unpinning), so the pipeline never records those runs; every
+        # other run records --at's ref, whose form then names the owner.
         git(self.source, "tag", "v1.1.0")
+        git(self.source, "tag", "v0.9.0", self.release)
         recorded_refs = {
             "none": None,
             "update": "refs/tags/v1.0.0",
+            "update older": "refs/tags/v0.9.0",
             "user short": "v1.0.0",
             "user commit": self.release,
         }
@@ -569,6 +614,18 @@ class DeployAtTests(DeployerTestCase):
             ("update", "commit", True, True): ("new", "user"),
             ("update", "commit", False, False): ("new", "user"),
             ("update", "commit", False, True): ("new", "user"),
+            ("update older", "short", True, False): ("new", "user"),
+            ("update older", "short", True, True): ("new", "user"),
+            ("update older", "short", False, False): ("new", "user"),
+            ("update older", "short", False, True): ("new", "user"),
+            ("update older", "full", True, False): ("new", "update"),
+            ("update older", "full", True, True): ("new", "update"),
+            ("update older", "full", False, False): ("new", "update"),
+            ("update older", "full", False, True): ("new", "update"),
+            ("update older", "commit", True, False): ("new", "user"),
+            ("update older", "commit", True, True): ("new", "user"),
+            ("update older", "commit", False, False): ("new", "user"),
+            ("update older", "commit", False, True): ("new", "user"),
             ("user short", "short", True, False): ("recorded", "user"),
             ("user short", "short", True, True): ("new", "user"),
             ("user short", "short", False, False): ("refused", None),
@@ -597,6 +654,7 @@ class DeployAtTests(DeployerTestCase):
         combinations = itertools.product(recorded_refs, ("short", "full", "commit"), (True, False), (True, False))
         self.assertEqual(set(combinations), set(expected))
         self.assertTrue(source_ref.is_release_pin(self.source, recorded_refs["update"], self.release))
+        self.assertTrue(source_ref.is_release_pin(self.source, recorded_refs["update older"], self.release))
         for (recorded, form, same, unpin), (kept, owner) in expected.items():
             with self.subTest(recorded=recorded, form=form, same=same, unpin=unpin):
                 pin = source_ref.Pin(new_refs[form, same], self.release if same else self.head)

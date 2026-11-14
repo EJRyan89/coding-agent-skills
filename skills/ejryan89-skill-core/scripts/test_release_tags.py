@@ -1,4 +1,5 @@
-"""Regression tests for the one definition of a release tag and the lookup of the last release a commit holds."""
+"""Regression tests for the one definition of a release tag, the lookup of the last release a commit holds, and the
+releases naming a commit."""
 
 from __future__ import annotations
 
@@ -14,8 +15,8 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from git_client import GitClient
-from release_tags import breaking_component, highest_release, is_release_tag, last_release, main
+from git_client import GitClient, GitError
+from release_tags import breaking_component, highest_release, is_release_tag, last_release, main, releases_naming
 
 
 class ReleaseTagTests(unittest.TestCase):
@@ -117,6 +118,39 @@ class LastReleaseTests(unittest.TestCase):
     def test_a_commit_the_repository_lacks_is_a_failed_line(self) -> None:
         self.commit("first", "v0.1.0")
         code, output = self.run_main(str(self.root), "0" * 40)
+        self.assertEqual(1, code)
+        self.assertTrue(output.startswith("FAILED git for-each-ref: "), output)
+        self.assertEqual(1, len(output.splitlines()), output)
+
+    def test_every_release_naming_the_commit_is_listed_in_release_order_whatever_tags_peel_to_it(self) -> None:
+        # An older release, an annotated one, and a tag of a tag all name the commit; a pre-release and another tag
+        # there, a release on its parent, and one on a later commit do not.
+        first = self.commit("first", "v0.1.0")
+        commit = self.commit("second", "v0.10.0", "v0.2.0", "v0.10.1-rc.1", "nightly")
+        self.git("tag", "-a", "-m", "annotated", "v0.9.0", commit)
+        self.git("tag", "-a", "-m", "nested", "v0.11.0", "refs/tags/v0.9.0")
+        self.commit("third", "v1.0.0")
+        client = GitClient()
+        self.assertEqual(["v0.2.0", "v0.9.0", "v0.10.0", "v0.11.0"], releases_naming(client, self.root, commit))
+        self.assertEqual(["v0.1.0"], releases_naming(client, self.root, first))
+        self.assertEqual(
+            (0, "RELEASE v0.2.0\nRELEASE v0.9.0\nRELEASE v0.10.0\nRELEASE v0.11.0\n"),
+            self.run_main("--naming", str(self.root), commit),
+        )
+
+    def test_a_commit_no_release_names_has_none_though_a_release_reaches_it(self) -> None:
+        self.commit("released", "v1.0.0")
+        untagged = self.commit("untagged", "v1.1.0-rc.1")
+        self.assertEqual("v1.0.0", last_release(GitClient(), self.root, untagged))
+        self.assertEqual([], releases_naming(GitClient(), self.root, untagged))
+        self.assertEqual((0, "NO_RELEASE\n"), self.run_main("--naming", str(self.root), untagged))
+
+    def test_a_commit_the_repository_lacks_names_no_release_but_is_a_failed_line(self) -> None:
+        # Never an empty list: a pin to a commit the clone lost is not read as naming no release.
+        self.commit("first", "v0.1.0")
+        with self.assertRaises(GitError):
+            releases_naming(GitClient(), self.root, "0" * 40)
+        code, output = self.run_main("--naming", str(self.root), "0" * 40)
         self.assertEqual(1, code)
         self.assertTrue(output.startswith("FAILED git for-each-ref: "), output)
         self.assertEqual(1, len(output.splitlines()), output)
