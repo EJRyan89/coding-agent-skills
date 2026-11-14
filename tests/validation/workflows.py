@@ -1432,6 +1432,9 @@ def powershell_package_problems(workflow: str, job: str = "deployable-macos") ->
 # Homebrew's Bash folder alone ahead, since the whole of Homebrew's bin would also put Homebrew's python3 and node
 # ahead of the ones the job sets up and runs as python3 and node. The Windows and Linux images' own Bash is found.
 DEPLOYABLE_MACOS_BASH_INSTALL = ("brew install bash", 'echo "$(brew --prefix bash)/bin" >> "$GITHUB_PATH"')
+# The environment of a step that installs with Homebrew, as validate.yml's macOS legs set it: no self-update and no
+# cleanup on each run.
+HOMEBREW_STEP_ENV = {"HOMEBREW_NO_AUTO_UPDATE": "1", "HOMEBREW_NO_INSTALL_CLEANUP": "1"}
 # Each deployable.yml job, by job: the lines its prerequisites step runs to install the Bash the deployer is to find.
 DEPLOYABLE_BASH_INSTALLS: dict[str, tuple[str, ...]] = {
     "deployable": (),
@@ -1442,12 +1445,20 @@ DEPLOYABLE_BASH_INSTALLS: dict[str, tuple[str, ...]] = {
 # command in it that finds Bash as the deployer does and fails one older than the floor it is given.
 DEPLOYABLE_TOOLS_STEP = "Verify the tools in a fresh shell"
 DEPLOYABLE_BASH_CHECK = re.compile(r"python3? tools/deployable_report\.py bash --at-least (?P<floor>\S+)")
+# The line that ends the Windows job's PowerShell step on the check's failure: PowerShell goes on past a native
+# command's non-zero exit, and the step fails only on its last command's.
+DEPLOYABLE_PWSH_EXIT = "if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }"
+# The lines that turn Bash's errexit off, so a Bash step goes on past the check's failure.
+ERREXIT_OFF = re.compile(r"set\s+(?:\+e|\+o\s+errexit)\b")
 
 
 def deployable_bash_problems(workflow: str, floor: tuple[int, ...]) -> list[str]:
     """Report each deployable.yml job that could deploy on a Bash older than `floor`, validation's Bash floor, and
-    pass: a prerequisites step that does not run the lines DEPLOYABLE_BASH_INSTALLS gives its job, or a job whose
-    commands check the deployer's Bash anywhere but once, at that floor, in its DEPLOYABLE_TOOLS_STEP."""
+    pass: a prerequisites step that does not run the lines DEPLOYABLE_BASH_INSTALLS gives its job, a job whose
+    commands check the deployer's Bash anywhere but once, at that floor, in its DEPLOYABLE_TOOLS_STEP, or a check whose
+    failure would not fail the run: `continue-on-error` on the job or the step, an `if:` on the step, a Windows check
+    not followed by DEPLOYABLE_PWSH_EXIT, or a Bash step that turns errexit off before it. A later step that changes
+    PATH before the deployer runs is outside what it reads."""
     tree = read_workflow(workflow)
     expected = ".".join(str(part) for part in floor)
     problems: list[str] = []
@@ -1456,12 +1467,18 @@ def deployable_bash_problems(workflow: str, floor: tuple[int, ...]) -> list[str]
         if not steps:
             problems.append(f"there is no {job} job")
             continue
-        prerequisites = [set(_script_lines(step)) for step in steps if step.get("name") == POWERSHELL_PACKAGE_STEP]
-        if install and not any(set(install) <= lines for lines in prerequisites):
+        prerequisites = [step for step in steps if step.get("name") == POWERSHELL_PACKAGE_STEP]
+        if install and not any(set(install) <= set(_script_lines(step)) for step in prerequisites):
             problems.append(
                 f"the {job} job's step {POWERSHELL_PACKAGE_STEP!r} does not run {list(install)}, so it deploys on "
                 "the image's own Bash"
             )
+        problems.extend(
+            f"the {job} job's step {POWERSHELL_PACKAGE_STEP!r} does not set {name}: '{value}', so Homebrew "
+            "updates itself on each run"
+            for name, value in HOMEBREW_STEP_ENV.items()
+            if install and not any(_mapping(step, "env").get(name) == value for step in prerequisites)
+        )
         checks = [
             (str(step.get("name")), match["floor"])
             for step in steps
@@ -1472,6 +1489,34 @@ def deployable_bash_problems(workflow: str, floor: tuple[int, ...]) -> list[str]
             problems.append(
                 f"the {job} job checks the deployer's Bash as {checks}, not once at the floor {expected} in its step "
                 f"{DEPLOYABLE_TOOLS_STEP!r}"
+            )
+        problems.extend(_bash_check_reach_problems(job, _mapping(tree, "jobs", job), steps))
+    return problems
+
+
+def _bash_check_reach_problems(job: str, settings: dict[str, Node], steps: list[dict[str, Node]]) -> list[str]:
+    """Each way `job`'s DEPLOYABLE_TOOLS_STEP could let the Bash check fail without failing the run."""
+    problems: list[str] = []
+    if "continue-on-error" in settings:
+        problems.append(f"the {job} job sets continue-on-error, so a failed Bash check would not fail the run")
+    for step in steps:
+        if step.get("name") != DEPLOYABLE_TOOLS_STEP:
+            continue
+        problems.extend(
+            f"the {job} job's step {DEPLOYABLE_TOOLS_STEP!r} sets {key}, so the Bash check may not run or fail it"
+            for key in ("continue-on-error", "if")
+            if key in step
+        )
+        lines = _script_lines(step)
+        positions = [index for index, line in enumerate(lines) if DEPLOYABLE_BASH_CHECK.fullmatch(line)]
+        if not positions:
+            continue
+        before, after = lines[: positions[0]], lines[positions[0] + 1 : positions[0] + 2]
+        if any(ERREXIT_OFF.match(line) for line in before):
+            problems.append(f"the {job} job's step {DEPLOYABLE_TOOLS_STEP!r} turns errexit off before the Bash check")
+        if lines[positions[0]].startswith("python ") and after != [DEPLOYABLE_PWSH_EXIT]:
+            problems.append(
+                f"the {job} job's Bash check is not followed by {DEPLOYABLE_PWSH_EXIT!r}, so PowerShell goes on past it"
             )
     return problems
 

@@ -1148,7 +1148,13 @@ class PowerShellPackageFixtures(unittest.TestCase):
 def _bash_job(job: str, runner: str, install: str, check: str) -> str:
     return (
         f"  {job}:\n    runs-on: {runner}\n    steps:\n"
-        "      - name: Install the prerequisites\n        run: |\n"
+        "      - name: Install the prerequisites\n"
+        + (
+            "        env:\n          HOMEBREW_NO_AUTO_UPDATE: '1'\n          HOMEBREW_NO_INSTALL_CLEANUP: '1'\n"
+            if install
+            else ""
+        )
+        + "        run: |\n"
         f"          echo prerequisites\n{install}"
         "      - name: Verify the tools in a fresh shell\n        run: |\n"
         f"          echo tools\n{check}"
@@ -1161,7 +1167,13 @@ def _bash_job(job: str, runner: str, install: str, check: str) -> str:
 MACOS_BASH_LINES = '          brew install bash\n          echo "$(brew --prefix bash)/bin" >> "$GITHUB_PATH"\n'
 BASH_JOBS = (
     "jobs:\n"
-    + _bash_job("deployable", "windows-latest", "", "          python tools/deployable_report.py bash --at-least 5.2\n")
+    + _bash_job(
+        "deployable",
+        "windows-latest",
+        "",
+        "          python tools/deployable_report.py bash --at-least 5.2\n"
+        "          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }\n",
+    )
     + _bash_job(
         "deployable-linux", "ubuntu-latest", "", "          python3 tools/deployable_report.py bash --at-least 5.2\n"
     )
@@ -1179,6 +1191,7 @@ class DeployableBashFixtures(unittest.TestCase):
         self.assertEqual([], deployable_bash_problems(BASH_JOBS, (5, 2)))
         macos = BASH_JOBS.index("  deployable-macos:")
         check = "python3 tools/deployable_report.py bash --at-least 5.2"
+        tools = "      - name: Verify the tools in a fresh shell\n"
         for drifted, floor, problem in (
             # The job as it was before the fix: no Homebrew Bash, so /bin/bash 3.2 deploys.
             (BASH_JOBS.replace(MACOS_BASH_LINES, ""), (5, 2), "does not run ['brew install bash'"),
@@ -1200,6 +1213,55 @@ class DeployableBashFixtures(unittest.TestCase):
                 "('Install the prerequisites', '5.2'), ('Verify the tools in a fresh shell', '5.2')",
             ),
             (BASH_JOBS.replace("  deployable-linux:", "  other:"), (5, 2), "there is no deployable-linux job"),
+            (
+                BASH_JOBS.replace("          HOMEBREW_NO_AUTO_UPDATE: '1'\n", ""),
+                (5, 2),
+                "does not set HOMEBREW_NO_AUTO_UPDATE: '1'",
+            ),
+            (
+                BASH_JOBS.replace("HOMEBREW_NO_INSTALL_CLEANUP: '1'", "HOMEBREW_NO_INSTALL_CLEANUP: '0'"),
+                (5, 2),
+                "does not set HOMEBREW_NO_INSTALL_CLEANUP: '1'",
+            ),
+            # Each way the check could fail without failing the run.
+            (
+                BASH_JOBS[:macos] + BASH_JOBS[macos:].replace(tools, tools + "        continue-on-error: true\n"),
+                (5, 2),
+                "the deployable-macos job's step 'Verify the tools in a fresh shell' sets continue-on-error",
+            ),
+            (
+                BASH_JOBS[:macos] + BASH_JOBS[macos:].replace(tools, tools + "        if: false\n"),
+                (5, 2),
+                "the deployable-macos job's step 'Verify the tools in a fresh shell' sets if",
+            ),
+            (
+                BASH_JOBS.replace(tools, tools + "        if: ${{ github.event_name == 'schedule' }}\n", 1),
+                (5, 2),
+                "the deployable job's step 'Verify the tools in a fresh shell' sets if",
+            ),
+            (
+                BASH_JOBS.replace(
+                    "  deployable-linux:\n    runs-on: ubuntu-latest\n",
+                    "  deployable-linux:\n    runs-on: ubuntu-latest\n    continue-on-error: true\n",
+                ),
+                (5, 2),
+                "the deployable-linux job sets continue-on-error",
+            ),
+            (
+                BASH_JOBS.replace("          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }\n", ""),
+                (5, 2),
+                "the deployable job's Bash check is not followed by",
+            ),
+            (
+                BASH_JOBS[:macos] + BASH_JOBS[macos:].replace("          echo tools\n", "          set +e\n"),
+                (5, 2),
+                "the deployable-macos job's step 'Verify the tools in a fresh shell' turns errexit off",
+            ),
+            (
+                BASH_JOBS[:macos] + BASH_JOBS[macos:].replace("          echo tools\n", "          set +o errexit\n"),
+                (5, 2),
+                "turns errexit off",
+            ),
         ):
             with self.subTest(problem=problem):
                 problems = deployable_bash_problems(drifted, floor)
