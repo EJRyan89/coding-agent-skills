@@ -33,7 +33,7 @@ from bounded_process import Finished, run_bounded
 from guard_limits import PROCESS_SECONDS, process_limits_held
 from markdown_sections import CODE_SPAN, markdown_section
 from resident_pwsh import resident_reads
-from worktree_fixture import GUARD_SCRIPT, HUB, REPOSITORY_ROOT, TREE, HubTestCase, isolated_environment
+from worktree_fixture import GUARD_SCRIPT, HUB, REPOSITORY_ROOT, TREE, HubTestCase, isolated_environment, run_git
 
 from deployer import platform_support
 from tools import bash_syntax, hub_guard, worktrees
@@ -1350,6 +1350,18 @@ class HookCommandTests(GuardTestCase):
                 code, arguments = self.run_hook(variables)
                 self.assertEqual((0, ["-B", f"{self.hub}/tools/hub_guard.py"]), (code, arguments))
 
+    def test_an_inherited_trace_or_output_file_has_the_hook_s_own_git_write_nothing(self) -> None:
+        # The hook's git config call would append a trace to a hub file the session's environment names before the
+        # guard starts, whatever the command; Windows reads an environment name in any case.
+        readme = self.hub / "README.md"
+        before = readme.read_bytes()
+        self.enable("true")
+        for name in ("GIT_TRACE", "GIT_TRACE2_PERF", "GIT_TRACE2_EVENT", "GIT_REDIRECT_STDOUT", "GIT_REDIRECT_STDERR"):
+            with self.subTest(name=name):
+                code, arguments = self.run_hook({name: str(readme)})
+                self.assertEqual((0, ["-B", f"{self.hub}/tools/hub_guard.py"]), (code, arguments))
+                self.assertEqual(before, readme.read_bytes())
+
 
 class HookCommandUnderPowerShellTests(GuardTestCase):
     """The tracked hook command run under PowerShell, as Copilot CLI runs a hook's command on Windows.
@@ -1876,36 +1888,287 @@ class CommandGuardTests(GuardTestCase):
                     self.assertEqual("deny", shell("git add .", self.tree, environment))
                     self.assertIn("a GIT_INDEX_FILE the guard cannot place", self.reason)
 
-    def test_own_index_is_the_index_git_uses_for_the_call_s_repository_and_fails_closed(self) -> None:
-        own = Path(self.git(self.tree, "rev-parse", "--path-format=absolute", "--git-path", "index").strip())
+    def test_own_paths_are_where_git_keeps_the_call_s_repository_and_fail_closed(self) -> None:
+        # git answers with forward slashes on Windows, so each answer is compared as a path, never as text.
+        asked = ["rev-parse", "--path-format=absolute", "--git-dir", "--git-common-dir", "--git-path", "objects"]
+        git_dir, common_dir, objects = (Path(line) for line in self.git(self.tree, *asked).splitlines())
         outside = self.root / "outside"
         outside.mkdir()
         place = hub_guard.Place(self.tree, self.tree)
-        self.assertTrue(hub_guard.own_index(place, own))
-        self.assertFalse(hub_guard.own_index(place, self.hub / ".git" / "index"))
+        own = hub_guard.own_paths(place)
+        assert own is not None
+        for found, expected in ((own.git_dir, git_dir), (own.common_dir, common_dir), (own.objects, objects)):
+            self.assertTrue(same(found, expected), (found, expected))
+        self.assertTrue(own.linked)
+        hub_own = hub_guard.own_paths(hub_guard.Place(self.hub, self.hub))
+        assert hub_own is not None
+        self.assertFalse(hub_own.linked, "a hub's git directory is its common one")
         # A repository named with --git-dir or GIT_DIR is the one asked, wherever git starts.
-        self.assertTrue(hub_guard.own_index(hub_guard.Place(outside, outside, own.parent, True), own))
+        named = hub_guard.own_paths(hub_guard.Place(outside, outside, git_dir, True))
+        assert named is not None
+        self.assertTrue(same(named.git_dir, git_dir))
         # A start in no repository, one that is no folder, none at all, and a repository named but not settled have
-        # no index of their own.
-        for start, repository, named in (
+        # no repository of their own.
+        for start, repository, is_named in (
             (outside, None, False),
             (self.root / "missing", None, False),
             (None, None, False),
             (self.tree, None, True),
         ):
-            with self.subTest(start=str(start), named=named):
-                self.assertFalse(hub_guard.own_index(hub_guard.Place(start, start, repository, named), own))
-        # git's answer is compared as the path it names, however it is spelled: forward slashes, as git writes on
+            with self.subTest(start=str(start), named=is_named):
+                self.assertIsNone(hub_guard.own_paths(hub_guard.Place(start, start, repository, is_named)))
+        # git's answer is read as the paths it names, however they are spelled: forward slashes, as git writes on
         # Windows, and a segment that names the folder it is in.
-        spelled = f"{own.parent.as_posix()}/./{own.name}\n"
+        spelled = "".join(f"{path.parent.as_posix()}/./{path.name}\n" for path in (git_dir, common_dir, objects))
         with mock.patch.object(worktrees.CLIENT, "output", return_value=spelled):
-            self.assertTrue(hub_guard.own_index(place, own))
-        # An answer of other than one line is an error, never a match.
+            answered = hub_guard.own_paths(place)
+        assert answered is not None
+        self.assertTrue(same(answered.git_dir, git_dir))
+        # An answer of other than three lines is an error, never a match.
         with (
-            mock.patch.object(worktrees.CLIENT, "output", return_value=f"{own}\n{own}\n"),
-            self.assertRaisesRegex(git_client.GitError, "answered 2 lines for the index of"),
+            mock.patch.object(worktrees.CLIENT, "output", return_value=f"{git_dir}\n{common_dir}\n"),
+            self.assertRaisesRegex(git_client.GitError, "answered 2 lines for the repository of"),
         ):
-            hub_guard.own_index(place, own)
+            hub_guard.own_paths(place)
+
+    def second_worktree(self) -> Path:
+        """Another task worktree of the hub, beside self.tree."""
+        second = self.worktrees / "feat-second"
+        self.git(self.hub, "worktree", "add", "-q", "-b", "feat/second", str(second), "main")
+        return second
+
+    def test_any_file_in_the_call_s_own_worktree_git_directory_is_its_index_and_no_other_call_s(self) -> None:
+        # A hook or an editor git starts mid-operation hands on the lock file git writes the new index into, or the
+        # next-index lock of a commit given paths; each lies in the worktree's own git directory, which git writes for
+        # the worktree's calls anyway.
+        own = Path(self.git(self.tree, "rev-parse", "--path-format=absolute", "--git-dir").strip())
+        self.assertTrue(own.is_relative_to(self.hub / ".git"), own)
+        files = [own / "index", own / "index.lock", own / "next-index-4242.lock"]
+        for index in files:
+            environment = self.index_file(index)
+            for command in ("git add .", "git status", "git commit -m x"):
+                for shell in (self.bash, self.powershell):
+                    with self.subTest(index=index.name, command=command, shell=shell.__name__):
+                        self.assertIsNone(shell(command, self.tree, environment))
+        # The same files are no other call's: not one the hub runs, not even one of its read-only forms, and not one
+        # another worktree runs, though each lies in the hub's git directory.
+        second = self.second_worktree()
+        for index in files:
+            environment = self.index_file(index)
+            for cwd, command in (
+                (self.hub, "git status"),
+                (self.hub, "git log -1"),
+                (self.hub, "git pull --ff-only origin main"),
+                (second, "git status"),
+                (second, "git add ."),
+                (self.tree, f'git -C "{self.hub}" status'),
+            ):
+                for shell in (self.bash, self.powershell):
+                    with self.subTest(index=index.name, cwd=cwd.name, command=command, shell=shell.__name__):
+                        self.assertEqual("deny", shell(command, cwd, environment))
+                        self.assertIn(f"GIT_INDEX_FILE={index}, an index the guarded hub", self.reason)
+
+    def test_a_call_that_acts_on_the_hub_given_any_index_store_or_alternates_is_refused(self) -> None:
+        # A fast-forward in the hub moves its HEAD and tree while the new tree goes into the index it is given, so the
+        # hub's own index is left at the old commit; a store or alternates other than its own leave its refs
+        # naming objects its own store lacks.
+        elsewhere = self.root / "elsewhere"
+        elsewhere.mkdir()
+        for name, value in (
+            ("GIT_INDEX_FILE", elsewhere / "index"),
+            ("GIT_OBJECT_DIRECTORY", elsewhere),
+            ("GIT_COMMON_DIR", self.other_git_directory()),
+            ("GIT_ALTERNATE_OBJECT_DIRECTORIES", elsewhere),
+        ):
+            environment = {**self.environment, name: str(value)}
+            for cwd, command in (
+                (self.hub, "git merge --ff-only origin/main"),
+                (self.hub, "git pull --ff-only origin main"),
+                (self.hub, "git status"),
+                (self.tree, f'git -C "{self.hub}" log -1'),
+                (self.tree, 'cd "$SOMEWHERE_UNSET" && git status'),
+            ):
+                for shell in (self.bash, self.powershell):
+                    if shell is self.powershell and "SOMEWHERE" in command:
+                        continue
+                    with self.subTest(name=name, cwd=cwd.name, command=command, shell=shell.__name__):
+                        self.assertEqual("deny", shell(command, cwd, environment))
+                        self.assertIn(f"given {name} from the session's environment", self.reason)
+                        self.assertIn(f"without {name}", self.reason)
+            # A call in a worktree writes no hub's HEAD, index, or tree.
+            with self.subTest(name=name, cwd="tree"):
+                self.assertIsNone(self.bash("git add . && git status", self.tree, environment))
+        # The hub's own store and common directory are its own.
+        own = hub_guard.own_paths(hub_guard.Place(self.hub, self.hub))
+        assert own is not None
+        for name, value in (("GIT_OBJECT_DIRECTORY", own.objects), ("GIT_COMMON_DIR", own.common_dir)):
+            with self.subTest(name=name, own=True):
+                self.assertIsNone(self.bash("git status", self.hub, {**self.environment, name: str(value)}))
+        # Real git: the fast-forward leaves the hub's own index at the old commit, which status shows as staged.
+        self.git(self.tree, "commit", "-q", "--allow-empty", "-m", "ahead")
+        (self.tree / "added.txt").write_text("added\n", encoding="utf-8")
+        self.git(self.tree, "add", "added.txt")
+        self.git(self.tree, "commit", "-q", "-m", "added")
+        branch = self.git(self.tree, "branch", "--show-current").strip()
+        run = run_git(
+            self.hub, {**self.environment, "GIT_INDEX_FILE": str(elsewhere / "index")}, "merge", "--ff-only", branch
+        )
+        self.assertEqual(0, run.returncode, run.stderr)
+        self.assertIn("added.txt", self.git(self.hub, "status", "--porcelain"))
+
+    def other_git_directory(self) -> Path:
+        """The git directory of a throwaway repository outside the hub, made once."""
+        other = self.root / "other repository"
+        if not other.exists():
+            self.other_repository()
+        return other / ".git"
+
+    def test_an_inherited_store_a_guarded_hub_holds_is_refused_unless_it_is_the_call_s_own(self) -> None:
+        (self.tree / "new.txt").write_text("new\n", encoding="utf-8")
+        docs = self.hub / "docs"
+        docs.mkdir()
+        second = self.second_worktree()
+        second_git = Path(self.git(second, "rev-parse", "--path-format=absolute", "--git-dir").strip())
+        for name, value in (
+            ("GIT_OBJECT_DIRECTORY", docs),
+            ("GIT_OBJECT_DIRECTORY", self.hub / ".git" / "objects" / "pack"),
+            ("GIT_COMMON_DIR", second_git),
+            ("GIT_COMMON_DIR", docs),
+        ):
+            environment = {**self.environment, name: str(value)}
+            for command in ("git add new.txt", "git status", "gh pr checkout 12"):
+                for shell in (self.bash, self.powershell):
+                    with self.subTest(name=name, value=str(value), command=command, shell=shell.__name__):
+                        self.assertEqual("deny", shell(command, self.tree, environment))
+                        self.assertIn(f"{name}={value}, in the guarded hub", self.reason)
+        # A worktree's own store is the hub's, which git writes for it anyway, and one no hub holds is no hub's.
+        own = hub_guard.own_paths(hub_guard.Place(self.tree, self.tree))
+        assert own is not None
+        for name, value in (
+            ("GIT_OBJECT_DIRECTORY", own.objects),
+            ("GIT_COMMON_DIR", own.common_dir),
+            ("GIT_OBJECT_DIRECTORY", self.root / "elsewhere"),
+            ("GIT_COMMON_DIR", self.other_git_directory()),
+        ):
+            with self.subTest(name=name, value=str(value)):
+                self.assertIsNone(self.bash("git add new.txt", self.tree, {**self.environment, name: str(value)}))
+        # From another repository the hub's own store is the hub's: a commit there writes its objects into it.
+        other = self.other_git_directory().parent
+        hub_store = {**self.environment, "GIT_COMMON_DIR": str(self.hub / ".git")}
+        self.assertEqual("deny", self.bash("git add . && git commit -m x", other, hub_store))
+        # A relative store is read from wherever git works, so the guard cannot place it.
+        for name in ("GIT_OBJECT_DIRECTORY", "GIT_COMMON_DIR"):
+            with self.subTest(name=name, relative=True):
+                self.assertEqual("deny", self.bash("git status", self.tree, {**self.environment, name: "objects"}))
+                self.assertIn("a store the guard cannot place", self.reason)
+        # Real git: the variable sends a worktree's new objects into the folder it names.
+        (self.tree / "stored.txt").write_text("stored\n", encoding="utf-8")
+        run = run_git(self.tree, {**self.environment, "GIT_OBJECT_DIRECTORY": str(docs)}, "add", "stored.txt")
+        self.assertEqual(0, run.returncode, run.stderr)
+        self.assertTrue(any(path.is_dir() for path in docs.iterdir()), "git wrote no object into the named store")
+        # And GIT_COMMON_DIR from another repository sends its commit's objects into the hub's store.
+        (other / "file.txt").write_text("other\n", encoding="utf-8")
+        for arguments in (["add", "file.txt"], ["commit", "-q", "-m", "other"]):
+            run = run_git(other, hub_store, *arguments)
+            self.assertEqual(0, run.returncode, run.stderr)
+        commit = run_git(other, hub_store, "rev-parse", "HEAD").stdout.strip()
+        self.assertEqual("commit\n", self.git(self.hub, "cat-file", "-t", commit))
+
+    def test_a_trace_or_output_file_the_environment_names_in_a_hub_is_refused(self) -> None:
+        readme = self.hub / "README.md"
+        docs = self.hub / "docs"
+        docs.mkdir()
+        for name, value in (
+            ("GIT_TRACE", readme),
+            ("GIT_TRACE_PACKET", readme),
+            ("GIT_TRACE2", readme),
+            ("GIT_TRACE2_EVENT", self.hub / ".git" / "trace"),
+            ("GIT_TRACE2_PERF", docs),
+            ("GIT_REDIRECT_STDOUT", readme),
+            ("GIT_REDIRECT_STDERR", readme),
+        ):
+            environment = {**self.environment, name: str(value)}
+            for cwd, command in (
+                (self.tree, "git status"),
+                (self.tree, "gh pr checkout 12"),
+                (self.root, "git init x"),
+            ):
+                for shell in (self.bash, self.powershell):
+                    with self.subTest(name=name, cwd=cwd.name, command=command, shell=shell.__name__):
+                        self.assertEqual("deny", shell(command, cwd, environment))
+                        self.assertIn(
+                            f"{name}={value}, and git writes there, into a file of a guarded hub", self.reason
+                        )
+        # A value that names no file, a relative trace, which git ignores, and a file no hub holds write no hub.
+        for name, text in (
+            ("GIT_TRACE", "1"),
+            ("GIT_TRACE", "true"),
+            ("GIT_TRACE", "relative.txt"),
+            ("GIT_TRACE2_EVENT", "af_unix:/tmp/socket"),
+            ("GIT_TRACE", str(self.root / "trace.txt")),
+            ("GIT_TRACE", "/dev/null"),
+            ("GIT_REDIRECT_STDOUT", "off"),
+            ("GIT_REDIRECT_STDERR", "2>&1"),
+            ("GIT_REDIRECT_STDOUT", str(self.root / "out.txt")),
+        ):
+            with self.subTest(name=name, text=text):
+                self.assertIsNone(self.bash("git status", self.tree, {**self.environment, name: text}))
+        # git for Windows opens a relative output file from where it starts, which the guard does not place.
+        self.assertEqual("deny", self.bash("git status", self.tree, {**self.environment, "GIT_REDIRECT_STDOUT": "o"}))
+        self.assertIn("a file git writes that the guard cannot place", self.reason)
+        self.assertEqual("", self.git(self.hub, "status", "--porcelain", "--untracked-files=no"))
+        # Real git: a trace is appended to the absolute path the variable names, and trace2 makes a file inside a
+        # directory it names.
+        trace = self.root / "trace.txt"
+        run_git(self.tree, {**self.environment, "GIT_TRACE": str(trace)}, "status")
+        self.assertTrue(trace.stat().st_size > 0)
+        folder = self.root / "traces"
+        folder.mkdir()
+        run_git(self.tree, {**self.environment, "GIT_TRACE2_PERF": str(folder)}, "status")
+        self.assertTrue(list(folder.iterdir()))
+
+    def test_the_guard_s_own_git_calls_write_no_trace_the_environment_names(self) -> None:
+        # The guard runs git to find the hubs in view, so an inherited trace in a hub file would be written by the
+        # guard itself, whatever the command.
+        readme = self.hub / "README.md"
+        before = readme.read_bytes()
+        environment = {**self.environment, "GIT_TRACE": str(readme), "GIT_TRACE2_PERF": str(readme)}
+        self.assertIsNone(self.bash("ls", self.tree, environment))
+        self.assertEqual("deny", self.edit(readme, self.tree, environment=environment))
+        self.assertEqual(before, readme.read_bytes())
+
+    def test_an_inherited_path_the_guard_cannot_place_is_noted_with_no_hub_in_view(self) -> None:
+        outside = self.root / "outside"
+        outside.mkdir()
+        self.git(outside, "init", "-q")
+        unshared = {name: value for name, value in self.environment.items() if name != "CLAUDE_PROJECT_DIR"}
+        for name, value, said in (
+            ("GIT_OBJECT_DIRECTORY", "objects", "could not tell where GIT_OBJECT_DIRECTORY has `git add` write"),
+            ("GIT_REDIRECT_STDOUT", "out.txt", "could not tell where GIT_REDIRECT_STDOUT has `git add` write"),
+        ):
+            with self.subTest(name=name):
+                self.assertIsNone(self.bash("git add .", outside, {**unshared, name: value}))
+                self.assertIn(said, self.stderr)
+
+    def test_an_absolute_store_git_cannot_place_is_refused_while_a_hub_is_guarded_and_noted_otherwise(self) -> None:
+        # git answering with an error, for the call's own store or for the hub that may hold the named one, says
+        # nothing about where the store lies, so it may be a guarded hub's.
+        failure = git_client.GitError("git could not read it", returncode=128)
+        outside = self.root / "outside"
+        outside.mkdir()
+        self.git(outside, "init", "-q")
+        unshared = {name: value for name, value in self.environment.items() if name != "CLAUDE_PROJECT_DIR"}
+        for name in ("GIT_OBJECT_DIRECTORY", "GIT_COMMON_DIR"):
+            store = str(self.root / "elsewhere")
+            for failing in ("own_paths", "protecting_hub"):
+                with mock.patch.object(hub_guard, failing, side_effect=failure):
+                    for shell in (self.bash, self.powershell):
+                        with self.subTest(name=name, failing=failing, shell=shell.__name__):
+                            self.assertEqual("deny", shell("git add .", self.tree, {**self.environment, name: store}))
+                            self.assertIn("a store the guard cannot place", self.reason)
+                    with self.subTest(name=name, failing=failing, hub=None):
+                        self.assertIsNone(self.bash("git add .", outside, {**unshared, name: store}))
+                        self.assertIn(f"could not tell where {name} has `git add` write", self.stderr)
 
     if not platform_support.WINDOWS:
         # Windows makes a symbolic link only with a privilege a test cannot count on.
@@ -3484,6 +3747,23 @@ class GuardGitTests(unittest.TestCase):
             ],
             [timeout for _, timeout in calls],
         )
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("/srv/trace", True),
+        # git reads a backslash as a separator and a drive as absolute, as git for Windows does.
+        ("C:\\x\\trace", True),
+        ("C:/x", True),
+        ("\\\\host\\share\\t", True),
+        ("relative.txt", False),
+        ("af_unix:/tmp/s", False),
+        ("1", False),
+    ],
+)
+def test_a_trace_value_names_a_file_git_writes_when_git_reads_it_as_absolute(value: str, expected: bool) -> None:
+    assert hub_guard.git_writes_trace_at(value) is expected
 
 
 @pytest.mark.parametrize(
