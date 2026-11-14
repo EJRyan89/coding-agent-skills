@@ -130,6 +130,9 @@ jobs:
             python tools/deployable_report.py pin --program $command --wanted $wanted
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           }
+          # The Bash the deployer will run, found as it finds one, no older than the floor docs/dependency-updates.md gives.
+          python tools/deployable_report.py bash --at-least 5.2
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       # Codex CLI on Windows needs two machine settings before it can run a skill's scripts (docs/codex-support.md).
       # Neither changes what `verify` sees, because discovery runs no script. This step writes the sandbox settings, the
@@ -353,6 +356,8 @@ jobs:
           for pin in "claude $CLAUDE_VERSION" "codex $CODEX_VERSION" "copilot $COPILOT_VERSION"; do
             python3 tools/deployable_report.py pin --program "${pin%% *}" --wanted "${pin#* }"
           done
+          # The Bash the deployer will run, found as it finds one, no older than the floor docs/dependency-updates.md gives.
+          python3 tools/deployable_report.py bash --at-least 5.2
 
       - name: Check the deployer's prerequisites
         run: |
@@ -476,6 +481,9 @@ jobs:
 
       # The install commands are the ones docs/installation.md lists. The runner image already provides some of these
       # tools, so each is installed only when it is missing; the verify step below records what was found.
+      # The image's /bin/bash is a Bash 3.2 that Apple no longer updates, so the step installs Homebrew's, as
+      # docs/installation.md tells a Mac to, and puts its folder alone ahead of /bin/bash on PATH: the whole of
+      # Homebrew's bin would also put Homebrew's python3 and node ahead of the ones set up above.
       # Homebrew has no PowerShell cask, so where the image lacks pwsh the step installs Microsoft's package of the
       # pinned release, refused unless its SHA-256 is the pinned digest for the runner's architecture
       # (docs/dependency-updates.md).
@@ -492,6 +500,8 @@ jobs:
               brew install "$command"
             fi
           done
+          brew install bash
+          echo "$(brew --prefix bash)/bin" >> "$GITHUB_PATH"
           if command -v pwsh > /dev/null; then
             echo "pwsh is provided by the runner image"
           else
@@ -526,6 +536,8 @@ jobs:
           for pin in "claude $CLAUDE_VERSION" "codex $CODEX_VERSION" "copilot $COPILOT_VERSION"; do
             python3 tools/deployable_report.py pin --program "${pin%% *}" --wanted "${pin#* }"
           done
+          # The Bash the deployer will run, found as it finds one, no older than the floor docs/dependency-updates.md gives.
+          python3 tools/deployable_report.py bash --at-least 5.2
 
       - name: Check the deployer's prerequisites
         run: |

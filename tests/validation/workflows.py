@@ -12,10 +12,10 @@ from pathlib import Path
 
 import file_presence
 from python_checks import MYPY_CACHE_VARIABLE
-from toolchain import removed_install_problems
+from toolchain import VALIDATION_FLOORS, removed_install_problems
 from validation_support import REPOSITORY_ROOT, repository_files
 
-from deployer import config
+from deployer import config, platform_support
 
 
 def required_match(pattern: str, text: str) -> re.Match[str]:
@@ -1427,6 +1427,55 @@ def powershell_package_problems(workflow: str, job: str = "deployable-macos") ->
     return problems
 
 
+# The lines deployable.yml's macOS job runs in its prerequisites step to put Homebrew's Bash ahead of the image's
+# /bin/bash, a Bash 3.2, on PATH, as docs/installation.md tells a Mac to. Unlike MACOS_BASH_INSTALL, they put
+# Homebrew's Bash folder alone ahead, since the whole of Homebrew's bin would also put Homebrew's python3 and node
+# ahead of the ones the job sets up and runs as python3 and node. The Windows and Linux images' own Bash is found.
+DEPLOYABLE_MACOS_BASH_INSTALL = ("brew install bash", 'echo "$(brew --prefix bash)/bin" >> "$GITHUB_PATH"')
+# Each deployable.yml job, by job: the lines its prerequisites step runs to install the Bash the deployer is to find.
+DEPLOYABLE_BASH_INSTALLS: dict[str, tuple[str, ...]] = {
+    "deployable": (),
+    "deployable-linux": (),
+    "deployable-macos": DEPLOYABLE_MACOS_BASH_INSTALL,
+}
+# The step of each deployable job that runs in a fresh shell after the installs and before the deployer, and the
+# command in it that finds Bash as the deployer does and fails one older than the floor it is given.
+DEPLOYABLE_TOOLS_STEP = "Verify the tools in a fresh shell"
+DEPLOYABLE_BASH_CHECK = re.compile(r"python3? tools/deployable_report\.py bash --at-least (?P<floor>\S+)")
+
+
+def deployable_bash_problems(workflow: str, floor: tuple[int, ...]) -> list[str]:
+    """Report each deployable.yml job that could deploy on a Bash older than `floor`, validation's Bash floor, and
+    pass: a prerequisites step that does not run the lines DEPLOYABLE_BASH_INSTALLS gives its job, or a job whose
+    commands check the deployer's Bash anywhere but once, at that floor, in its DEPLOYABLE_TOOLS_STEP."""
+    tree = read_workflow(workflow)
+    expected = ".".join(str(part) for part in floor)
+    problems: list[str] = []
+    for job, install in DEPLOYABLE_BASH_INSTALLS.items():
+        steps = _steps(_mapping(tree, "jobs", job))
+        if not steps:
+            problems.append(f"there is no {job} job")
+            continue
+        prerequisites = [set(_script_lines(step)) for step in steps if step.get("name") == POWERSHELL_PACKAGE_STEP]
+        if install and not any(set(install) <= lines for lines in prerequisites):
+            problems.append(
+                f"the {job} job's step {POWERSHELL_PACKAGE_STEP!r} does not run {list(install)}, so it deploys on "
+                "the image's own Bash"
+            )
+        checks = [
+            (str(step.get("name")), match["floor"])
+            for step in steps
+            for line in _script_lines(step)
+            if (match := DEPLOYABLE_BASH_CHECK.fullmatch(line))
+        ]
+        if checks != [(DEPLOYABLE_TOOLS_STEP, expected)]:
+            problems.append(
+                f"the {job} job checks the deployer's Bash as {checks}, not once at the floor {expected} in its step "
+                f"{DEPLOYABLE_TOOLS_STEP!r}"
+            )
+    return problems
+
+
 # The file docs/codex-support.md tells a user to write the settings to, ~/.codex/config.toml, as the parts the Codex
 # step's $config is joined from: the runner's profile folder, then each folder and the file under it.
 CODEX_CONFIG_PARTS = ("$env:USERPROFILE", ".codex", "config.toml")
@@ -2036,6 +2085,10 @@ class WorkflowsPolicies(unittest.TestCase):
     def test_the_deployable_macos_job_installs_powershell_from_microsofts_pinned_and_checked_package(self) -> None:
         workflow = (REPOSITORY_ROOT / ".github/workflows/deployable.yml").read_text(encoding="utf-8")
         self.assertEqual([], powershell_package_problems(workflow))
+
+    def test_every_deployable_job_deploys_on_a_bash_it_proves_meets_validations_bash_floor(self) -> None:
+        workflow = (REPOSITORY_ROOT / ".github/workflows/deployable.yml").read_text(encoding="utf-8")
+        self.assertEqual([], deployable_bash_problems(workflow, VALIDATION_FLOORS[platform_support.BASH_NAME]))
 
     def test_no_workflow_installs_a_package_homebrew_removed(self) -> None:
         workflows = file_presence.matching(REPOSITORY_ROOT / WORKFLOWS_DIRECTORY, "*.y*ml")

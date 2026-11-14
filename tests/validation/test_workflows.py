@@ -39,6 +39,7 @@ from workflows import (
     configure_answer_problems,
     copilot_auto_update_problems,
     defender_problems,
+    deployable_bash_problems,
     deployable_posix_problems,
     image_module_problems,
     leg_problems,
@@ -1141,6 +1142,67 @@ class PowerShellPackageFixtures(unittest.TestCase):
         ):
             with self.subTest(problem=problem):
                 problems = powershell_package_problems(drifted)
+                self.assertTrue(any(problem in found for found in problems), problems)
+
+
+def _bash_job(job: str, runner: str, install: str, check: str) -> str:
+    return (
+        f"  {job}:\n    runs-on: {runner}\n    steps:\n"
+        "      - name: Install the prerequisites\n        run: |\n"
+        f"          echo prerequisites\n{install}"
+        "      - name: Verify the tools in a fresh shell\n        run: |\n"
+        f"          echo tools\n{check}"
+        "      - name: Deploy\n        run: python3 deploy.py --all\n"
+    )
+
+
+# The three deployable jobs, each checking the deployer's Bash at 5.2, and the macOS job installing Homebrew's Bash
+# ahead of /bin/bash, written here as literals.
+MACOS_BASH_LINES = '          brew install bash\n          echo "$(brew --prefix bash)/bin" >> "$GITHUB_PATH"\n'
+BASH_JOBS = (
+    "jobs:\n"
+    + _bash_job("deployable", "windows-latest", "", "          python tools/deployable_report.py bash --at-least 5.2\n")
+    + _bash_job(
+        "deployable-linux", "ubuntu-latest", "", "          python3 tools/deployable_report.py bash --at-least 5.2\n"
+    )
+    + _bash_job(
+        "deployable-macos",
+        "macos-latest",
+        MACOS_BASH_LINES,
+        "          python3 tools/deployable_report.py bash --at-least 5.2\n",
+    )
+)
+
+
+class DeployableBashFixtures(unittest.TestCase):
+    def test_each_job_proves_its_bash_meets_the_floor_and_the_macos_job_installs_homebrews(self) -> None:
+        self.assertEqual([], deployable_bash_problems(BASH_JOBS, (5, 2)))
+        macos = BASH_JOBS.index("  deployable-macos:")
+        check = "python3 tools/deployable_report.py bash --at-least 5.2"
+        for drifted, floor, problem in (
+            # The job as it was before the fix: no Homebrew Bash, so /bin/bash 3.2 deploys.
+            (BASH_JOBS.replace(MACOS_BASH_LINES, ""), (5, 2), "does not run ['brew install bash'"),
+            (BASH_JOBS.replace("          brew install bash\n", ""), (5, 2), "does not run ['brew install bash'"),
+            # The whole of Homebrew's bin ahead of the Python and Node.js the job set up.
+            (BASH_JOBS.replace("--prefix bash)/bin", "--prefix)/bin"), (5, 2), "does not run ['brew install bash'"),
+            (BASH_JOBS[:macos] + BASH_JOBS[macos:].replace(check, "echo skipped"), (5, 2), "as [], not once"),
+            (BASH_JOBS[:macos] + BASH_JOBS[macos:].replace(check, f"# {check}"), (5, 2), "as [], not once"),
+            (
+                BASH_JOBS.replace("python tools/deployable_report.py bash --at-least 5.2", "echo skipped"),
+                (5, 2),
+                "the deployable job checks",
+            ),
+            (BASH_JOBS[:macos] + BASH_JOBS[macos:].replace("5.2", "3.2"), (5, 2), "'3.2')], not once at the floor 5.2"),
+            (BASH_JOBS, (5, 3), "not once at the floor 5.3"),
+            (
+                BASH_JOBS[:macos] + BASH_JOBS[macos:].replace("          echo prerequisites\n", f"          {check}\n"),
+                (5, 2),
+                "('Install the prerequisites', '5.2'), ('Verify the tools in a fresh shell', '5.2')",
+            ),
+            (BASH_JOBS.replace("  deployable-linux:", "  other:"), (5, 2), "there is no deployable-linux job"),
+        ):
+            with self.subTest(problem=problem):
+                problems = deployable_bash_problems(drifted, floor)
                 self.assertTrue(any(problem in found for found in problems), problems)
 
 

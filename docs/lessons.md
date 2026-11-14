@@ -377,14 +377,16 @@ removed fails validation until its pattern follows it.
   `tests/deployer/test_backup_settlement.py::RecoveryStopsTests::test_when_recovery_fails_names_every_stop_recovery_makes`,
   which reads each stop from the code and fails one the guide's list leaves out,
   `skills/dotnet-format/scripts/test_csharp_layout.py::test_each_status_word_a_scripts_docstring_names_is_one_it_prints`,
-  which fails a dotnet-format script's docstring naming a status word the script never prints
+  which fails a dotnet-format script's docstring naming a status word the script never prints,
+  `tests/validation/workflows.py::WorkflowsPolicies::test_every_deployable_job_deploys_on_a_bash_it_proves_meets_validations_bash_floor`,
+  which fails a fresh-runner job that installs less than the installation guide tells a user to
 - **Search for:** an `assertEqual(` or `assertIn(` on a literal sentence a document states, where the test could read
   the document or the shared constant; `never`, `always`, `nothing`, `every`, or `only` in a `SKILL.md` or a
   docstring, each checked for a test of its exception; a docstring's exit codes against the function's `return` and
   `sys.exit(` values; a statement of which code a credential or the run's token reaches, checked for the code a
   pull request can change at those paths; a document's list of the cases a step stops or refuses on, checked against
   each `return False` or `raise` of that step.
-- **Examples:** #1317, #1584, #1629, #1861, #1864, #1869, #2224, #2237, #2296
+- **Examples:** #1317, #1584, #1629, #1861, #1864, #1869, #2224, #2237, #2296, #2694
 
 ### A reader refuses a shape it does not know
 
