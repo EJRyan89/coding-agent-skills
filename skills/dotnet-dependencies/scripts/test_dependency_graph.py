@@ -3808,9 +3808,28 @@ class PresenceReadTests(Fixture):
         resolved, base, projects = dependency_graph.resolve_root(self.root, [])
         self.assertEqual((solution, self.root, []), (resolved, base, projects))
         locked = self.write("Locked.sln", "")
-        with stat_failing_at(locked), self.assertRaises(PermissionError) as raised:
+        with stat_failing_at(locked), self.assertRaises(dependency_graph.Failed) as raised:
             dependency_graph.resolve_root(self.root, [])
-        self.assertEqual(str(locked), raised.exception.filename)
+        self.assertEqual(f"{locked} cannot be examined: Access is denied", str(raised.exception))
+        # Only an entry named as a solution is examined, so one named otherwise whose stat fails refuses nothing.
+        locked.unlink()
+        with stat_failing_at(self.write("Locked.txt", "")):
+            self.assertEqual((solution, self.root, []), dependency_graph.resolve_root(self.root, []))
+
+    def test_the_root_folder_or_a_solution_in_it_it_cannot_examine_is_named_though_the_error_names_no_file(
+        self,
+    ) -> None:
+        self.write("App/App.csproj", LEGACY_APP_PROJECT)
+        listed = self.write("Listed.sln", solution("App\\App.csproj"))
+        for owner, name, target in (
+            (Path, "iterdir", self.root),
+            (file_presence, "is_present", listed),
+            (file_presence, "is_present", self.root),
+        ):
+            with self.subTest(f"{name} {target.name if target != self.root else 'the root'}"):
+                with failing_without_a_file(owner, name, target), self.assertRaises(dependency_graph.Failed) as raised:
+                    dependency_graph.resolve_root(self.root, [])
+                self.assertEqual(f"{target} cannot be examined: Access is denied", str(raised.exception))
 
     def test_the_cache_keeps_a_folder_drops_a_file_or_nothing_and_refuses_one_it_cannot_stat(self) -> None:
         home = self.root / "home"
@@ -4028,9 +4047,9 @@ class PresenceReadTests(Fixture):
 
     def test_a_root_or_listed_project_it_cannot_stat_is_refused_with_its_reason(self) -> None:
         root = self.mixed_solution()
-        with stat_failing_at(root), self.assertRaises(PermissionError) as raised:
+        with stat_failing_at(root), self.assertRaises(dependency_graph.Failed) as raised:
             dependency_graph.resolve_root(root, [])
-        self.assertEqual(str(root), raised.exception.filename)
+        self.assertEqual(f"{root} cannot be examined: Access is denied", str(raised.exception))
         listed = self.root / "src" / "Harbor.Core" / "Harbor.Core.csproj"
         unreadable: list[tuple[Path, str]] = []
         with stat_failing_at(listed):

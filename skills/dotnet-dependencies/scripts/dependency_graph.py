@@ -267,13 +267,39 @@ def find_projects(directory: Path, unreadable: list[tuple[Path, str]]) -> list[P
     return walk.files
 
 
+def unexaminable(path: Path, error: OSError) -> Failed:
+    """The refusal of a path the root's search could not examine, naming that path whatever file the error names, or
+    none, with the operating system's reason, else the error's text."""
+    return Failed(f"{path} cannot be examined: {error.strerror or error}")
+
+
+def regular_file(path: Path) -> bool:
+    """Whether a regular file is at `path`, False for nothing or something else there, and `unexaminable` naming the
+    path when its stat fails."""
+    try:
+        return file_presence.is_present(path, other_is_absent=True)
+    except OSError as error:
+        raise unexaminable(path, error) from None
+
+
+def root_solutions(folder: Path) -> list[Path]:
+    """The solution files directly in `folder`, in path order: entries named as a solution that are regular files,
+    so a folder so named is passed over. A folder it cannot list, or a solution-named entry it cannot stat, is refused
+    naming it, never read as holding no solution, which would take the projects below it for the answer."""
+    try:
+        children = sorted(folder.iterdir())
+    except OSError as error:
+        raise unexaminable(folder, error) from None
+    return [child for child in children if is_solution(child) and regular_file(child)]
+
+
 def resolve_root(path: Path, graph_unreadable: list[tuple[Path, str]]) -> tuple[Path, Path, list[Path]]:
     """The solution or directory the graph is built from, the directory paths are shown relative to, and the
     project files to read: a solution's listed .csproj files, the one solution in a directory, or the .csproj files
     under a directory holding none. A solution that cannot be read is reported unreadable and lists no project, so
     the answer says why it is empty, and an entry `refusal` refuses is reported before anything looks it up."""
     path = path.resolve()
-    if file_presence.is_present(path, other_is_absent=True):
+    if regular_file(path):
         if not is_solution(path):
             raise Failed(f"{path} is not a .sln or .slnx solution")
         projects: list[Path] = []
@@ -304,11 +330,7 @@ def resolve_root(path: Path, graph_unreadable: list[tuple[Path, str]]) -> tuple[
     # Neither a file nor a folder: missing, something else, or a path a stat cannot examine, each named so.
     if reason := file_presence.refusal_reason(path, folder=True):
         raise Failed(f"{path} {reason}")
-    solutions = sorted(
-        child
-        for child in path.iterdir()
-        if file_presence.is_present(child, other_is_absent=True) and is_solution(child)
-    )
+    solutions = root_solutions(path)
     if len(solutions) > 1:
         names = ", ".join(solution.name for solution in solutions)
         raise Failed(f"{path} holds more than one solution ({names}); name one with --root")
