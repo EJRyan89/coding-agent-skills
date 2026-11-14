@@ -800,12 +800,14 @@ class SealsFolderTests(CleanupTestCase):
         patcher.start()
         self.addCleanup(patcher.stop)
 
-    def assert_refused(self, folder: Path, reason: str) -> None:
-        """Saving, loading, and starting a sweep each refuse the folder, naming why, and write nothing."""
-        prefix = f"the seals folder is not yours alone: {folder} {reason}"
+    def assert_refused(self, why: str) -> None:
+        """Saving, loading, loading a plan that is not there, and starting a sweep each refuse the folder, naming
+        `why`, and write nothing."""
+        prefix = f"the seals folder is not yours alone: {why}"
         attempts: dict[str, Callable[[], object]] = {
             "save": lambda: rc.save_plan(self.plan, written_plan()),
             "load": lambda: rc.load_plan(self.plan),
+            "load missing": lambda: rc.load_plan(self.root / "missing.json"),
             "sweep": lambda: rc.sweep(None, str(self.root), None, rc.Services()),
         }
         untouched = mock.Mock(side_effect=AssertionError("the sweep went on past the seals folder"))
@@ -838,8 +840,50 @@ class SealsFolderTests(CleanupTestCase):
         rc.save_plan(self.plan, written_plan())
         self.assertEqual(self.saved, self.plan.read_bytes())
         self.plan.unlink()
+        # The parent is this user's, which the parent check would judge another's under the id the test pretends.
+        with (
+            mock.patch.object(private_folder, "user_id", return_value=4242),
+            mock.patch.object(private_folder, "parent_refusal", return_value=None),
+        ):
+            self.assert_refused(f"{folder} is owned by user id ")
+
+    def test_a_seals_folder_in_a_parent_another_account_owns_is_refused(self) -> None:
+        folder = self.root / "seals"
+        self.use_seals(folder)
         with mock.patch.object(private_folder, "user_id", return_value=4242):
-            self.assert_refused(folder, "is owned by user id ")
+            self.assert_refused(f"{folder}: its parent {self.root} is owned by user id ")
+        self.assertFalse(folder.exists(), "nothing was made in that parent")
+
+    @unittest.skipIf(sys.platform == "win32", "Windows mode bits say nothing about who may write a folder")
+    def test_a_seals_folder_in_a_parent_others_can_write_is_refused_unless_the_parent_is_sticky(self) -> None:
+        parent = self.root / "open"
+        parent.mkdir()
+        parent.chmod(0o777)
+        folder = parent / "seals"
+        self.use_seals(folder)
+        self.assert_refused(
+            f"{folder}: its parent {parent} can be written by users other than its owner and is not sticky (mode 777)"
+        )
+        self.assertFalse(folder.exists(), "nothing was made in that parent")
+        parent.chmod(0o1777)
+        rc.save_plan(self.plan, written_plan())
+        self.assertEqual(written_plan(), rc.load_plan(self.plan))
+
+    def test_a_seals_folder_that_cannot_be_made_is_refused_naming_the_reason(self) -> None:
+        folder = self.root / "missing" / "seals"
+        self.use_seals(folder)
+        attempts: dict[str, Callable[[], object]] = {
+            "save": lambda: rc.save_plan(self.plan, written_plan()),
+            "load missing": lambda: rc.load_plan(self.root / "missing.json"),
+            "sweep": lambda: rc.sweep(None, str(self.root), None, rc.Services()),
+        }
+        for name, attempt in attempts.items():
+            with self.subTest(name), self.assertRaises(rc.CleanupError) as raised:
+                attempt()
+            self.assertTrue(
+                str(raised.exception).startswith(f"cannot use the seals folder {folder}: "), raised.exception
+            )
+        self.assertFalse(self.plan.exists(), "no plan was saved without its seal")
 
     @unittest.skipIf(sys.platform == "win32", "Windows mode bits say nothing about who may write a folder")
     def test_a_seals_folder_others_can_write_is_refused(self) -> None:
@@ -847,7 +891,7 @@ class SealsFolderTests(CleanupTestCase):
         folder.mkdir()
         folder.chmod(0o777)
         self.use_seals(folder)
-        self.assert_refused(folder, "can be written by users other than its owner (mode 777)")
+        self.assert_refused(f"{folder} can be written by users other than its owner (mode 777)")
 
     @unittest.skipIf(
         sys.platform == "win32", "a symbolic link needs a privilege there; test_private_folder covers its kind"
@@ -861,7 +905,7 @@ class SealsFolderTests(CleanupTestCase):
         folder = self.root / "seals"
         folder.symlink_to(target, target_is_directory=True)
         self.use_seals(folder)
-        self.assert_refused(folder, "is a link or junction, not a folder of this user's own")
+        self.assert_refused(f"{folder} is a link or junction, not a folder of this user's own")
 
 
 class PlanOutsideASweepTests(Fixture):

@@ -937,13 +937,14 @@ def read_sealed(path: str | Path, what: str) -> bytes:
     script wrote when it last saved one there, so what they name is what a sweep recorded. A path with no seal, which
     the script never saved one at, one whose bytes changed since, and one whose seal cannot be read are refused
     apart. One whose stat fails is refused as unreadable too, before any command acts on it: every command saves the
-    plan after acting, and that save stats it."""
+    plan after acting, and that save stats it. The seals folder is checked first, so a folder that is not the user's
+    alone is refused before the plan or record is read."""
+    sealed = seal_file(path)
     try:
         Path(path).stat()
         data = Path(path).read_bytes()
     except OSError as exc:
         raise CleanupError(f"cannot read {what} {path}: {exc}") from exc
-    sealed = seal_file(path)
     try:
         seal = sealed.read_bytes().decode("utf-8").strip() if file_presence.is_present(sealed) else None
     except (OSError, UnicodeDecodeError) as exc:

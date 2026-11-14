@@ -9,10 +9,11 @@ a folder of state at a fixed name there would be the first creator's to empty or
 `location` names the folder, carrying the user's id where the platform has one, so another account's folder never
 stands in its place by name. `ensure` makes it, owner only, when it is missing, and refuses it with
 `UnsafeFolderError` unless it is a directory, no link or junction, and, where the platform has user ids, one this user
-owns that no group or other user can write. A folder that passes stays the user's: no other account can remove or
-replace an entry the user made in a sticky directory, nor write inside a folder it cannot write. On Windows the
-temporary directory is under the user's profile, which other accounts cannot write, and a folder's mode bits say
-nothing about who may write it, so only the kind of the folder is checked there.
+owns that no group or other user can write, in a parent that root or this user owns and that no other user can write
+unless it is sticky. A folder that passes stays the user's: no other account can remove, rename, or replace an entry
+the user made in such a parent, nor write inside a folder it cannot write, so nothing can swap the folder between the
+check and a write. On Windows the temporary directory is under the user's profile, which other accounts cannot write,
+and a folder's mode bits say nothing about who may write it, so only the kind of the folder is checked there.
 """
 
 from __future__ import annotations
@@ -29,6 +30,8 @@ from link_probe import is_link_or_junction
 OWNER_ONLY = 0o700
 # The mode bits that let a user other than the owner write a folder: its group's and everyone's.
 OTHERS_WRITE = stat.S_IWGRP | stat.S_IWOTH
+# The user id of root, who may remove any entry anywhere, so a parent root owns is as safe as one the user owns.
+ROOT = 0
 
 
 class UnsafeFolderError(Exception):
@@ -64,12 +67,32 @@ def refusal(folder: Path, metadata: os.stat_result, user: int | None) -> str | N
     return None
 
 
+def parent_refusal(parent: Path, metadata: os.stat_result, user: int | None) -> str | None:
+    """Why `parent`, whose `stat` result is `metadata`, would let another account remove or rename a folder this user
+    made in it, or None when it would not: it must be owned by root or `user`, since a directory's owner may remove
+    any entry, and no group or other user may write it unless it is sticky. With no `user`, as on Windows, nothing is
+    judged."""
+    if user is None:
+        return None
+    if metadata.st_uid not in (ROOT, user):
+        return f"its parent {parent} is owned by user id {metadata.st_uid}, not by root or this user (id {user})"
+    if metadata.st_mode & OTHERS_WRITE and not metadata.st_mode & stat.S_ISVTX:
+        mode = stat.S_IMODE(metadata.st_mode)
+        return f"its parent {parent} can be written by users other than its owner and is not sticky (mode {mode:o})"
+    return None
+
+
 def ensure(folder: Path) -> Path:
     """`folder`, made owner only when it is missing, whose parent must exist; raises UnsafeFolderError naming why
-    when it is not a folder only this user owns and can write, and lets any other OSError through."""
+    when it is not a folder only this user owns and can write in a parent no other account can rename it out of, and
+    lets any other OSError through."""
+    user = user_id()
+    reason = parent_refusal(folder.parent, folder.parent.stat(), user)
+    if reason is not None:
+        raise UnsafeFolderError(f"{folder}: {reason}")
     with contextlib.suppress(FileExistsError):
         folder.mkdir(mode=OWNER_ONLY)
-    reason = refusal(folder, os.lstat(folder), user_id())
+    reason = refusal(folder, os.lstat(folder), user)
     if reason is not None:
         raise UnsafeFolderError(reason)
     return folder
