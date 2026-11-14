@@ -17,7 +17,7 @@ strict = true
 # under the roots validation names; a gitignored file is still skipped, since nothing can commit one.
 exclude = []
 line-length = 120
-target-version = "py311"
+target-version = "py312"
 
 [tool.ruff.format]
 quote-style = "double"
@@ -118,7 +118,7 @@ max-statements = 50
 # default strictness, then on each of them alone and on each skill's scripts/ directory from inside it, each of those
 # in strict mode as [tool.validation] mypy-strict below lists. No module, suite, or import is exempt.
 [tool.mypy]
-python_version = "3.11"
+python_version = "3.12"
 # The optional error codes beyond --strict that every root passes, so a name a path leaves unbound, a condition that is
 # always true, a match that leaves a case unhandled, and a `type: ignore` without its codes are errors. warn_unreachable
 # and mutable-override are declined; "Considered and declined" in docs/design.md says why.

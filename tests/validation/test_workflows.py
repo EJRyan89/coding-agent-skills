@@ -218,7 +218,7 @@ class WorkflowsFixtures(unittest.TestCase):
 @pytest.mark.parametrize(
     "expression",
     [
-        "github.event_name == 'schedule' && fromJSON('[\"3.11\", \"3.x\"]') || fromJSON('[\"3.11\"]')",
+        "github.event_name == 'schedule' && fromJSON('[\"3.12\", \"3.x\"]') || fromJSON('[\"3.12\"]')",
         "github.ref != 'refs/heads/main'",
         "GitHub.Workflow",
         "github.workflow",
@@ -407,7 +407,7 @@ def test_a_mypy_cache_off_its_key_folder_or_order_fails(drifted: str, problem: s
 
 
 # The Linux legs' Python: the floor on every event, and the latest stable release beside it on the schedule only.
-SCHEDULED_LATEST = "${{ github.event_name == 'schedule' && fromJSON('[\"3.11\", \"3.x\"]') || fromJSON('[\"3.11\"]') }}"
+SCHEDULED_LATEST = "${{ github.event_name == 'schedule' && fromJSON('[\"3.12\", \"3.x\"]') || fromJSON('[\"3.12\"]') }}"
 LINUX = (
     "env:\n  TOOL_VERSION: '1.2.3'\n\njobs:\n  suite:\n    runs-on: windows-latest\n"
     "  linux:\n    name: Linux shard ${{ matrix.shard }}, Python ${{ matrix.python-version }}\n"
@@ -518,7 +518,7 @@ class LinuxJobFixtures(unittest.TestCase):
         ),
         # A typed version in the name could say another Python than the one set up.
         pytest.param(
-            LINUX.replace("Python ${{ matrix.python-version }}\n", "Python 3.11\n"),
+            LINUX.replace("Python ${{ matrix.python-version }}\n", "Python 3.12\n"),
             "legs are named",
             id="a typed version in the name",
         ),
@@ -539,12 +539,12 @@ class LinuxJobFixtures(unittest.TestCase):
             id="a shallow checkout",
         ),
         # The latest stable release dropped from the weekly run, so the Linux-only branches never meet it.
-        pytest.param(LINUX.replace(SCHEDULED_LATEST, "['3.11']"), "matrix's Python", id="the floor alone"),
+        pytest.param(LINUX.replace(SCHEDULED_LATEST, "['3.12']"), "matrix's Python", id="the floor alone"),
         pytest.param(LINUX.replace(', "3.x"]', "]"), "matrix's Python", id="the floor alone on the schedule"),
         # The latest stable release on every pull request, where a new interpreter would block the required check.
-        pytest.param(LINUX.replace(SCHEDULED_LATEST, "['3.11', '3.x']"), "matrix's Python", id="latest on every event"),
+        pytest.param(LINUX.replace(SCHEDULED_LATEST, "['3.12', '3.x']"), "matrix's Python", id="latest on every event"),
         pytest.param(
-            LINUX.replace("|| fromJSON('[\"3.11\"]')", '|| fromJSON(\'["3.11", "3.x"]\')'),
+            LINUX.replace("|| fromJSON('[\"3.12\"]')", '|| fromJSON(\'["3.12", "3.x"]\')'),
             "matrix's Python",
             id="latest on every pull request",
         ),
@@ -561,7 +561,7 @@ class LinuxJobFixtures(unittest.TestCase):
         ),
         # The name reads the matrix, so setup-python must install what it says.
         pytest.param(
-            LINUX.replace("python-version: ${{ matrix.python-version }}", "python-version: '3.11'"),
+            LINUX.replace("python-version: ${{ matrix.python-version }}", "python-version: '3.12'"),
             "sets up Python",
             id="a typed version in setup-python",
         ),
@@ -1695,7 +1695,7 @@ class WorkflowReaderFixtures(unittest.TestCase):
             '      - name: "Say \\"hi\\""\n'
             "        # A comment inside a mapping.\n"
             "        with:\n"
-            "          python-version: '3.11'\n"
+            "          python-version: '3.12'\n"
             "          empty: ''\n"
             "        run: |\n"
             "          echo one  # kept: a run block has no comments\n"
@@ -1717,7 +1717,7 @@ class WorkflowReaderFixtures(unittest.TestCase):
                         "steps": [
                             {
                                 "name": 'Say "hi"',
-                                "with": {"python-version": "3.11", "empty": ""},
+                                "with": {"python-version": "3.12", "empty": ""},
                                 "run": "echo one  # kept: a run block has no comments\n\necho 'two'\n",
                             },
                             "plain",
@@ -1757,7 +1757,7 @@ def test_yaml_outside_the_subset_is_refused(text: str, reason: str) -> None:
 
 
 MUTATION_SETUP = (
-    "      - uses: actions/setup-python@abc\n        with:\n          python-version: '3.11'\n          cache: pip\n"
+    "      - uses: actions/setup-python@abc\n        with:\n          python-version: '3.12'\n          cache: pip\n"
     "          cache-dependency-path: requirements-mutation.txt\n"
 )
 MUTATION_INSTALL_STEP = (
@@ -1839,7 +1839,7 @@ MUTATION = (
     + "  mutation:\n    name: Mutation gate\n    needs: [select, linux, windows]\n    if: ${{ !cancelled() }}\n"
     "    runs-on: ubuntu-latest\n    timeout-minutes: 15\n    steps:\n      - uses: actions/checkout@abc\n"
     "        with:\n          persist-credentials: false\n"
-    "      - uses: actions/setup-python@abc\n        with:\n          python-version: '3.11'\n"
+    "      - uses: actions/setup-python@abc\n        with:\n          python-version: '3.12'\n"
     "      - uses: actions/download-artifact@abc\n        with:\n          pattern: mutation-*\n"
     "          path: mutation\n          merge-multiple: true\n"
     "      - name: Join\n        id: join\n        run: python -B tools/mutation_gate.py join mutation\n"
@@ -2157,7 +2157,7 @@ TOKEN_STEP_DRIFTS = {
 TOKEN_ENV_DRIFTS = ("BASH_ENV", "ENV", "PATH", "PYTHONPATH", "PYTHONSTARTUP", "GIT_DIR", "OTHER")
 TOKEN_JOB_DRIFTS = {
     "defaults": "    defaults:\n      run:\n        shell: bash\n",
-    "container": "    container: python:3.11\n",
+    "container": "    container: python:3.12\n",
     "services": "    services:\n      cache:\n        image: redis\n",
     "env": "    env:\n      BASH_ENV: setup.sh\n",
     "strategy": "    strategy:\n      matrix:\n        os:\n          - ubuntu-latest\n",

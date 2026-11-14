@@ -1234,16 +1234,17 @@ class DeployAtTests(DeployerTestCase):
                 self.assertFalse(made[0].exists())
 
     def test_a_python_without_tarfile_extraction_filters_is_refused_before_git_or_anything_runs(self) -> None:
-        # 3.11.4 is the first 3.11 release whose tarfile has extraction filters.
+        # The floor, 3.12.0, is the first 3.12 release; 3.11.3 is a 3.11 release whose tarfile has no extraction
+        # filters.
         with (
             mock.patch.object(tools, "python_version", return_value=(3, 11, 3)),
             mock.patch.object(platform_support, "run_tool") as run_tool,
             mock.patch.object(tempfile, "mkdtemp") as mkdtemp,
         ):
-            result = self.deploy_fails("--all", "--at", "v1.0.0", pattern=r"--at needs Python 3\.11\.4 or newer")
+            result = self.deploy_fails("--all", "--at", "v1.0.0", pattern=r"--at needs Python 3\.12\.0 or newer")
         self.assertEqual(1, result.code)
         self.assertIn(
-            "ERROR: --at needs Python 3.11.4 or newer, whose tarfile extracts with filters; this is Python 3.11.3.\n"
+            "ERROR: --at needs Python 3.12.0 or newer, whose tarfile extracts with filters; this is Python 3.11.3.\n"
             'See "Installing the tools" in docs/installation.md.',
             result.output,
         )
