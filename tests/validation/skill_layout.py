@@ -17,7 +17,7 @@ import git_subcommands
 import json_reader
 import json_writer
 import skill_menu
-from agent_skills import MAX_NAME
+from agent_skills import MAX_NAME, SKILL_FILE
 from markdown_sections import EXECUTABLE_FENCES, markdown_section
 from path_containment import within
 from skill_menu import PLUGIN_HOOKS, PLUGIN_MANIFEST
@@ -1014,6 +1014,24 @@ REPOSITORY_SKILL_SHIMS = ".agents/skills"
 SKILL_NAMES_DOC = '"Files" in docs/adding-a-skill.md'
 
 
+def skill_file_spelling_problems(root: Path) -> list[str]:
+    """Report a shipped skill's, a repository skill's, or a shim's main file spelled in another case than SKILL.md.
+
+    A runtime opens SKILL.md, which such a file is only where its folder folds case, while validation, the plugin
+    build, and the shims find a skill by SKILL.md exactly, so each tree holds that one spelling on every platform, as
+    deployer/source.py refuses another for a shipped skill. The files are found by a pattern that matches the name in
+    any case, so one is reported on a file system that keeps case as on one that folds it.
+    """
+    from deployer import source as deploy_source
+
+    return [
+        f"{path.relative_to(root).as_posix()} is spelled in another case than {SKILL_FILE}; rename it {SKILL_FILE}"
+        for tree in ("skills", REPOSITORY_SKILLS, REPOSITORY_SKILL_SHIMS)
+        for path in file_presence.matching(root / tree, f"*/{deploy_source.any_case(SKILL_FILE)}")
+        if path.name != SKILL_FILE
+    ]
+
+
 def repository_skill_name_problems(root: Path) -> list[str]:
     """Report a repository skill or shim whose folder breaks the skill naming rules the deployer holds a shipped
     skill to, or whose frontmatter `name` is not its folder's name.
@@ -1070,6 +1088,11 @@ class SkillLayoutPolicies(unittest.TestCase):
 
     def test_every_directory_under_skills_is_a_skill_or_a_shared_asset(self) -> None:
         self.assertEqual([], skill_tree_problems(REPOSITORY_ROOT))
+
+    def test_every_skill_file_is_spelled_skill_md(self) -> None:
+        for tree in ("skills", REPOSITORY_SKILLS, REPOSITORY_SKILL_SHIMS):
+            self.assertTrue(list(file_presence.matching(REPOSITORY_ROOT / tree, "*/SKILL.md")), tree)
+        self.assertEqual([], skill_file_spelling_problems(REPOSITORY_ROOT))
 
     def test_repository_skills_and_their_shims_are_named_as_skills_and_as_their_folders(self) -> None:
         self.assertTrue(list(file_presence.matching(REPOSITORY_ROOT / REPOSITORY_SKILL_SHIMS, "*/SKILL.md")))

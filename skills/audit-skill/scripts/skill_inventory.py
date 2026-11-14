@@ -178,6 +178,7 @@ import python_reader
 import runtime_support
 import skill_menu
 import whole_number
+from agent_skills import is_skill_file
 from console import run_main
 from executable_locator import RelativeEnvironmentPath, absolute_home
 from file_presence import NotADirectory, NotAFile, is_directory, is_occupied, is_present, matching
@@ -194,13 +195,11 @@ from markdown_sections import (
 )
 from module_assignments import assigned_names, sole_assignment
 from path_containment import within
-from path_keys import name_key, path_key
+from path_keys import path_key
 from powershell_startup import POWERSHELL_PROGRAMS, StartupCommand, startup_command
 from python_names import import_aliases, qualified_name
 from suite_names import is_suite_name
 
-# A skill's main file, which a runtime opens by this name: found in any case only where its folder folds case.
-MAIN_FILE = "SKILL.md"
 # Where Claude Code keeps the plugins it installs, under the home: each under its marketplace and version, so a plugin
 # root lies PLUGIN_DEPTH folders down, as deep as locate searches any plugin folder.
 PLUGIN_CACHE = Path(".claude") / "plugins" / "cache"
@@ -1002,19 +1001,10 @@ def listed_in_folders(folder: Path, name: str) -> list[Path]:
     )
 
 
-def is_main_file(path: Path) -> bool:
-    """Whether `path` is named as its folder's SKILL.md, as the folder's file system compares names: SKILL.md in any
-    case where the folder folds case, and exactly SKILL.md where it does not, as the runtime that opens it finds it.
-    Only a name that is SKILL.md in some case asks the folder."""
-    return path.name.casefold() == MAIN_FILE.casefold() and name_key(path.name, path.parent) == name_key(
-        MAIN_FILE, path.parent
-    )
-
-
 def main_files(directory: Path) -> list[Path]:
     if not is_directory(directory):
         return []
-    return sorted(path for path in directory.iterdir() if is_main_file(path) and is_listed_file(path))
+    return sorted(path for path in directory.iterdir() if is_skill_file(path) and is_listed_file(path))
 
 
 def skill_roots(home: Path, repo: Path | None) -> list[tuple[str, Path]]:
@@ -1191,7 +1181,7 @@ def git_toplevel(directory: Path, git: GitClient | None = None) -> Path | None:
 
 def category(relative: Path, directory: Path) -> str:
     """What a file of the skill folder `directory` is, by its path relative to the folder."""
-    if len(relative.parts) == 1 and is_main_file(directory / relative):
+    if len(relative.parts) == 1 and is_skill_file(directory / relative):
         return "main"
     suffix = relative.suffix.casefold()
     if suffix in HELPER_SUFFIXES:
@@ -1659,7 +1649,7 @@ def tools(path: Path) -> list[str]:
                     first_implied.setdefault(name, start + offset + 1)
     invocation = next(line.split()[1] for line in listed if line.startswith("INVOCATION "))
     output = [f"MODEL {model or 'none'}"]
-    if is_main_file(path):
+    if is_skill_file(path):
         output += setting_lines(path.parent)
     output += [*listed, *trigger_scenario_lines(path.parent, invocation)]
     output += runtime_lines(path.parent, allowed or [], invocation != "model")
@@ -1946,7 +1936,7 @@ def skill_folder(path: Path) -> Path | None:
     file is, so a relative path stays relative."""
     for folder in path.parents:
         folder = folder if folder.name else folder.resolve()
-        if any(is_main_file(child) and is_listed_file(child) for child in folder.iterdir()):
+        if any(is_skill_file(child) and is_listed_file(child) for child in folder.iterdir()):
             return folder
     return None
 
@@ -2864,6 +2854,8 @@ def own_needs(folder: Path) -> set[str]:
     them for the skill audited."""
     path = folder / "SKILL.md"
     try:
+        # The entry the folder gives for SKILL.md, read under the name it is listed by.
+        path = next(iter(main_files(folder)), path)
         document = frontmatter.read(path)
         granted = parse_allowed_tools(document.value("allowed-tools")) or []
         listed = listing(document)
@@ -2882,11 +2874,18 @@ def invoked_evidence(folder: Path) -> list[tuple[str, str]]:
     """Each runtime capability a skill the audited one invokes carries over to it, with that skill, by
     ejryan89-skill-core's runtime_support derivation, which repository validation shares."""
     skills = folder.parent
-    known = {path.parent.name for path in listed_in_folders(skills, "SKILL.md")}
+    # Each sibling by the entry its folder gives for SKILL.md, as the runtime that opens it finds it, read under the
+    # name it is listed by.
+    main = {
+        child.name: entry
+        for child in skills.iterdir()
+        if is_directory(child, other_is_absent=True)
+        for entry in child.iterdir()
+        if is_skill_file(entry)
+    }
 
     def invokes(name: str) -> set[str]:
-        path = skills / name / "SKILL.md"
-        return runtime_support.invoked_skills(require_text(path), known) if name in known else set()
+        return runtime_support.invoked_skills(require_text(main[name]), set(main)) if name in main else set()
 
     carried = runtime_support.carried_needs(folder.name, lambda name: own_needs(skills / name), invokes)
     return [
