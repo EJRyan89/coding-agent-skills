@@ -462,6 +462,34 @@ class ManifestValidationTests(DeployerTestCase):
         self.deploy_fails("--all", pattern="Manifest entry is malformed")
         self.write_manifest(original)
 
+    def test_a_recorded_name_too_long_or_a_device_name_is_rejected_in_a_selection_and_as_an_item(self) -> None:
+        # A manifest reads names under the grammar before consecutive hyphens were refused, still within the length
+        # limit and never a Windows device name. A selection field reaches only that rule; an item key is also held
+        # to the safe-name rule, which refuses a device name before it.
+        self.deployed()
+        original = self.manifest()
+        for name in ("a" * 65, "con"):
+            for field in ("requested_skills", "requested_bundles"):
+                with self.subTest(name=name, field=field):
+                    data = json.loads(json.dumps(original))
+                    data["sources"][SOURCE_ID][field] = [name]
+                    self.write_manifest(data)
+                    self.deploy_fails("--all", pattern="Manifest selection fields are malformed")
+            with self.subTest(name=name, field="requested_bundle_members"):
+                data = json.loads(json.dumps(original))
+                data["sources"][SOURCE_ID]["requested_bundle_members"] = {"pack": [name]}
+                self.write_manifest(data)
+                self.deploy_fails("--all", pattern="Manifest selection fields are malformed")
+            with self.subTest(name=name, field="skills"):
+                data = json.loads(json.dumps(original))
+                skills = data["sources"][SOURCE_ID]["skills"]
+                skills[name] = skills["alpha"]
+                self.write_manifest(data)
+                self.deploy_fails(
+                    "--all", pattern=re.escape(f"Manifest entry is malformed: source '{SOURCE_ID}' skills '{name}'")
+                )
+        self.write_manifest(original)
+
     def test_owned_names_that_escape_the_deployment_root_are_rejected(self) -> None:
         self.deployed()
         sentinel = self.home / ".claude" / "sentinel" / "data.txt"

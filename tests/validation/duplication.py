@@ -77,7 +77,8 @@ COLLECTION_CALLS = frozenset({"tuple", "list", "set", "frozenset"})
 
 # The names that tell a name grammar from another format: lowercase runs joined by hyphens, a digit, one character,
 # the length limit, and the forms every such grammar refuses, a leading or trailing hyphen, a capital, an underscore,
-# a space, and the empty name.
+# a space, and the empty name. No probe holds consecutive hyphens, deliberately: a grammar that allows them is the
+# same grammar drifted, as the deployer's once was, and is a copy all the same.
 NAME_GRAMMAR_PROBES = ("pdf-processing", "a", "data-2", "a" * 64, "-pdf", "pdf-", "PDF", "pdf_processing", "pdf x", "")
 
 # A restatement of a shared fact's vocabulary holds at least this many of its members: fewer is a command that passes
@@ -300,8 +301,8 @@ def _derives_name_grammar(
     node: ast.AST, members: frozenset[str], _imports_owner: bool, _name: str, _resolver: CallableResolver
 ) -> bool:
     """A string literal that, read as a regular expression, judges every name in NAME_GRAMMAR_PROBES as the fact's
-    pattern does, those with consecutive hyphens aside: the name grammar re-derived, however it treats `--`, as the
-    deployer's copy once drifted from audit-ai-config's. Only a literal naming the range a-z is compiled."""
+    pattern does: the name grammar re-derived, however it treats `--`, which no probe holds, as the deployer's copy
+    once drifted from audit-ai-config's. Only a literal naming the range a-z is compiled."""
     if not (isinstance(node, ast.Constant) and isinstance(node.value, str) and "a-z" in node.value):
         return False
     try:
@@ -310,11 +311,7 @@ def _derives_name_grammar(
         return False
     owners = [re.compile(member) for member in members]
     return any(
-        all(
-            (candidate.fullmatch(probe) is None) == (owner.fullmatch(probe) is None)
-            for probe in NAME_GRAMMAR_PROBES
-            if "--" not in probe
-        )
+        all((candidate.fullmatch(probe) is None) == (owner.fullmatch(probe) is None) for probe in NAME_GRAMMAR_PROBES)
         for owner in owners
     )
 
