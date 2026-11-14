@@ -1120,6 +1120,10 @@ DENY_REASON = (
     "`python tools/worktrees.py new <kind> <name>`, enter it, and work there."
 )
 PLACE_IT = "Write the directory into the command itself, as `git -C <dir>` or `cd <dir> &&`, and run it again."
+INDEX_IT = (
+    "The session inherited the variable, which no command can unset here: restart the session from an environment "
+    "without GIT_INDEX_FILE, or run git from a terminal."
+)
 # The refusal the guard gives when its own reason holds what JSON cannot carry, such as a lone surrogate.
 UNWRITABLE_REASON = f"The guard refused this command for a reason that holds what JSON cannot carry. {DENY_REASON}"
 REWRITE_IT = (
@@ -2487,46 +2491,34 @@ def reached_hub(place: Place) -> tuple[Path | None, bool]:
         unknown = True
     else:
         hub = hub or guarded_hub_at(place.start)
-    index_hub, index_unknown = index_reached(place)
-    return hub or index_hub, unknown or index_unknown
+    return hub, unknown
 
 
 def index_reached(place: Place) -> tuple[Path | None, bool]:
-    """The guarded hub a call at place writes through the index file GIT_INDEX_FILE names, and whether the text does
-    not settle it.
+    """The guarded hub that holds the index file GIT_INDEX_FILE names for a call at place, when that index is not the
+    call's own, and whether the text does not settle it.
 
-    One form is accepted: an index no guarded hub holds (protecting_hub), or the one git uses for the call's own
-    repository without the variable (own_index). Any other a guarded hub holds, its own index, another worktree's, or
-    any file in its git directory or tracked surface, is a write to that hub. git follows a symbolic link to write the
-    index through its lock file, so each link is followed here too; and git reads a relative path from the top of the
-    work tree it moves to, so one is read from each directory that may be, and reaches a hub where any reading does.
+    One form is accepted: an absolute path to an index no guarded hub holds (protecting_hub), or to the one git uses
+    for the call's own repository without the variable (own_index). Any other a guarded hub holds, its own index,
+    another worktree's, or any file in its git directory or tracked surface, is that hub's. git follows a symbolic
+    link to write the index through its lock file, so each link is followed here too. A relative path is not settled:
+    git reads it from whatever directory each process it starts works in, a child such as `worktree add`'s
+    `reset --hard` in another one, and git exports a relative index only for a repository whose git directory is
+    relative, which no worktree's is.
     """
     if not place.index_named:
         return None, False
     if place.index is None:
         return None, True
     named = Path(platform_support.from_shell_path(place.index))
-    bases = [None] if named.is_absolute() else index_bases(place)
-    if bases is None:
+    if not named.is_absolute():
         return None, True
-    for base in bases:
-        index = Path(os.path.realpath(named if base is None else base / named))
-        try:
-            hub = protecting_hub(index)
-            if hub is not None and not own_index(place, index):
-                return hub, False
-        except GitError:
-            return None, True  # an index git cannot read the place of may be a guarded hub's
-    return None, False
-
-
-def index_bases(place: Place) -> list[Path] | None:
-    """The directories git may read a relative GIT_INDEX_FILE from: where it starts, its work tree, and the top of the
-    checkout holding that; None where the text does not settle them."""
-    if place.start is None or place.tree is None:
-        return None
-    checkout = checkout_of(place.tree)
-    return [place.start, place.tree, *([] if checkout is None else [checkout.toplevel])]
+    index = Path(os.path.realpath(named))
+    try:
+        hub = protecting_hub(index)
+        return (hub, False) if hub is not None and not own_index(place, index) else (None, False)
+    except GitError:
+        return None, True  # an index git cannot place may be a guarded hub's
 
 
 def own_index(place: Place, index: Path) -> bool:
@@ -2579,7 +2571,7 @@ class Judge:
         return None
 
     def judge(self, call: GitCall, depth: int) -> str | None:
-        reason = self.effects_refusal(call)
+        reason = self.index_refusal(call) or self.effects_refusal(call)
         if reason is not None:
             return reason
         if call.subcommand is None and self.hubs:
@@ -2612,6 +2604,28 @@ class Judge:
             f"The guard could not tell where `git {call.subcommand}` runs; since it cannot place it while a hub is "
             f"guarded, it allows it only in the hub's read-only forms: {reason} {PLACE_IT}"
         )
+
+    def index_refusal(self, call: GitCall) -> str | None:
+        """Why a call is refused for the index GIT_INDEX_FILE names (index_reached): every git call, wherever it runs
+        and whatever its subcommand, while that index is one a guarded hub holds and not the call's own, since a form
+        that only reads the hub, status or a fast-forward among them, still refreshes or rewrites the index it is
+        given, out of step with the hub's HEAD; and, while a hub is guarded, every one whose index the guard cannot
+        place."""
+        hub, unknown = index_reached(call.place)
+        named = f"`git {call.subcommand or '<computed>'}`" if call.program == "git" else f"`gh {call.subcommand}`"
+        if hub is not None:
+            return (
+                f"{named} would run with GIT_INDEX_FILE={call.place.index}, an index the guarded hub {hub} holds that "
+                f"is not the call's own, and any git call may rewrite the index it is given. {INDEX_IT}"
+            )
+        if unknown and self.hubs:
+            return (
+                f"{named} would run with a GIT_INDEX_FILE the guard cannot place, a relative path among them, which "
+                f"may be a guarded hub's, so it is refused while a hub is guarded. {INDEX_IT}"
+            )
+        if unknown:
+            self.notes.append(f"could not tell where the index of {named} lies")
+        return None
 
     def effects_refusal(self, call: GitCall) -> str | None:
         """Why what a git call's words make it do is refused, wherever it runs: a file it writes at a path that lies in
