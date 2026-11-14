@@ -2375,7 +2375,12 @@ class CommandGuardTests(GuardTestCase):
             with self.subTest(value=value, written=True):
                 notes = self.root / "notes.txt"
                 self.assertEqual("deny", self.bash(f'printf x >> "{notes}" && git status', self.tree, environment))
-                self.assertIn("cannot place a file git reads its system or global configuration from", self.reason)
+                reasons = ["cannot place a file git reads its system or global configuration from"]
+                if platform_support.WINDOWS and value.startswith("~"):
+                    # git for Windows cannot expand a ~user/ path and refuses the whole configuration, so the guard
+                    # refuses a command whose lookups git answers with an error.
+                    reasons.append("The guard failed reading this command")
+                self.assertTrue(any(reason in self.reason for reason in reasons), self.reason)
 
     def test_a_relative_location_of_the_configuration_is_a_trace2_target_the_guard_cannot_place(self) -> None:
         # git reads a relative GIT_CONFIG_GLOBAL, GIT_CONFIG_SYSTEM, HOME, or XDG_CONFIG_HOME from wherever each git

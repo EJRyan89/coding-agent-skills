@@ -768,7 +768,7 @@ GIT_READ_NAMES: dict[str, str] = {
     "XDG_CONFIG_HOME": "chooses where git reads its global configuration, attributes, and ignore files",
     "XDG_CACHE_HOME": "chooses where git's credential cache makes its socket",
     **dict.fromkeys(
-        ("USERPROFILE", "HOMEDRIVE", "HOMEPATH"),
+        sorted(platform_support.GIT_WINDOWS_HOME_VARIABLES),
         "chooses git for Windows' home, where it reads its global configuration, when HOME is unset",
     ),
     "TMPDIR": "chooses where git writes the temporary files an external diff or a textconv reads",

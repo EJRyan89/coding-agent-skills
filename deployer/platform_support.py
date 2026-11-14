@@ -205,6 +205,9 @@ def home_directory(environment: Mapping[str, str] | None = None) -> Path:
 # The variables Git Bash's MSYS runtime sets in every bash it starts, which tools/hub_guard.py counts among those Bash
 # sets itself.
 GIT_BASH_SHELL_VARIABLES = frozenset({"MSYSTEM", "SYSTEMROOT", "WINDIR"})
+# The variables git for Windows takes its home from when HOME is unset, where it reads its global configuration, which
+# tools/hub_guard.py counts among the names git reads to choose a file, on every platform.
+GIT_WINDOWS_HOME_VARIABLES = frozenset({"USERPROFILE", "HOMEDRIVE", "HOMEPATH"})
 
 
 # The variables a program needs to start and find the system's own files, which a run that must hold no credential
