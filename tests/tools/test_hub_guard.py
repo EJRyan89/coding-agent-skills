@@ -2150,6 +2150,26 @@ class CommandGuardTests(GuardTestCase):
                 self.assertIsNone(self.bash("git add .", outside, {**unshared, name: value}))
                 self.assertIn(said, self.stderr)
 
+    def test_an_absolute_store_git_cannot_place_is_refused_while_a_hub_is_guarded_and_noted_otherwise(self) -> None:
+        # git answering with an error, for the call's own store or for the hub that may hold the named one, says
+        # nothing about where the store lies, so it may be a guarded hub's.
+        failure = git_client.GitError("git could not read it", returncode=128)
+        outside = self.root / "outside"
+        outside.mkdir()
+        self.git(outside, "init", "-q")
+        unshared = {name: value for name, value in self.environment.items() if name != "CLAUDE_PROJECT_DIR"}
+        for name in ("GIT_OBJECT_DIRECTORY", "GIT_COMMON_DIR"):
+            store = str(self.root / "elsewhere")
+            for failing in ("own_paths", "protecting_hub"):
+                with mock.patch.object(hub_guard, failing, side_effect=failure):
+                    for shell in (self.bash, self.powershell):
+                        with self.subTest(name=name, failing=failing, shell=shell.__name__):
+                            self.assertEqual("deny", shell("git add .", self.tree, {**self.environment, name: store}))
+                            self.assertIn("a store the guard cannot place", self.reason)
+                    with self.subTest(name=name, failing=failing, hub=None):
+                        self.assertIsNone(self.bash("git add .", outside, {**unshared, name: store}))
+                        self.assertIn(f"could not tell where {name} has `git add` write", self.stderr)
+
     if not platform_support.WINDOWS:
         # Windows makes a symbolic link only with a privilege a test cannot count on.
 
@@ -3727,6 +3747,23 @@ class GuardGitTests(unittest.TestCase):
             ],
             [timeout for _, timeout in calls],
         )
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("/tmp/trace", True),
+        # git reads a backslash as a separator and a drive as absolute, as git for Windows does.
+        ("C:\\x\\trace", True),
+        ("C:/x", True),
+        ("\\\\host\\share\\t", True),
+        ("relative.txt", False),
+        ("af_unix:/tmp/s", False),
+        ("1", False),
+    ],
+)
+def test_a_trace_value_names_a_file_git_writes_when_git_reads_it_as_absolute(value: str, expected: bool) -> None:
+    assert hub_guard.git_writes_trace_at(value) is expected
 
 
 @pytest.mark.parametrize(
