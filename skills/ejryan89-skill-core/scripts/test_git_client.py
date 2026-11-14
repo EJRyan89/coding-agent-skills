@@ -2134,6 +2134,11 @@ LOCAL_FAILURES = {
     "a Windows path": "error: cannot open 'C:\\Users\\u\\clone\\.git\\FETCH_HEAD': Permission denied\n",
     "a path of another spelling": "error: could not open '/home/u/clone/.git/packed-refs.new' for writing: Read-only "
     "file system\n",
+    # git says `unable to access` of a local file it cannot read, as of a URL it cannot reach.
+    "unreadable repository config": "warning: unable to access '.git/config': Permission denied\nfatal: unable to "
+    "access '.git/config': Permission denied\n",
+    "unreadable global config": "warning: unable to access '/home/u/.gitconfig': Permission denied\nfatal: unknown "
+    "error occurred while reading the configuration files\n",
 }
 # The remote's failures, which name nothing of the local repository, among them a remote's own lock on its line.
 REMOTE_FAILURES = {
@@ -2158,6 +2163,8 @@ REMOTE_FAILURES = {
     "expected flush after ref listing\n",
     "a remote URL holding .git/": "fatal: unable to access 'https://example.invalid/r/.git/': Could not resolve host: "
     "example.invalid\n",
+    "an HTTP remote that refuses the connection": "fatal: unable to access 'https://127.0.0.1:9/x.git/': Failed to "
+    "connect to 127.0.0.1 port 9 after 0 ms: Couldn't connect to server\n",
     "a missing repository at a URL holding .git/": "remote: Repository not found.\nfatal: repository "
     "'https://example.invalid/r/.git/' not found\n",
 }

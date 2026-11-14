@@ -505,8 +505,8 @@ LOCAL_GIT_PATH = re.compile(r"(?:^|[\s'\"/\\])\.git[/\\]")
 # A URL a line quotes, such as the one `unable to access` names, whose path may hold `.git/` on the remote's side.
 QUOTED_URL = re.compile(r"[a-z][a-z0-9+.-]*://\S*")
 # Lowered markers of the local faults git reports without such a path: a ref it could not lock or update in a git
-# directory of another name, a disk that is full, a configuration file outside the repository it cannot parse, or a
-# repository it refuses as another user's.
+# directory of another name, a disk that is full, a configuration file outside the repository it cannot parse or read,
+# or a repository it refuses as another user's.
 LOCAL_FAILURE_MARKERS = (
     "cannot lock ref",
     "unable to update local ref",
@@ -514,18 +514,18 @@ LOCAL_FAILURE_MARKERS = (
     "insufficient permission for adding an object",
     "no space left on device",
     "bad config",
+    "error occurred while reading the configuration files",
     "dubious ownership",
 )
 # Lowered text of git's own verdict that the remote end failed, or of a line that carries what the remote said. A
 # remote's git, reached over ssh or a local path, writes its own `fatal:` lines into this stderr with no `remote:`
 # before them, and git then says it could not read from the remote; over HTTP git says it could not access the URL,
 # and quotes the remote's own message after `remote error:` or in an `RPC failed` line. Any of these makes the failure
-# the remote's, whatever local-looking text the remote chose to send.
-REMOTE_VERDICTS = (
-    "could not read from remote repository",
-    "remote error:",
-    "rpc failed",
-    "unable to access '",
+# the remote's, whatever local-looking text the remote chose to send. `unable to access` is a verdict only before a
+# quoted URL: git says the same of a local file it cannot read, such as `unable to access '.git/config'`. The other
+# three name the remote or the HTTP transport, which no local file's failure does.
+REMOTE_VERDICTS = re.compile(
+    r"could not read from remote repository|remote error:|rpc failed|unable to access '[a-z][a-z0-9+.-]*://"
 )
 
 
@@ -713,7 +713,7 @@ def local_failure(stderr: str) -> bool:
     either reading stops the caller.
     """
     lowered = stderr.casefold()
-    if any(verdict in lowered for verdict in REMOTE_VERDICTS):
+    if REMOTE_VERDICTS.search(lowered):
         return False
     own = [line for line in lowered.splitlines() if line.lstrip().startswith(("fatal:", "error:"))]
     return any(
