@@ -1246,3 +1246,20 @@ removed fails validation until its pattern follows it.
   `GH_TOKEN` in its `env`; `add_header("Authorization"` or `headers={"Authorization"`, which a redirect carries to
   another host where `add_unredirected_header` does not.
 - **Examples:** #2568
+
+### A command that starts Python on every platform names it as each platform does
+
+- **Rule:** A command that starts Python and runs unchanged on more than one platform names it as each platform's
+  installers do: `{{PYTHON}}` where the deployer renders it, `sys.executable` from Python, and, in a tracked command
+  nothing renders, `python` when the shell finds it and `python3` when it does not.
+- **Why:** The Windows installers name Python `python`, and Homebrew, the python.org macOS installer, and most Linux
+  distributions name it `python3` alone, so a hook that fails closed and names one of them blocks every call it
+  matches on a machine with only the other.
+- **Use:** `executable_locator:PYTHON`, the name the deployer gives the interpreter token on each platform.
+- **Guard:** `tests/tools/test_hub_guard.py::HookCommandTests::test_an_opted_in_clone_with_only_python3_runs_the_guard_with_python3`,
+  `tests/tools/test_hub_guard.py::HookCommandTests::test_python_is_run_before_python3_where_both_resolve`,
+  `tests/validation/shell_targets.py::ShellTargetsPolicies::test_shipped_skills_name_python_through_the_interpreter_token`
+- **Search for:** `python -B` or `python -I` opening a hook's `command` in `.claude/settings.json`, in an agent's
+  `hooks` frontmatter, or in a plugin's hooks file; `"python"` as the first item of an argument list a program starts,
+  where `sys.executable` belongs; `{{PYTHON}}` answered as `python` in an output built once for every platform.
+- **Examples:** #2742, #2744
