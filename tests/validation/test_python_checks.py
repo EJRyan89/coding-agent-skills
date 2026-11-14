@@ -5477,6 +5477,21 @@ PRESENCE_SEARCH_REFUSAL_SHAPES = {
         "def f(ps):\n    missing = [p for p in ps if not {call}]\n    if missing:\n        raise OSError(missing)\n"
         "    return 1\n"
     ),
+    "a list a filter keeps by not P and Q, then raise": (
+        "def f(ps, q):\n    missing = [p for p in ps if not {call} and p not in q]\n    if missing:\n"
+        "        raise OSError(missing)\n    return 1\n"
+    ),
+    "a next of a search by Q and not P, then raise": (
+        "def f(ps, q):\n    if next((p for p in ps if p not in q and not {call}), None) is not None:\n"
+        "        raise OSError(ps)\n    return 1\n"
+    ),
+    "any of Q and a negated test": (
+        "def f(ps, q):\n    if any(q and not {call} for p in ps):\n        raise OSError(ps)\n    return 1\n"
+    ),
+    "if P: raise, then raise": (
+        "def f(p):\n    if {call}:\n        raise ValueError(f'{{p}} has no marker')\n"
+        "    raise OSError(f'{{p}} has no folder')\n"
+    ),
     "any of a negated test": (
         "def f(ps, q):\n    if q or any(not {call} for p in ps):\n        raise OSError(ps)\n    return 1\n"
     ),
@@ -5611,6 +5626,20 @@ PRESENCE_PASSED = {
     "if P: return, then a value": (
         "import file_presence\n\n\ndef f(p, q):\n    if file_presence.is_present(p, other_is_absent=True):\n"
         "        return p\n    if q:\n        return q\n    raise OSError(p)\n"
+    ),
+    "if P: raise, then a value": (
+        "import file_presence\n\n\ndef f(p):\n    if file_presence.is_present(p, other_is_absent=True):\n"
+        "        raise OSError(p)\n    return 1\n"
+    ),
+    "a list a filter keeps by P and Q, then raise": (
+        "import file_presence\n\n\ndef f(ps, q):\n"
+        "    found = [p for p in ps if file_presence.is_present(p, other_is_absent=True) and p in q]\n"
+        "    if found:\n        raise OSError(found)\n    return 1\n"
+    ),
+    "limit: a loop of if P: return, then raise": (
+        "import file_presence\n\n\ndef f(ps):\n    for p in ps:\n"
+        "        if file_presence.is_present(p, other_is_absent=True):\n            return p\n"
+        "    raise OSError(f'{ps} are missing')\n"
     ),
     "if P: return, then more work": "def f(p):\n    if p.is_dir():\n        return p\n    p.mkdir()\n    return p\n",
     "file_presence.require": (

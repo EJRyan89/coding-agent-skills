@@ -333,11 +333,20 @@ def _discover_directories(paths: Paths, metadata: set[str]) -> dict[str, Path]:
 
 def _skill_directory(paths: Paths, name: str, directories: dict[str, Path]) -> Path:
     """The skill directory discovery found for a metadata file's name. A skill's folder whose SKILL.md is gone, or is
-    no file, is refused as that, never as a folder that is not there."""
+    no file, is refused as that, and something else in the folder's place as no directory, never as a folder that is
+    not there; a stat that fails reaches the caller as its OSError."""
     directory = directories.get(name)
     if directory is not None:
         return directory
-    if file_presence.is_directory(paths.skills_src / name, other_is_absent=True):
+    try:
+        folder = file_presence.is_directory(paths.skills_src / name)
+    except file_presence.NotADirectory:
+        raise DeployError(
+            f"ERROR: skills/{name} is not a directory",
+            f'Make skills/{name} the skill\'s folder, or remove deploy-meta/{name}.json; see "Files" in '
+            "docs/adding-a-skill.md.",
+        ) from None
+    if folder:
         raise DeployError(
             f"ERROR: Skill '{name}' has no {SKILL_FILE} file in skills/{name}",
             f'Add skills/{name}/{SKILL_FILE}, or remove deploy-meta/{name}.json; see "Files" in '

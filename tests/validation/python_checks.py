@@ -783,10 +783,11 @@ def link_test_problems(root: Path, files: list[Path]) -> list[str]:
 # that answers a failed stat or listing with nothing. An if on a predicate with no else is left out unless its branch
 # returns a value and its False goes on to an empty return or the function's end, since its False otherwise goes on to
 # code that meets the same path or gives a value. A predicate whose False goes straight to a raise of an error of its
-# own is refused too, as is a file_presence test given other_is_absent=True whose False does, an `if P: return V` whose
-# False goes on, returning no other value, to such a raise, and a search for a path either test finds absent that a
-# raise answers when it finds one, as `missing = next((p for p in ps if not P), None)` then `if missing is not None:
-# raise`, `if any(not P for p in ps): raise`, or `if not all(P for p in ps): raise`: that refusal names a path of
+# own is refused too, as is a file_presence test given other_is_absent=True whose False does, an `if P: return V` or
+# `if P: raise A` whose False goes on, returning no other value, to such a raise, and a search for a path either test
+# finds absent that a raise answers when it finds one, as `missing = next((p for p in ps if not P), None)` then
+# `if missing is not None: raise`, `[p for p in ps if not P and q]` then `if missing: raise`, `if any(not P for p in
+# ps): raise`, or `if not all(P for p in ps): raise`: that refusal names a path of
 # another kind, or for a path's predicate one it cannot stat, as missing, where file_presence.refusal_reason and
 # require name each cause. Any such site outside file_presence and link_probe states why in a module-level
 # PRESENCE_ALLOWED = {scope: reason}, as where the caller just made the path.
@@ -799,8 +800,9 @@ def link_test_problems(root: Path, files: list[Path]) -> list[str]:
 # tuple, as `ERRS = (OSError,)` then `except ERRS:`, which this does not follow; a refusal returned as a value or
 # printed rather than raised, as `if not P: return f"{p} is missing"`; a refusal on `not P` as an operand of an `and`;
 # a `warn(...)` imported by `from warnings import warn`, which this does not read as a log, so a branch or handler
-# holding one passes; an `if P: return V` whose False tries another place, returning a value, before its raise; and a
-# search bound to a name this does not follow, or handed to any call but `next` and `any`. The link tests are no
+# holding one passes; an `if P: return V` whose False tries another place, returning a value, before its raise; a
+# loop of `if P: return p` whose raise follows the loop; and a search bound to a name this does not follow, or handed
+# to any call but `next` and `any`. The link tests are no
 # presence predicates here: LINK_TESTS refuses each outside link_probe however its answer is used, and link_probe lets
 # a failed stat through.
 PRESENCE_PREDICATES = frozenset(
@@ -993,14 +995,22 @@ class _PresenceReader:
         if not (isinstance(node, ast.Call) and node.args and isinstance(node.args[0], ast.GeneratorExp)):
             return None
         called = qualified_name(node.func, self.aliases)
-        if called == "any" and (found := self._refused(node.args[0].elt, negated=True)):
+        if called == "any" and (found := self._kept_absent(node.args[0].elt)):
             return found
         return self._absent_filter(node.args[0]) if called in ("next", "any") else None
 
     def _absent_filter(self, node: ast.ListComp | ast.SetComp | ast.GeneratorExp) -> str | None:
         """The presence test a comprehension's filter keeps the paths it finds absent by."""
         tests = [test for generator in node.generators for test in generator.ifs]
-        return next((found for test in tests if (found := self._refused(test, negated=True))), None)
+        return next((found for test in tests if (found := self._kept_absent(test))), None)
+
+    def _kept_absent(self, test: ast.expr) -> str | None:
+        """The presence test a filter's test holds true for a path the presence test finds absent: `not P`, `not P`
+        as an operand of an `or`, as `_refused` reads them, or either as an operand of an `and`, as
+        `not P and q` is, which keeps the absent paths among those `q` keeps."""
+        if isinstance(test, ast.BoolOp) and isinstance(test.op, ast.And):
+            return next((found for value in test.values if (found := self._kept_absent(value))), None)
+        return self._refused(test, negated=True)
 
     def _every_present(self, node: ast.expr) -> str | None:
         """The presence test an `all(P for ...)` finds true of every path."""
@@ -1163,9 +1173,10 @@ def _falling_ifs(tree: ast.Module) -> frozenset[int]:
 
 
 def _raising_ifs(tree: ast.Module) -> frozenset[int]:
-    """Each if with no else whose branch ends by returning a value that is not empty, and whose False goes on to
-    statements of its block that return no such value and end by raising an error of their own, as a lookup that
-    returns what it found and otherwise refuses does."""
+    """Each if with no else whose branch ends by returning a value that is not empty, or by raising an error of its
+    own, and whose False goes on to statements of its block that return no such value and end by raising an error of
+    their own, as a lookup that returns what it found and otherwise refuses does, or one that refuses each case in
+    turn."""
     found: set[int] = set()
     for node in ast.walk(tree):
         for block in (getattr(node, name, None) for name in ("body", "orelse", "finalbody")):
@@ -1176,8 +1187,10 @@ def _raising_ifs(tree: ast.Module) -> frozenset[int]:
                 if (
                     isinstance(statement, ast.If)
                     and not statement.orelse
-                    and isinstance(statement.body[-1], ast.Return)
-                    and not _empty(statement.body[-1].value)
+                    and (
+                        (isinstance(statement.body[-1], ast.Return) and not _empty(statement.body[-1].value))
+                        or _raises_anew(statement.body)
+                    )
                     and _raises_anew(rest)
                     and not _returns_a_value(rest)
                 ):
