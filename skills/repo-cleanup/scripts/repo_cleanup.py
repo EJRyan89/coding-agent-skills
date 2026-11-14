@@ -62,6 +62,7 @@ import git_client
 import git_worktrees
 import json_reader
 import pr_status
+import private_folder
 from atomic_file import replace_bytes, replace_text
 from cleanup_policy import Policy, Regenerable
 from console import run_main
@@ -84,8 +85,12 @@ PLAN_SCHEMA_VERSION = 1
 # what the confirmation commands may delete is what a sweep offered and the later commands recorded: a file the caller
 # names that this script never saved there has no seal, and one changed since it saved it no longer matches. The seals
 # lie outside every plans directory, so no directory a plan sits in carries a seal for it: a sweep's plans go to a new
-# directory mkdtemp makes, or one a sweep made and recorded, and save_plan refuses a path inside this folder.
-SEALS = Path(tempfile.gettempdir()) / "repo-cleanup-seals"
+# directory mkdtemp makes, or one a sweep made and recorded, and save_plan refuses a path inside this folder. The
+# folder is the user's own, named with their user id in the temporary directory, which is the shared /tmp on Linux
+# with TMPDIR unset, and every seal is read and written only once private_folder.ensure has found it a folder only the
+# user owns and can write, so no other account can empty it or fill it.
+SEALS_NAME = "repo-cleanup-seals"
+SEALS = private_folder.location(SEALS_NAME)
 OWNER_ONLY_ALLOWED = {
     "save_plan": "writes a plan holding a branch name git gave as bytes that are not UTF-8 as its surrogate escapes, "
     "as its JSON_WRITE_ALLOWED entry states",
@@ -169,6 +174,8 @@ KEPT_STATES = {"OPEN": "pr-open", "UNMATCHED": "pr-unmatched", "UNKNOWN": "pr-un
 WORKTREE_AREA = "Worktrees"
 # What a refusal of a plan's state tells the agent to do: the command that makes and applies plans.
 SWEEP_AGAIN = "run the sweep again for a new plan"
+# What a refusal of the seals folder asks of the user.
+SEALS_REMEDY = "make it a folder only you own and can write, or set TMPDIR to such a folder, then run the sweep again"
 # Where Claude Code, and many repositories' own worktree tools, put a repository's worktrees. With
 # WORKTREE_AREA/<repository name>, the folders a sweep searches for directories a worktree removal left behind.
 REPOSITORY_AREA = (".claude", "worktrees")
@@ -897,19 +904,32 @@ def policy_of(plan: dict[str, Any]) -> Policy:
 def save_plan(path: str | Path, document: dict[str, Any]) -> None:
     """Write a plan, or a sweep record, in one step, so a reader sees the old or the new one, never part of either;
     then its seal: the digest of the bytes written, which every command compares with the file before it reads it.
-    A path inside the seals folder is refused, so no seal lies beside a plan."""
+    A path inside the seals folder is refused, so no seal lies beside a plan, and so is every save while the seals
+    folder is not the user's alone, before the plan is written."""
     if strictly_inside(str(path), str(SEALS)):
         raise CleanupError(f"{path} is inside the seals folder {SEALS}; {SWEEP_AGAIN}")
+    seal = seal_file(path)
     data = (json.dumps(document, indent=2) + "\n").encode("utf-8")
     replace_bytes(Path(path), data)
-    replace_text(seal_file(path), hashlib.sha256(data).hexdigest() + "\n")
+    replace_text(seal, hashlib.sha256(data).hexdigest() + "\n")
 
 
 def seal_file(path: str | Path) -> Path:
     """Where the seal of the plan or record at `path` lies: named by its path resolved through links, in any letter
     case the file system treats as the same."""
     resolved = path_key(path, resolve=True)
-    return SEALS / hashlib.sha256(resolved.encode("utf-8", "surrogatepass")).hexdigest()
+    return seals_folder() / hashlib.sha256(resolved.encode("utf-8", "surrogatepass")).hexdigest()
+
+
+def seals_folder() -> Path:
+    """The seals folder, made owner only when it is missing, and refused unless it is a folder only this user owns and
+    can write, so no seal is read from or written to a folder another account could change."""
+    try:
+        return private_folder.ensure(SEALS)
+    except private_folder.UnsafeFolderError as exc:
+        raise CleanupError(f"the seals folder is not yours alone: {exc}; {SEALS_REMEDY}") from exc
+    except OSError as exc:
+        raise CleanupError(f"cannot use the seals folder {SEALS}: {exc}") from exc
 
 
 def read_sealed(path: str | Path, what: str) -> bytes:
@@ -2227,14 +2247,15 @@ def sweep(
 ) -> int:
     """Clean every repository at once; print each one's decisions, failures, and summary in discovery order.
 
-    The GitHub CLI's access is checked before the plans directory is created, so a sweep that cannot start leaves
-    nothing behind. Each repository is synced, planned, and applied in turn, re-checking every recorded branch tip.
+    The seals folder and the GitHub CLI's access are checked before the plans directory is created, so a sweep that
+    cannot start, or could not seal its plans, leaves nothing behind and syncs nothing. Each repository is synced, planned, and applied in turn, re-checking every recorded branch tip.
     A failure in one repository never stops the others: every result is reported, and the sweep exits 1 when any
     repository needs the agent or Git refused a deletion or removal in one. skip_checkout cleans a dirty main worktree
     without switching its branch. `policy`, the shipped lists alone when None, decides what a worktree's removal may
     delete and which branches are protected; the lines naming it follow PLANS.
     """
     policy = policy or cleanup_policy.configured()
+    seals_folder()
     repositories = discover(target, repos_root, services)
     directory = plans or new_plans_directory()
     entries = read_record(directory)[0] if plans else []
