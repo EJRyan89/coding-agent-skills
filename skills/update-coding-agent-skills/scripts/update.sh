@@ -229,6 +229,22 @@ release_of() {
     return 1
   fi
 }
+# The release tags naming a commit, one a line in release order, or nothing when none does; when they cannot be read, a
+# FAILED line naming the second argument, and status 1.
+releases_naming() {
+  local answer line names=
+  answer=$("$PYTHON" "$RELEASE_TAGS" --naming "$CLONE" "$1" </dev/null 2>&1 | tr -d '\r')
+  if [ "$answer" != NO_RELEASE ]; then
+    while IFS= read -r line; do
+      if ! [[ "$line" =~ ^RELEASE\ (v[0-9]+\.[0-9]+\.[0-9]+)$ ]]; then
+        echo "FAILED cannot read the release tags naming $2: $(one_line "${answer#FAILED }")"
+        return 1
+      fi
+      names+="${BASH_REMATCH[1]}"$'\n'
+    done <<<"$answer"
+  fi
+  printf '%s' "$names"
+}
 # The commits git log lists for a range, one a line; when git cannot list them, an UNLISTED line naming the range and
 # git's error in their place, and status 1, so a failure never reads as a range holding no commits.
 log_lines() {
@@ -308,16 +324,19 @@ if { [ -z "$DEPLOYED_COMMIT" ] && [ "$DEPLOYED" != unknown ]; } ||
 fi
 
 # The release channel pins the installation at the release it deploys, naming the tag in full, as refs/tags/<tag>, so
-# its own pin is one whose ref is the full name of the last release its commit holds. Any other pin is the user's,
-# such as one made by hand with `deploy.py --at <tag>` to step back from a regression, and stops the update until
-# --unpin; the release channel moves its own pin to each later release, and the main channel replaces it.
+# its own pin is one whose ref is the full name of a release tag naming its commit: any of them, so a later release
+# tagged on the pinned commit leaves the pin the update's own. Any other pin is the user's, such as one made by hand
+# with `deploy.py --at <tag>` to step back from a regression, and stops the update until --unpin; the release channel
+# moves its own pin to each later release, and the main channel replaces it.
 OWN_PIN=
 if [ -n "$PIN_REF" ] && [ -n "$DEPLOYED_COMMIT" ] && [ "${PIN_REF#refs/tags/}" != "$PIN_REF" ]; then
-  PINNED_RELEASE=$(release_of "$DEPLOYED_COMMIT" "the pinned commit $DEPLOYED_COMMIT") ||
-    { echo "$PINNED_RELEASE"; exit 1; }
-  if [ -n "$PINNED_RELEASE" ] && [ "$PIN_REF" = "refs/tags/$PINNED_RELEASE" ]; then
-    OWN_PIN=1
-  fi
+  PINNED_RELEASES=$(releases_naming "$DEPLOYED_COMMIT" "the pinned commit $DEPLOYED_COMMIT") ||
+    { echo "$PINNED_RELEASES"; exit 1; }
+  while IFS= read -r PINNED_RELEASE; do
+    if [ -n "$PINNED_RELEASE" ] && [ "$PIN_REF" = "refs/tags/$PINNED_RELEASE" ]; then
+      OWN_PIN=1
+    fi
+  done <<<"$PINNED_RELEASES"
 fi
 USER_PIN=
 if [ -n "$PIN_REF" ] && [ -z "$OWN_PIN" ] && [ -z "$UNPIN" ]; then

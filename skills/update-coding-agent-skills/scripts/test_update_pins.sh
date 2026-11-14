@@ -92,7 +92,7 @@ done
 # the refusal never has, or the deployer's refusal of a pin whose release tags Git cannot read, which names Git's fault
 # rather than a pin of the user's.
 begin_case 'deploy failed with an error'
-TAGS_UNREAD="Git could not read the release tags reaching it, so whether it is update-coding-agent-skills' own pin is"
+TAGS_UNREAD="Git could not read the release tags naming it, so whether it is update-coding-agent-skills' own pin is"
 TAGS_UNREAD+=" unknown: fatal: refused by the test"
 for FAILURE in "1 ERROR: Could not write the manifest." \
   "2 ERROR: Refusing to replace the deployment pinned with --at v1.0.0 to $PINNED_COMMIT without --unpin." \
@@ -180,7 +180,7 @@ begin_case 'pinned commit missing'
 FETCHED=$(git -C "$CLONE" rev-parse origin/main)
 for CHANNEL in main release; do
   FAKE_CHECK_OUTPUT="Deployed commit: $MISSING_COMMIT, pinned with --at refs/tags/v1.0.0" run_subject "$CLONE" "$CHANNEL"
-  expect_failed "FAILED cannot read the release tags reaching the pinned commit $MISSING_COMMIT: " \
+  expect_failed "FAILED cannot read the release tags naming the pinned commit $MISSING_COMMIT: " \
     "pinned commit missing $CHANNEL"
   [ "$(cat "$FAKE_DEPLOY_LOG")" = "check" ] || fail "pinned commit missing $CHANNEL: ran: $(cat "$FAKE_DEPLOY_LOG")"
   [ "$(git -C "$CLONE" rev-parse origin/main)" = "$FETCHED" ] || fail "pinned commit missing $CHANNEL: fetched"
