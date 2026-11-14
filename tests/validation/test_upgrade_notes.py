@@ -199,6 +199,11 @@ class UpgradeNotesPolicy(unittest.TestCase):
         },
     }
     MANIFEST_CHANGE = CONTRACT_CHANGES["deployer/manifest.py"]
+    # The problem for an item the pull request itself changes that its own entries do not name.
+    OWN_CHANGE = (
+        r"changed in this pull request, against [0-9a-f]{7} where HEAD meets origin/main, and the pull request's own "
+        r"upgrade note does not name it, whatever an entry since v0\.1\.0 names; "
+    )
 
     def test_each_shared_pdf_provider_floor_needs_its_own_upgrade_note(self) -> None:
         self.release()
@@ -252,8 +257,15 @@ class UpgradeNotesPolicy(unittest.TestCase):
         self.git("checkout", "--", ".")
         self.git("clean", "-q", "-f", "-d")
 
-    def entry(self, contract: str, level: str = "minor", action: str = "none", pull_request: str = "") -> str:
-        return f"\n### A contract changed\n\n- Level: {level}.\n- Contract: {contract}\n- User action: {action}\n" + (
+    def entry(
+        self,
+        contract: str,
+        level: str = "minor",
+        action: str = "none",
+        pull_request: str = "",
+        heading: str = "A contract changed",
+    ) -> str:
+        return f"\n### {heading}\n\n- Level: {level}.\n- Contract: {contract}\n- User action: {action}\n" + (
             f"- Pull request: {pull_request}\n" if pull_request else ""
         )
 
@@ -279,7 +291,7 @@ class UpgradeNotesPolicy(unittest.TestCase):
                     problems = self.problems(change, body)
                     self.assertEqual(1, len(problems), problems)
                     self.assertTrue(problems[0].startswith(f"{item}: "), problems[0])
-                    self.assertIn("changed since v0.1.0, and no upgrade note since then names it", problems[0])
+                    self.assertRegex(problems[0], self.OWN_CHANGE)
                     self.assertIn(f"under ## Upgrade note in the pull request body naming `{item}`", problems[0])
                     self.assertIn("patch, minor, or major", problems[0])
                     self.assertIn("--pr-body <file>, and otherwise the branch's commit messages", problems[0])
@@ -333,7 +345,7 @@ class UpgradeNotesPolicy(unittest.TestCase):
         status, output = self.run_with_body(self.body())
         self.assertEqual(1, status, output)
         self.assertIn("deployer/manifest.py: MANIFEST_VERSION or OLDEST_READABLE_VERSION changed", output)
-        self.assertIn("no upgrade note since then names it", output)
+        self.assertRegex(output, self.OWN_CHANGE)
 
         status, output = self.run_with_body(self.body(self.entry("`deployer/manifest.py`")))
         self.assertEqual(0, status, output)
@@ -344,7 +356,7 @@ class UpgradeNotesPolicy(unittest.TestCase):
         self.commit("Change the manifest without a commit note", self.MANIFEST_CHANGE)
         status, output = self.run_with_body(None)
         self.assertEqual(1, status, output)
-        self.assertIn("no upgrade note since then names it", output)
+        self.assertRegex(output, self.OWN_CHANGE)
 
         status, output = self.run_with_body(self.body(self.entry("`deployer/manifest.py`")))
         self.assertEqual(0, status, output)
@@ -525,7 +537,63 @@ class UpgradeNotesPolicy(unittest.TestCase):
                 problems = self.problems(self.MANIFEST_CHANGE, self.body(self.entry(contract)))
                 self.assertEqual(1, len(problems), problems)
                 self.assertTrue(problems[0].startswith("deployer/manifest.py: "), problems[0])
-                self.assertIn("changed since v0.1.0, and no upgrade note since then names it", problems[0])
+                self.assertRegex(problems[0], self.OWN_CHANGE)
+
+    def schema_changed_and_named_since_the_tag(self) -> str:
+        """origin/main after a merged pull request that changed the review schema and named it, and the schema changed
+        again in the working tree by a later pull request, whose own entry must name it too; returns the item."""
+        item = "skills/ejryan89-code-review-core/references/record.schema.json"
+        self.release()
+        self.commit(f"Change the schema (#8)\n\n{self.body(self.entry(f'`{item}`'))}", self.CONTRACT_CHANGES[item])
+        self.merged()
+        write_fixture_tree(self.root, {item: '{"type": "array", "items": {"type": "string"}}\n'})
+        return item
+
+    def test_an_item_named_since_the_tag_still_needs_the_pull_requests_own_entry_when_it_changes_it(self) -> None:
+        item = self.schema_changed_and_named_since_the_tag()
+        # The one accepted form is the item in backticks in '- Contract:' of the body's own entry; no entry, `none`,
+        # and an entry naming another item each leave it unnamed, whatever the merged entry since the tag names.
+        heading = "The schema changed again"
+        for own in ("", self.entry("none", heading=heading), self.entry("`deployer/manifest.py`", heading=heading)):
+            with self.subTest(own=own):
+                problems = upgrade_notes_problems(self.root, self.body(own))
+                self.assertEqual(1, len(problems), problems)
+                self.assertTrue(problems[0].startswith(f"{item}: the schema "), problems[0])
+                self.assertRegex(problems[0], self.OWN_CHANGE)
+                self.assertIn(f"naming `{item}`", problems[0])
+        self.assertEqual([], upgrade_notes_problems(self.root, self.body(self.entry(f"`{item}`", heading=heading))))
+
+    def test_without_a_body_the_branchs_own_commits_since_the_merge_base_must_name_its_change(self) -> None:
+        item = self.schema_changed_and_named_since_the_tag()
+        self.commit(f"Change the schema again\n\n{self.body(self.entry('none'))}")
+        problems = upgrade_notes_problems(self.root)
+        self.assertEqual([item], [problem.split(":", 1)[0] for problem in problems])
+        self.assertRegex(problems[0], self.OWN_CHANGE)
+        self.commit(f"Name the schema\n\n{self.body(self.entry(f'`{item}`'))}")
+        self.assertEqual([], upgrade_notes_problems(self.root))
+
+    def test_a_branch_behind_origin_main_is_not_charged_with_mains_later_contract_change(self) -> None:
+        # The pull request's own change is the working tree's against the merge base, never against origin/main's tip,
+        # so a contract item main changed after the branch left it is not this pull request's to name.
+        self.release()
+        self.git("checkout", "-q", "-b", "topic")
+        self.git("checkout", "-q", "main")
+        self.commit(
+            f"Change the manifest (#8)\n\n{self.body(self.entry('`deployer/manifest.py`'))}", self.MANIFEST_CHANGE
+        )
+        self.merged()
+        self.git("checkout", "-q", "topic")
+        self.assertEqual([], upgrade_notes_problems(self.root, self.body()))
+        self.assertEqual([], upgrade_notes_problems(self.root))
+
+    def test_an_item_main_changed_without_an_entry_is_named_as_changed_since_the_tag(self) -> None:
+        self.release()
+        self.commit("Change the manifest (#8)", self.MANIFEST_CHANGE)
+        self.merged()
+        problems = upgrade_notes_problems(self.root, self.body())
+        self.assertEqual(1, len(problems), problems)
+        self.assertTrue(problems[0].startswith("deployer/manifest.py: "), problems[0])
+        self.assertIn("changed since v0.1.0, and no upgrade note since then names it; ", problems[0])
 
     def test_a_notes_section_that_is_not_a_version_fails(self) -> None:
         self.release()
@@ -624,7 +692,7 @@ class UpgradeNotesPolicy(unittest.TestCase):
         self.git("update-ref", "refs/remotes/origin/main", "HEAD", cwd=other)
         with mock.patch.dict(os.environ, {"GIT_DIR": str(other / ".git")}):
             tag, problem = upgrade_notes.last_release_tag(self.root)
-            names = upgrade_notes.tag_snapshot(self.root, "v0.1.0").names
+            names = upgrade_notes.revision_snapshot(self.root, "v0.1.0").names
         self.assertEqual(("v0.1.0", None), (tag, problem))
         self.assertEqual(frozenset(self.RELEASED), names)
 
@@ -690,6 +758,28 @@ class UpgradeNotesPolicy(unittest.TestCase):
             ),
             problem,
         )
+
+    def commits_read_as(self, entries: list[release_notes.SourcedEntry]) -> contextlib.AbstractContextManager[object]:
+        return mock.patch.object(upgrade_notes, "range_entries", return_value=entries)
+
+    def test_a_head_that_never_meets_origin_main_is_a_problem_line(self) -> None:
+        # The tag, its tree, and the commits read, and only the merge base git cannot find: a branch whose history
+        # shares no commit with origin/main.
+        self.release()
+        self.git("checkout", "-q", "--orphan", "unrelated")
+        self.commit("An unrelated root", self.MANIFEST_CHANGE)
+        # Without a body the branch's own commits are read first, and an unrelated root has no parent to read the
+        # notes file at, so that read stands aside for the merge base to be the one git cannot answer.
+        for body, reading in ((self.body(), contextlib.nullcontext()), (None, self.commits_read_as([]))):
+            with self.subTest(body=body is not None), reading:
+                [problem] = upgrade_notes_problems(self.root, body)
+                self.assertTrue(
+                    problem.startswith(
+                        "the upgrade-notes check cannot read the commits and the tree since v0.1.0: "
+                        "git merge-base HEAD origin/main failed"
+                    ),
+                    problem,
+                )
 
     def test_a_missing_origin_main_fails_with_the_fetch_command(self) -> None:
         self.release()
