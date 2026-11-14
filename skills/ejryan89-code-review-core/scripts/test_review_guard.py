@@ -593,6 +593,17 @@ class ReadLogTests(GuardFixture):
         self.claim()
         self.assertIsNone(self.decide("Read", file_path=str(self.source / "app" / "Service.cs")))
 
+    def test_a_folder_where_the_read_log_is_shows_no_claim(self) -> None:
+        # Only the log the claim creates proves the guard held the role. A folder in its place, which the claim cannot
+        # replace, proves nothing, so the role reads as unclaimed, never as one the guard held.
+        guard.read_log(self.run_directory, "csharp-review").mkdir(parents=True)
+        self.claim()
+        self.claim("sql-review", agent=OTHER_AGENT)
+        self.assertEqual(
+            (False, True),
+            (guard.claimed(self.run_directory, "csharp-review"), guard.claimed(self.run_directory, "sql-review")),
+        )
+
     def test_a_read_the_log_cannot_hold_is_allowed_uncounted_and_the_boundary_still_holds(self) -> None:
         # A path holding a lone surrogate, which a file name on Linux may, is a line no UTF-8 log can hold.
         self.claim()

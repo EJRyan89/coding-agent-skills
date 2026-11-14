@@ -27,12 +27,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-cor
 import atomic_file
 import dependency_graph
 import dotnet_solution
+import file_presence
 import msbuild_reader
 from dependency_graph import main
 from dotnet_solution import same_path
 from flat_text import flat_text
 from sdk_why import DEFAULT_TIMEOUT_SECONDS, Completed, SdkPath, Services
-from test_msbuild_reader import stat_failing_at
+from test_msbuild_reader import failing_without_a_file, stat_failing_at
 
 SCRIPT = Path(__file__).resolve().parent / "dependency_graph.py"
 CSHARP = "{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}"
@@ -3389,20 +3390,6 @@ class MSBuildEvaluationTests(Fixture):
         expected = [["B/B.csproj", unsettled.format("PackageVersion")]]
         self.assertEqual((1, [], expected), (code, self.lines(rows, "CONFLICT"), self.lines(rows, "UNREADABLE")))
 
-    def test_an_import_of_a_folder_is_not_read_and_named_so_never_as_not_found(self) -> None:
-        (self.root / "A" / "Versions.props").mkdir(parents=True)
-        body = (
-            '<Import Project="Versions.props" /><PropertyGroup><TargetFramework>net8.0</TargetFramework>'
-            '</PropertyGroup><ItemGroup><PackageReference Include="Lib.Pkg" Version="1.0.0" /></ItemGroup>'
-        )
-        self.write("A/A.csproj", sdk_project(body))
-        _, rows = self.run_main("conflicts", "--root", str(self.root))
-        not_read = (
-            "the Import of Versions.props is not read: the path it names is not a file, so every property is "
-            "unsettled after it"
-        )
-        self.assertIn(["A/A.csproj", not_read], self.lines(rows, "UNREADABLE"))
-
     def why_lib_pkg(self, app: str) -> tuple[int, list[list[str]], list[list[str]]]:
         self.write("App/App.csproj", app)
         self.write("Lib/Lib.csproj", LIB_PROJECT)
@@ -4050,6 +4037,100 @@ class PresenceReadTests(Fixture):
             _, _, projects = dependency_graph.resolve_root(root, unreadable)
         self.assertNotIn(listed, projects)
         self.assertEqual([(listed, "Access is denied")], unreadable)
+
+    def test_a_listed_project_it_cannot_examine_is_named_with_its_error_and_the_ones_after_it_are_still_read(
+        self,
+    ) -> None:
+        first = self.write("A/A.csproj", LEGACY_APP_PROJECT)
+        second = self.write("B/B.csproj", LEGACY_APP_PROJECT)
+        listed = self.write("Listed.sln", solution("A\\A.csproj", "B\\B.csproj"))
+        real = file_presence.is_there
+
+        def is_there(path: Path) -> bool:
+            if path == first:
+                # An error with no strerror, whose message is its reason.
+                raise OSError("the stat gave up")
+            return real(path)
+
+        unreadable: list[tuple[Path, str]] = []
+        with mock.patch.object(file_presence, "is_there", is_there):
+            _, _, projects = dependency_graph.resolve_root(listed, unreadable)
+        self.assertEqual(([second], [(first, "the stat gave up")]), (projects, unreadable))
+
+    def test_a_stat_error_naming_no_file_is_refused_against_the_folder_checked(self) -> None:
+        home = self.root / "home"
+        cache = home / ".nuget" / "packages"
+        configured = self.root / "configured"
+        configured.mkdir()
+        # The home cache is checked after the folder NUGET_PACKAGES names, and the one whose stat fails is named.
+        for setting in ("", str(configured)):
+            with (
+                self.subTest(NUGET_PACKAGES=setting),
+                mock.patch.object(Path, "home", return_value=home),
+                mock.patch.dict(os.environ, {"NUGET_PACKAGES": setting}),
+                failing_without_a_file(file_presence, "is_directory", cache),
+                self.assertRaises(msbuild_reader.Unreadable) as raised,
+            ):
+                dependency_graph.nuget_cache()
+            self.assertEqual((cache, "Access is denied"), (raised.exception.file, raised.exception.reason))
+        project = self.root / "src" / "App"
+        project.mkdir(parents=True)
+        nearer = project / "packages"
+        with (
+            failing_without_a_file(file_presence, "is_directory", nearer),
+            self.assertRaises(msbuild_reader.Unreadable) as raised,
+        ):
+            dependency_graph.packages_folder(project, self.root)
+        self.assertEqual((nearer, "Access is denied"), (raised.exception.file, raised.exception.reason))
+
+    def test_the_redirects_of_each_config_are_kept_and_a_listing_error_naming_no_file_is_the_folder_s(self) -> None:
+        root = self.mixed_solution()
+        project = self.root / "src" / "Harbor.Web"
+        self.write(
+            "src/Harbor.Web/App.config",
+            '<configuration><runtime><assemblyBinding xmlns="urn:schemas-microsoft-com:asm.v1"><dependentAssembly>'
+            '<assemblyIdentity name="Beacon.App" />'
+            '<bindingRedirect oldVersion="0.0.0.0-1.0.0.0" newVersion="1.0.0.0" />'
+            "</dependentAssembly></assemblyBinding></runtime></configuration>",
+        )
+        graph = dependency_graph.build_graph(root, self.without_dotnet)
+        web = graph.projects[same_path(project / "Harbor.Web.csproj")]
+        self.assertEqual(
+            ["Beacon.App", "Lantern.Json", "Quill.Http", "Ghost.Assembly"],
+            [redirect.name for redirect in web.file.redirects],
+        )
+        rows = self.answered(root, failing_without_a_file(Path, "iterdir", project))
+        self.assertIn(["src/Harbor.Web", "Access is denied"], self.lines(rows, "UNREADABLE"))
+        # A config whose stat fails naming no file is reported against itself, never the folder, and the other config's
+        # redirects are still read.
+        failing = failing_without_a_file(file_presence, "is_present", project / "Web.config")
+        with failing:
+            graph = dependency_graph.build_graph(root, self.without_dotnet)
+        web = graph.projects[same_path(project / "Harbor.Web.csproj")]
+        self.assertEqual(["Beacon.App"], [redirect.name for redirect in web.file.redirects])
+        rows = self.answered(root, failing_without_a_file(file_presence, "is_present", project / "Web.config"))
+        unreadable = self.lines(rows, "UNREADABLE")
+        self.assertIn(["src/Harbor.Web/Web.config", "Access is denied"], unreadable)
+        self.assertNotIn(["src/Harbor.Web", "Access is denied"], unreadable)
+
+    def test_a_package_entry_it_cannot_stat_or_list_is_named_never_the_folder_above_it(self) -> None:
+        # A packages folder's <id>.<version>, and the NuGet cache's <id>/<version>, each in a folder of its own.
+        packages = unpacked(self.root / "solution", "Lantern.Core.1.0.0")
+        cache = unpacked(self.root / "home", "Lantern.Core/1.0.0")
+        for folder, owner, name, target in (
+            (packages, Path, "iterdir", packages),
+            (packages, file_presence, "is_directory", packages / "Lantern.Core.1.0.0"),
+            (cache, file_presence, "is_directory", cache / "Lantern.Core"),
+            (cache, Path, "iterdir", cache / "Lantern.Core"),
+            (cache, file_presence, "is_directory", cache / "Lantern.Core" / "1.0.0"),
+        ):
+            with (
+                self.subTest(f"{name} {target.relative_to(self.root).as_posix()}"),
+                failing_without_a_file(owner, name, target),
+                self.assertRaises(msbuild_reader.Unreadable) as raised,
+            ):
+                dependency_graph.package_directory([folder], "Lantern.Core", "1.0.0")
+            self.assertEqual((target, "Access is denied"), (raised.exception.file, raised.exception.reason))
 
     def test_a_config_or_project_folder_it_cannot_read_is_an_unreadable_row_and_a_folder_config_is_passed_over(
         self,

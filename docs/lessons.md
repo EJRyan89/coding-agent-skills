@@ -108,7 +108,8 @@ removed fails validation until its pattern follows it.
   `os.path.isfile`, or `os.path.isdir` anywhere a False must mean nothing is there, since from Python 3.14 each
   returns False on every `OSError`, and `lexists` on a `ValueError` too; a refusal worded as missing on a search,
   `next((p for p in paths if not P), None)`, or after `if P: return p`, where `P` is such a predicate or a
-  `file_presence` test given `other_is_absent=True`; `if not result.stdout`
+  `file_presence` test given `other_is_absent=True`, raised or recorded as a report, as
+  `dotnet-dependencies` recorded an Import naming a folder as one whose file is not found; `if not result.stdout`
   read as nothing found; `len(lines) != ` beside a successful git answer followed by `return None`; two branches
   that catch the same `GitError` and read its kinds differently; a function given a new `raise GitError` whose
   callers are not each read for where the error goes, one that catches it on one branch and lets it escape on
@@ -120,7 +121,7 @@ removed fails validation until its pattern follows it.
   pipeline whose status no branch reads, which a script without `set -e` reads as an empty answer, and a
   `rev-parse --verify --quiet` whose exit 1 is not told from any other failure.
 - **Examples:** #1320, #1365, #1599, #1601, #1887, #1888, #2090, #2091, #2131, #2133, #2182, #2185, #2205, #2218, #2236,
-  #2245, #2727
+  #2245, #2727, #2301
 
 ### Evidence that was never produced is never a pass
 

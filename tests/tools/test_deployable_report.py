@@ -24,6 +24,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts"))
 
 
+import file_presence
 from presence_denial import denied
 
 from deployer import discovery, manifest, platform_support
@@ -360,7 +361,16 @@ class DeployableReportTests(unittest.TestCase):
             self.assertEqual(report.FAILED, result.status)
             self.assertEqual(problem, result.detail)
 
-    def test_a_skill_file_or_agent_of_another_kind_is_named_so_never_as_missing(self) -> None:
+    def test_a_skill_file_whose_size_cannot_be_read_after_its_presence_is_named_never_raised(self) -> None:
+        # The presence read, answered here as present, passes, and only the size read's stat is refused.
+        skill = self.paths.dest_dir / "alpha" / "SKILL.md"
+        with mock.patch.object(file_presence, "refusal_reason", return_value=None), denied(skill):
+            result = self.layout()
+        self.assertEqual(
+            (report.FAILED, "alpha/SKILL.md cannot be examined: Access is denied"), (result.status, result.detail)
+        )
+
+    def test_a_folder_where_a_skill_file_or_agent_is_expected_is_named_not_a_file_never_missing(self) -> None:
         skill = self.paths.dest_dir / "alpha" / "SKILL.md"
         skill.unlink()
         skill.mkdir()
@@ -368,9 +378,10 @@ class DeployableReportTests(unittest.TestCase):
         agent.unlink()
         agent.mkdir()
         result = self.layout()
+        reason = file_presence.refusal_reason(skill)
+        self.assertEqual("is not a file", reason)
         self.assertEqual(
-            (report.FAILED, f"alpha/SKILL.md is not a file; agent {AGENT} is not a file"),
-            (result.status, result.detail),
+            (report.FAILED, f"alpha/SKILL.md {reason}; agent {AGENT} {reason}"), (result.status, result.detail)
         )
 
     def test_a_missing_agent_fails(self) -> None:

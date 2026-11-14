@@ -33,6 +33,7 @@ from skill_roots import sibling_scripts
 
 sys.path.insert(0, str(sibling_scripts("ejryan89-code-review-core")))
 
+import file_presence
 import json_reader
 import path_keys
 import review_document
@@ -2240,7 +2241,19 @@ def test_a_document_path_holding_a_hash_it_cannot_stat_is_refused_never_read_as_
     document.write_text("# Notes\n", encoding="utf-8")
     with stat_failing_at(document), pytest.raises(review_document.DocumentError) as raised:
         review_document.pull_reference(str(document))
-    assert str(raised.value).startswith(f"cannot tell whether {document} is a file: ")
+    # The reason is the operating system's, without the errno and the path the refusal already names.
+    assert str(raised.value) == f"cannot tell whether {document} is a file: Permission denied"
+
+
+def test_a_stat_error_with_no_operating_system_reason_is_named_by_its_text(tmp_path: Path) -> None:
+    document = tmp_path / "notes#2.md"
+    failure = OSError("the stat was refused")
+    with (
+        mock.patch.object(file_presence, "is_occupied", side_effect=failure),
+        pytest.raises(review_document.DocumentError) as raised,
+    ):
+        review_document.pull_reference(str(document))
+    assert str(raised.value) == f"cannot tell whether {document} is a file: the stat was refused"
 
 
 def test_an_unborn_branch_is_looked_up_by_its_whole_name() -> None:

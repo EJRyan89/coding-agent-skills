@@ -1020,15 +1020,14 @@ def skill_tree_problems(root: Path) -> list[str]:
         path for path in skills.iterdir() if file_presence.is_directory(path, other_is_absent=True)
     ):
         shown = directory.relative_to(root).as_posix()
-        if directory.name in shared:
-            continue
-        # A SKILL.md of another kind is named so; a stat that fails raises, never read as no SKILL.md.
+        # A SKILL.md of another kind is named so, never as a folder that holds none, and one a stat cannot examine
+        # raises, as every validation reader's does.
         try:
             present = file_presence.is_present(directory / "SKILL.md")
         except file_presence.NotAFile:
             problems.append(f"{shown}/SKILL.md is not a file")
             continue
-        if not present:
+        if not present and directory.name not in shared:
             problems.append(f"{shown} holds no SKILL.md and source.json declares no such shared asset")
     problems += [
         f"{skill_md.relative_to(root).as_posix()} is deeper than skills/<name>"

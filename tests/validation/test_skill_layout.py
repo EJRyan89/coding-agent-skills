@@ -120,6 +120,14 @@ class SkillTreeFixtures(unittest.TestCase):
                 skill_tree_problems(root),
             )
 
+    def test_a_skill_md_of_another_kind_is_named_so_never_as_a_folder_holding_none(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            write_fixture_tree(root, {"skills/alpha/SKILL.md": "", "skills/folded/SKILL.md/notes.md": ""})
+            reason = file_presence.refusal_reason(root / "skills" / "folded" / "SKILL.md")
+            self.assertEqual("is not a file", reason)
+            self.assertEqual([f"skills/folded/SKILL.md {reason}"], skill_tree_problems(root))
+
     def test_a_flat_skills_directory_has_no_tree_problems(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

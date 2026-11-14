@@ -230,6 +230,16 @@ class TemplateLookupTests(unittest.TestCase):
         (self.root / "docs" / "pull_request_template.md").write_text("## Changes\n", encoding="utf-8")
         self.assertEqual(self.root / "docs" / "pull_request_template.md", pull_request.find_template(self.root))
 
+    def test_a_folder_named_like_the_template_is_passed_over_for_the_real_one(self) -> None:
+        (self.root / ".github" / pull_request.TEMPLATE_NAME).mkdir(parents=True)
+        (self.root / "docs").mkdir()
+        (self.root / "docs" / pull_request.TEMPLATE_NAME).write_text("## Changes\n", encoding="utf-8")
+        self.assertEqual(self.root / "docs" / pull_request.TEMPLATE_NAME, pull_request.find_template(self.root))
+
+    def test_a_folder_named_like_the_template_alone_is_no_template(self) -> None:
+        (self.root / ".github" / pull_request.TEMPLATE_NAME).mkdir(parents=True)
+        self.assertIsNone(pull_request.find_template(self.root))
+
     def test_a_template_whose_stat_fails_is_refused_rather_than_passed_over_for_the_next(self) -> None:
         template = self.root / ".github" / "pull_request_template.md"
         template.parent.mkdir()

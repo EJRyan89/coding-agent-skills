@@ -58,7 +58,7 @@ from xml.etree.ElementTree import Element
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
 from dotnet_solution import project_path, refusal, same_path
-from file_presence import NotAFile, is_directory, is_present
+from file_presence import is_directory, is_present
 from msbuild_conditions import EMPTY, UNKNOWN, FileSystem, Value, condition_value, expanded, union
 from msbuild_reader import (
     ASSEMBLY_VERSION,
@@ -487,13 +487,9 @@ class Evaluation:
             return
         try:
             present = is_present(path)
-        except NotAFile:
-            # Something other than a file where the Import points is named so, never as not found.
-            self.not_read(written, "the path it names is not a file")
-            return
         except OSError as error:
-            # A file it cannot stat is reported with the stat's reason, as import_nearest reports one, never as not
-            # found.
+            # A file it cannot stat, or something other than a file, such as a folder, is reported with the stat's
+            # reason or as not a file, as import_nearest reports one, never as not found.
             self.reports.append(os_unreadable(error, path))
             self.state.unsettle()
             return

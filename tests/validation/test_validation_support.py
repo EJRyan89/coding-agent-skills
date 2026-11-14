@@ -845,6 +845,17 @@ class RepositoryFilesFixtures(unittest.TestCase):
             ):
                 repository_files(Path(temporary))
 
+    def test_a_tracked_name_that_is_now_a_folder_is_passed_over_and_the_files_in_it_listed(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            checkout = Path(temporary)
+            self.repository(checkout, {"kept.txt": "kept\n", "moved.txt": "moved\n"})
+            # The index still lists moved.txt, which is now a folder holding an untracked file.
+            (checkout / "moved.txt").unlink()
+            write_fixture_tree(checkout, {"moved.txt/inner.txt": "inner\n"})
+            self.assertEqual(
+                [checkout / "kept.txt", checkout / "moved.txt" / "inner.txt"], sorted(repository_files(checkout))
+            )
+
 
 def test_each_shell_continues_a_command_by_its_one_mark() -> None:
     assert (BASH_CONTINUATION, POWERSHELL_CONTINUATION) == ("\\", "`")
