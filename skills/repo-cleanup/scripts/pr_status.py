@@ -7,7 +7,7 @@ import sys
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, TypeVar
+from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
@@ -23,7 +23,6 @@ FIELDS = "number,state,headRefOid,headRepository,headRepositoryOwner,mergeCommit
 # GitHub's pull request commits endpoint lists at most this many commits, so a list this long may be truncated.
 COMMIT_LIMIT = 250
 SHA_PATTERN = re.compile(r"[0-9a-f]{40}")
-T = TypeVar("T")
 REPOSITORY_PATTERN = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
 # GitHubError kinds meaning gh itself did not run to completion: missing, unable to start, or out of time.
 RUN_FAILURES = frozenset({"prerequisite", "execution", "timeout"})

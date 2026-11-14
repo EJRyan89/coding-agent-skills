@@ -51,7 +51,6 @@ from skill_roots import skills_directory_holding
 from typed_fields import FieldError, FieldReader, describe
 
 T = TypeVar("T")
-Page = TypeVar("Page")
 PRINT_ALLOWED = {
     "write_report": "writes the Markdown report the skill shows the user as it is, over many lines",
 }

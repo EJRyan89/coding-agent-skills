@@ -15,7 +15,7 @@ from collections import defaultdict
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath, PureWindowsPath
-from typing import TextIO, TypeVar, overload
+from typing import TextIO, overload
 
 import file_presence
 import json_reader
@@ -390,8 +390,6 @@ def _unread_start(words: Sequence[str | None]) -> set[str]:
     cannot read."""
     return {f"{UNREAD_PROGRAM}{' '.join(word if word is not None else '<value>' for word in words)}"}
 
-
-Primed = TypeVar("Primed")
 
 # What each PowerShell script a start-up runs has been read to, for this process, by _powershell_script_reading or
 # prime. Each reading is the one powershell_readings gives the script, so a reading held here is never replaced.

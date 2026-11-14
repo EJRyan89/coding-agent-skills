@@ -16,7 +16,7 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import IO, Any, TypeVar
+from typing import IO, Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
@@ -46,9 +46,6 @@ SURROGATE_ESCAPE = re.compile(r"\\u[dD][89a-fA-F]")
 
 # Concurrent GitHub and git network calls; small enough to stay clear of GitHub's secondary rate limits.
 NETWORK_WORKERS = 4
-
-Item = TypeVar("Item")
-Value = TypeVar("Value")
 
 
 # The presence reads and removals here that read a path they cannot stat, list, or remove as nothing there,

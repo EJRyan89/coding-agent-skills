@@ -52,7 +52,7 @@ from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, TypeVar
+from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
@@ -78,7 +78,6 @@ from path_keys import name_key, path_key
 from skill_roots import skills_directory_holding
 from typed_fields import FieldError, FieldReader, describe
 
-T = TypeVar("T")
 PLAN_SCHEMA_VERSION = 1
 # Where each plan's and sweep record's seal lives: the SHA-256 of its bytes as this script last saved them, in a file
 # named by the SHA-256 of its resolved path. Every command reads a plan or record only when its bytes match its seal, so

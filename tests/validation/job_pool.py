@@ -13,7 +13,7 @@ from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
-from typing import NamedTuple, TypeVar
+from typing import NamedTuple
 
 # ejryan89-skill-core's bounded runner is imported before validation_support, which puts ejryan89-skill-core on sys.path
 # too, so this module states the path itself.
@@ -30,7 +30,6 @@ COMMAND_TIMEOUT_SECONDS = 20 * 60
 # Held for each line or block written while the pool runs, so a suite's line never lands inside the policy report.
 OUTPUT_LOCK = threading.Lock()
 # What the foreground work beside the pool returns.
-T = TypeVar("T")
 
 
 # Bash and PowerShell suites cannot be split, so they start before any shard.
