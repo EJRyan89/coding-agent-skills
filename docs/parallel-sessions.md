@@ -196,7 +196,10 @@ carry; the hook command runs its call through `env -u` for each of `GIT_DIR`, `G
 `GIT_CONFIG` it holds, in any case, since Windows reads an environment name in any case; and `tools/hub_guard.py` runs
 its own git calls, and the `pwsh` that reads a PowerShell command, without any of git's repository-selecting
 variables, the set ejryan89-skill-core's `bounded_process.py` names, through its `run_bounded`, which ends every
-process `pwsh` starts with it. `tests/tools/test_hub_guard.py` runs the tracked command both ways.
+process `pwsh` starts with it. Neither git writes a trace or its output where the environment points: the hook
+command's `env -u` drops each `GIT_TRACE` variable and `GIT_REDIRECT_STDOUT` and `GIT_REDIRECT_STDERR` too, and the
+guard takes them out of its own environment before its first git call, judging a command's calls from the
+environment it was started with. `tests/tools/test_hub_guard.py` runs the tracked command both ways.
 
 The command is also written to end at once under PowerShell, for the runtime that runs it there (see
 [Other runtimes](#other-runtimes)). Its first two lines are `set \` and `exit 0`: Bash, like any POSIX shell, joins
@@ -310,8 +313,9 @@ a row decides it.
   else the one git finds from where it starts, which inside a git directory, such as `-C <hub>/.git`, is that
   directory's own repository; the work tree is the one `--work-tree`, `GIT_WORK_TREE`, or a `core.worktree` setting
   names, or else where git starts, after each `-C`. A relative path is read from where git finally starts, and a
-  relative `core.worktree` from the repository it is set for. `GIT_COMMON_DIR` names only the store of refs and
-  objects every worktree shares, so it does not change which checkout a call writes. The guard reads git's own
+  relative `core.worktree` from the repository it is set for. `GIT_COMMON_DIR` names only the store of objects,
+  configuration, and shared refs every worktree uses, so it does not change which checkout a call writes; the
+  environment's store is judged as the bullet on what the environment has git write says. The guard reads git's own
   options as git does, with no abbreviation and with a value attached after `=` or as the next word (`-C`, `-c`,
   `--attr-source`, `--config-env`, `--git-dir`, `--namespace`, `--shallow-file`, `--super-prefix`, `--work-tree`),
   and `core.worktree` and `alias.<name>` among the command-line configuration a call sees: `GIT_CONFIG_PARAMETERS`,
@@ -326,15 +330,36 @@ a row decides it.
   two spellings disagree, the call is judged by the upper-case one, the spelling git reads, with a note.
 - **The index a git call is given.** Any git call may rewrite the index `GIT_INDEX_FILE` names, even a form that
   only reads the hub: `status` and `diff` refresh it, and a fast-forward writes a tree into it, as does the child
-  git that `worktree add -b` (`reset --hard`) or `worktree remove` (its clean check) starts in another checkout,
+  git that `worktree add` (`reset --hard`) or `worktree remove` (its clean check) starts in another checkout,
   inheriting the variable. So while that index is one a guarded hub holds, anywhere in its git directory or among
-  the files of its checkout, the hub's own index included, no git call runs, wherever it starts and whatever its
-  subcommand. The one exception is a worktree's own index, in the hub's git directory, for a call whose own
-  repository is that worktree's: git uses it anyway. The index is read as an absolute path with each symbolic link
+  the files of its checkout it does not ignore, the hub's own index included, no git call runs, wherever it starts
+  and whatever its subcommand. The one exception is a file in a linked worktree's own git directory, in the hub's
+  git directory, for a call whose own repository is that worktree's, as `git rev-parse --git-dir` answers it: git
+  writes there for that worktree anyway, its `index` and the lock files beside it, `index.lock` and
+  `next-index-<pid>.lock`, which a hook or an editor git starts mid-operation hands on, among them. No other call's,
+  a hub's read-only forms included, takes that exception. The index is read as an absolute path with each symbolic link
   followed, as git follows one to write through its lock file. A relative path is not settled, since git reads it
   from the directory each process it starts works in, so a call given one is refused while a hub is guarded; git
   exports a relative index only for a repository whose git directory is relative, which no worktree's is. `gh`
   checking a branch out runs git with the same variables, so the location variables and the index place it too.
+- **What the environment has git write.** git takes from its environment more places to write than its checkout,
+  and the guard judges each for every git call and every `gh` checkout, from the environment Claude Code gives the
+  hook, which no command here can change. A file git appends a trace to, the absolute path a `GIT_TRACE` variable
+  names, `GIT_TRACE2` and `GIT_TRACE_PACKET` among them, a file trace2 makes inside a directory one names, and the
+  file git for Windows sends its output to, which `GIT_REDIRECT_STDOUT` and `GIT_REDIRECT_STDERR` name, is judged as
+  a redirection's target is; a trace sent to a descriptor or a socket, a relative trace path, which git ignores, and
+  `off` or `2>&1` write no file, and a relative output file, which git reads from where it starts, is not settled. The
+  store `GIT_OBJECT_DIRECTORY` names, where git writes objects, and the common directory `GIT_COMMON_DIR` names,
+  where it writes objects, configuration, and shared refs, are refused when a guarded hub holds them, unless each is
+  the call's own, the one `git rev-parse` answers for the call's repository without the variable, as a worktree's
+  is the hub's, which git writes for it anyway. And a call that acts on a guarded hub runs only with the hub's own
+  index and store: given any `GIT_INDEX_FILE`, a store or common directory other than the hub's own, or
+  `GIT_ALTERNATE_OBJECT_DIRECTORIES`, it is refused, since a fast-forward then moves the hub's `HEAD` and tree while
+  the new tree goes into the other index, leaving the hub's own out of step, or moves its refs to objects only
+  another store holds. A store a relative path names is read from wherever git works, so it is not settled. Each path
+  is read with every symbolic link followed. A place the guard cannot settle is refused while a hub is guarded and
+  otherwise noted. The guard's own git calls, and the hook command's `git config`, run without the trace and output
+  variables, so neither writes where they point.
 - **What a git call's words write or run.** Wherever git runs, a file it writes at a path its words name is judged
   as a redirection's target is, a relative path read from where git starts. The options that name such a file are
   `--output`, which every subcommand that reads git's diff or revision options takes, and those
@@ -564,6 +589,9 @@ refuses:
   does not settle where it may be an option that does either; a setting `-c` or `--config-env` hands git that the
   guard does not know to be safe; and a `git config` that may write, but for one that writes only a file `--file`
   names outside every hub. A file a git call writes into a guarded hub is refused wherever the call runs;
+- a git call, or a `gh` checkout, given from the environment an index, a store, or a trace or output file that the
+  bullets on the index a git call is given and on what the environment has git write refuse, and, while a hub is
+  guarded, one given any of them that the guard cannot place;
 - an alias that cannot be read, nests more than four deep, or runs a part the guard does not read;
 - a command the guard does not finish reading and judging within 15 seconds, `pwsh` included, and the lookups of the
   hubs the places it names reach, each git call of theirs given no more than the time left; a PowerShell command when
@@ -629,7 +657,10 @@ The hook sees the command text. It does not see:
   tool's shell holds that the hook's environment does not, or holds with another value;
 - a work tree set in a repository's own configuration: the guard judges such a call by the checkout it runs in;
 - a ref moved from another checkout, such as `git update-ref refs/heads/main` run in a worktree: refs live in the
-  store every worktree shares, and the guard judges a call by the checkout whose `HEAD`, index, and tree it writes.
+  store every worktree shares, and the guard judges a call by the checkout whose `HEAD`, index, and tree it writes;
+- the git a `gh` subcommand other than a checkout runs, as `gh pr create` may run `git status` where it starts: the
+  inherited index and the variables reach it as they reach any git, and the guard places only the checkouts
+  `GH_CHECKOUTS` names.
 
 `.claude/settings.json` is tracked and reaches every developer's sessions. It may therefore name its `$schema`,
 declare hooks, and set `attribution`, which turns off Claude Code's commit trailers, pull request footer, and session
