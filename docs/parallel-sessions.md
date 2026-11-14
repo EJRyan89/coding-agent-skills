@@ -355,33 +355,36 @@ a row decides it.
   unless `GIT_TRACE2`, `GIT_TRACE2_PERF`, or `GIT_TRACE2_EVENT` holds a value, which outranks it: the guard asks git for
   them with the session's environment, so the files `GIT_CONFIG_SYSTEM`, `GIT_CONFIG_GLOBAL`, `HOME`, and
   `XDG_CONFIG_HOME` choose, and every file their `include.path` names, are read as git reads them (`TRACE2_SETTINGS`);
-  trace2 never reads a repository's own configuration or the command line's. Such a file reaches every git a command
-  starts, the git a program or a `gh` subcommand runs among them, which the text does not show, and no git call is owed
-  a trace in a hub, so one that lies in a guarded hub refuses every `Bash`, `PowerShell`, and `Monitor` command,
-  whatever it holds; one the guard cannot place, or a configuration git cannot read, refuses every command while a hub
-  is guarded and is otherwise noted. The guard reads the configuration as it stands when the command starts, so while a
-  hub is guarded it also refuses a command that writes a file git reads its system or global configuration from, by a
-  redirection or by a git call's words, as `git config --file <file>` writes, though not one a program or a cmdlet
-  writes (see [What it does not see](#what-it-does-not-see)): each file `git var GIT_CONFIG_SYSTEM` and `git var
-  GIT_CONFIG_GLOBAL` name, whether or not it exists, every file the listing of those scopes names as an origin, and
-  every file an `include.path` or `includeIf.<condition>.path` in them names, a leading `~/` read from the home and a
-  relative path from the including file's directory (`configuration_files`); where git cannot name them, or the guard
-  cannot place one, it refuses every file a command writes while a hub is guarded. The store `GIT_OBJECT_DIRECTORY`
-  names, where git writes objects, and the common directory `GIT_COMMON_DIR` names, where it writes objects,
-  configuration, and shared refs, are refused for every git call and every `gh` checkout when a guarded hub holds them,
-  unless each is the call's own, the one `git rev-parse` answers for the call's repository without the variable, as a
-  worktree's is the hub's, which git writes for it anyway. A call that acts on a guarded hub runs only with the hub's
-  own index and store and the hub's own view of its objects: given any `GIT_INDEX_FILE`, a store or common directory
-  other than the hub's own, or any of the variables `OBJECT_VIEW_VARIABLES` names (`GIT_ALTERNATE_OBJECT_DIRECTORIES`,
-  `GIT_SHALLOW_FILE`, `GIT_GRAFT_FILE`, and `GIT_REPLACE_REF_BASE`), each set even to an empty value, it is refused,
-  since a fast-forward then moves the hub's `HEAD` and tree while the new tree goes into the other index, leaving the
-  hub's own out of step, or moves its refs to objects its store lacks. A call whose repository is one of a guarded hub's
-  linked worktrees writes the refs the hub's store holds, its branch and the remote-tracking refs among them, so it too
-  is refused given a store or common directory other than its own or any of those variables, though not given an index,
-  which is its own to write: a commit there would move the branch to a commit only the other store holds, a fetch the
-  remote-tracking refs to objects only the alternates hold, and a `gc` may prune objects the hub's refs still need. A
-  store a relative path names is read from wherever git works, so it is not settled. Each path is read with every
-  symbolic link followed. A place the guard cannot settle is refused while a hub is guarded and otherwise noted.
+  trace2 never reads a repository's own configuration or the command line's. A relative path any of those variables
+  holds (`CONFIGURATION_LOCATIONS`) is read by each git from wherever it starts, so it is a target the guard cannot
+  place. Such a file reaches every git a command starts, the git a program or a `gh` subcommand runs among them, which
+  the text does not show, and no git call is owed a trace in a hub, so one that lies in a guarded hub refuses every
+  `Bash`, `PowerShell`, and `Monitor` command, whatever it holds; one the guard cannot place, or a configuration git
+  cannot read, refuses every command while a hub is guarded and is otherwise noted. The guard reads the configuration as
+  it stands when the command starts, so while a hub is guarded it also refuses a command that writes a file git reads
+  its system or global configuration from, by a redirection or by a git call's words, as `git config --file <file>`
+  writes, though not one a program or a cmdlet writes (see [What it does not see](#what-it-does-not-see)): each file
+  `git var GIT_CONFIG_SYSTEM` and `git var GIT_CONFIG_GLOBAL` name, whether or not it exists, every file the listing of
+  those scopes names as an origin, and every file an `include.path` or `includeIf.<condition>.path` in them names, a
+  leading `~/` read from the home and a relative path from the including file's directory, while a `~user/` or
+  `%(prefix)/` path, which git expands for itself, is one the guard cannot place (`configuration_files`); where git
+  cannot name them, or the guard cannot place one, it refuses every file a command writes while a hub is guarded. The
+  store `GIT_OBJECT_DIRECTORY` names, where git writes objects, and the common directory `GIT_COMMON_DIR` names, where
+  it writes objects, configuration, and shared refs, are refused for every git call and every `gh` checkout when a
+  guarded hub holds them, unless each is the call's own, the one `git rev-parse` answers for the call's repository
+  without the variable, as a worktree's is the hub's, which git writes for it anyway. A call that acts on a guarded hub
+  runs only with the hub's own index and store and the hub's own view of its objects: given any `GIT_INDEX_FILE`, a
+  store or common directory other than the hub's own, or any of the variables `OBJECT_VIEW_VARIABLES` names
+  (`GIT_ALTERNATE_OBJECT_DIRECTORIES`, `GIT_SHALLOW_FILE`, `GIT_GRAFT_FILE`, and `GIT_REPLACE_REF_BASE`), each set even
+  to an empty value, it is refused, since a fast-forward then moves the hub's `HEAD` and tree while the new tree goes
+  into the other index, leaving the hub's own out of step, or moves its refs to objects its store lacks. A call whose
+  repository is one of a guarded hub's linked worktrees writes the refs the hub's store holds, its branch and the
+  remote-tracking refs among them, so it too is refused given a store or common directory other than its own or any of
+  those variables, though not given an index, which is its own to write: a commit there would move the branch to a
+  commit only the other store holds, a fetch the remote-tracking refs to objects only the alternates hold, and a `gc`
+  may prune objects the hub's refs still need. A store a relative path names is read from wherever git works, so it is
+  not settled. Each path is read with every symbolic link followed. A place the guard cannot settle is refused while a
+  hub is guarded and otherwise noted.
 - **What a git call's words write or run.** Wherever git runs, a file it writes at a path its words name is judged
   as a redirection's target is, a relative path read from where git starts. The options that name such a file are
   `--output`, which every subcommand that reads git's diff or revision options takes, and those

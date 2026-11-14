@@ -429,6 +429,8 @@ TRACE2_SETTINGS = {
 TRACE2_SCOPES = frozenset({"system", "global"})
 # The settings that name a further configuration file git reads, by their name as git lists it (section and name in
 # lower case, a condition as written).
+# The variables that locate the system and global configuration files, each read as a path git opens.
+CONFIGURATION_LOCATIONS = ("GIT_CONFIG_SYSTEM", "GIT_CONFIG_GLOBAL", "HOME", "XDG_CONFIG_HOME")
 INCLUDE_SETTING = re.compile(r"include\.path|includeif\..+\.path", re.DOTALL)
 # git for Windows sends its output to the file these name, read from where it starts (compat/mingw.c), but for the
 # values that name none; each is judged on every platform, since one git may be either build.
@@ -2683,6 +2685,8 @@ class WrittenTarget:
     named: str
     remedy: str
     path: Path | None
+    # Why a target the guard cannot place may lie in a guarded hub, as a refusal says it.
+    unplaced: str = "a file git writes that the guard cannot place, which may lie in a guarded hub"
 
 
 def placed_file(value: str) -> Path | None:
@@ -2714,18 +2718,32 @@ def written_targets(variables: Mapping[str, str]) -> list[WrittenTarget]:
 def configured_trace_targets(variables: Mapping[str, str]) -> list[WrittenTarget]:
     """The files the system and global git configuration name for trace2 to write to (TRACE2_SETTINGS), as git reads
     them with the session's environment, include.path followed, but for a target whose variable holds a value, which
-    outranks the setting. The guard's own git runs with every trace off, so this lookup writes no trace either.
+    outranks the setting. The guard's own git runs with every trace off, so this lookup writes no trace either. A
+    relative path a CONFIGURATION_LOCATIONS variable holds is a target the guard cannot place.
 
     Raises GitError where git cannot read the configuration."""
     overridden = {variable for variable in TRACE2_SETTINGS.values() if variables.get(variable)}
     if len(overridden) == len(TRACE2_SETTINGS):
         return []
+    # A relative path among the variables that locate the system and global configuration is read from wherever each
+    # git starts, never from the guard's own directory, so the targets the files there name cannot be placed.
+    targets = [
+        WrittenTarget(
+            name,
+            f"The session's environment holds {name}={variables[name]}",
+            INHERITED_IT.format(name=name),
+            None,
+            "a relative path each git reads its configuration through from wherever it starts, which may name a "
+            "trace2 target in a guarded hub",
+        )
+        for name in CONFIGURATION_LOCATIONS
+        if variables.get(name) and placed_file(variables[name]) is None
+    ]
     pattern = "^(" + "|".join(re.escape(setting) for setting in TRACE2_SETTINGS) + ")$"
     arguments = ["config", "--includes", "--show-scope", "--null", "--get-regexp", pattern]
     # Exit 1 with nothing on stderr is git finding no such setting.
     output = CLIENT.quiet_output(arguments, directory=Path(__file__).resolve().parent, timeout=lookup_timeout())
     fields = (output or "").split("\0")
-    targets: list[WrittenTarget] = []
     # Each setting is its scope, then its name and value on two lines, each ended by a NUL.
     for scope, entry in zip(fields[0::2], fields[1::2], strict=False):
         setting, has_value, value = entry.partition("\n")
@@ -2743,9 +2761,11 @@ def configured_trace_targets(variables: Mapping[str, str]) -> list[WrittenTarget
 def included_file(value: str, source: Path | None, start: Path | None) -> Path | None:
     """The file an include.path or includeIf.<condition>.path setting names, as git reads it: a leading ~/ from the
     home start names, a relative path from the directory of the file source holding it; None where the guard cannot
-    place it."""
+    place it, as a ~user/ path or a %(prefix)/ path, which git expands for itself (interpolate_path)."""
     if value.startswith(("~/", "~\\")):
         return None if start is None else Path(os.path.realpath(start / value[2:]))
+    if value.startswith(("~", "%(")):
+        return None
     path = Path(platform_support.from_shell_path(value))
     if path.is_absolute():
         return Path(os.path.realpath(path))
@@ -2918,9 +2938,9 @@ class Judge:
             if target.path is None:
                 if self.hubs:
                     return (
-                        f"{target.named}, a file git writes that the guard cannot place, which may lie in a guarded "
-                        "hub, and every git a command starts, a program's own included, would write there, so every "
-                        f"command is refused while a hub is guarded. {target.remedy}"
+                        f"{target.named}, {target.unplaced}, and every git a command starts, a program's own "
+                        f"included, would write there, so every command is refused while a hub is guarded. "
+                        f"{target.remedy}"
                     )
                 self.notes.append(f"could not tell where {target.source} has git write")
             elif hub_protected(target.path):

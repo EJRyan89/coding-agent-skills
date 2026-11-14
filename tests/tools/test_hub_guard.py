@@ -2363,6 +2363,49 @@ class CommandGuardTests(GuardTestCase):
                 self.assertEqual(Path(os.path.realpath(expected)), hub_guard.included_file(value, source, home))
         self.assertIsNone(hub_guard.included_file("~/included", source, None))
         self.assertIsNone(hub_guard.included_file("relative", None, home))
+        # git expands a ~user/ path and a %(prefix)/ path itself (interpolate_path), so the guard cannot place them.
+        for value in ("~nobody/included", "%(prefix)/etc/included"):
+            with self.subTest(value=value):
+                self.assertIsNone(hub_guard.included_file(value, source, home))
+        for value in ("~nobody/inc.gitconfig", "%(prefix)/etc/inc.gitconfig"):
+            configured = self.global_configuration({}, name="interpolated.gitconfig")
+            with configured.open("a", encoding="utf-8") as stream:
+                stream.write(f'[include]\n\tpath = "{value}"\n')
+            environment = {**self.environment, "GIT_CONFIG_GLOBAL": str(configured)}
+            with self.subTest(value=value, written=True):
+                notes = self.root / "notes.txt"
+                self.assertEqual("deny", self.bash(f'printf x >> "{notes}" && git status', self.tree, environment))
+                self.assertIn("cannot place a file git reads its system or global configuration from", self.reason)
+
+    def test_a_relative_location_of_the_configuration_is_a_trace2_target_the_guard_cannot_place(self) -> None:
+        # git reads a relative GIT_CONFIG_GLOBAL, GIT_CONFIG_SYSTEM, HOME, or XDG_CONFIG_HOME from wherever each git
+        # starts, never from where the guard asks, so a trace2 target the file there names cannot be placed.
+        readme = self.hub / "README.md"
+        (self.tree / "rel.gitconfig").write_text(f"[trace2]\n\teventTarget = {readme.as_posix()}\n", encoding="utf-8")
+        for name in hub_guard.CONFIGURATION_LOCATIONS:
+            environment = {**self.environment, name: "rel.gitconfig"}
+            for shell in (self.bash, self.powershell):
+                with self.subTest(name=name, shell=shell.__name__):
+                    self.assertEqual("deny", shell("git status", self.tree, environment))
+                    self.assertIn(f"holds {name}=rel.gitconfig, a relative path each git reads", self.reason)
+                    self.assertIn(f"without {name}", self.reason)
+        # With no hub in view it is noted.
+        outside = self.root / "outside"
+        outside.mkdir()
+        unshared = {key: value for key, value in self.environment.items() if key != "CLAUDE_PROJECT_DIR"}
+        self.assertIsNone(self.bash("ls", outside, {**unshared, "GIT_CONFIG_GLOBAL": "rel.gitconfig"}))
+        self.assertIn("could not tell where GIT_CONFIG_GLOBAL has git write", self.stderr)
+        # Real git: the relative file in the worktree is the one a git started there reads, and its target is written.
+        before = readme.read_bytes()
+        subprocess.run(
+            ["git", "status"],
+            cwd=self.tree,
+            env={**self.environment, "GIT_CONFIG_GLOBAL": "rel.gitconfig"},
+            capture_output=True,
+            check=True,
+        )
+        self.assertNotEqual(before, readme.read_bytes())
+        self.git(self.hub, "checkout", "--", "README.md")
 
     def test_an_assignment_to_a_name_git_reads_for_a_file_or_a_program_is_refused(self) -> None:
         # XDG_CONFIG_HOME chooses the global configuration a program's git, or gh's, reads, a trace2 target in it
@@ -2395,7 +2438,12 @@ class CommandGuardTests(GuardTestCase):
             self.assertIsNone(self.bash("ls", outside, unshared))
             self.assertIn("could not read the trace2 targets the git configuration names", self.stderr)
         # A configured target the guard cannot place is refused the same way.
-        with mock.patch.object(hub_guard, "placed_file", return_value=None):
+        placed = hub_guard.placed_file
+
+        def unplaced_trace(value: str) -> Path | None:
+            return None if value.endswith("trace.json") else placed(value)
+
+        with mock.patch.object(hub_guard, "placed_file", side_effect=unplaced_trace):
             configured = self.global_configuration({"eventTarget": self.root / "trace.json"})
             environment = {**self.environment, "GIT_CONFIG_GLOBAL": str(configured)}
             self.assertEqual("deny", self.bash("ls", self.tree, environment))
