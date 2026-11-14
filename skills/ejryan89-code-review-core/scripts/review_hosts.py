@@ -26,8 +26,11 @@ import file_presence
 import versions
 from bounded_process import run_bounded, without_repository_variables
 from executable_locator import find_executables, find_program
+from flat_text import flat_text
+from git_client import GitClient, GitError
 from job_tree import JobRefused, process_tree
 from path_containment import within
+from path_keys import name_key
 from process_identity import ProcessStatus, read_pid
 from review_config import REVIEWER_EFFORTS
 from review_io import (
@@ -86,8 +89,14 @@ COPILOT_VARIABLE_PREFIXES = ("COPILOT_", "GITHUB_COPILOT_")
 # since the host isolates configuration, not credentials (docs/copilot-support.md).
 COPILOT_KEPT_VARIABLES = frozenset({"COPILOT_GITHUB_TOKEN", "COPILOT_GH_HOST"})
 # The isolated Copilot home's user settings: Copilot ignores every allow-all option, which the host never passes, so
-# nothing else in the host's environment or command can lift its tool and path rules either.
+# nothing else in the host's environment or command can lift its tool and path rules either. `copilot_settings` adds
+# the skill folders it excludes.
 COPILOT_SETTINGS = {"permissions": {"disableBypassPermissionsMode": "disable"}}
+# The folders at the top of a directory added with --add-dir that Copilot CLI loads as trusted configuration: skills
+# from `.github/skills/`, `.agents/skills/`, and `.claude/skills/`, and agents from `.github/agents/` and
+# `.claude/agents/` (its command reference, "Skill locations" and "Custom agent locations"). The host refuses an added
+# root that holds any of them, as its file system compares names.
+COPILOT_CONFIGURATION_FOLDERS = frozenset({".github", ".agents", ".claude"})
 
 
 class HostSuperseded(RuntimeContractError):
@@ -299,14 +308,17 @@ def parse_copilot_version(output: str) -> versions.Version:
 def isolated_copilot_environment(
     isolation_root: Path,
     base_environment: Mapping[str, str] | None = None,
+    *,
+    added_roots: Sequence[Path],
 ) -> tuple[Path, dict[str, str]]:
     """Make the isolation root's home, Copilot home, Copilot cache, and workspace, write the Copilot home's settings,
-    and return the workspace and Copilot CLI's environment: `base_environment`, or this process's, without git's
-    repository-selecting variables, so neither Copilot nor a git it runs reads the repository a shell's `GIT_DIR`
-    names, and without any of Copilot's own variables but COPILOT_KEPT_VARIABLES, so no permission, model, or folder
-    the caller set for their own sessions reaches a host that reads pull request content. Both homes and the cache are
-    in the isolation root, and Copilot's auto-update is off, so the Copilot CLI whose version the host checks is the
-    one that reviews, not a newer package it has downloaded."""
+    which exclude every skill in or below `added_roots`, the directories the command adds, and return the workspace
+    and Copilot CLI's environment: `base_environment`, or this process's, without git's repository-selecting
+    variables, so neither Copilot nor a git it runs reads the repository a shell's `GIT_DIR` names, and without any of
+    Copilot's own variables but COPILOT_KEPT_VARIABLES, so no permission, model, or folder the caller set for their own
+    sessions reaches a host that reads pull request content. Both homes and the cache are in the isolation root, and
+    Copilot's auto-update is off, so the Copilot CLI whose version the host checks is the one that reviews, not a newer
+    package it has downloaded. The workspace is made a git repository of its own (`bounded_workspace`)."""
     if not isolation_root.is_absolute():
         raise RuntimeContractError("Copilot isolation root must be absolute")
     # A root whose stat fails raises, never reads as no root and so as empty.
@@ -322,7 +334,8 @@ def isolated_copilot_environment(
     workspace = isolation_root / "workspace"
     for directory in (home, copilot_home, copilot_cache, workspace):
         directory.mkdir(parents=True, exist_ok=True)
-    atomic_write_json(copilot_home / "settings.json", COPILOT_SETTINGS)
+    bounded_workspace(workspace)
+    atomic_write_json(copilot_home / "settings.json", copilot_settings(added_roots))
     environment = {
         name: value
         for name, value in without_repository_variables(
@@ -336,6 +349,50 @@ def isolated_copilot_environment(
     environment["COPILOT_CACHE_HOME"] = str(copilot_cache)
     environment["COPILOT_AUTO_UPDATE"] = "false"
     return workspace, environment
+
+
+def copilot_settings(added_roots: Sequence[Path]) -> dict[str, Any]:
+    """The isolated Copilot home's settings: COPILOT_SETTINGS, and `ignoredSkillsLocations` naming each added root as
+    the command spells it and as it resolves, so Copilot CLI discovers no skill in or below one. It matches a location
+    by its text, in the case it is written, so the host names the spelling it passes as well as the one a link
+    resolves to. No setting excludes an added root's agents, which `require_no_added_configuration` refuses."""
+    ignored: list[str] = []
+    for root in added_roots:
+        for spelling in (str(root), str(root.resolve(strict=True))):
+            if spelling not in ignored:
+                ignored.append(spelling)
+    return {**COPILOT_SETTINGS, "ignoredSkillsLocations": ignored}
+
+
+def bounded_workspace(workspace: Path) -> None:
+    """Make the empty workspace a git repository, so Copilot CLI's search for project skills and agents ends there.
+
+    Copilot CLI reads project skills in `.github/skills/` and project agents in `.github/agents/` and `.claude/agents/`
+    from its working directory up to the git root; with no git root it reads every folder above the working directory,
+    where the run directory's parents, the system's shared temporary directory on Linux among them, are not the
+    host's. Nothing in the host commits there, so a hook the user's own git templates copy in never runs."""
+    try:
+        result = GitClient().run(["init", "--quiet"], directory=workspace)
+    except GitError as exc:
+        raise RuntimeContractError(f"The Copilot workspace could not be made a git repository: {exc}") from exc
+    if result.returncode != 0:
+        detail = flat_text(result.stderr) or f"git init exited {result.returncode}"
+        raise RuntimeContractError(f"The Copilot workspace could not be made a git repository: {detail}")
+
+
+def require_no_added_configuration(root: Path, label: str) -> None:
+    """Refuse an added root whose top holds a folder of COPILOT_CONFIGURATION_FOLDERS, by the name its file system
+    compares, or that cannot be listed: Copilot CLI would load the skills and agents in it as trusted configuration."""
+    try:
+        names = sorted(entry.name for entry in root.iterdir())
+    except OSError as exc:
+        raise RuntimeContractError(f"Copilot {label} {root} cannot be listed: {exc.strerror or exc}") from exc
+    found = [name for name in names if name_key(name, root) in COPILOT_CONFIGURATION_FOLDERS]
+    if found:
+        raise RuntimeContractError(
+            f"Copilot {label} {root} holds {', '.join(found)}, whose skills and agents Copilot CLI would load from an "
+            "added directory as trusted configuration"
+        )
 
 
 def copilot_variable(name: str) -> bool:
@@ -390,6 +447,13 @@ def materialized_reviewer_entrypoint(materialized_root: Path) -> Path:
     return materialized_root.joinpath(*relative.parts).resolve(strict=True)
 
 
+def copilot_added_roots(run_directory: Path) -> list[Path]:
+    """The directories the review command adds with --add-dir, which the isolated settings exclude skills from: the
+    run directory alone, which holds the materialized reviewer, the source snapshot, the diff, and the staging
+    result."""
+    return [run_directory]
+
+
 def copilot_local_session(version: tuple[int, ...]) -> list[str]:
     """The flags that keep a Copilot CLI session of `version` local: not exported to the account's history on GitHub
     web and mobile, and not controlled from there. Before COPILOT_SYNC_SESSION_VERSION, --no-remote-export turns off
@@ -416,7 +480,13 @@ def copilot_command(
     """The Copilot CLI command that reviews one run on the Copilot CLI `version` names, at `effort` when one is given,
     else at the session's default. It names no --model, since a reviewer profile names a Claude alias, so the review
     runs on the model Copilot chooses for a prompt-mode run: its default, or the model Auto selection picks on an
-    account where Auto is managed, which prompt mode honors for piped stdin (docs/copilot-support.md)."""
+    account where Auto is managed, which prompt mode honors for piped stdin (docs/copilot-support.md).
+
+    It adds one directory, the run directory, which `copilot_added_roots` names: Copilot CLI loads the skills and
+    agents at the top of an added directory as trusted configuration, and a materialized review skill keeps its
+    repository paths, such as `.claude/skills/` and `.claude/agents/`, so the materialized root, which must be below
+    the run directory, is read through it and never added itself. A run directory whose top holds such a folder is
+    refused (`require_no_added_configuration`)."""
     negotiate_capabilities("copilot-cli", ["isolated-added-root", "read-diff", "write-result"])
     if effort is not None and effort not in REVIEWER_EFFORTS:
         raise RuntimeContractError(f"Copilot reasoning effort must be one of {', '.join(sorted(REVIEWER_EFFORTS))}")
@@ -428,16 +498,20 @@ def copilot_command(
     if not result_path.is_absolute():
         raise RuntimeContractError("Copilot result path must be absolute")
     run_directory_resolved = run_directory.resolve(strict=True)
+    if not within(materialized_root.resolve(strict=True), run_directory_resolved, strict=True):
+        raise RuntimeContractError("Copilot materialized root must be inside the run directory")
     result_path_resolved = result_path.resolve(strict=False)
     if not within(result_path_resolved, run_directory_resolved):
         raise RuntimeContractError("Copilot result path must be inside the run directory")
+    added = copilot_added_roots(run_directory)
+    for root in added:
+        require_no_added_configuration(root, "run directory")
     # No prompt argument: the prompt, which carries review-comment bodies, prior findings, and diff paths, goes on
     # stdin, which Copilot CLI reads as its prompt in non-interactive mode when no -p is given. A command line holds
     # none of that text, so no program's parsing of one can turn it into a command.
     return [
         executable,
-        f"--add-dir={run_directory}",
-        f"--add-dir={materialized_root}",
+        *(f"--add-dir={root}" for root in added),
         "--no-custom-instructions",
         "--no-ask-user",
         *copilot_local_session(version),
@@ -491,7 +565,9 @@ def run_copilot(
     )
     request = _read_copilot_request(request_path)
     source_resolved = _verified_copilot_source(run_directory, request, snapshot_stamp)
-    execution_directory, environment = isolated_copilot_environment(isolation_root, base_environment)
+    execution_directory, environment = isolated_copilot_environment(
+        isolation_root, base_environment, added_roots=copilot_added_roots(run_directory)
+    )
     executable = executable or find_copilot()
     version = _copilot_version(runner, executable, execution_directory, environment, diagnostic_path)
     prompt = _copilot_prompt(

@@ -3606,8 +3606,9 @@ class CopilotHostTests(PipelineFixture):
         self.assertEqual([], list(self.run_directory.glob("result.json*")))
 
     def test_a_detached_host_runs_and_reports_through_wait(self) -> None:
-        # The real start: a separate Python process runs the host command. Copilot is kept off its PATH, so the
-        # host fails at once with a reason wait reports; nothing here calls a model.
+        # The real start: a separate Python process runs the host command. Copilot and git are kept off its PATH, so
+        # the host fails at once, making the workspace it would start Copilot in, with a reason wait reports; nothing
+        # here calls a model.
         empty = self.root / "no copilot"
         empty.mkdir()
         with mock.patch.dict(os.environ, {"PATH": str(Path(sys.executable).parent), "LOCALAPPDATA": str(empty)}):
@@ -3618,7 +3619,12 @@ class CopilotHostTests(PipelineFixture):
             pid = self.claim()["pid"]
             self.addCleanup(self.until_ended, pid)  # it holds its log open until it exits
             self.assertEqual(
-                (1, "FAILED fixture-copilot: GitHub Copilot CLI is not available\n", ""),
+                (
+                    1,
+                    "FAILED fixture-copilot: The Copilot workspace could not be made a git repository: "
+                    "Git executable 'git' was not found; install Git first\n",
+                    "",
+                ),
                 self.run_main("wait", "--run", self.run_path, "--timeout", "60"),
             )
         self.assertIsInstance(self.claim()["start_time"], int)
