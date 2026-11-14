@@ -1004,8 +1004,9 @@ removed fails validation until its pattern follows it.
   own step in one exact form instead of refusing set +e and its variants; `git_client:local_failure`, which reads a fault that names
   a path inside the local git directory or reports a failed write by its structure rather than by its wording,
   keeping a short marker list only for the faults git reports with no path; `file_presence:_pattern_parts`, which
-  accepts a glob pattern only when POSIX and Windows path rules both read in it exactly the parts a forward slash
-  separates and no anchor, rather than refusing a list of absolute spellings.
+  accepts a glob pattern only when Windows path rules read in it exactly the parts a forward slash separates and
+  each part is one name in its folder, with `file_presence:_is_one_name`, rather than refusing a list of absolute
+  spellings.
 - **Guard:**
   `tests/validation/test_workflows.py::DeployableBashFixtures::test_each_job_checks_its_bash_in_one_exact_step_and_the_macos_job_installs_homebrews`,
   `skills/ejryan89-skill-core/scripts/test_file_presence.py::MatchingTests::test_a_pattern_one_platform_reads_as_more_than_names_below_the_folder_is_refused_on_every_platform`,

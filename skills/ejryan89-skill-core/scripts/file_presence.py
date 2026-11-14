@@ -36,11 +36,14 @@ import fnmatch
 import os
 import stat
 from collections.abc import Callable
-from pathlib import Path, PurePosixPath, PureWindowsPath
+from pathlib import Path, PureWindowsPath
+
+from device_names import is_reserved_device_name
 
 PLATFORM_ALLOWED = {
-    "pathlib.PureWindowsPath": "refuses a glob pattern Windows reads as naming a drive, a root, or a network share, on "
-    "every platform, so a pattern means the same names below its folder on each"
+    "pathlib.PureWindowsPath": "refuses a glob pattern Windows reads as more than names a forward slash separates, "
+    "a root or a network share among them, on every platform, so a pattern means the same names below its folder on "
+    "each"
 }
 
 # The errors a stat raises when nothing is at the path: the path or a folder above it is missing, or a folder above
@@ -203,22 +206,24 @@ def matching(folder: Path, pattern: str, *, skip: Callable[[Path], bool] = _neve
 
 def _pattern_parts(pattern: str) -> tuple[str, ...]:
     """The parts of a glob pattern `matching` reads, split on `/`, or ValueError for any other pattern. It accepts one
-    form, rather than refusing the spellings found so far: a pattern in which Windows path rules read no anchor, so
-    no drive, root, or network share, and whose `/`-separated parts are exactly the parts both POSIX and Windows path
-    rules read in it, so no part is empty or `.` or holds a backslash, and the pattern means the same names below its
-    folder on every platform. Of those parts, none is `..`, which climbs out of the folder, and the last is not `**`,
-    whose matches differ between Python versions."""
+    form, rather than refusing the spellings found so far: Windows path rules, which read either separator, read in the
+    pattern exactly the parts a forward slash separates, so no part is empty or `.` or holds a backslash, and no root
+    or network share is read; and each part is a name Windows reads as one name in its folder, as `_is_one_name`
+    holds, so no drive or file stream is read, on any Python version, and no part is `..`, which climbs out of the
+    folder. The last part is not `**`, whose matches differ between Python versions. Such a pattern names the same
+    names below its folder on every platform, apart from the short alias Windows may also answer to for a long name,
+    such as `PROGRA~1`, which no form shows."""
     parts = tuple(pattern.split("/"))
-    windows = PureWindowsPath(pattern)
-    if (
-        windows.anchor
-        or windows.parts != parts
-        or PurePosixPath(pattern).parts != parts
-        or ".." in parts
-        or parts[-1] == "**"
-    ):
+    if PureWindowsPath(pattern).parts != parts or not all(map(_is_one_name, parts)) or parts[-1] == "**":
         raise ValueError(f"{pattern!r} is no relative glob pattern this reads")
     return parts
+
+
+def _is_one_name(part: str) -> bool:
+    """Whether Windows reads a pattern's part as one name in its folder: it holds no colon, which ends a drive or opens
+    a stream of a file, and no NUL, which no name holds; it ends in no dot or space, which Windows drops, so it is
+    neither `.` nor `..`; and it is no device name, which Windows opens in every folder."""
+    return ":" not in part and "\0" not in part and not part.endswith((".", " ")) and not is_reserved_device_name(part)
 
 
 def _entries(folder: Path) -> list[os.DirEntry[str]]:

@@ -560,6 +560,34 @@ class MatchingTests(unittest.TestCase):
                 ):
                     matching(folder, pattern)
 
+    def test_a_part_windows_reads_as_other_than_one_name_in_its_folder_is_refused_on_every_python(self) -> None:
+        # A drive before a character other than an ASCII letter, which pathlib reads as a drive from Python 3.12 on
+        # and as a name before; a stream of a file; a NUL; a trailing dot or space, which Windows drops; and a device
+        # name, alone or before an extension, in any part. Each is refused on every platform and Python version.
+        for pattern in (
+            "1:x",
+            "_:x",
+            "*:x",
+            "a.txt:s",
+            "sub/ab:stream",
+            "a\0b",
+            "foo.",
+            "sub/foo ",
+            "*.",
+            "CON",
+            "sub/nul.txt",
+            "Com1.py",
+        ):
+            with self.subTest(pattern=pattern), self.assertRaises(ValueError):
+                matching(self.root, pattern)
+
+    def test_a_name_that_only_holds_a_device_name_or_a_dot_is_read(self) -> None:
+        # A device name is the whole stem, so a name that holds one, or a dot that does not end it, is a name.
+        for name in ("console.py", "nul_x.txt", "a.b.c", ".hidden"):
+            (self.root / name).write_text("", encoding="utf-8")
+            with self.subTest(name=name):
+                self.assertEqual([self.root / name], matching(self.root, name))
+
     def test_below_a_link_to_nothing_nothing_is_listed_and_a_pattern_it_cannot_read_is_still_refused(self) -> None:
         # The stat a link to nothing gives on every platform, Windows included, as in FilePresenceTests.
         link = os.stat_result((0o120777, 0, 0, 1, 0, 0, 0, 0, 0, 0))
