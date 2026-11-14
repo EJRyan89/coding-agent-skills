@@ -2139,6 +2139,13 @@ LOCAL_FAILURES = {
     "access '.git/config': Permission denied\n",
     "unreadable global config": "warning: unable to access '/home/u/.gitconfig': Permission denied\nfatal: unknown "
     "error occurred while reading the configuration files\n",
+    # write_or_die's line for a received pack names no path, whatever the file system answered.
+    "pack write, ENOSPC": "fatal: write error: No space left on device\nfatal: fetch-pack: invalid index-pack output\n",
+    "pack write, EDQUOT": "fatal: write error: Disk quota exceeded\nfatal: fetch-pack: invalid index-pack output\n",
+    "pack write, EROFS": "fatal: write error: Read-only file system\nfatal: fetch-pack: invalid index-pack output\n",
+    "pack write, EIO": "fatal: write error: Input/output error\nfatal: fetch-pack: invalid index-pack output\n",
+    "pack write, another reason": "fatal: write error: File too large\nfatal: fetch-pack: invalid index-pack output\n",
+    "a temporary file with no path": "error: unable to create temporary file: Too many open files\n",
 }
 # The remote's failures, which name nothing of the local repository, among them a remote's own lock on its line.
 REMOTE_FAILURES = {
@@ -2165,6 +2172,11 @@ REMOTE_FAILURES = {
     "example.invalid\n",
     "an HTTP remote that refuses the connection": "fatal: unable to access 'https://127.0.0.1:9/x.git/': Failed to "
     "connect to 127.0.0.1 port 9 after 0 ms: Couldn't connect to server\n",
+    # A write to the remote names the remote or the connection fault.
+    "a write to the remote": "fatal: unable to write to remote: Broken pipe\n",
+    "a write the connection cut": "fatal: write error: Connection reset by peer\n",
+    "a write error beside a remote verdict": "fatal: write error: Disk quota exceeded\nfatal: Could not read from "
+    "remote repository.\n",
     "a missing repository at a URL holding .git/": "remote: Repository not found.\nfatal: repository "
     "'https://example.invalid/r/.git/' not found\n",
 }
