@@ -114,11 +114,11 @@ artifacts rather than authority sources.
 
 ## Git repository check is CLI-only
 
-The CLI checks `args.root / ".git"` exists (not equivalent to `git rev-parse --show-toplevel`). The `audit()` library function does not enforce repository identity.
+The CLI checks that something is at `args.root / ".git"`, through ejryan89-skill-core's `file_presence.is_occupied` (not equivalent to `git rev-parse --show-toplevel`), and refuses a root whose `.git` cannot be examined. The `audit()` library function does not enforce repository identity.
 
 ## Read-only contract
 
-The audit engine is verified read-only: no writes, no execution, no modifications, no subprocess, no tempfile, no network access. All file access uses `read_text()`, `exists()`, `is_file()`, `is_dir()`, `resolve()`, `iterdir()`, `glob()`, `rglob()`, `os.walk()`, ejryan89-skill-core's `json_reader.loads()`, and `tomllib.load()` on a file opened in read-binary mode.
+The audit engine is verified read-only: no writes, no execution, no modifications, no subprocess, no tempfile, no network access. It reads files with `read_bytes()` and `read_text()`, and examines paths with `stat()`, `iterdir()`, and `resolve()` and through ejryan89-skill-core's `file_presence`, `link_probe`, `folder_walk`, whose walk lists folders with `os.scandir()`, and `path_keys`, which asks a folder how its file system compares names, for `agent_skills.is_skill_file` and `path_containment.within`. It parses what it reads with `tomllib.loads()` and ejryan89-skill-core's `json_reader.loads()`, `python_reader`, `frontmatter`, and `check_provenance`.
 
 ## Behavioral checks are heuristics
 

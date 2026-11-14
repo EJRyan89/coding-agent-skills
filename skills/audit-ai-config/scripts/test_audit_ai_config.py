@@ -28,6 +28,7 @@ import check_provenance
 import folder_walk
 import link_probe
 import markdown_literal
+import path_keys
 import pytest
 from folder_walk import SKIPPED_FOLDERS
 
@@ -1697,6 +1698,74 @@ class CopilotConfigurationTests(unittest.TestCase):
                 found = audit.check_copilot_configuration(self.root, {})
                 self.assertEqual(expected, [f.message for f in found if f.check == "claude-skill"])
 
+    def test_a_skill_md_in_another_case_is_audited_only_where_its_folder_folds_case(self) -> None:
+        # A runtime opens SKILL.md, which is this file where the folder folds case: its broken frontmatter was never
+        # reported, since the walk matched SKILL.md by its exact spelling.
+        for skill_dir in (".github/skills", ".claude/skills", ".agents/skills"):
+            folder = self.root / skill_dir / "alpha"
+            _write_fixture(self.root, {f"{skill_dir}/alpha/skill.md": "---\nname: alpha\ndescription: 'open\n---\n"})
+            for folds in (True, False):
+                with self.subTest(skill_dir=skill_dir, folds=folds):
+                    with mock.patch.dict(path_keys._FOLDS_CASE, {str(folder): folds}):
+                        found = audit.check_copilot_configuration(self.root, {})
+                    paths = {f.path for f in found if f.severity == "ERROR"}
+                    self.assertEqual(folds, f"{skill_dir}/alpha/skill.md" in paths, paths)
+            (folder / "skill.md").unlink()
+
+    def test_a_skill_md_below_a_skill_s_folder_in_another_case_is_never_audited(self) -> None:
+        # A runtime opens a skill's SKILL.md in the skill's own folder; a lowercase skill.md deeper, such as a
+        # template, is no skill's main file in any folder, so it draws no finding where its folder folds case either.
+        alpha = self.root / ".claude/skills/alpha"
+        _write_fixture(
+            self.root,
+            {
+                ".claude/skills/alpha/SKILL.md": "---\nname: alpha\ndescription: Does a thing.\n---\n",
+                ".claude/skills/alpha/templates/skill.md": "# A template\n",
+            },
+        )
+        folds = {str(alpha): True, str(alpha / "templates"): True}
+        with mock.patch.dict(path_keys._FOLDS_CASE, folds):
+            found = audit.check_copilot_configuration(self.root, {})
+        self.assertEqual([], [(f.path, f.message) for f in found if "alpha" in (f.path or "")])
+
+    @unittest.skipIf(sys.platform == "win32", "Windows makes a file symbolic link only with a privilege tests lack")
+    def test_a_link_out_spelled_as_no_runtime_opens_it_draws_no_finding(self) -> None:
+        # Where the folder keeps case, Skill.md is a file no runtime opens as the skill's, so its link out of the
+        # repository is not the audit's to report; where the folder folds case it is the skill's file.
+        alpha = self.root / ".claude/skills/alpha"
+        alpha.mkdir(parents=True)
+        with tempfile.TemporaryDirectory() as outside:
+            target = Path(outside) / "Skill.md"
+            target.write_text("---\nname: alpha\ndescription: Elsewhere.\n---\n", encoding="utf-8")
+            (alpha / "Skill.md").symlink_to(target)
+            for folds in (False, True):
+                with self.subTest(folds=folds), mock.patch.dict(path_keys._FOLDS_CASE, {str(alpha): folds}):
+                    found = audit.check_copilot_configuration(self.root, {})
+                    linked = [f.path for f in found if f.path == ".claude/skills/alpha/Skill.md"]
+                    self.assertEqual([".claude/skills/alpha/Skill.md"] if folds else [], linked)
+
+    def test_a_projection_in_another_case_is_owned_by_the_skill_md_the_manifest_names(self) -> None:
+        # The manifest names a projection as the runtime opens it, SKILL.md, which is this file where the folder folds
+        # case.
+        marked = f"---\nname: project-skill\ndescription: Projected.\n---\n\n<!-- {OWNERSHIP} -->\n"
+        _write_fixture(self.root, {".github/skills/project-skill/skill.md": marked})
+        folder = self.root / ".github/skills/project-skill"
+        manifest = self._manifest()
+        manifest["artifacts"].append({"path": ".github/skills/project-skill/SKILL.md"})
+        with mock.patch.dict(path_keys._FOLDS_CASE, {str(folder): True}):
+            owned = audit.check_copilot_configuration(self.root, manifest)
+            unowned = audit.check_copilot_configuration(self.root, self._manifest())
+        self.assertEqual([], [f for f in owned if f.check == "provenance"])
+        self.assertEqual(
+            [
+                (
+                    ".github/skills/project-skill/skill.md",
+                    "Generated Copilot skill projection is not owned by the manifest",
+                )
+            ],
+            [(f.path, f.message) for f in unowned if f.check == "provenance"],
+        )
+
     def test_each_unowned_projection_is_named_by_its_path_and_kind_and_an_owned_one_is_not(self) -> None:
         marked = f"---\nname: project-skill\ndescription: Projected.\n---\n\n<!-- {OWNERSHIP} -->\n"
         _write_fixture(
@@ -2551,6 +2620,22 @@ class LimitationTests(unittest.TestCase):
             ],
             self._limitations(),
         )
+
+    def test_a_manifest_owned_projection_in_another_case_is_noted_only_where_its_folder_folds_case(self) -> None:
+        # The manifest records a skill projection as the runtime opens it, SKILL.md, which is this unmarked skill.md
+        # where the folder folds case: it was looked up by its spelling on disk, so its limitation went unreported.
+        folder = self.root / ".github/skills/demo"
+        folder.mkdir(parents=True)
+        (folder / "skill.md").write_text("---\nname: demo\ndescription: Demo.\n---\n", encoding="utf-8")
+        manifest = {"artifacts": [{"path": ".github/skills/demo/SKILL.md"}]}
+        note = (
+            ".github/skills/demo/skill.md",
+            "Generated Copilot projection is provenance-checked only, not reconstructed",
+        )
+        for folds in (True, False):
+            with self.subTest(folds=folds), mock.patch.dict(path_keys._FOLDS_CASE, {str(folder): folds}):
+                rows = [(f.path, f.message) for f in audit.check_limitations(self.root, manifest)]
+                self.assertEqual(folds, note in rows, rows)
 
     def test_limitations_never_change_the_exit_code(self) -> None:
         self.assertEqual(0, audit.audit(self.root).exit_code)
@@ -5245,6 +5330,22 @@ class ClaudeCodeConfigurationTests(unittest.TestCase):
             ],
             claude_code_rows({"CLAUDE.md": text, "docs/present.md": "x"}),
         )
+
+    def test_an_import_inside_a_fence_is_none_as_markdown_reads_the_fence(self) -> None:
+        # A closing fence takes no info string, so a ``` text line is body; a fence a blockquote or list item holds is
+        # still a fence; and a shorter run of the opener's character, or the other character, closes nothing.
+        cases = {
+            "```\n@inside.md\n``` text\n@still_inside.md\n```\n@outside.md\n": ["outside.md"],
+            "> ```\n> @quoted.md\n> ```\n@after.md\n": ["after.md"],
+            "- ```\n  @listed.md\n  ```\n@after.md\n": ["after.md"],
+            "````\n```\n@inner.md\n````\n@after.md\n": ["after.md"],
+            "~~~\n```\n@tilde.md\n~~~\n@after.md\n": ["after.md"],
+            "> ```\n> @quoted.md\n@after.md\n": ["after.md"],
+            "```\n@unclosed.md\n": [],
+        }
+        for text, expected in cases.items():
+            with self.subTest(text=text):
+                self.assertEqual(expected, audit.claude_imports(text))
 
     def test_an_import_resolves_from_the_file_that_holds_it(self) -> None:
         self.assertEqual(
