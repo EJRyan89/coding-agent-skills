@@ -989,6 +989,32 @@ removed fails validation until its pattern follows it.
 - **Examples:** #1366, #1598, #1678, #1722, #2260, #2352, #1884, which adds the check that holds a policy's scope
   to its rule, #2315, whose resolver spellings the indirection policies refuse at the source, and #2388
 
+### A check pins the form it accepts when the forms it refuses are open
+
+- **Rule:** Where the ways to break a rule are an open set, such as a shell's flags that switch errexit off, the
+  wordings a program prints for a local fault, or the spellings that disable a workflow step, a check states the one
+  form it accepts, or the structure every violation shares, and refuses everything else, never a list of the
+  violating spellings found so far.
+- **Why:** A list of refused spellings passes the next spelling as checked, and each review round finds one more, so
+  the fix never converges; a pinned form or a structural test refuses spellings nobody has named yet.
+- **Use:** `tests.validation.workflows:deployable_bash_problems`, which pins each deployable job's Bash check to its
+  own step in one exact form instead of refusing set +e and its variants; `git_client:local_failure`, which reads a fault that names
+  a path inside the local git directory or reports a failed write by its structure rather than by its wording,
+  keeping a short marker list only for the faults git reports with no path.
+- **Guard:**
+  `tests/validation/test_workflows.py::DeployableBashFixtures::test_each_job_checks_its_bash_in_one_exact_step_and_the_macos_job_installs_homebrews`,
+  `skills/ejryan89-skill-core/scripts/test_git_client.py::test_a_fetch_that_failed_in_the_local_repository_is_not_the_remote_s_failure`,
+  `skills/ejryan89-skill-core/scripts/test_git_client.py::test_a_fetch_whose_failure_names_nothing_local_is_the_remote_s_failure`,
+  `skills/ejryan89-skill-core/scripts/test_git_client.py::test_only_a_timeout_among_the_failures_git_never_answered_is_the_remote_s`
+- **Search for:** a regular expression of alternatives that refuses spellings of one effect, such as
+  `re.compile(r"set\s+(?:\+e|`, which the next combined flag walks past; a tuple of message substrings named
+  `*_MARKERS` or `*_SPELLINGS` that decides a classification; a fix commit whose diff only adds one more alternative
+  or one more marker after a review finding; a policy that refuses a workflow step's bad forms instead of requiring
+  its one good form; a check that runs once and trusts every later step not to undo it.
+- **Examples:** #2751, where four review rounds each found one more local-failure wording until the classifier read
+  git's write-error line by its shape; #2759, where refusing errexit spellings gave way to pinning the check step's
+  exact form; #2468, whose hub guard was rebuilt as an allow-list after three outside passes in a row found leaks.
+
 ### A check reads its subject through its consumer's reader
 
 - **Rule:** A check reads what it holds through the reader or builder its consumer uses, never a re-derivation of the
