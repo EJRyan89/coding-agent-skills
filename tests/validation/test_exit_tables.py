@@ -16,7 +16,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts"))
 
 import exit_tables
-from validation_support import write_fixture_tree
+from validation_support import import_aliases, write_fixture_tree
 
 HEADER = "from console import run_main\nimport argparse\n"
 MAIN = (
@@ -152,6 +152,16 @@ def test_the_reader_follows_returns_through_conditionals_constants_locals_calls_
 
 
 PARSER_ERROR_TAIL = "    return 0\nif __name__ == '__main__':\n    run_main(main)\n"
+# A parser bound in a class's body, and a class Tool whose property calls error on a receiver, with a main the reader
+# reaches it from: the reader follows into a method through a property a return reads.
+ANNOTATED = "    cli: argparse.ArgumentParser\n"
+
+
+def tool_class(bound: str, receiver: str, parameter: str = "self") -> str:
+    return (
+        f"class Tool:\n{bound}    @property\n    def status({parameter}) -> int:\n        {receiver}.error('no')\n"
+        "        return 0\ndef main() -> int:\n    if X:\n        return Tool().status\n"
+    )
 
 
 @pytest.mark.parametrize(
@@ -180,6 +190,13 @@ PARSER_ERROR_TAIL = "    return 0\nif __name__ == '__main__':\n    run_main(main
         ("def main() -> int:\n    self.cli = argparse.ArgumentParser()\n    self.log.error('no')\n", {0, 1}),
         ("def main() -> int:\n    cli = argparse.ArgumentParser()\n    self.cli.error('no')\n", {0, 1}),
         ("def main() -> int:\n    holder[0] = argparse.ArgumentParser()\n    made().error('no')\n", {0, 1}),
+        # A name a class's body binds to a parser is one on its method's receiver, in that class's methods alone.
+        (tool_class(ANNOTATED, "self.cli"), {0, 1, 2}),
+        (tool_class("    cli = argparse.ArgumentParser()\n", "self.cli"), {0, 1, 2}),
+        (tool_class(ANNOTATED, "this.cli", "this"), {0, 1, 2}),
+        (tool_class(ANNOTATED, "self.log"), {0, 1}),
+        (tool_class(ANNOTATED, "other.cli"), {0, 1}),
+        (f"class Holder:\n{ANNOTATED}{tool_class('', 'self.cli')}", {0, 1}),
         # Every parsing call argparse offers exits 2 on a usage error.
         ("def main() -> int:\n    got.parse_known_intermixed_args()\n", {0, 1, 2}),
         # A quoted annotation that does not parse names no parser.
@@ -200,6 +217,19 @@ def test_a_parser_s_error_is_the_usage_exit_and_another_object_s_error_is_none(b
         reader = exit_tables.read_codes(root, exit_tables.EntryPoint("tool.py", path, ast.parse(source)))
     assert reader.reading.codes == codes
     assert reader.reading.unread == []
+
+
+def test_a_class_s_parser_is_reached_on_each_receiver_its_own_methods_take_and_on_no_other() -> None:
+    source = (
+        "import argparse\n"
+        "class Outer:\n    cli: argparse.ArgumentParser\n"
+        "    def first(this, /): pass\n    @classmethod\n    def made(cls): pass\n"
+        "    @staticmethod\n    def static(given): pass\n    def bare(): pass\n"
+        "    class Inner:\n        def method(self): pass\n"
+    )
+    tree = ast.parse(source)
+    found = {method.name: chains for method, chains in exit_tables.method_parsers(tree, import_aliases(tree)).items()}
+    assert found == {"first": {"this.cli"}, "made": {"cls.cli"}, "method": set()}
 
 
 def test_an_entry_point_whose_only_usage_exit_is_parser_error_names_2() -> None:
