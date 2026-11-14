@@ -1538,6 +1538,23 @@ class OverrideTests(TrackerPipelineFixture):
             )
         self.assertEqual({}, load_config(self.config_path)["dashboard"]["status_overrides"])
 
+    @unittest.skipIf(sys.platform == "win32", "a symbolic link to a file needs a privilege on Windows")
+    def test_a_record_that_is_a_link_to_nothing_is_no_update_and_is_written_in_the_links_place(self) -> None:
+        # Nothing can be read through the link, so no update has written the record; update then writes it where the
+        # link stands, never creating the file the link leads to.
+        self.serve_default_pages()
+        code, _, err = self.run_main("collect", "--output", str(self.input))
+        self.assertEqual(0, code, err)
+        target = self.root / "elsewhere" / "tracker.json"
+        self.record.symlink_to(target)
+        code, out, err = self.run_main("update", "--input", str(self.input))
+        self.assertEqual(0, code, err)
+        self.assertNotIn("STALE_SINCE_LAST_UPDATE", out)
+        self.assertFalse(self.record.is_symlink())
+        self.assertIn("pulls", json.loads(self.record.read_text(encoding="utf-8")))
+        self.assertFalse(target.exists())
+        self.assertFalse(target.parent.exists())
+
     def test_a_configuration_reached_through_a_link_has_the_record_update_wrote_and_stays_linked(self) -> None:
         self.serve_default_pages()
         code, _, err = self.run_main("collect", "--output", str(self.input))

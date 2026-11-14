@@ -76,6 +76,22 @@ class MarkdownLinkPolicy(unittest.TestCase):
             found = self.problems({"docs/guide.md": "# Guide\n\nSee [odd](pipe.md).\n", "docs/pipe.md": ""})
         self.assertEqual(["docs/guide.md:3 links to pipe.md, which is neither a file nor a folder"], found)
 
+    def test_a_link_to_a_link_to_nothing_does_not_exist_never_as_neither_a_file_nor_a_folder(self) -> None:
+        # The stat a link to nothing gives on every platform: its target is missing, the link itself is there.
+        real_stat = Path.stat
+        link = os.stat_result((0o120777, 0, 0, 1, 0, 0, 0, 0, 0, 0))
+
+        def stat(path: Path, *, follow_symlinks: bool = True) -> os.stat_result:
+            if path.name != "gone.md":
+                return real_stat(path, follow_symlinks=follow_symlinks)
+            if follow_symlinks:
+                raise FileNotFoundError(2, "No such file or directory", str(path))
+            return link
+
+        with mock.patch.object(Path, "stat", stat):
+            found = self.problems({"docs/guide.md": "# Guide\n\nSee [gone](gone.md).\n"})
+        self.assertEqual(["docs/guide.md:3 links to gone.md, which does not exist"], found)
+
     def test_a_fragment_that_names_no_heading_fails(self) -> None:
         self.assertEqual(
             [

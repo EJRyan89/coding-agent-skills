@@ -75,8 +75,9 @@ skill-source prints `SKILL_FILE <path>` for each editable source of the named sk
 skills/<name>/SKILL.md of the checkout the deployer's manifest records for it, and the repository's
 .claude/skills/<name>/SKILL.md; with --file it checks a source file named instead. It never names a
 file inside a skills directory, the deployed copy among them, because the deployer stops updating a
-skill whose deployed copy changed, and prints a `NOTE` for each such file it passes over, and one
-when git cannot read the repository to look for a project skill. With no source left, it prints
+skill whose deployed copy changed, and prints a `NOTE` for each such file it passes over, for each
+recorded source that is missing, a link to nothing included, is not a file, or cannot be examined, and
+one when git cannot read the repository to look for a project skill. With no source left, it prints
 `FAILED <reason>`.
 
 Usage:
@@ -116,7 +117,7 @@ import json_writer
 from atomic_file import is_read_only, replace_text
 from console import run_main
 from executable_locator import RelativeEnvironmentPath, absolute_home, environment_path, required_environment_path
-from file_presence import is_directory, is_present, matching
+from file_presence import is_directory, is_present, matching, refusal_reason
 from flat_text import flat_text, single_line
 from git_client import GitClient, GitError
 from link_probe import is_link_or_junction, is_plain_file
@@ -1206,9 +1207,8 @@ def source_refusal(path: Path) -> str | None:
     root = skills_directory_holding(path)
     if root:
         return f"{path} is inside the skills directory {root}; the deployer stops updating a skill changed there"
-    if not path.is_file():
-        return f"{path} is not a file"
-    return None
+    reason = refusal_reason(path)
+    return None if reason is None else f"{path} {reason}"
 
 
 def skill_source_lines(args: argparse.Namespace) -> tuple[int, list[str]]:

@@ -2523,6 +2523,27 @@ class SkillSourceTests(unittest.TestCase):
         write(self.home / ".claude" / "skills" / ".deploy-manifest.json", json.dumps({"manifest_version": 8}))
         self.assertEqual([missing.format("demo")], self.source("demo", code=1))
 
+    def test_a_recorded_source_of_another_kind_is_named_so_and_a_link_to_nothing_as_missing(self) -> None:
+        folder = self.root / "folder" / "skills" / "demo" / "SKILL.md"
+        folder.mkdir(parents=True)
+        cases = [("folder", folder, "is not a file")]
+        if sys.platform != "win32":  # a symbolic link to a file needs a privilege on Windows
+            link = self.root / "linked" / "skills" / "demo" / "SKILL.md"
+            link.parent.mkdir(parents=True)
+            link.symlink_to(self.root / "nowhere.md")
+            cases.append(("linked", link, "is missing"))
+        for name, path, wording in cases:
+            with self.subTest(source=name):
+                self.manifest(**{name: str(self.root / name)})
+                self.assertEqual(
+                    [
+                        f"NOTE {path} {wording}",
+                        "FAILED no editable source of skill demo: the deployer's manifest records none, and the "
+                        "repository has no project skill of that name; name its source file with --file",
+                    ],
+                    self.source("demo", code=1),
+                )
+
     def test_a_source_inside_a_skills_directory_or_holding_a_line_break_is_passed_over(self) -> None:
         deployed = self.home / ".claude" / "skills" / "demo-home"
         write(deployed / "skills" / "demo" / "SKILL.md", "---\nname: demo\n---\n")
@@ -2531,7 +2552,7 @@ class SkillSourceTests(unittest.TestCase):
             [
                 f"NOTE {deployed / 'skills' / 'demo' / 'SKILL.md'} is inside the skills directory "
                 f"{self.home / '.claude' / 'skills'}; the deployer stops updating a skill changed there",
-                f"NOTE {self.root / 'gone' / 'skills' / 'demo' / 'SKILL.md'} is not a file",
+                f"NOTE {self.root / 'gone' / 'skills' / 'demo' / 'SKILL.md'} is missing",
                 "FAILED no editable source of skill demo: the deployer's manifest records none, and the repository "
                 "has no project skill of that name; name its source file with --file",
             ],

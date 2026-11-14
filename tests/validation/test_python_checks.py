@@ -427,6 +427,22 @@ class PythonChecksFixtures(unittest.TestCase):
                     }
                     check.assert_called_once_with(root, ["."], configuration, strict=strict)
 
+    @unittest.skipIf(sys.platform == "win32", "a symbolic link to a folder needs a privilege on Windows")
+    def test_a_type_check_root_that_is_a_link_to_nothing_is_no_root(self) -> None:
+        # Nothing can be read through a link to nothing, so it holds no module strict mode would check.
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            write_fixture_tree(
+                root,
+                {
+                    "skills/alpha/SKILL.md": "",
+                    "skills/alpha/scripts/run.py": "",
+                    "pyproject.toml": '[tool.validation]\nmypy-strict = ["skills/alpha/scripts"]\n',
+                },
+            )
+            (root / "deployer").symlink_to(root / "nowhere", target_is_directory=True)
+            self.assertEqual([], strict_area_problems(root, ("skills/alpha/scripts",)))
+
     def test_the_strict_list_holds_every_root_and_never_loses_one(self) -> None:
         pinned = ("skills/alpha/scripts",)
         files = {
@@ -5330,6 +5346,7 @@ PRESENCE_STAT_CALLS = {
     "os.fwalk": "list(os.fwalk(p, onerror=fail))",
     "file_presence.is_directory": "file_presence.is_directory(p)",
     "file_presence.is_occupied": "file_presence.is_occupied(p)",
+    "file_presence.is_there": "file_presence.is_there(p)",
     "os.path.getsize": "os.path.getsize(p)",
     "os.path.getmtime": "os.path.getmtime(p)",
     "os.path.getatime": "os.path.getatime(p)",
@@ -5707,8 +5724,8 @@ def test_presence_policy_sanctions_by_scope_and_leaves_file_presence_alone() -> 
     )
     assert found == [
         f"{alpha}:5 reads is_file's False as nothing there, which it also answers for a path it cannot stat; call "
-        "ejryan89-skill-core's file_presence (is_present, is_directory, or is_occupied), which lets a failed stat "
-        "through, or state why in PRESENCE_ALLOWED",
+        "ejryan89-skill-core's file_presence (is_present, is_directory, or is_there, which a reader asks; "
+        "is_occupied only before a write), which lets a failed stat through, or state why in PRESENCE_ALLOWED",
         f"{alpha}: PRESENCE_ALLOWED allows stale, which holds nothing it sanctions; remove the entry",
         "tools/broken.py: PRESENCE_ALLOWED must map each function, class, or assignment to its reason",
     ]

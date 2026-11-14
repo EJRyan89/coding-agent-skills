@@ -23,6 +23,7 @@ from review_archive import (
     ArchiveError,
     archive_head,
     commit_record,
+    every_version,
     latest_record,
     list_versions,
     pull_directory,
@@ -199,6 +200,19 @@ class ArchiveTests(unittest.TestCase):
             for name in names:
                 (directory / name).write_text("{}", encoding="utf-8")
             self.assertEqual([*range(1, 12), 100], list_versions(directory))
+
+    @unittest.skipIf(sys.platform == "win32", "a symbolic link to a file needs a privilege on Windows")
+    def test_a_record_that_is_a_link_to_nothing_is_no_version_and_is_refused_as_missing(self) -> None:
+        # Nothing can be read through the link, so the version it names is missing, as with no file at all, and the
+        # history above it is refused naming it, never read with a version that has no record.
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            (directory / "review.json").symlink_to(directory / "nowhere.json")
+            (directory / "review-v2.json").write_text("{}", encoding="utf-8")
+            self.assertEqual([2], list_versions(directory))
+            with self.assertRaises(ArchiveError) as caught:
+                every_version(directory)
+            self.assertIn("but no review.json", str(caught.exception))
 
     def test_a_record_missing_below_the_latest_is_refused_naming_it_never_read_as_a_shorter_history(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

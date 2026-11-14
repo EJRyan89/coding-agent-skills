@@ -1,13 +1,22 @@
 """Whether a file or folder a reader may find absent is there: it, nothing, or a refusal naming what stands in its
 place.
 
-A reader that checks `is_file()` before it reads takes a directory, a link to nothing, or any other thing that is not
-a regular file for no file at all, and reports the repository as having no such configuration, a pass by absence.
-`is_present` tells the three apart, and raises `NotAFile`, an `OSError`, for the third, so a reader that already turns
-an `OSError` from its read into its own refusal refuses this one alike. `is_directory` answers the same for a folder,
-raising `NotADirectory`, and `is_occupied` whether anything at all, a link to nothing included, is at a path.
-`refusal_reason` words why a file or folder a caller needs is not there, missing, of another kind, or not
-examinable, and `require` raises the caller's own error with it, so a refusal never names the last two as missing.
+A reader that checks `is_file()` before it reads takes a directory or any other thing that is not a regular file for
+no file at all, and reports the repository as having no such configuration, a pass by absence. `is_present` tells a
+file, nothing, and something else apart, and raises `NotAFile`, an `OSError`, for the third, so a reader that already
+turns an `OSError` from its read into its own refusal refuses this one alike. `is_directory` answers the same for a
+folder, raising `NotADirectory`, and `is_there` whether anything a reader meets is there at all. `refusal_reason`
+words why a file or folder a caller needs is not there, missing, of another kind, or not examinable, and `require`
+raises the caller's own error with it, so a refusal never names the last two as missing.
+
+A symbolic link whose target does not exist, a link to nothing, is read two ways on purpose. A reader asks what it can
+read there, and nothing can be read through such a link, so `is_present`, `is_directory`, `is_there`, and
+`refusal_reason` answer for it as for a missing path: no file, no folder, nothing there, `MISSING`. A writer asks
+whether its write would land on something, and writing to such a link creates its target wherever it points, so
+`is_occupied`, which a writer asks before it creates or moves anything into a place, counts the link as occupying it,
+and a reader never asks it. A caller that reads a path as missing and then
+writes there asks `is_occupied` before the write, or writes through a call that replaces the link itself, such as a
+rename, never one that follows it.
 `matching` lists what a glob pattern matches below a folder, as `Path.glob` does, but raises for a folder it cannot
 list, where `Path.glob` matches nothing in it from Python 3.15 on, so a reader takes no unreadable folder for an empty
 one.
@@ -54,20 +63,19 @@ def _refuse_nul(path: Path) -> None:
 
 
 def _mode(path: Path) -> int | None:
-    """The mode of what is at `path` through links, the link's own mode for a link to nothing, or None when nothing
-    is there; any other stat error reaches the caller."""
+    """The mode of what is at `path` through links, or None when nothing is there, a link to nothing included; any
+    other stat error reaches the caller. The place itself is examined after the stat through it answered "not found",
+    as `is_occupied` examines it, so a stat of a link that fails is reported, never read as nothing there."""
     _refuse_nul(path)
     try:
         return path.stat().st_mode
     except ABSENT:
-        try:
-            return path.stat(follow_symlinks=False).st_mode
-        except ABSENT:
-            return None
+        is_occupied(path)
+        return None
 
 
 def is_present(path: Path, *, other_is_absent: bool = False) -> bool:
-    """Whether a regular file is at `path`, following links: False when nothing is, not even a link to nothing,
+    """Whether a regular file is at `path`, following links: False when nothing is, a link to nothing included,
     `NotAFile` when something else is, or False then too for a caller that passes `other_is_absent`, such as one
     choosing the files among a listing's entries, and the stat's `OSError` when it cannot tell."""
     mode = _mode(path)
@@ -81,7 +89,7 @@ def is_present(path: Path, *, other_is_absent: bool = False) -> bool:
 
 
 def is_directory(path: Path, *, other_is_absent: bool = False) -> bool:
-    """Whether a folder is at `path`, following links: False when nothing is, not even a link to nothing,
+    """Whether a folder is at `path`, following links: False when nothing is, a link to nothing included,
     `NotADirectory` when something else is, or False then too for a caller that passes `other_is_absent`, such as one
     choosing the folders among a listing's entries, and the stat's `OSError` when it cannot tell."""
     mode = _mode(path)
@@ -101,10 +109,10 @@ MISSING = "is missing"
 
 def refusal_reason(path: Path, *, folder: bool = False) -> str | None:
     """None when a regular file, or with `folder` a folder, is at `path`, following links; otherwise why not, worded to
-    follow the path in a refusal: `MISSING` when nothing is there, "is not a file" or "is not a folder" when something
-    else is, and "cannot be examined: <reason>" with the operating system's reason when a stat cannot tell. A caller
-    that refuses a path it needs raises on any answer but None, so it never names a path it could not examine, or one
-    of the wrong kind, as missing."""
+    follow the path in a refusal: `MISSING` when nothing is there, a link to nothing included, "is not a file" or
+    "is not a folder" when something else is, and "cannot be examined: <reason>" with the operating system's reason
+    when a stat cannot tell. A caller that refuses a path it needs raises on any answer but None, so it never names a
+    path it could not examine, or one of the wrong kind, as missing."""
     try:
         present = is_directory(path) if folder else is_present(path)
     except NotADirectory:
@@ -127,9 +135,19 @@ def require(path: Path, error: Callable[[str], Exception], missing: str, subject
         raise error(f"{subject} {reason}")
 
 
+def is_there(path: Path) -> bool:
+    """Whether anything a reader meets is at `path`, following links: a file, a folder, or anything else, but False
+    when nothing is, a link to nothing included, and the stat's `OSError` when it cannot tell. It is the reader's
+    question `is_occupied` answers for a writer, for a reader that names something of another kind apart from nothing
+    there."""
+    return _mode(path) is not None
+
+
 def is_occupied(path: Path) -> bool:
     """Whether anything is at `path` itself, a link to nothing included, without following a link: False only when
-    nothing is, and the stat's `OSError` when it cannot tell."""
+    nothing is, and the stat's `OSError` when it cannot tell. The readers above answer a link to nothing as missing;
+    this counts it as occupying its place, so a writer that asks it before creating there never writes through the
+    link to create its target."""
     _refuse_nul(path)
     try:
         path.stat(follow_symlinks=False)
@@ -146,9 +164,9 @@ def matching(folder: Path, pattern: str, *, skip: Callable[[Path], bool] = _neve
     """The paths below `folder` a relative glob pattern matches, in path order, as `Path.glob` matches them: `*`, `?`,
     and `[...]` within one name, in the case the platform reads names in, and a `**` part before another any depth of
     folders, the folder itself included, without entering a symbolic link to a folder. Nothing when nothing is at
-    `folder`, `NotADirectory` when something else is, and the `OSError` of a folder it cannot list, where `Path.glob`
-    matches nothing in it from Python 3.15 on. A pattern that is empty, absolute, ends in `**`, whose matches differ
-    between Python versions, or holds an empty, `.`, or `..` part raises ValueError.
+    `folder`, a link to nothing included, `NotADirectory` when something else is, and the `OSError` of a folder it
+    cannot list, where `Path.glob` matches nothing in it from Python 3.15 on. A pattern that is empty, absolute, ends
+    in `**`, whose matches differ between Python versions, or holds an empty, `.`, or `..` part raises ValueError.
 
     `skip` names the folders below `folder` a caller leaves out, such as `node_modules` or a folder of fixtures: one it
     answers True for is never listed or entered, so a folder it cannot list inside a skipped one is never met, while

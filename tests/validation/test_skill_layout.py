@@ -899,6 +899,29 @@ class SkillLayoutFixtures(unittest.TestCase):
                 deploy_variable_problems(root, set(), set(), set()),
             )
 
+    @unittest.skipIf(sys.platform == "win32", "a symbolic link to a file needs a privilege on Windows")
+    def test_plugin_policy_reads_a_plugin_manifest_that_is_a_link_to_nothing_as_none(self) -> None:
+        # Nothing can be read through a link to nothing, so the checkout's skills never read as a plugin's.
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            write_plugin_sources(root, PLUGIN_SOURCES)
+            (root / ".claude-plugin" / "plugin.json").symlink_to(root / "nowhere.json")
+            self.assertEqual([], plugin_tree_problems(root, {"suite": plugin_files()}, VERSION))
+
+    @unittest.skipIf(sys.platform == "win32", "a symbolic link to a file needs a privilege on Windows")
+    def test_a_declared_shared_asset_that_is_a_link_to_nothing_is_not_there(self) -> None:
+        # Nothing can be read through a link to nothing, so the asset is named as not held, never read.
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "deploy-meta").mkdir()
+            (root / "skills").mkdir()
+            (root / "skills" / "gone.md").symlink_to(root / "nowhere.md")
+            (root / "source.json").write_text(json.dumps({"shared_assets": {"gone.md": "owner"}}), encoding="utf-8")
+            self.assertEqual(
+                ["source.json declares shared asset gone.md, which skills/ does not hold"],
+                deploy_variable_problems(root, set(), set(), set()),
+            )
+
     def test_script_dependency_policy_detects_an_undeclared_sibling(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

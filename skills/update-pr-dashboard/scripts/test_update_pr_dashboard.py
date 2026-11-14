@@ -13,6 +13,7 @@ from collections.abc import Callable, Iterable, Sequence
 from functools import partial
 from pathlib import Path
 from typing import Any, ClassVar
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -32,6 +33,7 @@ from update_pr_dashboard import (
     evaluate,
     normalize_overrides,
     normalize_pull_keys,
+    replacement,
     review_candidates,
     update_dashboard_rows,
     validate_items,
@@ -917,6 +919,22 @@ class ReadAheadTests(unittest.TestCase):
         with self.assertRaises(GitHubError) as stopped:
             evaluate(self.items(6), "reviewer", ChangeDetector(GitHubClient(runner, sleeper=lambda seconds: None)))
         self.assertEqual("network", stopped.exception.kind)
+
+
+class ReplacementTests(unittest.TestCase):
+    def test_a_place_whose_own_stat_fails_after_its_target_is_not_found_is_refused_never_written(self) -> None:
+        # The stat through the path answers "not found", as for a link to nothing, and the stat of the place itself
+        # fails, so whether a link stands there cannot be told: the replacement is refused, naming the stat's reason.
+        path = Path("tracker.json")
+
+        def stat(self: Path, *, follow_symlinks: bool = True) -> object:
+            if follow_symlinks:
+                raise FileNotFoundError(2, "No such file or directory", str(self))
+            raise PermissionError(13, "Permission denied", str(self))
+
+        with mock.patch.object(Path, "stat", stat), self.assertRaises(TrackerError) as raised:
+            replacement(path)
+        self.assertEqual(f"Cannot examine {path}: Permission denied", str(raised.exception))
 
 
 class DashboardWriteTests(unittest.TestCase):

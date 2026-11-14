@@ -9,6 +9,7 @@ import io
 import os
 import shutil
 import sys
+import unittest
 from collections.abc import Callable, Iterator
 from pathlib import Path
 from types import SimpleNamespace
@@ -25,6 +26,7 @@ from deployer import (
     fsops,
     hashing,
     journal,
+    manifest,
     migrate,
     paths,
     pipeline,
@@ -404,6 +406,21 @@ class RecoveryPresenceTests(DeployerTestCase):
             with self.subTest(path=path.name), stat_failing_at(path), self.assertRaises(PermissionError):
                 journal.check_backup_root(self.paths, "claude", self.RUN)
 
+    @unittest.skipIf(sys.platform == "win32", "a symbolic link to a folder needs a privilege on Windows")
+    def test_a_source_whose_git_is_a_link_to_nothing_is_no_checkout(self) -> None:
+        # Git reads nothing through a link to nothing, so no commit is recorded, --at refuses the source as no
+        # checkout, and no pin is read as a release's.
+        self.source.mkdir(parents=True, exist_ok=True)
+        (self.source / ".git").symlink_to(self.root / "nowhere", target_is_directory=True)
+        self.assertFalse(source_commit.is_checkout(self.source))
+        with self.assertRaises(DeployError) as raised:
+            source_ref.resolve(self.source, "main")
+        self.assertEqual(
+            f"ERROR: --at needs a Git checkout, and {forward(self.source)} is not one.", raised.exception.lines[0]
+        )
+        with mock.patch.object(source_ref, "_client", side_effect=AssertionError("asked git of no checkout")):
+            self.assertFalse(source_ref.is_release_pin(self.source, "refs/tags/v1.0.0", "0" * 40))
+
     def test_a_source_whose_git_it_cannot_stat_is_refused_rather_than_recording_no_commit(self) -> None:
         with stat_failing_at(self.source / ".git"), self.assertRaises(DeployError) as raised:
             source_commit.is_checkout(self.source)
@@ -518,6 +535,43 @@ class DeployerPresenceTests(DeployerTestCase):
         canary.mkdir()
         paths.claim_canary_home(canary)
         self.assertEqual(paths.CANARY_MARKER_TEXT, (canary / paths.CANARY_MARKER).read_bytes())
+
+    @unittest.skipIf(sys.platform == "win32", "a symbolic link to a file needs a privilege on Windows")
+    def test_a_link_to_nothing_reads_as_missing_and_no_write_creates_its_target(self) -> None:
+        # Nothing can be read through a link to nothing, so the manifest it stands for is missing; every write the
+        # deployer makes in such a place replaces the link or refuses it, and none creates the file it leads to.
+        target = self.root / "elsewhere" / "target"
+        target.parent.mkdir()
+        self.make_source_json()
+        self.make_skill("alpha", "Alpha")
+        self.make_config()
+        self.paths.manifest_file.parent.mkdir(parents=True)
+        self.paths.manifest_file.symlink_to(target)
+        self.assertEqual({}, manifest.load(self.paths.manifest_file).sources)
+        self.deploy_ok("--all")
+        self.assertFalse(self.paths.manifest_file.is_symlink())
+        self.assertIn(SOURCE_ID, self.manifest()["sources"])
+        self.assertFalse(os.path.lexists(target))
+        place = self.root / "place"
+        writes: list[tuple[str, Callable[[], object]]] = [
+            ("fsops.make_directory", lambda: fsops.make_directory(place)),
+            ("fsops.make_directories", lambda: fsops.make_directories(place)),
+            ("fsops.move", lambda: fsops.move(self.root / "moved", place)),
+        ]
+        (self.root / "moved").write_text("moved", encoding="utf-8")
+        for name, write in writes:
+            with self.subTest(writer=name):
+                place.symlink_to(target)
+                with self.assertRaises(FileExistsError):
+                    write()
+                self.assertTrue(place.is_symlink())
+                self.assertFalse(os.path.lexists(target))
+                place.unlink()
+        place.symlink_to(target)
+        fsops.write_atomic(place, b"written")
+        self.assertFalse(place.is_symlink())
+        self.assertEqual(b"written", place.read_bytes())
+        self.assertFalse(os.path.lexists(target))
 
     def test_something_other_than_a_file_where_a_file_is_read_is_passed_over(self) -> None:
         # A folder at alpha's marker makes no user-only adapter, and the next adapter is still read.

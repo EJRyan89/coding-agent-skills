@@ -35,7 +35,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-cor
 import dotnet_solution
 import json_reader
 from dotnet_solution import FileRefused, decode_text, lexical_absolute, listed_projects, project_path
-from file_presence import is_directory, is_occupied, is_present, matching
+from file_presence import is_directory, is_present, is_there, matching
 from folders_up import folders_up
 from msbuild_xml import local_name
 from ordinal_case import ordinal_fold
@@ -159,10 +159,11 @@ def read_solution(path: Path) -> list[str]:
 def examined_tree(base: Path) -> Path:
     """The tree a run reads the paths files name in: the checkout holding `base`, the solution's directory or the
     directory searched, which is the nearest folder at or above it holding `CHECKOUT_MARKER`, else `base` itself. A
-    marker it cannot stat raises its OSError, which the command refuses, never read as no checkout there, which would
-    take a folder above or the base for the tree."""
+    marker that is a link to nothing marks no checkout, since git reads nothing through it. A marker it cannot stat
+    raises its OSError, which the command refuses, never read as no checkout there, which would take a folder above or
+    the base for the tree."""
     for folder in folders_up(base):
-        if is_occupied(folder / CHECKOUT_MARKER):
+        if is_there(folder / CHECKOUT_MARKER):
             return folder
     return base
 

@@ -292,7 +292,7 @@ def resolve_root(path: Path, graph_unreadable: list[tuple[Path, str]]) -> tuple[
                 graph_unreadable.append((candidate, refused))
                 continue
             try:
-                present = file_presence.is_occupied(candidate)
+                present = file_presence.is_there(candidate)
             except OSError as error:
                 graph_unreadable.append((candidate, error.strerror or str(error)))
                 continue

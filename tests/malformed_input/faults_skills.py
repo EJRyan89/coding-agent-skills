@@ -11,6 +11,7 @@ from pathlib import Path
 
 from fault_table import (
     DIRECTORY,
+    LINK_TO_NOTHING,
     MISSING,
     OPENED_ONLY,
     REPOSITORY,
@@ -352,6 +353,18 @@ def prepared(inline: bool) -> Callable[[Fixture], None]:
 
 INLINE_RUN = prepared(inline=True)
 SUBAGENT_RUN = prepared(inline=False)
+# The fixture canary's one role's result file, which an inline run's orchestrating session writes.
+INLINE_RESULT = f"{RUN}/work/generic-review.result.json"
+
+
+def inline_run_with_a_result(fixture: Fixture) -> None:
+    """An inline run whose one role has written its result, which next-role seals before it answers."""
+    INLINE_RUN(fixture)
+    run = Path(RUN.format(**fixture.values()))
+    roles = json.loads((run / "run.json").read_text(encoding="utf-8"))["roles"]
+    result = Path(INLINE_RESULT.format(**fixture.values()))
+    assert [Path(role["result_file"]) for role in roles] == [result], roles
+    result.write_text("{}\n", encoding="utf-8")
 
 
 def batch(fixture: Fixture) -> None:
@@ -1007,6 +1020,16 @@ DRIVERS: list[Driver] = [
     ),
     run_driver("dispatch", ("--run", RUN), SUBAGENT_RUN, (RUN_STATE,)),
     run_driver("next-role", ("--run", RUN), INLINE_RUN, (RUN_STATE, REQUEST)),
+    Driver(
+        PIPELINE,
+        "next-role",
+        ("next-role", "--run", RUN),
+        prepare=inline_run_with_a_result,
+        inputs=(INLINE_RESULT,),
+        not_run={MISSING: "a role with no result is the one next-role hands out, as its docstring says"},
+        handed_to_writer=(INLINE_RESULT,),
+        outputs=(RUN,),
+    ),
     run_driver("wait", ("--run", RUN, "--timeout", "1"), SUBAGENT_RUN, (RUN_STATE,)),
     run_driver("host", ("--run", RUN, "--token", "token"), SUBAGENT_RUN, (RUN_STATE,)),
     run_driver("workflow", ("--run", RUN), SUBAGENT_RUN, (RUN_STATE, CONFIG)),
@@ -1143,6 +1166,9 @@ DRIVERS: list[Driver] = [
         gh=True,
         not_run={
             "missing": "a history file that does not exist yet holds no rows, as read_history documents",
+            LINK_TO_NOTHING: "a history that is a link to nothing holds no rows, as a missing one does, so the run "
+            "goes on to ask GitHub, which this fault does not answer; replace_text writes the history over the link, "
+            "never through it",
             STAT_RAISES: OPENED_ONLY,
         },
     ),
@@ -1256,7 +1282,11 @@ DRIVERS: list[Driver] = [
         ("collect", "--output", "{root}/collected/input.json"),
         prepare=dashboard_fixture,
         inputs=(FLAG_STORE,),
-        not_run={MISSING: EMPTY_STORE},
+        not_run={
+            MISSING: EMPTY_STORE,
+            LINK_TO_NOTHING: EMPTY_STORE + ", a link to nothing included, so the run goes on to ask GitHub, which this "
+            "fault does not answer; collect only reads the store",
+        },
         outputs=("{root}/collected",),
     ),
     Driver(

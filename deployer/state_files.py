@@ -53,10 +53,11 @@ def holds_lone_surrogate(text: str) -> bool:
 def is_present(path: Path, what: str, step: str, *more: str) -> bool:
     """Whether a file is at path: False when nothing is, and a refusal naming it when something else is.
 
-    A directory, a link to nothing, or any other thing that is not a regular file is refused here, before anything is
-    planned, so it is never read as absent; and so is a path whose stat fails with anything but "not found", such as
-    one this user may not read, naming the stat's reason. The refusal ends with the step to take and the lines after
-    it.
+    A directory or any other thing that is not a regular file is refused here, before anything is planned, so it is
+    never read as absent; and so is a path whose stat fails with anything but "not found", such as one this user may
+    not read, naming the stat's reason. A link to nothing reads as absent, as file_presence reads it, since nothing can
+    be read through it: every write the deployer makes in a state file's place replaces the link or refuses it. The
+    refusal ends with the step to take and the lines after it.
     """
     try:
         return file_presence.is_present(path)
