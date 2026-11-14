@@ -38,7 +38,8 @@ None
 <!-- What this change asks of a user who updates, written here and never in docs/upgrade-notes.md: the squash
      commit carries this body into main, and tools/release_notes.py writes each release's notes from it. Give one
      entry per change a user meets, in this shape, and keep "None" only when there is none. Validation fails while a
-     changed contract item is named by no entry; docs/upgrade-notes.md describes each field.
+     contract item this pull request changes is named by no entry here, whatever an earlier entry names;
+     docs/upgrade-notes.md describes each field.
 
 ### What changed, as a user meets it
 
