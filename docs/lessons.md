@@ -354,7 +354,8 @@ removed fails validation until its pattern follows it.
   the owner moves on.
 - **Use:** `tests.validation.duplication:_shared_facts`, the registry of facts each read from its owner; where a fact
   is a behavior, the owner's function, such as `frontmatter:Frontmatter.user_only`, `frontmatter:user_only_value` for
-  another reader's values, `typed_text:read_typed`, the read of a title or body file without its byte-order mark, and
+  another reader's values, `agent_skills:NAME_PATTERN`, the one Agent Skills name grammar the deployer, audit-ai-config,
+  and the evaluation runner read, `typed_text:read_typed`, the read of a title or body file without its byte-order mark, and
   `deployer.journal:finish_backup`, the one rule a committed run's finalization and its recovery settle a backup by,
   and `review_config:REPOSITORY`, the one rule of a repository identity the mute and pull-key patterns are built
   on, and the adapter schema's repository pattern is probed against.
@@ -364,6 +365,7 @@ removed fails validation until its pattern follows it.
   `tests/validation/duplication.py::DuplicationPolicies::test_repository_owners_hold_every_shared_fact`,
   `tests/validation/duplication.py::DuplicationPolicies::test_repository_copies_only_what_it_sanctions`,
   `tests/validation/test_duplication.py::SharedFactPolicy`,
+  `tests/validation/test_duplication.py::SharedFactPolicy::test_a_re_derived_name_grammar_fails_however_it_treats_consecutive_hyphens_and_an_import_passes`,
   `tests/validation/python_checks.py::PythonChecksPolicies::test_json_reader_is_the_one_parse_of_json`,
   `tests/validation/skill_grants.py::SkillGrantsPolicies::test_skill_markdown_names_every_status_line_its_scripts_print`,
   `tests/validation/workflows.py::WorkflowsPolicies::test_deployable_workflow_answers_every_prompt_configure_declares_in_both_jobs`,
@@ -377,7 +379,7 @@ removed fails validation until its pattern follows it.
   `rg -n "def (_?inside|strictly_inside|_lexically_inside)\b"` and other helpers of one job held in several modules;
   a live step and its recovery, such as a run's finalization and the completion of an interrupted one, each deciding
   in its own code what becomes of the same state on disk.
-- **Examples:** #1349, #1477, #1495, #1596, #1679, #2219, #2295, #2296, #2738
+- **Examples:** #1349, #1477, #1495, #1596, #1679, #2219, #2295, #2296, #2718, #2738
 
 ### A promise in prose is held where its reader reads it
 

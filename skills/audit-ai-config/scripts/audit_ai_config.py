@@ -59,6 +59,7 @@ from agent_skills import (
     CODEX_METADATA,
     MAX_DESCRIPTION,
     MAX_NAME,
+    NAME_PATTERN,
     RESERVED_WORDS,
     SKILL_FILE,
     XML_TAG_PATTERN,
@@ -1151,7 +1152,7 @@ def _validate_skill(path: Path, root: Path) -> list[Finding]:
     name = values.get("name", "")
     if not name:
         findings.append(Finding("ERROR", "copilot-skill", rel, message="Skill frontmatter requires name"))
-    elif not isinstance(name, str) or not re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", name):
+    elif not isinstance(name, str) or not NAME_PATTERN.fullmatch(name):
         # Copilot's add-skills page: the name must be lowercase with hyphens, and typically, not necessarily, matches
         # its directory; Codex's rule that it match is _codex_skill_rules'.
         findings.append(Finding("ERROR", "copilot-skill", rel, message="Skill name must be lowercase hyphenated"))

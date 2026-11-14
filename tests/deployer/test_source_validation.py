@@ -1272,12 +1272,125 @@ def test_a_skill_name_of_lowercase_digits_and_inner_hyphens_deploys_and_is_remov
     deployer.deploy_ok("--all")
 
 
-@pytest.mark.parametrize("name", ["-alpha", "alpha-", "alpha_beta", "alpha.beta", "Alpha"])
+@pytest.mark.parametrize(
+    "name", ["-alpha", "alpha-", "alpha--beta", "alpha---beta", "alpha_beta", "alpha.beta", "Alpha"]
+)
 def test_a_skill_name_outside_the_grammar_is_refused(deployer: Deployment, name: str) -> None:
     deployer.make_source_json()
     deployer.make_skill(name, "Test")
     deployer.make_config()
     deployer.deploy_fails("--all", pattern=f"Skill name '{re.escape(name)}' does not match naming grammar")
+
+
+# The grammar names were held to before the Agent Skills rule against consecutive hyphens, which a home deployed then
+# may record: lowercase letters, digits, and hyphens, none first or last.
+EARLIER_GRAMMAR = re.compile(r"^[a-z0-9]([a-z0-9-]*[a-z0-9])?$")
+
+
+def test_a_bundle_named_with_consecutive_hyphens_is_refused(deployer: Deployment) -> None:
+    deployer.make_skill("alpha", "Test")
+    deployer.make_config()
+    deployer.make_source_json(bundles={"suite--all": {"members": ["alpha"]}})
+    deployer.deploy_fails("--all", pattern=re.escape("ERROR: Bundle name 'suite--all' is invalid"))
+    deployer.make_source_json(bundles={"suite-all": {"members": ["alpha"]}})
+    deployer.deploy_ok("--all")
+
+
+def test_a_renamed_old_name_with_consecutive_hyphens_is_refused(deployer: Deployment) -> None:
+    deployer.make_skill("alpha", "Test")
+    deployer.make_config()
+    deployer.make_source_json(renamed={"old--alpha": "alpha"})
+    deployer.deploy_fails(
+        "--all", pattern=re.escape("ERROR: source.json renamed names an invalid old name 'old--alpha'")
+    )
+    deployer.make_source_json(renamed={"old-alpha": "alpha"})
+    deployer.deploy_ok("--all")
+
+
+def test_an_agent_named_with_consecutive_hyphens_is_refused(deployer: Deployment) -> None:
+    deployer.make_source_json()
+    deployer.make_skill("alpha", "Test", agent_deps=["code--reviewer"])
+    deployer.make_agent("code--reviewer")
+    deployer.make_config()
+    deployer.deploy_fails(
+        "--all", pattern=re.escape("ERROR: Agent name 'code--reviewer' does not match naming grammar")
+    )
+    assert not (deployer.claude_agents_dir / "code--reviewer.md").exists()
+
+
+def _deploy_under_the_earlier_grammar(deployer: Deployment) -> None:
+    """A home that recorded skill alpha--beta and its agent code--reviewer, deployed before the rule."""
+    deployer.make_source_json()
+    deployer.make_skill("alpha--beta", "Test", agent_deps=["code--reviewer"])
+    deployer.make_agent("code--reviewer")
+    deployer.make_config()
+    with mock.patch.object(source, "NAME_PATTERN", EARLIER_GRAMMAR):
+        deployer.deploy_ok("--all")
+    assert (deployer.skills_dir / "alpha--beta" / "SKILL.md").is_file()
+    assert (deployer.claude_agents_dir / "code--reviewer.md").is_file()
+    assert (deployer.agents_dir / "alpha--beta").is_dir()
+
+
+def test_a_name_deployed_before_the_rule_is_refused_in_the_source_not_in_the_manifest(deployer: Deployment) -> None:
+    _deploy_under_the_earlier_grammar(deployer)
+    deployer.deploy_fails("--all", pattern=re.escape("ERROR: Skill name 'alpha--beta' does not match naming grammar"))
+
+
+def _rename_in_the_source(deployer: Deployment) -> None:
+    """The source's names, alpha--beta and code--reviewer, renamed to ones the rule allows."""
+    deployer.remove_skill("alpha--beta")
+    (deployer.source / "agents" / "code--reviewer.md").unlink()
+    deployer.make_skill("alpha-beta", "Test", agent_deps=["code-reviewer"])
+    deployer.make_agent("code-reviewer")
+
+
+def test_a_name_deployed_before_the_rule_is_removed_once_the_source_renames_it(deployer: Deployment) -> None:
+    _deploy_under_the_earlier_grammar(deployer)
+    _rename_in_the_source(deployer)
+    deployer.deploy_ok("--all")
+    assert not (deployer.skills_dir / "alpha--beta").exists()
+    assert not (deployer.agents_dir / "alpha--beta").exists()
+    assert not (deployer.claude_agents_dir / "code--reviewer.md").exists()
+    assert (deployer.skills_dir / "alpha-beta" / "SKILL.md").is_file()
+    assert (deployer.claude_agents_dir / "code-reviewer.md").is_file()
+
+
+def test_a_rename_with_no_renamed_entry_drops_an_opt_in_request_and_keeps_a_modified_copy(deployer: Deployment) -> None:
+    """What the upgrade note promises a home that deployed a name with consecutive hyphens, renamed in the source with
+    no renamed entry, since a renamed old name with -- is refused: every run, an uninstall too, is refused until the
+    source renames it; then the opt-in request is not carried to the new name, and a modified copy stays."""
+    deployer.make_source_json()
+    deployer.make_skill("opt--in", "Test", opt_in=True)
+    deployer.make_skill("edited--skill", "Test")
+    deployer.make_config()
+    with mock.patch.object(source, "NAME_PATTERN", EARLIER_GRAMMAR):
+        deployer.deploy_ok("--all", "--include", "opt--in")
+    edited = deployer.skills_dir / "edited--skill" / "SKILL.md"
+    edited.write_text(edited.read_text(encoding="utf-8") + "\nA local change.\n", encoding="utf-8")
+    for arguments in (("--uninstall",), ("--all",)):
+        deployer.deploy_fails(*arguments, pattern=re.escape("does not match naming grammar"))
+    deployer.remove_skill("opt--in")
+    deployer.remove_skill("edited--skill")
+    deployer.make_skill("opt-in", "Test", opt_in=True)
+    deployer.make_skill("edited-skill", "Test")
+    deployer.deploy_ok("--all")
+    assert not (deployer.skills_dir / "opt--in").exists()
+    assert not (deployer.skills_dir / "opt-in").exists()
+    assert "A local change." in edited.read_text(encoding="utf-8")
+    assert (deployer.skills_dir / "edited-skill" / "SKILL.md").is_file()
+    deployer.deploy_ok("--all", "--include", "opt-in")
+    assert (deployer.skills_dir / "opt-in" / "SKILL.md").is_file()
+
+
+def test_a_name_deployed_before_the_rule_is_removed_by_an_uninstall_once_the_source_renames_it(
+    deployer: Deployment,
+) -> None:
+    _deploy_under_the_earlier_grammar(deployer)
+    _rename_in_the_source(deployer)
+    deployer.deploy_ok("--uninstall")
+    assert not (deployer.skills_dir / "alpha--beta").exists()
+    assert not (deployer.agents_dir / "alpha--beta").exists()
+    assert not (deployer.claude_agents_dir / "code--reviewer.md").exists()
 
 
 @pytest.mark.parametrize(
