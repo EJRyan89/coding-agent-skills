@@ -324,6 +324,17 @@ a row decides it.
   form that would, an assignment before git, `export`, `env`, and a PowerShell assignment among them, is a part the
   guard does not read. On Windows git reads an environment name in any case, so `git_dir` is `GIT_DIR` there; when
   two spellings disagree, the call is judged by the upper-case one, the spelling git reads, with a note.
+- **The index a git call is given.** Any git call may rewrite the index `GIT_INDEX_FILE` names, even a form that
+  only reads the hub: `status` and `diff` refresh it, and a fast-forward writes a tree into it, as does the child
+  git that `worktree add -b` (`reset --hard`) or `worktree remove` (its clean check) starts in another checkout,
+  inheriting the variable. So while that index is one a guarded hub holds, anywhere in its git directory or among
+  the files of its checkout, the hub's own index included, no git call runs, wherever it starts and whatever its
+  subcommand. The one exception is a worktree's own index, in the hub's git directory, for a call whose own
+  repository is that worktree's: git uses it anyway. The index is read as an absolute path with each symbolic link
+  followed, as git follows one to write through its lock file. A relative path is not settled, since git reads it
+  from the directory each process it starts works in, so a call given one is refused while a hub is guarded; git
+  exports a relative index only for a repository whose git directory is relative, which no worktree's is. `gh`
+  checking a branch out runs git with the same variables, so the location variables and the index place it too.
 - **What a git call's words write or run.** Wherever git runs, a file it writes at a path its words name is judged
   as a redirection's target is, a relative path read from where git starts. The options that name such a file are
   `--output`, which every subcommand that reads git's diff or revision options takes, and those
@@ -616,8 +627,7 @@ The hook sees the command text. It does not see:
   function, and not under `/bin/sh`, where it does not; no syntax PowerShell also parses shuts every such name out;
 - what the shell's own startup files set: an alias, a function, or an option they define, or a variable the Bash
   tool's shell holds that the hook's environment does not, or holds with another value;
-- a work tree set in a repository's own configuration, or `GIT_INDEX_FILE`, which moves only the index: the guard
-  judges such a call by the checkout whose `HEAD` and tree it writes;
+- a work tree set in a repository's own configuration: the guard judges such a call by the checkout it runs in;
 - a ref moved from another checkout, such as `git update-ref refs/heads/main` run in a worktree: refs live in the
   store every worktree shares, and the guard judges a call by the checkout whose `HEAD`, index, and tree it writes.
 

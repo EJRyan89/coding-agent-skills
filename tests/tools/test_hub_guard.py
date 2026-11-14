@@ -6,6 +6,7 @@ import contextlib
 import io
 import itertools
 import json
+import math
 import os
 import shutil
 import subprocess
@@ -337,6 +338,20 @@ class FileGuardTests(GuardTestCase):
 class UnreadableCheckoutFileTests(GuardTestCase):
     """A file event in a checkout git answers with an error for, as one whose ownership it doubts, is judged as a git
     directory git cannot read is: it may be a guarded hub's, so the edit is refused."""
+
+    def test_a_hub_file_whose_check_ignore_git_answers_with_an_error_is_tracked(self) -> None:
+        # check-ignore exits 0 for an ignored file and 1 for one that is not; any other answer is no answer, so an
+        # ignored file git answered with an error for is refused, and one git never answered is allowed with a note.
+        target = self.hub / "local.json"
+        self.assertIsNone(self.edit(target))
+        answered = git_client.GitError("git check-ignore could not read it", returncode=128)
+        with mock.patch.object(worktrees.CLIENT, "quiet_output", side_effect=answered):
+            self.assertEqual("deny", self.edit(target))
+            self.assertEqual(hub_guard.DENY_REASON, self.reason)
+        unanswered = git_client.GitError("git failed as timeout", kind="timeout")
+        with mock.patch.object(worktrees.CLIENT, "quiet_output", side_effect=unanswered):
+            self.assertIsNone(self.edit(target))
+            self.assertIn("hub guard skipped: GitError: git failed as timeout", self.stderr)
 
     def test_an_edit_in_a_checkout_git_answers_with_an_error_for_is_refused(self) -> None:
         failure = git_client.GitError("git could not read the checkout", returncode=128)
@@ -1719,6 +1734,172 @@ class CommandGuardTests(GuardTestCase):
         self.assertIsNone(self.bash("git reset --hard", self.tree, common))
         self.assertEqual("main\n", self.git(self.hub, "branch", "--show-current"))
         self.assertEqual("", self.git(self.hub, "status", "--porcelain"))
+
+    def index_file(self, value: Path | str) -> dict[str, str]:
+        return {**self.environment, "GIT_INDEX_FILE": str(value)}
+
+    def test_an_index_file_a_guarded_hub_holds_refuses_every_git_call_unless_it_is_the_call_s_own(self) -> None:
+        # A hook or an editor's terminal may hand the session the hub's GIT_INDEX_FILE. Every git call rewrites the
+        # index it is given, even a form that only reads the hub: status refreshes it, and a fast-forward or
+        # `worktree add -b`, whose `reset --hard` inherits the variable, writes a tree into it out of step with the
+        # hub's HEAD. So none runs, wherever it starts.
+        (self.tree / "new.txt").write_text("new\n", encoding="utf-8")
+        for index in (self.hub / ".git" / "index", self.hub / ".git" / "other-index", self.hub / "README.md"):
+            environment = self.index_file(index)
+            for command in (
+                "git add new.txt",
+                "git reset",
+                "git read-tree HEAD",
+                "git update-index --refresh",
+                "git checkout -- .",
+                "git commit -m x",
+                "git status",
+                "git diff",
+                "git log -1",
+                "git merge --ff-only origin/main",
+                "git pull --ff-only origin main",
+                "git worktree add -b task/x ../x",
+                "gh pr checkout 12",
+            ):
+                for shell in (self.bash, self.powershell):
+                    with self.subTest(index=str(index), command=command, shell=shell.__name__):
+                        self.assertEqual("deny", shell(command, self.tree, environment))
+                        self.assertIn(f"GIT_INDEX_FILE={index}, an index the guarded hub", self.reason)
+        # In the hub its read-only forms are refused too, given its own index as much as any other: `worktree add -b`
+        # starts a `reset --hard`, and `worktree remove` a clean check, in another checkout, each inheriting the
+        # variable, so the hub's index gets the new worktree's tree while the hub's HEAD stays where it was.
+        for index in (self.hub / ".git" / "index", self.hub / ".git" / "other-index"):
+            for command in (
+                "git status",
+                f'git worktree add -b task/x "{self.worktrees / "task-x"}" origin/main',
+                f'git worktree remove "{self.tree}"',
+            ):
+                for shell in (self.bash, self.powershell):
+                    with self.subTest(index=str(index), command=command, shell=shell.__name__, cwd="hub"):
+                        self.assertEqual("deny", shell(command, self.hub, self.index_file(index)))
+                        self.assertIn(f"GIT_INDEX_FILE={index}, an index the guarded hub", self.reason)
+        self.assertEqual("", self.git(self.hub, "status", "--porcelain"))
+        # One no guarded hub holds changes nothing, nor does the worktree's own, which lies in the hub's git directory.
+        # git answers with forward slashes on Windows, so the answer is compared as a path, never as text.
+        own = Path(self.git(self.tree, "rev-parse", "--path-format=absolute", "--git-path", "index").strip())
+        self.assertTrue(own.is_relative_to(self.hub / ".git"), own)
+        for index in (self.root / "elsewhere" / "index", own):
+            environment = self.index_file(index)
+            with self.subTest(index=str(index)):
+                self.assertIsNone(self.bash("git add . && git commit -m x && git status", self.tree, environment))
+                self.assertIsNone(self.powershell("git reset", self.tree, environment))
+                # In the hub the call writes the hub's tree whichever index it stages into.
+                self.assertEqual("deny", self.bash("git checkout -- .", self.hub, environment))
+        # The worktree's own index is the call's own only where the guard can tell where it starts.
+        self.assertEqual("deny", self.bash('cd "$SOMEWHERE_UNSET" && git add .', self.tree, self.index_file(own)))
+        self.assertIn("an index the guarded hub", self.reason)
+
+    def test_a_relative_index_file_is_refused_while_a_hub_is_guarded(self) -> None:
+        # git reads a relative path from the directory each process it starts works in, so `worktree add`'s
+        # `reset --hard` reads it from the new worktree, where this one reaches the hub's index.
+        relative = os.path.relpath(self.hub / ".git" / "index", self.tree / "deep" / "er" / "nn")
+        for value in (relative, "staged-index"):
+            environment = self.index_file(value)
+            for command in ("git worktree add -b task/x deep/er/nn", "git add .", "git log -1"):
+                for shell in (self.bash, self.powershell):
+                    with self.subTest(value=value, command=command, shell=shell.__name__):
+                        self.assertEqual("deny", shell(command, self.tree, environment))
+                        self.assertIn("a GIT_INDEX_FILE the guard cannot place", self.reason)
+        # With no guarded hub in view it is allowed, with a note.
+        outside = self.root / "outside"
+        outside.mkdir()
+        unshared = {name: value for name, value in self.environment.items() if name != "CLAUDE_PROJECT_DIR"}
+        self.assertIsNone(self.bash("git add .", outside, {**unshared, "GIT_INDEX_FILE": "staged-index"}))
+        self.assertIn("could not tell where the index of `git add` lies", self.stderr)
+
+    def test_an_index_file_the_text_does_not_settle_is_refused_while_a_hub_is_guarded(self) -> None:
+        # A command cannot set the variable itself: every form that would is a part the guard does not read.
+        for command in (
+            'GIT_INDEX_FILE="$x" git add .',
+            "export GIT_INDEX_FILE=/x; git add .",
+            "env GIT_INDEX_FILE=/x git add .",
+        ):
+            with self.subTest(command=command):
+                self.assertEqual("deny", self.bash(command, self.tree))
+                self.assertIn(UNREAD, self.reason)
+        for command in ("$env:GIT_INDEX_FILE = '/x'; git add .", "$env:GIT_INDEX_FILE = $x; git add ."):
+            with self.subTest(command=command):
+                self.assertEqual("deny", self.powershell(command, self.tree))
+        # A call read with options the text does not show, as an alias's is where nothing settles them, may be given
+        # any index.
+        place = hub_guard.GitOptions.initial(self.tree, {}, opaque=True).place()
+        self.assertTrue(place.index_named)
+        self.assertIsNone(place.index)
+        call = hub_guard.GitCall(hub_guard.Place(self.tree, self.tree, index_named=True), "add", ["."])
+        notes: list[str] = []
+        reason = hub_guard.Judge({self.hub}, self.environment, notes, math.inf).judge(call, 0)
+        self.assertIn("a GIT_INDEX_FILE the guard cannot place", reason or "")
+        self.assertIsNone(hub_guard.Judge(set(), self.environment, notes, math.inf).index_refusal(call))
+        self.assertIn("could not tell where the index of `git add` lies", notes)
+
+    def test_an_index_file_git_cannot_place_is_refused_while_a_hub_is_guarded(self) -> None:
+        failure = git_client.GitError("git could not read it", returncode=128)
+        environment = self.index_file(self.root / "elsewhere" / "index")
+        with mock.patch.object(hub_guard, "protecting_hub", side_effect=failure):
+            for shell in (self.bash, self.powershell):
+                with self.subTest(shell=shell.__name__):
+                    self.assertEqual("deny", shell("git add .", self.tree, environment))
+                    self.assertIn("a GIT_INDEX_FILE the guard cannot place", self.reason)
+
+    def test_own_index_is_the_index_git_uses_for_the_call_s_repository_and_fails_closed(self) -> None:
+        own = Path(self.git(self.tree, "rev-parse", "--path-format=absolute", "--git-path", "index").strip())
+        outside = self.root / "outside"
+        outside.mkdir()
+        place = hub_guard.Place(self.tree, self.tree)
+        self.assertTrue(hub_guard.own_index(place, own))
+        self.assertFalse(hub_guard.own_index(place, self.hub / ".git" / "index"))
+        # A repository named with --git-dir or GIT_DIR is the one asked, wherever git starts.
+        self.assertTrue(hub_guard.own_index(hub_guard.Place(outside, outside, own.parent, True), own))
+        # A start in no repository, one that is no folder, none at all, and a repository named but not settled have
+        # no index of their own.
+        for start, repository, named in (
+            (outside, None, False),
+            (self.root / "missing", None, False),
+            (None, None, False),
+            (self.tree, None, True),
+        ):
+            with self.subTest(start=str(start), named=named):
+                self.assertFalse(hub_guard.own_index(hub_guard.Place(start, start, repository, named), own))
+        # git's answer is compared as the path it names, however it is spelled: forward slashes, as git writes on
+        # Windows, and a segment that names the folder it is in.
+        spelled = f"{own.parent.as_posix()}/./{own.name}\n"
+        with mock.patch.object(worktrees.CLIENT, "output", return_value=spelled):
+            self.assertTrue(hub_guard.own_index(place, own))
+        # An answer of other than one line is an error, never a match.
+        with (
+            mock.patch.object(worktrees.CLIENT, "output", return_value=f"{own}\n{own}\n"),
+            self.assertRaisesRegex(git_client.GitError, "answered 2 lines for the index of"),
+        ):
+            hub_guard.own_index(place, own)
+
+    if not platform_support.WINDOWS:
+        # Windows makes a symbolic link only with a privilege a test cannot count on.
+
+        def test_an_inherited_index_file_reached_through_a_symbolic_link_is_judged_by_its_target(self) -> None:
+            linked_file = self.root / "linked-index"
+            linked_file.symlink_to(self.hub / ".git" / "index")
+            linked_folder = self.root / "linked-git"
+            linked_folder.symlink_to(self.hub / ".git", target_is_directory=True)
+            for index in (linked_file, linked_folder / "index"):
+                with self.subTest(index=str(index)):
+                    self.assertEqual("deny", self.bash("git add .", self.tree, self.index_file(index)))
+            elsewhere = self.root / "elsewhere"
+            elsewhere.mkdir()
+            (self.root / "linked-elsewhere").symlink_to(elsewhere / "index")
+            self.assertIsNone(self.bash("git add .", self.tree, self.index_file(self.root / "linked-elsewhere")))
+
+    def test_gh_checking_a_branch_out_is_placed_by_the_inherited_variables(self) -> None:
+        # gh runs git in its own directory with the environment it was given.
+        self.assertIsNone(self.bash("gh pr checkout 12", self.tree))
+        for name, value in (("GIT_INDEX_FILE", self.hub / ".git" / "index"), ("GIT_DIR", self.hub / ".git")):
+            with self.subTest(name=name):
+                environment = {**self.environment, name: str(value)}
+                self.assertEqual("deny", self.bash("gh pr checkout 12", self.tree, environment))
 
     def test_an_inherited_location_variable_cannot_hide_the_hub_from_the_file_guard(self) -> None:
         other = self.other_repository() / ".git"
