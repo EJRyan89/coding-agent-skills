@@ -37,7 +37,7 @@ The maintainer's machines, on Windows, macOS, and Linux, ran the [runtime canary
 
 ## Quick start
 
-You need Python 3.11.4 or newer, Git for Windows (on Linux and macOS, Git and Bash), ShellCheck, and PowerShell (PowerShell 7 on Linux and macOS); several skills also use the GitHub CLI. [Installation](docs/installation.md) gives the install commands and explains each step below.
+You need Python 3.12.0 or newer, Git for Windows (on Linux and macOS, Git and Bash), ShellCheck, and PowerShell (PowerShell 7 on Linux and macOS); several skills also use the GitHub CLI. [Installation](docs/installation.md) gives the install commands and explains each step below.
 
 ```bash
 git clone https://github.com/EJRyan89/coding-agent-skills.git

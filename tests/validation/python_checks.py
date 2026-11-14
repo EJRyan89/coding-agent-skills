@@ -5462,7 +5462,7 @@ class PythonChecksPolicies(unittest.TestCase):
 
     def test_type_check_configuration_is_pinned(self) -> None:
         configuration = tomllib.loads((REPOSITORY_ROOT / "pyproject.toml").read_text(encoding="utf-8"))["tool"]["mypy"]
-        self.assertEqual("3.11", configuration["python_version"])
+        self.assertEqual("3.12", configuration["python_version"])
         self.assertIs(True, configuration["explicit_package_bases"])
         # Default strictness, and no module, suite, or import is exempt; every root is also checked with --strict, as
         # [tool.validation] lists them. No platform: each host checks the code as it runs there, so every platform's

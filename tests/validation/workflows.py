@@ -948,7 +948,7 @@ LINUX_LEG_NAME = "Linux shard ${{ matrix.shard }}, Python ${{ matrix.python-vers
 # The Linux legs' Python, as the Windows legs': the floor in deployer/tools.py on every run, and the latest stable
 # release beside it on the weekly schedule only, so the Linux-only branches meet a new interpreter without it blocking
 # a pull request through the required check.
-LINUX_PYTHON = "${{ github.event_name == 'schedule' && fromJSON('[\"3.11\", \"3.x\"]') || fromJSON('[\"3.11\"]') }}"
+LINUX_PYTHON = "${{ github.event_name == 'schedule' && fromJSON('[\"3.12\", \"3.x\"]') || fromJSON('[\"3.12\"]') }}"
 # What each Linux leg's validation step runs, as the Windows legs' step does: its own shard, every suite outside a pull
 # request, and a pull request's body and title as files written from the event payload.
 LINUX_VALIDATION_LINES = (
@@ -1896,7 +1896,7 @@ MUTATION_WINDOWS_SHELLCHECK = [
 # The verify step's ShellCheck lines, which the validation legs' verify step runs too.
 MUTATION_SHELLCHECK_VERIFY = list(PINNED_TOOL_LINES[:2])
 MUTATION_LOCKED_PYTHON = {
-    "python-version": "3.11",
+    "python-version": "3.12",
     "cache": "pip",
     "cache-dependency-path": "requirements-mutation.txt",
 }
@@ -1993,7 +1993,7 @@ MUTATION_JOBS: dict[str, dict[str, object]] = {
         "runs-on": "ubuntu-latest",
         "timeout-minutes": "15",
         "checkout": NO_STORED_CREDENTIAL,
-        "python": {"python-version": "3.11"},
+        "python": {"python-version": "3.12"},
         "scripts": [[f"{MUTATION_GATE} join mutation"]],
         "shells": [None],
         "ids": ["join"],

@@ -21,7 +21,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent / "skills" / "ejryan89-sk
 
 from console import run_main
 
-MINIMUM_PYTHON = (3, 11, 4)
+# deployer/tools.py's MINIMUM_PYTHON, with its reason beside it, repeated here because the check below runs before
+# the deployer is importable.
+MINIMUM_PYTHON = (3, 12, 0)
 
 # The returns tests/validation/exit_tables.py cannot follow from main into the deployer, with where their codes come
 # from; the table above names them.

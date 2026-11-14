@@ -52,7 +52,7 @@ from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, TypeVar
+from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
@@ -78,7 +78,6 @@ from path_keys import name_key, path_key
 from skill_roots import skills_directory_holding
 from typed_fields import FieldError, FieldReader, describe
 
-T = TypeVar("T")
 PLAN_SCHEMA_VERSION = 1
 # Where each plan's and sweep record's seal lives: the SHA-256 of its bytes as this script last saved them, in a file
 # named by the SHA-256 of its resolved path. Every command reads a plan or record only when its bytes match its seal, so
@@ -367,7 +366,7 @@ def ahead_behind(services: Services, root: str | Path, local: str, upstream: str
     return int(ahead), int(behind)
 
 
-def read_worktree(
+def read_worktree[T](
     services: Services, directory: str | Path, subcommand: str, reader: Callable[..., T], *options: str
 ) -> T:
     """What ejryan89-skill-core's `reader` reads of the checkout at `directory` through `git <subcommand>`, a git that
@@ -1564,7 +1563,7 @@ def apply(plan_path: str, services: Services) -> bool:
     return run_and_report(plan_path, plan, lambda: apply_plan(plan, services), APPLY_STOP)
 
 
-def run_and_report(plan_path: str, plan: dict[str, Any], action: Callable[[], T], marker: str) -> T:
+def run_and_report[T](plan_path: str, plan: dict[str, Any], action: Callable[[], T], marker: str) -> T:
     """Run `action` on the plan, then save the plan and print its summary, also when the action failed partway.
 
     Every branch deleted and worktree removed before a failure is then in the summary, printed ahead of the failure.
@@ -1831,10 +1830,7 @@ def delete_tree(path: Path) -> None:
         Path(target).chmod(stat.S_IWRITE)
         function(target)
 
-    if sys.version_info >= (3, 12):
-        shutil.rmtree(path, onexc=writable)
-    else:
-        shutil.rmtree(path, onerror=writable)
+    shutil.rmtree(path, onexc=writable)
 
 
 def remove_detached(services: Services, plan: dict[str, Any], path: str, sha: str) -> bool:

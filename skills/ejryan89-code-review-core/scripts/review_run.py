@@ -13,7 +13,7 @@ from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
-from typing import Any, NotRequired, TypedDict, TypeVar, cast, get_origin, get_type_hints
+from typing import Any, NotRequired, TypedDict, cast, get_origin, get_type_hints
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
@@ -48,8 +48,6 @@ from review_specialists import SpecialistError
 from review_state import StateError, utc_today
 from review_vocabularies import DISPATCH_MODES, DispatchMode
 from typed_fields import FieldError, FieldReader, describe
-
-T = TypeVar("T")
 
 # The pipeline's command line, which a role's prompt names and the Copilot CLI host is started as.
 PIPELINE_SCRIPT = Path(__file__).resolve().parent / "review_pipeline.py"
@@ -429,12 +427,12 @@ def _read_role(value: object, path: str) -> RunRole:
     return role
 
 
-def _object_of(value: object, path: str, read: Callable[[object, str], T]) -> dict[str, T]:
+def _object_of[T](value: object, path: str, read: Callable[[object, str], T]) -> dict[str, T]:
     """An object whose every value `read` reads at `path.<key>`."""
     return {key: read(entry, f"{path}.{key}") for key, entry in READ.json_object(value, path).items()}
 
 
-def _by_role(
+def _by_role[T](
     value: object, path: str, roles: Collection[str], read: Callable[[object, str], T], *, every: bool = False
 ) -> dict[str, T]:
     """An object keyed by the run's roles, every one of them when `every`, whose every value `read` reads."""
