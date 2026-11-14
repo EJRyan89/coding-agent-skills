@@ -3752,7 +3752,7 @@ class GuardGitTests(unittest.TestCase):
 @pytest.mark.parametrize(
     ("value", "expected"),
     [
-        ("/tmp/trace", True),
+        ("/srv/trace", True),
         # git reads a backslash as a separator and a drive as absolute, as git for Windows does.
         ("C:\\x\\trace", True),
         ("C:/x", True),
