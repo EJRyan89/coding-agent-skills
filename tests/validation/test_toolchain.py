@@ -124,7 +124,7 @@ class ToolchainFixtures(unittest.TestCase):
     def test_prerequisite_check_reports_every_tool_older_than_its_floor(self) -> None:
         self.assertEqual(
             [
-                "  - Python 3.11.3 is older than the floor 3.11.4 in docs/dependency-updates.md",
+                "  - Python 3.11.3 is older than the floor 3.12.0 in docs/dependency-updates.md",
                 "  - ShellCheck 0.8.0 is older than the floor 0.9.0 in docs/dependency-updates.md: "
                 "winget install --id koalaman.shellcheck",
                 "  - PowerShell 7 (pwsh): its version could not be read; the floor is 7.0 in "
@@ -141,7 +141,7 @@ class ToolchainFixtures(unittest.TestCase):
             [],
             outdated_prerequisites(
                 {BASH: (5, 2), "ShellCheck": (0, 9, 0), "PowerShell 7 (pwsh)": (7, 5, 3), "ruff": (0, 17, 3)},
-                (3, 11, 4),
+                (3, 12, 0),
             ),
         )
         # A missing tool is reported by missing_prerequisites, not again here.
@@ -150,23 +150,23 @@ class ToolchainFixtures(unittest.TestCase):
     def test_a_tool_at_its_floor_needs_no_install_hint(self) -> None:
         # Only a tool reported is given its install command, so a platform with none for it reports nothing.
         with mock.patch.object(platform_support, "INSTALL_HINTS", {}):
-            self.assertEqual([], outdated_prerequisites({BASH: (5, 3, 15), "ShellCheck": (0, 9, 0)}, (3, 11, 4)))
+            self.assertEqual([], outdated_prerequisites({BASH: (5, 3, 15), "ShellCheck": (0, 9, 0)}, (3, 12, 0)))
 
     def test_a_bash_older_than_the_floor_is_reported_with_its_install_command(self) -> None:
         # macOS's own /bin/bash is a 3.2, which reads text the Bash reader is held to differently.
         with mock.patch.object(platform_support, "INSTALL_HINTS", {BASH: "brew install bash"}):
             self.assertEqual(
                 [f"  - {BASH} 3.2.57 is older than the floor 5.2 in docs/dependency-updates.md: brew install bash"],
-                outdated_prerequisites({BASH: (3, 2, 57)}, (3, 11, 4)),
+                outdated_prerequisites({BASH: (3, 2, 57)}, (3, 12, 0)),
             )
             self.assertEqual(
                 [
                     f"  - {BASH}: its version could not be read; the floor is 5.2 in docs/dependency-updates.md: "
                     "brew install bash"
                 ],
-                outdated_prerequisites({BASH: None}, (3, 11, 4)),
+                outdated_prerequisites({BASH: None}, (3, 12, 0)),
             )
-            self.assertEqual([], outdated_prerequisites({BASH: (5, 2, 0)}, (3, 11, 4)))
+            self.assertEqual([], outdated_prerequisites({BASH: (5, 2, 0)}, (3, 12, 0)))
 
     def test_tool_versions_reads_each_found_tool(self) -> None:
         def raises() -> str:
@@ -567,6 +567,6 @@ class PytestPrerequisiteFixtures(unittest.TestCase):
         )
 
     def test_pytest_older_than_its_pin_stops_the_run(self) -> None:
-        outdated = toolchain.outdated_prerequisites({"pytest": (9, 0, 3)}, (3, 11, 4))
+        outdated = toolchain.outdated_prerequisites({"pytest": (9, 0, 3)}, (3, 12, 0))
         self.assertEqual(1, len(outdated))
         self.assertIn("pytest 9.0.3 is older than the floor 9.2.0 in docs/dependency-updates.md", outdated[0])

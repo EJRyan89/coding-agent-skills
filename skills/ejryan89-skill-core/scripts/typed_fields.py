@@ -71,7 +71,7 @@ def _names(values: Iterable[object]) -> str:
     return ", ".join(json.dumps(value) for value in values)
 
 
-def _ordered(values: Collection[T]) -> list[T]:
+def _ordered[T](values: Collection[T]) -> list[T]:
     """A set's values sorted, so an error names them the same way every run; a sequence's in its own order."""
     if isinstance(values, set | frozenset):
         return sorted(values, key=lambda value: (type(value).__name__, str(value)))

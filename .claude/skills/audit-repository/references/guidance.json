@@ -795,7 +795,7 @@
     {
       "url": "https://devguide.python.org/versions/",
       "subject": "python",
-      "governs": "supported Python versions and the end of life of the 3.11 floor",
+      "governs": "supported Python versions and the end of life of the Python floor",
       "read": [
         "v0.10.0",
         "v0.11.0",

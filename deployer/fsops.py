@@ -8,7 +8,6 @@ from __future__ import annotations
 import os
 import shutil
 import stat
-import sys
 import tarfile
 import tempfile
 from collections.abc import Callable
@@ -70,10 +69,7 @@ def _retry_writable(function: Callable[[str], object], name: str, error: BaseExc
 
 
 def _remove_tree(path: Path) -> None:
-    if sys.version_info >= (3, 12):
-        shutil.rmtree(path, onexc=_retry_writable)
-    else:
-        shutil.rmtree(path, onerror=lambda function, name, info: _retry_writable(function, name, info[1]))
+    shutil.rmtree(path, onexc=_retry_writable)
 
 
 def remove(path: Path) -> None:
