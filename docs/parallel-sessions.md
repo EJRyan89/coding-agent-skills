@@ -310,8 +310,15 @@ a row decides it.
   else the one git finds from where it starts, which inside a git directory, such as `-C <hub>/.git`, is that
   directory's own repository; the work tree is the one `--work-tree`, `GIT_WORK_TREE`, or a `core.worktree` setting
   names, or else where git starts, after each `-C`. A relative path is read from where git finally starts, and a
-  relative `core.worktree` from the repository it is set for. `GIT_COMMON_DIR` names only the store of refs and
-  objects every worktree shares, so it does not change which checkout a call writes. The guard reads git's own
+  relative `core.worktree` from the repository it is set for. An index file `GIT_INDEX_FILE` names is the hub's too
+  when a guarded hub holds it, anywhere in its git directory or among the files of its checkout, unless it is the
+  index git uses anyway for the call's own repository, as a worktree's own index in the hub's git directory is; a
+  call that stages into it acts on that hub, so only the hub's read-only forms run, from wherever it starts. The
+  index is read as git reads it, a symbolic link followed to its target, and a relative path from each directory
+  git may read it from, where it starts, its work tree, and the top of that work tree, the call acting on the hub
+  where any of them reaches it. `gh` checking a branch out runs git with the same variables, so they place it too.
+  `GIT_COMMON_DIR` names only the store of refs and objects every worktree shares, so it does not change which
+  checkout a call writes. The guard reads git's own
   options as git does, with no abbreviation and with a value attached after `=` or as the next word (`-C`, `-c`,
   `--attr-source`, `--config-env`, `--git-dir`, `--namespace`, `--shallow-file`, `--super-prefix`, `--work-tree`),
   and `core.worktree` and `alias.<name>` among the command-line configuration a call sees: `GIT_CONFIG_PARAMETERS`,
@@ -616,8 +623,7 @@ The hook sees the command text. It does not see:
   function, and not under `/bin/sh`, where it does not; no syntax PowerShell also parses shuts every such name out;
 - what the shell's own startup files set: an alias, a function, or an option they define, or a variable the Bash
   tool's shell holds that the hook's environment does not, or holds with another value;
-- a work tree set in a repository's own configuration, or `GIT_INDEX_FILE`, which moves only the index: the guard
-  judges such a call by the checkout whose `HEAD` and tree it writes;
+- a work tree set in a repository's own configuration: the guard judges such a call by the checkout it runs in;
 - a ref moved from another checkout, such as `git update-ref refs/heads/main` run in a worktree: refs live in the
   store every worktree shares, and the guard judges a call by the checkout whose `HEAD`, index, and tree it writes.
 

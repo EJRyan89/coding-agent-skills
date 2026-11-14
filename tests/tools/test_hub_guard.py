@@ -1720,6 +1720,80 @@ class CommandGuardTests(GuardTestCase):
         self.assertEqual("main\n", self.git(self.hub, "branch", "--show-current"))
         self.assertEqual("", self.git(self.hub, "status", "--porcelain"))
 
+    def index_file(self, value: Path | str) -> dict[str, str]:
+        return {**self.environment, "GIT_INDEX_FILE": str(value)}
+
+    def test_an_inherited_index_file_is_a_write_to_the_guarded_hub_holding_it_unless_it_is_the_call_s_own(self) -> None:
+        # A hook or an editor's terminal may hand the session the hub's own GIT_INDEX_FILE: git in the worktree then
+        # stages into the hub's index, so only the hub's read-only forms run, as in the hub itself.
+        (self.tree / "new.txt").write_text("new\n", encoding="utf-8")
+        for index in (self.hub / ".git" / "index", self.hub / ".git" / "other-index", self.hub / "README.md"):
+            environment = self.index_file(index)
+            for command in (
+                "git add new.txt",
+                "git reset",
+                "git read-tree HEAD",
+                "git update-index --refresh",
+                "git checkout -- .",
+                "git commit -m x",
+            ):
+                for shell in (self.bash, self.powershell):
+                    with self.subTest(index=str(index), command=command, shell=shell.__name__):
+                        self.assertEqual("deny", shell(command, self.tree, environment))
+            with self.subTest(index=str(index), command="git log"):
+                self.assertIsNone(self.bash("git log -1", self.tree, environment))
+        self.assertEqual("", self.git(self.hub, "status", "--porcelain"))
+        # One no guarded hub holds changes nothing, nor does the worktree's own, which lies in the hub's git directory.
+        own = self.git(self.tree, "rev-parse", "--path-format=absolute", "--git-path", "index").strip()
+        self.assertTrue(own.startswith(str(self.hub / ".git")), own)
+        for index in (self.root / "elsewhere" / "index", Path(own)):
+            environment = self.index_file(index)
+            with self.subTest(index=str(index)):
+                self.assertIsNone(self.bash("git add . && git commit -m x", self.tree, environment))
+                self.assertIsNone(self.powershell("git reset", self.tree, environment))
+                # In the hub the call writes the hub's tree whichever index it stages into.
+                self.assertEqual("deny", self.bash("git checkout -- .", self.hub, environment))
+
+    def test_a_relative_inherited_index_file_is_read_from_the_top_of_the_work_tree(self) -> None:
+        # git moves to the top of the work tree before it opens the index, so a relative path is read from there.
+        sub = self.tree / "sub"
+        sub.mkdir()
+        (sub / "new.txt").write_text("new\n", encoding="utf-8")
+        relative = os.path.relpath(self.hub / ".git" / "index", self.tree)
+        environment = self.index_file(relative)
+        self.assertEqual("deny", self.bash("git add new.txt", sub, environment))
+        self.assertEqual("deny", self.powershell("git add new.txt", sub, environment))
+        self.assertIsNone(self.bash("git add new.txt", sub, self.index_file("staged-index")))
+        # The reading the guard holds is git's own: a relative index named from the subfolder lands at the top.
+        staged = {**self.environment, "GIT_INDEX_FILE": "staged-index"}
+        subprocess.run(["git", "add", "new.txt"], cwd=sub, env=staged, check=True, capture_output=True)
+        self.assertTrue((self.tree / "staged-index").is_file())
+        self.assertFalse((sub / "staged-index").exists())
+
+    if not platform_support.WINDOWS:
+        # Windows makes a symbolic link only with a privilege a test cannot count on.
+
+        def test_an_inherited_index_file_reached_through_a_symbolic_link_is_judged_by_its_target(self) -> None:
+            linked_file = self.root / "linked-index"
+            linked_file.symlink_to(self.hub / ".git" / "index")
+            linked_folder = self.root / "linked-git"
+            linked_folder.symlink_to(self.hub / ".git", target_is_directory=True)
+            for index in (linked_file, linked_folder / "index"):
+                with self.subTest(index=str(index)):
+                    self.assertEqual("deny", self.bash("git add .", self.tree, self.index_file(index)))
+            elsewhere = self.root / "elsewhere"
+            elsewhere.mkdir()
+            (self.root / "linked-elsewhere").symlink_to(elsewhere / "index")
+            self.assertIsNone(self.bash("git add .", self.tree, self.index_file(self.root / "linked-elsewhere")))
+
+    def test_gh_checking_a_branch_out_is_placed_by_the_inherited_variables(self) -> None:
+        # gh runs git in its own directory with the environment it was given.
+        self.assertIsNone(self.bash("gh pr checkout 12", self.tree))
+        for name, value in (("GIT_INDEX_FILE", self.hub / ".git" / "index"), ("GIT_DIR", self.hub / ".git")):
+            with self.subTest(name=name):
+                environment = {**self.environment, name: str(value)}
+                self.assertEqual("deny", self.bash("gh pr checkout 12", self.tree, environment))
+
     def test_an_inherited_location_variable_cannot_hide_the_hub_from_the_file_guard(self) -> None:
         other = self.other_repository() / ".git"
         for name in ("GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR"):

@@ -388,10 +388,10 @@ GIT_OPTIONS_WITHOUT_VALUE = {
 }
 # Options after which git prints something and runs no subcommand of the command's.
 GIT_OPTIONS_THAT_PRINT = {"--version", "-v", "--help", "-h", "--exec-path", "--html-path", "--man-path", "--info-path"}
-# The variables that choose the repository or work tree whose HEAD, index, and files a git command writes.
-# GIT_COMMON_DIR is not one: it moves only the refs and objects every worktree shares, never a checkout's HEAD, index,
-# or tree. Nor is GIT_INDEX_FILE, which moves only the index; the guard judges such a call by the checkout it runs in.
-LOCATION_VARIABLES = ("GIT_DIR", "GIT_WORK_TREE")
+# The variables that choose the repository, work tree, or index file whose HEAD, index, and files a git command writes;
+# index_reached judges the index GIT_INDEX_FILE names. GIT_COMMON_DIR is not one: it moves only the refs and objects
+# every worktree shares, never a checkout's HEAD, index, or tree.
+LOCATION_VARIABLES = ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE")
 # The variables that carry command-line configuration, which git reads for core.worktree and alias.<name>.
 CONFIGURATION_VARIABLES = ("GIT_CONFIG_PARAMETERS", "GIT_CONFIG_COUNT")
 CONFIGURATION_PAIR = re.compile(r"GIT_CONFIG_(?:KEY|VALUE)_[0-9]+")
@@ -1253,30 +1253,31 @@ def git_builtins() -> frozenset[str]:
 
 
 def hub_protected(path: Path) -> bool:
-    """Whether path lies in the tracked surface of a guarded hub or anywhere in its git directory; ignored files such
-    as local settings do not.
+    """Whether path lies in the tracked surface of a guarded hub or anywhere in its git directory (protecting_hub).
 
     A checkout or git directory git answers with an error for may be a guarded hub's, so it is protected; where git
     did not run or finish, the GitError goes to the hook, which allows the edit with a note."""
-    normalized = Path(os.path.normpath(path))
-    for directory in (normalized, *normalized.parents):
-        if platform_support.name_key(directory.name, directory.parent) == ".git" and directory.is_dir():
-            try:
-                return guarded_hub_of_repository(directory) is not None
-            except GitError as exc:
-                if not exc.answered:
-                    raise
-                return True
-
     try:
-        hub = guarded_hub_at(normalized)
+        return protecting_hub(path) is not None
     except GitError as exc:
         if not exc.answered:
             raise
         return True
-    if hub is None:
-        return False
-    return git(hub, "check-ignore", "-q", "--no-index", str(normalized)).returncode != 0
+
+
+def protecting_hub(path: Path) -> Path | None:
+    """The guarded hub whose git directory holds path, anywhere in it, or whose checkout holds it among the files it
+    does not ignore; ignored files such as local settings are no hub's. None where no guarded hub holds it.
+
+    Raises GitError where git cannot tell, as guarded_hub_of_repository and guarded_hub_at do."""
+    normalized = Path(os.path.normpath(path))
+    for directory in (normalized, *normalized.parents):
+        if platform_support.name_key(directory.name, directory.parent) == ".git" and directory.is_dir():
+            return guarded_hub_of_repository(directory)
+    hub = guarded_hub_at(normalized)
+    if hub is None or git(hub, "check-ignore", "-q", "--no-index", str(normalized)).returncode == 0:
+        return None
+    return hub
 
 
 def hubs_in_view(cwd: Path, environment: Mapping[str, str]) -> set[Path]:
@@ -1311,7 +1312,8 @@ class Place:
     start is where git starts, after each -C; tree is the work tree whose files it writes; repository is the git
     directory whose HEAD and index it writes when one is named, and otherwise git finds it from start. None is a
     place the text does not settle. aliases holds the alias.<name> settings given on the command line, or is None when
-    command-line configuration the text does not settle may hold any.
+    command-line configuration the text does not settle may hold any. index is the index file GIT_INDEX_FILE names, as
+    written, when index_named, None where the text does not settle it; index_reached reads it.
     """
 
     start: Path | None
@@ -1319,6 +1321,8 @@ class Place:
     repository: Path | None = None
     repository_named: bool = False
     aliases: Mapping[str, str | None] | None = field(default_factory=dict)
+    index_named: bool = False
+    index: Word = None
 
 
 @dataclass(frozen=True)
@@ -1572,17 +1576,20 @@ class GitOptions:
     git_dir: tuple[bool, Word]
     work_tree: tuple[bool, Word]
     configuration: Configuration
+    # The index file GIT_INDEX_FILE names, which no option of git's own does.
+    index_file: tuple[bool, Word] = (False, None)
 
     @classmethod
     def initial(cls, cwd: Path | None, values: Mapping[str, Word], opaque: bool) -> GitOptions:
         if opaque:
-            # Variables the text does not show may name any repository or work tree.
-            return cls(cwd, (True, None), (True, None), Configuration(settled=False))
+            # Variables the text does not show may name any repository, work tree, or index file.
+            return cls(cwd, (True, None), (True, None), Configuration(settled=False), (True, None))
         return cls(
             cwd,
             ("GIT_DIR" in values, values.get("GIT_DIR")),
             ("GIT_WORK_TREE" in values, values.get("GIT_WORK_TREE")),
             environment_configuration(values),
+            ("GIT_INDEX_FILE" in values, values.get("GIT_INDEX_FILE")),
         )
 
     def copy(self) -> GitOptions:
@@ -1604,7 +1611,8 @@ class GitOptions:
             tree = moved(base, core_worktree)
         else:
             tree = self.start
-        return Place(self.start, tree, repository, named_dir, self.configuration.aliases())
+        named_index, index = self.index_file
+        return Place(self.start, tree, repository, named_dir, self.configuration.aliases(), named_index, index)
 
 
 def is_absolute(value: Word) -> bool:
@@ -2479,7 +2487,67 @@ def reached_hub(place: Place) -> tuple[Path | None, bool]:
         unknown = True
     else:
         hub = hub or guarded_hub_at(place.start)
-    return hub, unknown
+    index_hub, index_unknown = index_reached(place)
+    return hub or index_hub, unknown or index_unknown
+
+
+def index_reached(place: Place) -> tuple[Path | None, bool]:
+    """The guarded hub a call at place writes through the index file GIT_INDEX_FILE names, and whether the text does
+    not settle it.
+
+    One form is accepted: an index no guarded hub holds (protecting_hub), or the one git uses for the call's own
+    repository without the variable (own_index). Any other a guarded hub holds, its own index, another worktree's, or
+    any file in its git directory or tracked surface, is a write to that hub. git follows a symbolic link to write the
+    index through its lock file, so each link is followed here too; and git reads a relative path from the top of the
+    work tree it moves to, so one is read from each directory that may be, and reaches a hub where any reading does.
+    """
+    if not place.index_named:
+        return None, False
+    if place.index is None:
+        return None, True
+    named = Path(platform_support.from_shell_path(place.index))
+    bases = [None] if named.is_absolute() else index_bases(place)
+    if bases is None:
+        return None, True
+    for base in bases:
+        index = Path(os.path.realpath(named if base is None else base / named))
+        try:
+            hub = protecting_hub(index)
+            if hub is not None and not own_index(place, index):
+                return hub, False
+        except GitError:
+            return None, True  # an index git cannot read the place of may be a guarded hub's
+    return None, False
+
+
+def index_bases(place: Place) -> list[Path] | None:
+    """The directories git may read a relative GIT_INDEX_FILE from: where it starts, its work tree, and the top of the
+    checkout holding that; None where the text does not settle them."""
+    if place.start is None or place.tree is None:
+        return None
+    checkout = checkout_of(place.tree)
+    return [place.start, place.tree, *([] if checkout is None else [checkout.toplevel])]
+
+
+def own_index(place: Place, index: Path) -> bool:
+    """Whether index is the one git uses for the repository of a call at place when no GIT_INDEX_FILE names one, as
+    `git rev-parse --git-path index` answers it, the guard's own git being given none of git's repository-selecting
+    variables. A place where git finds no repository has no index of its own."""
+    directory = place.start or place.tree
+    if directory is None or (place.repository_named and place.repository is None) or not worktrees.is_folder(directory):
+        return False
+    repository = ["--git-dir", str(place.repository)] if place.repository_named and place.repository else []
+    arguments = [*repository, "rev-parse", "--path-format=absolute", "--git-path", "index"]
+    try:
+        output = CLIENT.output(arguments, directory=directory, timeout=lookup_timeout())
+    except GitError as exc:
+        if exc.kind == "not_repository":
+            return False
+        raise
+    lines = output_lines(output)
+    if len(lines) != 1:
+        raise GitError(f"git rev-parse answered {len(lines)} lines for the index of {directory}, not one")
+    return same_path(Path(os.path.realpath(lines[0])), index)
 
 
 @dataclass
@@ -3559,7 +3627,9 @@ def read_gh(arguments: list[Word], directory: Directory, reading: Reading) -> No
             "may be one that checks a branch out"
         )
     elif tuple(named) in GH_CHECKOUTS:
-        place = Place(directory.cwd, directory.cwd)
+        # gh runs git in its own directory with the environment it was given, so the inherited variables place it.
+        values = git_variables(inherited_variables(reading.environment), reading.notes)
+        place = GitOptions.initial(directory.cwd, values, opaque=False).place()
         reading.calls.append(GitCall(place, " ".join(str(word) for word in named), [], program="gh"))
 
 
