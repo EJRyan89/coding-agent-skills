@@ -4101,6 +4101,36 @@ class PresenceReadTests(Fixture):
         )
         rows = self.answered(root, failing_without_a_file(Path, "iterdir", project))
         self.assertIn(["src/Harbor.Web", "Access is denied"], self.lines(rows, "UNREADABLE"))
+        # A config whose stat fails naming no file is reported against itself, never the folder, and the other config's
+        # redirects are still read.
+        failing = failing_without_a_file(file_presence, "is_present", project / "Web.config")
+        with failing:
+            graph = dependency_graph.build_graph(root, self.without_dotnet)
+        web = graph.projects[same_path(project / "Harbor.Web.csproj")]
+        self.assertEqual(["Beacon.App"], [redirect.name for redirect in web.file.redirects])
+        rows = self.answered(root, failing_without_a_file(file_presence, "is_present", project / "Web.config"))
+        unreadable = self.lines(rows, "UNREADABLE")
+        self.assertIn(["src/Harbor.Web/Web.config", "Access is denied"], unreadable)
+        self.assertNotIn(["src/Harbor.Web", "Access is denied"], unreadable)
+
+    def test_a_package_entry_it_cannot_stat_or_list_is_named_never_the_folder_above_it(self) -> None:
+        # A packages folder's <id>.<version>, and the NuGet cache's <id>/<version>, each in a folder of its own.
+        packages = unpacked(self.root / "solution", "Lantern.Core.1.0.0")
+        cache = unpacked(self.root / "home", "Lantern.Core/1.0.0")
+        for folder, owner, name, target in (
+            (packages, Path, "iterdir", packages),
+            (packages, file_presence, "is_directory", packages / "Lantern.Core.1.0.0"),
+            (cache, file_presence, "is_directory", cache / "Lantern.Core"),
+            (cache, Path, "iterdir", cache / "Lantern.Core"),
+            (cache, file_presence, "is_directory", cache / "Lantern.Core" / "1.0.0"),
+        ):
+            with (
+                self.subTest(f"{name} {target.relative_to(self.root).as_posix()}"),
+                failing_without_a_file(owner, name, target),
+                self.assertRaises(msbuild_reader.Unreadable) as raised,
+            ):
+                dependency_graph.package_directory([folder], "Lantern.Core", "1.0.0")
+            self.assertEqual((target, "Access is denied"), (raised.exception.file, raised.exception.reason))
 
     def test_a_config_or_project_folder_it_cannot_read_is_an_unreadable_row_and_a_folder_config_is_passed_over(
         self,

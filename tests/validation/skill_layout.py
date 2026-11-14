@@ -994,13 +994,18 @@ def skill_tree_problems(root: Path) -> list[str]:
         if file_presence.is_present(source)
         else {}
     )
-    problems = [
-        f"{directory.relative_to(root).as_posix()} holds no SKILL.md and source.json declares no such shared asset"
-        for directory in sorted(
-            path for path in skills.iterdir() if file_presence.is_directory(path, other_is_absent=True)
-        )
-        if not file_presence.is_present(directory / "SKILL.md", other_is_absent=True) and directory.name not in shared
-    ]
+    problems: list[str] = []
+    for directory in sorted(
+        path for path in skills.iterdir() if file_presence.is_directory(path, other_is_absent=True)
+    ):
+        shown = directory.relative_to(root).as_posix()
+        # A SKILL.md of another kind, or one a stat cannot examine, is named so, never as a folder that holds none.
+        reason = file_presence.refusal_reason(directory / "SKILL.md")
+        if reason == file_presence.MISSING:
+            if directory.name not in shared:
+                problems.append(f"{shown} holds no SKILL.md and source.json declares no such shared asset")
+        elif reason is not None:
+            problems.append(f"{shown}/SKILL.md {reason}")
     problems += [
         f"{skill_md.relative_to(root).as_posix()} is deeper than skills/<name>"
         for skill_md in file_presence.matching(skills, "**/SKILL.md")

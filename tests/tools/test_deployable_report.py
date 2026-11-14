@@ -8,8 +8,10 @@ spaces in its name are real.
 from __future__ import annotations
 
 import contextlib
+import errno
 import io
 import json
+import os
 import shutil
 import sys
 import tempfile
@@ -360,6 +362,17 @@ class DeployableReportTests(unittest.TestCase):
                 result = self.layout()
             self.assertEqual(report.FAILED, result.status)
             self.assertEqual(problem, result.detail)
+
+    def test_a_skill_file_whose_size_cannot_be_read_after_its_presence_is_named_never_raised(self) -> None:
+        # The file is gone between the presence read, answered here as present, and the size read.
+        skill = self.paths.dest_dir / "alpha" / "SKILL.md"
+        skill.unlink()
+        with mock.patch.object(file_presence, "refusal_reason", return_value=None):
+            result = self.layout()
+        reason = os.strerror(errno.ENOENT)
+        self.assertEqual(
+            (report.FAILED, f"alpha/SKILL.md cannot be examined: {reason}"), (result.status, result.detail)
+        )
 
     def test_a_folder_where_a_skill_file_or_agent_is_expected_is_named_not_a_file_never_missing(self) -> None:
         skill = self.paths.dest_dir / "alpha" / "SKILL.md"
