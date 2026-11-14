@@ -5492,6 +5492,32 @@ PRESENCE_SEARCH_REFUSAL_SHAPES = {
         "def f(p):\n    if {call}:\n        raise ValueError(f'{{p}} has no marker')\n"
         "    raise OSError(f'{{p}} has no folder')\n"
     ),
+    "any of a list of a negated test": (
+        "def f(ps):\n    if any([not {call} for p in ps]):\n        raise OSError(ps)\n    return 1\n"
+    ),
+    "any of a set of a negated test": (
+        "def f(ps):\n    if any({{not {call} for p in ps}}):\n        raise OSError(ps)\n    return 1\n"
+    ),
+    "any of a list a filter keeps": (
+        "def f(ps):\n    if any([p for p in ps if not {call}]):\n        raise OSError(ps)\n    return 1\n"
+    ),
+    "not all of a list of a test": (
+        "def f(ps):\n    if not all([{call} for p in ps]):\n        raise OSError(ps)\n    return 1\n"
+    ),
+    "all of a set of a test, else raise": (
+        "def f(ps):\n    if all({{{call} for p in ps}}):\n        return 1\n    else:\n        raise OSError(ps)\n"
+    ),
+    "any of a name bound to a list of a negated test": (
+        "def f(ps):\n    gone = [not {call} for p in ps]\n    if any(gone):\n        raise OSError(ps)\n    return 1\n"
+    ),
+    "not all of a name bound to a generator of a test": (
+        "def f(ps):\n    there = ({call} for p in ps)\n    if not all(there):\n        raise OSError(ps)\n"
+        "    return 1\n"
+    ),
+    "next of a name bound to a generator a filter keeps": (
+        "def f(ps):\n    gone = (p for p in ps if not {call})\n    if next(gone, None) is not None:\n"
+        "        raise OSError(ps)\n    return 1\n"
+    ),
     "any of a negated test": (
         "def f(ps, q):\n    if q or any(not {call} for p in ps):\n        raise OSError(ps)\n    return 1\n"
     ),
@@ -5635,6 +5661,21 @@ PRESENCE_PASSED = {
         "import file_presence\n\n\ndef f(ps, q):\n"
         "    found = [p for p in ps if file_presence.is_present(p, other_is_absent=True) and p in q]\n"
         "    if found:\n        raise OSError(found)\n    return 1\n"
+    ),
+    "a name bound to a comprehension and to something else": (
+        "import file_presence\n\n\ndef f(ps, q):\n"
+        "    gone = [not file_presence.is_present(p, other_is_absent=True) for p in ps]\n    if q:\n"
+        "        gone = q\n    if any(gone):\n        raise OSError(ps)\n    return 1\n"
+    ),
+    "limit: any of a list call over a comprehension": (
+        "import file_presence\n\n\ndef f(ps):\n"
+        "    if any(list(not file_presence.is_present(p, other_is_absent=True) for p in ps)):\n"
+        "        raise OSError(ps)\n    return 1\n"
+    ),
+    "limit: any of a dict comprehension": (
+        "import file_presence\n\n\ndef f(ps):\n"
+        "    if any({p: 1 for p in ps if not file_presence.is_present(p, other_is_absent=True)}):\n"
+        "        raise OSError(ps)\n    return 1\n"
     ),
     "limit: a loop of if P: return, then raise": (
         "import file_presence\n\n\ndef f(ps):\n    for p in ps:\n"
