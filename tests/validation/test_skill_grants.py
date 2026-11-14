@@ -29,7 +29,7 @@ from skill_grants import (
     tool_grant_problems,
 )
 from skill_scripts import RESULTS_DOC
-from validation_support import write_fixture_tree
+from validation_support import UnreadablePython, parse_python, write_fixture_tree
 
 # The allowance a script that starts the command a repository configures states, since its program is not the
 # script's to name.
@@ -206,6 +206,34 @@ class SkillGrantsFixtures(unittest.TestCase):
                 unreadable("built", 5, "*(f'{tool}({command})' for command in COMMANDS for tool in SHELLS)"),
                 unreadable("helper", 6, "*grants()"),
                 f"tools/one_shell.py:4 grants Bash({exact}) in one shell only; see {GRANTS_DOC}",
+                *(
+                    f"tools/wildcard.py:3 grants {shell}({wildcard}), whose * continues a path, so it reaches every "
+                    f"skill's scripts through ..; grant each script by name; see {GRANTS_DOC}"
+                    for shell in ("Bash", "PowerShell")
+                ),
+            ],
+            found,
+        )
+
+    def test_tool_grant_policy_reports_a_tool_that_does_not_parse_and_reads_the_rest(self) -> None:
+        wildcard = 'python -B "*review_pipeline.py" validate-result --run *'
+        tools = {
+            "broken": "def broken(:\n",
+            # A tool after the one that does not parse is still read.
+            "wildcard": (
+                f"command = [\n    'claude',\n    '--allowedTools',\n    'Bash({wildcard})',\n"
+                f"    'PowerShell({wildcard})',\n]\n"
+            ),
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            write_fixture_tree(root, {f"tools/{tool}.py": text for tool, text in tools.items()})
+            with self.assertRaises(UnreadablePython) as raised:
+                parse_python(root / "tools" / "broken.py")
+            found = tool_grant_problems(root)
+        self.assertEqual(
+            [
+                f"tools/broken.py {raised.exception}",
                 *(
                     f"tools/wildcard.py:3 grants {shell}({wildcard}), whose * continues a path, so it reaches every "
                     f"skill's scripts through ..; grant each script by name; see {GRANTS_DOC}"

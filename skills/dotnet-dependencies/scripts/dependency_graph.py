@@ -379,10 +379,14 @@ def nuget_cache() -> list[Path]:
         folders.append(absolute_home() / ".nuget" / "packages")
     except RelativeEnvironmentPath as error:
         raise Failed(f"{error}, so the NuGet cache under the home folder is not known") from None
-    try:
-        return [folder for folder in folders if file_presence.is_directory(folder, other_is_absent=True)]
-    except OSError as error:
-        raise os_unreadable(error, folders[0]) from None
+    found: list[Path] = []
+    for folder in folders:
+        try:
+            if file_presence.is_directory(folder, other_is_absent=True):
+                found.append(folder)
+        except OSError as error:
+            raise os_unreadable(error, folder) from None
+    return found
 
 
 def packages_folder(project_dir: Path, stop: Path) -> Path | None:

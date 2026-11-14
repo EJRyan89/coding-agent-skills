@@ -706,9 +706,11 @@ class PresenceReadTests(unittest.TestCase):
         sys.path.insert(0, str(SCRIPT.parent))
         sys.path.insert(0, str(SCRIPT.parents[4] / "skills" / "ejryan89-skill-core" / "scripts"))
         import conditions
+        import file_presence
         import untested_functions
 
         self.module = untested_functions
+        self.file_presence = file_presence
         self.missing_evidence = conditions.MissingEvidence
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
@@ -721,6 +723,26 @@ class PresenceReadTests(unittest.TestCase):
         )
         (self.root / "tests" / "test_folder.py").mkdir()
         self.assertEqual({"tests/deep/test_real.py": "def test_x():\n    pass\n"}, self.module.suites(self.root))
+
+    def test_suites_passes_over_a_file_under_a_suite_root_that_is_not_a_suite(self) -> None:
+        (self.root / "tests").mkdir()
+        (self.root / "tests" / "helper.py").write_text("def run():\n    pass\n", encoding="utf-8", newline="\n")
+        (self.root / "tests" / "test_real.py").write_text("pass\n", encoding="utf-8", newline="\n")
+        self.assertEqual({"tests/test_real.py": "pass\n"}, self.module.suites(self.root))
+
+    def test_suites_passes_over_a_fixture_suite_even_from_a_listing_that_entered_the_fixtures(self) -> None:
+        # The listing skips the fixtures; a fixture path is passed over on its own too, should a listing yield one.
+        fixture = self.root / "tests" / "fixtures" / "deep"
+        fixture.mkdir(parents=True)
+        (fixture / "test_fixture.py").write_text("pass\n", encoding="utf-8", newline="\n")
+        (self.root / "tests" / "test_real.py").write_text("pass\n", encoding="utf-8", newline="\n")
+        matching = self.file_presence.matching
+
+        def entering(folder: Path, pattern: str, **_options: Any) -> list[Path]:
+            return matching(folder, pattern)
+
+        with mock.patch.object(self.file_presence, "matching", entering):
+            self.assertEqual({"tests/test_real.py": "pass\n"}, self.module.suites(self.root))
 
     def test_suites_refuses_a_folder_it_cannot_list(self) -> None:
         deep = self.root / "tests" / "deep"
@@ -770,3 +792,17 @@ class PresenceReadTests(unittest.TestCase):
             with self.subTest(name=name), self.assertRaises(self.missing_evidence) as raised:
                 self.module.entries(self.root, [self.module.FileChange(name, self.root / name)])
             self.assertEqual(reason, str(raised.exception))
+
+    def test_entries_withholds_an_excluded_script_whose_head_is_a_folder_rather_than_refusing_it(self) -> None:
+        (self.root / "folder.py").mkdir()
+        manifest = {"excluded_paths": {"folder.py": "file-size-limit"}}
+        (self.root / "source-snapshot.json").write_bytes(json.dumps(manifest).encode("utf-8"))
+        hunk = self.module.Hunk("@@ -1 +1 @@", "@@ -1 +1 @@\n-A = 1\n+A = 2\n")
+        change = self.module.FileChange("folder.py", self.root / "folder.py", [hunk])
+        self.assertEqual(
+            [
+                "EXCLUDED folder.py: the snapshot leaves it out (file-size-limit), so no definition in it was read; "
+                "review its hunks from the diff, hunks @@ -1 +1 @@\n@@ -1 +1 @@\n-A = 1\n+A = 2\n\n"
+            ],
+            self.module.entries(self.root, [change]),
+        )

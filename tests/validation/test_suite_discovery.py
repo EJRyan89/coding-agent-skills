@@ -914,6 +914,21 @@ class SkillSuiteFixtures(unittest.TestCase):
                 [path.relative_to(root).as_posix() for path in regression_suites(root)],
             )
 
+    def test_a_file_in_place_of_tests_and_a_folder_named_like_a_suite_are_passed_over(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            files = {name: text for name, text in self.FILES.items() if not name.startswith("tests/")}
+            # tests is a file, where a suite root folder is expected, and test_folder.py is a folder, not a suite.
+            write_fixture_tree(root, {**files, "tests": "", "skills/alpha/scripts/test_folder.py/notes.txt": ""})
+            self.assertEqual(
+                [
+                    ".claude/skills/local/scripts/local.test.ps1",
+                    "skills/alpha/scripts/test_run.py",
+                    "skills/beta/scripts/test-tool.sh",
+                ],
+                [path.relative_to(root).as_posix() for path in regression_suites(root)],
+            )
+
     def test_a_skill_with_scripts_and_no_suite_fails(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

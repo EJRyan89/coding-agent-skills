@@ -25,7 +25,7 @@ from duplication import (
     skill_core_import_problems,
     skill_script_import_problems,
 )
-from validation_support import write_fixture_tree
+from validation_support import UnreadablePython, parse_python, write_fixture_tree
 
 # What a sanction no copy needs is reported as.
 STALE = "which no other file defines identically or restates as a shared fact"
@@ -834,6 +834,21 @@ class SharedFactPolicy(unittest.TestCase):
                 shared_fact_owner_problems(root),
             )
 
+    def test_an_owner_that_does_not_parse_is_reported_with_the_fact_it_no_longer_shows(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            write_fixture_tree(root, {**self.OWNERS, self.GIT_CLIENT: "def broken(:\n"})
+            with self.assertRaises(UnreadablePython) as raised:
+                parse_python(root / self.GIT_CLIENT)
+            self.assertEqual(
+                [
+                    f"{self.GIT_CLIENT} {raised.exception}",
+                    f"{self.GIT_CLIENT} no longer holds GLOBAL_VALUE_OPTIONS as a literal or a function; name its new "
+                    "home in the shared facts of tests/validation/duplication.py",
+                ],
+                shared_fact_owner_problems(root),
+            )
+
 
 class SkillCoreHomePolicy(unittest.TestCase):
     STATEMENT = (
@@ -971,6 +986,30 @@ class SkillCoreHomePolicy(unittest.TestCase):
                     "chosen = importlib.import_module(NAME)\n",
                 },
             ),
+        )
+
+    def test_a_deployer_package_that_does_not_parse_is_reported_and_states_no_path(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            write_fixture_tree(root, {**self.CORE, "deployer/__init__.py": "def broken(:\n"})
+            with self.assertRaises(UnreadablePython) as raised:
+                parse_python(root / "deployer" / "__init__.py")
+            self.assertEqual(
+                [
+                    f"deployer/__init__.py {raised.exception}",
+                    "deployer/__init__.py does not put skills/ejryan89-skill-core/scripts first on sys.path, located "
+                    f"from its own file; see {self.DOC}",
+                ],
+                skill_core_import_problems(root),
+            )
+
+    def test_a_deployer_without_its_package_file_states_no_path_and_is_not_read(self) -> None:
+        self.assertEqual(
+            [
+                "deployer/__init__.py does not put skills/ejryan89-skill-core/scripts first on sys.path, located from "
+                f"its own file; see {self.DOC}"
+            ],
+            self.run_policy(skill_core_import_problems, {"deployer/plan.py": "import json\n"}),
         )
 
     def test_a_shipped_skill_script_imports_only_what_a_deployment_holds(self) -> None:

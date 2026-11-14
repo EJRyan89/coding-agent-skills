@@ -134,6 +134,13 @@ class KindsTableFixtures(unittest.TestCase):
         }
         self.assertEqual([], self.problems(files))
 
+    def test_a_folder_named_like_a_deployer_module_is_passed_over_and_the_modules_still_read(self) -> None:
+        files = {
+            "deployer/folder.py/notes.txt": "",
+            "deployer/strayed.py": "from .kinds import SKILL\n\n\ndef describe(kind):\n    return kind is SKILL\n",
+        }
+        self.assertEqual(["deployer/strayed.py:5 branches on a kind in describe" + SUFFIX], self.problems(files))
+
     def test_an_allowance_must_give_a_reason_and_still_be_needed(self) -> None:
         files = {
             "deployer/gone.py": 'KINDS_ALLOWED = {"build": "it no longer branches"}\n\n\ndef build():\n    return 1\n',

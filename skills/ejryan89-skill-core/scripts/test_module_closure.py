@@ -110,6 +110,16 @@ class ModuleClosureTests(unittest.TestCase):
         with self.assertRaises(FileNotFoundError):
             closure("absent", scripts=self.scripts)
 
+    def test_a_folder_named_like_a_module_is_no_module_of_the_directory(self) -> None:
+        # A folder such as `tree.py` is not a module the directory holds, so neither walk copies or reads it.
+        self.module("first", "import tree\nimport second\n")
+        self.module("second", "")
+        (self.scripts / "tree.py").mkdir()
+        script = self.root / "run.py"
+        script.write_text(UNDECODABLE_IN_ANSI + "import tree\nimport first\n", encoding="utf-8")
+        self.assertEqual(["first"], imports_of(script, scripts=self.scripts))
+        self.assertEqual(["first", "second"], closure("first", scripts=self.scripts))
+
     def test_modules_are_read_as_utf_8_whatever_the_locale_encoding(self) -> None:
         self.module("entry", "import first\n")
         self.module("first", "")
