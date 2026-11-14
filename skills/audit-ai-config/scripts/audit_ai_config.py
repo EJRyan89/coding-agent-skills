@@ -67,7 +67,7 @@ from agent_skills import (
 )
 from check_provenance import Source
 from console import run_main
-from file_presence import NotAFile, is_directory, is_occupied, is_present
+from file_presence import NotAFile, is_directory, is_present, is_there
 from flat_text import fact_line, flat_text, single_line
 from folder_walk import LINKED, LOOP, NESTED_CHECKOUT, SKIPPED_FOLDERS, UNEXAMINED, UNLISTABLE
 from frontmatter import (
@@ -3367,7 +3367,7 @@ def _missing_imports(root: Path, rel: str, imports: list[str]) -> list[Finding]:
             continue
         target = (root / rel).parent / name
         try:
-            if leaves_root(root, target) or is_occupied(target):
+            if leaves_root(root, target) or is_there(target):
                 continue
         except OSError as error:
             message = f"Import @{name} names a path that could not be examined, so whether it loads is unknown: {error}"
@@ -4090,10 +4090,11 @@ def print_report(report: str) -> None:
 
 
 def not_a_checkout(root: Path) -> str | None:
-    """Why `root` is refused as a repository to audit, or None when a `.git` is in it: no `.git` at all, or a `.git`
-    whose stat fails, named with the error rather than read as none."""
+    """Why `root` is refused as a repository to audit, or None when a `.git` is in it: no `.git` at all, a link to
+    nothing included, since git reads nothing through it, or a `.git` whose stat fails, named with the error rather
+    than read as none."""
     try:
-        checkout = is_occupied(root / ".git")
+        checkout = is_there(root / ".git")
     except OSError as error:
         return f"{root} could not be examined for a .git: {error}"
     return None if checkout else f"{root} is not a Git repository (no .git found)"

@@ -76,10 +76,10 @@ def markdown_link_problems(root: Path) -> list[str]:
                 # A destination whose stat fails raises, never reads as one that does not exist or holds no heading.
                 is_file = file_presence.is_present(destination, other_is_absent=True)
                 if not is_file and not file_presence.is_directory(destination, other_is_absent=True):
-                    # Something that is neither a file nor a folder, a link to nothing included, is named so, never as
-                    # nothing there.
+                    # Something that is neither a file nor a folder is named so, never as nothing there; a link to
+                    # nothing is nothing there, since nothing can be read through it.
                     state = (
-                        "is neither a file nor a folder" if file_presence.is_occupied(destination) else "does not exist"
+                        "is neither a file nor a folder" if file_presence.is_there(destination) else "does not exist"
                     )
                     problems.append(f"{name}:{number} links to {target}, which {state}")
                 elif (

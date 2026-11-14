@@ -479,6 +479,17 @@ class PathBoundTests(unittest.TestCase):
             (base / marker).mkdir()
             self.assertEqual(base, examined_tree(base))
 
+    @unittest.skipIf(sys.platform == "win32", "a symbolic link to a folder needs a privilege on Windows")
+    def test_a_checkout_marker_that_is_a_link_to_nothing_marks_no_checkout(self) -> None:
+        # Git reads nothing through a link to nothing, so the tree is the checkout above it, never the folder it is in.
+        base = self.root / "repo" / "src"
+        base.mkdir(parents=True)
+        marker = ".dotnet-dependencies-test-checkout"
+        (self.root / marker).mkdir()
+        (self.root / "repo" / marker).symlink_to(self.root / "nowhere", target_is_directory=True)
+        with mock.patch.object(msbuild_reader, "CHECKOUT_MARKER", marker):
+            self.assertEqual(self.root, examined_tree(base))
+
     def test_a_checkout_marker_it_cannot_stat_is_refused_never_read_as_no_checkout(self) -> None:
         base = self.root / "repo" / "src"
         base.mkdir(parents=True)

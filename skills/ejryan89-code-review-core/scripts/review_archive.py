@@ -80,10 +80,15 @@ def _version_from_name(path: Path) -> int | None:
 def list_versions(directory: Path) -> list[int]:
     """A pull request folder's review versions, oldest first: none when the folder is not there, and the OSError
     file_presence or iterdir raises when something else is in its place or it cannot be stat'ed or listed, where glob
-    would match nothing."""
+    would match nothing. A record's file is read as file_presence reads it, so one that is a link to nothing is no
+    version, as a missing one is, and something else in a record's place is the NotAFile it raises."""
     if not file_presence.is_directory(directory):
         return []
-    versions = [version for path in directory.iterdir() if (version := _version_from_name(path))]
+    versions = [
+        version
+        for path in directory.iterdir()
+        if (version := _version_from_name(path)) and file_presence.is_present(path)
+    ]
     return sorted(set(versions))
 
 

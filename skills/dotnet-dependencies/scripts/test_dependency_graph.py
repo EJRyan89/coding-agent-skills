@@ -647,6 +647,19 @@ class GraphTests(Fixture):
         )
         self.assertEqual("SUMMARY", rows[-1][0])
 
+    @unittest.skipIf(sys.platform == "win32", "a symbolic link to a file needs a privilege on Windows")
+    def test_a_solution_entry_that_is_a_link_to_nothing_is_not_found(self) -> None:
+        # Nothing can be read through a link to nothing, so the project it stands for is not found.
+        root = self.mixed_solution()
+        self.write("Harbor.sln", solution("src\\Harbor.Web\\Harbor.Web.csproj", "src\\Gone\\Gone.csproj"))
+        gone = root.parent / "src" / "Gone"
+        gone.mkdir(parents=True)
+        (gone / "Gone.csproj").symlink_to(gone / "Nowhere.csproj")
+        _, rows = self.run_main("why", "Quill.Http", "--root", str(root))
+        self.assertEqual(
+            [["src/Gone/Gone.csproj", "listed by the solution but not found"]], self.lines(rows, "UNREADABLE")
+        )
+
     def test_a_solution_entry_that_is_missing_and_a_referenced_project_outside_the_list_are_reported(self) -> None:
         root = self.mixed_solution()
         self.write("Harbor.sln", solution("src\\Harbor.Web\\Harbor.Web.csproj", "src\\Gone\\Gone.csproj"))

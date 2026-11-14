@@ -6789,6 +6789,20 @@ class PresenceAnswerTests(unittest.TestCase):
             _finding_rows(audit._missing_imports(self.root, "CLAUDE.md", ["docs/guide.md", "docs/missing.md"])),
         )
 
+    @unittest.skipIf(sys.platform == "win32", "a symbolic link to a file needs a privilege on Windows")
+    def test_an_import_or_a_git_that_is_a_link_to_nothing_is_no_file(self) -> None:
+        # Nothing can be read through a link to nothing, so the import loads nothing, and no checkout is there.
+        (self.root / "docs").mkdir(parents=True, exist_ok=True)
+        (self.root / "docs" / "rules.md").symlink_to(self.root / "nowhere.md")
+        self.assertEqual(
+            [("WARNING", "claude-memory", "CLAUDE.md", "Import @docs/rules.md names no file, so nothing loads for it")],
+            _finding_rows(audit._missing_imports(self.root, "CLAUDE.md", ["docs/rules.md"])),
+        )
+        checkout = self.root / "checkout"
+        checkout.mkdir()
+        (checkout / ".git").symlink_to(self.root / "no-git")
+        self.assertEqual(f"{checkout} is not a Git repository (no .git found)", audit.not_a_checkout(checkout))
+
 
 class UnexaminedPathOnNewerPythonTests(UnexaminedPathTests):
     """The same rows with each predicate left on a refused path answering False, as from Python 3.14 on."""

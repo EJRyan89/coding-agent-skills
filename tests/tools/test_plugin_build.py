@@ -387,6 +387,13 @@ def test_a_source_tree_holding_a_plugin_manifest_is_refused(source: Source) -> N
         plugin_build.load_catalogue(source.root)
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="a symbolic link to a file needs a privilege on Windows")
+def test_a_plugin_manifest_that_is_a_link_to_nothing_is_no_manifest(source: Source) -> None:
+    # Nothing can be read through a link to nothing, so the source tree holds no manifest of its own.
+    (source.root / ".claude-plugin" / "plugin.json").symlink_to(source.root / "nowhere.json")
+    assert plugin_build.load_catalogue(source.root)
+
+
 def test_a_plugin_manifest_it_cannot_examine_is_refused_never_taken_for_none(source: Source) -> None:
     manifest = source.root / ".claude-plugin" / "plugin.json"
     with stat_denied(manifest), pytest.raises(plugin_build.BuildError) as raised:

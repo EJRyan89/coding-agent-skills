@@ -2437,6 +2437,22 @@ class AgentTests(SourceTreeTestCase):
         )
         self.assertIsNone(skill_inventory.declared_agents(skill.parent))
 
+    @unittest.skipIf(sys.platform == "win32", "a symbolic link to a file needs a privilege on Windows")
+    def test_a_dependencys_metadata_that_is_a_link_to_nothing_is_no_metadata_never_unreadable(self) -> None:
+        # Nothing can be read through a link to nothing, so the dependency has no metadata, as with no file at all.
+        skill = self.skill("Body.\n", {"skill_deps": ["beta"]})
+        self.skill("Body.\n", {}, name="beta")
+        beta = self.root / "deploy-meta" / "beta.json"
+        beta.unlink()
+        beta.symlink_to(self.root / "nowhere.json")
+        code, lines, error = run("inventory", str(skill.parent))
+        self.assertEqual(0, code, error)
+        self.assertEqual(["DECLARED skill beta"], [line for line in lines if line.startswith("DECLARED")])
+        self.assertFalse(skill_inventory.unreadable_metadata(self.root, "beta"))
+        # A .git that is a link to nothing is no repository for the skill's commands to run from either.
+        (self.root / ".git").symlink_to(self.root / "no-git")
+        self.assertNotEqual(self.root, skill_inventory.repository_root(skill.parent))
+
     def test_metadata_whose_name_list_is_of_another_kind_is_unreadable(self) -> None:
         for key in ("shared_deps", "skill_deps", "agent_deps", "tools", "optional_tools"):
             for value in ("ejryan89-skill-core", [1], {"name": "x"}):
@@ -3785,6 +3801,27 @@ class MainFileCaseTests(TemporaryTestCase):
                 code, lines, _ = run("locate", "alpha", "--home", str(home))
                 expected = (0, f"SKILL_FILE {skill.as_posix()}") if folds else (1, "NOT_FOUND alpha")
                 self.assertEqual(expected, (code, lines[1]))
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="a symbolic link to a file needs a privilege on Windows")
+def test_each_path_refusal_names_a_link_to_nothing_as_not_found_never_as_the_wrong_kind(tmp_path: Path) -> None:
+    # Nothing can be read through a link to nothing, so each refusal reads it as the path not there.
+    link, folder_link = tmp_path / "link.md", tmp_path / "folder link"
+    link.symlink_to(tmp_path / "nowhere.md")
+    folder_link.symlink_to(tmp_path / "nowhere", target_is_directory=True)
+    home = tmp_path / "home"
+    home.mkdir()
+    cases = [
+        (("scan", str(link)), f"FAILED file not found: {link.as_posix()}"),
+        (("tools", str(link)), f"FAILED skill file not found: {link}"),
+        (("inventory", str(folder_link)), f"FAILED skill directory not found: {folder_link}"),
+        (
+            ("locate", f"alpha {folder_link}", "--home", str(home)),
+            f"FAILED plugin folder not found: {folder_link.as_posix()}",
+        ),
+    ]
+    for arguments, line in cases:
+        assert (1, [line]) == run(*arguments)[:2], arguments
 
 
 def test_each_path_refusal_names_the_wrong_kind_never_as_not_found(tmp_path: Path) -> None:

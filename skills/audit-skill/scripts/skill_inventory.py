@@ -181,7 +181,7 @@ import whole_number
 from agent_skills import is_skill_file
 from console import run_main
 from executable_locator import RelativeEnvironmentPath, absolute_home
-from file_presence import NotADirectory, NotAFile, is_directory, is_occupied, is_present, matching
+from file_presence import NotADirectory, NotAFile, is_directory, is_present, is_there, matching
 from flat_text import flat_text, single_line
 from git_client import GitClient, GitError
 from markdown_sections import (
@@ -1406,11 +1406,11 @@ def metadata_path(root: Path, name: str) -> Path:
 
 def unreadable_metadata(root: Path, name: str) -> bool:
     """Whether the skill has a metadata file read_metadata cannot read, whose names are then unknown rather than none,
-    as opposed to no metadata file at all, which a stat that fails does not show."""
+    as opposed to no metadata file at all, a link to nothing included, which a stat that fails does not show."""
     if read_metadata(root, name) is not None:
         return False
     try:
-        return is_occupied(metadata_path(root, name))
+        return is_there(metadata_path(root, name))
     except OSError:
         return True
 
@@ -1801,12 +1801,23 @@ def scanned_files(path: Path) -> list[Path]:
     return [*main, *(file for file in files if category(file.relative_to(path), path) == "doc")]
 
 
+def not_a_file(path: Path) -> bool:
+    """Whether something other than a file is at `path`: not nothing, and not a link to nothing, which file_presence
+    reads as nothing there. A stat that fails raises."""
+    try:
+        is_present(path)
+    except NotAFile:
+        return True
+    return False
+
+
 def scan(given: list[Path]) -> list[str]:
     paths = [file for path in given for file in scanned_files(path)]
-    # Something other than a file is named so, never as not found, and a stat that fails raises.
-    if wrong := [posix(path) for path in paths if is_occupied(path) and not is_present(path, other_is_absent=True)]:
+    # Something other than a file is named so, never as not found, a link to nothing is not found, as file_presence
+    # reads it, and a stat that fails raises.
+    if wrong := [posix(path) for path in paths if not_a_file(path)]:
         raise InputError("not a file: " + ", ".join(wrong))
-    missing = [posix(path) for path in paths if not is_present(path, other_is_absent=True)]
+    missing = [posix(path) for path in paths if not is_present(path)]
     if missing:
         raise InputError("file not found: " + ", ".join(missing))
     texts = [require_text(path) for path in paths]
@@ -2168,8 +2179,9 @@ def script_facts(path: Path) -> ScriptFacts:
 
 def repository_root(folder: Path) -> Path | None:
     """The nearest folder above a skill that holds a .git entry, where its commands run tools from, or None; a .git
-    entry it cannot look at raises the stat's OSError rather than passing to the folder above."""
-    return next((parent for parent in folder.resolve().parents if is_occupied(parent / ".git")), None)
+    that is a link to nothing is none, since git reads nothing through it, and a .git entry it cannot look at raises
+    the stat's OSError rather than passing to the folder above."""
+    return next((parent for parent in folder.resolve().parents if is_there(parent / ".git")), None)
 
 
 def folder_scripts(folder: Path) -> list[Path]:

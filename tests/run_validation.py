@@ -328,15 +328,18 @@ def parse_arguments(argv: list[str] | None, errors: TextIO | None = None) -> arg
 
 
 def file_problem(option: str, path: Path | None) -> str | None:
-    """Why an option's file cannot be read as one, or None when it is a file or the option was not given: a path that
-    is not a file, or one whose stat fails, which is named as that, never read as no file."""
+    """Why an option's file cannot be read as one, or None when it is a file or the option was not given: a path where
+    nothing is, a link to nothing included, as not there, something else as not a file, and one whose stat fails as
+    that, each named as itself."""
     if path is None:
         return None
     try:
-        present = file_presence.is_present(path, other_is_absent=True)
+        present = file_presence.is_present(path)
+    except file_presence.NotAFile:
+        return f"{option} is not a file: {path}"
     except OSError as error:
         return f"{option} cannot be examined: {path}: {error.strerror or error}"
-    return None if present else f"{option} is not a file: {path}"
+    return None if present else f"{option} does not exist: {path}"
 
 
 def pull_request_only(arguments: argparse.Namespace) -> bool:

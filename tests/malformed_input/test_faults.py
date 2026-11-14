@@ -31,7 +31,19 @@ import exit_tables
 import fault_check
 import fault_runner
 import faults
-from fault_check import REPOSITORY, TRACEBACK, changes, environment, judged, placed, run_entry
+from fault_check import (
+    REPOSITORY,
+    TRACEBACK,
+    changes,
+    environment,
+    judged,
+    named_another_kind,
+    nowhere,
+    placed,
+    read_as_absent,
+    run_entry,
+    written_through,
+)
 from fault_table import (
     DIRECTORY,
     FAULTS,
@@ -41,6 +53,7 @@ from fault_table import (
     GIT_EXIT,
     GIT_FAULTS,
     GIT_TIMEOUT,
+    LINK_TO_NOTHING,
     MISSING,
     STAT_RAISES,
     UNREADABLE,
@@ -462,6 +475,79 @@ def test_placed_puts_the_file_back_as_it_was(fault: str) -> None:
         with placed(fault, path):
             pass
         assert path.read_bytes() == b'{"value": 1}'
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="a symbolic link to a file needs a privilege on Windows")
+def test_the_runner_reaches_a_link_to_nothing_whose_read_fails_as_the_file_missing() -> None:
+    finished, record = fixture_run("Path('input.txt').read_text()", LINK_TO_NOTHING, "input.txt")
+    assert record == {"exit": 1, "reached": True, "stopped": None}, finished
+    assert finished.stdout.splitlines()[-1].startswith("FAILED"), finished
+    assert "input.txt" in finished.stdout
+    assert judged(FIXTURE_DOCSTRING, LINK_TO_NOTHING, Path("work") / "input.txt", finished, record) == []
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="a symbolic link to a file needs a privilege on Windows")
+def test_a_link_to_nothing_is_placed_and_a_write_through_it_is_named_and_cleared() -> None:
+    with tempfile.TemporaryDirectory() as temporary:
+        path = Path(temporary) / "input.json"
+        path.write_bytes(b"{}")
+        with placed(LINK_TO_NOTHING, path):
+            assert path.is_symlink()
+            assert not path.exists()
+            assert written_through(LINK_TO_NOTHING, path) == []
+            path.write_text("written through", encoding="utf-8")
+            assert written_through(LINK_TO_NOTHING, path) == [
+                "it wrote through the link to nothing at input.json, creating input.json.nowhere"
+            ]
+        assert not nowhere(path).exists()
+        assert path.read_bytes() == b"{}"
+        assert sorted(entry.name for entry in Path(temporary).iterdir()) == ["input.json"]
+    assert written_through(MISSING, path) == []
+
+
+def test_an_input_handed_to_a_writer_is_never_one_whose_absence_is_an_answer() -> None:
+    reason = "a missing result is the role handed out"
+    driver = Driver(
+        "e.py", "", (), inputs=("a.json", "b.json"), not_run={MISSING: reason}, handed_to_writer=("b.json",)
+    )
+    assert driver.absent_is_an_answer("a.json")
+    assert not driver.absent_is_an_answer("b.json")
+    assert not Driver("e.py", "", (), inputs=("a.json",)).absent_is_an_answer("a.json")
+
+
+def test_each_input_a_driver_hands_to_a_writer_is_one_of_its_inputs() -> None:
+    stray = [
+        f"{driver.name}: {path}"
+        for driver in faults.DRIVERS
+        for path in driver.handed_to_writer
+        if path not in driver.inputs
+    ]
+    assert stray == [], "an input handed to a writer is one the driver places faults at"
+
+
+def test_a_link_to_nothing_named_as_another_kind_is_a_problem_in_either_stream_and_any_case() -> None:
+    expected = ["it named the link to nothing 'not a file', never reading it as the file missing"]
+    assert named_another_kind(LINK_TO_NOTHING, ended("FAILED x is not a file\n")) == expected
+    assert named_another_kind(LINK_TO_NOTHING, ended("", "FAILED X IS NOT A FILE\n")) == expected
+    assert named_another_kind(LINK_TO_NOTHING, ended("", "x is Not A Directory\n")) == [
+        "it named the link to nothing 'not a directory', never reading it as the file missing"
+    ]
+    assert named_another_kind(LINK_TO_NOTHING, ended("FAILED x is missing\n")) == []
+    assert named_another_kind(MISSING, ended("FAILED x is not a file\n")) == []
+
+
+def test_a_run_that_reads_its_input_as_absent_may_succeed_but_not_stop_or_print_a_traceback() -> None:
+    reached = {"exit": 0, "reached": True, "stopped": None}
+    assert read_as_absent(FIXTURE_DOCSTRING, ended("done\n"), reached) == []
+    assert read_as_absent(FIXTURE_DOCSTRING, ended("", f"{TRACEBACK}\n"), reached) == ["it printed a traceback"]
+    assert read_as_absent(FIXTURE_DOCSTRING, ended(""), {**reached, "exit": 3}) == [
+        "it exited 3, which its exit table does not name"
+    ]
+    assert read_as_absent(FIXTURE_DOCSTRING, ended(""), {**reached, "reached": False}) == [
+        "it never reached the fault: the driver's arguments or inputs do not reach it"
+    ]
+    stopped = read_as_absent(FIXTURE_DOCSTRING, ended(""), {**reached, "stopped": "started a program: gh"})
+    assert stopped == ["the harness stopped it: started a program: gh"]
 
 
 def test_the_shared_checkout_is_removed_at_exit_read_only_git_objects_included(monkeypatch: pytest.MonkeyPatch) -> None:

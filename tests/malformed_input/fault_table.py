@@ -22,11 +22,12 @@ REPOSITORY = Path(__file__).resolve().parents[2]
 UNREADABLE = "unreadable"
 DIRECTORY = "directory"
 MISSING = "missing"
+LINK_TO_NOTHING = "link_to_nothing"
 STAT_RAISES = "stat_raises"
 GIT_EXIT = "git_exit_128"
 GIT_TIMEOUT = "git_timeout"
 GH_FAILURE = "gh_failure"
-FILE_FAULTS = (UNREADABLE, DIRECTORY, MISSING, STAT_RAISES)
+FILE_FAULTS = (UNREADABLE, DIRECTORY, MISSING, LINK_TO_NOTHING, STAT_RAISES)
 GIT_FAULTS = (GIT_EXIT, GIT_TIMEOUT)
 GH_FAULTS = (GH_FAILURE,)
 FAULTS = {
@@ -34,6 +35,9 @@ FAULTS = {
     "given no permissions elsewhere",
     DIRECTORY: "a directory in the place of a file the command reads",
     MISSING: "a file the command reads, removed",
+    LINK_TO_NOTHING: "a symbolic link to nothing in the place of a file the command reads, which reads as the file "
+    "missing: refused as a missing one is, or, where the command reads a missing one as absent, read so, and never "
+    "written through to create the file it leads to",
     STAT_RAISES: "a file the command reads whose every stat raises PermissionError",
     GIT_EXIT: "every git command exits 128 with the reason git gives for a broken checkout",
     GIT_TIMEOUT: "every git command runs past its time limit",
@@ -138,6 +142,11 @@ class Driver:
     environment: Mapping[str, str] = field(default_factory=dict)
     from_checkout: bool = False
     outputs: tuple[str, ...] = ()
+    # Each input the command reads missing as an answer and then hands to a writer, such as a role's result file
+    # next-role hands to the reviewer that writes it: a link to nothing there is refused, as a missing file is
+    # elsewhere, since the writer's write would follow the link and create the file it leads to. Each is formatted as
+    # the arguments are.
+    handed_to_writer: tuple[str, ...] = ()
     # Each run whose refusal is a line led by a word its docstring does not name, by its fault, or `<fault> <input>`
     # for one input alone, with the open issue that gives it a FAILED or documented line.
     refusal_gaps: Mapping[str, str] = field(default_factory=dict)
@@ -147,8 +156,17 @@ class Driver:
         return f"{self.entry} {self.command}".strip()
 
     def refusal_gap(self, fault: str, path: str | None) -> str:
-        """The refusal gap refusal_gaps names for one run, by its input or its fault, or "" for none."""
+        """The refusal gap refusal_gaps names for one run, by its input or its fault, or "" for none. A link to nothing
+        reads as the file missing, so its run has the missing file's gap."""
+        if fault == LINK_TO_NOTHING:
+            fault = MISSING
         return self.refusal_gaps.get(f"{fault} {path}", "") or self.refusal_gaps.get(fault, "")
+
+    def absent_is_an_answer(self, path: str) -> bool:
+        """Whether the command reads the input missing as an answer rather than a fault: `not_run` names the missing
+        fault for it, with the reason, and it hands no writer the path. A link to nothing at such an input is held only
+        to never being written through."""
+        return (MISSING in self.not_run or f"{MISSING} {path}" in self.not_run) and path not in self.handed_to_writer
 
     def runs(self) -> list[tuple[str, str | None]]:
         """Each fault the driver runs, with the input it is placed at, or None for git's and gh's."""

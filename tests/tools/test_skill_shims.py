@@ -84,6 +84,27 @@ class SkillShimsTestCase(unittest.TestCase):
         )
         self.assertFalse((self.root / SHIM_PATH).exists())
 
+    @unittest.skipIf(sys.platform == "win32", "a symbolic link to a file needs a privilege on Windows")
+    def test_a_shim_that_is_a_link_to_nothing_is_missing_and_written_in_the_links_place_never_through_it(
+        self,
+    ) -> None:
+        target = self.root.parent / "elsewhere" / "SKILL.md"
+        target.parent.mkdir()
+        (self.root / SHIM_PATH).parent.mkdir(parents=True)
+        (self.root / SHIM_PATH).symlink_to(target)
+        self.assertEqual(
+            (
+                1,
+                "STALE .claude/skills/widget-check/SKILL.md has no .agents/skills/widget-check/SKILL.md shim; "
+                "run python tools/skill_shims.py --write\n",
+            ),
+            self.run_main(),
+        )
+        self.assertEqual((0, f"WROTE {SHIM_PATH.as_posix()}\n"), self.run_main("--write"))
+        self.assertFalse((self.root / SHIM_PATH).is_symlink())
+        self.assertEqual(SHIM.encode("utf-8"), (self.root / SHIM_PATH).read_bytes())
+        self.assertFalse(target.exists())
+
     def test_a_frontmatter_change_makes_the_shim_stale_until_written_again(self) -> None:
         self.write(SHIM_PATH.as_posix(), SHIM)
         self.write(".claude/skills/widget-check/SKILL.md", SKILL.replace("Use it when asked.", "Use it often."))
