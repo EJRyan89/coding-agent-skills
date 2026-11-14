@@ -1197,6 +1197,20 @@ def _comprehension(reader: _PresenceReader, node: ast.expr) -> Comprehension | N
     return node if isinstance(node, COMPREHENSIONS) else None
 
 
+def _statement_blocks(node: ast.AST) -> list[list[ast.stmt]]:
+    """Each block of statements a node holds: its body, its else, and a try's finally."""
+    blocks: list[list[ast.stmt]] = []
+    if isinstance(node, (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.With, ast.AsyncWith)):
+        blocks.append(node.body)
+    if isinstance(node, (ast.ExceptHandler, ast.match_case)):
+        blocks.append(node.body)
+    if isinstance(node, (ast.For, ast.AsyncFor, ast.While, ast.If)):
+        blocks += [node.body, node.orelse]
+    if isinstance(node, (ast.Try, ast.TryStar)):
+        blocks += [node.body, node.orelse, node.finalbody]
+    return blocks
+
+
 def _raising_ifs(tree: ast.Module) -> frozenset[int]:
     """Each if with no else whose branch ends by returning a value that is not empty, or by raising an error of its
     own, and whose False goes on to statements of its block that return no such value and end by raising an error of
@@ -1204,9 +1218,7 @@ def _raising_ifs(tree: ast.Module) -> frozenset[int]:
     turn."""
     found: set[int] = set()
     for node in ast.walk(tree):
-        for block in (getattr(node, name, None) for name in ("body", "orelse", "finalbody")):
-            if not isinstance(block, list):
-                continue
+        for block in _statement_blocks(node):
             for index, statement in enumerate(block):
                 rest = block[index + 1 :]
                 if (
