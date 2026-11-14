@@ -17,6 +17,7 @@ nothing about who may write it, so only the kind of the folder is checked there.
 
 from __future__ import annotations
 
+import contextlib
 import os
 import stat
 import tempfile
@@ -66,10 +67,8 @@ def refusal(folder: Path, metadata: os.stat_result, user: int | None) -> str | N
 def ensure(folder: Path) -> Path:
     """`folder`, made owner only when it is missing, whose parent must exist; raises UnsafeFolderError naming why
     when it is not a folder only this user owns and can write, and lets any other OSError through."""
-    try:
+    with contextlib.suppress(FileExistsError):
         folder.mkdir(mode=OWNER_ONLY)
-    except FileExistsError:
-        pass
     reason = refusal(folder, os.lstat(folder), user_id())
     if reason is not None:
         raise UnsafeFolderError(reason)

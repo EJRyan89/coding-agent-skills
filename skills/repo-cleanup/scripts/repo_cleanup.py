@@ -2248,11 +2248,12 @@ def sweep(
     """Clean every repository at once; print each one's decisions, failures, and summary in discovery order.
 
     The seals folder and the GitHub CLI's access are checked before the plans directory is created, so a sweep that
-    cannot start, or could not seal its plans, leaves nothing behind and syncs nothing. Each repository is synced, planned, and applied in turn, re-checking every recorded branch tip.
-    A failure in one repository never stops the others: every result is reported, and the sweep exits 1 when any
-    repository needs the agent or Git refused a deletion or removal in one. skip_checkout cleans a dirty main worktree
-    without switching its branch. `policy`, the shipped lists alone when None, decides what a worktree's removal may
-    delete and which branches are protected; the lines naming it follow PLANS.
+    cannot start, or could not seal its plans, leaves nothing behind and syncs nothing. Each repository is synced,
+    planned, and applied in turn, re-checking every recorded branch tip. A failure in one repository never stops the
+    others: every result is reported, and the sweep exits 1 when any repository needs the agent or Git refused a
+    deletion or removal in one. skip_checkout cleans a dirty main worktree without switching its branch. `policy`,
+    the shipped lists alone when None, decides what a worktree's removal may delete and which branches are protected;
+    the lines naming it follow PLANS.
     """
     policy = policy or cleanup_policy.configured()
     seals_folder()

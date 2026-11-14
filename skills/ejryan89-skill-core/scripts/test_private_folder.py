@@ -108,9 +108,10 @@ class EnsureTests(unittest.TestCase):
     def test_a_folder_another_user_owns_is_refused(self) -> None:
         folder = self.root / "state"
         folder.mkdir()
-        with mock.patch.object(private_folder, "user_id", return_value=OTHER_USER), self.assertRaises(
-            UnsafeFolderError
-        ) as raised:
+        with (
+            mock.patch.object(private_folder, "user_id", return_value=OTHER_USER),
+            self.assertRaises(UnsafeFolderError) as raised,
+        ):
             ensure(folder)
         self.assertTrue(str(raised.exception).startswith(f"{folder} is owned by user id "), raised.exception)
 

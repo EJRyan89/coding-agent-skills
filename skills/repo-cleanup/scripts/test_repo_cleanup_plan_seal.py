@@ -849,7 +849,9 @@ class SealsFolderTests(CleanupTestCase):
         self.use_seals(folder)
         self.assert_refused(folder, "can be written by users other than its owner (mode 777)")
 
-    @unittest.skipIf(sys.platform == "win32", "a symbolic link needs a privilege there; private_folder covers junctions")
+    @unittest.skipIf(
+        sys.platform == "win32", "a symbolic link needs a privilege there; test_private_folder covers its kind"
+    )
     def test_a_seals_folder_that_is_a_link_is_refused_even_to_a_folder_holding_the_plan_s_true_seal(self) -> None:
         target = self.root / "elsewhere"
         self.use_seals(target)
