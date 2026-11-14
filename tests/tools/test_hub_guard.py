@@ -339,6 +339,20 @@ class UnreadableCheckoutFileTests(GuardTestCase):
     """A file event in a checkout git answers with an error for, as one whose ownership it doubts, is judged as a git
     directory git cannot read is: it may be a guarded hub's, so the edit is refused."""
 
+    def test_a_hub_file_whose_check_ignore_git_answers_with_an_error_is_tracked(self) -> None:
+        # check-ignore exits 0 for an ignored file and 1 for one that is not; any other answer is no answer, so an
+        # ignored file git answered with an error for is refused, and one git never answered is allowed with a note.
+        target = self.hub / "local.json"
+        self.assertIsNone(self.edit(target))
+        answered = git_client.GitError("git check-ignore could not read it", returncode=128)
+        with mock.patch.object(worktrees.CLIENT, "quiet_output", side_effect=answered):
+            self.assertEqual("deny", self.edit(target))
+            self.assertEqual(hub_guard.DENY_REASON, self.reason)
+        unanswered = git_client.GitError("git failed as timeout", kind="timeout")
+        with mock.patch.object(worktrees.CLIENT, "quiet_output", side_effect=unanswered):
+            self.assertIsNone(self.edit(target))
+            self.assertIn("hub guard skipped: GitError: git failed as timeout", self.stderr)
+
     def test_an_edit_in_a_checkout_git_answers_with_an_error_for_is_refused(self) -> None:
         failure = git_client.GitError("git could not read the checkout", returncode=128)
         for tool in ("Edit", "Write", "NotebookEdit"):

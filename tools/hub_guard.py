@@ -1152,9 +1152,6 @@ GIT_STATUS_ALLOWED = {
     ),
     "git_builtins": "fails closed: an empty list makes every subcommand a possible alias, which is read and judged",
     "shadowed_fast_forward": "fails closed: any failure to list the refs refuses the fast-forward",
-    "hub_protected": (
-        "fails closed: a check-ignore git cannot answer counts the path as tracked, so the edit is refused"
-    ),
     "Judge.alias_refusal": (
         "fails closed: any failure but exit 1 refuses the call; exit 1 is git's answer that no such alias is set, or "
         "that the name is one no alias can have, which git cannot run either"
@@ -1273,15 +1270,19 @@ def protecting_hub(path: Path) -> Path | None:
     """The guarded hub whose git directory holds path, anywhere in it, or whose checkout holds it among the files it
     does not ignore; ignored files such as local settings are no hub's. None where no guarded hub holds it.
 
-    Raises GitError where git cannot tell, as guarded_hub_of_repository and guarded_hub_at do."""
+    Raises GitError where git cannot tell, as guarded_hub_of_repository and guarded_hub_at do, and where check-ignore
+    answers neither, which hub_protected reads as a protected path when git answered."""
     normalized = Path(os.path.normpath(path))
     for directory in (normalized, *normalized.parents):
         if platform_support.name_key(directory.name, directory.parent) == ".git" and directory.is_dir():
             return guarded_hub_of_repository(directory)
     hub = guarded_hub_at(normalized)
-    if hub is None or git(hub, "check-ignore", "-q", "--no-index", str(normalized)).returncode == 0:
+    if hub is None:
         return None
-    return hub
+    # check-ignore exits 0 for an ignored path and 1, saying nothing, for one that is not; any other answer raises.
+    arguments = ["check-ignore", "-q", "--no-index", str(normalized)]
+    ignored = CLIENT.quiet_output(arguments, directory=hub, timeout=lookup_timeout()) is not None
+    return None if ignored else hub
 
 
 def hubs_in_view(cwd: Path, environment: Mapping[str, str]) -> set[Path]:
