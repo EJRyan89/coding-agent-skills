@@ -77,7 +77,12 @@ from skill_roots import sibling_scripts
 
 sys.path.insert(0, str(sibling_scripts("ejryan89-code-review-core")))
 from review_config import REVIEWER_EFFORTS
-from review_hosts import COPILOT_SYNC_SESSION_VERSION, copilot_command, isolated_copilot_environment
+from review_hosts import (
+    COPILOT_SYNC_SESSION_VERSION,
+    copilot_added_roots,
+    copilot_command,
+    isolated_copilot_environment,
+)
 
 from deployer import discovery, platform_support
 from deployer import tools as deployer_tools
@@ -257,10 +262,13 @@ def copilot_lines(
     listing. A version that cannot be read is taken to be the latest, as the canary takes it."""
     home = root / "home"
     version = version or COPILOT_SYNC_SESSION_VERSION
-    run_directory, materialized = root / "review-run", root / "review-reviewer"
-    run_directory.mkdir(exist_ok=True)
-    materialized.mkdir(exist_ok=True)
-    workspace, review_environment = isolated_copilot_environment(root / "review-isolation", environment)
+    # The reviewer below the run directory and the isolation in it, as a run lays them out.
+    run_directory = root / "review-run"
+    materialized = run_directory / "reviewer"
+    materialized.mkdir(parents=True, exist_ok=True)
+    workspace, review_environment = isolated_copilot_environment(
+        run_directory / "copilot-isolation-1", environment, added_roots=copilot_added_roots(run_directory)
+    )
     review = copilot_command(
         executable,
         version=version,
