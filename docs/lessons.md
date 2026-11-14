@@ -546,11 +546,13 @@ removed fails validation until its pattern follows it.
   case pattern's `)`, a `;&` or `;;&`, or a function's `()`, or that compares a command's first word, such as
   `head == "git"` or `head in SCRIPT_SHELLS`, with a program's name rather than the file name
   `command_wrappers.bash_program` reads, so `/usr/bin/git` and `git.exe` go unread; in `tools/hub_guard.py`, an
-  environment variable git reads to choose where it writes, as `GIT_TRACE`, `GIT_OBJECT_DIRECTORY`, or
-  `GIT_COMMON_DIR` does, that no judgement of a call reads.
+  environment variable git reads to choose where it writes, as `GIT_TRACE`, `GIT_OBJECT_DIRECTORY`, or `GIT_COMMON_DIR`
+  does, or a setting it reads from the system or global configuration, as `trace2.eventTarget`, that no judgement of a
+  call or of the whole command reads, or one judged only for a call that acts on a hub when a call in one of its
+  worktrees writes the refs the hub's store holds.
 - **Examples:** #1412, #1429, #1430, #1592, #1606, #1843, #1851, #1865, #2032, #2088, #2089, #2134, #2135, #2136,
   #2137, #2138, #2139, #2140, #2188, #2225, #2232, #2233, #2234, #2251, #2262, #2274, #2276, #2316, #2411,
-  #2418, #2203, #2450, #2476, #2481, #2478, #2555, #2474, #2616, #2776
+  #2418, #2203, #2450, #2476, #2481, #2478, #2555, #2474, #2616, #2776, #2792
 
 ### A recursive parser of input has a depth bound
 
@@ -820,7 +822,7 @@ removed fails validation until its pattern follows it.
   for a runtime that reads pull request content, `review_hosts:isolated_copilot_environment`, which keeps none of
   the runtime's own variables but its sign-in; and for the hub guard's own git calls,
   `tools.hub_guard:withhold_written_variables`, which takes out the variables that have git write a trace or its
-  output into a file they name
+  output into a file they name and turns off the trace2 targets the configuration names
 - **Guard:** `tests/validation/python_checks.py::PythonChecksPolicies::test_every_process_starts_without_git_repository_variables`,
   `tests/validation/skill_scripts.py::SkillScriptsPolicies::test_each_checker_starts_only_from_its_runner_and_every_repository_command_is_read`,
   which reads a process start, a mypy or ruff import, and the names it is written with, so a name built at run time
@@ -840,8 +842,9 @@ removed fails validation until its pattern follows it.
   variables of that runtime the caller set for their own sessions, such as Copilot CLI's `COPILOT_*`; a git command run with its working directory, or `-C`, inside content a pull request or a
   reviewer wrote, such as a review snapshot, through a client that is not isolated; a git started where it must
   write nothing, as the hub guard's lookups and its hook command's `git config` are, with the environment's
-  `GIT_TRACE` or `GIT_REDIRECT_*` variables left set.
-- **Examples:** #1366, #1396, #1598, #1777, #1861, #2208, #2241, #2246, #2776
+  `GIT_TRACE` or `GIT_REDIRECT_*` variables left set, or without `GIT_TRACE2`, `GIT_TRACE2_PERF`, and
+  `GIT_TRACE2_EVENT` set to `0`, which outrank a trace2 target the configuration names.
+- **Examples:** #1366, #1396, #1598, #1777, #1861, #2208, #2241, #2246, #2776, #2792
 
 ### An action on something not proven ours stops
 

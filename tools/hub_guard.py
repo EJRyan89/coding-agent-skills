@@ -406,12 +406,30 @@ STORE_VARIABLES = {
     "GIT_OBJECT_DIRECTORY": "objects",
     "GIT_COMMON_DIR": "objects, configuration, and shared refs",
 }
-# The inherited variable naming further object stores a git call reads from, so that a fetch in a hub whose objects
-# lie there writes the hub refs to objects the hub's own store lacks.
-ALTERNATES_VARIABLE = "GIT_ALTERNATE_OBJECT_DIRECTORIES"
+# The inherited variables that change which objects git takes its store to hold, or which parents it takes a commit to
+# have, set even to an empty value, by what each does: a call that writes the refs a guarded hub's store holds may move
+# them to objects that store lacks, or walk past objects it then prunes (Judge.environment_refusal).
+OBJECT_VIEW_VARIABLES = {
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES": "names further stores git reads objects from",
+    "GIT_SHALLOW_FILE": "names the commits git takes as having no parents, which a fetch tells the server it has",
+    "GIT_GRAFT_FILE": "names parents git takes commits to have in place of their own",
+    "GIT_REPLACE_REF_BASE": "names the refs git reads replacement objects from",
+}
 # git appends a trace to the absolute path any GIT_TRACE variable names, and trace2 makes a file inside one that is a
 # directory (trace.c, trace2/tr2_dst.c); a relative path, a descriptor, a socket, and a switch write no file.
 TRACE_VARIABLE = re.compile(r"GIT_TRACE[A-Z0-9_]*")
+# trace2 also reads its three targets from the system and the global configuration, include.path followed, but never
+# from a repository's or the command line's, and the variable of the same name outranks a setting whenever it holds a
+# value (trace2/tr2_sysenv.c, read_very_early_config); the value 0 turns a target off.
+TRACE2_SETTINGS = {
+    "trace2.normaltarget": "GIT_TRACE2",
+    "trace2.perftarget": "GIT_TRACE2_PERF",
+    "trace2.eventtarget": "GIT_TRACE2_EVENT",
+}
+TRACE2_SCOPES = frozenset({"system", "global"})
+# The settings that name a further configuration file git reads, by their name as git lists it (section and name in
+# lower case, a condition as written).
+INCLUDE_SETTING = re.compile(r"include\.path|includeif\..+\.path", re.DOTALL)
 # git for Windows sends its output to the file these name, read from where it starts (compat/mingw.c), but for the
 # values that name none; each is judged on every platform, since one git may be either build.
 REDIRECT_VARIABLES = {"GIT_REDIRECT_STDOUT": frozenset({"off"}), "GIT_REDIRECT_STDERR": frozenset({"off", "2>&1"})}
@@ -740,6 +758,25 @@ SHOPT_OPTIONS: dict[str, str] = {
         "",
     ),
 }
+# The names beyond GIT_* that git reads to choose a file it reads or writes, or a program it runs, each with why; an
+# assignment to one is never harmless (harmless_name). A name git reads only for its messages, as LANG or LC_ALL,
+# chooses neither.
+GIT_READ_NAMES: dict[str, str] = {
+    "HOME": "chooses where git reads its global configuration, attributes, and ignore files",
+    "XDG_CONFIG_HOME": "chooses where git reads its global configuration, attributes, and ignore files",
+    "XDG_CACHE_HOME": "chooses where git's credential cache makes its socket",
+    **dict.fromkeys(
+        ("USERPROFILE", "HOMEDRIVE", "HOMEPATH"),
+        "chooses git for Windows' home, where it reads its global configuration, when HOME is unset",
+    ),
+    "TMPDIR": "chooses where git writes the temporary files an external diff or a textconv reads",
+    **dict.fromkeys(("TEMP", "TMP"), "chooses git for Windows' TMPDIR when that is unset"),
+    "PAGER": "names the pager git runs when no setting or GIT_PAGER names one",
+    **dict.fromkeys(("EDITOR", "VISUAL"), "names the editor git runs when no setting or GIT_EDITOR names one"),
+    "SSH_ASKPASS": "names the program git runs to ask for a credential when GIT_ASKPASS is unset",
+}
+# The prefixes of the names the dynamic loader reads as any program starts, git among them, which may load code into it.
+LOADER_PREFIXES = ("LD_", "DYLD_")
 # The variables Bash itself reads or sets, from its manual's "Shell Variables" and `compgen -v` in a bash started
 # with no environment, each with "" where assigning it changes nothing the guard reads, or why it does. A name Bash
 # neither reads nor sets is free: the guard needs its value only where an expansion of it stands, which leaves its
@@ -1148,6 +1185,11 @@ INHERITED_IT = (
     "without {name}, or run git from a terminal."
 )
 INDEX_IT = INHERITED_IT.format(name="GIT_INDEX_FILE")
+CONFIGURED_TRACE_IT = (
+    "No command can change the git configuration here: remove {name} from it from a terminal, or restart the session "
+    "from an environment that sets {variable} to 0, which outranks it."
+)
+UNREAD_CONFIGURATION_IT = "Repair the git configuration from a terminal, then run the command again."
 # The refusal the guard gives when its own reason holds what JSON cannot carry, such as a lone surrogate.
 UNWRITABLE_REASON = f"The guard refused this command for a reason that holds what JSON cannot carry. {DENY_REASON}"
 REWRITE_IT = (
@@ -2625,17 +2667,37 @@ def call_named(call: GitCall) -> str:
 
 
 def git_writes_trace_at(value: str) -> bool:
-    """Whether git writes a trace at the path a GIT_TRACE variable's value names: one git reads as absolute, starting
-    with a separator or a drive, as git for Windows also reads one (is_absolute_path in git's sources)."""
+    """Whether git writes a trace at the path a GIT_TRACE variable's value, or a trace2 target setting's, names: one git
+    reads as absolute, starting with a separator or a drive, as git for Windows also reads one (is_absolute_path in
+    git's sources)."""
     return value.startswith(("/", "\\")) or bool(re.match(r"[A-Za-z]:", value))
 
 
-def written_targets(variables: Mapping[str, str]) -> list[tuple[str, Path | None]]:
+@dataclass(frozen=True)
+class WrittenTarget:
+    """A file the session's environment has every git write a trace or its output to: what names it, as a note says
+    so, the sentence a refusal opens with, how to take it out, and the file with each symbolic link followed, None
+    where the guard cannot place it."""
+
+    source: str
+    named: str
+    remedy: str
+    path: Path | None
+
+
+def placed_file(value: str) -> Path | None:
+    """The absolute file a value names, with every symbolic link followed; None for a path this platform does not read
+    as absolute."""
+    path = Path(platform_support.from_shell_path(value))
+    return Path(os.path.realpath(path)) if path.is_absolute() else None
+
+
+def written_targets(variables: Mapping[str, str]) -> list[WrittenTarget]:
     """The files the inherited environment names for git to write its trace or its output to, by the name git reads
     (folded): the absolute path a GIT_TRACE variable names (TRACE_VARIABLE), and every value of a REDIRECT_VARIABLES
-    one but those that name no file, each with every symbolic link followed. None is a path the guard cannot place:
-    one this platform does not read as absolute, and a relative one git for Windows reads from where it starts."""
-    targets: list[tuple[str, Path | None]] = []
+    one but those that name no file. A path the guard cannot place is one this platform does not read as absolute, and
+    a relative one git for Windows reads from where it starts."""
+    targets: list[WrittenTarget] = []
     for name, value in sorted(variables.items()):
         if value in DEVICE_FILES:
             continue
@@ -2644,19 +2706,102 @@ def written_targets(variables: Mapping[str, str]) -> list[tuple[str, Path | None
                 continue
         elif name not in REDIRECT_VARIABLES or value in REDIRECT_VARIABLES[name]:
             continue
-        path = Path(platform_support.from_shell_path(value))
-        targets.append((name, Path(os.path.realpath(path)) if path.is_absolute() else None))
+        named = f"The session's environment holds {name}={value}"
+        targets.append(WrittenTarget(name, named, INHERITED_IT.format(name=name), placed_file(value)))
     return targets
 
 
+def configured_trace_targets(variables: Mapping[str, str]) -> list[WrittenTarget]:
+    """The files the system and global git configuration name for trace2 to write to (TRACE2_SETTINGS), as git reads
+    them with the session's environment, include.path followed, but for a target whose variable holds a value, which
+    outranks the setting. The guard's own git runs with every trace off, so this lookup writes no trace either.
+
+    Raises GitError where git cannot read the configuration."""
+    overridden = {variable for variable in TRACE2_SETTINGS.values() if variables.get(variable)}
+    if len(overridden) == len(TRACE2_SETTINGS):
+        return []
+    pattern = "^(" + "|".join(re.escape(setting) for setting in TRACE2_SETTINGS) + ")$"
+    arguments = ["config", "--includes", "--show-scope", "--null", "--get-regexp", pattern]
+    # Exit 1 with nothing on stderr is git finding no such setting.
+    output = CLIENT.quiet_output(arguments, directory=Path(__file__).resolve().parent, timeout=lookup_timeout())
+    fields = (output or "").split("\0")
+    targets: list[WrittenTarget] = []
+    # Each setting is its scope, then its name and value on two lines, each ended by a NUL.
+    for scope, entry in zip(fields[0::2], fields[1::2], strict=False):
+        setting, has_value, value = entry.partition("\n")
+        variable = TRACE2_SETTINGS.get(setting)
+        if scope not in TRACE2_SCOPES or variable is None or variable in overridden or not has_value:
+            continue
+        if value in DEVICE_FILES or not git_writes_trace_at(value):
+            continue
+        named = f"The session's {scope} git configuration sets {setting} to {value}"
+        remedy = CONFIGURED_TRACE_IT.format(name=setting, variable=variable)
+        targets.append(WrittenTarget(setting, named, remedy, placed_file(value)))
+    return targets
+
+
+def included_file(value: str, source: Path | None, start: Path | None) -> Path | None:
+    """The file an include.path or includeIf.<condition>.path setting names, as git reads it: a leading ~/ from the
+    home start names, a relative path from the directory of the file source holding it; None where the guard cannot
+    place it."""
+    if value.startswith(("~/", "~\\")):
+        return None if start is None else Path(os.path.realpath(start / value[2:]))
+    path = Path(platform_support.from_shell_path(value))
+    if path.is_absolute():
+        return Path(os.path.realpath(path))
+    return None if source is None else Path(os.path.realpath(source.parent / path))
+
+
+def configuration_files(start: Path | None) -> list[Path | None]:
+    """The files git reads its system and global configuration from with the session's environment, the ones trace2
+    reads its targets from: each `git var` names, whether or not it exists, every file the listing of those scopes
+    names as an origin, and every file an include.path or includeIf.<condition>.path in them names, whether or not it
+    exists. Each has every symbolic link followed; None is one the guard cannot place, start being the home a leading
+    ~/ names.
+
+    Raises GitError where git cannot name or read them."""
+    directory = Path(__file__).resolve().parent
+    files: list[Path | None] = []
+    for variable in ("GIT_CONFIG_SYSTEM", "GIT_CONFIG_GLOBAL"):
+        # Exit 1 with nothing on stderr is git reading no such file, as with GIT_CONFIG_NOSYSTEM.
+        output = CLIENT.quiet_output(["var", variable], directory=directory, timeout=lookup_timeout())
+        files += [placed_file(line) for line in output_lines(output or "")]
+    arguments = ["config", "--includes", "--show-scope", "--show-origin", "--null", "--list"]
+    fields = (CLIENT.quiet_output(arguments, directory=directory, timeout=lookup_timeout()) or "").split("\0")
+    # Each setting is its scope, its origin, then its name and value on two lines, each ended by a NUL.
+    for scope, origin, entry in zip(fields[0::3], fields[1::3], fields[2::3], strict=False):
+        if scope not in TRACE2_SCOPES:
+            continue
+        source = placed_file(origin.removeprefix("file:")) if origin.startswith("file:") else None
+        files.append(source)
+        setting, has_value, value = entry.partition("\n")
+        if has_value and INCLUDE_SETTING.fullmatch(setting):
+            files.append(included_file(value, source, start))
+    return files
+
+
 def withhold_written_variables(environment: MutableMapping[str, str]) -> None:
-    """Removes from environment each variable naming a file git writes its trace or output to (written_targets), so
-    the guard's own git calls, which run with this process's environment, write nothing there; the guard judges the
-    calls a command makes from the environment it was started with."""
+    """Removes from environment each variable naming a file git writes its trace or output to (written_targets), and
+    turns off each trace2 target (TRACE2_SETTINGS), which outranks one the configuration names, so the guard's own git
+    calls, which run with this process's environment, write no trace or output anywhere; the guard judges the calls a
+    command makes from the environment it was started with."""
     for name in list(environment):
         canonical = folded(name)
         if TRACE_VARIABLE.fullmatch(canonical) or canonical in REDIRECT_VARIABLES:
             del environment[name]
+    environment.update(dict.fromkeys(TRACE2_SETTINGS.values(), "0"))
+
+
+def shared_store_hub(place: Place) -> tuple[Path | None, bool]:
+    """The guarded hub whose store, its shared refs among it, a call at place writes as its own: the hub's, for a call
+    in the hub or in one of its linked worktrees (own_paths); and whether the text, or git, does not settle it."""
+    if (place.start or place.tree) is None or (place.repository_named and place.repository is None):
+        return None, True
+    try:
+        own = own_paths(place)
+        return (None, False) if own is None else (guarded_hub_of_repository(own.common_dir), False)
+    except GitError:
+        return None, True  # a repository git cannot read may share a guarded hub's store
 
 
 @dataclass
@@ -2667,6 +2812,8 @@ class Judge:
     environment: Mapping[str, str]
     notes: list[str]
     deadline: float
+    # The files git reads its system and global configuration from (configuration_files), once a write asks for them.
+    configuration: list[Path | None] | None = None
 
     def denied(self, reading: Reading, depth: int = 0) -> str | None:
         if reading.unread:
@@ -2680,6 +2827,9 @@ class Judge:
             reading.time_left()
             if hub_protected(path):
                 return f"The command redirects its output into {path}, a file of a guarded hub."
+            reason = self.configuration_write_refusal(path, "The command redirects its output into")
+            if reason is not None:
+                return reason
         for call in reading.calls:
             reading.time_left()
             reason = self.judge(call, depth)
@@ -2745,34 +2895,55 @@ class Judge:
             self.notes.append(f"could not tell where the index of {named} lies")
         return None
 
-    def environment_refusal(self, call: GitCall) -> str | None:
-        """Why a call is refused for where the inherited environment sends what git writes beyond a checkout's HEAD,
-        index, and tree. A trace or output file (written_targets) is judged as a redirection's target is, wherever the
-        call runs. An object store or common directory (STORE_VARIABLES) other than the call's own (own_paths) is
-        refused where a guarded hub holds it, since git writes its objects, configuration, or refs there. And a call
-        that acts on a guarded hub (reached_hub) runs only with the hub's own index, store, and common directory: given
-        any GIT_INDEX_FILE, another store, or GIT_ALTERNATE_OBJECT_DIRECTORIES, a fast-forward moves the hub's HEAD and
-        tree while the index it writes, or the objects its refs then name, lie elsewhere, so the hub's own index is
-        left out of step or its refs name objects its store lacks. Where the guard cannot place one of these, it is
-        refused while a hub is guarded and otherwise noted."""
-        named = call_named(call)
+    def session_written_refusal(self) -> str | None:
+        """Why every command is refused for a file the session's environment has git write its trace or its output to:
+        one an inherited variable names (written_targets) or the system or global configuration names for trace2
+        (configured_trace_targets). The environment reaches every git the command starts, a program's own and a `gh`
+        subcommand's among them, which the text does not show, and no git call is ever owed a trace in a hub, so a
+        file that lies in a guarded hub refuses the command whatever it holds; one the guard cannot place, or a
+        configuration git cannot read, is refused while a hub is guarded and otherwise noted."""
         variables = {folded(name): value for name, value in self.environment.items()}
-        for name, target in written_targets(variables):
-            if target is None:
+        targets = written_targets(variables)
+        try:
+            targets += configured_trace_targets(variables)
+        except GitError as exc:
+            if self.hubs:
+                return (
+                    f"The guard could not read the trace2 targets the git configuration names ({exc}), and every git "
+                    f"a command starts would write to them, so every command is refused while a hub is guarded. "
+                    f"{UNREAD_CONFIGURATION_IT}"
+                )
+            self.notes.append("could not read the trace2 targets the git configuration names")
+        for target in targets:
+            if target.path is None:
                 if self.hubs:
                     return (
-                        f"{named} would run with {name}={variables[name]}, a file git writes that the guard cannot "
-                        f"place, which may lie in a guarded hub, so it is refused while a hub is guarded. "
-                        f"{INHERITED_IT.format(name=name)}"
+                        f"{target.named}, a file git writes that the guard cannot place, which may lie in a guarded "
+                        "hub, and every git a command starts, a program's own included, would write there, so every "
+                        f"command is refused while a hub is guarded. {target.remedy}"
                     )
-                self.notes.append(f"could not tell where {name} has {named} write")
-            elif hub_protected(target):
+                self.notes.append(f"could not tell where {target.source} has git write")
+            elif hub_protected(target.path):
                 return (
-                    f"{named} would run with {name}={variables[name]}, and git writes there, into a file of a guarded "
-                    f"hub. {INHERITED_IT.format(name=name)}"
+                    f"{target.named}, and every git a command starts, a program's own included, writes there, into a "
+                    f"file of a guarded hub, so every command is refused while it does. {target.remedy}"
                 )
-        foreign = ["GIT_INDEX_FILE"] if call.place.index_named else []
-        foreign += [ALTERNATES_VARIABLE] if variables.get(ALTERNATES_VARIABLE) else []
+        return None
+
+    def environment_refusal(self, call: GitCall) -> str | None:
+        """Why a call is refused for where the inherited environment sends what git writes beyond a checkout's HEAD,
+        index, and tree; a trace or output file is judged for the whole command (session_written_refusal). An object
+        store or common directory (STORE_VARIABLES) other than the call's own (own_paths) is refused where a guarded
+        hub holds it, since git writes its objects, configuration, or refs there. A call that acts on a guarded hub
+        (reached_hub) runs only with the hub's own index, store, and common directory, and with the hub's own view of
+        its objects: given any GIT_INDEX_FILE, another store, or one of OBJECT_VIEW_VARIABLES, a fast-forward moves
+        the hub's HEAD and tree while the index it writes lies elsewhere, or its refs to objects its store lacks. And
+        a call whose repository shares a guarded hub's store (shared_store_hub), in one of its linked worktrees,
+        writes the refs that store holds, so it runs only with that store and that view of it. Where the guard cannot
+        place one of these, it is refused while a hub is guarded and otherwise noted."""
+        named = call_named(call)
+        variables = {folded(name): value for name, value in self.environment.items()}
+        foreign = [name for name in OBJECT_VIEW_VARIABLES if name in variables]
         for name, what in STORE_VARIABLES.items():
             if name not in variables:
                 continue
@@ -2791,16 +2962,33 @@ class Judge:
                 self.notes.append(f"could not tell where {name} has {named} write")
             if not own:
                 foreign.append(name)
-        if not foreign:
+        given = ["GIT_INDEX_FILE", *foreign] if call.place.index_named else foreign
+        if not given:
             return None
         hub, unknown = reached_hub(call.place)
-        if hub is None and not (unknown and self.hubs):
+        if hub is not None or (unknown and self.hubs):
+            where = (
+                f"the guarded hub {hub}" if hub is not None else "a place the guard cannot settle, which may be a hub"
+            )
+            return (
+                f"{named} would act on {where} given {', '.join(given)} from the session's environment: git would "
+                "move the hub's HEAD, tree, or refs while the index it writes lies elsewhere, or with a view of "
+                "objects other than its store's, leaving the hub's own index out of step or its refs naming objects "
+                f"its store lacks. {INHERITED_IT.format(name=given[0])}"
+            )
+        if not foreign:
             return None
-        where = f"the guarded hub {hub}" if hub is not None else "a place the guard cannot settle, which may be a hub"
+        shared, unknown = shared_store_hub(call.place)
+        if shared is None and not (unknown and self.hubs):
+            return None
+        where = (
+            f"the refs the guarded hub {shared} shares with its worktrees"
+            if shared is not None
+            else "refs a guarded hub may share, from a place the guard cannot settle"
+        )
         return (
-            f"{named} would act on {where} given {', '.join(foreign)} from the session's environment: git would move "
-            "the hub's HEAD, tree, or refs while the index it writes, or the objects they need, lie elsewhere, leaving "
-            f"the hub's own index out of step or its refs naming objects its store lacks. "
+            f"{named} would write {where} given {', '.join(foreign)} from the session's environment: git may move "
+            "them to objects the hub's store lacks, or prune objects they still need. "
             f"{INHERITED_IT.format(name=foreign[0])}"
         )
 
@@ -2849,6 +3037,36 @@ class Judge:
             path = call.place.start / path
         if hub_protected(path):
             return f"`git {call.subcommand}` writes {path}, a file of a guarded hub."
+        return self.configuration_write_refusal(path, f"`git {call.subcommand}` writes")
+
+    def configuration_write_refusal(self, path: Path, writer: str) -> str | None:
+        """Why a file a command writes is refused, while a hub is guarded, for being one git reads its system or global
+        configuration from (configuration_files): a trace2 target or another setting written there reaches every git
+        the rest of the command starts, a program's own included, though the guard judged the configuration before the
+        command ran. Where git cannot name those files, or the guard cannot place one, every file a command writes is
+        refused while a hub is guarded."""
+        if not self.hubs:
+            return None
+        if self.configuration is None:
+            try:
+                self.configuration = configuration_files(home(self.environment))
+            except GitError as exc:
+                return (
+                    f"{writer} {path}, and the guard could not tell which files git reads its system and global "
+                    f"configuration from ({exc}), so it is refused while a hub is guarded. {UNREAD_CONFIGURATION_IT}"
+                )
+        if None in self.configuration:
+            return (
+                f"{writer} {path}, and the guard cannot place a file git reads its system or global configuration "
+                f"from, which may be this one, so it is refused while a hub is guarded. {UNREAD_CONFIGURATION_IT}"
+            )
+        written = Path(os.path.realpath(path))
+        if any(file is not None and same_path(written, file) for file in self.configuration):
+            return (
+                f"{writer} {path}, a file git reads its system or global configuration from, and a setting written "
+                "there, such as a trace2 target in a hub, reaches every git the rest of the command starts, so it is "
+                "refused while a hub is guarded. Change the git configuration from a terminal."
+            )
         return None
 
     def config_refusal(self, call: GitCall) -> str | None:
@@ -2973,7 +3191,7 @@ def denied(reading: Reading, hubs: Iterable[Path] = (), depth: int = 0) -> str |
     """Why a reading's calls would write a guarded hub, or None; notes on what was passed over join the reading's."""
     judge = Judge(set(hubs), reading.environment, reading.notes, reading.deadline)
     with lookups_within(reading.deadline):
-        return judge.denied(reading, depth)
+        return judge.session_written_refusal() or judge.denied(reading, depth)
 
 
 # ---------------------------------------------------------------------------------------------------------------
@@ -3042,12 +3260,15 @@ def free_name(name: str, environment: Mapping[str, str]) -> bool:
 
 
 def harmless_name(name: str) -> bool:
-    """Whether a variable is one an assignment before a program may give it: one git does not read, and Bash does not
+    """Whether a variable is one an assignment before a program may give it: one git does not read to choose a file or
+    a program (no GIT_ name, none GIT_READ_NAMES names, and none the loader reads, LOADER_PREFIXES), and Bash does not
     read for what the guard reads."""
+    canonical = folded(name)
     return (
         BASH_VARIABLES.get(name, "") == ""
-        and not folded(name).startswith("GIT_")
-        and not EXPORTED_FUNCTION.match(folded(name))
+        and not canonical.startswith(("GIT_", *LOADER_PREFIXES))
+        and canonical not in GIT_READ_NAMES
+        and not EXPORTED_FUNCTION.match(canonical)
     )
 
 
