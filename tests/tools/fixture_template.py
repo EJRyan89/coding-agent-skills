@@ -20,7 +20,6 @@ import os
 import shutil
 import stat
 import subprocess
-import sys
 import tempfile
 import threading
 from collections.abc import Callable, Sequence
@@ -35,10 +34,7 @@ def remove_tree(path: Path) -> None:
         Path(target).chmod(stat.S_IWRITE)
         function(target)
 
-    if sys.version_info >= (3, 12):
-        shutil.rmtree(path, onexc=writable)
-    else:
-        shutil.rmtree(path, onerror=writable)
+    shutil.rmtree(path, onexc=writable)
 
 
 def path_forms(root: PurePath) -> list[str]:

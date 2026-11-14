@@ -547,7 +547,7 @@ class ToolchainPolicies(unittest.TestCase):
         self.assertIn(platform_support.BASH_NAME, ("Git Bash", "Bash"))
         self.assertEqual(
             {
-                "Python": (3, 11, 4),
+                "Python": (3, 12, 0),
                 platform_support.BASH_NAME: (5, 2),
                 "ShellCheck": (0, 9, 0),
                 "PSScriptAnalyzer": (1, 25, 0),
@@ -560,7 +560,7 @@ class ToolchainPolicies(unittest.TestCase):
         )
         document = (REPOSITORY_ROOT / DEPENDENCY_DOC).read_text(encoding="utf-8")
         for row in (
-            "| Python | 3.11.4 |",
+            "| Python | 3.12.0 |",
             "| Git Bash, or Bash on Linux and macOS | 5.2 |",
             "| ShellCheck | 0.9.0 |",
             "| PSScriptAnalyzer | 1.25.0 |",
@@ -704,8 +704,8 @@ class ToolchainPolicies(unittest.TestCase):
         self.assertEqual(
             3,
             workflow.count(
-                "python-version: ${{ github.event_name == 'schedule' && fromJSON('[\"3.11\", \"3.x\"]') "
-                "|| fromJSON('[\"3.11\"]') }}"
+                "python-version: ${{ github.event_name == 'schedule' && fromJSON('[\"3.12\", \"3.x\"]') "
+                "|| fromJSON('[\"3.12\"]') }}"
             ),
         )
         self.assertIn("if: github.event_name == 'schedule' && matrix.python-version == '3.x'", workflow)

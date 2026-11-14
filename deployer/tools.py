@@ -21,8 +21,10 @@ from pdf_tool import (
 
 from . import platform_support
 
-# 3.11.4 is the first 3.11 release whose tarfile has extraction filters, which --at extracts a commit's tree with.
-MINIMUM_PYTHON = (3, 11, 4)
+# 3.12.0 is the first 3.12 release; every 3.12 release's tarfile has the extraction filters --at extracts a commit's
+# tree with, and typing has override. The filters' known bypasses were fixed only in later 3.12 security releases,
+# which python.org ships as source alone, so --at refuses a link before the filter runs rather than relying on one.
+MINIMUM_PYTHON = (3, 12, 0)
 
 
 # Commands whose program the commands reader cannot read, by the scope that starts them, and why.

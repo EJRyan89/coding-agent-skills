@@ -260,7 +260,7 @@ class PythonChecksFixtures(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             configuration = root / "pyproject.toml"
-            configuration.write_text('[tool.mypy]\npython_version = "3.11"\n', encoding="utf-8")
+            configuration.write_text('[tool.mypy]\npython_version = "3.12"\n', encoding="utf-8")
             (root / "clean.py").write_text("def answer() -> int:\n    return 42\n", encoding="utf-8")
             mypy_type_check(root, ["clean.py"], configuration)
             (root / "module.py").write_text('def answer() -> int:\n    return "42"\n', encoding="utf-8")
@@ -333,7 +333,7 @@ class PythonChecksFixtures(unittest.TestCase):
             root = Path(directory) / "tree"
             root.mkdir()
             configuration = root / "pyproject.toml"
-            configuration.write_text('[tool.mypy]\npython_version = "3.11"\n', encoding="utf-8")
+            configuration.write_text('[tool.mypy]\npython_version = "3.12"\n', encoding="utf-8")
             (root / "module.py").write_text('def answer() -> int:\n    return "42"\n', encoding="utf-8")
             cache = Path(directory) / "cache"
             messages = []
@@ -351,7 +351,7 @@ class PythonChecksFixtures(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             configuration = root / "pyproject.toml"
-            configuration.write_text('[tool.mypy]\npython_version = "3.11"\n', encoding="utf-8")
+            configuration.write_text('[tool.mypy]\npython_version = "3.12"\n', encoding="utf-8")
             (root / "module.py").write_text("def answer(value):\n    return value\n", encoding="utf-8")
             mypy_type_check(root, ["module.py"], configuration)
             with self.assertRaises(AssertionError) as raised:

@@ -1752,9 +1752,12 @@ class GuidanceTests(Fixture):
             ('RUNTIME_TITLES.setdefault("gamma", "Gamma")', "3"),
             ("rename(RUNTIME_TITLES)", "3"),
             ("TITLES = RUNTIME_TITLES", "3"),
-            # Each capture and declaration that binds a name outside a Name node. A type parameter binds by the same
-            # `name` the definitions, the handler, and the captures do, and Python 3.11, which validation runs on,
-            # cannot parse one.
+            # Each capture, type parameter, and declaration that binds a name outside a Name node, and the type
+            # statement, whose name is a Name node of its own.
+            ("def load[RUNTIMES]():\n    pass", "3"),
+            ("class Holder[RUNTIMES]:\n    pass", "3"),
+            ("type Alias[RUNTIMES] = list[RUNTIMES]", "3"),
+            ("type RUNTIMES = tuple[str, ...]", "3"),
             ("match x:\n    case {**RUNTIMES}:\n        pass", "4"),
             ("match x:\n    case [*RUNTIMES]:\n        pass", "4"),
             ("match x:\n    case y as RUNTIMES:\n        pass", "4"),
