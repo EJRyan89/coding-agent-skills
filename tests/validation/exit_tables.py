@@ -76,7 +76,8 @@ PARSING_CALLS = frozenset({"parse_args", "parse_known_args", "parse_intermixed_a
 # read as the usage exit only on a receiver skill_scripts reads as a parser, one the module binds to a parser, or, in
 # a method, an attribute of its receiver that its class's body binds to a parser.
 USAGE_ERROR_CALL = "error"
-STATIC_METHOD = "staticmethod"
+# The decorator that makes a method static, as a bare name and as resolved through an import of builtins.
+STATIC_METHOD = frozenset({"staticmethod", "builtins.staticmethod"})
 SUBPARSER_CALL = "add_parser"
 # The folder below the repository whose Python never runs as a program the repository ships or uses.
 NOT_SCANNED = Path("tests") / "fixtures"
@@ -279,25 +280,37 @@ def parser_names(tree: ast.Module, aliases: dict[str, str]) -> set[str]:
     return found - {""}
 
 
+def _class_scope(owner: ast.ClassDef) -> Iterator[ast.AST]:
+    """Every node of a class's own scope: its body's statements, at any depth of an if, try, with, or loop, and the
+    functions and classes it defines, never what one of those defines inside itself."""
+    stack: list[ast.AST] = list(owner.body)
+    while stack:
+        node = stack.pop()
+        yield node
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef)):
+            stack.extend(ast.iter_child_nodes(node))
+
+
 def method_parsers(tree: ast.Module, aliases: dict[str, str]) -> dict[Function, set[str]]:
-    """The attribute chains on its own receiver each method reaches a parser by. A name a class's body binds to a
-    parser, as `cli: argparse.ArgumentParser` or `cli = argparse.ArgumentParser()`, is reached in each method that
-    class's body defines as an attribute of the method's first parameter, such as self.cli or cls.cli, and in no
-    other class's method; a static method has no receiver."""
+    """The attribute chains on its own receiver each method reaches a parser by. A name a class binds to a parser in
+    its own scope, as `cli: argparse.ArgumentParser` or `cli = argparse.ArgumentParser()`, under an if, try, or with
+    as well, is reached in each method that class's scope defines as an attribute of the method's first parameter,
+    such as self.cli or cls.cli, and in no other class's method; a static method has no receiver."""
     builders = _parser_builders(tree, aliases)
     found: dict[Function, set[str]] = {}
     for owner in ast.walk(tree):
         if not isinstance(owner, ast.ClassDef):
             continue
+        scope = list(_class_scope(owner))
         names = {
             target.id
-            for statement in owner.body
+            for statement in scope
             for target in _parser_targets(statement, aliases, builders)
             if isinstance(target, ast.Name)
         }
-        for method in owner.body:
+        for method in scope:
             if not isinstance(method, (ast.FunctionDef, ast.AsyncFunctionDef)) or any(
-                qualified_name(decorator, aliases) == STATIC_METHOD for decorator in method.decorator_list
+                qualified_name(decorator, aliases) in STATIC_METHOD for decorator in method.decorator_list
             ):
                 continue
             receiver = [*method.args.posonlyargs, *method.args.args][:1]

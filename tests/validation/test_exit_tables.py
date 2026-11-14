@@ -192,6 +192,9 @@ def tool_class(bound: str, receiver: str, parameter: str = "self") -> str:
         ("def main() -> int:\n    holder[0] = argparse.ArgumentParser()\n    made().error('no')\n", {0, 1}),
         # A name a class's body binds to a parser is one on its method's receiver, in that class's methods alone.
         (tool_class(ANNOTATED, "self.cli"), {0, 1, 2}),
+        (tool_class(f"    if TYPE_CHECKING:\n    {ANNOTATED}", "self.cli"), {0, 1, 2}),
+        (tool_class(f"    try:\n    {ANNOTATED}    except ImportError:\n        pass\n", "self.cli"), {0, 1, 2}),
+        (tool_class(f"    with context():\n    {ANNOTATED}", "self.cli"), {0, 1, 2}),
         (tool_class("    cli = argparse.ArgumentParser()\n", "self.cli"), {0, 1, 2}),
         (tool_class(ANNOTATED, "this.cli", "this"), {0, 1, 2}),
         (tool_class(ANNOTATED, "self.log"), {0, 1}),
@@ -219,17 +222,29 @@ def test_a_parser_s_error_is_the_usage_exit_and_another_object_s_error_is_none(b
     assert reader.reading.unread == []
 
 
-def test_a_class_s_parser_is_reached_on_each_receiver_its_own_methods_take_and_on_no_other() -> None:
+@pytest.mark.parametrize(
+    ("imports", "static", "made"),
+    [
+        ("", "staticmethod", "classmethod"),
+        ("import builtins\n", "builtins.staticmethod", "builtins.classmethod"),
+        ("from builtins import classmethod, staticmethod\n", "staticmethod", "classmethod"),
+        ("import builtins as b\n", "b.staticmethod", "b.classmethod"),
+    ],
+)
+def test_a_class_s_parser_is_reached_on_each_receiver_its_own_methods_take_and_on_no_other(
+    imports: str, static: str, made: str
+) -> None:
     source = (
-        "import argparse\n"
+        f"import argparse\n{imports}"
         "class Outer:\n    cli: argparse.ArgumentParser\n"
-        "    def first(this, /): pass\n    @classmethod\n    def made(cls): pass\n"
-        "    @staticmethod\n    def static(given): pass\n    def bare(): pass\n"
+        f"    def first(this, /): pass\n    @{made}\n    def made(cls): pass\n"
+        f"    @{static}\n    def static(given): pass\n    def bare(): pass\n"
+        "    if X:\n        def guarded(self): pass\n"
         "    class Inner:\n        def method(self): pass\n"
     )
     tree = ast.parse(source)
     found = {method.name: chains for method, chains in exit_tables.method_parsers(tree, import_aliases(tree)).items()}
-    assert found == {"first": {"this.cli"}, "made": {"cls.cli"}, "method": set()}
+    assert found == {"first": {"this.cli"}, "made": {"cls.cli"}, "guarded": {"self.cli"}, "method": set()}
 
 
 def test_an_entry_point_whose_only_usage_exit_is_parser_error_names_2() -> None:
