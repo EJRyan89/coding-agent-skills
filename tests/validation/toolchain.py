@@ -30,6 +30,14 @@ COMMANDS_ALLOWED = {
 }
 
 
+PRESENCE_ALLOWED = {
+    "read_module_version": (
+        "None reads as a version it cannot tell, which the prerequisite check reports, never as a version that "
+        "meets the floor"
+    ),
+}
+
+
 def find_git_bash() -> str:
     found = platform_support.find_bash()
     if found:

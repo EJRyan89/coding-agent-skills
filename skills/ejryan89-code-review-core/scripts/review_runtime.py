@@ -235,6 +235,14 @@ PRESENCE_ALLOWED = {
     "stopped it, which an error of the removal must not replace",
     "materialize_source_snapshot_from_github": "removes the folder it made, part way filled, before raising the "
     "failure that stopped it, which an error of the removal must not replace",
+    "_walk_snapshot": (
+        "a DirEntry's is_dir, which answers from the listing and raises every error but not found, as "
+        "file_presence's own listing does, so a failed stat is never read as no folder"
+    ),
+    "fetch_source_file": (
+        "raises the replace's own PermissionError again unless the same content is already at the target; a target "
+        "it cannot stat raises it again too"
+    ),
 }
 
 

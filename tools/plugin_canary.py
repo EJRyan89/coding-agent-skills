@@ -74,6 +74,7 @@ from typing import Any, cast
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "ejryan89-skill-core" / "scripts"))
 
+import file_presence
 import json_reader
 import json_writer
 import skill_menu
@@ -510,8 +511,11 @@ def unguarded(session: Session, executable: str, paths: Mapping[str, str], plugi
     completed = session.runner(
         command, session.home, environment(session.base, script_log, session.home), session.timeout
     )
-    if not result.is_file():
+    reason = file_presence.refusal_reason(result)
+    if reason == file_presence.MISSING:
         outcome = f"FAILED {quote('the reviewer wrote no result: ' + last_line(completed))}"
+    elif reason is not None:
+        outcome = f"FAILED {quote(f'the reviewer left a result that {reason}: ' + last_line(completed))}"
     else:
         # The state check reads: a native subagent's run on Claude Code, which the guard should have claimed.
         state = cast(RunState, {"runtime": "claude-code", "dispatch": "subagents", "reads": {}})

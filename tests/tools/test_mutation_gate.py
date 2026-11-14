@@ -902,6 +902,8 @@ class CoverageReachFixtures(unittest.TestCase):
         "    report = pathlib.Path('stub-report.json')\n"
         "    text = report.read_text() if report.is_file() else json.dumps({'files': {}})\n"
         "    pathlib.Path(sys.argv[sys.argv.index('-o') + 1]).write_text(text)\n"
+        "if step == 'json' and action == 'write a folder':\n"
+        "    pathlib.Path(sys.argv[sys.argv.index('-o') + 1]).mkdir()\n"
     )
 
     def reach(
@@ -946,6 +948,7 @@ class CoverageReachFixtures(unittest.TestCase):
             ({"combine": "sleep"}, "timed out in `coverage combine`"),
             ({"json": "sleep"}, "timed out in `coverage json`"),
             ({"json": "write nothing"}, "failed in `coverage json`, which wrote no report"),
+            ({"json": "write a folder"}, "failed in `coverage json`, whose report is not a file"),
         ):
             with self.subTest(actions=actions):
                 self.assertEqual(expected, self.reach(actions))

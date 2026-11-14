@@ -12,12 +12,14 @@ import unittest
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
+from unittest import mock
 
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts"))
 
+import file_presence
 import runtime_support
 from skill_layout import (
     MAXIMUM_INLINE_EXECUTABLE_LINES,
@@ -1434,4 +1436,49 @@ def test_marketplace_policy_refuses_assets_of_two_releases(tmp_path: Path) -> No
     other["source"] = {"source": "archive", "url": f"{REPOSITORY}/releases/download/v1.2.4/suite-extra.zip"}
     assert marketplace_problems(marketplace(tmp_path, entry("suite"), other)) == [
         "the marketplace names assets of more than one release: v1.2.3, v1.2.4"
+    ]
+
+
+# A path a layout policy needs that is of another kind, or that a stat cannot examine, is named so, never as missing.
+def test_a_skill_file_of_another_kind_is_named_so_never_as_no_skill_file(tmp_path: Path) -> None:
+    write_fixture_tree(tmp_path, {"skills/alpha/SKILL.md/notes.md": "", "skills/beta/notes.md": ""})
+    assert skill_tree_problems(tmp_path) == [
+        "skills/alpha/SKILL.md is not a file",
+        "skills/beta holds no SKILL.md and source.json declares no such shared asset",
+    ]
+
+
+def test_a_capability_guide_of_another_kind_is_named_so_never_as_one_without_its_section(tmp_path: Path) -> None:
+    document = runtime_support.CAPABILITY_GUIDES["codex", "sandbox-network"][0]
+    (tmp_path / document).mkdir(parents=True)
+    assert f"{document} is not a file, which runtime_support.CAPABILITY_GUIDES names as a guide" in (
+        capability_guide_problems(tmp_path)
+    )
+
+
+def test_a_plugin_file_whose_source_is_of_another_kind_is_named_so_never_as_one_without_a_source(
+    tmp_path: Path,
+) -> None:
+    write_plugin_sources(tmp_path, PLUGIN_SOURCES)
+    (tmp_path / "skills" / "alpha" / "scripts" / "other.py").mkdir()
+    files = {**plugin_files(), "skills/alpha/scripts/other.py": b"x"}
+    assert "plugin suite: skills/alpha/scripts/other.py has a source that is not a file" in plugin_tree_problems(
+        tmp_path, {"suite": files}, VERSION
+    )
+
+
+def test_a_skill_dir_path_a_stat_cannot_examine_is_named_so_never_as_one_that_does_not_exist(tmp_path: Path) -> None:
+    write_fixture_tree(
+        tmp_path,
+        {
+            "deploy-meta/alpha.json": "{}",
+            "skills/alpha/SKILL.md": "Read ${CLAUDE_SKILL_DIR}/references/denied.md.\n",
+        },
+    )
+    (tmp_path / "agents").mkdir()
+    denied = PermissionError(13, "Permission denied")
+    with mock.patch.object(file_presence, "is_there", side_effect=denied):
+        problems = skill_path_problems(tmp_path)
+    assert problems == [
+        f"skills/alpha/SKILL.md:1 names ${{CLAUDE_SKILL_DIR}}/references/denied.md, which cannot be examined: {denied}"
     ]

@@ -615,6 +615,11 @@ class DiscoverTests(Fixture):
             with self.subTest(target=target), self.assertRaisesRegex(rc.CleanupError, re.escape(message)):
                 self.discover(target)
 
+    def test_a_repos_root_with_nothing_there_is_named_missing_never_as_of_another_kind(self) -> None:
+        root = self.repos.parent / "gone"
+        with self.assertRaisesRegex(rc.CleanupError, f"^{re.escape(f'--repos-root {root} is missing')}$"):
+            rc.discover(None, str(root), rc.Services(gh=self.github))
+
     def test_unauthenticated_github_cli_stops(self) -> None:
         self.github.authenticated = False
         with self.assertRaisesRegex(rc.CleanupError, "^GitHub CLI not authenticated — run 'gh auth login'$"):

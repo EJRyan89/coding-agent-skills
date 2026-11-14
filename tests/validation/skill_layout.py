@@ -360,7 +360,10 @@ def capability_guide_problems(root: Path) -> list[str]:
     checked = 0
     for document, heading, _gives in sorted(set(runtime_support.CAPABILITY_GUIDES.values())):
         path = root / document
-        if not path.is_file() or markdown_section(path.read_text(encoding="utf-8"), f"## {heading}") is None:
+        reason = file_presence.refusal_reason(path)
+        if reason not in (None, file_presence.MISSING):
+            problems.append(f"{document} {reason}, which runtime_support.CAPABILITY_GUIDES names as a guide")
+        elif reason is not None or markdown_section(path.read_text(encoding="utf-8"), f"## {heading}") is None:
             problems.append(f'{document} has no "## {heading}" section, which runtime_support.CAPABILITY_GUIDES names')
     for metadata in file_presence.matching(root / "deploy-meta", "*.json"):
         try:
@@ -478,7 +481,12 @@ def _line_path_problems(
     )
     for match in SKILL_DIR_FILE.finditer(line) if directory is not None else ():
         named = match.group(1).rstrip(".")  # a path may end a sentence
-        if directory is not None and not (directory / named).exists():
+        try:
+            there = directory is None or file_presence.is_there(directory / named)
+        except OSError as error:
+            problems.append(f"{name}:{number} names ${{CLAUDE_SKILL_DIR}}/{named}, which cannot be examined: {error}")
+            continue
+        if not there:
             problems.append(f"{name}:{number} names ${{CLAUDE_SKILL_DIR}}/{named}, which does not exist")
     return problems
 
@@ -667,6 +675,19 @@ def _plugin_source(root: Path, path: str) -> tuple[Path, str] | str:
     return "comes from no skill file or agent a deployment ships"
 
 
+def _plugin_source_file(root: Path, path: str) -> tuple[Path, str] | str:
+    """The source file a plugin path comes from, with the skill it belongs to, or why it has none: no skill file or
+    agent a deployment ships, nothing at its source, or a source of another kind or one a stat cannot examine, each
+    named so."""
+    origin = _plugin_source(root, path)
+    if isinstance(origin, str):
+        return origin
+    reason = file_presence.refusal_reason(origin[0])
+    if reason == file_presence.MISSING:
+        return "has no source file"
+    return origin if reason is None else f"has a source that {reason}"
+
+
 def _answered(content: bytes, *, markdown: bool = False) -> bytes:
     """The source's bytes with the pinned answers, and in a Markdown file's frontmatter the pinned words first."""
     head = PLUGIN_FRONTMATTER.match(content) if markdown else None
@@ -766,9 +787,9 @@ def plugin_tree_problems(root: Path, plugins: Mapping[str, Mapping[str, bytes]],
         for path, content in sorted(files.items()):
             if path in (PLUGIN_MANIFEST, PLUGIN_HOOKS) or (path == "README.md" and has_readme):
                 continue
-            origin = _plugin_source(root, path)
-            if isinstance(origin, str) or not origin[0].is_file():
-                found.append(f"plugin {name}: {path} {origin if isinstance(origin, str) else 'has no source file'}")
+            origin = _plugin_source_file(root, path)
+            if isinstance(origin, str):
+                found.append(f"plugin {name}: {path} {origin}")
                 continue
             source, skill = origin
             carried.add(skill)
@@ -994,13 +1015,21 @@ def skill_tree_problems(root: Path) -> list[str]:
         if file_presence.is_present(source)
         else {}
     )
-    problems = [
-        f"{directory.relative_to(root).as_posix()} holds no SKILL.md and source.json declares no such shared asset"
-        for directory in sorted(
-            path for path in skills.iterdir() if file_presence.is_directory(path, other_is_absent=True)
-        )
-        if not file_presence.is_present(directory / "SKILL.md", other_is_absent=True) and directory.name not in shared
-    ]
+    problems: list[str] = []
+    for directory in sorted(
+        path for path in skills.iterdir() if file_presence.is_directory(path, other_is_absent=True)
+    ):
+        shown = directory.relative_to(root).as_posix()
+        if directory.name in shared:
+            continue
+        # A SKILL.md of another kind is named so; a stat that fails raises, never read as no SKILL.md.
+        try:
+            present = file_presence.is_present(directory / "SKILL.md")
+        except file_presence.NotAFile:
+            problems.append(f"{shown}/SKILL.md is not a file")
+            continue
+        if not present:
+            problems.append(f"{shown} holds no SKILL.md and source.json declares no such shared asset")
     problems += [
         f"{skill_md.relative_to(root).as_posix()} is deeper than skills/<name>"
         for skill_md in file_presence.matching(skills, "**/SKILL.md")

@@ -420,6 +420,17 @@ class SuiteDiscoveryFixtures(unittest.TestCase):
                 + recorded_cost_problems(root, {"tests/test_costly.py": {"Slow::test_long": 0}}),
             )
 
+    def test_a_recorded_suite_of_another_kind_is_named_so_never_as_no_suite(self) -> None:
+        # A folder where a recorded suite belongs is not a file, which the problem says, rather than reading it as
+        # a suite that is not there.
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "tests" / "test_folder.py").mkdir(parents=True)
+            self.assertEqual(
+                ["tests/test_folder.py records test costs but is not a file"],
+                recorded_cost_problems(root, {"tests/test_folder.py": {"Slow::test_long": 4}}),
+            )
+
     def test_a_test_a_block_of_its_class_body_holds_is_counted_and_never_recorded(self) -> None:
         source = (
             "import sys\nimport unittest\n\n\nclass Case(unittest.TestCase):\n    def test_everywhere(self): pass\n\n"

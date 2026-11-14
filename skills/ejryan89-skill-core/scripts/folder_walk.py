@@ -53,6 +53,15 @@ LOOP_REASON = "the folder is a link back into a folder the search is inside, whi
 NESTED_CHECKOUT_REASON = "the folder holds another checkout, a clone, submodule, or worktree, which the search skips"
 
 
+PRESENCE_ALLOWED = {
+    "search_folder": (
+        "a DirEntry's is_dir, which answers from the listing and raises every error but not found, as "
+        "file_presence's own listing does, so a failed stat is never read as no folder, and an entry whose test "
+        "raises is recorded as not entered"
+    ),
+}
+
+
 @dataclass(frozen=True)
 class NotEntered:
     """A folder or entry the walk did not search: its path, one of the kinds above, and why, as a phrase."""

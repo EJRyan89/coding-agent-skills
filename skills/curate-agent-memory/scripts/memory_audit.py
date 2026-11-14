@@ -226,6 +226,14 @@ USER_DESTINATION_GLOBS = ("CLAUDE.md", "rules/**/*.md")
 SKIPPED_DIRECTORIES = frozenset({".git", "node_modules", "bin", "obj", ".venv", "venv", "__pycache__", "packages"})
 
 
+PRESENCE_ALLOWED = {
+    "output_refusal": (
+        "a failed stat reads as no file here, but main opens the report with mode x, which never replaces a file "
+        "and raises for one it cannot create"
+    ),
+}
+
+
 @dataclass
 class CitedPath:
     """A path a memory cites: whether anything is there, or None with the reason when that cannot be told."""

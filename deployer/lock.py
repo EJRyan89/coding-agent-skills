@@ -40,6 +40,13 @@ PRESENCE_ALLOWED = {
     "refuses a stat or read that fails, naming the path",
     "_moved_record": "None reads as a record other than the one judged stale, which is moved back and refused, so a "
     "stat or read that fails never removes a record",
+    "Lock._remove_record": (
+        "a token file it cannot read is not this run's, so the record stays; nothing is removed on a failed read"
+    ),
+    "_read_info": (
+        "an empty mapping names no holder in a refusal that already refuses the run, so a failed read changes only "
+        "what the refusal names"
+    ),
 }
 # How long a run waits for the file lock another process holds before it refuses: long enough for a dry run's check,
 # which takes the lock for a moment, and for Windows, which may release a lock a little after its holder ends.

@@ -3389,6 +3389,20 @@ class MSBuildEvaluationTests(Fixture):
         expected = [["B/B.csproj", unsettled.format("PackageVersion")]]
         self.assertEqual((1, [], expected), (code, self.lines(rows, "CONFLICT"), self.lines(rows, "UNREADABLE")))
 
+    def test_an_import_of_a_folder_is_not_read_and_named_so_never_as_not_found(self) -> None:
+        (self.root / "A" / "Versions.props").mkdir(parents=True)
+        body = (
+            '<Import Project="Versions.props" /><PropertyGroup><TargetFramework>net8.0</TargetFramework>'
+            '</PropertyGroup><ItemGroup><PackageReference Include="Lib.Pkg" Version="1.0.0" /></ItemGroup>'
+        )
+        self.write("A/A.csproj", sdk_project(body))
+        _, rows = self.run_main("conflicts", "--root", str(self.root))
+        not_read = (
+            "the Import of Versions.props is not read: the path it names is not a file, so every property is "
+            "unsettled after it"
+        )
+        self.assertIn(["A/A.csproj", not_read], self.lines(rows, "UNREADABLE"))
+
     def why_lib_pkg(self, app: str) -> tuple[int, list[list[str]], list[list[str]]]:
         self.write("App/App.csproj", app)
         self.write("Lib/Lib.csproj", LIB_PROJECT)

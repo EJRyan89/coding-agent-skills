@@ -65,6 +65,14 @@ LISTED_PROCESSES = 64
 GROUP_POLL_SECONDS = 0.05
 
 
+PRESENCE_ALLOWED = {
+    "group_members": (
+        "a process folder under /proc whose stat file cannot be read is a process that ended between the listing "
+        "and the read"
+    ),
+}
+
+
 class JobRefused(OSError):
     """A command could not be held in its job: it could not join it, or, on Windows, it joined and could not be
     resumed in it, so it was killed; the message says which."""

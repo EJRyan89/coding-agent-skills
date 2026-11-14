@@ -473,6 +473,14 @@ class UnstatablePlaceTests(GuardTestCase):
             self.assertEqual("deny", self.bash(f'git -C "{self.place.as_posix()}" status', self.outside, self.unshared))
         self.assertIn("GitError", self.reason)
 
+    def test_a_git_directory_that_cannot_be_looked_at_is_never_passed_over_for_the_checkout_lookup(self) -> None:
+        # A .git the guard cannot stat may be a guarded hub's git directory, so the lookup of the hub protecting a path
+        # inside it raises git's error rather than reading it as no git directory and asking from the path instead.
+        repository = self.hub / ".git"
+        with unstatable(repository), self.assertRaises(git_client.GitError) as raised:
+            hub_guard.protecting_hub(repository / "config")
+        self.assertIn("Permission denied", str(raised.exception))
+
     def test_an_edit_in_a_hub_git_directory_that_cannot_be_looked_at_is_refused(self) -> None:
         with unstatable(self.hub / ".git", self.hub):
             self.assertEqual("deny", self.edit(self.hub / ".git" / "config"))

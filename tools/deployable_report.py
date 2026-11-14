@@ -127,6 +127,7 @@ COMMANDS_ALLOWED = {
 PRESENCE_ALLOWED = {
     "check_runtimes": "removes its throwaway work folder under the temporary directory once the runtimes are judged; "
     "nothing reads it after",
+    "_verify_log": ("an empty log names no runtime, so a deploy.py verify that failed counts as a failure of its own"),
 }
 
 
@@ -197,24 +198,24 @@ def check_layout(paths: Paths, find: Find | None = None) -> RuntimeResult:
         where = platform_support.normalize(paths.dest_dir)
         raise DeployError(f"ERROR: No skills are deployed in {where}.", f"Deploy first with '{PROG}'.")
     problems = [] if find(CLAUDE) else ["not installed"]
-    # A file whose stat fails is a problem naming it, as a missing one is, never raised past the report.
+    # A file of another kind, or one whose stat fails, is a problem naming why, as a missing one is, never raised past
+    # the report or named as missing.
     for name in skills:
         file = paths.dest_dir / name / "SKILL.md"
-        try:
-            empty = not file_presence.is_present(file, other_is_absent=True) or file.stat().st_size == 0
-        except OSError as error:
-            problems.append(f"{name}/SKILL.md cannot be examined: {error.strerror or error}")
-            continue
-        if empty:
+        reason = file_presence.refusal_reason(file)
+        if reason is None:
+            try:
+                reason = file_presence.MISSING if file.stat().st_size == 0 else None
+            except OSError as error:
+                reason = f"cannot be examined: {error.strerror or error}"
+        if reason == file_presence.MISSING:
             problems.append(f"{name}/SKILL.md missing or empty")
+        elif reason is not None:
+            problems.append(f"{name}/SKILL.md {reason}")
     for name in agents:
-        try:
-            present = file_presence.is_present(paths.agent_dest_dir / name, other_is_absent=True)
-        except OSError as error:
-            problems.append(f"agent {name} cannot be examined: {error.strerror or error}")
-            continue
-        if not present:
-            problems.append(f"agent {name} missing")
+        reason = file_presence.refusal_reason(paths.agent_dest_dir / name)
+        if reason is not None:
+            problems.append(f"agent {name} {'missing' if reason == file_presence.MISSING else reason}")
     if problems:
         return RuntimeResult(CLAUDE, FAILED, "; ".join(problems))
     plural = "agent" if len(agents) == 1 else "agents"

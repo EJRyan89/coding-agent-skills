@@ -80,9 +80,7 @@ class ExaminedRootTests(Fixture):
             ),
         ):
             rc.require_repository(self.clone)
-        refused = (
-            f"^{re.escape(f'{self.repos} cannot be examined: [Errno 13] Permission denied: {str(self.repos)!r}')}$"
-        )
+        refused = f"^{re.escape(f'--repos-root {self.repos} cannot be examined: Permission denied')}$"
         with stat_failing_at(self.repos), self.assertRaisesRegex(rc.CleanupError, refused):
             self.discover()
         self.assertEqual([], self.github.calls)
@@ -94,5 +92,5 @@ class ExaminedRootTests(Fixture):
             self.discover("linked")
         root = self.root / "a file"
         root.write_text("", encoding="utf-8")
-        with self.assertRaisesRegex(rc.CleanupError, f"^{re.escape(f'{root} is not a directory')}$"):
+        with self.assertRaisesRegex(rc.CleanupError, f"^{re.escape(f'--repos-root {root} is not a folder')}$"):
             rc.discover(None, str(root), rc.Services(gh=self.github))

@@ -36,6 +36,13 @@ from review_state import utc_date, watermark_date
 from review_vocabularies import SEVERITIES, SEVERITY_SECTIONS, DispatchMode, Severity
 from typed_fields import FieldError, FieldReader
 
+PRESENCE_ALLOWED = {
+    "legacy_counts": (
+        "None is its answer for a report it cannot read, which the follow-up summary shows as counts it cannot "
+        "tell, never as no findings"
+    ),
+}
+
 
 class ReviewOperationError(ValueError):
     pass

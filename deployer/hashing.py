@@ -21,6 +21,14 @@ UNENCODABLE_REMEDY = "Rename or remove that file, then rerun with --dry-run."
 LINKED_REMEDY = "Remove the link, or replace it with a copy of what it points to, then rerun with --dry-run."
 
 
+PRESENCE_ALLOWED = {
+    "hash_path": (
+        "a path it cannot stat is read as a file, whose read raises the error, so a failed stat is never hashed as "
+        "anything"
+    ),
+}
+
+
 def file_hash(content: bytes) -> str:
     return "sha256:" + hashlib.sha256(content).hexdigest()
 

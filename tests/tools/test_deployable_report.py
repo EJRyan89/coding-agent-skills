@@ -360,6 +360,19 @@ class DeployableReportTests(unittest.TestCase):
             self.assertEqual(report.FAILED, result.status)
             self.assertEqual(problem, result.detail)
 
+    def test_a_skill_file_or_agent_of_another_kind_is_named_so_never_as_missing(self) -> None:
+        skill = self.paths.dest_dir / "alpha" / "SKILL.md"
+        skill.unlink()
+        skill.mkdir()
+        agent = self.paths.agent_dest_dir / AGENT
+        agent.unlink()
+        agent.mkdir()
+        result = self.layout()
+        self.assertEqual(
+            (report.FAILED, f"alpha/SKILL.md is not a file; agent {AGENT} is not a file"),
+            (result.status, result.detail),
+        )
+
     def test_a_missing_agent_fails(self) -> None:
         (self.paths.agent_dest_dir / AGENT).unlink()
         result = self.layout()
