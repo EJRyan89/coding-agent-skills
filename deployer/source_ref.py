@@ -17,7 +17,7 @@ from pathlib import Path
 import file_presence
 from flat_text import flat_text
 from git_client import GitClient, GitError, GitResult
-from release_tags import TAGS, last_release
+from release_tags import TAGS, releases_naming
 
 from . import fsops, platform_support, tools
 from .arguments import usage_error
@@ -69,7 +69,7 @@ def check_ref(ref: str) -> None:
 
 
 class TagsUnreadable(Exception):
-    """Git could not read the release tags reaching a pinned commit; the message is Git's reason, on one line."""
+    """Git could not read the release tags naming a pinned commit; the message is Git's reason, on one line."""
 
 
 def _run_git(
@@ -161,13 +161,14 @@ def resolve(source_dir: Path, ref: str) -> Pin:
 
 
 def is_release_pin(source_dir: Path, ref: str | None, commit: str | None) -> bool:
-    """Whether a pin is update-coding-agent-skills' own: its ref is refs/tags/<the last release its commit holds>.
+    """Whether a pin is update-coding-agent-skills' own: its ref is refs/tags/<a release tag that names its commit>.
 
-    The release channel pins each release by its tag's full name, so a pin with a short name, another tag, or a tag a
-    later release on the same commit has overtaken is the user's. The last release is the one release_tags names, the
-    definition every reader of a release asks. Raises TagsUnreadable with Git's reason when Git cannot read the tags
-    reaching the commit, or the checkout's .git when it cannot tell whether one is there, so no owner is guessed for a
-    pin whose evidence was never produced.
+    The release channel pins each release by its tag's full name, and a user pins with a short name, so a pin with a
+    short name, a commit, or a tag that is not a release naming the pinned commit is the user's. Any release naming the
+    commit counts, not only the last, so a later release tagged on the pinned commit leaves the pin the update's own.
+    Which tags are releases naming the commit is release_tags' answer, the definition every reader of a release asks.
+    Raises TagsUnreadable with Git's reason when Git cannot read the tags naming the commit, or the checkout's .git
+    when it cannot tell whether one is there, so no owner is guessed for a pin whose evidence was never produced.
     """
     if ref is None or commit is None or not ref.startswith(TAGS):
         return False
@@ -178,10 +179,10 @@ def is_release_pin(source_dir: Path, ref: str | None, commit: str | None) -> boo
     if not checkout:
         return False
     try:
-        release = last_release(_client(), source_dir, commit)
+        releases = releases_naming(_client(), source_dir, commit)
     except GitError as error:
         raise TagsUnreadable(flat_text(str(error))) from error
-    return release is not None and ref == f"{TAGS}{release}"
+    return ref.removeprefix(TAGS) in releases
 
 
 def replaceable_release_pin(source_dir: Path, replaced: str, ref: str | None, commit: str | None) -> bool:
@@ -192,7 +193,7 @@ def replaceable_release_pin(source_dir: Path, replaced: str, ref: str | None, co
         return is_release_pin(source_dir, ref, commit)
     except TagsUnreadable as error:
         raise DeployError(
-            f"ERROR: Refusing to replace {replaced}: Git could not read the release tags reaching it, so whether it is "
+            f"ERROR: Refusing to replace {replaced}: Git could not read the release tags naming it, so whether it is "
             f"update-coding-agent-skills' own pin is unknown: {error}",
             "Put right what Git reports in the checkout, then retry; nothing was replaced.",
             see_recovery(EARLIER_COMMIT),

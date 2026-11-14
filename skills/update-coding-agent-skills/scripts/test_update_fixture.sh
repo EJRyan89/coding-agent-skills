@@ -139,8 +139,8 @@ EOF
 # real one does, and check names that commit and the pin, or prints
 # $FAKE_CHECK_OUTPUT when it is set, prints $FAKE_CHECK_STDERR to stderr, as the real one prints its errors, when it is
 # set, and exits with $FAKE_CHECK_EXIT. Like the real one, it refuses to replace a
-# recorded pin without --unpin: with --at only a pin at another commit that is not the full name of the last release
-# its commit holds, and without --at any pin.
+# recorded pin without --unpin: with --at only a pin at another commit that is not the full name of a release tag
+# naming its commit, and without --at any pin.
 UPSTREAM="$FIXTURE/upstream.git"
 SEED="$FIXTURE/seed"
 git_quiet init --bare -b main "$UPSTREAM"
@@ -177,9 +177,8 @@ at = arguments[arguments.index("--at") + 1] if "--at" in arguments else None
 def git_lines(*command):
     return subprocess.run(["git", "-C", here, *command], capture_output=True, text=True, check=True).stdout.split()
 def release_pin():
-    releases = [tag for tag in git_lines("tag", "--merged", commit) if re.fullmatch(r"v[0-9]+\.[0-9]+\.[0-9]+", tag)]
-    last = max(releases, key=lambda tag: tuple(int(part) for part in tag[1:].split(".")), default=None)
-    return last is not None and pin == "refs/tags/" + last
+    releases = [tag for tag in git_lines("tag", "--points-at", commit) if re.fullmatch(r"v[0-9]+\.[0-9]+\.[0-9]+", tag)]
+    return any(pin == "refs/tags/" + tag for tag in releases)
 named = git_lines("rev-parse", "--verify", (at or "HEAD") + "^{commit}")[0] if code == 0 else None
 if code == 0 and pin and "--unpin" not in arguments and (at is None or (named != commit and not release_pin())):
     print(f"ERROR: Refusing to replace the deployment pinned with --at {pin} to {commit} without --unpin.", file=sys.stderr)
@@ -282,9 +281,10 @@ expect_not_deployed() { ! grep -q -e "^--all" "$FAKE_DEPLOY_LOG" || fail "$1: de
 expect_nothing_run() { [ ! -s "$FAKE_DEPLOY_LOG" ] || fail "$1: deploy.py ran: $(cat "$FAKE_DEPLOY_LOG")"; }
 head_of() { git -C "$1" rev-parse --short "$2"; }
 
-# Version tags are published upstream only, so the clone must fetch them to see either side's version.
+# Version tags are published upstream only, so the clone must fetch them to see either side's version. A tag names the
+# seed's HEAD, or the commit the second argument names.
 tag_upstream() {
-  git_quiet -C "$SEED" tag "$1"
+  git_quiet -C "$SEED" tag "$1" "${2:-HEAD}"
   git_quiet -C "$SEED" push origin "$1"
 }
 
