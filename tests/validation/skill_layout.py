@@ -1048,7 +1048,8 @@ def repository_skill_name_problems(root: Path) -> list[str]:
             if not deploy_source.is_valid_name(name):
                 problems.append(
                     f"{where}: {name!r} is not a skill name: at most {MAX_NAME} lowercase letters, digits, and "
-                    f"hyphens, neither first nor last, and no Windows device name; see {SKILL_NAMES_DOC}"
+                    "hyphens, no leading, trailing, or consecutive hyphens, and no Windows device name; see "
+                    f"{SKILL_NAMES_DOC}"
                 )
             elif word := deploy_source.reserved_word(name):
                 problems.append(

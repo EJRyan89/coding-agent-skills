@@ -75,6 +75,12 @@ CONSTANT_KEY = "constant:"
 # set of one vocabulary, such as the severities a record allows, are one decision however each module holds it.
 COLLECTION_CALLS = frozenset({"tuple", "list", "set", "frozenset"})
 
+# The names that tell a name grammar from another format: lowercase runs joined by hyphens, a digit, one character,
+# the length limit, and the forms every such grammar refuses, a leading or trailing hyphen, a capital, an underscore,
+# a space, and the empty name. No probe holds consecutive hyphens, deliberately: a grammar that allows them is the
+# same grammar drifted, as the deployer's once was, and is a copy all the same.
+NAME_GRAMMAR_PROBES = ("pdf-processing", "a", "data-2", "a" * 64, "-pdf", "pdf-", "PDF", "pdf_processing", "pdf x", "")
+
 # A restatement of a shared fact's vocabulary holds at least this many of its members: fewer is a command that passes
 # one of them, such as a git invocation with -C.
 MINIMUM_SHARED_MEMBERS = 3
@@ -288,6 +294,25 @@ def _patterns_member(
     escaped = {re.escape(member) for member in members} - members
     return (
         isinstance(node, ast.Constant) and isinstance(node.value, str) and any(form in node.value for form in escaped)
+    )
+
+
+def _derives_name_grammar(
+    node: ast.AST, members: frozenset[str], _imports_owner: bool, _name: str, _resolver: CallableResolver
+) -> bool:
+    """A string literal that, read as a regular expression, judges every name in NAME_GRAMMAR_PROBES as the fact's
+    pattern does: the name grammar re-derived, however it treats `--`, which no probe holds, as the deployer's copy
+    once drifted from audit-ai-config's. Only a literal naming the range a-z is compiled."""
+    if not (isinstance(node, ast.Constant) and isinstance(node.value, str) and "a-z" in node.value):
+        return False
+    try:
+        candidate = re.compile(node.value)
+    except re.error:
+        return False
+    owners = [re.compile(member) for member in members]
+    return any(
+        all((candidate.fullmatch(probe) is None) == (owner.fullmatch(probe) is None) for probe in NAME_GRAMMAR_PROBES)
+        for owner in owners
     )
 
 
@@ -567,6 +592,7 @@ def _shared_facts() -> tuple[SharedFact, ...]:
             "skills/ejryan89-code-review-core/scripts/review_config.py", "DEFAULT_CONFIG_NAME", _equals_in_importer
         ),
         SharedFact(f"{SKILL_CORE_SCRIPTS}/agent_skills.py", "MAX_NAME", _states_number),
+        SharedFact(f"{SKILL_CORE_SCRIPTS}/agent_skills.py", "NAME_PATTERN", _derives_name_grammar),
         SharedFact(f"{SKILL_CORE_SCRIPTS}/frontmatter.py", "USER_ONLY_KEY", _reads_key),
         SharedFact(f"{SKILL_CORE_SCRIPTS}/typed_text.py", "TYPED_ENCODING", _reads_title_or_body),
         SharedFact("tests/validation/skill_layout.py", "HOME_SPELLINGS", _patterns_member),
@@ -578,8 +604,9 @@ def _shared_facts() -> tuple[SharedFact, ...]:
 
 
 def _fact_members(tree: ast.Module, name: str) -> frozenset[str] | None:
-    """The strings a module-level name holds, as a string literal, a whole number written in decimal, or a collection
-    of string literals, or the name itself when it names a module-level function, or None."""
+    """The strings a module-level name holds, as a string literal, a whole number written in decimal, a collection of
+    string literals, or the pattern of a regular expression compiled from a literal, or the name itself when it names a
+    module-level function, or None."""
     resolver = CallableResolver(tree)
     for node in module_statements(tree.body):
         if isinstance(node, ast.FunctionDef) and node.name == name:
@@ -594,6 +621,14 @@ def _fact_members(tree: ast.Module, name: str) -> frozenset[str] | None:
             return frozenset({value.value})
         if isinstance(value, ast.Constant) and isinstance(value.value, int) and not isinstance(value.value, bool):
             return frozenset({str(value.value)})
+        if (
+            isinstance(value, ast.Call)
+            and resolver.name(value.func) == "re.compile"
+            and value.args
+            and isinstance(value.args[0], ast.Constant)
+            and isinstance(value.args[0].value, str)
+        ):
+            return frozenset({value.args[0].value})
         if isinstance(value, ast.Call) and resolver.name(value.func) in COLLECTION_CALLS and len(value.args) == 1:
             value = value.args[0]
         items = _literals(value)

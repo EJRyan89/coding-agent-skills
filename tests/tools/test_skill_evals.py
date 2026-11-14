@@ -4127,13 +4127,24 @@ def test_each_scenario_tree_s_shell_suite_passes_on_its_tree(suite: str) -> None
 
 @pytest.mark.parametrize(
     "name",
-    [".", "..", "demo/one", "demo\\one", "Demo", ""],
-    ids=["dot", "dot dot", "a slash", "a backslash", "capitals", "empty"],
+    [".", "..", "demo/one", "demo\\one", "Demo", "", "demo--one", "-demo", "demo-"],
+    ids=[
+        "dot",
+        "dot dot",
+        "a slash",
+        "a backslash",
+        "capitals",
+        "empty",
+        "consecutive hyphens",
+        "a leading hyphen",
+        "a trailing hyphen",
+    ],
 )
 def test_a_skill_is_named_by_its_name_alone(name: str, tmp_path: Path) -> None:
     write_scenario(tmp_path, "one", scenario_spec())
+    # The name follows --, so one that opens with a hyphen reaches the name check rather than reading as an option.
     with contextlib.redirect_stderr(io.StringIO()) as error, pytest.raises(SystemExit) as raised:
-        skill_evals.main([name, "--records", str(tmp_path / "records")], tmp_path)
+        skill_evals.main(["--records", str(tmp_path / "records"), "--", name], tmp_path)
     assert raised.value.code == 2
     assert "must be a skill's name" in error.getvalue()
 

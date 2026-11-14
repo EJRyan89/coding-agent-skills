@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Collection, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import NotRequired, TypedDict, cast
 
 import json_writer
+from agent_skills import MAX_NAME
 from atomic_file import is_read_only
 
 from . import fsops, platform_support, state_files
@@ -15,7 +17,7 @@ from .errors import DEBUG_HINT, STATE_FILE, DeployError, os_error, see_recovery
 from .hashing import HASH_PATTERN
 from .kinds import ADAPTER_KIND, AGENT_KIND, DEPENDENCY_KINDS, KINDS, SHARED, SKILL, ItemKind, KindKey
 from .names import safe_name_problem
-from .source import SOURCE_ID_MAX_LENGTH, SOURCE_ID_PATTERN, is_valid_name
+from .source import SOURCE_ID_MAX_LENGTH, SOURCE_ID_PATTERN
 from .source_commit import COMMIT_PATTERN
 from .source_ref import REF_PATTERN
 
@@ -36,6 +38,18 @@ SKILL_DEPS_VERSION = 8
 # Version 7 added agent ownership; a version 6 manifest has no agents. Optional agent_deps and source_ref came later:
 # an older entry without them records no agents for a preserved skill and no pinned ref, respectively.
 OLDEST_READABLE_VERSION = 6
+# The grammar names were deployed under before a source's names were held to the Agent Skills one, which refuses
+# consecutive hyphens: a manifest recording such a name still reads, so a run refuses the name where the source gives
+# it rather than calling the manifest malformed. Once the source renames it, with no renamed entry, since an old name
+# with consecutive hyphens is refused there too, the deployed copy is one the source no longer has: removed when
+# unmodified and preserved when modified, and a request recorded under the old name is not carried to the new one.
+RECORDED_NAME_PATTERN = re.compile(r"[a-z0-9](?:[a-z0-9-]*[a-z0-9])?")
+DUPLICATION_ALLOWED = {
+    "NAME_PATTERN": (
+        "RECORDED_NAME_PATTERN is the grammar before skills/ejryan89-skill-core/scripts/agent_skills.py's NAME_PATTERN "
+        "refused consecutive hyphens, read only from a manifest so a home deployed then still reads"
+    ),
+}
 # What to do with a manifest the deployer cannot read, before it plans anything.
 MANIFEST_REMEDY = (
     "Put back a copy you trust, or move it out of the skills folder and rerun with --dry-run.",
@@ -270,6 +284,15 @@ class Manifest:
         fsops.write_atomic(self.path, (text + "\n").encode("utf-8"))
 
 
+def _is_recorded_name(name: str) -> bool:
+    """A skill, bundle, or agent name a manifest may record: one a source may give, or one deployed before."""
+    return (
+        len(name) <= MAX_NAME
+        and bool(RECORDED_NAME_PATTERN.fullmatch(name))
+        and not platform_support.is_reserved_device_name(name)
+    )
+
+
 def _hash_of(value: object) -> str:
     recorded = value.get("hash") if isinstance(value, dict) else None
     return recorded if isinstance(recorded, str) else ""
@@ -281,7 +304,7 @@ def _is_agent_file(name: object) -> bool:
         isinstance(name, str)
         and safe_name_problem(name, AGENT_KIND.noun) is None
         and name.endswith(AGENT_KIND.suffix)
-        and is_valid_name(AGENT_KIND.item_name(name))
+        and _is_recorded_name(AGENT_KIND.item_name(name))
     )
 
 
@@ -292,7 +315,7 @@ def _valid_dependencies(values: object, kind: ItemKind) -> bool:
     if kind is AGENT_KIND:
         return all(_is_agent_file(value) for value in values)
     if kind is SKILL:
-        return all(isinstance(value, str) and is_valid_name(value) for value in values)
+        return all(isinstance(value, str) and _is_recorded_name(value) for value in values)
     return all(isinstance(value, str) and safe_name_problem(value, "shared dependency") is None for value in values)
 
 
@@ -340,15 +363,15 @@ def _validate(data: dict[object, object], sources: dict[object, object], version
         for field_name in ("selected_skills", "requested_skills", "requested_bundles"):
             values = entry.get(field_name, [])
             if not isinstance(values, list) or not all(
-                isinstance(value, str) and is_valid_name(value) for value in values
+                isinstance(value, str) and _is_recorded_name(value) for value in values
             ):
                 raise DeployError("ERROR: Manifest selection fields are malformed", *MANIFEST_REMEDY)
         members = entry.get("requested_bundle_members", {})
         if not isinstance(members, dict) or not all(
             isinstance(name, str)
-            and is_valid_name(name)
+            and _is_recorded_name(name)
             and isinstance(values, list)
-            and all(isinstance(value, str) and is_valid_name(value) for value in values)
+            and all(isinstance(value, str) and _is_recorded_name(value) for value in values)
             for name, values in members.items()
         ):
             raise DeployError("ERROR: Manifest selection fields are malformed", *MANIFEST_REMEDY)
@@ -361,7 +384,7 @@ def _validate(data: dict[object, object], sources: dict[object, object], version
                 safe = isinstance(name, str) and safe_name_problem(name, "item") is None
                 if (
                     not safe
-                    or (named_like_skill and not is_valid_name(name))
+                    or (named_like_skill and not _is_recorded_name(name))
                     or (kind is AGENT_KIND and not _is_agent_file(name))
                     or not isinstance(value, dict)
                     or not isinstance(value.get("hash"), str)

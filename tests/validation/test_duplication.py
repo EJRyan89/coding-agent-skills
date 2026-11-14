@@ -418,7 +418,7 @@ class SharedFactPolicy(unittest.TestCase):
             'DEFAULT_CONFIG_NAME = "config.json"\n\n\ndef default_config_path():\n'
             '    return HOME / "code-review" / DEFAULT_CONFIG_NAME\n'
         ),
-        AGENT_SKILLS: "MAX_NAME = 64\n",
+        AGENT_SKILLS: 'import re\n\nMAX_NAME = 64\nNAME_PATTERN = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*")\n',
         FRONTMATTER: (
             'USER_ONLY_KEY = "disable-model-invocation"\n\n\ndef user_only(document):\n'
             '    return (document.string(USER_ONLY_KEY) or "").casefold() == "true"\n'
@@ -538,6 +538,34 @@ class SharedFactPolicy(unittest.TestCase):
         )
         # A module that does not import the owner may hold the number for another reason, such as a hash's length.
         self.assertEqual([], self.problems({source: imported, "tools/other.py": "SHA256_HEX = 64\n"}))
+
+    def test_a_re_derived_name_grammar_fails_however_it_treats_consecutive_hyphens_and_an_import_passes(self) -> None:
+        # The deployer's pattern accepted pdf--processing while audit-ai-config's inline one refused it: two
+        # derivations of one grammar that drifted apart.
+        source = "deployer/source.py"
+        audit = "skills/audit-ai-config/scripts/audit_ai_config.py"
+        drifted = 'import re\n\nSKILL_NAME_PATTERN = re.compile(r"^[a-z0-9]([a-z0-9-]*[a-z0-9])?$")\n'
+        inline = 'import re\n\n\ndef valid(name):\n    return re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", name)\n'
+        self.assertEqual(
+            [
+                self.restated(source, 3, "NAME_PATTERN", self.AGENT_SKILLS),
+                self.restated(audit, 5, "NAME_PATTERN", self.AGENT_SKILLS),
+            ],
+            self.problems({source: drifted, audit: inline}),
+        )
+        imported = (
+            "from agent_skills import NAME_PATTERN\n\n\ndef valid(name):\n    return NAME_PATTERN.fullmatch(name)\n"
+        )
+        # Another format that names the range a-z, such as a slug that may end in a hyphen or a case-blind name, is no
+        # copy of the grammar.
+        others = (
+            "import re\n\n"
+            'SLUG = re.compile(r"[a-z0-9][a-z0-9-]{0,63}")\n'
+            'LOGIN = re.compile(r"[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*")\n'
+            'WORD = re.compile(r"[a-z]+")\n'
+            'BROKEN = "[a-z"\n'
+        )
+        self.assertEqual([], self.problems({source: imported, audit: imported, "tools/other.py": others}))
 
     def test_a_reading_of_the_user_only_key_fails_outside_the_shared_reader(self) -> None:
         reference = "tools/skill_reference.py"
