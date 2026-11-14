@@ -1164,9 +1164,10 @@ removed fails validation until its pattern follows it.
   call that replaces the link itself, never one that follows it to create the file it leads to.
 - **Why:** Nothing can be read through such a link, so "not a file" sends a user looking for something that was never
   there; and a write that follows it creates a file wherever the link points, outside the folder the writer owns.
-- **Use:** `file_presence:is_present`, `file_presence:is_directory`, and `file_presence:refusal_reason`, which answer a
-  link to nothing as missing; `file_presence:is_occupied`, which counts it as occupying its place; and
-  `atomic_file:replace_bytes`, which replaces the link itself.
+- **Use:** `file_presence:is_present`, `file_presence:is_directory`, `file_presence:is_there`, and
+  `file_presence:refusal_reason`, which answer a link to nothing as missing; `file_presence:is_occupied`, the writer's
+  question, which counts it as occupying its place and which no reader asks; and `atomic_file:replace_bytes`, which
+  replaces the link itself.
 - **Guard:** `tests/malformed_input/test_faults_link.py::test_each_command_reads_a_link_to_nothing_as_the_file_missing_and_never_writes_through_it`,
   which places a link to nothing at each file every driven command reads and fails a run that names it as another
   kind, refuses it otherwise than a missing file, or creates the file it leads to,
@@ -1176,8 +1177,10 @@ removed fails validation until its pattern follows it.
 - **Search for:** `is_occupied(path) and not is_present(path, other_is_absent=True)`, which names a link to nothing as
   of another kind; `not path.is_file()` or `other_is_absent=True` worded as `is not a file`, which names a missing
   path so too; `.write_text(` or `open(path, "w")` after a reading of absence, which follows the link; `path.resolve()`
-  before a write that creates a missing target; and a listing that counts an entry by its name alone, such as
-  `_version_from_name(path)` in a comprehension over `iterdir()`.
+  before a write that creates a missing target; a missing path handed to a writer that follows it, as `next_role`
+  hands a role's result file to its reviewer; `is_occupied(` asked by a reader that names what is there, where
+  `is_there(` answers; and a listing that counts an entry by its name alone, such as `_version_from_name(path)` in a
+  comprehension over `iterdir()`.
 - **Examples:** #2716
 
 ### A grant is earned by a step that names its tool
