@@ -251,7 +251,7 @@ def _gh_json(runner: GhRunner, arguments: list[str], failure: str) -> Any:
     return _gh_request(runner, lambda client: client.json(arguments), failure)
 
 
-def _gh_request(runner: GhRunner, request: Callable[[GitHubClient], T], failure: str) -> T:
+def _gh_request[T](runner: GhRunner, request: Callable[[GitHubClient], T], failure: str) -> T:
     """`request` on the shared client over `runner`; any failure, output that is not JSON included, is a
     QueryError."""
     try:

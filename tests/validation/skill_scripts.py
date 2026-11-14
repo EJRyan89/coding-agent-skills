@@ -414,7 +414,7 @@ def _powershell_script_reading(script: str) -> PowerShellReading:
     return reading
 
 
-def prime(read: Callable[[], Primed]) -> Primed:
+def prime[Primed](read: Callable[[], Primed]) -> Primed:
     """What `read` gives once every PowerShell script it reaches through _powershell_script_reading is held in this
     process's readings: run it, deferring each script not yet read, read those in one powershell_readings call, which
     is one pwsh start for them all, and run it again until it defers none. A script a deferred script starts is read

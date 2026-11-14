@@ -115,7 +115,4 @@ def test_a_run_whose_probe_found_no_identifier_reads_as_its_exit_where_the_recor
         timeout=60,
     )
     # The recorder sees a Python script end from 3.12; before it, the run reads as one that wrote no marker.
-    if sys.version_info >= (3, 12):
-        assert reason == f'FAILED "ran {script.as_posix()} but it exited with code 1"'
-    else:
-        assert reason == f'FAILED "ran {script.as_posix()} but it wrote no marker; was the write denied?"'
+    assert reason == f'FAILED "ran {script.as_posix()} but it exited with code 1"'

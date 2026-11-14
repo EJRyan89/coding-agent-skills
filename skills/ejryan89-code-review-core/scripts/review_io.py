@@ -97,7 +97,7 @@ def working_path(explicit: Path | None, prefix: str, name: str) -> Path:
     return explicit
 
 
-def map_in_order(
+def map_in_order[Item, Value](
     function: Callable[[Item], Value],
     items: Iterable[Item],
     *,

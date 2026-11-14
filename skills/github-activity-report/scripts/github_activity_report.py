@@ -24,7 +24,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
-from typing import Any, Generic, TypeVar
+from typing import Any, TypeVar
 from urllib.parse import quote
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
@@ -242,7 +242,7 @@ class RangedSearch:
 
 
 @dataclass(frozen=True)
-class _Searcher(Generic[Page]):
+class _Searcher[Page]:
     """How one kind of search reads a query's first page and its count, fetches every result given that page and
     reports whether the cap truncated them, and drops results that repeat across parts."""
 
@@ -251,7 +251,7 @@ class _Searcher(Generic[Page]):
     distinct: Callable[[list[Any]], list[Any]]
 
 
-def _search_range(
+def _search_range[Page](
     searcher: _Searcher[Page], search: RangedSearch, start: date, end: date
 ) -> tuple[list[Any], list[str]]:
     """Search start..end, halving the range until each part fits under the cap, and slicing a single day still over it
@@ -275,7 +275,7 @@ def _search_range(
     return items, [str(start)] if capped else []
 
 
-def _slices(
+def _slices[Page](
     searcher: _Searcher[Page], search: RangedSearch, query: str, span: tuple[date, date], bounds: tuple[date, date]
 ) -> tuple[list[Any], bool]:
     """The results of `query`, a single day over the cap, in the two halves of `span`, a range of more than one day of

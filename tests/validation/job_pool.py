@@ -296,7 +296,7 @@ def run_jobs(jobs: list[Job], verbose: bool, workers: int) -> PoolResult:
     )
 
 
-def run_beside(foreground: Callable[[], T], jobs: list[Job], verbose: bool, workers: int) -> tuple[T, PoolResult]:
+def run_beside[T](foreground: Callable[[], T], jobs: list[Job], verbose: bool, workers: int) -> tuple[T, PoolResult]:
     """Start the pool on its own thread, run `foreground` in this one while the pool works, and return both results.
 
     The pool is always waited for: an exception from `foreground` propagates only once every job has finished.

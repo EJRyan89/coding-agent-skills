@@ -429,12 +429,12 @@ def _read_role(value: object, path: str) -> RunRole:
     return role
 
 
-def _object_of(value: object, path: str, read: Callable[[object, str], T]) -> dict[str, T]:
+def _object_of[T](value: object, path: str, read: Callable[[object, str], T]) -> dict[str, T]:
     """An object whose every value `read` reads at `path.<key>`."""
     return {key: read(entry, f"{path}.{key}") for key, entry in READ.json_object(value, path).items()}
 
 
-def _by_role(
+def _by_role[T](
     value: object, path: str, roles: Collection[str], read: Callable[[object, str], T], *, every: bool = False
 ) -> dict[str, T]:
     """An object keyed by the run's roles, every one of them when `every`, whose every value `read` reads."""
