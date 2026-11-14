@@ -41,6 +41,7 @@ from skill_layout import (
     script_layout_problems,
     shared_guidance_problems,
     sibling_path_problems,
+    skill_file_spelling_problems,
     skill_path_problems,
     skill_tree_problems,
     trigger_scenario_problems,
@@ -124,6 +125,33 @@ class SkillTreeFixtures(unittest.TestCase):
                 root, {"skills/alpha/SKILL.md": "", "skills/beta/scripts/run.py": "", "skills/beta/SKILL.md": ""}
             )
             self.assertEqual([], skill_tree_problems(root))
+
+    def test_a_skill_file_spelled_in_another_case_is_refused_in_every_skill_tree(self) -> None:
+        # A runtime opens it as SKILL.md only where its folder folds case, and validation, the plugin build, and the
+        # shims find a skill by SKILL.md exactly, so each tree holds that one spelling on every platform.
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            write_fixture_tree(
+                root,
+                {
+                    "skills/good/SKILL.md": "",
+                    "skills/lower/skill.md": "",
+                    f"{REPOSITORY_SKILLS}/good/SKILL.md": "",
+                    f"{REPOSITORY_SKILLS}/mixed/Skill.MD": "",
+                    f"{REPOSITORY_SKILL_SHIMS}/good/SKILL.md": "",
+                    f"{REPOSITORY_SKILL_SHIMS}/lower/skill.md": "",
+                    "skills/good/notes/skill.md": "",
+                },
+            )
+            self.assertEqual(
+                [
+                    "skills/lower/skill.md is spelled in another case than SKILL.md; rename it SKILL.md",
+                    f"{REPOSITORY_SKILLS}/mixed/Skill.MD is spelled in another case than SKILL.md; rename it SKILL.md",
+                    f"{REPOSITORY_SKILL_SHIMS}/lower/skill.md is spelled in another case than SKILL.md; rename it "
+                    "SKILL.md",
+                ],
+                skill_file_spelling_problems(root),
+            )
 
     def test_a_repository_skill_or_shim_must_be_named_as_a_skill_and_as_its_folder(self) -> None:
         def skill(name: str) -> str:

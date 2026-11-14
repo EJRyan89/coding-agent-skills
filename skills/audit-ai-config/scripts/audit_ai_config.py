@@ -11,8 +11,8 @@ Usage:
     python audit_ai_config.py [--json | --relay] [--provenance] [--root <path>]
 
 With --relay the report is the plain lines the skill relays as printed: REPOSITORY, AUTHORITY, and SCOPE lines, the
-RESULT and SUMMARY lines, and a tab-separated FINDING line for every ERROR, WARNING, and limitation finding, its
-path and message as plain text on one line.
+RESULT and SUMMARY lines, and a tab-separated FINDING line for every ERROR and WARNING finding and every limitation
+and layering INFO finding, its path and message as plain text on one line.
 
 With --provenance the report also names, for each check its findings name, the guidance the check derives from, read
 from references/provenance.json: a published page and the passage it rests on, or this source's decision.
@@ -26,8 +26,8 @@ The Markdown and relay reports state the result on one line, before the SUMMARY 
 Exit status:
   0  RESULT COMPLIANT
   1  RESULT ERRORS or RESULT INCONCLUSIVE, or a last line FAILED <reason>
-     (the root is not a Git repository, --provenance could not read the provenance file, or the --json report
-     cannot hold a value the audit found)
+     (the root is not a Git repository, the root could not be examined for a .git, --provenance could not read the
+     provenance file, or the --json report cannot hold a value the audit found)
   2  a usage error
 """
 
@@ -55,7 +55,15 @@ import folder_walk
 import json_reader
 import json_writer
 import python_reader
-from agent_skills import CODEX_METADATA, MAX_DESCRIPTION, MAX_NAME, RESERVED_WORDS, XML_TAG_PATTERN
+from agent_skills import (
+    CODEX_METADATA,
+    MAX_DESCRIPTION,
+    MAX_NAME,
+    RESERVED_WORDS,
+    SKILL_FILE,
+    XML_TAG_PATTERN,
+    is_skill_file,
+)
 from check_provenance import Source
 from console import run_main
 from file_presence import NotAFile, is_directory, is_occupied, is_present
@@ -1230,14 +1238,18 @@ def _builtin_agent_collision(name: str) -> str:
     )
 
 
-def _provenance(root: Path, path: Path, rel: str, kind: str, manifest_paths: set[str]) -> list[Finding]:
+def _provenance(root: Path, path: Path, kind: str, manifest_paths: set[str]) -> list[Finding]:
     """A marker-bearing Copilot projection must be owned by the manifest.
 
-    The converse, a manifest-owned projection without the marker, is check_ownership's finding. An unreadable file is
-    skipped: it is an ERROR from its frontmatter check, and from parity when the manifest owns it.
+    The manifest names a skill projection as the runtime opens it, by SKILL.md, which is the file found where its
+    folder folds case, so a skill's is looked up under that name. The converse, a manifest-owned projection without
+    the marker, is check_ownership's finding. An unreadable file is skipped: it is an ERROR from its frontmatter check,
+    and from parity when the manifest owns it.
     """
+    rel = path.relative_to(root).as_posix()
+    opened = path.with_name(SKILL_FILE) if kind == "skill" else path
     content = read_text_or_none(root, path)
-    if content is None or not has_ownership_marker(content) or rel in manifest_paths:
+    if content is None or not has_ownership_marker(content) or opened.relative_to(root).as_posix() in manifest_paths:
         return []
     return [
         Finding("ERROR", "provenance", rel, message=f"Generated Copilot {kind} projection is not owned by the manifest")
@@ -1260,7 +1272,9 @@ def check_copilot_configuration(root: Path, manifest: dict[str, Any]) -> list[Fi
         except OSError as error:
             findings.append(_unlistable_finding(skill_dir, error))
             continue
-        walk = walk_files(root, directory, lambda name: name == "SKILL.md")
+        # A skill's SKILL.md as its folder compares names, the file a runtime opens by that name: the walk keeps each
+        # name that is SKILL.md in some case, and is_skill_file asks its folder.
+        walk = walk_files(root, directory, lambda name: name.casefold() == SKILL_FILE.casefold())
         findings.extend(outside_link_findings(root, walk))
         # A folder below it the walk cannot list, which the repository walk skips by its name or reports too.
         findings.extend(
@@ -1269,10 +1283,10 @@ def check_copilot_configuration(root: Path, manifest: dict[str, Any]) -> list[Fi
         )
         # A skill in a nested checkout, which the inventory's one-level listing names but this walk does not enter.
         findings.extend(skipped_folder_findings(root, walk))
-        for path in sorted(walk.paths):
+        for path in sorted(path for path in walk.paths if is_skill_file(path)):
             findings.extend(_validate_skill(path, root))
             if skill_dir == ".github/skills":
-                findings.extend(_provenance(root, path, path.relative_to(root).as_posix(), "skill", manifest_paths))
+                findings.extend(_provenance(root, path, "skill", manifest_paths))
             else:
                 findings.extend(_agent_skill_rules(path, root, skill_dir))
     for agent_dir in (".github/agents", ".claude/agents"):
@@ -1293,7 +1307,7 @@ def check_copilot_configuration(root: Path, manifest: dict[str, Any]) -> list[Fi
                 findings.extend(_validate_claude_agent(path, root, directory))
             else:
                 findings.extend(_validate_agent(path, root, directory))
-            findings.extend(_provenance(root, path, path.relative_to(root).as_posix(), "agent", manifest_paths))
+            findings.extend(_provenance(root, path, "agent", manifest_paths))
     return findings
 
 
@@ -3267,26 +3281,21 @@ def _hook_handler_problems(rules: HookRules, event: str, handler: Any) -> list[t
 
 # An @path import outside code: a path the memory page resolves relative to the file holding it.
 CLAUDE_IMPORT = re.compile(r"(?<![\w@`/])@(~?[\w./-]*[\w-])")
-FENCE = re.compile(r"^\s{0,3}(`{3,}|~{3,})")
 CODE_SPAN = re.compile(r"(`+).*?\1")
 
 
 def claude_imports(text: str) -> list[str]:
     """The @path imports in a CLAUDE.md file, in order, skipping fenced code blocks and code spans as Claude Code
-    does."""
-    imports: list[str] = []
-    fence: str | None = None
-    for line in text.splitlines():
-        opened = FENCE.match(line)
-        if fence is not None:
-            if opened and opened.group(1)[0] == fence[0] and len(opened.group(1)) >= len(fence):
-                fence = None
-            continue
-        if opened:
-            fence = opened.group(1)
-            continue
-        imports.extend(CLAUDE_IMPORT.findall(CODE_SPAN.sub("", line)))
-    return imports
+    does. markdown_sections reads the fences, those a blockquote or list item holds included, as CommonMark reads
+    them."""
+    lines = text.splitlines()
+    fenced = {index for fence in find_fences(lines) for index in fence.lines()}
+    return [
+        path
+        for index, line in enumerate(lines)
+        if index not in fenced
+        for path in CLAUDE_IMPORT.findall(CODE_SPAN.sub("", line))
+    ]
 
 
 def _claude_memory(root: Path) -> list[Finding]:
@@ -4080,8 +4089,8 @@ def main() -> int:
     output.add_argument(
         "--relay",
         action="store_true",
-        help="output the plain lines the skill relays: authority, scope, result, summary, and every ERROR, WARNING, "
-        "and limitation finding",
+        help="output the plain lines the skill relays: authority, scope, result, summary, and every ERROR and "
+        "WARNING finding and every limitation and layering INFO finding",
     )
     parser.add_argument(
         "--provenance",
