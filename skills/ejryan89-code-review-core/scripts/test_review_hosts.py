@@ -714,16 +714,12 @@ class AddedRootTests(unittest.TestCase):
         self.assertEqual(workspace.resolve(), Path(top.strip()).resolve())
 
     def test_a_workspace_git_cannot_make_a_repository_of_is_refused(self) -> None:
-        for label, effect, message in (
-            ("failed", GitResult(128, "", "fatal: cannot\nmake it\n"), "fatal: cannot make it"),
-            ("silent", GitResult(1, "", ""), "git init exited 1"),
-            ("missing", GitError("git is not installed"), "git is not installed"),
+        for label, error, message in (
+            ("failed", GitError("git init failed:\nfatal: cannot make it\n", returncode=128), "fatal: cannot make it"),
+            ("missing", GitError("git is not installed", kind="prerequisite"), "git is not installed"),
         ):
             client = mock.Mock()
-            if isinstance(effect, GitResult):
-                client.run.return_value = effect
-            else:
-                client.run.side_effect = effect
+            client.output.side_effect = error
             isolation = self.root / f"isolation-{label}"
             with (
                 self.subTest(label),
@@ -731,8 +727,24 @@ class AddedRootTests(unittest.TestCase):
                 self.assertRaises(RuntimeContractError) as raised,
             ):
                 isolated_copilot_environment(isolation, {}, added_roots=[])
-            self.assertEqual(
-                f"The Copilot workspace could not be made a git repository: {message}", str(raised.exception)
+            self.assertTrue(
+                str(raised.exception).startswith("The Copilot workspace could not be made a git repository: "),
+                raised.exception,
             )
-            client.run.assert_called_once_with(["init", "--quiet"], directory=isolation / "workspace")
+            self.assertIn(message, str(raised.exception))
+            self.assertNotIn("\n", str(raised.exception), "git's lines are flattened to one")
+            client.output.assert_called_once_with(["init", "--quiet"], directory=isolation / "workspace")
             self.assertFalse((isolation / "copilot-home" / "settings.json").exists())
+
+    def test_a_failing_git_init_is_named_as_git_names_it(self) -> None:
+        def failing(command: Sequence[str], timeout: float) -> GitResult:
+            del command, timeout
+            return GitResult(128, "", "fatal: cannot\nmake it\n")
+
+        with (
+            mock.patch.object(review_hosts, "GitClient", return_value=GitClient(failing)),
+            self.assertRaises(RuntimeContractError) as raised,
+        ):
+            isolated_copilot_environment(self.root / "isolation", {}, added_roots=[])
+        self.assertIn("could not be made a git repository: ", str(raised.exception))
+        self.assertIn("fatal: cannot make it", str(raised.exception))

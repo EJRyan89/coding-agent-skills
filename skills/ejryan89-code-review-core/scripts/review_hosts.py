@@ -372,12 +372,11 @@ def bounded_workspace(workspace: Path) -> None:
     where the run directory's parents, the system's shared temporary directory on Linux among them, are not the
     host's. Nothing in the host commits there, so a hook the user's own git templates copy in never runs."""
     try:
-        result = GitClient().run(["init", "--quiet"], directory=workspace)
+        GitClient().output(["init", "--quiet"], directory=workspace)
     except GitError as exc:
-        raise RuntimeContractError(f"The Copilot workspace could not be made a git repository: {exc}") from exc
-    if result.returncode != 0:
-        detail = flat_text(result.stderr) or f"git init exited {result.returncode}"
-        raise RuntimeContractError(f"The Copilot workspace could not be made a git repository: {detail}")
+        raise RuntimeContractError(
+            f"The Copilot workspace could not be made a git repository: {flat_text(str(exc))}"
+        ) from exc
 
 
 def require_no_added_configuration(root: Path, label: str) -> None:
