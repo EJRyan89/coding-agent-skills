@@ -2589,6 +2589,22 @@ class LimitationTests(unittest.TestCase):
             self._limitations(),
         )
 
+    def test_a_manifest_owned_projection_in_another_case_is_noted_only_where_its_folder_folds_case(self) -> None:
+        # The manifest records a skill projection as the runtime opens it, SKILL.md, which is this unmarked skill.md
+        # where the folder folds case: it was looked up by its spelling on disk, so its limitation went unreported.
+        folder = self.root / ".github/skills/demo"
+        folder.mkdir(parents=True)
+        (folder / "skill.md").write_text("---\nname: demo\ndescription: Demo.\n---\n", encoding="utf-8")
+        manifest = {"artifacts": [{"path": ".github/skills/demo/SKILL.md"}]}
+        note = (
+            ".github/skills/demo/skill.md",
+            "Generated Copilot projection is provenance-checked only, not reconstructed",
+        )
+        for folds in (True, False):
+            with self.subTest(folds=folds), mock.patch.dict(path_keys._FOLDS_CASE, {str(folder): folds}):
+                rows = [(f.path, f.message) for f in audit.check_limitations(self.root, manifest)]
+                self.assertEqual(folds, note in rows, rows)
+
     def test_limitations_never_change_the_exit_code(self) -> None:
         self.assertEqual(0, audit.audit(self.root).exit_code)
 

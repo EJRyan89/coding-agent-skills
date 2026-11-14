@@ -1238,18 +1238,23 @@ def _builtin_agent_collision(name: str) -> str:
     )
 
 
-def _provenance(root: Path, path: Path, kind: str, manifest_paths: set[str]) -> list[Finding]:
-    """A marker-bearing Copilot projection must be owned by the manifest.
+def manifest_name(root: Path, path: Path) -> str:
+    """The path the manifest records a Copilot projection under: a `.github/skills` skill's main file as the runtime
+    opens it, `SKILL.md`, which is this file in any case where its folder folds case, and any other file as it is
+    spelled on disk. Every lookup of a found projection among the manifest's artifacts goes through it."""
+    skill = path.parent.parent == root / ".github/skills" and is_skill_file(path)
+    return (path.with_name(SKILL_FILE) if skill else path).relative_to(root).as_posix()
 
-    The manifest names a skill projection as the runtime opens it, by SKILL.md, which is the file found where its
-    folder folds case, so a skill's is looked up under that name. The converse, a manifest-owned projection without
-    the marker, is check_ownership's finding. An unreadable file is skipped: it is an ERROR from its frontmatter check,
-    and from parity when the manifest owns it.
+
+def _provenance(root: Path, path: Path, kind: str, manifest_paths: set[str]) -> list[Finding]:
+    """A marker-bearing Copilot projection must be owned by the manifest, looked up under manifest_name.
+
+    The converse, a manifest-owned projection without the marker, is check_ownership's finding. An unreadable file is
+    skipped: it is an ERROR from its frontmatter check, and from parity when the manifest owns it.
     """
     rel = path.relative_to(root).as_posix()
-    opened = path.with_name(SKILL_FILE) if kind == "skill" else path
     content = read_text_or_none(root, path)
-    if content is None or not has_ownership_marker(content) or opened.relative_to(root).as_posix() in manifest_paths:
+    if content is None or not has_ownership_marker(content) or manifest_name(root, path) in manifest_paths:
         return []
     return [
         Finding("ERROR", "provenance", rel, message=f"Generated Copilot {kind} projection is not owned by the manifest")
@@ -3823,7 +3828,7 @@ def check_limitations(root: Path, manifest: dict[str, Any]) -> list[Finding]:
                 generated = has_ownership_marker(read_text(root, path))
             except (OSError, UnicodeError):
                 generated = False
-            if generated or rel in artifact_paths:
+            if generated or manifest_name(root, path) in artifact_paths:
                 note(rel, "Generated Copilot projection is provenance-checked only, not reconstructed")
     instructions = root / ".github/instructions"
     if found_folder(instructions) and walk_files(root, instructions, _is_path_instructions).paths:
