@@ -2495,12 +2495,15 @@ def reached_hub(place: Place) -> tuple[Path | None, bool]:
 
 
 def index_reached(place: Place) -> tuple[Path | None, bool]:
-    """The guarded hub that holds the index file GIT_INDEX_FILE names for a call at place, when that index is not the
-    call's own, and whether the text does not settle it.
+    """The guarded hub that holds the index file GIT_INDEX_FILE names for a call at place, unless that index is a
+    worktree's own the call uses anyway, and whether the text does not settle it.
 
     One form is accepted: an absolute path to an index no guarded hub holds (protecting_hub), or to the one git uses
-    for the call's own repository without the variable (own_index). Any other a guarded hub holds, its own index,
-    another worktree's, or any file in its git directory or tracked surface, is that hub's. git follows a symbolic
+    for the call's own repository without the variable (own_index) where that is not the hub's own. Any other a
+    guarded hub holds is that hub's: its own index, even from the hub, since a call such as `worktree add -b` or
+    `worktree remove` starts a git that inherits the variable in another checkout, whose `reset --hard` or clean check
+    then writes the hub's index out of step with its HEAD; another worktree's; and any file in its git directory or
+    tracked surface. git follows a symbolic
     link to write the index through its lock file, so each link is followed here too. A relative path is not settled:
     git reads it from whatever directory each process it starts works in, a child such as `worktree add`'s
     `reset --hard` in another one, and git exports a relative index only for a repository whose git directory is
@@ -2516,7 +2519,9 @@ def index_reached(place: Place) -> tuple[Path | None, bool]:
     index = Path(os.path.realpath(named))
     try:
         hub = protecting_hub(index)
-        return (hub, False) if hub is not None and not own_index(place, index) else (None, False)
+        if hub is None or (own_index(place, index) and not own_index(Place(hub, hub), index)):
+            return None, False
+        return hub, False
     except GitError:
         return None, True  # an index git cannot place may be a guarded hub's
 
@@ -2607,7 +2612,7 @@ class Judge:
 
     def index_refusal(self, call: GitCall) -> str | None:
         """Why a call is refused for the index GIT_INDEX_FILE names (index_reached): every git call, wherever it runs
-        and whatever its subcommand, while that index is one a guarded hub holds and not the call's own, since a form
+        and whatever its subcommand, while that index is one a guarded hub holds and not a worktree's own, since a form
         that only reads the hub, status or a fast-forward among them, still refreshes or rewrites the index it is
         given, out of step with the hub's HEAD; and, while a hub is guarded, every one whose index the guard cannot
         place."""
@@ -2615,8 +2620,8 @@ class Judge:
         named = f"`git {call.subcommand or '<computed>'}`" if call.program == "git" else f"`gh {call.subcommand}`"
         if hub is not None:
             return (
-                f"{named} would run with GIT_INDEX_FILE={call.place.index}, an index the guarded hub {hub} holds that "
-                f"is not the call's own, and any git call may rewrite the index it is given. {INDEX_IT}"
+                f"{named} would run with GIT_INDEX_FILE={call.place.index}, an index the guarded hub {hub} holds, and "
+                f"any git call, or a git it starts in another checkout, may rewrite the index it is given. {INDEX_IT}"
             )
         if unknown and self.hubs:
             return (

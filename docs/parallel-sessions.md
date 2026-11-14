@@ -324,17 +324,17 @@ a row decides it.
   form that would, an assignment before git, `export`, `env`, and a PowerShell assignment among them, is a part the
   guard does not read. On Windows git reads an environment name in any case, so `git_dir` is `GIT_DIR` there; when
   two spellings disagree, the call is judged by the upper-case one, the spelling git reads, with a note.
-- **The index a git call is given.** Every git call rewrites the index `GIT_INDEX_FILE` names, even a form that
-  only reads the hub: `status` and `diff` refresh it, and a fast-forward or `worktree add -b`, whose `reset --hard`
-  inherits the variable, writes a tree into it. So while that index is one a guarded hub holds, anywhere in its git
-  directory or among the files of its checkout, no git call runs, wherever it starts and whatever its subcommand,
-  unless the index is the one git uses anyway for the call's own repository, as a worktree's own index in the hub's
-  git directory is and the hub's own index is in the hub, where the call is judged by where it acts. The index is
-  read as an absolute path with each symbolic link followed, as git follows one to write through its lock file. A
-  relative path is not settled, since git reads it from the directory each process it starts works in, so a call
-  given one is refused while a hub is guarded; git exports a relative index only for a repository whose git
-  directory is relative, which no worktree's is. `gh` checking a branch out runs git with the same variables, so the
-  location variables and the index place it too.
+- **The index a git call is given.** Any git call may rewrite the index `GIT_INDEX_FILE` names, even a form that
+  only reads the hub: `status` and `diff` refresh it, and a fast-forward writes a tree into it, as does the child
+  git that `worktree add -b` (`reset --hard`) or `worktree remove` (its clean check) starts in another checkout,
+  inheriting the variable. So while that index is one a guarded hub holds, anywhere in its git directory or among
+  the files of its checkout, the hub's own index included, no git call runs, wherever it starts and whatever its
+  subcommand. The one exception is a worktree's own index, in the hub's git directory, for a call whose own
+  repository is that worktree's: git uses it anyway. The index is read as an absolute path with each symbolic link
+  followed, as git follows one to write through its lock file. A relative path is not settled, since git reads it
+  from the directory each process it starts works in, so a call given one is refused while a hub is guarded; git
+  exports a relative index only for a repository whose git directory is relative, which no worktree's is. `gh`
+  checking a branch out runs git with the same variables, so the location variables and the index place it too.
 - **What a git call's words write or run.** Wherever git runs, a file it writes at a path its words name is judged
   as a redirection's target is, a relative path read from where git starts. The options that name such a file are
   `--output`, which every subcommand that reads git's diff or revision options takes, and those

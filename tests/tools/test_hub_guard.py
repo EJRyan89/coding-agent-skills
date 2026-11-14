@@ -1751,9 +1751,19 @@ class CommandGuardTests(GuardTestCase):
                     with self.subTest(index=str(index), command=command, shell=shell.__name__):
                         self.assertEqual("deny", shell(command, self.tree, environment))
                         self.assertIn(f"GIT_INDEX_FILE={index}, an index the guarded hub", self.reason)
-        # In the hub, any index of its own git directory but the hub's own is refused for its read-only forms too.
-        self.assertEqual("deny", self.bash("git status", self.hub, self.index_file(self.hub / ".git" / "other-index")))
-        self.assertIsNone(self.bash("git status", self.hub, self.index_file(self.hub / ".git" / "index")))
+        # In the hub its read-only forms are refused too, given its own index as much as any other: `worktree add -b`
+        # starts a `reset --hard`, and `worktree remove` a clean check, in another checkout, each inheriting the
+        # variable, so the hub's index gets the new worktree's tree while the hub's HEAD stays where it was.
+        for index in (self.hub / ".git" / "index", self.hub / ".git" / "other-index"):
+            for command in (
+                "git status",
+                f'git worktree add -b task/x "{self.worktrees / "task-x"}" origin/main',
+                f'git worktree remove "{self.tree}"',
+            ):
+                for shell in (self.bash, self.powershell):
+                    with self.subTest(index=str(index), command=command, shell=shell.__name__, cwd="hub"):
+                        self.assertEqual("deny", shell(command, self.hub, self.index_file(index)))
+                        self.assertIn(f"GIT_INDEX_FILE={index}, an index the guarded hub", self.reason)
         self.assertEqual("", self.git(self.hub, "status", "--porcelain"))
         # One no guarded hub holds changes nothing, nor does the worktree's own, which lies in the hub's git directory.
         own = self.git(self.tree, "rev-parse", "--path-format=absolute", "--git-path", "index").strip()
