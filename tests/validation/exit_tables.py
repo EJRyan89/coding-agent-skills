@@ -73,8 +73,11 @@ INTERRUPTED = 130
 USAGE = 2
 PARSING_CALLS = frozenset({"parse_args", "parse_known_args", "parse_intermixed_args", "parse_known_intermixed_args"})
 # A parser's own usage error, which exits 2 too. Loggers and other objects have an error method, so a call of it is
-# read as the usage exit only on a receiver skill_scripts reads as a parser, or one the module binds to a parser.
+# read as the usage exit only on a receiver skill_scripts reads as a parser, one the module binds to a parser, or, in
+# a method, an attribute of its receiver that its class's body binds to a parser.
 USAGE_ERROR_CALL = "error"
+# The decorator that makes a method static, as a bare name and as resolved through an import of builtins.
+STATIC_METHOD = frozenset({"staticmethod", "builtins.staticmethod"})
 SUBPARSER_CALL = "add_parser"
 # The folder below the repository whose Python never runs as a program the repository ships or uses.
 NOT_SCANNED = Path("tests") / "fixtures"
@@ -184,13 +187,15 @@ class Module:
     allowance_malformed: bool = False
     # Each property a class of the module defines, by its name.
     properties: dict[str, list[ast.FunctionDef | ast.AsyncFunctionDef]] = field(default_factory=dict)
-    # The names it binds to an argument parser, in any scope.
+    # The names it binds to an argument parser, in any scope, and the receiver's attributes each method reaches one by.
     parsers: set[str] = field(default_factory=set)
+    method_parsers: dict[Function, set[str]] = field(default_factory=dict)
 
     @classmethod
     def read(cls, path: Path, tree: ast.Module, package: str = "") -> Module:
         module = cls(path, tree, aliases={**relative_aliases(tree, package), **import_aliases(tree)})
         module.parsers = parser_names(tree, module.aliases)
+        module.method_parsers = method_parsers(tree, module.aliases)
         for node in tree.body:
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 module.functions[node.name] = node
@@ -232,32 +237,86 @@ def is_parser_annotation(annotation: ast.expr | None, aliases: dict[str, str]) -
     return annotation is not None and qualified_name(annotation, aliases) == PARSER_CLASS
 
 
-def parser_names(tree: ast.Module, aliases: dict[str, str]) -> set[str]:
-    """The names and attribute chains, such as self.cli, a module binds to an argument parser, in any scope: one
-    assigned argparse.ArgumentParser(...), a subcommand's add_parser(...), or a call of its own function annotated to
-    return a parser, and a parameter, name, or attribute annotated as one."""
-    builders = {
+def _parser_targets(node: ast.AST, aliases: dict[str, str], builders: set[str]) -> list[ast.expr]:
+    """The targets one statement binds to an argument parser: one annotated as a parser, or one assigned
+    argparse.ArgumentParser(...), a subcommand's add_parser(...), or a call of a function of the module annotated to
+    return a parser."""
+    if not isinstance(node, (ast.Assign, ast.AnnAssign)):
+        return []
+    targets: list[ast.expr] = [*node.targets] if isinstance(node, ast.Assign) else [node.target]
+    if isinstance(node, ast.AnnAssign) and is_parser_annotation(node.annotation, aliases):
+        return targets
+    if not isinstance(node.value, ast.Call):
+        return []
+    callee = node.value.func
+    if (
+        qualified_name(callee, aliases) == PARSER_CLASS
+        or (isinstance(callee, ast.Attribute) and callee.attr == SUBPARSER_CALL)
+        or (isinstance(callee, ast.Name) and callee.id in builders)
+    ):
+        return targets
+    return []
+
+
+def _parser_builders(tree: ast.Module, aliases: dict[str, str]) -> set[str]:
+    """The functions of a module, in any scope, annotated to return an argument parser."""
+    return {
         node.name
         for node in ast.walk(tree)
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and is_parser_annotation(node.returns, aliases)
     }
+
+
+def parser_names(tree: ast.Module, aliases: dict[str, str]) -> set[str]:
+    """The names and attribute chains, such as self.cli, a module binds to an argument parser, in any scope and as
+    written at the binding: one assigned argparse.ArgumentParser(...), a subcommand's add_parser(...), or a call of
+    its own function annotated to return a parser, and a parameter, name, or attribute annotated as one."""
+    builders = _parser_builders(tree, aliases)
     found: set[str] = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.arg) and is_parser_annotation(node.annotation, aliases):
             found.add(node.arg)
-        elif isinstance(node, ast.AnnAssign) and is_parser_annotation(node.annotation, aliases):
-            found.add(binding(node.target))
-        if not isinstance(node, (ast.Assign, ast.AnnAssign)) or not isinstance(node.value, ast.Call):
-            continue
-        callee = node.value.func
-        if (
-            qualified_name(callee, aliases) == PARSER_CLASS
-            or (isinstance(callee, ast.Attribute) and callee.attr == SUBPARSER_CALL)
-            or (isinstance(callee, ast.Name) and callee.id in builders)
-        ):
-            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
-            found.update(binding(target) for target in targets)
+        found.update(binding(target) for target in _parser_targets(node, aliases, builders))
     return found - {""}
+
+
+def _class_scope(owner: ast.ClassDef) -> Iterator[ast.AST]:
+    """Every node of a class's own scope: its body's statements, at any depth of an if, try, with, or loop, and the
+    functions and classes it defines, never what one of those defines inside itself."""
+    stack: list[ast.AST] = list(owner.body)
+    while stack:
+        node = stack.pop()
+        yield node
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef)):
+            stack.extend(ast.iter_child_nodes(node))
+
+
+def method_parsers(tree: ast.Module, aliases: dict[str, str]) -> dict[Function, set[str]]:
+    """The attribute chains on its own receiver each method reaches a parser by. A name a class binds to a parser in
+    its own scope, as `cli: argparse.ArgumentParser` or `cli = argparse.ArgumentParser()`, under an if, try, or with
+    as well, is reached in each method that class's scope defines as an attribute of the method's first parameter,
+    such as self.cli or cls.cli, and in no other class's method; a static method has no receiver."""
+    builders = _parser_builders(tree, aliases)
+    found: dict[Function, set[str]] = {}
+    for owner in ast.walk(tree):
+        if not isinstance(owner, ast.ClassDef):
+            continue
+        scope = list(_class_scope(owner))
+        names = {
+            target.id
+            for statement in scope
+            for target in _parser_targets(statement, aliases, builders)
+            if isinstance(target, ast.Name)
+        }
+        for method in scope:
+            if not isinstance(method, (ast.FunctionDef, ast.AsyncFunctionDef)) or any(
+                qualified_name(decorator, aliases) in STATIC_METHOD for decorator in method.decorator_list
+            ):
+                continue
+            receiver = [*method.args.posonlyargs, *method.args.args][:1]
+            if receiver:
+                found[method] = {f"{receiver[0].arg}.{name}" for name in names}
+    return found
 
 
 def relative_aliases(tree: ast.Module, package: str) -> dict[str, str]:
@@ -582,7 +641,10 @@ class CodeReader:
                 self.exits(call_argument(node, 0, code_keyword(name)), Scope(module, function))
             elif isinstance(node.func, ast.Attribute) and (
                 node.func.attr in PARSING_CALLS
-                or (node.func.attr == USAGE_ERROR_CALL and _is_parser(node.func.value, module.parsers))
+                or (
+                    node.func.attr == USAGE_ERROR_CALL
+                    and _is_parser(node.func.value, module.parsers | module.method_parsers.get(function, set()))
+                )
             ):
                 self.reading.codes.add(USAGE)
                 self.parsing.add(module.path)
