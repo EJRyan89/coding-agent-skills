@@ -540,8 +540,8 @@ class UpgradeNotesPolicy(unittest.TestCase):
                 self.assertRegex(problems[0], self.OWN_CHANGE)
 
     def schema_changed_and_named_since_the_tag(self) -> str:
-        """origin/main after a merged pull request that changed the review schema and named it, as #2324 did, and the
-        schema changed again in the working tree, as #2393 changed it; returns the item."""
+        """origin/main after a merged pull request that changed the review schema and named it, and the schema changed
+        again in the working tree by a later pull request, whose own entry must name it too; returns the item."""
         item = "skills/ejryan89-code-review-core/references/record.schema.json"
         self.release()
         self.commit(f"Change the schema (#8)\n\n{self.body(self.entry(f'`{item}`'))}", self.CONTRACT_CHANGES[item])
