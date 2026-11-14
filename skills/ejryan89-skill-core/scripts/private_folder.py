@@ -7,12 +7,16 @@ account from deleting or renaming an entry the user made there, but not an entry
 a folder of state at a fixed name there would be the first creator's to empty or to fill.
 
 `location` names the folder, carrying the user's id where the platform has one, so another account's folder never
-stands in its place by name. It lies in `XDG_RUNTIME_DIR` where that names an absolute path, as systemd-logind sets it
-on Linux to a folder the user owns that no other account can create a name in, so no other account can take the name
-first; elsewhere it lies in the temporary directory, where another account that makes the name first can only deny the
-user their state, since `ensure` refuses its folder. A command that saves state and a later one that reads it must
-therefore agree on `XDG_RUNTIME_DIR`: a session that sets it differently, or not at all, looks in another folder and
-finds nothing saved. `ensure` makes the folder, owner only, when it is missing, and refuses it with
+stands in its place by name. Where the platform has user ids, it lies in the runtime directory `XDG_RUNTIME_DIR` names,
+as systemd-logind sets it on Linux, so no other account can take the name first, but only when that is an absolute
+path to a directory, no link, that the user owns with mode 0700, in a parent root or the user owns that no other
+user can write unless it is sticky, as the XDG Base Directory specification requires of it: a runtime directory set by
+hand, such as one under /tmp, that is a link another account planted, or that another account could rename away, is
+never followed. Otherwise, and always on Windows, which has no user ids and where `ensure` judges only a folder's
+kind, it lies in the temporary directory, where another account that makes the name first can only deny the user their
+state, since `ensure` refuses its folder. A command that saves state and a later one that reads it must therefore
+agree on the runtime directory: a session that sets it differently, or not at all, looks in another folder and finds
+nothing saved. `ensure` makes the folder, owner only, when it is missing, and refuses it with
 `UnsafeFolderError` unless it is a directory, no link or junction, and, where the platform has user ids, one this user
 owns that no group or other user can write, in a parent that root or this user owns and that no other user can write
 unless it is sticky. A folder that passes stays the user's: no other account can remove, rename, or replace an entry
@@ -39,6 +43,13 @@ OTHERS_WRITE = stat.S_IWGRP | stat.S_IWOTH
 # The variable naming the user's runtime directory, which systemd-logind sets on Linux to /run/user/<user id>, a folder
 # the user owns with mode 0700, cleared when their last session ends.
 RUNTIME_DIRECTORY = "XDG_RUNTIME_DIR"
+# The one mode the XDG Base Directory specification allows a runtime directory: read, write, and search for its owner.
+RUNTIME_MODE = 0o700
+
+PRESENCE_ALLOWED = {
+    "runtime_directory": "a runtime directory, or its parent, that it cannot stat is not one proven the user's own, so "
+    "the temporary directory serves instead, where ensure judges the state folder before any use",
+}
 # The user id of root, who may remove any entry anywhere, so a parent root owns is as safe as one the user owns.
 ROOT = 0
 
@@ -53,11 +64,33 @@ def user_id() -> int | None:
     return None if geteuid is None else int(geteuid())
 
 
+def runtime_directory() -> Path | None:
+    """The runtime directory `XDG_RUNTIME_DIR` names, or None where the platform has no user ids, as on Windows, or
+    where it is unset, empty, or not an absolute path, so a relative one is never resolved against the working
+    directory, or names anything but a directory, no link, that this user owns with mode RUNTIME_MODE, in a parent
+    that root or this user owns and that no other user can write unless it is sticky."""
+    user = user_id()
+    runtime = None if user is None else environment_path(RUNTIME_DIRECTORY)
+    if runtime is None:
+        return None
+    try:
+        metadata = os.lstat(runtime)
+        parent = runtime.parent.stat()
+    except OSError:
+        return None
+    if (
+        refusal(runtime, metadata, user) is not None
+        or stat.S_IMODE(metadata.st_mode) != RUNTIME_MODE
+        or parent_refusal(runtime.parent, parent, user) is not None
+    ):
+        return None
+    return runtime
+
+
 def base() -> Path:
-    """The folder every state folder lies in: the runtime directory `XDG_RUNTIME_DIR` names when it is an absolute
-    path, and the temporary directory when it is unset, empty, or relative, so a relative one is never resolved
-    against the working directory."""
-    runtime = environment_path(RUNTIME_DIRECTORY)
+    """The folder every state folder lies in: the runtime directory when `runtime_directory` finds one, and the
+    temporary directory otherwise."""
+    runtime = runtime_directory()
     return Path(tempfile.gettempdir()) if runtime is None else runtime
 
 

@@ -2462,7 +2462,7 @@ class ConsoleTests(CleanupTestCase):
         """The environment of a script run whose runtime and temporary directories, and so whose seals, lie under
         `root`, where this test's saves write them too."""
         temporary = root / "temp"
-        temporary.mkdir()
+        temporary.mkdir(mode=0o700)
         patcher = mock.patch.object(rc, "SEALS", private_folder.location(rc.SEALS_NAME, temporary))
         patcher.start()
         self.addCleanup(patcher.stop)

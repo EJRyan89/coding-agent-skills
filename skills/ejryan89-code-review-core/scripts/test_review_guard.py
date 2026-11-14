@@ -1288,6 +1288,7 @@ class HookTests(GuardFixture):
         self.assertIn("may only look inside your own review run", decision["permissionDecisionReason"])
         self.assertEqual("deny", json.loads(self.hook("not json").stdout)["hookSpecificOutput"]["permissionDecision"])
 
+    @unittest.skipIf(sys.platform == "win32", "Windows has no user ids, so its runtime directory is never read")
     def test_the_hook_keeps_claims_in_the_runtime_directory_where_one_is_set_and_else_the_temporary_one(self) -> None:
         event = json.dumps(
             {
