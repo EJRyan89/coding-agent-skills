@@ -128,9 +128,10 @@ def resolve(source_dir: Path, ref: str) -> Pin:
     check_ref(ref)
     shown = platform_support.normalize(source_dir)
     # A .git whose stat fails is refused with its reason, never as no checkout. A .git file, which a linked worktree
-    # holds, and a link count as there: git itself then says whether they make a checkout.
+    # holds, and a link to a folder count as there: git itself then says whether they make a checkout. A link to
+    # nothing is no checkout, since git reads nothing through it.
     try:
-        checkout = file_presence.is_occupied(source_dir / ".git")
+        checkout = file_presence.is_there(source_dir / ".git")
     except OSError as exc:
         raise os_error(exc, "tell whether the source is a Git checkout") from exc
     if not checkout:
@@ -173,7 +174,7 @@ def is_release_pin(source_dir: Path, ref: str | None, commit: str | None) -> boo
     if ref is None or commit is None or not ref.startswith(TAGS):
         return False
     try:
-        checkout = file_presence.is_occupied(source_dir / ".git")
+        checkout = file_presence.is_there(source_dir / ".git")
     except OSError as error:
         raise TagsUnreadable(flat_text(f"{error.filename}: {error.strerror or error}")) from error
     if not checkout:

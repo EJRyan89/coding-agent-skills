@@ -462,7 +462,7 @@ def strict_area_problems(root: Path, pinned: tuple[str, ...] = STRICT_TYPE_CHECK
         for area in pinned
         if area not in areas
     ]
-    present = skill_roots | {top for top in TYPE_CHECK_ROOTS if file_presence.is_occupied(root / top)}
+    present = skill_roots | {top for top in TYPE_CHECK_ROOTS if file_presence.is_there(root / top)}
     problems += [
         f"pyproject.toml: [tool.validation] mypy-strict lacks {area}, a type-check root; every root is checked in "
         "strict mode, so list it and fix the errors strict mode reports there"

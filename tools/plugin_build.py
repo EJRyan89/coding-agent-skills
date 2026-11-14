@@ -128,9 +128,10 @@ def load_source(directory: Path) -> deploy_source.Source:
 
 def load_catalogue(directory: Path) -> dict[str, dict[str, object]]:
     """The source's marketplace entries by plugin name. A source tree holds no plugin manifest of its own, which
-    would make the skills in its checkout read as a plugin's."""
+    would make the skills in its checkout read as a plugin's; a link to nothing in its place is none, since nothing
+    can be read through it."""
     try:
-        manifest_there = file_presence.is_occupied(directory / PLUGIN_MANIFEST)
+        manifest_there = file_presence.is_there(directory / PLUGIN_MANIFEST)
     except OSError as exc:
         raise BuildError(f"{directory / PLUGIN_MANIFEST} cannot be examined: {exc}") from exc
     if manifest_there:

@@ -427,6 +427,22 @@ class PythonChecksFixtures(unittest.TestCase):
                     }
                     check.assert_called_once_with(root, ["."], configuration, strict=strict)
 
+    @unittest.skipIf(sys.platform == "win32", "a symbolic link to a folder needs a privilege on Windows")
+    def test_a_type_check_root_that_is_a_link_to_nothing_is_no_root(self) -> None:
+        # Nothing can be read through a link to nothing, so it holds no module strict mode would check.
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            write_fixture_tree(
+                root,
+                {
+                    "skills/alpha/SKILL.md": "",
+                    "skills/alpha/scripts/run.py": "",
+                    "pyproject.toml": '[tool.validation]\nmypy-strict = ["skills/alpha/scripts"]\n',
+                },
+            )
+            (root / "deployer").symlink_to(root / "nowhere", target_is_directory=True)
+            self.assertEqual([], strict_area_problems(root, ("skills/alpha/scripts",)))
+
     def test_the_strict_list_holds_every_root_and_never_loses_one(self) -> None:
         pinned = ("skills/alpha/scripts",)
         files = {

@@ -752,7 +752,7 @@ def plugin_tree_problems(root: Path, plugins: Mapping[str, Mapping[str, bytes]],
     token left; a file of a carried skill, as the builder reads it, that the plugin leaves out; a manifest that is not
     its marketplace entry with the plugin's name and `version`, the one it was built with; and a hooks file that is not
     its agents' hooks. `plugins` maps each plugin's name to its files, by path in the plugin."""
-    if file_presence.is_occupied(root / PLUGIN_MANIFEST):
+    if file_presence.is_there(root / PLUGIN_MANIFEST):
         return [f"{PLUGIN_MANIFEST} makes the checkout's skills read as a plugin's"]
     found: list[str] = []
     for name, files in sorted(plugins.items()):

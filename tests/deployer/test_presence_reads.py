@@ -406,6 +406,21 @@ class RecoveryPresenceTests(DeployerTestCase):
             with self.subTest(path=path.name), stat_failing_at(path), self.assertRaises(PermissionError):
                 journal.check_backup_root(self.paths, "claude", self.RUN)
 
+    @unittest.skipIf(sys.platform == "win32", "a symbolic link to a folder needs a privilege on Windows")
+    def test_a_source_whose_git_is_a_link_to_nothing_is_no_checkout(self) -> None:
+        # Git reads nothing through a link to nothing, so no commit is recorded, --at refuses the source as no
+        # checkout, and no pin is read as a release's.
+        self.source.mkdir(parents=True, exist_ok=True)
+        (self.source / ".git").symlink_to(self.root / "nowhere", target_is_directory=True)
+        self.assertFalse(source_commit.is_checkout(self.source))
+        with self.assertRaises(DeployError) as raised:
+            source_ref.resolve(self.source, "main")
+        self.assertEqual(
+            f"ERROR: --at needs a Git checkout, and {forward(self.source)} is not one.", raised.exception.lines[0]
+        )
+        with mock.patch.object(source_ref, "_client", side_effect=AssertionError("asked git of no checkout")):
+            self.assertFalse(source_ref.is_release_pin(self.source, "refs/tags/v1.0.0", "0" * 40))
+
     def test_a_source_whose_git_it_cannot_stat_is_refused_rather_than_recording_no_commit(self) -> None:
         with stat_failing_at(self.source / ".git"), self.assertRaises(DeployError) as raised:
             source_commit.is_checkout(self.source)
