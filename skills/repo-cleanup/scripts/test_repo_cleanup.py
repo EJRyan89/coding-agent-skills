@@ -2459,14 +2459,14 @@ class UnitTests(CleanupTestCase):
 
 class ConsoleTests(CleanupTestCase):
     def sealed_in(self, root: Path) -> dict[str, str]:
-        """The environment of a script run whose temporary directory, and so whose seals, lie under `root`, where
-        this test's saves write them too."""
+        """The environment of a script run whose runtime and temporary directories, and so whose seals, lie under
+        `root`, where this test's saves write them too."""
         temporary = root / "temp"
         temporary.mkdir()
         patcher = mock.patch.object(rc, "SEALS", private_folder.location(rc.SEALS_NAME, temporary))
         patcher.start()
         self.addCleanup(patcher.stop)
-        return {**os.environ, "TMPDIR": str(temporary), "TEMP": str(temporary), "TMP": str(temporary)}
+        return {**os.environ, **dict.fromkeys(("XDG_RUNTIME_DIR", "TMPDIR", "TEMP", "TMP"), str(temporary))}
 
     def test_output_a_cp1252_console_cannot_encode_is_written_as_utf_8(self) -> None:
         root = Path(tempfile.mkdtemp(prefix="repo cleanup console ")).resolve()

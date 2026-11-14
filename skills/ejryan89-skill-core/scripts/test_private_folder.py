@@ -15,13 +15,15 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import private_folder
-from private_folder import UnsafeFolderError, ensure, location, parent_refusal, refusal
+from private_folder import UnsafeFolderError, base, ensure, location, parent_refusal, refusal
 from test_link_probe import link_folder
 
 # The modes and the id the rules are held to, written out rather than read from the module's constants.
 OWNER_ONLY = 0o700
 DIRECTORY = stat.S_IFDIR
 OTHER_USER = 4242
+# The variable naming the user's runtime directory, as the XDG Base Directory specification names it.
+RUNTIME = "XDG_RUNTIME_DIR"
 
 
 def metadata(mode: int, owner: int) -> os.stat_result:
@@ -40,11 +42,31 @@ class LocationTests(unittest.TestCase):
     @unittest.skipUnless(sys.platform == "win32", "only Windows has no user ids")
     def test_on_windows_there_is_no_user_id_and_the_folder_carries_none(self) -> None:
         self.assertIsNone(private_folder.user_id())
-        self.assertEqual(Path(tempfile.gettempdir()) / "state", location("state"))
+        with mock.patch.dict(os.environ, {RUNTIME: ""}):
+            self.assertEqual(Path(tempfile.gettempdir()) / "state", location("state"))
 
-    def test_the_folder_lies_in_the_temporary_directory_by_default(self) -> None:
-        self.assertEqual(Path(tempfile.gettempdir()), location("state").parent)
-        self.assertTrue(location("state").name.startswith("state"))
+    def test_the_folder_lies_in_the_runtime_directory_where_an_absolute_one_is_set(self) -> None:
+        runtime = Path(tempfile.gettempdir()).absolute() / "runtime"
+        with mock.patch.dict(os.environ, {RUNTIME: str(runtime)}):
+            self.assertEqual(runtime, base())
+            self.assertEqual(runtime, location("state").parent)
+            self.assertTrue(location("state").name.startswith("state"))
+
+    def test_the_folder_lies_in_the_temporary_directory_where_no_runtime_directory_is_set(self) -> None:
+        with mock.patch.dict(os.environ, {RUNTIME: ""}):
+            self.assertEqual(Path(tempfile.gettempdir()), base())
+            self.assertEqual(Path(tempfile.gettempdir()), location("state").parent)
+        with mock.patch.dict(os.environ):
+            os.environ.pop(RUNTIME, None)
+            self.assertEqual(Path(tempfile.gettempdir()), base())
+
+    def test_a_relative_runtime_directory_is_never_resolved_against_the_working_directory(self) -> None:
+        relative = ["runtime", str(Path("run", "user"))]
+        if sys.platform == "win32":
+            relative += ["C:runtime", "\\runtime"]
+        for value in relative:
+            with self.subTest(value=value), mock.patch.dict(os.environ, {RUNTIME: value}):
+                self.assertEqual(Path(tempfile.gettempdir()), base())
 
 
 class RefusalTests(unittest.TestCase):

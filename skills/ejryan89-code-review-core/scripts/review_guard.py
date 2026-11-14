@@ -31,7 +31,9 @@ prompt describes. It reads the hook event as JSON on stdin and prints a deny dec
 
 Parallel reviewers share one session, so the hook tells them apart by the `agent_id` Claude Code puts in the hook
 event of a subagent's tool call, and keeps each agent's claim in a file of its own under `CLAIMS`, which no
-reviewer can write. A retry is a fresh agent that claims the same role.
+reviewer can write: a folder named with the user's id that `private_folder.ensure` finds, before every read and write
+of a claim, to be one only the user owns and can write, so no other local account can remove a claim or plant one.
+A call is denied while it is not. A retry is a fresh agent that claims the same role.
 
 The hook also counts what a reviewer reads: a claim creates the role's read log in the run's `work` folder, and each
 allowed Read of a file, or Grep of one file, under the run's source snapshot appends that file's path, relative to
@@ -72,6 +74,7 @@ import file_presence
 import hook_decision
 import json_reader
 import json_writer
+import private_folder
 from console import run_main
 from executable_locator import PYTHON
 from path_containment import relative_within, within
@@ -120,7 +123,10 @@ UNWRITABLE_REASON = (
     "Code-review reviewer boundary: the guard denied this call for a reason that holds what JSON cannot carry, such "
     "as a path whose name is not valid Unicode."
 )
-CLAIMS = Path(tempfile.gettempdir()) / "code-review-reviewer-claims"
+# The user's own folder of claims, in their runtime directory or else the temporary directory, which on Linux with
+# TMPDIR unset is the shared /tmp: every read and write goes through claims_folder, which refuses it unless it is a
+# folder only the user owns and can write.
+CLAIMS = private_folder.location("code-review-reviewer-claims")
 # The subagent every reviewer role runs as, deployed from agents/ with ejryan89-code-review-core, and the plugin these
 # scripts run from, if any, which namespaces it.
 REVIEWER = "code-review-reviewer"
@@ -146,7 +152,11 @@ def _spellings(root: Path) -> tuple[Path, ...]:
 
 
 # The folders every path the guard accepts lies under: the temporary directory, where prepare makes every run, and
-# this skill's folder, which holds the references and the scripts the allowed commands run.
+# this skill's folder, which holds the references and the scripts the allowed commands run. A run folder another local
+# account made in a shared temporary directory lies under these roots too, but no reviewer reaches it: a run is chosen
+# only by the reviewer's first read, of the prompt its task names in the run prepare made, before it has read anything
+# a pull request holds; every later call is held to the run its claim names; and the claims lie in the user's own
+# folder, so no other account can plant one binding a reviewer to its run.
 TEMPORARY_ROOTS = _spellings(Path(tempfile.gettempdir()))
 LOCAL_ROOTS = (*TEMPORARY_ROOTS, *_spellings(Path(__file__).absolute().parents[1]))
 
@@ -308,10 +318,22 @@ def _role(value: Any, path: str) -> dict[str, Any]:
     return role
 
 
+def claims_folder() -> Path:
+    """The claims folder, made owner only when it is missing; the call is denied, naming why, unless it is a folder
+    only this user owns and can write, so no claim is read from or written to a folder another account could change."""
+    try:
+        return private_folder.ensure(CLAIMS)
+    except private_folder.UnsafeFolderError as exc:
+        raise Denied(f"the reviewer claims folder is not yours alone: {exc}") from exc
+    except OSError as exc:
+        raise Denied(f"the reviewer claims folder {CLAIMS} cannot be used: {exc}") from exc
+
+
 def _load_claim(agent: str) -> Claim | None:
     """The run and role this agent claimed, or None when it has claimed none."""
+    claims = claims_folder()
     try:
-        claim = json_reader.read_file(CLAIMS / f"{agent}.json")
+        claim = json_reader.read_file(claims / f"{agent}.json")
     except FileNotFoundError:
         return None
     except (OSError, ValueError) as exc:
@@ -328,10 +350,11 @@ def _load_claim(agent: str) -> Claim | None:
     return run, role
 
 
-def _prune_claims() -> None:
-    """Remove each claim whose run is gone: finalize removes a run's folder, run.json with it. A claim whose run.json
-    it cannot stat, or finds something else in place of, is kept: the error leaves it, as one it cannot read is."""
-    for path in file_presence.matching(CLAIMS, "*.json"):
+def _prune_claims(claims: Path) -> None:
+    """Remove each claim in `claims`, the folder claims_folder found the user's own, whose run is gone: finalize
+    removes a run's folder, run.json with it. A claim whose run.json it cannot stat, or finds something else in place
+    of, is kept: the error leaves it, as one it cannot read is."""
+    for path in file_presence.matching(claims, "*.json"):
         with contextlib.suppress(OSError, ValueError):
             claim = json_reader.read_file(path)
             try:
@@ -352,10 +375,10 @@ def _claim(agent: str, path: Path) -> None:
     # Serialized before the claim file exists, so a run path the JSON writer refuses leaves no empty claim behind:
     # the refusal fails the guard's evaluation, which denies the call.
     claim = json_writer.dumps({"run": str(run), "role": role["id"]})
-    CLAIMS.mkdir(parents=True, exist_ok=True)
-    _prune_claims()
+    claims = claims_folder()
+    _prune_claims(claims)
     try:
-        handle = os.open(CLAIMS / f"{agent}.json", os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        handle = os.open(claims / f"{agent}.json", os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     except FileExistsError:
         claimed = _load_claim(agent)
         if claimed is None:

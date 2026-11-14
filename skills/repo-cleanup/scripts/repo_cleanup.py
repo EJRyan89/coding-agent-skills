@@ -86,9 +86,11 @@ PLAN_SCHEMA_VERSION = 1
 # names that this script never saved there has no seal, and one changed since it saved it no longer matches. The seals
 # lie outside every plans directory, so no directory a plan sits in carries a seal for it: a sweep's plans go to a new
 # directory mkdtemp makes, or one a sweep made and recorded, and save_plan refuses a path inside this folder. The
-# folder is the user's own, named with their user id in the temporary directory, which is the shared /tmp on Linux
-# with TMPDIR unset, and every seal is read and written only once private_folder.ensure has found it a folder only the
-# user owns and can write, so no other account can empty it or fill it.
+# folder is the user's own, named with their user id in the runtime directory XDG_RUNTIME_DIR names, or else in the
+# temporary directory, which is the shared /tmp on Linux with TMPDIR unset, and every seal is read and written only
+# once private_folder.ensure has found it a folder only the user owns and can write, so no other account can empty it
+# or fill it. A confirmation run from a session whose XDG_RUNTIME_DIR differs from the sweep's looks in another folder,
+# so the refusal of a plan with no seal names the folder it looked in.
 SEALS_NAME = "repo-cleanup-seals"
 SEALS = private_folder.location(SEALS_NAME)
 OWNER_ONLY_ALLOWED = {
@@ -175,7 +177,10 @@ WORKTREE_AREA = "Worktrees"
 # What a refusal of a plan's state tells the agent to do: the command that makes and applies plans.
 SWEEP_AGAIN = "run the sweep again for a new plan"
 # What a refusal of the seals folder asks of the user.
-SEALS_REMEDY = "make it a folder only you own and can write, or set TMPDIR to such a folder, then run the sweep again"
+SEALS_REMEDY = (
+    "make it a folder only you own and can write, or run from a session whose XDG_RUNTIME_DIR, or TMPDIR where that "
+    "is unset, names such a folder, then run the sweep again"
+)
 # Where Claude Code, and many repositories' own worktree tools, put a repository's worktrees. With
 # WORKTREE_AREA/<repository name>, the folders a sweep searches for directories a worktree removal left behind.
 REPOSITORY_AREA = (".claude", "worktrees")
@@ -956,8 +961,8 @@ def read_sealed(path: str | Path, what: str) -> bytes:
         raise CleanupError(f"cannot read the seal of {what} {path}: {exc}") from exc
     if seal is None:
         raise CleanupError(
-            f"{path} is not a {what} repo-cleanup saved at this path, so it may name what no sweep offered; "
-            f"{SWEEP_AGAIN}"
+            f"{path} is not a {what} repo-cleanup saved at this path, so it may name what no sweep offered (the seals "
+            f"folder {SEALS} holds no seal for it); {SWEEP_AGAIN}"
         )
     if seal != hashlib.sha256(data).hexdigest():
         raise CleanupError(
