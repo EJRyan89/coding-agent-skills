@@ -20,9 +20,10 @@ COMMIT_PATTERN = re.compile(r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$")
 
 def is_checkout(source_dir: Path) -> bool:
     """Whether source_dir is a Git checkout, whose commit a deployment from it records, so that deployment needs Git. A
-    .git whose stat fails is refused, never read as no checkout, which would record no commit."""
+    .git that is a link to nothing is no checkout, since git reads nothing through it, and a .git whose stat fails is
+    refused, never read as no checkout, which would record no commit."""
     try:
-        return file_presence.is_occupied(source_dir / ".git")
+        return file_presence.is_there(source_dir / ".git")
     except OSError as exc:
         raise os_error(exc, "tell whether the source is a Git checkout") from exc
 

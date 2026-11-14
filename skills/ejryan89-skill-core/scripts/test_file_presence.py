@@ -22,6 +22,7 @@ from file_presence import (
     is_directory,
     is_occupied,
     is_present,
+    is_there,
     matching,
     refusal_reason,
     require,
@@ -88,13 +89,22 @@ class FilePresenceTests(unittest.TestCase):
         self.assertFalse(is_present(self.root / "missing" / "settings.json"))
 
     @unittest.skipIf(sys.platform == "win32", "a symbolic link to a file needs a privilege on Windows")
-    def test_a_link_to_nothing_is_refused_not_read_as_absent(self) -> None:
+    def test_a_link_to_nothing_reads_as_missing_and_occupies_its_place(self) -> None:
+        # Nothing can be read through the link, so every reader answers as for a missing path; a writer asking
+        # is_occupied still finds the link, so it never creates the link's target. The wording is written out.
         path = self.root / "settings.json"
-        path.symlink_to(self.root / "gone.json")
-        with self.assertRaises(NotAFile) as raised:
-            is_present(path)
-        self.assertEqual(EINVAL, raised.exception.errno)
-        self.assertEqual(str(path), raised.exception.filename)
+        target = self.root / "gone.json"
+        path.symlink_to(target)
+        self.assertFalse(is_present(path))
+        self.assertFalse(is_directory(path))
+        self.assertEqual("is missing", refusal_reason(path))
+        self.assertEqual("is missing", refusal_reason(path, folder=True))
+        with self.assertRaises(LookupError) as raised:
+            require(path, LookupError, "gone", "the subject")
+        self.assertEqual(("gone",), raised.exception.args)
+        self.assertFalse(is_there(path))
+        self.assertTrue(is_occupied(path))
+        self.assertFalse(os.path.lexists(target))
 
     def test_a_stat_that_fails_with_anything_but_not_found_reaches_the_caller(self) -> None:
         path = self.root / "settings.json"
@@ -143,8 +153,9 @@ class FilePresenceTests(unittest.TestCase):
             self.assertEqual(str(path), raised.exception.filename)
             self.assertNotIsInstance(raised.exception, NotAFile)
 
-    def test_a_path_whose_link_stat_answers_where_its_target_is_missing_is_refused_naming_it(self) -> None:
-        # The stat a link to nothing gives on every platform: the target is missing, the link itself is there.
+    def test_a_path_whose_link_stat_answers_where_its_target_is_missing_reads_as_missing(self) -> None:
+        # The stat a link to nothing gives on every platform, Windows included: the target is missing, the link
+        # itself is there.
         path = self.root / "settings.json"
         link = os.stat_result((0o120777, 0, 0, 1, 0, 0, 0, 0, 0, 0))
 
@@ -153,9 +164,12 @@ class FilePresenceTests(unittest.TestCase):
                 raise FileNotFoundError(errno.ENOENT, "missing")
             return link
 
-        with mock.patch.object(Path, "stat", side_effect=answer), self.assertRaises(NotAFile) as raised:
-            is_present(path)
-        self.assertEqual((EINVAL, str(path)), (raised.exception.errno, raised.exception.filename))
+        with mock.patch.object(Path, "stat", side_effect=answer) as made:
+            self.assertFalse(is_present(path))
+            self.assertEqual("is missing", refusal_reason(path))
+            self.assertTrue(is_occupied(path))
+        # The link's own stat is made, so one that fails reaches the caller rather than reading as nothing there.
+        self.assertIn(mock.call(follow_symlinks=False), made.call_args_list)
 
 
 # Each stat error that is not "nothing is there", the rows FilePresenceTests raises, so every helper is held to them.
@@ -167,7 +181,7 @@ STAT_FAILURES = (
     OSError(errno.ENAMETOOLONG, "file name too long"),
     OSError(errno.EINVAL, "invalid argument"),
 )
-HELPERS = (is_present, is_directory, is_occupied)
+HELPERS = (is_present, is_directory, is_there, is_occupied)
 
 
 class DirectoryTests(unittest.TestCase):
@@ -204,7 +218,7 @@ class DirectoryTests(unittest.TestCase):
             is_directory(path, other_is_absent=True)
         self.assertIs(failure, raised_stat.exception)
 
-    def test_a_link_to_nothing_is_refused_by_the_folder_test_and_occupies_its_place(self) -> None:
+    def test_a_link_to_nothing_is_no_folder_and_occupies_its_place(self) -> None:
         path = self.root / "rules"
         link = os.stat_result((0o120777, 0, 0, 1, 0, 0, 0, 0, 0, 0))
 
@@ -214,8 +228,8 @@ class DirectoryTests(unittest.TestCase):
             return link
 
         with mock.patch.object(Path, "stat", side_effect=answer):
-            with self.assertRaises(NotADirectory):
-                is_directory(path)
+            self.assertFalse(is_directory(path))
+            self.assertEqual("is missing", refusal_reason(path, folder=True))
             self.assertTrue(is_occupied(path))
 
 
@@ -240,6 +254,36 @@ class OccupiedTests(unittest.TestCase):
         ) as made:
             self.assertTrue(is_occupied(self.root / "entry"))
         made.assert_called_once_with(follow_symlinks=False)
+
+
+class ThereTests(unittest.TestCase):
+    def setUp(self) -> None:
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+
+    def test_a_file_a_folder_or_something_else_is_there_and_nothing_is_not(self) -> None:
+        (self.root / "file").write_text("", encoding="utf-8")
+        (self.root / "folder").mkdir()
+        self.assertTrue(is_there(self.root / "file"))
+        self.assertTrue(is_there(self.root / "folder"))
+        self.assertFalse(is_there(self.root / "missing"))
+        self.assertFalse(is_there(self.root / "file" / "below"))
+        pipe = os.stat_result((0o010644, 0, 0, 1, 0, 0, 0, 0, 0, 0))
+        with mock.patch.object(Path, "stat", return_value=pipe):
+            self.assertTrue(is_there(self.root / "pipe"))
+
+    def test_a_link_to_nothing_is_not_there_for_a_reader_though_it_occupies_its_place(self) -> None:
+        link = os.stat_result((0o120777, 0, 0, 1, 0, 0, 0, 0, 0, 0))
+
+        def answer(follow_symlinks: bool = True) -> os.stat_result:
+            if follow_symlinks:
+                raise FileNotFoundError(errno.ENOENT, "missing")
+            return link
+
+        with mock.patch.object(Path, "stat", side_effect=answer):
+            self.assertFalse(is_there(self.root / "entry"))
+            self.assertTrue(is_occupied(self.root / "entry"))
 
 
 class RefusalReasonTests(unittest.TestCase):

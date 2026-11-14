@@ -166,13 +166,13 @@ def existing_directory(path: Path) -> Path | None:
 
 def below_a_checkout(directory: Path) -> bool:
     """Whether a `.git` in directory or above it marks it as part of a checkout, outside any git directory, where git
-    has no work tree to show. A `.git` whose stat fails raises GitError naming the stat's error, never reads as no
-    mark."""
+    has no work tree to show. A `.git` that is a link to nothing is no mark, since git reads nothing through it, and a
+    `.git` whose stat fails raises GitError naming the stat's error, never reads as no mark."""
     absolute = directory.absolute()
     if any(platform_support.name_key(folder.name, folder.parent) == ".git" for folder in (absolute, *absolute.parents)):
         return False
     try:
-        return any(file_presence.is_occupied(folder / ".git") for folder in (absolute, *absolute.parents))
+        return any(file_presence.is_there(folder / ".git") for folder in (absolute, *absolute.parents))
     except OSError as exc:
         raise GitError(f"could not tell whether a .git marks {directory} as a checkout: {exc}") from exc
 
@@ -233,9 +233,10 @@ def row(hub: Path, tree: git_worktrees.Worktree) -> Row:
     path = Path(tree.path)
     branch = tree.branch or "(detached)"
     shown = platform_support.normalize(path)
-    # A path whose stat fails raises, and a file in the worktree's place is not a folder, never reported as missing.
+    # A path whose stat fails raises, and a file in the worktree's place is not a folder, never reported as missing; a
+    # link to nothing is missing, since nothing can be read through it.
     if not file_presence.is_directory(path, other_is_absent=True):
-        state = "not a folder" if file_presence.is_occupied(path) else "missing"
+        state = "not a folder" if file_presence.is_there(path) else "missing"
         return Row(branch, state, "-", "-", "-", shown)
     counted = git(hub, "rev-list", "--left-right", "--count", f"{MAIN}...{tree.head or 'HEAD'}", timeout=None)
     counts = output_line(counted.stdout).split("\t")

@@ -3117,6 +3117,27 @@ class InlineReviewTests(PipelineFixture):
         self.assertEqual((1, f"FAILED [Errno 13] Permission denied: {str(result)!r}\n"), (code, out))
         self.assertEqual(before, (run / review_run.RUN_FILE).read_bytes(), "no role is handed out")
 
+    @unittest.skipIf(sys.platform == "win32", "a symbolic link to a file needs a privilege on Windows")
+    def test_next_role_refuses_a_result_that_is_a_link_to_nothing_rather_than_hand_its_role_out(self) -> None:
+        # The link reads as no result, but the reviewer's write would follow it and create the file it leads to.
+        run = self.prepare_inline()
+        result = Path(self.role(run, "python-reviewer")["result_file"])
+        target = run.parent / "elsewhere.json"
+        result.parent.mkdir(parents=True, exist_ok=True)
+        result.symlink_to(target)
+        before = (run / review_run.RUN_FILE).read_bytes()
+        code, out = self.next_role(run)
+        self.assertEqual(
+            (
+                1,
+                f"FAILED python-reviewer's result file {result} is a link to nothing, which a reviewer's write would "
+                "follow; remove it, then run next-role again\n",
+            ),
+            (code, out),
+        )
+        self.assertEqual(before, (run / review_run.RUN_FILE).read_bytes(), "no role is handed out")
+        self.assertFalse(os.path.lexists(target))
+
     def test_a_later_role_that_rewrites_an_earlier_result_fails_the_pull_request(self) -> None:
         run = self.prepare_inline()
         self.next_role(run)

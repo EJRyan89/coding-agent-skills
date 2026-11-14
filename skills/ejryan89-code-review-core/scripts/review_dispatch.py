@@ -278,6 +278,13 @@ def next_role(run: Path, services: Services) -> tuple[str, RunRole | None]:
         # A result it cannot stat is the stat's OSError, never a role without one to hand out again unsealed.
         if file_presence.is_present(result):
             state["seal"]["results"].setdefault(role["id"], _sha256(result))
+        elif file_presence.is_occupied(result):
+            # A link to nothing reads as no result, but the reviewer's write would follow it and create the file it
+            # leads to, so the role is never handed out with one in its result's place.
+            raise PipelineError(
+                f"{role['id']}'s result file {result} is a link to nothing, which a reviewer's write would follow; "
+                "remove it, then run next-role again"
+            )
         elif following is None:
             following = role
     if following is not None:
