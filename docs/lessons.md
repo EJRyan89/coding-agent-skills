@@ -1003,9 +1003,13 @@ removed fails validation until its pattern follows it.
 - **Use:** `tests.validation.workflows:deployable_bash_problems`, which pins each deployable job's Bash check to its
   own step in one exact form instead of refusing set +e and its variants; `git_client:local_failure`, which reads a fault that names
   a path inside the local git directory or reports a failed write by its structure rather than by its wording,
-  keeping a short marker list only for the faults git reports with no path.
+  keeping a short marker list only for the faults git reports with no path; `file_presence:_pattern_parts`, which
+  accepts a glob pattern only when Windows path rules read in it exactly the parts a forward slash separates and
+  each part is one name in its folder, with `file_presence:_is_one_name`, rather than refusing a list of absolute
+  spellings.
 - **Guard:**
   `tests/validation/test_workflows.py::DeployableBashFixtures::test_each_job_checks_its_bash_in_one_exact_step_and_the_macos_job_installs_homebrews`,
+  `skills/ejryan89-skill-core/scripts/test_file_presence.py::MatchingTests::test_a_pattern_one_platform_reads_as_more_than_names_below_the_folder_is_refused_on_every_platform`,
   `skills/ejryan89-skill-core/scripts/test_git_client.py::test_a_fetch_that_failed_in_the_local_repository_is_not_the_remote_s_failure`,
   `skills/ejryan89-skill-core/scripts/test_git_client.py::test_a_fetch_whose_failure_names_nothing_local_is_the_remote_s_failure`,
   `skills/ejryan89-skill-core/scripts/test_git_client.py::test_only_a_timeout_among_the_failures_git_never_answered_is_the_remote_s`
@@ -1013,10 +1017,13 @@ removed fails validation until its pattern follows it.
   `re.compile(r"set\s+(?:\+e|`, which the next combined flag walks past; a tuple of message substrings named
   `*_MARKERS` or `*_SPELLINGS` that decides a classification; a fix commit whose diff only adds one more alternative
   or one more marker after a review finding; a policy that refuses a workflow step's bad forms instead of requiring
-  its one good form; a check that runs once and trusts every later step not to undo it.
+  its one good form; a check that runs once and trusts every later step not to undo it; a relative path or pattern
+  check that refuses parts such as `""`, `.`, `..`, or a leading `/` one by one, which a drive or a backslash walks
+  past.
 - **Examples:** #2751, where four review rounds each found one more local-failure wording until the classifier read
   git's write-error line by its shape; #2759, where refusing errexit spellings gave way to pinning the check step's
-  exact form; #2468, whose hub guard was rebuilt as an allow-list after three outside passes in a row found leaks.
+  exact form; #2468, whose hub guard was rebuilt as an allow-list after three outside passes in a row found leaks;
+  #2733, where `file_presence.matching` refused empty, `.`, and `..` parts and matched nothing for a drive pattern.
 
 ### A check reads its subject through its consumer's reader
 

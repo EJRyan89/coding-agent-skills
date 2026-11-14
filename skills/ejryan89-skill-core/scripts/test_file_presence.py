@@ -535,6 +535,75 @@ class MatchingTests(unittest.TestCase):
             with self.subTest(pattern=pattern), self.assertRaises(ValueError):
                 matching(self.root, pattern)
 
+    def test_a_pattern_one_platform_reads_as_more_than_names_below_the_folder_is_refused_on_every_platform(
+        self,
+    ) -> None:
+        # A drive with its root, by either separator; a drive alone and a drive before a name, which Windows reads
+        # from that drive's current folder; a root by a backslash; a network share by backslashes; and a backslash
+        # inside a part, which Windows reads as a separator. POSIX reads each as names below the folder and Windows
+        # does not, so each is refused on both, before the folder is examined: a missing folder refuses it too
+        # rather than answering that nothing matched.
+        for pattern in (
+            "C:/Windows",
+            "C:\\Windows",
+            "C:",
+            "C:x",
+            "c:*.py",
+            "\\abs",
+            "\\\\server\\share\\x",
+            "sub\\c.py",
+        ):
+            for folder in (self.root, self.root / "missing"):
+                with (
+                    self.subTest(pattern=pattern, folder=folder.name),
+                    self.assertRaises(ValueError),
+                ):
+                    matching(folder, pattern)
+
+    def test_a_part_windows_reads_as_other_than_one_name_in_its_folder_is_refused_on_every_python(self) -> None:
+        # A drive before a character other than an ASCII letter, which pathlib reads as a drive from Python 3.12 on
+        # and as a name before; a stream of a file; a NUL; a trailing dot or space, which Windows drops; and a device
+        # name, alone or before an extension, in any part. Each is refused on every platform and Python version.
+        for pattern in (
+            "1:x",
+            "_:x",
+            "*:x",
+            "a.txt:s",
+            "sub/ab:stream",
+            "a\0b",
+            "foo.",
+            "sub/foo ",
+            "*.",
+            "CON",
+            "sub/nul.txt",
+            "Com1.py",
+        ):
+            with self.subTest(pattern=pattern), self.assertRaises(ValueError):
+                matching(self.root, pattern)
+
+    def test_a_name_that_only_holds_a_device_name_or_a_dot_is_read(self) -> None:
+        # A device name is the whole stem, so a name that holds one, or a dot that does not end it, is a name.
+        for name in ("console.py", "nul_x.txt", "a.b.c", ".hidden"):
+            (self.root / name).write_text("", encoding="utf-8")
+            with self.subTest(name=name):
+                self.assertEqual([self.root / name], matching(self.root, name))
+
+    def test_below_a_link_to_nothing_nothing_is_listed_and_a_pattern_it_cannot_read_is_still_refused(self) -> None:
+        # The stat a link to nothing gives on every platform, Windows included, as in FilePresenceTests.
+        link = os.stat_result((0o120777, 0, 0, 1, 0, 0, 0, 0, 0, 0))
+
+        def answer(follow_symlinks: bool = True) -> os.stat_result:
+            if follow_symlinks:
+                raise FileNotFoundError(errno.ENOENT, "missing")
+            return link
+
+        folder = self.root / "linked"
+        with mock.patch.object(Path, "stat", side_effect=answer), mock.patch.object(os, "scandir") as listed:
+            self.assertEqual([], matching(folder, "**/*.py"))
+            with self.assertRaises(ValueError):
+                matching(folder, "C:/x")
+        listed.assert_not_called()
+
     @unittest.skipIf(sys.platform == "win32", "a symbolic link to a folder needs a privilege on Windows")
     def test_a_double_star_enters_no_link_to_a_folder_but_a_wildcard_part_does(self) -> None:
         (self.root / "linked").symlink_to(self.root / "sub", target_is_directory=True)
