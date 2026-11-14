@@ -184,11 +184,12 @@ on stderr that names git's exit status, so an opted-in clone left unguarded is n
 is inert and costs one `awk`, one `env`, and one `git config` call per tool call: no Python
 starts, so it needs none, and a `python` that still resolves to the Microsoft Store alias cannot fail the hook. In an
 opted-in clone it runs `tools/hub_guard.py` under `$CLAUDE_PROJECT_DIR`, which checks the same setting again, with
-`python` when the shell finds a program of that name on `PATH` and with `python3` when it does not. `python` comes
-first because the Windows installers give Python that name, and a `python3` there may be the Microsoft Store alias;
-`python3` is the only name Homebrew and the python.org installer give it on macOS, and the name most Linux
-distributions give it. The hook therefore needs `python` or `python3` on the `PATH` Claude Code runs it with, starting
-a Python as new as [Requirements](installation.md#requirements) names. Neither read can be
+`python` when `command -v` finds that name and with `python3` when it does not. `python` comes first because the
+Windows installers give Python that name, and a `python3` there may be the Microsoft Store alias; `python3` is the only
+name Homebrew and the python.org installer give it on macOS, and the name most Linux distributions give it. The first
+of `python` and `python3` that the shell finds on the `PATH` Claude Code runs the hook with must start a Python as new
+as [Requirements](installation.md#requirements) names: the hook chooses by name alone and never tries `python3` after a
+`python` that starts and fails, since the guard's refusal is a failing exit too. Neither read can be
 pointed at another repository's setting or outranked: each reads only the repository's own file, with
 `git config --local`, which passes over the command-line configuration `GIT_CONFIG_PARAMETERS` and `GIT_CONFIG_COUNT`
 carry; the hook command runs its call through `env -u` for each of `GIT_DIR`, `GIT_WORK_TREE`, `GIT_COMMON_DIR`, and
@@ -593,9 +594,11 @@ starts the guard and exits 0 on every path where the clone has not opted in, git
 or false and a setting git cannot read among them, so a block can fall only where the clone is guarded, and there it
 is the refusal a failure is owed. One case blocks a clone that has not opted in: a `git config` that does not answer
 within the hook's own timeout, which leaves the hook timed out before it can exit. In an opted-in clone where neither
-`python` nor `python3` is on the `PATH` Claude Code runs the hook with, the hook cannot start the guard, so every tool
-call it matches is blocked, the edit that would fix it included. Install Python, or turn the guard off, from a terminal
-outside the session, then restart Claude Code so the hook runs with the new `PATH`.
+`python` nor `python3` is on the `PATH` Claude Code runs the hook with, or where the first of them the shell finds
+cannot run the guard, as a Python 2 `python`, one older than the floor, or a version manager's shim set to a Python it
+cannot find, the hook fails, so every tool call it matches is blocked, the edit that would fix it included. Install
+Python or put a current one first on `PATH`, or turn the guard off, from a terminal outside the session, then restart
+Claude Code so the hook runs with the new `PATH`.
 
 #### What it does not see
 
@@ -606,6 +609,11 @@ The hook sees the command text. It does not see:
   `npm`'s scripts do, and an agent runtime it starts, which runs git under its own guards; the guard reads only the
   command line, and refuses only the runners above where the command line they are given is or may be git;
 - a file a program writes;
+- a shell function the environment the hook starts in supplies, as Bash's exported `BASH_FUNC_<name>%%` variables
+  do: the hook command's own words, `test`, `env`, `awk`, `git`, `command`, and `exec` among them, run such a function
+  where Bash runs it before the builtin or program of that name, so whoever sets the hook's environment can make the
+  hook allow a call, as a function named `exec` would under `/bin/bash`, where a special builtin gives way to a
+  function, and not under `/bin/sh`, where it does not; no syntax PowerShell also parses shuts every such name out;
 - what the shell's own startup files set: an alias, a function, or an option they define, or a variable the Bash
   tool's shell holds that the hook's environment does not, or holds with another value;
 - a work tree set in a repository's own configuration, or `GIT_INDEX_FILE`, which moves only the index: the guard
