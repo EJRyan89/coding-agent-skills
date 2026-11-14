@@ -17,8 +17,9 @@ resolve and audit are read-only. They never decide what to keep or delete; the c
 every candidate. resolve locates the memory directory for --repo, else for the current directory, and
 prints `REPO <root>`, the top level of the Git worktree holding that folder, or the folder itself when
 --repo names one in no Git repository; then `MEMORY_DIR <path>`, `SOURCE <where it came from>`,
-`EXISTS yes|no`, and `REFUSED <reason>` when the directory exists but is no memory store, or cannot be
-looked at, which counts as existing, or `NO_MEMORY_DIR` when no usable directory resolves; one
+`EXISTS yes|no`, `no` only when nothing is at the path, and `REFUSED <reason>` when something is there but
+is no memory store: a folder without the index, a file or anything else in the folder's place, or a path
+that cannot be examined, which counts as existing; or `NO_MEMORY_DIR` when no usable directory resolves; one
 `CANDIDATE <dir>` per memory directory under the configuration directory's projects folder when no memory
 store resolved, whether settings named a missing one, the default one is missing or refused, or none is
 usable; and one `NOTE <text>` per caveat, among them each memory directory there that cannot be looked at.
@@ -881,7 +882,7 @@ def resolve(repo: Path, home: Path, environment: dict[str, str], managed: Path |
                 f"The memory directory from {result['source']} holds a line break: {result['memory_dir']!r}",
             ]
         )
-    if result["exists"]:
+    if result["exists"] and not result.get("refused"):
         refused = store_refusal(Path(result["memory_dir"]))
         if refused:
             result["refused"] = refused
@@ -917,12 +918,15 @@ def candidate_directories(projects: Path) -> tuple[list[str], list[str]]:
 
 
 def directory_state(directory: Path) -> dict[str, Any]:
-    """Whether the memory directory exists, as `exists`. One whose presence cannot be told is never reported as
-    missing: it counts as there, and `refused` says why the later steps refuse it."""
-    try:
-        return {"exists": is_directory(directory, other_is_absent=True)}
-    except OSError as exc:
-        return {"exists": True, "refused": f"{directory} cannot be looked at: {reason(exc)}"}
+    """Whether anything is at the memory directory's path, as `exists`: False only when nothing is, a link to nothing
+    included. A file or anything else in its place, or a path a stat cannot examine, is never reported as missing: it
+    counts as there, and `refused` names what is there, which the later steps refuse."""
+    found = refusal_reason(directory, folder=True)
+    if found == file_presence.MISSING:
+        return {"exists": False}
+    if found is None:
+        return {"exists": True}
+    return {"exists": True, "refused": f"{directory} {flat_text(found)}"}
 
 
 class UnreadableSettings(Exception):

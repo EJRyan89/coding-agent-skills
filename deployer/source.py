@@ -50,10 +50,6 @@ METADATA_SUFFIX = ".json"
 
 
 PRESENCE_ALLOWED = {
-    "checkout_gone": (
-        "something other than a folder in a recorded checkout's place is no checkout, which 'no longer exists' "
-        "says, and a stat that fails is named with its reason"
-    ),
     "_reject_links": (
         "a DirEntry's is_dir, which answers from the listing and raises every error but not found, as "
         "file_presence's own listing does, so a failed stat is never read as no folder"
@@ -163,9 +159,12 @@ def load_source_id(paths: Paths) -> str:
 
 def checkout_gone(directory: Path) -> str:
     """What a refusal adds after a checkout the manifest records: nothing while a folder is there, that it no longer
-    exists when nothing or something else is, and the reason when its stat fails, which is never read as gone."""
+    exists when nothing is, a link to nothing included, that it is no longer a folder when something else is, and the
+    reason when its stat fails, so neither of the last two is read as gone."""
     try:
-        return "" if file_presence.is_directory(directory, other_is_absent=True) else ", which no longer exists"
+        return "" if file_presence.is_directory(directory) else ", which no longer exists"
+    except file_presence.NotADirectory:
+        return ", which is no longer a folder"
     except OSError as exc:
         return f", which could not be read ({exc.strerror or exc})"
 
