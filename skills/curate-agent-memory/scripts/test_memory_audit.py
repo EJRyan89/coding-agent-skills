@@ -1825,9 +1825,37 @@ class ResolveTests(unittest.TestCase):
                     result = self.resolve()
                 self.assertEqual(str(directory), result["memory_dir"])
                 self.assertEqual(
-                    (True, f"{directory} cannot be looked at: Permission denied", [str(other)]),
+                    (True, f"{directory} cannot be examined: Permission denied", [str(other)]),
                     (result["exists"], result.get("refused"), result.get("candidates")),
                 )
+
+    def test_a_file_in_the_memory_directorys_place_is_refused_as_not_a_folder_rather_than_missing(self) -> None:
+        other = self.home / ".claude" / "projects" / "C--elsewhere" / "memory"
+        other.mkdir(parents=True)
+        settings = self.home / ".claude" / "settings.json"
+        write(settings, json.dumps({"autoMemoryDirectory": "~/memory-user"}))
+        for source, directory in (("settings", self.home / "memory-user"), ("derived", self.derived())):
+            with self.subTest(source=source):
+                if source == "derived":
+                    settings.unlink()
+                write(directory, "not a folder")
+                result = self.resolve()
+                self.assertEqual(
+                    (str(directory), True, f"{directory} is not a folder", [str(other)]),
+                    (result["memory_dir"], result["exists"], result.get("refused"), result.get("candidates")),
+                )
+                self.assertEqual([], [note for note in result["notes"] if note.startswith("Left out")])
+                directory.unlink()
+
+    def test_a_link_to_nothing_in_the_memory_directorys_place_is_missing(self) -> None:
+        directory = self.derived()
+        directory.parent.mkdir(parents=True)
+        target = self.home / "gone"
+        target.mkdir()
+        directory_link(directory, target)
+        target.rmdir()
+        result = self.resolve()
+        self.assertEqual((False, None), (result["exists"], result.get("refused")))
 
     def test_a_candidate_whose_stat_fails_is_left_out_with_a_note(self) -> None:
         projects = self.home / ".claude" / "projects"
@@ -1849,15 +1877,6 @@ class ResolveTests(unittest.TestCase):
             f"Left out the memory directories under {str(projects)!r}, which cannot be read: Permission denied",
             result["notes"],
         )
-
-    def test_a_file_in_the_place_of_a_memory_directory_is_no_directory_and_no_note(self) -> None:
-        other = self.home / ".claude" / "projects" / "C--elsewhere" / "memory"
-        other.mkdir(parents=True)
-        write(self.derived(), "notes\n")
-        result = self.resolve()
-        self.assertEqual((False, None), (result["exists"], result.get("refused")))
-        self.assertEqual([str(other)], result["candidates"])
-        self.assertEqual([], [note for note in result["notes"] if note.startswith("Left out")])
 
     def test_a_file_in_the_place_of_the_projects_folder_lists_no_candidates_and_no_note(self) -> None:
         write(self.home / ".claude" / "projects", "notes\n")

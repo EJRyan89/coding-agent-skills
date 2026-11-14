@@ -749,9 +749,14 @@ class DeployerPresenceTests(DeployerTestCase):
         )
         other.rmdir()
         self.deploy_fails("--all", pattern="which no longer exists, not from this checkout")
-        # A file where the checkout was is no checkout either.
+        # A file where the checkout was is no checkout either, and is named as what it is rather than as gone.
         other.write_text("", encoding="utf-8")
-        self.deploy_fails("--all", pattern="which no longer exists, not from this checkout")
+        result = self.deploy_fails("--all", pattern="not from this checkout")
+        self.assertIn(
+            f"ERROR: Source '{SOURCE_ID}' is deployed from {forward(other)}, which is no longer a folder, not from "
+            f"this checkout, {forward(self.source)}.\n",
+            result.output,
+        )
 
 
 class RecoveryEdgeTests(DeployerTestCase):
