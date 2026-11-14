@@ -44,6 +44,13 @@ CHANGED = (
 )
 OTHER_AREAS = "names worktree areas other than the ones a sweep derives for"
 NOT_A_PLAN = "is not a repo-cleanup plan: "
+# What a refusal of the seals folder asks of the user: every folder above it counts, and TMPDIR serves whenever
+# XDG_RUNTIME_DIR is not followed, not only where it is unset.
+SEALS_REMEDY = (
+    "make it a folder only you own and can write, where only root or you can rename it or any folder above it, or run "
+    "from a session whose XDG_RUNTIME_DIR names such a folder, or whose TMPDIR does whenever XDG_RUNTIME_DIR is unset "
+    "or not followed, then run the sweep again"
+)
 
 
 # Where the seals lie before any test patches them.
@@ -816,7 +823,7 @@ class SealsFolderTests(CleanupTestCase):
                 with self.subTest(name), self.assertRaises(rc.CleanupError) as raised:
                     attempt()
                 self.assertTrue(str(raised.exception).startswith(prefix), raised.exception)
-                self.assertTrue(str(raised.exception).endswith("then run the sweep again"), raised.exception)
+                self.assertTrue(str(raised.exception).endswith(f"; {SEALS_REMEDY}"), raised.exception)
                 if name == "save":
                     self.assertFalse(self.plan.exists(), "no plan was saved without its seal")
                     self.plan.write_bytes(self.saved)
