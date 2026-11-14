@@ -85,6 +85,11 @@ class ExaminedRootTests(Fixture):
             self.discover()
         self.assertEqual([], self.github.calls)
 
+    def test_a_repos_root_with_nothing_there_is_named_missing_never_as_of_another_kind(self) -> None:
+        root = self.repos.parent / "gone"
+        with self.assertRaisesRegex(rc.CleanupError, f"^{re.escape(f'--repos-root {root} is missing')}$"):
+            rc.discover(None, str(root), rc.Services(gh=self.github))
+
     def test_a_git_file_or_a_file_in_the_roots_place_is_still_no_repository_and_no_directory(self) -> None:
         (self.repos / "linked").mkdir()
         (self.repos / "linked" / ".git").write_text("gitdir: elsewhere\n", encoding="utf-8")
