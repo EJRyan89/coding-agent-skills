@@ -102,6 +102,49 @@ class SiblingScriptsTests(unittest.TestCase):
             self.assertIn(f"skill {name} has no scripts under {skills}", str(caught.exception))
             self.assertIn("; deploy the skills that declare it in skill_deps again", str(caught.exception))
 
+    def test_scripts_of_another_kind_or_that_a_stat_cannot_examine_are_named_so_never_as_missing(self) -> None:
+        skills = self.root / "skills"
+        self.make_skill(skills / "ejryan89-skill-core")
+        (skills / "file-scripts").mkdir()
+        (skills / "file-scripts" / "scripts").write_text("", encoding="utf-8")
+        locked = self.make_skill(skills / "locked-dep")
+        self.use_skills_root(skills)
+        real_stat = Path.stat
+
+        def stat(path: Path, *, follow_symlinks: bool = True) -> os.stat_result:
+            if path == locked:
+                raise PermissionError(13, "Permission denied", str(path))
+            return real_stat(path, follow_symlinks=follow_symlinks)
+
+        for name, scripts, reason in (
+            ("file-scripts", skills / "file-scripts" / "scripts", "is not a folder"),
+            ("locked-dep", locked, "cannot be examined: Permission denied"),
+        ):
+            with (
+                self.subTest(name=name),
+                mock.patch("pathlib.Path.stat", stat),
+                contextlib.redirect_stdout(io.StringIO()) as printed,
+                self.assertRaises(MissingSibling) as caught,
+            ):
+                sibling_scripts(name)
+            self.assertEqual(f"skill {name}'s scripts {scripts} {reason}", str(caught.exception))
+            self.assertEqual(f"FAILED MissingSibling: {caught.exception}\n", printed.getvalue())
+            self.assertEqual((name, 1), (caught.exception.name, caught.exception.code))
+
+    @unittest.skipIf(sys.platform == "win32", "a symbolic link needs a privilege on Windows")
+    def test_scripts_that_are_a_link_to_nothing_are_missing(self) -> None:
+        skills = self.root / "skills"
+        self.make_skill(skills / "ejryan89-skill-core")
+        (skills / "linked-dep").mkdir()
+        (skills / "linked-dep" / "scripts").symlink_to(self.root / "nowhere", target_is_directory=True)
+        self.use_skills_root(skills)
+        with contextlib.redirect_stdout(io.StringIO()), self.assertRaises(MissingSibling) as caught:
+            sibling_scripts("linked-dep")
+        self.assertEqual(
+            f"skill linked-dep has no scripts under {skills}; deploy the skills that declare it in skill_deps again",
+            str(caught.exception),
+        )
+
     def test_a_script_whose_sibling_is_absent_ends_with_a_failed_line_and_exit_1(self) -> None:
         # A home no legacy code page can spell, so the line is shown to print in UTF-8 before run_main sets it up.
         deployed = self.root / "a home 家" / ".claude" / "skills"

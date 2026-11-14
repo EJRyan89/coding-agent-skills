@@ -81,6 +81,8 @@ PRESENCE_ALLOWED = {
     "remove_run": "making the source repository's read-only files writable is a best effort before the removal, and "
     "its caller passes ignore_errors only for a run it made and is removing because preparing it failed, before "
     "raising that failure, which an error of the removal must not replace",
+    "verify_seal": "names a sealed file that is gone or of another kind as changed, which either is, never as missing, "
+    "and a stat it cannot make raises its own error",
 }
 
 

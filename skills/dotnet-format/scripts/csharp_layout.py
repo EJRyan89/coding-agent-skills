@@ -92,7 +92,7 @@ from atomic_file import replace_bytes
 from console import run_main
 from dotnet_format_targets import inside_root, owning_projects, read_file_list, solution_refusal, write_refusal
 from dotnet_solution import project_path, read_listed_projects, read_text, refusal, same_path
-from file_presence import is_present
+from file_presence import is_present, require
 from flat_text import fact_line, flat_text
 from folders_up import folders_up
 from run_dotnet_format import Services
@@ -564,11 +564,11 @@ def check_files(root: Path, listed: list[str], fix: bool, emit: Callable[[str], 
     refused. An entry `inside_root` refuses is never opened, and one `read_source` cannot decode is reported and left
     alone while the rest are checked. With `fix`, every file is read and its fix worked out before the first write, and
     a file with a fix pending that `write_refusal` refuses is reported, checked, and left unfixed, so a refusal never
-    stops the run part way."""
+    stops the run part way. A listed file that is missing, a link to nothing included, is not a file, or cannot be
+    examined fails the run before any is read, named as each."""
     names = inside_root(root, listed, emit)
-    missing = next((root / name for name in names if not is_present(root / name, other_is_absent=True)), None)
-    if missing is not None:
-        raise Failed(f"{missing} does not exist")
+    for name in names:
+        require(root / name, Failed, f"{root / name} does not exist", str(root / name))
     checked: list[tuple[str, str]] = []
     pending: list[tuple[str, Source, str, list[Violation]]] = []
     unreadable = False

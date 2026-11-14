@@ -23,8 +23,8 @@ import tokenize
 import tomllib
 import unittest
 from collections import Counter
-from collections.abc import Iterator, Mapping, Sequence
-from dataclasses import dataclass, replace
+from collections.abc import Callable, Iterator, Mapping, Sequence
+from dataclasses import dataclass, field, replace
 from pathlib import Path, PurePosixPath
 from typing import Any, NamedTuple
 
@@ -783,8 +783,11 @@ def link_test_problems(root: Path, files: list[Path]) -> list[str]:
 # that answers a failed stat or listing with nothing. An if on a predicate with no else is left out unless its branch
 # returns a value and its False goes on to an empty return or the function's end, since its False otherwise goes on to
 # code that meets the same path or gives a value. A predicate whose False goes straight to a raise of an error of its
-# own is refused too, as is a file_presence test given other_is_absent=True whose False does: that refusal names a path
-# of another kind, or for a path's predicate one it cannot stat, as missing, where file_presence.refusal_reason and
+# own is refused too, as is a file_presence test given other_is_absent=True whose False does, an `if P: return V` whose
+# False goes on, returning no other value, to such a raise, and a search for a path either test finds absent that a
+# raise answers when it finds one, as `missing = next((p for p in ps if not P), None)` then `if missing is not None:
+# raise`, `if any(not P for p in ps): raise`, or `if not all(P for p in ps): raise`: that refusal names a path of
+# another kind, or for a path's predicate one it cannot stat, as missing, where file_presence.refusal_reason and
 # require name each cause. Any such site outside file_presence and link_probe states why in a module-level
 # PRESENCE_ALLOWED = {scope: reason}, as where the caller just made the path.
 # Stated limits, which the policy's next widening reads: `if not P and Q: return None`; a predicate handed to map, as
@@ -795,9 +798,11 @@ def link_test_problems(root: Path, files: list[Path]) -> list[str]:
 # is an answer, as `if path.is_file(): tokens.update(...)`; an except naming its exceptions through a name bound to a
 # tuple, as `ERRS = (OSError,)` then `except ERRS:`, which this does not follow; a refusal returned as a value or
 # printed rather than raised, as `if not P: return f"{p} is missing"`; a refusal on `not P` as an operand of an `and`;
-# and a `warn(...)` imported by `from warnings import warn`, which this does not read as a log, so a branch or handler
-# holding one passes. The link tests are no presence predicates here: LINK_TESTS refuses each outside link_probe however
-# its answer is used, and link_probe lets a failed stat through.
+# a `warn(...)` imported by `from warnings import warn`, which this does not read as a log, so a branch or handler
+# holding one passes; an `if P: return V` whose False tries another place, returning a value, before its raise; and a
+# search bound to a name this does not follow, or handed to any call but `next` and `any`. The link tests are no
+# presence predicates here: LINK_TESTS refuses each outside link_probe however its answer is used, and link_probe lets
+# a failed stat through.
 PRESENCE_PREDICATES = frozenset(
     {"exists", "is_file", "is_dir", "is_mount", "is_socket", "is_fifo", "is_block_device", "is_char_device"}
 )
@@ -841,6 +846,10 @@ class _PresenceReader:
     names: Mapping[str, str]
     # The ifs whose True branch returns a value and whose False goes on to an empty return or the function's end.
     falling: frozenset[int] = frozenset()
+    # The names the scope binds only to a search for a path a presence test finds absent, as `search` reads one.
+    searches: Mapping[str, str] = field(default_factory=dict)
+    # The ifs with no else whose True branch returns a value and whose False goes on to a raise of a new error.
+    raising: frozenset[int] = frozenset()
 
     def call(self, node: ast.expr) -> str | None:
         """The presence predicate whose answer an expression is, as `is_file` or `os.path.lexists`, or None."""
@@ -935,14 +944,73 @@ class _PresenceReader:
 
     def refusal(self, node: ast.AST) -> str | None:
         """The presence test whose False an if answers with a raise of a new error: `if not P: raise E`, `if P: ...
-        else: raise E`, or either with `file_presence.is_present` or `is_directory` given `other_is_absent=True` as
-        P. A bare `raise` passes on the error being handled, which words nothing as missing."""
+        else: raise E`, `if P: return V` whose False goes on to a raise, or any of them with
+        `file_presence.is_present` or `is_directory` given `other_is_absent=True` as P, or with a search for a path P
+        finds absent, as `_searched` reads one. A bare `raise` passes on the error being handled, which words nothing
+        as missing."""
         if not isinstance(node, ast.If):
             return None
-        if _raises_anew(node.body) and (found := self._refused(node.test, negated=True)):
+        if _raises_anew(node.body) and (
+            found := self._refused(node.test, negated=True) or self._searched(node.test, absent=True)
+        ):
             return found
-        if _raises_anew(node.orelse):
-            return self._refused(node.test, negated=False)
+        if _raises_anew(node.orelse) or id(node) in self.raising:
+            return self._refused(node.test, negated=False) or self._searched(node.test, absent=False)
+        return None
+
+    def _searched(self, test: ast.expr, *, absent: bool) -> str | None:
+        """The presence test of a search for a path it finds absent that a test reads as having found one when
+        `absent`, or as having found none otherwise: `missing`, `missing is not None`, `any(not P for ...)`, or
+        `not all(P for ...)`, and their negations, alone or as an operand of an `or` when `absent` and of an `and`
+        otherwise, where `missing` is a search or a name bound only to one."""
+        if isinstance(test, ast.UnaryOp) and isinstance(test.op, ast.Not):
+            return self._searched(test.operand, absent=not absent)
+        if (
+            isinstance(test, ast.Compare)
+            and len(test.ops) == 1
+            and isinstance(test.ops[0], (ast.Is, ast.IsNot))
+            and isinstance(test.comparators[0], ast.Constant)
+            and test.comparators[0].value is None
+        ):
+            return self._searched(test.left, absent=absent == isinstance(test.ops[0], ast.IsNot))
+        if isinstance(test, ast.BoolOp) and isinstance(test.op, ast.Or if absent else ast.And):
+            return next((found for value in test.values if (found := self._searched(value, absent=absent))), None)
+        if not absent:
+            return self._every_present(test)
+        if isinstance(test, ast.Name):
+            return self.searches.get(test.id)
+        return self.search(test)
+
+    def search(self, node: ast.expr) -> str | None:
+        """The presence test of a search an expression makes for a path the test finds absent: a comprehension, or a
+        `next` or `any` of one, that keeps or takes the paths whose test, a file_presence test given
+        `other_is_absent=True` among them, is False, as `next((p for p in ps if not P), None)`,
+        `[p for p in ps if not P]`, and `any(not P for p in ps)` do."""
+        if isinstance(node, ast.NamedExpr):
+            return self.search(node.value)
+        if isinstance(node, (ast.ListComp, ast.SetComp, ast.GeneratorExp)):
+            return self._absent_filter(node)
+        if not (isinstance(node, ast.Call) and node.args and isinstance(node.args[0], ast.GeneratorExp)):
+            return None
+        called = qualified_name(node.func, self.aliases)
+        if called == "any" and (found := self._refused(node.args[0].elt, negated=True)):
+            return found
+        return self._absent_filter(node.args[0]) if called in ("next", "any") else None
+
+    def _absent_filter(self, node: ast.ListComp | ast.SetComp | ast.GeneratorExp) -> str | None:
+        """The presence test a comprehension's filter keeps the paths it finds absent by."""
+        tests = [test for generator in node.generators for test in generator.ifs]
+        return next((found for test in tests if (found := self._refused(test, negated=True))), None)
+
+    def _every_present(self, node: ast.expr) -> str | None:
+        """The presence test an `all(P for ...)` finds true of every path."""
+        if (
+            isinstance(node, ast.Call)
+            and qualified_name(node.func, self.aliases) == "all"
+            and len(node.args) == 1
+            and isinstance(node.args[0], ast.GeneratorExp)
+        ):
+            return self._refused(node.args[0].elt, negated=False)
         return None
 
     def _refused(self, test: ast.expr, *, negated: bool) -> str | None:
@@ -1094,17 +1162,42 @@ def _falling_ifs(tree: ast.Module) -> frozenset[int]:
     return frozenset(found)
 
 
-def _bound_answers(tree: ast.Module, aliases: dict[str, str]) -> dict[str, dict[str, str]]:
-    """Each scope's names that every binding in the scope sets to one presence predicate's answer, by an assignment, an
-    annotated assignment, or an assignment expression, with that predicate; a name bound any other way, or as a
-    parameter, is none."""
+def _raising_ifs(tree: ast.Module) -> frozenset[int]:
+    """Each if with no else whose branch ends by returning a value that is not empty, and whose False goes on to
+    statements of its block that return no such value and end by raising an error of their own, as a lookup that
+    returns what it found and otherwise refuses does."""
+    found: set[int] = set()
+    for node in ast.walk(tree):
+        for block in (getattr(node, name, None) for name in ("body", "orelse", "finalbody")):
+            if not isinstance(block, list):
+                continue
+            for index, statement in enumerate(block):
+                rest = block[index + 1 :]
+                if (
+                    isinstance(statement, ast.If)
+                    and not statement.orelse
+                    and isinstance(statement.body[-1], ast.Return)
+                    and not _empty(statement.body[-1].value)
+                    and _raises_anew(rest)
+                    and not _returns_a_value(rest)
+                ):
+                    found.add(id(statement))
+    return frozenset(found)
+
+
+def _bound_answers(
+    tree: ast.Module, aliases: dict[str, str], read: Callable[[_PresenceReader, ast.expr], str | None]
+) -> dict[str, dict[str, str]]:
+    """Each scope's names that every binding in the scope sets to a value `read` names one presence test for, by an
+    assignment, an annotated assignment, or an assignment expression, with that test: a predicate's answer, or a search
+    for a path a test finds absent; a name bound any other way, or as a parameter, is none."""
     plain = _PresenceReader(aliases, {})
     answers: dict[int, str | None] = {}
     for node, _ in scoped_nodes(tree.body):
         if isinstance(node, ast.Assign) and len(node.targets) == 1:
-            answers[id(node.targets[0])] = plain.call(node.value)
+            answers[id(node.targets[0])] = read(plain, node.value)
         elif isinstance(node, (ast.AnnAssign, ast.NamedExpr)) and node.value is not None:
-            answers[id(node.target)] = plain.call(node.value)
+            answers[id(node.target)] = read(plain, node.value)
     seen: dict[str, dict[str, str | None]] = {}
     for node, scope in scoped_nodes(tree.body):
         if isinstance(node, ast.Name) and not isinstance(node.ctx, ast.Load):
@@ -1299,12 +1392,16 @@ def _listing_answer(node: ast.AST, aliases: dict[str, str]) -> str | None:
 
 def _presence_answers(tree: ast.Module, aliases: dict[str, str]) -> Iterator[tuple[ast.AST, str, str]]:
     """Each node where a failed stat, listing, or removal is read as nothing there, with its scope and its refusal."""
-    bound = _bound_answers(tree, aliases)
+    bound = _bound_answers(tree, aliases, _PresenceReader.call)
+    searches = _bound_answers(tree, aliases, _PresenceReader.search)
     falling = _falling_ifs(tree)
+    raising = _raising_ifs(tree)
     returned = _returned_names(tree)
     readers: dict[str, _PresenceReader] = {}
     for node, scope in scoped_nodes(tree.body):
-        reader = readers.setdefault(scope, _PresenceReader(aliases, bound.get(scope, {}), falling))
+        reader = readers.setdefault(
+            scope, _PresenceReader(aliases, bound.get(scope, {}), falling, searches.get(scope, {}), raising)
+        )
         if predicate := reader.answer(node):
             yield (
                 node,
