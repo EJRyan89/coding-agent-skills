@@ -494,8 +494,6 @@ def validate_manifest_path(path_str: str) -> str | None:
         return f"absolute path not allowed: {path_str}"
     if ".." in posix.parts:
         return f"path traversal not allowed: {path_str}"
-    import fnmatch
-
     if not any(fnmatch.fnmatch(path_str, pat) for pat in MANIFEST_ALLOWED_PATHS):
         return f"path not in manifest allowlist: {path_str}"
     if path_str.startswith(".agents/skills/"):

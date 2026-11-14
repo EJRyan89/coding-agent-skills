@@ -184,7 +184,9 @@ removed fails validation until its pattern follows it.
   `tests/tools/test_runtime_changelogs.py::MainTests::test_a_summary_that_cannot_be_appended_to_fails_by_name_after_the_findings`,
   `skills/ejryan89-skill-core/scripts/test_git_client.py::test_a_fetch_that_failed_in_the_local_repository_is_not_the_remote_s_failure`,
   `skills/update-coding-agent-skills/scripts/test_remote_refs.py::test_a_fetch_that_fails_in_the_clone_is_a_failed_line_never_origins_failure`,
-  `skills/dotnet-format/scripts/test_dotnet_format_targets.py::ResolveTests::test_a_git_that_could_not_fetch_fails_by_name_never_as_a_failed_fetch`
+  `skills/dotnet-format/scripts/test_dotnet_format_targets.py::ResolveTests::test_a_git_that_could_not_fetch_fails_by_name_never_as_a_failed_fetch`,
+  `skills/dotnet-format/scripts/test_dotnet_format_targets.py::ResolveTests::test_a_failed_git_command_fails_with_the_reason_git_gave`,
+  `skills/audit-skill/scripts/test_skill_inventory.py::InventoryTests::test_markdown_the_skill_loads_that_is_not_utf8_is_unreadable_and_fails_the_inventory`
 - **Search for:** `rg -nU "except (OSError|ValueError|UnicodeDecodeError)[^\n]*:\n\s+(print\([^\n]*\)\n\s+)?return 1\b"`,
   a handler that ends every failure in one code; two probes under one `except` that print one message; an `except`
   around a `git` or `gh` call that drops the exception's text; `FAILED KeyError`, `FAILED TypeError`, or
@@ -196,8 +198,11 @@ removed fails validation until its pattern follows it.
   a `write_text(` or `.open("a"` of a results or summary file after an entry point printed its verdict lines, outside
   any handler, so its failure ends in `run_main`'s generic line after them rather than one its docstring names;
   `rg -n "kind (in|==) .*\"git\"|except GitError" -g '*.py'` beside a fetch or `ls-remote` whose failure is reported
-  as the remote's, where `GitError.origin_failed` is meant.
-- **Examples:** #1511, #1840, #1855, #1910, #2022, #2181, #2207, #2209, #2477, #2548, #2596, #2697
+  as the remote's, where `GitError.origin_failed` is meant;
+  `rg -nU "returncode != 0[^\n]*:\n\s+raise \w+\(f?\"[^\"\n]*\"\)" -g '*.py'`, a failed command reported by its name alone,
+  dropping the stderr that says why; a measurement printed for a file beside the line that says it could not be
+  measured.
+- **Examples:** #1511, #1840, #1855, #1910, #2022, #2181, #2207, #2209, #2477, #2548, #2596, #2697, #2738
 
 ### A refusal ends with the step to take
 
@@ -370,7 +375,7 @@ removed fails validation until its pattern follows it.
   `rg -n "def (_?inside|strictly_inside|_lexically_inside)\b"` and other helpers of one job held in several modules;
   a live step and its recovery, such as a run's finalization and the completion of an interrupted one, each deciding
   in its own code what becomes of the same state on disk.
-- **Examples:** #1349, #1477, #1495, #1596, #1679, #2219, #2295, #2296
+- **Examples:** #1349, #1477, #1495, #1596, #1679, #2219, #2295, #2296, #2738
 
 ### A promise in prose is held where its reader reads it
 

@@ -19,14 +19,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from github_client import CommandResult, GitHubError
 from pr_change import CHANGED, UNCHANGED, UNKNOWN, ChangeDetector, ComparisonError
+from review_config import DASHBOARD_END_MARKER as END_MARKER
+from review_config import DASHBOARD_START_MARKER as START_MARKER
 from review_config import ConfigurationError, dashboard_status_heading, dashboard_status_key
 from review_github import GitHubClient
 from typed_fields import FieldError
 from update_pr_dashboard import (
-    END_MARKER,
     SECTION_SUMMARIES,
     SECTION_TO_REVIEW,
-    START_MARKER,
     ComparisonFailures,
     TrackerError,
     TrackerFieldError,
