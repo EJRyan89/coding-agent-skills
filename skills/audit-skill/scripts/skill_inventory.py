@@ -1801,12 +1801,23 @@ def scanned_files(path: Path) -> list[Path]:
     return [*main, *(file for file in files if category(file.relative_to(path), path) == "doc")]
 
 
+def not_a_file(path: Path) -> bool:
+    """Whether something other than a file is at `path`: not nothing, and not a link to nothing, which file_presence
+    reads as nothing there. A stat that fails raises."""
+    try:
+        is_present(path)
+    except NotAFile:
+        return True
+    return False
+
+
 def scan(given: list[Path]) -> list[str]:
     paths = [file for path in given for file in scanned_files(path)]
-    # Something other than a file is named so, never as not found, and a stat that fails raises.
-    if wrong := [posix(path) for path in paths if is_occupied(path) and not is_present(path, other_is_absent=True)]:
+    # Something other than a file is named so, never as not found, a link to nothing is not found, as file_presence
+    # reads it, and a stat that fails raises.
+    if wrong := [posix(path) for path in paths if not_a_file(path)]:
         raise InputError("not a file: " + ", ".join(wrong))
-    missing = [posix(path) for path in paths if not is_present(path, other_is_absent=True)]
+    missing = [posix(path) for path in paths if not is_present(path)]
     if missing:
         raise InputError("file not found: " + ", ".join(missing))
     texts = [require_text(path) for path in paths]

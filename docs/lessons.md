@@ -43,12 +43,12 @@ removed fails validation until its pattern follows it.
 - **Rule:** A reader that cannot tell whether something is there reports that it could not tell, never that it is
   absent or that nothing was wrong.
 - **Why:** An unreadable path, a failed command, or a git error read as "not found" otherwise reads as a clean pass.
-- **Use:** `file_presence:is_present`, which tells a file, nothing, and something else apart, and lets a stat that
-  fails with anything but "not found" through as the error the stat raised; `file_presence:is_directory`, which
-  answers the same for a folder; `file_presence:refusal_reason` and `file_presence:require`, which name a file or
-  folder a caller needs as missing, of another kind, or not examinable, never the last two as missing;
-  `file_presence:is_occupied`, which answers whether anything is at a path, a link
-  to nothing included, in place of lexists; `file_presence:matching`, which lists what a glob pattern matches but
+- **Use:** `file_presence:is_present`, which tells a file, nothing, a link to nothing included, and something else
+  apart, and lets a stat that fails with anything but "not found" through as the error the stat raised;
+  `file_presence:is_directory`, which answers the same for a folder; `file_presence:refusal_reason` and
+  `file_presence:require`, which name a file or folder a caller needs as missing, of another kind, or not examinable,
+  never the last two as missing; `file_presence:is_occupied`, which answers whether anything is at a path, a link to
+  nothing included, in place of lexists, and which a writer that read a path as missing asks before it creates there; `file_presence:matching`, which lists what a glob pattern matches but
   raises for a folder it cannot list;
   `link_probe:is_link_or_junction`, which lets the error of an unreadable path through; and
   `deployer.source_ref:TagsUnreadable`, which keeps git's reason when the tags cannot be read; and git's found,

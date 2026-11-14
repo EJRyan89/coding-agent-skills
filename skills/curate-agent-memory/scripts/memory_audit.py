@@ -116,7 +116,7 @@ import json_writer
 from atomic_file import is_read_only, replace_text
 from console import run_main
 from executable_locator import RelativeEnvironmentPath, absolute_home, environment_path, required_environment_path
-from file_presence import is_directory, is_present, matching
+from file_presence import is_directory, is_present, matching, refusal_reason
 from flat_text import flat_text, single_line
 from git_client import GitClient, GitError
 from link_probe import is_link_or_junction, is_plain_file
@@ -1206,9 +1206,8 @@ def source_refusal(path: Path) -> str | None:
     root = skills_directory_holding(path)
     if root:
         return f"{path} is inside the skills directory {root}; the deployer stops updating a skill changed there"
-    if not path.is_file():
-        return f"{path} is not a file"
-    return None
+    reason = refusal_reason(path)
+    return None if reason is None else f"{path} {reason}"
 
 
 def skill_source_lines(args: argparse.Namespace) -> tuple[int, list[str]]:

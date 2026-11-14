@@ -38,6 +38,7 @@ from fault_table import (
     GH_FAILURE,
     GIT_EXIT,
     GIT_TIMEOUT,
+    LINK_TO_NOTHING,
     MISSING,
     STAT_RAISES,
     UNREADABLE,
@@ -116,9 +117,16 @@ def tree(path: Path) -> dict[str, bytes | None]:
     return found
 
 
+def nowhere(path: Path) -> Path:
+    """Where the link-to-nothing fault's link at path leads: a file beside it that is not there, which a run that
+    writes through the link would create."""
+    return path.with_name(f"{path.name}.nowhere")
+
+
 @contextmanager
 def placed(fault: str, path: Path | None) -> Iterator[None]:
-    """The fault at path while the context lasts, and the file as it was afterwards."""
+    """The fault at path while the context lasts, and the file as it was afterwards, with nothing left where a link to
+    nothing led."""
     if path is None or fault == STAT_RAISES:
         yield
         return
@@ -132,13 +140,17 @@ def placed(fault: str, path: Path | None) -> Iterator[None]:
         path.unlink()
         if fault == DIRECTORY:
             path.mkdir()
+        elif fault == LINK_TO_NOTHING:
+            path.symlink_to(nowhere(path))
         yield
     finally:
-        if fault in {DIRECTORY, MISSING}:
-            if path.is_dir():
+        if fault in {DIRECTORY, MISSING, LINK_TO_NOTHING}:
+            if path.is_dir() and not path.is_symlink():
                 shutil.rmtree(path)
-            elif path.exists():
+            elif os.path.lexists(path):
                 path.unlink()
+            if fault == LINK_TO_NOTHING and os.path.lexists(nowhere(path)):
+                nowhere(path).unlink()
             path.write_bytes(original)
 
 
@@ -232,6 +244,49 @@ def judged(
         elif refused and gap:
             problems.append(f"its refusal gap is closed, so the driver's refusal_gaps entry goes: {gap}")
     return problems
+
+
+def read_as_absent(docstring: str, finished: subprocess.CompletedProcess[str], record: dict[str, Any]) -> list[str]:
+    """What is wrong with a run that may read its input missing as an answer, under a link to nothing at it: a stop, a
+    fault never reached, an exit its exit table does not name, or a traceback. It may succeed and write, as it does
+    with the file missing, so only written_through judges what it wrote."""
+    problems: list[str] = []
+    if record["stopped"]:
+        problems.append(f"the harness stopped it: {record['stopped']}")
+    if not record["reached"]:
+        problems.append("it never reached the fault: the driver's arguments or inputs do not reach it")
+    try:
+        table = exit_tables.exit_table(docstring)
+    except exit_tables.TableUnreadable as error:
+        table = {}
+        problems.append(f"its docstring {error}")
+    if record["exit"] not in table and not record["stopped"]:
+        problems.append(f"it exited {record['exit']}, which its exit table does not name")
+    if TRACEBACK in finished.stdout + finished.stderr:
+        problems.append("it printed a traceback")
+    return problems
+
+
+# The words a refusal of something of another kind in a file's place uses, which a link to nothing, read as the file
+# missing, never draws.
+OTHER_KIND = ("not a file", "not a folder", "not a directory")
+
+
+def named_another_kind(fault: str, finished: subprocess.CompletedProcess[str]) -> list[str]:
+    """A problem when a run under the link-to-nothing fault names what it met as something of another kind, where the
+    link reads as the file missing."""
+    if fault != LINK_TO_NOTHING:
+        return []
+    output = (finished.stdout + finished.stderr).casefold()
+    words = [word for word in OTHER_KIND if word in output]
+    return [f"it named the link to nothing {words[0]!r}, never reading it as the file missing"] if words else []
+
+
+def written_through(fault: str, target: Path | None) -> list[str]:
+    """A problem when a run under the link-to-nothing fault wrote through the link, creating the file it leads to."""
+    if fault != LINK_TO_NOTHING or target is None or not os.path.lexists(nowhere(target)):
+        return []
+    return [f"it wrote through the link to nothing at {target.name}, creating {nowhere(target).name}"]
 
 
 def refuses(line: str, docstring: str, code: int) -> bool:
@@ -351,9 +406,14 @@ def check(driver: Driver, fault: str, path: str | None) -> None:
                     repository,
                 )
                 after = {str(each): tree(each) for each in watched if each != target}
+                written = written_through(fault, target)
             docstring = ast.get_docstring(parse_python(REPOSITORY / driver.entry)) or ""
-            problems = judged(docstring, fault, target, finished, record, driver.refusal_gap(fault, path))
-            problems += changes(before, after, target, root)
+            if fault == LINK_TO_NOTHING and path is not None and driver.absent_is_an_answer(path):
+                problems = read_as_absent(docstring, finished, record)
+            else:
+                problems = judged(docstring, fault, target, finished, record, driver.refusal_gap(fault, path))
+                problems += changes(before, after, target, root)
+            problems += written + named_another_kind(fault, finished)
     assert problems == [], (
         f"{driver.name} under {fault} ({FAULTS[fault]}){f' at {path}' if path else ''}: {'; '.join(problems)}\n"
         f"exit {record['exit']}\nstdout:\n{finished.stdout[-2000:]}\nstderr:\n{finished.stderr[-2000:]}"

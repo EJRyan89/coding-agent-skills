@@ -11,6 +11,7 @@ from pathlib import Path
 
 from fault_table import (
     DIRECTORY,
+    LINK_TO_NOTHING,
     MISSING,
     OPENED_ONLY,
     REPOSITORY,
@@ -1143,6 +1144,9 @@ DRIVERS: list[Driver] = [
         gh=True,
         not_run={
             "missing": "a history file that does not exist yet holds no rows, as read_history documents",
+            LINK_TO_NOTHING: "a history that is a link to nothing holds no rows, as a missing one does, so the run "
+            "goes on to ask GitHub, which this fault does not answer; replace_text writes the history over the link, "
+            "never through it",
             STAT_RAISES: OPENED_ONLY,
         },
     ),
@@ -1256,7 +1260,11 @@ DRIVERS: list[Driver] = [
         ("collect", "--output", "{root}/collected/input.json"),
         prepare=dashboard_fixture,
         inputs=(FLAG_STORE,),
-        not_run={MISSING: EMPTY_STORE},
+        not_run={
+            MISSING: EMPTY_STORE,
+            LINK_TO_NOTHING: EMPTY_STORE + ", a link to nothing included, so the run goes on to ask GitHub, which this "
+            "fault does not answer; collect only reads the store",
+        },
         outputs=("{root}/collected",),
     ),
     Driver(

@@ -14,6 +14,7 @@ from urllib.parse import quote
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
+from file_presence import is_occupied
 from markdown_literal import markdown_line, navigation_url
 from skill_roots import sibling_scripts
 
@@ -402,14 +403,20 @@ def _record_reviews(rows: list[Row]) -> dict[str, dict[str, Any]]:
 def replacement(path: Path, writer: str = "the update") -> tuple[Path, int]:
     """Where a replacement of `path` is written and the mode it takes: the file the path leads to, through any
     symbolic link, so a link stays a link and its target is what changes, with the mode that file has, or
-    `NEW_FILE_MODE` for a file not yet written. A file with another hard link is refused, since a replacement would
+    `NEW_FILE_MODE` for a file not yet written. A link to nothing reads as a file not yet written, and its replacement
+    takes the link's own place, so no write creates the file the link leads to. A file with another hard link is
+    refused, since a replacement would
     leave that name with the old content, and so is a read-only file, which ejryan89-skill-core's `atomic_file` would
     refuse only once GitHub had been asked; the refusal names `writer`, the command that would replace it."""
     target = path.resolve()
     try:
         status = target.stat()
     except FileNotFoundError:
-        return target, NEW_FILE_MODE
+        try:
+            linked = is_occupied(path)
+        except OSError as exc:
+            raise TrackerError(f"Cannot examine {path}: {exc.strerror or exc}") from exc
+        return (path if linked else target), NEW_FILE_MODE
     except OSError as exc:
         raise TrackerError(f"Cannot examine {path}: {exc.strerror or exc}") from exc
     if status.st_nlink > 1:

@@ -38,7 +38,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "ejryan8
 
 import frontmatter
 from console import run_main
-from file_presence import is_directory, is_present
+from file_presence import is_directory, is_occupied, is_present
 
 from deployer.render import CODEX_METADATA, CODEX_USER_ONLY
 from tools.checkout import ROOT_HELP, checkout_root
@@ -230,6 +230,10 @@ def write(root: Path, names: list[str] | None = None) -> list[Path]:
             if is_present(path) and _current(path, text):
                 continue
             path.parent.mkdir(parents=True, exist_ok=True)
+            if is_occupied(path) and not is_present(path):
+                # A link to nothing reads as a missing shim, and writing through it would create the file it leads
+                # to, wherever that is, so the link itself is removed and the shim written in its place.
+                path.unlink()
             path.write_text(text, encoding="utf-8", newline="\n")
             written.append(SHIMS / name / relative)
     return written

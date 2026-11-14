@@ -856,6 +856,22 @@ class LockRemedyTests(RemedyTestCase):
             *stale,
         )
 
+    @unittest.skipIf(sys.platform == "win32", "a symbolic link to a file needs a privilege on Windows")
+    def test_lock_metadata_that_is_a_link_to_nothing_is_no_metadata_and_its_target_is_never_made(self) -> None:
+        # Nothing can be read through the link, so the record reads as one with no metadata yet, never as metadata
+        # that is not a file, and judging it writes nothing through the link.
+        self.fixture()
+        self.write_lock(None)
+        target = self.root / "gone.json"
+        (self.lock_dir / "info.json").symlink_to(target)
+        self.assert_lines(
+            self.deploy_fails("--all", pattern="no metadata").output,
+            "ERROR: Lock exists but has no metadata (may be initializing).",
+            f"If no deployment is running, the lock is stale: remove {forward(self.lock_dir)}, then retry.",
+            SEE_LOCK,
+        )
+        self.assertFalse(target.exists())
+
     def test_failed_lock_initialization_says_to_retry_or_remove_the_lock(self) -> None:
         self.fixture()
         real_remove = fsops.remove

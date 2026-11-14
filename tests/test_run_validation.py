@@ -108,7 +108,7 @@ class KnownFailureIssuesOption(unittest.TestCase):
 
 
 class PullRequestBodyOption(unittest.TestCase):
-    def test_a_body_that_is_not_a_file_is_a_usage_error_before_any_check_runs(self) -> None:
+    def test_a_body_that_does_not_exist_is_a_usage_error_before_any_check_runs(self) -> None:
         missing = REPOSITORY_ROOT / "tests" / "no such body.md"
         error = io.StringIO()
         with (
@@ -117,10 +117,10 @@ class PullRequestBodyOption(unittest.TestCase):
         ):
             main(["--pr-body", str(missing)], errors=error)
         self.assertEqual(2, raised.exception.code)
-        self.assertIn(f"--pr-body is not a file: {missing}", error.getvalue())
+        self.assertIn(f"--pr-body does not exist: {missing}", error.getvalue())
         versions.assert_not_called()
 
-    def test_a_title_that_is_not_a_file_is_a_usage_error_before_any_check_runs(self) -> None:
+    def test_a_title_that_does_not_exist_is_a_usage_error_before_any_check_runs(self) -> None:
         missing = REPOSITORY_ROOT / "tests" / "no such title.txt"
         error = io.StringIO()
         with (
@@ -129,8 +129,30 @@ class PullRequestBodyOption(unittest.TestCase):
         ):
             main(["--pr-title", str(missing)], errors=error)
         self.assertEqual(2, raised.exception.code)
-        self.assertIn(f"--pr-title is not a file: {missing}", error.getvalue())
+        self.assertIn(f"--pr-title does not exist: {missing}", error.getvalue())
         versions.assert_not_called()
+
+    def test_a_folder_given_as_a_title_or_body_is_named_not_a_file_and_a_link_to_nothing_as_not_there(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            folder = Path(temporary) / "title.txt"
+            folder.mkdir()
+            cases = [(folder, "is not a file")]
+            if sys.platform != "win32":  # a symbolic link to a file needs a privilege on Windows
+                link = Path(temporary) / "body.md"
+                link.symlink_to(Path(temporary) / "nowhere.md")
+                cases.append((link, "does not exist"))
+            for path, wording in cases:
+                for option in ("--pr-title", "--pr-body"):
+                    error = io.StringIO()
+                    with (
+                        self.subTest(option=option, path=path.name),
+                        mock.patch.object(run_validation, "tool_versions") as versions,
+                        self.assertRaises(SystemExit) as raised,
+                    ):
+                        main([option, str(path)], errors=error)
+                    self.assertEqual(2, raised.exception.code)
+                    self.assertIn(f"{option} {wording}: {path}", error.getvalue())
+                    versions.assert_not_called()
 
     def test_a_title_or_body_whose_stat_fails_is_a_usage_error_naming_the_failure_never_a_traceback(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

@@ -3787,6 +3787,27 @@ class MainFileCaseTests(TemporaryTestCase):
                 self.assertEqual(expected, (code, lines[1]))
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="a symbolic link to a file needs a privilege on Windows")
+def test_each_path_refusal_names_a_link_to_nothing_as_not_found_never_as_the_wrong_kind(tmp_path: Path) -> None:
+    # Nothing can be read through a link to nothing, so each refusal reads it as the path not there.
+    link, folder_link = tmp_path / "link.md", tmp_path / "folder link"
+    link.symlink_to(tmp_path / "nowhere.md")
+    folder_link.symlink_to(tmp_path / "nowhere", target_is_directory=True)
+    home = tmp_path / "home"
+    home.mkdir()
+    cases = [
+        (("scan", str(link)), f"FAILED file not found: {link.as_posix()}"),
+        (("tools", str(link)), f"FAILED skill file not found: {link}"),
+        (("inventory", str(folder_link)), f"FAILED skill directory not found: {folder_link}"),
+        (
+            ("locate", f"alpha {folder_link}", "--home", str(home)),
+            f"FAILED plugin folder not found: {folder_link.as_posix()}",
+        ),
+    ]
+    for arguments, line in cases:
+        assert (1, [line]) == run(*arguments)[:2], arguments
+
+
 def test_each_path_refusal_names_the_wrong_kind_never_as_not_found(tmp_path: Path) -> None:
     file, folder = tmp_path / "file.md", tmp_path / "folder"
     file.write_text("For each item.\n", encoding="utf-8")
