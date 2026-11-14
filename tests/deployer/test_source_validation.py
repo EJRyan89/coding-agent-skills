@@ -571,6 +571,20 @@ class MetadataValidationTests(DeployerTestCase):
             'Add skills/ghost/SKILL.md, or remove deploy-meta/ghost.json; see "Files" in docs/adding-a-skill.md.',
         )
 
+    def test_metadata_whose_skill_folder_is_a_file_is_refused_as_no_directory_never_as_none(self) -> None:
+        self.make_source_json()
+        self.make_skill("alpha", "Test")
+        self.write(self.source / "deploy-meta" / "ghost.json", json.dumps({"required_vars": []}))
+        self.write(self.source / "skills" / "ghost", "not a folder\n")
+        self.make_config()
+        result = self.deploy_fails("--all", pattern="is not a directory")
+        self.assert_refusal(
+            result.output,
+            "ERROR: skills/ghost is not a directory",
+            'Make skills/ghost the skill\'s folder, or remove deploy-meta/ghost.json; see "Files" in '
+            "docs/adding-a-skill.md.",
+        )
+
     def test_a_skill_folder_whose_skill_md_is_gone_or_a_folder_is_named_as_that_never_as_no_folder(self) -> None:
         self.make_source_json()
         self.make_skill("alpha", "Test")

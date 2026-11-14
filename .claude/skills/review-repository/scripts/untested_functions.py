@@ -678,7 +678,9 @@ def excluded_entry(change: FileChange, reason: str) -> str:
 def entries(root: Path, files: list[FileChange], unreadable: dict[str, str] | None = None) -> list[str]:
     """One block for each changed script the snapshot leaves out by a recorded exclusion, then for each changed
     definition no test names, and for each changed Python file `ast` cannot read; `unreadable` gains each test it
-    consulted and could not read, with the reason."""
+    consulted and could not read, with the reason. A changed script the snapshot lacks without a recorded exclusion,
+    a link to nothing included, raises MissingEvidence naming it as not held, and one of another kind, or that a stat
+    cannot examine, raises it naming that."""
     changes = [
         change
         for change in files
@@ -690,17 +692,16 @@ def entries(root: Path, files: list[FileChange], unreadable: dict[str, str] | No
     withheld = [
         change
         for change in changes
-        if not file_presence.is_present(change.head, other_is_absent=True) and change.path in excluded
+        if change.path in excluded and not file_presence.is_present(change.head, other_is_absent=True)
     ]
-    absent = [
-        change.path
-        for change in changes
-        if not file_presence.is_present(change.head, other_is_absent=True) and change.path not in excluded
-    ]
-    if absent:
-        raise MissingEvidence(
-            f"the snapshot holds no {json_writer.dumps(absent[0])}, which the diff leaves at the head"
-        )
+    for change in changes:
+        reason = None if change.path in excluded else file_presence.refusal_reason(change.head)
+        if reason == file_presence.MISSING:
+            raise MissingEvidence(
+                f"the snapshot holds no {json_writer.dumps(change.path)}, which the diff leaves at the head"
+            )
+        if reason is not None:
+            raise MissingEvidence(f"the snapshot's {json_writer.dumps(change.path)} {reason}")
     blocks = [excluded_entry(change, excluded[change.path]) for change in withheld]
     unread = unread_suites(excluded)
     changes = [change for change in changes if change not in withheld]

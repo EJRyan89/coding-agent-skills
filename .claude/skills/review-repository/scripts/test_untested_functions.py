@@ -699,15 +699,17 @@ def unlistable(folder: Path) -> Iterator[None]:
 
 class PresenceReadTests(unittest.TestCase):
     """suites() lists the suite roots through file_presence.matching, and entries() asks file_presence whether each
-    changed script is at its head, so a folder it cannot list or a head it cannot stat raises rather than reading as
-    no suite or as a script the snapshot lacks."""
+    changed script is at its head, so a folder it cannot list raises, and a head of another kind or that it cannot
+    stat is named so, rather than reading as no suite or as a script the snapshot lacks."""
 
     def setUp(self) -> None:
         sys.path.insert(0, str(SCRIPT.parent))
         sys.path.insert(0, str(SCRIPT.parents[4] / "skills" / "ejryan89-skill-core" / "scripts"))
+        import conditions
         import untested_functions
 
         self.module = untested_functions
+        self.missing_evidence = conditions.MissingEvidence
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name)
@@ -736,7 +738,7 @@ class PresenceReadTests(unittest.TestCase):
         with unlistable(fixture):
             self.assertEqual({"tests/test_real.py": "pass\n"}, self.module.suites(self.root))
 
-    def test_entries_refuses_a_head_it_cannot_stat_never_counts_it_absent(self) -> None:
+    def test_entries_names_a_head_it_cannot_stat_so_never_counts_it_absent(self) -> None:
         head = self.root / "tool.py"
         head.write_text("def run():\n    return 1\n", encoding="utf-8")
         change = self.module.FileChange("tool.py", head)
@@ -753,7 +755,18 @@ class PresenceReadTests(unittest.TestCase):
         with (
             mock.patch.object(Path, "stat", stat),
             mock.patch.object(Path, "is_file", is_file),
-            self.assertRaises(PermissionError) as raised,
+            self.assertRaises(self.missing_evidence) as raised,
         ):
             self.module.entries(self.root, [change])
-        self.assertEqual(str(head), raised.exception.filename)
+        self.assertEqual('the snapshot\'s "tool.py" cannot be examined: Permission denied', str(raised.exception))
+
+    def test_entries_names_a_head_of_another_kind_so_and_a_link_to_nothing_as_not_held(self) -> None:
+        (self.root / "folder.py").mkdir()
+        cases = [("folder.py", 'the snapshot\'s "folder.py" is not a file')]
+        if sys.platform != "win32":  # a symbolic link to a file needs a privilege on Windows
+            (self.root / "linked.py").symlink_to(self.root / "nowhere.py")
+            cases.append(("linked.py", 'the snapshot holds no "linked.py", which the diff leaves at the head'))
+        for name, reason in cases:
+            with self.subTest(name=name), self.assertRaises(self.missing_evidence) as raised:
+                self.module.entries(self.root, [self.module.FileChange(name, self.root / name)])
+            self.assertEqual(reason, str(raised.exception))

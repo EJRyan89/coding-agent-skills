@@ -1870,17 +1870,22 @@ class CheckFilesPresenceTests(unittest.TestCase):
     def test_a_present_file_is_checked(self) -> None:
         self.assertFalse(self.check("A.cs"))
 
-    def test_a_file_that_is_not_there_or_is_a_folder_is_refused_as_missing(self) -> None:
+    def test_a_file_that_is_not_there_is_refused_as_missing_and_a_folder_as_not_a_file(self) -> None:
         (self.root / "Folder.cs").mkdir()
-        for name in ("Gone.cs", "Folder.cs"):
+        cases = [("Gone.cs", "does not exist"), ("Folder.cs", "is not a file")]
+        if sys.platform != "win32":  # a symbolic link to a file needs a privilege on Windows
+            (self.root / "Linked.cs").symlink_to(self.root / "Nowhere.cs")
+            cases.append(("Linked.cs", "does not exist"))
+        for name, wording in cases:
             with self.subTest(name=name), self.assertRaises(layout.Failed) as raised:
                 self.check("A.cs", name)
-            self.assertEqual(f"{self.root / name} does not exist", str(raised.exception))
+            self.assertEqual(f"{self.root / name} {wording}", str(raised.exception))
+        self.assertEqual([], self.lines)
 
-    def test_a_file_whose_stat_fails_is_refused_with_the_error_never_as_missing(self) -> None:
-        with stat_failing_at(self.root / "A.cs"), self.assertRaises(PermissionError) as raised:
+    def test_a_file_whose_stat_fails_is_refused_as_one_that_cannot_be_examined_never_as_missing(self) -> None:
+        with stat_failing_at(self.root / "A.cs"), self.assertRaises(layout.Failed) as raised:
             self.check("A.cs")
-        self.assertEqual(str(self.root / "A.cs"), raised.exception.filename)
+        self.assertEqual(f"{self.root / 'A.cs'} cannot be examined: Access is denied", str(raised.exception))
 
 
 SCRIPTS = Path(__file__).resolve().parent

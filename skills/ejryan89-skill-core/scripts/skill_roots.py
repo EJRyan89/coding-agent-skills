@@ -16,7 +16,7 @@ from pathlib import Path
 import json_reader
 from console import failed_line, use_utf8_output
 from executable_locator import absolute_home
-from file_presence import is_present
+from file_presence import MISSING, is_present, refusal_reason
 from path_containment import within
 
 # This skill's own folder name, which every dependent's fixed sys.path line and every check of that line names.
@@ -30,7 +30,7 @@ PLUGIN_MANIFEST = Path(".claude-plugin") / "plugin.json"
 
 
 class MissingSibling(SystemExit):
-    """A sibling skill a script reaches is not beside it.
+    """A sibling skill a script reaches is not beside it, or its scripts are of another kind or cannot be examined.
 
     `sibling_scripts` runs while a script imports, before `console.run_main` can turn an exception into a FAILED
     line, so the lookup prints the line `run_main` would, `FAILED MissingSibling: <message>` on stdout, and this exit
@@ -50,11 +50,16 @@ def sibling_scripts(name: str) -> Path:
     """The scripts directory of the sibling skill `name`, for a script to put on sys.path.
 
     The skills directory is flat in the checkout, the deployed home, and a plugin alike, so the sibling is
-    SKILLS_ROOT/<name>, beside ejryan89-skill-core.
+    SKILLS_ROOT/<name>, beside ejryan89-skill-core. A sibling whose scripts are missing, a link to nothing included,
+    ends the script with a remedy; scripts of another kind, or ones a stat cannot examine, end it named as such, never
+    as missing.
     """
     scripts = SKILLS_ROOT / name / "scripts"
-    if scripts.is_dir():
+    reason = refusal_reason(scripts, folder=True)
+    if reason is None:
         return scripts
+    if reason != MISSING:
+        raise _reported(name, f"skill {name}'s scripts {scripts} {reason}")
     try:
         plugin = plugin_name()
     except ValueError as error:
@@ -70,7 +75,8 @@ def sibling_scripts(name: str) -> Path:
 
 
 def _reported(name: str, message: str) -> MissingSibling:
-    """The exit for an absent sibling, once its FAILED line is out on stdout in UTF-8, as `run_main` prints one."""
+    """The exit for a sibling the lookup cannot use, once its FAILED line is out on stdout in UTF-8, as `run_main`
+    prints one."""
     missing = MissingSibling(name, message)
     use_utf8_output()
     print(failed_line(missing))

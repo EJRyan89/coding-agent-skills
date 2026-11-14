@@ -2544,6 +2544,20 @@ class SkillSourceTests(unittest.TestCase):
                     self.source("demo", code=1),
                 )
 
+    def test_a_recorded_source_a_stat_cannot_examine_is_named_so_never_as_missing(self) -> None:
+        locked = write(self.root / "locked" / "skills" / "demo" / "SKILL.md", "---\nname: demo\n---\n")
+        self.manifest(locked=str(self.root / "locked"))
+        with stat_failing_at(locked):
+            lines = self.source("demo", code=1)
+        self.assertEqual(
+            [
+                f"NOTE {locked} cannot be examined: Permission denied",
+                "FAILED no editable source of skill demo: the deployer's manifest records none, and the repository "
+                "has no project skill of that name; name its source file with --file",
+            ],
+            lines,
+        )
+
     def test_a_source_inside_a_skills_directory_or_holding_a_line_break_is_passed_over(self) -> None:
         deployed = self.home / ".claude" / "skills" / "demo-home"
         write(deployed / "skills" / "demo" / "SKILL.md", "---\nname: demo\n---\n")

@@ -5458,6 +5458,86 @@ PRESENCE_REFUSAL_SHAPES = {
         "def f(p, q):\n    if q and {call}:\n        return 1\n    else:\n        raise OSError(p)\n"
     ),
 }
+# The forms that search for a path a presence test finds absent and raise when one is found, or that return what the
+# test finds and raise otherwise: each refusal names a path of another kind, or for a path's predicate one it cannot
+# stat, as missing.
+PRESENCE_SEARCH_REFUSAL_SHAPES = {
+    "a next of a search, then raise": (
+        "def f(ps):\n    missing = next((p for p in ps if not {call}), None)\n    if missing is not None:\n"
+        "        raise OSError(f'{{missing}} does not exist')\n    return 1\n"
+    ),
+    "a search bound by an assignment expression": (
+        "def f(ps):\n    if (missing := next((p for p in ps if not {call}), None)) is not None:\n"
+        "        raise OSError(missing)\n    return 1\n"
+    ),
+    "an inline next of a search": (
+        "def f(ps):\n    if next((p for p in ps if not {call}), None):\n        raise OSError(ps)\n    return 1\n"
+    ),
+    "a list of what a search keeps, then raise": (
+        "def f(ps):\n    missing = [p for p in ps if not {call}]\n    if missing:\n        raise OSError(missing)\n"
+        "    return 1\n"
+    ),
+    "a list a filter keeps by not P and Q, then raise": (
+        "def f(ps, q):\n    missing = [p for p in ps if not {call} and p not in q]\n    if missing:\n"
+        "        raise OSError(missing)\n    return 1\n"
+    ),
+    "a next of a search by Q and not P, then raise": (
+        "def f(ps, q):\n    if next((p for p in ps if p not in q and not {call}), None) is not None:\n"
+        "        raise OSError(ps)\n    return 1\n"
+    ),
+    "any of Q and a negated test": (
+        "def f(ps, q):\n    if any(q and not {call} for p in ps):\n        raise OSError(ps)\n    return 1\n"
+    ),
+    "if P: raise, then raise": (
+        "def f(p):\n    if {call}:\n        raise ValueError(f'{{p}} has no marker')\n"
+        "    raise OSError(f'{{p}} has no folder')\n"
+    ),
+    "any of a list of a negated test": (
+        "def f(ps):\n    if any([not {call} for p in ps]):\n        raise OSError(ps)\n    return 1\n"
+    ),
+    "any of a set of a negated test": (
+        "def f(ps):\n    if any({{not {call} for p in ps}}):\n        raise OSError(ps)\n    return 1\n"
+    ),
+    "any of a list a filter keeps": (
+        "def f(ps):\n    if any([p for p in ps if not {call}]):\n        raise OSError(ps)\n    return 1\n"
+    ),
+    "not all of a list of a test": (
+        "def f(ps):\n    if not all([{call} for p in ps]):\n        raise OSError(ps)\n    return 1\n"
+    ),
+    "all of a set of a test, else raise": (
+        "def f(ps):\n    if all({{{call} for p in ps}}):\n        return 1\n    else:\n        raise OSError(ps)\n"
+    ),
+    "any of a name bound to a list of a negated test": (
+        "def f(ps):\n    gone = [not {call} for p in ps]\n    if any(gone):\n        raise OSError(ps)\n    return 1\n"
+    ),
+    "not all of a name bound to a generator of a test": (
+        "def f(ps):\n    there = ({call} for p in ps)\n    if not all(there):\n        raise OSError(ps)\n"
+        "    return 1\n"
+    ),
+    "next of a name bound to a generator a filter keeps": (
+        "def f(ps):\n    gone = (p for p in ps if not {call})\n    if next(gone, None) is not None:\n"
+        "        raise OSError(ps)\n    return 1\n"
+    ),
+    "any of a negated test": (
+        "def f(ps, q):\n    if q or any(not {call} for p in ps):\n        raise OSError(ps)\n    return 1\n"
+    ),
+    "not all of a test": "def f(ps):\n    if not all({call} for p in ps):\n        raise OSError(ps)\n    return 1\n",
+    "all of a test, else raise": (
+        "def f(ps):\n    if all({call} for p in ps):\n        return 1\n    else:\n        raise OSError(ps)\n"
+    ),
+    "a search found None, else raise": (
+        "def f(ps):\n    missing = next((p for p in ps if not {call}), None)\n    if missing is None:\n"
+        "        return 1\n    else:\n        raise OSError(missing)\n"
+    ),
+    "if P: return, then raise": (
+        "def f(p, q):\n    if {call}:\n        return p\n    message = f'{{p}} is missing'\n"
+        "    raise OSError(message)\n"
+    ),
+    "if P: return, then a lookup and raise": (
+        "def f(p, q):\n    if {call}:\n        return p\n    try:\n        hint = q()\n    except ValueError:\n"
+        "        raise OSError(p) from None\n    raise OSError(f'{{p}}: {{hint}}')\n"
+    ),
+}
 PRESENCE_ABSENT_OTHERS = {
     "file_presence.is_present": "file_presence.is_present(p, other_is_absent=True)",
     "file_presence.is_directory": "file_presence.is_directory(p, other_is_absent=True)",
@@ -5475,6 +5555,14 @@ PRESENCE_REFUSED = {
             + PRESENCE_REFUSAL_SHAPES[shape].format(call=call)
         )
         for shape in PRESENCE_REFUSAL_SHAPES
+        for predicate, call in {**PRESENCE_PREDICATE_CALLS, **PRESENCE_ABSENT_OTHERS}.items()
+    },
+    **{
+        f"{shape} by {predicate}": (
+            "import os\nimport file_presence\nfrom file_presence import is_directory\n\n\n"
+            + PRESENCE_SEARCH_REFUSAL_SHAPES[shape].format(call=call)
+        )
+        for shape in PRESENCE_SEARCH_REFUSAL_SHAPES
         for predicate, call in {**PRESENCE_PREDICATE_CALLS, **PRESENCE_ABSENT_OTHERS}.items()
     },
     **{
@@ -5539,6 +5627,62 @@ PRESENCE_PASSED = {
         "import file_presence\n\n\ndef f(p):\n    if not file_presence.is_directory(p, other_is_absent=False):\n"
         "        raise OSError(p)\n    return 1\n"
     ),
+    # A search on a test that lets another kind through, or a raise on finding none absent or one present, words
+    # nothing of another kind as missing, and an if whose False goes on to a value or to work before its raise is no
+    # refusal on its False.
+    "a search on a file_presence test that lets another kind through": (
+        "import file_presence\n\n\ndef f(ps):\n    missing = next((p for p in ps if not file_presence.is_present(p)), "
+        "None)\n    if missing is not None:\n        raise OSError(missing)\n    return 1\n"
+    ),
+    "a raise when a search finds none absent": (
+        "import file_presence\n\n\ndef f(ps):\n"
+        "    missing = next((p for p in ps if not file_presence.is_present(p, other_is_absent=True)), None)\n"
+        "    if missing is None:\n        raise OSError(ps)\n    return missing\n"
+    ),
+    "a raise when any is present": (
+        "import file_presence\n\n\ndef f(ps):\n"
+        "    if any(file_presence.is_present(p, other_is_absent=True) for p in ps):\n        raise OSError(ps)\n"
+        "    return 1\n"
+    ),
+    "a search bound to a name also bound otherwise": (
+        "import file_presence\n\n\ndef f(ps, q):\n"
+        "    missing = next((p for p in ps if not file_presence.is_present(p, other_is_absent=True)), None)\n"
+        "    if q:\n        missing = q\n    if missing is not None:\n        raise OSError(missing)\n    return 1\n"
+    ),
+    "if P: return, then a value": (
+        "import file_presence\n\n\ndef f(p, q):\n    if file_presence.is_present(p, other_is_absent=True):\n"
+        "        return p\n    if q:\n        return q\n    raise OSError(p)\n"
+    ),
+    "if P: raise, then a value": (
+        "import file_presence\n\n\ndef f(p):\n    if file_presence.is_present(p, other_is_absent=True):\n"
+        "        raise OSError(p)\n    return 1\n"
+    ),
+    "a list a filter keeps by P and Q, then raise": (
+        "import file_presence\n\n\ndef f(ps, q):\n"
+        "    found = [p for p in ps if file_presence.is_present(p, other_is_absent=True) and p in q]\n"
+        "    if found:\n        raise OSError(found)\n    return 1\n"
+    ),
+    "a name bound to a comprehension and to something else": (
+        "import file_presence\n\n\ndef f(ps, q):\n"
+        "    gone = [not file_presence.is_present(p, other_is_absent=True) for p in ps]\n    if q:\n"
+        "        gone = q\n    if any(gone):\n        raise OSError(ps)\n    return 1\n"
+    ),
+    "limit: any of a list call over a comprehension": (
+        "import file_presence\n\n\ndef f(ps):\n"
+        "    if any(list(not file_presence.is_present(p, other_is_absent=True) for p in ps)):\n"
+        "        raise OSError(ps)\n    return 1\n"
+    ),
+    "limit: any of a dict comprehension": (
+        "import file_presence\n\n\ndef f(ps):\n"
+        "    if any({p: 1 for p in ps if not file_presence.is_present(p, other_is_absent=True)}):\n"
+        "        raise OSError(ps)\n    return 1\n"
+    ),
+    "limit: a loop of if P: return, then raise": (
+        "import file_presence\n\n\ndef f(ps):\n    for p in ps:\n"
+        "        if file_presence.is_present(p, other_is_absent=True):\n            return p\n"
+        "    raise OSError(f'{ps} are missing')\n"
+    ),
+    "if P: return, then more work": "def f(p):\n    if p.is_dir():\n        return p\n    p.mkdir()\n    return p\n",
     "file_presence.require": (
         "import file_presence\n\n\ndef f(p):\n    file_presence.require(p, OSError, 'missing', str(p))\n    return 1\n"
     ),

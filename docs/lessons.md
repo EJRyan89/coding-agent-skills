@@ -58,8 +58,9 @@ removed fails validation until its pattern follows it.
   `git_client:GitClient.quiet_output` for any command run quiet, each None only for what git reports as absent.
 - **Guard:** `tests/validation/python_checks.py::PythonChecksPolicies::test_file_presence_is_the_one_reader_of_absence`,
   which refuses a presence predicate whose False is the answer or goes straight to a refusal, a file_presence test
-  given other_is_absent=True whose False does, a glob, an os.walk with no onerror, and a removal that discards its
-  errors, outside file_presence unless its module states why,
+  given other_is_absent=True whose False does, a search for a path either finds absent that a refusal answers, a
+  glob, an os.walk with no onerror, and a removal that discards its errors, outside file_presence unless its module
+  states why,
   `skills/ejryan89-skill-core/scripts/test_file_presence.py::RefusalReasonTests`,
   `tests/deployer/test_invariants.py::TreeStateTests::test_a_folder_that_cannot_be_listed_fails_the_state_and_a_root_nothing_is_at_holds_nothing`,
   which holds the deployer harness's walk, in the tests that policy leaves out, to failing on a folder it cannot list,
@@ -106,7 +107,9 @@ removed fails validation until its pattern follows it.
   `onerror`, and an `rmtree(ignore_errors=True)` or `TemporaryDirectory(ignore_cleanup_errors=True)`, which reads a
   folder it could not remove as gone; `exists()`, `is_file()`, `is_dir()`, `os.path.exists`, `os.path.lexists`,
   `os.path.isfile`, or `os.path.isdir` anywhere a False must mean nothing is there, since from Python 3.14 each
-  returns False on every `OSError`, and `lexists` on a `ValueError` too; `if not result.stdout`
+  returns False on every `OSError`, and `lexists` on a `ValueError` too; a refusal worded as missing on a search,
+  `next((p for p in paths if not P), None)`, or after `if P: return p`, where `P` is such a predicate or a
+  `file_presence` test given `other_is_absent=True`; `if not result.stdout`
   read as nothing found; `len(lines) != ` beside a successful git answer followed by `return None`; two branches
   that catch the same `GitError` and read its kinds differently; a function given a new `raise GitError` whose
   callers are not each read for where the error goes, one that catches it on one branch and lets it escape on
@@ -118,7 +121,7 @@ removed fails validation until its pattern follows it.
   pipeline whose status no branch reads, which a script without `set -e` reads as an empty answer, and a
   `rev-parse --verify --quiet` whose exit 1 is not told from any other failure.
 - **Examples:** #1320, #1365, #1599, #1601, #1887, #1888, #2090, #2091, #2131, #2133, #2182, #2185, #2205, #2218, #2236,
-  #2245
+  #2245, #2727
 
 ### Evidence that was never produced is never a pass
 
