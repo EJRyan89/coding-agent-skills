@@ -1157,6 +1157,29 @@ removed fails validation until its pattern follows it.
   read where the file may be missing.
 - **Examples:** #2312
 
+### A link to nothing is missing to a reader and taken to a writer
+
+- **Rule:** A reader answers a symbolic link whose target does not exist as the path missing, never as something of
+  another kind, and a writer that read a path as missing either asks whether anything occupies it or writes through a
+  call that replaces the link itself, never one that follows it to create the file it leads to.
+- **Why:** Nothing can be read through such a link, so "not a file" sends a user looking for something that was never
+  there; and a write that follows it creates a file wherever the link points, outside the folder the writer owns.
+- **Use:** `file_presence:is_present`, `file_presence:is_directory`, and `file_presence:refusal_reason`, which answer a
+  link to nothing as missing; `file_presence:is_occupied`, which counts it as occupying its place; and
+  `atomic_file:replace_bytes`, which replaces the link itself.
+- **Guard:** `tests/malformed_input/test_faults_link.py::test_each_command_reads_a_link_to_nothing_as_the_file_missing_and_never_writes_through_it`,
+  which places a link to nothing at each file every driven command reads and fails a run that names it as another
+  kind, refuses it otherwise than a missing file, or creates the file it leads to,
+  `skills/ejryan89-skill-core/scripts/test_file_presence.py::FilePresenceTests::test_a_link_to_nothing_reads_as_missing_and_occupies_its_place`,
+  and
+  `tests/deployer/test_presence_reads.py::DeployerPresenceTests::test_a_link_to_nothing_reads_as_missing_and_no_write_creates_its_target`
+- **Search for:** `is_occupied(path) and not is_present(path, other_is_absent=True)`, which names a link to nothing as
+  of another kind; `not path.is_file()` or `other_is_absent=True` worded as `is not a file`, which names a missing
+  path so too; `.write_text(` or `open(path, "w")` after a reading of absence, which follows the link; `path.resolve()`
+  before a write that creates a missing target; and a listing that counts an entry by its name alone, such as
+  `_version_from_name(path)` in a comprehension over `iterdir()`.
+- **Examples:** #2716
+
 ### A grant is earned by a step that names its tool
 
 - **Rule:** A skill's `allowed-tools` grant counts only for a tool one of its steps names.

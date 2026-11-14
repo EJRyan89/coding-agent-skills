@@ -75,8 +75,9 @@ skill-source prints `SKILL_FILE <path>` for each editable source of the named sk
 skills/<name>/SKILL.md of the checkout the deployer's manifest records for it, and the repository's
 .claude/skills/<name>/SKILL.md; with --file it checks a source file named instead. It never names a
 file inside a skills directory, the deployed copy among them, because the deployer stops updating a
-skill whose deployed copy changed, and prints a `NOTE` for each such file it passes over, and one
-when git cannot read the repository to look for a project skill. With no source left, it prints
+skill whose deployed copy changed, and prints a `NOTE` for each such file it passes over, for each
+recorded source that is missing, a link to nothing included, is not a file, or cannot be examined, and
+one when git cannot read the repository to look for a project skill. With no source left, it prints
 `FAILED <reason>`.
 
 Usage:
