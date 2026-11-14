@@ -46,6 +46,7 @@ import update_pr_dashboard
 from atomic_file import replace_text
 from guidance_record import Changelog, GuidanceRecord, Page
 from harness import SOURCE_ID, DeployerTestCase, forward
+from review_config import DASHBOARD_END_MARKER, DASHBOARD_START_MARKER
 
 from deployer import config, journal, manifest, platform_support
 from deployer.kinds import ADAPTERS
@@ -314,7 +315,7 @@ def test_the_dashboard_tracker_record_reads_back_as_the_update_wrote_it(tmp_path
     source = tmp_path / "input.json"
     source.write_text(json.dumps(items), encoding="utf-8")
     dashboard = tmp_path / "dashboard.md"
-    dashboard.write_text(f"{update_pr_dashboard.START_MARKER}\n{update_pr_dashboard.END_MARKER}\n", encoding="utf-8")
+    dashboard.write_text(f"{DASHBOARD_START_MARKER}\n{DASHBOARD_END_MARKER}\n", encoding="utf-8")
     record = tmp_path / "tracker.json"
     try:
         update_pr_dashboard.update_dashboard_rows(source, dashboard, "reviewer", detector=_Detector(), record=record)

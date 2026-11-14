@@ -58,6 +58,7 @@ import skill_inventory
 import update_pr_dashboard
 from github_client import CommandResult
 from pr_change import CHANGED, UNCHANGED
+from review_config import DASHBOARD_END_MARKER, DASHBOARD_START_MARKER
 from review_flags import FlagError
 from review_io import PersistenceError
 
@@ -204,7 +205,7 @@ class _Detector:
 
 def _dashboard(path: Path) -> None:
     dashboard = path.parent / "dashboard.md"
-    dashboard.write_text(f"{update_pr_dashboard.START_MARKER}\n{update_pr_dashboard.END_MARKER}\n", encoding="utf-8")
+    dashboard.write_text(f"{DASHBOARD_START_MARKER}\n{DASHBOARD_END_MARKER}\n", encoding="utf-8")
 
 
 def _dashboard_input(path: Path) -> object:
