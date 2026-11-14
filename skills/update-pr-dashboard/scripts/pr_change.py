@@ -231,7 +231,7 @@ class ChangeDetector:
         return self.client.api_json(endpoint, allow_absent=True)
 
 
-def _outcome(read: Callable[[Key], Cached], key: Key) -> Cached | GitHubError:
+def _outcome[Key, Cached](read: Callable[[Key], Cached], key: Key) -> Cached | GitHubError:
     """What `read` returns for `key`, or the GitHub call that failed; a failure in `FATAL_ERROR_KINDS` is raised."""
     try:
         return read(key)
@@ -241,7 +241,7 @@ def _outcome(read: Callable[[Key], Cached], key: Key) -> Cached | GitHubError:
         return exc
 
 
-def _known(pull: str, value: Cached | GitHubError) -> Cached:
+def _known[Cached](pull: str, value: Cached | GitHubError) -> Cached:
     """A read's value, or the `ComparisonError` its failed call makes of the comparison of `pull` that needed it."""
     if isinstance(value, GitHubError):
         raise ComparisonError(pull, value)

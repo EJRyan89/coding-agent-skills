@@ -239,7 +239,7 @@ class CheckCommandTests(DeployerTestCase):
             "  Git 2.54.0 (used by every skill)\n"
             f"{after}"
             "  PowerShell 7.6.6 (needed to deploy)\n"
-            "  Python 3.12.1 (needed to deploy; 3.11.4 or newer)\n"
+            "  Python 3.12.1 (needed to deploy; 3.12.0 or newer)\n"
             "  ShellCheck 0.11.0 (needed to deploy)\n"
             "  dotnet-format 5.1.250801 (used by formatter)\n"
             "  gh 2.97.0 (used by operations, reporter)\n"
@@ -361,12 +361,12 @@ class CheckCommandTests(DeployerTestCase):
             result.output,
         )
 
-    def test_a_python_before_3_11_4_is_outdated_because_at_extracts_with_the_tarfile_data_filter(self) -> None:
-        # Python 3.11.4 is the first 3.11 release whose tarfile has extraction filters, which --at extracts with.
-        result = self.check(Machine(python=(3, 11, 3)))
+    def test_a_python_before_3_12_0_is_outdated(self) -> None:
+        # Python 3.12.0 is the floor, the first 3.12 release, so the newest 3.11 release is outdated.
+        result = self.check(Machine(python=(3, 11, 18)))
         self.assertEqual(1, result.code, result.output)
         groups = self.report_groups(result.output, "CHECK")
-        self.assertEqual(["Python 3.11.3 (needed to deploy; needs 3.11.4 or newer)"], groups["OUTDATED"])
+        self.assertEqual(["Python 3.11.18 (needed to deploy; needs 3.12.0 or newer)"], groups["OUTDATED"])
         self.assertTrue(
             result.output.endswith(
                 'Update the outdated tools before deploying; see "Installing the tools" in\n'
@@ -374,16 +374,16 @@ class CheckCommandTests(DeployerTestCase):
             ),
             result.output,
         )
-        result = self.check(Machine(python=(3, 11, 4)))
+        result = self.check(Machine(python=(3, 12, 0)))
         self.assertEqual(0, result.code, result.output)
         found = self.report_groups(result.output, "CHECK")["FOUND"]
-        self.assertIn("Python 3.11.4 (needed to deploy; 3.11.4 or newer)", found)
+        self.assertIn("Python 3.12.0 (needed to deploy; 3.12.0 or newer)", found)
 
     def test_a_missing_and_an_outdated_deploy_tool_ask_for_both_in_one_lead(self) -> None:
-        result = self.check(Machine(missing=("shellcheck",), python=(3, 11, 3)))
+        result = self.check(Machine(missing=("shellcheck",), python=(3, 11, 18)))
         self.assertEqual(1, result.code, result.output)
         groups = self.report_groups(result.output, "CHECK")
-        self.assertEqual(["Python 3.11.3 (needed to deploy; needs 3.11.4 or newer)"], groups["OUTDATED"])
+        self.assertEqual(["Python 3.11.18 (needed to deploy; needs 3.12.0 or newer)"], groups["OUTDATED"])
         self.assertEqual(1, len(groups["MISSING"]), result.output)
         self.assertTrue(
             result.output.endswith(
@@ -432,9 +432,9 @@ class CheckCommandTests(DeployerTestCase):
         unusable = "put right what each unusable tool's line names"
         machines = [
             (Machine(missing=("shellcheck",)), f"Install the missing tools and {unusable}"),
-            (Machine(python=(3, 11, 3)), f"Update the outdated tools and {unusable}"),
+            (Machine(python=(3, 11, 18)), f"Update the outdated tools and {unusable}"),
             (
-                Machine(missing=("shellcheck",), python=(3, 11, 3)),
+                Machine(missing=("shellcheck",), python=(3, 11, 18)),
                 f"Install the missing tools, update the outdated ones, and {unusable}",
             ),
         ]
@@ -467,7 +467,7 @@ class CheckCommandTests(DeployerTestCase):
         unusable = mock.patch("deployer.platform_support.find_bash", side_effect=refused)
         for clause, machine, patch, code in (
             (failing, Machine(missing=("shellcheck",)), contextlib.nullcontext(), 1),
-            (failing, Machine(python=(3, 11, 3)), contextlib.nullcontext(), 1),
+            (failing, Machine(python=(3, 11, 18)), contextlib.nullcontext(), 1),
             (failing, Machine(), unusable, 1),
             (passing, Machine(), contextlib.nullcontext(), 0),
             (passing, Machine(missing=("gh",)), contextlib.nullcontext(), 0),
@@ -1217,16 +1217,17 @@ class VersionTests(unittest.TestCase):
                 if runtime == "copilot-cli":
                     self.assertEqual(expected, review_hosts.parse_copilot_version(output))
 
-    def test_minimum_python_is_3_11_4_in_both_places(self) -> None:
-        # 3.11.4 is the first 3.11 release whose tarfile has extraction filters, which --at extracts with.
+    def test_minimum_python_is_3_12_0_in_both_places(self) -> None:
+        # A pinned contract value: 3.12.0 is the first 3.12 release, whose tarfile has the extraction filters --at
+        # extracts with and whose typing has override.
         specification = importlib.util.spec_from_file_location("deploy_entry", REPOSITORY_ROOT / "deploy.py")
         if specification is None or specification.loader is None:
             self.fail("deploy.py loads as a module")
         entry = importlib.util.module_from_spec(specification)
         specification.loader.exec_module(entry)
-        self.assertEqual((3, 11, 4), entry.MINIMUM_PYTHON)
-        self.assertEqual((3, 11, 4), tools.MINIMUM_PYTHON)
-        for version, shown in (((3, 10, 9), "3.10.9"), ((3, 11, 3), "3.11.3")):
+        self.assertEqual((3, 12, 0), entry.MINIMUM_PYTHON)
+        self.assertEqual((3, 12, 0), tools.MINIMUM_PYTHON)
+        for version, shown in (((3, 10, 9), "3.10.9"), ((3, 11, 4), "3.11.4"), ((3, 11, 18), "3.11.18")):
             captured = io.StringIO()
             with (
                 self.subTest(version=version),
@@ -1236,11 +1237,11 @@ class VersionTests(unittest.TestCase):
                 entry.require_supported_python(version)
             self.assertEqual(1, raised.exception.code)
             self.assertEqual(
-                f"\nERROR: Python 3.11.4 or newer is required; this is Python {shown}.\n"
+                f"\nERROR: Python 3.12.0 or newer is required; this is Python {shown}.\n"
                 'See "Installing the tools" in docs/installation.md.\n\n',
                 captured.getvalue(),
             )
-        entry.require_supported_python((3, 11, 4))
+        entry.require_supported_python((3, 12, 0))
         entry.require_supported_python(sys.version_info)
 
     def test_deploy_py_and_its_console_setup_parse_as_python_3_7(self) -> None:
@@ -1255,6 +1256,39 @@ class VersionTests(unittest.TestCase):
                 ast.parse(path.read_text(encoding="utf-8"), feature_version=(3, 7))
         with self.assertRaises(SyntaxError):
             ast.parse("if (found := 1):\n    pass\n", feature_version=(3, 7))
+
+
+# Run deploy.py as written in a child Python that reports itself as the newest 3.11 release, then name every deployer
+# module the child imported: argv[1] is the checkout copy, and the rest deploy.py's.
+OLDER_PYTHON = r"""
+import runpy, sys
+root = sys.argv.pop(1)
+sys.version_info = (3, 11, 18, "final", 0)
+sys.argv[0] = root + "/deploy.py"
+try:
+    runpy.run_path(sys.argv[0], run_name="__main__")
+finally:
+    print(sorted(name for name in sys.modules if name.partition(".")[0] == "deployer"))
+"""
+
+
+class OlderPythonTests(DeployerTestCase):
+    """deploy.py refuses a Python older than the floor before it imports the deployer, so no command runs on it."""
+
+    def test_deploy_py_refuses_python_3_11_before_it_imports_the_deployer(self) -> None:
+        environment = dict(os.environ)
+        environment.update({"HOME": str(self.home), "USERPROFILE": str(self.home)})
+        for arguments in (("check",), ("--all", "--dry-run"), ("--all",)):
+            with self.subTest(arguments=arguments):
+                result = self.run_in_checkout(OLDER_PYTHON, *arguments, environment=environment)
+                self.assertEqual(1, result.code, result.stdout + result.stderr)
+                self.assertEqual("[]\n", result.stdout)
+                self.assertEqual(
+                    "\nERROR: Python 3.12.0 or newer is required; this is Python 3.11.18.\n"
+                    'See "Installing the tools" in docs/installation.md.\n\n',
+                    result.stderr,
+                )
+        self.assertFalse(self.manifest_file.exists())
 
 
 class LocatorFixture(unittest.TestCase):
