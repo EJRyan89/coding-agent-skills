@@ -77,6 +77,7 @@ Exit status:
 from __future__ import annotations
 
 import argparse
+import os
 import shutil
 import stat
 import sys
@@ -267,10 +268,26 @@ def find_projects(directory: Path, unreadable: list[tuple[Path, str]]) -> list[P
     return walk.files
 
 
-def unexaminable(path: Path, error: OSError) -> Failed:
-    """The refusal of a path the root's search could not examine, naming that path whatever file the error names, or
-    none, with the operating system's reason, else the error's text."""
-    return Failed(f"{path} cannot be examined: {error.strerror or error}")
+def unexaminable(path: Path, error: OSError | Unreadable) -> Failed:
+    """The refusal of a path the run could not examine, naming that path whatever file the error names, or none, with
+    the operating system's reason, else the error's text, in the words `file_presence.refusal_reason` gives."""
+    reason = error.reason if isinstance(error, Unreadable) else error.strerror or str(error)
+    return Failed(f"{path} cannot be examined: {reason}")
+
+
+def resolved_path(path: Path) -> Path:
+    """`path` made absolute with every link followed, as `Path.resolve` answers from Python 3.13 on: a symbolic link
+    loop is left unresolved, where Python 3.12's `Path.resolve` raises RuntimeError, so the stat that follows refuses
+    the loop naming the path, on every version."""
+    return Path(os.path.realpath(path))
+
+
+def checkout_tree(base: Path) -> Path:
+    """`examined_tree` of `base`, or `unexaminable` naming a checkout marker above it whose stat fails."""
+    try:
+        return examined_tree(base)
+    except Unreadable as error:
+        raise unexaminable(error.file, error) from None
 
 
 def regular_file(path: Path) -> bool:
@@ -298,7 +315,7 @@ def resolve_root(path: Path, graph_unreadable: list[tuple[Path, str]]) -> tuple[
     project files to read: a solution's listed .csproj files, the one solution in a directory, or the .csproj files
     under a directory holding none. A solution that cannot be read is reported unreadable and lists no project, so
     the answer says why it is empty, and an entry `refusal` refuses is reported before anything looks it up."""
-    path = path.resolve()
+    path = resolved_path(path)
     if regular_file(path):
         if not is_solution(path):
             raise Failed(f"{path} is not a .sln or .slnx solution")
@@ -308,7 +325,7 @@ def resolve_root(path: Path, graph_unreadable: list[tuple[Path, str]]) -> tuple[
         except Unreadable as error:
             graph_unreadable.append((error.file, error.reason))
             entries = []
-        tree = examined_tree(path.parent)
+        tree = checkout_tree(path.parent)
         for listed in entries:
             if not ordinal_fold(listed).endswith(PROJECT_SUFFIX):
                 continue
@@ -616,7 +633,7 @@ def build_graph(root: Path, services: Services) -> Graph:
     """Read the solution's projects and, for each one whose file could be read, its packages and redirects."""
     unreadable: list[tuple[Path, str]] = []
     resolved, base, listed = resolve_root(root, unreadable)
-    tree = examined_tree(base)
+    tree = checkout_tree(base)
     # resolve_root shows a solution's paths relative to its folder and a searched folder's relative to itself, so the
     # root is a solution exactly when it is not the base; a second look at the disk could answer otherwise.
     solution = None if resolved == base else resolved
@@ -799,7 +816,7 @@ def selected_projects(graph: Graph, narrowed: Path | None) -> list[Project]:
     """Every project in label order, or the one `--project` names."""
     if narrowed is None:
         return sorted(graph.projects.values(), key=lambda item: ordinal_fold(graph.label(item)))
-    project = graph.project_at(narrowed.resolve())
+    project = graph.project_at(resolved_path(narrowed))
     if project is None:
         raise Failed(f"{narrowed} is not a project of {graph.root}")
     return [project]
@@ -1150,12 +1167,15 @@ def write_graph(text: str, requested: Path | None, fmt: str) -> Path:
     only once there is a graph to write and removed again when the write fails, so a failed query leaves nothing.
 
     The requested file is replaced whole through ejryan89-skill-core's `atomic_file`, keeping the permissions of a
-    file already there, so a write that fails part way leaves that file as it was."""
+    file already there, so a write that fails part way leaves that file as it was. A requested path whose stat fails
+    for any reason but nothing being there is refused naming it, before anything is written."""
     if requested is not None:
         try:
             mode = stat.S_IMODE(requested.stat().st_mode)
         except FileNotFoundError:
             mode = NEW_FILE_MODE
+        except OSError as error:
+            raise unexaminable(requested, error) from None
         replace_text(requested, text, mode=mode)
         return requested
     folder = Path(tempfile.mkdtemp(prefix="dotnet-dependencies-"))
