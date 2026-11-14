@@ -629,19 +629,31 @@ class ResolveTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as outside:
             self.assertEqual(f"{outside} is not inside a Git repository", self.failed(cwd=Path(outside)))
 
-    def test_a_failed_git_command_fails(self) -> None:
+    def test_a_failed_git_command_fails_with_the_reason_git_gave(self) -> None:
         self.repository.write("Code.cs")
         self.repository.commit("code")
-        services = Services()
-        real = services.git.runner
+        command = "git ls-files -z --others --exclude-standard -- *.cs failed"
+        # git's stderr on one line, or the exit code when git printed none: never the command alone.
+        for stderr, reason in (
+            ("fatal: index file corrupt\nfatal: unable to read\n", "fatal: index file corrupt fatal: unable to read"),
+            ("", "exit code 128"),
+        ):
+            with self.subTest(stderr=stderr):
+                services = Services()
+                real = services.git.runner
 
-        def run(command: Sequence[str], timeout: float) -> GitResult:
-            if command[3] == "ls-files":
-                return GitResult(128, "", "")
-            return real(command, timeout)
+                def run(
+                    arguments: Sequence[str],
+                    timeout: float,
+                    real: Callable[[Sequence[str], float], GitResult] = real,
+                    stderr: str = stderr,
+                ) -> GitResult:
+                    if arguments[3] == "ls-files":
+                        return GitResult(128, "", stderr)
+                    return real(arguments, timeout)
 
-        services.git = GitClient(run)
-        self.assertEqual("git ls-files -z --others --exclude-standard -- *.cs failed", self.failed(services=services))
+                services.git = GitClient(run)
+                self.assertEqual(f"{command}: {reason}", self.failed(services=services))
 
     def test_a_git_command_that_never_finishes_fails_but_a_stalled_fetch_does_not(self) -> None:
         self.repository.write("Code.cs")

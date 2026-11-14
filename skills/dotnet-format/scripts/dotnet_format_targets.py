@@ -268,7 +268,8 @@ def git(services: Services, directory: Path, *arguments: str) -> GitResult:
 def git_paths(services: Services, root: Path, *arguments: str) -> list[str]:
     result = git(services, root, *arguments)
     if result.returncode != 0:
-        raise Failed(f"git {' '.join(arguments)} failed")
+        reason = flat_text(result.stderr) or f"exit code {result.returncode}"
+        raise Failed(f"git {' '.join(arguments)} failed: {reason}")
     return [name for name in result.stdout.split("\0") if name]
 
 

@@ -1233,13 +1233,17 @@ def inventory(directory: Path) -> list[str]:
     flags: list[str] = []
     texts: dict[str, tuple[str, str]] = {}
     unreadable: list[str] = []
+    has_main = False
     for path in files:
         relative = path.relative_to(directory)
         kind = category(relative, directory)
+        has_main = has_main or kind == "main"
         size = path.stat().st_size
         text = read_text(path)
         if text is None and kind in ("main", "doc"):
+            # The runtime still loads it, so it has no measured cost: no FILE line, and nothing in TOTAL.
             unreadable.append(f"UNREADABLE {posix(relative)} {NOT_UTF8}")
+            continue
         tokens = estimate_tokens(text, kind)
         lines.append(f"FILE {kind} {size} {tokens} {posix(relative)}")
         for index, value in enumerate((1, size, tokens)):
@@ -1249,7 +1253,7 @@ def inventory(directory: Path) -> list[str]:
             flags.extend(structure_flags(kind, text, posix(relative)))
     lines.extend(f"TOTAL {kind} {totals[kind][0]} {totals[kind][1]} {totals[kind][2]}" for kind in CATEGORIES)
     lines.append("TOTAL all " + " ".join(str(sum(totals[kind][i] for kind in CATEGORIES)) for i in range(3)))
-    if not totals["main"][0]:
+    if not has_main:
         flags.insert(0, "NO_MAIN")
     return [
         *lines,

@@ -28,10 +28,12 @@ from review_config import (
     DASHBOARD_AI_REVIEW_MISSING,
     DASHBOARD_AI_REVIEW_STALE,
     DASHBOARD_AI_REVIEW_STATES,
+    DASHBOARD_END_MARKER,
     DASHBOARD_SECTION_AWAITING,
     DASHBOARD_SECTION_DRAFTS,
     DASHBOARD_SECTION_MINE,
     DASHBOARD_SECTION_TO_REVIEW,
+    DASHBOARD_START_MARKER,
     PULL_NUMBER,
     REPOSITORY,
     ConfigurationError,
@@ -45,8 +47,6 @@ from review_io import PersistenceError, atomic_write_json, atomic_write_text, re
 from review_vocabularies import SEVERITIES as SEVERITY_KEYS
 from typed_fields import FieldError, FieldReader
 
-START_MARKER = "<!-- code-review-pr-tracker:start -->"
-END_MARKER = "<!-- code-review-pr-tracker:end -->"
 REQUIRED_FIELDS = {
     "repository",
     "number",
@@ -666,8 +666,8 @@ def _section_lines(section: str, members: list[Row], summary: str) -> list[str]:
 def render(
     rows: list[Row],
     *,
-    start_marker: str = START_MARKER,
-    end_marker: str = END_MARKER,
+    start_marker: str = DASHBOARD_START_MARKER,
+    end_marker: str = DASHBOARD_END_MARKER,
     config_path: str | None = None,
 ) -> str:
     """Render the owned section: collapsible sections, rows grouped by requestor, AI verdict and findings. Pinned rows
@@ -728,8 +728,8 @@ def splice(
     document: str,
     owned_section: str,
     *,
-    start_marker: str = START_MARKER,
-    end_marker: str = END_MARKER,
+    start_marker: str = DASHBOARD_START_MARKER,
+    end_marker: str = DASHBOARD_END_MARKER,
 ) -> str:
     """The document with its owned section replaced, written with the document's dominant line ending."""
     start, end = _owned_span(document, start_marker, end_marker)
@@ -753,8 +753,8 @@ def update_dashboard_rows(
     login: str | Callable[[], str],
     *,
     detector: BatchDetector | None = None,
-    start_marker: str = START_MARKER,
-    end_marker: str = END_MARKER,
+    start_marker: str = DASHBOARD_START_MARKER,
+    end_marker: str = DASHBOARD_END_MARKER,
     overrides: dict[str, str] | None = None,
     author_names: dict[str, str] | None = None,
     removals: set[str] | list[str] | None = None,

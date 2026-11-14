@@ -505,9 +505,17 @@ class InventoryTests(TemporaryTestCase):
             [line for line in lines if line.startswith(("UNREADABLE", "OUTSIDE", "TOTAL outside", "DOC_"))],
         )
         self.assertIn("FILE helper", next(line for line in lines if line.endswith("scripts/tool.ps1")))
+        # The UNREADABLE line stands in place of a cost: no FILE line beside it, and nothing counted in TOTAL.
+        self.assertEqual([], [line for line in lines if line.startswith("FILE doc")])
+        self.assertIn("TOTAL doc 0 0 0", lines)
         unreadable = write(self.root / "skills" / "v" / "SKILL.md", "x\n".encode("utf-16"))
         code, lines, _ = run("inventory", str(unreadable.parent))
         self.assertEqual((1, ["UNREADABLE SKILL.md not UTF-8 text"]), (code, [x for x in lines if "UNREADABLE" in x]))
+        # The folder still has its SKILL.md, so it is never NO_MAIN.
+        self.assertEqual(
+            ["TOTAL main 0 0 0", "TOTAL all 0 0 0"],
+            [line for line in lines if line.startswith(("FILE", "NO_MAIN", "TOTAL main", "TOTAL all"))],
+        )
 
     def test_missing_directory_fails(self) -> None:
         code, lines, error = run("inventory", str(self.root / "absent"))

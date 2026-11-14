@@ -128,6 +128,11 @@ REVIEWER_KEYS = {
     "reviewer_root",
 }
 DASHBOARD_KEYS = {"start_marker", "end_marker", "status_overrides", "author_names", "ignored_repositories"}
+# The lines that open and close the dashboard's owned section when the configuration names none. They live here,
+# beside the validation that supplies them, and update-pr-dashboard renders and splices with these names, so the
+# default a configuration loads with and the one the dashboard falls back to cannot drift.
+DASHBOARD_START_MARKER = "<!-- code-review-pr-tracker:start -->"
+DASHBOARD_END_MARKER = "<!-- code-review-pr-tracker:end -->"
 # The repositories update-pr-dashboard's `collect` never names as untracked: each entry an `owner/repo` identity, or a
 # pattern of one whose owner and name are each matched on their own, ignoring case, where `*` stands for any run of
 # characters and `?` for any one.
@@ -797,13 +802,13 @@ def _validate_dashboard(value: Any) -> dict[str, Any]:
     """The markers with their defaults, the status overrides as given, and the normalized author names."""
     dashboard = READ.json_object(value, "config.dashboard", optional=DASHBOARD_KEYS)
     start_marker = READ.string(
-        dashboard.get("start_marker", "<!-- code-review-pr-tracker:start -->"),
+        dashboard.get("start_marker", DASHBOARD_START_MARKER),
         "config.dashboard.start_marker",
         single_line=True,
         trimmed=True,
     )
     end_marker = READ.string(
-        dashboard.get("end_marker", "<!-- code-review-pr-tracker:end -->"),
+        dashboard.get("end_marker", DASHBOARD_END_MARKER),
         "config.dashboard.end_marker",
         single_line=True,
         trimmed=True,
