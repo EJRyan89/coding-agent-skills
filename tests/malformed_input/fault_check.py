@@ -2,12 +2,13 @@
 fault in a throwaway fixture, and judged.
 
 fault_runner.py runs the command under the fault and stops it, past any handler, if it starts a program other than
-git, opens a network connection, or writes outside the temporary folder or inside this checkout, even where the
-temporary folder holds it. A run must reach its fault and end with a nonzero exit its docstring's exit table names,
-a line that names what failed and is its refusal, FAILED, led by a word its docstring names, or argparse's usage
-error at exit 2, which a remedy line may follow, no traceback, and the home, the work folder, and the outputs the
-driver names as it found them. The suites test_faults_<group>.py run every driver's runs of their group of faults,
-so the runner deals each group to a leg of its own; test_faults.py holds the coverage and the harness's own tests.
+git, opens a network connection, or writes outside the temporary folder and the runtime folder private_folder keeps a
+script's state in, `private_folder.base()`, or inside this checkout, even where the temporary folder holds it. A run
+must reach its fault and end with a nonzero exit its docstring's exit table names, a line that names what failed and
+is its refusal, FAILED, led by a word its docstring names, or argparse's usage error at exit 2, which a remedy line may
+follow, no traceback, and the home, the work folder, and the outputs the driver names as it found them. The suites
+test_faults_<group>.py run every driver's runs of their group of faults, so the runner deals each group to a leg of
+its own; test_faults.py holds the coverage and the harness's own tests.
 """
 
 from __future__ import annotations
@@ -28,10 +29,12 @@ from pathlib import Path
 from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "validation"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts"))
 
 import corpus
 import exit_tables
 import faults
+import private_folder
 from fault_table import (
     DIRECTORY,
     FAULTS,
@@ -324,16 +327,17 @@ def run_entry(
     writable: Path | None = None,
 ) -> tuple[subprocess.CompletedProcess[str], dict[str, Any]]:
     """Run an entry point through fault_runner.py under the fault, in the fixture's work folder, and return how it
-    ended and the runner's record. The run may write in `writable`, the temporary folder unless a caller names another,
-    and never in this checkout, which lies under the temporary folder when the mutation gate runs the suite in a
-    throwaway worktree."""
+    ended and the runner's record. The run may write in `writable`, unless a caller names another the temporary folder
+    and the folder private_folder keeps a script's state across runs in, the runtime directory where one is set, and
+    never in this checkout, which lies under the temporary folder when the mutation gate runs the suite in a throwaway
+    worktree."""
     record_file = fixture.root / "record.json"
     spec = {
         "entry": str(entry),
         "arguments": arguments,
         "fault": fault,
         "target": str(target) if target else None,
-        "writable": [str(writable or tempfile.gettempdir())],
+        "writable": [str(writable)] if writable else [tempfile.gettempdir(), str(private_folder.base())],
         "protected": [str(REPOSITORY)],
         "path": [str(repository / SKILL_CORE)],
         "repository": str(repository),

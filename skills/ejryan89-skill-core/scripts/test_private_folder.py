@@ -15,13 +15,15 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import private_folder
-from private_folder import UnsafeFolderError, ensure, location, parent_refusal, refusal
+from private_folder import UnsafeFolderError, base, ensure, location, parent_refusal, refusal
 from test_link_probe import link_folder
 
 # The modes and the id the rules are held to, written out rather than read from the module's constants.
 OWNER_ONLY = 0o700
 DIRECTORY = stat.S_IFDIR
 OTHER_USER = 4242
+# The variable naming the user's runtime directory, as the XDG Base Directory specification names it.
+RUNTIME = "XDG_RUNTIME_DIR"
 
 
 def metadata(mode: int, owner: int) -> os.stat_result:
@@ -40,11 +42,99 @@ class LocationTests(unittest.TestCase):
     @unittest.skipUnless(sys.platform == "win32", "only Windows has no user ids")
     def test_on_windows_there_is_no_user_id_and_the_folder_carries_none(self) -> None:
         self.assertIsNone(private_folder.user_id())
-        self.assertEqual(Path(tempfile.gettempdir()) / "state", location("state"))
+        with mock.patch.dict(os.environ, {RUNTIME: ""}):
+            self.assertEqual(Path(tempfile.gettempdir()) / "state", location("state"))
 
-    def test_the_folder_lies_in_the_temporary_directory_by_default(self) -> None:
-        self.assertEqual(Path(tempfile.gettempdir()), location("state").parent)
-        self.assertTrue(location("state").name.startswith("state"))
+    def test_the_folder_lies_in_the_temporary_directory_where_no_runtime_directory_is_set(self) -> None:
+        with mock.patch.dict(os.environ, {RUNTIME: ""}):
+            self.assertEqual(Path(tempfile.gettempdir()), base())
+            self.assertEqual(Path(tempfile.gettempdir()), location("state").parent)
+        with mock.patch.dict(os.environ):
+            os.environ.pop(RUNTIME, None)
+            self.assertEqual(Path(tempfile.gettempdir()), base())
+
+    def test_where_the_platform_has_no_user_ids_a_runtime_directory_is_never_followed(self) -> None:
+        # Windows has none, and ensure judges only a folder's kind there, so a runtime directory another account can
+        # write, such as one under C:\ProgramData, would let it make the state folder first.
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        with (
+            mock.patch.object(private_folder, "user_id", return_value=None),
+            mock.patch.dict(os.environ, {RUNTIME: str(Path(temporary.name).absolute())}),
+        ):
+            self.assertIsNone(private_folder.runtime_directory())
+            self.assertEqual(Path(tempfile.gettempdir()), base())
+            self.assertEqual(Path(tempfile.gettempdir()) / "state", location("state"))
+
+
+@unittest.skipIf(sys.platform == "win32", "Windows has no user ids, so its runtime directory is never read")
+class RuntimeDirectoryTests(unittest.TestCase):
+    """A runtime directory is followed only as the XDG Base Directory specification requires one to be: a directory,
+    no link, the user owns with mode 0700, in a parent no other account can rename it out of; anything else leaves the
+    state folder in the temporary directory."""
+
+    def setUp(self) -> None:
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name).resolve()
+        self.runtime = self.root / "runtime"
+        self.runtime.mkdir(mode=OWNER_ONLY)
+
+    def base_for(self, value: Path | str) -> Path:
+        with mock.patch.dict(os.environ, {RUNTIME: str(value)}):
+            return base()
+
+    def assert_not_followed(self, value: Path | str) -> None:
+        self.assertEqual(Path(tempfile.gettempdir()), self.base_for(value))
+
+    def test_a_directory_the_user_owns_with_mode_0700_is_followed(self) -> None:
+        self.assertEqual(self.runtime, self.base_for(self.runtime))
+        with mock.patch.dict(os.environ, {RUNTIME: str(self.runtime)}):
+            self.assertEqual(self.runtime, location("state").parent)
+            self.assertTrue(location("state").name.startswith("state"))
+
+    def test_a_link_to_a_directory_of_the_user_s_own_is_not_followed(self) -> None:
+        link = self.root / "link"
+        link.symlink_to(self.runtime, target_is_directory=True)
+        self.assert_not_followed(link)
+
+    def test_a_directory_another_user_owns_is_not_followed(self) -> None:
+        # The parent is this user's, which the parent check would judge another's under the id the test pretends.
+        with (
+            mock.patch.object(private_folder, "user_id", return_value=OTHER_USER),
+            mock.patch.object(private_folder, "parent_refusal", return_value=None),
+        ):
+            self.assert_not_followed(self.runtime)
+
+    def test_a_directory_of_any_mode_but_0700_is_not_followed(self) -> None:
+        for mode in (0o755, 0o750, 0o711, 0o500, 0o770, 0o707, 0o777, 0o1700):
+            with self.subTest(mode=oct(mode)):
+                self.runtime.chmod(mode)
+                self.assert_not_followed(self.runtime)
+        self.runtime.chmod(OWNER_ONLY)
+        self.assertEqual(self.runtime, self.base_for(self.runtime))
+
+    def test_a_directory_in_a_parent_others_can_write_is_followed_only_when_the_parent_is_sticky(self) -> None:
+        parent = self.root / "open"
+        parent.mkdir()
+        runtime = parent / "runtime"
+        runtime.mkdir(mode=OWNER_ONLY)
+        parent.chmod(0o777)
+        self.assert_not_followed(runtime)
+        parent.chmod(0o1777)
+        self.assertEqual(runtime, self.base_for(runtime))
+
+    def test_a_file_or_nothing_in_its_place_is_not_followed(self) -> None:
+        file = self.root / "file"
+        file.write_text("x", encoding="utf-8")
+        file.chmod(OWNER_ONLY)
+        self.assert_not_followed(file)
+        self.assert_not_followed(self.root / "missing")
+
+    def test_a_relative_one_is_never_resolved_against_the_working_directory(self) -> None:
+        # The relative path leads to the followed directory from here, so following it would show.
+        self.assert_not_followed(os.path.relpath(self.runtime))
+        self.assert_not_followed(str(Path("run", "user")))
 
 
 class RefusalTests(unittest.TestCase):

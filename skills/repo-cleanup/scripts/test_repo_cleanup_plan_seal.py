@@ -38,7 +38,7 @@ from test_repo_cleanup import (
 git_config = GIT_CONFIG
 
 # The refusals, by what they name after the plan's path; independent of the script's own wording constants.
-NOT_SAVED = "is not a plan repo-cleanup saved at this path, so it may name what no sweep offered; run the sweep again"
+NOT_SAVED = "is not a plan repo-cleanup saved at this path, so it may name what no sweep offered (the seals folder "
 CHANGED = (
     "changed since repo-cleanup last saved this plan there, so it may name what no sweep offered; run the sweep again"
 )
@@ -583,8 +583,8 @@ class PlanFieldTests(CleanupTestCase):
         with self.assertRaises(rc.CleanupError) as raised:
             rc.load_plan(self.plan)
         self.assertEqual(
-            f"{self.plan} is not a plan repo-cleanup saved at this path, so it may name what no sweep offered; "
-            "run the sweep again for a new plan",
+            f"{self.plan} is not a plan repo-cleanup saved at this path, so it may name what no sweep offered (the "
+            f"seals folder {rc.SEALS} holds no seal for it); run the sweep again for a new plan",
             str(raised.exception),
         )
         rc.save_plan(self.plan, written_plan())
@@ -822,10 +822,11 @@ class SealsFolderTests(CleanupTestCase):
                     self.plan.write_bytes(self.saved)
 
     @unittest.skipIf(sys.platform == "win32", "the temporary directory there is the user's own and has no user ids")
-    def test_the_seals_folder_is_named_with_the_user_s_id_in_the_temporary_directory(self) -> None:
+    def test_the_seals_folder_is_named_with_the_user_s_id_in_the_runtime_or_temporary_directory(self) -> None:
         # The id is read only where the platform has user ids, so a type check for Windows, which has none, passes it.
+        # Which folder is the base is private_folder's to choose, and its suite holds that choice.
         if sys.platform != "win32":
-            self.assertEqual(Path(tempfile.gettempdir()) / f"repo-cleanup-seals-{os.geteuid()}", UNPATCHED_SEALS)
+            self.assertEqual(private_folder.base() / f"repo-cleanup-seals-{os.geteuid()}", UNPATCHED_SEALS)
 
     def test_a_missing_seals_folder_is_made_owner_only(self) -> None:
         folder = self.root / "seals"

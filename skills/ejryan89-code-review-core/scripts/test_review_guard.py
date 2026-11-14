@@ -6,6 +6,8 @@ import contextlib
 import io
 import json
 import os
+import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -21,6 +23,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-cor
 
 import json_writer
 import path_keys
+import private_folder
 import review_dispatch
 import review_guard as guard
 import review_pipeline as rp
@@ -36,6 +39,8 @@ from test_review_runtime_validation import directory_link
 SCRIPT_DIRECTORY = Path(__file__).resolve().parent
 AGENT = "a71dab35ebc1b97eb"  # the form Claude Code gives an agent ID
 OTHER_AGENT = "a73176509870d6114"
+OTHER_USER = 4242  # another local account's user id
+CLAIMS_NAME = "code-review-reviewer-claims"
 
 
 def make_run(folder: Path, roles: list[str], *, entrypoint: bool = False) -> Path:
@@ -95,6 +100,11 @@ class GuardFixture(unittest.TestCase):
         """The reviewer's first call: reading the prompt its task names, which binds it to that role."""
         self.assertIsNone(self.decide("Read", agent=agent, file_path=self.prompt(role, run)))
 
+    def assert_no_claim(self, message: str = "a denied call claims nothing") -> None:
+        """No claim file lies in the claims folder, which a call the guard got as far as judging made, empty and owner
+        only, and one it denied before that left unmade."""
+        self.assertEqual([], sorted(self.claims.glob("*")) if self.claims.is_dir() else [], message)
+
     def assert_denied(self, reason: str | None, text: str = "Code-review reviewer boundary") -> None:
         self.assertIsNotNone(reason)
         self.assertIn(text, reason or "")
@@ -114,7 +124,7 @@ class ReadTests(GuardFixture):
         ):
             with self.subTest(tool=tool, input=tool_input):
                 self.assert_denied(self.decide(tool, **tool_input), "read the prompt file your task names first")
-        self.assertFalse(self.claims.exists(), "a denied read claims nothing")
+        self.assert_no_claim("a denied read claims nothing")
         self.claim()
         self.assertIsNone(self.decide("Read", file_path=source))
 
@@ -394,7 +404,7 @@ class LocalPathTests(GuardFixture):
             for path in paths:
                 with self.subTest(path=path, claimed=False):
                     self.assert_denied(self.decide("Read", file_path=path), "not a network or device path")
-            self.assertFalse(self.claims.exists(), "a denied first read claims nothing")
+            self.assert_no_claim("a denied first read claims nothing")
             self.claim()
             for path in paths:
                 for tool, tool_input in self.calls(path):
@@ -896,7 +906,7 @@ class ClaimTests(GuardFixture):
                     self.decide("Read", file_path=str(nested / "p.md")),
                     f"{nested} sits inside the review run {self.run_directory}",
                 )
-                self.assertFalse(self.claims.exists(), "a denied first read claims nothing")
+                self.assert_no_claim("a denied first read claims nothing")
                 self.assert_denied(self.decide("Write", file_path=str(chosen)), "read the prompt file")
         self.claim()
         self.assertEqual(
@@ -915,7 +925,7 @@ class ClaimTests(GuardFixture):
         elsewhere = guard._spellings(self.root / "elsewhere")
         with mock.patch.object(guard, "TEMPORARY_ROOTS", elsewhere):
             self.assert_denied(self.decide("Read", file_path=self.prompt()), "is not a reviewer prompt")
-        self.assertFalse(self.claims.exists())
+        self.assert_no_claim()
         self.claim()
 
     def test_without_an_agent_id_every_guarded_call_is_denied(self) -> None:
@@ -934,7 +944,7 @@ class ClaimTests(GuardFixture):
                     ("Bash", {"command": review_run.self_check_command(self.run_directory, "csharp-review")}),
                 ):
                     self.assert_denied(guard.decide({**event, "tool_name": tool, "tool_input": tool_input}))
-        self.assertFalse(self.claims.exists())
+        self.assert_no_claim()
 
     def test_a_claim_is_one_file_per_agent_naming_its_run_and_role(self) -> None:
         self.claim()
@@ -997,6 +1007,87 @@ class ClaimTests(GuardFixture):
         self.assertEqual(sorted([f"{AGENT}.json", live.name]), sorted(path.name for path in self.claims.iterdir()))
 
 
+class ClaimsFolderTests(GuardFixture):
+    """The claims folder is the user's alone before every claim is read or written: one another local account made
+    first, as it can at the predictable name in Linux's shared /tmp, denies every call rather than holding a claim
+    that account could remove or plant."""
+
+    def assert_folder_denied(self, why: str, tool: str = "Read", agent: str = AGENT, **tool_input: str) -> None:
+        reason = self.decide(tool, agent, **(tool_input or {"file_path": self.prompt()}))
+        self.assertIsNotNone(reason)
+        self.assertTrue(
+            (reason or "").startswith(
+                f"Code-review reviewer boundary: the reviewer claims folder is not yours alone: {why}"
+            ),
+            reason,
+        )
+
+    @unittest.skipIf(sys.platform == "win32", "Windows has no user ids; private_folder's WindowsTests cover it")
+    def test_a_claims_folder_another_account_owns_denies_the_claim_and_every_later_call(self) -> None:
+        self.claim()
+        # The parent is this user's, which the parent check would judge another's under the id the test pretends.
+        with (
+            mock.patch.object(private_folder, "user_id", return_value=OTHER_USER),
+            mock.patch.object(private_folder, "parent_refusal", return_value=None),
+        ):
+            self.assert_folder_denied(f"{self.claims} is owned by user id ")
+            self.assert_folder_denied(f"{self.claims} is owned by user id ", "Write", file_path=self.result())
+            self.assert_folder_denied(
+                f"{self.claims} is owned by user id ", "Read", agent=OTHER_AGENT, file_path=self.prompt("sql-review")
+            )
+        self.assertEqual([f"{AGENT}.json"], [path.name for path in self.claims.iterdir()], "no claim was written")
+
+    @unittest.skipIf(sys.platform == "win32", "Windows mode bits say nothing about who may write a folder")
+    def test_a_claims_folder_its_group_or_anyone_can_write_denies_the_claim_and_every_later_call(self) -> None:
+        for mode in (0o770, 0o707, 0o777):
+            with self.subTest(mode=oct(mode)):
+                self.claims.mkdir(mode=0o700)
+                self.claims.chmod(mode)
+                self.assert_folder_denied(f"{self.claims} can be written by users other than its owner (mode {mode:o})")
+                self.assertEqual([], list(self.claims.iterdir()), "no claim was written")
+                self.claims.chmod(0o700)
+                self.claim()
+                self.claims.chmod(mode)
+                source = str(self.run_directory / "source" / "app" / "Service.cs")
+                self.assert_folder_denied(f"{self.claims} can be written by users other than", file_path=source)
+                self.assert_folder_denied(
+                    f"{self.claims} can be written by users other than", "Write", file_path=self.result()
+                )
+                self.assertEqual(mode, stat.S_IMODE(self.claims.stat().st_mode), "the folder was left as it is")
+                self.claims.chmod(0o700)
+                shutil.rmtree(self.claims)
+
+    def test_a_claims_folder_that_is_a_link_denies_the_claim_and_nothing_is_written_through_it(self) -> None:
+        target = self.root / "elsewhere"
+        target.mkdir(mode=0o700)
+        directory_link(self.claims, target)
+        self.assert_folder_denied(f"{self.claims} is a link or junction, not a folder of this user's own")
+        self.assertEqual([], list(target.iterdir()), "no claim was written through the link")
+        # A claim already behind the link, as another account would plant one, binds nobody.
+        (target / f"{AGENT}.json").write_text(
+            json.dumps({"run": str(self.run_directory), "role": "csharp-review"}), encoding="utf-8"
+        )
+        self.assert_folder_denied(f"{self.claims} is a link or junction", "Write", file_path=self.result())
+
+    def test_a_claims_folder_that_cannot_be_made_denies_naming_why(self) -> None:
+        claims = self.root / "missing" / "claims"
+        with mock.patch.object(guard, "CLAIMS", claims):
+            reason = self.decide("Read", file_path=self.prompt())
+        self.assertTrue(
+            (reason or "").startswith(
+                f"Code-review reviewer boundary: the reviewer claims folder {claims} cannot be used: "
+            ),
+            reason,
+        )
+        self.assertFalse(claims.parent.exists(), "nothing was made above the claims folder")
+
+    def test_a_missing_claims_folder_is_made_owner_only(self) -> None:
+        self.claim()
+        self.assertTrue((self.claims / f"{AGENT}.json").is_file())
+        if sys.platform != "win32":
+            self.assertEqual(0o700, stat.S_IMODE(self.claims.stat().st_mode))
+
+
 class FieldKindTests(GuardFixture):
     """A hook event, run, or claim field of the wrong kind denies the call with the guidance its own check gives."""
 
@@ -1028,7 +1119,7 @@ class FieldKindTests(GuardFixture):
         for event, reason in cases:
             with self.subTest(event=event):
                 self.assertEqual(reason, guard.decide(event))
-        self.assertFalse(self.claims.exists(), "a denied call claims nothing")
+        self.assert_no_claim("a denied call claims nothing")
 
     def test_tool_input_fields_of_the_wrong_kind_deny_a_claimed_reviewer(self) -> None:
         self.claim()
@@ -1083,7 +1174,7 @@ class FieldKindTests(GuardFixture):
             with self.subTest(run=run):
                 (self.run_directory / "run.json").write_text(json.dumps(run), encoding="utf-8")
                 self.assertEqual(reason, self.decide("Read", file_path=self.prompt()))
-        self.assertFalse(self.claims.exists(), "a denied first read claims nothing")
+        self.assert_no_claim("a denied first read claims nothing")
 
     def test_claim_fields_of_the_wrong_kind_deny_with_the_unreadable_claim(self) -> None:
         reason = "Code-review reviewer boundary: this reviewer's claim could not be read."
@@ -1118,7 +1209,7 @@ class FieldKindTests(GuardFixture):
                 self.assertEqual(
                     ("deny", reason), (decision["permissionDecision"], decision["permissionDecisionReason"])
                 )
-        self.assertFalse(self.claims.exists())
+        self.assert_no_claim()
 
 
 class PluginScopeTests(GuardFixture):
@@ -1143,7 +1234,7 @@ class PluginScopeTests(GuardFixture):
             with self.subTest(agent=agent, agent_type=agent_type):
                 self.assertIsNone(self.plugin_decide("Read", agent, agent_type, file_path=outside))
                 self.assertIsNone(self.plugin_decide("Bash", agent, agent_type, command="git status"))
-        self.assertFalse(self.claims.exists())
+        self.assert_no_claim()
 
     def test_a_subagent_call_without_its_type_is_denied(self) -> None:
         for agent_type in (None, "", 3):
@@ -1165,13 +1256,15 @@ class PluginScopeTests(GuardFixture):
 
 class HookTests(GuardFixture):
     def hook(self, stdin: str | bytes, **environment: str) -> subprocess.CompletedProcess[Any]:
-        # The hook process finds its runs and claims under the system temporary directory, here this test's own.
+        # The hook process finds its runs under the system temporary directory, and its claims in the runtime
+        # directory, here both this test's own unless the test names another.
         temporary = str(self.root)
+        variables = dict.fromkeys(("TMPDIR", "TEMP", "TMP", "XDG_RUNTIME_DIR"), temporary)
         return subprocess.run(
             [sys.executable, "-B", str(SCRIPT_DIRECTORY / "review_guard.py")],
             input=stdin.encode("utf-8") if isinstance(stdin, str) else stdin,
             capture_output=True,
-            env={**os.environ, "TMPDIR": temporary, "TEMP": temporary, "TMP": temporary, **environment},
+            env={**os.environ, **variables, **environment},
             check=False,
         )
 
@@ -1188,12 +1281,32 @@ class HookTests(GuardFixture):
             "agent_id": AGENT,
         }
         self.assertEqual("", self.hook(json.dumps(event), PYTHONIOENCODING="utf-8").stdout.decode(), "allowed")
-        self.assertTrue((self.root / "code-review-reviewer-claims" / f"{AGENT}.json").is_file())
+        self.assertTrue((private_folder.location(CLAIMS_NAME, self.root) / f"{AGENT}.json").is_file())
         outside = {**event, "tool_input": {"file_path": str(self.checkout / "app" / "x.cs")}}
         decision = json.loads(self.hook(json.dumps(outside)).stdout)["hookSpecificOutput"]
         self.assertEqual(("PreToolUse", "deny"), (decision["hookEventName"], decision["permissionDecision"]))
         self.assertIn("may only look inside your own review run", decision["permissionDecisionReason"])
         self.assertEqual("deny", json.loads(self.hook("not json").stdout)["hookSpecificOutput"]["permissionDecision"])
+
+    @unittest.skipIf(sys.platform == "win32", "Windows has no user ids, so its runtime directory is never read")
+    def test_the_hook_keeps_claims_in_the_runtime_directory_where_one_is_set_and_else_the_temporary_one(self) -> None:
+        event = json.dumps(
+            {
+                "tool_name": "Read",
+                "tool_input": {"file_path": self.prompt()},
+                "cwd": str(self.outside_cwd),
+                "agent_id": AGENT,
+            }
+        )
+        runtime = self.root / "runtime"
+        runtime.mkdir(mode=0o700)
+        self.assertEqual(b"", self.hook(event, XDG_RUNTIME_DIR=str(runtime)).stdout)
+        self.assertTrue((private_folder.location(CLAIMS_NAME, runtime) / f"{AGENT}.json").is_file())
+        self.assertFalse(private_folder.location(CLAIMS_NAME, self.root).exists())
+        # A relative runtime directory is never resolved against the working directory: the temporary one serves.
+        other = json.dumps({**json.loads(event), "agent_id": OTHER_AGENT})
+        self.assertEqual(b"", self.hook(other, XDG_RUNTIME_DIR="runtime").stdout)
+        self.assertTrue((private_folder.location(CLAIMS_NAME, self.root) / f"{OTHER_AGENT}.json").is_file())
 
     def test_a_stream_the_console_cannot_decode_is_denied_not_left_to_the_runner(self) -> None:
         # The runner's FAILED line and exit 1 would read to Claude Code as a hook error, which lets the call through.
@@ -1296,7 +1409,7 @@ class EvidenceAbsentTests(GuardFixture):
     def test_a_prompt_in_a_run_with_no_run_json_claims_nothing(self) -> None:
         (self.run_directory / "run.json").unlink()
         self.assert_denied(self.decide("Read", file_path=self.prompt()), "is not a reviewer prompt")
-        self.assertFalse(self.claims.exists(), "a denied read claims nothing")
+        self.assert_no_claim("a denied read claims nothing")
         self.assert_denied(self.decide("Write", file_path=self.result()), "read the prompt file your task names first")
 
 
