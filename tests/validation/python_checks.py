@@ -788,22 +788,25 @@ def link_test_problems(root: Path, files: list[Path]) -> list[str]:
 # a comparison with True, False, None, zero, or an empty value, `len` or `bool` of it, a comparison of two answers as
 # either answer, a comprehension, a filter, `any`, `all`, or `next` of one, a call that keeps a collection's items, and
 # every name its scope binds to any of them, where a name its scope also binds to an empty value is, when true, true
-# under the tests that guard its other bindings. A reading that finds no path, as a search that found none, or more
-# than one, refuses, names no path as missing. A refusal is a branch that raises an error of its own, or that returns,
-# records, or prints a message of more than one word, taken by an if, its else, a conditional expression, or a
-# comprehension's filter, and an if with no else whose branch leaves and whose False goes on, through the rest of its
-# block and any loop or block around it, to such a raise or returned message, returning no other value but under an if
-# or in a loop of its own. A refusal whose test also needs file_presence.is_occupied or is_there to find something at
-# the same path names another kind there, never nothing, so it passes.
+# under the tests that guard its other bindings. A reading that finds no path, as a search that found none, or more than
+# one, refuses, names no path as missing. A refusal is a branch that raises an error of its own, or that returns a
+# message of more than one word, or records one, in a call's argument, an augmented assignment, or a store into an item
+# or an attribute, as `problems.extend([...])`, `problems += [...]`, or `problems[p] = "..."` do, taken by an if, its
+# else, a conditional expression, or a comprehension's filter, and an if with no else whose branch leaves and whose
+# False goes on, through the rest of its block and any loop or block around it, to such a raise or returned message,
+# returning no other value but under an if or in a loop of its own. A refusal whose test also needs
+# file_presence.is_occupied or is_there to find something at the same path names another kind there, never nothing, so
+# it passes.
 #
 # It also refuses a glob, an os.walk or a path's walk that ignores the folders it cannot list, a removal that discards
-# its errors, a walk or removal whose error callback is a lambda that calls nothing or a function of the module that
-# only logs, and an except clause or a contextlib.suppress, naming its exceptions directly or through a name the module
-# binds to a literal tuple of them, that answers a failed stat, listing, or read with nothing: a branch that only logs,
-# or binds a local name to a value that calls nothing, before its empty answer, a warn imported from warnings read as
+# its errors, a walk or removal whose error callback is a lambda that calls nothing, a log named uncalled, as `print` or
+# `logger.warning`, or a function of the module that only logs, and an except clause or a contextlib.suppress, naming
+# its exceptions directly or through a name the module binds to a literal tuple of them, that answers a failed stat,
+# listing, or read with nothing: a branch that only logs, or binds local names, by an assignment, an augmented one, or a
+# tuple or list target, to a value that calls nothing, before its empty answer, a warn imported from warnings read as
 # the log it is, or a return of a name whose last binding before the try is an empty value. Any such site outside
-# file_presence and link_probe states why in a module-level PRESENCE_ALLOWED = {scope: reason}, as where the caller
-# just made the path.
+# file_presence and link_probe states why in a module-level PRESENCE_ALLOWED = {scope: reason}, as where the caller just
+# made the path.
 #
 # Stated limits, which no reading of a module's syntax tree settles: a predicate looked up by a name computed at run
 # time, as `getattr(p, name)`; a test's answer held in an attribute or another scope, or returned by a function the
@@ -1185,20 +1188,42 @@ def _message(node: ast.expr | None) -> bool:
     return any(character.isalpha() for character in own) and len(text.split()) > 1
 
 
+def _holds_message(node: ast.expr | None) -> bool:
+    """Whether an expression is a message or holds one, as a list, a dictionary, or a call's argument may, outside a
+    lambda it holds."""
+    pending: list[ast.AST] = [] if node is None else [node]
+    while pending:
+        part = pending.pop()
+        if isinstance(part, ast.Lambda):
+            continue
+        if isinstance(part, ast.expr) and _message(part):
+            return True
+        pending.extend(ast.iter_child_nodes(part))
+    return False
+
+
+def _records(statement: ast.stmt) -> bool:
+    """Whether a statement returns or records a message: a return of one, a call given one, as
+    `problems.append(f"{p} is missing")`, `problems.extend([...])`, `print(...)`, or `fail(...)` is, an augmented
+    assignment adding one, as `problems += [...]`, or a store of one into an item or an attribute, as
+    `problems[p] = "..."`."""
+    if isinstance(statement, ast.Return):
+        return _holds_message(statement.value)
+    if isinstance(statement, ast.Expr) and isinstance(call := statement.value, ast.Call):
+        return any(_holds_message(argument) for argument in [*call.args, *(keyword.value for keyword in call.keywords)])
+    if isinstance(statement, ast.AugAssign):
+        return _holds_message(statement.value)
+    if isinstance(statement, (ast.Assign, ast.AnnAssign)):
+        targets = statement.targets if isinstance(statement, ast.Assign) else [statement.target]
+        stored = any(isinstance(target, (ast.Subscript, ast.Attribute)) for target in targets)
+        return stored and _holds_message(statement.value)
+    return False
+
+
 def _refuses(block: list[ast.stmt]) -> bool:
     """Whether a block refuses: it ends by raising an error of its own, or a statement of it, outside a block it holds,
-    returns a message or calls anything with a message among its arguments, as `problems.append(f"{p} is missing")`,
-    `print(...)`, or `fail(...)` does."""
-    if _raises_anew(block):
-        return True
-    for statement in block:
-        if isinstance(statement, ast.Return) and _message(statement.value):
-            return True
-        if isinstance(statement, ast.Expr) and isinstance(call := statement.value, ast.Call):
-            arguments = [*call.args, *(keyword.value for keyword in call.keywords)]
-            if any(_message(argument) for argument in arguments):
-                return True
-    return False
+    returns or records a message, as `_records` reads one."""
+    return _raises_anew(block) or any(_records(statement) for statement in block)
 
 
 def _empty(node: ast.expr | None) -> bool:
@@ -1245,19 +1270,30 @@ def _only_logs(statement: ast.stmt, aliases: dict[str, str]) -> bool:
     return named in LOG_FUNCTIONS or (isinstance(func, ast.Attribute) and func.attr in LOG_METHODS)
 
 
+def _local_target(target: ast.expr, declared: frozenset[str]) -> bool:
+    """Whether a binding's target holds only names local to its function: a name, or a tuple, list, or starred target
+    of them."""
+    if isinstance(target, (ast.Tuple, ast.List)):
+        return all(_local_target(element, declared) for element in target.elts)
+    if isinstance(target, ast.Starred):
+        return _local_target(target.value, declared)
+    return isinstance(target, ast.Name) and target.id not in declared
+
+
 def _inert(statement: ast.stmt, aliases: dict[str, str], declared: frozenset[str]) -> bool:
     """Whether a statement before a return changes nothing the return leaves behind: it only logs, or binds names local
-    to its function to a value that calls nothing."""
+    to its function, by an assignment, an annotated or augmented assignment, or a tuple or list target, to a value that
+    calls nothing."""
     if _only_logs(statement, aliases):
         return True
     targets: list[ast.expr]
     if isinstance(statement, ast.Assign):
         targets, value = statement.targets, statement.value
-    elif isinstance(statement, ast.AnnAssign) and statement.value is not None:
+    elif isinstance(statement, (ast.AnnAssign, ast.AugAssign)) and statement.value is not None:
         targets, value = [statement.target], statement.value
     else:
         return False
-    return all(isinstance(target, ast.Name) and target.id not in declared for target in targets) and not any(
+    return all(_local_target(target, declared) for target in targets) and not any(
         isinstance(node, (ast.Call, ast.Await, ast.Yield, ast.YieldFrom)) for node in ast.walk(value)
     )
 
@@ -1586,13 +1622,16 @@ def _inert_functions(tree: ast.Module, aliases: dict[str, str]) -> frozenset[str
     return frozenset(found)
 
 
-def _swallowing_callback(callback: ast.expr | None, inert: frozenset[str]) -> bool:
-    """Whether an error callback swallows each error it is handed: None, a lambda that calls and raises nothing, or a
-    function of the module, by its name or as a method, whose body only logs."""
+def _swallowing_callback(callback: ast.expr | None, inert: frozenset[str], aliases: dict[str, str]) -> bool:
+    """Whether an error callback swallows each error it is handed: None, a lambda that calls and raises nothing, a log
+    call named uncalled, as `print` or `logger.warning` is, or a function of the module, by its name or as a method,
+    whose body only logs."""
     if callback is None or (isinstance(callback, ast.Constant) and callback.value is None):
         return True
     if isinstance(callback, ast.Lambda):
         return not any(isinstance(node, ast.Call) for node in ast.walk(callback.body))
+    if _only_logs(ast.Expr(ast.Call(callback, [], [])), aliases):
+        return True
     name = (
         callback.id if isinstance(callback, ast.Name) else callback.attr if isinstance(callback, ast.Attribute) else ""
     )
@@ -1623,7 +1662,7 @@ def _listing_answer(node: ast.AST, aliases: dict[str, str], inert: frozenset[str
     if named in WALKS or path_walk:
         onerror = call_argument(node, *PATH_WALK_ERROR) if path_walk else call_argument(node, WALKS[named], "onerror")
         # An unpacking may not hold one, so it shows no onerror.
-        if isinstance(onerror, ast.Starred) or _swallowing_callback(onerror, inert):
+        if isinstance(onerror, ast.Starred) or _swallowing_callback(onerror, inert, aliases):
             walk = "a path's walk" if path_walk else named
             keyword = "on_error" if path_walk else "onerror"
             return (
@@ -1639,7 +1678,7 @@ def _listing_answer(node: ast.AST, aliases: dict[str, str], inert: frozenset[str
             )
     for place, name in REMOVAL_CALLBACKS.get(named, ()):
         callback = call_argument(node, place, name)
-        if callback is not None and _swallowing_callback(callback, inert):
+        if callback is not None and _swallowing_callback(callback, inert, aliases):
             return (
                 f"removes a folder with {named} given an {name} that swallows the error, which reads one it could "
                 "not remove as gone; let the error through"

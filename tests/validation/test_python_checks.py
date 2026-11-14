@@ -5468,6 +5468,14 @@ PRESENCE_HANDLED = {
         "def f(p):\n    try:\n        return p.read_text()\n    except OSError:\n        failed = True\n"
         "        return None\n"
     ),
+    "a handler that adds to a local count before its empty answer": (
+        "def f(p):\n    n = 0\n    try:\n        return p.read_text()\n    except OSError:\n        n += 1\n"
+        "        return None\n"
+    ),
+    "a handler that binds a tuple of local names before its empty answer": (
+        "def f(p):\n    try:\n        return p.read_text()\n    except OSError:\n"
+        "        failed, why = True, 'unreadable'\n        return None\n"
+    ),
     "a handler that returns a name bound to an empty value before the try": (
         "def f(p):\n    result = []\n    try:\n        result = list(p.iterdir())\n    except OSError:\n"
         "        return result\n    return result\n"
@@ -5516,6 +5524,11 @@ PRESENCE_LISTINGS = {
     "shutil.rmtree given an onexc method that passes": (
         "import shutil\n\n\nclass Removal:\n    def ignore(self, function, path, error):\n        pass\n\n"
         "    def f(self, p):\n        shutil.rmtree(p, onexc=self.ignore)\n"
+    ),
+    "shutil.rmtree given print as its onexc": "import shutil\n\n\ndef f(p):\n    shutil.rmtree(p, onexc=print)\n",
+    "shutil.rmtree given a logger's warning as its onerror": (
+        "import logging\nimport shutil\n\nlogger = logging.getLogger()\n\n\ndef f(p):\n"
+        "    shutil.rmtree(p, onerror=logger.warning)\n"
     ),
     "os.walk given an onerror lambda that swallows the error": (
         "import os\n\n\ndef f(p):\n    return list(os.walk(p, onerror=lambda error: None))\n"
@@ -5579,6 +5592,16 @@ PRESENCE_REFUSAL_SHAPES = {
     ),
     "if not P: return a tuple holding a message": (
         "def f(p):\n    if not {call}:\n        return None, 'not found here'\n    return p, None\n"
+    ),
+    "if not P: extend a list with a message": (
+        "def f(p, problems):\n    if not {call}:\n        problems.extend([f'{{p}} is missing'])\n    return problems\n"
+    ),
+    "if not P: add a message by an augmented assignment": (
+        "def f(p):\n    problems = []\n    if not {call}:\n        problems += [f'{{p}} is missing']\n"
+        "    return problems\n"
+    ),
+    "if not P: store a message as an item": (
+        "def f(p, problems):\n    if not {call}:\n        problems[p] = 'the folder is missing'\n    return problems\n"
     ),
     "a message when not P": "def f(p):\n    return '' if {call} else ', which no longer exists'\n",
     "a message for each path not P keeps": "def f(ps):\n    return [f'{{p}} is missing' for p in ps if not {call}]\n",

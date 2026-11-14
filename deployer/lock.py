@@ -45,7 +45,9 @@ PRESENCE_ALLOWED = {
     ),
     "_read_info": (
         "an empty mapping names no holder in a refusal that already refuses the run, so a failed read changes only "
-        "what the refusal names"
+        "what the refusal names; read for _moved_record, it gives Judged(None, None), which never equals a record "
+        "judged stale, since that judgment holds a valid PID or its folder's identity, so the record is moved back, "
+        "never removed"
     ),
 }
 # How long a run waits for the file lock another process holds before it refuses: long enough for a dry run's check,
