@@ -153,6 +153,15 @@ class SkillTreeFixtures(unittest.TestCase):
                 skill_file_spelling_problems(root),
             )
 
+    def test_a_skill_tree_that_is_absent_holds_no_misspelled_skill_file(self) -> None:
+        # A tree that does not exist holds no file to refuse, so the policy passes with any or all of them missing.
+        trees = ("skills", REPOSITORY_SKILLS, REPOSITORY_SKILL_SHIMS)
+        for present in ((), *((tree,) for tree in trees)):
+            with self.subTest(present=present), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                write_fixture_tree(root, {f"{tree}/alpha/SKILL.md": "" for tree in present})
+                self.assertEqual([], skill_file_spelling_problems(root))
+
     def test_a_repository_skill_or_shim_must_be_named_as_a_skill_and_as_its_folder(self) -> None:
         def skill(name: str) -> str:
             return f"---\nname: {name}\ndescription: Does a thing. Use it when asked.\n---\n"

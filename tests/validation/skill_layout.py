@@ -1090,6 +1090,8 @@ class SkillLayoutPolicies(unittest.TestCase):
         self.assertEqual([], skill_tree_problems(REPOSITORY_ROOT))
 
     def test_every_skill_file_is_spelled_skill_md(self) -> None:
+        for tree in ("skills", REPOSITORY_SKILLS, REPOSITORY_SKILL_SHIMS):
+            self.assertTrue(list(file_presence.matching(REPOSITORY_ROOT / tree, "*/SKILL.md")), tree)
         self.assertEqual([], skill_file_spelling_problems(REPOSITORY_ROOT))
 
     def test_repository_skills_and_their_shims_are_named_as_skills_and_as_their_folders(self) -> None:
