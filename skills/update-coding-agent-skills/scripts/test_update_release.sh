@@ -224,6 +224,53 @@ for PIN in v5.1.0 "$V51"; do
     fail "user pin $PIN over the release pin at the next release: expected only the PINNED line, got: $OUTPUT"
   expect_not_deployed "user pin $PIN over the release pin at the next release"
 done
+
+# The update's own pin is the full name of any release tag naming the pinned commit, not only the last, so a later
+# release tagged on that commit leaves it the update's own. The update deploys the later tag at the same commit, which
+# records it, and the next release, on a new commit, moves the pin without stopping.
+begin_case 'later release on the pinned commit, then the next release'
+V52=$(git -C "$SEED" rev-parse "v5.2.0^{commit}")
+printf '%s\nrefs/tags/v5.2.0\n' "$V52" >"$CLONE/.fake-deployed"
+tag_upstream v5.2.1 "$V52"
+run_subject "$CLONE" release
+expect_status 0 "later release on the pinned commit"
+expect_first_line "UP_TO_DATE v5.2.1" "later release on the pinned commit"
+expect_deployed "later release on the pinned commit" "--all --at refs/tags/v5.2.1"
+[ "$(recorded_line 2)" = "refs/tags/v5.2.1" ] || fail "later release on the pinned commit: the pin is $(recorded_line 2)"
+publish "five three"
+tag_upstream v5.3.0
+run_subject "$CLONE" release
+expect_status 0 "the release after a later release on the pinned commit"
+expect_first_line "UPDATED $(git -C "$CLONE" rev-parse --short "$V52")..v5.3.0" \
+  "the release after a later release on the pinned commit"
+expect_deployed "the release after a later release on the pinned commit" "--all --at refs/tags/v5.3.0"
+[ "$(recorded_line 2)" = "refs/tags/v5.3.0" ] ||
+  fail "the release after a later release on the pinned commit: the pin is $(recorded_line 2)"
+
+# A later release tagged on the pinned commit and the next release on a new commit, both published before the update
+# runs again, move the pin in one run: whether the clone first sees the later tag in the update's own fetch, when the
+# deployer reads it, or already holds it from a fetch before, when the update itself reads it.
+# Each entry is when the clone fetches the tags, the pinned release, the later release tagged on its commit, and the
+# next release, a bar between each.
+for ENTRY in "in the update's fetch|v5.3.0|v5.3.1|v5.4.0" "before the update|v5.4.0|v5.4.1|v5.5.0"; do
+  IFS='|' read -r FETCHED PINNED_RELEASE LATER NEXT <<<"$ENTRY"
+  begin_case "later release on the pinned commit and the next release, fetched $FETCHED"
+  PINNED=$(git -C "$SEED" rev-parse "$PINNED_RELEASE^{commit}")
+  [ "$(recorded_line 1) $(recorded_line 2)" = "$PINNED refs/tags/$PINNED_RELEASE" ] ||
+    fail "fetched $FETCHED: the update's own pin is not at $PINNED_RELEASE: $(recorded_line 1) $(recorded_line 2)"
+  tag_upstream "$LATER" "$PINNED"
+  publish "release $NEXT"
+  tag_upstream "$NEXT"
+  if [ "$FETCHED" = "before the update" ]; then
+    git_quiet -C "$CLONE" fetch --tags origin
+  fi
+  run_subject "$CLONE" release
+  expect_status 0 "fetched $FETCHED"
+  expect_first_line "UPDATED $(git -C "$CLONE" rev-parse --short "$PINNED")..$NEXT" "fetched $FETCHED"
+  expect_deployed "fetched $FETCHED" "--all --at refs/tags/$NEXT"
+  [ "$(recorded_line 2)" = "refs/tags/$NEXT" ] || fail "fetched $FETCHED: the pin is $(recorded_line 2)"
+done
+
 # The update's own pin again, which the next case's release moves.
 printf '%s\nrefs/tags/v5.1.0\n' "$V51" >"$CLONE/.fake-deployed"
 

@@ -233,6 +233,24 @@ def test_a_patch_release_updates_to_it(installation: Installation) -> None:
     assert installation.deployed_commit() == commit
 
 
+def test_a_later_release_on_the_releases_commit_leaves_the_pin_the_updates_own_to_the_next_release(
+    installation: Installation,
+) -> None:
+    """A patch release tagged on the installed release's own commit: the update deploys it at that commit, the current
+    deployer keeps the pin the update's own, and the release after it, on a new commit, updates without PINNED."""
+    pinned = git(installation.origin, "rev-parse", f"refs/tags/{installation.release}^{{commit}}")
+    retagged = next_release(installation.release, breaking=False)
+    git(installation.origin, "tag", retagged, pinned)
+    result = installation.update()
+    assert_deployed(result, f"UP_TO_DATE {retagged}")
+    assert installation.deployed_commit() == pinned
+    following = next_release(retagged, breaking=False)
+    commit = installation.fixture_commit(following)
+    again = installation.update()
+    assert_deployed(again, f"UPDATED {git(installation.clone, 'rev-parse', '--short', pinned)}..{following}")
+    assert installation.deployed_commit() == commit
+
+
 def test_a_breaking_release_stops_until_crossed_then_deploys_moving_renamed_skills(
     installation: Installation,
 ) -> None:
