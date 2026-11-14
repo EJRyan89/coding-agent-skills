@@ -31,7 +31,7 @@ import shlex
 import subprocess
 import sys
 import time
-from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, MutableMapping, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
@@ -397,9 +397,24 @@ GIT_OPTIONS_WITHOUT_VALUE = {
 # Options after which git prints something and runs no subcommand of the command's.
 GIT_OPTIONS_THAT_PRINT = {"--version", "-v", "--help", "-h", "--exec-path", "--html-path", "--man-path", "--info-path"}
 # The variables that choose the repository, work tree, or index file whose HEAD, index, and files a git command writes;
-# index_reached judges the index GIT_INDEX_FILE names. GIT_COMMON_DIR is not one: it moves only the refs and objects
-# every worktree shares, never a checkout's HEAD, index, or tree.
+# index_reached judges the index GIT_INDEX_FILE names. GIT_COMMON_DIR is not one: it moves the store of objects,
+# configuration, and refs every worktree shares, never a checkout's HEAD, index, or tree; STORE_VARIABLES judges it.
 LOCATION_VARIABLES = ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE")
+# The inherited variables that name the store a git call writes its objects into, by what git writes there; each is
+# judged by store_reached, against the call's own store and the guarded hubs (Judge.environment_refusal).
+STORE_VARIABLES = {
+    "GIT_OBJECT_DIRECTORY": "objects",
+    "GIT_COMMON_DIR": "objects, configuration, and shared refs",
+}
+# The inherited variable naming further object stores a git call reads from, so that a fetch in a hub whose objects
+# lie there writes the hub refs to objects the hub's own store lacks.
+ALTERNATES_VARIABLE = "GIT_ALTERNATE_OBJECT_DIRECTORIES"
+# git appends a trace to the absolute path any GIT_TRACE variable names, and trace2 makes a file inside one that is a
+# directory (trace.c, trace2/tr2_dst.c); a relative path, a descriptor, a socket, and a switch write no file.
+TRACE_VARIABLE = re.compile(r"GIT_TRACE[A-Z0-9_]*")
+# git for Windows sends its output to the file these name, read from where it starts (compat/mingw.c), but for the
+# values that name none; each is judged on every platform, since one git may be either build.
+REDIRECT_VARIABLES = {"GIT_REDIRECT_STDOUT": frozenset({"off"}), "GIT_REDIRECT_STDERR": frozenset({"off", "2>&1"})}
 # The variables that carry command-line configuration, which git reads for core.worktree and alias.<name>.
 CONFIGURATION_VARIABLES = ("GIT_CONFIG_PARAMETERS", "GIT_CONFIG_COUNT")
 CONFIGURATION_PAIR = re.compile(r"GIT_CONFIG_(?:KEY|VALUE)_[0-9]+")
@@ -1128,10 +1143,11 @@ DENY_REASON = (
     "`python tools/worktrees.py new <kind> <name>`, enter it, and work there."
 )
 PLACE_IT = "Write the directory into the command itself, as `git -C <dir>` or `cd <dir> &&`, and run it again."
-INDEX_IT = (
+INHERITED_IT = (
     "The session inherited the variable, which no command can unset here: restart the session from an environment "
-    "without GIT_INDEX_FILE, or run git from a terminal."
+    "without {name}, or run git from a terminal."
 )
+INDEX_IT = INHERITED_IT.format(name="GIT_INDEX_FILE")
 # The refusal the guard gives when its own reason holds what JSON cannot carry, such as a lone surrogate.
 UNWRITABLE_REASON = f"The guard refused this command for a reason that holds what JSON cannot carry. {DENY_REASON}"
 REWRITE_IT = (
@@ -2504,17 +2520,19 @@ def reached_hub(place: Place) -> tuple[Path | None, bool]:
 
 
 def index_reached(place: Place) -> tuple[Path | None, bool]:
-    """The guarded hub that holds the index file GIT_INDEX_FILE names for a call at place, unless that index is a
-    worktree's own the call uses anyway, and whether the text does not settle it.
+    """The guarded hub that holds the index file GIT_INDEX_FILE names for a call at place, unless that index lies in
+    the call's own worktree's git directory, which git writes for the call anyway, and whether the text does not
+    settle it.
 
-    One form is accepted: an absolute path to an index no guarded hub holds (protecting_hub), or to the one git uses
-    for the call's own repository without the variable (own_index) where that is not the hub's own. Any other a
-    guarded hub holds is that hub's: its own index, even from the hub, since a call such as `worktree add -b` or
-    `worktree remove` starts a git that inherits the variable in another checkout, whose `reset --hard` or clean check
-    then writes the hub's index out of step with its HEAD; another worktree's; and any file in its git directory or
-    tracked surface. git follows a symbolic
-    link to write the index through its lock file, so each link is followed here too. A relative path is not settled:
-    git reads it from whatever directory each process it starts works in, a child such as `worktree add`'s
+    One form is accepted: an absolute path to an index no guarded hub holds (protecting_hub), or to any file in the
+    per-worktree git directory of the linked worktree a call's repository is (own_paths), its own `index` and the lock
+    files git writes beside it, as `index.lock` and `next-index-<pid>.lock`, among them, since a hook or an editor git
+    starts mid-operation hands one on. Any other a guarded hub holds is that hub's: its own index, even from the hub,
+    since a call such as `worktree add` or `worktree remove` starts a git that inherits the variable in another
+    checkout, whose `reset --hard` or clean check then writes the hub's index out of step with its HEAD; another
+    worktree's; and any file in its git directory or among the files of its checkout it does not ignore. git follows a
+    symbolic link to write the index through its lock file, so each link is followed here too. A relative path is not
+    settled: git reads it from whatever directory each process it starts works in, a child such as `worktree add`'s
     `reset --hard` in another one, and git exports a relative index only for a repository whose git directory is
     relative, which no worktree's is.
     """
@@ -2528,32 +2546,117 @@ def index_reached(place: Place) -> tuple[Path | None, bool]:
     index = Path(os.path.realpath(named))
     try:
         hub = protecting_hub(index)
-        if hub is None or (own_index(place, index) and not own_index(Place(hub, hub), index)):
+        if hub is None:
+            return None, False
+        own = own_paths(place)
+        if own is not None and own.linked and within(index, own.git_dir):
             return None, False
         return hub, False
     except GitError:
         return None, True  # an index git cannot place may be a guarded hub's
 
 
-def own_index(place: Place, index: Path) -> bool:
-    """Whether index is the one git uses for the repository of a call at place when no GIT_INDEX_FILE names one, as
-    `git rev-parse --git-path index` answers it, the guard's own git being given none of git's repository-selecting
-    variables. A place where git finds no repository has no index of its own."""
+def within(path: Path, folder: Path) -> bool:
+    """Whether path is folder or lies anywhere beneath it, each compared as platform_support compares a path."""
+    return any(same_path(each, folder) for each in (path, *path.parents))
+
+
+@dataclass(frozen=True)
+class OwnPaths:
+    """Where git keeps the repository of a call when no variable names another place, as `git rev-parse` answers it:
+    the per-worktree git directory, the common directory every worktree of it shares, and the object store."""
+
+    git_dir: Path
+    common_dir: Path
+    objects: Path
+
+    @property
+    def linked(self) -> bool:
+        """Whether the git directory is a linked worktree's own, apart from the common directory, which a main
+        checkout's, a hub's among them, is."""
+        return not same_path(self.git_dir, self.common_dir)
+
+
+def own_paths(place: Place) -> OwnPaths | None:
+    """Where git keeps the repository of a call at place (OwnPaths), the guard's own git being given none of git's
+    repository-selecting variables; None at a place where git finds no repository, and where the text does not settle
+    where git starts or the repository it is named. Each path is read with every symbolic link followed."""
     directory = place.start or place.tree
     if directory is None or (place.repository_named and place.repository is None) or not worktrees.is_folder(directory):
-        return False
+        return None
     repository = ["--git-dir", str(place.repository)] if place.repository_named and place.repository else []
-    arguments = [*repository, "rev-parse", "--path-format=absolute", "--git-path", "index"]
+    asked = ["--git-dir", "--git-common-dir", "--git-path", "objects"]
     try:
-        output = CLIENT.output(arguments, directory=directory, timeout=lookup_timeout())
+        output = CLIENT.output(
+            [*repository, "rev-parse", "--path-format=absolute", *asked], directory=directory, timeout=lookup_timeout()
+        )
     except GitError as exc:
         if exc.kind == "not_repository":
-            return False
+            return None
         raise
     lines = output_lines(output)
-    if len(lines) != 1:
-        raise GitError(f"git rev-parse answered {len(lines)} lines for the index of {directory}, not one")
-    return same_path(Path(os.path.realpath(lines[0])), index)
+    if len(lines) != 3:
+        raise GitError(f"git rev-parse answered {len(lines)} lines for the repository of {directory}, not three")
+    git_dir, common_dir, objects = (Path(os.path.realpath(line)) for line in lines)
+    return OwnPaths(git_dir, common_dir, objects)
+
+
+def store_reached(place: Place, name: str, value: str) -> tuple[Path | None, bool, bool]:
+    """For the store an inherited STORE_VARIABLES variable names for a call at place: the guarded hub that holds it
+    (protecting_hub), unless it is the call's own (own_paths), which git writes anyway; whether the guard cannot place
+    it, as a relative path, which git reads from wherever it works, or one git cannot answer for; and whether it is the
+    call's own. Each symbolic link is followed, as git follows one."""
+    given = Path(platform_support.from_shell_path(value))
+    if not given.is_absolute():
+        return None, True, False
+    store = Path(os.path.realpath(given))
+    try:
+        own = own_paths(place)
+        if own is not None and same_path(store, own.objects if name == "GIT_OBJECT_DIRECTORY" else own.common_dir):
+            return None, False, True
+        return protecting_hub(store), False, False
+    except GitError:
+        return None, True, False  # a store git cannot place may be a guarded hub's
+
+
+def call_named(call: GitCall) -> str:
+    """A call as a refusal names it."""
+    return f"`git {call.subcommand or '<computed>'}`" if call.program == "git" else f"`gh {call.subcommand}`"
+
+
+def git_writes_trace_at(value: str) -> bool:
+    """Whether git writes a trace at the path a GIT_TRACE variable's value names: one git reads as absolute, starting
+    with a separator or a drive, as git for Windows also reads one (is_absolute_path in git's sources)."""
+    return value.startswith(("/", "\\")) or bool(re.match(r"[A-Za-z]:", value))
+
+
+def written_targets(variables: Mapping[str, str]) -> list[tuple[str, Path | None]]:
+    """The files the inherited environment names for git to write its trace or its output to, by the name git reads
+    (folded): the absolute path a GIT_TRACE variable names (TRACE_VARIABLE), and every value of a REDIRECT_VARIABLES
+    one but those that name no file, each with every symbolic link followed. None is a path the guard cannot place:
+    one this platform does not read as absolute, and a relative one git for Windows reads from where it starts."""
+    targets: list[tuple[str, Path | None]] = []
+    for name, value in sorted(variables.items()):
+        if value in DEVICE_FILES:
+            continue
+        if TRACE_VARIABLE.fullmatch(name):
+            if not git_writes_trace_at(value):
+                continue
+        elif name not in REDIRECT_VARIABLES or value in REDIRECT_VARIABLES[name]:
+            continue
+        path = Path(platform_support.from_shell_path(value))
+        targets.append((name, Path(os.path.realpath(path)) if path.is_absolute() else None))
+    return targets
+
+
+def withhold_written_variables(environment: MutableMapping[str, str]) -> None:
+    """Removes from environment each variable naming a file git writes its trace or output to (written_targets), so
+    the guard's own git calls, which run with this process's environment, write nothing there; the guard judges the
+    calls a command makes from the environment it was started with."""
+    for name in list(environment):
+        canonical = folded(name)
+        if TRACE_VARIABLE.fullmatch(canonical) or canonical in REDIRECT_VARIABLES:
+            del environment[name]
 
 
 @dataclass
@@ -2585,7 +2688,7 @@ class Judge:
         return None
 
     def judge(self, call: GitCall, depth: int) -> str | None:
-        reason = self.index_refusal(call) or self.effects_refusal(call)
+        reason = self.index_refusal(call) or self.environment_refusal(call) or self.effects_refusal(call)
         if reason is not None:
             return reason
         if call.subcommand is None and self.hubs:
@@ -2621,12 +2724,13 @@ class Judge:
 
     def index_refusal(self, call: GitCall) -> str | None:
         """Why a call is refused for the index GIT_INDEX_FILE names (index_reached): every git call, wherever it runs
-        and whatever its subcommand, while that index is one a guarded hub holds and not a worktree's own, since a form
+        and whatever its subcommand, while that index is one a guarded hub holds and not a file in the call's own
+        linked worktree's git directory, since a form
         that only reads the hub, status or a fast-forward among them, still refreshes or rewrites the index it is
         given, out of step with the hub's HEAD; and, while a hub is guarded, every one whose index the guard cannot
         place."""
         hub, unknown = index_reached(call.place)
-        named = f"`git {call.subcommand or '<computed>'}`" if call.program == "git" else f"`gh {call.subcommand}`"
+        named = call_named(call)
         if hub is not None:
             return (
                 f"{named} would run with GIT_INDEX_FILE={call.place.index}, an index the guarded hub {hub} holds, and "
@@ -2640,6 +2744,65 @@ class Judge:
         if unknown:
             self.notes.append(f"could not tell where the index of {named} lies")
         return None
+
+    def environment_refusal(self, call: GitCall) -> str | None:
+        """Why a call is refused for where the inherited environment sends what git writes beyond a checkout's HEAD,
+        index, and tree. A trace or output file (written_targets) is judged as a redirection's target is, wherever the
+        call runs. An object store or common directory (STORE_VARIABLES) other than the call's own (own_paths) is
+        refused where a guarded hub holds it, since git writes its objects, configuration, or refs there. And a call
+        that acts on a guarded hub (reached_hub) runs only with the hub's own index, store, and common directory: given
+        any GIT_INDEX_FILE, another store, or GIT_ALTERNATE_OBJECT_DIRECTORIES, a fast-forward moves the hub's HEAD and
+        tree while the index it writes, or the objects its refs then name, lie elsewhere, so the hub's own index is
+        left out of step or its refs name objects its store lacks. Where the guard cannot place one of these, it is
+        refused while a hub is guarded and otherwise noted."""
+        named = call_named(call)
+        variables = {folded(name): value for name, value in self.environment.items()}
+        for name, target in written_targets(variables):
+            if target is None:
+                if self.hubs:
+                    return (
+                        f"{named} would run with {name}={variables[name]}, a file git writes that the guard cannot "
+                        f"place, which may lie in a guarded hub, so it is refused while a hub is guarded. "
+                        f"{INHERITED_IT.format(name=name)}"
+                    )
+                self.notes.append(f"could not tell where {name} has {named} write")
+            elif hub_protected(target):
+                return (
+                    f"{named} would run with {name}={variables[name]}, and git writes there, into a file of a guarded "
+                    f"hub. {INHERITED_IT.format(name=name)}"
+                )
+        foreign = ["GIT_INDEX_FILE"] if call.place.index_named else []
+        foreign += [ALTERNATES_VARIABLE] if variables.get(ALTERNATES_VARIABLE) else []
+        for name, what in STORE_VARIABLES.items():
+            if name not in variables:
+                continue
+            hub, unknown, own = store_reached(call.place, name, variables[name])
+            if hub is not None:
+                return (
+                    f"{named} would run with {name}={variables[name]}, in the guarded hub {hub}, where git would write "
+                    f"its {what}. {INHERITED_IT.format(name=name)}"
+                )
+            if unknown and self.hubs:
+                return (
+                    f"{named} would run with {name}={variables[name]}, a store the guard cannot place, which may be a "
+                    f"guarded hub's, so it is refused while a hub is guarded. {INHERITED_IT.format(name=name)}"
+                )
+            if unknown:
+                self.notes.append(f"could not tell where {name} has {named} write")
+            if not own:
+                foreign.append(name)
+        if not foreign:
+            return None
+        hub, unknown = reached_hub(call.place)
+        if hub is None and not (unknown and self.hubs):
+            return None
+        where = f"the guarded hub {hub}" if hub is not None else "a place the guard cannot settle, which may be a hub"
+        return (
+            f"{named} would act on {where} given {', '.join(foreign)} from the session's environment: git would move "
+            "the hub's HEAD, tree, or refs while the index it writes, or the objects they need, lie elsewhere, leaving "
+            f"the hub's own index out of step or its refs naming objects its store lacks. "
+            f"{INHERITED_IT.format(name=foreign[0])}"
+        )
 
     def effects_refusal(self, call: GitCall) -> str | None:
         """Why what a git call's words make it do is refused, wherever it runs: a file it writes at a path that lies in
@@ -4206,6 +4369,10 @@ def guard(stream: str) -> int:
     # git answers with an error for, or paths past NAMED_PATH_LIMIT leave a place not looked up, which may be a guarded
     # hub's.
     looking_up = False
+    # The guard judges each call from the environment it was started with, and its own git calls run without the
+    # variables that would have git write a trace or its output into a file they name.
+    environment = dict(os.environ)
+    withhold_written_variables(os.environ)
     try:
         event = json_reader.loads(stream)
         tool = event.get("tool_name", "")
@@ -4221,10 +4388,10 @@ def guard(stream: str) -> int:
         elif tool in SHELL_READERS and not isinstance(tool_input.get("command"), str):
             print(f"hub guard skipped: the {tool} event names no command", file=sys.stderr)
         elif tool in SHELL_READERS:
-            reading = start_reading(tool_input["command"], cwd, os.environ)
+            reading = start_reading(tool_input["command"], cwd, environment)
             hubs = set(reading.context_hubs)
             in_view = (reading.text, hubs)
-            read_into(reading, tool, cwd, os.environ)
+            read_into(reading, tool, cwd, environment)
             looking_up = True
             reached_hubs(reading, hubs)
             if reading.unread and not hubs:

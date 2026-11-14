@@ -545,10 +545,12 @@ removed fails validation until its pattern follows it.
   commands a Bash script runs that starts one only at a line's start, an operator, or a substitution, and not after a
   case pattern's `)`, a `;&` or `;;&`, or a function's `()`, or that compares a command's first word, such as
   `head == "git"` or `head in SCRIPT_SHELLS`, with a program's name rather than the file name
-  `command_wrappers.bash_program` reads, so `/usr/bin/git` and `git.exe` go unread.
+  `command_wrappers.bash_program` reads, so `/usr/bin/git` and `git.exe` go unread; in `tools/hub_guard.py`, an
+  environment variable git reads to choose where it writes, as `GIT_TRACE`, `GIT_OBJECT_DIRECTORY`, or
+  `GIT_COMMON_DIR` does, that no judgement of a call reads.
 - **Examples:** #1412, #1429, #1430, #1592, #1606, #1843, #1851, #1865, #2032, #2088, #2089, #2134, #2135, #2136,
   #2137, #2138, #2139, #2140, #2188, #2225, #2232, #2233, #2234, #2251, #2262, #2274, #2276, #2316, #2411,
-  #2418, #2203, #2450, #2476, #2481, #2478, #2555, #2474, #2616
+  #2418, #2203, #2450, #2476, #2481, #2478, #2555, #2474, #2616, #2776
 
 ### A recursive parser of input has a depth bound
 
@@ -816,7 +818,9 @@ removed fails validation until its pattern follows it.
   comparison any of whose arguments spells the no-index option or an abbreviation of it
   (`git_client:reads_no_repository`), reading no option grammar, and takes a search's pattern apart from its arguments;
   for a runtime that reads pull request content, `review_hosts:isolated_copilot_environment`, which keeps none of
-  the runtime's own variables but its sign-in
+  the runtime's own variables but its sign-in; and for the hub guard's own git calls,
+  `tools.hub_guard:withhold_written_variables`, which takes out the variables that have git write a trace or its
+  output into a file they name
 - **Guard:** `tests/validation/python_checks.py::PythonChecksPolicies::test_every_process_starts_without_git_repository_variables`,
   `tests/validation/skill_scripts.py::SkillScriptsPolicies::test_each_checker_starts_only_from_its_runner_and_every_repository_command_is_read`,
   which reads a process start, a mypy or ruff import, and the names it is written with, so a name built at run time
@@ -824,7 +828,9 @@ removed fails validation until its pattern follows it.
   `skills/ejryan89-code-review-core/scripts/test_review_source.py::SnapshotIsolationTests`,
   `tests/validation/test_suite_discovery.py::PytestEnvironmentFixtures`,
   `tests/tools/test_mutation_gate.py::RunSuiteFixtures::test_a_test_the_users_environment_would_leave_out_still_kills_the_mutant`,
-  `skills/ejryan89-code-review-core/scripts/test_review_hosts_copilot.py::CopilotProcessTests::test_this_processs_copilot_variables_never_reach_the_host`
+  `skills/ejryan89-code-review-core/scripts/test_review_hosts_copilot.py::CopilotProcessTests::test_this_processs_copilot_variables_never_reach_the_host`,
+  `tests/tools/test_hub_guard.py::CommandGuardTests::test_the_guard_s_own_git_calls_write_no_trace_the_environment_names`,
+  `tests/tools/test_hub_guard.py::HookCommandTests::test_an_inherited_trace_or_output_file_has_the_hook_s_own_git_write_nothing`
 - **Search for:** `{**os.environ`, `os.environ.copy()`, or `dict(os.environ)` passed as `env=`; a measured or
   sandboxed child started with no `env=`; a checker started anywhere but its runner, or run with no option that stops
   it reading settings outside the repository: ShellCheck without `--norc` and an empty `SHELLCHECK_OPTS`,
@@ -832,8 +838,10 @@ removed fails validation until its pattern follows it.
   `MYPYPATH` left set, and a `pytest_command` started without `PYTEST_ENVIRONMENT`, which leaves `PYTEST_ADDOPTS`,
   `PYTEST_PLUGINS`, and plugin autoloading to the user; a runtime started to read pull request content with the
   variables of that runtime the caller set for their own sessions, such as Copilot CLI's `COPILOT_*`; a git command run with its working directory, or `-C`, inside content a pull request or a
-  reviewer wrote, such as a review snapshot, through a client that is not isolated.
-- **Examples:** #1366, #1396, #1598, #1777, #1861, #2208, #2241, #2246
+  reviewer wrote, such as a review snapshot, through a client that is not isolated; a git started where it must
+  write nothing, as the hub guard's lookups and its hook command's `git config` are, with the environment's
+  `GIT_TRACE` or `GIT_REDIRECT_*` variables left set.
+- **Examples:** #1366, #1396, #1598, #1777, #1861, #2208, #2241, #2246, #2776
 
 ### An action on something not proven ours stops
 
