@@ -129,6 +129,18 @@ class GuardTestCase(HubTestCase):
     def bash(self, command: str, cwd: Path, environment: dict[str, str] | None = None) -> str | None:
         return self.decision({"tool_name": "Bash", "tool_input": {"command": command}, "cwd": str(cwd)}, environment)
 
+    def global_configuration(self, targets: Mapping[str, Path | str], name: str = "global.gitconfig") -> Path:
+        """A git configuration file that includes the fixture's global one and sets each trace2 target given, a path
+        written with forward slashes, which git reads on every platform."""
+        config = self.root / name
+        fixture = Path(self.environment["GIT_CONFIG_GLOBAL"]).as_posix()
+        lines = [f'[include]\n\tpath = "{fixture}"\n', "[trace2]\n"]
+        for key, value in targets.items():
+            written = value.as_posix() if isinstance(value, Path) else value
+            lines.append(f'\t{key} = "{written}"\n')
+        config.write_text("".join(lines), encoding="utf-8")
+        return config
+
     def powershell(self, command: str, cwd: Path, environment: dict[str, str] | None = None) -> str | None:
         event = {"tool_name": "PowerShell", "tool_input": {"command": command}, "cwd": str(cwd)}
         return self.decision(event, environment)
@@ -1361,6 +1373,16 @@ class HookCommandTests(GuardTestCase):
                 code, arguments = self.run_hook({name: str(readme)})
                 self.assertEqual((0, ["-B", f"{self.hub}/tools/hub_guard.py"]), (code, arguments))
                 self.assertEqual(before, readme.read_bytes())
+        # So would the trace2 targets the global configuration names, which only the variables outrank.
+        targets = {"normalTarget": readme, "perfTarget": readme, "eventTarget": readme}
+        configured = self.global_configuration(targets)
+        code, arguments = self.run_hook({"GIT_CONFIG_GLOBAL": str(configured)})
+        self.assertEqual((0, ["-B", f"{self.hub}/tools/hub_guard.py"]), (code, arguments))
+        self.assertEqual(before, readme.read_bytes())
+        # Real git: without the variables, the hook's own call would have written there.
+        run_git(self.hub, {**self.environment, "GIT_CONFIG_GLOBAL": str(configured)}, "config", "--get", "x.y")
+        self.assertNotEqual(before, readme.read_bytes())
+        self.git(self.hub, "checkout", "--", "README.md")
 
 
 class HookCommandUnderPowerShellTests(GuardTestCase):
@@ -1770,10 +1792,12 @@ class CommandGuardTests(GuardTestCase):
         self.assertEqual("deny", self.bash("git reset --hard", self.hub, inherited))
         self.assertEqual("deny", self.powershell("git reset --hard", self.hub, inherited))
         self.assertIsNone(self.bash("git reset --hard", self.tree, inherited))
-        # GIT_COMMON_DIR moves only the refs and objects every worktree shares.
+        # GIT_COMMON_DIR moves only the refs and objects every worktree shares, so a worktree call given another is
+        # refused for those, not for its checkout.
         common = {**self.environment, "GIT_COMMON_DIR": str(other)}
         self.assertEqual("deny", self.bash("git reset --hard", self.hub, common))
-        self.assertIsNone(self.bash("git reset --hard", self.tree, common))
+        self.assertEqual("deny", self.bash("git reset --hard", self.tree, common))
+        self.assertIn("shares with its worktrees", self.reason)
         self.assertEqual("main\n", self.git(self.hub, "branch", "--show-current"))
         self.assertEqual("", self.git(self.hub, "status", "--porcelain"))
 
@@ -1970,8 +1994,8 @@ class CommandGuardTests(GuardTestCase):
 
     def test_a_call_that_acts_on_the_hub_given_any_index_store_or_alternates_is_refused(self) -> None:
         # A fast-forward in the hub moves its HEAD and tree while the new tree goes into the index it is given, so the
-        # hub's own index is left at the old commit; a store or alternates other than its own leave its refs
-        # naming objects its own store lacks.
+        # hub's own index is left at the old commit; a store, alternates, a shallow or graft file, or replacements other
+        # than its own leave its refs naming objects its own store lacks.
         elsewhere = self.root / "elsewhere"
         elsewhere.mkdir()
         for name, value in (
@@ -1979,6 +2003,9 @@ class CommandGuardTests(GuardTestCase):
             ("GIT_OBJECT_DIRECTORY", elsewhere),
             ("GIT_COMMON_DIR", self.other_git_directory()),
             ("GIT_ALTERNATE_OBJECT_DIRECTORIES", elsewhere),
+            ("GIT_SHALLOW_FILE", elsewhere / "shallow"),
+            ("GIT_GRAFT_FILE", elsewhere / "grafts"),
+            ("GIT_REPLACE_REF_BASE", "refs/elsewhere/"),
         ):
             environment = {**self.environment, name: str(value)}
             for cwd, command in (
@@ -1995,9 +2022,10 @@ class CommandGuardTests(GuardTestCase):
                         self.assertEqual("deny", shell(command, cwd, environment))
                         self.assertIn(f"given {name} from the session's environment", self.reason)
                         self.assertIn(f"without {name}", self.reason)
-            # A call in a worktree writes no hub's HEAD, index, or tree.
-            with self.subTest(name=name, cwd="tree"):
-                self.assertIsNone(self.bash("git add . && git status", self.tree, environment))
+            # A call in a worktree writes no hub's HEAD, index, or tree, and its index is its own to write.
+            if name == "GIT_INDEX_FILE":
+                with self.subTest(name=name, cwd="tree"):
+                    self.assertIsNone(self.bash("git add . && git status", self.tree, environment))
         # The hub's own store and common directory are its own.
         own = hub_guard.own_paths(hub_guard.Place(self.hub, self.hub))
         assert own is not None
@@ -2041,17 +2069,22 @@ class CommandGuardTests(GuardTestCase):
                     with self.subTest(name=name, value=str(value), command=command, shell=shell.__name__):
                         self.assertEqual("deny", shell(command, self.tree, environment))
                         self.assertIn(f"{name}={value}, in the guarded hub", self.reason)
-        # A worktree's own store is the hub's, which git writes for it anyway, and one no hub holds is no hub's.
+        # A worktree's own store is the hub's, which git writes for it anyway; one no hub holds is no hub's, though a
+        # worktree call given one is refused for the refs it shares with its hub.
         own = hub_guard.own_paths(hub_guard.Place(self.tree, self.tree))
         assert own is not None
+        for name, value in (("GIT_OBJECT_DIRECTORY", own.objects), ("GIT_COMMON_DIR", own.common_dir)):
+            with self.subTest(name=name, value=str(value)):
+                self.assertIsNone(self.bash("git add new.txt", self.tree, {**self.environment, name: str(value)}))
         for name, value in (
-            ("GIT_OBJECT_DIRECTORY", own.objects),
-            ("GIT_COMMON_DIR", own.common_dir),
             ("GIT_OBJECT_DIRECTORY", self.root / "elsewhere"),
             ("GIT_COMMON_DIR", self.other_git_directory()),
         ):
             with self.subTest(name=name, value=str(value)):
-                self.assertIsNone(self.bash("git add new.txt", self.tree, {**self.environment, name: str(value)}))
+                self.assertEqual(
+                    "deny", self.bash("git add new.txt", self.tree, {**self.environment, name: str(value)})
+                )
+                self.assertIn("shares with its worktrees", self.reason)
         # From another repository the hub's own store is the hub's: a commit there writes its objects into it.
         other = self.other_git_directory().parent
         hub_store = {**self.environment, "GIT_COMMON_DIR": str(self.hub / ".git")}
@@ -2088,17 +2121,28 @@ class CommandGuardTests(GuardTestCase):
             ("GIT_REDIRECT_STDERR", readme),
         ):
             environment = {**self.environment, name: str(value)}
+            # The variable reaches every git a command starts, a program's own and a gh subcommand's among them, which
+            # the text does not show, so every command is refused, wherever it runs.
             for cwd, command in (
                 (self.tree, "git status"),
                 (self.tree, "gh pr checkout 12"),
                 (self.root, "git init x"),
+                (self.hub, "python tools/worktrees.py list"),
+                (self.tree, "gh pr view"),
+                (self.root, "ls"),
             ):
                 for shell in (self.bash, self.powershell):
                     with self.subTest(name=name, cwd=cwd.name, command=command, shell=shell.__name__):
                         self.assertEqual("deny", shell(command, cwd, environment))
                         self.assertIn(
-                            f"{name}={value}, and git writes there, into a file of a guarded hub", self.reason
+                            f"holds {name}={value}, and every git a command starts, a program's own included, writes "
+                            "there, into a file of a guarded hub",
+                            self.reason,
                         )
+                        self.assertIn(f"without {name}", self.reason)
+            # An edit runs no git.
+            with self.subTest(name=name, tool="Edit"):
+                self.assertIsNone(self.edit(self.tree / "notes.txt", self.tree, environment=environment))
         # A value that names no file, a relative trace, which git ignores, and a file no hub holds write no hub.
         for name, text in (
             ("GIT_TRACE", "1"),
@@ -2114,28 +2158,229 @@ class CommandGuardTests(GuardTestCase):
             with self.subTest(name=name, text=text):
                 self.assertIsNone(self.bash("git status", self.tree, {**self.environment, name: text}))
         # git for Windows opens a relative output file from where it starts, which the guard does not place.
-        self.assertEqual("deny", self.bash("git status", self.tree, {**self.environment, "GIT_REDIRECT_STDOUT": "o"}))
-        self.assertIn("a file git writes that the guard cannot place", self.reason)
+        for command in ("git status", "ls"):
+            with self.subTest(command=command, relative=True):
+                environment = {**self.environment, "GIT_REDIRECT_STDOUT": "o"}
+                self.assertEqual("deny", self.bash(command, self.tree, environment))
+                self.assertIn("a file git writes that the guard cannot place", self.reason)
         self.assertEqual("", self.git(self.hub, "status", "--porcelain", "--untracked-files=no"))
-        # Real git: a trace is appended to the absolute path the variable names, and trace2 makes a file inside a
-        # directory it names.
+        # Real git: a trace is appended to the absolute path the variable names, by a program's git too, and trace2
+        # makes a file inside a directory it names.
         trace = self.root / "trace.txt"
         run_git(self.tree, {**self.environment, "GIT_TRACE": str(trace)}, "status")
         self.assertTrue(trace.stat().st_size > 0)
+        program_trace = self.root / "program-trace.txt"
+        listed = subprocess.run(
+            [sys.executable, "-B", "-c", "import subprocess; subprocess.run(['git', 'status'], check=True)"],
+            cwd=self.hub,
+            env={**self.environment, "GIT_TRACE": str(program_trace)},
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(0, listed.returncode, listed.stderr)
+        self.assertTrue(program_trace.stat().st_size > 0, "the program's git wrote no trace")
         folder = self.root / "traces"
         folder.mkdir()
         run_git(self.tree, {**self.environment, "GIT_TRACE2_PERF": str(folder)}, "status")
         self.assertTrue(list(folder.iterdir()))
 
+    def test_a_trace2_target_the_configuration_names_in_a_hub_is_refused_for_every_command(self) -> None:
+        # trace2 reads its targets from the system and global configuration, which GIT_CONFIG_GLOBAL,
+        # GIT_CONFIG_SYSTEM, HOME, and XDG_CONFIG_HOME choose, include.path followed, so every git a command starts
+        # writes there; the variable of the same name outranks the setting.
+        readme = self.hub / "README.md"
+        docs = self.hub / "docs"
+        docs.mkdir()
+        home = self.root / "home"
+        home.mkdir()
+        xdg = self.root / "xdg"
+        (xdg / "git").mkdir(parents=True)
+        included = self.global_configuration({"perfTarget": docs}, name="included.gitconfig")
+        unset = {name: value for name, value in self.environment.items() if name != "GIT_CONFIG_GLOBAL"}
+        cases: list[tuple[str, dict[str, str], str, Path]] = []
+        for key, target in (("eventTarget", readme), ("normalTarget", self.hub / ".git" / "trace")):
+            configured = self.global_configuration({key: target}, name=f"{key}.gitconfig")
+            cases.append((key, {**self.environment, "GIT_CONFIG_GLOBAL": str(configured)}, "global", target))
+        system = self.global_configuration({"eventTarget": readme}, name="system.gitconfig")
+        without_nosystem = {name: value for name, value in self.environment.items() if name != "GIT_CONFIG_NOSYSTEM"}
+        cases.append(("system", {**without_nosystem, "GIT_CONFIG_SYSTEM": str(system)}, "system", readme))
+        shutil.copy(self.global_configuration({"eventTarget": readme}, name="home.gitconfig"), home / ".gitconfig")
+        cases.append(("home", {**unset, "HOME": str(home)}, "global", readme))
+        shutil.copy(self.global_configuration({"eventTarget": readme}, name="xdg.gitconfig"), xdg / "git" / "config")
+        cases.append(
+            ("xdg", {**unset, "HOME": str(self.root / "no home"), "XDG_CONFIG_HOME": str(xdg)}, "global", readme)
+        )
+        including = self.root / "including.gitconfig"
+        including.write_text(f'[include]\n\tpath = "{included.as_posix()}"\n', encoding="utf-8")
+        cases.append(("include", {**self.environment, "GIT_CONFIG_GLOBAL": str(including)}, "global", docs))
+        for label, environment, scope, target in cases:
+            for cwd, command in (
+                (self.tree, "git status"),
+                (self.hub, "python tools/worktrees.py list"),
+                (self.tree, "gh pr view"),
+                (self.root, "ls"),
+            ):
+                for shell in (self.bash, self.powershell):
+                    with self.subTest(case=label, cwd=cwd.name, command=command, shell=shell.__name__):
+                        self.assertEqual("deny", shell(command, cwd, environment))
+                        self.assertIn(f"The session's {scope} git configuration sets trace2.", self.reason)
+                        self.assertIn(f"to {target.as_posix()}, and every git a command starts", self.reason)
+                        self.assertIn("from an environment that sets GIT_TRACE2", self.reason)
+        self.assertEqual("", self.git(self.hub, "status", "--porcelain", "--untracked-files=no"))
+        # A variable that holds a value outranks the setting; a target no hub holds, a descriptor, a relative path,
+        # which trace2 ignores, and a target in the repository's own configuration, which trace2 never reads, write no
+        # hub.
+        configured = self.global_configuration({"eventTarget": readme})
+        for label, environment in (
+            ("off", {**self.environment, "GIT_CONFIG_GLOBAL": str(configured), "GIT_TRACE2_EVENT": "0"}),
+            ("elsewhere", {**self.environment, "GIT_CONFIG_GLOBAL": str(configured), "GIT_TRACE2_EVENT": "/dev/null"}),
+        ):
+            with self.subTest(case=label):
+                self.assertIsNone(self.bash("ls", self.root, environment))
+        for label, harmless_target in (
+            ("outside", self.root / "trace.json"),
+            ("descriptor", "2"),
+            ("relative", "trace.json"),
+            ("socket", "af_unix:/tmp/socket"),
+        ):
+            with self.subTest(case=label):
+                harmless = self.global_configuration({"eventTarget": harmless_target}, name=f"{label}.gitconfig")
+                self.assertIsNone(
+                    self.bash("git status", self.tree, {**self.environment, "GIT_CONFIG_GLOBAL": str(harmless)})
+                )
+        self.git(self.tree, "config", "--local", "trace2.eventTarget", readme.as_posix())
+        self.assertIsNone(self.bash("git status", self.tree))
+        self.git(self.tree, "config", "--local", "--unset", "trace2.eventTarget")
+        # Real git: a trace2 target the global configuration names, include.path followed, is written by any git, and
+        # the variable set to 0 turns it off.
+        trace = self.root / "configured-trace.json"
+        written = self.global_configuration({"eventTarget": trace}, name="written.gitconfig")
+        wrapper = self.root / "wrapper.gitconfig"
+        wrapper.write_text(f'[include]\n\tpath = "{written.as_posix()}"\n', encoding="utf-8")
+        run_git(self.tree, {**self.environment, "GIT_CONFIG_GLOBAL": str(wrapper), "GIT_TRACE2_EVENT": "0"}, "status")
+        self.assertFalse(trace.exists())
+        run_git(self.tree, {**self.environment, "GIT_CONFIG_GLOBAL": str(wrapper)}, "status")
+        self.assertTrue(trace.stat().st_size > 0)
+
+    def test_a_configuration_the_guard_cannot_read_for_trace2_targets_is_refused_while_a_hub_is_guarded(self) -> None:
+        failure = git_client.GitError("git could not read it", returncode=128)
+        outside = self.root / "outside"
+        outside.mkdir()
+        unshared = {name: value for name, value in self.environment.items() if name != "CLAUDE_PROJECT_DIR"}
+        with mock.patch.object(hub_guard, "configured_trace_targets", side_effect=failure):
+            for shell in (self.bash, self.powershell):
+                with self.subTest(shell=shell.__name__):
+                    self.assertEqual("deny", shell("ls", self.tree))
+                    self.assertIn("could not read the trace2 targets the git configuration names", self.reason)
+            self.assertIsNone(self.bash("ls", outside, unshared))
+            self.assertIn("could not read the trace2 targets the git configuration names", self.stderr)
+        # A configured target the guard cannot place is refused the same way.
+        with mock.patch.object(hub_guard, "placed_file", return_value=None):
+            configured = self.global_configuration({"eventTarget": self.root / "trace.json"})
+            environment = {**self.environment, "GIT_CONFIG_GLOBAL": str(configured)}
+            self.assertEqual("deny", self.bash("ls", self.tree, environment))
+            self.assertIn("a file git writes that the guard cannot place", self.reason)
+            self.assertIsNone(self.bash("ls", outside, {**unshared, "GIT_CONFIG_GLOBAL": str(configured)}))
+            self.assertIn("could not tell where trace2.eventtarget has git write", self.stderr)
+
+    def test_a_worktree_call_given_another_store_or_view_of_objects_is_refused(self) -> None:
+        # A linked worktree writes the refs its hub's store holds, its branch among them, so a commit or fetch there
+        # given another store, alternates, a shallow or graft file, or replacements moves the hub's refs to objects
+        # the hub's store lacks, or a gc prunes objects they need.
+        elsewhere = self.root / "elsewhere"
+        elsewhere.mkdir()
+        foreign = (
+            ("GIT_OBJECT_DIRECTORY", str(elsewhere)),
+            ("GIT_COMMON_DIR", str(self.other_git_directory())),
+            ("GIT_ALTERNATE_OBJECT_DIRECTORIES", str(elsewhere)),
+            ("GIT_ALTERNATE_OBJECT_DIRECTORIES", ""),
+            ("GIT_SHALLOW_FILE", str(elsewhere / "shallow")),
+            ("GIT_SHALLOW_FILE", ""),
+            ("GIT_GRAFT_FILE", str(elsewhere / "grafts")),
+            ("GIT_REPLACE_REF_BASE", "refs/elsewhere/"),
+        )
+        second = self.second_worktree()
+        for name, value in foreign:
+            environment = {**self.environment, name: value}
+            for cwd, command in (
+                (self.tree, "git commit --allow-empty -m x"),
+                (self.tree, "git fetch origin"),
+                (second, "git gc --prune=now"),
+                (self.root, f'git -C "{self.tree}" status'),
+                (self.tree, "gh pr checkout 12"),
+            ):
+                for shell in (self.bash, self.powershell):
+                    with self.subTest(name=name, value=value, command=command, shell=shell.__name__):
+                        self.assertEqual("deny", shell(command, cwd, environment))
+                        self.assertIn(f"the refs the guarded hub {self.hub} shares with its worktrees", self.reason)
+                        self.assertIn(f"given {name} from the session's environment", self.reason)
+                        self.assertIn(f"without {name}", self.reason)
+            # Another repository shares no hub's store.
+            with self.subTest(name=name, value=value, cwd="other"):
+                other = self.other_git_directory().parent
+                if name != "GIT_COMMON_DIR":
+                    self.assertIsNone(self.bash("git commit --allow-empty -m x", other, environment))
+        # A worktree's own store, given as such, is its own.
+        own = hub_guard.own_paths(hub_guard.Place(self.tree, self.tree))
+        assert own is not None
+        self.assertIsNone(
+            self.bash(
+                "git commit --allow-empty -m x",
+                self.tree,
+                {**self.environment, "GIT_OBJECT_DIRECTORY": str(own.objects)},
+            )
+        )
+        # Real git: a commit in the worktree with another store, reading the hub's through alternates, moves the
+        # branch the hub's store holds to a commit that store lacks.
+        branch = self.git(self.tree, "branch", "--show-current").strip()
+        store = {
+            **self.environment,
+            "GIT_OBJECT_DIRECTORY": str(elsewhere),
+            "GIT_ALTERNATE_OBJECT_DIRECTORIES": str(own.objects),
+        }
+        run = run_git(
+            self.tree,
+            store,
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "elsewhere",
+        )
+        self.assertEqual(0, run.returncode, run.stderr)
+        moved = self.git(self.hub, "rev-parse", f"refs/heads/{branch}").strip()
+        missing = run_git(self.hub, self.environment, "cat-file", "-e", moved)
+        self.assertNotEqual(0, missing.returncode, "the hub's store holds the commit")
+
+    def test_a_worktree_call_whose_store_the_guard_cannot_place_is_refused_while_a_hub_is_guarded(self) -> None:
+        failure = git_client.GitError("git could not read it", returncode=128)
+        other = self.other_git_directory().parent
+        unshared = {name: value for name, value in self.environment.items() if name != "CLAUDE_PROJECT_DIR"}
+        alternates = {**unshared, "GIT_ALTERNATE_OBJECT_DIRECTORIES": str(self.root)}
+        with mock.patch.object(hub_guard, "own_paths", side_effect=failure):
+            # From the worktree a guarded hub is in view; from another repository alone none is, which is noted.
+            for shell in (self.bash, self.powershell):
+                with self.subTest(shell=shell.__name__):
+                    self.assertEqual("deny", shell(f'git -C "{other}" status', self.tree, alternates))
+                    self.assertIn("refs a guarded hub may share, from a place the guard cannot settle", self.reason)
+            self.assertIsNone(self.bash("git status", other, alternates))
+
     def test_the_guard_s_own_git_calls_write_no_trace_the_environment_names(self) -> None:
-        # The guard runs git to find the hubs in view, so an inherited trace in a hub file would be written by the
-        # guard itself, whatever the command.
+        # The guard runs git to find the hubs in view, and to read the configuration's trace2 targets, so an inherited
+        # trace in a hub file, or one the configuration names, would be written by the guard itself, whatever the
+        # command.
         readme = self.hub / "README.md"
         before = readme.read_bytes()
-        environment = {**self.environment, "GIT_TRACE": str(readme), "GIT_TRACE2_PERF": str(readme)}
-        self.assertIsNone(self.bash("ls", self.tree, environment))
-        self.assertEqual("deny", self.edit(readme, self.tree, environment=environment))
-        self.assertEqual(before, readme.read_bytes())
+        configured = self.global_configuration({"eventTarget": readme, "perfTarget": readme, "normalTarget": readme})
+        for environment in (
+            {**self.environment, "GIT_TRACE": str(readme), "GIT_TRACE2_PERF": str(readme)},
+            {**self.environment, "GIT_CONFIG_GLOBAL": str(configured)},
+        ):
+            with self.subTest(environment=sorted(set(environment) - set(self.environment))):
+                self.assertEqual("deny", self.bash("ls", self.tree, environment))
+                self.assertEqual("deny", self.edit(readme, self.tree, environment=environment))
+                self.assertIsNone(self.edit(self.tree / "notes.txt", self.tree, environment=environment))
+                self.assertEqual(before, readme.read_bytes())
 
     def test_an_inherited_path_the_guard_cannot_place_is_noted_with_no_hub_in_view(self) -> None:
         outside = self.root / "outside"
@@ -2144,7 +2389,7 @@ class CommandGuardTests(GuardTestCase):
         unshared = {name: value for name, value in self.environment.items() if name != "CLAUDE_PROJECT_DIR"}
         for name, value, said in (
             ("GIT_OBJECT_DIRECTORY", "objects", "could not tell where GIT_OBJECT_DIRECTORY has `git add` write"),
-            ("GIT_REDIRECT_STDOUT", "out.txt", "could not tell where GIT_REDIRECT_STDOUT has `git add` write"),
+            ("GIT_REDIRECT_STDOUT", "out.txt", "could not tell where GIT_REDIRECT_STDOUT has git write"),
         ):
             with self.subTest(name=name):
                 self.assertIsNone(self.bash("git add .", outside, {**unshared, name: value}))
