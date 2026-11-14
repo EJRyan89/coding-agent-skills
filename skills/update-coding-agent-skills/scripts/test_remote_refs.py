@@ -4,11 +4,12 @@ helper, a time limit, and a fetch that leaves out a tag shadowing a branch."""
 from __future__ import annotations
 
 import http.server
+import stat
 import subprocess
 import sys
 import threading
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from unittest import mock
 
@@ -232,3 +233,88 @@ def test_a_git_that_could_not_run_is_a_failed_line_never_origins_failure(
     # report it as FETCH_FAILED, which tells the user to sign in to origin.
     with mock.patch.object(GitClient, "output", side_effect=GitError("git could not run", kind=kind)):
         assert run(capsys, command, clone) == (1, "FAILED git could not run\n")
+
+
+def test_a_fetch_that_fails_in_the_clone_is_a_failed_line_never_origins_failure(
+    capsys: pytest.CaptureFixture[str], clone: Path, tmp_path: Path
+) -> None:
+    # Origin answered, but the clone could not take what it sent: a stale lock on the ref the fetch writes. That says
+    # nothing of origin, so update.sh must not report it as FETCH_FAILED, which sends the user to sign in to origin.
+    seed = tmp_path / "seed folder"
+    git(
+        "-C",
+        seed,
+        "-c",
+        "user.name=Test",
+        "-c",
+        "user.email=test@example.invalid",
+        "commit",
+        "-q",
+        "--allow-empty",
+        "-m",
+        "second",
+    )
+    git("-C", seed, "push", "-q", git("-C", clone, "remote", "get-url", "origin").strip(), "main")
+    lock = clone / ".git" / "refs" / "remotes" / "origin" / "main.lock"
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    lock.touch()
+    code, output = run(capsys, "fetch", clone)
+    assert code == 1
+    assert output.startswith("FAILED error: cannot lock ref 'refs/remotes/origin/main'"), output
+    assert output.count("\n") == 1, output
+
+
+@pytest.mark.parametrize("command", COMMANDS)
+def test_a_failure_git_names_in_the_clone_is_a_failed_line_and_any_other_failure_is_origins(
+    capsys: pytest.CaptureFixture[str], clone: Path, command: str
+) -> None:
+    local = GitError("error: insufficient permission for adding an object to repository database .git/objects")
+    with mock.patch.object(GitClient, "output", side_effect=local):
+        assert run(capsys, command, clone)[1].startswith("FAILED error: insufficient permission"), command
+    remote = GitError("remote: error: cannot lock ref 'refs/heads/main'\nfatal: the remote end hung up unexpectedly")
+    with mock.patch.object(GitClient, "output", side_effect=remote):
+        assert run(capsys, command, clone)[1].startswith("ORIGIN_FAILED remote: error: cannot lock ref"), command
+
+
+def unwritable_fetch_head(clone: Path) -> Path:
+    fetch_head = clone / ".git" / "FETCH_HEAD"
+    fetch_head.touch()
+    return fetch_head
+
+
+def unwritable_reflog(clone: Path) -> Path:
+    git("-C", clone, "config", "core.logAllRefUpdates", "true")
+    reflog = clone / ".git" / "logs" / "refs" / "remotes" / "origin" / "main"
+    reflog.parent.mkdir(parents=True, exist_ok=True)
+    reflog.touch()
+    return reflog
+
+
+@pytest.mark.parametrize("unwritable", [unwritable_fetch_head, unwritable_reflog], ids=["FETCH_HEAD", "reflog"])
+def test_a_fetch_that_cannot_write_a_file_of_the_clone_is_a_failed_line_whatever_git_calls_it(
+    capsys: pytest.CaptureFixture[str], clone: Path, tmp_path: Path, unwritable: Callable[[Path], Path]
+) -> None:
+    # Each names its own wording, neither a lock nor an object, so only the path inside .git tells it from origin's.
+    seed = tmp_path / "seed folder"
+    git("-C", seed, "-c", "user.name=T", "-c", "user.email=t@example.invalid", "commit", "-qm", "next", "--allow-empty")
+    git("-C", seed, "push", "-q", git("-C", clone, "remote", "get-url", "origin").strip(), "main")
+    target = unwritable(clone)
+    target.chmod(stat.S_IREAD)
+    try:
+        code, output = run(capsys, "fetch", clone)
+    finally:
+        target.chmod(stat.S_IREAD | stat.S_IWRITE)
+    assert code == 1
+    assert output.startswith("FAILED error: "), output
+    assert "Permission denied" in output, output
+
+
+def test_a_remote_that_prints_a_local_looking_failure_of_its_own_is_origins(
+    capsys: pytest.CaptureFixture[str], clone: Path
+) -> None:
+    # A local origin's upload-pack runs through the shell, and its stderr reaches the fetch's with no remote: before
+    # it, as a remote's over ssh does; git's own verdict after it keeps the failure origin's.
+    git("-C", clone, "config", "remote.origin.uploadpack", "echo 'fatal: unable to write .git/FETCH_HEAD' >&2; exit 1;")
+    code, output = run(capsys, "fetch", clone)
+    assert code == 1
+    assert output.startswith("ORIGIN_FAILED fatal: unable to write .git/FETCH_HEAD"), output
