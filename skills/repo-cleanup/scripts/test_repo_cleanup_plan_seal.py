@@ -20,6 +20,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
+import private_folder
 import repo_cleanup as rc
 from test_repo_cleanup import (
     GIT_CONFIG,
@@ -43,6 +44,10 @@ CHANGED = (
 )
 OTHER_AREAS = "names worktree areas other than the ones a sweep derives for"
 NOT_A_PLAN = "is not a repo-cleanup plan: "
+
+
+# Where the seals lie before any test patches them.
+UNPATCHED_SEALS = rc.SEALS
 
 
 def setUpModule() -> None:
@@ -774,6 +779,141 @@ class SealReadingTests(CleanupTestCase):
             f"{rc.SEALS} holds no sweep record sweep.record; name the directory a sweep printed as PLANS",
             str(raised.exception),
         )
+
+
+class SealsFolderTests(CleanupTestCase):
+    """The seals lie in a folder of the user's own, named with their user id in the temporary directory, which on
+    Linux with TMPDIR unset is the shared /tmp; one another account owns or can write, or a link, is refused before
+    any seal is read or written, so no other account can empty the folder or fill it."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.root = Path(tempfile.mkdtemp(prefix="repo cleanup seals folder ")).resolve()
+        self.addCleanup(remove_tree, self.root)
+        self.plan = self.root / "plans" / "plan.json"
+        self.plan.parent.mkdir()
+        # A plan's bytes as a save writes them, which the load attempt finds in the plan's place.
+        self.saved = (json.dumps(written_plan(), indent=2) + "\n").encode("utf-8")
+
+    def use_seals(self, folder: Path) -> None:
+        patcher = mock.patch.object(rc, "SEALS", folder)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def assert_refused(self, why: str) -> None:
+        """Saving, loading, loading a plan that is not there, and starting a sweep each refuse the folder, naming
+        `why`, and write nothing."""
+        prefix = f"the seals folder is not yours alone: {why}"
+        attempts: dict[str, Callable[[], object]] = {
+            "save": lambda: rc.save_plan(self.plan, written_plan()),
+            "load": lambda: rc.load_plan(self.plan),
+            "load missing": lambda: rc.load_plan(self.root / "missing.json"),
+            "sweep": lambda: rc.sweep(None, str(self.root), None, rc.Services()),
+        }
+        untouched = mock.Mock(side_effect=AssertionError("the sweep went on past the seals folder"))
+        with mock.patch.object(rc, "discover", untouched), mock.patch.object(rc, "new_plans_directory", untouched):
+            for name, attempt in attempts.items():
+                with self.subTest(name), self.assertRaises(rc.CleanupError) as raised:
+                    attempt()
+                self.assertTrue(str(raised.exception).startswith(prefix), raised.exception)
+                self.assertTrue(str(raised.exception).endswith("then run the sweep again"), raised.exception)
+                if name == "save":
+                    self.assertFalse(self.plan.exists(), "no plan was saved without its seal")
+                    self.plan.write_bytes(self.saved)
+
+    @unittest.skipIf(sys.platform == "win32", "the temporary directory there is the user's own and has no user ids")
+    def test_the_seals_folder_is_named_with_the_user_s_id_in_the_temporary_directory(self) -> None:
+        # The id is read only where the platform has user ids, so a type check for Windows, which has none, passes it.
+        if sys.platform != "win32":
+            self.assertEqual(Path(tempfile.gettempdir()) / f"repo-cleanup-seals-{os.geteuid()}", UNPATCHED_SEALS)
+
+    def test_a_missing_seals_folder_is_made_owner_only(self) -> None:
+        folder = self.root / "seals"
+        self.use_seals(folder)
+        rc.save_plan(self.plan, written_plan())
+        self.assertEqual(written_plan(), rc.load_plan(self.plan))
+        self.assertTrue(folder.is_dir())
+        if sys.platform != "win32":
+            self.assertEqual(0o700, folder.stat().st_mode & 0o777)
+
+    @unittest.skipIf(
+        sys.platform == "win32", "Windows has no user ids; private_folder's WindowsTests cover what holds there"
+    )
+    def test_a_seals_folder_another_account_owns_is_refused(self) -> None:
+        folder = self.root / "seals"
+        self.use_seals(folder)
+        rc.save_plan(self.plan, written_plan())
+        self.assertEqual(self.saved, self.plan.read_bytes())
+        self.plan.unlink()
+        # The parent is this user's, which the parent check would judge another's under the id the test pretends.
+        with (
+            mock.patch.object(private_folder, "user_id", return_value=4242),
+            mock.patch.object(private_folder, "parent_refusal", return_value=None),
+        ):
+            self.assert_refused(f"{folder} is owned by user id ")
+
+    @unittest.skipIf(
+        sys.platform == "win32", "Windows has no user ids; private_folder's WindowsTests cover what holds there"
+    )
+    def test_a_seals_folder_in_a_parent_another_account_owns_is_refused(self) -> None:
+        folder = self.root / "seals"
+        self.use_seals(folder)
+        with mock.patch.object(private_folder, "user_id", return_value=4242):
+            self.assert_refused(f"{folder}: its parent {self.root} is owned by user id ")
+        self.assertFalse(folder.exists(), "nothing was made in that parent")
+
+    @unittest.skipIf(sys.platform == "win32", "Windows mode bits say nothing about who may write a folder")
+    def test_a_seals_folder_in_a_parent_others_can_write_is_refused_unless_the_parent_is_sticky(self) -> None:
+        parent = self.root / "open"
+        parent.mkdir()
+        parent.chmod(0o777)
+        folder = parent / "seals"
+        self.use_seals(folder)
+        self.assert_refused(
+            f"{folder}: its parent {parent} can be written by users other than its owner and is not sticky (mode 777)"
+        )
+        self.assertFalse(folder.exists(), "nothing was made in that parent")
+        parent.chmod(0o1777)
+        rc.save_plan(self.plan, written_plan())
+        self.assertEqual(written_plan(), rc.load_plan(self.plan))
+
+    def test_a_seals_folder_that_cannot_be_made_is_refused_naming_the_reason(self) -> None:
+        folder = self.root / "missing" / "seals"
+        self.use_seals(folder)
+        attempts: dict[str, Callable[[], object]] = {
+            "save": lambda: rc.save_plan(self.plan, written_plan()),
+            "load missing": lambda: rc.load_plan(self.root / "missing.json"),
+            "sweep": lambda: rc.sweep(None, str(self.root), None, rc.Services()),
+        }
+        for name, attempt in attempts.items():
+            with self.subTest(name), self.assertRaises(rc.CleanupError) as raised:
+                attempt()
+            self.assertTrue(
+                str(raised.exception).startswith(f"cannot use the seals folder {folder}: "), raised.exception
+            )
+        self.assertFalse(self.plan.exists(), "no plan was saved without its seal")
+
+    @unittest.skipIf(sys.platform == "win32", "Windows mode bits say nothing about who may write a folder")
+    def test_a_seals_folder_others_can_write_is_refused(self) -> None:
+        folder = self.root / "seals"
+        folder.mkdir()
+        folder.chmod(0o777)
+        self.use_seals(folder)
+        self.assert_refused(f"{folder} can be written by users other than its owner (mode 777)")
+
+    @unittest.skipIf(
+        sys.platform == "win32", "a symbolic link needs a privilege there; test_private_folder covers its kind"
+    )
+    def test_a_seals_folder_that_is_a_link_is_refused_even_to_a_folder_holding_the_plan_s_true_seal(self) -> None:
+        target = self.root / "elsewhere"
+        self.use_seals(target)
+        rc.save_plan(self.plan, written_plan())
+        self.assertEqual(self.saved, self.plan.read_bytes())
+        self.plan.unlink()
+        folder = self.root / "seals"
+        folder.symlink_to(target, target_is_directory=True)
+        self.use_seals(folder)
+        self.assert_refused(f"{folder} is a link or junction, not a folder of this user's own")
 
 
 class PlanOutsideASweepTests(Fixture):

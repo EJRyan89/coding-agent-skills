@@ -156,6 +156,8 @@ TRUST_BOUNDARY_SCRIPTS = (
     f"{SKILL_CORE}/path_containment.py",
     f"{SKILL_CORE}/path_keys.py",
     f"{SKILL_CORE}/pdf_tool.py",
+    f"{SKILL_CORE}/private_folder.py",
+    f"{SKILL_CORE}/test_private_folder.py",
     f"{SKILL_CORE}/process_identity.py",
     f"{SKILL_CORE}/python_reader.py",
     f"{SKILL_CORE}/skill_menu.py",
