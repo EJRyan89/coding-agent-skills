@@ -28,10 +28,12 @@ from pathlib import Path
 from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "validation"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts"))
 
 import corpus
 import exit_tables
 import faults
+import private_folder
 from fault_table import (
     DIRECTORY,
     FAULTS,
@@ -324,16 +326,17 @@ def run_entry(
     writable: Path | None = None,
 ) -> tuple[subprocess.CompletedProcess[str], dict[str, Any]]:
     """Run an entry point through fault_runner.py under the fault, in the fixture's work folder, and return how it
-    ended and the runner's record. The run may write in `writable`, the temporary folder unless a caller names another,
-    and never in this checkout, which lies under the temporary folder when the mutation gate runs the suite in a
-    throwaway worktree."""
+    ended and the runner's record. The run may write in `writable`, unless a caller names another the temporary folder
+    and the folder private_folder keeps a script's state across runs in, the runtime directory where one is set, and
+    never in this checkout, which lies under the temporary folder when the mutation gate runs the suite in a throwaway
+    worktree."""
     record_file = fixture.root / "record.json"
     spec = {
         "entry": str(entry),
         "arguments": arguments,
         "fault": fault,
         "target": str(target) if target else None,
-        "writable": [str(writable or tempfile.gettempdir())],
+        "writable": [str(writable)] if writable else [tempfile.gettempdir(), str(private_folder.base())],
         "protected": [str(REPOSITORY)],
         "path": [str(repository / SKILL_CORE)],
         "repository": str(repository),
