@@ -39,13 +39,15 @@ SKILL_DEPS_VERSION = 8
 # an older entry without them records no agents for a preserved skill and no pinned ref, respectively.
 OLDEST_READABLE_VERSION = 6
 # The grammar names were deployed under before a source's names were held to the Agent Skills one, which refuses
-# consecutive hyphens: a manifest recording such a name still reads, so the deployment that refuses the name in a
-# source can remove the copy once the source renames it, and an uninstall can remove it at all.
+# consecutive hyphens: a manifest recording such a name still reads, so a run refuses the name where the source gives
+# it rather than calling the manifest malformed. Once the source renames it, with no renamed entry, since an old name
+# with consecutive hyphens is refused there too, the deployed copy is one the source no longer has: removed when
+# unmodified and preserved when modified, and a request recorded under the old name is not carried to the new one.
 RECORDED_NAME_PATTERN = re.compile(r"[a-z0-9](?:[a-z0-9-]*[a-z0-9])?")
 DUPLICATION_ALLOWED = {
     "NAME_PATTERN": (
         "RECORDED_NAME_PATTERN is the grammar before skills/ejryan89-skill-core/scripts/agent_skills.py's NAME_PATTERN "
-        "refused consecutive hyphens, read only from a manifest so a home deployed then can still be cleaned up"
+        "refused consecutive hyphens, read only from a manifest so a home deployed then still reads"
     ),
 }
 # What to do with a manifest the deployer cannot read, before it plans anything.

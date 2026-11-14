@@ -1355,6 +1355,33 @@ def test_a_name_deployed_before_the_rule_is_removed_once_the_source_renames_it(d
     assert (deployer.claude_agents_dir / "code-reviewer.md").is_file()
 
 
+def test_a_rename_with_no_renamed_entry_drops_an_opt_in_request_and_keeps_a_modified_copy(deployer: Deployment) -> None:
+    """What the upgrade note promises a home that deployed a name with consecutive hyphens, renamed in the source with
+    no renamed entry, since a renamed old name with -- is refused: every run, an uninstall too, is refused until the
+    source renames it; then the opt-in request is not carried to the new name, and a modified copy stays."""
+    deployer.make_source_json()
+    deployer.make_skill("opt--in", "Test", opt_in=True)
+    deployer.make_skill("edited--skill", "Test")
+    deployer.make_config()
+    with mock.patch.object(source, "NAME_PATTERN", EARLIER_GRAMMAR):
+        deployer.deploy_ok("--all", "--include", "opt--in")
+    edited = deployer.skills_dir / "edited--skill" / "SKILL.md"
+    edited.write_text(edited.read_text(encoding="utf-8") + "\nA local change.\n", encoding="utf-8")
+    for arguments in (("--uninstall",), ("--all",)):
+        deployer.deploy_fails(*arguments, pattern=re.escape("does not match naming grammar"))
+    deployer.remove_skill("opt--in")
+    deployer.remove_skill("edited--skill")
+    deployer.make_skill("opt-in", "Test", opt_in=True)
+    deployer.make_skill("edited-skill", "Test")
+    deployer.deploy_ok("--all")
+    assert not (deployer.skills_dir / "opt--in").exists()
+    assert not (deployer.skills_dir / "opt-in").exists()
+    assert "A local change." in edited.read_text(encoding="utf-8")
+    assert (deployer.skills_dir / "edited-skill" / "SKILL.md").is_file()
+    deployer.deploy_ok("--all", "--include", "opt-in")
+    assert (deployer.skills_dir / "opt-in" / "SKILL.md").is_file()
+
+
 def test_a_name_deployed_before_the_rule_is_removed_by_an_uninstall_once_the_source_renames_it(
     deployer: Deployment,
 ) -> None:
