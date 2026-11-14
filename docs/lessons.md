@@ -744,6 +744,7 @@ removed fails validation until its pattern follows it.
   it; `path_keys:path_key`, the one form a path is compared in, which the deployer reaches as
   `deployer.platform_support:path_key`, with `path_keys:name_key`, a name in its directory, and
   `path_keys:same_parts`, a path against a trusted one, asking only the trusted one's directories;
+  `agent_skills:is_skill_file`, a skill's main file as its folder compares names;
   `guidance_record:canonical_url`; `deployer.source:any_case` and
   `deployer.source:refuse_other_spellings`, which find a name the deployer reads spelled in any case on every
   platform and refuse one spelled otherwise; `review_config:validate_repository_identity`, the one form a
@@ -764,6 +765,8 @@ removed fails validation until its pattern follows it.
   `skills/ejryan89-skill-core/scripts/test_release_tags.py::ReleaseTagTests::test_releases_are_ordered_by_their_numbers_not_their_text`,
   `skills/ejryan89-skill-core/scripts/test_guidance_record.py::test_the_canonical_form_folds_only_raw_github_s_refs_heads_and_the_scheme_and_host_case`,
   `tests/deployer/test_source_validation.py::MetadataValidationTests::test_a_name_the_deployer_reads_spelled_in_another_case_is_refused_by_name_on_every_platform`,
+  `skills/ejryan89-skill-core/scripts/test_agent_skills.py::SkillFileTests::test_skill_md_in_another_case_is_the_main_file_only_where_the_folder_folds_case`,
+  `tests/validation/skill_layout.py::SkillLayoutPolicies::test_every_skill_file_is_spelled_skill_md`,
   `skills/ejryan89-code-review-core/scripts/test_review_pipeline.py::BatchTests::test_a_state_key_in_another_case_is_that_repository_s_watermark`,
   `skills/ejryan89-code-review-core/scripts/test_review_pipeline.py::BatchTests::test_a_state_holding_one_repository_under_two_spellings_is_refused`
 - **Search for:** `version in`, `.startswith(version`, `sorted(tags`, or `tags[-1]`; `int(part) for part in` or
@@ -779,7 +782,7 @@ removed fails validation until its pattern follows it.
   `validate_repository_identity(` but are kept as written, while lookups use the lowercase form it returns; two
   names whose `(st_dev, st_ino)`, `os.path.samestat`, or `samefile` agree taken for one name, which two hard links
   also give.
-- **Examples:** #1556, #1855, #1867, #1909, #2299, #2590, #2614, #2615, #2620, #2662
+- **Examples:** #1556, #1855, #1867, #1909, #2299, #2590, #2614, #2615, #2620, #2662, #2712
 
 ### A child process starts from an environment built for it
 

@@ -2843,6 +2843,22 @@ class RuntimeSupportTests(SourceTreeTestCase):
                 self.runtime(lowered),
             )
 
+    def test_an_invoked_skill_with_a_lowercase_skill_md_carries_its_needs_only_where_its_folder_folds_case(
+        self,
+    ) -> None:
+        # The sibling was known only by an exact SKILL.md, so where its folder folds case and a runtime opens its
+        # skill.md, what it needs was not carried to the skill invoking it.
+        skill = self.skill("Then invoke `beta`.\n", self.full())
+        self.skill("Body.\n", {"tools": ["gh"]}, name="beta")
+        beta = self.root / "skills" / "beta"
+        (beta / "SKILL.md").rename(beta / "skill.md")
+        for folds in (True, False):
+            with self.subTest(folds=folds), mock.patch.dict(path_keys._FOLDS_CASE, {str(beta): folds}):
+                self.assertEqual(
+                    ["RUNTIME_NEEDS sandbox-network skill beta"] if folds else [],
+                    [line for line in self.runtime(skill) if line.startswith("RUNTIME_NEEDS")],
+                )
+
     def test_a_missing_or_malformed_declaration_and_a_skill_outside_a_source_tree(self) -> None:
         self.assertEqual(["RUNTIME_UNDECLARED"], self.runtime(self.skill("Body.\n")))
         broken = self.runtime(self.skill("Body.\n", {"runtime_support": {"codex": "full"}}, name="beta"))
@@ -3751,18 +3767,6 @@ class MainFileCaseTests(TemporaryTestCase):
                 self.assertEqual([folder / "SKILL.md"], skill_inventory.main_files(folder))
                 self.assertEqual("main", skill_inventory.category(Path("SKILL.md"), folder))
                 self.assertEqual(folder, skill_inventory.skill_folder(folder / "notes.md"))
-
-    def test_a_case_sensitive_folder_holding_both_spellings_has_one_main_file(self) -> None:
-        # Two names a case-sensitive folder holds apart, which a folding file system cannot hold, so each is judged
-        # by its name.
-        folder = self.folder("SKILL.md")
-        with mock.patch.dict(path_keys._FOLDS_CASE, {str(folder): False}):
-            self.assertTrue(skill_inventory.is_main_file(folder / "SKILL.md"))
-            self.assertFalse(skill_inventory.is_main_file(folder / "skill.md"))
-            self.assertFalse(skill_inventory.is_main_file(folder / "Skill.MD"))
-        with mock.patch.dict(path_keys._FOLDS_CASE, {str(folder): True}):
-            self.assertTrue(skill_inventory.is_main_file(folder / "Skill.MD"))
-            self.assertFalse(skill_inventory.is_main_file(folder / "notes.md"))
 
     def test_a_skill_with_a_lowercase_skill_md_is_located_only_where_its_folder_folds_case(self) -> None:
         home = self.root / "home"
