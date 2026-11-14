@@ -7,6 +7,7 @@ Usage:
   python tools/deployable_report.py leftovers --results FILE
   python tools/deployable_report.py summary --results FILE [--note TEXT ...] [--summary FILE]
   python tools/deployable_report.py pin --program NAME --wanted VERSION
+  python tools/deployable_report.py bash --at-least VERSION
 
 `verify` asks Codex CLI and Copilot CLI which skills they find, the way `python deploy.py verify` does, and judges
 each runtime: PASSED when it finds every adapter, SKIPPED when it refuses to list skills until someone signs in,
@@ -34,6 +35,13 @@ what the program reported, and passes when VERSION is `latest` or the version in
 numbers part by part, so `1.0.9` does not match `1.0.98`. Otherwise it prints a `::error::` line saying why, a
 program that is not on PATH, that fails, or that reports no or another version.
 
+`bash` checks that the Bash the deployer runs is no older than VERSION. It finds Bash as the deployer does, the first
+`bash` on PATH on Linux and macOS and Git for Windows' Bash on Windows, and prints `NAME: PATH: TEXT`, the first line
+that Bash reported for `--version`. It passes when that version is VERSION or newer, compared as numbers part by part,
+so macOS's own `/bin/bash`, a Bash 3.2, fails a floor of 5.2. Otherwise it prints a `::error::` line saying why: no
+Bash found, one that fails, one that reports no version or an older one, or a VERSION that is not a version. The
+summary's tool versions name the same Bash and where it was found.
+
 An absent results file starts an empty record. A results file that cannot be read, is not JSON, or does not hold a
 JSON array, and a results file that cannot be written are each an `ERROR:` line naming the file, leaving the file as
 it was.
@@ -42,8 +50,8 @@ Nothing here starts a model.
 
 Exit status:
   0  the command's check passed, or its record or summary was written
-  1  verify judged a failure, layout failed, leftovers named an entry, pin found another version, an ERROR: line for
-     a home that is no absolute path, or a last line FAILED <reason>
+  1  verify judged a failure, layout failed, leftovers named an entry, pin found another version, bash found none or
+     an older one, an ERROR: line for a home that is no absolute path, or a last line FAILED <reason>
   2  a usage error, or an ERROR: line for a results file or a deployed directory it cannot read or write
 """
 
@@ -102,6 +110,7 @@ VERSIONED = (
 BACKUPS = ".backups"
 UNINSTALL = "uninstall"
 Find = Callable[[str], "str | None"]
+FindBash = Callable[[], "str | None"]
 RunVersion = Callable[[list[str]], "tuple[int, str]"]
 
 
@@ -109,6 +118,7 @@ RunVersion = Callable[[list[str]], "tuple[int, str]"]
 COMMANDS_ALLOWED = {
     "_run_version": "runs the version command of each program the summary records",
     "_pin": "runs the program the command line names, located with find_executable",
+    "_bash": "runs the Bash the deployer finds, located with platform_support.find_bash",
 }
 
 
@@ -296,9 +306,21 @@ def _run_version(arguments: list[str]) -> tuple[int, str]:
     return result.returncode, result.output
 
 
-def tool_versions(find: Find | None = None, run: RunVersion = _run_version) -> list[tuple[str, str]]:
+def tool_versions(
+    find: Find | None = None, run: RunVersion = _run_version, find_bash: FindBash | None = None
+) -> list[tuple[str, str]]:
+    """Each program's version as the summary records it: Python's own, then the Bash the deployer finds, with where it
+    found it, then each program VERSIONED names, found on PATH."""
     find = find or platform_support.find_executable
     versions = [("Python", tools.format_version(tools.python_version()))]
+    bash = (find_bash or platform_support.find_bash)()
+    if bash is None:
+        versions.append((platform_support.BASH_NAME, "not installed"))
+    else:
+        code, output = run([bash, "--version"])
+        version = tools.parse_version(output) if code == 0 else None
+        found = tools.format_version(version) if version else "version could not be read"
+        versions.append((platform_support.BASH_NAME, f"{found} at `{bash}`"))
     for label, name in VERSIONED:
         path = find(name)
         if path is None:
@@ -481,6 +503,36 @@ def _pin(arguments: argparse.Namespace) -> int:
     return 0
 
 
+def bash_problem(reported: str, floor: str) -> str | None:
+    """Why a Bash that reported `reported` for `--version` is older than `floor`, or None when it is `floor` or newer;
+    versions compare as numbers, never as text."""
+    minimum = tools.parse_version(floor)
+    if minimum is None or tools.format_version(minimum) != floor:
+        return f"is held to {floor}, which is not a version"
+    version = tools.parse_version(reported)
+    if version is None:
+        return f"reports '{reported}', which names no version"
+    if version < minimum:
+        return f"is {tools.format_version(version)}, older than {floor}"
+    return None
+
+
+def _bash(arguments: argparse.Namespace) -> int:
+    name = platform_support.BASH_NAME
+    path = platform_support.find_bash()
+    if path is None:
+        print(f"::error::{platform_support.BASH_MISSING}")
+        return 1
+    code, output = _run_version([path, "--version"])
+    reported = next(iter(output.strip().splitlines()), "")
+    print(f"{name}: {path}: {reported}")
+    problem = f"exits {code}" if code != 0 else bash_problem(reported, arguments.at_least)
+    if problem is not None:
+        print(f"::error::{name} at {path} {problem}")
+        return 1
+    return 0
+
+
 def _summary(arguments: argparse.Namespace) -> int:
     try:
         passes = _read_results(Path(arguments.results))
@@ -520,14 +572,23 @@ def main(argv: list[str] | None = None) -> int:
     pin = commands.add_parser("pin")
     pin.add_argument("--program", required=True, help="the runtime's command, such as claude")
     pin.add_argument("--wanted", required=True, help="the version the workflow installed, or latest")
+    bash = commands.add_parser("bash")
+    bash.add_argument("--at-least", required=True, help="the oldest Bash version the deployment may run on")
     arguments = parser.parse_args(argv)
-    if arguments.command != "pin" and arguments.home is None:
+    if arguments.command not in ("pin", "bash") and arguments.home is None:
         try:
             arguments.home = str(platform_support.home_directory())
         except DeployError as exc:
             report_error(exc)
             return exc.exit_code
-    handlers = {"verify": _verify, "layout": _layout, "leftovers": _leftovers, "summary": _summary, "pin": _pin}
+    handlers = {
+        "verify": _verify,
+        "layout": _layout,
+        "leftovers": _leftovers,
+        "summary": _summary,
+        "pin": _pin,
+        "bash": _bash,
+    }
     return handlers[arguments.command](arguments)
 
 

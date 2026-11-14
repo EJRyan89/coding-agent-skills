@@ -39,6 +39,7 @@ from workflows import (
     configure_answer_problems,
     copilot_auto_update_problems,
     defender_problems,
+    deployable_bash_problems,
     deployable_posix_problems,
     image_module_problems,
     leg_problems,
@@ -1142,6 +1143,152 @@ class PowerShellPackageFixtures(unittest.TestCase):
             with self.subTest(problem=problem):
                 problems = powershell_package_problems(drifted)
                 self.assertTrue(any(problem in found for found in problems), problems)
+
+
+def _bash_job(job: str, runner: str, shell: str, install: str, check: str) -> str:
+    homebrew = "        env:\n          HOMEBREW_NO_AUTO_UPDATE: '1'\n          HOMEBREW_NO_INSTALL_CLEANUP: '1'\n"
+    return (
+        f"  {job}:\n    runs-on: {runner}\n    defaults:\n      run:\n        shell: {shell}\n    steps:\n"
+        "      - name: Install the prerequisites\n"
+        + (homebrew if install else "")
+        + f"        run: |\n          echo prerequisites\n{install}"
+        "      - name: Verify the tools in a fresh shell\n        run: |\n          echo tools\n"
+        f"      - name: Check the Bash the deployer finds\n        run: |\n{check}"
+        "      - name: Deploy\n        run: python3 deploy.py --all\n"
+    )
+
+
+# The three deployable jobs, each checking the deployer's Bash at 5.2 in a step of its own, and the macOS job
+# installing Homebrew's Bash ahead of /bin/bash, written here as literals.
+MACOS_BASH_LINES = '          brew install bash\n          echo "$(brew --prefix bash)/bin" >> "$GITHUB_PATH"\n'
+WINDOWS_BASH_CHECK = (
+    "          python tools/deployable_report.py bash --at-least 5.2\n"
+    "          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }\n"
+)
+POSIX_BASH_CHECK = "          python3 tools/deployable_report.py bash --at-least 5.2\n"
+BASH_JOBS = (
+    "jobs:\n"
+    + _bash_job("deployable", "windows-latest", "pwsh", "", WINDOWS_BASH_CHECK)
+    + _bash_job("deployable-linux", "ubuntu-latest", "bash", "", POSIX_BASH_CHECK)
+    + _bash_job("deployable-macos", "macos-latest", "bash", MACOS_BASH_LINES, POSIX_BASH_CHECK)
+)
+BASH_STEP = "      - name: Check the Bash the deployer finds\n"
+
+
+def _macos(text: str, old: str, new: str) -> str:
+    """BASH_JOBS with `old` replaced by `new` in the macOS job only."""
+    macos = text.index("  deployable-macos:")
+    return text[:macos] + text[macos:].replace(old, new)
+
+
+class DeployableBashFixtures(unittest.TestCase):
+    def test_each_job_checks_its_bash_in_one_exact_step_and_the_macos_job_installs_homebrews(self) -> None:
+        self.assertEqual([], deployable_bash_problems(BASH_JOBS, (5, 2)))
+        check = POSIX_BASH_CHECK
+        for drifted, floor, problem in (
+            # The job as it was before the fix: no Homebrew Bash, so /bin/bash 3.2 deploys.
+            (BASH_JOBS.replace(MACOS_BASH_LINES, ""), (5, 2), "does not run ['brew install bash'"),
+            (BASH_JOBS.replace("          brew install bash\n", ""), (5, 2), "does not run ['brew install bash'"),
+            # The whole of Homebrew's bin ahead of the Python and Node.js the job set up.
+            (BASH_JOBS.replace("--prefix bash)/bin", "--prefix)/bin"), (5, 2), "does not run ['brew install bash'"),
+            (
+                BASH_JOBS.replace("          HOMEBREW_NO_AUTO_UPDATE: '1'\n", ""),
+                (5, 2),
+                "does not set HOMEBREW_NO_AUTO_UPDATE: '1'",
+            ),
+            (
+                BASH_JOBS.replace("HOMEBREW_NO_INSTALL_CLEANUP: '1'", "HOMEBREW_NO_INSTALL_CLEANUP: '0'"),
+                (5, 2),
+                "does not set HOMEBREW_NO_INSTALL_CLEANUP: '1'",
+            ),
+            (BASH_JOBS.replace("  deployable-linux:", "  other:"), (5, 2), "there is no deployable-linux job"),
+            # No check, two, or one off its place.
+            (_macos(BASH_JOBS, BASH_STEP, "      - name: Other\n"), (5, 2), "has 0 steps named"),
+            (
+                _macos(BASH_JOBS, "      - name: Deploy\n", BASH_STEP + "        run: echo\n      - name: Deploy\n"),
+                (5, 2),
+                "has 2 steps named",
+            ),
+            (
+                _macos(BASH_JOBS, "Verify the tools in a fresh shell", "Verify something else"),
+                (5, 2),
+                "does not follow 'Verify the tools in a fresh shell'",
+            ),
+            # A script other than the check alone: another floor, a commented-out check, or a line before it, such
+            # as one turning errexit off however it is spelled.
+            (
+                _macos(BASH_JOBS, "5.2", "3.2"),
+                (5, 2),
+                "runs ['python3 tools/deployable_report.py bash --at-least 3.2']",
+            ),
+            (BASH_JOBS, (5, 3), "not exactly ['python3 tools/deployable_report.py bash --at-least 5.3']"),
+            (_macos(BASH_JOBS, check, "          # " + check.lstrip()), (5, 2), "not exactly"),
+            (_macos(BASH_JOBS, check, check.rstrip() + " || true\n"), (5, 2), "not exactly"),
+            (_macos(BASH_JOBS, check, "          set +e\n" + check), (5, 2), "runs ['set +e', 'python3"),
+            (_macos(BASH_JOBS, check, "          set +eu\n" + check), (5, 2), "runs ['set +eu', 'python3"),
+            (_macos(BASH_JOBS, check, "          set +u +e\n" + check), (5, 2), "runs ['set +u +e', 'python3"),
+            (
+                _macos(BASH_JOBS, check, "          set +o pipefail +o errexit\n" + check),
+                (5, 2),
+                "runs ['set +o pipefail +o errexit', 'python3",
+            ),
+            (_macos(BASH_JOBS, check, "          echo checking\n" + check), (5, 2), "runs ['echo checking', 'python3"),
+            # The Windows check without the line that fails the step on its exit status.
+            (
+                BASH_JOBS.replace("          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }\n", ""),
+                (5, 2),
+                "the deployable job's step 'Check the Bash the deployer finds' runs ['python tools/",
+            ),
+            # A shell started without -e, or another shell.
+            (
+                _macos(BASH_JOBS, BASH_STEP, BASH_STEP + "        shell: bash {0}\n"),
+                (5, 2),
+                "runs in 'bash {0}', not its job's 'bash'",
+            ),
+            (
+                BASH_JOBS.replace(BASH_STEP, BASH_STEP + "        shell: cmd\n", 1),
+                (5, 2),
+                "the deployable job's step 'Check the Bash the deployer finds' runs in 'cmd', not its job's 'pwsh'",
+            ),
+            (
+                _macos(BASH_JOBS, "        shell: bash\n    steps:", "        shell: sh\n    steps:"),
+                (5, 2),
+                "the deployable-macos job's default shell is 'sh', not 'bash'",
+            ),
+            # Any other key on the step, or continue-on-error on the job.
+            (
+                _macos(BASH_JOBS, BASH_STEP, BASH_STEP + "        continue-on-error: true\n"),
+                (5, 2),
+                "sets ['continue-on-error']",
+            ),
+            (_macos(BASH_JOBS, BASH_STEP, BASH_STEP + "        if: false\n"), (5, 2), "sets ['if']"),
+            (
+                BASH_JOBS.replace(BASH_STEP, BASH_STEP + "        if: ${{ github.event_name == 'schedule' }}\n", 1),
+                (5, 2),
+                "the deployable job's step 'Check the Bash the deployer finds' sets ['if']",
+            ),
+            (
+                _macos(BASH_JOBS, BASH_STEP, BASH_STEP + "        env:\n          PATH: /bin\n"),
+                (5, 2),
+                "sets ['env']",
+            ),
+            (
+                BASH_JOBS.replace(
+                    "  deployable-linux:\n    runs-on: ubuntu-latest\n",
+                    "  deployable-linux:\n    runs-on: ubuntu-latest\n    continue-on-error: true\n",
+                ),
+                (5, 2),
+                "the deployable-linux job sets continue-on-error",
+            ),
+        ):
+            with self.subTest(problem=problem):
+                problems = deployable_bash_problems(drifted, floor)
+                self.assertTrue(any(problem in found for found in problems), problems)
+
+    def test_the_exact_step_passes_with_its_shell_named_as_its_jobs_default(self) -> None:
+        named = _macos(BASH_JOBS, BASH_STEP, BASH_STEP + "        shell: bash\n")
+        named = named.replace(BASH_STEP, BASH_STEP + "        shell: pwsh\n", 1)
+        self.assertEqual([], deployable_bash_problems(named, (5, 2)))
 
 
 class DeployableLinuxFixtures(unittest.TestCase):
