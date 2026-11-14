@@ -2111,3 +2111,52 @@ def test_output_line_takes_off_only_the_newline_that_ends_a_line() -> None:
         assert git_client.output_line(f"{name}\n") == name
         assert git_client.output_line(name) == name
     assert git_client.output_line("a\n\n") == "a\n"
+
+
+# Literal stderr of a fetch that reached the remote but failed in the local repository, as git prints it.
+LOCAL_FAILURES = {
+    "stale ref lock": "error: cannot lock ref 'refs/remotes/origin/main': Unable to create "
+    "'/home/u/clone/.git/refs/remotes/origin/main.lock': File exists.\n\nAnother git process seems to be running in "
+    "this repository, or the lock file may be stale\n",
+    "unwritable objects": "error: insufficient permission for adding an object to repository database .git/objects\n"
+    "fatal: failed to write object\nfatal: unpack-objects failed\n",
+    "full disk": "fatal: write error: No space left on device\nfatal: index-pack failed\n",
+    "broken config": "fatal: bad config line 3 in file .git/config\n",
+    "dubious ownership": "fatal: detected dubious ownership in repository at '/srv/clone'\n",
+}
+# The remote's failures, which name nothing of the local repository, among them a remote's own lock on its line.
+REMOTE_FAILURES = {
+    **PERMANENT,
+    "early eof": EARLY_EOF,
+    "unresolved": UNRESOLVED,
+    "hung up": HUNG_UP,
+    "missing origin": "fatal: '/srv/missing.git' does not appear to be a git repository\n"
+    "fatal: Could not read from remote repository.\n",
+    "refused connection": "fatal: unable to access 'https://127.0.0.1:9/x.git/': Failed to connect to 127.0.0.1 port "
+    "9 after 0 ms: Couldn't connect to server\n",
+    "remote's lock": "remote: error: cannot lock ref 'refs/heads/main': Unable to create 'main.lock': File exists.\n"
+    "fatal: the remote end hung up unexpectedly\n",
+}
+
+
+@pytest.mark.parametrize("stderr", [pytest.param(stderr, id=name) for name, stderr in LOCAL_FAILURES.items()])
+def test_a_fetch_that_failed_in_the_local_repository_is_not_the_remote_s_failure(stderr: str) -> None:
+    assert git_client.local_failure(stderr)
+    assert not GitError(stderr.strip(), kind=classify_failure(stderr)).origin_failed
+
+
+@pytest.mark.parametrize("stderr", [pytest.param(stderr, id=name) for name, stderr in REMOTE_FAILURES.items()])
+def test_a_fetch_whose_failure_names_nothing_local_is_the_remote_s_failure(stderr: str) -> None:
+    assert not git_client.local_failure(stderr)
+    assert GitError(stderr.strip(), kind=classify_failure(stderr)).origin_failed
+
+
+def test_only_a_timeout_among_the_failures_git_never_answered_is_the_remote_s() -> None:
+    answered = {kind: GitError("git said nothing", kind=kind).origin_failed for kind in get_args(GitErrorKind)}
+    assert answered == {
+        "git": True,
+        "timeout": True,
+        "prerequisite": False,
+        "execution": False,
+        "not_repository": False,
+    }

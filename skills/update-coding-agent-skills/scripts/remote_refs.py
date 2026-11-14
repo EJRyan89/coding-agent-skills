@@ -16,15 +16,18 @@ Usage:
 `shadows` lists the tags on origin named like a branch the update reads, `refs/tags/main` and `refs/tags/origin/main`,
 printing `ON_ORIGIN <tag>` for each, then `CHECKED`. `fetch` fetches origin's main into `refs/remotes/origin/main`,
 with origin's tags but those two, and prints `FETCHED`. Either prints a last line `ORIGIN_FAILED <reason>` instead
-when git ran and failed or ran out its time limit, git's error or the limit on one line, and `FAILED <reason>` for any
-failure of this script's own, such as git missing or unable to start, which `update.sh` must not report as origin's.
+when origin failed, as `GitError.origin_failed` tells it: git ran and failed with no line of its own naming a fault in
+the clone, or ran out its time limit, git's error or the limit on one line. It prints `FAILED <reason>` for any other
+failure, which `update.sh` must not report as origin's: git missing, unable to start, or leaving programs it started
+that could not be ended, a clone that is no repository, a failure in the clone itself, such as a ref git could not lock
+or an object it could not write, and a failure of this script's own.
 `--seconds` is each command's time limit, retries of a transient fault included; it defaults to the client's.
 
 Exit status:
   0  CHECKED, after any ON_ORIGIN lines; or FETCHED
-  1  a last line ORIGIN_FAILED <reason>: git could not reach origin, was refused, failed, or ran out its time
-     limit; or a last line FAILED <reason>: git is missing or could not start, the clone is no repository, or the
-     script itself failed
+  1  a last line ORIGIN_FAILED <reason>: git could not reach origin, was refused, failed there, or ran out its time
+     limit; or a last line FAILED <reason>: git is missing, could not start, or left programs it started that could
+     not be ended, the clone is no repository, git failed in the clone itself, or the script itself failed
   2  a usage error
 """
 
@@ -45,8 +48,6 @@ MAIN = "refs/heads/main"
 ORIGIN_MAIN = "refs/remotes/origin/main"
 # Tags git would resolve before the branches the update names by their short names, main and origin/main.
 SHADOWING_TAGS = ("refs/tags/main", "refs/tags/origin/main")
-# The GitError kinds that are origin's failure: git ran and failed, or did not finish within the time limit.
-ORIGIN_KINDS = frozenset({"git", "timeout"})
 FETCH_HELP = "fetch origin's main and its tags but those named like main or origin/main"
 
 
@@ -87,9 +88,9 @@ def main(argv: list[str]) -> int:
             fetch(git, options.clone, options.seconds)
             print("FETCHED")
     except GitError as error:
-        # Only git's own answer, or its silence past the limit, is origin's failure; a git that could not run says
-        # nothing of origin.
-        if error.kind in ORIGIN_KINDS:
+        # Only git's answer about origin, or its silence past the limit, is origin's failure; a git that could not
+        # run, or that failed in the clone, says nothing of origin.
+        if error.origin_failed:
             print(f"ORIGIN_FAILED {flat_text(str(error))}")
         else:
             print(f"FAILED {flat_text(str(error))}")

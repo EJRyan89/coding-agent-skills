@@ -497,6 +497,23 @@ PERMANENT_MARKERS = (
     "ssl certificate problem",
     "returned error: 4",
 )
+# Lowered markers of a command that reached a remote but failed in the local repository: a ref it could not lock or
+# update, an object or a file it could not write, a disk that is full, or a configuration or ownership git refuses
+# there. Like the transient markers they count only on git's own lines, so a remote's `remote:` line naming its own
+# lock is never the local repository's fault.
+LOCAL_FAILURE_MARKERS = (
+    "cannot lock ref",
+    "unable to update local ref",
+    "update_ref failed",
+    "insufficient permission for adding an object",
+    "failed to write object",
+    "unable to write",
+    "unable to create",
+    "could not write",
+    "no space left on device",
+    "bad config",
+    "dubious ownership",
+)
 
 
 class GitError(RuntimeError):
@@ -516,6 +533,17 @@ class GitError(RuntimeError):
         """Whether git ran and finished, so that the error is its answer about what it was asked, not that git is
         missing, could not start, or did not finish in time, which says nothing of it."""
         return self.kind not in {"prerequisite", "execution", "timeout"}
+
+    @property
+    def origin_failed(self) -> bool:
+        """For a command that reaches a remote, such as a fetch or ls-remote: whether the remote is what failed. It did
+        when the command did not finish in time, or when git ran and failed and none of its own lines names a fault
+        in the local repository (`local_failure`). A git that is missing, could not start, could not end what it
+        started, or found no repository, and a ref it could not lock or an object it could not write, say nothing of
+        the remote."""
+        if self.kind == "timeout":
+            return True
+        return self.kind == "git" and not local_failure(str(self))
 
 
 @dataclass(frozen=True)
@@ -660,6 +688,13 @@ def transient_failure(result: GitResult) -> bool:
         return False
     own = [line for line in lowered.splitlines() if line.lstrip().startswith(GIT_LINE_PREFIXES)]
     return any(marker in line for line in own for marker in TRANSIENT_MARKERS)
+
+
+def local_failure(stderr: str) -> bool:
+    """Whether a failed command's stderr names a fault of the local repository rather than of a remote: one of git's
+    own lines holds a `LOCAL_FAILURE_MARKERS` marker."""
+    own = [line for line in stderr.casefold().splitlines() if line.lstrip().startswith(GIT_LINE_PREFIXES)]
+    return any(marker in line for line in own for marker in LOCAL_FAILURE_MARKERS)
 
 
 def transient_wait(retry: int) -> float:

@@ -135,13 +135,17 @@ removed fails validation until its pattern follows it.
   `skills/audit-ai-config/scripts/test_audit_ai_config.py::test_a_repository_whose_files_show_nothing_says_the_checks_did_not_run`,
   `tests/tools/test_hub_guard.py::test_an_event_that_names_no_command_or_file_is_allowed_with_a_note_never_unseen`,
   `tests/tools/test_hub_guard.py::ReadingBoundTests`,
-  `.claude/skills/evaluate-skill/SKILL.md#5-read-the-sampled-transcript`
+  `.claude/skills/evaluate-skill/SKILL.md#5-read-the-sampled-transcript`,
+  `skills/update-coding-agent-skills/scripts/test_update_refs.sh`, whose case with no local main and no deployed
+  commit holds that a list of commits with nothing to start from is an `UNLISTED` line
 - **Search for:** `rg -n "os\.walk\(" | rg -v onerror`, a walk that skips what it cannot read; `if not <input>:`
   followed by `return True` or `return 0`; a count, verdict, or summary computed over a list that is empty because its
   step never ran; a skill-evaluation scenario that holds `no_finding_above` and no `verdict`; `"timeout"` in a hook
   of `.claude/settings.json` whose program has no bound of its own below it, or reads a part of its input more than
-  once per level of nesting, as `for _ in range(2)` over a child does.
-- **Examples:** #1443, #1462, #1603, #1805, #1821, #1824, #1854, #2432, #2203
+  once per level of nesting, as `for _ in range(2)` over a child does; in `update.sh`, a `git_quiet` lookup whose
+  quiet no (status 1) skips a list of commits rather than printing an `UNLISTED` line, and a `log_lines` range whose
+  start is a stand-in that makes it empty, such as origin's own tip.
+- **Examples:** #1443, #1462, #1603, #1805, #1821, #1824, #1854, #2432, #2203, #2735
 
 ### Evidence a store records leaving out is withheld, not missing
 
@@ -164,8 +168,9 @@ removed fails validation until its pattern follows it.
   it, never a neighbour's message, a traceback, or a generic code.
 - **Why:** A failure reported as another one sends its reader to fix the wrong thing, and a caller that reads exit
   codes takes the wrong branch.
-- **Use:** `console:run_main`, `console:failed_line`, `skill_roots:MissingSibling`; an entry point states its codes
-  in its docstring's exit table, in the form "Script results" in the skill contract settles.
+- **Use:** `console:run_main`, `console:failed_line`, `skill_roots:MissingSibling`, `git_client:GitError.origin_failed`,
+  which tells a remote's failure from one of the local repository or of a git that never ran; an entry point states
+  its codes in its docstring's exit table, in the form "Script results" in the skill contract settles.
 - **Guard:** `tests/malformed_input/test_malformed_input.py::test_failure_names_a_write_before_a_refusal_an_escape_and_an_undocumented_acceptance`,
   `tests/validation/skill_grants.py::SkillGrantsPolicies::test_skill_markdown_names_every_status_line_its_scripts_print`,
   `tests/tools/test_mutation_gate.py::CoverageReachFixtures::test_no_data_is_read_as_reaching_nothing_only_from_coverage_json_exiting_1_with_that_message_alone`,
@@ -178,7 +183,10 @@ removed fails validation until its pattern follows it.
   `skills/ejryan89-skill-core/scripts/test_json_reader.py::AnswersRequestTests::test_a_response_nested_past_the_recursion_limit_is_told_by_its_id_wherever_the_id_stands`,
   `skills/ejryan89-skill-core/scripts/test_json_reader.py::AnswersRequestTests::test_a_request_id_is_a_number_equal_to_it_whatever_its_spelling_and_nothing_else`,
   `tests/tools/test_skill_evals.py::EvaluateTests::test_a_results_file_that_cannot_be_written_fails_by_name_after_the_run_is_judged`,
-  `tests/tools/test_runtime_changelogs.py::MainTests::test_a_summary_that_cannot_be_appended_to_fails_by_name_after_the_findings`
+  `tests/tools/test_runtime_changelogs.py::MainTests::test_a_summary_that_cannot_be_appended_to_fails_by_name_after_the_findings`,
+  `skills/ejryan89-skill-core/scripts/test_git_client.py::test_a_fetch_that_failed_in_the_local_repository_is_not_the_remote_s_failure`,
+  `skills/update-coding-agent-skills/scripts/test_remote_refs.py::test_a_fetch_that_fails_in_the_clone_is_a_failed_line_never_origins_failure`,
+  `skills/dotnet-format/scripts/test_dotnet_format_targets.py::ResolveTests::test_a_git_that_could_not_fetch_fails_by_name_never_as_a_failed_fetch`
 - **Search for:** `rg -nU "except (OSError|ValueError|UnicodeDecodeError)[^\n]*:\n\s+(print\([^\n]*\)\n\s+)?return 1\b"`,
   a handler that ends every failure in one code; two probes under one `except` that print one message; an `except`
   around a `git` or `gh` call that drops the exception's text; `FAILED KeyError`, `FAILED TypeError`, or
@@ -188,8 +196,10 @@ removed fails validation until its pattern follows it.
   point's message about where it runs, such as "Run this inside the repository", printed after any git failure;
   a wait for a response that passes over every line `json_reader` refuses, reporting a refused answer as a timeout;
   a `write_text(` or `.open("a"` of a results or summary file after an entry point printed its verdict lines, outside
-  any handler, so its failure ends in `run_main`'s generic line after them rather than one its docstring names.
-- **Examples:** #1511, #1840, #1855, #1910, #2022, #2181, #2207, #2209, #2477, #2548, #2596
+  any handler, so its failure ends in `run_main`'s generic line after them rather than one its docstring names;
+  `rg -n "kind (in|==) .*\"git\"|except GitError" -g '*.py'` beside a fetch or `ls-remote` whose failure is reported
+  as the remote's, where `GitError.origin_failed` is meant.
+- **Examples:** #1511, #1840, #1855, #1910, #2022, #2181, #2207, #2209, #2477, #2548, #2596, #2697
 
 ### A refusal ends with the step to take
 

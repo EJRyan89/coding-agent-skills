@@ -325,12 +325,16 @@ def fetch_failure(services: Services, root: Path) -> str | None:
     """Why `git fetch origin` failed, or None when it succeeded.
 
     A failed fetch, offline or a remote that does not answer, leaves the remote-tracking refs as they were, which
-    still serve as a base, so the caller reports it and goes on.
+    still serve as a base, so the caller reports it and goes on. A git that is missing, could not start, or could not
+    end what it started never fetched at all and says nothing of origin, so it fails the resolution with its reason
+    rather than read as a fetch that failed.
     """
     try:
         result = services.git.run(["fetch", "origin", "--quiet"], directory=root)
     except GitError as exc:
-        return flat_text(str(exc))
+        if exc.origin_failed:
+            return flat_text(str(exc))
+        raise Failed(f"git could not fetch origin: {flat_text(str(exc))}") from exc
     if result.returncode == 0:
         return None
     return flat_text(result.stderr) or f"git fetch origin exited with code {result.returncode}"

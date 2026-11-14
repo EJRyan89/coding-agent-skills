@@ -232,3 +232,44 @@ def test_a_git_that_could_not_run_is_a_failed_line_never_origins_failure(
     # report it as FETCH_FAILED, which tells the user to sign in to origin.
     with mock.patch.object(GitClient, "output", side_effect=GitError("git could not run", kind=kind)):
         assert run(capsys, command, clone) == (1, "FAILED git could not run\n")
+
+
+def test_a_fetch_that_fails_in_the_clone_is_a_failed_line_never_origins_failure(
+    capsys: pytest.CaptureFixture[str], clone: Path, tmp_path: Path
+) -> None:
+    # Origin answered, but the clone could not take what it sent: a stale lock on the ref the fetch writes. That says
+    # nothing of origin, so update.sh must not report it as FETCH_FAILED, which sends the user to sign in to origin.
+    seed = tmp_path / "seed folder"
+    git(
+        "-C",
+        seed,
+        "-c",
+        "user.name=Test",
+        "-c",
+        "user.email=test@example.invalid",
+        "commit",
+        "-q",
+        "--allow-empty",
+        "-m",
+        "second",
+    )
+    git("-C", seed, "push", "-q", git("-C", clone, "remote", "get-url", "origin").strip(), "main")
+    lock = clone / ".git" / "refs" / "remotes" / "origin" / "main.lock"
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    lock.touch()
+    code, output = run(capsys, "fetch", clone)
+    assert code == 1
+    assert output.startswith("FAILED error: cannot lock ref 'refs/remotes/origin/main'"), output
+    assert output.count("\n") == 1, output
+
+
+@pytest.mark.parametrize("command", COMMANDS)
+def test_a_failure_git_names_in_the_clone_is_a_failed_line_and_any_other_failure_is_origins(
+    capsys: pytest.CaptureFixture[str], clone: Path, command: str
+) -> None:
+    local = GitError("error: insufficient permission for adding an object to repository database .git/objects")
+    with mock.patch.object(GitClient, "output", side_effect=local):
+        assert run(capsys, command, clone)[1].startswith("FAILED error: insufficient permission"), command
+    remote = GitError("remote: error: cannot lock ref 'refs/heads/main'\nfatal: the remote end hung up unexpectedly")
+    with mock.patch.object(GitClient, "output", side_effect=remote):
+        assert run(capsys, command, clone)[1].startswith("ORIGIN_FAILED remote: error: cannot lock ref"), command

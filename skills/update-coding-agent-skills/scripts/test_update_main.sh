@@ -249,6 +249,17 @@ expect_no_stderr "origin wants a credential"
 [ ! -e "$FIXTURE/askpass ran" ] || fail "origin wants a credential: an askpass helper ran"
 expect_not_deployed "origin wants a credential"
 
+# A fetch that origin answered but the clone could not take, here a stale lock on the ref it writes, is the clone's
+# failure, named with git's reason, never FETCH_FAILED, which sends the user to sign in to origin.
+begin_case 'ref lock in the clone'
+new_clone
+publish "change behind a stale lock"
+mkdir -p "$CLONE/.git/refs/remotes/origin"
+: >"$CLONE/.git/refs/remotes/origin/main.lock"
+run_subject "$CLONE" main
+expect_failed "FAILED remote_refs.py fetch failed: error: cannot lock ref 'refs/remotes/origin/main'" "ref lock"
+expect_not_deployed "ref lock"
+
 # A Git command that fails outright is a named failure.
 begin_case 'status failed'
 new_clone
@@ -326,6 +337,29 @@ expect_nothing_run "no file for git errors"
 [ "$(cat "$GIT_MKTEMP_WRAPPER/made")" = "2" ] || fail "no file for git errors: the first two files were not made"
 [ -z "$(ls -A "$FIXTURE/tmp for git errors")" ] ||
   fail "no file for git errors: temporary files left behind: $(ls -A "$FIXTURE/tmp for git errors")"
+
+# Every temporary file, the copy, the deployer's errors, and git's errors, is named from a template under TMPDIR: a
+# mktemp wrapper refuses any call that names none there, as a bare mktemp on macOS would make its file elsewhere, so
+# a full update deploys only while each of the three names its template. Each is removed when the update ends.
+begin_case 'every file under TMPDIR'
+new_clone
+UNDER_TMPDIR="$FIXTURE/tmp for every file"
+TEMPLATE_MKTEMP="$FIXTURE/template mktemp wrapper"
+mkdir -p "$TEMPLATE_MKTEMP" "$UNDER_TMPDIR"
+cat >"$TEMPLATE_MKTEMP/mktemp" <<EOF
+#!/usr/bin/env bash
+case "\${1:-}" in
+  "$UNDER_TMPDIR/"*) exec "$(command -v mktemp)" "\$@" ;;
+esac
+echo "mktemp: no template under TMPDIR: \$*" >&2
+exit 1
+EOF
+chmod +x "$TEMPLATE_MKTEMP/mktemp"
+TMPDIR="$UNDER_TMPDIR" PATH="$TEMPLATE_MKTEMP:$PATH" run_subject "$CLONE" main
+expect_status 0 "every file under TMPDIR"
+expect_deployed "every file under TMPDIR"
+[ -z "$(ls -A "$UNDER_TMPDIR")" ] ||
+  fail "every file under TMPDIR: temporary files left behind: $(ls -A "$UNDER_TMPDIR")"
 
 # A failing deploy is reported with its exit code.
 begin_case 'deploy failed'

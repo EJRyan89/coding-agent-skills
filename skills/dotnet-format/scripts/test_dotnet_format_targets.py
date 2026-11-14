@@ -719,6 +719,29 @@ class ResolveTests(unittest.TestCase):
             [mock.call(message.strip()), mock.call("Cannot read café 設計 repository.")], flatten.call_args_list
         )
 
+    def test_a_git_that_could_not_fetch_fails_by_name_never_as_a_failed_fetch(self) -> None:
+        # A git that is missing, could not start, or could not end what it started said nothing of origin: reading it
+        # as FETCH_FAILED would report a fetch from origin that never ran.
+        for failure in (
+            GitError(git_client.MISSING_GIT, kind="prerequisite"),
+            GitError("Git could not be started: [Errno 13] Permission denied", kind="execution"),
+            GitError("git fetch left programs it started that could not be ended", kind="execution"),
+        ):
+            services = Services()
+
+            def run(
+                command: Sequence[str], timeout: float, failure: GitError = failure, real: Any = services.git.runner
+            ) -> GitResult:
+                if command[3] == "fetch":
+                    raise failure
+                result: GitResult = real(command, timeout)
+                return result
+
+            services.git = GitClient(run)
+            with self.subTest(failure=str(failure)):
+                self.assertEqual(f"git could not fetch origin: {failure}", self.failed(services=services))
+                self.assertEqual([], self.values(self.run_resolve(None, services)[1], "FETCH_FAILED"))
+
     def test_a_fetch_that_succeeds_reports_nothing(self) -> None:
         services = Services()
         real = services.git.runner
