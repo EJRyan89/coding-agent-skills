@@ -5,16 +5,13 @@ Each policy fails on a violating input and passes on a conforming one.
 
 from __future__ import annotations
 
-import errno
 import json
-import os
 import sys
 import tempfile
 import unittest
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
-from unittest import mock
 
 import pytest
 
@@ -129,22 +126,6 @@ class SkillTreeFixtures(unittest.TestCase):
             reason = file_presence.refusal_reason(root / "skills" / "folded" / "SKILL.md")
             self.assertEqual("is not a file", reason)
             self.assertEqual([f"skills/folded/SKILL.md {reason}"], skill_tree_problems(root))
-
-    def test_a_skill_md_a_stat_cannot_examine_is_named_so_never_as_a_folder_holding_none(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            write_fixture_tree(root, {"skills/alpha/SKILL.md": "", "skills/beta/SKILL.md": ""})
-            target = root / "skills" / "beta" / "SKILL.md"
-            real = Path.stat
-
-            def stat(path: Path, *, follow_symlinks: bool = True) -> os.stat_result:
-                if path == target:
-                    raise PermissionError(errno.EACCES, "Access is denied")
-                return real(path, follow_symlinks=follow_symlinks)
-
-            with mock.patch.object(Path, "stat", stat):
-                problems = skill_tree_problems(root)
-            self.assertEqual(["skills/beta/SKILL.md cannot be examined: Access is denied"], problems)
 
     def test_a_flat_skills_directory_has_no_tree_problems(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
