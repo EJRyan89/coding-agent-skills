@@ -2520,6 +2520,36 @@ class CommandGuardTests(GuardTestCase):
         missing = run_git(self.hub, self.environment, "cat-file", "-e", moved)
         self.assertNotEqual(0, missing.returncode, "the hub's store holds the commit")
 
+    def test_the_store_a_call_shares_is_unsettled_where_its_place_is_and_no_hub_s_outside_every_repository(
+        self,
+    ) -> None:
+        plain = self.root / "plain"
+        plain.mkdir()
+        cases = (
+            (hub_guard.Place(None, None), (None, True)),
+            (hub_guard.Place(self.tree, self.tree, repository_named=True, repository=None), (None, True)),
+            (hub_guard.Place(plain, plain), (None, False)),
+            (hub_guard.Place(self.tree, self.tree), (self.hub, False)),
+        )
+        for place, expected in cases:
+            with self.subTest(place=place):
+                hub, unknown = hub_guard.shared_store_hub(place)
+                self.assertEqual(expected, (None if hub is None else Path(hub), unknown))
+        shallow = {"GIT_SHALLOW_FILE": str(self.root / "shallow")}
+        unshared = {name: value for name, value in self.environment.items() if name != "CLAUDE_PROJECT_DIR"}
+        # A place the text does not settle may share a guarded hub's store: refused while one is in view, and passed
+        # over with none.
+        for command in ('cd "$SOMEWHERE_UNSET" && git status', 'cd "$SOMEWHERE_UNSET" && git -C "$PWD" status'):
+            with self.subTest(command=command):
+                self.assertEqual("deny", self.bash(command, self.tree, {**unshared, **shallow}))
+                self.assertIn("a place the guard cannot settle", self.reason)
+                self.assertIsNone(self.bash(command, plain, {**unshared, **shallow}))
+        # A directory outside every repository shares no store, with a hub in view or not.
+        for shell, command in ((self.bash, f'git -C "{plain}" status'), (self.powershell, f"git -C '{plain}' status")):
+            with self.subTest(command=command, shell=shell.__name__):
+                self.assertIsNone(shell(command, self.tree, {**unshared, **shallow}))
+        self.assertIsNone(self.bash("git status", plain, {**unshared, **shallow}))
+
     def test_a_worktree_call_whose_store_the_guard_cannot_place_is_refused_while_a_hub_is_guarded(self) -> None:
         failure = git_client.GitError("git could not read it", returncode=128)
         other = self.other_git_directory().parent
