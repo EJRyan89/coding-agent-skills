@@ -39,7 +39,7 @@ Reports are especially useful when they involve a boundary the [trust model](doc
 - **The reviewer guard**: a reviewer call outside its role that the guard allows, or a result it lets count without having claimed the role.
 - **The hub guard**: an edit to a guarded hub, or a git command that moves its HEAD or writes its tree, that the guard lets through.
 - **The merge shepherd**: an action of the shepherd on a pull request whose head branch is not in this repository.
-- **The same user**: a process running as the user is trusted, so a report that needs one is in scope only when the suite hands it something the user did not, such as a credential written to a file.
+- **The same user**: a process running as the user is trusted, so a report that needs one is in scope only when the suite hands it something the user did not, such as a credential written to a file, or leaves state of the user's where another local account sharing the temporary directory can change it.
 - Reviewer isolation, under the guard or in the [bounded Copilot CLI host](docs/copilot-support.md#bounded-code-review-host), that exposes ambient configuration, credentials, or unintended write access beyond what those pages say remains.
 - Secret disclosure through logs, generated files, archives, or diagnostics.
 

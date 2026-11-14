@@ -25,6 +25,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-cor
 
 import cleanup_policy
 import git_client
+import private_folder
 import repo_cleanup as rc
 from git_client import GitClient, GitError, GitResult
 from github_client import MISSING_CLI, CommandResult, GitHubError
@@ -2458,7 +2459,7 @@ class ConsoleTests(CleanupTestCase):
         this test's saves write them too."""
         temporary = root / "temp"
         temporary.mkdir()
-        patcher = mock.patch.object(rc, "SEALS", temporary / "repo-cleanup-seals")
+        patcher = mock.patch.object(rc, "SEALS", private_folder.location(rc.SEALS_NAME, temporary))
         patcher.start()
         self.addCleanup(patcher.stop)
         return {**os.environ, "TMPDIR": str(temporary), "TEMP": str(temporary), "TMP": str(temporary)}
