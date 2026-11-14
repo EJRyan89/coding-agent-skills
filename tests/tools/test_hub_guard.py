@@ -2243,7 +2243,7 @@ class CommandGuardTests(GuardTestCase):
             "GIT_CONFIG_GLOBAL": str(configured),
             **dict.fromkeys(("GIT_TRACE2", "GIT_TRACE2_PERF", "GIT_TRACE2_EVENT"), "0"),
         }
-        with mock.patch.object(hub_guard.CLIENT, "quiet_output", wraps=hub_guard.CLIENT.quiet_output) as asked:
+        with mock.patch.object(worktrees.CLIENT, "quiet_output", wraps=worktrees.CLIENT.quiet_output) as asked:
             self.assertIsNone(self.bash("ls", self.tree, every_off))
         self.assertFalse([call for call in asked.call_args_list if "--get-regexp" in call.args[0]])
         for label, harmless_target in (
@@ -2270,6 +2270,31 @@ class CommandGuardTests(GuardTestCase):
         self.assertFalse(trace.exists())
         run_git(self.tree, {**self.environment, "GIT_CONFIG_GLOBAL": str(wrapper)}, "status")
         self.assertTrue(trace.stat().st_size > 0)
+
+    def test_a_file_an_include_if_entry_names_is_read_for_trace2_targets_and_refused_as_written(self) -> None:
+        # An includeIf.<condition>.path names a further configuration file as include.path does. The guard asks git
+        # from inside a repository, where a gitdir condition matching every git directory holds, so a trace2 target
+        # in the file is read; and the file is one git reads its configuration from, whether or not it exists yet.
+        readme = self.hub / "README.md"
+        conditional = self.root / "conditional.gitconfig"
+        configured = self.global_configuration({})
+        with configured.open("a", encoding="utf-8") as stream:
+            stream.write(f'[includeIf "gitdir:**"]\n\tpath = "{conditional.as_posix()}"\n')
+        environment = {**self.environment, "GIT_CONFIG_GLOBAL": str(configured)}
+        for shell, command in (
+            (self.bash, f'printf x > "{conditional}"'),
+            (self.bash, f'git config --file "{conditional}" trace2.eventTarget "{readme}" && git status'),
+            (self.powershell, f"'x' >> '{conditional}'"),
+        ):
+            with self.subTest(command=command, shell=shell.__name__):
+                self.assertEqual("deny", shell(command, self.tree, environment))
+                self.assertIn(f"{conditional}, a file git reads its system or global configuration from", self.reason)
+        conditional.write_text(f"[trace2]\n\teventTarget = {readme.as_posix()}\n", encoding="utf-8")
+        for shell in (self.bash, self.powershell):
+            with self.subTest(shell=shell.__name__, target="included"):
+                self.assertEqual("deny", shell("ls", self.tree, environment))
+                self.assertIn("The session's global git configuration sets trace2.eventtarget to", self.reason)
+                self.assertIn("every git a command starts", self.reason)
 
     def test_a_command_that_writes_a_file_git_reads_its_configuration_from_is_refused(self) -> None:
         # The guard reads the configuration's trace2 targets before the command runs, so a command that writes one
