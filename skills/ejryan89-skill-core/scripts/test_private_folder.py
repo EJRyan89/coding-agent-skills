@@ -16,6 +16,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import private_folder
 from private_folder import UnsafeFolderError, ensure, location, parent_refusal, refusal
+from test_link_probe import link_folder
 
 # The modes and the id the rules are held to, written out rather than read from the module's constants.
 OWNER_ONLY = 0o700
@@ -35,6 +36,11 @@ class LocationTests(unittest.TestCase):
             self.assertEqual(base / "state-1000", location("state", base))
         with mock.patch.object(private_folder, "user_id", return_value=None):
             self.assertEqual(base / "state", location("state", base))
+
+    @unittest.skipUnless(sys.platform == "win32", "only Windows has no user ids")
+    def test_on_windows_there_is_no_user_id_and_the_folder_carries_none(self) -> None:
+        self.assertIsNone(private_folder.user_id())
+        self.assertEqual(Path(tempfile.gettempdir()) / "state", location("state"))
 
     def test_the_folder_lies_in_the_temporary_directory_by_default(self) -> None:
         self.assertEqual(Path(tempfile.gettempdir()), location("state").parent)
@@ -134,6 +140,7 @@ class EnsureTests(unittest.TestCase):
         self.assertEqual(f"{folder} can be written by users other than its owner (mode 777)", str(raised.exception))
         self.assertEqual(0o777, stat.S_IMODE(folder.stat().st_mode))
 
+    @unittest.skipIf(sys.platform == "win32", "Windows has no user ids; WindowsTests cover what holds there")
     def test_a_folder_another_user_owns_is_refused(self) -> None:
         folder = self.root / "state"
         folder.mkdir()
@@ -146,6 +153,7 @@ class EnsureTests(unittest.TestCase):
             ensure(folder)
         self.assertTrue(str(raised.exception).startswith(f"{folder} is owned by user id "), raised.exception)
 
+    @unittest.skipIf(sys.platform == "win32", "Windows has no user ids; WindowsTests cover what holds there")
     def test_a_folder_in_a_parent_another_user_owns_is_refused_before_anything_is_made(self) -> None:
         folder = self.root / "state"
         with (
@@ -199,3 +207,40 @@ class EnsureTests(unittest.TestCase):
     def test_a_missing_parent_is_raised_rather_than_made(self) -> None:
         with self.assertRaises(FileNotFoundError):
             ensure(self.root / "missing" / "state")
+
+
+class WindowsTests(unittest.TestCase):
+    """What holds where the platform has no user ids, as on Windows, whose temporary directory lies under the user's
+    profile, which other accounts cannot write: only the folder's kind is judged, so a link or junction and a file are
+    refused, and a folder's mode bits and its parent's, which say nothing there, are not."""
+
+    def setUp(self) -> None:
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+        patcher = mock.patch.object(private_folder, "user_id", return_value=None)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_a_folder_is_made_and_used_whatever_its_parent_s_mode_bits_say(self) -> None:
+        folder = self.root / "state"
+        self.assertEqual(folder, ensure(folder))
+        self.assertTrue(folder.is_dir())
+        self.assertEqual(folder, ensure(folder))
+
+    def test_a_link_or_junction_in_the_folder_s_place_is_refused_and_nothing_is_made_through_it(self) -> None:
+        target = self.root / "target"
+        target.mkdir()
+        folder = self.root / "state"
+        link_folder(target, folder)
+        with self.assertRaises(UnsafeFolderError) as raised:
+            ensure(folder)
+        self.assertEqual(f"{folder} is a link or junction, not a folder of this user's own", str(raised.exception))
+        self.assertEqual([], list(target.iterdir()))
+
+    def test_a_file_in_the_folder_s_place_is_refused(self) -> None:
+        folder = self.root / "state"
+        folder.write_text("x", encoding="utf-8")
+        with self.assertRaises(UnsafeFolderError) as raised:
+            ensure(folder)
+        self.assertEqual(f"{folder} is not a directory", str(raised.exception))

@@ -823,7 +823,9 @@ class SealsFolderTests(CleanupTestCase):
 
     @unittest.skipIf(sys.platform == "win32", "the temporary directory there is the user's own and has no user ids")
     def test_the_seals_folder_is_named_with_the_user_s_id_in_the_temporary_directory(self) -> None:
-        self.assertEqual(Path(tempfile.gettempdir()) / f"repo-cleanup-seals-{os.geteuid()}", UNPATCHED_SEALS)
+        # The id is read only where the platform has user ids, so a type check for Windows, which has none, passes it.
+        if sys.platform != "win32":
+            self.assertEqual(Path(tempfile.gettempdir()) / f"repo-cleanup-seals-{os.geteuid()}", UNPATCHED_SEALS)
 
     def test_a_missing_seals_folder_is_made_owner_only(self) -> None:
         folder = self.root / "seals"
@@ -834,6 +836,9 @@ class SealsFolderTests(CleanupTestCase):
         if sys.platform != "win32":
             self.assertEqual(0o700, folder.stat().st_mode & 0o777)
 
+    @unittest.skipIf(
+        sys.platform == "win32", "Windows has no user ids; private_folder's WindowsTests cover what holds there"
+    )
     def test_a_seals_folder_another_account_owns_is_refused(self) -> None:
         folder = self.root / "seals"
         self.use_seals(folder)
@@ -847,6 +852,9 @@ class SealsFolderTests(CleanupTestCase):
         ):
             self.assert_refused(f"{folder} is owned by user id ")
 
+    @unittest.skipIf(
+        sys.platform == "win32", "Windows has no user ids; private_folder's WindowsTests cover what holds there"
+    )
     def test_a_seals_folder_in_a_parent_another_account_owns_is_refused(self) -> None:
         folder = self.root / "seals"
         self.use_seals(folder)
