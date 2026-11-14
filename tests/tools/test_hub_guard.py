@@ -1198,7 +1198,8 @@ class HookCommandTests(GuardTestCase):
                 self.assertEqual(["-B", f"{self.hub}/tools/hub_guard.py"], arguments)
 
     def test_an_opted_in_clone_with_only_python3_runs_the_guard_with_python3(self) -> None:
-        # Homebrew's Python on macOS, and Linux without python-is-python3, name Python `python3` alone (#2742).
+        # Homebrew's Python on macOS, and Linux without python-is-python3, name Python `python3` alone, and a hook that
+        # started `python` alone blocked every tool call there.
         self.enable("true")
         completed, started = self.start_hook(pythons=("python3",), machine_path=False)
         outcome = (completed.returncode, completed.stderr, started)
