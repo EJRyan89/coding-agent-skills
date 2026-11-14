@@ -427,6 +427,9 @@ TRACE2_SETTINGS = {
     "trace2.eventtarget": "GIT_TRACE2_EVENT",
 }
 TRACE2_SCOPES = frozenset({"system", "global"})
+# The settings that name a further configuration file git reads, by their name as git lists it (section and name in
+# lower case, a condition as written).
+INCLUDE_SETTING = re.compile(r"include\.path|includeif\..+\.path", re.DOTALL)
 # git for Windows sends its output to the file these name, read from where it starts (compat/mingw.c), but for the
 # values that name none; each is judged on every platform, since one git may be either build.
 REDIRECT_VARIABLES = {"GIT_REDIRECT_STDOUT": frozenset({"off"}), "GIT_REDIRECT_STDERR": frozenset({"off", "2>&1"})}
@@ -755,6 +758,25 @@ SHOPT_OPTIONS: dict[str, str] = {
         "",
     ),
 }
+# The names beyond GIT_* that git reads to choose a file it reads or writes, or a program it runs, each with why; an
+# assignment to one is never harmless (harmless_name). A name git reads only for its messages, as LANG or LC_ALL,
+# chooses neither.
+GIT_READ_NAMES: dict[str, str] = {
+    "HOME": "chooses where git reads its global configuration, attributes, and ignore files",
+    "XDG_CONFIG_HOME": "chooses where git reads its global configuration, attributes, and ignore files",
+    "XDG_CACHE_HOME": "chooses where git's credential cache makes its socket",
+    **dict.fromkeys(
+        ("USERPROFILE", "HOMEDRIVE", "HOMEPATH"),
+        "chooses git for Windows' home, where it reads its global configuration, when HOME is unset",
+    ),
+    "TMPDIR": "chooses where git writes the temporary files an external diff or a textconv reads",
+    **dict.fromkeys(("TEMP", "TMP"), "chooses git for Windows' TMPDIR when that is unset"),
+    "PAGER": "names the pager git runs when no setting or GIT_PAGER names one",
+    **dict.fromkeys(("EDITOR", "VISUAL"), "names the editor git runs when no setting or GIT_EDITOR names one"),
+    "SSH_ASKPASS": "names the program git runs to ask for a credential when GIT_ASKPASS is unset",
+}
+# The prefixes of the names the dynamic loader reads as any program starts, git among them, which may load code into it.
+LOADER_PREFIXES = ("LD_", "DYLD_")
 # The variables Bash itself reads or sets, from its manual's "Shell Variables" and `compgen -v` in a bash started
 # with no environment, each with "" where assigning it changes nothing the guard reads, or why it does. A name Bash
 # neither reads nor sets is free: the guard needs its value only where an expansion of it stands, which leaves its
@@ -2718,6 +2740,46 @@ def configured_trace_targets(variables: Mapping[str, str]) -> list[WrittenTarget
     return targets
 
 
+def included_file(value: str, source: Path | None, start: Path | None) -> Path | None:
+    """The file an include.path or includeIf.<condition>.path setting names, as git reads it: a leading ~/ from the
+    home start names, a relative path from the directory of the file source holding it; None where the guard cannot
+    place it."""
+    if value.startswith(("~/", "~\\")):
+        return None if start is None else Path(os.path.realpath(start / value[2:]))
+    path = Path(platform_support.from_shell_path(value))
+    if path.is_absolute():
+        return Path(os.path.realpath(path))
+    return None if source is None else Path(os.path.realpath(source.parent / path))
+
+
+def configuration_files(start: Path | None) -> list[Path | None]:
+    """The files git reads its system and global configuration from with the session's environment, the ones trace2
+    reads its targets from: each `git var` names, whether or not it exists, every file the listing of those scopes
+    names as an origin, and every file an include.path or includeIf.<condition>.path in them names, whether or not it
+    exists. Each has every symbolic link followed; None is one the guard cannot place, start being the home a leading
+    ~/ names.
+
+    Raises GitError where git cannot name or read them."""
+    directory = Path(__file__).resolve().parent
+    files: list[Path | None] = []
+    for variable in ("GIT_CONFIG_SYSTEM", "GIT_CONFIG_GLOBAL"):
+        # Exit 1 with nothing on stderr is git reading no such file, as with GIT_CONFIG_NOSYSTEM.
+        output = CLIENT.quiet_output(["var", variable], directory=directory, timeout=lookup_timeout())
+        files += [placed_file(line) for line in output_lines(output or "")]
+    arguments = ["config", "--includes", "--show-scope", "--show-origin", "--null", "--list"]
+    fields = (CLIENT.quiet_output(arguments, directory=directory, timeout=lookup_timeout()) or "").split("\0")
+    # Each setting is its scope, its origin, then its name and value on two lines, each ended by a NUL.
+    for scope, origin, entry in zip(fields[0::3], fields[1::3], fields[2::3], strict=False):
+        if scope not in TRACE2_SCOPES:
+            continue
+        source = placed_file(origin.removeprefix("file:")) if origin.startswith("file:") else None
+        files.append(source)
+        setting, has_value, value = entry.partition("\n")
+        if has_value and INCLUDE_SETTING.fullmatch(setting):
+            files.append(included_file(value, source, start))
+    return files
+
+
 def withhold_written_variables(environment: MutableMapping[str, str]) -> None:
     """Removes from environment each variable naming a file git writes its trace or output to (written_targets), and
     turns off each trace2 target (TRACE2_SETTINGS), which outranks one the configuration names, so the guard's own git
@@ -2750,6 +2812,8 @@ class Judge:
     environment: Mapping[str, str]
     notes: list[str]
     deadline: float
+    # The files git reads its system and global configuration from (configuration_files), once a write asks for them.
+    configuration: list[Path | None] | None = None
 
     def denied(self, reading: Reading, depth: int = 0) -> str | None:
         if reading.unread:
@@ -2763,6 +2827,9 @@ class Judge:
             reading.time_left()
             if hub_protected(path):
                 return f"The command redirects its output into {path}, a file of a guarded hub."
+            reason = self.configuration_write_refusal(path, "The command redirects its output into")
+            if reason is not None:
+                return reason
         for call in reading.calls:
             reading.time_left()
             reason = self.judge(call, depth)
@@ -2970,6 +3037,36 @@ class Judge:
             path = call.place.start / path
         if hub_protected(path):
             return f"`git {call.subcommand}` writes {path}, a file of a guarded hub."
+        return self.configuration_write_refusal(path, f"`git {call.subcommand}` writes")
+
+    def configuration_write_refusal(self, path: Path, writer: str) -> str | None:
+        """Why a file a command writes is refused, while a hub is guarded, for being one git reads its system or global
+        configuration from (configuration_files): a trace2 target or another setting written there reaches every git
+        the rest of the command starts, a program's own included, though the guard judged the configuration before the
+        command ran. Where git cannot name those files, or the guard cannot place one, every file a command writes is
+        refused while a hub is guarded."""
+        if not self.hubs:
+            return None
+        if self.configuration is None:
+            try:
+                self.configuration = configuration_files(home(self.environment))
+            except GitError as exc:
+                return (
+                    f"{writer} {path}, and the guard could not tell which files git reads its system and global "
+                    f"configuration from ({exc}), so it is refused while a hub is guarded. {UNREAD_CONFIGURATION_IT}"
+                )
+        if None in self.configuration:
+            return (
+                f"{writer} {path}, and the guard cannot place a file git reads its system or global configuration "
+                f"from, which may be this one, so it is refused while a hub is guarded. {UNREAD_CONFIGURATION_IT}"
+            )
+        written = Path(os.path.realpath(path))
+        if any(file is not None and same_path(written, file) for file in self.configuration):
+            return (
+                f"{writer} {path}, a file git reads its system or global configuration from, and a setting written "
+                "there, such as a trace2 target in a hub, reaches every git the rest of the command starts, so it is "
+                "refused while a hub is guarded. Change the git configuration from a terminal."
+            )
         return None
 
     def config_refusal(self, call: GitCall) -> str | None:
@@ -3163,12 +3260,15 @@ def free_name(name: str, environment: Mapping[str, str]) -> bool:
 
 
 def harmless_name(name: str) -> bool:
-    """Whether a variable is one an assignment before a program may give it: one git does not read, and Bash does not
+    """Whether a variable is one an assignment before a program may give it: one git does not read to choose a file or
+    a program (no GIT_ name, none GIT_READ_NAMES names, and none the loader reads, LOADER_PREFIXES), and Bash does not
     read for what the guard reads."""
+    canonical = folded(name)
     return (
         BASH_VARIABLES.get(name, "") == ""
-        and not folded(name).startswith("GIT_")
-        and not EXPORTED_FUNCTION.match(folded(name))
+        and not canonical.startswith(("GIT_", *LOADER_PREFIXES))
+        and canonical not in GIT_READ_NAMES
+        and not EXPORTED_FUNCTION.match(canonical)
     )
 
 

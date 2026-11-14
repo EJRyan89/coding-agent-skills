@@ -2237,6 +2237,15 @@ class CommandGuardTests(GuardTestCase):
         ):
             with self.subTest(case=label):
                 self.assertIsNone(self.bash("ls", self.root, environment))
+        # With every target's variable holding a value, the configuration is not even asked.
+        every_off = {
+            **self.environment,
+            "GIT_CONFIG_GLOBAL": str(configured),
+            **dict.fromkeys(("GIT_TRACE2", "GIT_TRACE2_PERF", "GIT_TRACE2_EVENT"), "0"),
+        }
+        with mock.patch.object(hub_guard.CLIENT, "quiet_output", wraps=hub_guard.CLIENT.quiet_output) as asked:
+            self.assertIsNone(self.bash("ls", self.tree, every_off))
+        self.assertFalse([call for call in asked.call_args_list if "--get-regexp" in call.args[0]])
         for label, harmless_target in (
             ("outside", self.root / "trace.json"),
             ("descriptor", "2"),
@@ -2261,6 +2270,92 @@ class CommandGuardTests(GuardTestCase):
         self.assertFalse(trace.exists())
         run_git(self.tree, {**self.environment, "GIT_CONFIG_GLOBAL": str(wrapper)}, "status")
         self.assertTrue(trace.stat().st_size > 0)
+
+    def test_a_command_that_writes_a_file_git_reads_its_configuration_from_is_refused(self) -> None:
+        # The guard reads the configuration's trace2 targets before the command runs, so a command that writes one
+        # into the system or global configuration, or a file it includes, and then runs git would write the hub.
+        readme = self.hub / "README.md"
+        included = self.root / "included.gitconfig"
+        configured = self.global_configuration({})
+        with configured.open("a", encoding="utf-8") as stream:
+            stream.write(f'[include]\n\tpath = "{included.as_posix()}"\n')
+        environment = {**self.environment, "GIT_CONFIG_GLOBAL": str(configured)}
+        trace2 = f"[trace2]\\n\\teventTarget = {readme.as_posix()}\\n"
+        for target in (configured, included):
+            for shell, command in (
+                (self.bash, f'git config --file "{target}" trace2.eventTarget "{readme}" && git status'),
+                (self.bash, f"printf '{trace2}' >> \"{target}\" && git status"),
+                (self.bash, f"printf '{trace2}' >> \"{target}\" && python tools/worktrees.py list"),
+                (self.powershell, f"git config --file '{target}' trace2.eventTarget '{readme}'; git status"),
+                (self.powershell, f"'x' >> '{target}'; git status"),
+            ):
+                with self.subTest(target=target.name, command=command, shell=shell.__name__):
+                    self.assertEqual("deny", shell(command, self.tree, environment))
+                    self.assertIn("a file git reads its system or global configuration from", self.reason)
+        # The files HOME and XDG_CONFIG_HOME choose count whether or not they exist.
+        home = self.root / "home"
+        home.mkdir()
+        xdg = self.root / "xdg"
+        unset = {name: value for name, value in self.environment.items() if name != "GIT_CONFIG_GLOBAL"}
+        located = {**unset, "HOME": str(home), "XDG_CONFIG_HOME": str(xdg)}
+        for target in (home / ".gitconfig", xdg / "git" / "config"):
+            with self.subTest(target=str(target)):
+                self.assertEqual("deny", self.bash(f'printf x > "{target}"', self.tree, located))
+                self.assertIn("a file git reads its system or global configuration from", self.reason)
+        # Any other file is judged as before, and with no hub in view nothing is asked.
+        self.assertIsNone(self.bash(f'printf x > "{self.root / "notes.txt"}" && git status', self.tree, environment))
+        outside = self.root / "outside"
+        outside.mkdir()
+        unshared = {name: value for name, value in environment.items() if name != "CLAUDE_PROJECT_DIR"}
+        self.assertIsNone(self.bash(f'printf x >> "{configured}"', outside, unshared))
+        # Where git cannot name the files, or one cannot be placed, every write is refused while a hub is guarded.
+        failure = git_client.GitError("git could not read it", returncode=128)
+        notes = f'printf x > "{self.root / "notes.txt"}"'
+        with mock.patch.object(hub_guard, "configuration_files", side_effect=failure):
+            self.assertEqual("deny", self.bash(notes, self.tree, environment))
+            self.assertIn("could not tell which files git reads its system and global configuration from", self.reason)
+        with mock.patch.object(hub_guard, "configuration_files", return_value=[None]):
+            self.assertEqual("deny", self.bash(notes, self.tree, environment))
+            self.assertIn("cannot place a file git reads its system or global configuration from", self.reason)
+        self.assertEqual("", self.git(self.hub, "status", "--porcelain", "--untracked-files=no"))
+        # Real git: a target written into an included file reaches the next git in the same command.
+        included.write_text(f"[trace2]\n\teventTarget = {readme.as_posix()}\n", encoding="utf-8")
+        before = readme.read_bytes()
+        run_git(self.tree, environment, "status")
+        self.assertNotEqual(before, readme.read_bytes())
+        self.git(self.hub, "checkout", "--", "README.md")
+
+    def test_included_files_are_read_as_git_reads_them(self) -> None:
+        source = self.root / "configuration" / "global"
+        home = self.root / "home"
+        cases = (
+            ("~/included", home / "included"),
+            ("relative/included", source.parent / "relative" / "included"),
+            (str(self.root / "absolute"), self.root / "absolute"),
+        )
+        for value, expected in cases:
+            with self.subTest(value=value):
+                self.assertEqual(Path(os.path.realpath(expected)), hub_guard.included_file(value, source, home))
+        self.assertIsNone(hub_guard.included_file("~/included", source, None))
+        self.assertIsNone(hub_guard.included_file("relative", None, home))
+
+    def test_an_assignment_to_a_name_git_reads_for_a_file_or_a_program_is_refused(self) -> None:
+        # XDG_CONFIG_HOME chooses the global configuration a program's git, or gh's, reads, a trace2 target in it
+        # among them.
+        xdg = self.root / "xdg"
+        for command in (
+            f'XDG_CONFIG_HOME="{xdg}" gh pr view',
+            f'XDG_CONFIG_HOME="{xdg}" python tools/worktrees.py list',
+            f'env XDG_CONFIG_HOME="{xdg}" gh pr view',
+        ):
+            with self.subTest(command=command):
+                self.assertEqual("deny", self.bash(command, self.tree))
+                self.assertIn("XDG_CONFIG_HOME before a command, which Bash or git reads", self.reason)
+        for name in (*hub_guard.GIT_READ_NAMES, "LD_PRELOAD", "DYLD_INSERT_LIBRARIES"):
+            with self.subTest(name=name):
+                self.assertEqual("deny", self.bash(f'{name}="{xdg}" ls', self.tree))
+        # A name git reads only for its messages stays allowed.
+        self.assertIsNone(self.bash("LC_ALL=C ls", self.tree))
 
     def test_a_configuration_the_guard_cannot_read_for_trace2_targets_is_refused_while_a_hub_is_guarded(self) -> None:
         failure = git_client.GitError("git could not read it", returncode=128)

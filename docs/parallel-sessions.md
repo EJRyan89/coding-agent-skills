@@ -359,22 +359,29 @@ a row decides it.
   starts, the git a program or a `gh` subcommand runs among them, which the text does not show, and no git call is owed
   a trace in a hub, so one that lies in a guarded hub refuses every `Bash`, `PowerShell`, and `Monitor` command,
   whatever it holds; one the guard cannot place, or a configuration git cannot read, refuses every command while a hub
-  is guarded and is otherwise noted. The store `GIT_OBJECT_DIRECTORY` names, where git writes objects, and the common
-  directory `GIT_COMMON_DIR` names, where it writes objects, configuration, and shared refs, are refused for every git
-  call and every `gh` checkout when a guarded hub holds them, unless each is the call's own, the one `git rev-parse`
-  answers for the call's repository without the variable, as a worktree's is the hub's, which git writes for it anyway.
-  A call that acts on a guarded hub runs only with the hub's own index and store and the hub's own view of its objects:
-  given any `GIT_INDEX_FILE`, a store or common directory other than the hub's own, or any of the variables
-  `OBJECT_VIEW_VARIABLES` names (`GIT_ALTERNATE_OBJECT_DIRECTORIES`, `GIT_SHALLOW_FILE`, `GIT_GRAFT_FILE`, and
-  `GIT_REPLACE_REF_BASE`), each set even to an empty value, it is refused, since a fast-forward then moves the hub's
-  `HEAD` and tree while the new tree goes into the other index, leaving the hub's own out of step, or moves its refs to
-  objects its store lacks. A call whose repository is one of a guarded hub's linked worktrees writes the refs the hub's
-  store holds, its branch and the remote-tracking refs among them, so it too is refused given a store or common
-  directory other than its own or any of those variables, though not given an index, which is its own to write: a commit
-  there would move the branch to a commit only the other store holds, a fetch the remote-tracking refs to objects only
-  the alternates hold, and a `gc` may prune objects the hub's refs still need. A store a relative path names is read
-  from wherever git works, so it is not settled. Each path is read with every symbolic link followed. A place the guard
-  cannot settle is refused while a hub is guarded and otherwise noted.
+  is guarded and is otherwise noted. The guard reads the configuration as it stands when the command starts, so while a
+  hub is guarded it also refuses a command that writes a file git reads its system or global configuration from, by a
+  redirection or by a git call's words, as `git config --file <file>` writes, though not one a program or a cmdlet
+  writes (see [What it does not see](#what-it-does-not-see)): each file `git var GIT_CONFIG_SYSTEM` and `git var
+  GIT_CONFIG_GLOBAL` name, whether or not it exists, every file the listing of those scopes names as an origin, and
+  every file an `include.path` or `includeIf.<condition>.path` in them names, a leading `~/` read from the home and a
+  relative path from the including file's directory (`configuration_files`); where git cannot name them, or the guard
+  cannot place one, it refuses every file a command writes while a hub is guarded. The store `GIT_OBJECT_DIRECTORY`
+  names, where git writes objects, and the common directory `GIT_COMMON_DIR` names, where it writes objects,
+  configuration, and shared refs, are refused for every git call and every `gh` checkout when a guarded hub holds them,
+  unless each is the call's own, the one `git rev-parse` answers for the call's repository without the variable, as a
+  worktree's is the hub's, which git writes for it anyway. A call that acts on a guarded hub runs only with the hub's
+  own index and store and the hub's own view of its objects: given any `GIT_INDEX_FILE`, a store or common directory
+  other than the hub's own, or any of the variables `OBJECT_VIEW_VARIABLES` names (`GIT_ALTERNATE_OBJECT_DIRECTORIES`,
+  `GIT_SHALLOW_FILE`, `GIT_GRAFT_FILE`, and `GIT_REPLACE_REF_BASE`), each set even to an empty value, it is refused,
+  since a fast-forward then moves the hub's `HEAD` and tree while the new tree goes into the other index, leaving the
+  hub's own out of step, or moves its refs to objects its store lacks. A call whose repository is one of a guarded hub's
+  linked worktrees writes the refs the hub's store holds, its branch and the remote-tracking refs among them, so it too
+  is refused given a store or common directory other than its own or any of those variables, though not given an index,
+  which is its own to write: a commit there would move the branch to a commit only the other store holds, a fetch the
+  remote-tracking refs to objects only the alternates hold, and a `gc` may prune objects the hub's refs still need. A
+  store a relative path names is read from wherever git works, so it is not settled. Each path is read with every
+  symbolic link followed. A place the guard cannot settle is refused while a hub is guarded and otherwise noted.
 - **What a git call's words write or run.** Wherever git runs, a file it writes at a path its words name is judged
   as a redirection's target is, a relative path read from where git starts. The options that name such a file are
   `--output`, which every subcommand that reads git's diff or revision options takes, and those
@@ -446,8 +453,11 @@ a row decides it.
   does not settle, `cd -`, a `CDPATH` search, and `pushd`'s rotations leave the directory unknown, and a compound
   command that holds a change leaves every git call in it and after it in a directory the text does not settle.
 - **Assignments.** A bare assignment is understood to a free name: one `BASH_VARIABLES` gives no reason, git does not
-  read, and the environment does not hold. Before a command, an assignment is understood to a name git does not read
-  and `BASH_VARIABLES` gives no reason, and before git only to a name `GIT_PREFIXES` lists, with a value it allows,
+  read, and the environment does not hold. Before a command, an assignment is understood to a name git does not read to
+  choose a file or a program, that is, no `GIT_` name, none `GIT_READ_NAMES` names (`HOME`, `XDG_CONFIG_HOME`,
+  `XDG_CACHE_HOME`, `USERPROFILE`, `HOMEDRIVE`, `HOMEPATH`, `TMPDIR`, `TEMP`, `TMP`, `PAGER`, `EDITOR`, `VISUAL`, and
+  `SSH_ASKPASS`), and none the dynamic loader reads as git starts (`LOADER_PREFIXES`: `LD_` and `DYLD_`), that
+  `BASH_VARIABLES` also gives no reason, and before git only to a name `GIT_PREFIXES` lists, with a value it allows,
   such as `GIT_EDITOR=true`, or to such a name of Bash's own, such as `LC_ALL`.
 - **Shell options.** `set` and `shopt` are understood for the options `SET_OPTIONS` and `SHOPT_OPTIONS` decide change
   nothing the guard reads, such as `errexit`, `pipefail`, `nounset`, and `nullglob`, and so is a shell the
@@ -608,7 +618,9 @@ refuses:
   the index a git call is given and on what the environment has git write refuse, and, while a hub is guarded, one given
   any of them that the guard cannot place; every command while the environment or the system or global configuration has
   git write a trace or its output into a guarded hub; and, while a hub is guarded, every command while either has git
-  write one into a file the guard cannot place, or while git cannot read that configuration;
+  write one into a file the guard cannot place, or while git cannot read that configuration; and, while a hub is
+  guarded, a command that writes a file git reads its system or global configuration from, by a redirection or a git
+  call's words, or that writes any file while git cannot name those files;
 - an alias that cannot be read, nests more than four deep, or runs a part the guard does not read;
 - a command the guard does not finish reading and judging within 15 seconds, `pwsh` included, and the lookups of the
   hubs the places it names reach, each git call of theirs given no more than the time left; a PowerShell command when
@@ -664,7 +676,9 @@ The hook sees the command text. It does not see:
   script name, in the hub or in a worktree, an awk or sed program, a test suite, a script file, `make`'s recipes, or
   `npm`'s scripts do, and an agent runtime it starts, which runs git under its own guards; the guard reads only the
   command line, and refuses only the runners above where the command line they are given is or may be git;
-- a file a program writes;
+- a file a program writes, one git reads its configuration from included: a configuration file a program such as `cp`,
+  `tee`, or a script, or a PowerShell cmdlet such as `Set-Content` or `Copy-Item`, writes is read only by the next
+  command's judgement, so a git later in the same command reads what it wrote;
 - a shell function the environment the hook starts in supplies, as Bash's exported `BASH_FUNC_<name>%%` variables
   do: the hook command's own words, `test`, `env`, `awk`, `git`, `command`, and `exec` among them, run such a function
   where Bash runs it before the builtin or program of that name, so whoever sets the hook's environment can make the

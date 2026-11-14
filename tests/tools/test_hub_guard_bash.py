@@ -278,9 +278,11 @@ class VariableTests(unittest.TestCase):
 
     def test_each_variable_is_assigned_as_its_table_says(self) -> None:
         for name, reason in hub_guard.BASH_VARIABLES.items():
+            # A name git reads to choose a file or a program, such as TMPDIR, is never assigned, whatever Bash says.
+            refused = bool(reason) or name in hub_guard.GIT_READ_NAMES
             with self.subTest(name=name):
-                self.assertEqual(bool(reason), bool(reading(f"{name}=x; true").unread))
-                self.assertEqual(bool(reason), bool(reading(f"{name}=x ls").unread))
+                self.assertEqual(refused, bool(reading(f"{name}=x; true").unread))
+                self.assertEqual(refused, bool(reading(f"{name}=x ls").unread))
         for command in ("x=1; true", "x=1 ls", "for x in a; do :; done", "read -r x", "echo ${x:=1}"):
             with self.subTest(command=command):
                 self.assertEqual([], reading(command).unread)
@@ -292,10 +294,14 @@ class VariableTests(unittest.TestCase):
             ("EDITOR=x; true", {"EDITOR": "vi"}),
             ("for EDITOR in a; do :; done", {"EDITOR": "vi"}),
             ("echo ${EDITOR:=x}", {"EDITOR": "vi"}),
+            ("EDITOR=x ls", {"EDITOR": "vi"}),
+            ("XDG_CONFIG_HOME=x ls", None),
+            ("LD_PRELOAD=x ls", None),
         ):
             with self.subTest(command=command):
                 self.assertTrue(reading(command, environment).unread)
-        self.assertEqual([], reading("EDITOR=x ls", {"EDITOR": "vi"}).unread)
+        # Before a command, a name the environment holds that git does not read may be given another value.
+        self.assertEqual([], reading("SOME_SETTING=x ls", {"SOME_SETTING": "y"}).unread)
 
 
 # How a runner's command is written where it is no plain word after the runner, with {command} standing for it.
