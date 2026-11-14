@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 import contextlib
+import errno
 import io
 import json
 import os
@@ -3229,6 +3230,25 @@ LIB_CHAIN = ["App/App.csproj", "-", "Lib.Pkg", "graph", "Lib (project) > Lib.Pkg
 LIB_OWN = ["Lib/Lib.csproj", "-", "Lib.Pkg", "graph", "Lib.Pkg (v1.0.0)"]
 
 
+@contextlib.contextmanager
+def resolving_as_python_312() -> Iterator[None]:
+    """`Path.resolve` as Python 3.12 runs it, which stats what it resolved and raises RuntimeError on a symbolic link
+    loop, where later versions answer the path with the loop left unresolved, so a test holds on every version."""
+    real = Path.resolve
+
+    def resolve(path: Path, strict: bool = False) -> Path:
+        resolved = real(path, strict=strict)
+        try:
+            resolved.stat()
+        except OSError as error:
+            if error.errno == errno.ELOOP:
+                raise RuntimeError(f"Symlink loop from {error.filename!r}") from None
+        return resolved
+
+    with mock.patch.object(Path, "resolve", resolve):
+        yield
+
+
 def link_folder(target: Path, link: Path) -> None:
     """A real link to a folder: a junction on Windows, which needs no privilege, else a symbolic link."""
     if sys.platform == "win32":
@@ -3830,6 +3850,57 @@ class PresenceReadTests(Fixture):
                 with failing_without_a_file(owner, name, target), self.assertRaises(dependency_graph.Failed) as raised:
                     dependency_graph.resolve_root(self.root, [])
                 self.assertEqual(f"{target} cannot be examined: Access is denied", str(raised.exception))
+
+    def test_a_checkout_marker_above_the_root_it_cannot_examine_is_named_though_the_error_names_no_file(self) -> None:
+        # The solution's folder is examined while the root is resolved, and a searched folder's once it is.
+        self.write("listed/App/App.csproj", LEGACY_APP_PROJECT)
+        self.write("listed/Listed.sln", solution("App\\App.csproj"))
+        self.write("searched/App/App.csproj", LEGACY_APP_PROJECT)
+        marker = self.root / TEST_MARKER
+        for root in ("listed/Listed.sln", "listed", "searched"):
+            with (
+                self.subTest(root),
+                mock.patch.object(msbuild_reader, "CHECKOUT_MARKER", TEST_MARKER),
+                failing_without_a_file(msbuild_reader, "is_there", marker),
+            ):
+                code, rows = self.run_main("conflicts", "--root", str(self.root / root))
+            self.assertEqual((1, f"FAILED {marker} cannot be examined: Access is denied"), (code, rows[-1][0]))
+
+    def test_a_graph_file_it_cannot_examine_is_named_whatever_file_the_error_names(self) -> None:
+        root = self.mixed_solution()
+        target = self.root / "out" / "graph.mmd"
+        target.parent.mkdir()
+        target.write_bytes(b"graph LR\n  kept\n")
+        for name, failing in (
+            ("naming no file", failing_without_a_file(Path, "stat", target)),
+            ("naming the file", stat_failing_at(target)),
+        ):
+            with self.subTest(name), failing:
+                code, rows = self.run_main("graph", "--output", str(target), "--root", str(root))
+            self.assertEqual((1, f"FAILED {target} cannot be examined: Access is denied"), (code, rows[-1][0]))
+            self.assertEqual(b"graph LR\n  kept\n", target.read_bytes())
+
+    @unittest.skipIf(sys.platform == "win32", "a symbolic link needs a privilege on Windows")
+    def test_a_root_or_project_that_is_a_symbolic_link_loop_is_refused_naming_it(self) -> None:
+        # Python 3.12's Path.resolve raises RuntimeError for a loop, and later versions answer the path unresolved; the
+        # run refuses either way, naming the link.
+        solution_file = self.mixed_solution()
+        loop = self.root / "Loop"
+        loop.symlink_to(loop)
+        versions: tuple[tuple[str, Callable[[], contextlib.AbstractContextManager[None]]], ...] = (
+            ("this Python", contextlib.nullcontext),
+            ("Python 3.12", resolving_as_python_312),
+        )
+        for version, resolving in versions:
+            with self.subTest(version):
+                with resolving():
+                    code, rows = self.run_main("conflicts", "--root", str(loop))
+                self.assertEqual(
+                    (1, f"FAILED {loop} cannot be examined: Too many levels of symbolic links"), (code, rows[-1][0])
+                )
+                with resolving():
+                    code, rows = self.run_main("conflicts", "--root", str(solution_file), "--project", str(loop))
+                self.assertEqual((1, f"FAILED {loop} is not a project of {solution_file}"), (code, rows[-1][0]))
 
     def test_the_cache_keeps_a_folder_drops_a_file_or_nothing_and_refuses_one_it_cannot_stat(self) -> None:
         home = self.root / "home"
