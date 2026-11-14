@@ -1,4 +1,4 @@
-"""Regression tests for the folder a script keeps the user's own state in, under the temporary directory."""
+"""Regression tests for the folder a script keeps the user's own state in, in the runtime or temporary directory."""
 
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import private_folder
-from private_folder import UnsafeFolderError, base, ensure, location, parent_refusal, refusal
+from private_folder import UnsafeFolderError, ancestry_refusal, base, ensure, location, parent_refusal, refusal
 from test_link_probe import link_folder
 
 # The modes and the id the rules are held to, written out rather than read from the module's constants.
@@ -136,6 +136,40 @@ class RuntimeDirectoryTests(unittest.TestCase):
         self.assert_not_followed(os.path.relpath(self.runtime))
         self.assert_not_followed(str(Path("run", "user")))
 
+    def test_a_directory_below_a_shared_folder_further_up_than_its_parent_is_not_followed(self) -> None:
+        # Whoever can rename the shared folder's entry can put a tree of their own, runtime directory and all, in its
+        # place, so a parent of the user's own proves nothing alone.
+        shared = self.root / "shared"
+        shared.mkdir()
+        user = shared / "u"
+        user.mkdir()
+        user.chmod(0o755)
+        runtime = user / "rt"
+        runtime.mkdir(mode=OWNER_ONLY)
+        shared.chmod(0o777)
+        self.assert_not_followed(runtime)
+        shared.chmod(0o1777)
+        self.assertEqual(runtime, self.base_for(runtime))
+
+    def test_a_trailing_parent_reference_is_resolved_before_the_parent_is_judged(self) -> None:
+        # `rt/inner/..` names rt, whose parent is the shared folder, not `rt/inner`, which is the user's own.
+        shared = self.root / "shared"
+        shared.mkdir()
+        runtime = shared / "rt"
+        runtime.mkdir(mode=OWNER_ONLY)
+        (runtime / "inner").mkdir(mode=OWNER_ONLY)
+        shared.chmod(0o777)
+        self.assert_not_followed(f"{runtime}/inner/..")
+        shared.chmod(0o1777)
+        self.assertEqual(runtime, self.base_for(f"{runtime}/inner/.."), "the resolved folder is the one followed")
+
+    def test_a_directory_named_through_a_linked_ancestor_is_followed_by_its_resolved_path(self) -> None:
+        # The link lies in a folder of the user's own, so no other account can change where it leads, and every later
+        # use names the resolved directory, so none goes through the link again.
+        via = self.root / "via"
+        via.symlink_to(self.root, target_is_directory=True)
+        self.assertEqual(self.runtime, self.base_for(via / "runtime"))
+
 
 class RefusalTests(unittest.TestCase):
     """The rule, judged from a folder's metadata, so an owner no test can make is judged as a real one would be."""
@@ -205,12 +239,43 @@ class ParentRefusalTests(unittest.TestCase):
     def test_with_no_user_ids_a_parent_is_not_judged(self) -> None:
         self.assertIsNone(parent_refusal(self.parent, metadata(DIRECTORY | 0o777, OTHER_USER), None))
 
+    def test_a_folder_further_up_is_named_as_an_ancestor(self) -> None:
+        self.assertEqual(
+            f"its ancestor {self.parent} can be written by users other than its owner and is not sticky (mode 777)",
+            parent_refusal(self.parent, metadata(DIRECTORY | 0o777, 0), 1000, "ancestor"),
+        )
+
+
+@unittest.skipIf(sys.platform == "win32", "a symbolic link needs a privilege there, and no ancestry is judged there")
+class AncestryRefusalTests(unittest.TestCase):
+    """Every folder from a resolved parent up to the root, of which a link is one that was put there since."""
+
+    def setUp(self) -> None:
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name).resolve()
+        user = private_folder.user_id()
+        assert user is not None, "the class runs only where the platform has user ids"
+        self.user = user
+
+    def test_a_resolved_parent_below_folders_no_other_account_can_rename_is_accepted(self) -> None:
+        self.assertIsNone(ancestry_refusal(self.root, self.user))
+
+    def test_a_link_as_the_parent_or_further_up_is_refused(self) -> None:
+        inner = self.root / "inner"
+        inner.mkdir()
+        via = self.root / "via"
+        via.symlink_to(self.root, target_is_directory=True)
+        self.assertEqual(f"its parent {via} is a link or junction", ancestry_refusal(via, self.user))
+        self.assertEqual(f"its ancestor {via} is a link or junction", ancestry_refusal(via / "inner", self.user))
+
 
 class EnsureTests(unittest.TestCase):
     def setUp(self) -> None:
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
-        self.root = Path(temporary.name)
+        # Resolved, as ensure hands back a folder whose parent is resolved, and macOS's temporary directory is a link.
+        self.root = Path(temporary.name).resolve()
 
     def test_a_missing_folder_is_made_owner_only_and_returned(self) -> None:
         folder = self.root / "state"
@@ -273,6 +338,56 @@ class EnsureTests(unittest.TestCase):
         parent.chmod(0o1777)
         self.assertEqual(folder, ensure(folder))
 
+    @unittest.skipIf(sys.platform == "win32", "Windows mode bits say nothing about who may write a folder")
+    def test_a_folder_below_a_shared_folder_further_up_than_its_parent_is_refused(self) -> None:
+        # Whoever can rename the shared folder's entry can put a tree of their own in its place between the check and
+        # a write, so a parent of the user's own proves nothing alone.
+        shared = self.root / "shared"
+        shared.mkdir()
+        user = shared / "u"
+        user.mkdir()
+        user.chmod(0o755)
+        shared.chmod(0o777)
+        folder = user / "state"
+        with self.assertRaises(UnsafeFolderError) as raised:
+            ensure(folder)
+        self.assertEqual(
+            f"{folder}: its ancestor {shared} can be written by users other than its owner and is not sticky "
+            "(mode 777)",
+            str(raised.exception),
+        )
+        self.assertFalse(folder.exists(), "nothing was made where another account could rename it away")
+        shared.chmod(0o1777)
+        self.assertEqual(folder, ensure(folder))
+
+    @unittest.skipIf(sys.platform == "win32", "Windows mode bits say nothing about who may write a folder")
+    def test_a_parent_reference_is_resolved_before_the_parent_is_judged_and_the_resolved_folder_returned(self) -> None:
+        # `u/inner/../state` lies in u, whose parent is the shared folder, though `u/inner` is the user's own.
+        shared = self.root / "shared"
+        shared.mkdir()
+        user = shared / "u"
+        user.mkdir(mode=OWNER_ONLY)
+        (user / "inner").mkdir(mode=OWNER_ONLY)
+        shared.chmod(0o777)
+        named = user / "inner" / ".." / "state"
+        with self.assertRaises(UnsafeFolderError) as raised:
+            ensure(named)
+        self.assertEqual(
+            f"{named}: its ancestor {shared} can be written by users other than its owner and is not sticky (mode 777)",
+            str(raised.exception),
+        )
+        shared.chmod(0o1777)
+        self.assertEqual(user / "state", ensure(named))
+        self.assertTrue((user / "state").is_dir())
+
+    @unittest.skipIf(sys.platform == "win32", "Windows has no user ids; WindowsTests cover what holds there")
+    def test_a_name_ending_in_a_parent_reference_or_at_the_root_is_refused(self) -> None:
+        (self.root / "inner").mkdir()
+        for named in (self.root / "inner" / "..", Path(self.root.anchor)):
+            with self.subTest(named=str(named)), self.assertRaises(UnsafeFolderError) as raised:
+                ensure(named)
+            self.assertEqual(f"{named} does not end in the name of a folder", str(raised.exception))
+
     @unittest.skipIf(sys.platform == "win32", "a symbolic link needs a privilege there; refusal tests cover its kind")
     def test_a_link_to_a_folder_of_the_user_s_own_is_refused_and_nothing_is_made_through_it(self) -> None:
         target = self.root / "target"
@@ -317,6 +432,12 @@ class WindowsTests(unittest.TestCase):
         self.assertEqual(folder, ensure(folder))
         self.assertTrue(folder.is_dir())
         self.assertEqual(folder, ensure(folder))
+
+    def test_a_folder_is_returned_by_the_name_it_was_given(self) -> None:
+        (self.root / "inner").mkdir()
+        named = self.root / "inner" / ".." / "state"
+        self.assertEqual(named, ensure(named))
+        self.assertTrue((self.root / "state").is_dir())
 
     def test_a_link_or_junction_in_the_folder_s_place_is_refused_and_nothing_is_made_through_it(self) -> None:
         target = self.root / "target"
