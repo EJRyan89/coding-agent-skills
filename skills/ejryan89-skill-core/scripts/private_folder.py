@@ -14,18 +14,18 @@ the name as given, since `/shared/u/rt/inner/..` names `/shared/u/rt`, whose par
 The resolved path is the one handed back and used, so no link along the name, which a folder another account can
 write might hold, is followed again after the check.
 
-`location` names the folder, carrying the user's id where the platform has one, so another account's folder never
-stands in its place by name. Where the platform has user ids, it lies in the runtime directory `XDG_RUNTIME_DIR` names,
-as systemd-logind sets it on Linux, so no other account can take the name first, but only when that is an absolute
-path to a directory, no link, that the user owns with mode 0700, below folders no other account can rename, as above,
-as the XDG Base Directory specification requires of it. A runtime directory set by hand that fails, such as one under
-/tmp, a link another account planted, or one inside a shared folder anyone can write, is never followed:
-`runtime_directory` falls back to the temporary directory instead, since a value in the environment is a preference,
-and the temporary directory's own folder is then judged by `ensure` like any other. Otherwise, and always on Windows,
-which has no user ids and where `ensure` judges only a folder's kind, it lies in the temporary directory, where another
-account that makes the name first can only deny the user their state, since `ensure` refuses its folder. A command
-that saves state and a later one that reads it must therefore agree on the runtime directory: a session that sets it
-differently, or not at all, looks in another folder and finds nothing saved.
+`location` names the folder, carrying the user's id where the platform has one, so another account's folder never stands
+in its place by name. Where the platform has user ids, it lies in the runtime directory `XDG_RUNTIME_DIR` names, as
+systemd-logind sets it on Linux, so no other account can take the name first, but only when that is an absolute path to
+a directory, no link, that the user owns with mode 0700, below folders no other account can rename, as above, as the XDG
+Base Directory specification requires of it. A runtime directory set by hand that fails, such as one another account
+made first under /tmp, a link another account planted, or one below a shared folder anyone can write that is not sticky,
+is never followed: `runtime_directory` falls back to the temporary directory instead, since a value in the environment
+is a preference, and the temporary directory's own folder is then judged by `ensure` like any other. Otherwise, and
+always on Windows, which has no user ids and where `ensure` judges only a folder's kind, it lies in the temporary
+directory, where another account that makes the name first can only deny the user their state, since `ensure` refuses
+its folder. A command that saves state and a later one that reads it must therefore agree on the runtime directory: a
+session that sets it differently, or not at all, looks in another folder and finds nothing saved.
 
 `ensure` makes the folder, owner only, when it is missing, and refuses it with `UnsafeFolderError`, never falling back,
 since its caller named the folder and state kept anywhere else would not be found again: it refuses a folder that is
