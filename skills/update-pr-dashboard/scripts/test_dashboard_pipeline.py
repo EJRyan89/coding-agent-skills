@@ -41,8 +41,8 @@ SCRIPT_DIRECTORY = Path(__file__).resolve().parent
 HEAD = "b" * 40
 OLD_HEAD = "a" * 40
 USER_REVIEWED = "c" * 40
-START = review_config.DASHBOARD_START_MARKER
-END = review_config.DASHBOARD_END_MARKER
+START = "<!-- code-review-pr-tracker:start -->"
+END = "<!-- code-review-pr-tracker:end -->"
 
 
 def pull_node(number: int, **changes: Any) -> dict[str, Any]:

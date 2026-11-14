@@ -199,9 +199,10 @@ removed fails validation until its pattern follows it.
   any handler, so its failure ends in `run_main`'s generic line after them rather than one its docstring names;
   `rg -n "kind (in|==) .*\"git\"|except GitError" -g '*.py'` beside a fetch or `ls-remote` whose failure is reported
   as the remote's, where `GitError.origin_failed` is meant;
-  `rg -nU "returncode != 0[^\n]*:\n\s+raise \w+\(f?\"[^\"\n]*\"\)" -g '*.py'`, a failed command reported by its name alone,
-  dropping the stderr that says why; a measurement printed for a file beside the line that says it could not be
-  measured.
+  `rg -nU "returncode != 0[^\n]*:\n\s+(raise \w+\(|return )f?\"[^\"\n]*\"" -g '*.py'`, a failed command raised or
+  returned by its name or exit code alone, dropping the stderr or output that says why; an `except` that returns or
+  raises fixed text in place of the exception's; a measurement printed for a file beside the line that says it could
+  not be measured, or a file a reader skips where its docstring says the command fails on one.
 - **Examples:** #1511, #1840, #1855, #1910, #2022, #2181, #2207, #2209, #2477, #2548, #2596, #2697, #2738
 
 ### A refusal ends with the step to take

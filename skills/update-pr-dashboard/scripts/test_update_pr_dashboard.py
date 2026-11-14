@@ -19,8 +19,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from github_client import CommandResult, GitHubError
 from pr_change import CHANGED, UNCHANGED, UNKNOWN, ChangeDetector, ComparisonError
-from review_config import DASHBOARD_END_MARKER as END_MARKER
-from review_config import DASHBOARD_START_MARKER as START_MARKER
 from review_config import ConfigurationError, dashboard_status_heading, dashboard_status_key
 from review_github import GitHubClient
 from typed_fields import FieldError
@@ -39,6 +37,10 @@ from update_pr_dashboard import (
     validate_items,
 )
 
+# The default markers, as literals: users' dashboards hold them and docs/code-review-operations-contract.md states
+# them, so a change to review_config's DASHBOARD_START_MARKER or DASHBOARD_END_MARKER fails here.
+START_MARKER = "<!-- code-review-pr-tracker:start -->"
+END_MARKER = "<!-- code-review-pr-tracker:end -->"
 HEAD = "b" * 40
 AI_REVIEWED = "a" * 40
 USER_REVIEWED = "c" * 40

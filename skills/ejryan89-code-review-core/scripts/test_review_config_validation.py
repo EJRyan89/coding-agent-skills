@@ -158,6 +158,8 @@ def _expected() -> dict[str, Any]:
         "local_mirror_root": None,
         "verdict_policy": {"request_changes_for": ["MUST_FIX"], "should_fix_threshold": 3},
         "dashboard": {
+            # Pinned contract values: the default markers docs/code-review-operations-contract.md states, which users'
+            # dashboards hold; review_config's DASHBOARD_START_MARKER and DASHBOARD_END_MARKER must load as these.
             "start_marker": "<!-- code-review-pr-tracker:start -->",
             "end_marker": "<!-- code-review-pr-tracker:end -->",
             "status_overrides": {},
