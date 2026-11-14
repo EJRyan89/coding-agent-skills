@@ -177,8 +177,9 @@ WORKTREE_AREA = "Worktrees"
 SWEEP_AGAIN = "run the sweep again for a new plan"
 # What a refusal of the seals folder asks of the user.
 SEALS_REMEDY = (
-    "make it a folder only you own and can write, or run from a session whose XDG_RUNTIME_DIR, or TMPDIR where that "
-    "is unset, names such a folder, then run the sweep again"
+    "make it a folder only you own and can write, where only root or you can rename it or any folder above it, or run "
+    "from a session whose XDG_RUNTIME_DIR names such a folder, or whose TMPDIR does whenever XDG_RUNTIME_DIR is unset "
+    "or not followed, then run the sweep again"
 )
 # Where Claude Code, and many repositories' own worktree tools, put a repository's worktrees. With
 # WORKTREE_AREA/<repository name>, the folders a sweep searches for directories a worktree removal left behind.
