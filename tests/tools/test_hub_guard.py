@@ -1780,9 +1780,10 @@ class CommandGuardTests(GuardTestCase):
                         self.assertIn(f"GIT_INDEX_FILE={index}, an index the guarded hub", self.reason)
         self.assertEqual("", self.git(self.hub, "status", "--porcelain"))
         # One no guarded hub holds changes nothing, nor does the worktree's own, which lies in the hub's git directory.
-        own = self.git(self.tree, "rev-parse", "--path-format=absolute", "--git-path", "index").strip()
-        self.assertTrue(own.startswith(str(self.hub / ".git")), own)
-        for index in (self.root / "elsewhere" / "index", Path(own)):
+        # git answers with forward slashes on Windows, so the answer is compared as a path, never as text.
+        own = Path(self.git(self.tree, "rev-parse", "--path-format=absolute", "--git-path", "index").strip())
+        self.assertTrue(own.is_relative_to(self.hub / ".git"), own)
+        for index in (self.root / "elsewhere" / "index", own):
             environment = self.index_file(index)
             with self.subTest(index=str(index)):
                 self.assertIsNone(self.bash("git add . && git commit -m x && git status", self.tree, environment))
@@ -1864,6 +1865,11 @@ class CommandGuardTests(GuardTestCase):
         ):
             with self.subTest(start=str(start), named=named):
                 self.assertFalse(hub_guard.own_index(hub_guard.Place(start, start, repository, named), own))
+        # git's answer is compared as the path it names, however it is spelled: forward slashes, as git writes on
+        # Windows, and a segment that names the folder it is in.
+        spelled = f"{own.parent.as_posix()}/./{own.name}\n"
+        with mock.patch.object(worktrees.CLIENT, "output", return_value=spelled):
+            self.assertTrue(hub_guard.own_index(place, own))
         # An answer of other than one line is an error, never a match.
         with (
             mock.patch.object(worktrees.CLIENT, "output", return_value=f"{own}\n{own}\n"),
