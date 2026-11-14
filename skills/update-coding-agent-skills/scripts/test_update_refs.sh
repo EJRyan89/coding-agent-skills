@@ -44,6 +44,37 @@ expect_first_line "UP_TO_DATE $(head_of "$SEED" HEAD)" "no local main"
 expect_no_stderr "no local main"
 expect_deployed "no local main"
 
+# A clone with no local main, whose deployed commit check does not name, has no commit to start a list from: the stop
+# on either channel, and the release channel's update once --cross-major accepts it, each say so in an UNLISTED line
+# in place of the commits, never an empty list that reads as nothing to deploy.
+begin_case 'no local main and no deployed commit'
+for CHANNEL in release main; do
+  new_clone --branch v3.0.0
+  rm -- "$CLONE/.fake-deployed"
+  run_subject "$CLONE" "$CHANNEL"
+  expect_status 1 "no base $CHANNEL"
+  expect_first_line "MAJOR_UPDATE unknown..v4.0.0" "no base $CHANNEL"
+  expect_no_stderr "no base $CHANNEL"
+  END=refs/remotes/origin/main
+  [ "$CHANNEL" = main ] || END=refs/tags/v4.0.0
+  [ "$(printf '%s\n' "$OUTPUT" | wc -l | tr -d ' ')" = "2" ] || fail "no base $CHANNEL: expected two lines: $OUTPUT"
+  case "${OUTPUT#*$'\n'}" in
+    "UNLISTED refs/heads/main..$END "?*) ;;
+    *) fail "no base $CHANNEL: the commits were neither listed nor named unlisted: $OUTPUT" ;;
+  esac
+  expect_not_deployed "no base $CHANNEL"
+done
+run_subject "$CLONE" release --cross-major
+expect_status 0 "no base accepted"
+expect_first_line "UPDATED unknown..v4.0.0" "no base accepted"
+LISTED=$(printf '%s\n' "$OUTPUT" | sed -n 2p)
+case "$LISTED" in
+  "UNLISTED refs/heads/main..refs/tags/v4.0.0 "?*) ;;
+  *) fail "no base accepted: the commits were neither listed nor named unlisted: $OUTPUT" ;;
+esac
+grep -qx "CROSSED unknown..v4.0.0" <<<"$OUTPUT" || fail "no base accepted: crossing not named: $OUTPUT"
+expect_deployed "no base accepted" "--all --at refs/tags/v4.0.0"
+
 # A release whose major or minor is longer than Bash's integers hold is compared exactly, as release_tags.py reads it,
 # so a raised major stops the update as any other does; the tag is then removed so the cases below follow the releases
 # above.
