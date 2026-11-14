@@ -178,18 +178,23 @@ class SkillTreeFixtures(unittest.TestCase):
                     f"{REPOSITORY_SKILLS}/claude-helper/SKILL.md": skill("claude-helper"),
                     f"{REPOSITORY_SKILLS}/-dash/SKILL.md": skill("-dash"),
                     f"{REPOSITORY_SKILLS}/renamed/SKILL.md": skill("old-name"),
+                    f"{REPOSITORY_SKILLS}/repo--cleanup/SKILL.md": skill("repo--cleanup"),
                     f"{REPOSITORY_SKILL_SHIMS}/nameless/SKILL.md": "---\ndescription: Does a thing.\n---\n",
                     f"{REPOSITORY_SKILLS}/unreadable/SKILL.md": "---\nname: [unreadable, list]\n---\n",
                 },
             )
             problems = repository_skill_name_problems(root)
-            invalid = "is not a skill name: at most 64 lowercase letters, digits, and hyphens"
+            invalid = (
+                "is not a skill name: at most 64 lowercase letters, digits, and hyphens, no leading, trailing, or "
+                "consecutive hyphens"
+            )
             expected = [
                 f"{REPOSITORY_SKILLS}/-dash/SKILL.md: '-dash' {invalid}",
                 (f"{REPOSITORY_SKILLS}/Claude_Tool/SKILL.md: 'Claude_Tool' {invalid}"),
                 (f"{REPOSITORY_SKILLS}/Claude_Tool/SKILL.md declares name 'some-other-name', not its folder's name"),
                 f"{REPOSITORY_SKILLS}/claude-helper/SKILL.md: 'claude-helper' contains the reserved word 'claude'",
                 f"{REPOSITORY_SKILLS}/renamed/SKILL.md declares name 'old-name', not its folder's name 'renamed'",
+                f"{REPOSITORY_SKILLS}/repo--cleanup/SKILL.md: 'repo--cleanup' {invalid}",
                 f"{REPOSITORY_SKILLS}/unreadable/SKILL.md: its frontmatter cannot be read: ",
                 f"{REPOSITORY_SKILL_SHIMS}/Claude_Tool/SKILL.md: 'Claude_Tool' {invalid}",
                 f"{REPOSITORY_SKILL_SHIMS}/Claude_Tool/SKILL.md declares name 'some-other-name', not its folder's name",
