@@ -61,7 +61,7 @@ the exit code, which `ERRORS` and `INCONCLUSIVE` share:
 | `RESULT COMPLIANT` | `0` | Compliant within statically verifiable scope |
 | `RESULT ERRORS` | `1` | One or more `ERROR`-level findings |
 | `RESULT INCONCLUSIVE` | `1` | Ambiguous, unconfigured, or alternative authority; cannot confirm compliance or non-compliance |
-| `FAILED <reason>` | `1` | No report: the root is not a Git repository, or `--provenance` could not read `references/provenance.json` |
+| `FAILED <reason>` | `1` | No report: the root is not a Git repository, the root could not be examined for a `.git`, `--provenance` could not read `references/provenance.json`, or the `--json` report cannot hold a value the audit found |
 | (usage text on stderr) | `2` | A usage error: arguments the engine rejects |
 
 Ambiguous repositories must not return `0`. `INCONCLUSIVE` takes precedence over `ERROR` findings. JSON output has no
