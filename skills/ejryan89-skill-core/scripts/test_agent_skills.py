@@ -22,6 +22,16 @@ class AgentSkillsRuleTests(unittest.TestCase):
         self.assertEqual(64, agent_skills.MAX_NAME)
         self.assertEqual(1024, agent_skills.MAX_DESCRIPTION)
 
+    def test_a_name_is_lowercase_runs_joined_by_single_hyphens(self) -> None:
+        # The Agent Skills specification's name field: lowercase letters, digits, and hyphens, no leading, trailing,
+        # or consecutive hyphen; its invalid examples include pdf--processing.
+        for name in ("pdf-processing", "a", "2", "data-analysis-2", "a" * 64):
+            with self.subTest(name=name):
+                self.assertIsNotNone(agent_skills.NAME_PATTERN.fullmatch(name))
+        for name in ("pdf--processing", "a---b", "-pdf", "pdf-", "-", "PDF-Processing", "pdf_processing", "", "a\n"):
+            with self.subTest(name=name):
+                self.assertIsNone(agent_skills.NAME_PATTERN.fullmatch(name))
+
     def test_codex_reads_the_invocation_policy_beside_the_skill(self) -> None:
         self.assertEqual("agents/openai.yaml", agent_skills.CODEX_METADATA)
 

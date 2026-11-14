@@ -3,6 +3,7 @@
 The deployer refuses a skill it renders that breaks a rule, and audit-ai-config reports one in a repository it
 audits. Anthropic's skills overview and best-practices pages give the field requirements: a skill's name is at most 64
 characters and holds neither reserved word, its description is at most 1,024 characters, and neither holds an XML tag.
+The Agent Skills specification gives the name grammar, which the deployer also holds bundle and agent names to.
 Codex's skills page reads a skill's invocation policy from `agents/openai.yaml` beside its `SKILL.md`, never from its
 frontmatter. A runtime opens a skill's main file by the name `SKILL.md`, so the file a folder gives for that name is
 the skill's, whatever its spelling where the folder folds case: `is_skill_file` is the one recognizer of it.
@@ -15,6 +16,15 @@ from pathlib import Path
 
 from path_keys import name_key
 
+DUPLICATION_ALLOWED = {
+    "NAME_PATTERN": (
+        "skills/ejryan89-code-review-core/scripts/review_records.py holds the same grammar as CUSTOM_RULE for "
+        "a review's custom analyzer rule names, a separate decision that the Agent Skills specification does not govern"
+    ),
+}
+# A name the specification allows: lowercase letters and digits in runs joined by single hyphens, so no leading,
+# trailing, or consecutive hyphen. Match it with fullmatch.
+NAME_PATTERN = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*")
 RESERVED_WORDS = ("anthropic", "claude")
 XML_TAG_PATTERN = re.compile(r"</?[A-Za-z][^<>]*>")
 MAX_NAME = 64

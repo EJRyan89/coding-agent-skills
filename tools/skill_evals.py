@@ -275,13 +275,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "ejryan8
 
 import json_writer
 import whole_number
+from agent_skills import NAME_PATTERN
 from bounded_process import without_repository_variables
 from console import run_main
 from git_client import GitClient
 from seconds_option import positive_seconds
 
 from deployer import fsops, platform_support
-from deployer.source import SKILL_NAME_PATTERN
 from tools import checkout_trust, runtime_canary
 from tools.runtime_canary import Runner
 from tools.skill_evals_judging import Outcome, judge, not_counted_line, outcome_line, records_in, report, table
@@ -491,7 +491,7 @@ def evaluate(skill: str, scenarios: Sequence[Scenario], options: Options, seams:
 
 
 def skill_name(value: str) -> str:
-    if not SKILL_NAME_PATTERN.fullmatch(value):
+    if not NAME_PATTERN.fullmatch(value):
         raise argparse.ArgumentTypeError(f"must be a skill's name, a folder under {SCENARIO_ROOT}, not {value}")
     return value
 

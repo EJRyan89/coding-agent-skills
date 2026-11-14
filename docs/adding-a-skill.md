@@ -17,10 +17,10 @@ The deployer and the repository tools read `name`, `description`, `argument-hint
 
 Claude Code loads every model-invocable skill's name and description into a listing in every session, and Codex and GitHub Copilot CLI read it through the skill's runtime adapter. Claude Code's listing has a budget, a share of the model's context window: past it, Claude Code drops descriptions, starting with the skills invoked least, and it cuts every description short at a length the `skillListingMaxDescChars` setting configures ([Skill descriptions are cut short](https://code.claude.com/docs/en/skills#skill-descriptions-are-cut-short)). Put the skill's use case first, where a cut leaves it. Keep it within 1,024 characters once rendered: Copilot refuses a longer one, so deployment stops instead, and `tools/new_skill.py` refuses one before it writes anything. Add `disable-model-invocation: true` to a skill only the user should start, such as one that deletes branches or redeploys, and also `user-invocable: false` to an internal dependency nobody starts directly. Never add either to a skill another skill invokes by name; a contract test checks this.
 
-Skill and bundle names must:
+Skill, bundle, and agent names, and the old names `renamed` records, must:
 
 - be at most 64 characters, the limit for a skill `name` in the Agent Skills format;
-- use only lowercase letters, digits, and hyphens, without a leading or trailing hyphen, such as `repo-cleanup` or `review-prs`;
+- use only lowercase letters, digits, and hyphens, without a leading, trailing, or consecutive hyphen, such as `repo-cleanup` or `review-prs` but not `repo--cleanup`, the name grammar of the [Agent Skills specification](https://agentskills.io/specification), which `NAME_PATTERN` in `skills/ejryan89-skill-core/scripts/agent_skills.py` holds for the deployer and audit-ai-config alike. An agent is not a skill under the specification, but its name follows the same grammar;
 - not be a reserved Windows device name such as `con`, `aux`, `nul`, `com1`, or `lpt1`.
 
 The Agent Skills frontmatter rules ("YAML frontmatter requirements" in Anthropic's [skill authoring best practices](https://platform.claude.com/docs/en/agents-and-tools/agent-skills/best-practices)) add two more:

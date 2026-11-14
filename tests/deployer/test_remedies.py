@@ -37,9 +37,9 @@ from deployer.errors import DeployError
 from deployer.paths import Paths
 
 NAME_RULES = (
-    "Rename it with only lowercase letters, digits, and hyphens, no leading or trailing hyphen, at most 64 characters, "
-    "not a Windows device name such as con or nul, and, for a skill, without the reserved words anthropic or claude; "
-    'see "Files" in docs/adding-a-skill.md.'
+    "Rename it with only lowercase letters, digits, and hyphens, no leading, trailing, or consecutive hyphens, at most "
+    "64 characters, not a Windows device name such as con or nul, and, for a skill, without the reserved words "
+    'anthropic or claude; see "Files" in docs/adding-a-skill.md.'
 )
 RESET = f"Run '{DEPLOY_COMMAND} configure --reset' to write a new configuration for this source."
 SEE_OWNERSHIP = 'See "Ownership held by another source" in docs/recovery.md.'
@@ -122,6 +122,7 @@ class SourceRemedyTests(RemedyTestCase):
         self.make_config()
         for name, message in (
             ("Alpha", "ERROR: Skill name 'Alpha' does not match naming grammar"),
+            ("alpha--beta", "ERROR: Skill name 'alpha--beta' does not match naming grammar"),
             ("a" * 65, f"ERROR: Skill name '{'a' * 65}' exceeds 64 characters"),
             ("con", "ERROR: Skill name 'con' is a Windows reserved name"),
             (

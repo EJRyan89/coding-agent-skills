@@ -121,6 +121,18 @@ ANALYZER_COVERAGES = ("available", "known", "custom-candidate")
 ANALYZER_FIELDS = frozenset({"coverage", "tool", "rule"})
 ANALYZER_NAME = re.compile(r"[^\s`|<>]{1,100}")
 CUSTOM_RULE = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*")
+# A custom rule's name shares the kebab-case grammar of a skill name, but the Agent Skills specification that owns
+# that grammar does not govern it, so it keeps its own copy.
+DUPLICATION_ALLOWED = {
+    "CUSTOM_RULE": (
+        "skills/ejryan89-skill-core/scripts/agent_skills.py holds the same grammar as NAME_PATTERN for skill, bundle, "
+        "and agent names, which the Agent Skills specification governs and a custom analyzer rule's name does not"
+    ),
+    "NAME_PATTERN": (
+        "CUSTOM_RULE is a custom analyzer rule's name, a separate decision from the skill name grammar "
+        "skills/ejryan89-skill-core/scripts/agent_skills.py holds"
+    ),
+}
 CUSTOM_RULE_MAXIMUM_LENGTH = 60
 
 

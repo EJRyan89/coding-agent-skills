@@ -17,7 +17,7 @@ import file_presence
 import frontmatter
 import json_writer
 import runtime_support
-from agent_skills import MAX_NAME, RESERVED_WORDS, XML_TAG_PATTERN
+from agent_skills import MAX_NAME, NAME_PATTERN, RESERVED_WORDS, XML_TAG_PATTERN
 from skill_menu import expand as expand
 from skill_menu import is_opt_in as is_opt_in
 from skill_menu import root_names as root_names
@@ -31,10 +31,10 @@ from .tools import SKILL_TOOLS
 
 SOURCE_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9._-]*/[a-z0-9][a-z0-9._-]*$")
 SOURCE_ID_MAX_LENGTH = 128
-SKILL_NAME_PATTERN = re.compile(r"^[a-z0-9]([a-z0-9-]*[a-z0-9])?$")
-# The Agent Skills frontmatter rules, RESERVED_WORDS and XML_TAG_PATTERN from ejryan89-skill-core: a skill name may
-# not contain a reserved word, and neither its name nor its description an XML tag. The naming grammar already keeps
-# angle brackets out of a name.
+# The Agent Skills rules, NAME_PATTERN, RESERVED_WORDS, and XML_TAG_PATTERN from ejryan89-skill-core: every skill,
+# bundle, agent, and renamed old name follows the specification's naming grammar, a skill name may not contain a
+# reserved word, and neither its name nor its description an XML tag. The naming grammar already keeps angle brackets
+# out of a name.
 AGENT_SKILLS_RULE = "which the Agent Skills frontmatter rules forbid"
 # The step a source.json the deployer cannot read takes: the checkout's own copy is the one to put back. It names a
 # git command a guarded hub allows, where a deployment runs, rather than one that writes the work tree.
@@ -210,7 +210,7 @@ def label(source_id: str, name: str) -> str:
 
 
 NAME_RULES = (
-    "Rename it with only lowercase letters, digits, and hyphens, no leading or trailing hyphen, at most "
+    "Rename it with only lowercase letters, digits, and hyphens, no leading, trailing, or consecutive hyphens, at most "
     f"{MAX_NAME} characters, not a Windows device name such as con or nul, and, for a skill, without the reserved "
     'words anthropic or claude; see "Files" in docs/adding-a-skill.md.'
 )
@@ -225,7 +225,7 @@ METADATA_SHAPE = (
 def is_valid_name(name: str) -> bool:
     return (
         len(name) <= MAX_NAME
-        and bool(SKILL_NAME_PATTERN.fullmatch(name))
+        and bool(NAME_PATTERN.fullmatch(name))
         and not platform_support.is_reserved_device_name(name)
     )
 
@@ -352,7 +352,7 @@ def _skill_directory(paths: Paths, name: str, directories: dict[str, Path]) -> P
 def _load_skill(paths: Paths, name: str, directories: dict[str, Path]) -> Skill:
     if len(name) > MAX_NAME:
         raise DeployError(f"ERROR: Skill name '{name}' exceeds {MAX_NAME} characters", NAME_RULES)
-    if not SKILL_NAME_PATTERN.fullmatch(name):
+    if not NAME_PATTERN.fullmatch(name):
         raise DeployError(f"ERROR: Skill name '{name}' does not match naming grammar", NAME_RULES)
     if platform_support.is_reserved_device_name(name):
         raise DeployError(f"ERROR: Skill name '{name}' is a Windows reserved name", NAME_RULES)
