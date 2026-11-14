@@ -992,9 +992,9 @@ removed fails validation until its pattern follows it.
 - **Why:** A list of refused spellings passes the next spelling as checked, and each review round finds one more, so
   the fix never converges; a pinned form or a structural test refuses spellings nobody has named yet.
 - **Use:** `tests.validation.workflows:deployable_bash_problems`, which pins each deployable job's Bash check to its
-  own step in one exact form instead of refusing set +e and its variants; `git_client:local_failure`, which reads a fault as local
-  by its structure (a path inside the local git directory, git's own write-error line) rather than by a list of
-  message wordings.
+  own step in one exact form instead of refusing set +e and its variants; `git_client:local_failure`, which reads a fault that names
+  a path inside the local git directory or reports a failed write by its structure rather than by its wording,
+  keeping a short marker list only for the faults git reports with no path.
 - **Guard:**
   `tests/validation/test_workflows.py::DeployableBashFixtures::test_each_job_checks_its_bash_in_one_exact_step_and_the_macos_job_installs_homebrews`,
   `skills/ejryan89-skill-core/scripts/test_git_client.py::test_a_fetch_that_failed_in_the_local_repository_is_not_the_remote_s_failure`,
