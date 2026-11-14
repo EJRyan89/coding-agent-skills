@@ -118,7 +118,7 @@ The CLI checks that something is at `args.root / ".git"`, through ejryan89-skill
 
 ## Read-only contract
 
-The audit engine is verified read-only: no writes, no execution, no modifications, no subprocess, no tempfile, no network access. It reads files with `read_bytes()` and `read_text()`, and examines paths with `stat()`, `iterdir()`, and `resolve()` and through ejryan89-skill-core's `file_presence`, `link_probe`, and `folder_walk`, whose walk lists folders with `os.scandir()`. It parses what it reads with `tomllib.loads()` and ejryan89-skill-core's `json_reader.loads()`, `python_reader`, `frontmatter`, and `check_provenance`.
+The audit engine is verified read-only: no writes, no execution, no modifications, no subprocess, no tempfile, no network access. It reads files with `read_bytes()` and `read_text()`, and examines paths with `stat()`, `iterdir()`, and `resolve()` and through ejryan89-skill-core's `file_presence`, `link_probe`, `folder_walk`, whose walk lists folders with `os.scandir()`, and `path_keys`, which asks a folder how its file system compares names, for `agent_skills.is_skill_file` and `path_containment.within`. It parses what it reads with `tomllib.loads()` and ejryan89-skill-core's `json_reader.loads()`, `python_reader`, `frontmatter`, and `check_provenance`.
 
 ## Behavioral checks are heuristics
 

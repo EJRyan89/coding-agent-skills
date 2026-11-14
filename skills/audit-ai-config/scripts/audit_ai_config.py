@@ -1261,6 +1261,25 @@ def _provenance(root: Path, path: Path, kind: str, manifest_paths: set[str]) -> 
     ]
 
 
+def skill_walk(root: Path, directory: Path) -> Listing:
+    """Each skill main file below a skills folder, as walk_files finds it, with the links that lead out of the root.
+
+    A file directly in a skill's folder is its SKILL.md as the folder compares names (is_skill_file), the file a
+    runtime opens by that name, so any case where the folder folds case; one deeper is taken only as spelled
+    `SKILL.md`, since no runtime opens it as a skill's main file, so a lowercase `skill.md` template is never audited.
+    A file link the rule turns away leaves `outside` too, so a name no runtime opens draws no finding; the folders
+    and entries the walk could not list or examine stay in `unread` whatever their names, as walk_files gives them.
+    """
+    walk = walk_files(root, directory, lambda name: name.casefold() == SKILL_FILE.casefold())
+
+    def taken(path: Path) -> bool:
+        return is_skill_file(path) if path.parent.parent == directory else path.name == SKILL_FILE
+
+    walk.paths = [path for path in walk.paths if taken(path)]
+    walk.outside = [path for path in walk.outside if path.name.casefold() != SKILL_FILE.casefold() or taken(path)]
+    return walk
+
+
 def check_copilot_configuration(root: Path, manifest: dict[str, Any]) -> list[Finding]:
     """Statically validate Copilot-discovered repository skills and agents."""
     findings: list[Finding] = []
@@ -1277,9 +1296,7 @@ def check_copilot_configuration(root: Path, manifest: dict[str, Any]) -> list[Fi
         except OSError as error:
             findings.append(_unlistable_finding(skill_dir, error))
             continue
-        # A skill's SKILL.md as its folder compares names, the file a runtime opens by that name: the walk keeps each
-        # name that is SKILL.md in some case, and is_skill_file asks its folder.
-        walk = walk_files(root, directory, lambda name: name.casefold() == SKILL_FILE.casefold())
+        walk = skill_walk(root, directory)
         findings.extend(outside_link_findings(root, walk))
         # A folder below it the walk cannot list, which the repository walk skips by its name or reports too.
         findings.extend(
@@ -1288,7 +1305,7 @@ def check_copilot_configuration(root: Path, manifest: dict[str, Any]) -> list[Fi
         )
         # A skill in a nested checkout, which the inventory's one-level listing names but this walk does not enter.
         findings.extend(skipped_folder_findings(root, walk))
-        for path in sorted(path for path in walk.paths if is_skill_file(path)):
+        for path in sorted(walk.paths):
             findings.extend(_validate_skill(path, root))
             if skill_dir == ".github/skills":
                 findings.extend(_provenance(root, path, "skill", manifest_paths))

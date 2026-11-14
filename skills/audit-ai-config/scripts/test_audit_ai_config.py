@@ -1712,6 +1712,38 @@ class CopilotConfigurationTests(unittest.TestCase):
                     self.assertEqual(folds, f"{skill_dir}/alpha/skill.md" in paths, paths)
             (folder / "skill.md").unlink()
 
+    def test_a_skill_md_below_a_skill_s_folder_in_another_case_is_never_audited(self) -> None:
+        # A runtime opens a skill's SKILL.md in the skill's own folder; a lowercase skill.md deeper, such as a
+        # template, is no skill's main file in any folder, so it draws no finding where its folder folds case either.
+        alpha = self.root / ".claude/skills/alpha"
+        _write_fixture(
+            self.root,
+            {
+                ".claude/skills/alpha/SKILL.md": "---\nname: alpha\ndescription: Does a thing.\n---\n",
+                ".claude/skills/alpha/templates/skill.md": "# A template\n",
+            },
+        )
+        folds = {str(alpha): True, str(alpha / "templates"): True}
+        with mock.patch.dict(path_keys._FOLDS_CASE, folds):
+            found = audit.check_copilot_configuration(self.root, {})
+        self.assertEqual([], [(f.path, f.message) for f in found if "alpha" in (f.path or "")])
+
+    @unittest.skipIf(sys.platform == "win32", "Windows makes a file symbolic link only with a privilege tests lack")
+    def test_a_link_out_spelled_as_no_runtime_opens_it_draws_no_finding(self) -> None:
+        # Where the folder keeps case, Skill.md is a file no runtime opens as the skill's, so its link out of the
+        # repository is not the audit's to report; where the folder folds case it is the skill's file.
+        alpha = self.root / ".claude/skills/alpha"
+        alpha.mkdir(parents=True)
+        with tempfile.TemporaryDirectory() as outside:
+            target = Path(outside) / "Skill.md"
+            target.write_text("---\nname: alpha\ndescription: Elsewhere.\n---\n", encoding="utf-8")
+            (alpha / "Skill.md").symlink_to(target)
+            for folds in (False, True):
+                with self.subTest(folds=folds), mock.patch.dict(path_keys._FOLDS_CASE, {str(alpha): folds}):
+                    found = audit.check_copilot_configuration(self.root, {})
+                    linked = [f.path for f in found if f.path == ".claude/skills/alpha/Skill.md"]
+                    self.assertEqual([".claude/skills/alpha/Skill.md"] if folds else [], linked)
+
     def test_a_projection_in_another_case_is_owned_by_the_skill_md_the_manifest_names(self) -> None:
         # The manifest names a projection as the runtime opens it, SKILL.md, which is this file where the folder folds
         # case.
