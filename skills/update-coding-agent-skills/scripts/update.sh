@@ -12,7 +12,8 @@
 #                    main channel nothing was fetched, and on the release channel the clone was fetched and the pin
 #                    is at another commit than the release the update would deploy
 #   FETCH_FAILED     followed by Git's error on one line: origin could not be reached, refused, wanted a credential
-#                    the configured helpers could not give without asking, or did not answer within the time limit
+#                    the configured helpers could not give without asking, or did not answer within the time limit; a
+#                    fetch that failed in the clone itself, such as a ref Git could not lock, is a FAILED line
 #   TAG_SHADOWS_BRANCH followed by each tag named main or origin/main, as "<tag> on origin" or "<tag> in the clone";
 #                    nothing was fetched
 #   NO_RELEASE       alone, on the release channel: no release tag reaches origin/main; the clone was fetched
@@ -22,7 +23,7 @@
 #                    and --cross-major was not given; <current> is untagged, counted as 0.0.0, when no
 #                    release tag reaches that commit, and unknown, which any release raises, when check
 #                    names no deployed commit or the clone does not hold it, which a NOT_IN_CLONE line then
-#                    names before the commits
+#                    names before the commits, or an UNLISTED line when the clone has no local main either
 #   CHECKOUT_FAILED  followed by Git's error from switching to main
 #   NOT_FAST_FORWARD followed by the commits main has that origin/main lacks, found before switching branches;
 #                    or by Git's error when Git refuses the fast-forward itself, after which the clone is
@@ -33,7 +34,8 @@
 #                    NOT_IN_CLONE <commit> when the clone does not hold the deployed commit check names, as when it
 #                    was on a branch since deleted and pruned, so what the release adds to it and drops from it
 #                    cannot be read, then by the commits the release adds to the deployed commit, or to local main
-#                    as it was before the fast-forward when <old> is unknown, and by
+#                    as it was before the fast-forward when <old> is unknown (an UNLISTED line when there was no local
+#                    main), and by
 #                    NOT_IN_RELEASE <tag>..<old> and the deployed commits the release does not carry, when there are
 #                    any; either is followed by CROSSED <current>..<target> when --cross-major accepted a release
 #                    boundary, then the deploy output and DEPLOYED, DEPLOY_FAILED <code>, or DEPLOY_PINNED <ref>
@@ -45,9 +47,11 @@
 #                    skill, `deploy.py check` printed nothing, printed only its error, or named the deployed commit or
 #                    the pin in a form the update cannot read, so whether the installation is pinned is unknown, a git
 #                    lookup or comparison failed rather than answering, git's own reason following, remote_refs.py
-#                    failed or ended without its result, or another step failed outright
-# Each list of commits above that git cannot read, after any status line, is one UNLISTED <range> <reason> line in its
-# place, never an empty list.
+#                    failed, git failed in the clone rather than at origin, or remote_refs.py ended without its
+#                    result, or another step failed outright
+# Each list of commits above that git cannot read, or that has no commit to start from, as when check names no deployed
+# commit the clone holds and the clone has no local main, is one UNLISTED <range> <reason> line in its place, after any
+# status line, never an empty list.
 # A stop leaves the clone on the branch it was found on unless a "still on main:" line says otherwise; an update
 # switches it to main and leaves it there.
 # Exit: 0 deployed; 1 any other status line, or FAILED; 2 usage (the wrong arguments, on stderr).
@@ -340,8 +344,9 @@ ORIGIN_MAIN=refs/remotes/origin/main
 # core.askPass, or SSH_ASKPASS names, no Git Credential Manager dialog, and a time limit, so a credential the helpers
 # cannot give without asking, or a remote that never answers, ends the update with FETCH_FAILED and git's reason
 # instead of holding it. Its last line is CHECKED, FETCHED, or ORIGIN_FAILED <reason> for origin's failure, which alone
-# is FETCH_FAILED; FAILED <reason>, a fault of the script or of a git that could not run, and any other last line end
-# the update with FAILED naming remote_refs.py, never as a fetch origin refused.
+# is FETCH_FAILED; FAILED <reason>, a fault of the script, of a git that could not run, or of the clone itself, such as
+# a ref git could not lock, and any other last line end the update with FAILED naming remote_refs.py, never as a fetch
+# origin refused.
 REMOTE_REFS="$SCRIPTS/remote_refs.py"
 REMOTE_OUT=
 remote_refs() {
@@ -431,6 +436,10 @@ if [ -n "$DEPLOYED_COMMIT" ]; then
   fi
 fi
 
+# Why a list of commits that starts from local main, for want of a deployed commit the clone holds, is not listed in a
+# clone with no local main: there is no commit to start it from, which an empty list would hide.
+NO_LIST_BASE="not listed: check names no deployed commit the clone holds, and the clone has no local main"
+
 # The installed version is the release of the deployed commit, not of local main, which a pull by hand may have moved
 # past it. Without a release on origin/main there is nothing to cross. A deployed commit no release tag reaches counts
 # as version zero, and one check does not name, or the clone does not hold, stops at any release.
@@ -460,13 +469,15 @@ if [ -n "$TARGET" ] && [ "$CURRENT" != "$TARGET" ]; then
       [ -z "$NOT_IN_CLONE" ] || echo "$NOT_IN_CLONE"
       # The commits the update would deploy: from the deployed commit, or from local main when check names none or
       # the clone does not hold it. A clone with no local main yet, which git's quiet exit 1 alone says, has none to
-      # list from; any other answer of the lookup is an UNLISTED line, never an empty list.
+      # list from, and any other answer of the lookup is git's reason; either is an UNLISTED line, never an empty list.
       LISTED_FROM=${KNOWN_COMMIT:-$MAIN}
       VERIFIED=0
       git_quiet rev-parse --verify --quiet "$LISTED_FROM^{commit}" || VERIFIED=$?
       if [ "$VERIFIED" -eq 0 ]; then
         log_lines "$LISTED_FROM..$DEPLOY_END"
-      elif [ "$VERIFIED" -ne 1 ]; then
+      elif [ "$VERIFIED" -eq 1 ]; then
+        echo "UNLISTED $LISTED_FROM..$DEPLOY_END $NO_LIST_BASE"
+      else
         echo "UNLISTED $LISTED_FROM..$DEPLOY_END $GIT_REASON"
       fi
       exit 1
@@ -555,11 +566,16 @@ if [ "$CHANNEL" = main ]; then
 elif [ "$DEPLOYED_COMMIT" = "$RELEASE_COMMIT" ]; then
   echo "UP_TO_DATE $TARGET"
 elif [ -z "$KNOWN_COMMIT" ]; then
-  # Without a deployed commit the clone holds, the commits listed are those the release adds to local main, as the
-  # stop listed them, and what the release drops from the deployed commit is not claimed either way.
+  # Without a deployed commit the clone holds, the commits listed are those the release adds to local main as it was
+  # before the fast-forward, as the stop listed them, and what the release drops from the deployed commit is not
+  # claimed either way. A clone that had no local main has no such commits to list, so an UNLISTED line says so.
   echo "UPDATED unknown..$TARGET"
   [ -z "$NOT_IN_CLONE" ] || echo "$NOT_IN_CLONE"
-  log_lines "$BEFORE..$RELEASE_REF"
+  if [ "$HAS_MAIN" -eq 0 ]; then
+    log_lines "$BEFORE..$RELEASE_REF"
+  else
+    echo "UNLISTED $MAIN..$RELEASE_REF $NO_LIST_BASE"
+  fi
 else
   echo "UPDATED $OLD..$TARGET"
   log_lines "$KNOWN_COMMIT..$RELEASE_REF"
