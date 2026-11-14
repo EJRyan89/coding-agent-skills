@@ -20,16 +20,30 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
+import review_hosts
+from git_client import GitClient, GitError, GitResult
+from path_keys import name_key
 from review_hosts import (
     HostSuperseded,
     ProcessResult,
     copilot_command,
+    copilot_settings,
     find_copilot,
+    isolated_copilot_environment,
     parse_copilot_version,
+    require_no_added_configuration,
     run_copilot,
 )
 from review_runtime import SOURCE_SNAPSHOT_MANIFEST, RuntimeContractError
 from test_review_archive import unstatable
+
+# A review skill run as an entrypoint reviewer keeps its repository paths when prepare materializes it, so its
+# reviewer root holds the folders Copilot CLI loads skills and agents from at the top of an added directory.
+SKILL_REVIEWER_FILES = {
+    ".claude/skills/review/SKILL.md": b"# Review skill\n",
+    ".claude/agents/helper.md": b"---\nname: helper\ndescription: a helper the skill names\n---\nHelp.\n",
+    ".github/agents/other.agent.md": b"---\nname: other\ndescription: another\n---\nOther.\n",
+}
 
 
 class RuntimeHostTests(unittest.TestCase):
@@ -121,13 +135,15 @@ class RuntimeHostTests(unittest.TestCase):
     def test_copilot_command_is_noninteractive_and_least_privilege(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()
+            (root / "reviewer").mkdir()
             command = copilot_command(
                 "copilot",
                 version=(1, 0, 103),
                 run_directory=root,
-                materialized_root=root,
+                materialized_root=root / "reviewer",
                 result_path=root / "result.json",
             )
+            self.assertEqual([f"--add-dir={root}"], [argument for argument in command if "--add-dir" in argument])
             self.assertIn("--no-custom-instructions", command)
             self.assertIn("--no-ask-user", command)
             self.assertIn("--disable-builtin-mcps", command)
@@ -177,13 +193,13 @@ class RuntimeHostTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()
             run_directory = root / "run"
-            run_directory.mkdir()
+            (run_directory / "reviewer").mkdir(parents=True)
             with self.assertRaisesRegex(RuntimeContractError, "result path must be inside the run directory"):
                 copilot_command(
                     "copilot",
                     version=(1, 0, 103),
                     run_directory=run_directory,
-                    materialized_root=root,
+                    materialized_root=run_directory / "reviewer",
                     result_path=root / "result.json",
                 )
 
@@ -541,3 +557,194 @@ class RuntimeHostTests(unittest.TestCase):
                     isolation_root=isolation,
                     executable="copilot",
                 )
+
+
+class AddedRootTests(unittest.TestCase):
+    """Copilot CLI loads the skills and agents at the top of every directory added with --add-dir as trusted
+    configuration, and the project skills and agents from its working directory up to the git root."""
+
+    def setUp(self) -> None:
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name).resolve()
+
+    def skill_reviewer(self, run: Path) -> Path:
+        """A review skill materialized below the run directory at its repository paths, as prepare writes one."""
+        reviewer = run / "reviewer"
+        for relative, content in SKILL_REVIEWER_FILES.items():
+            (reviewer / relative).parent.mkdir(parents=True, exist_ok=True)
+            (reviewer / relative).write_bytes(content)
+        (reviewer / "materialization.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "adapter_id": "review-skill",
+                    "entrypoint": ".claude/skills/review/SKILL.md",
+                    "source_commit": "a" * 40,
+                    "source_hashes": {
+                        relative: hashlib.sha256(content).hexdigest()
+                        for relative, content in SKILL_REVIEWER_FILES.items()
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+        return reviewer
+
+    def review(self, run: Path, reviewer: Path) -> tuple[list[str], dict[str, Any]]:
+        """Run the host with a recording Copilot; return the review command and the isolated home's settings."""
+        commands: list[list[str]] = []
+
+        def runner(arguments: Sequence[str], cwd: Path, environment: Mapping[str, str], stdin: str) -> ProcessResult:
+            del cwd, environment, stdin
+            if "--version" in arguments:
+                return ProcessResult(0, "GitHub Copilot CLI 1.0.110\n", "")
+            commands.append(list(arguments))
+            (run / "copilot-result-1.json").write_text('{"protocol_version": 1}', encoding="utf-8")
+            return ProcessResult(0, "", "")
+
+        isolation = run / "copilot-isolation-1"
+        run_copilot(
+            run_directory=run,
+            materialized_root=reviewer,
+            request_path=run / "request.json",
+            result_path=run / "result.json",
+            staging_path=run / "copilot-result-1.json",
+            promote=RuntimeHostTests._promote_fixture_result,
+            diagnostic_path=run / "copilot-diagnostic-1.jsonl",
+            isolation_root=isolation,
+            runner=runner,
+            executable="copilot",
+            base_environment={"GH_TOKEN": "test-token"},
+        )
+        settings = json.loads((isolation / "copilot-home" / "settings.json").read_text(encoding="utf-8"))
+        self.assertEqual(1, len(commands), "the review ran once")
+        return commands[0], settings
+
+    def test_a_review_skill_at_its_repository_paths_is_read_through_the_run_directory_and_never_added(self) -> None:
+        run = self.root / "run"
+        run.mkdir()
+        reviewer = self.skill_reviewer(run)
+        RuntimeHostTests._write_request_with_snapshot(run, run / "request.json")
+        command, settings = self.review(run, reviewer)
+        self.assertEqual([f"--add-dir={run}"], [argument for argument in command if argument.startswith("--add-dir")])
+        self.assertEqual([], [argument for argument in command if str(reviewer) in argument])
+        self.assertEqual([str(run)], settings["ignoredSkillsLocations"])
+        self.assertEqual("disable", settings["permissions"]["disableBypassPermissionsMode"])
+        self.assertEqual({"protocol_version": 1}, json.loads((run / "result.json").read_text(encoding="utf-8")))
+
+    def test_the_settings_exclude_each_added_root_as_the_command_spells_it_and_as_it_resolves(self) -> None:
+        (self.root / "run" / "source").mkdir(parents=True)
+        spelled = self.root / "run" / "source" / ".."
+        settings = copilot_settings([spelled, spelled, self.root / "run"])
+        self.assertEqual([str(spelled), str(self.root / "run")], settings["ignoredSkillsLocations"])
+        self.assertEqual({"permissions": {"disableBypassPermissionsMode": "disable"}}, review_hosts.COPILOT_SETTINGS)
+        workspace, _ = isolated_copilot_environment(self.root / "isolation", {}, added_roots=[spelled])
+        written = json.loads((self.root / "isolation" / "copilot-home" / "settings.json").read_text(encoding="utf-8"))
+        self.assertEqual(
+            {
+                "permissions": {"disableBypassPermissionsMode": "disable"},
+                "ignoredSkillsLocations": [str(spelled), str(self.root / "run")],
+            },
+            written,
+        )
+        self.assertEqual(self.root / "isolation" / "workspace", workspace)
+
+    def test_a_run_directory_whose_top_holds_a_skill_or_agent_folder_is_refused_before_the_review(self) -> None:
+        for name, kind in ((".github", "folder"), (".agents", "folder"), (".claude", "folder"), (".claude", "file")):
+            with self.subTest(name=name, kind=kind):
+                run = self.root / f"run-{name}-{kind}"
+                run.mkdir()
+                reviewer = self.skill_reviewer(run)
+                RuntimeHostTests._write_request_with_snapshot(run, run / "request.json")
+                if kind == "folder":
+                    (run / name / "skills" / "planted").mkdir(parents=True)
+                else:
+                    (run / name).write_text("", encoding="utf-8")
+                with self.assertRaises(RuntimeContractError) as raised:
+                    self.review(run, reviewer)
+                self.assertEqual(
+                    f"Copilot run directory {run} holds {name}, whose skills and agents Copilot CLI would load from an "
+                    "added directory as trusted configuration",
+                    str(raised.exception),
+                )
+                self.assertFalse((run / "result.json").exists())
+
+    def test_a_folder_named_in_another_case_is_refused_where_the_file_system_folds_case(self) -> None:
+        run = self.root / "run"
+        (run / ".GitHub" / "agents").mkdir(parents=True)
+        folds = name_key(".GitHub", run) == ".github"
+        if folds:
+            with self.assertRaisesRegex(RuntimeContractError, r"holds \.GitHub, whose skills and agents"):
+                require_no_added_configuration(run, "run directory")
+        else:
+            require_no_added_configuration(run, "run directory")  # Copilot CLI finds no .github folder there
+
+    def test_a_run_directory_that_cannot_be_listed_is_refused(self) -> None:
+        with (
+            mock.patch.object(Path, "iterdir", side_effect=PermissionError(13, "Permission denied")),
+            self.assertRaises(RuntimeContractError) as raised,
+        ):
+            require_no_added_configuration(self.root, "run directory")
+        self.assertEqual(
+            f"Copilot run directory {self.root} cannot be listed: Permission denied", str(raised.exception)
+        )
+
+    def test_a_materialized_root_outside_or_at_the_run_directory_is_refused(self) -> None:
+        run = self.root / "run"
+        run.mkdir()
+        for label, reviewer in (("outside", self.root / "reviewer"), ("at", run)):
+            reviewer.mkdir(exist_ok=True)
+            with self.subTest(label):
+                with self.assertRaises(RuntimeContractError) as raised:
+                    copilot_command(
+                        "copilot",
+                        version=(1, 0, 110),
+                        run_directory=run,
+                        materialized_root=reviewer,
+                        result_path=run / "result.json",
+                    )
+                self.assertEqual("Copilot materialized root must be inside the run directory", str(raised.exception))
+
+    def test_the_workspace_is_its_own_git_root_whatever_repository_holds_it(self) -> None:
+        outer = self.root / "outer"
+        GitClient(timeout=60).output(["init", "--quiet", str(outer)])
+        workspace, _ = isolated_copilot_environment(outer / "run" / "isolation", {}, added_roots=[])
+        top = GitClient(timeout=60).output(["rev-parse", "--show-toplevel"], directory=workspace)
+        self.assertEqual(workspace.resolve(), Path(top.strip()).resolve())
+
+    def test_a_workspace_git_cannot_make_a_repository_of_is_refused(self) -> None:
+        for label, error, message in (
+            ("failed", GitError("git init failed:\nfatal: cannot make it\n", returncode=128), "fatal: cannot make it"),
+            ("missing", GitError("git is not installed", kind="prerequisite"), "git is not installed"),
+        ):
+            client = mock.Mock()
+            client.output.side_effect = error
+            isolation = self.root / f"isolation-{label}"
+            with (
+                self.subTest(label),
+                mock.patch.object(review_hosts, "GitClient", return_value=client),
+                self.assertRaises(RuntimeContractError) as raised,
+            ):
+                isolated_copilot_environment(isolation, {}, added_roots=[])
+            self.assertTrue(
+                str(raised.exception).startswith("The Copilot workspace could not be made a git repository: "),
+                raised.exception,
+            )
+            self.assertIn(message, str(raised.exception))
+            self.assertNotIn("\n", str(raised.exception), "git's lines are flattened to one")
+            client.output.assert_called_once_with(["init", "--quiet"], directory=isolation / "workspace")
+            self.assertFalse((isolation / "copilot-home" / "settings.json").exists())
+
+    def test_a_failing_git_init_is_named_as_git_names_it(self) -> None:
+        def failing(command: Sequence[str], timeout: float) -> GitResult:
+            del command, timeout
+            return GitResult(128, "", "fatal: cannot\nmake it\n")
+
+        with (
+            mock.patch.object(review_hosts, "GitClient", return_value=GitClient(failing)),
+            self.assertRaises(RuntimeContractError) as raised,
+        ):
+            isolated_copilot_environment(self.root / "isolation", {}, added_roots=[])
+        self.assertIn("could not be made a git repository: ", str(raised.exception))
+        self.assertIn("fatal: cannot make it", str(raised.exception))

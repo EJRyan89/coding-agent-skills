@@ -189,7 +189,6 @@ def _command(
     return [
         executable,
         f"--add-dir={paths['run']}",
-        f"--add-dir={paths['trusted']}",
         "--no-custom-instructions",
         "--no-ask-user",
         *local_session,
@@ -550,7 +549,7 @@ class CopilotHostTests(unittest.TestCase):
             "root": root,
             "run": run,
             "source": run / "source",
-            "trusted": root / "trusted",
+            "trusted": run / "reviewer",
             "request": run / "request.json",
             "diff": run / "diff.patch",
             "result": run / "result.json",
@@ -577,7 +576,7 @@ class CopilotHostTests(unittest.TestCase):
             self.stamp_snapshot(copilot, paths["source"])
         paths["diff"].write_text("diff --git a/Example.cs b/Example.cs\n", encoding="utf-8")
         (root / "outside.patch").write_text("diff --git a/Example.cs b/Example.cs\n", encoding="utf-8")
-        paths["trusted"].mkdir()
+        paths["trusted"].mkdir(parents=True)
         (paths["trusted"] / "SKILL.md").write_bytes(SKILL)
         (paths["trusted"] / "rules.md").write_bytes(RULES)
         (paths["trusted"] / "materialization.json").write_text(
@@ -689,7 +688,7 @@ class CopilotHostTests(unittest.TestCase):
                 "missing": paths["root"] / "missing",
                 "relative": Path("relative") / name,
                 "outside": paths["root"] / "outside-staging.json",
-                "unresolved": paths["run"] / ".." / "trusted",
+                "unresolved": paths["run"] / "source" / ".." / "reviewer",
                 "file": paths["request"],
                 "folder": paths["source"],
             }[mode]
@@ -886,9 +885,7 @@ class CopilotHostTests(unittest.TestCase):
         paths = self.materialize(copilot)
         events, error = self.call(copilot, paths)
         self.assertIsNone(error)
-        expected = self.full_sequence(paths)
-        expected[1][1][2] = f"--add-dir={paths['run'] / '..' / 'trusted'}"
-        self.assertEqual(expected, events)
+        self.assertEqual(self.full_sequence(paths), events)
 
     def test_a_request_and_result_with_a_byte_order_mark_are_read(self) -> None:
         copilot = Copilot(writes=b"\xef\xbb\xbf" + RESULT)
@@ -1156,7 +1153,7 @@ class CopilotProcessTests(unittest.TestCase):
             exported.update({"GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "fixture.scope", "GIT_CONFIG_VALUE_0": "on"})
             with self.subTest(value=value), mock.patch.dict(os.environ, exported):
                 isolation = self.folder / f"isolation-{index}"
-                workspace, environment = review_hosts.isolated_copilot_environment(isolation)
+                workspace, environment = review_hosts.isolated_copilot_environment(isolation, added_roots=[])
                 # GIT_DIR alone, as before the fix, finds the other repository from the workspace.
                 git_dir_alone = {
                     name: setting
@@ -1180,7 +1177,8 @@ class CopilotProcessTests(unittest.TestCase):
                 seen = json.loads(result.stdout)
                 self.assertEqual(set(), set(REPOSITORY_SELECTING) & set(seen["variables"]))
                 self.assertLessEqual({"GIT_CEILING_DIRECTORIES", "GIT_CONFIG_COUNT"}, set(seen["variables"]))
-                self.assertIsNone(seen["git_dir"])
+                # A git there finds the workspace's own repository, which the host makes, never another.
+                self.assertEqual((workspace / ".git").resolve(), Path(seen["git_dir"]).resolve())
 
     def test_a_given_base_environment_loses_its_repository_selecting_variables_in_any_case(self) -> None:
         base = {
@@ -1190,7 +1188,7 @@ class CopilotProcessTests(unittest.TestCase):
             "GIT_SSH_COMMAND": "ssh -o BatchMode=yes",
         }
         isolation = self.folder / "isolation"
-        workspace, environment = review_hosts.isolated_copilot_environment(isolation, base)
+        workspace, environment = review_hosts.isolated_copilot_environment(isolation, base, added_roots=[])
         self.assertEqual(isolation / "workspace", workspace)
         self.assertEqual(
             {
@@ -1208,7 +1206,7 @@ class CopilotProcessTests(unittest.TestCase):
     def test_a_given_base_environment_loses_every_copilot_variable_but_the_sign_in(self) -> None:
         base = {**BASE_ENVIRONMENT, **CALLER_COPILOT_VARIABLES, **COPILOT_SIGN_IN}
         isolation = self.folder / "isolation"
-        _, environment = review_hosts.isolated_copilot_environment(isolation, base)
+        _, environment = review_hosts.isolated_copilot_environment(isolation, base, added_roots=[])
         self.assertEqual(
             {
                 **BASE_ENVIRONMENT,
@@ -1225,7 +1223,7 @@ class CopilotProcessTests(unittest.TestCase):
     def test_this_processs_copilot_variables_never_reach_the_host(self) -> None:
         # The dispatched host passes no base environment, so it starts from this process's.
         with mock.patch.dict(os.environ, {**CALLER_COPILOT_VARIABLES, **COPILOT_SIGN_IN}):
-            _, environment = review_hosts.isolated_copilot_environment(self.folder / "isolation")
+            _, environment = review_hosts.isolated_copilot_environment(self.folder / "isolation", added_roots=[])
         caller = {name.upper() for name in CALLER_COPILOT_VARIABLES} - {
             "COPILOT_HOME",
             "COPILOT_CACHE_HOME",
@@ -1236,9 +1234,11 @@ class CopilotProcessTests(unittest.TestCase):
 
     def test_the_copilot_home_turns_every_allow_all_option_off(self) -> None:
         isolation = self.folder / "isolation"
-        review_hosts.isolated_copilot_environment(isolation, BASE_ENVIRONMENT)
+        review_hosts.isolated_copilot_environment(isolation, BASE_ENVIRONMENT, added_roots=[])
         settings = json.loads((isolation / "copilot-home" / "settings.json").read_text(encoding="utf-8"))
-        self.assertEqual({"permissions": {"disableBypassPermissionsMode": "disable"}}, settings)
+        self.assertEqual(
+            {"permissions": {"disableBypassPermissionsMode": "disable"}, "ignoredSkillsLocations": []}, settings
+        )
 
     def test_output_past_the_limit_is_cut_and_the_cut_named_in_the_diagnostic(self) -> None:
         program = "import sys; sys.stdout.write('o' * 1000); sys.stderr.write('kept'); sys.exit(1)"
@@ -1356,7 +1356,7 @@ class IsolationRootStatTests(unittest.TestCase):
             root.mkdir()
             (root / "stale.txt").write_text("stale\n", encoding="utf-8")
             with unstatable(root), self.assertRaises(PermissionError) as raised:
-                review_hosts.isolated_copilot_environment(root)
+                review_hosts.isolated_copilot_environment(root, added_roots=[])
             self.assertEqual(str(root), raised.exception.filename)
             self.assertEqual(["stale.txt"], [path.name for path in root.iterdir()])
 
