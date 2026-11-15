@@ -419,7 +419,9 @@ jobs:
           key: psscriptanalyzer-${{ runner.os }}-${{ env.PSSCRIPTANALYZER_VERSION }}
 
       # The image's /bin/bash is a Bash 3.2 that Apple no longer updates, older than validation's Bash floor, so the leg
-      # installs Homebrew's, as docs/installation.md tells a Mac to, and puts it ahead of /bin/bash on PATH.
+      # installs Homebrew's, as docs/installation.md tells a Mac to, and puts its folder alone ahead of /bin/bash on
+      # PATH: the whole of Homebrew's bin would also put Homebrew's python3 ahead of the one set up above, which a suite
+      # running a skill's python3 command would then start.
       - name: Install Bash
         shell: bash
         env:
@@ -427,7 +429,7 @@ jobs:
           HOMEBREW_NO_INSTALL_CLEANUP: '1'
         run: |
           brew install bash
-          echo "$(brew --prefix)/bin" >> "$GITHUB_PATH"
+          echo "$(brew --prefix bash)/bin" >> "$GITHUB_PATH"
 
       # The image has PowerShell 7. ShellCheck is the pinned release's own macOS build, checked against its pinned
       # digest and kept in its own folder ahead of the image's on PATH.

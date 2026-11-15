@@ -2538,10 +2538,13 @@ def definition_lines(definition: AgentDefinition) -> list[str]:
 
 
 def json_hook(event: str, group: int, handler: dict[str, object]) -> Hook:
-    """One command handler of a hooks file, read as agent_hooks reads a definition's."""
+    """One command handler of a hooks file, read as agent_hooks reads a definition's, and a command the plugin build
+    wrote to start Python in every shell as the Python it starts."""
     hook = Hook(event, group)
     command = handler.get("command")
-    if isinstance(command, str) and command.split():
+    if isinstance(command, str) and skill_menu.plugin_hook_arguments(command) is not None:
+        hook.program = skill_menu.PLUGIN_PYTHON
+    elif isinstance(command, str) and command.split():
         hook.program = unquoted(command.split()[0])
     hook.timeout = str(handler["timeout"]) if "timeout" in handler else hook.timeout
     hook.on_failure = str(handler["onFailure"]) if "onFailure" in handler else hook.on_failure
