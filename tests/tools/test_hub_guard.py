@@ -285,6 +285,8 @@ class PowerShellReaderStartTests(unittest.TestCase):
             # A line separator U+2028 inside pwsh's message is flattened with the rest, never read as its end.
             (Finished(1, b"", b"first\xe2\x80\xa8second\n"), "first second"),
             (Finished(1, b"not json", b""), "exit code 1"),
+            # A long message is cut to a bounded reason, as every failed command's is.
+            (Finished(1, b"", b"x" * 600), "x" * 500 + "..."),
             (Finished(0, b"", b"  \n"), "exit code 0"),
         ):
             reading = hub_guard.Reading(isolated_environment(), text="Get-Item x")

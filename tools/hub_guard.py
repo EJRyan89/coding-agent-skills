@@ -47,7 +47,7 @@ import json_writer
 import whole_number
 from bounded_process import run_bounded
 from console import run_main
-from flat_text import flat_text
+from flat_text import reason_line
 from git_client import (
     CARRIER_OPTIONS,
     CONFIG_READ_ACTIONS,
@@ -1523,7 +1523,7 @@ def guard_enabled(hub: Path) -> bool:
     look up, allowed with a note rather than read as unguarded unseen."""
     result = git(hub, "config", "--local", "--type=bool", "--get", GUARD_SETTING)
     if result.returncode not in (0, 1):
-        said = flat_text(result.stderr) or f"git config exited with {result.returncode}"
+        said = reason_line(result.stderr) or f"git config exited with {result.returncode}"
         print(f"hub guard skipped: the opt-in of {hub} could not be read: {said}", file=sys.stderr)
     return result.returncode == 0 and output_line(result.stdout) == "true"
 
@@ -2605,7 +2605,7 @@ def shadowed_fast_forward(hub: Path) -> str | None:
     refs/remotes/origin/main exists, which git resolves first or reads as ambiguous, or git cannot list them."""
     result = git(hub, "for-each-ref", "--format=%(refname)", *FAST_FORWARD_SHADOWS)
     if result.returncode != 0:
-        said = flat_text(result.stderr) or f"git for-each-ref exited with {result.returncode}"
+        said = reason_line(result.stderr) or f"git for-each-ref exited with {result.returncode}"
         return (
             f"`git merge --ff-only origin/main` is refused: the guard could not list the refs it may follow ({said})."
         )
@@ -3743,7 +3743,7 @@ class Judge:
                 continue
             if result.returncode != 0:
                 arguments = [*repository, "config", "--get", f"alias.{subcommand}"]
-                return self.unreadable(call, flat_text(failure_message(arguments, result)))
+                return self.unreadable(call, reason_line(failure_message(arguments, result)))
             found = True
             reason = self.expansion_refusal(call, result.stdout.removesuffix("\n"), depth, lookup.top)
             if reason is not None:
@@ -5644,7 +5644,7 @@ def powershell_events(command: str, reading: Reading) -> dict[str, Any] | None:
     try:
         output = json_reader.loads(result.stdout.decode("utf-8", "replace"))
     except ValueError:
-        reason = flat_text(result.stderr.decode("utf-8", "replace")) or f"exit code {result.returncode}"
+        reason = reason_line(result.stderr.decode("utf-8", "replace")) or f"exit code {result.returncode}"
         reading.cannot_read(f"pwsh could not read the command ({reason})")
         return None
     if not isinstance(output, dict):

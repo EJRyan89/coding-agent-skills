@@ -126,7 +126,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[4] / "skills" / "ejryan8
 
 import whole_number
 from console import run_main
-from flat_text import flat_text
+from flat_text import flat_text, reason_line
 from git_client import GitClient, GitError, output_line, output_lines
 from git_worktrees import Worktree, list_worktrees
 from github_client import GitHubClient, GitHubError
@@ -356,11 +356,11 @@ def fast_forward(git: GitClient, hub: Path, dry_run: bool) -> str:
     tracking = f"refs/remotes/{REMOTE}/{BASE}"
     shown = git.run(["show-ref", "--verify", "--hash", tracking], directory=hub)
     if shown.returncode != 0:
-        reason = flat_text(shown.stderr) or f"git show-ref exited {shown.returncode}"
+        reason = reason_line(shown.stderr) or f"git show-ref exited {shown.returncode}"
         return f"not fast-forwarded: could not read {tracking} ({reason})"
     merged = git.run(["merge", "--ff-only", output_line(shown.stdout)], directory=hub)
     if merged.returncode != 0:
-        reason = flat_text(merged.stderr) or f"git merge --ff-only exited {merged.returncode}"
+        reason = reason_line(merged.stderr) or f"git merge --ff-only exited {merged.returncode}"
         return f"not fast-forwarded: {reason}"
     after = output_line(git.output(["rev-parse", "HEAD"], directory=hub))
     return f"current at {short(after)}" if after == before else f"fast-forwarded {short(before)} to {short(after)}"

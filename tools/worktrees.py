@@ -36,7 +36,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "ejryan8
 import file_presence
 import git_worktrees
 from console import run_main
-from flat_text import flat_text
+from flat_text import flat_text, reason_line
 from git_client import GitClient, GitError, GitResult, failure_message, output_line, output_lines
 
 from deployer import platform_support
@@ -131,7 +131,7 @@ def checkout_of(path: Path, timeout: float = GUARD_GIT_TIMEOUT_SECONDS) -> Check
     )
     lines = output_lines(result.stdout)
     if result.returncode != 0 and below_a_checkout(directory):
-        said = flat_text(result.stderr) or f"git rev-parse exited with {result.returncode}"
+        said = reason_line(result.stderr) or f"git rev-parse exited with {result.returncode}"
         raise GitError(f"git could not read the checkout at {directory}: {said}", returncode=result.returncode)
     if result.returncode != 0:
         return None
