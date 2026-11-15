@@ -661,6 +661,15 @@ PLUGIN_HOOK_PATHS = {
         "'review_guard.py')"
     ),
 }
+# How a plugin hook that starts Python by the pinned answer starts it, with its arguments in place of {0}: sh, which
+# runs a hook on macOS and Linux and as Git Bash on Windows, joins each `set -- \` to the next line and starts python,
+# or python3 where it finds no python, and PowerShell, which runs a hook on Windows without Git Bash, sets the exit
+# status to 1, which a missing python leaves, starts python, and exits with its status. Pinned here rather than read
+# from skill_menu, as PLUGIN_ANSWERS is.
+PLUGIN_HOOK_START = (
+    "set -- \\\n$global:LASTEXITCODE = 1\nset -- \\\npython {0}\nset -- \\\nexit $LASTEXITCODE\n"
+    'p=$(command -v python); exec "${{p:-python3}}" {0}'
+)
 PLUGIN_TOKEN = re.compile(rb"\{\{[A-Z_][A-Z0-9_]*\}\}")
 
 
@@ -729,7 +738,16 @@ def _hook_problems(name: str, hooks: bytes, declared: str) -> list[str]:
         expected = expected.replace(deployed, plugin)
     found = []
     for matcher, handler in handlers:
-        command = " ".join(str(handler.get("command", "")).split())
+        command = str(handler.get("command", ""))
+        arguments = command.rpartition('"${p:-python3}" ')[2]
+        if PLUGIN_HOOK_START.format(arguments) == command:
+            command = f"python {arguments}"
+        elif command.split()[:1] == ["python"]:
+            found.append(
+                f"plugin {name}: {PLUGIN_HOOKS} starts python by that name alone, which a macOS or Linux install of "
+                "Python may not give, so the hook blocks every call it matches there"
+            )
+        command = " ".join(command.split())
         fields = [f'matcher: "{matcher}"', f"command: >- {command}"]
         fields += [f"{key}: {handler[key]}" for key in ("type", "timeout", "onFailure") if key in handler]
         found += [
