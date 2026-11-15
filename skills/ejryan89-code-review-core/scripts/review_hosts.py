@@ -54,6 +54,7 @@ from review_runtime import (
     verify_stamped_snapshot,
 )
 from review_specialists import parse_unified_diff, render_entrypoint_prompt, symbolic_links
+from search_boundary import bound_search
 from typed_fields import FieldError
 
 
@@ -365,14 +366,10 @@ def copilot_settings(added_roots: Sequence[Path]) -> dict[str, Any]:
 
 
 def bounded_workspace(workspace: Path) -> None:
-    """Make the empty workspace a git repository, so Copilot CLI's search for project skills and agents ends there.
-
-    Copilot CLI reads project skills in `.github/skills/` and project agents in `.github/agents/` and `.claude/agents/`
-    from its working directory up to the git root; with no git root it reads every folder above the working directory,
-    where the run directory's parents, the system's shared temporary directory on Linux among them, are not the
-    host's. Nothing in the host commits there, so a hook the user's own git templates copy in never runs."""
+    """Make the empty workspace a git repository of its own (ejryan89-skill-core's `search_boundary`), so Copilot
+    CLI's search for project skills and agents ends there rather than in the run directory's parents."""
     try:
-        GitClient().output(["init", "--quiet"], directory=workspace)
+        bound_search(workspace, GitClient())
     except GitError as exc:
         raise RuntimeContractError(
             f"The Copilot workspace could not be made a git repository: {flat_text(str(exc))}"

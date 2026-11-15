@@ -22,6 +22,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts"))
 
+from git_client import GitClient
 from skill_roots import sibling_scripts
 
 sys.path.insert(0, str(sibling_scripts("ejryan89-code-review-core")))
@@ -175,6 +176,38 @@ class AcceptedTests(RuntimeCommandLinesTestCase):
         review = next(arguments for arguments in stdins if "--disallow-temp-dir" in arguments)
         self.assertEqual(lines.REQUEST, stdins[review])
         self.assertEqual({""}, {stdin for arguments, stdin in stdins.items() if arguments != review})
+
+
+class SearchBoundaryTests(RuntimeCommandLinesTestCase):
+    def test_every_command_line_and_its_help_start_in_a_folder_that_is_its_own_git_root(self) -> None:
+        # Copilot CLI and Claude Code read project skills and agents from every folder above one outside any
+        # repository, the shared temporary directory among them, so each line starts where that search ends.
+        tops: dict[str, set[bool]] = {}
+        stub = StubRuntimes()
+        git = GitClient(timeout=60)
+
+        def runner(
+            arguments: list[str], cwd: Path, environment: dict[str, str], timeout: float, stdin: str
+        ) -> Completed:
+            top = git.rev_parse_path("--show-toplevel", directory=cwd)
+            own = top is not None and top.resolve() == cwd.resolve()
+            # A version probe reads no configuration, and runs before the home is made.
+            if list(arguments[1:]) != ["--version"]:
+                tops.setdefault(" ".join(arguments[:2]), set()).add(own)
+            return stub(arguments, cwd, environment, timeout, stdin)
+
+        found = lines.run(
+            runtime_canary.RUNTIMES,
+            5,
+            self.root / "run",
+            runner=runner,
+            which=lambda name: name,
+            say=lambda _: None,
+            samples=(),
+        )
+        self.assertTrue(any(line.startswith("ACCEPTED copilot skill-listing") for line in found), found)
+        self.assertTrue(tops)
+        self.assertEqual({}, {started: owns for started, owns in tops.items() if owns != {True}})
 
 
 def help_answering(answer: Completed) -> lines.Starter:

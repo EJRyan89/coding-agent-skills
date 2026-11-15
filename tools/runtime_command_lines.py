@@ -13,11 +13,12 @@ runtime's version is given the version the installed runtime's `--version` print
 real run would start there.
 
 Each command line is checked twice. Each flag it passes is looked for in its runtime's help for the subcommand it
-starts, such as `codex exec --help`. Then it is started in a throwaway home with no stdin, signed out: its environment
-keeps only the variables a program needs to start, every home and configuration folder is inside the throwaway home,
-every request goes to a proxy nothing listens on, and Copilot CLI's auto-update is off. So no runtime finds a sign-in or
-reaches a model, and the start shows only whether the runtime got past parsing its arguments. A start is ended at
---timeout (default 30 seconds) with every process it started.
+starts, such as `codex exec --help`. Then it is started with no stdin, signed out, in a throwaway home that is a git
+repository of its own, as the real runs make the folder they start in, or in the review host's own workspace: its
+environment keeps only the variables a program needs to start, every home and configuration folder is inside the
+throwaway home, every request goes to a proxy nothing listens on, and Copilot CLI's auto-update is off. So no runtime
+finds a sign-in or reaches a model, and the start shows only whether the runtime got past parsing its arguments. A
+start is ended at --timeout (default 30 seconds) with every process it started.
 
 It prints one fact per line:
 
@@ -69,6 +70,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "ejryan89-skill-core" / "scripts"))
 
+import search_boundary
 from console import run_main
 from flat_text import single_line
 from runtime_support import RUNTIMES as RUNTIME_NAMES
@@ -295,6 +297,8 @@ def command_lines(
     runtime: str, executable: str, root: Path, environment: dict[str, str], version: tuple[int, ...] | None
 ) -> list[CommandLine]:
     (root / "home").mkdir(parents=True, exist_ok=True)
+    # A git repository of its own, as the canaries and the skill evaluations make the home their sessions start in.
+    search_boundary.bound_search(root / "home")
     if runtime == "claude":
         return claude_lines(executable, root, environment)
     if runtime == "codex":

@@ -17,7 +17,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan8
 
 import job_tree
 import json_reader
+import search_boundary
 from bounded_process import KILL_WAIT_SECONDS
+from git_client import GitClient, GitError
 from harness import (
     DEPLOY_COMMAND,
     DeployerTestCase,
@@ -98,9 +100,11 @@ class Runtimes:
     """Stands in for discovery.converse: answers each runtime's listing and records how it was started."""
 
     def __init__(self) -> None:
-        self.answers: dict[str, list[str] | Exception] = {}
+        self.answers: dict[str, list[str] | Exception | Callable[[Path], list[str]]] = {}
         self.calls: list[tuple[list[str], Path, Mapping[str, str], list[str], bool]] = []
-        self.cwd_was_empty: list[bool] = []
+        # What the working directory held, and whether it was its own git root, when each listing started.
+        self.cwd_held: list[list[str]] = []
+        self.cwd_was_git_root: list[bool] = []
 
     def __call__(
         self,
@@ -115,11 +119,15 @@ class Runtimes:
         if runtime == "codex" and arguments[1:] == list(discovery.CODEX_CATALOG):
             runtime = "codex-catalog"
         self.calls.append((arguments, cwd, environment, requests, answered is not None))
-        self.cwd_was_empty.append(cwd.is_dir() and not any(cwd.iterdir()))
+        # A parsing test names a working directory that does not exist, which holds nothing and is no git root.
+        there = cwd.is_dir()
+        self.cwd_held.append(sorted(entry.name for entry in cwd.iterdir()) if there else [])
+        top = GitClient(timeout=60).rev_parse_path("--show-toplevel", directory=cwd) if there else None
+        self.cwd_was_git_root.append(top is not None and top.resolve() == cwd.resolve())
         answer = self.answers[runtime]
         if isinstance(answer, Exception):
             raise answer
-        return answer
+        return answer(cwd) if callable(answer) else answer
 
 
 class AdapterLineTests(unittest.TestCase):
@@ -1116,14 +1124,61 @@ class VerifyCommandTests(DeployerTestCase):
             result.output,
         )
 
-    def test_each_runtime_lists_from_an_empty_directory_it_removes_afterwards(self) -> None:
+    def test_each_runtime_lists_from_an_empty_git_repository_of_its_own_it_removes_afterwards(self) -> None:
         self.answer()
         self.verify()
         # Codex's listing and catalog, then Copilot's listing.
-        self.assertEqual([True, True, True], self.runtimes.cwd_was_empty)
+        self.assertEqual([[".git"], [".git"], [".git"]], self.runtimes.cwd_held)
+        self.assertEqual([True, True, True], self.runtimes.cwd_was_git_root)
         directories = {call[1] for call in self.runtimes.calls}
         self.assertEqual(1, len(directories))
         self.assertFalse(directories.pop().exists())
+
+    def test_a_project_skill_planted_above_the_working_directory_never_stands_in_for_an_adapter(self) -> None:
+        # Copilot CLI lists project skills from its working directory up to the git root, and from every folder above
+        # it when there is none, before the user's skills, and lists one copy of each name, the first it finds.
+        temporary = self.root / "shared-temp"
+        planted = temporary / ".github" / "skills" / "alpha"
+        planted.mkdir(parents=True)
+        (planted / "SKILL.md").write_text("---\nname: alpha\ndescription: planted\n---\n", encoding="utf-8")
+        self.answer()
+        adapters = [(name, self.adapter(name), True) for name in ("alpha", "beta")]
+
+        def copilot(cwd: Path) -> list[str]:
+            listed: dict[str, tuple[str, str, bool]] = {}
+            for folder in (cwd, *cwd.parents):
+                skills = folder / ".github" / "skills"
+                for skill in sorted(skills.iterdir()) if skills.is_dir() else []:
+                    listed.setdefault(skill.name, (skill.name, forward(skill), True))
+                if (folder / ".git").exists() or folder == temporary:
+                    break
+            for name, path, on in adapters:
+                listed.setdefault(name, (name, path, on))
+            return [copilot_answer(*listed.values())]
+
+        self.runtimes.answers["copilot"] = copilot
+        with mock.patch.object(tempfile, "tempdir", str(temporary)):
+            result = self.verify()
+        self.assertEqual(0, result.code, result.output)
+        self.assertEqual({"FOUND": ["alpha", "beta"]}, self.groups(result.output, "COPILOT CLI"))
+        self.assertTrue(all(call[1].parent == temporary for call in self.runtimes.calls))
+
+    def test_a_working_directory_git_cannot_make_a_repository_of_its_own_stops_verify_before_any_listing(self) -> None:
+        self.answer()
+        failure = GitError("git init failed:\nfatal: cannot make it\n", returncode=128)
+        with mock.patch.object(search_boundary, "bound_search", side_effect=failure) as bound:
+            result = self.verify()
+        self.assertEqual(1, result.code, result.output)
+        self.assertEqual([], self.runtimes.calls)
+        [(workdir, *_)] = [call.args for call in bound.call_args_list]
+        self.assertFalse(workdir.exists())
+        self.assertIn(
+            f"ERROR: Git could not make verify's working directory {forward(workdir)} a repository of its own: "
+            "git init failed: fatal: cannot make it\n"
+            "Verify lists skills only from such a directory, so that no project skill in a folder above it stands in "
+            "for an adapter. Put right what Git reports, then rerun verify.\n",
+            result.output,
+        )
 
     def test_a_missing_disabled_or_shadowed_adapter_fails_and_names_the_runtime_documentation(self) -> None:
         other = "C:/Profiles/YourName/.codex/skills/alpha"

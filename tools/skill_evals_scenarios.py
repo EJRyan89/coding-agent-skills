@@ -806,12 +806,30 @@ def reviewed_fixture(scenario: Scenario) -> Iterator[Path]:
         fsops.remove(copy)
 
 
-def skill_arguments(scenario: Scenario, run: Path, git: GitClient, fixture: Path | None = None) -> list[str]:
+@contextlib.contextmanager
+def document_place(scenario: Scenario, run: Path) -> Iterator[Path]:
+    """The folder a run stages its document scenario's document in, under DOCUMENT_FOLDER. A document with a base is
+    staged in the run's folder, since its folder is a git checkout of its own. One without stands outside any
+    checkout, and the run's folder is inside the model's home, a git repository of its own, so it is staged in a
+    throwaway folder outside the home, removed when the block ends, however it ends. A fixture scenario stages
+    nothing, so it gets the run's folder."""
+    if scenario.document is None or scenario.base is not None:
+        yield run
+        return
+    place = Path(tempfile.mkdtemp(prefix="skill-evals-document-")).resolve()
+    try:
+        yield place
+    finally:
+        fsops.remove(place)
+
+
+def skill_arguments(scenario: Scenario, place: Path, git: GitClient, fixture: Path | None = None) -> list[str]:
     """What the skill is started with: a fixture scenario's prepare arguments, on the fixture given when it is a
-    copy, or the path of a document scenario's document, staged in the run's folder, and its stage, if it names one."""
+    copy, or the path of a document scenario's document, staged in a new folder in `place` (`document_place`), and its
+    stage, if it names one."""
     if scenario.document is None:
         return prepare_arguments(scenario, fixture)
-    staged = str(stage_document(scenario, run / DOCUMENT_FOLDER, git))
+    staged = str(stage_document(scenario, place / DOCUMENT_FOLDER, git))
     return [staged] if scenario.stage is None else [staged, "--stage", scenario.stage]
 
 
