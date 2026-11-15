@@ -545,10 +545,12 @@ removed fails validation until its pattern follows it.
   `.claude/skills/audit-repository/scripts/test_audit_repository.py::TwinTests::test_a_construct_line_holding_backslash_e_is_searched_as_fixed_text`,
   which holds the twin sweep's fixed-text search to what git grep built with PCRE does with a backslash-E,
   `skills/ejryan89-skill-core/scripts/test_text_lines.py::test_every_other_character_splitlines_breaks_at_is_kept_in_its_line`,
-  `tests/deployer/test_frontmatter.py::DocumentTests::test_a_line_breaks_only_where_yaml_breaks_one`, and
+  `tests/deployer/test_frontmatter.py::DocumentTests::test_a_line_breaks_only_where_yaml_breaks_one`,
+  `tests/deployer/test_frontmatter.py::DocumentTests::test_the_delimiter_is_three_hyphens_and_yaml_whitespace_alone`, and
   `skills/audit-ai-config/scripts/test_audit_ai_config.py::ClaudeCodeConfigurationTests::test_an_import_inside_an_indented_code_block_is_none_as_markdown_reads_the_block`
 - **Search for:** `str.splitlines()` of a file an author writes, which breaks at characters YAML, CommonMark, and .NET
-  read as text, rather than `text_lines`; a reader of Markdown that skips fenced code but not indented code; a Python parser or folding, `float(`, `int(` with or without a base, `casefold()`, `lower()`,
+  read as text, rather than `text_lines`; a `---` delimiter judged after `str.strip()` or `str.rstrip()`, which strip
+  characters YAML reads as text or forbids; a reader of Markdown that skips fenced code but not indented code; a Python parser or folding, `float(`, `int(` with or without a base, `casefold()`, `lower()`,
   `strip()`, or a pattern with `re.IGNORECASE` and no `re.ASCII`, applied to a value another program reads, each
   checked against that program's own reading of it, as MSBuild reads a number with .NET's invariant `Double.TryParse`
   and compares text with .NET's ordinal comparison ignoring case; a POSIX `shlex` lexer over shell text whose

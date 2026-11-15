@@ -17,7 +17,8 @@ so a skill or agent may carry hooks or other structured settings this reader doe
 a tab, which YAML forbids anywhere, is refused when the frontmatter is parsed. Lines break only where YAML 1.2
 breaks them, at CR, LF, and CRLF, as `text_lines` splits them, so a line separator in a value is text, and a
 frontmatter line holding a character YAML does not allow in a stream at all, such as a form feed, is refused when the
-frontmatter is parsed.
+frontmatter is parsed. A delimiter is `---` followed by nothing but spaces and tabs, as YAML reads a document marker,
+and one holding a character YAML forbids is refused as it is found.
 
 This is the one reader. ejryan89-skill-core is the home of the repository's shared modules, so skill scripts, the
 deployer, the repository tools, and the tests all import it from here as `frontmatter`.

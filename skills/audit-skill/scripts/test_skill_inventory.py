@@ -3957,7 +3957,7 @@ def test_a_runtime_prompt_cue_is_placed_on_the_line_the_prompt_breaks(separator:
 @SEPARATOR
 def test_a_powershell_comment_runs_to_the_line_its_tokenizer_breaks(separator: str) -> None:
     assert skill_inventory.shell_facts(f"# note{separator}exit 4\n", ".ps1").codes == {0}
-    assert skill_inventory.shell_facts(f"# note\nexit 4\n", ".ps1").codes == {0, 4}
+    assert skill_inventory.shell_facts("# note\nexit 4\n", ".ps1").codes == {0, 4}
 
 
 def test_a_bash_comment_runs_to_the_line_feed_alone() -> None:

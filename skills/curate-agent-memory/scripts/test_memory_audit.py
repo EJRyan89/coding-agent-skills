@@ -3088,7 +3088,10 @@ def test_a_skill_file_holding_a_line_break_prints_on_one_line() -> None:
 @pytest.mark.parametrize("separator", TEXT_SEPARATORS)
 def test_frontmatter_lines_break_only_where_yaml_breaks_one(separator: str) -> None:
     text = f"---\nname: a{separator}description: forged\n---\nBody{separator}more."
-    assert memory_audit.parse_frontmatter(text) == ({"name": f"a{separator}description: forged"}, f"Body{separator}more.")
+    assert memory_audit.parse_frontmatter(text) == (
+        {"name": f"a{separator}description: forged"},
+        f"Body{separator}more.",
+    )
 
 
 @pytest.mark.parametrize("separator", TEXT_SEPARATORS)

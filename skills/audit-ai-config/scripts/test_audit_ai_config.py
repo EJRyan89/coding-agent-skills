@@ -7822,7 +7822,7 @@ def test_a_scope_literal_too_deep_to_evaluate_is_not_a_literal(error: type[Excep
 
 
 # The characters str.splitlines breaks a line at and text_lines, as YAML 1.2 and CommonMark, does not.
-TEXT_SEPARATORS = ("\x0b", "\x0c", "\x1c", "\x1d", "\x1e", "\x85", " ", " ")
+TEXT_SEPARATORS = ("\x0b", "\x0c", "\x1c", "\x1d", "\x1e", "\x85", "\u2028", "\u2029")
 
 
 @pytest.mark.parametrize("separator", TEXT_SEPARATORS)

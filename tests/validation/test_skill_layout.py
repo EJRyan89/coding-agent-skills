@@ -1546,7 +1546,9 @@ def test_a_runtime_page_statement_is_read_from_the_lines_commonmark_breaks(separ
             "deploy-meta/fetcher.json": json.dumps(
                 {"runtime_support": {"claude-code": "full", "codex": "full", "copilot-cli": "full"}}
             ),
-            "docs/copilot-support.md": f"Intro{separator}```\n\n`fetcher` is `partial` lacking `sandbox-network`.\n```\n",
+            "docs/copilot-support.md": (
+                f"Intro{separator}```\n\n`fetcher` is `partial` lacking `sandbox-network`.\n```\n"
+            ),
         },
     )
     assert runtime_page_problems(tmp_path) == [
