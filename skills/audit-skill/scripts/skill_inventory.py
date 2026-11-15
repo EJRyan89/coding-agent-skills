@@ -1878,7 +1878,8 @@ def runs_file_command(line: str) -> bool:
     a command: at the line's start, after an operator, in a group, a subshell, or a substitution, past its leading
     keywords and assignments, each read only unquoted, and Bash's time keyword, through each wrapper of
     command_wrappers' catalogue, and into the script eval or a shell's -c runs, so `then cat x`, `A=1 grep x`, and
-    `xargs wc -l` each run one, and `'then' cat x` runs the program `then`."""
+    `xargs wc -l` each run one, and `'then' cat x` runs the program `then`. Unlike git_subcommands, a fenced line in a
+    here-document's body is read as commands."""
     starts = git_subcommands.CommandStarts()
     for match in git_subcommands.SHELL_COMMAND.finditer(line):
         start, command = match.groups()

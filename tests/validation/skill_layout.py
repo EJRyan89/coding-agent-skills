@@ -227,7 +227,9 @@ def script_git_subcommands(script: Path) -> set[str]:
 
     suffix = script.suffix.casefold()
     if suffix in (".sh", ".bash"):
-        return git_subcommands.bash_git_subcommands(script.read_text(encoding="utf-8-sig"), powershell_script_commands)
+        # Read as bytes, so a lone CR stays inside its line as Bash and audit-skill read it, never turned into a LF.
+        text = script.read_bytes().decode("utf-8-sig")
+        return git_subcommands.bash_git_subcommands(text, powershell_script_commands)
     if suffix == ".ps1":
         commands = powershell_script_commands(script.read_text(encoding="utf-8-sig"))
         return git_subcommands.powershell_git_subcommands(commands, powershell_script_commands)

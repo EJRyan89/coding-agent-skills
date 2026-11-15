@@ -12,6 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import python_reader
 import runtime_support
+from powershell_commands import UNREAD_WORD
 
 PARTIAL = {"level": "partial", "needs": ["sandbox-network"], "reason": "Its gh calls need the network."}
 
@@ -83,17 +84,20 @@ def test_a_subcommand_no_literal_names_may_reach_a_remote(subcommand: str, reach
         ('git(services, root, "-C", path, "push", "origin")', {"push"}),
         ('GitClient(runner).output(["-c", "core.quotepath=off", "clone", url])', {"clone"}),
         ('self.client.run(("pull",))', set()),
-        ("git_output(services, root, *arguments)", set()),
         # A value that stands where git reads its subcommand may be any subcommand, so it is recorded as the word no
-        # literal names, which reaches_remote reads as one that may reach a remote.
-        ('services.git.run(["--no-optional-locks", *arguments])', {""}),
-        ('git.output(["-C", directory, verb])', {""}),
-        ('git.output([verb, "origin"])', {""}),
-        ('git.output((*options, "fetch"))', {""}),
-        ("git.output([verb])", {""}),
+        # literal names, which reaches_remote reads as one that may reach a remote. A starred value carries git's
+        # words wherever it stands.
+        ('services.git.run(["--no-optional-locks", *arguments])', {UNREAD_WORD}),
+        ('git.output(["-C", directory, verb])', {UNREAD_WORD}),
+        ('git.output([verb, "origin"])', {UNREAD_WORD}),
+        ('git.output((*options, "fetch"))', {UNREAD_WORD}),
+        ("git.output([verb])", {UNREAD_WORD}),
+        ('git(services, root, "-C", path, verb)', {UNREAD_WORD}),
+        ("git_output(services, root, *arguments)", {UNREAD_WORD}),
+        ("git_in(checkout, git, *fetch)", {UNREAD_WORD}),
+        ('git(services, root, *SHOW_UNTRACKED, "worktree", "remove", path)', {UNREAD_WORD}),
         ("services.git.commit_of(ref, directory=root)", set()),
-        ('git(services, root, "-C", path, verb)', {""}),
-        ('git(services, root, *SHOW_UNTRACKED, "worktree", "remove", path)', {"worktree"}),
+        ("services.git.run(arguments, directory=root)", set()),
         ('READ.json_object(value, "pull")', set()),
         ('digits(value, "fetch")', set()),
         ('print("fetch")', set()),

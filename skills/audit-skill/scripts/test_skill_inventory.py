@@ -2831,6 +2831,20 @@ class RuntimeSupportTests(SourceTreeTestCase):
             [line for line in self.runtime(skill) if line.startswith(("RUNTIME_NEEDS", "RUNTIME_OVERCLAIMED"))],
         )
 
+    def test_full_on_codex_for_a_python_git_subcommand_no_literal_names_is_overclaimed(self) -> None:
+        # The evidence keeps its `git <subcommand> <script>` shape: the unread subcommand is the parser's word for a
+        # value, never an empty field.
+        skill = self.skill("Body.\n", self.full())
+        write(skill.parent / "scripts" / "update.py", 'git.output(["-C", directory, verb])\n')
+        unread = powershell_commands.UNREAD_WORD
+        self.assertEqual(
+            [
+                f"RUNTIME_NEEDS sandbox-network git {unread} scripts/update.py",
+                "RUNTIME_OVERCLAIMED codex sandbox-network",
+            ],
+            [line for line in self.runtime(skill) if line.startswith(("RUNTIME_NEEDS", "RUNTIME_OVERCLAIMED"))],
+        )
+
     def test_a_skill_with_readable_metadata_or_none_at_all_has_its_needs_derived(self) -> None:
         readable = self.skill("Body.\n", self.full(tools=["gh"]))
         self.assertEqual({"sandbox-network"}, skill_inventory.own_needs(readable.parent))

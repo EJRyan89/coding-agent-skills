@@ -236,7 +236,11 @@ shell's `-c`, or a PowerShell start-up runs as well as at the script's own level
 listed by the same parser reading as this policy's. In Bash it is read wherever Bash starts a command: at a line's
 start, after an operator, in a group, a subshell, or a substitution, in each case item after its pattern, and in a
 function's body, a line ending at LF alone, as Bash ends one, and never in a here-document's body, of which only
-the command substitutions of an unquoted one run. Git, a shell, a wrapper, or `find` named by a path or with `.exe` is the program its file name
+the command substitutions of an unquoted one run. A here-document a shell reads as its script, as in `bash <<EOF`,
+`bash -s <<'EOF'`, or `source /dev/stdin <<EOF`, is read as data, so a git command in its body goes unread, and a
+`<<` that Bash reads inside a quote or a parameter expansion, such as one in a single-quoted string spanning lines
+or in `${x//<<a/b}`, opens a here-document there, so lines up to one equal to its word go unread; no script here
+writes either. Git, a shell, a wrapper, or `find` named by a path or with `.exe` is the program its file name
 names, matched as written in Bash, so `Git` is no git there, and in any case in PowerShell. One reader does it for validation and for audit-skill's
 runtime-support derivation, ejryan89-skill-core's `git_subcommands.py`, on the parser script in its
 `powershell_commands.py`, and `tests/audit-skill/test_audit_skill_runtime_needs.py` holds the two derivations equal on

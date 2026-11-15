@@ -138,17 +138,25 @@ def bash_git_subcommands(text: str, read_powershell: PowerShellReader) -> set[st
     body runs.
 
     A line ends at LF alone, as Bash ends one, so a line separator, a form feed, or another character
-    str.splitlines() breaks at stays inside its line; a backslash an odd count of them ends a line with continues it.
-    A here-document's body, the lines after the line that opens it up to its delimiter, is data, as here_documents
+    str.splitlines() breaks at stays inside its line; a backslash an odd count of them ends a line with continues it,
+    unless a comment holds it, since a comment ends at the LF.
+    A here-document's body, the lines after the line that opens it up to its delimiter, is data, as read_line
     reads it. A body the text never closes is read as commands, so a delimiter read otherwise than Bash reads it,
-    such as a $'...' one holding an escape, hides no command; Bash would run none there."""
+    such as a $'...' one holding an escape, hides no command; Bash would run none there.
+
+    Beyond what it reads: a here-document a shell reads as its script, as in `bash <<EOF`, `bash -s <<'EOF'`, or
+    `source /dev/stdin <<EOF`, is read as data, so a git command in its body goes unread; and a `<<` that Bash reads
+    inside a quote or a parameter expansion, such as one in a single-quoted string spanning lines or in
+    `${x//<<a/b}`, opens a here-document here, so lines up to one equal to its word go unread. No script here writes
+    either."""
     found: set[str] = set()
     after_pipe = False
     starts = CommandStarts()
     lines = text.split("\n")
     index = 0
     while index < len(lines):
-        line, index = continued_line(lines, index, joiner=" ")
+        line, index = command_line(lines, index)
+        documents, _ = read_line(line)
         if not line.lstrip(BASH_BLANKS).startswith("#"):
             start, command = "", ""
             for match in SHELL_COMMAND.finditer(line):
@@ -164,7 +172,7 @@ def bash_git_subcommands(text: str, read_powershell: PowerShellReader) -> set[st
             # A line whose last operator is a pipe with no command after it hands its output to the next line's
             # command.
             after_pipe = start in PIPES and not command.strip()
-        for document in here_documents(line):
+        for document in documents:
             body = here_document_body(lines, index, document)
             if body is None:
                 break
@@ -174,21 +182,39 @@ def bash_git_subcommands(text: str, read_powershell: PowerShellReader) -> set[st
     return found
 
 
-def continued_line(lines: Sequence[str], index: int, joiner: str) -> tuple[str, int]:
-    """The line at `index` with each line its backslash continues joined to it by `joiner`, and the index after the
-    last line read: a line continues when it ends in an odd count of backslashes, the last of which escapes the LF."""
+def escapes_its_end(line: str) -> bool:
+    """Whether a line ends in an odd count of backslashes, the last of which escapes the LF after it."""
+    return (len(line) - len(line.rstrip("\\"))) % 2 == 1
+
+
+def command_line(lines: Sequence[str], index: int) -> tuple[str, int]:
+    """The command line at `index`, each line its backslash continues joined to it by a space, and the index after
+    the last line read. A backslash inside a comment continues nothing, since the comment ends at the LF, so a line
+    whose comment ends in one is a line of its own."""
     line = lines[index]
     index += 1
-    while index < len(lines) and (len(line) - len(line.rstrip("\\"))) % 2 == 1:
-        line = line[:-1] + joiner + lines[index]
+    while index < len(lines) and escapes_its_end(line) and not read_line(line)[1]:
+        line = line[:-1] + " " + lines[index]
         index += 1
     return line, index
 
 
-def here_documents(line: str) -> list[HereDocument]:
-    """The here-documents a command line opens, in order: each `<<` or `<<-` outside quotes, escapes, a comment, and
-    arithmetic, `$((...))` or `((...))`, where `<<` shifts, with the delimiter word after it and any blanks; a `<<<`
-    here-string opens none, and neither does a `<<` with no word after it, which Bash refuses."""
+def continued_line(lines: Sequence[str], index: int) -> tuple[str, int]:
+    """The line at `index` of an unquoted here-document's body with each line its backslash continues joined to it,
+    as Bash removes that backslash and the LF, and the index after the last line read."""
+    line = lines[index]
+    index += 1
+    while index < len(lines) and escapes_its_end(line):
+        line = line[:-1] + lines[index]
+        index += 1
+    return line, index
+
+
+def read_line(line: str) -> tuple[list[HereDocument], bool]:
+    """The here-documents a command line opens, in order, and whether a comment ends it: each `<<` or `<<-` outside
+    quotes, escapes, a comment, and arithmetic, `$((...))` or `((...))`, where `<<` shifts, with the delimiter word
+    after it and any blanks; a `<<<` here-string opens none, and neither does a `<<` with no word after it, which Bash
+    refuses. A comment is a `#` that starts a word outside quotes and escapes."""
     found: list[HereDocument] = []
     index = 0
     word_start = True
@@ -204,7 +230,7 @@ def here_documents(line: str) -> list[HereDocument]:
             quoted = DOUBLE_QUOTED.match(line, index)
             after = len(line) if quoted is None else quoted.end()
         elif character == "#" and word_start:
-            break
+            return found, True
         elif line.startswith("((", index) or line.startswith("$((", index):
             after = closing_parenthesis(line, line.index("(", index) + 1) + 1
         elif line.startswith("<<<", index):
@@ -223,7 +249,7 @@ def here_documents(line: str) -> list[HereDocument]:
             after = position
         word_start = character in WORD_ENDS
         index = after
-    return found
+    return found, False
 
 
 def delimiter_text(word: str) -> str:
@@ -250,7 +276,7 @@ def here_document_body(lines: Sequence[str], index: int, document: HereDocument)
         if document.quoted:
             line, index = lines[index], index + 1
         else:
-            line, index = continued_line(lines, index, joiner="")
+            line, index = continued_line(lines, index)
         compared = line.lstrip("\t") if document.strip_tabs else line
         if compared == document.delimiter:
             return ("" if document.quoted else "\n".join(body)), index

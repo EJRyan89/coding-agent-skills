@@ -199,6 +199,11 @@ def test_a_here_document_s_body_is_read_as_data(script: str, expected: set[str])
         # A backslash continues a line only where it escapes the LF, never where another backslash escapes it.
         ("echo \\\\\ngit push", {"push"}),
         ("echo \\\\\\\n  git push", set()),
+        # A comment ends at the LF, so a backslash inside one continues nothing.
+        ("# note \\\ngit push", {"push"}),
+        ("  # note \\\ngit push", {"push"}),
+        ("echo a # note \\\ngit push", {"push"}),
+        ("echo 'a # b' \\\n  git push", set()),
     ],
 )
 def test_a_bash_line_ends_at_lf_alone(script: str, expected: set[str]) -> None:
