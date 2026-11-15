@@ -10,6 +10,7 @@ import shutil
 import sys
 from pathlib import Path
 from typing import Any
+from unittest import mock
 
 import pytest
 
@@ -23,6 +24,7 @@ from skill_roots import sibling_scripts
 sys.path.insert(0, str(sibling_scripts("ejryan89-code-review-core")))
 
 import json_writer
+import search_boundary
 import whole_number
 from review_dispatch import REVIEWER_TASK
 
@@ -635,6 +637,52 @@ def test_a_discovery_run_records_the_version_and_every_judged_line_with_paths_as
     assert not any(str(home) in line or home.as_posix() in line for line in record)
     # No session started: every command the fake answered was a plugin command or the version.
     assert {arguments[1] for arguments, _ in runner.calls} == {"plugin", "--version"}
+
+
+def test_every_command_starts_in_the_home_made_its_own_git_root(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Claude Code reads project skills and agents from every folder above one outside any repository, the shared
+    # temporary directory among them, so the home is where that search ends.
+    home = tmp_path / "home"
+    runner = FakeClaude(home)
+    real_build = canary.build
+
+    def build(where: Path, sources: list[Path]) -> list[plugin_build.Plugin]:
+        runner.plugins = real_build(where, sources)
+        return runner.plugins
+
+    tops: list[tuple[Path, Path | None]] = []
+
+    def recording(arguments: list[str], cwd: Path, environment: dict[str, str], timeout: float) -> Completed:
+        if list(arguments[1:]) != ["--version"]:
+            top = GitClient(timeout=60).rev_parse_path("--show-toplevel", directory=cwd)
+            tops.append((cwd, None if top is None else top.resolve()))
+        return runner(arguments, cwd, environment, timeout)
+
+    monkeypatch.setattr(canary, "build", build)
+    home.mkdir()
+    code = canary.canary(home, runner=recording, which=lambda name: "claude", base={"PATH": "x"}, discovery_only=True)
+    output = capsys.readouterr().out
+    assert code == 0, output
+    assert tops
+    assert {(cwd, top) for cwd, top in tops} == {(home.resolve(), home.resolve())}
+
+
+def test_a_home_git_cannot_make_its_own_repository_stops_the_run_before_any_command(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    home = tmp_path / "home"
+    runner = FakeClaude(home)
+    failure = GitError("git init failed:\nfatal: cannot make it\n", returncode=128)
+    monkeypatch.setattr(search_boundary, "bound_search", mock.Mock(side_effect=failure))
+    code, output = run_canary(home, capsys, runner)
+    assert code == 1
+    assert runner.calls == []
+    assert output.splitlines()[-1] == (
+        'FAILED "git could not make the home a repository of its own, so a runtime started there would read '
+        'project skills and agents from the folders above it: git init failed: fatal: cannot make it"'
+    )
 
 
 def test_nothing_checked_when_claude_is_not_installed_fails_the_run(

@@ -41,6 +41,7 @@ import review_pipeline
 import review_run
 import review_source
 import review_specialists
+import search_boundary
 import skill_inventory
 from checkout_fixture import follow, own_checkout
 from git_client import GitClient, GitError, GitResult
@@ -3069,6 +3070,44 @@ class EvaluateTests(unittest.TestCase):
             skill_evals_results.samples_table(self.results.read_text(encoding="utf-8"))[2],
         )
 
+    def test_every_session_starts_in_its_model_s_home_made_its_own_git_root_after_the_deployment(self) -> None:
+        # Claude Code reads project skills and agents from every folder above one outside any repository, the shared
+        # temporary directory among them, so each home is where that search ends.
+        claude = StubClaude(self)
+        held: list[list[str]] = []
+        tops: list[tuple[Path, Path | None]] = []
+
+        def deploy(home: Path, source: Path) -> tuple[int, str]:
+            held.append(sorted(entry.name for entry in home.iterdir()))
+            return fake_deploy(home, source)
+
+        def runner(arguments: list[str], cwd: Path, environment: dict[str, str], timeout: float) -> Any:
+            if list(arguments[1:]) != ["--version"]:
+                top = GitClient(timeout=60).rev_parse_path("--show-toplevel", directory=cwd)
+                tops.append((cwd, None if top is None else top.resolve()))
+            return claude(arguments, cwd, environment, timeout)
+
+        status, lines = self.evaluate(["--jobs", "1"], self.seams(runner, deploy=deploy), only=["clean-change"])
+        self.assertEqual(0, status, lines)
+        self.assertEqual([[]] * len(skill_evals_records.MODELS), held)
+        self.assertEqual(
+            [(self.homes / model, (self.homes / model).resolve()) for model in skill_evals_records.MODELS], tops
+        )
+
+    def test_a_home_git_cannot_make_its_own_repository_fails_before_any_session(self) -> None:
+        claude = StubClaude(self)
+        failure = GitError("git init failed:\nfatal: cannot make it\n", returncode=128)
+        with mock.patch.object(search_boundary, "bound_search", side_effect=failure):
+            status, lines = self.evaluate(["--jobs", "1"], self.seams(claude), only=["clean-change"])
+        self.assertEqual(1, status)
+        self.assertEqual([], claude.calls)
+        model = next(iter(skill_evals_records.MODELS))
+        self.assertEqual(
+            f'DEPLOY_FAILED {model} "git could not make the home a repository of its own, so a runtime started there '
+            'would read project skills and agents from the folders above it: git init failed: fatal: cannot make it"',
+            lines[-1],
+        )
+
     def test_a_passing_run_that_samples_nothing_removes_its_home(self) -> None:
         # Without --write nothing is sampled, so a run that passed leaves no transcript to read.
         status, lines = self.evaluate(["--jobs", "1"], self.seams(StubClaude(self)), only=["clean-change"])
@@ -3894,22 +3933,29 @@ def test_a_document_scenario_runs_the_skill_on_its_staged_document(scenario: str
     name = REVIEW_DOCUMENT_STAGED[scenario]
     # A scenario that names a stage starts the skill at it.
     prompts = [arguments[2] for arguments, _, _ in claude.calls if arguments[1:] != ["--version"]]
+    staged = [Path(re.findall(r'"([^"]*)"', prompt)[0]) for prompt in prompts]
     case.assertEqual(
-        [
-            f'/review-document "{case.homes / model / skill_evals_runs.STATE / scenario / "document" / name}"'
-            + REVIEW_DOCUMENT_STAGES.get(scenario, "")
-            for model in skill_evals_records.MODELS
-        ],
-        prompts,
+        [f'/review-document "{path}"' + REVIEW_DOCUMENT_STAGES.get(scenario, "") for path in staged], prompts
     )
+    models = skill_evals_records.MODELS
+    if scenario == "committed-edit":
+        # An edit is staged in the run's folder, a checkout of its own inside the home.
+        case.assertEqual(
+            [case.homes / model / skill_evals_runs.STATE / scenario / "document" / name for model in models], staged
+        )
+    else:
+        # A whole document is staged outside the home, which is a git repository of its own, in a throwaway folder
+        # of each run's, removed when the run ends.
+        case.assertEqual([("document", name)] * len(models), [(path.parent.name, path.name) for path in staged])
+        case.assertEqual(len(models), len({path.parent.parent for path in staged}))
+        for path in staged:
+            case.assertTrue(path.parent.parent.name.startswith("skill-evals-document-"), path)
+            case.assertFalse(path.is_relative_to(case.homes), path)
+            case.assertFalse(path.parent.parent.exists(), path)
     # The edit is reviewed against its committed base, and a whole document against nothing.
-    case.assertEqual(
-        {
-            f"{scenario} {model}": "committed" if scenario == "committed-edit" else "none"
-            for model in skill_evals_records.MODELS.values()
-        },
-        {key: built[1].split(" ")[1] for key, built in claude.built.items()},
-    )
+    base = "BASE committed " if scenario == "committed-edit" else "BASE none the file is outside any git checkout"
+    case.assertEqual({f"{scenario} {model}" for model in models.values()}, set(claude.built))
+    case.assertEqual([], [built[1] for built in claude.built.values() if not built[1].startswith(base)])
     guarded = [line for line in lines if line.startswith("GUARDED ")]
     case.assertEqual(
         [f"GUARDED {scenario} {model} design-review files_read=0" for model in skill_evals_records.MODELS], guarded

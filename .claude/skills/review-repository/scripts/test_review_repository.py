@@ -160,6 +160,8 @@ TRUST_BOUNDARY_SCRIPTS = (
     f"{SKILL_CORE}/test_private_folder.py",
     f"{SKILL_CORE}/process_identity.py",
     f"{SKILL_CORE}/python_reader.py",
+    f"{SKILL_CORE}/search_boundary.py",
+    f"{SKILL_CORE}/test_search_boundary.py",
     f"{SKILL_CORE}/skill_menu.py",
     f"{SKILL_CORE}/typed_fields.py",
     f"{SKILL_CORE}/versions.py",

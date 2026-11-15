@@ -14,8 +14,11 @@ deploys and runs the checkout's skills and fixture signed in as the user.
 
 It makes a fresh home under the temporary directory and deploys this checkout into it with `deploy.py
 --canary-home`, which a linked worktree may do, then deploys the fixture source in tests/fixtures/runtime-canary.
-That home is the only place anything is deployed. Each installed runtime then starts with the home as its working
-directory, so it finds the deployed skills as project skills, and with a fixed prompt naming one skill: the fixture
+That home is the only place anything is deployed. The home is then made a git repository of its own, so no runtime
+reads project skills or agents from the folders above it, the shared temporary directory among them, as Copilot CLI
+and Claude Code do from a folder outside any repository; a home git cannot make one is FAILED "<reason>", which stops
+the run before any runtime starts. Each installed runtime then starts with the home as its working directory, so it
+finds the deployed skills as project skills, and with a fixed prompt naming one skill: the fixture
 runtime-canary-probe, then each SKILL given. It prints one fact per line:
 
   HOME "<dir>"                                  the throwaway home, removed at the end unless the run failed
@@ -152,10 +155,12 @@ import frontmatter
 import json_reader
 import json_writer
 import runtime_support
+import search_boundary
 import whole_number
 from bounded_process import run_bounded, without_repository_variables
 from console import run_main
 from file_presence import is_present
+from flat_text import flat_text
 from git_client import GitClient, GitError, output_line
 from link_probe import is_plain_directory
 from path_containment import within
@@ -220,6 +225,11 @@ RECORDED = (
 # The deployer module that writes every runtime adapter, so a change to it reaches one skill of each kind of start.
 ADAPTER_RENDERER = "deployer/render.py"
 GIT = GitClient()
+# Why a run stops before any runtime starts when its home cannot be made a git repository of its own.
+UNBOUNDED = (
+    "git could not make the home a repository of its own, so a runtime started there would read project skills and "
+    "agents from the folders above it"
+)
 RUNTIME_CANARY_MARKER = "RUNTIME-CANARY-RUN"
 # What each runtime still loads from the user's real configuration once the canary's flags have switched off all
 # they can. Claude Code: checked with /context under --setting-sources project,local. Codex and Copilot: their
@@ -1198,6 +1208,9 @@ def checked(
             say(f"DEPLOYED {identifier}")
     finally:
         claim_home(home)
+    if (unbounded := bound_home(home)) is not None:
+        say(f"FAILED {quote(unbounded)}")
+        return 1
     for folder in ("recorder", "scripts", "transcripts"):
         (state / folder).mkdir(parents=True, exist_ok=True)
     (state / "recorder" / "sitecustomize.py").write_text(RECORDER, encoding="utf-8")
@@ -1401,6 +1414,17 @@ def create_home() -> Path:
             continue
         return home.resolve()
     raise FileExistsError(f"no unused name for a canary home under {parent}")
+
+
+def bound_home(home: Path, git: GitClient = GIT) -> str | None:
+    """Make the deployed home a git repository of its own, so each runtime started there reads project skills and
+    agents from the home alone, never from the temporary directory and the folders above it (ejryan89-skill-core's
+    `search_boundary`); why git could not, or None. It runs after the deployments, which take only an empty home."""
+    try:
+        search_boundary.bound_search(home, git)
+    except GitError as exc:
+        return f"{UNBOUNDED}: {flat_text(str(exc))}"
+    return None
 
 
 def claim_home(home: Path) -> None:

@@ -12,6 +12,9 @@ from pathlib import Path
 
 import file_presence
 import json_writer
+import search_boundary
+from flat_text import flat_text
+from git_client import GitError
 
 from . import discovery, manifest, platform_support, tools
 from .arguments import PROG, VERIFY_COMMAND, parse_command
@@ -31,9 +34,10 @@ PRESENCE_ALLOWED = {
 
 # Filesystem writes that tests/run_validation.py allows outside deployer/fsops.py, with the reason.
 FSOPS_ALLOWED = {
-    "tempfile.mkdtemp": "verify starts each runtime in an empty directory under the system temporary directory, "
+    "tempfile.mkdtemp": "verify starts each runtime in a directory of its own under the system temporary directory, "
     "outside every managed root; the read-only command changes no deployed state",
-    "shutil.rmtree": "verify removes only the empty working directory it created with tempfile.mkdtemp",
+    "shutil.rmtree": "verify removes only the working directory it created with tempfile.mkdtemp, which holds nothing "
+    "but the empty git repository it made there",
 }
 VERIFY_ACTIONS = ("NOT FOUND", "DISABLED", "SHADOWED", "EXPOSED", "OMITTED", "FOUND")
 # What an adapter only the user may start is, where Codex offers it to the model anyway.
@@ -58,6 +62,22 @@ CATALOG_FAILED = (
 METADATA_FAILED = (
     f"Listed its skills, but cannot read which adapters only the user starts, from their {CODEX_METADATA}: "
 )
+
+
+def bound_working_directory(folder: Path, who: str = "verify") -> None:
+    """Make the working directory a git repository of its own, so Copilot CLI reads project skills from it alone, never
+    from the system temporary directory and the folders above it (ejryan89-skill-core's `search_boundary`). `who` names
+    the command that lists from it, verify or another that judges the same listing."""
+    try:
+        search_boundary.bound_search(folder)
+    except GitError as error:
+        where = platform_support.normalize(folder)
+        raise DeployError(
+            f"ERROR: Git could not make {who}'s working directory {where} a repository of its own: "
+            f"{flat_text(str(error))}",
+            f"{who[:1].upper()}{who[1:]} lists skills only from such a directory, so that no project skill in a folder "
+            f"above it stands in for an adapter. Put right what Git reports, then rerun {who}.",
+        ) from error
 
 
 def _section(label: str, text: str) -> None:
@@ -200,9 +220,11 @@ def _verify(names: list[str], paths: Paths, environment: dict[str, str]) -> int:
     print(f"Adapters: {len(names)} in {platform_support.normalize(adapters)}")
     verified: list[str] = []
     problems: list[str] = []
-    # An empty working directory, so no project skill stands in for an adapter.
+    # An empty working directory that is a git repository of its own, so no project skill, in it or in a folder
+    # above it, stands in for an adapter.
     workdir = Path(tempfile.mkdtemp(prefix="deploy-verify-"))
     try:
+        bound_working_directory(workdir)
         for runtime in discovery.RUNTIMES:
             label = discovery.LABELS[runtime]
             probe = tools.probe(tools.VERIFY_TOOLS[runtime])

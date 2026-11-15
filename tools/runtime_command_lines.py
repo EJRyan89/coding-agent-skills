@@ -13,11 +13,12 @@ runtime's version is given the version the installed runtime's `--version` print
 real run would start there.
 
 Each command line is checked twice. Each flag it passes is looked for in its runtime's help for the subcommand it
-starts, such as `codex exec --help`. Then it is started in a throwaway home with no stdin, signed out: its environment
-keeps only the variables a program needs to start, every home and configuration folder is inside the throwaway home,
-every request goes to a proxy nothing listens on, and Copilot CLI's auto-update is off. So no runtime finds a sign-in or
-reaches a model, and the start shows only whether the runtime got past parsing its arguments. A start is ended at
---timeout (default 30 seconds) with every process it started.
+starts, such as `codex exec --help`. Then it is started with no stdin, signed out, in a throwaway home that is a git
+repository of its own, as the real runs make the folder they start in, or in the review host's own workspace: its
+environment keeps only the variables a program needs to start, every home and configuration folder is inside the
+throwaway home, every request goes to a proxy nothing listens on, and Copilot CLI's auto-update is off. So no runtime
+finds a sign-in or reaches a model, and the start shows only whether the runtime got past parsing its arguments. A
+start is ended at --timeout (default 30 seconds) with every process it started.
 
 It prints one fact per line:
 
@@ -27,8 +28,9 @@ It prints one fact per line:
                                                      is due to be captured again (tools/captured_samples.py); never
                                                      a failure
   MISSING <runtime> "<reason>"                       it is not installed where deploy.py check looks; exit 1
-  UNSAFE <runtime> "<reason>"                        it cannot be started signed out, so none of its command lines is
-                                                     started; exit 1
+  UNSAFE <runtime> "<reason>"                        it cannot be started signed out, or git cannot make its
+                                                     throwaway home a repository of its own, so none of its command
+                                                     lines is started; exit 1
   HELP_FAILED <runtime> <command> "<reason>"         the help its flags are looked for in could not be read: it
                                                      could not start, did not finish, or exited non-zero; the line
                                                      is still started and judged, with no UNLISTED; exit 1
@@ -69,8 +71,10 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "ejryan89-skill-core" / "scripts"))
 
+import search_boundary
 from console import run_main
-from flat_text import single_line
+from flat_text import flat_text, single_line
+from git_client import GitError
 from runtime_support import RUNTIMES as RUNTIME_NAMES
 from seconds_option import positive_seconds
 from skill_roots import sibling_scripts
@@ -383,6 +387,16 @@ def help_failure(shown: Completed, timeout: float) -> str:
     return ""
 
 
+def bound_home(home: Path) -> None:
+    """Make the throwaway home a git repository of its own, as the canaries and the skill evaluations make the home
+    their sessions start in, so a runtime started there reads project skills and agents from it alone; raise Unsafe
+    with git's reason when git cannot, which ends that runtime's lines and no other's."""
+    try:
+        search_boundary.bound_search(home)
+    except GitError as exc:
+        raise Unsafe(f"{runtime_canary.UNBOUNDED}: {flat_text(str(exc))}") from exc
+
+
 def runtime_lines(
     runtime: str,
     executable: str | None,
@@ -396,6 +410,7 @@ def runtime_lines(
         return
     try:
         environment = signed_out(root / "home", executable)
+        bound_home(root / "home")
     except Unsafe as exc:
         yield f"UNSAFE {runtime} {quote(str(exc))}"
         return

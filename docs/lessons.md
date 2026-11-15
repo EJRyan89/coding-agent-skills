@@ -841,7 +841,8 @@ removed fails validation until its pattern follows it.
 - **Rule:** A child process starts from an environment built for it, never the one its parent inherited.
 - **Why:** A variable the parent carries, such as git's repository selection or a signed-in token, otherwise reaches
   a child that must not see it. A checker also finds settings on its own, in an options variable, a file above what
-  it checks, or the user's configuration folder, and one of them can turn its findings off.
+  it checks, or the user's configuration folder, and one of them can turn its findings off; and a runtime started in
+  a folder outside any repository reads project skills and agents from every folder above it.
 - **Use:** `bounded_process:run_bounded`, `bounded_process:without_repository_variables`,
   `tools.mutation_gate:suite_environment`, a checker's one runner: `deployer.render:run_shellcheck`,
   `deployer.render:run_bash_syntax_check`, `tests.validation.toolchain:shellcheck_job`,
@@ -856,7 +857,9 @@ removed fails validation until its pattern follows it.
   for a runtime that reads pull request content, `review_hosts:isolated_copilot_environment`, which keeps none of
   the runtime's own variables but its sign-in; and for the hub guard's own git calls,
   `tools.hub_guard:withhold_written_variables`, which takes out the variables that have git write a trace or its
-  output into a file they name and turns off the trace2 targets the configuration names
+  output into a file they name and turns off the trace2 targets the configuration names; and for a runtime started in
+  a throwaway folder, `search_boundary:bound_search`, which makes the folder a git repository of its own, so Copilot
+  CLI's and Claude Code's search for project skills and agents ends there
 - **Guard:** `tests/validation/python_checks.py::PythonChecksPolicies::test_every_process_starts_without_git_repository_variables`,
   `tests/validation/skill_scripts.py::SkillScriptsPolicies::test_each_checker_starts_only_from_its_runner_and_every_repository_command_is_read`,
   which reads a process start, a mypy or ruff import, and the names it is written with, so a name built at run time
@@ -866,7 +869,11 @@ removed fails validation until its pattern follows it.
   `tests/tools/test_mutation_gate.py::RunSuiteFixtures::test_a_test_the_users_environment_would_leave_out_still_kills_the_mutant`,
   `skills/ejryan89-code-review-core/scripts/test_review_hosts_copilot.py::CopilotProcessTests::test_this_processs_copilot_variables_never_reach_the_host`,
   `tests/tools/test_hub_guard.py::CommandGuardTests::test_the_guard_s_own_git_calls_write_no_trace_the_environment_names`,
-  `tests/tools/test_hub_guard.py::HookCommandTests::test_an_inherited_trace_or_output_file_has_the_hook_s_own_git_write_nothing`
+  `tests/tools/test_hub_guard.py::HookCommandTests::test_an_inherited_trace_or_output_file_has_the_hook_s_own_git_write_nothing`,
+  `skills/ejryan89-skill-core/scripts/test_search_boundary.py::BoundSearchTests`,
+  `tests/deployer/test_verify.py::VerifyCommandTests::test_a_project_skill_planted_above_the_working_directory_never_stands_in_for_an_adapter`,
+  `tests/tools/test_deployable_report.py::DeployableReportTests::test_a_project_skill_planted_above_the_working_directory_never_stands_in_for_an_adapter`,
+  `tests/tools/test_runtime_canary.py::SearchBoundaryTests`, `tests/tools/test_runtime_command_lines.py::SearchBoundaryTests`
 - **Search for:** `{**os.environ`, `os.environ.copy()`, or `dict(os.environ)` passed as `env=`; a measured or
   sandboxed child started with no `env=`; a checker started anywhere but its runner, or run with no option that stops
   it reading settings outside the repository: ShellCheck without `--norc` and an empty `SHELLCHECK_OPTS`,
@@ -877,8 +884,11 @@ removed fails validation until its pattern follows it.
   reviewer wrote, such as a review snapshot, through a client that is not isolated; a git started where it must
   write nothing, as the hub guard's lookups and its hook command's `git config` are, with the environment's
   `GIT_TRACE` or `GIT_REDIRECT_*` variables left set, or without `GIT_TRACE2`, `GIT_TRACE2_PERF`, and
-  `GIT_TRACE2_EVENT` set to `0`, which outrank a trace2 target the configuration names.
-- **Examples:** #1366, #1396, #1598, #1777, #1861, #2208, #2241, #2246, #2776, #2792
+  `GIT_TRACE2_EVENT` set to `0`, which outrank a trace2 target the configuration names; and a Copilot CLI or Claude
+  Code started with its working directory in a folder `tempfile.mkdtemp`, `TemporaryDirectory`, or
+  `tempfile.gettempdir()` makes, or any folder outside a repository, that `search_boundary:bound_search` has not
+  made a git repository of its own.
+- **Examples:** #1366, #1396, #1598, #1777, #1861, #2208, #2241, #2246, #2750, #2755, #2776, #2792
 
 ### An action on something not proven ours stops
 
