@@ -502,7 +502,9 @@ removed fails validation until its pattern follows it.
   The hub guard's modelling reader closed one spelling per fix and every review found the next, until it was rebuilt
   to refuse what it does not understand.
 - **Use:** `tools.hub_guard:read_powershell`, `tools.hub_guard:runner_refusal`, `option_reader:option_refusal`,
-  `tools.hub_guard:expansion_form`, `git_subcommands:CommandStarts`, which says where Bash starts a command, and
+  `tools.hub_guard:expansion_form`, `tools.hub_guard:built_name`, the name every table of the guard keeps for a
+  program a package manager installs under a prefix or another name, `tools.hub_guard:multicall`, the utility a
+  multicall program runs, `git_subcommands:CommandStarts`, which says where Bash starts a command, and
   `command_wrappers:bash_program`, the program a Bash command's word names by its file name, `text_lines:text_lines`,
   the lines of a file an author writes, broken only where YAML, CommonMark, and .NET break them, and
   `markdown_sections:code_block_lines`, the fenced and indented code blocks CommonMark reads
@@ -537,6 +539,8 @@ removed fails validation until its pattern follows it.
   which refuses the Rust coreutils' env options that read variables from a file and name what a multicall program
   runs as,
   `tests/tools/test_hub_guard.py::UnderstoodSetTests::test_each_class_of_construct_the_guard_does_not_read_is_refused_while_a_hub_is_in_view`,
+  `tests/tools/test_hub_guard.py::WriteGuardTests::test_a_runner_or_a_program_whose_options_the_guard_reads_is_read_under_a_prefix`,
+  which holds every table to a build installed under a prefix,
   `tests/tools/test_hub_guard.py::ReadOnlyFormTests::test_a_dash_word_after_a_valued_option_written_alone_is_refused`,
   which refuses a dash word git would take as a lone valued option's value,
   `tests/tools/test_hub_guard.py::UnderstoodSetTests::test_a_gh_flag_before_its_subcommand_is_not_read_past`, which
@@ -570,7 +574,8 @@ removed fails validation until its pattern follows it.
   rather than from its syntax, which is None for a quoted or escaped name Bash refuses; in `tools/hub_guard.py`, a construct a
   table neither understands nor lists in `NOT_READ`, a table whose test types its rows rather than taking them from the shell's own
   catalogue, a word settled from what an earlier command assigns rather than the assignment refused, a program added
-  to `RUNNERS` with no row, a program that runs a command its words name left out of it, a runner allowed around a command that may be git, a cmdlet added to
+  to `RUNNERS` with no row, a program that runs a command its words name left out of it, a program name compared
+  with a table as the command spells it rather than by `built_name`, so `gtimeout` or `gsort` goes unread, a runner allowed around a command that may be git, a cmdlet added to
   `POWERSHELL_COMMANDS` that starts a command its words name, and a refusal that waits
   for the command to name git; a `re.compile(` in `tools/runtime_*.py` or `deployer/discovery.py` with no sample
   under `tests/fixtures/captured-output/`; a test whose sample output was typed rather than captured; a refusal of an
@@ -598,7 +603,7 @@ removed fails validation until its pattern follows it.
   worktrees writes the refs the hub's store holds.
 - **Examples:** #1412, #1429, #1430, #1592, #1606, #1843, #1851, #1865, #2032, #2088, #2089, #2134, #2135, #2136,
   #2137, #2138, #2139, #2140, #2188, #2225, #2232, #2233, #2234, #2251, #2262, #2274, #2276, #2316, #2411,
-  #2418, #2203, #2450, #2476, #2481, #2478, #2555, #2474, #2616, #2776, #2792, #2725, #2753
+  #2418, #2203, #2450, #2476, #2481, #2478, #2555, #2474, #2616, #2776, #2792, #2725, #2753, #2811, #2812, #2820
 
 ### A recursive parser of input has a depth bound
 
@@ -1128,14 +1133,17 @@ removed fails validation until its pattern follows it.
   each part is one name in its folder, with `file_presence:_is_one_name`, rather than refusing a list of absolute
   spellings; `tests.validation.python_checks:presence_problems`, which refuses every presence predicate outside
   file_presence however its answer is used, rather than the spellings of its False found so far, and follows a
-  file_presence test's answer through its bindings and comparisons to each refusal it reaches.
+  file_presence test's answer through its bindings and comparisons to each refusal it reaches;
+  `tools.hub_guard:read_unlisted`, which judges the words of every program the hub guard's tables do not read and
+  `tools.hub_guard:READ_ONLY_PROGRAMS` does not name, rather than a catalogue of the programs that write.
 - **Guard:**
   `tests/validation/test_workflows.py::DeployableBashFixtures::test_each_job_checks_its_bash_in_one_exact_step_and_the_macos_job_installs_homebrews`,
   `skills/ejryan89-skill-core/scripts/test_file_presence.py::MatchingTests::test_a_pattern_one_platform_reads_as_more_than_names_below_the_folder_is_refused_on_every_platform`,
   `skills/ejryan89-skill-core/scripts/test_git_client.py::test_a_fetch_that_failed_in_the_local_repository_is_not_the_remote_s_failure`,
   `skills/ejryan89-skill-core/scripts/test_git_client.py::test_a_fetch_whose_failure_names_nothing_local_is_the_remote_s_failure`,
   `skills/ejryan89-skill-core/scripts/test_git_client.py::test_only_a_timeout_among_the_failures_git_never_answered_is_the_remote_s`,
-  `tests/validation/test_python_checks.py::test_presence_policy_refuses_each_empty_answer_form`
+  `tests/validation/test_python_checks.py::test_presence_policy_refuses_each_empty_answer_form`,
+  `tests/tools/test_hub_guard.py::WriteGuardTests::test_a_program_no_table_reads_is_refused_where_a_word_may_name_a_hub_file`
 - **Search for:** a regular expression of alternatives that refuses spellings of one effect, such as
   `re.compile(r"set\s+(?:\+e|`, which the next combined flag walks past; a tuple of message substrings named
   `*_MARKERS` or `*_SPELLINGS` that decides a classification; a fix commit whose diff only adds one more alternative
@@ -1148,7 +1156,9 @@ removed fails validation until its pattern follows it.
   exact form; #2468, whose hub guard was rebuilt as an allow-list after three outside passes in a row found leaks;
   #2733, where `file_presence.matching` refused empty, `.`, and `..` parts and matched nothing for a drive pattern;
   #2285, where each review of the presence policy found one more spelling of a predicate's False until the policy
-  refused every presence predicate outside file_presence.
+  refused every presence predicate outside file_presence; #2811, where widening the hub guard's catalogue of writing
+  programs found the next writers at once, until every program it does not know to write nothing was judged by its
+  words.
 
 ### A check reads its subject through its consumer's reader
 
