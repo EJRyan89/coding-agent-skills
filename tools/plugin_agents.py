@@ -10,6 +10,11 @@ directory, which a plugin does not have, so each `os.path.expanduser('~/.claude/
 under the plugin's root, which Claude Code exports to a plugin hook as CLAUDE_PLUGIN_ROOT; a command that names the
 home's Claude folder any other way, as `$HOME/.claude`, `%USERPROFILE%\\.claude`, or a `.claude` it joins to a home, is
 refused: once those paths are rewritten, a command names no `.claude` folder, in any case, at all.
+
+A plugin is one tree for every platform, so a command that starts Python by the plugin's name for it, `python`, is
+written to start `python3` where sh finds no `python`, as macOS and Linux installs name it, and `python` under
+PowerShell, which runs a hook on Windows without Git Bash. Limit: a command that starts Python other than as its
+first word, such as after `cd` or `env`, keeps its `python`; no agent's hook is written so.
 """
 
 from __future__ import annotations
@@ -22,6 +27,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "ejryan8
 
 import frontmatter
 import whole_number
+from skill_menu import PLUGIN_PYTHON, plugin_hook_command
 
 HOOKS_KEY = "hooks"
 KEY_LINE = re.compile(r"^(?P<key>[A-Za-z][A-Za-z0-9_]*):(?:[ \t]+(?P<value>.*))?$")
@@ -93,7 +99,9 @@ def _node(lines: list[str], start: int, end: int) -> Node:
 
 
 def _plugin_command(command: str) -> str:
-    """A hook's command as the plugin runs it: each deployed script under the plugin's root instead."""
+    """A hook's command as the plugin runs it: each deployed script under the plugin's root instead, and a command
+    that starts the plugin's Python, as an agent's hook renders `{{PYTHON}}`, started as skill_menu's
+    plugin_hook_command starts it in every shell Claude Code runs a hook in."""
 
     def plugin_path(match: re.Match[str]) -> str:
         parts = ", ".join(f"'{part}'" for part in match.group("path").split("/"))
@@ -104,7 +112,13 @@ def _plugin_command(command: str) -> str:
     # folds; `.claude-plugin` is not.
     if re.search(r"\.claude(?![a-z0-9_-])", rewritten, re.IGNORECASE):
         raise AgentError("hooks: a command names the home's Claude folder other than as a deployed script's path")
-    return rewritten
+    program, _, arguments = rewritten.partition(" ")
+    if program != PLUGIN_PYTHON:
+        return rewritten
+    try:
+        return plugin_hook_command(arguments)
+    except ValueError as exc:
+        raise AgentError(f"hooks: {exc}") from exc
 
 
 def _commands(hooks: Node) -> Node:

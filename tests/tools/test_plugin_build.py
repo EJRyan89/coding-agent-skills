@@ -7,8 +7,11 @@ import errno
 import hashlib
 import io
 import json
+import os
+import subprocess
 import sys
 import zipfile
+from collections.abc import Mapping
 from contextlib import redirect_stdout
 from pathlib import Path
 
@@ -17,6 +20,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts"))
 
+import executable_locator
 import skill_menu
 from presence_denial import denied as stat_denied
 from skill_roots import SKILLS_ROOT, sibling_scripts
@@ -27,6 +31,7 @@ sys.path.insert(0, str(sibling_scripts("audit-skill")))
 
 import skill_inventory
 
+from deployer import platform_support
 from tools import plugin_agents, plugin_build
 
 AGENT = "---\nname: {name}\ndescription: An agent.\ntools: Read\n{extra}---\n\nRun {{{{PYTHON}}}} -B it.\n"
@@ -239,9 +244,15 @@ def test_an_agents_hooks_move_into_the_plugins_hooks_file_with_its_scripts_under
     plugin = by_name(assembly)["fixture-skills"]
     agent = plugin.files["agents/guarded.md"].decode()
     assert agent == "---\nname: guarded\ndescription: An agent.\ntools: Read\n---\n\nRun python -B it.\n"
-    command = (
-        'python -I -c "import os, runpy; runpy.run_path(os.path.join(os.environ['
+    arguments = (
+        '-I -c "import os, runpy; runpy.run_path(os.path.join(os.environ['
         "'CLAUDE_PLUGIN_ROOT'], 'skills', 'core', 'scripts', 'guard.py'))\""
+    )
+    # Pinned as written rather than read from skill_menu: sh and PowerShell each read the whole command, sh starting
+    # python or else python3 on its last line, PowerShell starting python and exiting with its status before it.
+    command = (
+        f"set -- \\\n$global:LASTEXITCODE = 1\nset -- \\\npython {arguments}\nset -- \\\nexit $LASTEXITCODE\n"
+        f'p=$(command -v python); exec "${{p:-python3}}" {arguments}'
     )
     hooks = {
         "hooks": {
@@ -289,6 +300,17 @@ def test_an_agents_hooks_move_into_the_plugins_hooks_file_with_its_scripts_under
         ("hooks:\n  PreToolUse:\n    - Read\n", "not a key of its own: Read"),
         (GUARD_HOOK.replace("timeout: 30", "timeout: ²"), r"timeout is not a number of at most \d+ ASCII digits: ²"),
         (GUARD_HOOK.replace("timeout: 30", "timeout: 3" + "0" * 5000), r"timeout is not a number of at most \d+ ASCII"),
+        # Python's arguments in a form sh and PowerShell read differently: an expansion one of them makes, an escape
+        # only sh reads, a separator only sh reads outside quotes, or a second quoted string.
+        *(
+            (
+                GUARD_HOOK.replace(' -I -c "import os, runpy;', f' -I -c "import os, runpy; {code};'),
+                "hook's Python arguments",
+            )
+            for code in ("print('$HOME')", "print('`date`')", "print('\\\\x41')")
+        ),
+        (GUARD_HOOK.replace(' -I -c "import', ' -I; echo -c "import'), "hook's Python arguments"),
+        (GUARD_HOOK.replace(' -I -c "import', ' -I "-X" -c "import'), "hook's Python arguments"),
     ],
 )
 def test_hooks_a_plugin_cannot_carry_as_written_are_refused(source: Source, hook: str, problem: str) -> None:
@@ -296,6 +318,220 @@ def test_hooks_a_plugin_cannot_carry_as_written_are_refused(source: Source, hook
     source.skill("beta", agent_deps=["guarded"])
     with pytest.raises(plugin_build.BuildError, match=problem):
         assembled(source)
+
+
+GUARD_ARGUMENTS = [
+    "-I",
+    "-c",
+    "import os, runpy; runpy.run_path(os.path.join(os.environ['CLAUDE_PLUGIN_ROOT'], 'skills', 'core', 'scripts', "
+    "'guard.py'))",
+]
+# A program that records the arguments it was started with, by the name it was started as, and exits as told.
+RECORDER = (
+    "import json, os, sys\n"
+    "with open(os.path.join(os.environ['SHIM_RECORDS'], sys.argv[1]), 'w', encoding='utf-8') as record:\n"
+    "    json.dump(sys.argv[2:], record)\n"
+    "if os.environ.get('SHIM_WARNING'):\n"
+    "    print(os.environ['SHIM_WARNING'], file=sys.stderr)\n"
+    "sys.exit(int(os.environ['SHIM_STATUS']))\n"
+)
+
+
+def start_built_hook(
+    source: Source,
+    tmp_path: Path,
+    shell: list[str],
+    pythons: tuple[str, ...],
+    status: int = 0,
+    *,
+    batch: bool = False,
+    variables: Mapping[str, str] | None = None,
+) -> tuple[subprocess.CompletedProcess[str], dict[str, list[str]]]:
+    """Build the guarded agent's plugin, run its hook's command in `shell` with a PATH of the named Python shims
+    alone, so no Python of the machine's is found by any name, and return the result and each shim's arguments. Each
+    shim is a script Bash runs, Git Bash's included, or with `batch` a batch file, which PowerShell runs on Windows;
+    `variables` are added to the environment the shell inherits."""
+    source.agent("guarded", extra=GUARD_HOOK)
+    source.skill("beta", agent_deps=["guarded"])
+    hooks = json.loads(by_name(assembled(source))["fixture-skills"].files[skill_menu.PLUGIN_HOOKS])
+    command = hooks["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
+    shims, records = tmp_path / "shims", tmp_path / "records"
+    shims.mkdir()
+    records.mkdir()
+    recorder = tmp_path / "recorder.py"
+    recorder.write_text(RECORDER, encoding="utf-8")
+    for name in pythons:
+        if batch:
+            (shims / f"{name}.cmd").write_text(f'@"{sys.executable}" "{recorder}" {name} %*\r\n', encoding="utf-8")
+            continue
+        script = shims / name
+        script.write_text(f"#!/bin/sh\nexec '{sys.executable}' '{recorder}' {name} \"$@\"\n", encoding="utf-8")
+        script.chmod(0o755)  # Bash runs a program off Windows only when it is executable
+    environment = {
+        **os.environ,
+        "PATH": str(shims),
+        "SHIM_RECORDS": str(records),
+        "SHIM_STATUS": str(status),
+        **(variables or {}),
+    }
+    completed = subprocess.run(
+        [*shell, command], capture_output=True, text=True, encoding="utf-8", env=environment, check=False
+    )
+    started = {record.name: json.loads(record.read_text(encoding="utf-8")) for record in records.iterdir()}
+    return completed, started
+
+
+def hook_shells() -> list[list[str]]:
+    """Each POSIX shell Claude Code may run a plugin hook in on this platform, as it starts one: Git Bash on Windows;
+    sh on macOS and Linux, beside Bash and dash, which is sh on Debian and Ubuntu, wherever they are found."""
+    bash = platform_support.find_bash()
+    if bash is None:
+        raise AssertionError("Bash was not found; it is required for repository validation.")
+    if platform_support.WINDOWS:
+        return [[bash, "-c"]]
+    sh = executable_locator.find_executable("sh")
+    if sh is None:
+        raise AssertionError("sh was not found; macOS and Linux both provide it.")
+    dash = executable_locator.find_executable("dash")
+    return [[bash, "-c"], [sh, "-c"], *([[dash, "-c"]] if dash else [])]
+
+
+# The two PowerShells Claude Code may run a hook in on Windows without Git Bash: PowerShell 7, which validation needs
+# on every platform, and Windows PowerShell 5.1, which every Windows has and which parses some text 7 reads.
+# Claude Code runs a hook in PowerShell on Windows where Git Bash is not installed: PowerShell 7, which validation needs
+# on every platform, or Windows PowerShell 5.1, which every Windows has and which parses some text 7 reads. Each case
+# below runs under pwsh, and again under Windows PowerShell where it exists.
+WINDOWS_POWERSHELL = "Windows PowerShell 5.1 exists only on Windows"
+
+
+def powershell(name: str) -> list[str]:
+    """The PowerShell named, started as a hook's shell, from this process's PATH."""
+    found = (
+        platform_support.find_pwsh(os.environ.get("PATH", ""))
+        if name == "pwsh"
+        else executable_locator.find_executable(name)
+    )
+    if found is None:
+        raise AssertionError(f"{name} was not found; validation needs pwsh, and every Windows has powershell.")
+    return [found, "-NoProfile", "-NonInteractive", "-Command"]
+
+
+@pytest.mark.parametrize(
+    ("pythons", "started"),
+    [
+        # Homebrew's and python.org's Python on macOS, and Linux without python-is-python3, name it python3 alone, and
+        # a hook that started python alone blocked every matched tool call there.
+        pytest.param(("python3",), "python3", id="python3 alone"),
+        # Windows installers name Python python, and a python3 there may be the Microsoft Store's alias.
+        pytest.param(("python", "python3"), "python", id="python first"),
+        pytest.param(("python",), "python", id="python alone"),
+    ],
+)
+def test_the_plugins_hook_starts_python_in_sh_and_bash_by_the_name_the_machine_gives_it(
+    source: Source, tmp_path: Path, pythons: tuple[str, ...], started: str
+) -> None:
+    for number, shell in enumerate(hook_shells()):
+        folder = tmp_path / str(number)
+        folder.mkdir()
+        completed, recorded = start_built_hook(Source(folder), folder, shell, pythons, status=3)
+        # The guard's own status is the hook's, so a guard that fails blocks the call, as onFailure: block asks.
+        assert (completed.returncode, recorded) == (3, {started: GUARD_ARGUMENTS}), (shell, completed.stderr)
+
+
+def test_the_plugins_hook_with_no_python_by_either_name_fails_naming_python3(source: Source, tmp_path: Path) -> None:
+    for number, shell in enumerate(hook_shells()):
+        folder = tmp_path / str(number)
+        folder.mkdir()
+        completed, recorded = start_built_hook(Source(folder), folder, shell, ())
+        assert recorded == {}
+        assert completed.returncode != 0
+        assert "python3" in completed.stderr, (shell, completed.stderr)
+
+
+# Variables sh would expand in the lines it joins to a `set`, each set to an option that stops sh running commands.
+OPTION_VARIABLES = {"ErrorActionPreference": "-n", "global": "-n", "LASTEXITCODE": "-n"}
+
+
+def test_the_plugins_hook_in_sh_reads_no_inherited_variable_as_options(source: Source, tmp_path: Path) -> None:
+    # `set -n` would let sh read the rest without running it and exit 0, letting every call through unguarded.
+    for number, shell in enumerate(hook_shells()):
+        for pythons, expected in ((("python3",), {"python3": GUARD_ARGUMENTS}), ((), {})):
+            folder = tmp_path / f"{number}-{len(pythons)}"
+            folder.mkdir()
+            completed, recorded = start_built_hook(
+                Source(folder), folder, shell, pythons, status=3, variables=OPTION_VARIABLES
+            )
+            assert recorded == expected, (shell, completed.stderr)
+            assert completed.returncode == 3 if pythons else completed.returncode != 0, (shell, completed.stderr)
+
+
+def warning_passes(source: Source, tmp_path: Path, name: str) -> None:
+    # A PowerShell that took a native program's stderr for a failure would block every call the guard allows.
+    completed, recorded = start_built_hook(
+        source,
+        tmp_path,
+        powershell(name),
+        ("python",),
+        batch=platform_support.WINDOWS,
+        variables={"SHIM_WARNING": "the guard warns"},
+    )
+    assert (completed.returncode, recorded) == (0, {"python": GUARD_ARGUMENTS}), completed.stderr
+    assert "the guard warns" in completed.stderr
+
+
+def status_passes(source: Source, tmp_path: Path, name: str, status: int) -> None:
+    # Windows names Python python, and the guard's own status is the hook's.
+    completed, recorded = start_built_hook(
+        source, tmp_path, powershell(name), ("python", "python3"), status, batch=platform_support.WINDOWS
+    )
+    assert (completed.returncode, recorded) == (status, {"python": GUARD_ARGUMENTS}), completed.stderr
+
+
+def missing_python_blocks(source: Source, tmp_path: Path, name: str) -> None:
+    # A PowerShell that went on past the missing command would exit with no status of Python's, 0, and the hook would
+    # let every call through unguarded.
+    completed, recorded = start_built_hook(
+        source, tmp_path, powershell(name), ("python3",), batch=platform_support.WINDOWS
+    )
+    assert recorded == {}
+    assert completed.returncode != 0
+
+
+def test_the_plugins_hook_under_pwsh_passes_a_guard_that_warns_on_stderr(source: Source, tmp_path: Path) -> None:
+    warning_passes(source, tmp_path, "pwsh")
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason=WINDOWS_POWERSHELL)
+def test_the_plugins_hook_under_windows_powershell_passes_a_guard_that_warns_on_stderr(
+    source: Source, tmp_path: Path
+) -> None:
+    warning_passes(source, tmp_path, "powershell")
+
+
+@pytest.mark.parametrize("status", [0, 3])
+def test_the_plugins_hook_starts_python_under_pwsh_and_exits_with_its_status(
+    source: Source, tmp_path: Path, status: int
+) -> None:
+    status_passes(source, tmp_path, "pwsh", status)
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason=WINDOWS_POWERSHELL)
+@pytest.mark.parametrize("status", [0, 3])
+def test_the_plugins_hook_starts_python_under_windows_powershell_and_exits_with_its_status(
+    source: Source, tmp_path: Path, status: int
+) -> None:
+    status_passes(source, tmp_path, "powershell", status)
+
+
+def test_the_plugins_hook_under_pwsh_with_no_python_fails_rather_than_passing(source: Source, tmp_path: Path) -> None:
+    missing_python_blocks(source, tmp_path, "pwsh")
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason=WINDOWS_POWERSHELL)
+def test_the_plugins_hook_under_windows_powershell_with_no_python_fails_rather_than_passing(
+    source: Source, tmp_path: Path
+) -> None:
+    missing_python_blocks(source, tmp_path, "powershell")
 
 
 @pytest.mark.parametrize("name", [".claudeRC", ".claude-plugin", ".claude_Notes", ".CLAUDE9"])
