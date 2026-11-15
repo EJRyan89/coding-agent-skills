@@ -23,6 +23,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-cor
 import atomic_file
 import memory_audit
 import path_keys
+import private_folder
 import skill_roots
 from executable_locator import RelativeEnvironmentPath
 from file_presence import NotAFile
@@ -559,8 +560,9 @@ class MemoryAuditTests(unittest.TestCase):
         for line in (first, second):
             self.assertRegex(line, r"^REPORT \S")
             path = Path(line.removeprefix("REPORT "))
-            # The report lies in the temporary directory resolved through its links, as private_folder judged it.
-            self.assertEqual(Path(os.path.realpath(self.root / "Temporary Files")), path.parent)
+            # The report lies in the temporary directory as private_folder judged it, resolved where it judges one.
+            with mock.patch.object(tempfile, "tempdir", str(self.root / "Temporary Files")):
+                self.assertEqual(private_folder.temporary_directory(), path.parent)
             report = json.loads(path.read_text(encoding="utf-8"))
             self.assertEqual(["one.md"], [entry["file"] for entry in report["memories"]])
         self.assertNotEqual(first, second, "a rerun must not overwrite the report the agent is still reading")
@@ -1690,8 +1692,9 @@ class MemoryStoreGuardTests(unittest.TestCase):
         write(self.skills_root / "some-skill" / "SKILL.md", "---\nname: some-skill\n---\n")
         audited, reindexed, deleted = self.run_all(directory)
         self.assertEqual((0, ""), (audited[0], audited[2]))
-        # The report lies in the temporary directory resolved through its links, as private_folder judged it.
-        reports = Path(os.path.realpath(self.root / "reports"))
+        # The report lies in the temporary directory as private_folder judged it, resolved where it judges one.
+        with mock.patch.object(tempfile, "tempdir", str(self.root / "reports")):
+            reports = private_folder.temporary_directory()
         self.assertTrue(audited[1].startswith(f"REPORT {reports}"), audited[1])
         self.assertEqual((0, f"INDEX_LINE notes.md\nWROTE {(directory / 'MEMORY.md').as_posix()}\n", ""), reindexed)
         self.assertEqual((1, "FAILED SKILL.md: no such file\n", ""), deleted)

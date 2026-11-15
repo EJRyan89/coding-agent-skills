@@ -24,7 +24,6 @@ import runtime_support
 from skill_layout import (
     MAXIMUM_INLINE_EXECUTABLE_LINES,
     REPOSITORY_SKILL_SHIMS,
-    WORKING_FILES_DOC,
     ExecutableFence,
     capability_guide_problems,
     deploy_variable_problems,
@@ -49,6 +48,7 @@ from skill_layout import (
     trigger_scenario_problems,
     unsupported_script_problems,
 )
+from skill_scripts import WORKING_FILES_DOC
 from validation_support import REPOSITORY_SKILLS, SKILL_GUIDE, write_fixture_tree
 
 from deployer import platform_support
