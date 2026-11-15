@@ -21,6 +21,7 @@ import skill_menu
 from presence_denial import denied as stat_denied
 from skill_roots import SKILLS_ROOT, sibling_scripts
 from test_path_containment import resolving_as_python_312
+from test_private_folder import judged_folder_calls, recording_temporary_folders
 
 sys.path.insert(0, str(sibling_scripts("audit-skill")))
 
@@ -626,3 +627,12 @@ def test_audit_skill_names_the_plugins_this_checkout_makes_for_each_skill_as_the
             if name in skill_menu.expand(source, [], skill_menu.members(source, item))
         ]
         assert lines == (carried or reasons), name
+
+
+def test_a_default_output_is_made_in_the_temporary_directory_private_folder_judged(tmp_path: Path) -> None:
+    # The build writes the plugins it archives there, so another account that could swap the folder would choose
+    # what ships.
+    with recording_temporary_folders() as calls:
+        made = plugin_build.output_directory(None, tmp_path / "source")
+    made.rmdir()
+    assert judged_folder_calls(calls, "coding-agent-skills-plugins-") == [True]

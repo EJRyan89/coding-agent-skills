@@ -714,15 +714,20 @@ removed fails validation until its pattern follows it.
   judgment of the folders above.
 - **Guard:** `tests/validation/skill_scripts.py::SkillScriptsPolicies::test_skill_scripts_name_the_folder_of_each_temporary_folder_or_file`,
   `tests/validation/test_skill_scripts.py::SkillScriptsFixtures::test_a_temporary_folder_or_named_file_left_to_tmpdir_is_refused_and_one_given_its_folder_passes`,
+  `tests/validation/test_skill_scripts.py::SkillScriptsFixtures::test_a_write_or_a_judged_variable_that_reaches_the_temporary_directory_unjudged_is_refused`,
   `skills/ejryan89-skill-core/scripts/test_private_folder.py::TemporaryDirectoryTests`,
   `skills/ejryan89-skill-core/scripts/test_private_folder.py::TemporaryDirectoryCommandTests`,
-  `skills/ejryan89-code-review-core/scripts/test_review_pipeline_prepare.py::InitialReviewTests::test_a_temporary_directory_below_a_shared_folder_that_is_not_sticky_holds_no_run`
-- **Search for:** `tempfile.mkdtemp(`, `tempfile.mkstemp(`, `TemporaryDirectory(`, or `NamedTemporaryFile(` with no
-  `dir=` in `deployer/` or `tools/`, which the policy does not read, where a later step reads what it holds;
-  `Path(tempfile.gettempdir()) /` joined with a fixed name; a folder an environment variable names, used with no
-  judgment of the folders above it; `mktemp` in a `.sh` file, or `New-TemporaryFile` or `GetTempPath` in a `.ps1` file,
-  whose folder did not come from `private_folder.py temporary-directory`, which no policy reads (#2817).
-- **Examples:** #2756, #2793, #2796, #2817
+  `skills/ejryan89-code-review-core/scripts/test_review_pipeline_prepare.py::InitialReviewTests::test_a_temporary_directory_below_a_shared_folder_that_is_not_sticky_holds_no_run`,
+  `tests/tools/test_mutation_gate.py::JudgedFolderFixtures`
+- **Search for:** a temporary folder made through a call the policy cannot resolve, or handed to a command a function
+  starts later, such as a method of `GitClient`; a Bash variable set by `read`, `mapfile`, `readarray`, `for`,
+  `printf -v`, `getopts`, `eval`, or a nameref, assigned again by a loop, or read by a function called before its
+  assignment; the temporary directory named by `${!name}`, `printenv`, or `getconf`; a PowerShell variable named by a
+  wildcard or a partly literal name, or the table `GetEnvironmentVariables()` returns, kept and read later, each a
+  limit "Working files" in `docs/adding-a-skill.md` names; and a
+  converted folder whose own suite does not record the `dir` it is given with
+  `test_private_folder:recording_temporary_folders`, since the policy reads the call, not the folder a run makes.
+- **Examples:** #2756, #2793, #2796, #2817, #2833, #2834
 
 ### What one step accepts, every later step can read and write
 

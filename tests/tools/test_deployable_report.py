@@ -28,6 +28,7 @@ import file_presence
 import search_boundary
 from git_client import GitError
 from presence_denial import denied
+from test_private_folder import judged_folder_calls, recording_temporary_folders
 
 from deployer import discovery, manifest, platform_support
 from deployer.errors import DeployError
@@ -119,6 +120,13 @@ class DeployableReportTests(unittest.TestCase):
     def check(self) -> dict[str, report.RuntimeResult]:
         results = report.check_runtimes(self.paths, {}, find=self.fake.find, talk=self.fake.talk)
         return {result.runtime: result for result in results}
+
+    def test_the_runtimes_list_from_a_folder_made_in_the_temporary_directory_private_folder_judged(self) -> None:
+        # Each runtime reads the project skills of the folder it lists from, so another account that could swap it
+        # would choose what the report finds.
+        with recording_temporary_folders() as calls:
+            self.check()
+        self.assertEqual([True], judged_folder_calls(calls, "deployable-report-"))
 
     def use_fake_runtimes(self) -> None:
         """Have the report's command line find and talk to the fake runtimes until the test ends."""

@@ -25,6 +25,7 @@ import review_dispatch
 import review_hosts
 from presence_denial import denied as stat_denied
 from review_run import Services
+from test_private_folder import judged_folder_calls, recording_temporary_folders
 
 from tools import runtime_prompts
 
@@ -378,3 +379,10 @@ class PullRecordTests(unittest.TestCase):
             self.assertTrue(str(raised.exception).startswith(message), str(raised.exception))
         record.write_text('{"number": 7}', encoding="utf-8")
         self.assertEqual({"number": 7}, runtime_prompts.read_pull_record(record))
+
+
+def test_each_renderer_writes_in_a_folder_made_in_the_temporary_directory_private_folder_judged() -> None:
+    # A renderer runs a skill's own pipeline there, whose prompts become the committed samples.
+    with recording_temporary_folders() as calls:
+        assert runtime_prompts.rendered({"example": lambda directory: {}}) == {}
+    assert judged_folder_calls(calls, "runtime-prompt-") == [True]
