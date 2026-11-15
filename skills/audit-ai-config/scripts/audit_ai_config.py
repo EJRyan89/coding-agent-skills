@@ -43,7 +43,7 @@ import re
 import sys
 import tomllib
 from collections import Counter
-from collections.abc import Callable
+from collections.abc import Callable, Collection
 from dataclasses import asdict, dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -82,9 +82,11 @@ from frontmatter import (
 from frontmatter import split as split_frontmatter
 from link_probe import is_link_or_junction
 from markdown_literal import markdown_line
-from markdown_sections import ATX_HEADING, find_fences
+from markdown_sections import ATX_HEADING, COMMONMARK_CODE_SPAN, code_block_lines, find_fences
 from module_assignments import assigned_names, sole_assignment
 from path_containment import within
+from path_keys import opens_as
+from text_lines import text_lines
 from typed_fields import FieldError, FieldReader
 
 # ---------------------------------------------------------------------------
@@ -407,11 +409,33 @@ def walk_files(
     return listing
 
 
+def named_walk(root: Path, names: Collection[str]) -> Listing:
+    """Every file below the root a runtime opens as one of `names`, outside the folders ejryan89-skill-core's folder
+    walk skips by name (`SKIPPED_FOLDERS`) and nested checkouts, in a stable order, never through a link that leads out
+    of the root, which goes in `outside`.
+
+    A file is one of `names` when its folder gives that entry for the name (`opened_name`), as Codex opens AGENTS.md
+    in each folder it reads: exactly as spelled where the folder keeps case, and in any case where it folds, so a
+    nested `agents.md` there is audited as the AGENTS.md it is. A file link the rule turns away leaves `outside` too,
+    so a name no runtime opens draws no finding; the folders and entries the walk could not list or examine stay in
+    `unread` whatever their names, as walk_files gives them."""
+    folded = {name.casefold() for name in names}
+    walk = walk_files(root, root, lambda name: name.casefold() in folded, SKIPPED_FOLDERS)
+    walk.paths = [path for path in walk.paths if opened_name(path, names)]
+    walk.outside = [path for path in walk.outside if path.name.casefold() not in folded or opened_name(path, names)]
+    return walk
+
+
+def opened_name(path: Path, names: Collection[str]) -> str | None:
+    """Which of `names` a runtime opening it in `path`'s folder reaches `path` by, as the folder's file system gives
+    the entry (`path_keys.opens_as`), or None when it is none of them."""
+    return next((name for name in sorted(names) if opens_as(path, name)), None)
+
+
 def named_files(root: Path, *names: str) -> list[Path]:
-    """Every file below the root with one of these names, outside the folders ejryan89-skill-core's folder walk skips by
-    name (`SKIPPED_FOLDERS`) and nested checkouts, in a stable order, never through a link that leads out of the root;
-    the inventory reports each such link."""
-    return walk_files(root, root, lambda name: name in names, SKIPPED_FOLDERS).paths
+    """Every file below the root a runtime opens as one of these names, as `named_walk` finds them; the inventory
+    reports each link that leads out of the root."""
+    return named_walk(root, names).paths
 
 
 OUTSIDE_LINK = "Link leads out of the repository; the audit does not follow it"
@@ -634,7 +658,7 @@ CLAUDE_AGENTS_MD_SINCE = "v2.1.277"
 
 
 def check_inventory(root: Path) -> list[Finding]:
-    walk = walk_files(root, root, lambda name: name in NESTED_FILE_NAMES, SKIPPED_FOLDERS)
+    walk = named_walk(root, NESTED_FILE_NAMES)
     return _one_unread_error_per_path(
         [
             *_inventory_unreadable(root, [root / rel for rel in (*READ_FILES, *GENERATOR_CANDIDATES)]),
@@ -730,17 +754,19 @@ def _inventory_recursive_files(root: Path, walk: Listing) -> list[Finding]:
     """Each nested instruction file the repository walk found, an ERROR for each file it found that cannot be
     examined, or, for an AGENTS.md, read, and each directory or nested-file link that leads out of the repository,
     which the nested-file checks' walks do not follow either."""
+    opened = {path: opened_name(path, NESTED_FILE_NAMES) for path in walk.paths}
     found = [
         _inventory_finding(rel, f"Found {rel}")
         for name in RECURSIVE_INVENTORY_NAMES
-        for rel in (path.relative_to(root).as_posix() for path in walk.paths if path.name == name)
+        for rel in (path.relative_to(root).as_posix() for path in walk.paths if opened[path] == name)
     ]
     # The root's own instruction files, which the walk passes by when a folder or anything else stands in a file's
     # place: examined here, so such a thing is reported as CLAUDE.md's is and never taken for no file.
-    passed_by = [root / name for name in RECURSIVE_INVENTORY_NAMES if root / name not in walk.paths]
+    at_root = {opened[path] for path in walk.paths if path.parent == root}
+    passed_by = [root / name for name in RECURSIVE_INVENTORY_NAMES if name not in at_root]
     unreadable = [
-        *_inventory_unreadable(root, [path for path in walk.paths if path.name == "AGENTS.md"]),
-        *_inventory_unreadable(root, [path for path in walk.paths if path.name != "AGENTS.md"], read=False),
+        *_inventory_unreadable(root, [path for path in walk.paths if opened[path] == "AGENTS.md"]),
+        *_inventory_unreadable(root, [path for path in walk.paths if opened[path] != "AGENTS.md"], read=False),
         *_inventory_unreadable(root, passed_by, read=False),
     ]
     return [*unreadable, *found, *outside_link_findings(root, walk)]
@@ -928,7 +954,7 @@ def _frontmatter(root: Path, path: Path) -> tuple[dict[str, FrontmatterValue], l
     """
     rel = path.as_posix()
     try:
-        lines = read_text(root, path).splitlines()
+        lines = text_lines(read_text(root, path))
     except (OSError, UnicodeError) as error:
         return {}, [Finding("ERROR", "copilot-config", rel, message=f"Could not read: {error}")]
     if not lines or lines[0] != "---":
@@ -1397,7 +1423,7 @@ def _claude_skill_rules(root: Path, path: Path, rel: str, values: dict[str, Fron
 def _skill_body(text: str) -> list[str]:
     """The lines after a skill's frontmatter, as ejryan89-skill-core's reader finds where it closes: all of them when
     there is no frontmatter, and none when the frontmatter never closes, which _validate_skill reports."""
-    lines = text.splitlines()
+    lines = text_lines(text)
     try:
         parts = split_frontmatter(lines)
     except FrontmatterError:
@@ -2024,7 +2050,7 @@ COPILOT_BANNER = "> AUTO-GENERATED from CLAUDE.md. Do not edit directly — upda
 def _extract_sections(content: str, section_names: list[str]) -> str:
     """Extract named H2 sections from Markdown content. A heading-shaped line inside a fenced code block is the fence's
     text, as markdown_sections reads it, never a heading."""
-    lines = content.splitlines()
+    lines = text_lines(content)
     fenced = {index for fence in find_fences(lines) for index in fence.lines()}
     sections: dict[str, list[str]] = {}
     current: str | None = None
@@ -2074,7 +2100,7 @@ def _expected_skill_shim(
     try:
         if not is_present(canonical):
             return None
-        lines = read_text(root, canonical).splitlines()
+        lines = text_lines(read_text(root, canonical))
     except (OSError, UnicodeError):
         return None  # the .claude/skills checks report a canonical skill they cannot read
     if not lines or lines[0] != "---":
@@ -2609,8 +2635,9 @@ def _instruction_sources(root: Path) -> InstructionSources:
 
 
 def _nested_files(root: Path, name: str) -> list[Path]:
-    """Every file with this name below the repository root, outside SKIPPED_FOLDERS and nested checkouts."""
-    return [path for path in named_files(root, name) if path != root / name]
+    """Every file a runtime opens by this name below the repository root, outside SKIPPED_FOLDERS and nested
+    checkouts, as `named_walk` recognizes it."""
+    return [path for path in named_files(root, name) if path.parent != root]
 
 
 # The files Codex looks for in each directory from the project root to its working directory, before the fallbacks
@@ -2990,7 +3017,7 @@ def _code_review_lengths(root: Path, names: list[str], sources: InstructionSourc
                     Finding("ERROR", "layering", rel, message="Could not read, so its length was not checked")
                 )
             continue
-        lines = len(text.splitlines())
+        lines = len(text_lines(text))
         if lines > CODE_REVIEW_MAX_LINES:
             findings.append(
                 Finding(
@@ -3302,20 +3329,19 @@ def _hook_handler_problems(rules: HookRules, event: str, handler: Any) -> list[t
 
 # An @path import outside code: a path the memory page resolves relative to the file holding it.
 CLAUDE_IMPORT = re.compile(r"(?<![\w@`/])@(~?[\w./-]*[\w-])")
-CODE_SPAN = re.compile(r"(`+).*?\1")
 
 
 def claude_imports(text: str) -> list[str]:
-    """The @path imports in a CLAUDE.md file, in order, skipping fenced code blocks and code spans as Claude Code
-    does. markdown_sections reads the fences, those a blockquote or list item holds included, as CommonMark reads
-    them."""
-    lines = text.splitlines()
-    fenced = {index for fence in find_fences(lines) for index in fence.lines()}
+    """The @path imports in a CLAUDE.md file, in order, skipping code blocks and code spans as Claude Code does.
+    markdown_sections reads the code blocks, fenced or indented, those a blockquote or list item holds included, and
+    the code spans, as CommonMark reads them."""
+    lines = text_lines(text)
+    code = code_block_lines(lines)
     return [
         path
         for index, line in enumerate(lines)
-        if index not in fenced
-        for path in CLAUDE_IMPORT.findall(CODE_SPAN.sub("", line))
+        if index not in code
+        for path in CLAUDE_IMPORT.findall(COMMONMARK_CODE_SPAN.sub("", line))
     ]
 
 
@@ -3344,7 +3370,7 @@ def _claude_memory(root: Path) -> list[Finding]:
 
 
 def _length_finding(rel: str, text: str) -> list[Finding]:
-    lines = len(text.splitlines())
+    lines = len(text_lines(text))
     if lines <= CLAUDE_MD_TARGET_LINES:
         return []
     return [

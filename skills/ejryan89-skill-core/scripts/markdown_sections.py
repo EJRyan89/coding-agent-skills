@@ -18,6 +18,9 @@ LINE_END = MARKDOWN_SPACE + "\r"
 # The most columns of indentation a block marker below a paragraph may have: four or more make the line the paragraph's
 # continuation, never a list item.
 MAX_BLOCK_INDENT = 3
+# The columns of indentation past what holds it that make a line no paragraph continues a line of an indented code
+# block.
+CODE_INDENT = MAX_BLOCK_INDENT + 1
 # A list marker as CommonMark reads one: a bullet, or one to nine ASCII digits and `.` or `)`. `\d` would admit every
 # Unicode digit, and an unbounded count, so a line Markdown shows as prose would be read as a list item.
 BULLET_MARKER = r"[-*+]"
@@ -178,6 +181,86 @@ def _fence_from(lines: list[str], opener: int, match: re.Match[str]) -> Fence:
         if len(closing) >= len(marker) and set(closing) == {marker[0]}:
             return Fence(opener, later, language, later, quotes)
     return Fence(opener, None, language, len(lines), quotes)
+
+
+def code_block_lines(lines: list[str]) -> set[int]:
+    """The indexes of the lines of every code block, fenced or indented, as CommonMark reads them.
+
+    An indented code block is a run of lines each indented at least CODE_INDENT columns past the content of the list
+    items that hold it, with the blank lines between them, starting where no paragraph is open: an indented line after
+    a paragraph's text continues the paragraph. A list item holds the lines indented as far as its content, which starts
+    after its marker and the one to four spaces that follow it, or one space when more follow, since the text then opens
+    with indented code; a line after a blank one, or after any block but a paragraph, indented less leaves the item.
+    Blockquote markers are taken off a line first, and a change in how many hold it starts a new container, but for a
+    line that lazily continues a quoted paragraph. The limits: the partial tab a blockquote or list marker consumes is
+    counted as a whole one, and an HTML block or a setext heading is read as a paragraph."""
+    fenced = {index for fence in find_fences(lines) for index in fence.lines()}
+    code: set[int] = set()
+    items: list[int] = []
+    paragraph = False
+    run: list[int] = []
+    depth = 0
+    for index, quoted in enumerate(lines):
+        line, quotes = _unquoted(quoted)
+        if quotes != depth:
+            if paragraph and quotes < depth and not is_blank(line):
+                continue  # a lazy continuation of the quoted paragraph
+            items, depth, paragraph, run = [], quotes, False, []
+        if index in fenced:
+            paragraph, run = False, []
+            continue
+        if is_blank(line):
+            paragraph = False
+            if run:
+                run.append(index)
+            continue
+        width = indentation(line)
+        if not paragraph:
+            while items and width < items[-1]:
+                items.pop()
+            if width >= (items[-1] if items else 0) + CODE_INDENT:
+                code.update(run)
+                code.add(index)
+                run = [index]
+                continue
+        run = []
+        item = _item_content(line, interrupting=paragraph)
+        if item is not None:
+            while items and width < items[-1]:
+                items.pop()
+            items.append(item[0])
+            paragraph = not is_blank(item[1])
+        else:
+            paragraph = ATX_HEADING.match(line) is None
+    return fenced | code
+
+
+def _unquoted(line: str) -> tuple[str, int]:
+    """The line without the blockquote markers that open it, each indented at most MAX_BLOCK_INDENT columns, and how
+    many there were."""
+    quotes = 0
+    while indentation(line) <= MAX_BLOCK_INDENT and (marker := QUOTE_MARKER.match(line)) is not None:
+        line, quotes = line[marker.end() :], quotes + 1
+    return line, quotes
+
+
+def _item_content(line: str, *, interrupting: bool) -> tuple[int, str] | None:
+    """The column a list item's content starts at and its text, for a line that opens one as `list_item` reads it, or
+    None."""
+    match = LIST_ITEM.fullmatch(line)
+    if match is None or list_item(line, interrupting=interrupting) is None:
+        return None
+    after = _columns(line[: match.end("marker")])
+    spaces = _columns(line[: match.start("text")]) - after
+    return after + (spaces if spaces <= CODE_INDENT else 1), match.group("text")
+
+
+def _columns(text: str) -> int:
+    """The column `text` ends at, a tab advancing to the next multiple of four, as CommonMark counts them."""
+    width = 0
+    for character in text:
+        width += 4 - width % 4 if character == "\t" else 1
+    return width
 
 
 def prose_code_spans(lines: list[str]) -> list[tuple[int, str]]:

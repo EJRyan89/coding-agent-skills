@@ -45,9 +45,9 @@ class AgentSkillsRuleTests(unittest.TestCase):
 
 
 class SkillFileTests(unittest.TestCase):
-    """A skill's main file is SKILL.md as its folder's file system compares names, as the runtime that opens it finds
-    it: in any case where the folder folds case, and exactly SKILL.md where it does not. Each answer is pinned with the
-    folder's answer set, so it holds on a file system that folds case and one that does not."""
+    """A skill's main file is the entry its folder gives for SKILL.md, as the runtime that opens it finds it: in any
+    case where the folder folds case, and exactly SKILL.md where it does not. Each answer is the real folder's, pinned
+    against whether it refuses a second name differing only in case."""
 
     def test_the_main_file_is_the_name_a_runtime_opens(self) -> None:
         self.assertEqual("SKILL.md", agent_skills.SKILL_FILE)
@@ -55,14 +55,17 @@ class SkillFileTests(unittest.TestCase):
     def test_skill_md_in_another_case_is_the_main_file_only_where_the_folder_folds_case(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             folder = Path(temp)
-            for folds in (True, False):
-                with self.subTest(folds=folds), mock.patch.dict(path_keys._FOLDS_CASE, {str(folder): folds}):
-                    self.assertTrue(agent_skills.is_skill_file(folder / "SKILL.md"))
-                    for name in ("skill.md", "Skill.MD"):
-                        self.assertEqual(folds, agent_skills.is_skill_file(folder / name), name)
-                    for name in ("notes.md", "SKILL.markdown", "SKILL.md.bak"):
-                        self.assertFalse(agent_skills.is_skill_file(folder / name), name)
+            (folder / "Probe").write_bytes(b"")
+            folds = (folder / "PROBE").exists()
+            self.assertTrue(agent_skills.is_skill_file(folder / "SKILL.md"))
+            for name in ("skill.md", "Skill.MD"):
+                (folder / name).write_bytes(b"")
+                self.assertEqual(folds, agent_skills.is_skill_file(folder / name), name)
+                (folder / name).unlink()
+            for name in ("notes.md", "SKILL.markdown", "SKILL.md.bak"):
+                (folder / name).write_bytes(b"")
+                self.assertFalse(agent_skills.is_skill_file(folder / name), name)
 
     def test_a_name_that_is_skill_md_in_no_case_never_asks_its_folder(self) -> None:
-        with mock.patch.object(path_keys, "folds_case", side_effect=AssertionError("asked")):
+        with mock.patch.object(path_keys, "_one_entry", side_effect=AssertionError("asked")):
             self.assertFalse(agent_skills.is_skill_file(Path("alpha") / "README.md"))

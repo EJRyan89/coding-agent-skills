@@ -14,7 +14,10 @@ reads otherwise or not at all, which a runtime's parser would refuse to load: a 
 `:`, which YAML reads as a mapping, or starting with an indicator such as `- ` or `? `, and a scalar that goes on after
 a comment has ended it, as a comment line at column 0 ends a block scalar. A key that is never read is never parsed,
 so a skill or agent may carry hooks or other structured settings this reader does not interpret; a line indented with
-a tab, which YAML forbids anywhere, is refused when the frontmatter is parsed.
+a tab, which YAML forbids anywhere, is refused when the frontmatter is parsed. Lines break only where YAML 1.2
+breaks them, at CR, LF, and CRLF, as `text_lines` splits them, so a line separator in a value is text, and a
+frontmatter line holding a character YAML does not allow in a stream at all, such as a form feed, is refused when the
+frontmatter is parsed.
 
 This is the one reader. ejryan89-skill-core is the home of the repository's shared modules, so skill scripts, the
 deployer, the repository tools, and the tests all import it from here as `frontmatter`.
@@ -26,6 +29,7 @@ import re
 from pathlib import Path
 
 import json_reader
+from text_lines import text_lines
 
 Value = str | list[str] | None
 
@@ -40,6 +44,9 @@ DOUBLE_QUOTED = re.compile(r'^"((?:[^"\\]|\\.)*)"(?:[ \t]+#.*)?$', re.DOTALL)
 SINGLE_QUOTED = re.compile(r"^'((?:[^']|'')*)'(?:[ \t]+#.*)?$", re.DOTALL)
 FLOW_ITEM = re.compile(r"""[ \t]*(?:"((?:[^"\\]|\\.)*)"|'((?:[^']|'')*)'|([^,\[\]{}"'#][^,\[\]{}]*?))[ \t]*(,|$)""")
 COMMENT = re.compile(r"[ \t]+#.*$")
+# A character YAML 1.2 allows nowhere in a stream: each C0 control but the tab, LF, and CR, DEL, each C1 control but
+# the next line (U+0085), a surrogate, and U+FFFE and U+FFFF.
+NON_PRINTABLE = re.compile("[^\t\n\r\x20-\x7e\x85\xa0-\ud7ff\ue000-\ufffd\U00010000-\U0010ffff]")
 # Where a comment starts on a line of a plain value stripped of its indentation.
 COMMENT_START = re.compile(r"(?:^|[ \t])#")
 # A colon YAML reads as a mapping indicator: one followed by whitespace, or ending the value.
@@ -96,6 +103,10 @@ class Frontmatter:
         current: list[str] | None = None
         for number, line in enumerate(lines, start=1):
             line = line.rstrip("\r")
+            if found := NON_PRINTABLE.search(line):
+                raise FrontmatterError(
+                    f"frontmatter line {number} holds U+{ord(found.group()):04X}, which YAML forbids"
+                )
             if line.startswith("\t") and line.strip():
                 raise FrontmatterError(f"frontmatter line {number} is indented with a tab, which YAML forbids")
             if not line.strip() or line[0] in " \t" or line.startswith("-"):
@@ -165,7 +176,7 @@ def user_only_value(value: object) -> bool:
 
 def parse(text: str) -> Frontmatter:
     """The frontmatter of a Markdown document; an empty one when the document has none."""
-    found = split(text.splitlines())
+    found = split(text_lines(text))
     return Frontmatter(found[0] if found else [])
 
 
@@ -178,7 +189,7 @@ def read(path: Path) -> Frontmatter:
         raise FrontmatterError(f"{path} cannot be read: {error.strerror or error}") from error
     except UnicodeError as error:
         raise FrontmatterError(f"{path} is not UTF-8: {error}") from error
-    found = split(text.splitlines())
+    found = split(text_lines(text))
     if found is None:
         raise FrontmatterError("no frontmatter")
     return Frontmatter(found[0])

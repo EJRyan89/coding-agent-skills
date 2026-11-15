@@ -614,6 +614,56 @@ class CaseSensitiveFolderTests(KeyedTestCase):
         with mock.patch.object(os, "lstat", side_effect=unifying):
             self.assertFalse(path_keys._asked_folds_case(str(folder)))
 
+    def test_a_name_in_another_case_listed_as_its_own_entry_is_not_the_one_a_program_opens(self) -> None:
+        folder = case_sensitive_folder(self.root / "work")
+        (folder / "SKILL.md").write_bytes(b"one")
+        (folder / "skill.md").write_bytes(b"two")
+        self.assertFalse(path_keys.opens_as(folder / "skill.md", "SKILL.md"))
+        (folder / "SKILL.md").unlink()
+        os.link(folder / "skill.md", folder / "SKILL.md")
+        self.assertFalse(path_keys.opens_as(folder / "skill.md", "SKILL.md"))
+        self.assertTrue(path_keys.opens_as(folder / "SKILL.md", "SKILL.md"))
+
+
+class OpensAsTests(KeyedTestCase):
+    """`opens_as` asks the folder, so each answer is its file system's: pinned against a folder measured apart from
+    the probe, and against the platform where only one file system answers."""
+
+    def test_the_name_itself_is_that_entry_and_a_name_it_cannot_be_never_asks_the_folder(self) -> None:
+        with mock.patch.object(path_keys, "_one_entry", side_effect=AssertionError("asked")):
+            self.assertTrue(path_keys.opens_as(self.root / "SKILL.md", "SKILL.md"))
+            self.assertTrue(path_keys.opens_as(Path("missing") / ".git", ".git"))
+            for name in ("README.md", "SKILL.markdown", "SKILL.md.bak", "SKILLS.md", ".gitignore"):
+                self.assertFalse(path_keys.opens_as(self.root / name, "SKILL.md"), name)
+
+    def test_another_case_is_the_entry_only_where_the_folder_folds_case(self) -> None:
+        folds = measured_folds(self.root)
+        for name in ("skill.md", "Skill.MD"):
+            with self.subTest(name=name):
+                (self.root / name).write_bytes(b"")
+                self.assertEqual(folds, path_keys.opens_as(self.root / name, "SKILL.md"))
+                (self.root / name).unlink()
+
+    def test_a_spelling_the_folder_cannot_find_or_a_second_link_is_not_the_entry(self) -> None:
+        self.assertFalse(path_keys.opens_as(self.root / "skill.md", "SKILL.md"))
+        (self.root / "elsewhere").mkdir()
+        hard_link_pair(self.root, "skill.md", "elsewhere/copy.md")
+        self.assertFalse(path_keys.opens_as(self.root / "skill.md", "SKILL.md"))
+
+    def test_a_letter_beyond_ascii_is_folded_as_the_folder_folds_it(self) -> None:
+        # APFS compares names case-folded and decomposed, so it opens the long s as `s` and the Kelvin sign as `K`;
+        # NTFS and ext4 keep the Kelvin sign apart from `K`. name_key, folding one letter to one letter and composing,
+        # answered the other way for each.
+        apfs = sys.platform == "darwin"
+        folds = measured_folds(self.root)
+        for name, expected in (("S\u212aILL.md", apfs), ("\u017fKILL.md", apfs and folds)):
+            with self.subTest(name=ascii(name)):
+                (self.root / name).write_bytes(b"")
+                if sys.platform == "win32" and name.startswith("\u017f"):
+                    expected = os.path.lexists(self.root / "SKILL.md")  # NTFS's upcase table decides
+                self.assertEqual(expected, path_keys.opens_as(self.root / name, "SKILL.md"))
+                (self.root / name).unlink()
+
 
 @unittest.skipUnless(sys.platform in ("win32", "linux"), "APFS finds one entry under both forms")
 class NormalizationFormLinkTests(KeyedTestCase):
