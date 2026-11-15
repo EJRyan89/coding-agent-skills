@@ -1,0 +1,30 @@
+"""The one splitter of a file an author writes into its lines, breaking them only where the program that loads the
+file does.
+
+Every program that loads such a file breaks its lines at a carriage return, a line feed, or the pair of them, and
+nowhere else: YAML 1.2, which each runtime's parser reads a skill's or an agent's frontmatter by, reads every other
+character as text, the next line (U+0085) and the line and paragraph separators (U+2028, U+2029) included, which only
+YAML 1.1 broke at; CommonMark ends a line of Markdown, such as a CLAUDE.md, an AGENTS.md, or a memory, at the same
+three; and .NET's `TextReader.ReadLine`, through which MSBuild reads a solution file, breaks at the same three.
+`str.splitlines` also breaks at the vertical tab, the form feed, the file, group, and record separators, and those
+three, so a reader splitting with it would read a key, an import, or a project line the program never reads. A reader
+of a file an author writes splits it with `text_lines`, never `str.splitlines`. An analyzer config is the exception,
+since the C# compiler breaks it at more (`analyzer_config.py`), and a program's output is split where that program
+ends a line (`git_client.output_lines`).
+"""
+
+from __future__ import annotations
+
+import re
+
+# A line break as YAML 1.2, CommonMark, and .NET's TextReader.ReadLine read one.
+LINE_BREAK = re.compile(r"\r\n|\r|\n")
+
+
+def text_lines(text: str) -> list[str]:
+    """The lines of `text`, without their breaks, split only at CRLF, CR, and LF. As `str.splitlines` does, a break
+    that ends the text ends its last line rather than starting an empty one, and an empty text has no lines."""
+    lines = LINE_BREAK.split(text)
+    if lines[-1] == "":
+        lines.pop()
+    return lines

@@ -97,6 +97,7 @@ Exit status:
 from __future__ import annotations
 
 import argparse
+import fnmatch
 import itertools
 import os
 import re
@@ -113,6 +114,7 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
 import file_presence
+import folder_walk
 import json_reader
 import json_writer
 import private_folder
@@ -125,8 +127,9 @@ from git_client import GitClient, GitError
 from link_probe import is_link_or_junction, is_plain_file
 from markdown_sections import CODE_SPAN
 from path_containment import resolved_path, within
-from path_keys import name_key, path_key
+from path_keys import name_key, opens_as, path_key
 from skill_roots import skills_directory_holding
+from text_lines import text_lines
 
 INDEX_NAME = "MEMORY.md"
 # The permissions of an index the rebuild creates: its owner writes it and everyone reads it, as Claude Code's files.
@@ -225,7 +228,6 @@ DESTINATION_GLOBS = (
     "**/SKILL.md",
 )
 USER_DESTINATION_GLOBS = ("CLAUDE.md", "rules/**/*.md")
-SKIPPED_DIRECTORIES = frozenset({".git", "node_modules", "bin", "obj", ".venv", "venv", "__pycache__", "packages"})
 
 
 PRESENCE_ALLOWED = {
@@ -310,7 +312,7 @@ def block_scalar(header: re.Match[str], key_indent: int, following: list[str]) -
 # the shared reader does not give, and the audit must read every memory however it is written.
 def parse_frontmatter(text: str) -> tuple[dict[str, str], str]:
     """Parse the simple key: value frontmatter Claude Code writes, tolerating nesting and reading block scalars."""
-    lines = text.splitlines()
+    lines = text_lines(text)
     if not lines or lines[0].strip() != "---":
         return {}, text
     values: dict[str, str] = {}
@@ -384,7 +386,7 @@ def parse_index(path: Path) -> tuple[list[dict[str, str]], list[str]]:
     NotAFile, an OSError, rather than reading as an empty index."""
     if not is_present(path):
         return [], []
-    lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    lines = text_lines(path.read_text(encoding="utf-8", errors="replace"))
     entries = []
     for number, line in enumerate(lines, start=1):
         entry = parse_index_entry(line)
@@ -518,7 +520,7 @@ def destination_blocks(files: list[Path]) -> list[tuple[str, int, str, set[str]]
     raises its OSError, which fails the audit, rather than silently losing its overlaps."""
     blocks: list[tuple[str, int, str, set[str]]] = []
     for path in files:
-        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+        lines = text_lines(path.read_text(encoding="utf-8", errors="replace"))
         current: list[str] = []
         start = 1
         for number, line in enumerate([*lines, ""], start=1):
@@ -558,30 +560,45 @@ def overlaps_for(body: str, blocks: list[tuple[str, int, str, set[str]]]) -> tup
 
 def destination_files(repo: Path | None, instructions: list[Path], user_dir: Path | None = None) -> list[Path]:
     """The instruction files a memory's overlaps are measured against: each named one and each a destination pattern
-    finds. A folder among them is passed over, and a stat that fails raises, so an instruction file the audit cannot
-    look at fails it rather than silently losing its overlaps. A pattern naming one file is looked up directly: glob
-    checks such a name with os.path.lexists, which answers False for a stat that fails."""
+    finds (`pattern_files`). A folder among them is passed over, and a stat that fails raises, so an instruction file
+    the audit cannot look at fails it rather than silently losing its overlaps."""
     files = [path for path in instructions if is_present(path, other_is_absent=True)]
     for root, patterns in ((repo, DESTINATION_GLOBS), (user_dir, USER_DESTINATION_GLOBS)):
         if root is None:
             continue
         for pattern in patterns:
-            # A skipped folder is never listed, so a folder it cannot list inside one is never met.
-            found = (
-                matching(root, pattern, skip=lambda folder: folder.name in SKIPPED_DIRECTORIES)
-                if "*" in pattern
-                else [root / pattern]
-            )
-            files.extend(
-                path
-                for path in found
-                if is_present(path, other_is_absent=True)
-                and not SKIPPED_DIRECTORIES.intersection(path.relative_to(root).parts[:-1])
-            )
+            files.extend(path for path in pattern_files(root, pattern) if is_present(path, other_is_absent=True))
     unique: dict[str, Path] = {}
     for path in files:
         unique.setdefault(path_key(path, resolve=True), path)
     return list(unique.values())
+
+
+def pattern_files(root: Path, pattern: str) -> list[Path]:
+    """The paths below `root` a destination pattern names, in path order.
+
+    A pattern without `**/` names one file, looked up directly: glob checks such a name with os.path.lexists, which
+    answers False for a stat that fails. `<folder>/**/<name>` names each file below the folder that
+    ejryan89-skill-core's folder walk finds, which skips its one stated set of folders and every nested checkout, and
+    enters no link: a name with a wildcard as fnmatch matches it, and a fixed name as the folder holding the file
+    gives the entry for it (`path_keys.opens_as`), as a runtime opens it, so a `claude.md` is the folder's CLAUDE.md
+    where it folds case. A folder the walk cannot list, or an entry it cannot examine, raises the error it met."""
+    folder, below, name = pattern.rpartition("**/")
+    if not below:
+        return [root / pattern]
+    base = root / folder if folder else root
+    if not is_directory(base):
+        return []
+    if "*" in name:
+        walk = folder_walk.walk_files(base, lambda found: fnmatch.fnmatch(found, name))
+        files = walk.files
+    else:
+        walk = folder_walk.walk_files(base, lambda found: found.casefold() == name.casefold())
+        files = [path for path in walk.files if opens_as(path, name)]
+    for entry in walk.not_entered:
+        if entry.error is not None:
+            raise entry.error
+    return sorted(files, key=os.fspath)
 
 
 def audit(
@@ -680,7 +697,7 @@ def reindex(memory_dir: Path) -> dict[str, Any]:
         return parse_frontmatter((memory_dir / file).read_text(encoding="utf-8", errors="replace"))
 
     def derived_hook(body: str) -> str:
-        first = next((line.strip().lstrip("#").strip() for line in body.splitlines() if line.strip()), "")
+        first = next((line.strip().lstrip("#").strip() for line in text_lines(body) if line.strip()), "")
         return one_line(first)
 
     def derived_title(meta: dict[str, str], file: str) -> str:
@@ -691,7 +708,7 @@ def reindex(memory_dir: Path) -> dict[str, Any]:
     seen: set[str] = set()
     dropped: list[tuple[str, str]] = []
     unreadable: list[tuple[str, str]] = []
-    for line in current.splitlines():
+    for line in text_lines(current):
         entry = parse_index_entry(line)
         if entry is None:
             lines.append(line)
