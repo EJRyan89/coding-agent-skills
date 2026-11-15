@@ -96,9 +96,9 @@ from file_presence import is_present, require
 from flat_text import fact_line, flat_text
 from folders_up import folders_up
 from run_dotnet_format import Services
+from text_lines import text_lines
 from xml_reader import XmlRefused
 
-LINE = re.compile(r"[^\r\n]*(?:\r\n|\r|\n)|[^\r\n]+\Z")
 DIRECTIVE = re.compile(r"[ \t]*#[ \t]*([A-Za-z]+)")
 PACKAGE = "Roslynator.Formatting.Analyzers"
 # The items of MSBuild's evaluation that show the package: a PackageReference to it, or an Analyzer item of its
@@ -384,7 +384,7 @@ class Violation:
 
 
 def split_lines(text: str) -> list[str]:
-    return LINE.findall(text)
+    return text_lines(text, keepends=True)
 
 
 def body(line: str) -> str:

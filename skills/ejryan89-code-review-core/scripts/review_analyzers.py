@@ -284,8 +284,10 @@ def _ini(found: _Inventory, path: str, text: str) -> None:
 
 
 def _shellcheckrc(found: _Inventory, path: str, text: str) -> None:
+    """ShellCheck's settings, a line each: ShellCheck ends a line of its rc file at LF alone, so a CR, a form feed, or
+    U+2028 is part of the line that holds it, and stripping it from either end is all a CRLF file needs."""
     found.tool("ShellCheck", path)
-    for line in text.splitlines():
+    for line in text.split("\n"):
         if line.strip() and not line.lstrip().startswith("#"):
             found.setting(path, line.strip())
 

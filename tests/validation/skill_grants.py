@@ -15,6 +15,7 @@ import frontmatter
 from skill_layout import embedded_program_problems, output_placeholder_problems
 from skill_roots import sibling_scripts
 from skill_scripts import RESULTS_DOC, command_reader
+from text_lines import text_lines
 from validation_support import (
     REPOSITORY_ROOT,
     REPOSITORY_SKILLS,
@@ -283,7 +284,7 @@ def root_option_problems(root: Path, skill_files: list[Path]) -> list[str]:
     problems: list[str] = []
     for skill_md in skill_files:
         name = skill_md.relative_to(root).as_posix()
-        found = frontmatter.split(skill_md.read_text(encoding="utf-8").splitlines())
+        found = frontmatter.split(text_lines(skill_md.read_text(encoding="utf-8")))
         document = frontmatter.Frontmatter(found[0] if found else [])
         for tool, pattern in skill_inventory.allowed_entries(document.value("allowed-tools")):
             match = GRANTED_TOOL.match(pattern or "")

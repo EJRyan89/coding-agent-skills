@@ -45,6 +45,7 @@ from markdown_sections import MARKDOWN_SPACE, find_fences, list_item
 from path_containment import refusal
 from review_config import safe_repository_path
 from review_records import is_suite_profile
+from text_lines import text_lines
 
 PROSE_SUFFIXES = frozenset({".md", ".markdown", ".mdx", ".txt", ".rst", ".adoc"})
 # The text the input carries: each file at most FILE_CHARS, all of them at most TOTAL_CHARS, near 12k tokens.
@@ -360,7 +361,7 @@ def _statements(text: str) -> list[tuple[int, str]]:
     code, and only a run that can close it does."""
     found: list[tuple[int, str]] = []
     continued = in_item = False
-    lines = text.splitlines()
+    lines = text_lines(text)
     fenced = {index for fence in find_fences(lines) for index in fence.lines()}
     for index, raw in enumerate(lines):
         stripped = raw.strip(MARKDOWN_SPACE)
@@ -507,7 +508,7 @@ def unsupplied(repository: str, texts: dict[VersionKey, str], sources: dict[str,
             text = texts.get((path, given[path]))
             if text is None:
                 continue
-            for number, line in enumerate(text.splitlines(), start=1):
+            for number, line in enumerate(text_lines(text), start=1):
                 links = [_resolved(path, target) for target in LINK.findall(line) if "://" not in target]
                 named = [(target, _resolved(path, target)) for target in CODE_REFERENCE.findall(line)]
                 candidates = [link for link in links if link is not None and link not in given]

@@ -24,6 +24,7 @@ from skill_menu import PLUGIN_HOOKS, PLUGIN_MANIFEST
 from skill_roots import SKILL_CORE
 from skill_scripts import WORKING_FILES_DOC, powershell_script_commands
 from suite_names import is_suite_name
+from text_lines import text_lines
 from validation_support import (
     CODE_SPAN,
     EXECUTABLE_SCRIPT_EXTENSIONS,
@@ -92,7 +93,7 @@ def embedded_program_problems(root: Path, tree: str = "skills") -> list[str]:
             f"{name}:{fence.line_number} contains a {fence.language} fence with {fence.body_line_count} "
             f"lines. Markdown may contain only short command examples of at most "
             f"{MAXIMUM_INLINE_EXECUTABLE_LINES} lines; move executable logic to the skill's scripts/ directory."
-            for fence in find_executable_fences(markdown.read_text(encoding="utf-8").splitlines())
+            for fence in find_executable_fences(text_lines(markdown.read_text(encoding="utf-8")))
             if fence.body_line_count > MAXIMUM_INLINE_EXECUTABLE_LINES
         )
     return problems
@@ -322,7 +323,7 @@ def runtime_page_problems(root: Path) -> list[str]:
         path = root / page
         if not file_presence.is_present(path):
             continue
-        lines = path.read_text(encoding="utf-8").splitlines()
+        lines = text_lines(path.read_text(encoding="utf-8"))
         fenced = {index for fence in find_fences(lines) for index in fence.lines()}
         prose = "\n".join("" if index in fenced else line for index, line in enumerate(lines))
         for paragraph in re.split(r"\n\s*\n", prose):
@@ -413,7 +414,7 @@ def skill_path_problems(root: Path) -> list[str]:
     problems: list[str] = []
     for path, dependencies, directory in _path_documents(root):
         name = path.relative_to(root).as_posix()
-        lines = path.read_text(encoding="utf-8").splitlines()
+        lines = text_lines(path.read_text(encoding="utf-8"))
         holders = fence_holders(lines)
         for number, line in enumerate(lines, start=1):
             holder = holders[number - 1]
@@ -507,7 +508,7 @@ def output_placeholder_problems(root: Path, tree: str = "skills") -> list[str]:
         file_presence.matching(root / tree, "**/*.md"), key=lambda path: path.relative_to(root).as_posix()
     ):
         name = path.relative_to(root).as_posix()
-        lines = path.read_text(encoding="utf-8").splitlines()
+        lines = text_lines(path.read_text(encoding="utf-8"))
         for number, (line, holder) in enumerate(zip(lines, fence_holders(lines), strict=True), start=1):
             in_command_fence = (
                 fence_body_line(holder, number - 1)
@@ -701,7 +702,11 @@ def _answered(content: bytes, *, markdown: bool = False) -> bytes:
 
 
 def _without_hooks(text: str) -> tuple[str, str]:
-    """An agent definition without its frontmatter's top-level hooks key, and that key's lines, on one line each."""
+    """An agent definition without its frontmatter's top-level hooks key, and that key's lines, on one line each.
+
+    Limit: the delimiters are found by exact match on lines split at LF, so an agent whose `---` lines carry trailing
+    spaces or tabs, or whose lines end in CRLF, is compared with its hooks kept; no agent the repository holds is
+    written so."""
     lines = text.split("\n")
     closing = lines.index("---", 1) if lines[:1] == ["---"] and "---" in lines[1:] else 0
     start = next((index for index in range(1, closing) if lines[index].startswith("hooks:")), None)
@@ -950,7 +955,7 @@ def script_language_problems(root: Path, standard_commands: set[str]) -> list[st
     ]
     statement = "A skill's executable files are Bash, Python, and PowerShell"
     line = next(
-        (line for line in (root / SKILL_GUIDE).read_text(encoding="utf-8").splitlines() if statement in line), None
+        (line for line in text_lines((root / SKILL_GUIDE).read_text(encoding="utf-8")) if statement in line), None
     )
     if line is None:
         return [*found, f"{SKILL_GUIDE} does not state which languages a skill's executable files may use"]

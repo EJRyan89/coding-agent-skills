@@ -70,6 +70,7 @@ from git_client import GitClient, GitError, output_line
 from markdown_sections import find_fences
 from path_containment import within
 from skill_menu import closure
+from text_lines import text_lines
 
 # The paths and commands validation and the tools also name: this script runs from the checkout without the
 # deployer, which tests/validation and tools/skill_shims.py import.
@@ -195,7 +196,7 @@ def document_path(root: Path, relative: str) -> Path:
 
 def print_section(root: Path, document: str, title: str) -> int:
     path = document_path(root, document)
-    lines = path.read_text(encoding="utf-8-sig").splitlines()
+    lines = text_lines(path.read_text(encoding="utf-8-sig"))
     try:
         heading, body = section(lines, title)
     except StepError:
@@ -245,9 +246,9 @@ def frontmatter_block(text: str | None) -> list[str] | None:
     if text is None:
         return None
     try:
-        found = frontmatter.split(text.splitlines())
+        found = frontmatter.split(text_lines(text))
     except frontmatter.FrontmatterError:
-        return text.splitlines()
+        return text_lines(text)
     return found[0] if found else []
 
 
@@ -256,7 +257,7 @@ def frontmatter_value(text: str | None, key: str) -> object:
     if text is None:
         return None
     try:
-        found = frontmatter.split(text.splitlines())
+        found = frontmatter.split(text_lines(text))
         return frontmatter.Frontmatter(found[0]).value(key) if found else None
     except frontmatter.FrontmatterError:
         return UNREADABLE

@@ -21,6 +21,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
 import atomic_file
+import folder_walk
 import memory_audit
 import path_keys
 import private_folder
@@ -46,6 +47,9 @@ FOLDS_CASE = temporary_store_folds_case()
 
 # Characters a reader splits a line at: the two a shell does, and the three str.splitlines also does.
 LINE_BREAKS = ("\n", "\r", "\u2028", "\u2029", "\x85")
+
+# The characters str.splitlines breaks a line at and text_lines, as YAML 1.2 and CommonMark, does not.
+TEXT_SEPARATORS = ("\x0b", "\x0c", "\x1c", "\x1d", "\x1e", "\x85", "\u2028", "\u2029")
 
 
 def file_name_breaks() -> tuple[str, ...]:
@@ -3079,3 +3083,62 @@ def test_a_skill_file_holding_a_line_break_prints_on_one_line() -> None:
     # A skill's source_dir is read from the deployer manifest, so a break in it split the SKILL_FILE line.
     with mock.patch.object(memory_audit, "run", return_value=(0, ["SKILL_FILE /src/a\nNOTE b\u2029c/SKILL.md"])):
         assert run_main("skill-source", "a") == (0, "SKILL_FILE /src/a NOTE b c/SKILL.md\n", "")
+
+
+@pytest.mark.parametrize("separator", TEXT_SEPARATORS)
+def test_frontmatter_lines_break_only_where_yaml_breaks_one(separator: str) -> None:
+    text = f"---\nname: a{separator}description: forged\n---\nBody{separator}more."
+    assert memory_audit.parse_frontmatter(text) == (
+        {"name": f"a{separator}description: forged"},
+        f"Body{separator}more.",
+    )
+
+
+@pytest.mark.parametrize("separator", TEXT_SEPARATORS)
+def test_a_delimiter_is_three_hyphens_and_yaml_whitespace_alone(separator: str) -> None:
+    opened = f"---{separator}\nname: a\n---\nBody."
+    assert memory_audit.parse_frontmatter(opened) == ({}, opened)
+    closed = f"---\nname: a\n---{separator}\nlate: b\n---\nBody."
+    assert memory_audit.parse_frontmatter(closed) == ({"name": "a", "late": "b"}, "Body.")
+    assert memory_audit.parse_frontmatter("--- \t\nname: a\n---\t\nBody.") == ({"name": "a"}, "Body.")
+
+
+@pytest.mark.parametrize("separator", TEXT_SEPARATORS)
+def test_an_index_line_breaks_only_where_commonmark_breaks_one(separator: str, tmp_path: Path) -> None:
+    line = f"- [A](a.md) — first{separator}- [B](b.md) — forged"
+    index = write(tmp_path / "MEMORY.md", f"{line}\n")
+    entries, lines = memory_audit.parse_index(index)
+    assert lines == [line]
+    assert [(entry["line"], entry["target"]) for entry in entries] == [("1", "a.md")]
+
+
+@pytest.mark.parametrize("separator", TEXT_SEPARATORS)
+def test_a_destination_block_breaks_only_where_commonmark_breaks_a_line(separator: str, tmp_path: Path) -> None:
+    guide = write(tmp_path / "CLAUDE.md", f"alpha beta{separator}- gamma delta\n")
+    blocks = memory_audit.destination_blocks([guide])
+    assert [(file, start, text) for file, start, text, _ in blocks] == [
+        (str(guide), 1, f"alpha beta{separator}- gamma delta")
+    ]
+
+
+@pytest.mark.parametrize("separator", TEXT_SEPARATORS)
+def test_reindex_breaks_the_index_and_a_body_only_where_commonmark_breaks_a_line(
+    separator: str, tmp_path: Path
+) -> None:
+    write(tmp_path / "plain.md", f"---\nname: plain\n---\n\nFirst{separator}# Second\n")
+    current = f"# Notes{separator}- [Gone](gone.md) — x\n- [Plain](plain.md)\n"
+    write(tmp_path / "MEMORY.md", current)
+    rebuilt = memory_audit.reindex(tmp_path)
+    assert rebuilt["dropped"] == []
+    assert rebuilt["content"] == f"# Notes{separator}- [Gone](gone.md) — x\n- [Plain](plain.md) — First # Second\n"
+
+
+def test_a_folder_the_destination_walk_could_not_list_raises_the_error_the_walk_recorded(tmp_path: Path) -> None:
+    write(tmp_path / "docs" / "guide.md", "rules\n")
+    recorded = PermissionError(13, "Permission denied", str(tmp_path / "docs" / "notes"))
+    walk = folder_walk.Walk(
+        not_entered=[folder_walk.NotEntered(tmp_path / "docs" / "notes", "unlistable", "cannot be listed", recorded)]
+    )
+    with mock.patch.object(folder_walk, "walk_files", return_value=walk), pytest.raises(PermissionError) as raised:
+        memory_audit.pattern_files(tmp_path, "docs/**/*.md")
+    assert raised.value is recorded

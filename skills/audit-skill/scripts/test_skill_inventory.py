@@ -1897,8 +1897,10 @@ class StatusLineTests(TemporaryTestCase):
 
     def test_a_shell_exit_past_the_digit_limit_or_in_other_digits_is_no_exit_code(self) -> None:
         script = "exit 3\nexit 1" + "0" * 5000 + "\nexit " + chr(0x0663) + "\n"
-        self.assertEqual(skill_inventory.shell_facts("exit 3\n").codes, skill_inventory.shell_facts(script).codes)
-        self.assertIn(3, skill_inventory.shell_facts(script).codes)
+        self.assertEqual(
+            skill_inventory.shell_facts("exit 3\n", ".sh").codes, skill_inventory.shell_facts(script, ".sh").codes
+        )
+        self.assertIn(3, skill_inventory.shell_facts(script, ".sh").codes)
 
     def test_exit_codes_come_from_exit_calls_and_named_constants(self) -> None:
         folder = self.skill(
@@ -3875,3 +3877,106 @@ def test_each_path_refusal_names_the_wrong_kind_never_as_not_found(tmp_path: Pat
         assert (1, [f"FAILED not a file: {file.as_posix()}, {other.as_posix()}"]) == run("scan", str(file), str(other))[
             :2
         ]
+
+
+# The characters str.splitlines breaks a line at and text_lines, as YAML 1.2 and CommonMark, does not.
+TEXT_SEPARATORS = ("\x0b", "\x0c", "\x1c", "\x1d", "\x1e", "\x85", "\u2028", "\u2029")
+SEPARATOR = pytest.mark.parametrize("separator", TEXT_SEPARATORS, ids=lambda separator: f"U+{ord(separator):04X}")
+
+
+@SEPARATOR
+def test_the_token_estimate_finds_a_fence_only_on_a_line_commonmark_breaks(separator: str) -> None:
+    # 22 characters of prose and none of code: ceil(3 * 22 / 12) = 6. Broken at the separator, the ``` opened a fence.
+    assert skill_inventory.estimate_tokens(f"intro{separator}```\nplain words\n", "doc") == 6
+
+
+@SEPARATOR
+def test_a_fenced_block_holds_the_lines_commonmark_breaks(separator: str) -> None:
+    assert skill_inventory.normalized_blocks(f"```\na{separator}b\nc\n```\n") == [(1, (f"a{separator}b", "c"))]
+
+
+@SEPARATOR
+def test_a_body_is_counted_in_the_lines_commonmark_breaks(separator: str) -> None:
+    text = "---\nname: demo\n---\n" + f"a{separator}b\n" * 500
+    assert skill_inventory.structure_flags("main", text, "SKILL.md") == []
+    assert skill_inventory.structure_flags("main", text + "c\n", "SKILL.md") == ["BODY_OVER_500_LINES 501"]
+
+
+@SEPARATOR
+def test_a_nested_reference_is_read_from_the_lines_yaml_and_commonmark_break(separator: str, tmp_path: Path) -> None:
+    texts = {
+        # The --- after the separator is text in the description, so the frontmatter, and the link in it, runs on.
+        "SKILL.md": (
+            "main",
+            f"---\nname: demo\ndescription: d{separator}---\nnote: `references/a.md`\n---\nRead `references/b.md`.\n",
+        ),
+        "references/b.md": ("doc", f"Intro{separator}then `a.md`.\n"),
+        "references/a.md": ("doc", "A.\n"),
+    }
+    assert skill_inventory.nested_flags(tmp_path, texts) == ["NESTED_REFERENCE references/b.md:1 a.md"]
+
+
+@SEPARATOR
+def test_an_outside_read_is_placed_on_the_line_commonmark_breaks(separator: str, tmp_path: Path) -> None:
+    skill = tmp_path / "skills" / "alpha"
+    write(tmp_path / "skills" / "shared.md", "12345678\n")
+    texts = {"SKILL.md": ("main", f"---\nname: alpha\n---\nIntro{separator}read `../shared.md`.\n")}
+    assert skill_inventory.outside_lines(skill, texts) == [
+        "OUTSIDE_READ SKILL.md:4 9 3 ../shared.md",
+        "TOTAL outside 1 9 3",
+    ]
+
+
+@SEPARATOR
+def test_an_inlined_helper_is_compared_in_the_lines_its_interpreter_breaks(separator: str) -> None:
+    texts = {
+        "SKILL.md": ("main", "```bash\ntwo\nthree\nfour\n```\n"),
+        "scripts/run.sh": ("helper", f"one{separator}two\nthree\nfour\n"),
+    }
+    assert skill_inventory.duplicate_flags(texts) == []
+    texts["scripts/run.sh"] = ("helper", f"one{separator}\ntwo\nthree\nfour\n")
+    assert skill_inventory.duplicate_flags(texts) == ["INLINED_HELPER SKILL.md:1 scripts/run.sh"]
+
+
+@SEPARATOR
+def test_a_scan_cue_is_placed_on_the_line_commonmark_breaks(separator: str, tmp_path: Path) -> None:
+    notes = write(tmp_path / "notes.md", f"Intro{separator}For each item.\n")
+    assert [line for line in skill_inventory.scan([notes]) if line.startswith("CUE ")] == [
+        f"CUE {notes.as_posix()} 1 loop Intro{separator}For each item."
+    ]
+
+
+@SEPARATOR
+def test_a_runtime_prompt_cue_is_placed_on_the_line_the_prompt_breaks(separator: str, tmp_path: Path) -> None:
+    sample = write(tmp_path / "sample.txt", f"Intro{separator}You MUST read it.\n")
+    assert [line for line in skill_inventory.measure_sample(tmp_path, sample) if line.startswith("CUE ")] == [
+        f"CUE {sample.as_posix()} 1 emphasis Intro{separator}You MUST read it."
+    ]
+
+
+@SEPARATOR
+def test_a_powershell_comment_runs_to_the_line_its_tokenizer_breaks(separator: str) -> None:
+    assert skill_inventory.shell_facts(f"# note{separator}exit 4\n", ".ps1").codes == {0}
+    assert skill_inventory.shell_facts("# note\nexit 4\n", ".ps1").codes == {0, 4}
+
+
+def test_a_bash_comment_runs_to_the_line_feed_alone() -> None:
+    assert skill_inventory.shell_facts("# note\rexit 4\n", ".sh").codes == {0}
+    assert skill_inventory.shell_facts("echo DONE\rexit 4\n", ".bash").codes == {0, 4}
+
+
+@SEPARATOR
+def test_a_status_line_is_placed_on_the_line_commonmark_breaks(separator: str, tmp_path: Path) -> None:
+    folder = tmp_path / "repo" / "skills" / "alpha"
+    write(tmp_path / "repo" / ".git" / "HEAD", "ref: refs/heads/main\n")
+    write(folder / "SKILL.md", f"---\nname: alpha\n---\nIntro{separator}It prints `GONE <path>` when it removed one.\n")
+    write(folder / "scripts" / "tool.py", 'def main() -> int:\n    print("DONE")\n    return 0\n')
+    assert [line for line in skill_inventory.status_lines(folder) if line.startswith("UNPRINTED ")] == [
+        f"UNPRINTED {(folder / 'SKILL.md').as_posix()} 4 GONE"
+    ]
+
+
+@SEPARATOR
+def test_a_skills_markdown_is_read_in_the_lines_commonmark_breaks(separator: str, tmp_path: Path) -> None:
+    main = write(tmp_path / "SKILL.md", f"---\nname: alpha\n---\nIntro{separator}more\n")
+    assert skill_inventory.skill_markdown(tmp_path) == [(main, ["---", "name: alpha", "---", f"Intro{separator}more"])]

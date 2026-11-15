@@ -1377,7 +1377,7 @@ class SharedLocatorTests(LocatorFixture):
         program = self.parser(self.links, XPDF_4_06)
         line, refusal = self.check_and_extract()
         self.assertEqual(("pdftotext Xpdf 4.06", "OPTIONAL", "used by operations"), line)
-        self.assertEqual("pdftotext could not be started", refusal)
+        self.assertEqual("pdftotext could not be started: the fixture's pdftotext is no program", refusal)
         self.assertEqual([program.resolve()] * 2, [Path(path).resolve() for path in self.probed])
         self.assertEqual([str(program.resolve())], [command[0] for command in self.started])
 
@@ -1402,7 +1402,7 @@ class SharedLocatorTests(LocatorFixture):
             ),
             line,
         )
-        self.assertEqual("pdftotext could not be started", refusal)
+        self.assertEqual("pdftotext could not be started: the fixture's pdftotext is no program", refusal)
         self.assertEqual([bundled, supported] * 2, [Path(path) for path in self.probed])
         self.assertEqual([str(supported)], [command[0] for command in self.started])
 

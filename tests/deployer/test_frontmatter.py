@@ -273,6 +273,38 @@ class DocumentTests(unittest.TestCase):
         with self.assertRaisesRegex(FrontmatterError, "not closed"):
             frontmatter.split(["---", "name: a"])
 
+    def test_the_delimiter_is_three_hyphens_and_yaml_whitespace_alone(self) -> None:
+        # YAML ends a document marker at a space, a tab, or the line's end; str.rstrip also stripped a vertical tab, a
+        # form feed, the file, group, and record separators, U+0085, U+2028, and U+2029, so each passed for one.
+        self.assertEqual((["name: a"], 3), frontmatter.split(["--- \t", "name: a", "---\t ", "Body."]))
+        self.assertEqual((["name: a"], 3), frontmatter.split(["---\r", "name: a", "---\r", "Body."]))
+        self.assertIsNone(frontmatter.split(["---x", "name: a", "---"]))
+        for separator in ("\x85", "\u2028", "\u2029"):
+            with self.subTest(separator=f"U+{ord(separator):04X}"):
+                self.assertIsNone(frontmatter.split([f"---{separator}", "name: a", "---", "Body."]))
+                self.assertEqual(
+                    (["name: a", f"---{separator}", "more: b"], 5),
+                    frontmatter.split(["---", "name: a", f"---{separator}", "more: b", "---", "Body."]),
+                )
+                with self.assertRaisesRegex(FrontmatterError, "not closed"):
+                    frontmatter.split(["---", "name: a", f"--- {separator}", "Body."])
+
+    def test_a_character_yaml_forbids_on_a_delimiter_line_is_refused(self) -> None:
+        for character in ("\x0b", "\x0c", "\x1c", "\x1d", "\x1e", "\x00"):
+            for lines, number in (
+                ([f"---{character}", "name: a", "---", "Body."], 1),
+                (["---", "name: a", f"--- {character}\t", "Body."], 3),
+            ):
+                with self.subTest(character=f"U+{ord(character):04X}", line=number):
+                    with self.assertRaises(FrontmatterError) as raised:
+                        frontmatter.split(lines)
+                    self.assertEqual(
+                        f"frontmatter delimiter on line {number} holds U+{ord(character):04X}, which YAML forbids",
+                        str(raised.exception),
+                    )
+        with self.assertRaisesRegex(FrontmatterError, "line 1 holds U\\+000C"):
+            frontmatter.parse("---\x0c\nname: a\n---\nBody.\n")
+
     def test_a_line_breaks_only_where_yaml_breaks_one(self) -> None:
         # str.splitlines also breaks at U+0085, U+2028, and U+2029, which YAML 1.2 reads as text, so a key after one
         # was read that no runtime reads.

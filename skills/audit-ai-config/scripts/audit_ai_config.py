@@ -77,6 +77,7 @@ from frontmatter import (
     USER_ONLY_KEY,
     Frontmatter,
     FrontmatterError,
+    is_delimiter,
     user_only_value,
 )
 from frontmatter import split as split_frontmatter
@@ -957,11 +958,14 @@ def _frontmatter(root: Path, path: Path) -> tuple[dict[str, FrontmatterValue], l
         lines = text_lines(read_text(root, path))
     except (OSError, UnicodeError) as error:
         return {}, [Finding("ERROR", "copilot-config", rel, message=f"Could not read: {error}")]
-    if not lines or lines[0] != "---":
-        return {}, [Finding("ERROR", "copilot-config", rel, message="Missing YAML frontmatter")]
+    # A delimiter is judged as ejryan89-skill-core's reader and YAML judge one: `---` and spaces or tabs alone.
     try:
-        end = lines.index("---", 1)
-    except ValueError:
+        if not lines or not is_delimiter(lines[0], 1):
+            return {}, [Finding("ERROR", "copilot-config", rel, message="Missing YAML frontmatter")]
+        end = next((index for index in range(1, len(lines)) if is_delimiter(lines[index], index + 1)), None)
+    except FrontmatterError as error:
+        return {}, [Finding("ERROR", "copilot-config", rel, message=f"Invalid YAML frontmatter: {error}")]
+    if end is None:
         return {}, [Finding("ERROR", "copilot-config", rel, message="Unterminated YAML frontmatter")]
     values: dict[str, FrontmatterValue] = {}
     findings: list[Finding] = []

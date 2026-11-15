@@ -11,6 +11,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from review_analyzers import MAX_SETTINGS, UNREAD, inventory, tool_names
 
+# The characters str.splitlines breaks a line at and text_lines, as YAML 1.2 and CommonMark, does not.
+TEXT_SEPARATORS = ("\x0b", "\x0c", "\x1c", "\x1d", "\x1e", "\x85", "\u2028", "\u2029")
+
 SDK_PROJECT = """<?xml version="1.0" encoding="utf-8"?>
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
@@ -558,6 +561,15 @@ class InventoryTests(unittest.TestCase):
         self.assertEqual([{"tool": "ShellCheck", "files": ["empty/.shellcheckrc", "shellcheckrc"]}], result["tools"])
         self.assertEqual(["source-path=SCRIPTDIR", "external-sources=true"], self.settings(result, "shellcheckrc"))
         self.assertEqual([], self.settings(result, "empty/.shellcheckrc"))
+
+    def test_a_shellcheckrc_line_ends_at_a_line_feed_alone_as_shellcheck_reads_it(self) -> None:
+        for separator in ("\r", *TEXT_SEPARATORS):
+            with self.subTest(separator=f"U+{ord(separator):04X}"):
+                paths = self.write({".shellcheckrc": f"disable=SC1091{separator}SC2034\r\nexternal-sources=true\n"})
+                result = inventory(self.root, paths)
+                self.assertEqual(
+                    ["disable=SC1091 SC2034", "external-sources=true"], self.settings(result, ".shellcheckrc")
+                )
 
     def test_package_json_names_eslint_and_its_plugins(self) -> None:
         paths = self.write(
