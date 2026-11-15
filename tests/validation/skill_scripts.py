@@ -2350,6 +2350,55 @@ def secret_named_function_problems(root: Path) -> list[str]:
     return problems
 
 
+# Each tempfile call that makes a folder or a named file, by the position of its `dir` argument. TemporaryFile and
+# SpooledTemporaryFile are left out: the file has no name another account could swap, only the descriptor this process
+# holds.
+TEMPORARY_MAKERS = {
+    "tempfile.mkdtemp": 2,
+    "tempfile.mkstemp": 2,
+    "tempfile.mktemp": 2,
+    "tempfile.TemporaryDirectory": 2,
+    "tempfile.NamedTemporaryFile": 6,
+}
+TEMPORARY_FOLDER = "private_folder.temporary_directory()"
+WORKING_FILES_DOC = '"Working files" in docs/adding-a-skill.md'
+
+
+def _names_its_folder(call: ast.Call, position: int) -> bool:
+    """Whether a tempfile call is given a `dir` that is not None, by keyword or at `position`."""
+    given = [keyword.value for keyword in call.keywords if keyword.arg == "dir"]
+    if len(call.args) > position and not any(isinstance(argument, ast.Starred) for argument in call.args[:position]):
+        given.append(call.args[position])
+    return any(not (isinstance(value, ast.Constant) and value.value is None) for value in given)
+
+
+def temporary_folder_problems(root: Path) -> list[str]:
+    """Each call in a shipped or repository skill's scripts, tests aside, that makes a temporary folder or named file
+    without naming the folder it lies in: left to tempfile, it lies wherever `TMPDIR` points, with no check that no
+    other account can rename a folder above it and swap what a later step reads."""
+    problems: list[str] = []
+    paths = sorted(
+        (
+            path
+            for scripts in skill_script_directories(root)
+            for path in file_presence.matching(scripts, "**/*.py")
+            if file_presence.is_present(path, other_is_absent=True) and not is_test_script(path)
+        ),
+        key=lambda path: path.relative_to(root).as_posix(),
+    )
+    for _, name, tree in python_trees(paths, root, problems):
+        resolver = CallableResolver(tree)
+        problems.extend(
+            f"{name}:{node.lineno}: {called} leaves its folder to TMPDIR; pass dir={TEMPORARY_FOLDER}, or a folder "
+            f"the script already holds; see {WORKING_FILES_DOC}"
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            and (called := _reached_name(node.func, resolver)) in TEMPORARY_MAKERS
+            and not _names_its_folder(node, TEMPORARY_MAKERS[called])
+        )
+    return problems
+
+
 def script_contract_problems(root: Path) -> list[str]:
     """Report skill scripts that break "Script results": a failure through parser.error or on stderr, JSON output,
     or an exit code other than 0, 1, and 2. A module that must speak another protocol says why in
@@ -2645,6 +2694,10 @@ class SkillScriptsPolicies(unittest.TestCase):
     def test_skill_scripts_print_each_line_through_a_choke_point(self) -> None:
         # A value holding a line break printed a second line an agent read as a fact of its own.
         self.assertEqual([], print_choke_point_problems(REPOSITORY_ROOT))
+
+    def test_skill_scripts_name_the_folder_of_each_temporary_folder_or_file(self) -> None:
+        # A run folder left to TMPDIR lay below folders another account could rename, which swapped its prompts.
+        self.assertEqual([], temporary_folder_problems(REPOSITORY_ROOT))
 
     def test_no_shipped_function_is_named_so_codeql_reads_its_result_as_a_secret(self) -> None:
         self.assertEqual([], secret_named_function_problems(REPOSITORY_ROOT))

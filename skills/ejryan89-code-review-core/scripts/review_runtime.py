@@ -24,6 +24,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-cor
 
 import file_presence
 import json_writer
+import private_folder
 from device_names import is_reserved_device_name
 from diff_paths import MAX_SEGMENT_UNITS, unsafe_snapshot_name
 from executable_locator import find_executable
@@ -2571,7 +2572,9 @@ def materialize_source_snapshot_from_github(
         raise RuntimeContractError("Source snapshot commit is invalid")
     _prepare_destination(destination)
     try:
-        with tempfile.TemporaryDirectory(prefix="code-review-source-") as temporary:
+        with tempfile.TemporaryDirectory(
+            prefix="code-review-source-", dir=private_folder.temporary_directory()
+        ) as temporary:
             archive = Path(temporary) / "source.tar.gz"
             fetcher(repository, commit, archive)
             documents = _Documents(frozenset(changed_paths), path_room(destination))

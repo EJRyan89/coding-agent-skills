@@ -18,6 +18,7 @@ from typing import Any
 
 import json_reader
 import json_writer
+import private_folder
 from bounded_process import non_interactive_environment, run_bounded
 from executable_locator import find_executable, program_name
 
@@ -229,7 +230,9 @@ def read(sources: Sequence[str], timeout: float = READ_SECONDS) -> list[list[lis
     program = find_executable("pwsh")
     if program is None:
         raise PowerShellUnread("pwsh was not found")
-    with tempfile.TemporaryDirectory(prefix="powershell-commands-") as directory:
+    with tempfile.TemporaryDirectory(
+        prefix="powershell-commands-", dir=private_folder.temporary_directory()
+    ) as directory:
         request = Path(directory) / "sources.json"
         try:
             json_writer.write(request, list(sources))

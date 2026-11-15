@@ -56,6 +56,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[4] / "skills" / "ejryan89-skill-core" / "scripts"))
 
+import private_folder
 import whole_number
 from closing_references import (
     CLOSING_KEYWORDS,
@@ -282,7 +283,7 @@ def template_of(git: GitClient, repository: Path) -> tuple[Path, Path]:
 def draft(git: GitClient, repository: Path, closes: Sequence[int]) -> list[str]:
     top, template = template_of(git, repository)
     body = draft_body(read_file(template), closes)
-    folder = Path(tempfile.mkdtemp(prefix="implement-change-"))
+    folder = Path(tempfile.mkdtemp(prefix="implement-change-", dir=private_folder.temporary_directory()))
     (folder / "body.md").write_text(body, encoding="utf-8", newline="\n")
     return [
         f'TEMPLATE "{template.relative_to(top).as_posix()}"',

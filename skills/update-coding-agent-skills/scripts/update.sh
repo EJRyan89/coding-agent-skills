@@ -44,7 +44,7 @@
 #                    deployed
 #   FAILED <reason>  alone, before anything is merged or deployed and with the clone on the branch it was found on:
 #                    the clone is not a repository with deploy.py, no ejryan89-skill-core is deployed beside this
-#                    skill, `deploy.py check` printed nothing, printed only its error, or named the deployed commit or
+#                    skill, the temporary directory is one another account could rename or cannot be examined, `deploy.py check` printed nothing, printed only its error, or named the deployed commit or
 #                    the pin in a form the update cannot read, so whether the installation is pinned is unknown, a git
 #                    lookup or comparison failed rather than answering, git's own reason following, remote_refs.py
 #                    failed, git failed in the clone rather than at origin, or remote_refs.py ended without its
@@ -108,9 +108,37 @@ one_line() {
 # Bash keeps its script open while running, and Windows refuses to rename a directory holding an open
 # file, so the deploy below could not back up this skill's own directory. Run from a temporary copy.
 # Every temporary file is named from a template under TMPDIR, as macOS's mktemp, given no template, takes the user's
-# temporary folder ahead of TMPDIR.
-TEMPLATE="${TMPDIR:-/tmp}"
-TEMPLATE="${TEMPLATE%/}/update-skills.XXXXXXXXXX"
+# temporary folder ahead of TMPDIR. Where the platform has user ids, ejryan89-skill-core's private_folder.py judges that
+# folder first and names it resolved through every link, or refuses one whose folders another account could rename,
+# which could otherwise swap this script's copy between the cp and the exec; on Windows it lies under the user's profile.
+TEMPORARY="${TMPDIR:-/tmp}"
+case "${OSTYPE:-}" in
+  msys* | cygwin*) ;;
+  *)
+    if [ "${UPDATE_SKILLS_COPY:-}" = "$0" ]; then
+      PRIVATE_FOLDER="$UPDATE_SKILLS_SCRIPTS/../../ejryan89-skill-core/scripts/private_folder.py"
+    else
+      PRIVATE_FOLDER="$(dirname -- "$0")/../../ejryan89-skill-core/scripts/private_folder.py"
+    fi
+    if [ ! -f "$PRIVATE_FOLDER" ]; then
+      echo "FAILED no ejryan89-skill-core private_folder.py deployed beside update.sh: $PRIVATE_FOLDER"
+      exit 1
+    fi
+    if ! JUDGED=$("$PYTHON" -B "$PRIVATE_FOLDER" temporary-directory "$TEMPORARY" 2>&1); then
+      JUDGED=$(one_line "$JUDGED")
+      echo "FAILED cannot make update.sh's temporary files: ${JUDGED#FAILED }"
+      exit 1
+    fi
+    case "$JUDGED" in
+      'TEMPORARY_DIRECTORY '?*) TEMPORARY=${JUDGED#TEMPORARY_DIRECTORY } ;;
+      *)
+        echo "FAILED private_folder.py named no temporary directory: $(one_line "$JUDGED")"
+        exit 1
+        ;;
+    esac
+    ;;
+esac
+TEMPLATE="${TEMPORARY%/}/update-skills.XXXXXXXXXX"
 if [ "${UPDATE_SKILLS_COPY:-}" != "$0" ]; then
   if ! COPY=$(mktemp "$TEMPLATE" 2>&1); then
     echo "FAILED cannot create a temporary copy of update.sh: $(one_line "$COPY")"

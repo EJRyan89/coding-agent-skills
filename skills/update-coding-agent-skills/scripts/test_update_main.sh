@@ -268,12 +268,23 @@ run_subject "$CLONE" main
 expect_failed "FAILED git status failed: " "status failed"
 expect_not_deployed "status failed"
 
-# A script that cannot make its temporary copy stops before any Git command. TMPDIR names a folder that does not
-# exist, and a mktemp wrapper does what macOS's mktemp does: given no template, it makes the file in a folder of its
-# own, the user's temporary folder there, ahead of TMPDIR. So the copy fails on every platform only while update.sh
-# names its files from a template under TMPDIR.
+# A script that cannot make its temporary copy stops before any Git command. TMPDIR names a folder no file can be made
+# in, and a mktemp wrapper does what macOS's mktemp does: given no template, it makes the file in a folder of its own,
+# the user's temporary folder there, ahead of TMPDIR. So the copy fails on every platform only while update.sh names its
+# files from a template under TMPDIR. Where the platform has user ids, that is a folder of the user's own that the user
+# cannot write, which private_folder.py accepts, since a folder that does not exist is refused before mktemp runs; on
+# Windows, where a folder's mode bits do not stop a write, it is a folder that does not exist.
 begin_case 'no temporary copy'
 new_clone
+NO_COPY_TMPDIR="$FIXTURE/absent temporary directory"
+case "${OSTYPE:-}" in
+  msys* | cygwin*) ;;
+  *)
+    NO_COPY_TMPDIR="$FIXTURE/read-only temporary directory"
+    mkdir -p "$NO_COPY_TMPDIR"
+    chmod 555 "$NO_COPY_TMPDIR"
+    ;;
+esac
 DARWIN_MKTEMP="$FIXTURE/darwin mktemp wrapper"
 mkdir -p "$DARWIN_MKTEMP" "$FIXTURE/darwin user temp"
 cat >"$DARWIN_MKTEMP/mktemp" <<EOF
@@ -285,12 +296,23 @@ chmod +x "$DARWIN_MKTEMP/mktemp"
 export FAKE_DEPLOY_LOG="$FIXTURE/deploy-$case_number.log"
 : >"$FAKE_DEPLOY_LOG"
 set +e
-OUTPUT=$(TMPDIR="$FIXTURE/absent temporary directory" PATH="$DARWIN_MKTEMP:$PATH" bash "$SUBJECT" "$CLONE" main \
-  2>"$FIXTURE/stderr")
+OUTPUT=$(TMPDIR="$NO_COPY_TMPDIR" PATH="$DARWIN_MKTEMP:$PATH" bash "$SUBJECT" "$CLONE" main 2>"$FIXTURE/stderr")
 status=$?
 set -e
 expect_failed "FAILED cannot create a temporary copy of update.sh: " "no temporary copy"
 expect_not_deployed "no temporary copy"
+case "${OSTYPE:-}" in
+  msys* | cygwin*) ;;
+  *)
+    chmod 755 "$NO_COPY_TMPDIR"
+    # A TMPDIR that does not exist is one another account could make first, so it is refused before mktemp.
+    begin_case 'temporary directory that does not exist'
+    TMPDIR="$FIXTURE/absent temporary directory" run_subject "$CLONE" main
+    expect_failed "FAILED cannot make update.sh's temporary files: the temporary directory $FIXTURE/absent temporary directory cannot be examined: " \
+      "temporary directory that does not exist"
+    expect_nothing_run "temporary directory that does not exist"
+    ;;
+esac
 
 # A script that cannot make the file the deployer's errors are kept in stops before any Git command too, and removes
 # its temporary copy. A mktemp wrapper makes the copy and refuses every later call.
@@ -340,16 +362,18 @@ expect_nothing_run "no file for git errors"
 
 # Every temporary file, the copy, the deployer's errors, and git's errors, is named from a template under TMPDIR: a
 # mktemp wrapper refuses any call that names none there, as a bare mktemp on macOS would make its file elsewhere, so
-# a full update deploys only while each of the three names its template. Each is removed when the update ends.
+# a full update deploys only while each of the three names its template. Each is removed when the update ends. Where
+# the platform has user ids, the template names TMPDIR resolved through its links, as private_folder.py judged it.
 begin_case 'every file under TMPDIR'
 new_clone
 UNDER_TMPDIR="$FIXTURE/tmp for every file"
 TEMPLATE_MKTEMP="$FIXTURE/template mktemp wrapper"
 mkdir -p "$TEMPLATE_MKTEMP" "$UNDER_TMPDIR"
+UNDER_TMPDIR_RESOLVED=$(cd -- "$UNDER_TMPDIR" && pwd -P)
 cat >"$TEMPLATE_MKTEMP/mktemp" <<EOF
 #!/usr/bin/env bash
 case "\${1:-}" in
-  "$UNDER_TMPDIR/"*) exec "$(command -v mktemp)" "\$@" ;;
+  "$UNDER_TMPDIR/"* | "$UNDER_TMPDIR_RESOLVED/"*) exec "$(command -v mktemp)" "\$@" ;;
 esac
 echo "mktemp: no template under TMPDIR: \$*" >&2
 exit 1

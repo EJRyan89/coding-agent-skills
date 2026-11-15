@@ -25,6 +25,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-cor
 
 import file_presence
 import json_writer
+import private_folder
 from bounded_process import non_interactive_environment, run_bounded
 from diff_paths import HUNK_HEADER, DiffPathError, header_path, unquote
 from flat_text import LINE_UNSAFE
@@ -1387,7 +1388,9 @@ def _route_files(
     A condition writes its file in a throwaway folder outside `work`, which is read and removed before anything is
     written there, so a condition that fails leaves `work` as empty as it found it."""
     conditions = manifest["conditions"]
-    with tempfile.TemporaryDirectory(prefix="code-review-conditions-") as folder:
+    with tempfile.TemporaryDirectory(
+        prefix="code-review-conditions-", dir=private_folder.temporary_directory()
+    ) as folder:
         outputs = Path(folder)
 
         def condition(name: str) -> bool:

@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import file_presence
+import private_folder
 from flat_text import flat_text
 from git_client import GitClient, GitError, GitResult
 from release_tags import TAGS, releases_naming
@@ -237,7 +238,7 @@ def export(source_dir: Path, commit: str) -> Path:
         raise ValueError(f"not a full commit name: {commit!r}")
     require_extraction_filters()
     refuse_archive_attributes(source_dir, commit)
-    root = Path(tempfile.mkdtemp(prefix="deploy-at-"))
+    root = Path(tempfile.mkdtemp(prefix="deploy-at-", dir=private_folder.temporary_directory()))
     try:
         archive = root / "tree.tar"
         result = _git(source_dir, "archive", "--format=tar", f"--output={archive}", commit)
@@ -308,7 +309,7 @@ def archive_attributes(source_dir: Path, commit: str) -> list[tuple[str, str]]:
     """
     paths = _tree_paths(source_dir, commit)
     # The throwaway directory that holds the index of the commit's tree, apart from the export's.
-    directory = Path(tempfile.mkdtemp(prefix="deploy-at-attributes-"))
+    directory = Path(tempfile.mkdtemp(prefix="deploy-at-attributes-", dir=private_folder.temporary_directory()))
     try:
         return _indexed_attributes(source_dir, commit, paths, _client(directory / "index"))
     finally:

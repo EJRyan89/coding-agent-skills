@@ -745,7 +745,7 @@ class LooseFileTests(DocumentTestCase):
         document.write_bytes(b"# Plan\n")
         temporary = self.root / ("t" * 100)
 
-        def mkdtemp(prefix: str) -> str:
+        def mkdtemp(prefix: str, **_: object) -> str:
             temporary.mkdir()
             return str(temporary)
 
@@ -1786,7 +1786,7 @@ class PullRequestTests(PipelineTestCase):
     def test_a_failed_build_leaves_no_temporary_output_behind(self) -> None:
         temporary = self.root / "temporary output"
 
-        def mkdtemp(prefix: str) -> str:
+        def mkdtemp(prefix: str, **_: object) -> str:
             temporary.mkdir()
             return str(temporary)
 
@@ -2017,7 +2017,7 @@ class OutputTests(DocumentTestCase):
         document.write_bytes(b"# Plan\n")
         temporary = self.root / "temp $dir"
 
-        def mkdtemp(prefix: str) -> str:
+        def mkdtemp(prefix: str, **_: object) -> str:
             temporary.mkdir()
             return str(temporary)
 

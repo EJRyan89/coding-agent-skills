@@ -2,14 +2,18 @@
 
 from __future__ import annotations
 
+import contextlib
+import inspect
+import io
 import os
 import stat
 import sys
 import tempfile
 import unittest
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from types import SimpleNamespace
-from typing import cast
+from typing import Any, cast
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -24,6 +28,42 @@ DIRECTORY = stat.S_IFDIR
 OTHER_USER = 4242
 # The variable naming the user's runtime directory, as the XDG Base Directory specification names it.
 RUNTIME = "XDG_RUNTIME_DIR"
+
+
+# The tempfile calls a converted caller makes its folder or file with, each recorded by the folder it was given.
+RECORDED_MAKERS = ("mkdtemp", "mkstemp", "TemporaryDirectory")
+
+
+@contextlib.contextmanager
+def recording_temporary_folders() -> Iterator[list[tuple[str, str | None]]]:
+    """Record the prefix and the `dir` of each tempfile.mkdtemp, mkstemp, and TemporaryDirectory call until the block
+    ends, as each was given by keyword or by position, while each still makes its folder or file. The suites of other
+    skills import it to hold that a caller passes the folder `private_folder.temporary_directory` judged: one recorded
+    with the default `dir` None lies wherever TMPDIR points, unjudged."""
+    calls: list[tuple[str, str | None]] = []
+
+    def recorder(real: Callable[..., Any]) -> Callable[..., Any]:
+        signature = inspect.signature(real)
+
+        def call(*arguments: Any, **keywords: Any) -> Any:
+            bound = signature.bind(*arguments, **keywords)
+            given = bound.arguments.get("dir")
+            calls.append((bound.arguments.get("prefix") or "", None if given is None else os.fspath(given)))
+            return real(*arguments, **keywords)
+
+        return call
+
+    with contextlib.ExitStack() as stack:
+        for name in RECORDED_MAKERS:
+            stack.enter_context(mock.patch.object(tempfile, name, recorder(getattr(tempfile, name))))
+        yield calls
+
+
+def judged_folder_calls(calls: list[tuple[str, str | None]], prefix: str) -> list[bool]:
+    """For each recorded call whose prefix starts with `prefix`, whether its `dir` is the folder
+    `private_folder.temporary_directory` hands back."""
+    judged = os.fspath(private_folder.temporary_directory())
+    return [folder == judged for given, folder in calls if given.startswith(prefix)]
 
 
 def metadata(mode: int, owner: int) -> os.stat_result:
@@ -268,6 +308,156 @@ class AncestryRefusalTests(unittest.TestCase):
         via.symlink_to(self.root, target_is_directory=True)
         self.assertEqual(f"its parent {via} is a link or junction", ancestry_refusal(via, self.user))
         self.assertEqual(f"its ancestor {via} is a link or junction", ancestry_refusal(via / "inner", self.user))
+
+
+class TemporaryDirectoryTests(unittest.TestCase):
+    """The temporary directory a run's folder is made in, judged before anything is made in it."""
+
+    def setUp(self) -> None:
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name).resolve()
+
+    def use(self, folder: Path) -> None:
+        """Make `folder` the temporary directory tempfile names, as a TMPDIR set by hand would, until the test ends."""
+        patcher = mock.patch.object(tempfile, "tempdir", str(folder))
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    @unittest.skipIf(sys.platform == "win32", "Windows has no user ids, so the directory is returned as given there")
+    def test_the_default_temporary_directory_is_accepted_resolved(self) -> None:
+        # Linux's /tmp, which root owns and is sticky, and macOS's per-user folder, reached through the /var link.
+        self.assertEqual(Path(os.path.realpath(tempfile.gettempdir())), private_folder.temporary_directory())
+
+    @unittest.skipIf(sys.platform == "win32", "Windows mode bits say nothing about who may write a folder")
+    def test_one_below_a_shared_folder_that_is_not_sticky_is_refused_naming_it_before_anything_is_made(self) -> None:
+        # Whoever can rename the shared folder's entry can put a tree of their own, run folder and all, in its place.
+        shared = self.root / "shared"
+        shared.mkdir()
+        own = shared / "u" / "tmp"
+        own.mkdir(parents=True)
+        shared.chmod(0o777)
+        self.addCleanup(shared.chmod, 0o755)
+        self.use(own)
+        with self.assertRaises(private_folder.UnsafeTemporaryDirectoryError) as raised:
+            tempfile.mkdtemp(prefix="run-", dir=private_folder.temporary_directory())
+        self.assertEqual(
+            f"a folder made in the temporary directory {own} could be replaced by another account: its ancestor "
+            f"{shared} can be written by users other than its owner and is not sticky (mode 777); set TMPDIR to a "
+            "folder of this user's own below folders no other account can write",
+            str(raised.exception),
+        )
+        self.assertIsInstance(raised.exception, OSError, "every caller reports it as the temporary directory failing")
+        self.assertIsInstance(raised.exception, UnsafeFolderError)
+        self.assertEqual([], list(own.iterdir()), "nothing was made where another account could swap it")
+        shared.chmod(0o1777)
+        self.assertEqual(own, private_folder.temporary_directory())
+
+    @unittest.skipIf(sys.platform == "win32", "a symbolic link needs a privilege there, and nothing is judged there")
+    def test_one_named_through_a_link_is_judged_and_returned_by_its_resolved_path(self) -> None:
+        # The link's own folder could be another account's to change, so the resolved path is the one used.
+        own = self.root / "own"
+        own.mkdir()
+        via = self.root / "via"
+        via.symlink_to(own, target_is_directory=True)
+        self.use(via)
+        self.assertEqual(own, private_folder.temporary_directory())
+        own.chmod(0o777)
+        self.addCleanup(own.chmod, 0o700)
+        with self.assertRaises(private_folder.UnsafeTemporaryDirectoryError) as raised:
+            private_folder.temporary_directory()
+        self.assertIn(f"its parent {own} can be written by users other than its owner", str(raised.exception))
+
+    def test_where_the_platform_has_no_user_ids_it_is_returned_as_given_and_not_judged(self) -> None:
+        shared = self.root / "shared"
+        shared.mkdir()
+        shared.chmod(0o777)
+        self.addCleanup(shared.chmod, 0o755)
+        given = self.root / "shared" / ".." / "shared"
+        self.use(given)
+        with mock.patch.object(private_folder, "user_id", return_value=None):
+            self.assertEqual(given, private_folder.temporary_directory())
+
+
+@unittest.skipIf(sys.platform == "win32", "Windows has no user ids, so no folder above it is judged")
+class TemporaryDirectoryCommandTests(unittest.TestCase):
+    """`private_folder.py temporary-directory <folder>`, which a Bash script such as update.sh runs before mktemp."""
+
+    def setUp(self) -> None:
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name).resolve()
+
+    def run_command(self, *arguments: str) -> tuple[int, str]:
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            code = private_folder.main(["temporary-directory", *arguments])
+        return code, output.getvalue()
+
+    def test_a_folder_of_the_user_s_own_is_printed_resolved(self) -> None:
+        own = self.root / "own"
+        own.mkdir()
+        (self.root / "via").symlink_to(own, target_is_directory=True)
+        self.assertEqual((0, f"TEMPORARY_DIRECTORY {own}\n"), self.run_command(str(self.root / "via")))
+
+    def test_a_folder_below_a_shared_folder_that_is_not_sticky_is_refused_naming_it(self) -> None:
+        shared = self.root / "shared"
+        own = shared / "u" / "tmp"
+        own.mkdir(parents=True)
+        shared.chmod(0o777)
+        self.addCleanup(shared.chmod, 0o755)
+        self.assertEqual(
+            (
+                1,
+                f"FAILED a folder made in the temporary directory {own} could be replaced by another account: its "
+                f"ancestor {shared} can be written by users other than its owner and is not sticky (mode 777); set "
+                "TMPDIR to a folder of this user's own below folders no other account can write\n",
+            ),
+            self.run_command(str(own)),
+        )
+
+    def test_a_folder_that_does_not_exist_or_cannot_be_examined_is_refused_as_given(self) -> None:
+        # Another account that can write the folder's parent could make it first, so a missing one is never accepted.
+        given = f"{self.root}//absent"
+        self.assertEqual(
+            (1, f"FAILED the temporary directory {given} cannot be examined: No such file or directory\n"),
+            self.run_command(given),
+        )
+        own = self.root / "own"
+        own.mkdir()
+        with mock.patch.object(os, "lstat", side_effect=PermissionError(13, "Permission denied")):
+            self.assertEqual(
+                (1, f"FAILED the temporary directory {own} cannot be examined: Permission denied\n"),
+                self.run_command(str(own)),
+            )
+
+    def test_a_folder_one_line_cannot_hold_as_it_is_is_refused(self) -> None:
+        broken = self.root / "line\nbreak"
+        broken.mkdir()
+        code, printed = self.run_command(str(broken))
+        self.assertEqual(1, code)
+        self.assertEqual(f"FAILED the temporary directory {str(broken)!r} cannot be printed on one line\n", printed)
+
+    def test_with_no_folder_the_temporary_directory_is_judged(self) -> None:
+        with mock.patch.object(tempfile, "tempdir", str(self.root)):
+            self.assertEqual((0, f"TEMPORARY_DIRECTORY {self.root}\n"), self.run_command())
+
+
+class RecordingTests(unittest.TestCase):
+    def test_a_call_given_the_judged_folder_is_told_from_one_given_none_by_keyword_or_position(self) -> None:
+        with recording_temporary_folders() as calls:
+            made = tempfile.mkdtemp(prefix="judged-", dir=private_folder.temporary_directory())
+            descriptor, name = tempfile.mkstemp(None, "unjudged-")
+            os.close(descriptor)
+            with tempfile.TemporaryDirectory(None, "positional-", str(private_folder.temporary_directory())):
+                pass
+        self.addCleanup(os.rmdir, made)
+        self.addCleanup(os.remove, name)
+        self.assertEqual([True], judged_folder_calls(calls, "judged-"))
+        self.assertEqual([False], judged_folder_calls(calls, "unjudged-"))
+        # TemporaryDirectory makes its folder through mkdtemp, which is recorded too.
+        self.assertEqual([True, True], judged_folder_calls(calls, "positional-"))
+        self.assertEqual([], judged_folder_calls(calls, "absent-"))
 
 
 class EnsureTests(unittest.TestCase):
