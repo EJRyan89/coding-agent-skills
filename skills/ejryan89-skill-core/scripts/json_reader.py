@@ -69,13 +69,19 @@ def _integer(text: str) -> int:
     return -value if digits != text else value
 
 
+# The values JSON writes as an array or an object: the reader gives lists and dictionaries, and the json module's
+# writer writes a tuple as an array too.
+CONTAINERS = (dict, list, tuple)
+
+
 def _items(value: Any) -> Any:
-    return value.values() if isinstance(value, dict) else value if isinstance(value, list) else ()
+    return value.values() if isinstance(value, dict) else value if isinstance(value, CONTAINERS) else ()
 
 
-def _containers(value: Any) -> list[Any]:
-    """The arrays and objects `value` holds directly, each one level below it; a scalar is no level."""
-    return [item for item in _items(value) if isinstance(item, (dict, list))]
+def containers(value: Any) -> list[Any]:
+    """The arrays and objects `value` holds directly, each one level below it; a scalar is no level. It is the
+    `children` by which `nesting_depth.nests_past` measures a JSON value, read or about to be written."""
+    return [item for item in _items(value) if isinstance(item, CONTAINERS)]
 
 
 def _strings(value: Any) -> list[str]:
@@ -97,7 +103,7 @@ def _strings(value: Any) -> list[str]:
 def _bounded(value: Any, *, surrogates: bool = False) -> Any:
     """`value`, or `JsonRefused` when it nests past `DEPTH_LIMIT` or, unless `surrogates` keeps them, a string or key
     holds a lone surrogate."""
-    if nesting_depth.nests_past(value, _containers):
+    if nesting_depth.nests_past(value, containers):
         raise JsonRefused(NESTED)
     for text in () if surrogates else _strings(value):
         try:

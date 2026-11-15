@@ -611,9 +611,12 @@ removed fails validation until its pattern follows it.
 ### A recursive parser of input has a depth bound
 
 - **Rule:** A parser that recurses into input it does not control stops at a stated depth and ends in its documented
-  refusal, never in a `RecursionError`.
+  refusal, never in a `RecursionError`, and a writer of a value nested from such input judges its depth before it
+  writes, never by waiting for the serializer's `RecursionError`.
 - **Why:** Nesting past Python's recursion limit escapes the reader as an unhandled error instead of its refusal, and
-  the C JSON scanner and the XML parser nest far deeper than a Python walk over what they read can recurse.
+  the C JSON scanner and the XML parser nest far deeper than a Python walk over what they read can recurse. Where a C
+  serializer stops is no contract either: Python 3.15's `json.dumps` writes a list nested 100,000 deep that 3.12's
+  stops with a `RecursionError`, so a handler of it refuses on one version and passes the value on another.
 - **Use:** `nesting_depth:deeper`, the check a recursive parser makes at each level, raising its own error, against
   `nesting_depth:DEPTH_LIMIT`; `json_reader:loads` and `xml_reader:read_xml`, which refuse a value nested past the
   same limit, so a walk over what they return, such as MSBuild's Choose evaluation, needs no bound of its own;
@@ -622,8 +625,12 @@ removed fails validation until its pattern follows it.
   and of a literal, which refuse the parser's overflow, a memory or recursion error, as the
   `python_reader:PythonRefused` their callers handle. A handler around such a reader alone names its family and no
   RecursionError; one that also guards a parser that recurses, such as tomllib, keeps it and says which call
-  raises it.
+  raises it. `json_writer:nests_too_deep`, the writer's judgment of a value's depth against the same limit, by
+  `nesting_depth:nests_past`'s walk, which `json_writer:dumps` makes before the json module writes and
+  `mcp_handshake:group_servers` before it keys a server by its JSON text.
 - **Guard:** `skills/ejryan89-skill-core/scripts/test_nesting_depth.py::DeeperTests`,
+  `skills/ejryan89-skill-core/scripts/test_json_writer.py::RefusalTests::test_nesting_is_judged_at_the_readers_limit_before_the_json_module_writes`,
+  `skills/audit-ai-config/scripts/test_mcp_handshake.py::HandshakeTests::test_a_definition_is_too_deep_one_level_past_the_shared_limit_and_grouped_at_it`,
   `tests/validation/test_python_checks.py::test_content_errors_policy_refuses_a_recursion_handler_around_readers_that_never_raise_it`,
   `skills/ejryan89-skill-core/scripts/test_json_reader.py::RefusalTests::test_nesting_one_level_past_the_shared_limit_is_refused_though_the_scanner_reads_it`,
   `skills/ejryan89-skill-core/scripts/test_json_reader.py::RefusalTests::test_a_scalar_is_no_level_so_one_at_the_limit_reads_as_an_empty_container_does`,
@@ -639,8 +646,10 @@ removed fails validation until its pattern follows it.
   table holds each parser of text by its own grammar's deep nesting
 - **Search for:** a function that calls itself on a child of its input with no depth parameter and no
   `except RecursionError`; `literal_eval(` or `ast.parse(` outside `python_reader.py`, whose handler would have to
-  name `MemoryError` and `RecursionError` beside `SyntaxError`; `json.loads(` outside `json_reader.py`.
-- **Examples:** #1613, #1617, #1729, #1886, #1893, #2170, #2190, #2390
+  name `MemoryError` and `RecursionError` beside `SyntaxError`; `json.loads(` outside `json_reader.py`; an
+  `except RecursionError` around `json.dumps(`, `pickle.dumps(`, `copy.deepcopy(`, `repr(`, or another call the
+  standard library runs in C, whose depth is judged first with `nesting_depth:nests_past` instead.
+- **Examples:** #1613, #1617, #1729, #1886, #1893, #2170, #2190, #2390, #2844
 
 ### A path taken from input is judged inside its tree before anything opens it
 
