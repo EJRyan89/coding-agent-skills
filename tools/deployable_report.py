@@ -160,13 +160,15 @@ def check_runtimes(
         where = platform_support.normalize(paths.adapter_dest_dir)
         raise DeployError(f"ERROR: No runtime adapters are deployed in {where}.", f"Deploy first with '{PROG}'.")
     results: list[RuntimeResult] = []
+    executables = {runtime: find(runtime) for runtime in discovery.RUNTIMES}
     # An empty working directory that is a git repository of its own, as verify's is, so no project skill, in it or
-    # in a folder above it, stands in for an adapter.
+    # in a folder above it, stands in for an adapter. With no runtime installed nothing lists from it, so git, which
+    # makes it one, is not needed then.
     workdir = Path(tempfile.mkdtemp(prefix="deployable-report-"))
     try:
-        verify.bound_working_directory(workdir, "the report")
-        for runtime in discovery.RUNTIMES:
-            executable = find(runtime)
+        if any(executables.values()):
+            verify.bound_working_directory(workdir, "the report")
+        for runtime, executable in executables.items():
             if executable is None:
                 results.append(RuntimeResult(runtime, FAILED, "not installed"))
                 continue

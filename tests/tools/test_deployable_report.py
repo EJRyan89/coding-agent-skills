@@ -243,6 +243,17 @@ class DeployableReportTests(unittest.TestCase):
         )
         self.assertEqual(1, raised.exception.exit_code)
 
+    def test_with_no_runtime_installed_the_working_directory_needs_no_git(self) -> None:
+        # Nothing lists from it then, so a machine whose search path holds no git still reaches the results file.
+        self.fake.installed = set()
+        with mock.patch.object(search_boundary, "bound_search", side_effect=AssertionError("ran git")) as bound:
+            results = self.check()
+        bound.assert_not_called()
+        self.assertEqual(
+            {"codex": (report.FAILED, "not installed"), "copilot": (report.FAILED, "not installed")},
+            {runtime: (result.status, result.detail) for runtime, result in results.items()},
+        )
+
     def test_a_missing_adapter_fails_that_runtime_and_names_it(self) -> None:
         self.fake.listed["copilot"] = ["alpha"]
         results = self.check()
