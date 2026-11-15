@@ -451,6 +451,23 @@ class RenderedRefusalStepTests(unittest.TestCase):
             raised.exception.lines,
         )
 
+    def test_a_powershell_parse_that_fails_printing_nothing_is_named_by_its_exit_code(self) -> None:
+        for output in ("", " \r\n\t\n"):
+            with (
+                tempfile.TemporaryDirectory() as temporary,
+                self.subTest(output=output),
+                mock.patch.object(platform_support, "run_tool", return_value=platform_support.ToolResult(3, output)),
+                self.assertRaises(DeployError) as raised,
+            ):
+                render._parse_powershell({"s/run.ps1": b"function Broken {\n"}, Path(temporary), "pwsh")
+            self.assertEqual(
+                (
+                    "ERROR: Rendered PowerShell syntax validation failed: pwsh exited with code 3 and printed nothing",
+                    render.RENDERED_CHECK_REMEDY,
+                ),
+                raised.exception.lines,
+            )
+
 
 class PowerShellExtensionTests(unittest.TestCase):
     def test_invalid_scripts_are_parsed_regardless_of_extension_case(self) -> None:

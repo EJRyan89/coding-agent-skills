@@ -15,7 +15,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
 import sdk_why
-from sdk_why import Completed, SdkPath, Services, parse_why, run_why, why_command
+from flat_text import REASON_CHARACTERS, reason_line
+from sdk_why import ANSI, Completed, SdkPath, Services, parse_why, run_why, why_command
 
 CYAN = "\x1b[38;5;14m"
 RESET = "\x1b[0m"
@@ -228,7 +229,28 @@ PARTIAL_TEXT = CORE_TEXT[: CORE_TEXT.index("  [net472]")]
 def test_a_run_that_exits_nonzero_after_printing_a_heading_is_a_failure_not_an_answer(text: str, code: int) -> None:
     runs = Runs({"Harbor.Core.csproj": Completed(code, text)})
     answer = run_why([Path("Harbor.Core.csproj")], "Lantern.Json", Services(run=runs), 30)
-    assert {
-        Path("Harbor.Core.csproj"): f"dotnet nuget why exited with code {code} after printing part of an answer"
-    } == answer.failures
+    stated = f"dotnet nuget why exited with code {code} after printing part of an answer, ending: "
+    [failure] = answer.failures.values()
+    assert failure.startswith(stated)
+    assert failure.removeprefix(stated) == reason_line(ANSI.sub("", text), end=True)
     assert ({}, set()) == (answer.paths, answer.answered)
+
+
+# The error lines a run prints after part of an answer, which name why it failed.
+ERROR_LINES = f"{CYAN}error: The operation was canceled.{RESET}\r\n  Unable to read the assets file.\r\n"
+
+
+def test_a_run_that_fails_after_part_of_an_answer_is_named_by_the_end_of_what_it_printed_on_one_line() -> None:
+    runs = Runs({"Harbor.Core.csproj": Completed(1, PARTIAL_TEXT + ERROR_LINES)})
+    answer = run_why([Path("Harbor.Core.csproj")], "Lantern.Json", Services(run=runs), 30)
+    [failure] = answer.failures.values()
+    assert failure.endswith("[net8.0] error: The operation was canceled. Unable to read the assets file.")
+    assert "\n" not in failure
+    assert "\x1b" not in failure
+    long = Runs({"Harbor.Core.csproj": Completed(1, PARTIAL_TEXT + "x" * 5000 + "\nerror: the end\n")})
+    answer = run_why([Path("Harbor.Core.csproj")], "Lantern.Json", Services(run=long), 30)
+    [failure] = answer.failures.values()
+    stated = "dotnet nuget why exited with code 1 after printing part of an answer, ending: ..."
+    assert failure.startswith(stated)
+    assert failure.endswith("xxx error: the end")
+    assert len(failure) == len(stated) + REASON_CHARACTERS

@@ -8,6 +8,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 import versions
+from flat_text import reason_line
 from pdf_tool import (
     MINIMUMS,
     PdfIdentity,
@@ -247,8 +248,13 @@ def probe(tool: Tool) -> Probe:
     result = platform_support.run_tool([path, *tool.version_arguments])
     version = parse_version(result.output) if result.returncode == 0 else None
     if version is None and tool.minimum:
-        # A version that cannot be read is no evidence the floor is met, so the probe refuses it as pdf_tool's does.
-        found = f"failed with exit status {result.returncode}" if result.returncode != 0 else "printed no version"
+        # A version that cannot be read is no evidence the floor is met, so the probe refuses it as pdf_tool's does,
+        # naming what the tool printed, on one line, or, when it printed nothing, its exit status alone.
+        printed = reason_line(result.output)
+        if result.returncode != 0:
+            found = f"failed with exit status {result.returncode}" + (f": {printed}" if printed else "")
+        else:
+            found = f"printed no version, only: {printed}" if printed else "printed no version"
         refusal = f"version probe {found}; needs {format_version(tool.minimum)} or newer"
         return Probe(tool, path, None, refusal=refusal)
     return Probe(tool, path, version)

@@ -16,7 +16,7 @@ from pathlib import Path
 
 import file_presence
 import private_folder
-from flat_text import flat_text
+from flat_text import flat_text, reason_line
 from git_client import GitClient, GitError, GitResult
 from release_tags import TAGS, releases_naming
 
@@ -243,8 +243,10 @@ def export(source_dir: Path, commit: str) -> Path:
         archive = root / "tree.tar"
         result = _git(source_dir, "archive", "--format=tar", f"--output={archive}", commit)
         if result.returncode != 0:
+            # git's reason on one line, or, when git printed none, as when it is killed, its exit code.
+            reason = reason_line(result.output) or f"exit code {result.returncode}"
             raise DeployError(
-                f"ERROR: git archive could not export {commit}: {flat_text(result.output)}",
+                f"ERROR: git archive could not export {commit}: {reason}",
                 "Put right what Git reports in the checkout, then retry.",
                 see_recovery(EARLIER_COMMIT),
             )

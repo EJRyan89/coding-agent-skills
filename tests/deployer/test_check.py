@@ -842,8 +842,14 @@ class CheckCommandTests(DeployerTestCase):
             version = tools.format_version(tools.parse_version(INSTALLED[name][1]) or ())
             self.assertTrue(any(line.startswith(f"{label} {version} (used by ") for line in usable), (name, usable))
             for machine, failure in (
-                (Machine(statuses={name: 1}), "failed with exit status 1"),
-                (Machine(versions={name: "no version here\n"}), "printed no version"),
+                (Machine(statuses={name: 1}, versions={name: ""}), "failed with exit status 1"),
+                (Machine(statuses={name: 1}, versions={name: " \r\n"}), "failed with exit status 1"),
+                (
+                    Machine(statuses={name: 2}, versions={name: "error: no such option\r\n  usage: tool\n"}),
+                    "failed with exit status 2: error: no such option usage: tool",
+                ),
+                (Machine(versions={name: ""}), "printed no version"),
+                (Machine(versions={name: "no version\n  here\n"}), "printed no version, only: no version here"),
             ):
                 with self.subTest(tool=name, failure=failure):
                     result = self.check(machine)

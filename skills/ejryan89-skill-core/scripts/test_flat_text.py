@@ -10,7 +10,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from flat_text import fact_line, flat_text, single_line
+from flat_text import REASON_CHARACTERS, fact_line, flat_text, reason_line, single_line
 
 
 def code_points(text: str) -> str:
@@ -25,6 +25,22 @@ class FlatTextTests(unittest.TestCase):
     def test_other_characters_are_kept(self) -> None:
         self.assertEqual('$x "q" `b` \u00e9 \u00a1 \ufffd', flat_text('$x "q" `b` \u00e9 \u00a1 \ufffd'))
         self.assertEqual("", flat_text(" \n\t\x1b "))
+
+
+class ReasonLineTests(unittest.TestCase):
+    def test_a_command_s_lines_are_one_line_and_nothing_printed_is_no_reason(self) -> None:
+        self.assertEqual("error: one two", reason_line("error: one\r\n\x1b  two\n"))
+        self.assertEqual("", reason_line(" \r\n\t\n"))
+
+    def test_a_long_reason_keeps_its_start_or_with_end_its_end_and_marks_the_cut(self) -> None:
+        text = "first " + "x" * 2000 + " last"
+        start, finish = reason_line(text), reason_line(text, end=True)
+        self.assertEqual(("first xxx", "..."), (start[:9], start[-3:]))
+        self.assertEqual(("...", "x last"), (finish[:3], finish[-6:]))
+        self.assertEqual(REASON_CHARACTERS + 3, len(start))
+        self.assertEqual(REASON_CHARACTERS + 3, len(finish))
+        exact = "y" * REASON_CHARACTERS
+        self.assertEqual((exact, exact), (reason_line(exact), reason_line(exact, end=True)))
 
 
 class SingleLineTests(unittest.TestCase):

@@ -554,7 +554,11 @@ def _parse_powershell(files: dict[str, bytes], workspace: Path, powershell: str)
     )
     if result.returncode != 0:
         lines = result.output.strip().splitlines()
-        failed = origins.get(lines[0].strip(), lines[0].strip()) if lines else "(unknown file)"
+        # A pwsh that names no file, having printed nothing, is named by its exit code.
+        if lines:
+            failed = origins.get(lines[0].strip(), lines[0].strip())
+        else:
+            failed = f"pwsh exited with code {result.returncode} and printed nothing"
         raise DeployError(
             f"ERROR: Rendered PowerShell syntax validation failed: {failed}", *lines[1:], RENDERED_CHECK_REMEDY
         )

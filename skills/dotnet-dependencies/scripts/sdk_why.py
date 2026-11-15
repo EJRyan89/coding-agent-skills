@@ -27,6 +27,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-cor
 
 from bounded_process import non_interactive_environment, run_bounded
 from executable_locator import find_program, located_command
+from flat_text import reason_line
 from ordinal_case import ordinal_fold
 
 ANSI = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
@@ -169,9 +170,10 @@ def run_why(projects: Sequence[Path], package: str, services: Services, timeout:
         if result.timed_out:
             answer.failures[project] = f"dotnet nuget why did not finish within {timeout:g} seconds"
         elif part.answered and result.returncode != 0:
-            answer.failures[project] = (
-                f"dotnet nuget why exited with code {result.returncode} after printing part of an answer"
-            )
+            # The CLI states an error after the part it printed, so the end of the output is the reason it gave.
+            ending = reason_line(ANSI.sub("", result.text), end=True)
+            stated = f"dotnet nuget why exited with code {result.returncode} after printing part of an answer"
+            answer.failures[project] = f"{stated}, ending: {ending}" if ending else stated
         elif NO_ASSETS in result.text and not part.answered:
             answer.failures[project] = "dotnet nuget why answered nothing (no restored assets file)"
         elif not part.answered:

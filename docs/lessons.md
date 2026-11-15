@@ -182,8 +182,9 @@ removed fails validation until its pattern follows it.
   `path_containment:resolved_path`, which follows a path taken from input or the environment as Python 3.13's path
   resolution does, leaving a symbolic link loop to the caller's own refusal where Python 3.12's raises
   RuntimeError, and `path_containment:strictly_resolved_path`, its strict counterpart, which raises OSError on a loop
-  on every version; an entry point states its codes in its docstring's exit table, in the form "Script results" in the
-  skill contract settles.
+  on every version; `flat_text:reason_line`, what a failed command printed as its reason on one bounded line, or ""
+  so the caller names the exit code; an entry point states its codes in its docstring's exit table, in the form
+  "Script results" in the skill contract settles.
 - **Guard:** `tests/malformed_input/test_malformed_input.py::test_failure_names_a_write_before_a_refusal_an_escape_and_an_undocumented_acceptance`,
   `tests/validation/python_checks.py::PythonChecksPolicies::test_path_containment_is_the_one_resolution_of_a_path`,
   `tests/validation/skill_grants.py::SkillGrantsPolicies::test_skill_markdown_names_every_status_line_its_scripts_print`,
@@ -210,7 +211,15 @@ removed fails validation until its pattern follows it.
   `skills/dotnet-format/scripts/test_csharp_layout.py::ConfigTests::test_a_failed_evaluation_is_named_by_msbuild_s_error_lines_on_one_bounded_line_or_its_exit_code`,
   `tests/tools/test_mutation_gate.py::CoverageReachFixtures::test_a_suite_failed_unmutated_is_named_by_the_end_of_pytest_s_output_or_its_exit_code`,
   `skills/audit-skill/scripts/test_skill_inventory.py::SubagentSettingTests::test_a_doc_that_is_not_utf8_text_fails_tools_whether_the_skill_or_a_dependency_holds_it`,
-  `tests/tools/test_worktrees.py::NewWorktreeTests::test_a_check_ignore_that_fails_is_named_by_git_s_reason_never_as_an_unignored_folder`
+  `tests/tools/test_worktrees.py::NewWorktreeTests::test_a_check_ignore_that_fails_is_named_by_git_s_reason_never_as_an_unignored_folder`,
+  `skills/repo-cleanup/scripts/test_pr_status.py::BranchTipListingTests::test_a_listing_that_failed_or_holds_no_nul_is_named_by_git_s_reason_on_one_line_or_its_exit_code`,
+  `skills/repo-cleanup/scripts/test_pr_status.py::PatchMatchTests::test_a_diff_that_fails_is_named_by_git_s_reason_on_one_line_or_its_exit_code`,
+  `skills/audit-ai-config/scripts/test_audit_ai_config.py::UnexaminedPathTests::test_an_unreadable_artifact_is_named_by_its_error_on_one_line_or_by_its_kind_when_the_error_says_nothing`,
+  `skills/ejryan89-skill-core/scripts/test_powershell_commands.py::test_a_pwsh_that_lists_no_commands_is_named_by_its_errors_on_one_line_or_its_exit_code`,
+  `tests/deployer/test_check.py::CheckCommandTests::test_a_floored_tool_whose_version_cannot_be_read_is_unusable_never_found`,
+  `skills/dotnet-dependencies/scripts/test_sdk_why.py::test_a_run_that_fails_after_part_of_an_answer_is_named_by_the_end_of_what_it_printed_on_one_line`,
+  `tests/deployer/test_deploy_at.py::DeployAtTests::test_an_export_git_fails_is_named_by_git_s_reason_on_one_line_or_by_its_exit_code`,
+  `tests/deployer/test_render_contexts.py::RenderedRefusalStepTests::test_a_powershell_parse_that_fails_printing_nothing_is_named_by_its_exit_code`
 - **Search for:** `rg -nU "except (OSError|ValueError|UnicodeDecodeError)[^\n]*:\n\s+(print\([^\n]*\)\n\s+)?return 1\b"`,
   a handler that ends every failure in one code; two probes under one `except` that print one message; an `except`
   around a `git` or `gh` call that drops the exception's text; `FAILED KeyError`, `FAILED TypeError`, or

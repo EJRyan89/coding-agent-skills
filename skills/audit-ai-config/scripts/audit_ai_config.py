@@ -700,6 +700,10 @@ def _inventory_unreadable(root: Path, paths: list[Path], *, read: bool = True) -
 
 
 UNREAD = "Could not read, so the checks that read it did not run: "
+# The start of the parity ERROR for a generated artifact that is there but cannot be read, before the reason.
+UNREADABLE_ARTIFACT = "Generated artifact exists but could not be read: "
+# The start of the authority WARNING for a manifest that is there but cannot be read or parsed, before the reason.
+MALFORMED_MANIFEST = "Manifest exists but is malformed: "
 
 
 def _unreadable_finding(root: Path, path: Path, error: Exception | str) -> Finding:
@@ -1886,9 +1890,11 @@ def _manifest_signal(root: Path) -> tuple[str | None, dict[str, Any], list[Findi
         if not is_present(manifest_path):
             return None, {}, []
         return _judge_manifest(root, json_reader.loads(read_text(root, manifest_path)))
-    # ValueError covers the decode errors, UnicodeError, an over-long integer, and nesting json_reader refuses
-    except (KeyError, OSError, ValueError):
-        return None, {}, [_manifest_authority_finding("WARNING", "Manifest exists but is malformed")]
+    # ValueError covers the decode errors, UnicodeError, an over-long integer, and nesting json_reader refuses; the
+    # error's own text, on one line, tells them, a denied read, and a folder in the manifest's place apart.
+    except (KeyError, OSError, ValueError) as error:
+        reason = flat_text(str(error)) or type(error).__name__
+        return None, {}, [_manifest_authority_finding("WARNING", f"{MALFORMED_MANIFEST}{reason}")]
 
 
 def _judge_manifest(root: Path, data: Any) -> tuple[str | None, dict[str, Any], list[Finding]]:
@@ -2136,14 +2142,17 @@ def _expected_skill_shim(
 
 
 def _read_artifact(root: Path, path_str: str) -> tuple[str | None, str | None]:
-    """Return (content, None) for a readable artifact, or (None, why it cannot be compared)."""
+    """Return (content, None) for a readable artifact, or (None, why it cannot be compared): one that is there but
+    cannot be read is named with the error's own text on one line, so a decode failure, a denied read, and a folder
+    in the file's place are told apart."""
     full_path = root / path_str
     try:
         if not is_present(full_path):
             return None, f"Generated artifact missing: {path_str}"
         return read_text(root, full_path), None
-    except (OSError, UnicodeError):
-        return None, "Generated artifact exists but could not be read"
+    except (OSError, UnicodeError) as error:
+        reason = flat_text(str(error)) or type(error).__name__
+        return None, f"{UNREADABLE_ARTIFACT}{reason}"
 
 
 def _hash_problem(content: str, stored_hash: Any) -> str | None:

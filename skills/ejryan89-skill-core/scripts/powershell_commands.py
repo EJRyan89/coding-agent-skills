@@ -19,8 +19,9 @@ from typing import Any
 import json_reader
 import json_writer
 import private_folder
-from bounded_process import non_interactive_environment, run_bounded
+from bounded_process import Finished, non_interactive_environment, run_bounded
 from executable_locator import find_executable, program_name
+from flat_text import reason_line
 
 # The environment variable naming the JSON file that holds the sources COMMANDS_RUN reads.
 SOURCES_VARIABLE = "COMMAND_SOURCES"
@@ -221,10 +222,25 @@ class PowerShellUnread(Exception):
     """pwsh could not be found or could not list the commands of the sources it was given."""
 
 
+def unlisted_reason(finished: Finished, lines: Sequence[str]) -> str:
+    """Why a COMMANDS_RUN that printed no list of commands failed, on one line: after a nonzero exit, what pwsh
+    printed to stderr, where its errors go, or its exit code when it printed none; after an exit of 0, what its last
+    line held, then anything it printed to stderr."""
+    errors = reason_line(finished.stderr.decode("utf-8", "replace"))
+    if finished.returncode != 0:
+        return errors or f"exit code {finished.returncode}"
+    if lines:
+        found = f"it exited 0 and its last line is not a list of commands: {reason_line(lines[-1])}"
+    else:
+        found = "it exited 0 and printed nothing"
+    return f"{found}; its stderr: {errors}" if errors else found
+
+
 def read(sources: Sequence[str], timeout: float = READ_SECONDS) -> list[list[list[str]]]:
     """The words of each external command each PowerShell source runs, as command_words gives them, read by pwsh's
     parser in one call for them all. Raises PowerShellUnread when pwsh is not found, does not finish within `timeout`
-    seconds, exits with a status other than 0, or prints no list of commands."""
+    seconds, exits with a status other than 0, or prints no list of commands, naming the reason pwsh printed on one
+    line, or its exit code when it printed none."""
     if not sources:
         return []
     program = find_executable("pwsh")
@@ -258,7 +274,7 @@ def read(sources: Sequence[str], timeout: float = READ_SECONDS) -> list[list[lis
     except json_reader.CONTENT_ERRORS:
         found = None
     if not isinstance(found, list):
-        raise PowerShellUnread(f"pwsh could not list the commands (exit code {finished.returncode})")
+        raise PowerShellUnread(f"pwsh could not list the commands: {unlisted_reason(finished, lines)}")
     commands: list[list[list[str]]] = [[] for _ in sources]
     for item in found:
         if (words := command_words(item)) is not None:
