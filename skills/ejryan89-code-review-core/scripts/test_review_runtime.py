@@ -1690,6 +1690,10 @@ class CommittedReadTests(unittest.TestCase):
                 f"The checkout did not return the size of blob {blob}: fatal: bad object fatal: the store is damaged",
             ),
             (
+                {("cat-file", "-s"): GitResult(128, "", "")},
+                f"The checkout did not return the size of blob {blob}: git cat-file failed with exit code 128",
+            ),
+            (
                 {("cat-file", "blob"): GitResult(128, "", "fatal: unable to read blob\n")},
                 f"The checkout did not return blob {blob}: fatal: unable to read blob",
             ),
@@ -1711,14 +1715,18 @@ class CommittedReadTests(unittest.TestCase):
         content = b"{}\n"
         trusted = self.commit({".review/manifest.json": content})
         blob = git_blob_id(content)
-        runner = self.failing({("cat-file", "blob"): GitResult(128, "", "fatal: unable to read blob\n")})
-        with self.assertRaises(RuntimeContractError) as raised:
-            review_runtime._read_git_file(self.checkout, trusted, ".review/manifest.json", runner)
-        self.assertEqual(
-            "Cannot read declared reviewer file: .review/manifest.json: The checkout did not return blob "
-            f"{blob}: fatal: unable to read blob",
-            str(raised.exception),
-        )
+        for failed, reason in (
+            (GitResult(128, "", "fatal: unable to read blob\n"), "fatal: unable to read blob"),
+            (GitResult(128, "", ""), "git cat-file failed with exit code 128"),
+        ):
+            runner = self.failing({("cat-file", "blob"): failed})
+            with self.subTest(reason), self.assertRaises(RuntimeContractError) as raised:
+                review_runtime._read_git_file(self.checkout, trusted, ".review/manifest.json", runner)
+            self.assertEqual(
+                "Cannot read declared reviewer file: .review/manifest.json: The checkout did not return blob "
+                f"{blob}: {reason}",
+                str(raised.exception),
+            )
         answers: tuple[tuple[list[bytes], str], ...] = (
             ([], f"the checkout returned no blob {blob}"),
             ([b"[]\n"], f"the checkout returned content that does not hash to blob {blob}"),

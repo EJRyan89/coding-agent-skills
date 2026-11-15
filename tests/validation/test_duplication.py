@@ -556,6 +556,10 @@ class SharedFactPolicy(unittest.TestCase):
             ('import re\n\nFENCE = re.compile(r"^[`~]{3,}")\n', 3),
             ('import re\n\n\ndef body(text):\n    return re.sub(r"```[a-z]*\\n", "", text)\n', 5),
             ('import re\n\n\ndef blocks(text):\n    return re.split(r"^~~~$", text)\n', 5),
+            # Each other function that takes a pattern first.
+            ('import re\n\n\ndef fenced(line):\n    return re.match(r"```", line)\n', 5),
+            ('import re\n\n\ndef fenced(line):\n    return re.fullmatch(r"~~~+", line)\n', 5),
+            ('import re\n\n\ndef runs(text):\n    return re.findall(r"^`{3,}", text)\n', 5),
             # An re imported under another name, or its function imported alone.
             ('import re as regex\n\n\ndef blocks(text):\n    return regex.finditer(r"```", text)\n', 5),
             ('from re import subn\n\n\ndef strip(text):\n    return subn(r"~{3,}", "", text)\n', 5),
@@ -582,6 +586,7 @@ class SharedFactPolicy(unittest.TestCase):
             'FENCE = "```"\n\n\ndef render(text):\n    return f"{FENCE}text\\n{text}\\n{FENCE}"\n',
             'HEADING = "#"\n\n\ndef heading(line):\n    return line.startswith(HEADING) or line == "~~"\n',
             'import re\n\nWORDS = re.compile(r"[a-z~]+")\n',
+            'import re\n\nCODES = re.compile(r"[XYZ]{3}")\n',
         ):
             with self.subTest(passing=passing):
                 self.assertEqual([], self.problems({guidance: passing}))

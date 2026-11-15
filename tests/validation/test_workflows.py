@@ -1090,6 +1090,11 @@ class CodexSettingsFixtures(unittest.TestCase):
             (CODEX_SETTINGS_WORKFLOW.replace("prefer_mxc = true", "prefer_mxc ="), CODEX_GUIDE, "are not TOML"),
             (CODEX_SETTINGS_WORKFLOW, CODEX_GUIDE.replace("For MXC with", "For"), "docs/codex-support.md has no"),
             (CODEX_SETTINGS_WORKFLOW, CODEX_GUIDE.replace("```toml", "```text"), "docs/codex-support.md has no"),
+            (
+                CODEX_SETTINGS_WORKFLOW,
+                CODEX_GUIDE.replace("config.toml`:\n\n```toml", "config.toml`:\nmore prose\n```toml"),
+                "docs/codex-support.md has no",
+            ),
         ):
             with self.subTest(problem=problem, workflow=workflow, guide=guide):
                 problems = codex_settings_problems(workflow, guide)

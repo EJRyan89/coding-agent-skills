@@ -1463,14 +1463,22 @@ class AnalyzerTests(InsightFixture):
         )
         self.assertEqual(before, json_path.read_bytes(), "nothing is decided")
         self.assertEqual("open", {flag["id"]: flag["status"] for flag in load_store(self.flags)["flags"]}[first])
-        for rules in ("", f"{current},REC-999"):
+        for rules, named in (("", "none"), (f"REC-999,{current}", f"{current},REC-999")):
             with self.subTest(rules=rules):
                 self.assertFailed(
                     self.run_main(
                         "decide-custom", "--report", str(json_path), "--rules", rules, "--flags", first, "accepted"
                     ),
-                    f"The custom-candidate recommendations are now {current}, not",
+                    f"The custom-candidate recommendations are now {current}, not {named}; run report again and "
+                    "confirm the decision with the user",
                 )
+        # A command without the rules, as one written before they were printed, is refused before the report is read.
+        err = io.StringIO()
+        arguments = ["--config", str(self.config_path), "decide-custom", "--report", str(json_path), "--flags", first]
+        with contextlib.redirect_stderr(err), self.assertRaises(SystemExit) as exited:
+            ri.main([*arguments, "accepted"], services=self.services)
+        self.assertEqual(2, exited.exception.code)
+        self.assertIn("the following arguments are required: --rules", err.getvalue())
         self.assertEqual(before, json_path.read_bytes(), "nothing is decided")
 
     def test_analyzer_decisions_name_the_rule_and_survive_regeneration(self) -> None:

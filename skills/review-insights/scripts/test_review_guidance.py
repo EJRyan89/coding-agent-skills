@@ -143,6 +143,11 @@ class RuleTests(unittest.TestCase):
         ):
             with self.subTest(text=text):
                 self.assertEqual([(line, outside)], [(rule.line, rule.text) for rule in rg.rules("guide.md", text)])
+        # A heading and a table row are no statement, however many words they hold.
+        text = (
+            f"# Keep every public method documented with examples\n| Keep every row short and readable |\n{outside}\n"
+        )
+        self.assertEqual([(3, outside)], [(rule.line, rule.text) for rule in rg.rules("guide.md", text)])
 
     def test_a_link_destination_is_read_as_commonmark_reads_one(self) -> None:
         self.assertEqual(["docs/x.md"], rg.LINK.findall("see [x]( docs/x.md#part\t)"))
