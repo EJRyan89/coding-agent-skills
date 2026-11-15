@@ -723,7 +723,9 @@ refuses:
   an indirection, Bash 5.3's `${ command; }`, a command name the text does not settle, a runner whose command is or
   may be git, one `RUNNERS_ALWAYS_REFUSED` names, and an option of a runner or of a program `PROGRAM_OPTIONS` names
   that its allow-list does not know to be safe, a word the text does not settle given to a program
-  `READ_ONLY_PROGRAMS` does not name and no table reads, and a word of one that names git or a runner, a multicall
+  `READ_ONLY_PROGRAMS` does not name and no table reads, a relative word of one in a directory the text does not
+  settle, as after `cd "$(git rev-parse --show-toplevel)"`, which the guard does not settle as the top level of the
+  directory it judges in, and a word of one that names git or a runner, a multicall
   program whose utility the text does not settle, a redirection to a target the text does not settle, a file a
   program or a cmdlet that writes is given where the text does not settle it, or that it takes from its input, a link
   a command makes, an
