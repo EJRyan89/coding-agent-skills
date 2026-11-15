@@ -596,6 +596,7 @@ class SharedFactPolicy(unittest.TestCase):
             ),
             ('MARKER = "`"\n\n\ndef fenced(line):\n    return line.lstrip(MARKER) != line\n', 5),
             ('def run(line):\n    return len(line) - len(line.lstrip("~"))\n', 2),
+            ('def run(line):\n    return len(line.lstrip("`")) - len(line)\n', 2),
             ('def fenced(line):\n    return line.strip() == line.strip().strip("`")\n', 2),
         ):
             with self.subTest(reader=reader):
@@ -628,6 +629,12 @@ class SharedFactPolicy(unittest.TestCase):
             'def fenced(line):\n    return str.find(line, "```") == 0\n',
             'def fenced(line):\n    return str.startswith(line, "```")\n',
             'def fenced(line):\n    match line[:3]:\n        case "```":\n            return True\n    return False\n',
+            # Stated limits: a strip bound to a name first, its length compared, or its result tested for emptiness.
+            'def run(line):\n    stripped = line.lstrip("`")\n    return len(line) - len(stripped)\n',
+            'def fenced(line):\n    return (stripped := line.lstrip("~")) != line and bool(stripped)\n',
+            'def fenced(line):\n    return len(line.lstrip("`")) < len(line)\n',
+            'def fenced(line):\n    return line.strip().strip("`") == ""\n',
+            'def fenced(line):\n    return not line.strip().strip("~")\n',
             'MARKER = "`"\n\n\ndef quoted(name):\n    return name.startswith(MARKER)\n',
         ):
             with self.subTest(passing=passing):

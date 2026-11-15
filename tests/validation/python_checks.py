@@ -848,8 +848,9 @@ def link_test_problems(root: Path, files: list[Path]) -> list[str]:
 # statement that enters it in a loop's else or in a try's handler or finally; a message nested in a call that builds a
 # value, assigned or returned, which reads as that value, a method of any receiver whose name is a built-in's, a str
 # method's, or a path's among them, as `parser.exit(2, msg)`, and the built-ins that record, `exit`, `quit`, and
-# `input`, assigned or returned; a yield in a compound statement's test, as `if (yield msg):`; a `case None:`, read as
-# taking every false answer, as it takes a search that found nothing, though it never matches a False; and a match on
+# `input`, assigned or returned; a yield in an `assert` or in a compound statement's test, as `if (yield msg):` or
+# `assert (yield msg)`; a `case None:`, read as taking every false answer, as it takes a search that found nothing,
+# though it never matches a False; and a match on
 # a tuple holding a starred item, on a name bound to a tuple more than once or at the module's top level, or a case
 # whose pattern is an `|` of sequence patterns, which reads no item's truth. The link tests are no presence
 # predicates here: LINK_TESTS refuses each outside link_probe however its answer is used, and link_probe lets a failed

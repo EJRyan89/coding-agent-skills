@@ -5578,6 +5578,11 @@ PRESENCE_HANDLED = {
         "from contextlib import ExitStack, suppress\n\n\ndef f(p):\n    with ExitStack() as stack:\n"
         "        while p.stat().st_size:\n            stack.enter_context(suppress(OSError))\n"
     ),
+    "a suppress of OSError beside an unbound enter_context given the stack alone": (
+        "import contextlib\n\n\ndef f(p):\n    with contextlib.ExitStack() as stack:\n"
+        "        contextlib.ExitStack.enter_context(stack)\n        with contextlib.suppress(OSError):\n"
+        "            return p.stat()\n"
+    ),
     "a suppress ExitStack.enter_context enters, called unbound": (
         "import contextlib\n\n\ndef f(p):\n    with contextlib.ExitStack() as stack:\n"
         "        contextlib.ExitStack.enter_context(stack, contextlib.suppress(OSError))\n        return p.stat()\n"
@@ -5964,6 +5969,9 @@ PRESENCE_REFUSAL_SHAPES = {
         "def f(p, report):\n    if not {call}:\n        return report(f'{{p}} is missing')\n    return 1\n"
     ),
     # A pattern of zero spelled signed, or as a class pattern of int or of bool reached through builtins.
+    "match P: case +0: raise": (
+        "def f(p):\n    match {call}:\n        case +0:\n            raise OSError(f'{{p}} is missing')\n    return 1\n"
+    ),
     "match P: case -0: raise": (
         "def f(p):\n    match {call}:\n        case -0:\n            raise OSError(f'{{p}} is missing')\n    return 1\n"
     ),

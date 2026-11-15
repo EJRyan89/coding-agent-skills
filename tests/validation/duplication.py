@@ -619,8 +619,11 @@ def _reads_fence_run(
     `cell.strip("`")`, reads none. Such a reader misses a fence a blockquote or a list item holds and takes any line
     that starts with a run, an info string's included, as the fence's close. Stated limits: a run built at runtime,
     such as from a marker by `*`, a run given by keyword, as `text.split(sep="```")`, or to a str method called
-    unbound, as `str.find(line, "```")`, and a run as a `case` pattern, as `case "```":` of `match line[:3]:`, are not
-    read."""
+    unbound, as `str.find(line, "```")`, a run as a `case` pattern, as `case "```":` of `match line[:3]:`, and a strip
+    bound to a name, by an assignment or an assignment expression, before it is measured or compared, as
+    `stripped = line.lstrip("`")` before `stripped != line`, one whose length is compared rather than subtracted, as
+    `len(line.lstrip("`")) < len(line)`, and one compared with an empty string or tested by `not`, as
+    `line.strip().strip("`") == ""`, are not read."""
     if isinstance(node, ast.Compare):
         operands = [node.left, *node.comparators]
         tests = any(isinstance(operator, RUN_TESTS) for operator in node.ops)
