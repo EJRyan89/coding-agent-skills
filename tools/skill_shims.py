@@ -39,6 +39,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "ejryan8
 import frontmatter
 from console import run_main
 from file_presence import is_directory, is_occupied, is_present
+from text_lines import text_lines
 
 from deployer.render import CODEX_METADATA, CODEX_USER_ONLY
 from tools.checkout import ROOT_HELP, checkout_root
@@ -86,7 +87,7 @@ def shim_text(name: str, skill_text: str) -> str | None:
     """The shim's SKILL.md for the repository skill whose SKILL.md is skill_text, or None when it has no closed
     frontmatter."""
     try:
-        found = frontmatter.split(skill_text.splitlines())
+        found = frontmatter.split(text_lines(skill_text))
     except frontmatter.FrontmatterError:
         return None
     if not found or not found[0]:

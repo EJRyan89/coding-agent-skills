@@ -1521,3 +1521,71 @@ def test_a_plugin_file_whose_source_a_stat_cannot_examine_is_named_so_never_as_o
     assert (
         "plugin suite: skills/alpha/scripts/tool.py has a source that cannot be examined: Permission denied" in problems
     )
+
+
+# The characters str.splitlines breaks a line at and text_lines, as YAML 1.2 and CommonMark, does not.
+TEXT_SEPARATORS = ("\x0b", "\x0c", "\x1c", "\x1d", "\x1e", "\x85", "\u2028", "\u2029")
+
+SEPARATOR = pytest.mark.parametrize("separator", TEXT_SEPARATORS, ids=lambda separator: f"U+{ord(separator):04X}")
+
+
+@SEPARATOR
+def test_an_embedded_program_is_a_fence_that_opens_where_commonmark_breaks_a_line(
+    separator: str, tmp_path: Path
+) -> None:
+    program = "".join(f"echo {number}\n" for number in range(6))
+    write_fixture_tree(tmp_path, {"skills/demo/SKILL.md": f"Intro{separator}```bash\n{program}"})
+    assert embedded_program_problems(tmp_path) == []
+
+
+@SEPARATOR
+def test_a_runtime_page_statement_is_read_from_the_lines_commonmark_breaks(separator: str, tmp_path: Path) -> None:
+    write_fixture_tree(
+        tmp_path,
+        {
+            "deploy-meta/fetcher.json": json.dumps(
+                {"runtime_support": {"claude-code": "full", "codex": "full", "copilot-cli": "full"}}
+            ),
+            "docs/copilot-support.md": f"Intro{separator}```\n\n`fetcher` is `partial` lacking `sandbox-network`.\n```\n",
+        },
+    )
+    assert runtime_page_problems(tmp_path) == [
+        "docs/copilot-support.md says fetcher is partial lacking sandbox-network on copilot-cli, but its "
+        'deploy-meta declares full; see "Metadata" in docs/adding-a-skill.md'
+    ]
+
+
+@SEPARATOR
+def test_a_skill_path_is_placed_on_the_line_commonmark_breaks(separator: str, tmp_path: Path) -> None:
+    write_fixture_tree(
+        tmp_path,
+        {"deploy-meta/alpha.json": "{}", "skills/alpha/SKILL.md": f"Intro{separator}Run `scripts/run.py`.\n"},
+    )
+    (tmp_path / "agents").mkdir()
+    assert skill_path_problems(tmp_path) == [
+        "skills/alpha/SKILL.md:1 names `scripts/run.py` by a bare relative path; see "
+        '"Paths to a skill\'s own files" in docs/adding-a-skill.md'
+    ]
+
+
+@SEPARATOR
+def test_an_output_placeholder_is_placed_on_the_line_commonmark_breaks(separator: str, tmp_path: Path) -> None:
+    write_fixture_tree(tmp_path, {"skills/demo/SKILL.md": f'```bash\necho{separator}tool --output "<file>"\n```\n'})
+    assert output_placeholder_problems(tmp_path) == [
+        f"skills/demo/SKILL.md:2 leaves --output to the agent; let the script choose and print the path; "
+        f"see {WORKING_FILES_DOC}"
+    ]
+
+
+@SEPARATOR
+def test_the_script_language_statement_is_one_line_as_commonmark_breaks_it(separator: str, tmp_path: Path) -> None:
+    python = platform_support.PYTHON
+    write_fixture_tree(
+        tmp_path,
+        {
+            SKILL_GUIDE: "A skill's executable files are Bash, Python, and PowerShell: `.bash`, `.sh`, `.py`, and "
+            f"`.ps1` files.{separator}JavaScript and TypeScript are not: `.js`, `.mjs`, `.cjs`, `.ts`, `.psm1`, "
+            "`.cmd`, and `.bat` files are rejected.\n"
+        },
+    )
+    assert script_language_problems(tmp_path, {"bash", python, "pwsh"}) == []

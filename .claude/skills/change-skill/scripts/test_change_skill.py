@@ -621,3 +621,28 @@ def unlistable(folder: Path) -> Iterator[None]:
         for name in ("scandir", "listdir"):
             stack.enter_context(mock.patch.object(os, name, refusing(getattr(os, name))))
         yield
+
+
+# The characters str.splitlines breaks a line at and text_lines, as YAML 1.2 and CommonMark, does not.
+TEXT_SEPARATORS = ("\x0b", "\x0c", "\x1c", "\x1d", "\x1e", "\x85", "\u2028", "\u2029")
+# The characters of them YAML forbids in a stream, which the frontmatter reader refuses.
+YAML_FORBIDDEN = ("\x0b", "\x0c", "\x1c", "\x1d", "\x1e")
+
+
+@pytest.mark.parametrize("separator", TEXT_SEPARATORS)
+def test_a_section_runs_on_past_a_separator_commonmark_does_not_break_at(separator: str, tmp_path: Path) -> None:
+    write(tmp_path, {"docs/adding-a-skill.md": f"## Files\n\nFirst{separator}## Validation\n"})
+    output = io.StringIO()
+    with contextlib.redirect_stdout(output):
+        assert change_skill.main(["section", "Files"], root=tmp_path) == 0
+    assert output.getvalue() == f'SECTION "docs/adding-a-skill.md" 1-3 ## Files\n\nFirst{separator}## Validation\n'
+
+
+@pytest.mark.parametrize("separator", TEXT_SEPARATORS)
+def test_frontmatter_lines_break_only_where_yaml_breaks_one(separator: str) -> None:
+    text = f"---\nname: a{separator}description: b\n---\nBody.\n"
+    assert change_skill.frontmatter_block(text) == [f"name: a{separator}description: b"]
+    # The --- after the separator is text, so the frontmatter is not closed and every line is its block.
+    assert change_skill.frontmatter_block(f"---\nname: a{separator}---\n") == ["---", f"name: a{separator}---"]
+    expected = change_skill.UNREADABLE if separator in YAML_FORBIDDEN else None
+    assert change_skill.frontmatter_value(text, "description") is expected

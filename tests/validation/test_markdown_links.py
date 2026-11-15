@@ -23,6 +23,7 @@ from markdown_links import (
     THREAT_MODEL_SUITES,
     TRUST_MODEL_DOC,
     cited_test_problems,
+    heading_slugs,
     lessons_ledger_problems,
     markdown_link_problems,
     threat_model_test_problems,
@@ -578,3 +579,14 @@ class LinkDestinationStatTests(unittest.TestCase):
                 with self.assertRaises(PermissionError) as raised:
                     markdown_links.markdown_link_problems(root)
             self.assertEqual(str(target), raised.exception.filename)
+
+
+# The characters str.splitlines breaks a line at and text_lines, as YAML 1.2 and CommonMark, does not.
+TEXT_SEPARATORS = ("\x0b", "\x0c", "\x1c", "\x1d", "\x1e", "\x85", "\u2028", "\u2029")
+
+
+class SeparatorTests(unittest.TestCase):
+    def test_a_heading_starts_only_a_line_commonmark_breaks(self) -> None:
+        for separator in TEXT_SEPARATORS:
+            with self.subTest(separator=f"U+{ord(separator):04X}"):
+                self.assertEqual({"title-other"}, heading_slugs(f"# Title{separator}# Other\n"))

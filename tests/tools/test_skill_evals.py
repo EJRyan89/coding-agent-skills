@@ -2456,6 +2456,17 @@ class RunPieceTests(unittest.TestCase):
     def test_a_missing_reviewer_agent_is_a_reason(self) -> None:
         self.assertIn("has no frontmatter line", skill_evals_runs.set_reviewer_model(self.root, "haiku") or "")
 
+    def test_the_agent_prompt_breaks_only_where_markdown_breaks_a_line(self) -> None:
+        fake_deploy(self.root, self.root)
+        self.assertIsNone(skill_evals_runs.set_reviewer_model(self.root, "haiku"))
+        agent = self.root / skill_evals_runs.REVIEWER_AGENT
+        original = agent.read_bytes()
+        for separator in ("\x0b", "\x0c", "\x1c", "\x1d", "\x1e", "\x85", "\u2028", "\u2029"):
+            with self.subTest(separator=f"U+{ord(separator):04X}"):
+                agent.write_bytes(original + f"Tail{separator}end.\n".encode())
+                prompt = skill_evals_runs.reviewer_agents(self.root)["code-review-reviewer"]["prompt"]
+                self.assertTrue(prompt.endswith(f"\nTail{separator}end."), prompt[-40:])
+
     def test_the_session_gets_the_deployed_agent_with_its_hook_on_the_homes_guard(self) -> None:
         fake_deploy(self.root, self.root)
         self.assertIsNone(skill_evals_runs.set_reviewer_model(self.root, "haiku"))
