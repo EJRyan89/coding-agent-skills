@@ -363,7 +363,9 @@ def test_pwsh_that_prints_no_list_is_refused(monkeypatch: pytest.MonkeyPatch) ->
     with pytest.raises(powershell_commands.PowerShellUnread, match="exit code 3"):
         powershell_commands.read(["git push"])
     monkeypatch.setattr(powershell_commands, "COMMANDS_RUN", "[Console]::Out.WriteLine('{}')")
-    with pytest.raises(powershell_commands.PowerShellUnread, match="exit code 0"):
+    with pytest.raises(
+        powershell_commands.PowerShellUnread, match=r"it exited 0 and its last line is not a list of commands: \{\}$"
+    ):
         powershell_commands.read(["git push"])
 
 

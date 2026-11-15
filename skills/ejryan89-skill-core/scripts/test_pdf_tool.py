@@ -107,6 +107,25 @@ class PdfPolicyTests(unittest.TestCase):
                 stream.return_value.__enter__.return_value = running
                 pdf_tool.probe_pdftotext("checked path")
 
+    def test_a_probe_that_fails_is_named_by_its_status_before_its_output_is_decoded_or_read_as_a_banner(self) -> None:
+        # A loader's error, output that is not UTF-8, or nothing at all, each after a status no provider prints its
+        # banner with; the refusal names the status and, content-free, none of the output.
+        for output, status in ((b"error while loading shared libraries: libpoppler.so\n", 127), (b"\xff", 2), (b"", 1)):
+            running = mock.Mock()
+            running.read.return_value = output
+            running.wait.return_value = status
+            with (
+                self.subTest(status=status),
+                mock.patch.object(pdf_tool, "streaming") as stream,
+                self.assertRaises(pdf_tool.PdfToolRefused) as raised,
+            ):
+                stream.return_value.__enter__.return_value = running
+                pdf_tool.probe_pdftotext("checked path")
+            self.assertEqual(f"version probe failed with exit status {status}", str(raised.exception))
+        with self.assertRaises(pdf_tool.PdfToolRefused) as raised:
+            pdf_tool.parse_banner("error while loading shared libraries\n", 127)
+        self.assertEqual("version probe failed with exit status 127", str(raised.exception))
+
 
 # Where Git for Windows keeps the Xpdf it bundles, which Git Bash's login profile puts ahead of the Windows PATH.
 GIT_BUNDLED = r"C:\Program Files\Git\mingw64\bin\pdftotext.exe"
