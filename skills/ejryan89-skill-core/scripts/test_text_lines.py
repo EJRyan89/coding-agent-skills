@@ -29,9 +29,17 @@ class TextLinesTests(unittest.TestCase):
     def test_a_lone_cr_before_lf_is_one_break(self) -> None:
         self.assertEqual(["a", "", "b"], text_lines("a\r\r\nb"))
 
+    def test_keepends_keeps_each_break_with_its_line(self) -> None:
+        self.assertEqual(["a\r\n", "b\r", "c\n", "d"], text_lines("a\r\nb\rc\nd", keepends=True))
+        self.assertEqual(["a\r", "\r\n", "b"], text_lines("a\r\r\nb", keepends=True))
+        self.assertEqual(["a\n", "\n"], text_lines("a\n\n", keepends=True))
+        self.assertEqual(["\n"], text_lines("\n", keepends=True))
+        self.assertEqual([], text_lines("", keepends=True))
+
 
 @pytest.mark.parametrize("character", KEPT, ids=[f"U+{ord(character):04X}" for character in KEPT])
 def test_every_other_character_splitlines_breaks_at_is_kept_in_its_line(character: str) -> None:
     text = f"description: a{character}disable-model-invocation: true\nname: x"
     assert len(text.splitlines()) == 3  # the premise: str.splitlines breaks here
     assert text_lines(text) == [f"description: a{character}disable-model-invocation: true", "name: x"]
+    assert text_lines(text, keepends=True) == [f"description: a{character}disable-model-invocation: true\n", "name: x"]

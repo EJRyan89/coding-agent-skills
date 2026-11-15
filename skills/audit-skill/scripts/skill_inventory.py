@@ -1195,7 +1195,7 @@ def estimate_tokens(text: str | None, kind: str) -> int:
     if text is None:
         return 0
     if kind in ("main", "doc"):
-        lines = text.splitlines(keepends=True)
+        lines = text_lines(text, keepends=True)
         languages, _ = parse_fences([line.rstrip("\r\n") for line in lines])
         code = sum(len(line) for line, language in zip(lines, languages, strict=True) if language is not None)
         prose = len(text) - code
@@ -1205,7 +1205,7 @@ def estimate_tokens(text: str | None, kind: str) -> int:
 
 
 def normalized_blocks(text: str) -> list[tuple[int, tuple[str, ...]]]:
-    _, blocks = parse_fences(text.splitlines())
+    _, blocks = parse_fences(text_lines(text))
     result = []
     for block in blocks:
         body = tuple(line.strip() for line in block.body if line.strip())
@@ -1270,7 +1270,7 @@ def inventory(directory: Path) -> list[str]:
 
 def structure_flags(kind: str, text: str, relative: str) -> list[str]:
     """A body past the published line limit, or a long reference file without a table of contents."""
-    lines = text.splitlines()
+    lines = text_lines(text)
     if kind == "main":
         body = len(lines) - body_start(lines)
         return [f"BODY_OVER_500_LINES {body}"] if body > BODY_LINE_LIMIT else []
@@ -1303,7 +1303,7 @@ def nested_flags(directory: Path, texts: dict[str, tuple[str, str]]) -> list[str
     linked: set[Path] = set()
     for relative, (kind, text) in texts.items():
         if kind == "main":
-            lines = text.splitlines()
+            lines = text_lines(text)
             linked.update(
                 target for _, _, target in inside_references(root, root / relative, lines[body_start(lines) :])
             )
@@ -1312,7 +1312,7 @@ def nested_flags(directory: Path, texts: dict[str, tuple[str, str]]) -> list[str
         if kind != "doc":
             continue
         source = (directory / relative).resolve()
-        for number, reference, target in inside_references(root, source, text.splitlines()):
+        for number, reference, target in inside_references(root, source, text_lines(text)):
             if target != source and target in docs and target not in linked:
                 flags.append(f"NESTED_REFERENCE {relative}:{number} {reference}")
     return flags
@@ -1327,7 +1327,7 @@ def outside_lines(directory: Path, texts: dict[str, tuple[str, str]]) -> list[st
     for relative, (kind, text) in texts.items():
         if kind not in ("main", "doc"):
             continue
-        body = text.splitlines()
+        body = text_lines(text)
         start = body_start(body) if kind == "main" else 0
         for number in range(start, len(body)):
             for match in OUTSIDE_REFERENCE.finditer(body[number]):
@@ -1534,7 +1534,7 @@ def duplicate_flags(texts: dict[str, tuple[str, str]]) -> list[str]:
     flags: list[str] = []
     first: dict[tuple[str, ...], str] = {}
     helpers = {
-        path: "\n" + "\n".join(line.strip() for line in text.splitlines() if line.strip()) + "\n"
+        path: "\n" + "\n".join(line.strip() for line in text_lines(text) if line.strip()) + "\n"
         for path, (kind, text) in texts.items()
         if kind == "helper"
     }
@@ -1825,7 +1825,7 @@ def scan(given: list[Path]) -> list[str]:
     output: list[str] = []
     runtime_prompts: list[tuple[Path, int]] = []
     for path, text in zip(paths, texts, strict=True):
-        lines = text.splitlines()
+        lines = text_lines(text)
         if path.suffix.casefold() == ".md":
             start = body_start(lines)
             languages, _ = parse_fences(lines)
@@ -1989,7 +1989,7 @@ def measure_sample(root: Path, sample: Path) -> list[str]:
             tokens = estimate_tokens(require_text(target), "doc")
             output.append(f"RUNTIME_PROMPT_READ {posix(sample)} {relative} {tokens}")
     output.append(f"REPLY_BOUNDED {posix(sample)} {'yes' if REPLY_BOUND.search(text) else 'no'}")
-    return output + sample_shape_cues(sample, text.splitlines())
+    return output + sample_shape_cues(sample, text_lines(text))
 
 
 def sample_shape_cues(sample: Path, lines: list[str]) -> list[str]:
@@ -2152,9 +2152,20 @@ def python_facts(text: str) -> ScriptFacts:
     return facts
 
 
-def shell_facts(text: str) -> ScriptFacts:
+def shell_lines(text: str, suffix: str) -> list[str]:
+    """A shell script's lines as its shell reads them: PowerShell's tokenizer ends a line at CR, LF, and CRLF, as
+    `text_lines` splits it, and Bash at LF alone, reading a CR as part of the line."""
+    if suffix.casefold() == ".ps1":
+        return text_lines(text)
+    lines = text.split("\n")
+    if lines[-1] == "":
+        lines.pop()
+    return lines
+
+
+def shell_facts(text: str, suffix: str) -> ScriptFacts:
     facts = ScriptFacts()
-    for number, line in enumerate(text.splitlines(), start=1):
+    for number, line in enumerate(shell_lines(text, suffix), start=1):
         if line.lstrip().startswith("#"):
             continue
         facts.words.update(ANY_STATUS_WORD.findall(line))
@@ -2171,7 +2182,7 @@ def script_facts(path: Path) -> ScriptFacts:
     cannot be measured, and reading it as printing nothing would compare the Markdown with less than the skill runs."""
     text = require_text(path)
     if path.suffix.casefold() != ".py":
-        return shell_facts(text)
+        return shell_facts(text, path.suffix)
     try:
         return python_facts(text)
     except python_reader.CONTENT_ERRORS as exc:
@@ -2304,7 +2315,7 @@ def status_lines(folder: Path) -> list[str]:
     command naming a script that does not exist. A skill with no script of its own that runs none has nothing else to
     compare.
     """
-    markdown = [(path, require_text(path).splitlines()) for path in scanned_files(folder)]
+    markdown = [(path, text_lines(require_text(path))) for path in scanned_files(folder)]
     root = repository_root(folder)
     bodies = [lines[body_start(lines) :] for _, lines in markdown]
     commands, missing = command_scripts(folder, root, markdown)
@@ -2455,7 +2466,7 @@ def delegates(line: str) -> bool:
 
 def skill_markdown(folder: Path) -> list[tuple[Path, list[str]]]:
     """A skill folder's SKILL.md and every doc file inventory lists, each with its lines."""
-    return [(path, text.splitlines()) for path in scanned_files(folder) if (text := read_text(path)) is not None]
+    return [(path, text_lines(text)) for path in scanned_files(folder) if (text := read_text(path)) is not None]
 
 
 def prose_lines(lines: list[str]) -> list[int]:

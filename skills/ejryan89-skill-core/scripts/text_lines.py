@@ -19,11 +19,16 @@ import re
 
 # A line break as YAML 1.2, CommonMark, and .NET's TextReader.ReadLine read one.
 LINE_BREAK = re.compile(r"\r\n|\r|\n")
+# A line with the break that ends it, or the last line when no break ends it.
+KEPT_LINE = re.compile(r"[^\r\n]*(?:\r\n|\r|\n)|[^\r\n]+\Z")
 
 
-def text_lines(text: str) -> list[str]:
-    """The lines of `text`, without their breaks, split only at CRLF, CR, and LF. As `str.splitlines` does, a break
-    that ends the text ends its last line rather than starting an empty one, and an empty text has no lines."""
+def text_lines(text: str, *, keepends: bool = False) -> list[str]:
+    """The lines of `text`, split only at CRLF, CR, and LF, without their breaks unless `keepends` asks, as
+    `str.splitlines` takes it. As `str.splitlines` does, a break that ends the text ends its last line rather than
+    starting an empty one, and an empty text has no lines."""
+    if keepends:
+        return KEPT_LINE.findall(text)
     lines = LINE_BREAK.split(text)
     if lines[-1] == "":
         lines.pop()

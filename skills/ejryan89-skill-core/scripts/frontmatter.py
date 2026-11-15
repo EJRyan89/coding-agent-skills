@@ -86,12 +86,30 @@ CONTENT_READERS = ("split", "parse", "read")
 
 def split(lines: list[str]) -> tuple[list[str], int] | None:
     """The frontmatter lines and the index of the first body line, or None when there is no frontmatter."""
-    if not lines or lines[0].rstrip() != DELIMITER:
+    if not lines or not is_delimiter(lines[0], 1):
         return None
     for index in range(1, len(lines)):
-        if lines[index].rstrip() == DELIMITER:
+        if is_delimiter(lines[index], index + 1):
             return lines[1:index], index + 1
     raise FrontmatterError("frontmatter is not closed")
+
+
+def is_delimiter(line: str, number: int) -> bool:
+    """Whether line `number` is the `---` that opens or closes frontmatter: as YAML reads a document marker, `---`
+    followed by nothing but YAML's whitespace, a space or a tab, before the line's end, a CR included. Any other
+    character makes the line no delimiter, such as U+2028, which YAML reads as text, but a character YAML forbids in
+    a stream, on a line that would otherwise be one, is refused as on any other frontmatter line."""
+    if not line.startswith(DELIMITER):
+        return False
+    rest = line[len(DELIMITER) :].rstrip("\r")
+    if not rest.strip(" \t"):
+        return True
+    forbidden = non_printable(rest)
+    if forbidden is not None and all(character in " \t" or non_printable(character) for character in rest):
+        raise FrontmatterError(
+            f"frontmatter delimiter on line {number} holds U+{ord(forbidden):04X}, which YAML forbids"
+        )
+    return False
 
 
 class Frontmatter:
