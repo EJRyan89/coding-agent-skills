@@ -1451,7 +1451,7 @@ removed fails validation until its pattern follows it.
   `tests/tools/test_hub_guard.py::HookCommandTests::test_python_is_run_before_python3_where_both_resolve`,
   `tests/validation/shell_targets.py::ShellTargetsPolicies::test_shipped_skills_name_python_through_the_interpreter_token`,
   `tests/tools/test_plugin_build.py::test_the_plugins_hook_starts_python_in_sh_and_bash_by_the_name_the_machine_gives_it`,
-  `tests/tools/test_plugin_build.py::test_the_plugins_hook_starts_python_under_powershell_and_exits_with_its_status`,
+  `tests/tools/test_plugin_build.py::test_the_plugins_hook_starts_python_under_pwsh_and_exits_with_its_status`,
   `tests/validation/test_skill_layout.py::test_plugin_policy_refuses_what_its_sources_do_not_hold`
 - **Search for:** `python -B` or `python -I` opening a hook's `command` in `.claude/settings.json`, in an agent's
   `hooks` frontmatter, or in a plugin's hooks file; `"python"` as the first item of an argument list a program starts,

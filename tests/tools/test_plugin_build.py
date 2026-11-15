@@ -398,14 +398,10 @@ def hook_shells() -> list[list[str]]:
 
 # The two PowerShells Claude Code may run a hook in on Windows without Git Bash: PowerShell 7, which validation needs
 # on every platform, and Windows PowerShell 5.1, which every Windows has and which parses some text 7 reads.
-POWERSHELLS = [
-    pytest.param("pwsh", id="pwsh"),
-    pytest.param(
-        "powershell",
-        id="Windows PowerShell",
-        marks=pytest.mark.skipif(sys.platform != "win32", reason="Windows PowerShell 5.1 exists only on Windows"),
-    ),
-]
+# Claude Code runs a hook in PowerShell on Windows where Git Bash is not installed: PowerShell 7, which validation needs
+# on every platform, or Windows PowerShell 5.1, which every Windows has and which parses some text 7 reads. Each case
+# below runs under pwsh, and again under Windows PowerShell where it exists.
+WINDOWS_POWERSHELL = "Windows PowerShell 5.1 exists only on Windows"
 
 
 def powershell(name: str) -> list[str]:
@@ -469,10 +465,7 @@ def test_the_plugins_hook_in_sh_reads_no_inherited_variable_as_options(source: S
             assert completed.returncode == 3 if pythons else completed.returncode != 0, (shell, completed.stderr)
 
 
-@pytest.mark.parametrize("name", POWERSHELLS)
-def test_the_plugins_hook_under_powershell_passes_a_guard_that_warns_on_stderr(
-    source: Source, tmp_path: Path, name: str
-) -> None:
+def warning_passes(source: Source, tmp_path: Path, name: str) -> None:
     # A PowerShell that took a native program's stderr for a failure would block every call the guard allows.
     completed, recorded = start_built_hook(
         source,
@@ -486,23 +479,15 @@ def test_the_plugins_hook_under_powershell_passes_a_guard_that_warns_on_stderr(
     assert "the guard warns" in completed.stderr
 
 
-@pytest.mark.parametrize("name", POWERSHELLS)
-@pytest.mark.parametrize("status", [0, 3])
-def test_the_plugins_hook_starts_python_under_powershell_and_exits_with_its_status(
-    source: Source, tmp_path: Path, name: str, status: int
-) -> None:
-    # Claude Code runs a hook in PowerShell on Windows where Git Bash is not installed, and Windows names Python python.
-    shell = powershell(name)
+def status_passes(source: Source, tmp_path: Path, name: str, status: int) -> None:
+    # Windows names Python python, and the guard's own status is the hook's.
     completed, recorded = start_built_hook(
-        source, tmp_path, shell, ("python", "python3"), status, batch=platform_support.WINDOWS
+        source, tmp_path, powershell(name), ("python", "python3"), status, batch=platform_support.WINDOWS
     )
     assert (completed.returncode, recorded) == (status, {"python": GUARD_ARGUMENTS}), completed.stderr
 
 
-@pytest.mark.parametrize("name", POWERSHELLS)
-def test_the_plugins_hook_under_powershell_with_no_python_fails_rather_than_passing(
-    source: Source, tmp_path: Path, name: str
-) -> None:
+def missing_python_blocks(source: Source, tmp_path: Path, name: str) -> None:
     # A PowerShell that went on past the missing command would exit with no status of Python's, 0, and the hook would
     # let every call through unguarded.
     completed, recorded = start_built_hook(
@@ -510,6 +495,43 @@ def test_the_plugins_hook_under_powershell_with_no_python_fails_rather_than_pass
     )
     assert recorded == {}
     assert completed.returncode != 0
+
+
+def test_the_plugins_hook_under_pwsh_passes_a_guard_that_warns_on_stderr(source: Source, tmp_path: Path) -> None:
+    warning_passes(source, tmp_path, "pwsh")
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason=WINDOWS_POWERSHELL)
+def test_the_plugins_hook_under_windows_powershell_passes_a_guard_that_warns_on_stderr(
+    source: Source, tmp_path: Path
+) -> None:
+    warning_passes(source, tmp_path, "powershell")
+
+
+@pytest.mark.parametrize("status", [0, 3])
+def test_the_plugins_hook_starts_python_under_pwsh_and_exits_with_its_status(
+    source: Source, tmp_path: Path, status: int
+) -> None:
+    status_passes(source, tmp_path, "pwsh", status)
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason=WINDOWS_POWERSHELL)
+@pytest.mark.parametrize("status", [0, 3])
+def test_the_plugins_hook_starts_python_under_windows_powershell_and_exits_with_its_status(
+    source: Source, tmp_path: Path, status: int
+) -> None:
+    status_passes(source, tmp_path, "powershell", status)
+
+
+def test_the_plugins_hook_under_pwsh_with_no_python_fails_rather_than_passing(source: Source, tmp_path: Path) -> None:
+    missing_python_blocks(source, tmp_path, "pwsh")
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason=WINDOWS_POWERSHELL)
+def test_the_plugins_hook_under_windows_powershell_with_no_python_fails_rather_than_passing(
+    source: Source, tmp_path: Path
+) -> None:
+    missing_python_blocks(source, tmp_path, "powershell")
 
 
 @pytest.mark.parametrize("name", [".claudeRC", ".claude-plugin", ".claude_Notes", ".CLAUDE9"])
