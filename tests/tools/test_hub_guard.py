@@ -3447,6 +3447,32 @@ class UnderstoodSetTests(GuardTestCase):
             with self.subTest(command=command, cwd=cwd.name):
                 self.assertIsNone(self.bash(command, cwd))
 
+    def test_a_powershell_start_up_s_script_is_read_by_powershell_s_reader_from_either_shell(self) -> None:
+        # The start-up parameters are read by powershell_startup.startup_command, the reader every other part of the
+        # repository uses: -Command and -CommandWithArgs by any prefix PowerShell reads, past every other parameter
+        # and its value, and Windows PowerShell's script by position.
+        for command in (
+            "pwsh -nop -c 'git config coding-agent-skills.hubGuard false'",
+            "pwsh -ExecutionPolicy Bypass -Command 'git checkout -b x'",
+            "pwsh -Com 'git checkout -b x'",
+            "pwsh -CommandWithArgs 'git checkout -b x'",
+            "pwsh -NoLogo -NonInteractive -NoProfile -c 'git switch feat/demo'",
+            "powershell -NoProfile 'git checkout -b x'",
+        ):
+            with self.subTest(command=command):
+                self.assertEqual("deny", self.bash(command, self.hub))
+        self.assertEqual("deny", self.powershell("pwsh -nop -Command 'git checkout -b x'", self.hub))
+        # An encoded command is a script the text does not settle, which may run any git, so it is refused while a hub
+        # is guarded, from the hub and from a worktree alike.
+        for cwd in (self.hub, self.tree):
+            with self.subTest(cwd=cwd.name):
+                self.assertEqual("deny", self.bash("pwsh -EncodedCommand ZwBpAHQAIABzAHQAYQB0AHUAcwA=", cwd))
+        self.assertEqual("deny", self.bash("pwsh -e ZwBpAHQA", self.tree))
+        # A script that only reads, a script file, and a script the text does not settle stay allowed.
+        for command in ("pwsh -NoProfile -Command 'git status'", "pwsh -File x.ps1", 'pwsh -c "$SCRIPT"', "pwsh"):
+            with self.subTest(command=command):
+                self.assertIsNone(self.bash(command, self.hub))
+
     def test_a_builtin_or_a_function_the_guard_does_not_follow_leaves_the_directory_unknown(self) -> None:
         for command in (
             f"eval 'cd {self.hub}'; git commit -m x",

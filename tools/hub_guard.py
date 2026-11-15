@@ -67,7 +67,7 @@ from git_client import GLOBAL_VALUE_OPTIONS as GIT_OPTIONS_WITH_VALUE
 from job_tree import process_tree
 from option_reader import Word
 from path_keys import name_key
-from powershell_startup import POWERSHELL_PROGRAMS
+from powershell_startup import POWERSHELL_PROGRAMS, UnknownWord, startup_command
 from text_lines import text_lines
 
 from deployer import platform_support
@@ -3311,10 +3311,8 @@ class BashReader:
             script = shell_script(arguments)
             if script is not None:
                 self.nested().read_text(script, directory)
-        elif program in POWERSHELL_PROGRAMS:
-            script = pwsh_script(arguments)
-            if script is not None and self.depth < NESTING_LIMIT:
-                read_powershell(script, directory.cwd, self.reading, self.depth + 1)
+        elif program in POWERSHELL_PROGRAMS and self.depth < NESTING_LIMIT:
+            read_powershell_start(program, arguments, directory.cwd, self.reading, self.depth + 1)
 
     def read_wrapped(
         self, wrapper: str, arguments: list[Word], directory: Directory, prefixes: list[tuple[str, Word]]
@@ -3370,9 +3368,6 @@ CHDIR_LONG = "--chdir"
 SHELL_WRAPPERS = frozenset({"command", "builtin"})
 # The wrappers that add words from their input to the command they run.
 INPUT_WRAPPERS = frozenset({"xargs"})
-# pwsh's options before -Command that change nothing the guard reads.
-PWSH_QUIET = frozenset({"-noprofile", "-noninteractive", "-nologo"})
-PWSH_COMMAND = frozenset({"-command", "-c"})
 
 
 @dataclass(frozen=True)
@@ -3416,20 +3411,25 @@ def wrapped_command(wrapper: str, arguments: list[Word]) -> Wrapped | None:
     return Wrapped(command, assignments, moved)
 
 
-def pwsh_script(arguments: list[Word]) -> str | None:
-    """The literal script pwsh's -Command or -c runs, after the options that change nothing the guard reads; None for
-    any other start, one whose script the text does not settle among them."""
-    words = iter(arguments)
-    for word in words:
-        if word is None:
-            return None
-        lowered = word.lower()
-        if lowered in PWSH_COMMAND:
-            rest = list(words)
-            return None if not rest or None in rest else " ".join(str(each) for each in rest)
-        if lowered not in PWSH_QUIET:
-            return None
-    return None
+def read_powershell_start(program: str, arguments: list[Word], cwd: Path | None, reading: Reading, depth: int) -> None:
+    """The script a pwsh or Windows PowerShell start-up runs, read by PowerShell's reader where its text is literal:
+    -Command, -CommandWithArgs, and -EncodedCommand by any prefix PowerShell reads as one, past every other start-up
+    parameter and its value, as ejryan89-skill-core's powershell_startup.startup_command reads them for every reader
+    in the repository, and Windows PowerShell's script given by position. An -EncodedCommand, whose text is Base64,
+    runs a script the text does not settle, so it is read as a git call whose subcommand the text does not settle,
+    refused while a hub is guarded; a start-up that runs no script the words hold, and a script a word the text does
+    not settle holds, are not read."""
+    command = startup_command(arguments, positional_command=program == "powershell", positional_file=program == "pwsh")
+    if command is None or isinstance(command, UnknownWord):
+        return
+    if command.encoded:
+        reading.notes.append(f"{program} -EncodedCommand runs a script the text does not settle")
+        read_git([None], cwd, reading)
+        return
+    script = arguments[command.start : command.start + 1 if command.with_arguments else len(arguments)]
+    if not script or None in script or script == ["-"]:
+        return
+    read_powershell(" ".join(str(word) for word in script), cwd, reading, depth)
 
 
 def shell_script(arguments: list[Word]) -> str | None:
@@ -3845,9 +3845,7 @@ class PowerShellReader:
             if script is not None:
                 read_bash(script, directory.cwd, self.reading, self.depth + 1)
         elif program in POWERSHELL_PROGRAMS:
-            script = pwsh_script(arguments)
-            if script is not None:
-                read_powershell(script, directory.cwd, self.reading, self.depth + 1)
+            read_powershell_start(program, arguments, directory.cwd, self.reading, self.depth + 1)
 
     def read_cmdlet(self, cmdlet: str, arguments: list[Word], directory: Directory) -> Outcome:
         """A command POWERSHELL_COMMANDS names: one that moves the location is followed, and any other moves

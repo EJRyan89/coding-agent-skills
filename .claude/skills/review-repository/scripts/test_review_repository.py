@@ -654,6 +654,17 @@ class ManifestTests(unittest.TestCase):
         on_a_fix = route(MANIFEST, [path], lambda name: True, title="fix(hub-guard): refuse an option")
         self.assertEqual([path], on_a_fix.get("sibling-spellings"))
 
+    def test_the_wrapper_option_catalogues_reach_the_trust_boundary_reviewers(self) -> None:
+        # Each catalogue lists a wrapper program's options, and the catalogue suite holds command_wrappers.py's rows,
+        # which the hub guard reads git through, to them, so a change that drops an option loosens what the suite
+        # proves. Each is read from the tree, so a catalogue added later must be routed too.
+        catalogues = sorted(path for path in tracked_files() if path.startswith(CATALOGUE_FIXTURES))
+        self.assertIn(f"{CATALOGUE_FIXTURES}option-catalogues.json", catalogues)
+        self.assertIn(f"{CATALOGUE_FIXTURES}option-catalogues-bsd.json", catalogues)
+        self.assertEqual([], [path for path in catalogues if "trust-boundary" not in reached([path])[path]])
+        on_a_fix = route(MANIFEST, catalogues, lambda name: True, title="fix(hub-guard): read a wrapper option")
+        self.assertEqual(catalogues, on_a_fix.get("sibling-spellings"))
+
     def test_every_file_the_design_trust_model_names_reaches_the_trust_boundary_reviewer(self) -> None:
         # docs/design.md's trust model names the code that holds each boundary and the suites that hold it, so a file
         # one of its rows names in code, such as skill_evals.py's refusal of a foreign checkout, the hub guard and its

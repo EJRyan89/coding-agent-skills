@@ -58,6 +58,10 @@ NICENESS = re.compile(r"\s*[+-]?[0-9]+")
 HELP_OPTION = re.compile(r"^\s+(?:(-[A-Za-z0-9]),?\s*)?(?:(--[a-z][a-z0-9-]*)(\[=|=)?)?")
 # The wrappers whose --help this suite reads where the system installs them.
 CHECKED = ("env", "nice", "nohup", "stdbuf", "timeout", "xargs")
+# The wrappers whose installed build this suite reads only where it is the one macOS installs: Apple's chroot and time,
+# each held to its BSD catalogue. Their GNU builds, which Git Bash and Linux install, were catalogued from their own
+# --help or getopt table and are held to the catalogue alone.
+MACOS_CHECKED = ("chroot", "time")
 # Each wrapper's --help and --version, and what it prints for -@, an option no implementation takes, which is where a
 # BSD build prints its usage synopsis: its nice and nohup run --help as a program. A BSD build refuses each with a
 # failing status, and what it printed is still read.
@@ -220,11 +224,12 @@ def find_bash() -> str:
 
 @functools.cache
 def installed_help() -> dict[str, tuple[str, str, str]]:
-    """The --help, the --version, and the refusal of an unknown option of each wrapper CHECKED names that the system
-    installs."""
+    """The --help, the --version, and the refusal of an unknown option of each wrapper CHECKED or MACOS_CHECKED names
+    that the system installs."""
     workspace = Path(WORKSPACE.name)
+    programs = (*CHECKED, *MACOS_CHECKED)
     result = platform_support.run_tool(
-        [find_bash(), "-c", DISCOVER, "discover", platform_support.normalize(workspace), *CHECKED], timeout=120
+        [find_bash(), "-c", DISCOVER, "discover", platform_support.normalize(workspace), *programs], timeout=120
     )
     if result.returncode != 0:
         raise AssertionError(f"Bash could not list the wrappers: {result.output.strip()}")
@@ -234,7 +239,7 @@ def installed_help() -> dict[str, tuple[str, str, str]]:
             (workspace / f"version.{name}").read_text(encoding="utf-8", errors="replace"),
             (workspace / f"usage.{name}").read_text(encoding="utf-8", errors="replace"),
         )
-        for name in CHECKED
+        for name in programs
         if (workspace / f"path.{name}").is_file()
     }
 
@@ -311,6 +316,9 @@ class CatalogueTests(unittest.TestCase):
         text, version, usage = helps[name]
         first = (version.strip().splitlines() or [""])[0]
         build = installed_implementation(version)
+        if name in MACOS_CHECKED and build != "BSD":
+            # A GNU or Rust build of one of these is held to its catalogue alone; see MACOS_CHECKED.
+            return
         self.assertIsNotNone(build, f"{name}'s --version names neither GNU nor uutils: {first!r}")
         assert build is not None
         path = IMPLEMENTATIONS[build]
@@ -329,6 +337,11 @@ class CatalogueTests(unittest.TestCase):
 
     def test_the_installed_runners_list_no_option_the_fixture_leaves_out(self) -> None:
         for name in CHECKED:
+            with self.subTest(program=name):
+                self.lists_every_option(name)
+
+    def test_the_wrappers_macos_builds_of_its_own_list_no_option_the_fixture_leaves_out(self) -> None:
+        for name in MACOS_CHECKED:
             with self.subTest(program=name):
                 self.lists_every_option(name)
 
@@ -418,6 +431,28 @@ class ReaderTests(unittest.TestCase):
             usage_options("nice: illegal option -- @\nusage: nice [-n increment] utility [argument ...]\n", "nice"),
         )
         self.assertEqual((), usage_options("usage: nohup [--] utility [arguments]\n", "nohup"))
+
+    def test_reads_apple_chroot_s_time_s_and_stdbuf_s_synopses_each_option_in_its_row(self) -> None:
+        chroot = (
+            "chroot: illegal option -- @\nusage: chroot [-g group] [-G group,group,...] [-u user] newroot [command]\n"
+        )
+        time = "time: illegal option -- @\nusage: time [-al] [-h | -p] [-o file] utility [argument ...]\n"
+        stdbuf = (
+            "stdbuf: illegal option -- @\n"
+            "usage: stdbuf [-e 0|L|B|<sz>] [-i 0|L|B|<sz>] [-o 0|L|B|<sz>] <cmd> [args ...]\n"
+        )
+        for name, text, expected in (
+            ("chroot", chroot, {Option(each, None, "value") for each in ("-g", "-G", "-u")}),
+            ("stdbuf", stdbuf, {Option(each, None, "value") for each in ("-e", "-i", "-o")}),
+            (
+                "time",
+                time,
+                {*(Option(each, None, "none") for each in ("-a", "-l", "-h", "-p")), Option("-o", None, "value")},
+            ),
+        ):
+            with self.subTest(program=name):
+                self.assertEqual(expected, set(usage_options(text, name)))
+                self.assertLessEqual(expected, set(listed_options(BSD_CATALOGUES, name)))
 
     def test_reads_options_joined_by_a_bar_as_each_taking_the_value(self) -> None:
         self.assertEqual(

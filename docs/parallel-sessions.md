@@ -176,8 +176,8 @@ git config coding-agent-skills.hubGuard true
 
 The setting lives in the shared `.git/config`, so one command covers the hub and all of its worktrees. Because
 the setting is not tracked, someone who clones the repository and works in a single checkout is never blocked.
-While a hub is guarded the guard refuses every `git config` that may write a setting, one a wrapper or a literal
-shell script runs included, so the guard is turned off from a terminal. A program the guard does not read can still write the
+While a hub is guarded the guard refuses every `git config` that may write a setting, one a wrapper whose words
+settle its program or a literal shell script runs included, so the guard is turned off from a terminal. A program the guard does not read can still write the
 configuration file by its own words, as `tee -a <hub>/.git/config` does; the guard is no sandbox, and the check
 names what such a write leaves in the hub's work tree.
 
@@ -478,9 +478,11 @@ commit `origin/main` lacks.
   tree holds it: git as a git call, `gh`'s checkouts as one, and `cd`, `pushd`, and `popd` as moves of the shell. A
   wrapper ejryan89-skill-core's `command_wrappers.COMMAND_WRAPPERS` names, as `env`, `timeout`, `command`, `exec`,
   `nohup`, `sudo`, or `xargs`, is read as the command it runs, past its options by `command_wrappers.unwrapped`, its
-  assignments judged as ones before that command, and a literal `bash -c` or `pwsh -Command` script is read by its
-  shell's reader, so git either runs is judged by the same rows as a bare git call; a wrapper whose words do not settle
-  its program, and a script the text does not settle, are not read. Any other command is a program the guard does not
+  assignments judged as ones before that command, and a literal `bash -c` script, or a `pwsh` or `powershell`
+  start-up's script, its parameters read by ejryan89-skill-core's `powershell_startup.startup_command`, is read by its
+  shell's reader, so git either runs is judged by the same rows as a bare git call; an `-EncodedCommand` runs a script
+  the text does not settle, so it is judged as a git call whose subcommand the text does not settle; a wrapper whose
+  words do not settle its program, and any other script the text does not settle, are not read. Any other command is a program the guard does not
   read. A word is read as literal text or `~`; an expansion, a glob, or
   a brace expansion leaves its word one the text does not settle. Such a word may stand among a git call's words
   after its subcommand, where a refused subcommand given one is refused in the hub, since it may be any option. Each
@@ -626,6 +628,14 @@ Within what it reads, it judges only what the text shows, so these too are left 
 - a git call before a part of the command Bash refuses, or that `tools/bash_syntax.py` does not cover, such as
   `coproc`: the whole command is not read, though Bash runs the lines before a syntax error;
 - a PowerShell file redirection the reader's statements do not reach, which is allowed with a note;
+- the words `xargs` adds from its input, which the guard takes as one word after the command it runs, and the string
+  its `-I`, `-i`, or `--replace` replaces, which it reads as the literal it is;
+- an assignment or a `-C` inside the line `env -S` or `--split-string` splits;
+- an assignment before a shell that runs a script, as `GIT_DIR=<dir> bash -c 'git ...'` or
+  `env GIT_DIR=<dir> bash -c '...'`, which the script's git inherits;
+- in PowerShell, an assignment a wrapper hands git through another wrapper, as `env GIT_DIR=<dir> timeout 5 git ...`;
+- a script a shell reads from its standard input, from a here-document or a pipe, as `bash <<'EOF'` or
+  `echo '...' | bash`;
 
 - a program git starts that the environment or the configuration names rather than the command's words: the program
   an inherited `GIT_EXTERNAL_DIFF`, `GIT_PAGER`, `PAGER`, `GIT_SSH_COMMAND`, `GIT_SSH`, `GIT_ASKPASS`, `SSH_ASKPASS`,
