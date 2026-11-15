@@ -368,8 +368,9 @@ a row decides it.
   environment and configuration name are judged the same way, each written by a git a command starts, a program's own
   and a `gh` subcommand's among them: the file `SSLKEYLOGFILE` names (`KEY_LOG_VARIABLE`), to which libcurl, which
   git's https transport runs, and other programs append the keys of each TLS session, a relative path being one each
-  program opens from where it starts, which the guard cannot place; and, from every scope the guard's own checkout
-  reads, the hub's included, the cookie jar an `http.cookieFile` or `http.<url>.cookieFile` setting names while any
+  program opens from where it starts, which the guard cannot place; and, from every scope git reads where the guard
+  runs, in the session's directory, in its project, and in each hub in view, so a conditional include that holds
+  there counts, the cookie jar an `http.cookieFile` or `http.<url>.cookieFile` setting names while any
   `http.saveCookies` or `http.<url>.saveCookies` setting is on, which an https call writes back, and the folder
   `fsmonitor.socketDir` names, where git's own file-system monitor makes its socket (`CONFIGURED_WRITES`), each a path
   git reads with a leading `~/` from the home, a relative one being one each git reads from where it starts. The guard
@@ -500,13 +501,23 @@ a row decides it.
 - **Writes a program or a cmdlet names.** The programs whose words name the files they write, create, remove, or
   change the mode or owner of are `WRITING_PROGRAMS`: `chcon`, `chflags`, `chgrp`, `chmod`, `chown`, `cp`, `dd`,
   `install`, `mkdir`, `mkfifo`, `mknod`, `mktemp`, `mv`, `rm`, `rmdir`, `sed`, `shred`, `tee`, `touch`, `truncate`,
-  and `unlink`. Each word of theirs that may name such a file is judged as a redirection's target is, from Bash and
-  PowerShell alike and where a runner starts one: every operand, a source among them, since telling a source from a
+  and `unlink`, each read under its own name and under the `g` or `u` prefix a package manager installs a GNU or uutils
+  build with, as `gcp`, `gsed`, or `ucp` (`BUILD_PREFIXES`). Each word of theirs that may name such a file is judged
+  as a redirection's target is, from Bash and PowerShell alike and where a runner starts one: every operand, a source among them, since telling a source from a
   target means reading every build's options, so copying a hub file elsewhere is refused while a hub is guarded and
   `cat <file> > <target>` is the way to write it; a long option's value after `=`; and, in a bundle of letters, the
   rest of the word after its first letter that the program's table does not name as a flag in every build, which may
-  be that option's value, as `cp -t<folder>`. `dd` writes only at its `of=` operand, and `sed` only in place, given
-  `-i`, `-I`, a prefix of `--in-place`, or a letter it does not know. A Bash word whose unquoted text holds a
+  be that option's value, as `cp -t<folder>`. A target is also judged by what it holds, since a recursive removal, a
+  move, a mode change, or a copy into a folder reaches everything in it: one that holds a guarded hub in view, as
+  `rm -rf ..` from the hub does, or, while a hub is guarded, a file git reads its system or global configuration
+  from, as `cp <file> ~` does, is refused. `dd` writes only at its `of=` operand. `sed` rewrites the files it is
+  given in place given `-i`, `-I`, a prefix of `--in-place`, or a letter it does not know, BSD's flag `-l` ending no
+  bundle; and its script, read as each build reads its options (`SED_BUILDS`: GNU's, which read a long option and an
+  option after an operand, and BSD's) and as GNU sed reads a script, whose commands hold BSD's, writes the file each
+  `w` or `W` command, or `s` command's `w` flag, names to the end of its line, which is judged as any target is. A
+  script that runs a command, by an `e` command or an `s` command's `e` flag, a script file, a script the text does
+  not settle, and options or a script no build reads are refused while a hub is guarded. A Bash word whose unquoted
+  text holds a
   wildcard, and a PowerShell path given to `-Path` or by position, or a native program's word, that holds one, is
   judged by the folder every file it matches lies in, the text before the wildcard up to its last separator: refused
   where that folder lies in a guarded hub, holds a guarded hub in view, or holds a file git reads its system or global
@@ -514,16 +525,18 @@ a row decides it.
   from its input, which may name any file, so it is refused while a hub is guarded, and so is every word of one that
   `chroot` starts, inside another tree. Of the cmdlets the PowerShell bullet below reads, `Set-Content`,
   `Add-Content`, `Out-File`, `New-Item`, `Copy-Item`, `Move-Item`, `Remove-Item`, and `mkdir` write: each value bound
-  to a parameter that takes a path (`POWERSHELL_PATH_PARAMETERS`), by its name, a prefix of it, or an alias, and each
+  to a parameter that takes a path (`POWERSHELL_PATH_PARAMETERS`), by its name or an alias, or a prefix of either, a
+  prefix of several read as the one that takes a wildcard, and each
   value given by position that `POWERSHELL_POSITIONS` does not bind to a parameter taking no path, as `Set-Content`'s
-  second, its `-Value`, is judged so, `New-Item`'s `-Name` joined to each path it is given; a parameter the tables do
+  second, its `-Value`, is judged so, `New-Item`'s `-Name` joined to each path it is given, and `Copy-Item` and
+  `Move-Item` given no destination write into the current location; a parameter the tables do
   not name is read as taking no value, so the value after it is judged as one given by position. One after the first
   command of a pipeline given no path, but `Copy-Item`, whose path is what it copies, binds the one it writes from its
   input, so it is refused while a hub is guarded. Off Windows, where pwsh gives `cp`, `mv`, `rm`, `rmdir`, and `tee`
   no alias, each is read as the program.
 - **Links.** A link a command makes is followed by no path the guard placed before the command ran, so a write later
-  in the same command through it reaches what it names unseen. While a hub is guarded, `ln` and `link`
-  (`LINK_PROGRAMS`) are refused, and so are `cp`'s `-l`, `-s`, `--link`, and `--symbolic-link` and `install`'s `-l`
+  in the same command through it reaches what it names unseen. While a hub is guarded, `fsutil`, `link`, and `ln`
+  (`LINK_PROGRAMS`), under their own names and the prefixes above, are refused, `fsutil` whatever its words choose, and so are `cp`'s `-l`, `-s`, `--link`, and `--symbolic-link` and `install`'s `-l`
   (`LINK_OPTIONS`), and `New-Item` given an item type other than a prefix of `File` or `Directory`, as `SymbolicLink`,
   `Junction`, or `HardLink`; with no guarded hub in view each is noted. A link that exists when a command starts is
   followed, as each bullet above says.
@@ -727,16 +740,19 @@ Claude Code so the hook runs with the new `PATH`.
 The hook sees the command text. It does not see:
 
 - inside a program: what a program does from inside itself, in its own language, as a Python script with any
-  script name, in the hub or in a worktree, an awk or sed program, a test suite, a script file, `make`'s recipes, or
+  script name, in the hub or in a worktree, an awk program, a sed script but for the files and commands
+  [Writes a program or a cmdlet names](#what-it-understands) reads in it, a test suite, a script file, `make`'s recipes, or
   `npm`'s scripts do, and an agent runtime it starts, which runs git under its own guards; the guard reads only the
   command line, and refuses only the runners above where the command line they are given is or may be git;
 - a file a program writes beyond the words the guard reads, one git reads its configuration from included: a file
-  a program `WRITING_PROGRAMS` does not name writes, as `rsync`, `curl -o`, `patch`, `unzip`, or `perl -i` does, or a
+  a program `WRITING_PROGRAMS` does not name writes, as `rsync`, `curl -o`, `patch`, `unzip`, `perl -i`, `gzip`,
+  `tar -cf`, or `coreutils cp` does, or a
   script does, or a program writes at a path no word of it names, is read only by the next command's judgement, so a
   git later in the same command reads a configuration it wrote;
-- a link a command makes other than by `ln`, `link`, a link option of `cp` or `install`, or `New-Item`: one a program
-  makes from inside itself, or a copy or a checkout carries, as `cp -R` copies a link inside a folder, is followed only
-  by the next command's judgement, so a write later in the same command through it reaches what it names;
+- a link a command makes other than by `ln`, `link`, `fsutil`, a link option of `cp` or `install`, or `New-Item`:
+  one a program makes from inside itself, or a copy or a checkout carries, as `cp -R` copies a link inside a folder,
+  is followed only by the next command's judgement, so a write later in the same command through it reaches what it
+  names;
 - a program git starts that the environment or the configuration names rather than the command's words: the program
   an inherited `GIT_EXTERNAL_DIFF`, `GIT_PAGER`, `PAGER`, `GIT_SSH_COMMAND`, `GIT_SSH`, `GIT_ASKPASS`, `SSH_ASKPASS`,
   `GIT_EDITOR`, `GIT_SEQUENCE_EDITOR`, `VISUAL`, `EDITOR`, `GIT_PROXY_COMMAND`, or `GIT_EXEC_PATH` names, or a setting
@@ -753,8 +769,9 @@ The hook sees the command text. It does not see:
   list of them would be the deny-list over git's settings the read-only forms replaced; a file such a setting names,
   as a hook in the folder `core.hooksPath` names, is a file the session's tools may write outside a hub, as any script
   is;
-- a write target a repository's own configuration names, other than one the guard's own checkout reads, as a cookie
-  jar a repository the command makes sets for a later https call in it;
+- a write target a repository's own configuration names, other than one git reads where the guard looks, its own
+  checkout, the session's directory and project, and each hub in view, as a cookie jar a repository the command makes
+  sets for a later https call in it, or one a conditional include sets only for a git call elsewhere;
 - a shell function the environment the hook starts in supplies, as Bash's exported `BASH_FUNC_<name>%%` variables
   do: the hook command's own words, `test`, `env`, `awk`, `git`, `command`, and `exec` among them, run such a function
   where Bash runs it before the builtin or program of that name, so whoever sets the hook's environment can make the

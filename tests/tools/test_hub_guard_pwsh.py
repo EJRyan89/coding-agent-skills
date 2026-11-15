@@ -247,15 +247,20 @@ class CommandNameTests(unittest.TestCase):
             "ConvertTo-Json -Compress -InputObject @("
             "@(Get-Alias | ForEach-Object Name), "
             "@(Get-Command -CommandType Function | Where-Object { -not $_.ModuleName } | ForEach-Object Name), "
-            "@(Get-Verb | ForEach-Object Verb))"
+            "@(Get-Verb | ForEach-Object Verb), "
+            "@(Get-Command -CommandType Cmdlet,Function | Where-Object { $_.Name -like '*-*' } | ForEach-Object Name))"
         )
-        aliases, functions, verbs = json.loads(pwsh(script))
+        aliases, functions, verbs, commands = json.loads(pwsh(script))
         self.assertEqual(set(), {name.lower() for name in aliases} - hub_guard.POWERSHELL_ALIASES)
         self.assertEqual(
             set(),
             {name.lower() for name in functions if "-" not in name} - hub_guard.POWERSHELL_FUNCTIONS,
         )
         self.assertEqual(set(), {name.lower() for name in verbs} - hub_guard.POWERSHELL_VERBS)
+        # A command whose verb Get-Verb does not list, as Tee-Object, is still found before any program.
+        unapproved = {name.lower() for name in commands if name.split("-")[0].lower() not in hub_guard.POWERSHELL_VERBS}
+        self.assertEqual(set(), unapproved - hub_guard.POWERSHELL_UNAPPROVED_COMMANDS)
+        self.assertIn("tee-object", hub_guard.POWERSHELL_UNAPPROVED_COMMANDS)
         for name in ("iex", "Invoke-Expression", "Start-Process", "help", "C:", "exec"):
             with self.subTest(name=name):
                 self.assertTrue(hub_guard.powershell_command(name))
