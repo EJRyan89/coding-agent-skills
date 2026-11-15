@@ -223,13 +223,26 @@ ends = time.monotonic() + 300
 while not os.path.exists(sys.argv[2]) and time.monotonic() < ends:
     server.handle_request()
 EOF
-"$TEST_PYTHON" "$FIXTURE/asking_origin.py" "$FIXTURE/origin port" "$FIXTURE/origin stop" &
+"$TEST_PYTHON" "$FIXTURE/asking_origin.py" "$FIXTURE/origin port" "$FIXTURE/origin stop" 2>"$FIXTURE/origin stderr" &
 SERVER_PID=$!
 for _ in $(seq 1 100); do
   [ ! -s "$FIXTURE/origin port" ] || break
   sleep 0.1
 done
-[ -s "$FIXTURE/origin port" ] || fail "origin wants a credential: the test origin did not start"
+if [ ! -s "$FIXTURE/origin port" ]; then
+  # Say which Python ran, whether it was still starting or had ended, and what it wrote, so a CI leg's failure names
+  # its cause.
+  if kill -0 "$SERVER_PID" 2>/dev/null; then
+    ORIGIN_STATE="was still starting after 10 seconds"
+    kill "$SERVER_PID" 2>/dev/null || true
+  else
+    ORIGIN_STATUS=0
+    wait "$SERVER_PID" || ORIGIN_STATUS=$?
+    ORIGIN_STATE="exited with status $ORIGIN_STATUS"
+  fi
+  fail "origin wants a credential: the test origin did not start: $(command -v "$TEST_PYTHON") $ORIGIN_STATE;" \
+    "its stderr: $(tr '\n' ' ' <"$FIXTURE/origin stderr")"
+fi
 cat >"$FIXTURE/askpass helper" <<EOF
 #!/bin/sh
 echo started >>"$FIXTURE/askpass ran"
