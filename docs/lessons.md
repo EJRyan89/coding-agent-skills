@@ -48,8 +48,11 @@ removed fails validation until its pattern follows it.
   `file_presence:is_directory`, which answers the same for a folder; `file_presence:refusal_reason` and
   `file_presence:require`, which name a file or folder a caller needs as missing, of another kind, or not examinable,
   never the last two as missing; `file_presence:is_there`, which a reader asks in place of exists, whether anything it
-  meets is at a path, a link to nothing read as nothing there; `file_presence:is_occupied`, which a writer asks in
-  place of lexists before it creates there, whether anything is at a path, a link to nothing included;
+  meets is at a path, a link to nothing read as nothing there; `file_presence:is_occupied`, in place of lexists,
+  whether anything takes a path's place, a link to nothing included, which a writer asks before it creates there and
+  a reader asks where its question is whether the place is taken, as `msbuild_evaluation:Evaluation.exists` asks
+  for MSBuild's Exists(), `msbuild_reader:msbuild_file_exists` for its search for a file above a project, and
+  `msbuild_evaluation:Evaluation.import_file` for an Import, each one of MSBuild's File.Exists lookups;
   `file_presence:matching`, which lists what a glob pattern matches but raises for a folder it cannot list;
   `link_probe:is_link_or_junction`, which lets the error of an unreadable path through; and
   `deployer.source_ref:TagsUnreadable`, which keeps git's reason when the tags cannot be read; and git's found,
