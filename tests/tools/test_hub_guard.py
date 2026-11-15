@@ -111,7 +111,9 @@ class GuardTestCase(HubTestCase):
         output = json.loads(stdout)["hookSpecificOutput"]
         self.assertEqual("PreToolUse", output["hookEventName"])
         self.reason = output["permissionDecisionReason"]
-        self.assertIn("tools/worktrees.py new", self.reason)
+        # Every refusal ends with its step: a worktree for a hub edit, or the remedy of one a worktree refuses too.
+        if not self.reason.endswith("Run it from a terminal outside the clone."):
+            self.assertIn("tools/worktrees.py new", self.reason)
         decision: str = output["permissionDecision"]
         return decision
 
@@ -1510,8 +1512,8 @@ class CommandGuardTests(GuardTestCase):
 
     def test_the_update_skills_command_is_refused_at_its_deployed_path_wherever_a_guarded_hub_is_in_view(self) -> None:
         # update-coding-agent-skills runs its script with bash on the clone it deploys from, the hub. The guard trusts
-        # no script by its path, the deployed update script's exact path under the skills directory included, since a
-        # session's file tools may write there; so the skill runs outside a session whose project is the clone, where
+        # no bash script by its path, the deployed update script's exact path under the skills directory included, since
+        # a session's file tools may write there; so the skill runs outside a session whose project is the clone, where
         # Claude Code loads no hook of the clone's, and its text says so.
         skill = REPOSITORY_ROOT / "skills" / "update-coding-agent-skills"
         script = self.root / "home dir" / ".claude" / "skills" / skill.name / "scripts" / "update.sh"
@@ -3163,6 +3165,577 @@ class WriteGuardTests(GuardTestCase):
         self.assertEqual("deny", self.bash(f'gln -s "{readme}" "{link}" && printf x >> "{link}"', self.tree))
         self.assertIn("ln makes a symbolic or a hard link", self.reason)
 
+    def test_a_program_no_table_reads_is_refused_where_a_word_may_name_a_hub_file(self) -> None:
+        readme = self.hub / "README.md"
+        database = self.hub / "x.db"
+        # Pinned against literals: what each refusal says the program is given.
+        for command, cwd, program, path in (
+            (f'curl -o "{readme}" https://example.com', self.tree, "curl", readme),
+            (f'curl -o"{readme}" https://example.com', self.tree, "curl", readme),
+            (f'curl --output="{readme}" https://example.com', self.tree, "curl", readme),
+            (f'wget -O "{readme}" https://example.com', self.tree, "wget", readme),
+            (f'rsync -a notes.txt "{readme}"', self.tree, "rsync", readme),
+            (f'gzip "{readme}"', self.tree, "gzip", readme),
+            (f'perl -pi -e s/a/b/ "{readme}"', self.tree, "perl", readme),
+            (f'base64 -o "{readme}" notes.txt', self.tree, "base64", readme),
+            (f'dos2unix "{readme}"', self.tree, "dos2unix", readme),
+            (f'prettier --write "{readme}"', self.tree, "prettier", readme),
+            (f'sqlite3 "{database}" "create table t(a)"', self.tree, "sqlite3", database),
+            (f"python3 -c \"open('{readme}', 'w')\"", self.tree, "python3", readme),
+            (f"""node run.js --command "cp a '{readme}'" """, self.tree, "node", readme),
+            ("gzip README.md", self.hub, "gzip", readme),
+            ("perl -pi -e s/a/b/ ./README.md", self.hub, "perl", self.hub / "README.md"),
+            ("python3 -c \"open('README.md', 'w')\"", self.hub, "python3", readme),
+        ):
+            with self.subTest(command=command):
+                self.assertEqual("deny", self.bash(command, cwd))
+                self.assertIn(f"`{program}` is given {path}, a file of a guarded hub.", self.reason)
+        self.assertEqual("deny", self.bash(f'node run.js "{self.root}"', self.tree))
+        self.assertIn(f"`node` is given {self.root}, which holds the guarded hub {self.hub}.", self.reason)
+        # A word that names no path where the program runs, a path outside every hub, or a bare name of a file that is
+        # not there yet, which is the named limit, is no write to a hub.
+        for command, cwd in (
+            ("curl -s https://example.com -o out.html", self.tree),
+            ("gzip notes.txt", self.tree),
+            ('python3 -c "print(1)"', self.tree),
+            ("node build.js --mode=prod", self.tree),
+            ("make test", self.tree),
+            ("make test", self.hub),
+            ('python3 -c "print(1)"', self.hub),
+            ("node x.js new-file.txt", self.hub),
+            (f'curl -o "{self.root / "out.html"}" https://example.com', self.hub),
+        ):
+            with self.subTest(command=command):
+                self.assertIsNone(self.bash(command, cwd))
+        self.assertEqual("hub\n", readme.read_text(encoding="utf-8"))
+
+    def test_a_program_no_table_reads_is_judged_alike_from_powershell_and_behind_a_runner(self) -> None:
+        readme = self.hub / "README.md"
+        for command, program in (
+            (f"gzip '{readme}'", "gzip"),
+            (f"curl.exe -o '{readme}' https://example.com", "curl"),
+            (f"timeout 5 curl -o '{readme}' https://example.com", "curl"),
+        ):
+            with self.subTest(command=command):
+                self.assertEqual("deny", self.powershell(command, self.tree))
+                self.assertIn(f"`{program}` is given {readme}, a file of a guarded hub.", self.reason)
+        for command, program in (
+            (f'timeout 5 curl -o "{readme}" https://example.com', "curl"),
+            (f'env LANG=C gzip "{readme}"', "gzip"),
+            (f'nice -n 5 perl -pi -e x "{readme}"', "perl"),
+            (f'gtimeout 5 gzip "{readme}"', "gzip"),
+        ):
+            with self.subTest(command=command):
+                self.assertEqual("deny", self.bash(command, self.tree))
+                self.assertIn(f"`{program}` is given {readme}, a file of a guarded hub.", self.reason)
+        self.assertEqual("deny", self.bash("echo notes.txt | xargs gzip", self.tree))
+        self.assertIn("runs xargs: xargs hands gzip words from its input, which may name a file", self.reason)
+        self.assertIsNone(self.bash("timeout 5 make test", self.tree))
+        self.assertIsNone(self.powershell("node build.js --mode=prod", self.tree))
+
+    def test_a_word_of_an_unlisted_program_that_the_text_does_not_settle_or_that_names_git_is_refused(self) -> None:
+        unsettled = "`node` is given a word the text does not settle, which may name a file in a hub"
+        for command, part in (
+            ('node x.js "$x"', unsettled),
+            ('for f in a b; do node x.js "$f"; done', unsettled),
+            ("node x.js *.txt", "`node` is given the files a pattern matches in"),
+            ("make GIT=git", "`make` is given GIT=git, which names git or a runner, which it may run"),
+            ("node run.js git commit -m x", "`node` is given git, which names git or a runner, which it may run"),
+            ("node run.js timeout", "`node` is given timeout, which names git or a runner, which it may run"),
+            ('cd "$x" && node ./*.txt', "`node` is given ./ in a directory the text does not settle"),
+            ('cd "$x" && node x.js prepare', "`node` is given x.js in a directory the text does not settle"),
+        ):
+            with self.subTest(command=command):
+                self.assertEqual("deny", self.bash(command, self.hub if "*" in command else self.tree))
+                self.assertIn(part, self.reason)
+        # With no guarded hub in view each is allowed with a note.
+        outside, unshared = self.outside()
+        self.assertIsNone(self.bash('node x.js "$x"', outside, unshared))
+        self.assertIn(unsettled, self.stderr)
+
+    def test_a_read_only_program_reads_a_hub_file(self) -> None:
+        for command in (
+            "cat README.md",
+            "head -n 5 README.md",
+            "grep -n hub README.md",
+            "wc -l README.md",
+            "diff README.md .gitignore",
+            "shasum -a 256 README.md",
+            "ls -la",
+            "sed -n 1p README.md",
+            'cat "$x"',
+        ):
+            with self.subTest(command=command):
+                self.assertIsNone(self.bash(command, self.hub))
+        self.assertIsNone(self.powershell("grep -n hub README.md", self.hub))
+        # A build under a prefix may be another program, as ugrep, whose --save-config writes, and gdu, whose -o does.
+        for command, program in (
+            ("ugrep --save-config=README.md x", "ugrep"),
+            ("gdu -o README.md .", "gdu"),
+            ("ghead -n 5 README.md", "ghead"),
+            # Windows' expand.exe writes its destination operand.
+            ("expand README.md out.txt", "expand"),
+        ):
+            with self.subTest(command=command):
+                self.assertEqual("deny", self.bash(command, self.hub))
+                self.assertIn(f"`{program}` is given {self.hub / 'README.md'}, a file of a guarded hub.", self.reason)
+        # Its output is still judged where a redirection writes it.
+        self.assertEqual("deny", self.bash("cat .gitignore > README.md", self.hub))
+        self.assertIn("The command redirects its output into", self.reason)
+
+    def test_a_python_script_the_hub_tracks_runs_from_the_hub_whatever_its_words(self) -> None:
+        readme = self.hub / "README.md"
+        tools = self.hub / "tools"
+        tools.mkdir()
+        (tools / "sync.py").write_text("print(1)\n", encoding="utf-8")
+        self.git(self.hub, "add", "tools/sync.py")
+        self.git(self.hub, "commit", "-q", "-m", "a script")
+        (self.hub / "local.json").write_text("print(1)\n", encoding="utf-8")
+        for command, cwd in (
+            ('python3 -B tools/sync.py README.md "$x" --out=README.md', self.hub),
+            (".venv/bin/python -B -X utf8 tools/sync.py README.md", self.hub),
+            (f'python3 "{tools / "sync.py"}" "{readme}"', self.tree),
+            (f'python3 "{tools / "sync.py"}" "{readme}"', self.hub),
+            ("python3 -E -q tools/sync.py -- README.md -s", self.hub),
+        ):
+            with self.subTest(command=command):
+                self.assertIsNone(self.bash(command, cwd))
+        self.assertIsNone(self.powershell(f"python3 '{tools / 'sync.py'}' '{readme}'", self.tree))
+        # A file the hub ignores, a script elsewhere, Python given -c or -m, and a variable Python reads before it
+        # leave the words judged.
+        for command in (
+            "python3 local.json README.md",
+            f'python3 "{self.root / "other.py"}" README.md',
+            "python3 -c 1 README.md",
+            "python3 -m tools.sync README.md",
+            "env PYTHONPATH=/x python3 tools/sync.py README.md",
+            "PYTHONSTARTUP=/x python3 tools/sync.py README.md",
+            "python3 -i tools/sync.py README.md",
+            "python3 -Bi tools/sync.py README.md",
+        ):
+            with self.subTest(command=command):
+                self.assertEqual("deny", self.bash(command, self.hub))
+                self.assertIn("`python3` is given ", self.reason)
+                self.assertIn(", a file of a guarded hub.", self.reason)
+        # A wildcard in a script's name is matched literally, never as the tracked script it would match.
+        (self.hub / "tools" / "s[y]nc.py").write_text("print(1)\n", encoding="utf-8")
+        self.assertEqual("deny", self.bash("python3 'tools/s[y]nc.py' README.md", self.hub))
+        # The interpreter's own option values are judged though the script is trusted.
+        for command in (
+            "python3 -X pycache_prefix=README.md tools/sync.py",
+            "python3 -Xpycache_prefix=README.md tools/sync.py",
+            "python3 -W error -X pycache_prefix=./README.md tools/sync.py",
+        ):
+            with self.subTest(command=command):
+                self.assertEqual("deny", self.bash(command, self.hub))
+                self.assertIn(f"`python3` is given {readme}", self.reason)
+        self.assertIsNone(self.bash("python3 -X utf8 -W error tools/sync.py README.md", self.hub))
+        # A variable assigned earlier in the command reaches Python only when exported: a bare assignment to a name the
+        # environment does not hold stays the shell's, one the environment holds, and export, are refused.
+        self.assertIsNone(self.bash("PYTHONPATH=/x; python3 tools/sync.py README.md", self.hub))
+        held = {**self.environment, "PYTHONPATH": "/srv"}
+        for command, environment in (
+            ("PYTHONPATH=/x; python3 tools/sync.py README.md", held),
+            ("export PYTHONPATH=/x; python3 tools/sync.py README.md", self.environment),
+        ):
+            with self.subTest(command=command):
+                self.assertEqual("deny", self.bash(command, self.hub, environment))
+        # A folder is no script the hub tracks, though its files are tracked: Python runs its __main__.py.
+        (tools / "__main__.py").write_text("print(1)\n", encoding="utf-8")
+        self.assertEqual("deny", self.bash("python3 tools README.md", self.hub))
+        self.assertIn(f"`python3` is given {tools}", self.reason)
+        # From PowerShell, an assignment to the environment before Python is refused.
+        self.assertEqual("deny", self.powershell("$env:PYTHONPATH = 'x'; python3 tools/sync.py README.md", self.hub))
+        self.assertEqual("deny", self.bash('python3 local.json "$x"', self.hub))
+        self.assertIn("`python3` is given a word the text does not settle", self.reason)
+
+    if not platform_support.WINDOWS:
+        # Windows makes a symbolic link only with a privilege a test cannot count on.
+
+        def test_a_hub_script_that_is_a_link_to_a_file_elsewhere_is_not_trusted(self) -> None:
+            elsewhere = self.root / "elsewhere.py"
+            elsewhere.write_text("print(1)\n", encoding="utf-8")
+            (self.hub / "linked.py").symlink_to(elsewhere)
+            self.git(self.hub, "add", "linked.py")
+            self.git(self.hub, "commit", "-q", "-m", "a link")
+            self.assertEqual("deny", self.bash("python3 linked.py README.md", self.hub))
+            self.assertIn(f"`python3` is given {self.hub / 'linked.py'}, a file of a guarded hub.", self.reason)
+
+    def test_a_gh_subcommand_that_downloads_or_clones_is_refused_in_the_hub(self) -> None:
+        for command in (
+            "gh repo clone owner/repo",
+            "gh release download v1 -p x",
+            "gh run download 12",
+            "gh -R owner/repo release download v1",
+            "gh gist clone 1234",
+            "gh cs cp remote:x .",
+            "gh at download x",
+        ):
+            named = [word for word in command.split()[1:3] if not word.startswith("-")]
+            named[:1] = [hub_guard.GH_ALIASES.get(named[0], named[0])]
+            subcommand = " ".join(named)
+            with self.subTest(command=command):
+                self.assertEqual("deny", self.bash(command, self.hub))
+                if "-R" not in command:
+                    self.assertIn(f"`gh {subcommand}` writes into {self.hub}, a folder of a guarded hub.", self.reason)
+        self.assertEqual("deny", self.powershell("gh repo clone owner/repo", self.hub))
+        self.assertEqual("deny", self.bash(f'gh release download v1 -D "{self.hub}"', self.tree))
+        self.assertIn(f"`gh` is given {self.hub}", self.reason)
+        self.assertEqual("deny", self.bash('gh release download "$tag"', self.tree))
+        self.assertIn("`gh` is given a word the text does not settle", self.reason)
+        self.assertEqual("deny", self.bash("gh release -b x download v1", self.tree))
+        self.assertIn("may be one that checks a branch out or writes files", self.reason)
+        # A subcommand that writes a git configuration, the repository's, which a worktree shares with its hub, or the
+        # global one, is refused wherever it runs.
+        for command, subcommand in (
+            ("gh repo set-default owner/repo", "repo set-default"),
+            ("gh repo fork --remote", "repo fork"),
+            ("gh repo create x --source=. --remote=up", "repo create"),
+            ("gh repo new x --source=. --remote=up", "repo create"),
+            ("gh repo rename newname", "repo rename"),
+            ("gh auth setup-git", "auth setup-git"),
+            ("gh auth login", "auth login"),
+        ):
+            for cwd in (self.hub, self.tree):
+                with self.subTest(command=command, cwd=cwd):
+                    self.assertEqual("deny", self.bash(command, cwd))
+                    # Pinned against a literal: the refusal names its own remedy, and no worktree, which refuses it too.
+                    self.assertEqual(
+                        f"`gh {subcommand}` writes a git configuration, its repository's, which every worktree shares "
+                        "with its hub, or the global one, so it is refused while a hub is guarded, from the hub and "
+                        "from a worktree alike. Run it from a terminal outside the clone.",
+                        self.reason,
+                    )
+        self.assertEqual("deny", self.powershell("gh repo set-default owner/repo", self.tree))
+        for command, cwd in (
+            ("gh repo clone owner/repo", self.tree),
+            ("gh pr view 12 --json state -q .state", self.hub),
+            ("gh pr list --json number --jq '.[].number'", self.hub),
+            ("gh issue list --label bug", self.hub),
+            (f'gh pr create --body-file "{self.root / "body.md"}"', self.hub),
+        ):
+            with self.subTest(command=command):
+                self.assertIsNone(self.bash(command, cwd))
+
+    def test_the_governance_session_s_own_commands_run_from_the_hub(self) -> None:
+        tools = self.hub / "tools"
+        tools.mkdir()
+        (tools / "project_release_sync.py").write_text("print(1)\n", encoding="utf-8")
+        self.git(self.hub, "add", "tools/project_release_sync.py")
+        self.git(self.hub, "commit", "-q", "-m", "a script")
+        deployed = self.root / "home" / ".claude" / "skills" / "review-prs" / "scripts" / "review_pipeline.py"
+        notes = self.root / "notes.md"
+        for command in (
+            f'python3 "{deployed}" prepare --host claude-code --pull owner/repo#12',
+            f"python3 -c \"print(open('{notes}').read())\"",
+            f'sed -n 1,5p "{notes}"',
+            f'printf "x\\n" >> "{notes}"',
+            "gh pr merge 12 --auto --squash",
+            "gh pr view 12 --json state,mergeStateStatus -q .state",
+            "gh pr checks 12",
+            "gh pr diff 12 --name-only",
+            "gh api repos/owner/repo/pulls/12/comments --paginate",
+            "gh api graphql -f query='{ viewer { login } }'",
+            f'gh issue create --title x --label bug --milestone v0.15.0 --body-file "{self.root / "issue.md"}"',
+            f'python3 "{deployed}" prepare --host claude-code --pull owner/repo#12',
+            f'python3 "{deployed}" status --pull owner/repo#12',
+            f'python3 -B "{deployed}" finish --pull owner/repo#12 --report "{self.root / "report.md"}"',
+            "git pull --ff-only origin main",
+            f'git worktree remove "{self.tree}"',
+            ".venv/bin/python -B tools/project_release_sync.py",
+        ):
+            with self.subTest(command=command):
+                self.assertIsNone(self.bash(command, self.hub))
+
+    def test_tar_s_archive_is_judged_where_its_mode_writes_it(self) -> None:
+        readme = self.hub / "README.md"
+        # A path with a colon before any slash, as a Windows drive path is, names an archive on a remote host to GNU
+        # tar, so a command naming the hub's file there says --force-local, as it must for GNU tar to write the file.
+        local = "--force-local " if ":" in str(readme).partition("/")[0] else ""
+        for command in (
+            f'tar {local}-cf "{readme}" notes.txt',
+            f'tar {local}-czf "{readme}" notes.txt',
+            f'tar {local}-rf "{readme}" notes.txt',
+            f'tar {local}-uf "{readme}" notes.txt',
+            f'tar {local}-Af "{readme}" other.tar',
+            # The old form's bundle stays the first word, so --force-local follows the archive, as GNU tar reads it.
+            f'tar cf "{readme}" {local}notes.txt',
+            f'tar {local}--create --file="{readme}" notes.txt',
+            f'tar {local}--create --file "{readme}" notes.txt',
+            f'tar {local}--delete -f "{readme}" notes.txt',
+            f'tar {local}-c -f"{readme}" notes.txt',
+            f'bsdtar {local}-cf "{readme}" notes.txt',
+            f'gnutar {local}-cf "{readme}" notes.txt',
+            f'gtar {local}-cf "{readme}" notes.txt',
+            f'timeout 5 tar {local}-cf "{readme}" notes.txt',
+        ):
+            with self.subTest(command=command):
+                self.assertEqual("deny", self.bash(command, self.tree))
+                self.assertIn(f"`tar` writes {readme}, a file of a guarded hub.", self.reason)
+        self.assertEqual("deny", self.bash("tar -cf archive.tar notes.txt", self.hub))
+        self.assertIn(f"`tar` writes {self.hub / 'archive.tar'}, a file of a guarded hub.", self.reason)
+        # Listing or comparing reads the archive, and `-` is standard output.
+        for command, cwd in (
+            (f'tar {local}-tf "{readme}"', self.tree),
+            (f'tar {local}-tvf "{readme}"', self.tree),
+            (f'tar {local}-df "{readme}" notes.txt', self.tree),
+            ("tar -cf - notes.txt > /dev/null", self.tree),
+            ("tar -cf - README.md | wc -c", self.hub),
+            ("tar -czf out.tgz notes.txt", self.tree),
+            ("tar tf archive.tar", self.hub),
+        ):
+            with self.subTest(command=command):
+                self.assertIsNone(self.bash(command, cwd))
+
+    def test_a_drive_path_archive_is_a_remote_one_to_tar_unless_force_local_makes_it_a_file(self) -> None:
+        # GNU tar reads an archive name with a colon before any slash as host:path, which it opens through a remote
+        # shell, a Windows drive path among them, on every platform.
+        for command in (r"tar -cf 'C:\x\y.tar' notes.txt", r"tar -tf 'C:\x\y.tar'", "tar -cf host:y.tar notes.txt"):
+            with self.subTest(command=command):
+                self.assertEqual("deny", self.bash(command, self.tree))
+                self.assertIn(
+                    "through a remote shell, which runs a command; --force-local makes it a file", self.reason
+                )
+        for command in (r"tar --force-local -cf 'C:\x\y.tar' notes.txt", r"tar --force-local -tf 'C:\x\y.tar'"):
+            with self.subTest(command=command):
+                self.assertIsNone(self.bash(command, self.tree))
+
+    def test_a_cookie_jar_a_repository_s_own_configuration_names_in_a_hub_refuses_a_git_call_there(self) -> None:
+        readme = (self.hub / "README.md").as_posix()
+        other = self.root / "other"
+        run_git(self.root, self.environment, "init", "-q", str(other)).check_returncode()
+        config = other / ".git" / "config"
+        original = config.read_text(encoding="utf-8")
+        for label, text, setting in (
+            ("cookie", f'[http]\n\tcookieFile = "{readme}"\n\tsaveCookies = true\n', "http.cookiefile"),
+            ("socket", f'[fsmonitor]\n\tsocketDir = "{(self.hub / "docs").as_posix()}"\n', "fsmonitor.socketdir"),
+        ):
+            config.write_text(original + text, encoding="utf-8")
+            for shell, command in (
+                (self.bash, f'git -C "{other}" ls-remote https://example.com/x'),
+                (self.bash, f'cd "{other}" && git fetch'),
+                (self.powershell, f"git -C '{other}' ls-remote https://example.com/x"),
+            ):
+                with self.subTest(case=label, command=command):
+                    self.assertEqual("deny", shell(command, self.tree))
+                    self.assertIn(
+                        f"The local git configuration a git call in {other} reads sets {setting} to", self.reason
+                    )
+                    self.assertIn(", into a file of a guarded hub, so the command is refused.", self.reason)
+            # A command with no git call there reads none of it.
+            self.assertIsNone(self.bash("git status", self.tree))
+            self.assertIsNone(self.bash(f'ls "{other}"', self.tree))
+        config.write_text(original, encoding="utf-8")
+        self.assertIsNone(self.bash(f'git -C "{other}" status', self.tree))
+
+    def test_a_cookie_jar_a_conditional_include_sets_only_for_another_checkout_is_refused_there(self) -> None:
+        readme = (self.hub / "README.md").as_posix()
+        other = self.root / "other"
+        run_git(self.root, self.environment, "init", "-q", str(other)).check_returncode()
+        jar = self.root / "configuration" / "jar.gitconfig"
+        jar.parent.mkdir(exist_ok=True)
+        jar.write_text(f'[http]\n\tcookieFile = "{readme}"\n\tsaveCookies = true\n', encoding="utf-8")
+        configured = self.configuration_file(
+            f'[includeIf "gitdir:{other.as_posix()}/"]\n\tpath = "{jar.as_posix()}"\n', "elsewhere.gitconfig"
+        )
+        environment = {**self.environment, "GIT_CONFIG_GLOBAL": str(configured)}
+        self.assertEqual("deny", self.bash(f'git -C "{other}" fetch', self.tree, environment))
+        self.assertIn(f"The global git configuration a git call in {other} reads sets http.cookiefile to", self.reason)
+        self.assertIsNone(self.bash("git status", self.tree, environment))
+
+    def test_a_command_that_writes_a_repository_s_configuration_and_runs_git_outside_the_hubs_is_refused(
+        self,
+    ) -> None:
+        readme = (self.hub / "README.md").as_posix()
+        other = self.root / "other"
+        cookie = f"[http]\\n\\tcookieFile = {readme}\\n\\tsaveCookies = true\\n"
+        written = "which may be a repository's own git configuration, and runs git outside every guarded hub"
+        for shell, command in (
+            (
+                self.bash,
+                f'git init -q "{other}" && printf "{cookie}" >> "{other}/.git/config" && '
+                f'git -C "{other}" ls-remote https://example.com/x',
+            ),
+            (self.bash, f'cp notes.txt "{other}/.git/config" && git -C "{other}" fetch'),
+            (self.bash, f'printf x > "{other}/.GIT/Config" && git -C "{other}" fetch'),
+            (self.bash, f'cp -R notes "{other}/.git" && git -C "{other}" fetch'),
+            (self.bash, f'printf x > "{other}/config" && git --git-dir="{other}" fetch'),
+            (
+                self.bash,
+                f'git -C "{other}" config --file "{other}/.git/config" http.cookieFile x && git -C "{other}" fetch',
+            ),
+            (self.powershell, f"Set-Content '{other}/.git/config' x; git -C '{other}' fetch"),
+        ):
+            with self.subTest(command=command):
+                self.assertEqual("deny", shell(command, self.tree))
+                self.assertIn(written, self.reason)
+        # A configuration written in a command of its own is read by the next command's judgement; a config file the
+        # session's own checkout reads lies in the hub, which is refused as any hub file is.
+        run_git(self.root, self.environment, "init", "-q", str(other)).check_returncode()
+        for command in (
+            f'git -C "{other}" config --file "{other}/.git/config" http.cookieFile x',
+            f'printf x > "{self.root}/config" && git status',
+            f'git init -q "{self.root}/fresh" && git -C "{self.root}/fresh" status',
+        ):
+            with self.subTest(command=command):
+                self.assertIsNone(self.bash(command, self.tree))
+
+    def test_a_command_that_writes_a_file_an_include_of_a_git_call_s_configuration_names_is_refused(self) -> None:
+        other = self.root / "other"
+        run_git(self.root, self.environment, "init", "-q", str(other)).check_returncode()
+        included = self.root / "includes" / "included.gitconfig"
+        included.parent.mkdir()
+        included.write_text("", encoding="utf-8")
+        relative = other / ".git" / "relative.gitconfig"
+        relative.write_text("", encoding="utf-8")
+        with (other / ".git" / "config").open("a", encoding="utf-8") as config:
+            config.write(f'[include]\n\tpath = "{included.as_posix()}"\n\tpath = relative.gitconfig\n')
+        for shell, command, written in (
+            (self.bash, f'printf x > "{included}" && git -C "{other}" fetch', included),
+            (self.bash, f'printf x > "{relative}" && git -C "{other}" fetch', relative),
+            (self.powershell, f"Set-Content '{included}' x; git -C '{other}' fetch", included),
+            (self.bash, f'cp notes.txt "{included.parent}/" && git -C "{other}" fetch', included),
+        ):
+            with self.subTest(command=command):
+                self.assertEqual("deny", shell(command, self.tree))
+                self.assertIn(
+                    f"The command writes {os.path.realpath(written)}, a file the git configuration", self.reason
+                )
+                self.assertIn(f"`git fetch` reads in {other} includes", self.reason)
+        self.assertIsNone(self.bash(f'printf x > "{self.root}/elsewhere.txt" && git -C "{other}" fetch', self.tree))
+
+    def test_a_git_call_s_configuration_git_cannot_read_is_refused_while_a_hub_is_guarded(self) -> None:
+        other = self.root / "other"
+        run_git(self.root, self.environment, "init", "-q", str(other)).check_returncode()
+        failure = git_client.GitError("bad config line 1", returncode=128)
+        with mock.patch.object(hub_guard, "repository_configuration", side_effect=failure):
+            self.assertEqual("deny", self.bash(f'git -C "{other}" fetch', self.tree))
+            self.assertIn(f"The guard could not read the git configuration `git fetch` reads in {other}", self.reason)
+            outside, unshared = self.outside()
+            self.assertIsNone(self.bash(f'git -C "{other}" fetch', outside, unshared))
+            self.assertIn("could not read the git configuration `git fetch` reads", self.stderr)
+
+    def test_the_repo_cleanup_sweep_and_python_m_from_the_hub_are_refused_and_their_forms_outside_run(self) -> None:
+        # repo-cleanup's sweep names the folder that holds the hub, so in a guarded clone it runs from outside it,
+        # as update-coding-agent-skills does; retiring by hand from the hub still works.
+        script = self.root / "home" / ".claude" / "skills" / "repo-cleanup" / "scripts" / "repo_cleanup.py"
+        sweep = (
+            f'python3 -B "{script}" sweep --repos-root "{self.root}" --regenerable="__pycache__,bin,obj" '
+            f'--protected="main" "{self.hub.name}"'
+        )
+        for cwd in (self.hub, self.tree):
+            with self.subTest(cwd=cwd):
+                self.assertEqual("deny", self.bash(sweep, cwd))
+                self.assertIn(f"`python3` is given {self.root}, which holds the guarded hub {self.hub}.", self.reason)
+        outside, unshared = self.outside()
+        self.assertIsNone(self.bash(sweep, outside, unshared))
+        for command in (f"git worktree remove '{self.tree}'", "git branch -D 'feat/demo'"):
+            with self.subTest(command=command):
+                self.assertIsNone(self.bash(command, self.hub))
+        # Python run from the hub with -m names hub files; the hub's interpreter run from a worktree does not.
+        for folder in (self.hub, self.tree):
+            (folder / "requirements-dev.txt").write_text("ruff\n", encoding="utf-8")
+            (folder / "tests").mkdir()
+            (folder / "tests" / "test_x.py").write_text("", encoding="utf-8")
+        install = "-m pip install --require-hashes --only-binary :all: -r requirements-dev.txt"
+        for command, path in (
+            (f".venv/bin/python {install}", self.hub / "requirements-dev.txt"),
+            ("python -m pytest tests/test_x.py -q", self.hub / "tests" / "test_x.py"),
+        ):
+            with self.subTest(command=command):
+                self.assertEqual("deny", self.bash(command, self.hub))
+                self.assertIn(f"`python` is given {path}, a file of a guarded hub.", self.reason)
+        for command in (f'"{self.hub / ".venv" / "bin" / "python"}" {install}', "python -m pytest tests/test_x.py -q"):
+            with self.subTest(command=command):
+                self.assertIsNone(self.bash(command, self.tree))
+
+    def test_a_place_whose_configuration_lookup_git_cannot_answer_is_refused_while_a_hub_is_guarded(self) -> None:
+        failure = git_client.GitError("git could not read the place", returncode=128)
+        with mock.patch.object(hub_guard, "alias_lookups", side_effect=failure):
+            self.assertEqual("deny", self.bash("git status", self.tree))
+            self.assertIn(
+                "The guard could not read where `git status` runs (git could not read the place)", self.reason
+            )
+            outside, unshared = self.outside()
+            self.assertIsNone(self.bash("git status", outside, unshared))
+            self.assertIn("could not read where `git status` runs", self.stderr)
+
+    def test_an_include_the_guard_cannot_place_refuses_a_command_that_writes_a_file(self) -> None:
+        unplaced = hub_guard.RepositoryConfiguration([], [None])
+        with mock.patch.object(hub_guard, "repository_configuration", return_value=unplaced):
+            self.assertEqual("deny", self.bash("printf x > out.txt && git status", self.tree))
+            self.assertIn("includes a file the guard cannot place, which the command may write", self.reason)
+            # A command that writes nothing reads the same configuration harmlessly.
+            self.assertIsNone(self.bash("git status", self.tree))
+
+    def test_a_multicall_program_whose_utility_the_text_does_not_settle_is_refused_in_both_shells(self) -> None:
+        unsettled = "runs a utility the text does not settle, which may be any command"
+        for command in ('coreutils "$x" a b', "coreutils --help", 'toybox "$x"'):
+            with self.subTest(command=command):
+                self.assertEqual("deny", self.bash(command, self.tree))
+                self.assertIn(unsettled, self.reason)
+        self.assertEqual("deny", self.powershell("coreutils $x a b", self.tree))
+        readme = self.hub / "README.md"
+        self.assertEqual("deny", self.powershell(f"coreutils cp notes.txt '{readme}'", self.tree))
+        self.assertIn(f"`cp` writes {readme}, a file of a guarded hub.", self.reason)
+        self.assertIsNone(self.powershell("coreutils ls", self.tree))
+
+    def test_a_multicall_program_named_after_a_runner_or_an_unlisted_program_is_refused(self) -> None:
+        for command, part in (
+            ("timeout 5 coreutils ls", "coreutils names git or another runner, which may run git"),
+            ("nice toybox ls", "toybox names git or another runner, which may run git"),
+            ("node x.js coreutils", "`node` is given coreutils, which names git or a runner, which it may run"),
+            ("make TOOL=toybox", "`make` is given TOOL=toybox, which names git or a runner, which it may run"),
+        ):
+            with self.subTest(command=command):
+                self.assertEqual("deny", self.bash(command, self.tree))
+                self.assertIn(part, self.reason)
+        self.assertEqual("deny", self.bash("coreutils timeout 5 git commit -m x", self.hub))
+        self.assertIn("runs timeout:", self.reason)
+
+    def test_a_runner_or_a_program_whose_options_the_guard_reads_is_read_under_a_prefix(self) -> None:
+        for command, runner in (
+            ("gtimeout 5 git commit -m x", "timeout"),
+            ("utimeout 5 git commit -m x", "timeout"),
+            ("genv git commit -m x", "env"),
+            ("uenv git commit -m x", "env"),
+            ("gnice git commit -m x", "nice"),
+            ("gnohup git commit -m x", "nohup"),
+            ("gstdbuf -oL git commit -m x", "stdbuf"),
+            ("gtime git commit -m x", "time"),
+            ("gchroot / git commit -m x", "chroot"),
+            ("gxargs git commit -m x < /dev/null", "xargs"),
+            ("timeout 5 gtimeout 5 git status", "timeout"),
+        ):
+            for shell in (self.bash, self.powershell):
+                if shell == self.powershell and "<" in command:
+                    continue
+                with self.subTest(command=command, shell=shell.__name__):
+                    self.assertEqual("deny", shell(command, self.hub))
+                    self.assertIn(f"runs {runner}: ", self.reason)
+        readme = self.hub / "README.md"
+        for command, part in (
+            (f'gsort -o "{readme}" notes.txt', "sort is given -o, not one of its options the guard knows to be safe"),
+            (f'usort --output="{readme}" notes.txt', "sort is given --output="),
+            (f'gfind . -fprint "{readme}"', "find is given -fprint, not one of its options the guard knows to be safe"),
+            (
+                f'gtar -xf notes.tar -C "{self.hub}"',
+                "tar is given -xf, not one of its options the guard knows to be safe",
+            ),
+            (f'timeout 5 gsort -o "{readme}" notes.txt', "sort is given -o, not one of its options"),
+        ):
+            with self.subTest(command=command):
+                self.assertEqual("deny", self.bash(command, self.tree))
+                self.assertIn(part, self.reason)
+        for command in ("gtimeout 5 ls -la", "gsort -u notes.txt", "gfind . -name x", "gtar -tf notes.tar"):
+            with self.subTest(command=command):
+                self.assertIsNone(self.bash(command, self.tree))
+        # A prefixed build is never Windows' own sort.exe, whose -u the guard cannot tell from a slash switch.
+        with mock.patch.object(platform_support, "SYSTEM_PROGRAMS_TAKE_SLASH_OPTIONS", True):
+            self.assertEqual("deny", self.bash("sort -u notes.txt", self.tree))
+            self.assertIsNone(self.bash("gsort -u notes.txt", self.tree))
+            self.assertIsNone(self.bash("timeout 5 gsort -u notes.txt", self.tree))
+
     def test_fsutil_and_a_powershell_runner_s_writer_are_read(self) -> None:
         readme = self.hub / "README.md"
         command = f"fsutil hardlink create '{self.root / 'lnk'}' '{readme}'"
@@ -3552,11 +4125,11 @@ class UnderstoodSetTests(GuardTestCase):
 
     def test_the_commands_sessions_run_most_are_read(self) -> None:
         for command in (
-            'cd "$(git rev-parse --show-toplevel)" && python -B -m pytest tests/tools/test_x.py -q 2>&1 | tail -20',
+            f'cd "{self.tree}" && python -B -m pytest tests/tools/test_x.py -q 2>&1 | tail -20',
             "grep -n 'def ' tools/hub_guard.py | head -40",
             "sed -n '1,40p' docs/design.md",
             "git diff --stat && git status --short",
-            'for f in a.py b.py; do python -m ruff check "$f"; done',
+            "python -m ruff check a.py b.py",
             "timeout 600 python -B -m pytest tests/tools -q",
             'gh pr view 12 --json title,body --jq ".title"',
             "ls -la; wc -l README.md; cat README.md | tr a-z A-Z",
@@ -3575,6 +4148,22 @@ class UnderstoodSetTests(GuardTestCase):
         ):
             with self.subTest(command=command):
                 self.assertIsNone(self.bash(command, self.tree))
+        # A program the guard does not know to write nothing is judged by its words, so one given a loop's variable,
+        # or relative words in a directory a substitution computes, which may be the hub, is refused; the forms above
+        # write the directory and the words out.
+        for command, part in (
+            (
+                'cd "$(git rev-parse --show-toplevel)" && python -B -m pytest tests/tools/test_x.py -q',
+                "`python` is given pytest in a directory the text does not settle",
+            ),
+            (
+                'for f in a.py b.py; do python -m ruff check "$f"; done',
+                "`python` is given a word the text does not settle, which may name a file in a hub",
+            ),
+        ):
+            with self.subTest(command=command):
+                self.assertEqual("deny", self.bash(command, self.tree))
+                self.assertIn(part, self.reason)
 
     def test_with_no_hub_in_view_a_part_the_guard_does_not_read_is_allowed_unless_a_named_path_reaches_one(
         self,
@@ -4384,6 +4973,65 @@ class ContractListTests(unittest.TestCase):
             set(hub_guard.WRITING_PROGRAMS),
         )
         self.assertEqual({"ln", "link", "fsutil"}, set(hub_guard.LINK_PROGRAMS))
+        self.assertEqual({"cp", "install"}, set(hub_guard.LINK_OPTIONS))
+
+    def test_the_programs_known_to_write_nothing_and_the_other_readers_are_the_ones_its_contract_names(self) -> None:
+        listed = contract_names("and to run no", ", each by its own name only")
+        self.assertEqual(sorted(hub_guard.READ_ONLY_PROGRAMS), sorted(listed))
+        # Pinned against literals: the programs whose words the guard does not judge.
+        self.assertEqual(
+            {
+                *("cat", "head", "tail", "tac", "grep", "egrep", "fgrep", "findstr", "jq", "strings", "od", "hexdump"),
+                *("wc", "cut", "tr", "paste", "fold", "nl", "rev", "unexpand", "fmt", "column", "comm"),
+                *("join", "diff", "cmp", "md5sum", "md5", "sha1sum", "sha256sum", "sha512sum", "shasum", "b2sum"),
+                *("cksum", "ls", "stat", "du", "df", "realpath", "readlink", "basename", "dirname", "pwd", "which"),
+                *("where", "true", "false", "sleep", "seq", "yes", "expr", "date", "uname", "whoami", "id"),
+                *("printenv", "nproc"),
+            },
+            set(hub_guard.READ_ONLY_PROGRAMS),
+        )
+        # No program a table reads is also known to write nothing, so no table's reading is skipped.
+        tables = {*hub_guard.RUNNERS, *hub_guard.PROGRAM_OPTIONS, *hub_guard.WRITING_PROGRAMS, *hub_guard.LINK_PROGRAMS}
+        self.assertEqual(set(), tables & set(hub_guard.READ_ONLY_PROGRAMS))
+        writers = contract_names("and `gh run download` (", ")")
+        self.assertEqual(["GH_WRITERS"], writers)
+        subcommands = contract_names("or where their words name,", "(`GH_WRITERS`)")
+        self.assertEqual(sorted(f"gh {' '.join(key)}" for key in hub_guard.GH_WRITERS), sorted(subcommands))
+        self.assertEqual(
+            {
+                ("run", "download"),
+                ("release", "download"),
+                ("attestation", "download"),
+                ("repo", "clone"),
+                ("gist", "clone"),
+                ("codespace", "cp"),
+            },
+            hub_guard.GH_WRITERS,
+        )
+        self.assertEqual(("bBdEIOPqsSuvx", "WX"), (hub_guard.PYTHON_FLAGS, hub_guard.PYTHON_VALUED))
+        self.assertEqual({"cs": "codespace", "at": "attestation"}, hub_guard.GH_ALIASES)
+        self.assertEqual({("repo", "new"): ("repo", "create")}, hub_guard.GH_SUBCOMMAND_ALIASES)
+        configuration = contract_names("or the global one,", "(`GH_CONFIGURATION_WRITERS`)")
+        self.assertEqual(
+            sorted(f"gh {' '.join(key)}" for key in hub_guard.GH_CONFIGURATION_WRITERS), sorted(configuration)
+        )
+        self.assertEqual(
+            {
+                *(("repo", "set-default"), ("repo", "rename"), ("repo", "fork"), ("repo", "create")),
+                *(("auth", "setup-git"), ("auth", "login")),
+            },
+            hub_guard.GH_CONFIGURATION_WRITERS,
+        )
+        for name in ("python", "python3", "python3.12"):
+            self.assertIsNotNone(hub_guard.PYTHON_NAMES.fullmatch(name))
+        for name in ("python2", "pythonw", "py", "ipython", "python3.12-config"):
+            self.assertIsNone(hub_guard.PYTHON_NAMES.fullmatch(name))
+        multicall = contract_names("as `coreutils cp` or `toybox cp` does (", ")")
+        self.assertEqual(["MULTICALL_PROGRAMS"], multicall)
+        self.assertEqual({"coreutils", "toybox"}, set(hub_guard.MULTICALL_PROGRAMS))
+        self.assertEqual("--coreutils-prog=", hub_guard.MULTICALL_OPTION)
+        self.assertEqual({"bsdtar": "tar", "gnutar": "tar"}, hub_guard.BUILD_NAMES)
+        self.assertEqual(("g", "u"), hub_guard.BUILD_PREFIXES)
 
     def test_the_git_options_that_write_or_run_and_the_settings_understood_are_the_ones_its_contract_names(
         self,
@@ -4479,7 +5127,9 @@ class WorkflowTests(GuardTestCase):
         # Each git command a document or a repository skill tells the hub to run, as the document writes it, and the
         # same command with its placeholders filled in; the guard must allow each from the hub through both shells.
         # The repository skills that work on the hub, repo-cleanup and shepherd-pull-requests, and tools/worktrees.py,
-        # run git from Python, which the hook never sees, so the commands a session types are these.
+        # run git from Python, whose git calls the hook never sees; the hook judges only the command line that starts
+        # their Python, as any unlisted program's (WriteGuardTests), so the git commands a session types are these.
+        # repo-cleanup's sweep names the folder that holds the hub, so in a guarded clone it runs from outside it.
         for document, written, command in (
             ("CLAUDE.md", "`git worktree remove <path>`", "git worktree remove '.claude/worktrees/feat-demo'"),
             ("CLAUDE.md", "`git branch -D <kind>/<name>`", "git branch -D 'feat/demo'"),
@@ -5056,10 +5706,158 @@ def test_a_native_program_s_word_from_powershell_is_read_with_its_pattern(
         ("gpg", None),
         ("u", None),
         ("", None),
+        ("gzip", None),
+        ("perl", None),
+        ("gtimeout", None),
     ],
 )
 def test_a_build_s_prefixed_name_is_read_as_the_program(program: str, expected: str | None) -> None:
     assert expected == hub_guard.writer_name(program)
+
+
+@pytest.mark.parametrize(
+    ("program", "expected"),
+    [
+        ("timeout", "timeout"),
+        ("gtimeout", "timeout"),
+        ("utimeout", "timeout"),
+        ("genv", "env"),
+        ("gsort", "sort"),
+        ("gfind", "find"),
+        ("gtar", "tar"),
+        ("bsdtar", "tar"),
+        ("gnutar", "tar"),
+        ("gpatch", "gpatch"),
+        ("ghead", "ghead"),
+        ("gcat", "gcat"),
+        ("ugrep", "ugrep"),
+        ("gdu", "gdu"),
+        ("gcp", "cp"),
+        ("gh", "gh"),
+        ("ggh", "ggh"),
+        ("ugit", "ugit"),
+        ("uname", "uname"),
+        ("grep", "grep"),
+        ("", ""),
+    ],
+)
+def test_every_table_reads_a_build_under_its_prefixed_or_other_name(program: str, expected: str) -> None:
+    assert expected == hub_guard.built_name(program)
+
+
+@pytest.mark.parametrize(
+    ("word", "expected"),
+    [
+        # A word that may be a path: absolute, from the home, `.` or `..`, or relative to a name that is there.
+        ("/srv/x", ["/srv/x"]),
+        ("~/x", ["<home>/x"]),
+        ("~", ["<home>"]),
+        (".", ["."]),
+        ("..", [".."]),
+        ("./new", ["./new"]),
+        ("../x", ["../x"]),
+        ("README.md", ["README.md"]),
+        ("docs/new.md", ["docs/new.md"]),
+        # A bare name or a value that is not there yet, or that starts with a dot but is no path.
+        ("new.txt", []),
+        ("prepare", []),
+        ("owner/repo#12", []),
+        (".state", []),
+        (".[].number", []),
+        ("https://example.com/x", []),
+        # A first name holding a character no Windows file name holds names no file, on every platform.
+        ("a<b/c", []),
+        ('x"y', []),
+        ("a|b", []),
+        ("", []),
+        # An option's value: after `=`, or the rest of a one-dash bundle; a long option's name is no path.
+        ("--output=/srv/x", ["/srv/x"]),
+        ("--output=README.md", ["README.md"]),
+        ("-o/srv/x", ["/srv/x"]),
+        ("-oREADME.md", ["README.md"]),
+        ("--docs", []),
+        ("-v", []),
+        ("--a=b=/srv/x", ["/srv/x"]),
+        # A quoted or blank-separated part, as a script or a command line holds it.
+        ("open('/srv/x', 'w')", ["/srv/x"]),
+        ("cp a /srv/x", ["/srv/x"]),
+        ('print(open("README.md").read())', ["README.md"]),
+    ],
+)
+def test_a_word_may_name_a_path_only_where_it_may_be_one(word: str, expected: list[str], tmp_path: Path) -> None:
+    (tmp_path / "README.md").write_text("x", encoding="utf-8")
+    (tmp_path / "docs").mkdir()
+    home = tmp_path / "home"
+    environment = {"HOME": str(home)}
+    directory = hub_guard.Directory(tmp_path)
+    found = hub_guard.word_paths(word, directory, environment)
+    assert [value.replace(str(home), "<home>") for value in found] == expected
+
+
+def test_a_drive_relative_word_names_a_path_where_the_platform_reads_a_drive(tmp_path: Path) -> None:
+    # Windows reads C:x as x in drive C's current directory, which may be a hub; elsewhere it is one name, holding a
+    # character no Windows file name holds.
+    expected = ["C:x"] if Path("C:x").drive else []
+    assert hub_guard.word_paths("C:x", hub_guard.Directory(tmp_path), {}) == expected
+
+
+def test_every_relative_word_may_name_a_path_where_the_directory_is_not_settled() -> None:
+    assert hub_guard.word_paths("prepare", hub_guard.UNKNOWN, {}) == ["prepare"]
+    assert hub_guard.word_paths("--x=a", hub_guard.UNKNOWN, {}) == ["a"]
+    assert hub_guard.word_paths("/srv/x", hub_guard.UNKNOWN, {}) == ["/srv/x"]
+
+
+@pytest.mark.parametrize(
+    ("words", "expected"),
+    [
+        (["tools/x.py", "a"], "tools/x.py"),
+        (["-B", "tools/x.py"], "tools/x.py"),
+        (["-BIu", "/srv/x.py", "--flag"], "/srv/x.py"),
+        (["-X", "utf8", "tools/x.py"], "tools/x.py"),
+        (["-Xutf8", "-W", "error", "tools/x.py"], "tools/x.py"),
+        (["-c", "print(1)"], None),
+        (["-m", "pytest"], None),
+        (["-Bc", "print(1)"], None),
+        (["-i", "tools/x.py"], None),
+        (["--version"], None),
+        (["-"], None),
+        ([None, "tools/x.py"], None),
+        (["-B"], None),
+        ([], None),
+    ],
+)
+def test_python_s_script_is_read_only_after_options_that_take_none(
+    words: list[str | None], expected: str | None, tmp_path: Path
+) -> None:
+    found = hub_guard.python_script("python3", [(word, False) for word in words], hub_guard.Directory(tmp_path))
+    if expected is None:
+        assert found is None
+    else:
+        assert found is not None
+        script, index = found
+        # Joined to the directory the command runs in, as Python resolves it: a rooted path such as /srv/x.py keeps that
+        # directory's drive on Windows, and a relative one is read from it.
+        assert script == tmp_path / expected
+        assert words[index] == expected
+    assert hub_guard.python_script("node", [("tools/x.py", False)], hub_guard.Directory(tmp_path)) is None
+
+
+@pytest.mark.parametrize(
+    ("program", "arguments", "expected"),
+    [
+        ("coreutils", ["cp", "a", "b"], ("cp", ["a", "b"])),
+        ("coreutils", ["--coreutils-prog=gcp", "a"], ("cp", ["a"])),
+        ("toybox", ["coreutils", "/bin/rm", "x"], ("rm", ["x"])),
+        ("coreutils", [None, "a"], (None, [None, "a"])),
+        ("coreutils", ["--help"], (None, ["--help"])),
+        ("coreutils", [], (None, [])),
+        ("cp", ["a", "b"], ("cp", ["a", "b"])),
+    ],
+)
+def test_a_multicall_program_is_read_as_the_utility_it_runs(
+    program: str, arguments: list[str | None], expected: tuple[str | None, list[str | None]]
+) -> None:
+    assert expected == hub_guard.multicall(program, arguments)
 
 
 @pytest.mark.parametrize(
