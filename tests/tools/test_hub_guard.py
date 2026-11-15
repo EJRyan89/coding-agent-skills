@@ -2651,6 +2651,11 @@ class CommandGuardTests(GuardTestCase):
                 self.assertEqual("deny", self.decision(event, {**self.environment, name: str(other)}))
 
 
+# Where pwsh's aliases shadow programs, on Windows, tee is Tee-Object, a cmdlet the guard does not read.
+TEE_IS_A_CMDLET = platform_support.POWERSHELL_ALIASES_SHADOW_PROGRAMS
+TEE_UNREAD = "runs tee, a PowerShell command the guard does not read"
+
+
 class WriteGuardTests(GuardTestCase):
     """A file a program or a cmdlet writes at a path its words name, a link a command makes, and a file the
     environment or the configuration names for an https call or git's file-system monitor to write, judged as a
@@ -2703,7 +2708,10 @@ class WriteGuardTests(GuardTestCase):
                     continue  # pwsh reads '' as an empty word, and cp, mv, and rm as cmdlets on Windows
                 with self.subTest(command=command, shell=shell.__name__):
                     self.assertEqual("deny", shell(command, cwd))
-                    self.assertIn(f"`{writer}` writes {written}, a file of a guarded hub.", self.reason)
+                    if shell == self.powershell and writer == "tee" and TEE_IS_A_CMDLET:
+                        self.assertIn(TEE_UNREAD, self.reason)
+                    else:
+                        self.assertIn(f"`{writer}` writes {written}, a file of a guarded hub.", self.reason)
         # A word the text does not settle may name any file, and so may every word xargs adds from its input.
         for command, part in (
             ('rm -f "$file"', "`rm` writes a file the text does not settle, which may lie in a hub"),
@@ -2730,7 +2738,11 @@ class WriteGuardTests(GuardTestCase):
                 if shell == self.powershell and command.startswith(("cp ", "rm ")):
                     continue
                 with self.subTest(command=command, shell=shell.__name__):
-                    self.assertIsNone(shell(command, self.tree))
+                    if shell == self.powershell and " tee " in command and TEE_IS_A_CMDLET:
+                        self.assertEqual("deny", shell(command, self.tree))
+                        self.assertIn(TEE_UNREAD, self.reason)
+                    else:
+                        self.assertIsNone(shell(command, self.tree))
         # With no guarded hub in view, a write the text does not settle is noted.
         outside, unshared = self.outside()
         self.assertIsNone(self.bash('rm -f "$file"', outside, unshared))
@@ -2749,7 +2761,9 @@ class WriteGuardTests(GuardTestCase):
             with self.subTest(command=command):
                 self.assertEqual("deny", self.bash(command, cwd))
                 self.assertIn(part, self.reason)
-        for command in (f'rm -f "{scratch}"/*.txt', "rm -f *.pyc", f"rm -f '{scratch}/*.md'"):
+        # A quoted wildcard is a literal name, which Windows cannot hold, so the guard cannot look it up there.
+        literal = [] if platform_support.WINDOWS else [f"rm -f '{scratch}/*.md'"]
+        for command in (f'rm -f "{scratch}"/*.txt', "rm -f *.pyc", *literal):
             with self.subTest(command=command):
                 self.assertIsNone(self.bash(command, self.tree))
         environment = {**self.environment, "TMP": str(scratch)}
