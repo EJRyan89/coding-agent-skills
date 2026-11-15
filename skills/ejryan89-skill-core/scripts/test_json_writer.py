@@ -9,10 +9,12 @@ import tempfile
 import unittest
 from pathlib import Path
 from typing import Any
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import json_writer
+import nesting_depth
 from json_reader import loads
 from json_writer import CONTENT_ERRORS, JsonWriteRefused, dumps, write
 
@@ -62,7 +64,31 @@ class RefusalTests(unittest.TestCase):
         )
 
     def test_nesting_past_the_recursion_limit_is_refused(self) -> None:
+        # The refusal's text is pinned here once; the other tests take it from NESTED.
         self.assertEqual("the value nests deeper than the writer can write", self.refusal(nested(100_000)))
+        self.assertEqual("the value nests deeper than the writer can write", json_writer.NESTED)
+
+    def test_nesting_is_judged_at_the_readers_limit_before_the_json_module_writes(self) -> None:
+        # nested(n) is n + 1 levels. The json module's writer stops a deep value with a RecursionError on one Python
+        # version and writes it on another, so it never sees a value past the limit, and the answer is the same on
+        # every version.
+        limit = nesting_depth.DEPTH_LIMIT
+        self.assertEqual(json.dumps(nested(limit - 1)), dumps(nested(limit - 1)))
+        loads(dumps(nested(limit - 1)))
+        for deep in (nested(limit), nested(100_000)):
+            with mock.patch.object(json, "dumps", side_effect=AssertionError("written")):
+                self.assertEqual(json_writer.NESTED, self.refusal(deep))
+
+    def test_a_tuple_and_an_object_are_each_a_level_as_the_reader_counts_them(self) -> None:
+        limit = nesting_depth.DEPTH_LIMIT
+        value: Any = "leaf"
+        for level in range(limit):
+            value = (value,) if level % 2 else {"k": value}
+        self.assertFalse(json_writer.nests_too_deep(value))
+        self.assertEqual(json.dumps(value), dumps(value))
+        self.assertTrue(json_writer.nests_too_deep([value]))
+        self.assertEqual(json_writer.NESTED, self.refusal([value]))
+        self.assertEqual(json_writer.NESTED, self.refusal({"k": [value]}))
 
     def test_a_refusal_is_a_value_error_and_a_value_of_no_json_type_is_still_a_type_error(self) -> None:
         self.assertTrue(issubclass(JsonWriteRefused, ValueError))

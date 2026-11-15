@@ -109,7 +109,9 @@ EXIT_WAIT_SECONDS = 2.0
 
 
 Problem = tuple[str, str, str]  # (ERROR or WARNING, source, message)
-# Why a server whose definition nests past the recursion limit, which json.dumps cannot write, is never started.
+# Why a server whose definition nests past nesting_depth's DEPTH_LIMIT, which json_writer.nests_too_deep judges the same
+# on every Python version, is never started: the key that groups it is its JSON text, which json.dumps stops with a
+# RecursionError on one version and writes whole on another.
 TOO_DEEP = "its definition nests too deep to compare with the others"
 
 
@@ -152,13 +154,12 @@ def group_servers(root: Path, only: str | None) -> tuple[list[tuple[str, list[st
     for name, source, entry in servers:
         if only is not None and name != only:
             continue
-        # A TOML date or time has no JSON form; repr keeps such a definition distinct, and the handshake then
-        # rejects the value as it rejects any other of the wrong type.
-        try:
-            key = (name, json.dumps(connection(entry), sort_keys=True, default=repr))
-        except RecursionError:
+        if json_writer.nests_too_deep(connection(entry)):
             problems.append(("ERROR", source, f"Server '{name}': {TOO_DEEP}"))
             continue
+        # A TOML date or time has no JSON form; repr keeps such a definition distinct, and the handshake then
+        # rejects the value as it rejects any other of the wrong type.
+        key = (name, json.dumps(connection(entry), sort_keys=True, default=repr))
         if key in groups:
             groups[key][1].append(source)
         else:
