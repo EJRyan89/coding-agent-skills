@@ -570,6 +570,31 @@ class SharedFactPolicy(unittest.TestCase):
             ('def fenced(line):\n    return "```" in line\n', 2),
             ('def fenced(line):\n    return line[:3] == "~~~"\n', 2),
             ('MARKERS = ("```", "~~~")\n\n\ndef fenced(line):\n    return line[:3] in MARKERS\n', 5),
+            # A run given first to a str method that finds, counts, splits at, or takes it off.
+            *(
+                (f'def blocks(text):\n    return text.{method}("```")\n', 2)
+                for method in (
+                    "split",
+                    "rsplit",
+                    "find",
+                    "rfind",
+                    "index",
+                    "rindex",
+                    "partition",
+                    "rpartition",
+                    "count",
+                    "removeprefix",
+                    "removesuffix",
+                )
+            ),
+            ('FENCE = "~~~"\n\n\ndef fenced(line):\n    return line.find(FENCE) == 0\n', 5),
+            # A marker given to a strip, which takes off a run of any length.
+            *(
+                (f'def fenced(line):\n    return line.{method}("{marker}") != line\n', 2)
+                for method in ("strip", "lstrip", "rstrip")
+                for marker in ("`", "~", " `")
+            ),
+            ('MARKER = "`"\n\n\ndef fenced(line):\n    return line.lstrip(MARKER) != line\n', 5),
         ):
             with self.subTest(reader=reader):
                 self.assertEqual(
@@ -587,6 +612,11 @@ class SharedFactPolicy(unittest.TestCase):
             'HEADING = "#"\n\n\ndef heading(line):\n    return line.startswith(HEADING) or line == "~~"\n',
             'import re\n\nWORDS = re.compile(r"[a-z~]+")\n',
             'import re\n\nCODES = re.compile(r"[XYZ]{3}")\n',
+            # A str method given no run, or a strip of no marker, reads no fence.
+            'def cells(line):\n    return line.strip("|").split("|")\n',
+            'def tail(text):\n    return text.partition("``")[2].count("#")\n',
+            "def word(text):\n    return text.strip()\n",
+            'MARKER = "`"\n\n\ndef quoted(name):\n    return name.startswith(MARKER)\n',
         ):
             with self.subTest(passing=passing):
                 self.assertEqual([], self.problems({guidance: passing}))
