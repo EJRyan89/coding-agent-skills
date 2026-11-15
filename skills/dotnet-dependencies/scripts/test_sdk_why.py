@@ -205,6 +205,24 @@ def test_failures_name_the_reason_and_leave_the_project_unanswered(text: str, co
     assert set() == answer.answered
 
 
+def test_a_long_unread_first_line_and_a_multi_line_start_error_are_each_one_bounded_line() -> None:
+    runs = Runs({"Harbor.Core.csproj": Completed(1, "error: " + "x" * 5000 + "\nmore\n")})
+    answer = run_why([Path("Harbor.Core.csproj")], "Lantern.Json", Services(run=runs), 30)
+    [failure] = answer.failures.values()
+    stated = f"dotnet nuget why answered nothing (exit code 1){UNREAD}"
+    assert failure.startswith(f"{stated}error: xxx")
+    assert failure.endswith("...")
+    assert len(failure) == len(stated) + REASON_CHARACTERS + 3
+
+    def refused(arguments: Sequence[str], timeout: float) -> Completed:
+        raise OSError(8, "Exec format\r\n  error")
+
+    answer = run_why([Path("Harbor.Core.csproj")], "Lantern.Json", Services(run=refused), 30)
+    assert {
+        Path("Harbor.Core.csproj"): "dotnet nuget why could not start: [Errno 8] Exec format error"
+    } == answer.failures
+
+
 def test_a_run_that_timed_out_after_printing_part_of_an_answer_is_not_taken_as_an_answer() -> None:
     runs = Runs({"Harbor.Core.csproj": Completed(-1, CORE_TEXT, timed_out=True)})
     answer = run_why([Path("Harbor.Core.csproj")], "Lantern.Json", Services(run=runs), 7)

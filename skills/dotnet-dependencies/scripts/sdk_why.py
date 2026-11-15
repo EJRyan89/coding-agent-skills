@@ -27,7 +27,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-cor
 
 from bounded_process import non_interactive_environment, run_bounded
 from executable_locator import find_program, located_command
-from flat_text import reason_line
+from flat_text import flat_text, reason_line
 from ordinal_case import ordinal_fold
 
 ANSI = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
@@ -119,7 +119,9 @@ def why_command(project: Path, package: str) -> list[str]:
 def parse_why(text: str, package: str) -> ParsedWhy:
     """The chains to `package` in a run's output, per project stem, the stems the run answered, and the lines after
     the answer's last heading, framework, or tree line. A heading the CLI wraps at the console width goes on to the
-    first blank line, so its wrapped part is never taken for a line after the answer."""
+    first blank line, so its wrapped part is never taken for a line after the answer. A line printed right after a
+    heading, with no blank line between, is read as the heading's wrapped part, so an error there is not quoted and
+    the failure names the exit code alone."""
     answer = ParsedWhy()
     target = ordinal_fold(package)
     project: str | None = None
@@ -179,7 +181,7 @@ def run_why(projects: Sequence[Path], package: str, services: Services, timeout:
         try:
             result = services.run(why_command(project, package), timeout)
         except OSError as error:
-            answer.failures[project] = f"dotnet nuget why could not start: {error}"
+            answer.failures[project] = f"dotnet nuget why could not start: {flat_text(str(error))}"
             continue
         part = parse_why(result.text, package)
         if result.timed_out:
@@ -193,7 +195,7 @@ def run_why(projects: Sequence[Path], package: str, services: Services, timeout:
         elif NO_ASSETS in result.text and not part.answered:
             answer.failures[project] = "dotnet nuget why answered nothing (no restored assets file)"
         elif not part.answered:
-            first = first_line(result.text)
+            first = reason_line(first_line(result.text))
             unread = f"; the first line it printed, which the script cannot read: {first}" if first else ""
             answer.failures[project] = f"dotnet nuget why answered nothing (exit code {result.returncode}){unread}"
         else:
