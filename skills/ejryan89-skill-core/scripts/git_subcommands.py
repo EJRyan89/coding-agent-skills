@@ -143,11 +143,12 @@ def bash_git_subcommands(text: str, read_powershell: PowerShellReader) -> set[st
     such as a $'...' one holding an escape, hides no command; Bash would run none there.
 
     Beyond what it reads: a here-document a shell reads as its script, as in `bash <<EOF`, `bash -s <<'EOF'`, or
-    `source /dev/stdin <<EOF`, is read as data, so a git command in its body goes unread; and a `<<` that Bash reads
+    `source /dev/stdin <<EOF`, is read as data, so a git command in its body goes unread; a `<<` that Bash reads
     inside a quote or a parameter expansion, such as one in a single-quoted string spanning lines or in
-    `${x//<<a/b}`, opens a here-document here, so lines up to one equal to its word go unread; and a line inside a
-    quote spanning lines whose word starts with `#` and that ends in a backslash is read as a comment, so the line
-    after it is read as a command Bash joins as arguments. No script here writes any of these."""
+    `${x//<<a/b}`, opens a here-document here, so lines up to one equal to its word go unread; a `<<<<`, which Bash
+    refuses, opens a here-document at its last `<<`; and a line inside a quote spanning lines whose word starts with
+    `#` and that ends in a backslash is read as a comment, so the line after it is read as a command Bash joins as
+    arguments. No script here writes any of these."""
     found: set[str] = set()
     after_pipe = False
     starts = CommandStarts()
@@ -243,7 +244,7 @@ def line_step(line: str, index: int) -> tuple[int, HereDocument | None]:
     if character == '"':
         quoted = DOUBLE_QUOTED.match(line, index)
         return (len(line) if quoted is None else quoted.end()), None
-    if line.startswith("((", index):
+    if line.startswith("((", index) or line.startswith("$((", index):
         return closing_parenthesis(line, line.index("(", index) + 1) + 1, None
     if line.startswith("<<", index):
         return here_document_at(line, index)

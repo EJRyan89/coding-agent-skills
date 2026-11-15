@@ -235,6 +235,8 @@ def test_a_bash_line_ends_at_lf_alone(script: str, expected: set[str]) -> None:
         ("echo 'a'<<EOF\ngit push\nEOF", set()),
         ('echo "a" <<EOF\ngit push\nEOF', set()),
         ("echo $((1))<<EOF\ngit push\nEOF", set()),
+        # `$((` is one step from its `$`, so the `#` right after its `))` goes on the word and starts no comment.
+        ("echo $((1))#x <<EOF\ngit push\nEOF", set()),
         ("cat <<<EOF\ngit push\nEOF", {"push"}),
         ("cat << \ngit push", {"push"}),
         # The delimiter's quoting and escapes, and `<<-`'s tabs, decide where the body ends and whether it expands.
