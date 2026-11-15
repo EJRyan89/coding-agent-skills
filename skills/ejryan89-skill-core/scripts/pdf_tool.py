@@ -29,6 +29,10 @@ MINIMUMS: dict[PdfProvider, tuple[int, ...]] = {"Xpdf": (4, 6), "Poppler": (26, 
 VERSION_ARGUMENTS = ("-v",)
 PROBE_SECONDS = 5.0
 MAX_PROBE_BYTES = 16 * 1024
+# The statuses a version probe exits with when it prints its banner: Poppler's 0, and Xpdf's 0 or 99. Any other is a
+# probe that failed, named by its status before its output is decoded or read as a banner. The refusal stays
+# content-free, as PdfToolRefused is, so what the program printed is never echoed.
+BANNER_STATUSES = frozenset({0, 99})
 BANNER = re.compile(r"pdftotext version ([0-9]{1,4}\.[0-9]{1,4}(?:\.[0-9]{1,4})?)( \[www\.xpdfreader\.com\])?")
 COPYRIGHT = re.compile(r"Copyright [0-9, -]+ (Glyph & Cog, LLC|The Poppler Developers)(?: - https?://\S+)?")
 
@@ -103,7 +107,10 @@ class PdfToolRefused(ValueError):
 
 
 def parse_banner(text: str, status: int) -> PdfIdentity:
-    """Identify only an unambiguous vendor version banner, then enforce that vendor's own floor and status."""
+    """Identify only an unambiguous vendor version banner, then enforce that vendor's own floor and status. A status
+    no provider prints its banner with is refused first, naming the status."""
+    if status not in BANNER_STATUSES:
+        raise PdfToolRefused(f"version probe failed with exit status {status}")
     lines = [line.strip() for line in text.splitlines() if line.strip()]
     banner = BANNER.fullmatch(lines[0]) if lines else None
     copyrights = [COPYRIGHT.fullmatch(line) for line in lines[1:]]
@@ -157,6 +164,8 @@ def probe_pdftotext(path: str) -> PdfIdentity:
         raise PdfToolRefused(f"version probe did not finish within {PROBE_SECONDS:g} seconds") from exc
     except OSError as exc:
         raise PdfToolRefused(f"version probe could not be started: {flat_text(str(exc))}") from exc
+    if status not in BANNER_STATUSES:
+        raise PdfToolRefused(f"version probe failed with exit status {status}")
     try:
         text = output.decode("utf-8")
     except UnicodeDecodeError as exc:

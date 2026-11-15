@@ -15,6 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
 import sdk_why
+from flat_text import REASON_CHARACTERS
 from sdk_why import Completed, SdkPath, Services, parse_why, run_why, why_command
 
 CYAN = "\x1b[38;5;14m"
@@ -204,6 +205,24 @@ def test_failures_name_the_reason_and_leave_the_project_unanswered(text: str, co
     assert set() == answer.answered
 
 
+def test_a_long_unread_first_line_and_a_multi_line_start_error_are_each_one_bounded_line() -> None:
+    runs = Runs({"Harbor.Core.csproj": Completed(1, "error: " + "x" * 5000 + "\nmore\n")})
+    answer = run_why([Path("Harbor.Core.csproj")], "Lantern.Json", Services(run=runs), 30)
+    [failure] = answer.failures.values()
+    stated = f"dotnet nuget why answered nothing (exit code 1){UNREAD}"
+    assert failure.startswith(f"{stated}error: xxx")
+    assert failure.endswith("...")
+    assert len(failure) == len(stated) + REASON_CHARACTERS + 3
+
+    def refused(arguments: Sequence[str], timeout: float) -> Completed:
+        raise OSError(8, "Exec format\r\n  error")
+
+    answer = run_why([Path("Harbor.Core.csproj")], "Lantern.Json", Services(run=refused), 30)
+    assert {
+        Path("Harbor.Core.csproj"): "dotnet nuget why could not start: [Errno 8] Exec format error"
+    } == answer.failures
+
+
 def test_a_run_that_timed_out_after_printing_part_of_an_answer_is_not_taken_as_an_answer() -> None:
     runs = Runs({"Harbor.Core.csproj": Completed(-1, CORE_TEXT, timed_out=True)})
     answer = run_why([Path("Harbor.Core.csproj")], "Lantern.Json", Services(run=runs), 7)
@@ -228,7 +247,49 @@ PARTIAL_TEXT = CORE_TEXT[: CORE_TEXT.index("  [net472]")]
 def test_a_run_that_exits_nonzero_after_printing_a_heading_is_a_failure_not_an_answer(text: str, code: int) -> None:
     runs = Runs({"Harbor.Core.csproj": Completed(code, text)})
     answer = run_why([Path("Harbor.Core.csproj")], "Lantern.Json", Services(run=runs), 30)
+    # Nothing followed the part of an answer, so the exit code is all the run said about its failure.
     assert {
         Path("Harbor.Core.csproj"): f"dotnet nuget why exited with code {code} after printing part of an answer"
     } == answer.failures
     assert ({}, set()) == (answer.paths, answer.answered)
+
+
+# The error lines a run prints after part of an answer, which name why it failed.
+ERROR_LINES = f"{CYAN}error: The operation was canceled.{RESET}\r\n  Unable to read the assets file.\r\n"
+# A no-dependency heading the CLI wrapped at the console width, whose wrapped part is the heading's, not an error.
+WRAPPED_ABSENT_TEXT = "Project 'Harbor.Core' does not have a dependency on \r\n'Nothing.Here'.\r\n"
+STATED = "dotnet nuget why exited with code 1 after printing part of an answer"
+
+
+@pytest.mark.parametrize(
+    ("text", "reason"),
+    [
+        pytest.param(
+            PARTIAL_TEXT + ERROR_LINES,
+            f"{STATED}, then: error: The operation was canceled. Unable to read the assets file.",
+            id="error-after-a-tree",
+        ),
+        pytest.param(WRAPPED_ABSENT_TEXT, STATED, id="wrapped-heading-alone"),
+        pytest.param(
+            WRAPPED_ABSENT_TEXT + "\r\n" + ERROR_LINES,
+            f"{STATED}, then: error: The operation was canceled. Unable to read the assets file.",
+            id="error-after-a-wrapped-heading",
+        ),
+        pytest.param(PARTIAL_TEXT + " \r\n\t\r\n", STATED, id="blank-lines-after-a-tree"),
+    ],
+)
+def test_a_run_that_fails_after_part_of_an_answer_is_named_by_what_it_printed_after_it_on_one_line(
+    text: str, reason: str
+) -> None:
+    runs = Runs({"Harbor.Core.csproj": Completed(1, text)})
+    answer = run_why([Path("Harbor.Core.csproj")], "Lantern.Json", Services(run=runs), 30)
+    assert {Path("Harbor.Core.csproj"): reason} == answer.failures
+
+
+def test_a_long_error_after_part_of_an_answer_is_cut_to_one_bounded_line() -> None:
+    runs = Runs({"Harbor.Core.csproj": Completed(1, PARTIAL_TEXT + "error: " + "x" * 5000 + "\n")})
+    answer = run_why([Path("Harbor.Core.csproj")], "Lantern.Json", Services(run=runs), 30)
+    [failure] = answer.failures.values()
+    assert failure.startswith(f"{STATED}, then: error: xxx")
+    assert failure.endswith("...")
+    assert len(failure) == len(f"{STATED}, then: ") + REASON_CHARACTERS + 3

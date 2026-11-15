@@ -3314,6 +3314,8 @@ def test_instruction_layering_findings_and_their_order(name: str) -> None:
 
 MANIFEST_PATH = ".github/ai-config-manifest.json"
 UNDECODABLE = b"\x80\x81 invalid utf-8"
+# What reading UNDECODABLE as UTF-8 raises, as a finding names it.
+DECODED = "'utf-8' codec can't decode byte 0x80 in position 0: invalid start byte"
 PLAIN_CLAUDE = "# CLAUDE.md\n\nUse tabs.\n"
 MAINTAINED_CLAUDE = "# CLAUDE.md\n\n## Maintaining AI Agent Config\n\nRegenerate.\n"
 GENERATOR_NAMING_CLAUDE = "SOURCE = 'CLAUDE.md'\n"
@@ -3592,7 +3594,13 @@ AUTHORITY_EXPECTED: dict[str, tuple[str, str, list[tuple[str, str, str | None, s
         "ambiguous",
         "empty",
         [
-            ("WARNING", "authority", ".github/ai-config-manifest.json", "Manifest exists but is malformed"),
+            (
+                "WARNING",
+                "authority",
+                ".github/ai-config-manifest.json",
+                "Manifest exists but is malformed: Expecting property name enclosed in double quotes: line 1 column 2 "
+                "(char 1)",
+            ),
             ("INFO", "authority", None, "Authority classification: ambiguous (signals: claude_md_exists)"),
         ],
     ),
@@ -3600,7 +3608,7 @@ AUTHORITY_EXPECTED: dict[str, tuple[str, str, list[tuple[str, str, str | None, s
         "unconfigured",
         "empty",
         [
-            ("WARNING", "authority", ".github/ai-config-manifest.json", "Manifest exists but is malformed"),
+            ("WARNING", "authority", ".github/ai-config-manifest.json", f"Manifest exists but is malformed: {DECODED}"),
             ("INFO", "authority", None, "Authority classification: unconfigured (signals: none)"),
         ],
     ),
@@ -3734,7 +3742,7 @@ PARITY_EXPECTED: dict[str, list[tuple[str, str, str | None, str]]] = {
             "exactly one skill-name segment: .github/skills/a/b/SKILL.md",
         ),
         ("ERROR", "parity", ".github/mcp.json", "Generated artifact missing: .github/mcp.json"),
-        ("ERROR", "parity", ".codex/config.toml", "Generated artifact exists but could not be read"),
+        ("ERROR", "parity", ".codex/config.toml", f"Generated artifact exists but could not be read: {DECODED}"),
         ("ERROR", "parity", ".mcp.json", "Artifact modified (hash mismatch with manifest)"),
         ("ERROR", "parity", ".github/copilot-instructions.md", "Copilot instructions missing banner"),
         ("ERROR", "parity", "AGENTS.md", "Content does not match deterministic template"),
@@ -4647,7 +4655,7 @@ class UnreadableConfigurationTests(unittest.TestCase):
         (self.root / ".github/skills/demo").mkdir(parents=True)
         (self.root / ".github/skills/demo/SKILL.md").write_bytes(UNDECODABLE)
         errors = self._errors(".github/skills/demo/SKILL.md")
-        self.assertIn(("parity", "Generated artifact exists but could not be read"), errors)
+        self.assertIn(("parity", f"Generated artifact exists but could not be read: {DECODED}"), errors)
 
     def test_an_undecodable_codex_config_is_invalid_toml(self) -> None:
         (self.root / ".codex").mkdir()
@@ -4715,10 +4723,21 @@ class UnreadableConfigurationTests(unittest.TestCase):
         manifest = self.root / ".github/ai-config-manifest.json"
         manifest.unlink()
         manifest.mkdir()
-        self.assertEqual(
-            [("WARNING", "Manifest exists but is malformed")],
-            [(finding.severity, finding.message) for finding in audit._manifest_signal(self.root)[2]],
-        )
+        [finding] = audit._manifest_signal(self.root)[2]
+        self.assertEqual("WARNING", finding.severity)
+        self.assertRegex(finding.message, "^Manifest exists but is malformed: .*not a file")
+
+    def test_a_manifest_that_cannot_be_read_is_named_by_its_error_on_one_line_or_by_its_kind(self) -> None:
+        for error, reason in (
+            (OSError(5, "Input/output error\n  at the second line"), "[Errno 5] Input/output error at the second line"),
+            (OSError(), "OSError"),
+            (ValueError("Expecting value:\r\n line 1"), "Expecting value: line 1"),
+        ):
+            with self.subTest(error=error), mock.patch.object(audit, "read_text", side_effect=error):
+                self.assertEqual(
+                    [("WARNING", f"Manifest exists but is malformed: {reason}")],
+                    [(finding.severity, finding.message) for finding in audit._manifest_signal(self.root)[2]],
+                )
 
     def test_a_generator_with_a_null_byte_is_unreadable_scope(self) -> None:
         (self.root / ".github/scripts").mkdir(parents=True)
@@ -6251,7 +6270,7 @@ class OwnershipFindingTests(unittest.TestCase):
 
     def test_an_unreadable_artifact_is_one_parity_error(self) -> None:
         self.assertEqual(
-            [("parity", "Generated artifact exists but could not be read")],
+            [("parity", f"Generated artifact exists but could not be read: {DECODED}")],
             self._own(".codex/config.toml", UNDECODABLE),
         )
 
@@ -6752,12 +6771,30 @@ class UnexaminedPathTests(unittest.TestCase):
         self.assertEqual("manifest-declared-only", audit.check_scope_and_roles(self.root, {})[0])
 
     def test_an_artifact_that_is_a_folder_or_cannot_be_examined_could_not_be_read_never_is_missing(self) -> None:
-        unread = (None, "Generated artifact exists but could not be read")
+        # Each is named by its own error, on one line, so a denied examination and a folder are told apart.
+        prefix = "Generated artifact exists but could not be read: "
         with self.denied(self.root / "AGENTS.md"):
-            self.assertEqual(unread, audit._read_artifact(self.root, "AGENTS.md"))
+            content, denied = audit._read_artifact(self.root, "AGENTS.md")
+        self.assertIsNone(content)
+        self.assertRegex(denied or "", f"^{re.escape(prefix)}\\[Errno 13\\] ")
         (self.root / "AGENTS.md").unlink()
         (self.root / "AGENTS.md").mkdir()
-        self.assertEqual(unread, audit._read_artifact(self.root, "AGENTS.md"))
+        content, folder = audit._read_artifact(self.root, "AGENTS.md")
+        self.assertIsNone(content)
+        self.assertRegex(folder or "", f"^{re.escape(prefix)}.*not a file")
+
+    def test_an_unreadable_artifact_is_named_by_its_error_on_one_line_or_by_its_kind_when_the_error_says_nothing(
+        self,
+    ) -> None:
+        prefix = "Generated artifact exists but could not be read: "
+        (self.root / "AGENTS.md").write_text("x", encoding="utf-8")
+        for error, reason in (
+            (OSError(5, "Input/output error\n  at the second line"), "[Errno 5] Input/output error at the second line"),
+            (OSError(), "OSError"),
+            (UnicodeDecodeError("utf-8", b"\x80", 0, 1, "invalid start byte"), DECODED),
+        ):
+            with self.subTest(error=error), mock.patch.object(audit, "read_text", side_effect=error):
+                self.assertEqual((None, prefix + reason), audit._read_artifact(self.root, "AGENTS.md"))
 
     def test_codex_chooses_an_instruction_file_it_cannot_examine_as_holding_text_and_passes_a_folder_by(self) -> None:
         (self.root / "AGENTS.md").write_text("  \n", encoding="utf-8")
