@@ -204,6 +204,8 @@ def test_a_plugin_hook_starts_python_in_sh_and_powershell_and_reads_back_its_arg
         # PowerShell ends a string at a typographic double quote, and splits an option at a dot.
         *(pytest.param(f'-c "print({quote}x{quote})"', id=f"U+{ord(quote):04X}") for quote in "\u201c\u201d\u201e"),
         pytest.param('-c "print(\u00e9)"', id="past ASCII"),
+        # Windows PowerShell 5.1 drops an empty argument to a native program, which sh passes.
+        pytest.param('-c ""', id="an empty string"),
         pytest.param('-X.y -c "x"', id="a dot in an option"),
         pytest.param('-X=a.b -c "x"', id="a dot in an option's value"),
     ],

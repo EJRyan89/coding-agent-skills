@@ -52,15 +52,16 @@ PLUGIN_VALUES: dict[str, str] = {
 # python leaves in place, starts python, and exits with its status, with no preference that would turn what python
 # writes to stderr into a failure. The arguments are written so both shells read them alike: options of plain
 # characters, with no `.` in one that starts with `-`, which PowerShell splits there, then at most one double-quoted
-# string of printable ASCII holding no $, backtick, backslash, or double quote, inside which sh's operators are text to
-# both; PowerShell also ends a string at a typographic double quote.
+# string of printable ASCII, not empty, since Windows PowerShell 5.1 drops an empty argument, holding no $, backtick,
+# backslash, or double quote, inside which sh's operators are text to both; PowerShell also ends a string at a
+# typographic double quote.
 PLUGIN_HOOK_PYTHON = (
     "set -- \\\n$global:LASTEXITCODE = 1\nset -- \\\npython {arguments}\nset -- \\\nexit $LASTEXITCODE\n"
     'p=$(command -v python); exec "${{p:-python3}}" {arguments}'
 )
 PLUGIN_HOOK_WORD = r"(?:-[A-Za-z0-9_=:+-]*|[A-Za-z0-9_./=:+][A-Za-z0-9_./=:+-]*)"
 PLUGIN_HOOK_ARGUMENTS = re.compile(
-    rf"{PLUGIN_HOOK_WORD}(?: {PLUGIN_HOOK_WORD})*(?: \"[\x20\x21\x23\x25-\x5b\x5d-\x5f\x61-\x7e]*\")?"
+    rf"{PLUGIN_HOOK_WORD}(?: {PLUGIN_HOOK_WORD})*(?: \"[\x20\x21\x23\x25-\x5b\x5d-\x5f\x61-\x7e]+\")?"
 )
 
 

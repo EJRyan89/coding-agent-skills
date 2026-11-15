@@ -1603,8 +1603,9 @@ def deployable_path_problems(workflow: str) -> list[str]:
     Limit: a program started to change the environment for what it runs, such as `env -i` or a script that a step
     sources, is not read, and neither are a step's `shell` (a login shell such as `bash -l {0}` reorders PATH), a step
     `env` naming BASH_ENV or ENV, the deprecated `::add-path::` command, PowerShell's `Env:\\Path` and cmd's `set Path=`
-    spellings, and a PATH the verify step sets for its own checks; no job writes any of them. `validation_path_problems`
-    shares this limit."""
+    spellings, and a PATH the verify step sets for its own checks; no job writes any of them. Before a POSIX job's
+    verify step, a PATH written through GITHUB_ENV, or an action other than the setup actions the job runs, is not
+    read; no job writes either. `validation_path_problems` shares this limit."""
     tree = read_workflow(workflow)
     problems: list[str] = []
     for job in DEPLOYABLE_BASH_STEP_SHELLS:
