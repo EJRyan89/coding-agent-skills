@@ -3235,8 +3235,14 @@ class BashReader:
         prefixes: list[tuple[str, Word]] = []
         for word in words[:index]:
             assignment = word.assignment
-            if assignment is not None and not word.array and not assignment.element:
-                prefixes.append((assignment.name, self.word_value(bash_syntax.Word("", assignment.value))))
+            if assignment is None:
+                continue
+            # An array's value, NAME=( ), or an element's, NAME[i]=, is one the text does not settle, which may still
+            # reach git's environment under NAME, so it is judged by its name as any assignment before git is.
+            whole = not word.array and not assignment.element
+            prefixes.append(
+                (assignment.name, self.word_value(bash_syntax.Word("", assignment.value)) if whole else None)
+            )
         return self.read_command_words(values[index:], directory, prefixes)
 
     def read_git_prefixes(self, prefixes: list[tuple[str, Word]]) -> None:

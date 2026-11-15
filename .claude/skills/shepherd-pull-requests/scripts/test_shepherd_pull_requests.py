@@ -756,6 +756,22 @@ class HubTest(FixtureTestCase):
             f'HUB_DIFFERS "{self.hub.as_posix()}" it is 1 commit ahead of origin/main', self.line(lines, "HUB_DIFFERS")
         )
 
+    def test_a_hub_with_no_origin_main_or_on_a_detached_head_is_named(self) -> None:
+        git("update-ref", "-d", "refs/remotes/origin/main", directory=self.hub)
+        status, lines = self.tick(StubGh(), dry_run=True)
+        self.assertEqual(1, status)
+        self.assertEqual(
+            f'HUB_DIFFERS "{self.hub.as_posix()}" git holds no origin/main to compare it with',
+            self.line(lines, "HUB_DIFFERS"),
+        )
+        git("fetch", "-q", "origin", directory=self.hub)
+        git("switch", "-q", "--detach", directory=self.hub)
+        status, lines = self.tick(StubGh(), dry_run=True)
+        self.assertEqual(1, status)
+        self.assertEqual(
+            f'HUB_DIFFERS "{self.hub.as_posix()}" it is on a detached HEAD, not main', self.line(lines, "HUB_DIFFERS")
+        )
+
     def test_a_hub_git_cannot_read_is_named_with_git_s_reason(self) -> None:
         names = GitClient.names
 

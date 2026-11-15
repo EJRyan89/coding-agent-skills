@@ -3361,6 +3361,11 @@ class UnderstoodSetTests(GuardTestCase):
             (f'GIT_DIR="{self.hub / ".git"}" git status', "deny"),
             ("HOME=/elsewhere git status", "deny"),
             ("XDG_CONFIG_HOME=/elsewhere git status", "deny"),
+            # An element's or an array's assignment before git is judged by its name, its value unsettled.
+            ("GIT_DIR[0]=x git commit -m x", "deny"),
+            ("GIT_WORK_TREE=(x) git reset --hard", "deny"),
+            ("GIT_AUTHOR_NAME[0]=x git commit -m x", "deny"),
+            ("NAME[0]=x git status", None),
             # Before any other program, and alone, an assignment is not read.
             ("PATH=/elsewhere python -B x.py", None),
             ("x=1; echo done", None),
@@ -3397,6 +3402,28 @@ class UnderstoodSetTests(GuardTestCase):
             for cwd in (self.tree, self.hub):
                 with self.subTest(command=command, cwd=cwd.name):
                     self.assertIsNone(self.bash(command, cwd))
+
+    def test_a_builtin_or_a_function_the_guard_does_not_follow_leaves_the_directory_unknown(self) -> None:
+        for command in (
+            f"eval 'cd {self.hub}'; git commit -m x",
+            "source env.sh; git commit -m x",
+            ". env.sh; git commit -m x",
+            "command git status; git commit -m x",
+            f"f() {{ cd {self.hub}; }}; git commit -m x",
+            f"if true; then eval 'cd {self.hub}'; fi; git commit -m x",
+            f"{{ f() {{ cd {self.hub}; }}; }}; git commit -m x",
+        ):
+            with self.subTest(command=command):
+                self.assertEqual("deny", self.bash(command, self.tree))
+                self.assertIn(UNPLACED.format("commit"), self.reason)
+        # command -v and -V only print, so the commit after them stays in the worktree.
+        for command in ("command -v git; git commit -m x", "command -V git && git commit -m x"):
+            with self.subTest(command=command):
+                self.assertIsNone(self.bash(command, self.tree))
+        self.assertEqual(
+            {".", "source", "eval", "builtin", "command", "trap", "fc", "alias", "unalias", "enable", "hash"},
+            set(hub_guard.BUILTINS_NOT_FOLLOWED),
+        )
 
     def test_a_cdpath_search_and_cd_dash_leave_the_directory_unknown(self) -> None:
         environment = {**self.environment, "CDPATH": str(self.root)}
