@@ -2383,6 +2383,8 @@ MKTEMP_TEMPLATE_OPTIONS = frozenset({"-d", "-q", "--directory", "--quiet"})
 # The words a command runs ejryan89-skill-core's judge of the temporary directory with: the script, named directly or
 # by a variable assigned a value naming it, and its command.
 TEMPORARY_JUDGE = ("private_folder.py", "temporary-directory")
+# An interpreter that runs the judge by its name: python, python3, python3.12, or py.
+PYTHON_PROGRAM = re.compile(r"python(?:3(?:\.\d+)?)?|py", re.IGNORECASE)
 TEMPORARY_VARIABLE_WORD = re.compile(r"\$\{?(?:TMPDIR|TEMP|TMP)\b")
 SHELL_VARIABLE_REFERENCE = re.compile(r"\$\{?#?([A-Za-z_]\w*)")
 # A Bash assignment, alone or after a declaration builtin, where a command may start.
@@ -2397,8 +2399,9 @@ REDIRECTION_WORD = re.compile(r"\d*[<>]")
 # Each PowerShell spelling that names the temporary directory unjudged: its .NET and cmdlet lookups, and the variables
 # it reads, through the env: drive in any spelling or the Environment class.
 POWERSHELL_TEMPORARY = re.compile(
-    r"New-TemporaryFile|GetTempPath|GetTempFileName|env:\\?(?:TMPDIR|TEMP|TMP)\b"
-    r"|GetEnvironmentVariable\(\s*['\"](?:TMPDIR|TEMP|TMP)['\"]",
+    r"New-TemporaryFile|GetTempPath|GetTempFileName|(?:env:[\\/]?|Environment::)(?:TMPDIR|TEMP|TMP)\b"
+    r"|GetEnvironmentVariable\(\s*['\"](?:TMPDIR|TEMP|TMP)['\"]"
+    r"|GetEnvironmentVariables\(\)\s*(?:\[\s*['\"]|\.)(?:TMPDIR|TEMP|TMP)\b|%(?:TMPDIR|TEMP|TMP)%",
     re.IGNORECASE,
 )
 FunctionNode = ast.FunctionDef | ast.AsyncFunctionDef
@@ -2457,6 +2460,18 @@ class _TemporaryReader:
             (node, False) for node in ast.walk(tree) if isinstance(node, FunctionNode) and id(node) not in methods
         ]
         self.calls = [node for node in ast.walk(tree) if isinstance(node, ast.Call)]
+        self.parents = {id(child): node for node in ast.walk(tree) for child in ast.iter_child_nodes(node)}
+        functions = {id(call.func) for call in self.calls}
+        # Each reference to a function by its name that is no call's function: a value handed on, as to
+        # functools.partial, a thread, map, or another name, whose calls the module does not show.
+        self.values: dict[str, list[ast.expr]] = {}
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, (ast.Name, ast.Attribute))
+                and isinstance(node.ctx, ast.Load)
+                and id(node) not in functions
+            ):
+                self.values.setdefault(node.id if isinstance(node, ast.Name) else node.attr, []).append(node)
 
     def parameter(self, name: ast.Name) -> _Parameter | None:
         """The parameter a name reads, given no default, in the innermost function the module defines around it."""
@@ -2480,8 +2495,9 @@ class _TemporaryReader:
 
     def arguments(self, parameter: _Parameter) -> list[ast.expr | None]:
         """What each call of the parameter's function in the module passes it, None for a call that may pass it
-        through an unpacked argument; a call that leaves it out is left out."""
-        passed: list[ast.expr | None] = []
+        through an unpacked argument and for each place the function is handed on as a value; a call that leaves it
+        out is left out."""
+        passed: list[ast.expr | None] = [None for _ in self.values.get(parameter.function.name, [])]
         for call in self.calls:
             func = call.func
             by_name = isinstance(func, ast.Name) and func.id == parameter.function.name
@@ -2504,13 +2520,27 @@ class _TemporaryReader:
                 passed.append(None)
         return passed
 
+    def handed_alongside(self, parameter: _Parameter) -> list[ast.expr]:
+        """Every other argument of each call the parameter's function is handed to as a value, such as
+        `functools.partial(make, folder)` or `threading.Thread(target=make, args=(folder,))`, any of which may reach
+        the parameter."""
+        found: list[ast.expr] = []
+        for reference in self.values.get(parameter.function.name, []):
+            parent = self.parents.get(id(reference))
+            while parent is not None and not isinstance(parent, ast.Call):
+                parent = self.parents.get(id(parent))
+            if parent is not None:
+                given = [*parent.args, *(keyword.value for keyword in parent.keywords)]
+                found += [argument for argument in given if argument is not reference]
+        return found
+
     def holds(self, value: ast.expr, seen: frozenset[int] = frozenset()) -> bool:
         """Whether every value an expression may stand for is a folder the module holds: CHECKED_TEMPORARY_DIRECTORY
         called with nothing, a folder tempfile.mkdtemp made, whose own `dir` is held where it is made, a parameter
-        every call in the module passes such a folder, or one of these kept by FOLDER_KEEPING_CALLS or
-        FOLDER_KEEPING_METHODS, joined to a name by `/`, chosen between by a conditional, or, for a parameter, its
-        parent. Anything else, such as tempfile.gettempdir(), a variable of the environment, or a literal, is not
-        held."""
+        every call in the module passes such a folder and whose function is never handed on as a value, or one of
+        these kept by FOLDER_KEEPING_CALLS or FOLDER_KEEPING_METHODS, joined by `/` to what _joins_below accepts,
+        chosen between by a conditional, or, for a held name, its parent. Anything else, such as
+        tempfile.gettempdir(), a variable of the environment, or a literal, is not held."""
         if id(value) in seen:
             return False
         seen = seen | {id(value)}
@@ -2530,7 +2560,7 @@ class _TemporaryReader:
         if isinstance(value, ast.IfExp):
             return self.holds(value.body, seen) and self.holds(value.orelse, seen)
         if isinstance(value, ast.BinOp) and isinstance(value.op, ast.Div):
-            return self.holds(value.left, seen)
+            return self.holds(value.left, seen) and self._joins_below(value.right)
         if isinstance(value, ast.Attribute) and value.attr == "parent":
             return isinstance(value.value, ast.Name) and self.holds(value.value, seen)
         if not isinstance(value, ast.Call):
@@ -2546,43 +2576,71 @@ class _TemporaryReader:
             return not value.args and self.holds(value.func.value, seen)
         return False
 
-    def reads_temporary_directory(self, node: ast.AST, seen: set[int] | None = None) -> bool:
+    def _joins_below(self, name: ast.expr) -> bool:
+        """Whether a name joined to a held folder by `/` stays below it: a name whose every value is no absolute path
+        literal, or a relative string literal, neither of which reads the temporary directory. An absolute path on the
+        right replaces the folder on the left."""
+        if not isinstance(name, (ast.Name, ast.Constant)) or self.reads_temporary_directory(name):
+            return False
+        values = bound_values(name, self.resolver) if isinstance(name, ast.Name) else [name]
+        return all(
+            not isinstance(value, ast.Constant) or (isinstance(value.value, str) and not _absolute_literal(value.value))
+            for value in values
+        )
+
+    def reads_temporary_directory(self, node: ast.AST) -> bool:
         """Whether an expression, followed through every name it reads to each value it may stand for, and through a
-        parameter to what each call in the module passes it, names the temporary directory as tempfile finds it,
-        unjudged: TEMPORARY_LOOKUPS called, TEMPORARY_VALUE, or one of TEMPORARY_VARIABLES read from a mapping, by a
-        subscript, ENVIRONMENT_GETTERS, or a LOOKUP_METHODS method, or expanded in a string, as os.path.expandvars
-        does."""
-        seen = set() if seen is None else seen
-        for part in ast.walk(node):
-            if id(part) in seen:
-                continue
-            seen.add(id(part))
-            if self._names_temporary_directory(part):
-                return True
-            if isinstance(part, ast.Name) and isinstance(part.ctx, ast.Load):
-                followed = [value for value in bound_values(part, self.resolver) if value is not part]
-                parameter = self.parameter(part)
-                if parameter is not None:
-                    followed += [value for value in self.arguments(parameter) if value is not None]
-                if any(self.reads_temporary_directory(value, seen) for value in followed):
+        parameter to what each call in the module passes it or hands on beside it, names the temporary directory as
+        tempfile finds it, unjudged: TEMPORARY_LOOKUPS called, TEMPORARY_VALUE, or one of TEMPORARY_VARIABLES read
+        from a mapping, by a subscript, ENVIRONMENT_GETTERS, or a LOOKUP_METHODS method, or expanded in a string, as
+        os.path.expandvars does. It follows a worklist, so a long chain of names never deepens the stack."""
+        pending: list[ast.AST] = [node]
+        seen: set[int] = set()
+        while pending:
+            for part in ast.walk(pending.pop()):
+                if id(part) in seen:
+                    continue
+                seen.add(id(part))
+                if self._names_temporary_directory(part):
                     return True
+                if isinstance(part, ast.Name) and isinstance(part.ctx, ast.Load):
+                    pending += [value for value in bound_values(part, self.resolver) if value is not part]
+                    parameter = self.parameter(part)
+                    if parameter is not None:
+                        pending += [value for value in self.arguments(parameter) if value is not None]
+                        pending += self.handed_alongside(parameter)
         return False
+
+    def _temporary_key(self, key: ast.expr) -> bool:
+        """Whether a key, as a literal, text or bytes, or through each value a name may stand for, is one of
+        TEMPORARY_VARIABLES."""
+        return any(_temporary_variable(value) for value in bound_values(key, self.resolver))
 
     def _names_temporary_directory(self, part: ast.AST) -> bool:
         if isinstance(part, ast.Call):
             called = _reached_name(part.func, self.resolver)
-            getter = called in ENVIRONMENT_GETTERS or (
-                isinstance(part.func, ast.Attribute) and part.func.attr in LOOKUP_METHODS
+            getter = (
+                called in ENVIRONMENT_GETTERS
+                or called.rpartition(".")[2] in LOOKUP_METHODS
+                or (isinstance(part.func, ast.Attribute) and part.func.attr in LOOKUP_METHODS)
             )
-            return called in TEMPORARY_LOOKUPS or (getter and bool(part.args) and _temporary_variable(part.args[0]))
+            return called in TEMPORARY_LOOKUPS or (getter and bool(part.args) and self._temporary_key(part.args[0]))
+        if isinstance(part, ast.Name) and id(part) not in self.resolver.scopes:
+            # A name the resolver gives no scope, as a comprehension's own assignment expression read in its element.
+            return False
         if isinstance(part, (ast.Attribute, ast.Name)):
             return _reached_name(part, self.resolver) == TEMPORARY_VALUE
         if isinstance(part, ast.Subscript):
-            return _temporary_variable(part.slice)
+            return self._temporary_key(part.slice)
         if isinstance(part, ast.Constant) and isinstance(part.value, (str, bytes)):
             text = part.value.decode("utf-8", "replace") if isinstance(part.value, bytes) else part.value
             return EXPANDED_TEMPORARY_VARIABLE.search(text) is not None
         return False
+
+
+def _absolute_literal(text: str) -> bool:
+    """Whether a path literal is absolute on any platform: rooted, or naming a drive."""
+    return text.startswith(("/", "\\")) or DRIVE.match(text) is not None
 
 
 def _is_static(function: FunctionNode) -> bool:
@@ -2590,7 +2648,12 @@ def _is_static(function: FunctionNode) -> bool:
 
 
 def _temporary_variable(node: ast.AST) -> bool:
-    return isinstance(node, ast.Constant) and node.value in TEMPORARY_VARIABLES
+    value = (
+        node.value.decode("utf-8", "replace")
+        if isinstance(node, ast.Constant) and isinstance(node.value, bytes)
+        else None
+    )
+    return isinstance(node, ast.Constant) and (node.value if value is None else value) in TEMPORARY_VARIABLES
 
 
 def _python_temporary_problems(name: str, tree: ast.Module) -> list[str]:
@@ -2669,12 +2732,23 @@ def _judged_variables(lines: list[tuple[int, str]]) -> set[str]:
         named = SHELL_VARIABLE_REFERENCE.match(word)
         return named is not None and any(TEMPORARY_JUDGE[0] in value for value in assignments.get(named.group(1), []))
 
+    def judge_command(words: list[str]) -> bool:
+        # The judge run as `python [options] private_folder.py temporary-directory`, with the interpreter by its name
+        # or a variable, as update.sh's "$PYTHON", or as the script itself; any other program merely names it.
+        if words and names_judge(words[0]):
+            return words[1:2] == [TEMPORARY_JUDGE[1]]
+        if not words or not (
+            SHELL_VARIABLE_REFERENCE.fullmatch(words[0])
+            or PYTHON_PROGRAM.fullmatch(platform_support.program_name(PureWindowsPath(words[0]).name))
+        ):
+            return False
+        rest = list(itertools.dropwhile(lambda word: word.startswith("-"), words[1:]))
+        return len(rest) > 1 and names_judge(rest[0]) and rest[1] == TEMPORARY_JUDGE[1]
+
     def runs_judge(value: str) -> bool:
-        for _, inner in substitution_spans(value):
-            commands = _shell_words(inner) or []
-            if any(TEMPORARY_JUDGE[1] in words[1:] and any(map(names_judge, words)) for words in commands):
-                return True
-        return False
+        return any(
+            judge_command(words) for _, inner in substitution_spans(value) for words in _shell_words(inner) or []
+        )
 
     judged = {name for name, values in assignments.items() if any(map(runs_judge, values))}
     added = True

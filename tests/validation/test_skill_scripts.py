@@ -1278,6 +1278,39 @@ class SkillScriptsFixtures(unittest.TestCase):
                         "Maker().create(tempfile.gettempdir())\n"
                         "open(Path(tempdir) / 'y', 'w')\n"  # 30
                     ),
+                    # A function handed on as a value, whose calls the module does not show; `/` and a name or an
+                    # absolute literal; and TMPDIR read by bytes, through a getter's alias, or by a key's variable.
+                    "skills/example/scripts/values.py": (
+                        "import functools\n"
+                        "import os\n"
+                        "import tempfile\n"
+                        "import threading\n"
+                        "from pathlib import Path\n"
+                        "\n"
+                        "import private_folder\n"
+                        "\n"
+                        "\n"
+                        "def make(folder):\n"
+                        "    return tempfile.mkdtemp(dir=folder)\n"  # 11
+                        "\n"
+                        "\n"
+                        "def note(folder):\n"
+                        "    (Path(folder) / 'x').write_text('a')\n"  # 15
+                        "\n"
+                        "\n"
+                        "g = make\n"
+                        "functools.partial(make, tempfile.gettempdir())()\n"
+                        "threading.Thread(target=note, args=(tempfile.gettempdir(),)).start()\n"
+                        "checked = Path(private_folder.temporary_directory())\n"
+                        "tempfile.mkdtemp(dir=checked / tempfile.gettempdir())\n"  # 22
+                        "tempfile.mkdtemp(dir=checked / '/tmp/shared')\n"  # 23
+                        "tempfile.mkdtemp(dir=checked / 'inner')\n"
+                        "open(os.getenvb(b'TMPDIR') + b'/x', 'wb')\n"  # 25
+                        "get = os.environ.get\n"
+                        "open(get('TMPDIR') + '/x', 'w')\n"  # 27
+                        "key = 'TMPDIR'\n"
+                        "open(os.environ[key] + '/x', 'w')\n"  # 29
+                    ),
                     # The checked call's module, named but never imported, which may be any object of that name.
                     "skills/example/scripts/unimported.py": (
                         "import tempfile\ntempfile.mkdtemp(dir=private_folder.temporary_directory())\n"
@@ -1305,6 +1338,11 @@ class SkillScriptsFixtures(unittest.TestCase):
                         'K=$(mktemp "$PLAIN")\n'  # 17: a variable no judge's output reaches
                         "echo ok # mktemp in a trailing comment is not read\n"
                     ),
+                    # The judge's words given to a program that only prints them.
+                    "skills/example/scripts/echoed.sh": (
+                        '#!/bin/bash\nJUDGED="$(echo private_folder.py temporary-directory)"\n'
+                        'X=$(mktemp "$JUDGED/x.XXXXXX")\n'
+                    ),
                     # The judge named in a comment only, which runs nothing.
                     "skills/example/scripts/commented.sh": (
                         '#!/bin/bash\nT="${TMPDIR:-/tmp}/x.XXXXXX"\n'
@@ -1325,6 +1363,10 @@ class SkillScriptsFixtures(unittest.TestCase):
                         "<# GetTempPath in a block comment\n"
                         "is not read #>\n"
                         "$named = python private_folder.py temporary-directory $env:TEMP\n"  # 12
+                        "$a = (Get-Item Env:/TEMP).Value\n"  # 13
+                        "$b = (Get-Item Microsoft.PowerShell.Core\\Environment::TEMP).Value\n"  # 14
+                        "$c = [Environment]::ExpandEnvironmentVariables('%TEMP%')\n"  # 15
+                        "$d = [Environment]::GetEnvironmentVariables()['TEMP']\n"  # 16
                     ),
                 },
             )
@@ -1355,6 +1397,7 @@ class SkillScriptsFixtures(unittest.TestCase):
             forms = "skills/example/scripts/forms.py"
             params = "skills/example/scripts/params.py"
             make = "skills/example/scripts/make.sh"
+            values = "skills/example/scripts/values.py"
             self.assertEqual(
                 [
                     f"deploy.py:2: tempfile.mkstemp {left}",
@@ -1369,8 +1412,12 @@ class SkillScriptsFixtures(unittest.TestCase):
                     f"{params}:13: write_text {unjudged}",
                     f"{params}:30: open {unjudged}",
                     f"skills/example/scripts/unimported.py:2: tempfile.mkdtemp {untraced}",
+                    *(f"{values}:{line}: tempfile.mkdtemp {untraced}" for line in (22, 23, 11)),
+                    f"{values}:15: write_text {unjudged}",
+                    *(f"{values}:{line}: open {unjudged}" for line in (25, 27, 29)),
                     f"tools/tool.py:2: tempfile.TemporaryDirectory {left}",
                     f"skills/example/scripts/commented.sh:3: {mktemp}",
+                    f"skills/example/scripts/echoed.sh:3: {mktemp}",
                     *(f"{make}:{line}: {mktemp}" for line in (7, 8, 9, 10, 11, 14, 15, 17)),
                     "skills/other/scripts/latin.sh holds a byte that is not UTF-8 at offset 14; save it as UTF-8",
                     f"skills/other/scripts/unjudged.sh:2: {mktemp}",
@@ -1385,6 +1432,10 @@ class SkillScriptsFixtures(unittest.TestCase):
                             (8, "Env:TEMP"),
                             (9, "New-TemporaryFile"),
                             (12, "env:TEMP"),
+                            (13, "Env:/TEMP"),
+                            (14, "Environment::TEMP"),
+                            (15, "%TEMP%"),
+                            (16, "GetEnvironmentVariables()['TEMP"),
                         )
                     ),
                 ],
