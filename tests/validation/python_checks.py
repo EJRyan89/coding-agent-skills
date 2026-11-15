@@ -792,7 +792,7 @@ def link_test_problems(root: Path, files: list[Path]) -> list[str]:
 # under the tests that guard its other bindings. A reading that finds no path, as a search that found none, or more than
 # one, refuses, names no path as missing. A refusal is a branch that raises an error of its own, or that returns or
 # yields a message of more than one word, the yield a statement or an assignment's value, or records one, as a call's
-# argument, the call a statement of its own or awaited as one or as an assignment's value, by an augmented assignment,
+# argument, the call a statement of its own or awaited as one or as any assignment's value, by an augmented assignment,
 # or by a store into an attribute or into an item keyed by anything but a string literal, as `problems.extend([...])`,
 # `await report(...)`, `done = await report(...)`, `problems += [...]`, or `problems[p] = "..."` do, the message given
 # as the value itself, an arm of a conditional expression, a value of an `and` or an `or`, a method called on it, a
@@ -1434,7 +1434,7 @@ def _records(statement: ast.stmt) -> bool:
     one, as `return None, "not found here"` is, the yield a statement of its own or the value of an assignment, as
     `sent = yield f"{p} is missing"` is, a call given one as an argument, a statement of its own, or awaited as one or
     as an assignment's value, as `problems.append(f"{p} is missing")`, `problems.extend([...])`, `print(...)`,
-    `await fail(...)`, or `done = await report(...)` is, an augmented
+    `await fail(...)`, `done = await report(...)`, or `total += await report(...)` is, an augmented
     assignment adding one, as `problems += [...]`, or a store of one into an attribute or into an item keyed by
     anything but a string literal, as `problems[p] = "..."`; a store under a literal key, as
     `cfg["title"] = "Untitled document"`, sets a field."""
@@ -1445,7 +1445,9 @@ def _records(statement: ast.stmt) -> bool:
         value, (ast.Yield, ast.YieldFrom)
     ):
         return _gives_message(value.value)
-    awaited = isinstance(value, ast.Await) and isinstance(statement, (ast.Expr, ast.Assign, ast.AnnAssign))
+    awaited = isinstance(value, ast.Await) and isinstance(
+        statement, (ast.Expr, ast.Assign, ast.AnnAssign, ast.AugAssign)
+    )
     if awaited and isinstance(value, ast.Await):
         value = value.value
     if (isinstance(statement, ast.Expr) or awaited) and isinstance(call := value, ast.Call):

@@ -5718,6 +5718,18 @@ PRESENCE_REFUSAL_SHAPES = {
     "match (P,): case (False,): raise": (
         "def f(p):\n    match ({call},):\n        case (False,):\n            raise OSError(p)\n    return 1\n"
     ),
+    "if not P: an augmented assignment of an await of a call given a message": (
+        "async def f(p, report):\n    total = 0\n    if not {call}:\n"
+        "        total += await report(f'{{p}} is missing')\n    return total\n"
+    ),
+    "if not P: an annotated assignment of an await of a call given a message": (
+        "async def f(p, report):\n    if not {call}:\n        done: object = await report(f'{{p}} is missing')\n"
+        "    return 1\n"
+    ),
+    "match (P, Q): case (False, _) as V: raise": (
+        "def f(p, q):\n    match ({call}, q):\n        case (False, _) as pair:\n            raise OSError(p)\n"
+        "    return 1\n"
+    ),
     "if not P: an assigned await of a call given a message": (
         "async def f(p, report):\n    if not {call}:\n        done = await report(f'{{p}} is missing')\n    return 1\n"
     ),
@@ -6412,6 +6424,10 @@ PRESENCE_PASSED = {
     "a suppress a class body binds, which its method does not read": (
         "import contextlib\n\n\nclass A:\n    quiet = contextlib.suppress(OSError)\n\n    def f(self, p):\n"
         "        with quiet:\n            return p.stat()\n        return None\n"
+    ),
+    "names bound to each other, neither a suppress": (
+        "import contextlib\n\n\ndef f(p, q):\n    a = q\n    b = a\n    a = b\n    with a:\n"
+        "        return p.stat()\n    return None\n"
     ),
     "a suppress of OSError an ExitStack enters after the stat": (
         "import contextlib\n\n\ndef f(p):\n    with contextlib.ExitStack() as stack:\n        st = p.stat()\n"
