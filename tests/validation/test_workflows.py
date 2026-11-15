@@ -40,6 +40,7 @@ from workflows import (
     copilot_auto_update_problems,
     defender_problems,
     deployable_bash_problems,
+    deployable_path_problems,
     deployable_posix_problems,
     image_module_problems,
     leg_problems,
@@ -61,6 +62,7 @@ from workflows import (
     tool_cache_problems,
     uninstall_check_problems,
     unknown_workflow_problems,
+    validation_path_problems,
     verify_log_problems,
     workflow_guard_problems,
 )
@@ -443,7 +445,7 @@ class LinuxJobFixtures(unittest.TestCase):
     def test_the_macos_job_is_held_to_its_own_runner_name_and_digest_check(self) -> None:
         bash = (
             "      - name: Install Bash\n        shell: bash\n        run: |\n          brew install bash\n"
-            '          echo "$(brew --prefix)/bin" >> "$GITHUB_PATH"\n'
+            '          echo "$(brew --prefix bash)/bin" >> "$GITHUB_PATH"\n'
         )
         mac = (
             LINUX.replace("  linux:\n    name: Linux shard", "  macos:\n    name: macOS shard")
@@ -463,7 +465,13 @@ class LinuxJobFixtures(unittest.TestCase):
             # macOS's own /bin/bash is older than validation's Bash floor, so the legs install Homebrew's first.
             (mac, "brew install bash"),
             (macos.replace("          brew install bash\n", ""), "brew install bash"),
-            (macos.replace('          echo "$(brew --prefix)/bin" >> "$GITHUB_PATH"\n', ""), "brew --prefix"),
+            (macos.replace('          echo "$(brew --prefix bash)/bin" >> "$GITHUB_PATH"\n', ""), "brew --prefix"),
+            # The whole of Homebrew's bin, which holds Homebrew's python3, ahead of the Python the leg set up.
+            (macos.replace("--prefix bash)/bin", "--prefix)/bin"), "puts another folder ahead on PATH"),
+            (
+                macos.replace(run, '      - run: echo "$(brew --prefix)/bin" >> "$GITHUB_PATH"\n' + run),
+                "puts another folder ahead on PATH",
+            ),
             # A step after the validation step changes PATH for no step that runs validation.
             (mac.replace("  validate:\n", bash + "  validate:\n"), "before validation runs"),
             (macos.replace("runs-on: macos-latest", "runs-on: ubuntu-latest"), "not macos-latest"),
@@ -1306,6 +1314,174 @@ class DeployableBashFixtures(unittest.TestCase):
         named = _macos(BASH_JOBS, BASH_STEP, BASH_STEP + "        shell: bash\n")
         named = named.replace(BASH_STEP, BASH_STEP + "        shell: pwsh\n", 1)
         self.assertEqual([], deployable_bash_problems(named, (5, 2)))
+
+
+VERIFY_STEP = "      - name: Verify the tools in a fresh shell\n        run: |\n          echo tools\n"
+DEPLOY_STEP = "      - name: Deploy\n        run: python3 deploy.py --all\n"
+
+
+def _before_deploy(text: str, step: str, *, windows: bool = False) -> str:
+    """BASH_JOBS with `step` added before the deployment of the Windows job or, by default, the macOS job only."""
+    if windows:
+        return text.replace(DEPLOY_STEP, step + DEPLOY_STEP, 1)
+    return _macos(text, DEPLOY_STEP, step + DEPLOY_STEP)
+
+
+def _validation_job(job: str) -> str:
+    return (
+        f"  {job}:\n    steps:\n"
+        "      - name: Verify validation tools\n        run: |\n          shellcheck --version\n"
+        "      - name: Run repository validation\n        run: |\n          python -B tests/run_validation.py\n"
+        "      - name: Validate with the latest ShellCheck\n        run: |\n"
+        "          $env:PATH = \"$(Join-Path $env:ChocolateyInstall 'bin');$env:PATH\"\n"
+    )
+
+
+VALIDATION_JOBS_TEXT = "jobs:\n" + "".join(_validation_job(job) for job in ("suite", "linux", "macos"))
+
+
+def test_a_validation_leg_that_changes_path_between_verifying_its_tools_and_running_validation_fails() -> None:
+    # The scheduled run with the latest ShellCheck changes PATH after validation, for its own tool.
+    assert validation_path_problems(VALIDATION_JOBS_TEXT) == []
+    run = "      - name: Run repository validation\n"
+    macos = VALIDATION_JOBS_TEXT.index("  macos:")
+    homebrew = '      - run: echo "$(brew --prefix)/bin" >> "$GITHUB_PATH"\n'
+    for drifted, problem in (
+        (
+            VALIDATION_JOBS_TEXT[:macos] + VALIDATION_JOBS_TEXT[macos:].replace(run, homebrew + run),
+            "the macos job's step 'None' changes PATH",
+        ),
+        (
+            VALIDATION_JOBS_TEXT.replace(run, run + "        env:\n          PATH: /bin\n", 1),
+            "the suite job's step 'Run repository validation' sets PATH",
+        ),
+        (
+            VALIDATION_JOBS_TEXT.replace(run, "      - uses: actions/setup-python@SHA # v1\n" + run, 1),
+            "the suite job's step 'None' runs an action",
+        ),
+        (VALIDATION_JOBS_TEXT.replace(run, "      - name: Run\n", 1), "the suite job has 0 steps named"),
+        # Validation run ahead of the step that verifies its tools.
+        (
+            VALIDATION_JOBS_TEXT.replace(
+                "      - name: Verify validation tools\n        run: |\n          shellcheck --version\n", "", 1
+            ).replace(
+                "      - name: Validate with the latest ShellCheck\n",
+                "      - name: Verify validation tools\n        run: |\n          shellcheck --version\n"
+                "      - name: Validate with the latest ShellCheck\n",
+                1,
+            ),
+            "the suite job's step 'Run repository validation' runs before 'Verify validation tools'",
+        ),
+    ):
+        problems = validation_path_problems(drifted)
+        assert any(problem in found for found in problems), problems
+
+
+class DeployablePathFixtures(unittest.TestCase):
+    def test_a_job_that_changes_path_after_its_verify_step_fails(self) -> None:
+        self.assertEqual([], deployable_path_problems(BASH_JOBS))
+        verify_writes = VERIFY_STEP + '          echo /opt/other/bin >> "$GITHUB_PATH"\n'
+        broad = '          echo "$(brew --prefix)/bin" >> "$GITHUB_PATH"\n'
+        for drifted, problem in (
+            # The whole of Homebrew's bin ahead before the verify step, beside its Bash folder, which the verify step
+            # cannot tell from the python3 the job set up; and on Linux, any folder but npm's.
+            (
+                BASH_JOBS.replace(MACOS_BASH_LINES, MACOS_BASH_LINES + broad),
+                "the deployable-macos job puts another folder ahead on PATH",
+            ),
+            (
+                BASH_JOBS.replace("          echo prerequisites\n", "          echo prerequisites\n" + broad, 2),
+                "the deployable-linux job puts another folder ahead on PATH",
+            ),
+            # A step's own env, as the issue's reproduction gives it, in each case Windows reads alike.
+            (
+                _before_deploy(
+                    BASH_JOBS, "      - name: Narrow\n        env:\n          PATH: /bin\n        run: echo\n"
+                ),
+                "the deployable-macos job's step 'Narrow' sets PATH",
+            ),
+            (
+                _before_deploy(
+                    BASH_JOBS,
+                    "      - name: Narrow\n        env:\n          Path: C:\\x\n        run: echo\n",
+                    windows=True,
+                ),
+                "the deployable job's step 'Narrow' sets Path",
+            ),
+            # A script that changes its own PATH, or the next steps', in Bash and in PowerShell.
+            (
+                _before_deploy(BASH_JOBS, "      - name: Narrow\n        run: |\n          export PATH=/bin:$PATH\n"),
+                "changes PATH after the tools are verified: 'export PATH=/bin:$PATH'",
+            ),
+            (
+                _macos(
+                    BASH_JOBS, DEPLOY_STEP, "      - name: Deploy\n        run: PATH=/bin python3 deploy.py --all\n"
+                ),
+                "'PATH=/bin python3 deploy.py --all'",
+            ),
+            (
+                _before_deploy(
+                    BASH_JOBS, '      - name: Add\n        run: |\n          echo /opt/x >> "$GITHUB_PATH"\n'
+                ),
+                "'echo /opt/x >> \"$GITHUB_PATH\"'",
+            ),
+            (
+                _before_deploy(
+                    BASH_JOBS,
+                    "      - name: Add\n        run: |\n          $env:Path = 'C:\\x;' + $env:Path\n",
+                    windows=True,
+                ),
+                "the deployable job's step 'Add' changes PATH",
+            ),
+            (
+                _before_deploy(
+                    BASH_JOBS,
+                    "      - name: Add\n        run: |\n          'PATH=C:\\x' | Add-Content -Path $env:GITHUB_ENV\n",
+                    windows=True,
+                ),
+                "the deployable job's step 'Add' changes PATH",
+            ),
+            (
+                _before_deploy(
+                    BASH_JOBS,
+                    "      - name: Add\n        run: |\n"
+                    "          [Environment]::SetEnvironmentVariable('Path', 'C:\\x', 'Process')\n",
+                    windows=True,
+                ),
+                "the deployable job's step 'Add' changes PATH",
+            ),
+            # The verify step handing the later steps a PATH it did not check.
+            (
+                _macos(BASH_JOBS, VERIFY_STEP, verify_writes),
+                "the deployable-macos job's step 'Verify the tools in a fresh shell' changes PATH",
+            ),
+            # An action between the check and the deployer, which may write GITHUB_PATH.
+            (
+                _before_deploy(BASH_JOBS, "      - name: Set up\n        uses: actions/setup-python@SHA # v1\n"),
+                "the deployable-macos job's step 'Set up' runs an action",
+            ),
+            (
+                _macos(BASH_JOBS, "Verify the tools in a fresh shell", "Verify something else"),
+                "the deployable-macos job has 0 steps named 'Verify the tools in a fresh shell'",
+            ),
+        ):
+            with self.subTest(problem=problem):
+                problems = deployable_path_problems(drifted)
+                self.assertTrue(any(problem in found for found in problems), problems)
+
+    def test_a_job_that_names_path_without_changing_it_passes(self) -> None:
+        # The verify step's own message, PowerShell's -Path parameters, and an action after the last script.
+        named = _macos(BASH_JOBS, VERIFY_STEP, VERIFY_STEP + '          echo "::error::git is not on PATH"\n')
+        named = _before_deploy(
+            named,
+            "      - name: Record\n        run: |\n          Set-Content -Path (Join-Path $env:LOGS 'x') -Value 1\n"
+            "          Add-Content -LiteralPath $env:RESULTS -Value 1\n",
+            windows=True,
+        )
+        named = _macos(
+            named, DEPLOY_STEP, DEPLOY_STEP + "      - name: Upload\n        uses: actions/upload-artifact@SHA # v1\n"
+        )
+        self.assertEqual([], deployable_path_problems(named))
 
 
 class DeployableLinuxFixtures(unittest.TestCase):
