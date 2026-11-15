@@ -450,6 +450,40 @@ class RenderedRefusalStepTests(unittest.TestCase):
             raised.exception.lines,
         )
 
+    def test_each_checker_s_line_is_read_whole_through_a_character_it_ends_no_line_at(self) -> None:
+        # Bash, ShellCheck, and pwsh end a line at LF, or CRLF on Windows, never at a line separator a path may hold.
+        unit = render.ShellUnit(Path("C:/work/files/run.sh"), "s/scripts/run.sh", False)
+        bash = platform_support.ToolResult(2, "C:/work/files/run.sh: line 2: near 'a\u2028b'\r\n")
+        with (
+            mock.patch.object(render, "run_bash_syntax_check", return_value=bash),
+            self.assertRaises(DeployError) as raised,
+        ):
+            render._check_bash_syntax([unit], "bash")
+        self.assertEqual("C:/work/files/run.sh: line 2: near 'a\u2028b'", raised.exception.lines[1])
+        shellcheck = platform_support.ToolResult(1, "C:/work/files/run.sh:2:1: note: 'a\u2028b' [SC1]\r\n")
+        with (
+            mock.patch.object(platform_support, "run_tool", return_value=shellcheck),
+            self.assertRaises(DeployError) as raised,
+        ):
+            render._run_shellcheck([unit], "shellcheck")
+        self.assertEqual("s/scripts/run.sh:2:1: note: 'a\u2028b' [SC1]", raised.exception.lines[1])
+        with tempfile.TemporaryDirectory() as temporary:
+            target = str(Path(temporary) / "powershell" / "s" / "run.ps1")
+            pwsh = platform_support.ToolResult(1, f"{target}\r\nMissing 'a\u2028b'.\r\n")
+            with (
+                mock.patch.object(platform_support, "run_tool", return_value=pwsh),
+                self.assertRaises(DeployError) as raised,
+            ):
+                render._parse_powershell({"s/run.ps1": b"function Broken {\n"}, Path(temporary), "pwsh")
+        self.assertEqual(
+            (
+                "ERROR: Rendered PowerShell syntax validation failed: s/run.ps1",
+                "Missing 'a\u2028b'.",
+                render.RENDERED_CHECK_REMEDY,
+            ),
+            raised.exception.lines,
+        )
+
     def test_a_bash_syntax_check_that_fails_printing_nothing_is_named_by_its_exit_code(self) -> None:
         units = [render.ShellUnit(Path("C:/work/files/run.sh"), "s/scripts/run.sh", False)]
         for output in ("", " \r\n\t\n"):

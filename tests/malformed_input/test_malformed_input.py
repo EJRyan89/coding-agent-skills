@@ -39,6 +39,7 @@ import corpus
 import reader_scan
 import readers
 from known_failures import KNOWN_FAILURES, read_known_failures
+from text_lines import program_lines
 
 from deployer import discovery
 
@@ -364,7 +365,7 @@ def test_the_codex_catalog_is_read_from_the_lines_converse_gives_it(tmp_path: Pa
         held = [{**document[0], "content": [{**document[0]["content"][0], "text": text}]}]
         path = tmp_path / reader.filename
         path.write_bytes(json.dumps(held, ensure_ascii=False).encode("utf-8"))
-        assert reader.read(path) == discovery.parse_codex_catalog(discovery.output_lines(path.read_text("utf-8")))
+        assert reader.read(path) == discovery.parse_codex_catalog(program_lines(path.read_text("utf-8")))
 
 
 def test_the_lock_owner_reason_states_the_pid_bound_stale_holds(tmp_path: Path) -> None:

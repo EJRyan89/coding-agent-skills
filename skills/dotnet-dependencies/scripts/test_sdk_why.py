@@ -16,7 +16,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-cor
 
 import sdk_why
 from flat_text import REASON_CHARACTERS
-from sdk_why import Completed, SdkPath, Services, parse_why, run_why, why_command
+from sdk_why import Completed, SdkPath, Services, first_line, parse_why, run_why, why_command
 
 CYAN = "\x1b[38;5;14m"
 RESET = "\x1b[0m"
@@ -80,6 +80,14 @@ class ParseTests(unittest.TestCase):
         answer = parse_why(ABSENT_TEXT, "Nothing.Here")
         self.assertEqual({"Harbor.Core"}, answer.answered)
         self.assertEqual({"Harbor.Core": []}, answer.paths)
+
+    def test_a_line_is_read_whole_through_a_character_the_sdk_ends_no_line_at(self) -> None:
+        # The SDK ends a line at LF, or CRLF on Windows, never at a line separator a project's name may hold.
+        answer = parse_why(
+            "Project 'Harbor\u2028Core' does not have a dependency on 'Nothing.Here'.\r\n", "Nothing.Here"
+        )
+        self.assertEqual({"Harbor\u2028Core"}, answer.answered)
+        self.assertEqual("Restore failed for 'a\u2028b'.", first_line("\r\n  Restore failed for 'a\u2028b'.\r\n"))
 
     def test_text_with_no_heading_answers_nothing(self) -> None:
         answer = parse_why(NO_ASSETS_TEXT, "Lantern.Json")

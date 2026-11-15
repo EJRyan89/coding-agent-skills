@@ -521,15 +521,6 @@ class ParsingTests(unittest.TestCase):
         found = discovery.parse_codex_catalog([json.dumps([{"text": text}])])
         self.assertEqual({"one": [Listed(forward(Path("/skills/one")), True)]}, found)
 
-    def test_output_lines_split_on_newline_alone_and_take_off_a_carriage_return_before_it(self) -> None:
-        for separator in LINE_BREAKS:
-            with self.subTest(separator=hex(ord(separator))):
-                self.assertEqual([f"a{separator}b", "c"], discovery.output_lines(f"a{separator}b\nc\n"))
-        self.assertEqual(["a", "b", ""], discovery.output_lines("a\r\nb\n\n"))
-        self.assertEqual(["a\rb"], discovery.output_lines("a\rb"))
-        self.assertEqual([], discovery.output_lines(""))
-        self.assertEqual([""], discovery.output_lines("\n"))
-
     def test_a_codex_catalog_that_is_not_json_is_a_listing_error(self) -> None:
         for lines in (["Error: something"], ['{"text": "a", "text": "b"}']):
             with self.subTest(lines=lines), self.assertRaisesRegex(ListingError, "its prompt input is not JSON"):

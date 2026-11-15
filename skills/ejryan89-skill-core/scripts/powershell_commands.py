@@ -22,6 +22,7 @@ import private_folder
 from bounded_process import Finished, non_interactive_environment, run_bounded
 from executable_locator import find_executable, program_name
 from flat_text import reason_line
+from text_lines import program_lines
 
 # The environment variable naming the JSON file that holds the sources COMMANDS_RUN reads.
 SOURCES_VARIABLE = "COMMAND_SOURCES"
@@ -266,9 +267,8 @@ def read(sources: Sequence[str], timeout: float = READ_SECONDS) -> list[list[lis
         except subprocess.TimeoutExpired as exc:
             raise PowerShellUnread(f"pwsh did not finish within {timeout:g} seconds") from exc
     # pwsh ends a line with "\n" or "\r\n", and a JSON string may hold U+0085 or U+2028 unescaped, which
-    # str.splitlines() would break the document on, so the output is split on "\n" alone.
-    output = finished.stdout.decode("utf-8", "replace")
-    lines = [line.removesuffix("\r") for line in output.split("\n") if line.strip(" \t\r")]
+    # str.splitlines() would break the document on, so the output is split as program_lines splits it.
+    lines = [line for line in program_lines(finished.stdout.decode("utf-8", "replace")) if line.strip(" \t\r")]
     try:
         found = json_reader.loads(lines[-1]) if finished.returncode == 0 and lines else None
     except json_reader.CONTENT_ERRORS:

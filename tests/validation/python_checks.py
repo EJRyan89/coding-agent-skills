@@ -4547,12 +4547,20 @@ def git_separator_problems(root: Path, files: list[Path]) -> list[str]:
 # bound or unbound as str.splitlines(text): a file an author writes is split with text_lines, and a program's output
 # where that program ends a line, as git_client.output_lines splits git's. Bytes, which splitlines() breaks at CR, LF,
 # and CRLF alone, are split with it where the receiver is plainly bytes: a bytes literal, a read_bytes(), an encode(),
-# or a bytes() call. Nor is text an author writes split at "\n" alone, which misses a lone CR, a line end to each of
-# those programs: a split() or rsplit() at "\n", bound or unbound, of a read_text(), of a replace("\r\n", "\n"), which
-# turns a CRLF into a line feed and leaves a lone CR, or of a name the same scope binds to either, with a strip(), an
-# lstrip(), an rstrip(), a removeprefix(), or a removesuffix() between or not. Text a parameter, an attribute, or any
-# other call gives is not traced to a file, so a split of it at "\n" is not read. A split that must stay, as a Bash
-# script's and a .shellcheckrc's at LF alone, states why in a module-level LINE_SPLIT_ALLOWED = {scope: reason}.
+# or a bytes() call. Nor is a file an author writes split at "\n" alone where it is read with its CRs kept, which
+# misses a lone CR, a line end to each of those programs other than Bash and ShellCheck. read_text() reads with
+# universal newlines, which turn a lone CR and a CRLF into a line feed, so a split of it at "\n" splits where they do;
+# the forms that keep a lone CR are a read_bytes().decode(), a read_text() given a newline other than None, and a
+# replace("\r\n", "\n"), which turns a CRLF into a line feed and leaves a lone CR. A split() or rsplit() at "\n", bound
+# or unbound, positional or by sep=, of one of them, or of a name the same scope binds to one, with a strip(), an
+# lstrip(), an rstrip(), a removeprefix(), or a removesuffix() between or not, is refused. Text a parameter, an
+# attribute, or any other call gives is not traced to a file, so a split of it at "\n" is not read, nor is a name bound
+# from a traced name through a further assignment, as body = text.strip() binds one; a split at LF alone through
+# io.StringIO(text).readline or readlines(); str.splitlines passed as a value, as map(str.splitlines, texts) or
+# operator.methodcaller("splitlines") pass it; or a re.split on a line-feed pattern. No module of the repository writes
+# those. A program's output keeps its CRs too, and is split where that program ends a line. A split that must stay,
+# as a Bash script's and a .shellcheckrc's at LF alone, states why in a module-level
+# LINE_SPLIT_ALLOWED = {scope: reason}.
 LINE_SPLIT_OWNER = "skills/ejryan89-skill-core/scripts/text_lines.py"
 LINE_SPLIT_ALLOWANCE = "LINE_SPLIT_ALLOWED"
 # The methods whose result is plainly bytes, and the str methods that keep a text's line ends where they were.
@@ -4584,8 +4592,9 @@ def _plainly_bytes(receiver: ast.expr) -> bool:
 
 
 def _authored_text(node: ast.expr, bound: frozenset[str]) -> bool:
-    """Whether an expression is text an author writes as the line-split policy reads it: a read_text(), a
-    replace("\\r\\n", "\\n"), or a name in `bound`, through any line-keeping method."""
+    """Whether an expression is text an author writes read with its CRs kept, as the line-split policy reads it: a
+    read_bytes().decode(), a read_text() given a newline other than None, a replace("\\r\\n", "\\n"), or a name in
+    `bound`, through any line-keeping method."""
     while (
         isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr in LINE_KEEPING_METHODS
     ):
@@ -4595,7 +4604,11 @@ def _authored_text(node: ast.expr, bound: frozenset[str]) -> bool:
     if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)):
         return False
     if node.func.attr == "read_text":
-        return True
+        newline = next((item.value for item in node.keywords if item.arg == "newline"), None)
+        return newline is not None and not (isinstance(newline, ast.Constant) and newline.value is None)
+    if node.func.attr == "decode":
+        read = node.func.value
+        return isinstance(read, ast.Call) and isinstance(read.func, ast.Attribute) and read.func.attr == "read_bytes"
     given = [_literal(argument) for argument in node.args]
     return node.func.attr == "replace" and given[:2] == ["\r\n", "\n"]
 
@@ -4635,9 +4648,9 @@ def _line_split(node: ast.Call, bound: frozenset[str]) -> str | None:
     if separator is None or _literal(separator) != "\n" or not _authored_text(receiver, bound):
         return None
     return (
-        'splits text an author writes at "\\n" alone, which misses a lone CR that YAML, CommonMark, and .NET end a '
-        f"line at; split it with text_lines.text_lines, or state why in {LINE_SPLIT_ALLOWANCE}, as for a Bash "
-        "script, which Bash ends at LF alone"
+        'splits a file an author writes, read with its CRs kept, at "\\n" alone, which misses a lone CR that YAML, '
+        f"CommonMark, and .NET end a line at; split it with text_lines.text_lines, or state why in "
+        f"{LINE_SPLIT_ALLOWANCE}, as for a Bash script, which Bash ends at LF alone"
     )
 
 
@@ -5388,8 +5401,7 @@ class _ContentEscapes:
 # The standard-library calls that recurse in Python once per level of the text or value they are given, so nesting
 # past the interpreter's recursion limit ends them in a RecursionError on every version: tomllib's parser, `re`'s
 # compile of a pattern's nested groups, which each function taking a pattern makes, `copy.deepcopy`, `pprint`'s
-# formatters, and `ast`'s walks of a tree; and with them the parser and compiler behind `ast.parse`, `compile`, `eval`,
-# and `exec`, which a reader of Python source guards together with the MemoryError of the parser's own bound. A reader
+# formatters, and `ast`'s walks of a tree, `ast.literal_eval`'s conversion among them. A reader
 # of either core bounds its own nesting and raises its family instead, so a handler naming RecursionError around such
 # a reader alone catches nothing. The list is closed for a call an import resolves: any other such call is read as
 # one that does not recurse, and a scope that holds one that does states it in CONTENT_ERRORS_ALLOWED.
@@ -5397,12 +5409,8 @@ RECURSIVE_CALLS = frozenset(
     {
         "ast.dump",
         "ast.literal_eval",
-        "ast.parse",
         "ast.unparse",
-        "compile",
         "copy.deepcopy",
-        "eval",
-        "exec",
         "pprint.pformat",
         "pprint.pprint",
         "re.compile",
@@ -5419,15 +5427,25 @@ RECURSIVE_CALLS = frozenset(
     }
 )
 # The standard-library calls that recurse in C once per level of the value they write or the text they read: the json
-# module's reader and writer, pickle, marshal, and the repr of a container. The interpreter's recursion limit is not
-# what stops them, and from Python 3.14 the stack is, so the depth at which one stops, and with what, varies by
-# version and platform: Python 3.15's json.dumps writes a list nested 100,000 deep that 3.12 refuses. A
+# module's reader and writer, pickle, marshal, the repr of a container, and the parser and compiler behind `ast.parse`,
+# `compile`, `eval`, and `exec`. The interpreter's recursion limit is not what stops them, and from Python 3.14 the
+# stack is, so the depth at which one stops, and with what, varies by version and platform: Python 3.15's json.dumps
+# writes a list nested 100,000 deep that 3.12 refuses, and its compiler stops a sum of 100,000 terms with a
+# RecursionError however high the limit is set. A
 # handler naming RecursionError around one is therefore no bound on its depth, and one whose only call that recurses
 # is such a call is refused unless its function also judges the depth with nesting_depth.nests_past, which measures a
 # value before a writer is given it or after a reader gives it, the same on every version, as
-# json_writer.nests_too_deep and json_reader.loads do.
+# json_writer.nests_too_deep, json_reader.loads, and python_reader's readers do. Depth is judged per function, not
+# per value: a function that calls nests_past on any value, directly or through a repository function such as
+# json_reader's or json_writer's, passes every handler of a call in C it holds. A call in C reached through an
+# instance method, as json.JSONEncoder().encode, json.JSONDecoder().raw_decode, or pickle.Pickler(file).dump reach
+# one, or through str(), format(), print(), or a formatted string of a container, is not read as one.
 C_RECURSIVE_CALLS = frozenset(
     {
+        "ast.parse",
+        "compile",
+        "eval",
+        "exec",
         "json.dump",
         "json.dumps",
         "json.load",
@@ -5445,7 +5463,8 @@ C_RECURSIVE_CALLS = frozenset(
 )
 # The one check of a value's depth that holds on every version, by its qualified name.
 DEPTH_JUDGE = "nesting_depth.nests_past"
-# The methods of text, bytes, a path, a mapping, a list, or a set that never recurse into what they hold. A method
+# The methods of text, bytes, a path, a file, a mapping, a list, or a set that never recurse into what they hold, the
+# encode and the reads and writes of a file among them; decode is not one, since json.JSONDecoder's parses. A method
 # called on a receiver no import resolves, such as a parameter or a value a call returned, is read as a callable the
 # policy cannot read unless it names one of these, since the receiver may be a parser.
 PLAIN_METHODS = frozenset(
@@ -5454,11 +5473,14 @@ PLAIN_METHODS = frozenset(
         "append",
         "as_posix",
         "casefold",
+        "close",
         "count",
+        "encode",
         "endswith",
         "exists",
         "extend",
         "find",
+        "flush",
         "get",
         "is_dir",
         "is_file",
@@ -5468,8 +5490,10 @@ PLAIN_METHODS = frozenset(
         "keys",
         "lower",
         "lstrip",
+        "open",
         "partition",
         "pop",
+        "read",
         "read_bytes",
         "read_text",
         "relative_to",
@@ -5489,6 +5513,9 @@ PLAIN_METHODS = frozenset(
         "unlink",
         "upper",
         "values",
+        "write",
+        "write_bytes",
+        "write_text",
     }
 )
 UNREAD_CALL = "<a call the policy cannot read>"

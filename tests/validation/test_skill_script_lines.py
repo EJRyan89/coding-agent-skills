@@ -11,7 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts"))
 
 import skill_scripts
-from skill_scripts import script_contract_problems
+from skill_scripts import gh_filter_problems, script_contract_problems
 from validation_support import write_fixture_tree
 
 
@@ -42,3 +42,18 @@ def test_a_sanction_s_lines_are_numbered_as_python_numbers_them() -> None:
     # Python ends no line at a form feed, so the sanction is line 2 and its reason names no script that runs.
     source = 'X = "\x0c"\nDUPLICATION_ALLOWED = {"a": "see /beta/scripts/other.py"}\nUSED = "/beta/scripts/used.py"\n'
     assert skill_scripts._references(source, True) == frozenset({"used"})
+
+
+def test_a_bash_script_s_lone_cr_ends_no_line(tmp_path: Path) -> None:
+    # Bash reads a CR as part of its line, so the exit after it is in the comment, and the backslash before a CRLF
+    # continues nothing, so the --jq after it is a command of its own, not gh's.
+    write_fixture_tree(
+        tmp_path,
+        {
+            "skills/alpha/SKILL.md": "# alpha\n",
+            "skills/alpha/scripts/tool.sh": "#!/usr/bin/env bash\n# a note\rexit 3\nexit 0\n",
+            "skills/alpha/scripts/query.sh": "gh pr list \\\r\n  --jq .x\n",
+        },
+    )
+    assert script_contract_problems(tmp_path) == []
+    assert gh_filter_problems(tmp_path) == []

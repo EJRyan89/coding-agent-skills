@@ -105,7 +105,7 @@ from conditions import (
 from console import failed_line, run_main
 from diff_paths import HUNK_HEADER
 from suite_names import SUITE_NAME_PATTERNS
-from text_lines import LINE_BREAK
+from text_lines import program_lines
 
 DUPLICATION_ALLOWED = {
     "EXIT_CONTRACT_EXEMPT": (
@@ -703,16 +703,16 @@ def entries(root: Path, files: list[FileChange], unreadable: dict[str, str] | No
     changes = [change for change in changes if change not in withheld]
     tests = Tests(suites(root), {} if unreadable is None else unreadable)
     for change in changes:
-        # Every line end becomes LF, a lone CR included, as Python and PowerShell end a line, so each reader below
-        # splits at LF and numbers a line as the parser does.
-        text = LINE_BREAK.sub("\n", change.head.read_bytes().decode("utf-8", errors="replace"))
+        # The diff's hunks number a line as git does, ending it at LF alone, so a CRLF is one line end and a lone CR
+        # part of its line; each reader below splits the text at LF to number its lines the same way.
+        text = change.head.read_bytes().decode("utf-8", errors="replace").replace("\r\n", "\n")
         try:
             definitions = _definitions(change.path, text)
         except (SyntaxError, ValueError) as error:
             blocks.append(f"UNPARSED {change.path}: {failed_line(error).removeprefix('FAILED ')}\n")
             continue
         changed = changed_definitions(change, definitions)
-        lines = text.split("\n")
+        lines = program_lines(text)
         imported = imported_names(parse_python(text)) if change.path.endswith(".py") else set()
         for definition in sorted(changed, key=lambda item: item.line):
             if tests.names(definition):

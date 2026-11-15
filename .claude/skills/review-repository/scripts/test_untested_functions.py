@@ -435,6 +435,17 @@ class ConditionTests(unittest.TestCase):
             "function days_old, added lines 3, hunk @@ -1,4 +1,4 @@, tests of its file tests/test_report.py\n", written
         )
 
+    def test_a_lone_cr_ends_no_line_where_the_diff_numbers_lines(self) -> None:
+        # git ends a line at LF alone, so the function starts on line 2 of the hunk git wrote, as Bash reads it too.
+        bash = "# note\rmore\nf() {\n  echo changed\n}\n"
+        diff = (
+            "diff --git a/tools/tool.sh b/tools/tool.sh\n--- a/tools/tool.sh\n+++ b/tools/tool.sh\n"
+            "@@ -1,4 +1,4 @@\n # note\rmore\n f() {\n-  echo old\n+  echo changed\n }\n"
+        )
+        code, out, written = self.run_condition({"tools/tool.sh": bash}, {"tools/tool.sh": bash}, extra=diff)
+        self.assertEqual((0, "UNTESTED 1 given=1\n"), (code, out))
+        self.assertIn("UNTESTED tools/tool.sh:2 function f, added lines 3, ", written)
+
     def test_fixtures_are_neither_code_to_test_nor_tests(self) -> None:
         fixture = "tests/fixtures/skill-evals/x/head"
         before = {f"{fixture}/app/service.py": SERVICE, "app/service.py": SERVICE}

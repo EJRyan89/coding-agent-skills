@@ -854,7 +854,7 @@ def _outside_claim_span(name: str, text: str) -> str:
     if name not in TOKEN_CLAIM_SPANS:
         return text
     first, after = TOKEN_CLAIM_SPANS[name][:2]
-    lines = text.split("\n")
+    lines = LINE_BREAK.split(text)
     start = next((index for index, line in enumerate(lines) if line.startswith(first)), None)
     end = next((index for index, line in enumerate(lines) if line.startswith(after)), None)
     if start is None or end is None or end <= start:
@@ -1687,7 +1687,7 @@ def _toml_problem(text: str | None, where: str) -> tuple[dict[str, object] | Non
 def _guide_toml(guide: str) -> str | None:
     """The body of the TOML fence docs/codex-support.md gives one blank line after the paragraph that starts "For MXC
     with the elevated fallback", read as markdown_sections.find_fences reads fences, or None when it gives none."""
-    lines = guide.split("\n")
+    lines = LINE_BREAK.split(guide)
     for start, line in enumerate(lines):
         if not line.startswith("For MXC with the elevated fallback"):
             continue

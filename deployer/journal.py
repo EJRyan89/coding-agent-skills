@@ -90,12 +90,6 @@ PRESENCE_ALLOWED = {
         "is; none is read as finished"
     ),
 }
-# The journal is the deployer's own file, never one an author writes: each entry is one line of JSON, which
-# escapes a CR, ended by LF.
-LINE_SPLIT_ALLOWED = {
-    "_read_entries": "the deployer writes each entry as one JSON line ended by LF, and JSON escapes a CR, so LF "
-    "alone ends an entry and the text after the last LF is the entry a crash tore",
-}
 # The refusals caught beside them, which never reach the user.
 STEP_ALLOWED = {
     "keep_backup": "its refusal is caught in the same function, whose warning names the step: move the kept copy out "

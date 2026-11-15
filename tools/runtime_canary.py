@@ -171,6 +171,7 @@ from path_containment import resolved_path, within
 from release_tags import last_release
 from seconds_option import positive_seconds
 from skill_roots import sibling_scripts
+from text_lines import program_lines
 
 sys.path.insert(0, str(sibling_scripts("ejryan89-code-review-core")))
 from review_hosts import COPILOT_SYNC_SESSION_VERSION, copilot_local_session
@@ -501,7 +502,7 @@ def read_records(path: Path) -> list[dict[str, Any]]:
     records left."""
     records = []
     if is_present(path):
-        for number, line in enumerate(discovery.output_lines(path.read_bytes().decode("utf-8", "replace")), 1):
+        for number, line in enumerate(program_lines(path.read_bytes().decode("utf-8", "replace")), 1):
             try:
                 record = json_reader.loads(line)
             except json.JSONDecodeError:
@@ -846,7 +847,7 @@ def unread_rejections(runtime: str, completed: Completed) -> list[str]:
         return []
     return [
         line.strip()
-        for line in discovery.output_lines(completed.stderr)
+        for line in program_lines(completed.stderr)
         if CODEX_EXEC_FAILED.search(line) and not CODEX_REJECTED.search(line)
     ]
 

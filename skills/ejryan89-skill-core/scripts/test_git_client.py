@@ -2298,3 +2298,19 @@ def test_only_a_timeout_among_the_failures_git_never_answered_is_the_remote_s() 
         "execution": False,
         "not_repository": False,
     }
+
+
+def test_a_line_of_git_s_own_after_its_progress_meter_s_lone_cr_is_read() -> None:
+    # git rewrites its progress line after a lone CR, so its own line may follow one, as a terminal shows it.
+    progress = "Receiving objects:  42% (1/2)\r"
+    assert git_client.transient_failure(GitResult(128, "", f"{progress}error: RPC failed; curl 18 transfer closed\n"))
+    assert git_client.local_failure(
+        f"{progress}error: could not lock config file .git/config: Permission denied\n", None
+    )
+
+
+def test_a_line_separator_in_a_remote_s_line_starts_no_line_of_git_s_own() -> None:
+    # What follows U+2028 in a remote's line is still the remote's, never a line git wrote.
+    remote = "remote: note\u2028"
+    assert not git_client.transient_failure(GitResult(128, "", f"{remote}fatal: the remote end hung up unexpectedly\n"))
+    assert not git_client.local_failure(f"{remote}error: could not lock config file .git/config: denied\n", None)

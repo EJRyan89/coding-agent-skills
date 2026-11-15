@@ -1703,7 +1703,8 @@ def gh_filter_problems(root: Path) -> list[str]:
         if not file_presence.is_present(path, other_is_absent=True) or is_test_script(path):
             continue
         name = path.relative_to(root).as_posix()
-        text = path.read_text(encoding="utf-8", errors="replace")
+        # The bytes as written, since Bash ends a line at LF alone and read_text would make a lone CR one.
+        text = path.read_bytes().decode("utf-8", "replace")
         found: list[tuple[int, str]] = []
         suffix = path.suffix.casefold()
         if suffix == ".py":
@@ -3128,7 +3129,8 @@ def script_contract_problems(root: Path) -> list[str]:
         if not file_presence.is_present(path, other_is_absent=True) or is_test_script(path):
             continue
         name = path.relative_to(root).as_posix()
-        text = path.read_text(encoding="utf-8", errors="replace")
+        # The bytes as written, since Bash ends a line at LF alone and read_text would make a lone CR one.
+        text = path.read_bytes().decode("utf-8", "replace")
         if path.suffix == ".py":
             try:
                 tree = parse_python(path)

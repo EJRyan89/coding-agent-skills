@@ -820,8 +820,8 @@ removed fails validation until its pattern follows it.
   U+00A0 and U+2028;
   `skill_inventory:delegation_lines`, which returns each runtime prompt's line number beside the lines it prints;
   `run_dotnet_format:parse_diagnostics`, which splits a formatter's log on a newline alone for the same reason;
-  `deployer.discovery:output_lines`, which splits a runtime's output, its skill catalog, and the canary's records on a
-  newline alone, taking off a carriage return before it, and `tools.claude_stream:events`, which reads Claude Code's
+  `text_lines:program_lines`, which splits a program's output, a runtime's skill catalog and the canary's records
+  among it, on a newline alone, taking off a carriage return before it, and `tools.claude_stream:events`, which reads Claude Code's
   stream-json output through it for the canaries and the skill evaluations; `flat_text:fact_line`, which flattens every field of a
   tab-separated fact line; and the choke points every stdout line of a shipped skill's scripts passes,
   `flat_text:flat_text`, `flat_text:fact_line`, `console:failed_line`, and `flat_text:single_line`, given a whole

@@ -3444,8 +3444,10 @@ def test_content_errors_policy_refuses_a_tree_whose_skill_core_names_no_reader()
 # that recurses in C, such as json's reader or writer, whose depth limit varies by Python version, is refused with or
 # without a reader when that call is all that recurses, directly or through a function, and passed when its function
 # judges the depth with nesting_depth.nests_past, before the call or after it, directly or through a function, or
-# when it also calls what recurses in Python.
+# when it also calls what recurses in Python. The codec and file methods a C call's result or argument passes through,
+# encode(), write_text(), and a file's write, recurse into nothing, and the parser behind ast.parse recurses in C.
 CONTENT_RECURSION_CALLER_SOURCE = """\
+import ast
 import contextlib
 import json
 import os
@@ -3697,6 +3699,35 @@ def beside_python_recursion(text):
         return json.loads(text), tomllib.loads(text)
     except RecursionError:
         return None
+
+
+def written_then_encoded(value):
+    try:
+        return json.dumps(value).encode()
+    except RecursionError:
+        return None
+
+
+def written_to_a_path(path, value):
+    try:
+        path.write_text(json.dumps(value))
+    except RecursionError:
+        return None
+
+
+def written_to_a_file(path, value):
+    try:
+        with open(path, "w") as file:
+            json.dump(value, file)
+    except RecursionError:
+        return None
+
+
+def parsed_source(text):
+    try:
+        return ast.parse(text)
+    except (SyntaxError, MemoryError, RecursionError):
+        return None
 """
 
 
@@ -3721,10 +3752,10 @@ def test_content_errors_policy_refuses_a_recursion_handler_around_readers_that_n
         "why in CONTENT_ERRORS_ALLOWED"
     )
     assert found == [
-        *(f"skills/alpha/scripts/alpha.py:{line} {remedy}" for line in (38, 45, 52, 57, 67)),
-        f"skills/alpha/scripts/alpha.py:97 {c_remedy}",
-        *(f"skills/alpha/scripts/alpha.py:{line} {remedy}" for line in (139, 150, 158, 174, 170)),
-        *(f"skills/alpha/scripts/alpha.py:{line} {c_remedy}" for line in (208, 215, 220)),
+        *(f"skills/alpha/scripts/alpha.py:{line} {remedy}" for line in (39, 46, 53, 58, 68)),
+        f"skills/alpha/scripts/alpha.py:98 {c_remedy}",
+        *(f"skills/alpha/scripts/alpha.py:{line} {remedy}" for line in (140, 151, 159, 175, 171)),
+        *(f"skills/alpha/scripts/alpha.py:{line} {c_remedy}" for line in (209, 216, 221, 258, 265, 273, 280)),
     ]
 
 
@@ -3733,12 +3764,8 @@ def test_content_errors_policy_refuses_a_recursion_handler_around_readers_that_n
 RECURSING_CALLS = (
     "ast.dump",
     "ast.literal_eval",
-    "ast.parse",
     "ast.unparse",
-    "compile",
     "copy.deepcopy",
-    "eval",
-    "exec",
     "pprint.pformat",
     "pprint.pprint",
     "re.compile",
@@ -3754,6 +3781,10 @@ RECURSING_CALLS = (
     "tomllib.loads",
 )
 C_RECURSING_CALLS = (
+    "ast.parse",
+    "compile",
+    "eval",
+    "exec",
     "json.dump",
     "json.dumps",
     "json.load",
@@ -3773,11 +3804,14 @@ NON_RECURSING_METHODS = (
     "append",
     "as_posix",
     "casefold",
+    "close",
     "count",
+    "encode",
     "endswith",
     "exists",
     "extend",
     "find",
+    "flush",
     "get",
     "is_dir",
     "is_file",
@@ -3787,8 +3821,10 @@ NON_RECURSING_METHODS = (
     "keys",
     "lower",
     "lstrip",
+    "open",
     "partition",
     "pop",
+    "read",
     "read_bytes",
     "read_text",
     "relative_to",
@@ -3808,6 +3844,9 @@ NON_RECURSING_METHODS = (
     "unlink",
     "upper",
     "values",
+    "write",
+    "write_bytes",
+    "write_text",
 )
 
 
@@ -8392,36 +8431,43 @@ class SiblingImportFixtures(unittest.TestCase):
             self.assertFalse(python_checks.imports_a_sibling(source, ast.parse(source.read_text(encoding="utf-8"))))
 
 
-# Each splitlines() the line-split policy refuses, each split at "\n" of text an author writes, and each form it
-# passes, by a source whose refused lines end in `# read`.
+# Each splitlines() the line-split policy refuses, each split at "\n" of a file read with its CRs kept, and each form
+# it passes, by a source whose refused lines end in `# read`.
+DECODED = "path.read_bytes().decode('utf-8')"
 LINE_SPLIT_FORMS = [
     pytest.param("def f(text):\n    return text.splitlines()  # read\n", id="splitlines bound"),
     pytest.param("def f(text):\n    return text.splitlines(keepends=True)  # read\n", id="splitlines keeping ends"),
     pytest.param("def f(text):\n    return str.splitlines(text)  # read\n", id="splitlines unbound"),
     pytest.param("def f(path):\n    return path.read_text().splitlines()  # read\n", id="splitlines of a file"),
     pytest.param("def f(result):\n    return result.stdout.splitlines()  # read\n", id="splitlines of output"),
+    pytest.param(f"def f(path):\n    return {DECODED}.split('\\n')  # read\n", id="decoded bytes split at LF"),
     pytest.param(
-        "def f(path):\n    return path.read_text(encoding='utf-8').split('\\n')  # read\n", id="a file split at LF"
+        "def f(path):\n    return path.read_text(newline='').split('\\n')  # read\n",
+        id="a file read with its line ends kept split at LF",
     ),
-    pytest.param("def f(path):\n    return path.read_text().rsplit('\\n', 1)  # read\n", id="a file rsplit at LF"),
-    pytest.param("def f(path):\n    return path.read_text().split(sep='\\n')  # read\n", id="LF given by keyword"),
-    pytest.param("def f(path):\n    return str.split(path.read_text(), '\\n')  # read\n", id="split unbound"),
     pytest.param(
-        "def f(path):\n    return path.read_text().strip().removesuffix('x').split('\\n')  # read\n",
-        id="through line-keeping methods",
+        "def f(path, end):\n    return path.read_text(newline=end).split('\\n')  # read\n",
+        id="a file read with a newline the policy cannot settle split at LF",
+    ),
+    pytest.param(f"def f(path):\n    return {DECODED}.rsplit('\\n', 1)  # read\n", id="decoded bytes rsplit at LF"),
+    pytest.param(f"def f(path):\n    return {DECODED}.split(sep='\\n')  # read\n", id="LF given by keyword"),
+    pytest.param(f"def f(path):\n    return str.split({DECODED}, '\\n')  # read\n", id="split unbound"),
+    *(
+        pytest.param(f"def f(path):\n    return {DECODED}.{method}('x').split('\\n')  # read\n", id=f"through {method}")
+        for method in ("strip", "lstrip", "rstrip", "removeprefix", "removesuffix")
     ),
     pytest.param(
         "def f(text):\n    return text.replace('\\r\\n', '\\n').split('\\n')  # read\n", id="CRLF made LF alone"
     ),
     pytest.param(
-        "def f(path):\n    text = path.read_text()\n    return text.split('\\n')  # read\n", id="a name bound to a file"
+        f"def f(path):\n    text = {DECODED}\n    return text.split('\\n')  # read\n", id="a name bound to a file"
     ),
     pytest.param(
-        "def f(path):\n    text: str = path.read_text()\n    return text.split('\\n')  # read\n",
+        f"def f(path):\n    text: str = {DECODED}\n    return text.split('\\n')  # read\n",
         id="a name annotated and bound to a file",
     ),
     pytest.param(
-        "def f(path):\n    if (text := path.read_text()):\n        return text.split('\\n')  # read\n",
+        f"def f(path):\n    if (text := {DECODED}):\n        return text.split('\\n')  # read\n",
         id="a name an assignment expression binds to a file",
     ),
     pytest.param(
@@ -8434,11 +8480,18 @@ LINE_SPLIT_FORMS = [
     pytest.param("def f(text):\n    return text.encode().splitlines()\n", id="splitlines of encode passes"),
     pytest.param("def f(value):\n    return bytes(value).splitlines()\n", id="splitlines of bytes() passes"),
     pytest.param("def f(text):\n    return text.split('\\n')\n", id="a parameter split at LF passes"),
+    # read_text reads with universal newlines, so a lone CR and a CRLF come back as the line feed it splits at.
+    pytest.param("def f(path):\n    return path.read_text().split('\\n')\n", id="read_text split at LF passes"),
     pytest.param(
-        "def f(path):\n    return path.read_text().split(',')\n", id="a file split at another separator passes"
+        "def f(path):\n    return path.read_text(newline=None).split('\\n')\n",
+        id="read_text given newline None split at LF passes",
     ),
     pytest.param(
-        "def f(path):\n    text = path.read_text()\n    return text\n\n\ndef g(text):\n    return text.split('\\n')\n",
+        "def f(output):\n    return output.decode('utf-8').split('\\n')\n", id="a program's output decoded passes"
+    ),
+    pytest.param(f"def f(path):\n    return {DECODED}.split(',')\n", id="a file split at another separator passes"),
+    pytest.param(
+        f"def f(path):\n    text = {DECODED}\n    return text\n\n\ndef g(text):\n    return text.split('\\n')\n",
         id="a name another scope binds to a file passes",
     ),
     pytest.param("def f(text):\n    return text.replace('a', '\\n').split('\\n')\n", id="another replace passes"),
@@ -8456,7 +8509,7 @@ def test_line_split_policy_refuses_each_split_its_comment_names_and_passes_the_r
 
 
 def test_line_split_policy_names_each_remedy_and_skips_text_lines_itself() -> None:
-    source = "def f(text, path):\n    return text.splitlines(), path.read_text().split('\\n')\n"
+    source = "def f(text, path):\n    return text.splitlines(), path.read_bytes().decode().split('\\n')\n"
     with tempfile.TemporaryDirectory() as temporary:
         root = Path(temporary)
         write_fixture_tree(
@@ -8473,9 +8526,9 @@ def test_line_split_policy_names_each_remedy_and_skips_text_lines_itself() -> No
         "vertical tab, a form feed, and the file, group, and record separators; split a file an author writes with "
         "text_lines.text_lines and a program's output where that program ends a line, with text_lines.program_lines "
         "or git_client.output_lines, or state why in LINE_SPLIT_ALLOWED",
-        'skills/alpha/scripts/alpha.py:2 splits text an author writes at "\\n" alone, which misses a lone CR that '
-        "YAML, CommonMark, and .NET end a line at; split it with text_lines.text_lines, or state why in "
-        "LINE_SPLIT_ALLOWED, as for a Bash script, which Bash ends at LF alone",
+        'skills/alpha/scripts/alpha.py:2 splits a file an author writes, read with its CRs kept, at "\\n" alone, '
+        "which misses a lone CR that YAML, CommonMark, and .NET end a line at; split it with text_lines.text_lines, "
+        "or state why in LINE_SPLIT_ALLOWED, as for a Bash script, which Bash ends at LF alone",
     ]
 
 

@@ -15,6 +15,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts"))
 
+import workflows
 from workflows import (
     ACTION_INPUT_STATEMENT,
     CREDENTIALS_ROW,
@@ -1043,6 +1044,10 @@ CODEX_GUIDE = (
 class CodexSettingsFixtures(unittest.TestCase):
     def test_the_workflow_writes_the_guides_codex_settings_in_any_order(self) -> None:
         self.assertEqual([], codex_settings_problems(CODEX_SETTINGS_WORKFLOW, CODEX_GUIDE))
+
+    def test_the_guide_s_lines_end_where_commonmark_ends_one(self) -> None:
+        # A lone CR ends a line as LF does, so the fence after the paragraph is found.
+        self.assertEqual([], codex_settings_problems(CODEX_SETTINGS_WORKFLOW, CODEX_GUIDE.replace("\n", "\r")))
 
     def test_config_may_be_joined_through_a_folder_variable(self) -> None:
         workflow = CODEX_SETTINGS_WORKFLOW.replace(
@@ -3066,3 +3071,10 @@ def test_a_workflow_is_held_to_validates_pin_of_each_action_or_repository_it_sha
     workflow: str, problems: list[str]
 ) -> None:
     assert shared_pin_problems(PIN_REVIEWED, workflow) == problems
+
+
+def test_a_claim_span_s_markers_open_lines_a_lone_cr_ends() -> None:
+    # The file is read as its bytes, keeping each CR, and YAML, CommonMark, and Python end a line at a lone one.
+    first, after = workflows.TOKEN_CLAIM_SPANS["tests/validation/workflows.py"][:2]
+    text = f"a\r{first}\rclaim\r{after}\rz"
+    assert workflows._outside_claim_span("tests/validation/workflows.py", text) == f"a\n\n\n{after}\nz"
