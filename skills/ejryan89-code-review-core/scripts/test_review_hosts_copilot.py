@@ -416,8 +416,13 @@ REFUSED: list[tuple[str, Mutation, Outcome]] = [
     ),
     (
         "a version run that fails",
-        _change("version", ProcessResult(1, "", "no")),
-        (RuntimeContractError, "Cannot determine GitHub Copilot CLI version", 1, None),
+        _change("version", ProcessResult(1, "", "error: no\nauthentication\n")),
+        (RuntimeContractError, "Cannot determine GitHub Copilot CLI version: error: no authentication", 1, None),
+    ),
+    (
+        "a version run that fails silently",
+        _change("version", ProcessResult(3, "", "")),
+        (RuntimeContractError, "Cannot determine GitHub Copilot CLI version: exit code 3", 1, None),
     ),
     (
         "a version that cannot be parsed",

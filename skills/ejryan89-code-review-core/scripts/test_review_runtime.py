@@ -15,7 +15,7 @@ import sys
 import tarfile
 import tempfile
 import unittest
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 from unittest import mock
@@ -1591,12 +1591,16 @@ class CommittedReadTests(unittest.TestCase):
             yield b"# Review\n"
             raise RuntimeContractError(f"Blob {blobs[1]} is missing from the checkout's object store")
 
-        for name, reader in (("swapped", swapped), ("missing", missing)):
+        blob = git_blob_id(b"rules\n")
+        for name, reader, reason in (
+            ("swapped", swapped, f"the checkout returned content that does not hash to blob {blob}"),
+            ("missing", missing, f"Blob {blob} is missing from the checkout's object store"),
+        ):
             with self.subTest(name), self.assertRaises(RuntimeContractError) as raised:
                 materialize_reviewer(
                     self.checkout, trusted, entrypoint_files("docs/a.md"), self.root / name, blob_reader=reader
                 )
-            self.assertEqual("Cannot read declared reviewer file: docs/a.md", str(raised.exception))
+            self.assertEqual(f"Cannot read declared reviewer file: docs/a.md: {reason}", str(raised.exception))
             self.assertFalse((self.root / name).exists())
 
     def test_a_long_list_of_paths_is_split_across_listings_and_read_in_one_batch(self) -> None:
@@ -1667,6 +1671,130 @@ class CommittedReadTests(unittest.TestCase):
         blob = git_blob_id(b"rules\n")
         with self.assertRaisesRegex(RuntimeContractError, f"^The checkout did not return the size of blob {blob}$"):
             review_runtime.read_blob(self.checkout, blob[:7], unsized, maximum=1024)
+
+    def failing(self, answers: Mapping[tuple[str, str], GitResult]) -> Callable[[Sequence[str], float], GitResult]:
+        """A runner that gives each `cat-file` its answer in `answers`, by its option, and runs every other command."""
+
+        def run(arguments: Sequence[str], timeout: float) -> GitResult:
+            answer = answers.get((arguments[3], arguments[4])) if len(arguments) > 4 else None
+            return answer if answer is not None else subprocess_runner(arguments, timeout)
+
+        return run
+
+    def test_a_failed_cat_file_is_named_with_the_reason_git_gave_and_a_wrong_answer_apart_from_it(self) -> None:
+        self.commit({"docs/a.md": b"rules\n"})
+        blob = git_blob_id(b"rules\n")
+        cases = (
+            (
+                {("cat-file", "-s"): GitResult(128, "", "fatal: bad object\nfatal: the store is damaged\n")},
+                f"The checkout did not return the size of blob {blob}: fatal: bad object fatal: the store is damaged",
+            ),
+            (
+                {("cat-file", "-s"): GitResult(128, "", "")},
+                f"The checkout did not return the size of blob {blob}: git cat-file failed with exit code 128",
+            ),
+            (
+                {("cat-file", "blob"): GitResult(128, "", "fatal: unable to read blob\n")},
+                f"The checkout did not return blob {blob}: fatal: unable to read blob",
+            ),
+            (
+                {("cat-file", "blob"): GitResult(1, "", "")},
+                f"The checkout did not return blob {blob}: git cat-file failed with exit code 1",
+            ),
+            (
+                {("cat-file", "blob"): GitResult(0, "rules, rewritten\n", "")},
+                f"The checkout returned content that does not hash to blob {blob}",
+            ),
+        )
+        for answers, message in cases:
+            with self.subTest(message), self.assertRaises(RuntimeContractError) as raised:
+                review_runtime.read_blob(self.checkout, blob[:7], self.failing(answers), maximum=1024)
+            self.assertEqual(message, str(raised.exception))
+
+    def test_a_reviewer_file_the_checkout_cannot_return_is_named_with_git_s_reason(self) -> None:
+        content = b"{}\n"
+        trusted = self.commit({".review/manifest.json": content})
+        blob = git_blob_id(content)
+        for failed, reason in (
+            (GitResult(128, "", "fatal: unable to read blob\n"), "fatal: unable to read blob"),
+            (GitResult(128, "", ""), "git cat-file failed with exit code 128"),
+        ):
+            runner = self.failing({("cat-file", "blob"): failed})
+            with self.subTest(reason), self.assertRaises(RuntimeContractError) as raised:
+                review_runtime._read_git_file(self.checkout, trusted, ".review/manifest.json", runner)
+            self.assertEqual(
+                "Cannot read declared reviewer file: .review/manifest.json: The checkout did not return blob "
+                f"{blob}: {reason}",
+                str(raised.exception),
+            )
+        answers: tuple[tuple[list[bytes], str], ...] = (
+            ([], f"the checkout returned no blob {blob}"),
+            ([b"[]\n"], f"the checkout returned content that does not hash to blob {blob}"),
+        )
+        for answer, reason in answers:
+
+            def reader(_checkout: Path, _blobs: Sequence[str], answer: list[bytes] = answer) -> list[bytes]:
+                return answer
+
+            with self.subTest(reason), self.assertRaises(RuntimeContractError) as raised:
+                review_runtime._read_reviewer_blobs(self.checkout, {".review/manifest.json": blob}, reader)
+            self.assertEqual(
+                f"Cannot read declared reviewer file: .review/manifest.json: {reason}", str(raised.exception)
+            )
+
+
+class BatchFailureTests(unittest.TestCase):
+    """A `git cat-file --batch` that fails is named with its stderr on one line, or its exit code when it printed
+    none."""
+
+    class Stream:
+        """A `git cat-file --batch` that answers `answers`, then exits with `code` and prints `stderr`."""
+
+        def __init__(self, answers: bytes, code: int, stderr: str) -> None:
+            self.stdin = io.BytesIO()
+            self.output = io.BytesIO(answers)
+            self.code, self.errors = code, stderr
+
+        def __enter__(self) -> BatchFailureTests.Stream:
+            return self
+
+        def __exit__(self, *_exc: object) -> None:
+            return None
+
+        def readline(self) -> bytes:
+            return self.output.readline()
+
+        def read(self, size: int) -> bytes:
+            return self.output.read(size)
+
+        def wait(self) -> int:
+            return self.code
+
+        def stderr(self) -> str:
+            return self.errors
+
+    BLOB = git_blob_id(b"a\n")
+
+    def read(self, answers: bytes, code: int, stderr: str) -> str:
+        stream = self.Stream(answers, code, stderr)
+        client = mock.Mock(return_value=mock.Mock(stream=mock.Mock(return_value=stream)))
+        with mock.patch.object(review_runtime, "GitClient", client), self.assertRaises(RuntimeContractError) as raised:
+            list(review_runtime.git_blob_reader(Path("checkout"), [self.BLOB]))
+        return str(raised.exception)
+
+    def test_a_batch_that_ends_before_answering_is_named_by_its_stderr_on_one_line_or_its_exit_code(self) -> None:
+        self.assertEqual(
+            f"git cat-file ended before it answered {self.BLOB}: fatal: one fatal: two",
+            self.read(b"", 128, "fatal: one\nfatal: two\n"),
+        )
+        self.assertEqual(f"git cat-file ended before it answered {self.BLOB}: exit code 128", self.read(b"", 128, ""))
+
+    def test_a_batch_that_answers_and_then_fails_is_named_by_its_stderr_on_one_line_or_its_exit_code(self) -> None:
+        answered = f"{self.BLOB} blob 2\na\n\n".encode("ascii")
+        self.assertEqual(
+            "git cat-file failed: error: one error: two", self.read(answered, 2, "error: one\nerror: two\n")
+        )
+        self.assertEqual("git cat-file failed: exit code 2", self.read(answered, 2, ""))
 
 
 class DestinationStatTests(unittest.TestCase):

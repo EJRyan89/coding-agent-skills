@@ -202,7 +202,9 @@ removed fails validation until its pattern follows it.
   `skills/dotnet-format/scripts/test_dotnet_format_targets.py::ResolveTests::test_a_failed_git_command_fails_with_the_reason_git_gave`,
   `skills/audit-skill/scripts/test_skill_inventory.py::InventoryTests::test_markdown_the_skill_loads_that_is_not_utf8_is_unreadable_and_fails_the_inventory`,
   `skills/ejryan89-skill-core/scripts/test_skill_roots.py::SkillsDirectoryHoldingTests::test_a_symbolic_link_loop_is_compared_as_written_on_every_python_version`,
-  `skills/dotnet-dependencies/scripts/test_dependency_graph.py::PresenceReadTests::test_an_output_that_is_a_symbolic_link_loop_is_refused_naming_it_on_every_python_version`
+  `skills/dotnet-dependencies/scripts/test_dependency_graph.py::PresenceReadTests::test_an_output_that_is_a_symbolic_link_loop_is_refused_naming_it_on_every_python_version`,
+  `skills/ejryan89-code-review-core/scripts/test_review_runtime.py::CommittedReadTests::test_a_failed_cat_file_is_named_with_the_reason_git_gave_and_a_wrong_answer_apart_from_it`,
+  `skills/ejryan89-code-review-core/scripts/test_review_runtime.py::BatchFailureTests::test_a_batch_that_answers_and_then_fails_is_named_by_its_stderr_on_one_line_or_its_exit_code`
 - **Search for:** `rg -nU "except (OSError|ValueError|UnicodeDecodeError)[^\n]*:\n\s+(print\([^\n]*\)\n\s+)?return 1\b"`,
   a handler that ends every failure in one code; two probes under one `except` that print one message; an `except`
   around a `git` or `gh` call that drops the exception's text; `FAILED KeyError`, `FAILED TypeError`, or
@@ -221,7 +223,8 @@ removed fails validation until its pattern follows it.
   not be measured, or a file a reader skips where its docstring says the command fails on one;
   `rg -n "\.resolve\(" -g '*.py'` on a path taken from input or the environment, never `__file__`, under a handler of
   `OSError` alone, whose RuntimeError on Python 3.12 for a symbolic link loop ends the run in `FAILED RuntimeError`.
-- **Examples:** #1511, #1840, #1855, #1910, #2022, #2181, #2207, #2209, #2477, #2548, #2596, #2697, #2738, #2794
+- **Examples:** #1511, #1840, #1855, #1910, #2022, #2181, #2207, #2209, #2477, #2548, #2596, #2697, #2738, #2763,
+  #2794
 
 ### A refusal ends with the step to take
 
@@ -375,7 +378,8 @@ removed fails validation until its pattern follows it.
   and the evaluation runner read, `typed_text:read_typed`, the read of a title or body file without its byte-order mark, and
   `deployer.journal:finish_backup`, the one rule a committed run's finalization and its recovery settle a backup by,
   and `review_config:REPOSITORY`, the one rule of a repository identity the mute and pull-key patterns are built
-  on, and the adapter schema's repository pattern is probed against.
+  on, and the adapter schema's repository pattern is probed against, and `markdown_sections:find_fences`, the one
+  reader of a Markdown fence.
   A module more than one part of the repository needs moves to skill-core.
 - **Guard:** `tests/deployer/test_backup_settlement.py::SettlementTests`, which runs each backup through both paths,
   `skills/ejryan89-code-review-core/scripts/test_review_config.py::ConfigurationTests::test_a_repository_identity_holds_githubs_name_rule_and_every_reader_built_on_it_agrees`,
@@ -389,15 +393,21 @@ removed fails validation until its pattern follows it.
   `tests/tools/test_hub_guard.py::ContractListTests::test_the_forms_the_hub_allows_are_the_read_only_forms`,
   `tests/tools/test_hub_guard.py::ContractListTests::test_the_runners_the_guard_refuses_are_the_ones_its_contract_names`,
   `tests/code-review/test_format_contract.py::test_the_threat_model_rows_name_each_file_the_analyzer_inventory_parses`,
-  `.claude/skills/review-repository/scripts/test_review_repository.py::test_the_trust_boundary_route_matches_its_scripts_and_each_choice_matches_a_file`
+  `.claude/skills/review-repository/scripts/test_review_repository.py::test_the_trust_boundary_route_matches_its_scripts_and_each_choice_matches_a_file`,
+  `tests/validation/test_duplication.py::SharedFactPolicy::test_a_fence_read_by_hand_fails_and_one_read_through_find_fences_passes`,
+  which refuses a fence read by hand outside the one fence reader: its run, as a literal or a name bound to one,
+  tested at a line's start or end, compared with a line by in or ==, or given as the pattern of an re function, however
+  re is imported
 - **Search for:** a module-level `frozenset({` or tuple of strings whose members another module also spells; a
   document's list of names, flags, or modules that a module's constant holds; a `print(` of a status line no
   `SKILL.md` names; a second `json.loads(`, `os.lstat(`, or other helper beside the one skill-core owns;
   `rg -n "def (_?inside|strictly_inside|_lexically_inside)\b"` and other helpers of one job held in several modules;
+  a fence's run built at runtime, as from its marker by `*`, or held in an attribute or another module's name,
+  which the fence guard cannot read;
   a live step and its recovery, such as a run's finalization and the completion of an interrupted one, each deciding
   in its own code what becomes of the same state on disk; a repository walk through `file_presence.matching` or
   `os.walk` with a skip set of its own, rather than `folder_walk.walk_files`.
-- **Examples:** #1349, #1477, #1495, #1596, #1679, #2219, #2295, #2296, #2718, #2738, #2734
+- **Examples:** #1349, #1477, #1495, #1596, #1679, #2219, #2295, #2296, #2718, #2734, #2738, #2748
 
 ### A promise in prose is held where its reader reads it
 
@@ -439,8 +449,9 @@ removed fails validation until its pattern follows it.
   `tools.hub_guard:judge_option`, which refuses a shell option neither table of the guard's names, and
   `tools.claude_stream:events`, the one reader of Claude Code's stream-json output, which refuses a line that is JSON
   but no event object, by its line, and `tools.runtime_canary:read_records`, which refuses a records line that is
-  JSON but no record object the same way, and `review_batches:load_batch`, which reads a batch file whole before the
-  advance or prepare command uses any field of it.
+  JSON but no record object the same way, and `review_dispatch:_read_log`, which refuses a read log line that is
+  JSON but neither a path nor a search, by its line, and `review_batches:load_batch`, which reads a batch file whole
+  before the advance or prepare command uses any field of it.
 - **Guard:** `skills/ejryan89-skill-core/scripts/test_typed_fields.py::FieldReaderTests::test_an_object_holds_its_required_fields_and_no_unknown_one`,
   `tests/malformed_input/test_malformed_input.py::test_each_reader_refuses_or_documents_accepting_each_case`, which
   fails a reader that answers on a field or a list item of another type it does not document taking,
@@ -454,7 +465,8 @@ removed fails validation until its pattern follows it.
   the same table for each check run in a rollup, and
   `tests/deployer/test_state_files.py::ReaderTests::test_a_journal_entry_with_any_key_of_another_type_is_malformed_never_an_error`,
   which gives every key of each journal entry the deployer writes a list, an object, and a number, and
-  `skills/ejryan89-code-review-core/scripts/test_review_pipeline.py::BatchTests::test_advance_refuses_each_batch_field_of_another_kind_naming_it_with_the_state_unchanged`, and
+  `skills/ejryan89-code-review-core/scripts/test_review_pipeline.py::BatchTests::test_advance_refuses_each_batch_field_of_another_kind_naming_it_with_the_state_unchanged`,
+  `skills/ejryan89-code-review-core/scripts/test_review_guard.py::ReadLogTests::test_check_refuses_a_log_line_that_is_json_of_another_shape_by_its_line_and_counts_no_log`, and
   `tests/malformed_input/test_malformed_input.py::test_every_function_that_calls_a_shared_reader_is_held_reached_pending_or_named_no_reader`,
   which fails a function calling a shared reader that no table holds, no held reader of its own module reaches, and
   neither the pending list nor NOT_READERS, the functions named as no reader with the reason, names, passes a helper
@@ -466,7 +478,7 @@ removed fails validation until its pattern follows it.
   such as arming, holding, or a rerun, and an absent member would read as the answer that allows it;
   `rg -n "\.get\([^)]*\)\)? (not )?in [A-Z_{(]"`, a field read from a file tested against a set, a frozenset, or a
   dictionary before its type is checked, which a list or an object fails with `TypeError` rather than as malformed.
-- **Examples:** #1890, #1892, #2054, #2227, #2235, #2292, #2564, #2589
+- **Examples:** #1890, #1892, #2054, #2227, #2235, #2292, #2564, #2589, #2705
 
 ### A reader of another program's language reads it as that program does
 
@@ -941,17 +953,21 @@ removed fails validation until its pattern follows it.
 - **Rule:** Whether something is merged, retired, or owned is decided by its identity, a commit, never by a name that
   can be reused.
 - **Why:** A branch name or a path outlives what it named, so a new branch with an old name is judged merged.
-- **Use:** `pull_carried:carried`
+- **Use:** `pull_carried:carried`, `review_insights:decide_custom`, which decides only the custom-candidate rules
+  whose IDs the user was shown
 - **Guard:** `skills/ejryan89-skill-core/scripts/test_pull_carried.py::CarriedTests`,
   `.claude/skills/shepherd-pull-requests/scripts/test_shepherd_pull_requests.py::MergedTest::test_a_worktree_at_main_that_reuses_a_merged_branch_s_name_is_not_named`,
   `.claude/skills/shepherd-pull-requests/scripts/test_shepherd_pull_requests.py::MergedTest::test_a_worktree_with_its_own_commit_that_reuses_a_merged_branch_s_name_is_not_named`,
   `.claude/skills/shepherd-pull-requests/scripts/test_shepherd_pull_requests.py::MergedTest::test_a_local_branch_that_reuses_a_merged_branch_s_name_is_not_named_for_deletion`,
-  `.claude/skills/shepherd-pull-requests/scripts/test_shepherd_pull_requests.py::MergedTest::test_only_an_open_pull_request_of_this_repository_holds_a_merged_worktree_s_line_back`
+  `.claude/skills/shepherd-pull-requests/scripts/test_shepherd_pull_requests.py::MergedTest::test_only_an_open_pull_request_of_this_repository_holds_a_merged_worktree_s_line_back`,
+  `skills/review-insights/scripts/test_review_insights.py::AnalyzerTests::test_custom_candidates_a_regenerated_report_added_are_refused_and_nothing_is_decided`
 - **Search for:** a branch, a ref, or a path compared by name, `== branch` or `in branches`, in a decision that a
   pull request is merged, a worktree retired, or a file owned; a `headRefName` read where a `headRefOid` or a commit
   is meant; a name or a head read from another repository's pull request, `isCrossRepository` true, in a decision
-  about this repository's own branches.
-- **Examples:** #1901, #2238
+  about this repository's own branches; a confirmation checked against a value derived from what was confirmed, such
+  as the union of the flags or the count of the items a question named, rather than the items' own IDs, so an item
+  added since passes as confirmed.
+- **Examples:** #1901, #2238, #2722
 
 ### A time option is a positive finite number of seconds
 

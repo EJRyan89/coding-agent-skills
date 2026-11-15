@@ -1319,7 +1319,10 @@ def insights_fixtures(scratch: Path) -> dict[str, list[Fixture]]:
         january_fixture = run.synthesize(january, january_result)
         run.decide(january, "category", "accepted", "Add a rule", category="Style")
         run.decide(january, "analyzer", "deferred")
-        review_insights.decide_custom(january, [], "rejected", services=run.services)
+        candidates = review_insights.custom_candidates(json.loads(january.read_text(encoding="utf-8")))
+        review_insights.decide_custom(
+            january, [], "rejected", rules=[item["id"] for item in candidates], services=run.services
+        )
         complete = json.loads(january.read_text(encoding="utf-8"))
         add_flag(run.flags_path, category="later", body="A new observation.", repository=INSIGHTS_REPOSITORY)
         run.report("2026-01-01", "2026-01-31")

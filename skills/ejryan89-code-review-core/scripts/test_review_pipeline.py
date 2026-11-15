@@ -2746,8 +2746,10 @@ class ReadCountTests(PipelineFixture):
         )
         self.guarded(role, "a73176509870d6114", "app/service.py", "review/rules.md")
         self.searched(role, "a73176509870d6114", "Grep", ".", "app")  # every search counts, each attempt's too
-        with log.open("a", encoding="utf-8") as stream:  # lines that name no file of the snapshot count for nothing
-            stream.write('"../run.json"\n"app/missing.py"\nnot json\n42\n')
+        # Paths that name no file of the snapshot count for nothing, and a line that is not JSON is passed over; a line
+        # that is JSON of another shape is refused, as test_review_guard.py's read log tests hold.
+        with log.open("a", encoding="utf-8") as stream:
+            stream.write('"../run.json"\n"app/missing.py"\nnot json\n')
         sizes = [(run / "source" / path).stat().st_size for path in ("app/service.py", "review/rules.md")]
         self.write_role_result(role, findings=[self.finding()])
         self.assertEqual((0, f"ALL_VALID {SELECTOR}\n", ""), self.run_main("check", "--run", str(run)))

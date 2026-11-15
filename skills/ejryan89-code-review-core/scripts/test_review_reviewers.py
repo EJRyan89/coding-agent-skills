@@ -406,8 +406,20 @@ class RepositoryTests(unittest.TestCase):
             COMMIT,
             lambda arguments, timeout: GitResult(128, "", "fatal: not a tree object\n"),
         )
+        # A failure git explains on several lines is named on one; one it does not explain, by the command and code.
         self.raises(
-            "git command failed", repository_files, CHECKOUT, COMMIT, lambda arguments, timeout: GitResult(1, "", "")
+            "fatal: one fatal: two",
+            repository_files,
+            CHECKOUT,
+            COMMIT,
+            lambda arguments, timeout: GitResult(128, "", "fatal: one\nfatal: two\n"),
+        )
+        self.raises(
+            "git ls-tree failed with exit code 1",
+            repository_files,
+            CHECKOUT,
+            COMMIT,
+            lambda arguments, timeout: GitResult(1, "", ""),
         )
 
     def test_a_path_that_is_not_utf8_is_left_out_of_the_listing(self) -> None:

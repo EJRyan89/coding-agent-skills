@@ -408,6 +408,7 @@ class SharedFactPolicy(unittest.TestCase):
     VERSIONS = "skills/ejryan89-skill-core/scripts/versions.py"
     PATH_KEYS = "skills/ejryan89-skill-core/scripts/path_keys.py"
     EXIT_CALLS = "skills/ejryan89-skill-core/scripts/exit_calls.py"
+    MARKDOWN_SECTIONS = "skills/ejryan89-skill-core/scripts/markdown_sections.py"
     OWNERS: ClassVar[dict[str, str]] = {
         GIT_CLIENT: (
             'GLOBAL_VALUE_OPTIONS = frozenset({"-c", "-C", "--attr-source", "--config-env", "--git-dir", '
@@ -442,6 +443,10 @@ class SharedFactPolicy(unittest.TestCase):
         EXIT_CALLS: (
             'EXIT_CALLS = frozenset({"sys.exit", "exit", "quit", "builtins.exit", "builtins.quit", "os._exit", '
             '"SystemExit"})\n'
+        ),
+        MARKDOWN_SECTIONS: (
+            'import re\n\nFENCE_OPENER = re.compile(r"(?P<marker>`{3,}|~{3,})(?P<info>.*)")\n\n\n'
+            "def find_fences(lines):\n    return [line for line in lines if FENCE_OPENER.match(line)]\n"
         ),
     }
 
@@ -538,6 +543,53 @@ class SharedFactPolicy(unittest.TestCase):
         )
         # A module that does not import the owner may hold the number for another reason, such as a hash's length.
         self.assertEqual([], self.problems({source: imported, "tools/other.py": "SHA256_HEX = 64\n"}))
+
+    def test_a_fence_read_by_hand_fails_and_one_read_through_find_fences_passes(self) -> None:
+        guidance = "skills/review-insights/scripts/review_guidance.py"
+        for reader, line in (
+            ('def fenced(line):\n    return line.strip().startswith(("```", "~~~"))\n', 2),
+            ('def fenced(line):\n    return line.startswith("````")\n', 2),
+            ('def closes(line):\n    return line.rstrip().endswith("~~~")\n', 2),
+            ('import re\n\n\ndef block(text):\n    return re.search(r"^```toml\\n(.*?)\\n```$", text, re.M)\n', 5),
+            ('import re\n\nFENCE = re.compile(r"^\\s*(`{3,}|~{3,})")\n', 3),
+            # A class of both markers repeated, and the pattern functions that do not find.
+            ('import re\n\nFENCE = re.compile(r"^[`~]{3,}")\n', 3),
+            ('import re\n\n\ndef body(text):\n    return re.sub(r"```[a-z]*\\n", "", text)\n', 5),
+            ('import re\n\n\ndef blocks(text):\n    return re.split(r"^~~~$", text)\n', 5),
+            # Each other function that takes a pattern first.
+            ('import re\n\n\ndef fenced(line):\n    return re.match(r"```", line)\n', 5),
+            ('import re\n\n\ndef fenced(line):\n    return re.fullmatch(r"~~~+", line)\n', 5),
+            ('import re\n\n\ndef runs(text):\n    return re.findall(r"^`{3,}", text)\n', 5),
+            # An re imported under another name, or its function imported alone.
+            ('import re as regex\n\n\ndef blocks(text):\n    return regex.finditer(r"```", text)\n', 5),
+            ('from re import subn\n\n\ndef strip(text):\n    return subn(r"~{3,}", "", text)\n', 5),
+            # A run held in a name, tested at a line's start or given as a pattern.
+            ('FENCE = "```"\n\n\ndef fenced(line):\n    return line.strip().startswith(FENCE)\n', 5),
+            ('import re\n\nRUN = r"^`{3,}"\nFENCE = re.compile(RUN)\n', 4),
+            # A run compared with a line: held in it, or its start.
+            ('def fenced(line):\n    return "```" in line\n', 2),
+            ('def fenced(line):\n    return line[:3] == "~~~"\n', 2),
+            ('MARKERS = ("```", "~~~")\n\n\ndef fenced(line):\n    return line[:3] in MARKERS\n', 5),
+        ):
+            with self.subTest(reader=reader):
+                self.assertEqual(
+                    [self.restated(guidance, line, "find_fences", self.MARKDOWN_SECTIONS)],
+                    self.problems({guidance: reader}),
+                )
+        for passing in (
+            "from markdown_sections import find_fences\n\n\ndef fenced(lines):\n"
+            "    return {index for fence in find_fences(lines) for index in fence.lines()}\n",
+            'def heading(line):\n    return line.startswith(("#", "|"))\n',
+            'def render(text):\n    return "\\n".join(["```text", text, "```"])\n',
+            'def fenced(line):\n    return line.startswith("``")\n',
+            # A run written, or a name holding none, is no reader.
+            'FENCE = "```"\n\n\ndef render(text):\n    return f"{FENCE}text\\n{text}\\n{FENCE}"\n',
+            'HEADING = "#"\n\n\ndef heading(line):\n    return line.startswith(HEADING) or line == "~~"\n',
+            'import re\n\nWORDS = re.compile(r"[a-z~]+")\n',
+            'import re\n\nCODES = re.compile(r"[XYZ]{3}")\n',
+        ):
+            with self.subTest(passing=passing):
+                self.assertEqual([], self.problems({guidance: passing}))
 
     def test_a_re_derived_name_grammar_fails_however_it_treats_consecutive_hyphens_and_an_import_passes(self) -> None:
         # The deployer's pattern accepted pdf--processing while audit-ai-config's inline one refused it: two

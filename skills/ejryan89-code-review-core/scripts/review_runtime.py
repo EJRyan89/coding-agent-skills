@@ -30,7 +30,17 @@ from diff_paths import MAX_SEGMENT_UNITS, unsafe_snapshot_name
 from executable_locator import find_executable
 from flat_text import flat_text
 from git_client import OBJECT_NAME as GIT_OBJECT_ID
-from git_client import GitClient, GitError, GitResult, GitStream, Runner, command_name, output_line, subprocess_runner
+from git_client import (
+    GitClient,
+    GitError,
+    GitResult,
+    GitStream,
+    Runner,
+    command_name,
+    failure_message,
+    output_line,
+    subprocess_runner,
+)
 from github_client import GitHubClient, GitHubError, replace_undecodable
 from github_remote import github_repository
 from link_probe import is_link_or_junction
@@ -796,6 +806,12 @@ def git_in(checkout: Path, runner: Runner, *arguments: str) -> GitResult:
         raise RuntimeContractError(f"{command_name(arguments)} failed in {checkout}: {exc}") from exc
 
 
+def git_reason(arguments: Sequence[str], result: GitResult) -> str:
+    """Why a git command that ran failed, on one line: git's stderr, or, when it printed none, the subcommand and the
+    exit code, as git_client's failure_message gives them."""
+    return flat_text(failure_message(arguments, result))
+
+
 # A full object id, alone or peeled to a kind: what it names cannot change while the object exists.
 FULL_OBJECT_NAME = re.compile(r"(?:[0-9a-f]{40}|[0-9a-f]{64})(?:\^\{(?:commit|tree|blob)\})?")
 # The git subcommands that only read: run through a PrepareGitRunner, they leave its kept answers in place.
@@ -865,10 +881,11 @@ class PrepareGitRunner:
 
 def _run_git(checkout: Path, runner: Runner, *arguments: str) -> str:
     """What git printed on stdout, whole, so a name it lists keeps every character; a one-line answer is read through
-    git_client.output_line."""
+    git_client.output_line. A failure is named by git's stderr on one line, its first stdout line when it printed no
+    stderr, or the subcommand and the exit code when it printed neither."""
     result = git_in(checkout, runner, *arguments)
     if result.returncode != 0:
-        detail = result.stderr.strip() or output_line(result.stdout) or "git command failed"
+        detail = flat_text(result.stderr) or flat_text(output_line(result.stdout)) or git_reason(arguments, result)
         raise RuntimeContractError(output_bytes(detail).decode("utf-8", "replace"))
     return result.stdout
 
@@ -1003,9 +1020,16 @@ def _read_reviewer_blobs(checkout: Path, blobs: dict[str, str], blob_reader: Blo
             try:
                 content = next(reader, None)
             except RuntimeContractError as exc:
-                raise RuntimeContractError(f"Cannot read declared reviewer file: {paths[blob]}") from exc
-            if content is None or not blob_matches(blob, content):
-                raise RuntimeContractError(f"Cannot read declared reviewer file: {paths[blob]}")
+                raise RuntimeContractError(f"Cannot read declared reviewer file: {paths[blob]}: {exc}") from exc
+            if content is None:
+                raise RuntimeContractError(
+                    f"Cannot read declared reviewer file: {paths[blob]}: the checkout returned no blob {blob}"
+                )
+            if not blob_matches(blob, content):
+                raise RuntimeContractError(
+                    f"Cannot read declared reviewer file: {paths[blob]}: the checkout returned content that does not "
+                    f"hash to blob {blob}"
+                )
             contents[blob] = content
     finally:
         close = getattr(reader, "close", None)
@@ -1020,9 +1044,10 @@ def _runner_blob_reader(runner: Runner) -> BlobReader:
 
     def read(checkout: Path, blobs: Sequence[str]) -> Iterator[bytes]:
         for blob in blobs:
-            result = git_in(checkout, runner, "cat-file", "blob", blob)
+            arguments = ("cat-file", "blob", blob)
+            result = git_in(checkout, runner, *arguments)
             if result.returncode != 0:
-                raise RuntimeContractError(f"The checkout did not return blob {blob}")
+                raise RuntimeContractError(f"The checkout did not return blob {blob}: {git_reason(arguments, result)}")
             yield result.output_bytes()
 
     return read
@@ -1829,8 +1854,8 @@ def _batch_blob_size(stdout: GitStream, blob: str) -> int:
     header = stdout.readline()
     if not header:
         # Git ended before it answered, as it does on a checkout it cannot read: its reason is the failure.
-        stdout.wait()
-        reason = stdout.stderr().strip() or "with no reason on stderr"
+        code = stdout.wait()
+        reason = flat_text(stdout.stderr()) or f"exit code {code}"
         raise RuntimeContractError(f"git cat-file ended before it answered {blob}: {reason}")
     fields = header.split()
     if len(fields) == 2 and fields[1] == b"missing":
@@ -1871,8 +1896,8 @@ def git_blob_reader(checkout: Path, blobs: Sequence[str]) -> Generator[bytes, No
                 yield _read_batch_blob(stream, blob)
             if stream.read(1):
                 raise RuntimeContractError("git cat-file printed more than it was asked for")
-            if stream.wait() != 0:
-                raise RuntimeContractError(stream.stderr().strip() or "git cat-file failed")
+            if (code := stream.wait()) != 0:
+                raise RuntimeContractError(f"git cat-file failed: {flat_text(stream.stderr()) or f'exit code {code}'}")
     except GitError as exc:
         raise RuntimeContractError(str(exc)) from exc
     finally:
@@ -2192,15 +2217,22 @@ def read_blob(
     if not blob.startswith(abbreviation) or not GIT_OBJECT_ID.fullmatch(blob):
         raise RuntimeContractError(f"Blob {abbreviation} did not resolve exactly")
     if maximum is not None:
-        size = git_in(checkout, runner, "cat-file", "-s", blob)
-        if size.returncode != 0 or not re.fullmatch(r"[0-9]+", output_line(size.stdout)):
+        sizing = ("cat-file", "-s", blob)
+        size = git_in(checkout, runner, *sizing)
+        if size.returncode != 0:
+            reason = git_reason(sizing, size)
+            raise RuntimeContractError(f"The checkout did not return the size of blob {blob}: {reason}")
+        if not re.fullmatch(r"[0-9]+", output_line(size.stdout)):
             raise RuntimeContractError(f"The checkout did not return the size of blob {blob}")
         if int(output_line(size.stdout)) > maximum:
             return None
-    result = git_in(checkout, runner, "cat-file", "blob", blob)
+    reading = ("cat-file", "blob", blob)
+    result = git_in(checkout, runner, *reading)
+    if result.returncode != 0:
+        raise RuntimeContractError(f"The checkout did not return blob {blob}: {git_reason(reading, result)}")
     content = result.output_bytes()
-    if result.returncode != 0 or not blob_matches(blob, content):
-        raise RuntimeContractError(f"The checkout did not return blob {blob}")
+    if not blob_matches(blob, content):
+        raise RuntimeContractError(f"The checkout returned content that does not hash to blob {blob}")
     return content
 
 
@@ -2250,8 +2282,12 @@ def fetch_source_file(
         close = getattr(blobs, "close", None)
         if close is not None:  # a generator reader ends its git process
             close()
-    if content is None or not blob_matches(blob, content):
+    if content is None:
         raise RuntimeContractError(f"The checkout did not return blob {blob} of {json_writer.dumps(relative)}")
+    if not blob_matches(blob, content):
+        raise RuntimeContractError(
+            f"The checkout returned content that does not hash to blob {blob} of {json_writer.dumps(relative)}"
+        )
     if is_binary(content):
         return "binary"
     if held + len(content) > MAX_SOURCE_SNAPSHOT_BYTES:
@@ -2336,7 +2372,7 @@ def search_source(
                 matches.append((path, number.decode("ascii", "replace"), _match_text(found)))
             status = stream.wait()
             if status not in {0, 1}:  # 1 is no match
-                raise RuntimeContractError(stream.stderr().strip() or f"git grep failed with exit code {status}")
+                raise RuntimeContractError(flat_text(stream.stderr()) or f"git grep failed with exit code {status}")
             _require_whole_search(stream)
     except GitError as exc:
         raise RuntimeContractError(str(exc)) from exc
@@ -2348,7 +2384,7 @@ def _require_whole_search(stream: GitStream) -> None:
     on, exiting 0 when another file matched and 1 when none did, so its status alone would report a result over fewer
     files than it was asked to search. Its matches go to stdout, so any line on stderr fails the search, as one the
     search cannot tell from such an error. Checked at the match limit too, for the errors printed by then."""
-    errors = stream.stderr().strip()
+    errors = flat_text(stream.stderr())
     if errors:
         raise RuntimeContractError(f"git grep could not search every file: {errors}")
 

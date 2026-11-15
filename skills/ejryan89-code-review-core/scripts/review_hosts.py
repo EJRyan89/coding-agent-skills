@@ -687,10 +687,12 @@ def _verified_copilot_source(run_directory: Path, request: _CopilotRequest, stam
 def _copilot_version(
     runner: Runner, executable: str, execution_directory: Path, environment: Mapping[str, str], diagnostic_path: Path
 ) -> versions.Version:
-    """The version the bounded `--version` run names, once the run succeeded and the version is at least the minimum."""
+    """The version the bounded `--version` run names, once the run succeeded and the version is at least the minimum.
+    A failed run is named with the reason it gave: its stderr on one line, or its exit code when it printed none."""
     version_result = _run_bounded(runner, [executable, "--version"], execution_directory, environment, diagnostic_path)
     if version_result.returncode != 0:
-        raise RuntimeContractError("Cannot determine GitHub Copilot CLI version")
+        reason = flat_text(version_result.stderr) or f"exit code {version_result.returncode}"
+        raise RuntimeContractError(f"Cannot determine GitHub Copilot CLI version: {reason}")
     version = parse_copilot_version(version_result.stdout)
     if version < MINIMUM_COPILOT_CLI_VERSION:
         minimum = versions.text(MINIMUM_COPILOT_CLI_VERSION)

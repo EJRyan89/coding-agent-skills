@@ -131,6 +131,24 @@ class RuleTests(unittest.TestCase):
         )
         self.assertEqual([1, 5], [rule.line for rule in rg.rules("guide.md", f"{paragraph}\n\n{em}```\n\n{item}\n")])
 
+    def test_fences_are_read_as_find_fences_reads_them(self) -> None:
+        # A closing fence takes no info string, so a fence line with one inside a fence is body, and the statement
+        # after the fence's real close is read; a fence a blockquote or a list item holds is still code.
+        outside = "Keep every public method documented with an example."
+        for text, line in (
+            (f"```\ninside the first fence\n``` text\nstill inside the fence\n```\n{outside}\n", 6),
+            (f"~~~~\ninside the first fence\n~~~\nstill inside the fence\n~~~~\n{outside}\n", 6),
+            (f"> ```\n> a fenced statement in a blockquote\n> ```\n\n{outside}\n", 5),
+            (f"- ```\n  a fenced statement in a list item\n  ```\n\n{outside}\n", 5),
+        ):
+            with self.subTest(text=text):
+                self.assertEqual([(line, outside)], [(rule.line, rule.text) for rule in rg.rules("guide.md", text)])
+        # A heading and a table row are no statement, however many words they hold.
+        text = (
+            f"# Keep every public method documented with examples\n| Keep every row short and readable |\n{outside}\n"
+        )
+        self.assertEqual([(3, outside)], [(rule.line, rule.text) for rule in rg.rules("guide.md", text)])
+
     def test_a_link_destination_is_read_as_commonmark_reads_one(self) -> None:
         self.assertEqual(["docs/x.md"], rg.LINK.findall("see [x]( docs/x.md#part\t)"))
         self.assertEqual([f"{chr(0xA0)}docs/x.md"], rg.LINK.findall(f"see [x]({chr(0xA0)}docs/x.md)"))
