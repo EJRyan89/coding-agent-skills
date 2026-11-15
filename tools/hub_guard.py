@@ -1162,7 +1162,8 @@ POWERSHELL_COMMON_PARAMETERS: dict[str, tuple[str, ...]] = {
 }
 _CONTENT_PARAMETERS: dict[str, tuple[str, ...]] = {
     **dict.fromkeys(("value", "passthru", "path", "filter", "include", "exclude", "force", "credential"), ()),
-    **dict.fromkeys(("nonewline", "encoding", "asbytestream"), ()),
+    # Stream, the file-system provider's on Windows, names an alternate data stream of the path.
+    **dict.fromkeys(("nonewline", "encoding", "asbytestream", "stream"), ()),
     "literalpath": ("pspath", "lp"),
 }
 _ITEM_PARAMETERS: dict[str, tuple[str, ...]] = {
@@ -1177,7 +1178,7 @@ POWERSHELL_CMDLET_PARAMETERS: dict[str, dict[str, tuple[str, ...]]] = {
         **dict.fromkeys(("destination", "container", "recurse", "passthru", "fromsession", "tosession"), ()),
     },
     "move-item": {**_ITEM_PARAMETERS, **dict.fromkeys(("destination", "passthru"), ())},
-    "remove-item": {**_ITEM_PARAMETERS, "recurse": ()},
+    "remove-item": {**_ITEM_PARAMETERS, "recurse": (), "stream": ()},
     "new-item": {
         **dict.fromkeys(("path", "name", "force", "credential"), ()),
         "itemtype": ("type",),

@@ -4990,6 +4990,8 @@ def test_a_link_option_is_read_where_a_bundle_or_a_long_name_gives_it(
         ("set-content", "-E", ("switch", "e")),
         ("set-content", "-Enc", ("data", "encoding")),
         ("set-content", "-Force", ("switch", "force")),
+        ("set-content", "-St", ("data", "stream")),
+        ("remove-item", "-S", ("data", "stream")),
         ("set-content", "-ea", ("data", "erroraction")),
         ("set-content", "-Unknown", ("switch", "unknown")),
         ("set-content", "-", ("switch", "")),
