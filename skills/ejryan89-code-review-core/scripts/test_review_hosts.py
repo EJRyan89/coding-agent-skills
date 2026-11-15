@@ -4,6 +4,8 @@ test_review_pipeline.py."""
 
 from __future__ import annotations
 
+import contextlib
+import errno
 import hashlib
 import json
 import os
@@ -35,6 +37,7 @@ from review_hosts import (
     run_copilot,
 )
 from review_runtime import SOURCE_SNAPSHOT_MANIFEST, RuntimeContractError
+from test_path_containment import resolving_as_python_312
 from test_review_archive import unstatable
 
 # A review skill run as an entrypoint reviewer keeps its repository paths when prepare materializes it, so its
@@ -632,6 +635,16 @@ class AddedRootTests(unittest.TestCase):
         self.assertEqual([str(run)], settings["ignoredSkillsLocations"])
         self.assertEqual("disable", settings["permissions"]["disableBypassPermissionsMode"])
         self.assertEqual({"protocol_version": 1}, json.loads((run / "result.json").read_text(encoding="utf-8")))
+
+    @unittest.skipIf(sys.platform == "win32", "a symbolic link needs a privilege on Windows")
+    def test_an_added_root_that_is_a_symbolic_link_loop_raises_oserror_on_every_python_version(self) -> None:
+        # Python 3.12's strict Path.resolve raised RuntimeError for the loop, past every handler of OSError.
+        loop = self.root / "loop"
+        loop.symlink_to(loop)
+        for version, resolving in (("this Python", contextlib.nullcontext), ("Python 3.12", resolving_as_python_312)):
+            with self.subTest(version), resolving(), self.assertRaises(OSError) as raised:
+                copilot_settings([loop])
+            self.assertEqual(errno.ELOOP, raised.exception.errno)
 
     def test_the_settings_exclude_each_added_root_as_the_command_spells_it_and_as_it_resolves(self) -> None:
         (self.root / "run" / "source").mkdir(parents=True)

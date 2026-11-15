@@ -77,7 +77,7 @@ from console import run_main
 from flat_text import flat_text, single_line
 from git_client import GitClient, GitError, output_line
 from github_client import GitHubError
-from path_containment import within
+from path_containment import resolved_path, within
 from path_keys import name_key
 from review_config import LOCAL_OWNER
 from review_documents import ExtractionRefused, document_format, extract, unlabeled
@@ -231,7 +231,7 @@ def locate(path: Path, git: GitClient) -> Location:
         raise DocumentError(f"git could not read the checkout around {path}: {exc}") from exc
     if top is None:
         return Location(path.name, None)
-    checkout = top.resolve()
+    checkout = resolved_path(top)
     relative = PurePosixPath(*path.relative_to(checkout).parts)
     if name_key(relative.parts[0], checkout) == ".git":
         raise DocumentError(f"{path} is inside the checkout's .git folder")
@@ -378,7 +378,7 @@ def fixture_target(root: Path, relative: str) -> Path:
     path rules refuse it in the room `root` leaves, or when it would land outside `root`."""
     refuse_path(relative, path_room(root))
     target = root.joinpath(*PurePosixPath(relative).parts)
-    if not within(target.resolve(), root.resolve()):
+    if not within(resolved_path(target), resolved_path(root)):
         raise DocumentError(f"{relative} is not a path a fixture can hold: it lands outside the fixture")
     return target
 
@@ -414,7 +414,7 @@ def output_directory(output: Path | None) -> Path | None:
     and one whose path a quoted argument does not keep, or that cannot be looked at, so it is never taken for new."""
     if output is None:
         return None
-    directory = working_path(output, "review-document-", "").resolve()
+    directory = resolved_path(working_path(output, "review-document-", ""))
     refuse_unquotable(directory)
     try:
         taken = file_presence.is_occupied(directory) and (
@@ -522,7 +522,7 @@ def output_root(directory: Path | None) -> Iterator[Path]:
     if directory is not None:
         yield directory
         return
-    root = Path(tempfile.mkdtemp(prefix="review-document-", dir=private_folder.temporary_directory())).resolve()
+    root = resolved_path(tempfile.mkdtemp(prefix="review-document-", dir=private_folder.temporary_directory()))
     try:
         refuse_unquotable(root)
         yield root
@@ -544,7 +544,7 @@ def build(
     path: Path, requested: str | None, output: Path | None, git: GitClient, stage: str | None = None
 ) -> list[str]:
     directory = output_directory(output)
-    path = path.resolve()
+    path = resolved_path(path)
     form = document_format(path.name)
     content = document_bytes(path, form)
     location = locate(path, git)
@@ -803,13 +803,13 @@ def _is_file(path: Path, refusal: str) -> bool:
 def report(fixture: Path, recorded: Path) -> list[str]:
     """Copy the recorded report beside the fixture, never over a file already there, once its record names the
     review of the fixture's document, and name the record JSON finalize wrote beside it."""
-    fixture = fixture.resolve()
+    fixture = resolved_path(fixture)
     # A file it cannot stat is the stat's OSError, which names it, never one that is not there.
     built = f"{fixture} is not a fixture review-document built"
     if not _is_file(fixture / "pull.json", f"{built}: its pull.json is not a file"):
         raise DocumentError(f"{built}: it holds no pull.json file")
     directory = working_path(fixture.parent, "review-document-", "")
-    recorded = recorded.resolve()
+    recorded = resolved_path(recorded)
     record = recorded.with_suffix(".json")
     finalized = f"{recorded} is not a report finalize recorded"
     if recorded.suffix != ".md" or not _is_file(recorded, f"{finalized}: it is not a file"):

@@ -17,7 +17,7 @@ from pathlib import Path, PurePath
 import file_presence
 import whole_number
 from path_containment import posix_within
-from python_checks import claim_files, formatted_modules, sanctioned_problems
+from python_checks import PATH_CONTAINMENT, claim_files, formatted_modules, sanctioned_problems
 from skill_roots import SKILL_CORE
 from validation_support import (
     COMMON_PATH_FUNCTIONS,
@@ -369,7 +369,8 @@ def _folds_path_case(
     by the platform's name, never the file system's, so a name such as a folder's against `.git` is refused too and
     compared through path_keys' name_key, which asks the folder's file system; or a path made absolute, normalized, or
     resolved, then case-folded through str.casefold or str.lower, which fold case even where the file system keeps
-    it. A function is named through the module's imports, so an alias of normcase is normcase and a local function
+    it, path_containment's `resolved_path` and `strictly_resolved_path` among the resolutions. A function is named
+    through the module's imports, so an alias of normcase is normcase and a local function
     that shares its name is not; a method is named by its name, since its receiver's type is unknown. str.casefold and
     str.lower of other text are left alone, since most such text is no path, and a name folded that way folds on every
     file system, which merges names rather than telling one file system from another."""
@@ -379,7 +380,7 @@ def _folds_path_case(
         f"{module}.{name}"
         for module in ("os.path", "posixpath", "ntpath")
         for name in ("normpath", "abspath", "realpath")
-    }
+    } | {f"path_containment.{name}" for name in ("resolved_path", "strictly_resolved_path")}
     if not isinstance(node, ast.Call):
         return False
     called = resolver.name(node.func)
@@ -1151,7 +1152,6 @@ def skill_script_import_problems(root: Path) -> list[str]:
 # path's parents, a prefix test written by hand, a relpath or a relative_to that walks up checked for a parent segment,
 # or a relative_to whose ValueError a handler or a contextlib.suppress turns into an answer, states why in a
 # module-level CONTAINMENT_ALLOWED = {scope: reason}.
-PATH_CONTAINMENT = "skills/ejryan89-skill-core/scripts/path_containment.py"
 CONTAINMENT_ALLOWANCE = "CONTAINMENT_ALLOWED"
 # The exceptions whose handler catches the ValueError relative_to raises, by the names a module reads them under.
 VALUE_ERROR_CATCHERS = frozenset({"ValueError", "Exception", "BaseException"})

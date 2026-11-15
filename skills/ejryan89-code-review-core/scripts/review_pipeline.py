@@ -56,6 +56,7 @@ import private_folder
 import whole_number
 from console import run_main
 from flat_text import single_line
+from path_containment import resolved_path
 from review_archive import archive_head, commit_record, pull_records
 from review_batches import (
     MAX_PREPARE_PULLS,
@@ -509,7 +510,7 @@ def prepare(
     session work every role itself, as it does on a runtime whose reviewers do not start as subagents.
     """
     services = services or Services()
-    config_path = (config_path or default_config_path()).resolve()
+    config_path = resolved_path(config_path or default_config_path())
     config = load_config(config_path)
     repository, number = parse_pull_selector(selector)
     selector = f"{repository}#{number}"
@@ -582,9 +583,9 @@ def prepare_fixture(
     a `manifest_path`, which is read from the fixture's base commit as a configured repository's is.
     """
     services = services or Services()
-    config_path = (config_path or default_config_path()).resolve()
+    config_path = resolved_path(config_path or default_config_path())
     config = load_config(config_path)
-    prior_value = None if prior is None else read_json(prior.resolve())
+    prior_value = None if prior is None else read_json(resolved_path(prior))
     notes: list[str] = []
     # pull.json and the prior record are validated before the throwaway repository is written.
     fixture_pull = read_fixture_pull(directory)
@@ -615,7 +616,10 @@ def prepare_fixture(
             ),
             read_closing_issues=lambda first: (change.closing_issues[:first], len(change.closing_issues)),
             canary=True,
-            fixture={"directory": str(directory.resolve()), "prior": None if prior is None else str(prior.resolve())},
+            fixture={
+                "directory": str(resolved_path(directory)),
+                "prior": None if prior is None else str(resolved_path(prior)),
+            },
             prior_record=record,
             adopt_source=True,
             document_stage=change.document_stage,
@@ -658,11 +662,11 @@ def _prepare_run(
         )
     runtime = services.resolve_runtime(config["runtime"], host)
     created = run_directory is None
-    run = (
+    run = resolved_path(
         Path(tempfile.mkdtemp(prefix=RUN_PREFIX, dir=private_folder.temporary_directory()))
         if run_directory is None
         else run_directory
-    ).resolve()
+    )
     if file_presence.is_directory(run) and any(run.iterdir()):
         raise PipelineError(f"Run directory must be empty: {run}")
     try:
@@ -860,7 +864,7 @@ def finalize(run: Path, services: Services | None = None) -> dict[str, Any]:
     """Commit a validated review. Nothing is archived unless every reviewer result is valid and the archive still
     holds the version prepare judged the review against."""
     services = services or Services()
-    run = run.resolve()
+    run = resolved_path(run)
     # A marker it cannot stat is the stat's OSError, never a run not yet recorded, which would archive it twice.
     if file_presence.is_present(run / RECORDED_FILE):
         raise PipelineError(f"{run} is already recorded")
@@ -911,7 +915,7 @@ def finalize(run: Path, services: Services | None = None) -> dict[str, Any]:
     )
     config = load_config(Path(state["config_path"]))
     canary_root = (
-        Path(tempfile.mkdtemp(prefix="code-review-canary-", dir=private_folder.temporary_directory())).resolve()
+        resolved_path(tempfile.mkdtemp(prefix="code-review-canary-", dir=private_folder.temporary_directory()))
         if state["canary"]
         else None
     )
@@ -1399,7 +1403,7 @@ def _run_unfinalized(args: argparse.Namespace, services: Services | None) -> int
             failed = True
             continue
         if selector is not None:
-            print(single_line(f"UNFINALIZED {selector} {run.resolve()}"))
+            print(single_line(f"UNFINALIZED {selector} {resolved_path(run)}"))
             pending = True
     # A pull request or fixture no prepare reached was never reviewed: its failure as much as an unfinalized run.
     for item in [] if runs is None else runs["pending"]:

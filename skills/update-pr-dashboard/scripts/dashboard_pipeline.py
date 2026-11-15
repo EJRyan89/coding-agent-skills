@@ -51,6 +51,7 @@ import json_writer
 from console import run_main
 from flat_text import flat_text, single_line
 from github_client import GitHubError
+from path_containment import resolved_path
 from pr_change import FATAL_ERROR_KINDS, ChangeDetector, at_or_before
 from review_archive import ArchiveError, pull_records
 from review_config import (
@@ -451,7 +452,7 @@ def update(
     update that wrote the tracker record (see `stale_since`). Without a configured login, GitHub is asked for it only
     after the refusals `update_dashboard_rows` makes before asking anything."""
     services = services or Services()
-    config_path = (config_path or default_config_path()).resolve()
+    config_path = resolved_path(config_path or default_config_path())
     config = load_config(config_path)
     dashboard = Path(config["dashboard_file"])
     record = tracker_record_path(config_path)
@@ -477,7 +478,7 @@ def tracker_record_path(config_path: Path) -> Path:
     the file the configuration path leads to, through any link, so a configuration reached through a link in another
     folder has the record `update` wrote. It is named after that file, `tracker.json` for the default name and
     `<name>.tracker.json` for any other, so two configurations in one folder never share one."""
-    resolved = config_path.resolve()
+    resolved = resolved_path(config_path)
     name = TRACKER_RECORD if resolved.name == DEFAULT_CONFIG_NAME else f"{resolved.stem}.{TRACKER_RECORD}"
     return resolved.parent / name
 

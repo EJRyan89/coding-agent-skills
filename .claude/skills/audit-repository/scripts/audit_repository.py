@@ -127,6 +127,7 @@ from github_client import GitHubClient, GitHubError, Listing, subprocess_runner
 from guidance_record import GUIDANCE_PATH, PYTHON_SUBJECT, Changelog, GuidanceRecord, GuidanceRecordError, Page
 from link_probe import is_plain_directory, is_plain_file
 from module_assignments import sole_assignment
+from path_containment import resolved_path
 from path_keys import path_key
 from release_tags import is_release_tag, last_release, release_order
 from suite_names import is_suite_name
@@ -1004,7 +1005,7 @@ def write_briefs(briefs: list[tuple[str, str]]) -> list[str]:
         raise AuditError(f"cannot create the briefs directory: {exc}") from exc
     marker = directory / BRIEFS_MARKER
     try:
-        json_writer.write(marker, {"directory": directory.resolve().as_posix()})
+        json_writer.write(marker, {"directory": resolved_path(directory).as_posix()})
     except (OSError, json_writer.JsonWriteRefused) as exc:
         raise AuditError(f"cannot write the briefs marker {marker.as_posix()}: {exc}") from exc
     lines = [f'BRIEFS "{directory.as_posix()}"']
@@ -1580,14 +1581,14 @@ def remove_briefs(directory: Path) -> list[str]:
     """Delete a briefs directory this script made: a BRIEFS_PREFIX directory directly in the temporary directory,
     reached through no link, holding the BRIEFS_MARKER that names it and otherwise only Markdown files. Anything else
     is refused and left as it is. The marker goes last, so a removal that fails part way can be run again."""
-    temporary = Path(tempfile.gettempdir()).resolve()
+    temporary = resolved_path(tempfile.gettempdir())
     # A folder a stat cannot examine is named so, never as one this script did not make. A plain directory, no link
     # or junction, resolves to a directory.
     try:
         file_presence.is_occupied(directory)
     except OSError as exc:
         raise AuditError(f"{directory.as_posix()} cannot be examined: {exc.strerror or exc}") from exc
-    resolved = directory.resolve()
+    resolved = resolved_path(directory)
     if not is_plain_directory(directory) or resolved.parent != temporary or not resolved.name.startswith(BRIEFS_PREFIX):
         raise AuditError(f"{directory.as_posix()} is not a briefs directory this script made in {temporary.as_posix()}")
     marker = resolved / BRIEFS_MARKER

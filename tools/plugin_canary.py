@@ -88,6 +88,7 @@ from skill_roots import sibling_scripts
 
 sys.path.insert(0, str(sibling_scripts("ejryan89-code-review-core")))
 
+from path_containment import resolved_path
 from review_dispatch import REVIEWER_TASK, unguarded_roles
 from review_guard import REVIEWER, RUN_FILE, RUN_PREFIX
 from review_run import RunState
@@ -459,7 +460,7 @@ def probe(session: Session, executable: str, paths: Mapping[str, str], fixture: 
         records = [record for record in marked(read_records(state / "probe.jsonl"), run) if record.get("script")]
     except (OSError, RecordRefused) as exc:
         records, unread = [], unreadable(exc, state / "probe.jsonl")
-    ran = [record for record in records if Path(record["script"]).resolve() == script.resolve()]
+    ran = [record for record in records if resolved_path(record["script"]) == resolved_path(script)]
     if unread:
         outcome = f"FAILED {quote(unread)}"
     elif ran:

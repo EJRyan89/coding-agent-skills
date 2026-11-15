@@ -754,6 +754,8 @@ class SharedFactPolicy(unittest.TestCase):
             ("from os.path import normcase\n\nkey = normcase(str(path.resolve()))\n", 3),
             ("key = os.path.normcase(os.fspath(Path(candidate).absolute()))\n", 1),
             ("key = str(path.resolve()).casefold()\n", 1),
+            ("from path_containment import resolved_path\n\nkey = str(resolved_path(path)).casefold()\n", 3),
+            ("import path_containment\n\nkey = str(path_containment.strictly_resolved_path(path)).lower()\n", 3),
             ("key = os.path.abspath(path).lower()\n", 1),
             # A path folded as it was given is a key too, as command_script's pipeline was.
             ("same = path_key(started) != os.path.normcase(str(pipeline))\n", 1),

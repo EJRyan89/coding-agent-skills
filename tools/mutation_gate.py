@@ -208,7 +208,7 @@ from fsops_platform import PLATFORM_ALLOWANCE, platform_tokens_named
 from git_client import GitClient, output_line
 from job_pool import append_step_summary, worker_count
 from job_selection import host_job_seconds, imported_names, importers, python_imports, reached_suites
-from path_containment import relative_within
+from path_containment import relative_within, resolved_path
 from suite_discovery import PYTEST_ENVIRONMENT, pytest_command
 from suite_names import is_suite_name
 from typed_fields import FieldError, FieldReader
@@ -1005,7 +1005,7 @@ def module_entries(
     files = report.get("files")
     for name, entry in files.items() if isinstance(files, dict) else ():
         # pathlib joins an absolute name as itself, so a name relative to the worktree and a path into it alike.
-        path, root = (tree / name).resolve(), tree.resolve()
+        path, root = resolved_path(tree / name), resolved_path(tree)
         relative = relative_within(path, root)
         if relative is None:
             continue

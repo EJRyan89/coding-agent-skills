@@ -42,7 +42,7 @@ import file_presence
 from flat_text import flat_text
 from git_client import GitClient, GitError
 from markdown_sections import MARKDOWN_SPACE, find_fences, list_item
-from path_containment import refusal
+from path_containment import refusal, resolved_path
 from review_config import safe_repository_path
 from review_records import is_suite_profile
 from text_lines import text_lines
@@ -212,7 +212,7 @@ def read_working_copy(checkout: Path, path: str) -> WorkingCopy:
     if not safe_repository_path(path):
         return WorkingCopy(None)
     try:
-        content = _working_copy(checkout.resolve(), path)
+        content = _working_copy(resolved_path(checkout), path)
     except OSError as exc:
         return WorkingCopy(None, unreadable=flat_text(f"{type(exc).__name__}: {exc.strerror or exc}"))
     if isinstance(content, str):

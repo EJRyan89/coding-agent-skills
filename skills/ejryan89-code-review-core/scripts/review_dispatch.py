@@ -13,6 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-cor
 import file_presence
 import json_reader
 import json_writer
+from path_containment import resolved_path
 from path_keys import path_key
 from review_config import ConfigurationError, load_config
 from review_guard import PLUGIN, UNGUARDED, claimed, is_search_entry, read_log, reviewer_agent_type
@@ -285,7 +286,7 @@ def next_role(run: Path, services: Services) -> tuple[str, RunRole | None]:
     The run's sealed files must be unchanged. Every result written so far is sealed before the next role is handed
     out, so the roles after it cannot change it. A role is timed from its first hand-out, so a rerun counts toward it.
     """
-    run = run.resolve()
+    run = resolved_path(run)
     state = load_run(run)
     if run_dispatch(state) != "inline":
         raise PipelineError(f"{state['selector']} is not reviewed inline; dispatch its roles as prepare printed them")
@@ -318,7 +319,7 @@ def check_run(run: Path, services: Services | None = None) -> dict[str, Any]:
     A Copilot CLI host still starting or running is not ready: its role is reported as running and left alone.
     Setting the role aside raises its attempt count, which a late host finds and so never promotes its result.
     """
-    run = run.resolve()
+    run = resolved_path(run)
     state = load_run(run)
     if run_dispatch(state) == "inline":
         verify_seal(run, state)
@@ -380,7 +381,7 @@ def validate_result(run: Path, role: str) -> str | None:
     """Why check would reject this role's result for what it holds, or None. It only reads: no rename, no retry
     counted. It is the reviewer's self-check, so it leaves the guard's claim to check: a reviewer is never told how to
     show one."""
-    run = run.resolve()
+    run = resolved_path(run)
     state = load_run(run)
     if role not in {entry["id"] for entry in state["roles"]}:
         raise PipelineError(f"{role} is not a reviewer role of {run}")
@@ -436,7 +437,7 @@ def workflow_script(runs: list[Path]) -> tuple[Path, str, int]:
     """
     entries: list[str] = []
     count = 0
-    states = [(run.resolve(), load_run(run.resolve())) for run in runs]
+    states = [(resolved_path(run), load_run(resolved_path(run))) for run in runs]
     for _, state in states:
         if run_dispatch(state) == "inline":
             raise _inline_only(state)
@@ -466,7 +467,7 @@ def workflow_script(runs: list[Path]) -> tuple[Path, str, int]:
         runs=",\n".join(entries), reviewer_agent=REVIEWER_AGENT, task_parts=json_writer.dumps([before, after, os.sep])
     )
     # Kept with the first run for inspection; finalize removes it with the run.
-    script = runs[0].resolve() / "reviewers.workflow.js"
+    script = resolved_path(runs[0]) / "reviewers.workflow.js"
     atomic_write_text(script, text)
     return script, text, count
 
@@ -479,7 +480,7 @@ MAX_WAIT_SECONDS = 300
 
 def _copilot_run(run: Path) -> tuple[Path, RunState, str]:
     """A Copilot CLI host run, its state, and its one reviewer, whose name every host failure carries."""
-    run = run.resolve()
+    run = resolved_path(run)
     state = load_run(run)
     if run_dispatch(state) == "inline":
         raise _inline_only(state)
@@ -617,7 +618,7 @@ def wait_for_reviewers(
     failures: dict[Path, str] = {}
     for run in runs:
         try:
-            resolved = run.resolve()
+            resolved = resolved_path(run)
             state = load_run(resolved)
             if run_dispatch(state) == "inline":
                 raise _inline_only(state)
@@ -651,7 +652,7 @@ def unfinalized_selector(run: Path) -> str | None:
     it. One that remains otherwise, after a failure or with nobody finalizing it, is its pull request's failure, and
     one it cannot stat is the OSError file_presence raises, never a recorded run.
     """
-    run = run.resolve()
+    run = resolved_path(run)
     if not file_presence.is_directory(run) or file_presence.is_present(run / RECORDED_FILE):
         return None
     return load_run(run)["selector"]

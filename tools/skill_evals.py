@@ -288,6 +288,7 @@ from agent_skills import NAME_PATTERN
 from bounded_process import without_repository_variables
 from console import run_main
 from git_client import GitClient
+from path_containment import resolved_path
 from seconds_option import positive_seconds
 
 from deployer import fsops, platform_support
@@ -402,7 +403,7 @@ def citation(
 
 
 def new_home() -> Path:
-    return Path(tempfile.mkdtemp(prefix="skill-evals-", dir=private_folder.temporary_directory())).resolve()
+    return resolved_path(tempfile.mkdtemp(prefix="skill-evals-", dir=private_folder.temporary_directory()))
 
 
 def this_checkout() -> str | None:

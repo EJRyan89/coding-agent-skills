@@ -29,6 +29,7 @@ import dotnet_solution
 import whole_number
 from flat_text import flat_text
 from run_dotnet_format import Completed, Services
+from test_path_containment import resolving_as_python_312
 
 LINKED_FILE = "the file is a symbolic link or junction, which the script does not write through"
 READ_ONLY_FILE = "the file is read-only; make it writable to fix it"
@@ -467,6 +468,19 @@ class FileTests(unittest.TestCase):
                 status, lines = self.main("check", "--repo-root", str(self.root), "--file-list", str(file_list), *extra)
                 self.assertEqual((1, [[f"FAILED {self.root / 'Gone' / 'Missing.cs'} does not exist"]]), (status, lines))
                 self.assertEqual(original, fixable.read_bytes())
+
+    @unittest.skipIf(sys.platform == "win32", "a symbolic link needs a privilege on Windows")
+    def test_a_repository_root_that_is_a_symbolic_link_loop_fails_naming_it_on_every_python_version(self) -> None:
+        # Python 3.12's Path.resolve raised RuntimeError for the loop, which ended the run FAILED RuntimeError.
+        loop = self.root / "loop"
+        loop.symlink_to(loop)
+        file_list = self.file_list("File.cs")
+        for version, resolving in (("this Python", contextlib.nullcontext), ("Python 3.12", resolving_as_python_312)):
+            with self.subTest(version), resolving():
+                status, lines = self.main("check", "--repo-root", str(loop), "--file-list", str(file_list))
+            self.assertEqual(
+                (1, [[f"FAILED {loop / 'File.cs'} cannot be examined: {os.strerror(errno.ELOOP)}"]]), (status, lines)
+            )
 
     def test_an_unreadable_file_list_fails(self) -> None:
         missing = self.root / "absent.txt"
