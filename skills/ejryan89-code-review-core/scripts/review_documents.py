@@ -46,6 +46,7 @@ from bounded_process import streaming
 from executable_locator import find_executables
 from flat_text import flat_text
 from pdf_tool import PdfToolRefused, install_text, probe_pdftotext, select_pdftotext
+from text_lines import text_lines
 
 DOCUMENT_FORMATS = {".docx": "docx", ".pdf": "pdf"}
 # A PDF is extracted whether or not the snapshot's NUL test finds it binary: one written without compressed streams
@@ -232,7 +233,7 @@ def _pdftotext(content: bytes) -> bytes:
         except subprocess.TimeoutExpired as exc:
             raise ExtractionRefused(f"{PDFTOTEXT} did not finish within {PDF_EXTRACTION_SECONDS:g} seconds") from exc
         except OSError as exc:
-            raise ExtractionRefused(f"{PDFTOTEXT} could not be started") from exc
+            raise ExtractionRefused(f"{PDFTOTEXT} could not be started: {flat_text(str(exc))}") from exc
     if status != 0:
         raise ExtractionRefused(f"{PDFTOTEXT} could not read it (exit status {status})")
     return output
@@ -554,7 +555,7 @@ def split_label(line: str) -> tuple[str, str]:
 def unlabeled(text: str) -> list[str]:
     """An extracted text's lines without their labels, as `document_diff` matches them: two texts whose unlabeled
     lines are equal give a diff with no hunk."""
-    return [split_label(line)[1] for line in text.splitlines()]
+    return [split_label(line)[1] for line in text_lines(text)]
 
 
 def locations(text: str) -> list[str]:
@@ -562,7 +563,7 @@ def locations(text: str) -> list[str]:
     nearest heading above it, or a PDF's page and line."""
     places: list[str] = []
     heading = ""
-    for line in text.splitlines():
+    for line in text_lines(text):
         match = LABEL.match(line)
         if match is None:
             places.append("")
@@ -619,7 +620,7 @@ def document_diff(
     as every later line renumbered; each line is then shown with its own side's label, so the new side's lines are
     exactly the head file's, and a hunk's line numbers are that file's.
     """
-    base_lines, head_lines = base.splitlines(), head.splitlines()
+    base_lines, head_lines = text_lines(base), text_lines(head)
     note = EXTRACTED_NOTES[form].format(held=held)
     if base_refused is not None:
         note += NO_BASE_NOTE.format(reason=base_refused)
