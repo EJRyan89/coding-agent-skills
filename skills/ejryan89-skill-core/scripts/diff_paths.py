@@ -132,7 +132,9 @@ def unsafe_snapshot_name(path: str) -> bool:
 def snapshot_path(root: Path, path: str) -> Path | None:
     """Where a decoded diff path lands in the snapshot at `root`, resolved, or None when it could land outside it or
     open something other than a file there: a name `unsafe_snapshot_name` refuses, and one that resolves outside the
-    resolved root, as through a link, or cannot be resolved."""
+    resolved root, as through a link, or cannot be resolved. A path through a link loop inside the root is left
+    unresolved there, as `path_containment.resolved_path` leaves it on every Python version, so the caller's stat or
+    read of it refuses it in the caller's own words."""
     if unsafe_snapshot_name(path):
         return None
     try:
