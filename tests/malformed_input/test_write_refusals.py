@@ -181,7 +181,7 @@ def _hub_guard(folder: Path) -> object:
         mock.patch.object(hub_guard, "run_bounded") as bounded,
     ):
         events = hub_guard.powershell_events("Get-Item x", reading)
-    return events, reading.unread, bounded.called
+    return events, reading.notes, bounded.called
 
 
 def _new_skill(*extra: str) -> Callable[[Path], object]:

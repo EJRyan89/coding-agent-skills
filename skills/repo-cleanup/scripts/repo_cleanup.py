@@ -11,8 +11,9 @@
                   remove detached worktrees reported CONFIRM_DETACHED and delete directories reported ORPHAN, after
                   the user confirmed
     report        print, from the directory a sweep printed and recorded its repositories in, each repository's
-                  current summary and the closing count of the repositories processed and skipped, naming the dirty
-                  repositories the user aborted
+                  current summary, how its main worktree now differs from a clean checkout of its default branch at
+                  origin's (hub_state.py in ejryan89-skill-core), and the closing count of the repositories processed
+                  and skipped, naming the dirty repositories the user aborted
 
 Every command reads a plan or sweep record only when its bytes match the seal this script wrote when it last saved
 one at that path, and refuses a plan with a field missing or not of the kind a sweep writes. delete-local,
@@ -60,6 +61,7 @@ import cleanup_policy
 import file_presence
 import git_client
 import git_worktrees
+import hub_state
 import json_reader
 import pr_status
 import private_folder
@@ -2394,7 +2396,18 @@ def aborted_entries(entries: list[dict[str, Any]], aborted: list[str]) -> list[d
     return dropped
 
 
-def report(directory: Path, aborted: list[str]) -> int:
+def main_differences(plan: dict[str, Any], services: Services) -> list[str]:
+    """How a planned repository's main worktree now differs from a clean checkout of its default branch at the commit
+    origin's holds, each a sentence hub_state.py gives, or one naming git's reason where git could not read it: a write
+    a session made there by mistake, such as a hub change no guard saw, shows here."""
+    try:
+        found = hub_state.differences(services.git, Path(plan["repo_root"]), plan["default"]["name"])
+    except git_client.GitError as exc:
+        return [f"it could not be read: {exc}"]
+    return [difference.text for difference in found]
+
+
+def report(directory: Path, aborted: list[str], services: Services | None = None) -> int:
     """Print each repository's current summary, then the closing count, from what the sweeps there recorded.
 
     A plan's summary is its latest: every command saves it. A repository counts as one with an error when the sweep
@@ -2402,9 +2415,12 @@ def report(directory: Path, aborted: list[str]) -> int:
     reach; when Git refused a deletion or removal its apply tried; while a run on its plan stands stopped; or while a
     branch or path a confirmation tried stands not carried out, until a later confirmation carries it out. A hold,
     such as a fast-forward kept from a worktree with changes, tried nothing and is not one: the summary names it
-    with its reason. Quiet repositories share one line. The lines naming the lists the sweep used come first, once
-    the record and the plans are read, so a report that fails prints only its FAILED line.
+    with its reason. After each planned repository's lines, but an aborted one's, a MAIN_DIFFERS line names each way
+    its main worktree now differs from a clean checkout of its default branch at origin's (main_differences), which
+    counts as no error. Quiet repositories with no such line share one line. The lines naming the lists the sweep used
+    come first, once the record and the plans are read, so a report that fails prints only its FAILED line.
     """
+    services = services or Services()
     entries, policy = read_record(directory)
     dropped = aborted_entries(entries, aborted)
     plans = {entry["root"]: load_plan(entry["plan"]) for entry in entries if entry["plan"]}
@@ -2414,7 +2430,8 @@ def report(directory: Path, aborted: list[str]) -> int:
     failed = 0
     for entry in entries:
         plan = plans.get(entry["root"])
-        if entry["state"] == "quiet":
+        differing = [] if plan is None or entry in dropped else main_differences(plan, services)
+        if entry["state"] == "quiet" and not differing:
             quiet.append(entry["root"])
             continue
         if (
@@ -2428,6 +2445,8 @@ def report(directory: Path, aborted: list[str]) -> int:
             print_summary(plan)
         for line in entry["lines"]:
             print_line(line)
+        for difference in differing:
+            emit("MAIN_DIFFERS", difference)
     if quiet:
         emit("QUIET", *quiet)
     fetch_failed = sum(entry["state"] == "fetch-failed" for entry in entries)
@@ -2490,7 +2509,7 @@ def main(arguments: list[str] | None = None, services: Services | None = None) -
             plans = recorded_location(options.record) if options.record else None
             return sweep(options.target, options.repos_root, plans, services, options.skip_checkout, policy)
         if options.command == "report":
-            return report(Path(options.record), options.aborted)
+            return report(Path(options.record), options.aborted, services)
         if options.command == "remove-directory":
             if not remove_directories(options.plan, options.paths, services):
                 return 1

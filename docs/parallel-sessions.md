@@ -284,10 +284,18 @@ With the guard enabled:
   acts on the hub, or where the call acts for one outside every hub (a worktree shares its hub's configuration, so a
   hub's alias is read from a worktree too), and judges what it runs, through further aliases, by the same rows. In the
   hub, a name that is no alias is refused. A shell alias (`!...`) is read as Bash from the top of the work tree it
-  runs in. An alias that cannot be read, nests more than four deep, or runs something the guard cannot judge is
-  refused while a guarded hub is in view, and one that writes a hub is refused wherever it is called.
+  runs in, its parts the guard does not read allowed as in any command. An alias that cannot be read, or nests more
+  than four deep, is refused while a guarded hub is in view, and one that writes a hub is refused wherever it is
+  called.
 - **Both shell tools.** The same commands are allowed and refused whether they run through the
   `Bash` tool or the `PowerShell` tool, or as a `Monitor` tool's command, which runs in the `Bash` tool's shell.
+- **Redirections.** A redirection whose target lies in the hub's tracked files or its git directory is refused, as
+  a file tool's edit is. Any other program a command runs, by its own words, is one the guard does not read, so it is
+  allowed, a hub tool that rewrites hub files among them, as `python tools/skill_reference.py --write` does.
+- **The check.** What the guard does not read, the check finds afterwards: ejryan89-skill-core's `hub_state.py`
+  names each way the hub differs from a clean checkout of `main` at `origin/main`, and the `shepherd-pull-requests`
+  tick prints each as a `HUB_DIFFERS` line, and `repo-cleanup`'s report as a `MAIN_DIFFERS` line, from the hub or from
+  a worktree alike.
 
 ### Other runtimes
 
@@ -306,14 +314,14 @@ The guard is Claude Code's. For Codex and Copilot CLI the `CLAUDE.md` rules are 
 
 ### The guard's contract
 
-The hook is given the text of a command, not what runs under it. The guard fails closed: it reads a command only as
-far as it understands it, and every decision it makes is one of three. What it understands is judged; a part it does
-not understand is refused while a guarded hub is in view; and what no shell's text shows is named below. What it
-understands is a set of tables in `tools/hub_guard.py`, each a catalogue a shell publishes, with every entry either
-understood or in `NOT_READ` with the reason it is not read. The guard's suites take each catalogue from the shell
-itself, `compgen -b`, `compgen -k`, `set -o`, `shopt`, and `compgen -v` from Bash and the AST node types by
-reflection from PowerShell, and fail on an entry neither table holds, so an entry a later shell adds is refused until
-a row decides it.
+The hook is given the text of a command, not what runs under it. The guard catches the accidents a session makes in
+the hub, and is no sandbox: it reads a command for its git calls and where each acts, and for the files its
+redirections write, and a file tool's event for the file it edits. What it reads it judges; a part of a git call's own
+words it does not settle is refused while a guarded hub is in view; and every other part of a command is a program
+the guard does not read, which it allows. A write such a program makes in the hub is the check's to find: ejryan89-skill-core's
+`hub_state.py`, which the `shepherd-pull-requests` tick and `repo-cleanup` run, names each way the hub differs from a
+clean checkout of `main` at `origin/main`, a change or an untracked file, another branch or a detached `HEAD`, or a
+commit `origin/main` lacks.
 
 #### What it understands
 
@@ -331,11 +339,11 @@ a row decides it.
   `GIT_CONFIG_COUNT` with its pairs, then each `-c` and `--config-env`. Of the settings `-c` and `--config-env` hand
   git, only the ones `GIT_SETTINGS_UNDERSTOOD` names and every setting of a section `GIT_SECTIONS_UNDERSTOOD` names
   (`advice`, `alias`, `color`, `column`, `i18n`) are understood, in any case; any other, or one the text does not
-  settle, is a part the guard does not read, since many run a command, as `core.pager`, `pager.<command>`,
+  settle, is a part of the git call the guard does not settle, since many run a command, as `core.pager`, `pager.<command>`,
   `core.fsmonitor`, and `diff.external` do, or choose where git writes. The location and configuration variables
-  reach a call from the environment Claude Code gives the hook; the command itself sets none of them, since every
-  form that would, an assignment before git, `export`, `env`, and a PowerShell assignment among them, is a part the
-  guard does not read. On Windows git reads an environment name in any case, so `git_dir` is `GIT_DIR` there; when
+  reach a call from the environment Claude Code gives the hook; an assignment before git to one is a part of the git
+  call the guard does not settle, and a variable a command sets for a later git call, by `export`, `env`, or a
+  PowerShell assignment, is not read ([What it does not see](#what-it-does-not-see)). On Windows git reads an environment name in any case, so `git_dir` is `GIT_DIR` there; when
   two spellings disagree, the call is judged by the upper-case one, the spelling git reads, with a note.
 - **The index a git call is given.** Any git call may rewrite the index `GIT_INDEX_FILE` names, even a form that
   only reads the hub: `status` and `diff` refresh it, and a fast-forward writes a tree into it, as does the child
@@ -384,12 +392,11 @@ a row decides it.
   cannot read, refuses it while a hub is guarded, and any other command is not touched. The guard
   reads the configuration as it stands when the command starts, so while a hub is guarded it also refuses a command
   that writes a file an include in the configuration one of its git calls reads names, or that runs git outside every
-  guarded hub and writes a file named `config` or `config.worktree`, or one in a folder named `.git`, by a redirection,
-  `git config --file`, or a program or a cmdlet whose words name it, since it may be the configuration of the
+  guarded hub and writes a file named `config` or `config.worktree`, or one in a folder named `.git`, by a redirection
+  or `git config --file`, since it may be the configuration of the
   repository that call reads, one the command makes among them (`repository_refusal`); and it refuses a command that
   writes a file git reads its system or global configuration from, by a redirection, by a git call's words, as
-  `git config --file <file>` writes, or by a program or a cmdlet whose words name it, as
-  [Writes a program or a cmdlet names](#what-it-understands) reads them, and a file tool's edit of one: each file
+  `git config --file <file>` writes, and a file tool's edit of one: each file
   `git var GIT_CONFIG_SYSTEM` and `git var GIT_CONFIG_GLOBAL` name, whether or not it exists, every file the listing of
   those scopes names as an origin, and every file an `include.path` or `includeIf.<condition>.path` in them names, a
   leading `~/` read from the home and a relative path from the including file's directory, while a `~user/` or
@@ -445,7 +452,7 @@ a row decides it.
   among them, and one that writes only the file `--file` or `-f` names, with no other scope, is judged as a file
   git writes. The options that start a command or a program their value names, `GIT_RUNNING_OPTIONS`, which takes
   ejryan89-skill-core's `git_client.CARRIER_OPTIONS` and adds the subcommands its plain client never runs, are
-  refused while a hub is guarded, as a runner around git is, in every spelling and wherever the word stands:
+  refused while a hub is guarded, in every spelling and wherever the word stands:
   `archive --exec`, `clone --config`, `clone --template`, `clone --upload-pack`, `clone -c`, `clone -u`,
   `difftool --extcmd`, `difftool -x`, `fetch --upload-pack`, `fetch-pack --exec`, `fetch-pack --upload-pack`,
   `filter-branch --commit-filter`, `filter-branch --env-filter`, `filter-branch --index-filter`,
@@ -466,272 +473,76 @@ a row decides it.
 - **Bash, by its grammar.** `tools/bash_syntax.py` reads Bash as Bash parses it: single and double quotes, `$'...'`,
   escapes and line continuations, comments, and here-documents, and the command tree of lists, `&&` and `||`,
   pipelines, `( )` subshells, `{ }` groups, `if`, `case`, `while`, `until`, `for`, `select`, `!`, and `time` with
-  its `-p` and `--`. The
-  guard understands a simple command whose name is literal once quotes are removed and is a builtin
-  `BUILTINS_UNDERSTOOD` names or a program, wherever the tree holds it, as the runner rule below judges it, and reads
-  each of its words as literal text, `~`, or an expansion `EXPANSIONS_UNDERSTOOD` names, which leaves its word one
-  the text does not settle. Such a word may stand among a program's arguments and among a git call's words after its
-  subcommand, where a refused subcommand given one is refused in the hub, since it may be any option. Each command
-  or process substitution is read as the commands it runs, and so is one in an unquoted here-document's body. A
-  quoted here-document's body, as `<<'EOF'` gives it, and a here-string's quoted word do not expand: each is data
-  handed to the command's input, read as nothing it runs.
+  its `-p` and `--`. The guard reads each simple command whose name is literal once quotes are removed, wherever the
+  tree holds it: git as a git call, `gh`'s checkouts as one, and `cd`, `pushd`, and `popd` as moves of the shell. Any
+  other command is a program the guard does not read. A word is read as literal text or `~`; an expansion, a glob, or
+  a brace expansion leaves its word one the text does not settle. Such a word may stand among a git call's words
+  after its subcommand, where a refused subcommand given one is refused in the hub, since it may be any option. Each
+  command or process substitution is read as the commands it runs, to a depth of four, and so is one in an unquoted
+  here-document's body; what is nested deeper is not read. A quoted here-document's body, as `<<'EOF'` gives it, and a
+  here-string's quoted word do not expand: each is data handed to the command's input, read as nothing it runs.
+  Bash its grammar cannot read is not read either; the lines before a syntax error do run, unlike PowerShell's.
 - **Directories.** `cd`, `pushd`, and `popd` to a literal directory move the shell, and each git call after them is
   placed there: along `&&` where the change succeeded, along `||` where it failed, and after `;` where the target is
   a directory now, or else nowhere the text settles, since an earlier command may make it one. A pipeline's commands
   and a background job run in subshells of their own, so a change there moves nothing after them. A target the text
-  does not settle, `cd -`, a `CDPATH` search, and `pushd`'s rotations leave the directory unknown, and a compound
-  command that holds a change leaves every git call in it and after it in a directory the text does not settle.
-- **Assignments.** A bare assignment is understood to a free name: one `BASH_VARIABLES` gives no reason, git does not
-  read, and the environment does not hold. Before a command, an assignment is understood to a name git does not read to
-  choose a file or a program, that is, no `GIT_` name, none `GIT_READ_NAMES` names (`HOME`, `XDG_CONFIG_HOME`,
-  `XDG_CACHE_HOME`, `USERPROFILE`, `HOMEDRIVE`, `HOMEPATH`, `TMPDIR`, `TEMP`, `TMP`, `PAGER`, `EDITOR`, `VISUAL`,
-  `SSH_ASKPASS`, and `SSLKEYLOGFILE`, the file libcurl writes each TLS session's keys to), and none the dynamic loader reads as git starts (`LOADER_PREFIXES`: `LD_` and `DYLD_`), that
-  `BASH_VARIABLES` also gives no reason, and before git only to a name `GIT_PREFIXES` lists, with a value it allows,
-  such as `GIT_EDITOR=true`, or to such a name of Bash's own, such as `LC_ALL`.
-- **Shell options.** `set` and `shopt` are understood for the options `SET_OPTIONS` and `SHOPT_OPTIONS` decide change
-  nothing the guard reads, such as `errexit`, `pipefail`, `nounset`, and `nullglob`, and so is a shell the
-  environment starts under them, through `SHELLOPTS` and `BASHOPTS`. Each other option, `keyword`, `posix`, `lastpipe`,
-  and `cdable_vars` among them, and one neither table names, is refused, and so is a shell the environment hands
-  `POSIXLY_CORRECT` or `BASH_COMPAT`, `xtrace` where the environment's `PS4` holds an expansion, whatever turns it
-  on, `set`, `shopt -o`, or the environment's `SHELLOPTS`, and a command named
-  after a function the environment hands the shell as `BASH_FUNC_<name>%%`.
-- **gh.** `gh pr checkout`, `gh pr co`, and `gh repo sync` check a branch out in the checkout gh runs in, and are
-  judged as a checkout git makes there, a runner's command among them, from Bash and PowerShell alike, read where
-  the runner's options end; gh after `xargs`, which adds words from its input to gh's, is refused, since they may make
-  any subcommand one of these. A flag before the words that would name one of these, or one of the subcommands
-  `GH_WRITERS` and `GH_CONFIGURATION_WRITERS` name below, other than `-R`, `--repo`, and `--hostname`, is a part the
-  guard does not read, since gh takes the word after a flag it does not know as its value, so `gh pr -b x checkout 12`
-  checks a branch out. Each is read by its first word's name or the alias cobra gives it (`GH_ALIASES`), as `gh cs cp`
-  is `gh codespace cp`, and by its subcommand's alias (`GH_SUBCOMMAND_ALIASES`), as `gh repo new` is `gh repo create`.
+  does not settle, `cd -`, a `CDPATH` search, an option of `cd`, and `pushd`'s rotations leave the directory unknown,
+  and a compound command that holds a change leaves every git call in it and after it in a directory the text does not
+  settle. So do the commands that may move the shell in a way the guard does not follow: a builtin
+  `BUILTINS_NOT_FOLLOWED` names (`.`, `source`, `eval`, `builtin`, `command` but with `-v` or `-V`, `trap`, `fc`,
+  `alias`, `unalias`, `enable`, and `hash`), a function definition, a function the environment hands the shell as
+  `BASH_FUNC_<name>%%`, and a command whose name the text does not settle. A git call whose place is unknown is judged
+  as the bullet on where a git call acts says.
+- **Assignments before git.** An assignment before git is understood to a name git does not read to choose a file or
+  a program, that is, no `GIT_` name and none `GIT_READ_NAMES` names (`HOME`, `XDG_CONFIG_HOME`, `XDG_CACHE_HOME`,
+  `USERPROFILE`, `HOMEDRIVE`, `HOMEPATH`, `TMPDIR`, `TEMP`, `TMP`, `PAGER`, `EDITOR`, `VISUAL`, `SSH_ASKPASS`, and
+  `SSLKEYLOGFILE`, the file libcurl writes each TLS session's keys to), and to a name `GIT_PREFIXES` lists, with a
+  value it allows, such as `GIT_EDITOR=true`. Any other is a part of the git call the guard does not settle. An
+  assignment anywhere else, alone or before another program, is not read.
+- **gh.** `gh pr checkout`, `gh pr co`, and `gh repo sync` (`GH_CHECKOUTS`) check a branch out in the checkout gh runs
+  in, and are judged as a checkout git makes there, from Bash and PowerShell alike, read past `-R`, `--repo`, and
+  `--hostname` with their values. Any other gh call, a subcommand the text does not settle among them, is a program the
+  guard does not read, and so is one with another flag before its subcommand, since gh takes the word after a flag it
+  does not know as its value, so `gh pr -b x checkout 12` checks a branch out.
 - **Redirections.** A redirection that writes a file at a path the text settles is refused when the file lies in a
   guarded hub's tracked files or anywhere in its git directory, as a file tool's edit is; a duplication such as
-  `2>&1` and a device such as `/dev/null` write none. In PowerShell every command's file redirection is read so,
-  an expression standing as a command, as `'x' > <file>`, included, and one the reader does not reach is refused.
-  A redirection that names its descriptor by a variable, as
-  `{fd}>out`, `{fd}<in`, or `{fd}>&-`, assigns that variable, any one, and is refused in every operator. A target the text does not settle to a literal path, or a
-  relative one in a directory it does not settle, may lie in a hub and is refused, but for one under the system's
-  temporary folder that `TMP`, `TEMP`, or `TMPDIR` names from the environment, as `> "$TMP/out.txt"` does. Each target
-  is judged with every link on the way to it followed, so a link that already leads into a hub leads the write there.
-- **Writes a program or a cmdlet names.** The programs whose words name the files they write, create, remove, or
-  change the mode or owner of are `WRITING_PROGRAMS`: `chcon`, `chflags`, `chgrp`, `chmod`, `chown`, `cp`, `dd`,
-  `install`, `mkdir`, `mkfifo`, `mknod`, `mktemp`, `mv`, `rm`, `rmdir`, `sed`, `shred`, `tee`, `touch`, `truncate`,
-  and `unlink`, each read under its own name and under the `g` or `u` prefix a package manager installs a GNU or uutils
-  build with, as `gcp`, `gsed`, or `ucp` (`BUILD_PREFIXES`), and as the utility a multicall program
-  runs by its first word or its `--coreutils-prog=`, as `coreutils cp` or `toybox cp` does (`MULTICALL_PROGRAMS`), a
-  multicall program whose utility the text does not settle, or that is given an option before it, being refused while
-  a hub is guarded. Each word of theirs that may name such a file is judged
-  as a redirection's target is, from Bash and PowerShell alike and where a runner starts one: every operand, a source among them, since telling a source from a
-  target means reading every build's options, so copying a hub file elsewhere is refused while a hub is guarded and
-  `cat <file> > <target>` is the way to write it; a long option's value after `=`; and, in a bundle of letters, the
-  rest of the word after its first letter that the program's table does not name as a flag in every build, which may
-  be that option's value, as `cp -t<folder>`. A target is also judged by what it holds, since a recursive removal, a
-  move, a mode change, or a copy into a folder reaches everything in it: one that holds a guarded hub in view, as
-  `rm -rf ..` from the hub does, or, while a hub is guarded, a file git reads its system or global configuration
-  from, as `cp <file> ~` does, is refused. `dd` writes only at its `of=` operand. `sed` rewrites the files it is
-  given in place given `-i`, `-I`, a prefix of `--in-place`, or a letter it does not know, BSD's flag `-l` ending no
-  bundle; and its script, read as each build reads its options (`SED_BUILDS`: GNU's, which read a long option and an
-  option after an operand, and BSD's) and as GNU sed reads a script, whose commands hold BSD's, writes the file each
-  `w` or `W` command, or `s` command's `w` flag, names to the end of its line, which is judged as any target is. Text
-  an `a`, `i`, or `c` command adds goes on past a line ending in an odd run of backslashes only, and a bracket
-  expression in a pattern is read whole, one that holds the pattern's delimiter, which GNU sed reads as the pattern's
-  end and BSD sed as a member, being a script the guard cannot follow. A script that runs a command, by an `e` command or an `s` command's `e` flag, a script file, a script the text does
-  not settle, and options or a script no build reads are refused while a hub is guarded. A Bash word whose unquoted
-  text holds a
-  wildcard, and a PowerShell path given to `-Path` or by position, or a native program's word, that holds one, is
-  judged by the folder every file it matches lies in, the text before the wildcard up to its last separator: refused
-  where that folder lies in a guarded hub, holds a guarded hub in view, or holds a file git reads its system or global
-  configuration from. A brace expansion may name any path, so it is not settled. `xargs` before one of them adds words
-  from its input, which may name any file, so it is refused while a hub is guarded, and so is every word of one that
-  `chroot` starts, inside another tree. Of the cmdlets the PowerShell bullet below reads, `Set-Content`,
-  `Add-Content`, `Out-File`, `New-Item`, `Copy-Item`, `Move-Item`, `Remove-Item`, and `mkdir` write: each value bound
-  to a parameter that takes a path (`POWERSHELL_PATH_PARAMETERS`), bound as pwsh binds it from the cmdlet's own
-  parameters and aliases and the common ones (`POWERSHELL_CMDLET_PARAMETERS`, held to `Get-Command`): by its name or
-  an alias, or by a prefix that names one of the cmdlet's own alone, or, naming none of them, one common parameter
-  alone; a prefix of several, which pwsh refuses as ambiguous, is read as the path among them, one that takes a
-  wildcard first, or else as `New-Item`'s item type, held to the types that make no link; and each
-  value given by position that `POWERSHELL_POSITIONS` does not bind to a parameter taking no path, as `Set-Content`'s
-  second, its `-Value`, is judged so, `New-Item`'s `-Name` joined to each path it is given, and `Copy-Item` and
-  `Move-Item` given no destination write into the current location; a parameter the tables do
-  not name is read as taking no value, so the value after it is judged as one given by position. One after the first
-  command of a pipeline given no path, but `Copy-Item`, whose path is what it copies, binds the one it writes from its
-  input, so it is refused while a hub is guarded. Off Windows, where pwsh gives `cp`, `mv`, `rm`, `rmdir`, and `tee`
-  no alias, each is read as the program.
-- **Links.** A link a command makes is followed by no path the guard placed before the command ran, so a write later
-  in the same command through it reaches what it names unseen. While a hub is guarded, `fsutil`, `link`, and `ln`
-  (`LINK_PROGRAMS`), under their own names and the prefixes above, are refused, `fsutil` whatever its words choose, and so are `cp`'s `-l`, `-s`, `--link`, and `--symbolic-link` and `install`'s `-l`
-  (`LINK_OPTIONS`), and `New-Item` given an item type other than a prefix of `File` or `Directory`, as `SymbolicLink`,
-  `Junction`, or `HardLink`; with no guarded hub in view each is noted. A link that exists when a command starts is
-  followed, as each bullet above says.
-- **Programs.** A command may start any program a literal name names. The programs that run another command their
-  words name are `RUNNERS`: `bash`, `busybox`, `chroot`, `chronic`, `chrt`, `cmd`, `csh`, `dash`, `doas`, `env`,
-  `fish`, `flock`, `ionice`, `ksh`, `ltrace`, `mksh`, `nice`, `nohup`, `parallel`, `powershell`, `pwsh`, `runuser`,
-  `script`, `setsid`, `sh`, `ssh`, `stdbuf`, `strace`, `su`, `sudo`, `taskset`, `tcsh`, `time`, `timeout`,
-  `unbuffer`, `watch`, `wsl`, `xargs`, and `zsh`. While a hub is guarded, a runner whose command is or may be git is
-  refused, and a runner around a command that is not git is understood. Its command may be git where one of its words
-  names git, by its name or a path, or names another runner or a multicall program, which may run git in turn, or is
-  a word the text does not settle, which may be either. Each runner, and each program `PROGRAM_OPTIONS` below names,
-  is read under its own name and under the `g` or `u` prefix above, as `gtimeout`, `genv`, `gsort`, `gfind`, or
-  `gtar`, a word naming a runner among them, and `tar` under `bsdtar` and `gnutar` too (`BUILD_NAMES`); a prefixed
-  build is never read as Windows' own. A runner's own options are read by an allow-list, `RUNNER_OPTIONS`, which names
-  for each of `chronic`, `chroot`, `chrt`, `doas`, `env`, `ionice`, `ltrace`, `nice`, `nohup`, `setsid`, `stdbuf`,
-  `strace`, `sudo`, `taskset`, `time`, `timeout`, `unbuffer`, and `xargs` the options known to be safe: ones that
-  neither build its command from text, as `xargs`'s `-I` and `env`'s `-S` do, nor change where it runs, as `env`'s
-  `-C` does, nor write a file or run another program, nor change what runs. The Rust coreutils (uutils), which
-  some Linux distributions install as their coreutils, add options to some runners: `env`'s `-f` or `--file`, which sets variables from a file the
-  text does not show, `GIT_DIR` or `PATH` among them, and its `-a` or `--argv0`, the name its command runs as, by
-  which a multicall program such as the Rust coreutils' own `coreutils` or busybox picks the program it runs, are
-  refused, so `env --argv0=env ls -S 'git commit'` is; `-h` and `-V`, the help and version options of `env`,
-  `nice`, `nohup`, `stdbuf`, `timeout`, and `chroot`, run no command and are refused as `--help` and `--version`
-  are; and `timeout`'s `-f` and `-p` are read as `--foreground` and `--preserve-status`, and, of the programs
-  below, `sort`'s `--check-silent` as its `-C`. Every other option word of a runner is refused, in every spelling getopt reads:
-  exactly, with its value attached by `=` or directly, abbreviated, or as a letter in a bundle, as `-0IX` is. A long
-  option is understood only spelled in full, since an abbreviation of a safe option may
-  be one of another option too. macOS's `env`, FreeBSD's, takes no long option and lists `-` as an option letter, so
-  it reads a long option word as a bundle of letters, `env --unset tar xf a.tar` as `-`, `-u` with `nset` attached,
-  and the program `tar`; `env`'s words are read by that build's letters too, and a word the two builds read as taking
-  different words is refused, so `--unset NAME` is refused on every platform and `--unset=NAME` is understood.
-  macOS's other runners take no `-` letter, so they refuse such a word and run nothing, or, as its `xargs` and
-  `sort` do, read GNU's long names alike. `env`'s `NAME=VALUE` words are read among its options as assignments for its
-  command, a value-taking option's value never ending them, and judged as ones before it, from Bash and PowerShell
-  alike; such a word before any other runner's command, as `sudo`
-  takes, is refused, since it may set a variable the guard does not judge. `bash -c` with a literal script is read as
-  Bash, and `pwsh -Command` or
-  `-c` with one literal script, after `-NoProfile`, `-NonInteractive`, or `-NoLogo`, as PowerShell, each refused
-  where the script runs git and in every other form, a script file among them. Some are refused whatever they run,
-  `RUNNERS_ALWAYS_REFUSED`: `busybox`, `cmd`, `csh`, `dash`, `fish`, `flock`, `ksh`, `mksh`, `parallel`,
-  `powershell`, `runuser`, `script`, `sh`, `ssh`, `su`, `tcsh`, `watch`, `wsl`, and `zsh`. Of these, the shells are
-  ones whose scripts the guard does not read, `sh` among them since it runs Bash in POSIX mode, or dash, either of
-  which keeps an assignment made before a special builtin after it, and the rest run a command line handed to them as
-  one string. The assignments before a runner, and `env`'s own, are judged as ones before a command that is not
-  git. The programs that have options which run a command, write a file the command does not name, or change where
-  the program acts, `PROGRAM_OPTIONS`: `find`, `rg`, `sort`, and `tar`, are read by an allow-list the same way, from
-  Bash and PowerShell alike, its safe options ones that do none of these, and so is refused any word of theirs that
-  the text does not settle. `tar`'s extraction, which writes the files an archive names, its `-C`, which chooses
-  where, and its `-T`, whose list of names may hand it options, are refused, and so is an archive it names `host:path`, which it opens through a remote shell, unless
-  `--force-local`, given as an option rather than as another option's value or after `--`, makes it a file. The
-  archive its `-f` or `--file` names, but `-` for standard output, is judged as a file it writes where it is given a
-  mode that writes one, `-c`, `-r`, `-u`, or `-A`, as a letter of a bundle or of its first word before a letter that
-  takes a value, or `--create`, `--append`, `--update`, `--catenate`, `--concatenate`, or `--delete`
-  (`program_writes`). `tar`'s
-  table holds only letters GNU tar and bsdtar, Windows' `tar.exe`, read alike, or that only one of them knows, so
-  `-H`, `-W`, and `-s`, which one of them reads with a value and the other without, are refused. On Windows, where no
-  name or path settles whether a command reaches GNU `sort` and `find` or Windows' own builds, each is read as both,
-  whatever its path and from both shells: its options written with a slash are read in any case by an allow-list of
-  their own, after `--` too, which the Windows build reads as an operand, so Windows `sort`'s `/O`, which writes a
-  file, and `/T` are refused, and so is such a program after `xargs`. Every word of such a program that starts with a
-  slash must be exactly one of those options, wherever it stands, since how the Windows build reads any other is not
-  documented: a joined pair such as `/r/o`, a value attached as in `/Oout.txt` or `/O:out.txt`, a slash word another
-  option takes as its value, as `/O` after `/L` or after `-t`, and a path such as `/tmp/x` are refused, and a slash
-  option is matched in ASCII case only, so a word holding any other character is refused. Whether Windows `sort`
-  reads a word that starts with a dash as the switch it would read with a slash, `-t` as `/T`, is not documented
-  either, so on Windows a `sort` word that starts with a dash passes only where GNU `sort`'s table and Windows
-  `sort`'s safe switches both allow it, as `-r`, and `sort -u` is refused there while a hub is guarded; `find`'s
-  dash words are judged by GNU `find`'s table alone, since Windows `find` has no switch that writes or runs
-  anything. A runner's command
-  that is one of them is held to its allow-list too, and after `xargs`, which adds words from its input, it is refused
-  unless its words hold a `--` that ends its options, which `find` has none of. A variable one of them reads options
-  from, `PROGRAM_VARIABLES`: `RIPGREP_CONFIG_PATH`, `TAPE`, and `TAR_OPTIONS`, is refused where it is assigned
-  before the program or before any runner, whatever the runner starts, a `bash -c` or `pwsh -Command` script at any
-  depth included, where `env` sets it, and where the environment holds it. Among the options
-  refused are `find`'s `-exec`, `-execdir`, `-ok`, `-okdir`, `-delete`, and `-fprint` family, `rg`'s `--pre` and
-  `--hostname-bin`, `sort`'s `--compress-program` and `--output`, and `tar`'s options that run a program.
-  `tests/tools/test_prefix_programs.py` holds each allow-list to every option the program's `--help` or getopt table
-  lists, pinned in `tests/fixtures/hub-guard/option-catalogues.json`, for the programs the Rust coreutils replace,
-  in `tests/fixtures/hub-guard/option-catalogues-uutils.json`, and for macOS's builds of `chroot`, `env`, `find`,
-  `nice`, `nohup`, `sort`, `stdbuf`, `time`, and `xargs`, Apple's builds of FreeBSD's, in
-  `tests/fixtures/hub-guard/option-catalogues-bsd.json`, every option any build lists, in each spelling, `tar`'s rows
-  holding bsdtar's options too, as macOS's and Windows' `tar` is bsdtar. It holds each of `env`, `nice`, `nohup`,
-  `stdbuf`, `timeout`, and `xargs` the system installs to the catalogue of the implementation its `--version` names,
-  GNU or uutils, or on macOS, where it names none, the BSD one, every option its `--help` or, for a BSD build, its
-  usage synopsis lists, macOS's `chroot`, `find`, `sort`, and `time` the same way, and macOS's `tar` to bsdtar's
-  catalogue by its `--help`. git keeps a judgment of its own, by its subcommands and by what its words write or run.
-- **Every other program, by an allow-list.** While a hub is guarded, a program none of the tables above reads, git,
-  `gh`, the runners, `PROGRAM_OPTIONS`, `WRITING_PROGRAMS`, and `LINK_PROGRAMS`, is judged by its words, unless it is
-  one of `READ_ONLY_PROGRAMS`, the programs known in every build to write no file their words name and to run no
-  command: `b2sum`, `basename`, `cat`, `cksum`, `cmp`, `column`, `comm`, `cut`, `date`, `df`, `diff`, `dirname`, `du`,
-  `egrep`, `expr`, `false`, `fgrep`, `findstr`, `fmt`, `fold`, `grep`, `head`, `hexdump`, `id`, `join`,
-  `jq`, `ls`, `md5`, `md5sum`, `nl`, `nproc`, `od`, `paste`, `printenv`, `pwd`, `readlink`, `realpath`, `rev`, `seq`,
-  `sha1sum`, `sha256sum`, `sha512sum`, `shasum`, `sleep`, `stat`, `strings`, `tac`, `tail`, `tr`, `true`, `uname`,
-  `unexpand`, `wc`, `where`, `which`, `whoami`, and `yes`, each by its own name only, never under the prefixes above,
-  since a program installed as `ugrep` or `gdu` may be another one, as ugrep, whose `--save-config` writes a file, and
-  gdu, whose `-o` does, are. Such a program
-  (`read_unlisted`) is refused where a word of it may name a file in a guarded hub, a folder that holds a guarded hub
-  in view, or a file git reads its system or global configuration from, each judged as a redirection's target is;
-  where a word, or its value after its last `=`, names git, a runner, or a multicall program, which it may run; and
-  where a word is one the text does not settle, as a loop's variable, which may name any file. A word counts as a path
-  only where it may be one: an absolute path, one that starts with `~`, read from the home, a `.` or `..` alone or
-  before a separator, a drive-relative one on Windows, as `C:x`, or a relative one whose first name is there in the
-  directory the command runs in and holds no character a Windows file name cannot hold (`NO_FILE_NAME`), any relative
-  one counting where the text does not settle that directory; each is read in the word itself unless it is an
-  option, in the rest of a one-dash bundle after each of its letters, in its value after its first and its last `=`,
-  and in each of its quoted and blank-separated parts, as a script or a command line it is handed holds them, and a
-  pattern by its folder, as above. The rule is the same in the hub and in a worktree, from Bash and PowerShell alike,
-  and where a runner starts the program; after `xargs`, which adds words from its input, such a program is refused,
-  and so is every word of one `chroot` starts. So `python3 -c` given a script that names only files outside the
-  hubs, a deployed skill's script given plain values, and `gh pr merge <number> --auto --squash` run from the hub,
-  while `curl -o <hub file>`, `rsync <file> <hub>`, `gzip <hub file>`, `perl -pi -e <script> <hub file>`, and an
-  unlisted program reading a hub file by a word that names it are refused; `cat`, `grep`, `head`, `sed -n`, and
-  `git show` read a hub file instead. Python run as `python`, `python3`, or `python3.<minor>`, with only the flags
-  `PYTHON_FLAGS` names before its script, `-i` not among them, and the options `PYTHON_VALUED` names, `-X` and `-W`,
-  whose values are judged as such a program's words are, since `-X pycache_prefix=<folder>` writes there, running a
-  script a guarded hub tracks at a path on the list of the hub's own tools that write no file a hub tracks whatever
-  their words, but by the one write the guard allows from the hub itself, the fast-forward of main to origin's main,
-  which a tool reads from `refs/remotes/origin/main` alone and merges by its commit id, so no other ref redirects it
-  (`TRUSTED_SCRIPTS`: `deploy.py`, `tools/worktrees.py`, `tools/project_release_sync.py`, and
-  `.claude/skills/shepherd-pull-requests/scripts/shepherd_pull_requests.py`), with every link on the way to it
-  followed, is trusted whatever its own words: the guard refuses every edit to a file a guarded hub tracks and every
-  git call that writes one, so such a script runs what the hub's history holds, as
-  `python -B tools/project_release_sync.py` and `python deploy.py` from the hub do. Every other script's words are
-  judged, the script's own path among them: a hub tool the list does not name, one that writes hub files when its
-  words ask among them, as `tools/skill_reference.py --write`, `tools/new_skill.py <name>`, and
-  `tools/runtime_changelogs.py --summary=<file>` do, which is refused from the hub, where its path names a hub file,
-  and runs in a worktree on `origin/main`; and a script anywhere else, a deployed skill's among them, which is
-  trusted by no path. So are a listed script's words when a variable Python reads, as `PYTHONPATH`, is assigned
-  before it, and an assignment of `HOME`, `USERPROFILE`, `TMPDIR`, or another name `GIT_READ_NAMES` names is refused
-  before a listed script as before any command, as Assignments above says.
-  `gh`'s subcommands that write into the directory they run in, or where their words name, `gh attestation download`, `gh codespace cp`, `gh gist clone`,
-  `gh release download`, `gh repo clone`, and `gh run download` (`GH_WRITERS`), are refused where that directory lies
-  in a guarded hub or the text does not settle it, and their words are judged as such a program's. Those that write
-  a git configuration, the repository's, which every worktree shares with its hub, or the global one,
-  `gh auth login`, `gh auth setup-git`, `gh repo create`, `gh repo fork`, `gh repo rename`, which rewrites the
-  remote's URL, and `gh repo set-default` (`GH_CONFIGURATION_WRITERS`), are refused while a hub is guarded wherever
-  they run, with a refusal that names its own remedy, a terminal outside the clone, since a worktree refuses them too.
+  `2>&1` and a device such as `/dev/null` write none. In PowerShell every command's file redirection is read so, an
+  expression standing as a command, as `'x' > <file>`, included. A target the text does not settle to a literal path,
+  or a relative one in a directory it does not settle, is not read, but for one under the system's temporary folder
+  that `TMP`, `TEMP`, or `TMPDIR` names from the environment, as `> "$TMP/out.txt"` does. A pattern's target is judged
+  by the folder its match lies in. Each target is judged with every link on the way to it followed, so a link that
+  already leads into a hub leads the write there.
 - **PowerShell.** A PowerShell command is read by PowerShell's own parser, not by a second hand-written grammar,
-  and is understood when every node type in its tree is one `POWERSHELL_UNDERSTOOD` names, in the forms that invoke
-  nothing: pipelines of commands joined by `&&` and `||`, with redirections, whose elements are constants, strings,
-  lists, parameters, and the values variables, value expressions, and properties compute, which leave their word one
-  the text does not settle, as Bash's expansions do; `if` and `foreach`, whose conditions and bodies are read; a cast
-  to a type `POWERSHELL_CASTS` names, such as `[int]` or `[string]`; and a script block handed to `ForEach-Object`,
-  `Where-Object`, `Sort-Object`, `Select-Object`, or `Group-Object`. Each command inside an expression or a body is
-  read as a command that runs within the statement holding it. An assignment, and a `foreach`'s variable, is
-  understood to a plain variable PowerShell neither sets nor reads itself (`POWERSHELL_VARIABLES`, held to what
-  `Get-Variable` lists in a pwsh started with no profile), and not to one on a drive, as `$env:GIT_DIR` is. A method
-  call, a static member such as `[IO.File]::Delete`, a member the text does not name, a cast to another type, a
-  script block handed to any other command, and `ForEach-Object` given a member's name are not read. A command is
-  understood when it is a program, judged by the runner rule above, `bash` and `pwsh` refused whatever they
-  run since the guard reads their scripts only from Bash, and `sort`, which off Windows pwsh gives no alias, read
-  there as the program by its allow-list, but for a name PowerShell keeps for its own commands, an
-  alias or a function of its own (held to `Get-Alias` and `Get-Command`), or any name holding a hyphen and no directory,
-  whatever its verb, since a module PowerShell loads on demand may define a function by it, as Windows' own modules
-  define `Delete-DeliveryOptimizationCache` (a program by such a name is written with `.exe` or as a path), which
-  is understood only for one of these cmdlets, by
-  its name or an alias PowerShell gives it: `Set-Location`, `Push-Location`, `Pop-Location`,
+  statement by statement as Bash's commands are, when every node type in its tree is one `POWERSHELL_UNDERSTOOD`
+  names, in the forms that invoke nothing: pipelines of commands joined by `&&` and `||`, with redirections, whose
+  elements are constants, strings, lists, parameters, and the values variables, value expressions, and properties
+  compute, which leave their word one the text does not settle, as Bash's expansions do; `if` and `foreach`, whose
+  conditions and bodies are read; a cast to a type `POWERSHELL_CASTS` names, such as `[int]` or `[string]`; and a
+  script block handed to `ForEach-Object`, `Where-Object`, `Sort-Object`, `Select-Object`, or `Group-Object`. Each
+  command inside an expression or a body is read as a command that runs within the statement holding it. A command
+  holding any other node type or form, a method call, a static member such as `[IO.File]::Delete`, a member the text
+  does not name, a cast to another type, a script block handed to any other command, or an assignment to the
+  environment or to a variable PowerShell sets or reads itself (`POWERSHELL_VARIABLES`) among them, has only its git
+  calls and its redirections read, each placed where the text does not settle once any command in it may move the
+  location. A command is read as git, as `gh`, as a location cmdlet, followed as Bash's `cd`, `pushd`, and `popd` are
+  to a literal file-system path given by position, `-Path`, or `-LiteralPath`, a leading `~` read as home, or as one
+  of these cmdlets, by its name or an alias PowerShell gives it: `Set-Location`, `Push-Location`, `Pop-Location`,
   `Get-ChildItem`, `Get-Content`, `Select-String`, `Select-Object`, `Sort-Object`, `Measure-Object`, `Write-Output`,
   `ForEach-Object`, `Where-Object`, `Group-Object`,
   `Write-Host`, `Out-String`, `Out-Null`, `Out-File`, `Get-Location`, `Get-Item`, `Get-Command`, `Get-Process`,
   `Format-Table`, `Format-List`, `Start-Sleep`, `Remove-Item`, `Copy-Item`, `Move-Item`, `New-Item`, `Set-Content`,
   `Add-Content`, `Resolve-Path`, `Test-Path`, `Join-Path`, `Split-Path`, `Get-Date`, `Get-FileHash`, `ConvertFrom-Json`,
-  `ConvertTo-Json`, and the function `mkdir`. Every other node type and command is a part the guard does not read. The location cmdlets are
-  followed as Bash's `cd`, `pushd`, and `popd` are, to a literal file-system path given by position, `-Path`, or
-  `-LiteralPath`, a leading `~` read as home; a path on another provider, as `env:` or `alias:`, given by position or
-  attached to a parameter by a colon, as `-Path:env:GIT_DIR`, is not read, nor is a value a cmdlet that writes, such as
-  `Set-Content`, is given that the text does not settle; each file-system path a writing cmdlet is given is judged as
-  [Writes a program or a cmdlet names](#what-it-understands) says, a leading `~` read as home; and a
-  location a pipeline of several commands sets is unknown after it, since each of them runs in the session.
-  `tools/hub_guard-powershell.ps1` only reports what the parser found, and `tools/hub_guard.py` makes every decision.
-  A command that does not parse is allowed: PowerShell parses a whole script before it runs any of it, so none of it
-  runs. pwsh starts for every PowerShell tool call and for a Bash command that hands it a literal script; no other
-  Bash command waits for it.
+  `ConvertTo-Json`, and the function `mkdir`, which move nothing. Every other node type and command is a program the
+  guard does not read; a command dot-sourced into the session, one whose name the text does not settle,
+  `ForEach-Object` given a member's name, and a name PowerShell keeps for its own commands, an alias or a function of
+  its own (held to `Get-Alias` and `Get-Command`), or any name holding a hyphen and no directory, whatever its verb,
+  since a module PowerShell loads on demand may define a function by it, as Windows' own modules define
+  `Delete-DeliveryOptimizationCache` (a program by such a name is written with `.exe` or as a path), may move the
+  location, which is unknown after it, and so is one a pipeline of several commands sets, since each of them runs in
+  the session, and a path on another provider, as `env:` or `alias:`. `tools/hub_guard-powershell.ps1` only reports
+  what the parser found, and `tools/hub_guard.py` makes every decision. A command that does not parse is allowed:
+  PowerShell parses a whole script before it runs any of it, so none of it runs. A command pwsh cannot read, as when it
+  cannot be found or started, is allowed with a note on stderr.
 
 #### What it refuses
 
@@ -739,27 +550,11 @@ A guarded hub is in view when it is the hub of the session's own directory, of i
 the command makes names, or the one whose git directory holds that directory or place. While one is, the guard
 refuses:
 
-- a part of the command it does not understand, whatever else the command holds and whether or not it names git:
-  each entry of `NOT_READ`, among them a nested shell, `eval`, `source` and `.`, `exec`, `alias`, a function
-  definition, `export` and the other declarations, `trap`, `hash`, `enable`, arithmetic of every kind, a subscript,
-  an indirection, Bash 5.3's `${ command; }`, a command name the text does not settle, a runner whose command is or
-  may be git, one `RUNNERS_ALWAYS_REFUSED` names, and an option of a runner or of a program `PROGRAM_OPTIONS` names
-  that its allow-list does not know to be safe, a word the text does not settle given to a program
-  `READ_ONLY_PROGRAMS` does not name and no table reads, a relative word of one in a directory the text does not
-  settle, as after `cd "$(git rev-parse --show-toplevel)"`, which the guard does not settle as the top level of the
-  directory it judges in, and a word of one that names git or a runner, a multicall
-  program whose utility the text does not settle, a redirection to a target the text does not settle, a file a
-  program or a cmdlet that writes is given where the text does not settle it, or that it takes from its input, a link
-  a command makes, an
-  assignment the rules above do not understand, an option the tables refuse, Bash its grammar cannot read (the lines
-  before a syntax error do run, unlike PowerShell's), substitutions nested more than four deep, and in PowerShell
-  every node type outside `POWERSHELL_UNDERSTOOD` and each form above that invokes something, method calls, static
-  members, `Invoke-Expression`, `&` with a name the text does not settle, and every cmdlet the list above does not
-  name among them, an assignment to the environment or to PowerShell's own variables, a dot-sourced command, and a
-  path on a provider other than the file system;
-- a git call that would write the checkout it runs in where the text does not settle its directory, a git call whose
-  subcommand the text does not settle, wherever it runs, since it may be an alias that writes a hub, a git call after
-  an option of git's own the guard does not read, and a refused subcommand given a word the text does not settle;
+- a git call that acts on a guarded hub in any form but the read-only ones, and one whose place the text does not
+  settle in any form but those, since it may act on a hub; a git call whose subcommand the text does not settle,
+  wherever it runs, since it may be an alias that writes a hub; a git call after an option of git's own the guard does
+  not read; a refused subcommand given a word the text does not settle; and an assignment before git the rule above
+  does not understand;
 - a git call whose words run a command, write a file at a path the text does not settle, or include a word the text
   does not settle where it may be an option that does either; a setting `-c` or `--config-env` hands git that the
   guard does not know to be safe; and a `git config` that may write, but for one that writes only a file `--file`
@@ -770,64 +565,33 @@ refuses:
   trace or its output, the keys of a TLS session, a cookie jar, or a file-system monitor's socket into a guarded hub;
   and, while a hub is guarded, every command while either has git write one into a file the guard cannot place, or
   while git cannot read that configuration; and, while a hub is guarded, a command or a file tool's edit that writes a
-  file git reads its system or global configuration from, by a redirection, a git call's words, or a program or a
-  cmdlet whose words name it, or that writes any file while git cannot name those files; a command whose git call
-  reads, where it runs, a configuration that names a cookie jar or a socket folder in a guarded hub, and, while a hub
-  is guarded, one whose such target the guard cannot place, or that writes a file an include of that configuration
-  names, or a file named `config` or `config.worktree` or in a folder named `.git` while it runs git outside every
-  guarded hub;
-- a file a redirection, a program `WRITING_PROGRAMS` names, or a writing cmdlet writes into a guarded hub, a link on
-  the way to it followed, and, while a hub is guarded, the files a pattern matches in a folder that holds a guarded hub
-  in view; a path in a guarded hub, or a folder holding one, that a word of a program `READ_ONLY_PROGRAMS` does not
-  name and no table reads may name, but for Python running a script `TRUSTED_SCRIPTS` names that a guarded hub
-  tracks, so a hub tool the list does not name, as `python tools/skill_reference.py --write`, is refused from the
-  hub, the `repo-cleanup`
-  sweep, whose `--repos-root` names the folder that holds the hub, is refused, and so is Python run from the hub with
-  `-m`, as `-m pip install -r requirements-dev.txt` or `-m pytest tests/...`, whose words name hub files: run the
-  sweep from outside the clone, and the hub's interpreter from a worktree, as
-  `<hub>/.venv/bin/python -m pip install --require-hashes --only-binary :all: -r requirements-dev.txt`; a `gh` subcommand
-  `GH_WRITERS` names run in a guarded hub; and one `GH_CONFIGURATION_WRITERS` names wherever it runs, `gh auth login`
-  and `gh auth setup-git` in every guarded session among them: run those from a terminal outside the clone;
-- an alias that cannot be read, nests more than four deep, or runs a part the guard does not read;
-- a command the guard does not finish reading and judging within 15 seconds, `pwsh` included, and the lookups of the
-  hubs the places it names reach, each git call of theirs given no more than the time left; a PowerShell command when
-  `pwsh` cannot be found or started; and a command either reader fails on with an error of its own.
+  file git reads its system or global configuration from, by a redirection or a git call's words, or that writes any
+  file while git cannot name those files; a command whose git call reads, where it runs, a configuration that names a
+  cookie jar or a socket folder in a guarded hub, and, while a hub is guarded, one whose such target the guard cannot
+  place, or that writes a file an include of that configuration names, or a file named `config` or `config.worktree`
+  or in a folder named `.git` while it runs git outside every guarded hub;
+- a file a redirection writes into a guarded hub, a link on the way to it followed;
+- an alias that cannot be read or nests more than four deep;
+- a command the guard does not finish reading and judging within 15 seconds, and the lookups of the hubs the places
+  its git calls name reach, each git call of theirs given no more than the time left; and a command either reader
+  fails on with an error of its own.
 
-A script `TRUSTED_SCRIPTS` names that a guarded hub tracks may run from the hub, by Python as [Every other program,
-by an allow-list](#what-it-understands) says, since each writes no file a hub tracks whatever its words, but by the
-fast-forward of main to `refs/remotes/origin/main` the guard allows from the hub itself, and the guard refuses every
-edit to a file a guarded hub tracks and every git call that writes one in a guarded hub. Any
-other hub tool's words are judged, so one that writes hub files when its words ask runs in a worktree. A script
-anywhere else is trusted by no path, the deployed
-`update-coding-agent-skills` script under the skills directory included, though updating and deploying are what the
-hub is for: a script is a file, and the guard refuses an edit only in a hub, so a session's own file tools may rewrite
-a script under the skills directory, and a path the guard allowed would run whatever that file holds, through
-whatever link or junction stands on the way to it. The guard therefore reads `bash <script>` as it reads every script
-file, a part it does not understand, judges the words of Python running such a script as any unlisted program's, and
-`update-coding-agent-skills` runs outside a session started in the clone: from a session in a folder outside it,
-which loads none of the clone's hooks, or from a terminal, as its section in [Skills](skills.md#update-coding-agent-skills)
-says.
-
-The refusal names the first part it did not understand, or what it could not place, and asks for the command to be
-written as plain commands, or for the directory to be written out, as `git -C <dir>` or `cd <dir> &&`. With no guarded
-hub in view, the same is allowed with a note on stderr, unless the command holds a part the guard does not read and
-a path one of its literal words names, as `export GIT_DIR=<hub>/.git` or a string `eval` is handed does, lies in a
-guarded hub: that hub is then in view. A place whose lookup the reading time cuts short, between git calls or inside
-one, or whose lookup git answers with an error for, may be a guarded hub's, so the guard then refuses the command as
-if one were in view; it looks up every other place first, so the hubs they reach stay in view. It looks up no more
-than 32 directories its literal words name, so a command naming more is refused the same way once those are looked
-up, since one it did not look up may be a guarded hub's. A defect in the guard
-itself, once it has found a guarded hub in view, is refused the same way, since a failure says nothing about where a
-call acts; a defect before that, such as an event it cannot decode, an event that names no command or file path, or a
-hub of the session's own directory or project it cannot look up, an opt-in git cannot read among them, is allowed
-with a note on stderr, so that it cannot block every tool and is never passed unseen. A reading the time cuts short
-before the lookups of the places it names is such a failure: refused while a hub of the session's own directory or
-project is in view, and otherwise allowed with a note. A directory of the session's below a checkout, which a `.git`
-in it or above it marks, where git answers with an error is one such hub: it is noted and passed over, never read as
-a place outside every repository, and the other hubs in view still count; a git call that starts there is a place
-git answers with an error for, refused as above. A successful answer that is not the lines the guard asked for is
-read as such an error. A file an edit names in such a checkout, or in a git directory git answers with an error for,
-may lie in a guarded hub, so the edit is refused; one where git did not run or finish is allowed with a note.
+The refusal names what it could not settle or place, and asks for the git call to be written with literal words, or
+for the directory to be written out, as `git -C <dir>` or `cd <dir> &&`. With no guarded hub in view, the same is
+allowed with a note on stderr. A place whose lookup the reading time cuts short, between git calls or inside one, or
+whose lookup git answers with an error for, may be a guarded hub's, so the guard then refuses the command as if one
+were in view; it looks up every other place first, so the hubs they reach stay in view. A defect in the guard itself,
+once it has found a guarded hub in view, is refused the same way, since a failure says nothing about where a call
+acts; a defect before that, such as an event it cannot decode, an event that names no command or file path, or a hub
+of the session's own directory or project it cannot look up, an opt-in git cannot read among them, is allowed with a
+note on stderr, so that it cannot block every tool and is never passed unseen. A reading the time cuts short before
+the lookups of the places it names is such a failure: refused while a hub of the session's own directory or project
+is in view, and otherwise allowed with a note. A directory of the session's below a checkout, which a `.git` in it or
+above it marks, where git answers with an error is one such hub: it is noted and passed over, never read as a place
+outside every repository, and the other hubs in view still count; a git call that starts there is a place git answers
+with an error for, refused as above. A successful answer that is not the lines the guard asked for is read as such an
+error. A file an edit names in such a checkout, or in a git directory git answers with an error for, may lie in a
+guarded hub, so the edit is refused; one where git did not run or finish is allowed with a note.
 
 The hook declares `onFailure: "block"`, so Claude Code blocks a command when the hook times out, cannot start, or
 exits with an error, rather than letting it run unseen. The hook command reads the project's own opt-in before it
@@ -843,45 +607,14 @@ Claude Code so the hook runs with the new `PATH`.
 
 #### What it does not see
 
-The hook sees the command text. It does not see:
+The hook sees the command text, and the guard reads git's words in it: it does not see any program other than git,
+run by its own words, which it allows whatever those words are, so what a script, a runner, a nested shell, `eval`, a
+function, or `gh` but for its checkouts writes or runs, the git it starts included, and a variable a command sets for
+a later git call, by `export`, `env`, or a PowerShell assignment, reach a hub unseen, and the check names what they
+changed there.
 
-- inside a program: what a program does from inside itself, in its own language, as a Python script with any
-  script name, in the hub or in a worktree, an awk program, a sed script but for the files and commands
-  [Writes a program or a cmdlet names](#what-it-understands) reads in it, a test suite, a script file, `make`'s recipes, or
-  `npm`'s scripts do, and an agent runtime it starts, which runs git under its own guards; the guard reads only the
-  command line, refusing a runner whose command is or may be git and judging the words of every other program it
-  does not know to write nothing;
-- a file a program writes beyond the words the guard reads, one git reads its configuration from included: one a
-  program writes at a path no word of it names, as `make` and `npm` do in the directory they run in, `curl` and
-  `wget` where their own configuration files name, an archive extractor or `patch` where the archive or the patch
-  names, and `perl`, `awk`, or a script from inside its program, a script `TRUSTED_SCRIPTS` names among them;
-  and one a relative word whose first name does not exist yet names, as `out.txt` or `out/report.json`, which is
-  no path to the guard, so a program no table reads may make new files and folders under a new name at the top of the
-  directory it runs in, the hub included, as `python x.py out.txt`, `unzip x.zip -d out`, or
-  `curl --create-dirs -o newdir/x` from the hub does: files the hub does not track, which `git status` shows, while
-  every file it tracks stays as it was.
-  Each is read only by the next command's judgement, so a git later in the same command reads a configuration it
-  wrote;
-- a hub tool Python runs by its module name or from its input, as `python -m tools.skill_reference --write` or
-  `python - < tools/skill_reference.py`, whose words name no hub file: the guard judges `-m` and `-` by their words,
-  and a module name is no path;
-- code a script `TRUSTED_SCRIPTS` names loads from beyond what the hub tracks: a module or a bytecode cache in a
-  folder the hub ignores, or one a `.pth` file, the user's site folder, or an inherited `PYTHONPATH` adds;
-- a `gh` alias or extension, which runs the command or the program the user's `gh` configuration names: the guard
-  reads `gh`'s words only for the subcommands `GH_CHECKOUTS`, `GH_WRITERS`, and `GH_CONFIGURATION_WRITERS` name;
-- a path an unlisted program's word holds after a `:` or inside a value joined by commas or colons, as `-bl:<file>`,
-  `/out:<file>`, `docker -v <hub>:/w`, or `--mount source=<hub>,target=/w`: the guard reads a word's value only after
-  `=`, in a one-dash bundle, and in its quoted and blank-separated parts; and a file whose name holds a character
-  no Windows file name holds, `:`, `"`, `<`, `>`, `|`, `?`, or `*`, named by a relative word, which is no path on any
-  platform;
-- a file a URL names, as `file://<hub>/README.md` or SQLite's `file:<hub>/x.db` URI, which no path rule reads as a
-  path;
-- a response file, `@<file>`, from which a program reads more words, as compilers and `msbuild` do: the guard judges
-  the words the command text shows;
-- a link a command makes other than by `ln`, `link`, `fsutil`, a link option of `cp` or `install`, or `New-Item`:
-  one a program makes from inside itself, or a copy or a checkout carries, as `cp -R` copies a link inside a folder,
-  is followed only by the next command's judgement, so a write later in the same command through it reaches what it
-  names;
+Within git's own words, it judges only what the text shows, so these too are left to the check:
+
 - a program git starts that the environment or the configuration names rather than the command's words: the program
   an inherited `GIT_EXTERNAL_DIFF`, `GIT_PAGER`, `PAGER`, `GIT_SSH_COMMAND`, `GIT_SSH`, `GIT_ASKPASS`, `SSH_ASKPASS`,
   `GIT_EDITOR`, `GIT_SEQUENCE_EDITOR`, `VISUAL`, `EDITOR`, `GIT_PROXY_COMMAND`, or `GIT_EXEC_PATH` names, or a setting
@@ -890,18 +623,14 @@ The hook sees the command text. It does not see:
   `smudge`, or `process`, `core.sshCommand`, `core.askPass`, `credential.helper`, `core.gitProxy`, `gpg.program`,
   `remote.<name>.vcs`, or `core.alternateRefsCommand` does, runs in an allowed call, one of the hub's read-only forms
   among them, and writes what it writes, as any program does. The guard refuses each when `-c`, `--config-env`, or an
-  assignment before git hands it to git, and refuses a command's writes to the system or global configuration files,
-  but it does not read them from the session's environment or from a configuration file, since one the session started
-  with is the user's own: Claude Code sets `GIT_EDITOR`, Apple's, Homebrew's, and Git for Windows' git set
-  `credential.helper` in the system configuration, and `git lfs install` sets the `lfs` filter in the global one, so
-  refusing every call that may start one would refuse the hub's own fast-forward on an ordinary machine, while judging a
-  list of them would be the deny-list over git's settings the read-only forms replaced; a file such a setting names,
-  as a hook in the folder `core.hooksPath` names, is a file the session's tools may write outside a hub, as any script
-  is;
-- a write target a repository's own configuration names for a git call the text does not show, as one a program or
-  a script starts, or for one whose place the text does not settle, and a configuration a copy carries into a
-  repository the command makes, as `cp -R` of another repository's folder does, which the next command's judgement
-  reads;
+  assignment before git hands it to git, and refuses a command's writes to the system or global configuration files
+  by a redirection or a git call's words, but it does not read them from the session's environment or from a
+  configuration file, since one the session started with is the user's own: Claude Code sets `GIT_EDITOR`, Apple's,
+  Homebrew's, and Git for Windows' git set `credential.helper` in the system configuration, and `git lfs install` sets
+  the `lfs` filter in the global one, so refusing every call that may start one would refuse the hub's own
+  fast-forward on an ordinary machine;
+- a write target a repository's own configuration names for a git call whose place the text does not settle, and a
+  configuration a command writes into a repository it makes by any means but a redirection or a git call's words;
 - a shell function the environment the hook starts in supplies, as Bash's exported `BASH_FUNC_<name>%%` variables
   do: the hook command's own words, `test`, `env`, `awk`, `git`, `command`, and `exec` among them, run such a function
   where Bash runs it before the builtin or program of that name, so whoever sets the hook's environment can make the
@@ -913,11 +642,7 @@ The hook sees the command text. It does not see:
 - a ref moved from another checkout to an object the hub's store holds, such as `git update-ref refs/heads/main` run in
   a worktree: refs live in the store every worktree shares, and the guard judges a call by the checkout whose `HEAD`,
   index, and tree it writes; a worktree call given another store or view of objects is refused, as the bullet on what
-  the environment has git write says;
-- the git a program or a `gh` subcommand other than a checkout runs, as `gh pr create` may run `git status` where it
-  starts: the inherited index, store, and view of objects reach it as they reach any git, and the guard judges them only
-  for the calls the text shows, placing only the checkouts `GH_CHECKOUTS` names among `gh`'s; a trace or output file
-  reaches it too, which is why one in a guarded hub refuses every command.
+  the environment has git write says.
 
 `.claude/settings.json` is tracked and reaches every developer's sessions. It may therefore name its `$schema`,
 declare hooks, and set `attribution`, which turns off Claude Code's commit trailers, pull request footer, and session

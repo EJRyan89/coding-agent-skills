@@ -2,8 +2,8 @@
 
 An OptionTable names each option a program takes and how it takes its value, built from getopt's spelling by
 option_table; option_refusal reads a program's or runner's words by it, in every spelling getopt reads, and names the
-first word the table does not settle. tools/hub_guard.py holds its runners and programs to allow-lists read this way,
-and command_wrappers.py reads past a wrapper's options to the command it runs by its catalogue.
+first word the table does not settle. command_wrappers.py reads past a wrapper's options to the command it runs by its
+catalogue.
 """
 
 from __future__ import annotations
@@ -26,8 +26,7 @@ MACOS_ENV_LETTERS = "-0C:iP:S:u:v"
 @dataclass(frozen=True)
 class OptionTable:
     """The options a table names for a program, each with how it takes its value; option_refusal names the first option
-    word the table does not, as tools/hub_guard.py refuses it while a hub is guarded, the table naming only the options
-    known to be safe there.
+    word the table does not, which its caller refuses, the table naming only the options it knows.
 
     short maps a short option's letter, and long a long option's name with its dashes, to how it takes a value.
     operands counts the words a runner takes after its options and before its command, as timeout's duration;
@@ -39,7 +38,7 @@ class OptionTable:
     reads an option written with a slash in any case, as System32's sort.exe does, by its upper-case name, `+` standing
     for `/+n`, or is None for a program with no such build; dash_switches says that build may read a word that starts
     with a dash as the slash option it would read with a slash, as sort.exe's `-t` might be its `/T`, so such a word is
-    held to the slash options too (tools/hub_guard.py's slash_refusal). dash_build maps each letter of another build
+    held to the slash options too. dash_build maps each letter of another build
     of the program, one whose getopt lists `-` as a letter, as macOS's env, FreeBSD's, does, to how it takes its value,
     and dash_safe names the ones of them known to be safe: such a build reads a long option word as a bundle of short
     letters, `--unset` as `-` and then `-u` with `nset` attached, so its reading is held to the table's
@@ -124,9 +123,7 @@ def option_refusal(table: OptionTable, arguments: list[Word], windows_build: boo
     after it, which is safe only spelled in full, and short options bundled in one word, each letter judged, a
     value-taking one ending the bundle with the rest of its word or the next word as its value. Where windows_build
     says the program is its Windows build, a slash option is read by the table's slash options, and refused where the
-    table has none; tools/hub_guard.py's program_refusal also refuses every other word that starts with a slash
-    (slash_refusal). A word the
-    text does not settle ends the reading, and the caller refuses it."""
+    table has none. A word the text does not settle ends the reading, and the caller refuses it."""
     operands = table.operands
     index = 0
     ended = False  # past `--`, where no word is an option

@@ -34,12 +34,6 @@ MACOS = sys.platform == "darwin"
 # Whether a process's environment matches a variable's name in any case, as Windows does, so git there takes git_dir
 # as GIT_DIR; elsewhere each spelling is a variable of its own and git reads only the upper-case one.
 ENVIRONMENT_NAMES_FOLD_CASE = WINDOWS
-# Whether pwsh gives its cmdlets aliases a program of the system also holds, as sort for Sort-Object; off Windows it
-# gives none, so `sort` there runs the program.
-POWERSHELL_ALIASES_SHADOW_PROGRAMS = WINDOWS
-# Whether the system's own programs read options written with a slash, as Windows' System32 sort.exe reads /O; a
-# program pwsh finds by name there is that build, since Git for Windows puts only its cmd folder on PATH.
-SYSTEM_PROGRAMS_TAKE_SLASH_OPTIONS = WINDOWS
 # This platform's name as a person knows it, which a report names it by.
 PLATFORM_NAME = SUPPORTED_PLATFORMS.get(sys.platform, sys.platform)
 WINDOWS_ABSOLUTE = re.compile(r"^[A-Za-z]:/")
@@ -202,9 +196,6 @@ def home_directory(environment: Mapping[str, str] | None = None) -> Path:
     return home
 
 
-# The variables Git Bash's MSYS runtime sets in every bash it starts, which tools/hub_guard.py counts among those Bash
-# sets itself.
-GIT_BASH_SHELL_VARIABLES = frozenset({"MSYSTEM", "SYSTEMROOT", "WINDIR"})
 # The variables git for Windows takes its home from when HOME is unset, where it reads its global configuration, which
 # tools/hub_guard.py counts among the names git reads to choose a file, on every platform.
 GIT_WINDOWS_HOME_VARIABLES = frozenset({"USERPROFILE", "HOMEDRIVE", "HOMEPATH"})

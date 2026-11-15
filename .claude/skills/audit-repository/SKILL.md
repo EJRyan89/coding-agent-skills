@@ -22,7 +22,7 @@ Each release is audited before its tag and after it, as "Before tagging" and "Af
 
 ## 2. Run the script
 
-From a worktree on the commit being audited, `origin/main` before a tag, never the hub, whose guard refuses this script in a clone that guards it, since `--record` writes the hub's files, run the mode you chose:
+From a worktree on the commit being audited, `origin/main` before a tag, never the hub, since `--record` writes files the hub must keep unchanged, run the mode you chose:
 
 ```bash
 python -B .claude/skills/audit-repository/scripts/audit_repository.py release

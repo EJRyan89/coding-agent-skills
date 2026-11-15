@@ -334,8 +334,7 @@ removed fails validation until its pattern follows it.
   `tests/tools/test_mutation_gate.py::SummaryFixtures::test_a_run_the_cap_cut_short_says_so_on_its_first_line_naming_each_module_and_its_counts`,
   `skills/review-document/scripts/test_review_document.py::PullRequestTests::test_a_file_listing_shorter_than_the_files_the_pull_request_changes_fails_before_any_document_is_read`,
   `skills/ejryan89-code-review-core/scripts/test_adversarial_inputs.py::ChangeSizeTests::test_a_file_listing_cut_short_or_read_at_a_moved_head_is_refused_by_each_of_its_readers`,
-  `tests/deployer/test_plan.py::UnmanagedDiffTests`,
-  `tests/tools/test_hub_guard.py::UnderstoodSetTests::test_with_no_hub_in_view_named_paths_past_the_lookup_limit_are_refused_as_a_lookup_cut_short`
+  `tests/deployer/test_plan.py::UnmanagedDiffTests`
 - **Search for:** `"--limit"` in a `gh` call whose result is never compared with the limit; a pull request's
   `pulls/<n>/files` pages read outside `review_github:GitHubClient.list_pull_files`, or its `PullFiles` used without
   comparing `files` with `changed`, since GitHub's files API lists at most 3,000; a slice such as
@@ -415,7 +414,6 @@ removed fails validation until its pattern follows it.
   `tests/validation/skill_grants.py::SkillGrantsPolicies::test_skill_markdown_names_every_status_line_its_scripts_print`,
   `tests/validation/workflows.py::WorkflowsPolicies::test_deployable_workflow_answers_every_prompt_configure_declares_in_both_jobs`,
   `tests/tools/test_hub_guard.py::ContractListTests::test_the_forms_the_hub_allows_are_the_read_only_forms`,
-  `tests/tools/test_hub_guard.py::ContractListTests::test_the_runners_the_guard_refuses_are_the_ones_its_contract_names`,
   `tests/code-review/test_format_contract.py::test_the_threat_model_rows_name_each_file_the_analyzer_inventory_parses`,
   `.claude/skills/review-repository/scripts/test_review_repository.py::test_the_trust_boundary_route_matches_its_scripts_and_each_choice_matches_a_file`,
   `tests/validation/test_duplication.py::SharedFactPolicy::test_a_fence_read_by_hand_fails_and_one_read_through_find_fences_passes`,
@@ -474,7 +472,6 @@ removed fails validation until its pattern follows it.
   `shepherd_pull_requests:member`, which refuse a gh listing or field of another kind than the shepherd acts on, and
   `shepherd_pull_requests:reported` and `shepherd_pull_requests:present`, which refuse a member that decides a write
   when the listing leaves it out, so an absent field is never read as the answer that permits the write, and
-  `tools.hub_guard:judge_option`, which refuses a shell option neither table of the guard's names, and
   `tools.claude_stream:events`, the one reader of Claude Code's stream-json output, which refuses a line that is JSON
   but no event object, by its line, and `tools.runtime_canary:read_records`, which refuses a records line that is
   JSON but no record object the same way, and `review_dispatch:_read_log`, which refuses a read log line that is
@@ -517,11 +514,9 @@ removed fails validation until its pattern follows it.
   itself, so a construct it never met is a refusal rather than a pass.
 - **Why:** A hand-written reader that misses a construct the program reads lets a command or an entry pass unjudged.
   The hub guard's modelling reader closed one spelling per fix and every review found the next, until it was rebuilt
-  to refuse what it does not understand.
-- **Use:** `tools.hub_guard:read_powershell`, `tools.hub_guard:runner_refusal`, `option_reader:option_refusal`,
-  `tools.hub_guard:expansion_form`, `tools.hub_guard:built_name`, the name every table of the guard keeps for a
-  program a package manager installs under a prefix or another name, `tools.hub_guard:multicall`, the utility a
-  multicall program runs, `git_subcommands:CommandStarts`, which says where Bash starts a command, and
+  to refuse what it does not understand; being a guard against accidents rather than a trust boundary, it was later
+  narrowed to read git's own words alone and allow the rest, with a check of the hub's state behind it.
+- **Use:** `tools.hub_guard:read_powershell`, `option_reader:option_refusal`, `git_subcommands:CommandStarts`, which says where Bash starts a command, and
   `command_wrappers:bash_program`, the program a Bash command's word names by its file name, `text_lines:text_lines`,
   the lines of a file an author writes, broken only where YAML, CommonMark, and .NET break them, and
   `markdown_sections:code_block_lines`, the fenced and indented code blocks CommonMark reads
@@ -537,33 +532,11 @@ removed fails validation until its pattern follows it.
   `tests/validation/test_skill_scripts.py::SkillScriptsFixtures::test_shell_command_extraction_runs_a_program_a_quoted_function_name_never_defined`,
   `skills/ejryan89-skill-core/scripts/test_git_client.py::IsolatedClientTests::test_a_plain_client_refuses_a_command_line_setting_that_can_define_an_alias`,
   `skills/ejryan89-skill-core/scripts/test_git_client.py::IsolatedClientTests::test_a_plain_client_refuses_every_carrier_of_another_command_in_every_spelling`,
-  `tests/tools/test_hub_guard_bash.py::BuiltinTests::test_every_builtin_bash_lists_is_understood_or_not_read_and_never_both`,
-  `tests/tools/test_hub_guard_bash.py::ShellOptionTests::test_each_set_option_is_read_by_its_table_from_every_source`,
-  `tests/tools/test_hub_guard_bash.py::ExpansionTests::test_every_expansion_form_is_understood_or_not_read_and_has_a_sample`,
-  `tests/tools/test_hub_guard_pwsh.py::NodeCatalogueTests::test_every_node_type_powershell_has_is_understood_or_not_read_and_never_both`,
-  `tests/tools/test_prefix_programs.py::RunnerFormTests::test_timeout`,
-  `tests/tools/test_prefix_programs.py::CatalogueTests::test_the_installed_runners_list_no_option_the_fixture_leaves_out`,
-  which holds each installed runner to the catalogue of the implementation its version option names, GNU or the Rust
-  coreutils, or on macOS, whose runners name none, Apple's BSD build, read from the usage synopsis it prints,
-  `tests/tools/test_prefix_programs.py::CatalogueTests::test_the_programs_macos_builds_of_its_own_list_no_option_the_fixture_leaves_out`,
-  which holds macOS's chroot, find, sort, and time to Apple's catalogue and its tar to bsdtar's,
-  `tests/tools/test_prefix_programs.py::CatalogueTests::test_each_safe_option_takes_its_value_as_every_implementation_reads_it`,
-  `tests/tools/test_prefix_programs.py::RunnerFormTests::test_env`, whose forms are understood only where macOS's
-  getopt-only build, read as FreeBSD's getopt reads it by its catalogue's getopt string, refuses them or starts the
-  same command,
-  `tests/tools/test_prefix_programs.py::CatalogueTests::test_every_table_reads_dash_words_as_each_macos_build_that_takes_dash_as_a_letter`,
-  which fails a table of a program whose macOS build lists the dash as a getopt letter that does not read its words
-  that way too,
-  `tests/tools/test_hub_guard_bash.py::RunnerTests::test_env_s_file_and_argv0_are_refused_in_every_spelling_and_neither_value_is_read_as_its_command`,
-  which refuses the Rust coreutils' env options that read variables from a file and name what a multicall program
-  runs as,
-  `tests/tools/test_hub_guard.py::UnderstoodSetTests::test_each_class_of_construct_the_guard_does_not_read_is_refused_while_a_hub_is_in_view`,
-  `tests/tools/test_hub_guard.py::WriteGuardTests::test_a_runner_or_a_program_whose_options_the_guard_reads_is_read_under_a_prefix`,
-  which holds every table to a build installed under a prefix,
+  `tests/tools/test_hub_guard_pwsh.py::NodeCatalogueTests::test_every_node_type_powershell_has_has_a_sample_and_each_understood_one_is_a_type_it_has`,
   `tests/tools/test_hub_guard.py::ReadOnlyFormTests::test_a_dash_word_after_a_valued_option_written_alone_is_refused`,
   which refuses a dash word git would take as a lone valued option's value,
   `tests/tools/test_hub_guard.py::UnderstoodSetTests::test_a_gh_flag_before_its_subcommand_is_not_read_past`, which
-  refuses a flag cobra may take the next word for before gh's subcommand,
+  reads no gh call with a flag cobra may take the next word for before its subcommand as a checkout,
   `tests/tools/test_captured_samples.py::test_every_sample_has_its_provenance_and_every_provenance_its_sample`,
   `tests/tools/test_runtime_changelogs.py::test_a_term_matches_only_where_a_real_entry_names_it`,
   `.claude/skills/shepherd-pull-requests/scripts/test_shepherd_pull_requests.py::ShapeTest::test_the_recorded_rollup_reads_its_newest_validation_run`,
@@ -669,7 +642,7 @@ removed fails validation until its pattern follows it.
   `skills/dotnet-format/scripts/test_csharp_layout.py::test_braces_nested_past_the_shared_depth_limit_fail_by_name`,
   `skills/dotnet-dependencies/scripts/test_msbuild_conditions.py::ConditionTests::test_negations_and_parentheses_nested_past_the_shared_depth_limit_are_not_settled`,
   `skills/ejryan89-skill-core/scripts/test_json_reader.py::RefusalTests::test_nesting_past_the_recursion_limit_is_refused`,
-  `tests/tools/test_hub_guard.py::EndToEndTests::test_bash_nested_deeper_than_the_reader_follows_is_refused_alike_in_its_own_process`,
+  `tests/tools/test_hub_guard.py::EndToEndTests::test_bash_nested_deeper_than_the_reader_follows_is_allowed_with_a_note_alike_in_its_own_process`,
   `tests/validation/python_checks.py::PythonChecksPolicies::test_json_reader_is_the_one_parse_of_json`,
   `tests/malformed_input/test_malformed_input.py::test_each_reader_refuses_or_documents_accepting_each_case`, whose
   table holds each parser of text by its own grammar's deep nesting
@@ -1167,9 +1140,7 @@ removed fails validation until its pattern follows it.
   each part is one name in its folder, with `file_presence:_is_one_name`, rather than refusing a list of absolute
   spellings; `tests.validation.python_checks:presence_problems`, which refuses every presence predicate outside
   file_presence however its answer is used, rather than the spellings of its False found so far, and follows a
-  file_presence test's answer through its bindings and comparisons to each refusal it reaches;
-  `tools.hub_guard:read_unlisted`, which judges the words of every program the hub guard's tables do not read and
-  `tools.hub_guard:READ_ONLY_PROGRAMS` does not name, rather than a catalogue of the programs that write.
+  file_presence test's answer through its bindings and comparisons to each refusal it reaches.
 - **Guard:**
   `tests/validation/test_workflows.py::DeployableBashFixtures::test_each_job_checks_its_bash_in_one_exact_step_and_the_macos_job_installs_homebrews`,
   `skills/ejryan89-skill-core/scripts/test_file_presence.py::MatchingTests::test_a_pattern_one_platform_reads_as_more_than_names_below_the_folder_is_refused_on_every_platform`,
@@ -1177,7 +1148,6 @@ removed fails validation until its pattern follows it.
   `skills/ejryan89-skill-core/scripts/test_git_client.py::test_a_fetch_whose_failure_names_nothing_local_is_the_remote_s_failure`,
   `skills/ejryan89-skill-core/scripts/test_git_client.py::test_only_a_timeout_among_the_failures_git_never_answered_is_the_remote_s`,
   `tests/validation/test_python_checks.py::test_presence_policy_refuses_each_empty_answer_form`,
-  `tests/tools/test_hub_guard.py::WriteGuardTests::test_a_program_no_table_reads_is_refused_where_a_word_may_name_a_hub_file`,
   `tests/validation/test_workflows.py::DeployablePathFixtures::test_a_job_that_changes_path_after_its_verify_step_fails`
 - **Search for:** a regular expression of alternatives that refuses spellings of one effect, such as
   `re.compile(r"set\s+(?:\+e|`, which the next combined flag walks past; a tuple of message substrings named
