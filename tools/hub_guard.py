@@ -9,7 +9,8 @@ read-only ones READ_ONLY_FORMS declares, and a redirection whose target lies in 
 through the Bash tool, the PowerShell tool, or the Monitor tool, whose command runs in Bash. It reads a command for its
 git calls, where each acts, and its redirections, Bash by tools/bash_syntax.py's grammar and PowerShell by PowerShell's
 own parser (tools/hub_guard-powershell.ps1); every other part is a program the guard does not read, which it allows,
-and tools/hub_state.py's check, which the shepherd and repo-cleanup run, reports a hub a missed write left changed.
+and ejryan89-skill-core's hub_state.py check, which the shepherd and repo-cleanup run, reports a hub a missed write
+left changed.
 docs/parallel-sessions.md ("The guard's contract") states the contract. Every decision is made here. It finds the
 checkout that holds a path, and runs git, through tools/worktrees.py, which owns the hub and its worktrees. It is inert
 unless `git config coding-agent-skills.hubGuard true` was set in this clone.
