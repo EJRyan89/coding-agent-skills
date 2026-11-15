@@ -31,6 +31,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts"))
 
 import runtime_support
+import search_boundary
 import whole_number
 from checkout_fixture import FOREIGN, make_foreign, own_checkout
 from git_client import GitClient, GitError
@@ -144,6 +145,35 @@ class FakeRuntimes:
         self.calls.append(("run", arguments, cwd, environment))
         action = self.actions.get(runtime)
         return action(arguments, cwd, environment) if action else Completed(0, "", "")
+
+
+class TopRecordingRuntimes(FakeRuntimes):
+    """FakeRuntimes that records, for each listing and run, where it started and the top of the repository there."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.tops: list[tuple[str, Path, Path | None]] = []
+
+    def top(self, kind: str, cwd: Path) -> None:
+        top = GitClient(timeout=60).rev_parse_path("--show-toplevel", directory=cwd)
+        self.tops.append((kind, cwd, None if top is None else top.resolve()))
+
+    def talk(
+        self,
+        arguments: list[str],
+        cwd: Path,
+        environment: Mapping[str, str],
+        requests: list[str],
+        answered: Callable[[str], bool] | None,
+        timeout: float,
+    ) -> list[str]:
+        self.top("listing", cwd)
+        return super().talk(arguments, cwd, environment, requests, answered, timeout)
+
+    def __call__(self, arguments: list[str], cwd: Path, environment: dict[str, str], timeout: float) -> Completed:
+        if arguments[1:] != ["--version"]:
+            self.top("run", cwd)
+        return super().__call__(arguments, cwd, environment, timeout)
 
 
 def run_python(*arguments: str, timed_out: bool = False) -> Callable[[list[str], Path, dict[str, str]], Completed]:
@@ -673,6 +703,45 @@ class RemoveHomeTests(unittest.TestCase):
             runtime_canary.main(["--remove-home", "somewhere", "review-prs"])
         self.assertEqual(2, raised.exception.code)
         self.assertIn("--remove-home takes no SKILL", output.getvalue())
+
+
+class SearchBoundaryTests(RuntimeCanaryTestCase):
+    def test_every_listing_and_run_starts_in_the_deployed_home_made_its_own_git_root(self) -> None:
+        # Copilot CLI and Claude Code read project skills and agents from every folder above one outside any
+        # repository, the shared temporary directory among them, so the home is where that search ends.
+        runner = TopRecordingRuntimes()
+        runner.listings["copilot"] = [(FIXTURE, self.skill_dir(), True)]
+        runner.actions["copilot"] = run_python(f"{self.skill_dir()}/scripts/canary_probe.py", "--help")
+        self.canary(runner, runtimes=("copilot",))
+        self.assertEqual({"listing", "run"}, {kind for kind, _, _ in runner.tops})
+        for kind, cwd, top in runner.tops:
+            self.assertEqual((kind, self.home, self.home), (kind, cwd, top))
+
+    def test_the_home_is_made_its_own_git_root_only_after_the_deployments_which_take_an_empty_home(self) -> None:
+        held: list[list[str]] = []
+        deploy = runtime_canary.deploy
+
+        def deploying(home: Path, source: Path) -> tuple[int, str]:
+            held.append(sorted(entry.name for entry in home.iterdir()))
+            return deploy(home, source)
+
+        with mock.patch.object(runtime_canary, "deploy", deploying):
+            self.canary(FakeRuntimes(), runtimes=("copilot",), discovery_only=True)
+        self.assertEqual([[]], held)
+        self.assertTrue((self.home / ".git").is_dir())
+
+    def test_a_home_git_cannot_make_its_own_repository_stops_the_run_before_any_runtime_starts(self) -> None:
+        runner = FakeRuntimes()
+        failure = GitError("git init failed:\nfatal: cannot make it\n", returncode=128)
+        with mock.patch.object(search_boundary, "bound_search", side_effect=failure):
+            code, lines = self.outcome(runner, runtimes=("copilot",))
+        self.assertEqual(1, code)
+        self.assertEqual([], runner.calls)
+        self.assertEqual(
+            'FAILED "git could not make the home a repository of its own, so a runtime started there would read '
+            'project skills and agents from the folders above it: git init failed: fatal: cannot make it"',
+            lines[-1],
+        )
 
 
 class RunTests(RuntimeCanaryTestCase):

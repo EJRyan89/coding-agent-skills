@@ -8,7 +8,9 @@ It first refuses, with FAILED "<reason>" before it makes a home, a checkout that
 repository's pull request, as tools/checkout_trust.py reads it and tools/runtime_canary.py refuses it, since the run
 builds and runs the checkout's plugins and fixture signed in as the user.
 
-It makes a fresh home under the temporary directory, as tools/runtime_canary.py does, and assembles into it, with
+It makes a fresh home under the temporary directory, as tools/runtime_canary.py does, makes it a git repository of
+its own, as that canary does once it has deployed, so Claude Code reads project skills and agents from the home alone,
+never from the folders above it, and assembles into it, with
 tools/plugin_build.py, this checkout's plugins and the plugin of the fixture source in tests/fixtures/runtime-canary.
 It writes a marketplace beside them and, with CLAUDE_CONFIG_DIR set to a folder of the home, so nothing reaches the
 user's own configuration, validates each plugin, adds the marketplace, installs each plugin, giving each option its
@@ -44,8 +46,9 @@ Each check is judged from the session's stream, never from what the model report
   RECORD_BEGIN ... RECORD_END                         the lines a pull request records, paths as placeholders:
   VERSION claude <version>                            first, the version Claude Code reports, or unknown, then
                                                       each line above from VALIDATED to UNGUARDED
-  FAILED "<reason>"                                   the checkout is refused, before HOME, or a plugin cannot be
-                                                      built or a file of the home written
+  FAILED "<reason>"                                   the checkout is refused, before HOME, or the home cannot be
+                                                      made a git repository of its own, a plugin cannot be built,
+                                                      or a file of the home cannot be written
   REMOVED "<dir>" or HOME_KEPT "<dir>" "<reason>"     as tools/runtime_canary.py ends
 
 A check fails on a FAILED or *_FAILED line, an UNDISCOVERED line, a RUNTIME line that did not run, a main-session
@@ -103,6 +106,7 @@ from tools.runtime_canary import (
     Completed,
     RecordRefused,
     Runner,
+    bound_home,
     claim_home,
     create_home,
     discovery_failure,
@@ -570,6 +574,9 @@ def canary(
 ) -> int:
     print(f"HOME {quote(forward(home))}", flush=True)
     claim_home(home)
+    if (unbounded := bound_home(home)) is not None:
+        print(f"FAILED {quote(unbounded)}")
+        return 1
     executable = which("claude")
     if executable is None:
         print(f"NOTHING_CHECKED {quote('claude is not installed where deploy.py check looks')}")

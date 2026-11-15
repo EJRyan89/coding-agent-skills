@@ -47,7 +47,15 @@ from tools.skill_evals_records import (
     review,
     unguarded,
 )
-from tools.skill_evals_scenarios import REPOSITORY_ROOT, TRIGGER, Scenario, quote, reviewed_fixture, skill_arguments
+from tools.skill_evals_scenarios import (
+    REPOSITORY_ROOT,
+    TRIGGER,
+    Scenario,
+    document_place,
+    quote,
+    reviewed_fixture,
+    skill_arguments,
+)
 
 # The session's own model, which orchestrates the skill: the strongest, so the orchestration never limits a result.
 SESSION_MODEL = list(MODELS)[-1]
@@ -559,7 +567,8 @@ def review_run(scenario: Scenario, model: str, home: Path, session: Session, run
     with contextlib.ExitStack() as copies:
         try:
             fixture = copies.enter_context(reviewed_fixture(scenario))
-            arguments = skill_arguments(scenario, run, session.git, fixture)
+            place = copies.enter_context(document_place(scenario, run))
+            arguments = skill_arguments(scenario, place, session.git, fixture)
         except (GitError, OSError) as exc:
             transcript.write_text("", encoding="utf-8")
             staged = "fixture" if scenario.document is None else "document"
@@ -638,8 +647,9 @@ def guarded_lines(scenario: str, model: str, index: Index, run: Run) -> list[str
 
 
 def prepare_home(home: Path, model: str, deploy: Callable[[Path, Path], tuple[int, str]]) -> str | None:
-    """Deploy the checkout into the model's home, set its reviewer model, and write the reviewer definition the
-    session gets with --agents; return why that failed, or None."""
+    """Deploy the checkout into the model's home, make the home a git repository of its own, as the runtime canary
+    makes its home, set its reviewer model, and write the reviewer definition the session gets with --agents; return
+    why that failed, or None."""
     if "*" in str(home):
         return (
             f"the home's path {runtime_canary.forward(home)} holds a *, which a reviewer's grant would read as any text"
@@ -651,7 +661,7 @@ def prepare_home(home: Path, model: str, deploy: Callable[[Path, Path], tuple[in
         log_file = home / STATE / "deploy.log"
         log_file.write_text(log, encoding="utf-8")
         return f"the deployment failed; its log is {runtime_canary.forward(log_file)}"
-    reason = set_reviewer_model(home, model)
+    reason = runtime_canary.bound_home(home) or set_reviewer_model(home, model)
     if reason:
         return reason
     try:

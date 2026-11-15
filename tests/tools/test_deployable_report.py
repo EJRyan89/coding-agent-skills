@@ -25,6 +25,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan8
 
 
 import file_presence
+import search_boundary
+from git_client import GitError
 from presence_denial import denied
 
 from deployer import discovery, manifest, platform_support
@@ -175,6 +177,82 @@ class DeployableReportTests(unittest.TestCase):
             {runtime: result.status for runtime, result in results.items()},
         )
         self.assertEqual(0, report.exit_code(list(results.values()), 0, ""))
+
+    def test_a_project_skill_planted_above_the_working_directory_never_stands_in_for_an_adapter(self) -> None:
+        # Copilot CLI lists project skills from its working directory up to the git root, and from every folder above
+        # it when there is none, before the user's skills, and lists one copy of each name, the first it finds.
+        temporary = self.home.parent / "shared-temp"
+        planted = temporary / ".github" / "skills" / "alpha"
+        planted.mkdir(parents=True)
+        (planted / "SKILL.md").write_text("---\nname: alpha\ndescription: planted\n---\n", encoding="utf-8")
+        talk = self.fake.talk
+        started: list[Path] = []
+
+        def copilot(
+            arguments: list[str],
+            cwd: Path,
+            environment: Mapping[str, str],
+            requests: list[str],
+            answered: Callable[[str], bool] | None,
+            timeout: float,
+        ) -> list[str]:
+            started.append(cwd)
+            if Path(arguments[0]).stem != "copilot":
+                return talk(arguments, cwd, environment, requests, answered, timeout)
+            listed: dict[str, dict[str, object]] = {}
+            for folder in (cwd, *cwd.parents):
+                skills = folder / ".github" / "skills"
+                for skill in sorted(skills.iterdir()) if skills.is_dir() else []:
+                    listed.setdefault(skill.name, {"name": skill.name, "path": str(skill), "enabled": True})
+                if (folder / ".git").exists() or folder == temporary:
+                    break
+            for name in ADAPTERS:
+                path = str(self.paths.adapter_dest_dir / name)
+                listed.setdefault(name, {"name": name, "path": path, "enabled": True})
+            return [json.dumps(list(listed.values()))]
+
+        with mock.patch.object(tempfile, "tempdir", str(temporary)):
+            results = report.check_runtimes(self.paths, {}, find=self.fake.find, talk=copilot)
+        self.assertEqual(
+            {"codex": report.PASSED, "copilot": report.PASSED},
+            {result.runtime: result.status for result in results},
+            results,
+        )
+        self.assertTrue(started)
+        self.assertTrue(all(cwd.parent == temporary for cwd in started), started)
+
+    def test_a_working_directory_git_cannot_make_a_repository_of_its_own_stops_the_report_before_any_listing(
+        self,
+    ) -> None:
+        failure = GitError("git init failed:\nfatal: cannot make it\n", returncode=128)
+        talk = mock.Mock()
+        with (
+            mock.patch.object(search_boundary, "bound_search", side_effect=failure) as bound,
+            self.assertRaises(DeployError) as raised,
+        ):
+            report.check_runtimes(self.paths, {}, find=self.fake.find, talk=talk)
+        talk.assert_not_called()
+        [(workdir, *_)] = [call.args for call in bound.call_args_list]
+        self.assertFalse(workdir.exists())
+        self.assertEqual(
+            f"ERROR: Git could not make the report's working directory {workdir.as_posix()} a repository of its own: "
+            "git init failed: fatal: cannot make it "
+            "The report lists skills only from such a directory, so that no project skill in a folder above it stands "
+            "in for an adapter. Put right what Git reports, then rerun the report.",
+            raised.exception.one_line(),
+        )
+        self.assertEqual(1, raised.exception.exit_code)
+
+    def test_with_no_runtime_installed_the_working_directory_needs_no_git(self) -> None:
+        # Nothing lists from it then, so a machine whose search path holds no git still reaches the results file.
+        self.fake.installed = set()
+        with mock.patch.object(search_boundary, "bound_search", side_effect=AssertionError("ran git")) as bound:
+            results = self.check()
+        bound.assert_not_called()
+        self.assertEqual(
+            {"codex": (report.FAILED, "not installed"), "copilot": (report.FAILED, "not installed")},
+            {runtime: (result.status, result.detail) for runtime, result in results.items()},
+        )
 
     def test_a_missing_adapter_fails_that_runtime_and_names_it(self) -> None:
         self.fake.listed["copilot"] = ["alpha"]

@@ -17,11 +17,13 @@ in place of a pull request: the change as two trees, base/ and head/, and the pu
 review_canary.py in ejryan89-code-review-core). A re-review scenario's run adds `--re-review --prior
 <scenario>/<prior>`, its prior a plain relative path inside the scenario's folder. A
 document scenario names a document instead, for a skill started on one file's path, as review-document is: the run
-writes it under its own file name into a new folder in the run's folder and starts the skill with that path alone.
-With a base, that folder is a new git checkout whose one commit holds the base under the same name, and the document
-is written over it uncommitted, so the skill reviews only the edit; without one, nothing encloses it and the skill
-reviews it whole. The checkout's Git commands use a temporary empty hook directory, overriding global and
-template-installed hooks, and the base commit disables signing. A finding's path is then the document's file name.
+writes it under its own file name into a new folder and starts the skill with that path alone. With a base, that
+folder is in the run's folder and is a new git checkout whose one commit holds the base under the same name, and the
+document is written over it uncommitted, so the skill reviews only the edit; without one, the folder is in a throwaway
+folder outside the home, which is a git repository of its own, so nothing encloses it and the skill reviews it whole,
+and it is removed when the run ends. The checkout's Git commands use a temporary empty hook directory, overriding
+global and template-installed hooks, and the base commit disables signing. A finding's path is then the document's
+file name.
 A repository reviewer's scenario judges one of this repository's own reviewers under .claude/skills/, such as
 review-repository, which review-prs runs and no session starts: it sits under the reviewer's name, and is a fixture
 scenario naming the reviewer and review-prs, whose pull.json manifest_path names the reviewer's manifest. Since
@@ -116,7 +118,9 @@ record must name each of the scenario's requests once, and every model ID in it 
 unreadable record, or one any of those refuses, fails every expectation of its scenario, model, and run.
 
 Without --records, it runs the scenarios. For each model it makes a fresh home under one throwaway directory,
-deploys this checkout into it with `deploy.py --canary-home`, as tools/runtime_canary.py does, and sets the model's
+deploys this checkout into it with `deploy.py --canary-home`, as tools/runtime_canary.py does, makes it a git
+repository of its own, as that canary makes its home, so a session started there reads project skills and agents from
+the home alone, never from the folders above it, and sets the model's
 ID in that home's copy of the reviewer agent, whose `model: inherit` would otherwise run every reviewer on the
 session's model: a fixture's reviewers have no MODEL line, since neither the generic reviewer nor a scenario's
 specialist names a model, and `inherit` outranks CLAUDE_CODE_SUBAGENT_MODEL. It sets the line after it to
