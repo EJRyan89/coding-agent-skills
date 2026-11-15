@@ -109,6 +109,14 @@ COMMAND_WRAPPERS: dict[str, OptionTable] = {
         "align= no-signals demangle debug= config= help library= indent= output= version where=",
     ),
 }
+# The prefixes a package manager installs a build of a wrapper under beside the system's own (wrapper_name): Homebrew's
+# GNU coreutils and findutils take a g, as gtimeout, genv, and gxargs, and its uutils coreutils a u, as utimeout, as
+# tools/hub_guard.py's BUILD_PREFIXES reads its runners. A wrapper is read under either prefix whether or not a package
+# builds it. Two stated limits, since no script here names either: a program of its own whose name is a prefix and a
+# wrapper's, as Windows' gsudo or CSCS's uenv, is read as that wrapper, its subcommand taken for the program; and find,
+# a shell, and every other program a reader names are matched by their own names alone, so a prefixed build of one, as
+# gfind, is read as a program of its own.
+BUILD_PREFIXES = ("g", "u")
 # env's options whose value is a command line, split into the words it runs.
 ENV_SPLIT_OPTIONS = frozenset({"-S", "--split-string"})
 LOOKUP_ONLY_OPTIONS = frozenset({"-v", "-V"})
@@ -142,21 +150,32 @@ def bash_program(word: str) -> str:
     return program_name(word.rpartition("/")[2])
 
 
+def wrapper_name(program: str, wrappers: Mapping[str, OptionTable] = COMMAND_WRAPPERS) -> str:
+    """The wrapper of `wrappers` a program's name, by its file name, builds: its own name, or, for a build a package
+    manager installs under a prefix BUILD_PREFIXES names, as gtimeout or uenv, the name after the prefix. Any other
+    name is returned as it is."""
+    unprefixed = program[1:]
+    if program not in wrappers and program[:1] in BUILD_PREFIXES and unprefixed in wrappers:
+        return unprefixed
+    return program
+
+
 def unwrapped(words: list[str], wrappers: Mapping[str, OptionTable] = COMMAND_WRAPPERS) -> list[str]:
     """The words of the command a wrapper of `wrappers` runs, from its program on: past the wrapper's options and their
     values, in every spelling option_refusal reads, the assignments env takes, and the duration timeout takes, with
-    the command line env's -S or --split-string holds split into the words it runs. Empty for a command that is no
-    wrapper, one that names no program, and `command` given -v or -V among its own options, alone or in a bundle such
-    as `-pv`, which only looks one up; a -v after the program is the program's own. A wrapper option the table does not
-    settle, such as an abbreviation, gives one word, UNREAD_PROGRAM and the wrapper with that option, so no word is
-    taken for the program unread."""
-    head, rest = words[0], words[1:]
+    the command line env's -S or --split-string holds split into the words it runs. A wrapper is read by wrapper_name,
+    so a build under a prefix, as gtimeout, is read as the one it builds. Empty for a command that is no wrapper, one
+    that names no program, and `command` given -v or -V among its own options, alone or in a bundle such as `-pv`,
+    which only looks one up; a -v after the program is the program's own. A wrapper option the table does not settle,
+    such as an abbreviation, gives one word, UNREAD_PROGRAM and the wrapper with that option, so no word is taken for
+    the program unread."""
+    head, rest = wrapper_name(words[0], wrappers), words[1:]
     table = wrappers.get(head)
     if table is None:
         return []
     reading = option_refusal(table, list(rest))
     if reading.refused is not None:
-        return [f"{UNREAD_PROGRAM}{head} {reading.refused}"]
+        return [f"{UNREAD_PROGRAM}{words[0]} {reading.refused}"]
     if head == "command" and any(looks_up(word) for word in rest[: reading.stop]):
         return []
     split = [value or "" for option, value in reading.values if option in ENV_SPLIT_OPTIONS]
