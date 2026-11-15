@@ -662,11 +662,12 @@ PLUGIN_HOOK_PATHS = {
     ),
 }
 # How a plugin hook that starts Python by the pinned answer starts it, with its arguments in place of {0}: sh, which
-# runs a hook on macOS and Linux and as Git Bash on Windows, joins each `set \` to the next line and starts python, or
-# python3 where it finds no python, and PowerShell, which runs a hook on Windows without Git Bash, starts python and
-# exits with its status. Pinned here rather than read from skill_menu, as PLUGIN_ANSWERS is.
+# runs a hook on macOS and Linux and as Git Bash on Windows, joins each `set -- \` to the next line and starts python,
+# or python3 where it finds no python, and PowerShell, which runs a hook on Windows without Git Bash, sets the exit
+# status to 1, which a missing python leaves, starts python, and exits with its status. Pinned here rather than read
+# from skill_menu, as PLUGIN_ANSWERS is.
 PLUGIN_HOOK_START = (
-    "set \\\n$ErrorActionPreference = 'Stop'\nset \\\npython {0}\nset \\\nexit $LASTEXITCODE\n"
+    "set -- \\\n$global:LASTEXITCODE = 1\nset -- \\\npython {0}\nset -- \\\nexit $LASTEXITCODE\n"
     'p=$(command -v python); exec "${{p:-python3}}" {0}'
 )
 PLUGIN_TOKEN = re.compile(rb"\{\{[A-Z_][A-Z0-9_]*\}\}")

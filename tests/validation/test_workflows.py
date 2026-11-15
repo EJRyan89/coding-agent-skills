@@ -1360,6 +1360,18 @@ def test_a_validation_leg_that_changes_path_between_verifying_its_tools_and_runn
             "the suite job's step 'None' runs an action",
         ),
         (VALIDATION_JOBS_TEXT.replace(run, "      - name: Run\n", 1), "the suite job has 0 steps named"),
+        # Validation run ahead of the step that verifies its tools.
+        (
+            VALIDATION_JOBS_TEXT.replace(
+                "      - name: Verify validation tools\n        run: |\n          shellcheck --version\n", "", 1
+            ).replace(
+                "      - name: Validate with the latest ShellCheck\n",
+                "      - name: Verify validation tools\n        run: |\n          shellcheck --version\n"
+                "      - name: Validate with the latest ShellCheck\n",
+                1,
+            ),
+            "the suite job's step 'Run repository validation' runs before 'Verify validation tools'",
+        ),
     ):
         problems = validation_path_problems(drifted)
         assert any(problem in found for found in problems), problems
@@ -1369,7 +1381,18 @@ class DeployablePathFixtures(unittest.TestCase):
     def test_a_job_that_changes_path_after_its_verify_step_fails(self) -> None:
         self.assertEqual([], deployable_path_problems(BASH_JOBS))
         verify_writes = VERIFY_STEP + '          echo /opt/other/bin >> "$GITHUB_PATH"\n'
+        broad = '          echo "$(brew --prefix)/bin" >> "$GITHUB_PATH"\n'
         for drifted, problem in (
+            # The whole of Homebrew's bin ahead before the verify step, beside its Bash folder, which the verify step
+            # cannot tell from the python3 the job set up; and on Linux, any folder but npm's.
+            (
+                BASH_JOBS.replace(MACOS_BASH_LINES, MACOS_BASH_LINES + broad),
+                "the deployable-macos job puts another folder ahead on PATH",
+            ),
+            (
+                BASH_JOBS.replace("          echo prerequisites\n", "          echo prerequisites\n" + broad, 2),
+                "the deployable-linux job puts another folder ahead on PATH",
+            ),
             # A step's own env, as the issue's reproduction gives it, in each case Windows reads alike.
             (
                 _before_deploy(

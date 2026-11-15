@@ -46,16 +46,22 @@ PLUGIN_VALUES: dict[str, str] = {
 # How a plugin hook starts Python. Claude Code runs a hook's command with sh on macOS and Linux, where an install may
 # name Python python3 alone, and on Windows in Git Bash, or in PowerShell where Git Bash is not installed, where
 # Windows names Python python. Every shell reads the whole command, so each line is one sh and PowerShell both read:
-# sh joins each `set \` to the line after it, so it sets its arguments from the PowerShell lines and then starts
-# python, or python3 where no python is found, while PowerShell sets a variable named `\` at each and runs its lines,
-# which make a missing python a failure, start python, and exit with its status. The arguments are written so both
-# shells read them alike: options of plain characters, then at most one double-quoted string holding no $, backtick,
-# backslash, double quote, or line break, inside which sh's operators are text to both.
+# sh joins each `set -- \` to the line after it, so it sets its arguments from the PowerShell lines, `--` keeping an
+# inherited variable such as $global from reading as options, and then starts python, or python3 where no python is
+# found. PowerShell sets a variable named `\` at each and runs its lines: it sets the exit status to 1, which a missing
+# python leaves in place, starts python, and exits with its status, with no preference that would turn what python
+# writes to stderr into a failure. The arguments are written so both shells read them alike: options of plain
+# characters, with no `.` in one that starts with `-`, which PowerShell splits there, then at most one double-quoted
+# string of printable ASCII holding no $, backtick, backslash, or double quote, inside which sh's operators are text to
+# both; PowerShell also ends a string at a typographic double quote.
 PLUGIN_HOOK_PYTHON = (
-    "set \\\n$ErrorActionPreference = 'Stop'\nset \\\npython {arguments}\nset \\\nexit $LASTEXITCODE\n"
+    "set -- \\\n$global:LASTEXITCODE = 1\nset -- \\\npython {arguments}\nset -- \\\nexit $LASTEXITCODE\n"
     'p=$(command -v python); exec "${{p:-python3}}" {arguments}'
 )
-PLUGIN_HOOK_ARGUMENTS = re.compile(r"[A-Za-z0-9_./=:+-]+(?: [A-Za-z0-9_./=:+-]+)*(?: \"[^$`\\\"\r\n]*\")?")
+PLUGIN_HOOK_WORD = r"(?:-[A-Za-z0-9_=:+-]*|[A-Za-z0-9_./=:+][A-Za-z0-9_./=:+-]*)"
+PLUGIN_HOOK_ARGUMENTS = re.compile(
+    rf"{PLUGIN_HOOK_WORD}(?: {PLUGIN_HOOK_WORD})*(?: \"[\x20\x21\x23\x25-\x5b\x5d-\x5f\x61-\x7e]*\")?"
+)
 
 
 def plugin_hook_command(arguments: str) -> str:
@@ -63,8 +69,8 @@ def plugin_hook_command(arguments: str) -> str:
     could read differently."""
     if not PLUGIN_HOOK_ARGUMENTS.fullmatch(arguments):
         raise ValueError(
-            "a plugin hook's Python arguments are not options of plain characters and one double-quoted string "
-            "without a $, backtick, backslash, or line break"
+            "a plugin hook's Python arguments are not options of plain characters, none starting with - holding a "
+            "dot, and one double-quoted string of printable ASCII without a $, backtick, or backslash"
         )
     return PLUGIN_HOOK_PYTHON.format(arguments=arguments)
 

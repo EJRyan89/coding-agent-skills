@@ -1176,7 +1176,7 @@ HELPER_ARGUMENTS = f'-I -c "import os, runpy; runpy.run_path({PLUGIN_GUARD})"'
 # The agent's hook as the plugin runs it in every shell: sh starts python, or python3 where it finds no python, and
 # PowerShell starts python and exits with its status.
 HELPER_COMMAND = (
-    f"set \\\n$ErrorActionPreference = 'Stop'\nset \\\npython {HELPER_ARGUMENTS}\nset \\\nexit $LASTEXITCODE\n"
+    f"set -- \\\n$global:LASTEXITCODE = 1\nset -- \\\npython {HELPER_ARGUMENTS}\nset -- \\\nexit $LASTEXITCODE\n"
     f'p=$(command -v python); exec "${{p:-python3}}" {HELPER_ARGUMENTS}'
 )
 HELPER_HANDLER: dict[str, object] = {"type": "command", "command": HELPER_COMMAND, "timeout": 30, "onFailure": "block"}

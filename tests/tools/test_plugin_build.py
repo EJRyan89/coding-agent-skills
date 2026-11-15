@@ -11,6 +11,7 @@ import os
 import subprocess
 import sys
 import zipfile
+from collections.abc import Mapping
 from contextlib import redirect_stdout
 from pathlib import Path
 
@@ -250,7 +251,7 @@ def test_an_agents_hooks_move_into_the_plugins_hooks_file_with_its_scripts_under
     # Pinned as written rather than read from skill_menu: sh and PowerShell each read the whole command, sh starting
     # python or else python3 on its last line, PowerShell starting python and exiting with its status before it.
     command = (
-        f"set \\\n$ErrorActionPreference = 'Stop'\nset \\\npython {arguments}\nset \\\nexit $LASTEXITCODE\n"
+        f"set -- \\\n$global:LASTEXITCODE = 1\nset -- \\\npython {arguments}\nset -- \\\nexit $LASTEXITCODE\n"
         f'p=$(command -v python); exec "${{p:-python3}}" {arguments}'
     )
     hooks = {
@@ -330,16 +331,26 @@ RECORDER = (
     "import json, os, sys\n"
     "with open(os.path.join(os.environ['SHIM_RECORDS'], sys.argv[1]), 'w', encoding='utf-8') as record:\n"
     "    json.dump(sys.argv[2:], record)\n"
+    "if os.environ.get('SHIM_WARNING'):\n"
+    "    print(os.environ['SHIM_WARNING'], file=sys.stderr)\n"
     "sys.exit(int(os.environ['SHIM_STATUS']))\n"
 )
 
 
 def start_built_hook(
-    source: Source, tmp_path: Path, shell: list[str], pythons: tuple[str, ...], status: int = 0, *, batch: bool = False
+    source: Source,
+    tmp_path: Path,
+    shell: list[str],
+    pythons: tuple[str, ...],
+    status: int = 0,
+    *,
+    batch: bool = False,
+    variables: Mapping[str, str] | None = None,
 ) -> tuple[subprocess.CompletedProcess[str], dict[str, list[str]]]:
     """Build the guarded agent's plugin, run its hook's command in `shell` with a PATH of the named Python shims
     alone, so no Python of the machine's is found by any name, and return the result and each shim's arguments. Each
-    shim is a script Bash runs, Git Bash's included, or with `batch` a batch file, which PowerShell runs on Windows."""
+    shim is a script Bash runs, Git Bash's included, or with `batch` a batch file, which PowerShell runs on Windows;
+    `variables` are added to the environment the shell inherits."""
     source.agent("guarded", extra=GUARD_HOOK)
     source.skill("beta", agent_deps=["guarded"])
     hooks = json.loads(by_name(assembled(source))["fixture-skills"].files[skill_menu.PLUGIN_HOOKS])
@@ -356,7 +367,13 @@ def start_built_hook(
         script = shims / name
         script.write_text(f"#!/bin/sh\nexec '{sys.executable}' '{recorder}' {name} \"$@\"\n", encoding="utf-8")
         script.chmod(0o755)  # Bash runs a program off Windows only when it is executable
-    environment = {**os.environ, "PATH": str(shims), "SHIM_RECORDS": str(records), "SHIM_STATUS": str(status)}
+    environment = {
+        **os.environ,
+        "PATH": str(shims),
+        "SHIM_RECORDS": str(records),
+        "SHIM_STATUS": str(status),
+        **(variables or {}),
+    }
     completed = subprocess.run(
         [*shell, command], capture_output=True, text=True, encoding="utf-8", env=environment, check=False
     )
@@ -433,6 +450,40 @@ def test_the_plugins_hook_with_no_python_by_either_name_fails_naming_python3(sou
         assert recorded == {}
         assert completed.returncode != 0
         assert "python3" in completed.stderr, (shell, completed.stderr)
+
+
+# Variables sh would expand in the lines it joins to a `set`, each set to an option that stops sh running commands.
+OPTION_VARIABLES = {"ErrorActionPreference": "-n", "global": "-n", "LASTEXITCODE": "-n"}
+
+
+def test_the_plugins_hook_in_sh_reads_no_inherited_variable_as_options(source: Source, tmp_path: Path) -> None:
+    # `set -n` would let sh read the rest without running it and exit 0, letting every call through unguarded.
+    for number, shell in enumerate(hook_shells()):
+        for pythons, expected in ((("python3",), {"python3": GUARD_ARGUMENTS}), ((), {})):
+            folder = tmp_path / f"{number}-{len(pythons)}"
+            folder.mkdir()
+            completed, recorded = start_built_hook(
+                Source(folder), folder, shell, pythons, status=3, variables=OPTION_VARIABLES
+            )
+            assert recorded == expected, (shell, completed.stderr)
+            assert completed.returncode == 3 if pythons else completed.returncode != 0, (shell, completed.stderr)
+
+
+@pytest.mark.parametrize("name", POWERSHELLS)
+def test_the_plugins_hook_under_powershell_passes_a_guard_that_warns_on_stderr(
+    source: Source, tmp_path: Path, name: str
+) -> None:
+    # A PowerShell that took a native program's stderr for a failure would block every call the guard allows.
+    completed, recorded = start_built_hook(
+        source,
+        tmp_path,
+        powershell(name),
+        ("python",),
+        batch=platform_support.WINDOWS,
+        variables={"SHIM_WARNING": "the guard warns"},
+    )
+    assert (completed.returncode, recorded) == (0, {"python": GUARD_ARGUMENTS}), completed.stderr
+    assert "the guard warns" in completed.stderr
 
 
 @pytest.mark.parametrize("name", POWERSHELLS)

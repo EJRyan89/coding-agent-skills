@@ -178,13 +178,15 @@ GUARD_ARGUMENTS = "-I -B -c \"import runpy; runpy.run_path('guard.py', run_name=
 
 
 def test_a_plugin_hook_starts_python_in_sh_and_powershell_and_reads_back_its_arguments() -> None:
-    # Pinned as written: sh joins each `set \` to the next line and runs the last, PowerShell runs each line.
+    # Pinned as written: sh joins each `set -- \` to the next line and runs the last, PowerShell runs each line.
     command = skill_menu.plugin_hook_command(GUARD_ARGUMENTS)
     assert command == (
-        f"set \\\n$ErrorActionPreference = 'Stop'\nset \\\npython {GUARD_ARGUMENTS}\nset \\\nexit $LASTEXITCODE\n"
+        f"set -- \\\n$global:LASTEXITCODE = 1\nset -- \\\npython {GUARD_ARGUMENTS}\nset -- \\\nexit $LASTEXITCODE\n"
         f'p=$(command -v python); exec "${{p:-python3}}" {GUARD_ARGUMENTS}'
     )
     assert skill_menu.plugin_hook_arguments(command) == GUARD_ARGUMENTS
+    # A word that does not start with - may hold a dot, as a module's name does.
+    assert skill_menu.plugin_hook_command("-B -m guard.main").endswith('exec "${p:-python3}" -B -m guard.main')
     assert skill_menu.plugin_hook_command("-B -m guard").endswith('exec "${p:-python3}" -B -m guard')
 
 
@@ -199,6 +201,11 @@ def test_a_plugin_hook_starts_python_in_sh_and_powershell_and_reads_back_its_arg
         pytest.param("-I; echo -c x", id="a separator outside quotes"),
         pytest.param('-X "a" -c "b"', id="two quoted strings"),
         pytest.param("-c 'print(1)'", id="a single-quoted string"),
+        # PowerShell ends a string at a typographic double quote, and splits an option at a dot.
+        *(pytest.param(f'-c "print({quote}x{quote})"', id=f"U+{ord(quote):04X}") for quote in "\u201c\u201d\u201e"),
+        pytest.param('-c "print(\u00e9)"', id="past ASCII"),
+        pytest.param('-X.y -c "x"', id="a dot in an option"),
+        pytest.param('-X=a.b -c "x"', id="a dot in an option's value"),
     ],
 )
 def test_a_plugin_hook_refuses_arguments_sh_and_powershell_could_read_differently(arguments: str) -> None:

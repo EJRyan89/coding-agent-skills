@@ -994,7 +994,8 @@ def posix_job_problems(workflow: str, legs: int, job: str = "linux") -> list[str
     and installed by setup-python, with pip's cache keyed on requirements-dev.txt, ShellCheck from the pinned release's
     archive checked against its pinned digest, PSScriptAnalyzer at the workflow's pin, the Bash its platform's image
     lacks installed in one step before validation runs, no folder put ahead on PATH but that Bash's and the pinned
-    ShellCheck's, and the Windows legs' validation step.
+    ShellCheck's, and the Windows legs' validation step. A PATH written through GITHUB_ENV before the verify step is
+    not read; no POSIX leg writes one.
     `required_check_problems` holds it inside the required check, `tool_cache_problems` its tool caches, and
     `pinned_tool_problems` its verify step."""
     runner, leg_name, digest_check, bash_install = POSIX_VALIDATION_JOBS[job]
@@ -1582,17 +1583,43 @@ def _path_change_problems(job: str, steps: list[dict[str, Node]], verify_step: s
     return problems
 
 
+# The folders each POSIX deployable job puts ahead on PATH before its verify step, as the lines that write them: npm's
+# global folder, where the runtimes install, and on macOS Homebrew's Bash folder alone. The whole of Homebrew's bin
+# would put Homebrew's python3 and node ahead of the ones the job set up, and the verify step finds a python3 either
+# way. The Windows job hands on each folder its installers added, which it does not name ahead of time.
+NPM_PATH_ENTRY = 'echo "$(npm prefix --global)/bin" >> "$GITHUB_PATH"'
+DEPLOYABLE_PATH_ENTRIES: dict[str, tuple[str, ...]] = {
+    "deployable-linux": (NPM_PATH_ENTRY,),
+    "deployable-macos": (DEPLOYABLE_MACOS_BASH_INSTALL[1], NPM_PATH_ENTRY),
+}
+
+
 def deployable_path_problems(workflow: str) -> list[str]:
     """Report each deployable.yml job that could run a program other than the one its DEPLOYABLE_TOOLS_STEP found and
     pinned, and DEPLOYABLE_BASH_STEP checked, through a change to PATH from that step to the job's end, as
-    `_path_change_problems` reads one.
+    `_path_change_problems` reads one, or, in a POSIX job, a folder put ahead on PATH before it that
+    DEPLOYABLE_PATH_ENTRIES does not give.
 
     Limit: a program started to change the environment for what it runs, such as `env -i` or a script that a step
-    sources, is not read; no deployable job runs one."""
+    sources, is not read, and neither are a step's `shell` (a login shell such as `bash -l {0}` reorders PATH), a step
+    `env` naming BASH_ENV or ENV, the deprecated `::add-path::` command, PowerShell's `Env:\\Path` and cmd's `set Path=`
+    spellings, and a PATH the verify step sets for its own checks; no job writes any of them. `validation_path_problems`
+    shares this limit."""
     tree = read_workflow(workflow)
     problems: list[str] = []
     for job in DEPLOYABLE_BASH_STEP_SHELLS:
-        problems.extend(_path_change_problems(job, _steps(_mapping(tree, "jobs", job)), DEPLOYABLE_TOOLS_STEP, None))
+        steps = _steps(_mapping(tree, "jobs", job))
+        problems.extend(_path_change_problems(job, steps, DEPLOYABLE_TOOLS_STEP, None))
+        names = [str(step.get("name")) for step in steps]
+        if job not in DEPLOYABLE_PATH_ENTRIES or DEPLOYABLE_TOOLS_STEP not in names:
+            continue
+        problems.extend(
+            f"the {job} job puts another folder ahead on PATH, {line!r}, so it may deploy with a program other than "
+            "the one its job set up"
+            for step in steps[: names.index(DEPLOYABLE_TOOLS_STEP)]
+            for line in _script_lines(step)
+            if "GITHUB_PATH" in line and line not in DEPLOYABLE_PATH_ENTRIES[job]
+        )
     return problems
 
 
@@ -1606,8 +1633,8 @@ VALIDATION_JOBS = ("suite", *POSIX_VALIDATION_JOBS)
 def validation_path_problems(workflow: str) -> list[str]:
     """Report each of validate.yml's VALIDATION_JOBS that could run validation on a program other than the one its
     VALIDATION_TOOLS_STEP verified, through a change to PATH from that step to its VALIDATION_RUN_STEP, as
-    `_path_change_problems` reads one. The same limit as `deployable_path_problems`'s holds; no leg runs such a
-    program."""
+    `_path_change_problems` reads one. The limit `deployable_path_problems` states holds here too; no leg writes any
+    of what it names."""
     tree = read_workflow(workflow)
     problems: list[str] = []
     for job in VALIDATION_JOBS:
@@ -2159,7 +2186,8 @@ def mutation_job_problems(workflow: str) -> list[str]:
     """Report how mutation.yml departs from the mutation gate: run on a pull request's opening, pushes, and reopening
     but not an edit of its text, as the jobs MUTATION_JOBS gives, in its order, each with its name, none the required
     check's, its dependencies and condition, matrix, runner, time limit, checkout, Python, scripts, step ids, the order
-    of its steps, and its artifact and cache steps, and the select job's outputs listing each leg's shards."""
+    of its steps, and its artifact and cache steps, and the select job's outputs listing each leg's shards. A step's
+    own `env` is not read, so an `env: PATH` on a step after Verify ShellCheck passes; no leg sets one."""
     tree = read_workflow(workflow)
     problems: list[str] = []
     types = _mapping(tree, "on", "pull_request").get("types")

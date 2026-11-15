@@ -23,6 +23,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-cor
 import check_provenance
 import powershell_commands
 import skill_inventory
+import skill_menu
 from file_presence import NotAFile
 from git_client import GitClient, GitError, GitResult
 
@@ -3076,6 +3077,26 @@ class PluginTests(TemporaryTestCase):
                 f"UNGUARDED_SUBAGENT {skill.as_posix()} 5 fixture-skills:guarded",
             ],
             [line for line in lines if line.startswith(("AGENT", "PLUGIN", "UNGUARDED"))],
+        )
+
+    def test_scan_reads_the_python_a_plugin_hook_starts_in_every_shell_and_any_other_hook_by_its_first_word(
+        self,
+    ) -> None:
+        # The build writes a hook that starts Python in sh and PowerShell alike, whose first word is `set`.
+        started = skill_menu.plugin_hook_command('-I -B -c "import guard"')
+        handlers = [{"type": "command", "command": command} for command in (started, "python3 x.py")]
+        hooks = {"hooks": {"PreToolUse": [{"matcher": "Read", "hooks": handlers}]}}
+        root = self.plugin(hooks=hooks)
+        skill = self.skill(root, text="---\ndescription: Run.\n---\nStart a `fixture-skills:guarded` subagent.\n")
+        write(root / "agents" / "guarded.md", PLUGIN_AGENT)
+        code, lines, _ = run("scan", str(skill.parent))
+        self.assertEqual(0, code)
+        self.assertEqual(
+            [
+                "PLUGIN_HOOK PreToolUse Read python timeout=default on_failure=default",
+                "PLUGIN_HOOK PreToolUse Read python3 timeout=default on_failure=default",
+            ],
+            [line for line in lines if line.startswith("PLUGIN_HOOK")],
         )
 
     def test_a_skill_in_a_plugin_without_hooks_prints_none(self) -> None:
