@@ -12,6 +12,7 @@ from pathlib import Path
 
 import file_presence
 import json_writer
+import private_folder
 import search_boundary
 from flat_text import flat_text
 from git_client import GitError
@@ -35,7 +36,8 @@ PRESENCE_ALLOWED = {
 # Filesystem writes that tests/run_validation.py allows outside deployer/fsops.py, with the reason.
 FSOPS_ALLOWED = {
     "tempfile.mkdtemp": "verify starts each runtime in a directory of its own under the system temporary directory, "
-    "outside every managed root; the read-only command changes no deployed state",
+    "outside every managed root, judged first by private_folder.temporary_directory since each runtime reads project "
+    "skills from it; the read-only command changes no deployed state",
     "shutil.rmtree": "verify removes only the working directory it created with tempfile.mkdtemp, which holds nothing "
     "but the empty git repository it made there",
 }
@@ -221,8 +223,9 @@ def _verify(names: list[str], paths: Paths, environment: dict[str, str]) -> int:
     verified: list[str] = []
     problems: list[str] = []
     # An empty working directory that is a git repository of its own, so no project skill, in it or in a folder
-    # above it, stands in for an adapter.
-    workdir = Path(tempfile.mkdtemp(prefix="deploy-verify-"))
+    # above it, stands in for an adapter, made in a temporary directory no other account can rename, so none can swap
+    # it for a folder of skills of its own while a runtime lists from it.
+    workdir = Path(tempfile.mkdtemp(prefix="deploy-verify-", dir=private_folder.temporary_directory()))
     try:
         bound_working_directory(workdir)
         for runtime in discovery.RUNTIMES:

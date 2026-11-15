@@ -12,14 +12,15 @@ repository's pull request, as tools/checkout_trust.py reads it: a branch whose u
 branch of origin holds, a pull request's head mirrored under refs/remotes/origin being no branch, since the run
 deploys and runs the checkout's skills and fixture signed in as the user.
 
-It makes a fresh home under the temporary directory and deploys this checkout into it with `deploy.py
---canary-home`, which a linked worktree may do, then deploys the fixture source in tests/fixtures/runtime-canary.
-That home is the only place anything is deployed. The home is then made a git repository of its own, so no runtime
-reads project skills or agents from the folders above it, the shared temporary directory among them, as Copilot CLI
-and Claude Code do from a folder outside any repository; a home git cannot make one is FAILED "<reason>", which stops
-the run before any runtime starts. Each installed runtime then starts with the home as its working directory, so it
-finds the deployed skills as project skills, and with a fixed prompt naming one skill: the fixture
-runtime-canary-probe, then each SKILL given. It prints one fact per line:
+It makes a fresh home in the temporary directory, which ejryan89-skill-core's private_folder judges first: one another
+account could rename, or replace a folder above, is FAILED "<reason>" naming it before anything is made there. It
+deploys this checkout into the home with `deploy.py --canary-home`, which a linked worktree may do, then deploys the
+fixture source in tests/fixtures/runtime-canary. That home is the only place anything is deployed. The home is then made
+a git repository of its own, so no runtime reads project skills or agents from the folders above it, the shared
+temporary directory among them, as Copilot CLI and Claude Code do from a folder outside any repository; a home git
+cannot make one is FAILED "<reason>", which stops the run before any runtime starts. Each installed runtime then starts
+with the home as its working directory, so it finds the deployed skills as project skills, and with a fixed prompt
+naming one skill: the fixture runtime-canary-probe, then each SKILL given. It prints one fact per line:
 
   HOME "<dir>"                                  the throwaway home, removed at the end unless the run failed
   DEPLOYED <source id>                          or DEPLOY_FAILED <source id> "<log>", which stops the run
@@ -70,10 +71,12 @@ deployer/render.py, which writes every adapter, reaches one skill the model may 
 changed one where it can. A git failure is FAILED "<reason>".
 
 The isolation is of configuration, not of credentials: each runtime keeps its real configuration folder and so
-its sign-in, and the canary switches off what each runtime lets it: Claude Code's user settings, skills, and MCP
-servers; Codex's config.toml and rules; Copilot's custom instructions and built-in MCP servers. KEPT names what
-still loads, among it the personal skills Codex and Copilot keep listing, and no flag keeps a model's shell from
-reading the installed copies under the profile's skill folders. So a run that started a script there, from
+its sign-in, and the canary switches off what each runtime lets it: Claude Code's user settings, skills, MCP
+servers, and every CLAUDE.md, rules file, and auto-memory, which it would read from each folder above the home, the
+shared temporary directory included; Codex's config.toml and rules; Copilot's custom instructions and built-in MCP
+servers. KEPT names what still loads, among it the personal skills Codex and Copilot keep listing, and no flag
+keeps a model's shell from reading the installed copies under the profile's skill folders. So a run that started a
+script there, from
 .claude/skills, .agents/skills, .codex/skills, or .copilot/skills under the profile, is UNCOUNTED: it tested nothing,
 and the canary runs the skill again, up to --attempts runs in all. Each such run keeps its own RUNTIME and
 TRANSCRIPT lines, a run after the first naming its transcript -run<n>, so the record shows how many runs the skill
@@ -154,6 +157,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "ejryan8
 import frontmatter
 import json_reader
 import json_writer
+import private_folder
 import runtime_support
 import search_boundary
 import whole_number
@@ -232,12 +236,13 @@ UNBOUNDED = (
 )
 RUNTIME_CANARY_MARKER = "RUNTIME-CANARY-RUN"
 # What each runtime still loads from the user's real configuration once the canary's flags have switched off all
-# they can. Claude Code: checked with /context under --setting-sources project,local. Codex and Copilot: their
-# skill listings, the flags each offers, Codex's AGENTS.md page, under which every run reads the Codex home's
-# AGENTS.override.md or AGENTS.md while --ignore-user-config skips config.toml only, and Copilot's hooks reference,
-# under which user hooks load without admission.
+# they can. Claude Code: checked with a local stand-in for its API under --setting-sources project,local and
+# search_boundary.CLAUDE_INSTRUCTIONS_OFF_VARIABLES, with which no CLAUDE.md, rules file, or auto-memory reaches the
+# request, the user's own included. Codex and Copilot: their skill listings, the flags each offers, Codex's AGENTS.md
+# page, under which every run reads the Codex home's AGENTS.override.md or AGENTS.md while --ignore-user-config skips
+# config.toml only, and Copilot's hooks reference, under which user hooks load without admission.
 KEPT = {
-    "claude": "user CLAUDE.md; auto-memory folder",
+    "claude": "sign-in only",
     "codex": "global AGENTS.override.md or AGENTS.md in ~/.codex; personal skills in ~/.agents/skills and "
     "~/.codex/skills",
     "copilot": "personal skills in ~/.agents/skills and ~/.copilot/skills; MCP servers in ~/.copilot/mcp-config.json; "
@@ -644,7 +649,9 @@ def unchecked(runtime: str, lines: Sequence[str], discovery_only: bool) -> str:
 def environment(base: Mapping[str, str], script_log: Path, home: Path) -> dict[str, str]:
     """The runtime's own environment, sign-in included, plus the Python and Bash recorders and PINNED_VERSION, without
     git's repository-selecting variables, so the runtime and the skill it runs read the canary home, not the
-    repository a shell's `GIT_DIR` names."""
+    repository a shell's `GIT_DIR` names, and with ejryan89-skill-core's
+    `search_boundary.CLAUDE_INSTRUCTIONS_OFF_VARIABLES`, so Claude Code reads no CLAUDE.md from the temporary directory
+    or a folder above it, nor any of the user's own."""
     recorder = home / STATE / "recorder"
     existing = base.get("PYTHONPATH")
     return {
@@ -653,6 +660,7 @@ def environment(base: Mapping[str, str], script_log: Path, home: Path) -> dict[s
         "BASH_ENV": forward(recorder / "bash_env.sh"),
         SCRIPT_LOG: str(script_log),
         **PINNED_VERSION,
+        **search_boundary.CLAUDE_INSTRUCTIONS_OFF_VARIABLES,
     }
 
 
@@ -1401,11 +1409,13 @@ def changed_since(ref: str | None, root: Path = REPOSITORY_ROOT, client: GitClie
 
 
 def create_home() -> Path:
-    """A new, empty folder under the temporary directory, named like tempfile.mkdtemp's but made with the mode
-    platform_support.SANDBOX_READABLE_DIRECTORY_MODE gives, so every Codex sandbox the canary may choose can read it.
-    mkdtemp's own 0o700 gives the folder, on Windows, an access control list that Codex's unelevated sandbox cannot
-    read, though MXC's can; elsewhere the mode is mkdtemp's."""
-    parent = Path(tempfile.gettempdir())
+    """A new, empty folder in the temporary directory ejryan89-skill-core's `private_folder.temporary_directory`
+    judges, named like tempfile.mkdtemp's but made with the mode platform_support.SANDBOX_READABLE_DIRECTORY_MODE
+    gives, so every Codex sandbox the canary may choose can read it. mkdtemp's own 0o700 gives the folder, on Windows,
+    an access control list that Codex's unelevated sandbox cannot read, though MXC's can; elsewhere the mode is
+    mkdtemp's. Raises the OSError of a temporary directory another account could rename, naming it, before anything
+    is made."""
+    parent = private_folder.temporary_directory()
     for _ in range(tempfile.TMP_MAX):
         home = parent / f"{HOME_PREFIX}{secrets.token_hex(6)}"
         try:
@@ -1414,6 +1424,16 @@ def create_home() -> Path:
             continue
         return home.resolve()
     raise FileExistsError(f"no unused name for a canary home under {parent}")
+
+
+def start_home(make: Callable[[], Path] | None = None) -> Path | None:
+    """A new home from `make`, by default create_home, or None once a FAILED line names why none could be made, such
+    as a temporary directory another account could rename, which nothing is made in."""
+    try:
+        return (make or create_home)()
+    except OSError as exc:
+        print(f"FAILED {quote(f'cannot make a canary home: {exc}')}")
+        return None
 
 
 def bound_home(home: Path, git: GitClient = GIT) -> str | None:
@@ -1542,7 +1562,9 @@ def main(arguments: list[str]) -> int:
     if refused is not None:
         print(f"FAILED {quote(refused)}")
         return 1
-    home = create_home()
+    home = start_home()
+    if home is None:
+        return 1
     code = canary(
         options.skills,
         options.runtimes or list(RUNTIMES),

@@ -898,7 +898,7 @@ def _callable_references(tree: ast.Module, resolver: CallableResolver) -> set[in
     }
 
 
-def _write_nodes(tree: ast.Module, resolver: CallableResolver | None = None) -> list[tuple[ast.stmt | ast.expr, str]]:
+def write_nodes(tree: ast.Module, resolver: CallableResolver | None = None) -> list[tuple[ast.stmt | ast.expr, str]]:
     """The imports, calls, and callables passed as values through which a module's code writes to the filesystem,
     with each one's token, ignoring test cases. A callable the resolver cannot name is read through _literal_callee."""
     resolver = resolver or CallableResolver(tree)
@@ -961,7 +961,7 @@ def _returned_callee_problems(name: str, tree: ast.Module, resolver: CallableRes
 
 def _filesystem_writes(tree: ast.Module) -> list[tuple[int, str]]:
     """The filesystem writes a module's code makes, as (line, token), ignoring test cases."""
-    return [(node.lineno, token) for node, token in _write_nodes(tree)]
+    return [(node.lineno, token) for node, token in write_nodes(tree)]
 
 
 TEMPORARY_DIRECTORY_CALL = "tempfile.mkdtemp"
@@ -992,14 +992,19 @@ CHECKED_TEMPORARY_DIRECTORY = "private_folder.temporary_directory"
 
 
 def _names_the_temporary_directory(keyword: ast.keyword, aliases: dict[str, str]) -> bool:
-    """Whether a tempfile call's keyword is no dir, or a dir that is CHECKED_TEMPORARY_DIRECTORY called with nothing."""
+    """Whether a tempfile call's keyword is no dir, or a dir that is CHECKED_TEMPORARY_DIRECTORY called with nothing,
+    reached through a name the module binds, so a module that never imports it does not pass by spelling its name."""
     if keyword.arg != "dir":
         return keyword.arg is not None
     value = keyword.value
+    if not isinstance(value, ast.Call) or value.args or value.keywords:
+        return False
+    root = value.func
+    while isinstance(root, ast.Attribute):
+        root = root.value
     return (
-        isinstance(value, ast.Call)
-        and not value.args
-        and not value.keywords
+        isinstance(root, ast.Name)
+        and root.id in aliases
         and qualified_name(value.func, aliases) == CHECKED_TEMPORARY_DIRECTORY
     )
 
@@ -1092,7 +1097,7 @@ METHOD_DESTINATIONS: dict[str, tuple[int, frozenset[str]]] = {
 }
 
 
-def _write_destinations(call: ast.Call, aliases: dict[str, str]) -> list[ast.expr]:
+def write_destinations(call: ast.Call, aliases: dict[str, str]) -> list[ast.expr]:
     """The arguments that may name where a write lands. A write in NAMED_DESTINATIONS or METHOD_DESTINATIONS lands at
     the argument it names; a path method writes to its receiver and, for a rename or a link, to its target; any other
     function may write to every argument but a constant that is not a string, such as a mode or a flag."""
@@ -1120,7 +1125,7 @@ def _temporary_write_problems(name: str, tree: ast.Module, allowed: dict[str, st
     resolver = CallableResolver(tree)
     directories = _temporary_directory_names(tree, resolver)
     problems: list[str] = []
-    for node, token in _write_nodes(tree, resolver):
+    for node, token in write_nodes(tree, resolver):
         if isinstance(node, ast.ImportFrom) or token not in allowed:
             continue
         if not isinstance(node, ast.Call):
@@ -1133,7 +1138,7 @@ def _temporary_write_problems(name: str, tree: ast.Module, allowed: dict[str, st
         if token.startswith("tempfile."):
             temporary = _in_the_temporary_directory(node, aliases)
         else:
-            destinations = _write_destinations(node, aliases)
+            destinations = write_destinations(node, aliases)
             temporary = bool(destinations) and all(
                 isinstance(destination, ast.Name) and destination.id in directories for destination in destinations
             )

@@ -17,6 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan8
 
 import job_tree
 import json_reader
+import private_folder
 import search_boundary
 from bounded_process import KILL_WAIT_SECONDS
 from git_client import GitClient, GitError
@@ -1161,7 +1162,32 @@ class VerifyCommandTests(DeployerTestCase):
             result = self.verify()
         self.assertEqual(0, result.code, result.output)
         self.assertEqual({"FOUND": ["alpha", "beta"]}, self.groups(result.output, "COPILOT CLI"))
-        self.assertTrue(all(call[1].parent == temporary for call in self.runtimes.calls))
+        with mock.patch.object(tempfile, "tempdir", str(temporary)):
+            judged = private_folder.temporary_directory()
+        self.assertTrue(all(call[1].parent == judged for call in self.runtimes.calls))
+
+    @unittest.skipIf(sys.platform == "win32", "Windows mode bits say nothing about who may write a folder")
+    def test_a_working_directory_in_a_temporary_directory_another_account_could_rename_is_refused_before_it_is_made(
+        self,
+    ) -> None:
+        # Each runtime reads project skills from verify's working directory, so another account that could rename a
+        # folder above it could swap in skills of its own for verify to count.
+        shared = self.root / "shared"
+        own = shared / "u" / "tmp"
+        own.mkdir(parents=True)
+        shared.chmod(0o777)
+        self.addCleanup(shared.chmod, 0o755)
+        self.answer()
+        with mock.patch.object(tempfile, "tempdir", str(own)):
+            result = self.verify()
+        self.assertEqual(1, result.code, result.output)
+        self.assertEqual([], self.runtimes.calls)
+        self.assertIn(
+            f"a folder made in the temporary directory {own.resolve()} could be replaced by another account: its "
+            f"ancestor {shared.resolve()} can be written by users other than its owner and is not sticky (mode 777)",
+            result.output,
+        )
+        self.assertEqual([], list(own.iterdir()), "no working directory was made there")
 
     def test_a_working_directory_git_cannot_make_a_repository_of_its_own_stops_verify_before_any_listing(self) -> None:
         self.answer()

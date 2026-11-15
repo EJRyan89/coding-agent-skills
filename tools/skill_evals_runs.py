@@ -28,6 +28,7 @@ import whole_number
 from git_client import GitClient, GitError
 from review_archive import ArchiveError, latest_record, list_versions
 from review_io import PersistenceError
+from search_boundary import CLAUDE_INSTRUCTIONS_OFF_VARIABLES
 
 from deployer import tools
 from deployer.platform_support import PYTHON
@@ -255,12 +256,18 @@ def skills_in_stream(output: str) -> list[str]:
     return list(dict.fromkeys(found))
 
 
+def trigger_environment(base: Mapping[str, str], run: Path) -> dict[str, str]:
+    """The user's environment, sign-in included, with the run's own temporary directory, and with
+    CLAUDE_INSTRUCTIONS_OFF_VARIABLES, so the session reads no CLAUDE.md from a folder above the home, nor any of the
+    user's own."""
+    return {**base, "TMPDIR": str(run / "tmp"), **CLAUDE_INSTRUCTIONS_OFF_VARIABLES}
+
+
 def run_environment(base: Mapping[str, str], run: Path, config: Path) -> dict[str, str]:
-    """The user's environment, sign-in included, with the run's own temporary directory and code-review files, and
-    without the effort variable that would outrank the reviewer's stated effort."""
+    """The trigger_environment, with the run's own code-review files, and without the effort variable that would
+    outrank the reviewer's stated effort."""
     return {
-        **{name: value for name, value in base.items() if name not in EFFORT_VARIABLES},
-        "TMPDIR": str(run / "tmp"),
+        **trigger_environment({name: value for name, value in base.items() if name not in EFFORT_VARIABLES}, run),
         "CODE_REVIEW_CONFIG": str(config),
         "CODE_REVIEW_STATE": str(run / "state.json"),
         "CODE_REVIEW_FLAGS": str(run / "flags.json"),
@@ -526,7 +533,7 @@ def run_trigger(scenario: Scenario, model: str, home: Path, session: Session, ru
     """Give each of a trigger scenario's requests, then each near miss, to a session of its own in the model's home,
     keep each transcript, and write the trigger record of the skills each session started in the run's folder. The
     first session that counts for nothing makes the run count for nothing."""
-    environment = {**session.base, "TMPDIR": str(run / "tmp")}
+    environment = trigger_environment(session.base, run)
     entries: list[dict[str, Any]] = []
     models: set[str] = set()
     transcripts: list[Path] = []

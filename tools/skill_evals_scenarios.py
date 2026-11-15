@@ -25,6 +25,7 @@ sys.path.insert(0, str(sibling_scripts("review-document")))
 
 import file_presence
 import json_reader
+import private_folder
 import whole_number
 from git_client import NO_HOOKS, GitClient
 from path_containment import within
@@ -788,7 +789,7 @@ def reviewed_fixture(scenario: Scenario) -> Iterator[Path]:
     if scenario.reviewer is None or scenario.checkout is None:
         yield scenario.directory
         return
-    copy = Path(tempfile.mkdtemp(prefix="skill-evals-fixture-")).resolve()
+    copy = Path(tempfile.mkdtemp(prefix="skill-evals-fixture-", dir=private_folder.temporary_directory())).resolve()
     try:
         fixture = copy / scenario.name
         shutil.copytree(scenario.directory, fixture)
@@ -816,7 +817,7 @@ def document_place(scenario: Scenario, run: Path) -> Iterator[Path]:
     if scenario.document is None or scenario.base is not None:
         yield run
         return
-    place = Path(tempfile.mkdtemp(prefix="skill-evals-document-")).resolve()
+    place = Path(tempfile.mkdtemp(prefix="skill-evals-document-", dir=private_folder.temporary_directory())).resolve()
     try:
         yield place
     finally:
