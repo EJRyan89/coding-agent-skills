@@ -64,18 +64,19 @@ METADATA_FAILED = (
 )
 
 
-def _bound(folder: Path) -> None:
+def bound_working_directory(folder: Path, who: str = "verify") -> None:
     """Make the working directory a git repository of its own, so Copilot CLI reads project skills from it alone, never
-    from the system temporary directory and the folders above it (ejryan89-skill-core's `search_boundary`)."""
+    from the system temporary directory and the folders above it (ejryan89-skill-core's `search_boundary`). `who` names
+    the command that lists from it, verify or another that judges the same listing."""
     try:
         search_boundary.bound_search(folder)
     except GitError as error:
         where = platform_support.normalize(folder)
         raise DeployError(
-            f"ERROR: Git could not make verify's working directory {where} a repository of its own: "
+            f"ERROR: Git could not make {who}'s working directory {where} a repository of its own: "
             f"{flat_text(str(error))}",
-            "Verify lists skills only from such a directory, so that no project skill in a folder above it stands in "
-            "for an adapter. Put right what Git reports, then rerun verify.",
+            f"{who[:1].upper()}{who[1:]} lists skills only from such a directory, so that no project skill in a folder "
+            f"above it stands in for an adapter. Put right what Git reports, then rerun {who}.",
         ) from error
 
 
@@ -223,7 +224,7 @@ def _verify(names: list[str], paths: Paths, environment: dict[str, str]) -> int:
     # above it, stands in for an adapter.
     workdir = Path(tempfile.mkdtemp(prefix="deploy-verify-"))
     try:
-        _bound(workdir)
+        bound_working_directory(workdir)
         for runtime in discovery.RUNTIMES:
             label = discovery.LABELS[runtime]
             probe = tools.probe(tools.VERIFY_TOOLS[runtime])

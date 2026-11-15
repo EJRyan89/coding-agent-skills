@@ -28,8 +28,9 @@ It prints one fact per line:
                                                      is due to be captured again (tools/captured_samples.py); never
                                                      a failure
   MISSING <runtime> "<reason>"                       it is not installed where deploy.py check looks; exit 1
-  UNSAFE <runtime> "<reason>"                        it cannot be started signed out, so none of its command lines is
-                                                     started; exit 1
+  UNSAFE <runtime> "<reason>"                        it cannot be started signed out, or git cannot make its
+                                                     throwaway home a repository of its own, so none of its command
+                                                     lines is started; exit 1
   HELP_FAILED <runtime> <command> "<reason>"         the help its flags are looked for in could not be read: it
                                                      could not start, did not finish, or exited non-zero; the line
                                                      is still started and judged, with no UNLISTED; exit 1
@@ -72,7 +73,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "ejryan8
 
 import search_boundary
 from console import run_main
-from flat_text import single_line
+from flat_text import flat_text, single_line
+from git_client import GitError
 from runtime_support import RUNTIMES as RUNTIME_NAMES
 from seconds_option import positive_seconds
 from skill_roots import sibling_scripts
@@ -297,8 +299,6 @@ def command_lines(
     runtime: str, executable: str, root: Path, environment: dict[str, str], version: tuple[int, ...] | None
 ) -> list[CommandLine]:
     (root / "home").mkdir(parents=True, exist_ok=True)
-    # A git repository of its own, as the canaries and the skill evaluations make the home their sessions start in.
-    search_boundary.bound_search(root / "home")
     if runtime == "claude":
         return claude_lines(executable, root, environment)
     if runtime == "codex":
@@ -387,6 +387,16 @@ def help_failure(shown: Completed, timeout: float) -> str:
     return ""
 
 
+def bound_home(home: Path) -> None:
+    """Make the throwaway home a git repository of its own, as the canaries and the skill evaluations make the home
+    their sessions start in, so a runtime started there reads project skills and agents from it alone; raise Unsafe
+    with git's reason when git cannot, which ends that runtime's lines and no other's."""
+    try:
+        search_boundary.bound_search(home)
+    except GitError as exc:
+        raise Unsafe(f"{runtime_canary.UNBOUNDED}: {flat_text(str(exc))}") from exc
+
+
 def runtime_lines(
     runtime: str,
     executable: str | None,
@@ -400,6 +410,7 @@ def runtime_lines(
         return
     try:
         environment = signed_out(root / "home", executable)
+        bound_home(root / "home")
     except Unsafe as exc:
         yield f"UNSAFE {runtime} {quote(str(exc))}"
         return

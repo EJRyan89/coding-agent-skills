@@ -9,7 +9,8 @@ Usage:
   python tools/deployable_report.py pin --program NAME --wanted VERSION
   python tools/deployable_report.py bash --at-least VERSION
 
-`verify` asks Codex CLI and Copilot CLI which skills they find, the way `python deploy.py verify` does, and judges
+`verify` asks Codex CLI and Copilot CLI which skills they find, the way `python deploy.py verify` does, from a
+throwaway working directory made a git repository of its own, so no project skill above it is listed, and judges
 each runtime: PASSED when it finds every adapter, SKIPPED when it refuses to list skills until someone signs in,
 FAILED otherwise, a runtime that is not installed included, because the workflow installed both. It judges a failure
 when any runtime FAILED, when every runtime was SKIPPED (nothing was checked), or when `deploy.py verify` failed for a
@@ -51,7 +52,8 @@ Nothing here starts a model.
 Exit status:
   0  the command's check passed, or its record or summary was written
   1  verify judged a failure, layout failed, leftovers named an entry, pin found another version, bash found none or
-     an older one, an ERROR: line for a home that is no absolute path, or a last line FAILED <reason>
+     an older one, an ERROR: line for a home that is no absolute path or for a verify working directory git cannot
+     make a repository of its own, or a last line FAILED <reason>
   2  a usage error, or an ERROR: line for a results file or a deployed directory it cannot read or write
 """
 
@@ -158,9 +160,11 @@ def check_runtimes(
         where = platform_support.normalize(paths.adapter_dest_dir)
         raise DeployError(f"ERROR: No runtime adapters are deployed in {where}.", f"Deploy first with '{PROG}'.")
     results: list[RuntimeResult] = []
-    # An empty working directory, so no project skill stands in for an adapter.
+    # An empty working directory that is a git repository of its own, as verify's is, so no project skill, in it or
+    # in a folder above it, stands in for an adapter.
     workdir = Path(tempfile.mkdtemp(prefix="deployable-report-"))
     try:
+        verify.bound_working_directory(workdir, "the report")
         for runtime in discovery.RUNTIMES:
             executable = find(runtime)
             if executable is None:

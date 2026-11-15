@@ -838,6 +838,7 @@ removed fails validation until its pattern follows it.
   `tests/tools/test_hub_guard.py::HookCommandTests::test_an_inherited_trace_or_output_file_has_the_hook_s_own_git_write_nothing`,
   `skills/ejryan89-skill-core/scripts/test_search_boundary.py::BoundSearchTests`,
   `tests/deployer/test_verify.py::VerifyCommandTests::test_a_project_skill_planted_above_the_working_directory_never_stands_in_for_an_adapter`,
+  `tests/tools/test_deployable_report.py::DeployableReportTests::test_a_project_skill_planted_above_the_working_directory_never_stands_in_for_an_adapter`,
   `tests/tools/test_runtime_canary.py::SearchBoundaryTests`, `tests/tools/test_runtime_command_lines.py::SearchBoundaryTests`
 - **Search for:** `{**os.environ`, `os.environ.copy()`, or `dict(os.environ)` passed as `env=`; a measured or
   sandboxed child started with no `env=`; a checker started anywhere but its runner, or run with no option that stops

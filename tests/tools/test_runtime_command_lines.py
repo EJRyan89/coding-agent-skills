@@ -22,7 +22,8 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts"))
 
-from git_client import GitClient
+import search_boundary
+from git_client import GitClient, GitError
 from skill_roots import sibling_scripts
 
 sys.path.insert(0, str(sibling_scripts("ejryan89-code-review-core")))
@@ -208,6 +209,32 @@ class SearchBoundaryTests(RuntimeCommandLinesTestCase):
         self.assertTrue(any(line.startswith("ACCEPTED copilot skill-listing") for line in found), found)
         self.assertTrue(tops)
         self.assertEqual({}, {started: owns for started, owns in tops.items() if owns != {True}})
+
+
+class UnboundedHomeTests(RuntimeCommandLinesTestCase):
+    def test_a_home_git_cannot_make_its_own_repository_is_unsafe_for_its_runtime_alone(self) -> None:
+        real = search_boundary.bound_search
+        failure = GitError("git init failed:\nfatal: cannot make it\n", returncode=128)
+
+        def bound(folder: Path, git: GitClient | None = None) -> None:
+            if folder.parent.name == "codex":
+                raise failure
+            real(folder, git)
+
+        stub = StubRuntimes()
+        with mock.patch.object(search_boundary, "bound_search", bound):
+            found = self.check(stub)
+        self.assertEqual(
+            [
+                'UNSAFE codex "git could not make the home a repository of its own, so a runtime started there would '
+                'read project skills and agents from the folders above it: git init failed: fatal: cannot make it"'
+            ],
+            [line for line in found if " codex" in line],
+        )
+        self.assertEqual([], [arguments for arguments, _ in stub.started if Path(arguments[0]).name == "codex"])
+        self.assertIn("ACCEPTED claude skill-evals-trigger", found)
+        self.assertTrue(any(line.startswith("ACCEPTED copilot skill-listing") for line in found), found)
+        self.assertTrue(lines.failed(found))
 
 
 def help_answering(answer: Completed) -> lines.Starter:
