@@ -26,6 +26,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan8
 
 from guidance_record import GUIDANCE_PATH, Changelog
 from presence_denial import denied
+from test_private_folder import judged_folder_calls, recording_temporary_folders
 
 from tools import runtime_changelogs as watch
 from tools import runtime_command_lines
@@ -863,3 +864,11 @@ def test_a_fetch_sends_the_token_to_the_api_and_never_on_to_a_redirect(monkeypat
     )
     assert redirected is not None
     assert redirected.get_header("Authorization") is None
+
+
+def test_the_command_lines_are_built_in_a_folder_made_in_the_temporary_directory_private_folder_judged() -> None:
+    # The builders write each runtime's signed-out home there. A TemporaryDirectory makes its folder with
+    # tempfile.mkdtemp, which records the folder a second time.
+    with recording_temporary_folders() as calls:
+        watch.command_line_terms({})
+    assert judged_folder_calls(calls, "runtime-changelogs-") == [True, True]

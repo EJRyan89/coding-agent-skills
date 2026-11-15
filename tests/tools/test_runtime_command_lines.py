@@ -25,6 +25,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan8
 import search_boundary
 from git_client import GitClient, GitError
 from skill_roots import sibling_scripts
+from test_private_folder import judged_folder_calls, recording_temporary_folders
 
 sys.path.insert(0, str(sibling_scripts("ejryan89-code-review-core")))
 from review_hosts import COPILOT_SYNC_SESSION_VERSION
@@ -677,3 +678,11 @@ def test_the_help_names_the_timeout_in_seconds(capsys: pytest.CaptureFixture[str
         lines.main(["--help"])
     assert exited.value.code == 0
     assert "--timeout SECONDS" in " ".join(capsys.readouterr().out.split())
+
+
+def test_main_runs_the_command_lines_in_a_folder_made_in_the_temporary_directory_private_folder_judged() -> None:
+    # Each runtime starts signed out from a home there, which another account that could swap it would choose. A
+    # TemporaryDirectory makes its folder with tempfile.mkdtemp, which records the folder a second time.
+    with recording_temporary_folders() as calls, mock.patch.object(lines, "run", return_value=[]):
+        assert lines.main([]) == 0
+    assert judged_folder_calls(calls, "runtime-command-lines-") == [True, True]
