@@ -21,6 +21,7 @@ import versions
 from bounded_process import streaming
 from flat_text import flat_text
 from path_containment import resolved_path
+from text_lines import program_lines
 
 # The vendors whose pdftotext the probe accepts.
 PdfProvider = Literal["Xpdf", "Poppler"]
@@ -111,7 +112,7 @@ def parse_banner(text: str, status: int) -> PdfIdentity:
     no provider prints its banner with is refused first, naming the status."""
     if status not in BANNER_STATUSES:
         raise PdfToolRefused(f"version probe failed with exit status {status}")
-    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    lines = [line.strip() for line in program_lines(text) if line.strip()]
     banner = BANNER.fullmatch(lines[0]) if lines else None
     copyrights = [COPYRIGHT.fullmatch(line) for line in lines[1:]]
     if banner is None or not copyrights or any(match is None for match in copyrights):

@@ -29,7 +29,7 @@ from git_client import GitClient, GitError
 from review_archive import ArchiveError, latest_record, list_versions
 from review_io import PersistenceError
 from search_boundary import CLAUDE_INSTRUCTIONS_OFF_VARIABLES
-from text_lines import text_lines
+from text_lines import LINE_BREAK, text_lines
 
 from deployer import tools
 from deployer.platform_support import PYTHON
@@ -280,7 +280,7 @@ def set_reviewer_model(home: Path, model: str) -> str | None:
     effort on the line after, in place of any effort the agent states; return why it could not, or None."""
     path = home / REVIEWER_AGENT
     try:
-        lines = path.read_text(encoding="utf-8").split("\n")
+        lines = LINE_BREAK.split(path.read_text(encoding="utf-8"))
         end = lines.index("---", 1)
         head = [line for line in lines[1:end] if not line.startswith("effort:")]
         at = head.index("model: inherit")

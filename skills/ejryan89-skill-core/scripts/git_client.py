@@ -100,6 +100,7 @@ from bounded_process import Streaming, isolated_git_environment, run_bounded, st
 from executable_locator import Found, located_command
 from flat_text import flat_text
 from job_tree import TreeNotEnded, process_tree
+from text_lines import text_lines
 
 T = TypeVar("T")
 
@@ -711,7 +712,9 @@ def transient_failure(result: GitResult) -> bool:
     lowered = result.stderr.casefold()
     if any(marker in lowered for marker in PERMANENT_MARKERS):
         return False
-    own = [line for line in lowered.splitlines() if line.lstrip().startswith(GIT_LINE_PREFIXES)]
+    # git's progress meter rewrites its line after a lone CR, so a line of git's own may follow one, as a terminal
+    # shows it; a line separator ends no line.
+    own = [line for line in text_lines(lowered) if line.lstrip().startswith(GIT_LINE_PREFIXES)]
     return any(marker in line for line in own for marker in TRANSIENT_MARKERS)
 
 
@@ -733,7 +736,8 @@ def local_failure(stderr: str, git_directory: str | Path | None) -> bool:
     if REMOTE_VERDICTS.search(lowered):
         return False
     inside = None if git_directory is None else str(git_directory).replace("\\", "/").rstrip("/").casefold()
-    own = [line.lstrip() for line in lowered.splitlines() if line.lstrip().startswith(("fatal:", "error:"))]
+    # As transient_failure reads them: a line of git's own may follow its progress meter's lone CR.
+    own = [line.lstrip() for line in text_lines(lowered) if line.lstrip().startswith(("fatal:", "error:"))]
     return any(
         LOCAL_GIT_PATH.search(QUOTED_URL.sub("", line))
         or (bool(inside) and f"{inside}/" in QUOTED_URL.sub("", line).replace("\\", "/"))

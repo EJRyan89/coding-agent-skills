@@ -211,6 +211,7 @@ from job_selection import host_job_seconds, imported_names, importers, python_im
 from path_containment import relative_within, resolved_path
 from suite_discovery import PYTEST_ENVIRONMENT, pytest_command
 from suite_names import is_suite_name
+from text_lines import program_lines, text_lines
 from typed_fields import FieldError, FieldReader
 from validation_support import import_aliases, literal_lookups, qualified_name, repository_files
 
@@ -662,7 +663,7 @@ def changed_lines(diff: str) -> set[int]:
 
 def describe(original: str, mutated: str) -> tuple[int, str, str]:
     """The first line a mutant changes, and that line's text before and after, each flattened to one line."""
-    old, new = original.splitlines(), mutated.splitlines()
+    old, new = text_lines(original), text_lines(mutated)
     for tag, first, last, new_first, new_last in difflib.SequenceMatcher(None, old, new, autojunk=False).get_opcodes():
         if tag != "equal":
             return first + 1, flat_text(" ".join(old[first:last])), flat_text(" ".join(new[new_first:new_last]))
@@ -804,7 +805,8 @@ def reached_otherwise(tree: ast.Module, source: str, names: frozenset[str]) -> b
     """Whether the module may reach a name other than by loading it as a variable: as an attribute, a parameter, a
     keyword, an import alias, a `global` statement, or a string, such as `globals()` or `getattr` would take."""
     loaded = {(node.lineno, node.col_offset) for node in ast.walk(tree) if isinstance(node, ast.Name)}
-    for token in tokenize.generate_tokens(io.StringIO(source).readline):
+    # A lone CR ends a line of Python, so tokenize reads it as the parser does only through universal newlines.
+    for token in tokenize.generate_tokens(io.StringIO(source, newline=None).readline):
         if token.type == tokenize.NAME and token.string in names and token.start not in loaded:
             return True
     words = re.compile(rf"\b(?:{'|'.join(map(re.escape, sorted(names)))})\b")
@@ -1026,7 +1028,7 @@ def executed_lines(report: Mapping[str, object], tree: Path, modules: Sequence[s
 
 def collected_tests(listing: str, suite: str) -> list[str]:
     """The node ids of a suite's tests that `pytest <suite> --collect-only -q` lists."""
-    return [line for line in listing.splitlines() if line.startswith(f"{suite}::")]
+    return [line for line in program_lines(listing) if line.startswith(f"{suite}::")]
 
 
 def context_tests(contexts: Iterable[str], suite: str, collected: Sequence[str]) -> frozenset[str] | None:
@@ -2842,7 +2844,7 @@ def main(argv: Sequence[str] | None = None, environment: Mapping[str, str] = os.
     if result.finished:
         return 0
     # A workflow command, which puts the summary's first line on the run's annotations.
-    print(f"::error title=Mutation gate unfinished::{result.text.splitlines()[0]}", flush=True)
+    print(f"::error title=Mutation gate unfinished::{result.text.split('\n', 1)[0]}", flush=True)
     return 1
 
 

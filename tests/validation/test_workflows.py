@@ -15,6 +15,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts"))
 
+import workflows
 from workflows import (
     ACTION_INPUT_STATEMENT,
     CREDENTIALS_ROW,
@@ -1044,6 +1045,10 @@ class CodexSettingsFixtures(unittest.TestCase):
     def test_the_workflow_writes_the_guides_codex_settings_in_any_order(self) -> None:
         self.assertEqual([], codex_settings_problems(CODEX_SETTINGS_WORKFLOW, CODEX_GUIDE))
 
+    def test_the_guide_s_lines_end_where_commonmark_ends_one(self) -> None:
+        # A lone CR ends a line as LF does, so the fence after the paragraph is found.
+        self.assertEqual([], codex_settings_problems(CODEX_SETTINGS_WORKFLOW, CODEX_GUIDE.replace("\n", "\r")))
+
     def test_config_may_be_joined_through_a_folder_variable(self) -> None:
         workflow = CODEX_SETTINGS_WORKFLOW.replace(
             "$config = Join-Path $env:USERPROFILE '.codex/config.toml'",
@@ -1925,6 +1930,25 @@ class WorkflowReaderFixtures(unittest.TestCase):
         )
 
 
+def test_a_workflow_s_lines_end_where_yaml_ends_one() -> None:
+    # YAML 1.2 ends a line at CR, LF, or CRLF, and at no line separator, which stays in its value.
+    expected = {"a": "b\u2028c", "jobs": {"run": {"steps": [{"run": "echo one\necho two\n"}]}}}
+    for end in ("\n", "\r", "\r\n"):
+        text = end.join(
+            [
+                "a: b\u2028c",
+                "jobs:",
+                "  run:",
+                "    steps:",
+                "      - run: |",
+                "          echo one",
+                "          echo two",
+                "",
+            ]
+        )
+        assert read_workflow(text) == expected, repr(end)
+
+
 @pytest.mark.parametrize(
     ("text", "reason"),
     [
@@ -2560,6 +2584,16 @@ def test_a_token_job_running_the_pull_requests_code_and_saying_so_passes() -> No
     assert token_reach_problems(_reach_workflow(), REACH_STEP, REACH_DESIGN) == []
 
 
+@pytest.mark.parametrize("character", ["\x0c", "\u2028"], ids=["form feed", "line separator"])
+def test_a_job_comment_is_read_whole_through_a_character_yaml_ends_no_line_at(character: str) -> None:
+    # The comment's last line holds the character after its `#`; YAML reads it as text, so the comment still sits
+    # directly above the job and says what it must.
+    lines = _reach_workflow().split("\n")
+    above = lines.index("  query:") - 1
+    lines[above] = lines[above].replace("# ", f"#{character}", 1)
+    assert token_reach_problems("\n".join(lines), REACH_STEP, REACH_DESIGN) == []
+
+
 @pytest.mark.parametrize(
     ("workflow", "steps"),
     [
@@ -3037,3 +3071,10 @@ def test_a_workflow_is_held_to_validates_pin_of_each_action_or_repository_it_sha
     workflow: str, problems: list[str]
 ) -> None:
     assert shared_pin_problems(PIN_REVIEWED, workflow) == problems
+
+
+def test_a_claim_span_s_markers_open_lines_a_lone_cr_ends() -> None:
+    # The file is read as its bytes, keeping each CR, and YAML, CommonMark, and Python end a line at a lone one.
+    first, after = workflows.TOKEN_CLAIM_SPANS["tests/validation/workflows.py"][:2]
+    text = f"a\r{first}\rclaim\r{after}\rz"
+    assert workflows._outside_claim_span("tests/validation/workflows.py", text) == f"a\n\n\n{after}\nz"

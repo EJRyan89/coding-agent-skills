@@ -905,3 +905,10 @@ def test_the_planned_actions_are_the_labelled_ones_in_report_order() -> None:
     )
     assert get_args(report.Action) == actions
     assert tuple(report.ACTION_LABELS) == actions
+
+
+def test_a_dry_run_diff_breaks_a_file_s_lines_where_its_program_does(tmp_path: Path) -> None:
+    # A line separator ends no line, so the one changed line is the whole of its own line, and a lone CR ends one.
+    (tmp_path / "SKILL.md").write_bytes("one\u2028two\rthree\n".encode())
+    diff = plan._tree_diff(tmp_path, {"SKILL.md": "one\u2028two\rTHREE\n".encode()}, "staged")
+    assert diff[2:] == ["@@ -1,2 +1,2 @@", " one\u2028two", "-three", "+THREE"]

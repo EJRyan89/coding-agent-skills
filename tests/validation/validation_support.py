@@ -39,6 +39,7 @@ from skill_menu import MenuEntry, SourceMenu, expand
 from suite_names import SUITE_EXTENSIONS as SUITE_EXTENSIONS
 from suite_names import SUITE_NAME_PATTERNS as SUITE_NAME_PATTERNS
 from suite_names import is_suite_name
+from text_lines import LINE_BREAK
 from typed_text import read_typed
 
 from deployer import platform_support
@@ -1319,10 +1320,15 @@ SHELL_CONTINUATIONS = BASH_CONTINUATION + POWERSHELL_CONTINUATION
 def continued_lines(text: str, marks: str = SHELL_CONTINUATIONS) -> list[tuple[int, str]]:
     """Each line of a script as its shell reads a command, by the number of its first line: a line that one of `marks`
     ends joins the next, the mark read as a space. A mark doubled, as `\\\\` writes a backslash, ends no command, so a
-    line ends a continuation only when an odd run of its mark ends it."""
+    line ends a continuation only when an odd run of its mark ends it. Given Bash's mark alone, the script is Bash's,
+    which ends a line at LF alone and reads a CR as part of it, so a backslash before a CRLF continues nothing;
+    otherwise its lines end where PowerShell and YAML end one, at CR, LF, or CRLF."""
     joined: list[tuple[int, str]] = []
     start, held = 0, ""
-    for number, physical in enumerate(text.splitlines(), start=1):
+    physicals = text.split("\n") if marks == BASH_CONTINUATION else LINE_BREAK.split(text)
+    if physicals[-1] == "":
+        physicals.pop()
+    for number, physical in enumerate(physicals, start=1):
         if not held:
             start = number
         line = held + physical
@@ -1571,11 +1577,13 @@ def skill_script_directories(root: Path = REPOSITORY_ROOT) -> list[Path]:
     ]
 
 
-def write_fixture_tree(root: Path, files: Mapping[str, str]) -> None:
-    """Write each relative path's literal text under root, creating its folders."""
+def write_fixture_tree(root: Path, files: Mapping[str, str], newline: str | None = None) -> None:
+    """Write each relative path's literal text under root, creating its folders. Each "\\n" is written as the
+    platform ends a line unless `newline` names the end, as "\\n" keeps a fixture LF-ended, as a checkout holds every
+    file .gitattributes ends at LF, for a reader of its bytes."""
     for relative_path, text in files.items():
         (root / relative_path).parent.mkdir(parents=True, exist_ok=True)
-        (root / relative_path).write_text(text, encoding="utf-8")
+        (root / relative_path).write_text(text, encoding="utf-8", newline=newline)
 
 
 def module_allowance(tree: ast.Module, name: str) -> dict[str, str] | None:

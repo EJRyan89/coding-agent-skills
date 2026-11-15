@@ -25,6 +25,7 @@
     "skills/ejryan89-skill-core/scripts/path_keys.py",
     "skills/ejryan89-skill-core/scripts/python_reader.py",
     "skills/ejryan89-skill-core/scripts/suite_names.py",
+    "skills/ejryan89-skill-core/scripts/text_lines.py",
     "skills/ejryan89-skill-core/scripts/whole_number.py"
   ],
   "finding_categories": [

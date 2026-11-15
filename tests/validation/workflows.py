@@ -13,6 +13,7 @@ from pathlib import Path
 import file_presence
 from markdown_sections import find_fences
 from python_checks import MYPY_CACHE_VARIABLE
+from text_lines import LINE_BREAK, text_lines
 from toolchain import VALIDATION_FLOORS, removed_install_problems
 from validation_support import REPOSITORY_ROOT, repository_files
 
@@ -45,7 +46,7 @@ class _WorkflowReader:
     def __init__(self, text: str) -> None:
         if "\t" in text:
             raise WorkflowSyntaxError("a tab is outside the subset; indent with spaces")
-        self.lines = text.replace("\r\n", "\n").split("\n")
+        self.lines = LINE_BREAK.split(text)
         self.index = 0
 
     def fail(self, reason: str) -> WorkflowSyntaxError:
@@ -725,7 +726,7 @@ CREDENTIALS_ROW = "| Development and CI gates need no model and no credentials:"
 def _job_comment(workflow: str, job: str) -> str:
     """The comment lines directly above a job's key in the workflow's text, with each `#` and indentation removed,
     joined by spaces, so a statement wrapped across them reads as one sentence; empty when the job has none."""
-    lines = workflow.splitlines()
+    lines = text_lines(workflow)
     key = next((index for index, line in enumerate(lines) if line.startswith(" ") and line.strip() == f"{job}:"), None)
     if key is None:
         return ""
@@ -743,7 +744,7 @@ def _claim_text(text: str) -> str:
     replaced or dropped; an underscore that opens or closes a word dropped, as Markdown's emphasis writes it; and every
     run of whitespace, line breaks included, one space. A claim capitalized, emphasized, or wrapped across comment lines
     reads as one sentence."""
-    joined = " ".join(_LINE_MARKER.sub("", line) for line in text.splitlines())
+    joined = " ".join(_LINE_MARKER.sub("", line) for line in text_lines(text))
     folded = _EMPHASIS_UNDERSCORE.sub("", unicodedata.normalize("NFKC", joined).translate(_CLAIM_FOLD))
     return " ".join(folded.casefold().split())
 
@@ -758,7 +759,7 @@ def token_reach_problems(workflow: str, token_steps: Mapping[tuple[str, str], st
     tree = read_workflow(workflow)
     if "pull_request" not in _triggers(tree.get("on") if isinstance(tree, dict) else None) or not token_steps:
         return []
-    rows = [line for line in design.splitlines() if line.startswith(CREDENTIALS_ROW)]
+    rows = [line for line in text_lines(design) if line.startswith(CREDENTIALS_ROW)]
     problems: list[str] = []
     for job in sorted({job for job, _ in token_steps}):
         checkouts = [
@@ -793,7 +794,7 @@ def token_claim_problems(texts: Mapping[str, str], design: str) -> list[str]:
     """Report docs/design.md's CREDENTIALS_ROW not stating ACTION_INPUT_STATEMENT, and each sentence, in `design` or in
     any of `texts`, a name mapped to a text such as a workflow or a module, that makes one of RETIRED_TOKEN_CLAIMS in
     any spelling the patterns read, folded by _claim_text."""
-    rows = [line for line in design.splitlines() if line.startswith(CREDENTIALS_ROW)]
+    rows = [line for line in text_lines(design) if line.startswith(CREDENTIALS_ROW)]
     problems = []
     if len(rows) != 1 or ACTION_INPUT_STATEMENT not in rows[0]:
         problems.append(f"docs/design.md's row {CREDENTIALS_ROW!r} does not say {ACTION_INPUT_STATEMENT!r}")
@@ -853,7 +854,7 @@ def _outside_claim_span(name: str, text: str) -> str:
     if name not in TOKEN_CLAIM_SPANS:
         return text
     first, after = TOKEN_CLAIM_SPANS[name][:2]
-    lines = text.split("\n")
+    lines = LINE_BREAK.split(text)
     start = next((index for index, line in enumerate(lines) if line.startswith(first)), None)
     end = next((index for index, line in enumerate(lines) if line.startswith(after)), None)
     if start is None or end is None or end <= start:
@@ -1046,7 +1047,7 @@ def posix_job_problems(workflow: str, legs: int, job: str = "linux") -> list[str
     )
     if bash_install:
         before = [
-            {line.strip() for line in str(step.get("run", "")).splitlines()}
+            {line.strip() for line in text_lines(str(step.get("run", "")))}
             for step in steps[: _validation_index(steps)]
         ]
         if not any(set(bash_install) <= lines for lines in before):
@@ -1068,7 +1069,7 @@ def posix_job_problems(workflow: str, legs: int, job: str = "linux") -> list[str
             problems.append(f"the step {step.get('name')} runs in {step.get('shell')}, not pwsh as the legs' does")
         if _mapping(step, "env").get("SHARD") != "${{ matrix.shard }}":
             problems.append(f"the step {step.get('name')} does not run its leg's --shard from matrix.shard")
-        lines = {line.strip() for line in script.splitlines()}
+        lines = {line.strip() for line in text_lines(script)}
         problems.extend(
             f"the step {step.get('name')} does not run {expected!r}"
             for expected in LINUX_VALIDATION_LINES
@@ -1190,13 +1191,13 @@ def pinned_tool_problems(workflow: str, job: str) -> list[str]:
         step
         for step in before
         if step.get("shell") == "pwsh"
-        and all(line in {raw.strip() for raw in str(step.get("run", "")).splitlines()} for line in PINNED_TOOL_LINES)
+        and all(line in {raw.strip() for raw in text_lines(str(step.get("run", "")))} for line in PINNED_TOOL_LINES)
     ]
     problems: list[str] = []
     if not verifies:
         problems.append(f"no pwsh step of the {job} job verifies the pinned tools before validation runs")
     for step in verifies:
-        lines = [raw.strip() for raw in str(step.get("run", "")).splitlines()]
+        lines = [raw.strip() for raw in text_lines(str(step.get("run", "")))]
         if not any(line.startswith(RESOLVED_PYTHON_LOOP) for line in lines) or RESOLVED_VERSION_LINE not in lines:
             problems.append(f"the step {step.get('name')} of the {job} job does not print the Python it resolves")
     problems.extend(
@@ -1225,7 +1226,7 @@ def defender_problems(workflow: str) -> list[str]:
     if not any(
         step.get("shell") == "pwsh"
         and step.get("if") == SCHEDULE_ONLY
-        and all(line in {raw.strip() for raw in str(step.get("run", "")).splitlines()} for line in DEFENDER_LINES)
+        and all(line in {raw.strip() for raw in text_lines(str(step.get("run", "")))} for line in DEFENDER_LINES)
         for step in steps
     ):
         problems.append("no pwsh step of the suite job prints Defender's real-time protection state on the schedule")
@@ -1271,7 +1272,7 @@ def image_module_problems(workflow: str, job: str) -> list[str]:
     problems: list[str] = []
     if first > _validation_index(steps):
         problems.append(f"the step {probe.get('name')} of the {job} job reads the image after validation runs")
-    lines = {raw.strip() for raw in str(probe.get("run", "")).splitlines()}
+    lines = {raw.strip() for raw in text_lines(str(probe.get("run", "")))}
     if probe.get("shell") != "pwsh" or "if" in probe or not all(line in lines for line in IMAGE_MODULE_LINES):
         problems.append(
             f"the step {probe.get('name')} of the {job} job does not record, on every event, whether the image has "
@@ -1301,7 +1302,7 @@ def _verify_commands(script: str) -> list[list[str]]:
     """Read the verify invocations as command data, not executable PowerShell. The pinned syntax uses literal
     arguments and parenthesized Join-Path calls; quoted labels stay one argument and comments supply no command."""
     commands = []
-    for line in script.splitlines():
+    for line in text_lines(script):
         if not re.match(r"^\s*python\s+(?:deploy\.py|tools/deployable_report\.py)\s+verify(?:\s|$)", line):
             continue
         lexer = shlex.shlex(line, posix=False, punctuation_chars="|()")
@@ -1534,7 +1535,7 @@ def _bash_step_problems(job: str, settings: dict[str, Node], steps: list[dict[st
         problems.append(f"{step_name} sets {extra}, so its check may not run or may not fail the run")
     if "shell" in step and step["shell"] != shell:
         problems.append(f"{step_name} runs in {step['shell']!r}, not its job's {shell!r}")
-    lines = [line.strip() for line in str(step.get("run", "")).splitlines() if line.strip()]
+    lines = [line.strip() for line in text_lines(str(step.get("run", ""))) if line.strip()]
     script = deployable_bash_script(job, floor)
     if lines != script:
         problems.append(f"{step_name} runs {lines}, not exactly {script}")
@@ -1686,7 +1687,7 @@ def _toml_problem(text: str | None, where: str) -> tuple[dict[str, object] | Non
 def _guide_toml(guide: str) -> str | None:
     """The body of the TOML fence docs/codex-support.md gives one blank line after the paragraph that starts "For MXC
     with the elevated fallback", read as markdown_sections.find_fences reads fences, or None when it gives none."""
-    lines = guide.split("\n")
+    lines = LINE_BREAK.split(guide)
     for start, line in enumerate(lines):
         if not line.startswith("For MXC with the elevated fallback"):
             continue
@@ -1899,7 +1900,7 @@ def posix_verify_log_problems(workflow: str, job: str = "deployable-linux") -> l
     steps = _steps(_mapping(read_workflow(workflow), "jobs", job))
     pairs: list[tuple[str, list[str]]] = []
     for index, step in enumerate(steps):
-        lines = [line.strip() for line in str(step.get("run", "")).splitlines()]
+        lines = [line.strip() for line in text_lines(str(step.get("run", "")))]
         lines = [line for line in lines if line and not line.startswith("#")]
         if any(POSIX_VERIFY.search(line) for line in lines):
             pairs.append((str(step.get("name", f"step {index + 1}")), lines))
@@ -1960,7 +1961,7 @@ UNINSTALL_CHECKS = {
 
 def _script_lines(step: dict[str, Node]) -> list[str]:
     """A step's run script as its lines, stripped, without blank lines and comments."""
-    lines = [line.strip() for line in str(step.get("run", "")).splitlines()]
+    lines = [line.strip() for line in text_lines(str(step.get("run", "")))]
     return [line for line in lines if line and not line.startswith("#")]
 
 

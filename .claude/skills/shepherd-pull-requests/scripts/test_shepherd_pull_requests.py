@@ -1930,6 +1930,10 @@ class LogTest(unittest.TestCase):
         text = PREFIX + "\x1b[31mFAIL\x1b[0m one\n2026-10-16T05:51:51Z two\nthree\twith a tab\n"
         self.assertEqual(["FAIL one", "two", "three\twith a tab"], shepherd.log_lines(text))
 
+    def test_a_log_line_is_read_whole_through_a_character_github_ends_no_line_at(self) -> None:
+        # A job log ends a line at LF, or CRLF, never at a line separator a path or a message may hold.
+        self.assertEqual(["FAIL a\u2028b", "next"], shepherd.log_lines(PREFIX + "FAIL a\u2028b\r\nnext\n"))
+
     def test_a_block_ends_at_the_next_rule_or_the_closing_line(self) -> None:
         lines = shepherd.log_lines(failed_log(SILENT_BLOCK, MYPY_BLOCK))
         blocks = shepherd.failure_blocks(lines)

@@ -28,6 +28,12 @@ P = ParamSpec("P")
 
 # The longest string or integer quoted in what an error found; a longer one is described by its length.
 QUOTED_CHARACTERS = 40
+LINE_SPLIT_ALLOWED = {
+    "FieldReader.string": (
+        "refuses, for a single-line field, a value holding any character str.splitlines breaks at, which is stricter "
+        "than any one reader's line end: such a value would break the one line it is printed on somewhere"
+    ),
+}
 OWNER_ONLY_ALLOWED = {
     "describe": "quotes, for a refusal, a string a reader that keeps lone surrogates may hand it, which json_writer "
     "would refuse in place of the message",

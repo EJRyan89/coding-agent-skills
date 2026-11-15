@@ -5070,3 +5070,9 @@ class JudgedFolderFixtures(unittest.TestCase):
                 with recording_temporary_folders() as calls:
                     gate.leg(selected)
         self.assertEqual([True, True], judged_folder_calls(calls, "mutation-gate-"))
+
+
+def test_a_name_in_a_comment_after_a_lone_cr_is_not_reached() -> None:
+    # Python ends a line at a lone CR, so the `f` after `#` is a comment's text, as the parser reads it.
+    source = "import x\r# f\n"
+    assert not mutation_gate.reached_otherwise(ast.parse(source), source, frozenset({"f"}))

@@ -15,6 +15,7 @@ import file_presence
 import frontmatter
 from job_pool import refuse_termination, run_process
 from path_containment import posix_within
+from text_lines import LINE_BREAK, program_lines
 from toolchain import (
     VALIDATION_FLOORS,
     bash_syntax_job,
@@ -75,7 +76,7 @@ def _shell_units(path: Path) -> list[tuple[str, int, str]]:
         return [(context, 1, text)]
     if context != "markdown":
         return []
-    lines = text.split("\n")
+    lines = LINE_BREAK.split(text)
     return [
         (render.fence_context(fence), fence.opener + 2, "\n".join(fence.text(lines[index]) for index in fence.body()))
         for fence in find_fences(lines)
@@ -94,7 +95,7 @@ def unclosed_fence_problems(root: Path, files: list[Path]) -> list[str]:
         name = path.relative_to(root).as_posix()
         if path.suffix.casefold() != ".md" or name.startswith("tests/fixtures/"):
             continue
-        lines = path.read_text(encoding="utf-8", errors="replace").split("\n")
+        lines = LINE_BREAK.split(path.read_text(encoding="utf-8", errors="replace"))
         problems += [
             f"{name}:{fence.opener + 1} opens a {fence.language or 'plain'} fence it never closes; close it"
             for fence in find_fences(lines)
@@ -283,7 +284,7 @@ def shell_token_problems(root: Path) -> list[str]:
 
 def _prose_code_spans(path: Path) -> list[tuple[int, str]]:
     """Each inline code span outside a Markdown file's fences, as (line number, text)."""
-    lines = path.read_text(encoding="utf-8", errors="replace").split("\n")
+    lines = LINE_BREAK.split(path.read_text(encoding="utf-8", errors="replace"))
     return [(index + 1, span) for index, span in prose_code_spans(lines)]
 
 
@@ -508,7 +509,7 @@ def markdown_shell_check(root: Path, files: list[Path]) -> None:
     if result.returncode == 0:
         return
     reported: list[str] = []
-    for line in result.output.splitlines():
+    for line in program_lines(result.output):
         found = next((path for path in fragments if line.startswith(f"{path}:")), None)
         position = re.match(r":(\d+)(:.*)$", line[len(found) :]) if found else None
         if found is None or position is None:

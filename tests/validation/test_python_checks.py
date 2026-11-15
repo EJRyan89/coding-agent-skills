@@ -3440,14 +3440,21 @@ def test_content_errors_policy_refuses_a_tree_whose_skill_core_names_no_reader()
 # of one function, and passed when it also calls what recurses (a standard-library parser or pattern compile, a
 # callable it cannot read, a method of a parameter or of what a call gave, a call of a subscript, a function calling
 # itself, or one that calls one, however many calls away), when it reaches no reader, when its scope is sanctioned, or
-# when the statement is a `with` of something other than a suppress.
+# when the statement is a `with` of something other than a suppress. A handler naming RecursionError around a call
+# that recurses in C, such as json's reader or writer, whose depth limit varies by Python version, is refused with or
+# without a reader when that call is all that recurses, directly or through a function, and passed when its function
+# judges the depth with nesting_depth.nests_past, before the call or after it, directly or through a function, or
+# when it also calls what recurses in Python. The codec and file methods a C call's result or argument passes through,
+# encode(), write_text(), and a file's write, recurse into nothing, and the parser behind ast.parse recurses in C.
 CONTENT_RECURSION_CALLER_SOURCE = """\
+import ast
 import contextlib
 import json
 import os
 import re
 import tomllib
 
+import nesting_depth
 from reader import read
 
 CAUGHT = (ValueError, RecursionError)
@@ -3643,6 +3650,84 @@ def sanctioned(text):
         return read(text)
     except (ValueError, RecursionError):
         return None
+
+
+def written_alone(value):
+    try:
+        return json.dumps(value)
+    except RecursionError:
+        return None
+
+
+def written_through_a_function(text):
+    try:
+        return parse(text)
+    except RecursionError:
+        return None
+
+
+def suppressed_writer(value):
+    with contextlib.suppress(RecursionError):
+        return repr(value)
+
+
+def bounded(value):
+    if nesting_depth.nests_past(value, list):
+        raise ValueError("nested too deep")
+    return value
+
+
+def judged_before(value):
+    if nesting_depth.nests_past(value, list):
+        return None
+    try:
+        return json.dumps(value)
+    except RecursionError:
+        return None
+
+
+def judged_after(text):
+    try:
+        value = json.loads(text)
+    except RecursionError:
+        return None
+    return bounded(value)
+
+
+def beside_python_recursion(text):
+    try:
+        return json.loads(text), tomllib.loads(text)
+    except RecursionError:
+        return None
+
+
+def written_then_encoded(value):
+    try:
+        return json.dumps(value).encode()
+    except RecursionError:
+        return None
+
+
+def written_to_a_path(path, value):
+    try:
+        path.write_text(json.dumps(value))
+    except RecursionError:
+        return None
+
+
+def written_to_a_file(path, value):
+    try:
+        with open(path, "w") as file:
+            json.dump(value, file)
+    except RecursionError:
+        return None
+
+
+def parsed_source(text):
+    try:
+        return ast.parse(text)
+    except (SyntaxError, MemoryError, RecursionError):
+        return None
 """
 
 
@@ -3661,32 +3746,26 @@ def test_content_errors_policy_refuses_a_recursion_handler_around_readers_that_n
         "catches RecursionError around readers that refuse nesting as their own family, and calls nothing that "
         "recurses; remove RecursionError, or state which call raises it in CONTENT_ERRORS_ALLOWED"
     )
+    c_remedy = (
+        "catches RecursionError around a call that recurses in C, which stops at a depth that varies by Python "
+        "version; judge the depth first with nesting_depth.nests_past, as json_writer.nests_too_deep does, or state "
+        "why in CONTENT_ERRORS_ALLOWED"
+    )
     assert found == [
-        f"skills/alpha/scripts/alpha.py:{line} {remedy}" for line in (37, 44, 51, 56, 66, 138, 149, 157, 173, 169)
+        *(f"skills/alpha/scripts/alpha.py:{line} {remedy}" for line in (39, 46, 53, 58, 68)),
+        f"skills/alpha/scripts/alpha.py:98 {c_remedy}",
+        *(f"skills/alpha/scripts/alpha.py:{line} {remedy}" for line in (140, 151, 159, 175, 171)),
+        *(f"skills/alpha/scripts/alpha.py:{line} {c_remedy}" for line in (209, 216, 221, 258, 265, 273, 280)),
     ]
 
 
-# The standard-library calls that recurse per level, and the plain methods that never do, spelled here apart from the
-# policy's own tables, so an entry dropped or misspelled there fails.
+# The standard-library calls that recurse per level, in Python and in C, and the plain methods that never do, spelled
+# here apart from the policy's own tables, so an entry dropped, misspelled, or moved between them there fails.
 RECURSING_CALLS = (
     "ast.dump",
     "ast.literal_eval",
-    "ast.parse",
     "ast.unparse",
-    "compile",
     "copy.deepcopy",
-    "eval",
-    "exec",
-    "json.dump",
-    "json.dumps",
-    "json.load",
-    "json.loads",
-    "marshal.dumps",
-    "marshal.loads",
-    "pickle.dump",
-    "pickle.dumps",
-    "pickle.load",
-    "pickle.loads",
     "pprint.pformat",
     "pprint.pprint",
     "re.compile",
@@ -3698,20 +3777,41 @@ RECURSING_CALLS = (
     "re.split",
     "re.sub",
     "re.subn",
-    "repr",
     "tomllib.load",
     "tomllib.loads",
+)
+C_RECURSING_CALLS = (
+    "ast.parse",
+    "compile",
+    "eval",
+    "exec",
+    "json.dump",
+    "json.dumps",
+    "json.load",
+    "json.loads",
+    "marshal.dump",
+    "marshal.dumps",
+    "marshal.load",
+    "marshal.loads",
+    "pickle.dump",
+    "pickle.dumps",
+    "pickle.load",
+    "pickle.loads",
+    "repr",
 )
 NON_RECURSING_METHODS = (
     "add",
     "append",
     "as_posix",
     "casefold",
+    "close",
     "count",
+    "encode",
     "endswith",
     "exists",
     "extend",
     "find",
+    "flush",
     "get",
     "is_dir",
     "is_file",
@@ -3721,8 +3821,10 @@ NON_RECURSING_METHODS = (
     "keys",
     "lower",
     "lstrip",
+    "open",
     "partition",
     "pop",
+    "read",
     "read_bytes",
     "read_text",
     "relative_to",
@@ -3742,23 +3844,28 @@ NON_RECURSING_METHODS = (
     "unlink",
     "upper",
     "values",
+    "write",
+    "write_bytes",
+    "write_text",
 )
 
 
 def test_content_errors_policy_reads_each_catalogued_call_as_recursing_and_each_plain_method_as_not() -> None:
-    modules = sorted({name.partition(".")[0] for name in RECURSING_CALLS if "." in name})
+    # A call that recurses in Python passes beside the reader; one that recurses in C, or a plain method, is refused.
+    modules = sorted({name.partition(".")[0] for name in RECURSING_CALLS + C_RECURSING_CALLS if "." in name})
     lines = [*(f"import {module}" for module in modules), "", "from reader import read", ""]
     refused = []
-    for index, (call, plain) in enumerate(
+    for index, (call, kind) in enumerate(
         [
-            *((f"{name}(text)", False) for name in RECURSING_CALLS),
-            *((f"value.{name}()", True) for name in NON_RECURSING_METHODS),
+            *((f"{name}(text)", None) for name in RECURSING_CALLS),
+            *((f"{name}(text)", "recurses in C") for name in C_RECURSING_CALLS),
+            *((f"value.{name}()", "refuse nesting") for name in NON_RECURSING_METHODS),
         ]
     ):
         lines += ["", f"def beside_{index}(text, value):", "    try:", f"        return read(text), {call}"]
         lines += ["    except (ValueError, RecursionError):", "        return None", ""]
-        if plain:
-            refused.append(len(lines) - 2)
+        if kind is not None:
+            refused.append((len(lines) - 2, kind))
     with tempfile.TemporaryDirectory() as temporary:
         root = Path(temporary)
         write_fixture_tree(
@@ -3769,7 +3876,10 @@ def test_content_errors_policy_reads_each_catalogued_call_as_recursing_and_each_
             },
         )
         found = python_checks.content_error_problems(root, sorted(root.rglob("*.py")), {})
-    lines_found = sorted(int(problem.split(" ", 1)[0].rpartition(":")[2]) for problem in found)
+    lines_found = sorted(
+        (int(problem.split(" ", 1)[0].rpartition(":")[2]), next(kind for _, kind in refused if kind in problem))
+        for problem in found
+    )
     assert lines_found == refused
 
 
@@ -8319,3 +8429,115 @@ class SiblingImportFixtures(unittest.TestCase):
             write_fixture_tree(folder, {"helper.py/notes.txt": "", "test_a.py": "import helper\n"})
             source = folder / "test_a.py"
             self.assertFalse(python_checks.imports_a_sibling(source, ast.parse(source.read_text(encoding="utf-8"))))
+
+
+# Each splitlines() the line-split policy refuses, each split at "\n" of a file read with its CRs kept, and each form
+# it passes, by a source whose refused lines end in `# read`.
+DECODED = "path.read_bytes().decode('utf-8')"
+LINE_SPLIT_FORMS = [
+    pytest.param("def f(text):\n    return text.splitlines()  # read\n", id="splitlines bound"),
+    pytest.param("def f(text):\n    return text.splitlines(keepends=True)  # read\n", id="splitlines keeping ends"),
+    pytest.param("def f(text):\n    return str.splitlines(text)  # read\n", id="splitlines unbound"),
+    pytest.param("def f(path):\n    return path.read_text().splitlines()  # read\n", id="splitlines of a file"),
+    pytest.param("def f(result):\n    return result.stdout.splitlines()  # read\n", id="splitlines of output"),
+    pytest.param(f"def f(path):\n    return {DECODED}.split('\\n')  # read\n", id="decoded bytes split at LF"),
+    pytest.param(
+        "def f(path):\n    return path.read_text(newline='').split('\\n')  # read\n",
+        id="a file read with its line ends kept split at LF",
+    ),
+    pytest.param(
+        "def f(path, end):\n    return path.read_text(newline=end).split('\\n')  # read\n",
+        id="a file read with a newline the policy cannot settle split at LF",
+    ),
+    pytest.param(f"def f(path):\n    return {DECODED}.rsplit('\\n', 1)  # read\n", id="decoded bytes rsplit at LF"),
+    pytest.param(f"def f(path):\n    return {DECODED}.split(sep='\\n')  # read\n", id="LF given by keyword"),
+    pytest.param(f"def f(path):\n    return str.split({DECODED}, '\\n')  # read\n", id="split unbound"),
+    *(
+        pytest.param(f"def f(path):\n    return {DECODED}.{method}('x').split('\\n')  # read\n", id=f"through {method}")
+        for method in ("strip", "lstrip", "rstrip", "removeprefix", "removesuffix")
+    ),
+    pytest.param(
+        "def f(text):\n    return text.replace('\\r\\n', '\\n').split('\\n')  # read\n", id="CRLF made LF alone"
+    ),
+    pytest.param(
+        f"def f(path):\n    text = {DECODED}\n    return text.split('\\n')  # read\n", id="a name bound to a file"
+    ),
+    pytest.param(
+        f"def f(path):\n    text: str = {DECODED}\n    return text.split('\\n')  # read\n",
+        id="a name annotated and bound to a file",
+    ),
+    pytest.param(
+        f"def f(path):\n    if (text := {DECODED}):\n        return text.split('\\n')  # read\n",
+        id="a name an assignment expression binds to a file",
+    ),
+    pytest.param(
+        "LINE_SPLIT_ALLOWED = {'g': 'a reason'}\n\n\ndef f(text):\n    return text.splitlines()  # read\n\n\n"
+        "def g(text):\n    return text.splitlines()\n",
+        id="a split outside the scope the allowance names",
+    ),
+    pytest.param("def f():\n    return b'a\\nb'.splitlines()\n", id="splitlines of a bytes literal passes"),
+    pytest.param("def f(path):\n    return path.read_bytes().splitlines()\n", id="splitlines of read_bytes passes"),
+    pytest.param("def f(text):\n    return text.encode().splitlines()\n", id="splitlines of encode passes"),
+    pytest.param("def f(value):\n    return bytes(value).splitlines()\n", id="splitlines of bytes() passes"),
+    pytest.param("def f(text):\n    return text.split('\\n')\n", id="a parameter split at LF passes"),
+    # read_text reads with universal newlines, so a lone CR and a CRLF come back as the line feed it splits at.
+    pytest.param("def f(path):\n    return path.read_text().split('\\n')\n", id="read_text split at LF passes"),
+    pytest.param(
+        "def f(path):\n    return path.read_text(newline=None).split('\\n')\n",
+        id="read_text given newline None split at LF passes",
+    ),
+    pytest.param(
+        "def f(output):\n    return output.decode('utf-8').split('\\n')\n", id="a program's output decoded passes"
+    ),
+    pytest.param(f"def f(path):\n    return {DECODED}.split(',')\n", id="a file split at another separator passes"),
+    pytest.param(
+        f"def f(path):\n    text = {DECODED}\n    return text\n\n\ndef g(text):\n    return text.split('\\n')\n",
+        id="a name another scope binds to a file passes",
+    ),
+    pytest.param("def f(text):\n    return text.replace('a', '\\n').split('\\n')\n", id="another replace passes"),
+]
+
+
+@pytest.mark.parametrize("source", LINE_SPLIT_FORMS)
+def test_line_split_policy_refuses_each_split_its_comment_names_and_passes_the_rest(source: str) -> None:
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        write_fixture_tree(root, {"skills/alpha/scripts/alpha.py": source})
+        found = python_checks.line_split_problems(root, sorted(root.rglob("*.py")))
+    lines = [number for number, text in enumerate(source.split("\n"), 1) if text.endswith("# read")]
+    assert [problem.split(" ", 1)[0] for problem in found] == [f"skills/alpha/scripts/alpha.py:{n}" for n in lines]
+
+
+def test_line_split_policy_names_each_remedy_and_skips_text_lines_itself() -> None:
+    source = "def f(text, path):\n    return text.splitlines(), path.read_bytes().decode().split('\\n')\n"
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        write_fixture_tree(
+            root,
+            {
+                "skills/alpha/scripts/alpha.py": source,
+                # The one splitter's own module is where splitlines is named, to say why it is not used.
+                "skills/ejryan89-skill-core/scripts/text_lines.py": source,
+            },
+        )
+        found = python_checks.line_split_problems(root, sorted(root.rglob("*.py")))
+    assert found == [
+        "skills/alpha/scripts/alpha.py:2 splits with splitlines(), which also breaks at U+0085, U+2028, U+2029, a "
+        "vertical tab, a form feed, and the file, group, and record separators; split a file an author writes with "
+        "text_lines.text_lines and a program's output where that program ends a line, with text_lines.program_lines "
+        "or git_client.output_lines, or state why in LINE_SPLIT_ALLOWED",
+        'skills/alpha/scripts/alpha.py:2 splits a file an author writes, read with its CRs kept, at "\\n" alone, '
+        "which misses a lone CR that YAML, CommonMark, and .NET end a line at; split it with text_lines.text_lines, "
+        "or state why in LINE_SPLIT_ALLOWED, as for a Bash script, which Bash ends at LF alone",
+    ]
+
+
+def test_line_split_policy_refuses_an_allowance_entry_that_sanctions_nothing() -> None:
+    source = "LINE_SPLIT_ALLOWED = {'f': 'a reason'}\n\n\ndef f(text):\n    return text.split('\\n')\n"
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        write_fixture_tree(root, {"skills/alpha/scripts/alpha.py": source})
+        found = python_checks.line_split_problems(root, sorted(root.rglob("*.py")))
+    assert found == [
+        "skills/alpha/scripts/alpha.py: LINE_SPLIT_ALLOWED allows f, which holds nothing it sanctions; remove the entry"
+    ]

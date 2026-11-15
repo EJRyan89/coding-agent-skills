@@ -579,11 +579,17 @@ removed fails validation until its pattern follows it.
   `.claude/skills/audit-repository/scripts/test_audit_repository.py::TwinTests::test_a_construct_line_holding_backslash_e_is_searched_as_fixed_text`,
   which holds the twin sweep's fixed-text search to what git grep built with PCRE does with a backslash-E,
   `skills/ejryan89-skill-core/scripts/test_text_lines.py::test_every_other_character_splitlines_breaks_at_is_kept_in_its_line`,
+  `tests/validation/test_python_checks.py::test_line_split_policy_refuses_each_split_its_comment_names_and_passes_the_rest`
+  and `tests/validation/python_checks.py::PythonChecksPolicies::test_text_is_split_into_lines_where_its_program_ends_one`,
+  which refuse a splitlines() of anything but plain bytes, and a split at LF alone of a file an author writes, outside
+  a stated reason,
   `tests/deployer/test_frontmatter.py::DocumentTests::test_a_line_breaks_only_where_yaml_breaks_one`,
   `tests/deployer/test_frontmatter.py::DocumentTests::test_the_delimiter_is_three_hyphens_and_yaml_whitespace_alone`, and
   `skills/audit-ai-config/scripts/test_audit_ai_config.py::ClaudeCodeConfigurationTests::test_an_import_inside_an_indented_code_block_is_none_as_markdown_reads_the_block`
 - **Search for:** `str.splitlines()` of a file an author writes, which breaks at characters YAML, CommonMark, and .NET
-  read as text, rather than `text_lines`; a `---` delimiter judged after `str.strip()` or `str.rstrip()`, which strip
+  read as text, rather than `text_lines`; `.replace("\r\n", "\n").split("\n")` or a `split("\n")` of a parameter
+  holding such a file, which misses a lone CR, a line end to each of them, and which the policy does not trace to a
+  file; a `---` delimiter judged after `str.strip()` or `str.rstrip()`, which strip
   characters YAML reads as text or forbids; a reader of Markdown that skips fenced code but not indented code; a Python parser or folding, `float(`, `int(` with or without a base, `casefold()`, `lower()`,
   `strip()`, or a pattern with `re.IGNORECASE` and no `re.ASCII`, applied to a value another program reads, each
   checked against that program's own reading of it, as MSBuild reads a number with .NET's invariant `Double.TryParse`
@@ -651,6 +657,9 @@ removed fails validation until its pattern follows it.
   `skills/ejryan89-skill-core/scripts/test_json_writer.py::RefusalTests::test_nesting_is_judged_at_the_readers_limit_before_the_json_module_writes`,
   `skills/audit-ai-config/scripts/test_mcp_handshake.py::HandshakeTests::test_a_definition_is_too_deep_one_level_past_the_shared_limit_and_grouped_at_it`,
   `tests/validation/test_python_checks.py::test_content_errors_policy_refuses_a_recursion_handler_around_readers_that_never_raise_it`,
+  which also refuses a handler whose only call that recurses is one the standard library runs in C unless its function
+  judges the depth with nesting_depth's nests_past,
+  `tests/validation/test_python_checks.py::test_content_errors_policy_reads_each_catalogued_call_as_recursing_and_each_plain_method_as_not`,
   `skills/ejryan89-skill-core/scripts/test_json_reader.py::RefusalTests::test_nesting_one_level_past_the_shared_limit_is_refused_though_the_scanner_reads_it`,
   `skills/ejryan89-skill-core/scripts/test_json_reader.py::RefusalTests::test_a_scalar_is_no_level_so_one_at_the_limit_reads_as_an_empty_container_does`,
   `skills/ejryan89-skill-core/scripts/test_xml_reader.py::DepthTests`,
@@ -667,9 +676,9 @@ removed fails validation until its pattern follows it.
 - **Search for:** a function that calls itself on a child of its input with no depth parameter and no
   `except RecursionError`; `literal_eval(` or `ast.parse(` outside `python_reader.py`, whose handler would have to
   name `MemoryError` and `RecursionError` beside `SyntaxError`; `json.loads(` outside `json_reader.py`; an
-  `except RecursionError` around `json.dumps(`, `pickle.dumps(`, `copy.deepcopy(`, `repr(`, or another call the
-  standard library runs in C, whose depth is judged first with `nesting_depth:nests_past` instead.
-- **Examples:** #1613, #1617, #1729, #1886, #1893, #2170, #2190, #2390, #2844, #2849
+  `except RecursionError` around `json.dumps(`, `pickle.dumps(`, `repr(`, or another call the standard library runs
+  in C, whose depth is judged with `nesting_depth:nests_past` instead.
+- **Examples:** #1613, #1617, #1729, #1886, #1893, #2170, #2190, #2390, #2844, #2849, #2851
 
 ### A path taken from input is judged inside its tree before anything opens it
 
@@ -811,8 +820,8 @@ removed fails validation until its pattern follows it.
   U+00A0 and U+2028;
   `skill_inventory:delegation_lines`, which returns each runtime prompt's line number beside the lines it prints;
   `run_dotnet_format:parse_diagnostics`, which splits a formatter's log on a newline alone for the same reason;
-  `deployer.discovery:output_lines`, which splits a runtime's output, its skill catalog, and the canary's records on a
-  newline alone, taking off a carriage return before it, and `tools.claude_stream:events`, which reads Claude Code's
+  `text_lines:program_lines`, which splits a program's output, a runtime's skill catalog and the canary's records
+  among it, on a newline alone, taking off a carriage return before it, and `tools.claude_stream:events`, which reads Claude Code's
   stream-json output through it for the canaries and the skill evaluations; `flat_text:fact_line`, which flattens every field of a
   tab-separated fact line; and the choke points every stdout line of a shipped skill's scripts passes,
   `flat_text:flat_text`, `flat_text:fact_line`, `console:failed_line`, and `flat_text:single_line`, given a whole

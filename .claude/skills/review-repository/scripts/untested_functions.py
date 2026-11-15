@@ -105,6 +105,7 @@ from conditions import (
 from console import failed_line, run_main
 from diff_paths import HUNK_HEADER
 from suite_names import SUITE_NAME_PATTERNS
+from text_lines import program_lines
 
 DUPLICATION_ALLOWED = {
     "EXIT_CONTRACT_EXEMPT": (
@@ -425,7 +426,8 @@ def _code_text(path: str, text: str) -> str:
     """A test's text without its comments: a Python test's strings stay, since a test calls a shell function from
     one. Raises tokenize.TokenError or SyntaxError when `tokenize` cannot read a Python test."""
     if path.endswith(".py"):
-        tokens = tokenize.generate_tokens(io.StringIO(text).readline)
+        # A lone CR ends a line of Python, so tokenize reads it as the parser does only through universal newlines.
+        tokens = tokenize.generate_tokens(io.StringIO(text, newline=None).readline)
         return " ".join(token.string for token in tokens if token.type != tokenize.COMMENT)
     if path.endswith(".ps1"):
         text = POWERSHELL_BLOCK_COMMENT.sub(" ", text)
@@ -702,6 +704,10 @@ def entries(root: Path, files: list[FileChange], unreadable: dict[str, str] | No
     changes = [change for change in changes if change not in withheld]
     tests = Tests(suites(root), {} if unreadable is None else unreadable)
     for change in changes:
+        # The diff's hunks number a line as git does, ending it at LF alone, so a CRLF is one line end and a lone CR
+        # part of its line; each reader below splits the text at LF to number its lines the same way. Python's parser
+        # ends a line at a lone CR too, so a Python file holding one is numbered past git's hunks after it; no file
+        # here holds one.
         text = change.head.read_bytes().decode("utf-8", errors="replace").replace("\r\n", "\n")
         try:
             definitions = _definitions(change.path, text)
@@ -709,7 +715,7 @@ def entries(root: Path, files: list[FileChange], unreadable: dict[str, str] | No
             blocks.append(f"UNPARSED {change.path}: {failed_line(error).removeprefix('FAILED ')}\n")
             continue
         changed = changed_definitions(change, definitions)
-        lines = text.split("\n")
+        lines = program_lines(text)
         imported = imported_names(parse_python(text)) if change.path.endswith(".py") else set()
         for definition in sorted(changed, key=lambda item: item.line):
             if tests.names(definition):

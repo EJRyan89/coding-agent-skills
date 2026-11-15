@@ -19,6 +19,7 @@ import json_reader
 import python_reader
 from git_client import GitError, output_line
 from release_levels import RELEASING_DOC, VERSION, VERSIONING_HEADING, level_word, versioning_levels
+from text_lines import LINE_BREAK
 from validation_support import (
     OPERATIONS_CONTRACT,
     REPOSITORY_ROOT,
@@ -316,7 +317,7 @@ def notes_entry_problems(item: SourcedEntry, levels: list[str]) -> list[str]:
 def notes_sections(notes: str) -> list[str]:
     """The heading of each `## ` section of the notes file, read outside every code fence: a fenced `## ` line is the
     fence's text, as GitHub renders it and tools/release_notes.py reads it inside an entry."""
-    lines = notes.replace("\r\n", "\n").split("\n")
+    lines = LINE_BREAK.split(notes)
     fenced = {index for fence in find_fences(lines) for index in fence.lines()}
     matches = (NOTES_SECTION.fullmatch(line) for index, line in enumerate(lines) if index not in fenced)
     return [match.group(1) for match in matches if match is not None]

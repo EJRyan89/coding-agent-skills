@@ -16,6 +16,7 @@ import file_presence
 import json_reader
 import json_writer
 from job_pool import Terminated, refuse_termination, run_process
+from text_lines import program_lines, text_lines
 from validation_support import REPOSITORY_ROOT, continued_lines, find_fences, markdown_section, repository_files
 
 from deployer import platform_support, render, tools
@@ -27,6 +28,26 @@ COMMANDS_ALLOWED = {
     "ruff_job": "the ruff runner starts the program find_ruff located",
     "mypy_job": "the mypy runner starts the program find_mypy located",
     "read_tool_version": "runs the version probe of a prerequisite its finder located",
+}
+
+
+# The readers of a requirements file, which split it where pip does.
+LINE_SPLIT_ALLOWED = {
+    "requirements_problems": (
+        "pip reads a requirements file's lines with str.splitlines, so a requirement is read where pip breaks its line"
+    ),
+    "locked_requirements": (
+        "pip reads a requirements file's lines with str.splitlines, so a requirement is read where pip breaks its line"
+    ),
+    "lock_problems": (
+        "pip reads a requirements file's lines with str.splitlines, so a requirement is read where pip breaks its line"
+    ),
+    "ToolchainPolicies.test_the_mutation_gate_installs_its_pinned_tools_and_nothing_else": (
+        "pip reads a requirements file's lines with str.splitlines, so a requirement is read where pip breaks its line"
+    ),
+    "ToolchainPolicies.test_ci_exercises_each_floor": (
+        "pip reads a requirements file's lines with str.splitlines, so a requirement is read where pip breaks its line"
+    ),
 }
 
 
@@ -67,7 +88,7 @@ def find_psscriptanalyzer() -> str | None:
     probe = [find_powershell(), "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", NEWEST_SCRIPT_ANALYZER]
     result = platform_support.run_tool(probe)
     refuse_termination(probe, result.returncode, result.output)
-    lines = [line.strip() for line in result.output.splitlines() if line.strip()]
+    lines = [line.strip() for line in program_lines(result.output) if line.strip()]
     found = lines[-1] if result.returncode == 0 and lines else ""
     return found if found.casefold().endswith(".psd1") else None
 
@@ -106,7 +127,7 @@ def powershell_json(
         json_writer.write(request, inputs)
         result = platform_support.run_tool(command, {**(environment or {}), variable: str(request)})
     refuse_termination(command, result.returncode, result.output)
-    lines = [line for line in result.output.splitlines() if line.strip()]
+    lines = [line for line in program_lines(result.output) if line.strip()]
     try:
         found = json_reader.loads(lines[-1]) if result.returncode == 0 and lines else None
     except json_reader.CONTENT_ERRORS:
@@ -431,7 +452,7 @@ def fence_install_problems(markdown: str, locks: tuple[str, ...]) -> list[str]:
     a lock, so a documented install of a lock checks hashes and builds no source distribution, as hash_install_problems
     holds a workflow's. A fence's pip install that names no requirements file, such as one of pip-tools, is not
     one."""
-    lines = markdown.splitlines()
+    lines = text_lines(markdown)
     body = {index + 1 for fence in find_fences(lines) for index in fence.body()}
     return [
         f"line {number} does not install only {list(locks)} with {HASH_CHECKED_INSTALL}: {line.strip()!r}"
@@ -680,7 +701,7 @@ class ToolchainPolicies(unittest.TestCase):
         dependencies = (REPOSITORY_ROOT / DEPENDENCY_DOC).read_text(encoding="utf-8")
         for part, document, pattern, expected in copies:
             if part.startswith("|"):
-                named = next(line for line in dependencies.splitlines() if line.startswith(part))
+                named = next(line for line in text_lines(dependencies) if line.startswith(part))
             else:
                 named = markdown_section(dependencies, part) or ""
             with self.subTest(document=document, pattern=pattern):

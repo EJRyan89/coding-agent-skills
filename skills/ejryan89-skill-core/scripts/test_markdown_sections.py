@@ -100,6 +100,13 @@ def test_a_heading_followed_by_another_unicode_space_is_not_that_heading() -> No
     assert markdown_section(f"## One{NBSP}\nfirst\n## One\nsecond", "## One") == "second"
 
 
+def test_a_section_s_lines_end_where_commonmark_ends_one() -> None:
+    # A lone CR ends a line as CRLF and LF do, and each becomes LF.
+    assert markdown_section("## One\rfirst\r\nsecond\r## Two\rthird", "## One") == "first\nsecond"
+    # A line separator ends no line, so the heading it holds is text.
+    assert markdown_section("## One\nfirst\u2028## Two\nlast", "## One") == "first\u2028## Two\nlast"
+
+
 def test_only_spaces_and_tabs_make_a_line_blank() -> None:
     assert is_blank("")
     assert is_blank(" \t ")

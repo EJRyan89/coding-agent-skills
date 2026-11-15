@@ -34,6 +34,7 @@ from bounded_process import Finished, run_bounded
 from executable_locator import located_command
 from flat_text import flat_text
 from gh_shorthands import GH_VALUE_SHORTHANDS, shorthands
+from text_lines import program_lines
 
 T = TypeVar("T")
 
@@ -407,7 +408,7 @@ def split_response(stdout: str) -> Response:
         return Response(None, {}, stdout)
     parts = re.split(r"\r?\n\r?\n", stdout, maxsplit=1)
     head, body = parts[0], parts[1] if len(parts) > 1 else ""
-    lines = head.splitlines()
+    lines = program_lines(head)
     status_parts = lines[0].split()
     status = int(status_parts[1]) if len(status_parts) > 1 and status_parts[1].isdigit() else None
     headers: dict[str, str] = {}

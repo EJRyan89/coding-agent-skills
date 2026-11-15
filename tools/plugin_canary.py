@@ -85,6 +85,7 @@ import skill_menu
 from console import run_main
 from seconds_option import positive_seconds
 from skill_roots import sibling_scripts
+from text_lines import program_lines
 
 sys.path.insert(0, str(sibling_scripts("ejryan89-code-review-core")))
 
@@ -193,14 +194,14 @@ def build(home: Path, sources: list[Path]) -> list[plugin_build.Plugin]:
 
 
 def last_line(completed: Completed) -> str:
-    lines = [line.strip() for line in (completed.stdout + completed.stderr).splitlines() if line.strip()]
+    lines = [line.strip() for line in program_lines(completed.stdout + completed.stderr) if line.strip()]
     return completed.error or (lines[-1] if lines else f"exited with code {completed.returncode}")
 
 
 def details(text: str) -> dict[str, set[str]]:
     """The component inventory `claude plugin details` prints: skill and agent names, and hook event names."""
     found: dict[str, set[str]] = {"skill": set(), "agent": set(), "hook": set()}
-    for line in text.splitlines():
+    for line in program_lines(text):
         match = DETAILS.match(line)
         if match:
             kind = {"Skills": "skill", "Agents": "agent", "Hooks": "hook"}[match.group(1)]

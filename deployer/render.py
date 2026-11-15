@@ -18,6 +18,7 @@ from agent_skills import CODEX_METADATA as CODEX_METADATA
 from agent_skills import MAX_DESCRIPTION as MAX_DESCRIPTION
 from markdown_sections import FENCE_LANGUAGES, Fence, find_fences
 from suite_names import is_suite_name
+from text_lines import program_lines
 
 from . import fsops, hashing, platform_support
 from .arguments import CONFIGURE_COMMAND_LINE
@@ -474,7 +475,7 @@ def _check_bash_syntax(units: list[ShellUnit], bash: str) -> None:
         if result.returncode != 0:
             kind = "block syntax" if unit.is_block else "syntax"
             # Bash's lines are the reason; a Bash that printed nothing is named by its exit code.
-            reason = result.output.rstrip().splitlines() if result.output.strip() else []
+            reason = program_lines(result.output.rstrip()) if result.output.strip() else []
             raise DeployError(
                 f"ERROR: Rendered Bash {kind} validation failed: {unit.origin}",
                 *(reason or [f"bash exited with code {result.returncode} and printed nothing"]),
@@ -513,7 +514,7 @@ def _run_shellcheck(units: list[ShellUnit], shellcheck: str) -> None:
             # A batch that failed printing nothing is named by its exit code, never by an empty report.
             unattributed.append(f"ShellCheck exited with code {result.returncode} and printed nothing")
             continue
-        for line in result.output.splitlines():
+        for line in program_lines(result.output):
             path = next((path for path in batch if line.startswith(path + ":")), None)
             if path is None:
                 unattributed.append(line)
@@ -559,7 +560,7 @@ def _parse_powershell(files: dict[str, bytes], workspace: Path, powershell: str)
         {"RENDERED_PS1_FILES": json_writer.dumps(list(origins))},
     )
     if result.returncode != 0:
-        lines = result.output.strip().splitlines()
+        lines = program_lines(result.output.strip())
         # A pwsh that names no file, having printed nothing, is named by its exit code.
         if lines:
             failed = origins.get(lines[0].strip(), lines[0].strip())

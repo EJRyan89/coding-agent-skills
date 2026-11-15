@@ -26,6 +26,7 @@ from typing import IO
 import json_reader
 import json_writer
 from bounded_process import KILL_WAIT_SECONDS, ProcessTree, without_repository_variables
+from text_lines import program_lines
 
 from . import platform_support
 
@@ -57,7 +58,7 @@ CLOSE_GRACE = 5
 CODEX_LIST_ID = 1
 # The model-free view of the skills Codex offers the model, which leaves out a skill only the user may start.
 CODEX_CATALOG = ("debug", "prompt-input")
-# Each pattern reads one line of the skills message, as output_lines splits it, whole.
+# Each pattern reads one line of the skills message, as program_lines splits it, whole.
 CODEX_CATALOG_ROOT = re.compile(r"- `(r\d+)` = `([^`]+)`")
 # A skill's file runs from its last "(file: " to the line's closing parenthesis, so an absolute path holding a space
 # or a parenthesis, as a home such as D:/Profiles/A Name (Work) does, is read whole. A plugin's skill is named
@@ -248,16 +249,8 @@ def _kill(process: subprocess.Popen[str]) -> None:
         process.wait(timeout=KILL_WAIT_SECONDS)
 
 
-def output_lines(output: str) -> list[str]:
-    """The lines another program wrote, split on "\\n" alone, with a "\\r" before it taken off: never on the other
-    characters str.splitlines() breaks on, such as U+0085, U+2028, and U+2029, which a skill's description, a path, or
-    a JSON string the program writes as it is can hold. A last "\\n" ends the last line rather than starting an empty
-    one."""
-    return [line.removesuffix("\r") for line in output.removesuffix("\n").split("\n")] if output else []
-
-
 def _ended(what: str, code: int, stderr: str) -> str:
-    last = output_lines(stderr)[-1] if stderr else ""
+    last = program_lines(stderr)[-1] if stderr else ""
     return f"{what} with exit code {code}" + (f": {last}" if last else "")
 
 
@@ -423,7 +416,7 @@ def parse_codex_catalog(lines: list[str]) -> Listing:
         raise ListingError(f"its prompt input has no skills message, which lists them under {CODEX_CATALOG_SKILLS}")
     found: Listing = {}
     for text in skills:
-        roots = {root[1]: root[2] for line in output_lines(text) if (root := CODEX_CATALOG_ROOT.fullmatch(line))}
+        roots = {root[1]: root[2] for line in program_lines(text) if (root := CODEX_CATALOG_ROOT.fullmatch(line))}
         for name, file in _catalog_skills(text):
             alias, _, rest = file.partition("/")
             path = f"{roots[alias]}/{rest}" if alias in roots else file
@@ -437,7 +430,7 @@ def _catalog_skills(text: str) -> list[tuple[str, str]]:
     """Each skill a skills message lists, as its name and file; a list item under its "### Available skills" that
     is not of that shape is refused, since passing over it would report the skill out of the model's catalog."""
     skills: list[tuple[str, str]] = []
-    for line in output_lines(text.split(CODEX_CATALOG_SKILLS, 1)[1]):
+    for line in program_lines(text.split(CODEX_CATALOG_SKILLS, 1)[1]):
         if line.startswith(("#", "<")):
             break
         if line.startswith("- "):

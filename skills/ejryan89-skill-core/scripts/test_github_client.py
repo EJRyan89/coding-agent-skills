@@ -536,6 +536,11 @@ class RequestTests(unittest.TestCase):
         self.assertEqual((404, {"retry-after": "7", "x-a": "b"}, "body\n\nmore"), response)
         self.assertEqual((None, {}, '{"plain": true}'), split_response('{"plain": true}'))
 
+    def test_a_header_holding_a_character_http_ends_no_line_at_is_one_header(self) -> None:
+        # gh ends a header line at CRLF, never at a line separator or a next line, which stay in the value.
+        response = split_response("HTTP/2.0 200 OK\r\nX-A: a\u2028b\r\nX-B: c\x85d\r\nLink: e\r\n\r\nbody")
+        self.assertEqual((200, {"x-a": "a\u2028b", "x-b": "c\x85d", "link": "e"}, "body"), response)
+
 
 class DecodingTests(unittest.TestCase):
     def test_a_failure_message_is_valid_unicode(self) -> None:

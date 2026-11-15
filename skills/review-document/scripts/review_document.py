@@ -116,6 +116,13 @@ UNQUOTABLE = frozenset('"$`\\')
 REVIEWED_FIELDS = ("number", "title", "base_ref", "head_ref")
 
 
+LINE_SPLIT_ALLOWED = {
+    "refuse_unquotable": (
+        "refuses a folder name holding any character str.splitlines breaks at, which is stricter than either shell's "
+        "line end: such a name would break the line that quotes it somewhere"
+    ),
+}
+
 # The presence reads and removals here that read a path they cannot stat, list, or remove as nothing there,
 # each with why that is the answer it should give.
 PRESENCE_ALLOWED = {

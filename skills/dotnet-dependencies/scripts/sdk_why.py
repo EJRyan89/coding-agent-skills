@@ -29,6 +29,7 @@ from bounded_process import non_interactive_environment, run_bounded
 from executable_locator import find_program, located_command
 from flat_text import flat_text, reason_line
 from ordinal_case import ordinal_fold
+from text_lines import program_lines
 
 ANSI = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 HEADING = re.compile(
@@ -127,7 +128,7 @@ def parse_why(text: str, package: str) -> ParsedWhy:
     project: str | None = None
     framework = ""
     stack: list[tuple[str, str]] = []
-    lines = ANSI.sub("", text).splitlines()
+    lines = program_lines(ANSI.sub("", text))
     end = 0
     in_heading = False
     for index, raw in enumerate(lines):
@@ -166,7 +167,7 @@ def parse_why(text: str, package: str) -> ParsedWhy:
 
 def first_line(text: str) -> str:
     """The first line of a run's output that holds anything but spaces, without its colors, or `""`."""
-    return next((line.strip() for line in ANSI.sub("", text).splitlines() if line.strip()), "")
+    return next((line.strip() for line in program_lines(ANSI.sub("", text)) if line.strip()), "")
 
 
 def run_why(projects: Sequence[Path], package: str, services: Services, timeout: float) -> WhyAnswer:
