@@ -253,8 +253,9 @@ class ReaderTests(unittest.TestCase):
         candidate.symlink_to(self.root / "nowhere")
         self.assertEqual(candidate, nearest_file(app, "Directory.Packages.props"))
         candidate.unlink()
-        os.mkfifo(candidate)
-        self.assertEqual(candidate, nearest_file(app, "Directory.Packages.props"))
+        if hasattr(os, "mkfifo"):
+            os.mkfifo(candidate)
+            self.assertEqual(candidate, nearest_file(app, "Directory.Packages.props"))
 
     def test_a_stat_error_naming_no_file_is_refused_against_the_candidate_the_search_checked(self) -> None:
         self.write("Directory.Packages.props", "<Project />")

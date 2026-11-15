@@ -461,11 +461,11 @@ class EvaluationTests(unittest.TestCase):
         candidate = app / "Directory.Packages.props"
         text = '<Project Sdk="Microsoft.NET.Sdk"><ItemGroup><PackageReference Include="Lantern.Core" /></ItemGroup>'
         self.write("src/App/App.csproj", f"{text}</Project>")
-        for kind in ("dangling", "fifo"):
+        for kind in ("dangling", "fifo") if hasattr(os, "mkfifo") else ("dangling",):
             with self.subTest(kind):
                 if kind == "dangling":
                     candidate.symlink_to(app / "nowhere.props")
-                else:
+                elif hasattr(os, "mkfifo"):
                     os.mkfifo(candidate)
                 project = self.read("src/App/App.csproj")
                 candidate.unlink()
