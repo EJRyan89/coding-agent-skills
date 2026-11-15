@@ -475,7 +475,8 @@ def shell_commands(script: str, commands: list[list[str]] | None = None) -> set[
     what it reads: a here-document's body, which git_subcommands reads as data, is read here as commands, so a word
     of a body may stand as a command Bash never runs, and a quote a body leaves open runs on past it; and a backslash
     that ends a comment, or that another backslash escapes, is read as continuing the line, so a command on the next
-    line goes unread. No skill's Bash script writes any of these; #2854 retires them through one Bash grammar."""
+    line goes unread. No skill's Bash script writes any of these, and reading Bash through one grammar would end
+    them."""
     tokens = list(ShellLexer(script.replace("\\\n", " ")).words())
     # A function's name is read from its syntax, None for a quoted or escaped word, which Bash refuses as a name and
     # defines no function for, as _function_header in suite_discovery.py reads it.
