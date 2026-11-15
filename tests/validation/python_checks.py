@@ -792,15 +792,18 @@ def link_test_problems(root: Path, files: list[Path]) -> list[str]:
 # under the tests that guard its other bindings. A reading that finds no path, as a search that found none, or more than
 # one, refuses, names no path as missing. A refusal is a branch that raises an error of its own, or that returns or
 # yields a message of more than one word, the yield a statement or an assignment's value, or records one, as a call's
-# argument, awaited or not, by an augmented assignment, or by a store into an attribute or into an item keyed by
-# anything but a string literal, as `problems.extend([...])`, `await report(...)`, `problems += [...]`, or
-# `problems[p] = "..."` do, the message given as the value itself, an arm of a conditional expression, a value of an
-# `and` or an `or`, a method called on it, a string literal's `join` of messages, or an element, a starred element, a
-# dictionary's key or value, a comprehension's element, key, or value, or what a subscript takes from one, at any depth;
+# argument, the call a statement of its own or awaited as one or as an assignment's value, by an augmented assignment,
+# or by a store into an attribute or into an item keyed by anything but a string literal, as `problems.extend([...])`,
+# `await report(...)`, `done = await report(...)`, `problems += [...]`, or `problems[p] = "..."` do, the message given
+# as the value itself, an arm of a conditional expression, a value of an `and` or an `or`, a method called on it, a
+# string literal's `join` of messages, or an element, a starred element, a dictionary's key or value, a comprehension's
+# element, key, or value, or what a subscript takes from one, at any depth;
 # taken by an if, its else, a conditional expression, a comprehension's filter, or a match's case that leaves one truth
 # of its subject, or of an item of a tuple or list it matches, when the truths it may match lose those earlier unguarded
-# cases took: True, False, None, zero, or an empty string, `bool(...)` of one, an `|` of them, a capture of one by `as`,
-# or of a tuple item a sequence pattern's item at the same place, and anything after a case that took the other truth,
+# cases took: True or one, False, None, or zero, `bool(...)` of one, an `|` of them, a capture of one by `as`, or of a
+# tuple item a sequence pattern's item at the same place, counted from the front before a star and from the back
+# after it, and anything after a case that took the other truth, an empty string, which no answer equals, matching
+# neither,
 # a guard read as an `and` and so as a test of its own; an assert given a message, as a refusal's message is read; a
 # while whose body, or whose else, refuses; an if with no else whose branch leaves, and a match whose every case leaves,
 # whose False goes on, through the rest of its block and any loop or block around it, to such a raise or returned
@@ -817,9 +820,10 @@ def link_test_problems(root: Path, files: list[Path]) -> list[str]:
 # the log it is, or a return of a name whose last binding before the try is an empty value; before a continue or a
 # break, which a binding outlives, only names its function never reads. A suppress takes the errors of the items a
 # `with` enters after it, as `with suppress(OSError), open(p) as h:` does, as well as its body's, and one an ExitStack's
-# enter_context enters, those of the rest of the `with` that holds the stack, by its target or as its item; a suppress
-# is read where it is called, in either arm of a conditional expression, or through a name any binding of which in its
-# scope, or at the module's top level where its scope binds it nowhere, may give one. Any such site outside
+# enter_context enters or push pushes, those of the rest of the `with` that holds the stack, by its target or as its
+# item; a suppress is read where it is called, its errors given starred included, in either arm of a conditional
+# expression, or through a name any binding of which may give one, in the innermost of its scope and the functions
+# around it that binds the name, or at the module's top level where none does. Any such site outside
 # file_presence and link_probe states why in a module-level PRESENCE_ALLOWED = {scope: reason}, as where the caller just
 # made the path.
 #
@@ -1199,10 +1203,11 @@ BOTH = frozenset({True, False})
 
 
 def _pattern_truths(pattern: ast.pattern, aliases: dict[str, str]) -> tuple[frozenset[bool], frozenset[bool]]:
-    """The truths of the subjects a case's pattern may match, and the truths it takes every subject of: `True` matches
-    and takes the true answer; `False`, `None`, and a value pattern of zero or an empty string, as `case 0:`, which a
-    False answer matches since `False == 0`, the false one, a `None` read as taking every false answer as it takes a
-    search that found nothing; `bool(...)` given one pattern what that pattern does, and given none, or `_` or a bare
+    """The truths of the subjects a case's pattern may match, and the truths it takes every subject of: `True` and a
+    value pattern of one, as `case 1:`, which a True answer matches since `True == 1`, match and take the true answer;
+    `False`, `None`, and a value pattern of zero, as `case 0:`, the false one, a `None` read as taking every false
+    answer as it takes a search that found nothing; a value pattern of an empty string or bytes, which no answer
+    equals, matches neither; `bool(...)` given one pattern what that pattern does, and given none, or `_` or a bare
     capture, every answer; an `|` what any of its options does; a capture by `as` what its pattern does. Any other
     pattern may match either truth and takes neither."""
     if isinstance(pattern, ast.MatchOr):
@@ -1214,8 +1219,11 @@ def _pattern_truths(pattern: ast.pattern, aliases: dict[str, str]) -> tuple[froz
         return truth, truth
     if isinstance(pattern, ast.MatchValue) and isinstance(pattern.value, ast.Constant):
         value = pattern.value.value
-        if isinstance(value, (int, float, complex, str, bytes)) and not value:
-            return frozenset({False}), frozenset({False})
+        if isinstance(value, (str, bytes)) and not value:
+            return frozenset(), frozenset()
+        if isinstance(value, (int, float, complex)) and value in (0, 1):
+            truth = frozenset({value == 1})
+            return truth, truth
     if isinstance(pattern, ast.MatchAs):
         return _pattern_truths(pattern.pattern, aliases) if pattern.pattern is not None else (BOTH, BOTH)
     if (
@@ -1228,29 +1236,40 @@ def _pattern_truths(pattern: ast.pattern, aliases: dict[str, str]) -> tuple[froz
     return BOTH, frozenset()
 
 
+def _sequence_subject(node: ast.Match) -> bool:
+    """Whether a match's subject is a tuple or a list it spells, with no starred item, whose items its cases test."""
+    subject = node.subject
+    return isinstance(subject, (ast.Tuple, ast.List)) and not any(
+        isinstance(item, ast.Starred) for item in subject.elts
+    )
+
+
 def _subject_items(node: ast.Match) -> list[ast.expr]:
     """What a match's cases test the truth of: each item of a tuple or list it matches, unless one is starred, or else
     its subject."""
     subject = node.subject
-    if isinstance(subject, (ast.Tuple, ast.List)) and not any(isinstance(item, ast.Starred) for item in subject.elts):
-        return list(subject.elts)
-    return [subject]
+    return list(subject.elts) if isinstance(subject, (ast.Tuple, ast.List)) and _sequence_subject(node) else [subject]
 
 
 def _item_patterns(pattern: ast.pattern, count: int) -> list[ast.pattern] | None:
-    """The pattern a case gives each of `count` items a match tests: a sequence pattern's of that length with no star,
-    through a capture by `as`, or `_` for each from a pattern that matches anything; None for any other."""
+    """The pattern a case gives each of `count` items a match tests: a sequence pattern's item at the same place, the
+    items before a star from the front and those after it from the back, with `_` for each item a star takes, through a
+    capture by `as`, or `_` for each from a pattern that matches anything; None for any other, or for a sequence
+    pattern of more items than the subject holds, which never matches."""
     while isinstance(pattern, ast.MatchAs) and pattern.pattern is not None:
         pattern = pattern.pattern
+    anything = ast.MatchAs(pattern=None, name=None)
     if isinstance(pattern, ast.MatchAs):
         return [pattern] * count
-    if (
-        isinstance(pattern, ast.MatchSequence)
-        and len(pattern.patterns) == count
-        and not any(isinstance(item, ast.MatchStar) for item in pattern.patterns)
-    ):
-        return list(pattern.patterns)
-    return None
+    if not isinstance(pattern, ast.MatchSequence):
+        return None
+    stars = [index for index, item in enumerate(pattern.patterns) if isinstance(item, ast.MatchStar)]
+    if not stars:
+        return list(pattern.patterns) if len(pattern.patterns) == count else None
+    before, after = pattern.patterns[: stars[0]], pattern.patterns[stars[0] + 1 :]
+    if len(before) + len(after) > count:
+        return None
+    return [*before, *[anything] * (count - len(before) - len(after)), *after]
 
 
 def _case_items(
@@ -1261,7 +1280,7 @@ def _case_items(
     neither."""
     items = _subject_items(node)
     for case in node.cases:
-        if len(items) == 1:
+        if not _sequence_subject(node):
             yield case, [_pattern_truths(case.pattern, aliases)]
             continue
         patterns = _item_patterns(case.pattern, len(items))
@@ -1413,8 +1432,9 @@ def _gives_message(node: ast.expr | None) -> bool:
 def _records(statement: ast.stmt) -> bool:
     """Whether a statement returns or records a message as it is, as `_gives_message` reads one: a return or a yield of
     one, as `return None, "not found here"` is, the yield a statement of its own or the value of an assignment, as
-    `sent = yield f"{p} is missing"` is, a call given one as an argument, awaited or not, as
-    `problems.append(f"{p} is missing")`, `problems.extend([...])`, `print(...)`, or `await fail(...)` is, an augmented
+    `sent = yield f"{p} is missing"` is, a call given one as an argument, a statement of its own, or awaited as one or
+    as an assignment's value, as `problems.append(f"{p} is missing")`, `problems.extend([...])`, `print(...)`,
+    `await fail(...)`, or `done = await report(...)` is, an augmented
     assignment adding one, as `problems += [...]`, or a store of one into an attribute or into an item keyed by
     anything but a string literal, as `problems[p] = "..."`; a store under a literal key, as
     `cfg["title"] = "Untitled document"`, sets a field."""
@@ -1425,9 +1445,10 @@ def _records(statement: ast.stmt) -> bool:
         value, (ast.Yield, ast.YieldFrom)
     ):
         return _gives_message(value.value)
-    if isinstance(statement, ast.Expr) and isinstance(value, ast.Await):
+    awaited = isinstance(value, ast.Await) and isinstance(statement, (ast.Expr, ast.Assign, ast.AnnAssign))
+    if awaited and isinstance(value, ast.Await):
         value = value.value
-    if isinstance(statement, ast.Expr) and isinstance(call := value, ast.Call):
+    if (isinstance(statement, ast.Expr) or awaited) and isinstance(call := value, ast.Call):
         return any(_gives_message(argument) for argument in [*call.args, *(keyword.value for keyword in call.keywords)])
     if isinstance(statement, ast.AugAssign):
         return _gives_message(statement.value)
@@ -1808,22 +1829,31 @@ class _Handlers:
     module_values: Mapping[str, list[ast.expr | None]] = field(default_factory=dict)
 
     def suppress(
-        self, node: ast.expr, bindings: Mapping[str, list[_Binding]], seen: frozenset[str] = frozenset()
+        self, node: ast.expr, scopes: Sequence[Mapping[str, list[_Binding]]], seen: frozenset[str] = frozenset()
     ) -> bool:
         """Whether an expression may be a contextlib.suppress of an error that takes a failed stat: one called there,
-        either arm of a conditional expression, or a name any binding of which, in its scope, or at the module's top
-        level where its scope binds it nowhere, may give one, as `quiet = suppress(OSError)` before `with quiet:`."""
+        either arm of a conditional expression, or a name any binding of which may give one, in the innermost of
+        `scopes`, its own scope then each function around it, that binds it, or at the module's top level where none
+        does, as `quiet = suppress(OSError)` before `with quiet:`, in the function itself or in one around it."""
         if isinstance(node, ast.IfExp):
-            return self.suppress(node.body, bindings, seen) or self.suppress(node.orelse, bindings, seen)
+            return self.suppress(node.body, scopes, seen) or self.suppress(node.orelse, scopes, seen)
         if isinstance(node, ast.Name) and node.id not in seen:
-            values = [binding.value for binding in bindings[node.id]] if node.id in bindings else None
-            values = self.module_values.get(node.id, []) if values is None else values
-            local = bindings if node.id in bindings else {}
-            return any(value is not None and self.suppress(value, local, seen | {node.id}) for value in values)
+            place = next((index for index, bindings in enumerate(scopes) if node.id in bindings), None)
+            values = (
+                self.module_values.get(node.id, [])
+                if place is None
+                else [binding.value for binding in scopes[place][node.id]]
+            )
+            outer = () if place is None else scopes[place:]
+            return any(value is not None and self.suppress(value, outer, seen | {node.id}) for value in values)
         return (
             isinstance(node, ast.Call)
             and qualified_name(node.func, self.aliases) == "contextlib.suppress"
-            and any(_swallows(argument, self.aliases, self.tuples) for argument in node.args)
+            # A starred argument hands on the errors its tuple holds, as `suppress(*ERRORS)` does.
+            and any(
+                _swallows(argument.value if isinstance(argument, ast.Starred) else argument, self.aliases, self.tuples)
+                for argument in node.args
+            )
         )
 
 
@@ -1842,7 +1872,12 @@ def _empty_before(node: ast.AST, bindings: Mapping[str, list[_Binding]]) -> froz
     return frozenset(found)
 
 
-def _handled_answer(node: ast.AST, handlers: _Handlers, bindings: Mapping[str, list[_Binding]]) -> str | None:
+def _handled_answer(
+    node: ast.AST,
+    handlers: _Handlers,
+    bindings: Mapping[str, list[_Binding]],
+    enclosing: Sequence[Mapping[str, list[_Binding]]] = (),
+) -> str | None:
     """How a handler around a stat, listing, or read reads its OSError as nothing there: an except clause that answers
     nothing, as `_empty_branch` reads a branch, a name bound to an empty value before the try among them, one that only
     passes or logs where the try goes on to an empty return or its function's end, one that binds an empty value to a
@@ -1869,20 +1904,21 @@ def _handled_answer(node: ast.AST, handlers: _Handlers, bindings: Mapping[str, l
             # A suppress takes the errors of the items entered after it, as `with suppress(OSError), open(p) as h:`
             # does, as well as its body's.
             later = [later.context_expr for later in node.items[index + 1 :]]
-            if handlers.suppress(item.context_expr, bindings) and (
+            if handlers.suppress(item.context_expr, [bindings, *enclosing]) and (
                 call := _stats_or_lists([*later, *node.body], aliases)
             ):
                 return (
                     f"suppresses {call}'s OSError, which reads a path it cannot stat, list, or read as nothing there; "
                     "let the error through, or report the path"
                 )
-    # A suppress an ExitStack enters takes the errors of the rest of the with that holds the stack.
+    # A suppress an ExitStack enters, or pushes, whose exit is called as the enter_context's is, takes the errors of
+    # the rest of the with that holds the stack.
     if (
         isinstance(node, ast.Call)
         and isinstance(node.func, ast.Attribute)
-        and node.func.attr == "enter_context"
+        and node.func.attr in ("enter_context", "push")
         and node.args
-        and handlers.suppress(node.args[0], bindings)
+        and handlers.suppress(node.args[0], [bindings, *enclosing])
         and (rest := _rest_of_holding_with(node, node.func.value, handlers.parents)) is not None
         and (call := _stats_or_lists(rest, aliases))
     ):
@@ -1912,6 +1948,16 @@ def _rest_of_holding_with(node: ast.AST, stack: ast.expr, parents: Mapping[int, 
             return rest
         child = parent
     return None
+
+
+def _enclosing_scopes(
+    scope: str, classes: set[str], bindings: Mapping[str, Mapping[str, list[_Binding]]]
+) -> list[Mapping[str, list[_Binding]]]:
+    """The bindings of each function around a scope, innermost first, whose names its body reads as free names; a
+    class's body is passed by, as Python passes it by."""
+    parts = scope.split(".")
+    around = [".".join(parts[:end]) for end in range(len(parts) - 1, 0, -1)]
+    return [bindings.get(name, {}) for name in around if name not in classes]
 
 
 def _flag_given(node: ast.expr | None) -> bool:
@@ -2024,6 +2070,7 @@ def _presence_answers(tree: ast.Module, aliases: dict[str, str]) -> Iterator[tup
         _module_values(tree),
     )
     readers: dict[str, _PresenceReader] = {}
+    classes = {scope for node, scope in scoped_nodes(tree.body) if isinstance(node, ast.ClassDef)}
     for node, scope in scoped_nodes(tree.body):
         reader = readers.setdefault(scope, _PresenceReader(aliases, bindings.get(scope, {}), raising, falling))
         if isinstance(node, ast.expr) and (predicate := _presence_predicate(node, aliases)):
@@ -2044,7 +2091,9 @@ def _presence_answers(tree: ast.Module, aliases: dict[str, str]) -> Iterator[tup
             )
         elif listing := _listing_answer(node, aliases, inert):
             yield node, scope, listing
-        elif handled := _handled_answer(node, handlers, bindings.get(scope, {})):
+        elif handled := _handled_answer(
+            node, handlers, bindings.get(scope, {}), _enclosing_scopes(scope, classes, bindings)
+        ):
             yield node, scope, handled
 
 

@@ -5513,6 +5513,18 @@ PRESENCE_HANDLED = {
         "import contextlib\n\n\nclass A:\n    def f(self, p):\n        with self.stack:\n"
         "            self.stack.enter_context(contextlib.suppress(OSError))\n            return p.stat()\n"
     ),
+    "a suppress of a tuple with OSError the module binds, given starred": (
+        "import contextlib\n\nERRORS = (OSError, ValueError)\n\n\ndef f(p):\n"
+        "    quiet = contextlib.suppress(*ERRORS)\n    with quiet:\n        return p.stat()\n    return None\n"
+    ),
+    "a suppress of OSError an ExitStack pushes": (
+        "import contextlib\n\n\ndef f(p):\n    with contextlib.ExitStack() as stack:\n"
+        "        stack.push(contextlib.suppress(OSError))\n        return p.stat()\n    return None\n"
+    ),
+    "a suppress of OSError an enclosing function binds to a name": (
+        "import contextlib\n\n\ndef outer():\n    quiet = contextlib.suppress(OSError)\n\n    def inner(p):\n"
+        "        with quiet:\n            return p.stat()\n        return None\n\n    return inner\n"
+    ),
     "a suppress bound to a name an ExitStack enters": (
         "import contextlib\n\n\nasync def f(p):\n    quiet = contextlib.suppress(OSError)\n"
         "    async with contextlib.AsyncExitStack() as stack:\n        stack.enter_context(quiet)\n"
@@ -5688,8 +5700,26 @@ PRESENCE_REFUSAL_SHAPES = {
     "match P: case 0: raise": (
         "def f(p):\n    match {call}:\n        case 0:\n            raise OSError(f'{{p}} is missing')\n    return 1\n"
     ),
-    "match P: case an empty string: return a message": (
-        "def f(p):\n    match {call}:\n        case '':\n            return f'{{p}} is missing'\n    return None\n"
+    "match P: case 1: ... case _: raise": (
+        "def f(p):\n    match {call}:\n        case 1:\n            return 1\n        case _:\n"
+        "            raise OSError(f'{{p}} is missing')\n"
+    ),
+    "match (P, Q): case (False, *_): raise": (
+        "def f(p, q):\n    match ({call}, q):\n        case (False, *_):\n            raise OSError(p)\n    return 1\n"
+    ),
+    "match (P, Q): case (True, *_): ... case _: raise": (
+        "def f(p, q):\n    match ({call}, q):\n        case (True, *rest):\n            return 1\n        case _:\n"
+        "            raise OSError(f'{{p}} is missing')\n"
+    ),
+    "match (Q, R, P): case [*_, False]: raise": (
+        "def f(p, q, r):\n    match (q, r, {call}):\n        case [*_, False]:\n            raise OSError(p)\n"
+        "    return 1\n"
+    ),
+    "match (P,): case (False,): raise": (
+        "def f(p):\n    match ({call},):\n        case (False,):\n            raise OSError(p)\n    return 1\n"
+    ),
+    "if not P: an assigned await of a call given a message": (
+        "async def f(p, report):\n    if not {call}:\n        done = await report(f'{{p}} is missing')\n    return 1\n"
     ),
     "match P: case bool(False): raise": (
         "def f(p):\n    match {call}:\n        case bool(False):\n            raise OSError(p)\n    return 1\n"
@@ -6358,6 +6388,30 @@ PRESENCE_PASSED = {
         "import file_presence\n\n\ndef f(p, q):\n    match (file_presence.is_present(p, other_is_absent=True), q):\n"
         "        case (True, 'file'):\n            return 1\n        case _:\n"
         "            raise OSError(f'{p} is not the file')\n"
+    ),
+    "a match whose refusing case is an empty string, which no answer equals": (
+        "import file_presence\n\n\ndef f(p):\n    match file_presence.is_present(p, other_is_absent=True):\n"
+        "        case '':\n            raise OSError(f'{p} is missing')\n    return 1\n"
+    ),
+    "a match whose case of anything follows an empty string": (
+        "import file_presence\n\n\ndef f(p):\n    match file_presence.is_present(p, other_is_absent=True):\n"
+        "        case b'':\n            return 1\n        case _:\n            raise OSError(f'{p} was examined')\n"
+    ),
+    "a match whose refusing case takes 1": (
+        "import file_presence\n\n\ndef f(p):\n    match file_presence.is_present(p, other_is_absent=True):\n"
+        "        case 1:\n            raise OSError(f'{p} is in the way')\n    return 1\n"
+    ),
+    "a match on a tuple whose starred pattern holds more items than the tuple": (
+        "import file_presence\n\n\ndef f(p, q):\n    match (file_presence.is_present(p, other_is_absent=True), q):\n"
+        "        case (False, _, *_, _):\n            raise OSError(f'{p} is missing')\n    return 1\n"
+    ),
+    "a match on a one-item tuple whose bare False case never matches": (
+        "import file_presence\n\n\ndef f(p):\n    match (file_presence.is_present(p, other_is_absent=True),):\n"
+        "        case False:\n            raise OSError(f'{p} is missing')\n    return 1\n"
+    ),
+    "a suppress a class body binds, which its method does not read": (
+        "import contextlib\n\n\nclass A:\n    quiet = contextlib.suppress(OSError)\n\n    def f(self, p):\n"
+        "        with quiet:\n            return p.stat()\n        return None\n"
     ),
     "a suppress of OSError an ExitStack enters after the stat": (
         "import contextlib\n\n\ndef f(p):\n    with contextlib.ExitStack() as stack:\n        st = p.stat()\n"

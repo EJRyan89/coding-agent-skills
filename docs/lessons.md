@@ -51,7 +51,7 @@ removed fails validation until its pattern follows it.
   meets is at a path, a link to nothing read as nothing there; `file_presence:is_occupied`, in place of lexists,
   whether anything takes a path's place, a link to nothing included, which a writer asks before it creates there and
   a reader asks where its question is whether the place is taken, as `msbuild_evaluation:Evaluation.exists` asks
-  for MSBuild's Exists();
+  for MSBuild's Exists() and `msbuild_reader:msbuild_file_exists` for its search for a file above a project;
   `file_presence:matching`, which lists what a glob pattern matches but raises for a folder it cannot list;
   `link_probe:is_link_or_junction`, which lets the error of an unreadable path through; and
   `deployer.source_ref:TagsUnreadable`, which keeps git's reason when the tags cannot be read; and git's found,

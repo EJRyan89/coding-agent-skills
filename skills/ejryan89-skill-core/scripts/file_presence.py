@@ -14,9 +14,10 @@ read there, and nothing can be read through such a link, so `is_present`, `is_di
 `refusal_reason` answer for it as for a missing path: no file, no folder, nothing there, `MISSING`. A writer asks
 whether its write would land on something, and writing to such a link creates its target wherever it points, so
 `is_occupied`, which a writer asks before it creates or moves anything into a place, counts the link as occupying it,
-and a reader asks it only where its question is whether the place is taken, as MSBuild's `Exists()` is, never whether
-something it can read is there. A caller that reads a path as missing and then writes there asks `is_occupied` before
-the write, or writes through a call that replaces the link itself, such as a rename, never one that follows it.
+and a reader asks it only where its question is whether the place is taken, as MSBuild's `Exists()` and its search
+for a file above a project are, never whether something it can read is there. A caller that reads a path as missing
+and then writes there asks `is_occupied` before the write, or writes through a call that replaces the link itself, such
+as a rename, never one that follows it.
 `matching` lists what a glob pattern matches below a folder, as `Path.glob` does, but raises for a folder it cannot
 list, where `Path.glob` matches nothing in it from Python 3.15 on, so a reader takes no unreadable folder for an empty
 one, and for a pattern it cannot read relative to its folder on every platform, such as one naming a drive, so a
@@ -146,17 +147,18 @@ def require(path: Path, error: Callable[[str], Exception], missing: str, subject
 
 def is_there(path: Path) -> bool:
     """Whether anything a reader meets is at `path`, following links: a file, a folder, or anything else, but False
-    when nothing is, a link to nothing included, and the stat's `OSError` when it cannot tell. It is the reader's
-    question `is_occupied` answers for a writer, for a reader that names something of another kind apart from nothing
-    there."""
+    when nothing is, a link to nothing included, and the stat's `OSError` when it cannot tell. A reader asks it to
+    name something of another kind apart from nothing there; `is_occupied` answers instead whether anything takes
+    the place, a link to nothing included."""
     return _mode(path) is not None
 
 
 def is_occupied(path: Path) -> bool:
     """Whether anything is at `path` itself, a link to nothing included, without following a link: False only when
     nothing is, and the stat's `OSError` when it cannot tell. The readers above answer a link to nothing as missing;
-    this counts it as occupying its place, so a writer that asks it before creating there never writes through the
-    link to create its target."""
+    this counts it as occupying its place. A writer asks it before creating there, so it never writes through the
+    link to create its target, and a reader asks it where its question is whether the place is taken, as MSBuild's
+    file search does, not whether something it can read is there."""
     _refuse_nul(path)
     try:
         path.stat(follow_symlinks=False)
