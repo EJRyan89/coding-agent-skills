@@ -1228,6 +1228,9 @@ class CheckoutRemoteTests(unittest.TestCase):
             "https://example.invalid/mirror/github.com:example/one.git",
             "git@example.invalid:github.com/example/one",
             "https://github.com.example.invalid/example/one",
+            # git fetches these from example.invalid: a `#` or `?` ends the host, so `@github.com` is not one.
+            "https://example.invalid#@github.com/example/one.git",
+            "https://example.invalid?@github.com/example/one",
         ):
             with self.subTest(url=url), self.assertRaisesRegex(RuntimeContractError, "not a recognizable GitHub"):
                 self.verify(url)

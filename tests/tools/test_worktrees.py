@@ -153,6 +153,44 @@ class NewWorktreeTests(WorktreesTestCase):
         self.assertEqual([(["show-ref", "--verify", "--quiet", "refs/heads/fix/unreadable"], self.hub)], asked)
         self.assertFalse((self.worktrees / "fix-unreadable").exists())
 
+    def answered(self, subcommand: str, answer: git_client.GitResult) -> str:
+        """Why new refuses when git answers `subcommand` with `answer` and runs every other command as it is."""
+        run = worktrees.CLIENT.run
+
+        def answering(arguments: Sequence[str], **options: Any) -> git_client.GitResult:
+            return answer if subcommand in arguments else run(arguments, **options)
+
+        with (
+            mock.patch.object(worktrees, "current_hub", return_value=self.hub),
+            mock.patch.object(worktrees.CLIENT, "run", side_effect=answering),
+            self.assertRaises(worktrees.UsageError) as raised,
+        ):
+            worktrees.new("fix", "answered")
+        self.assertFalse((self.worktrees / "fix-answered").exists())
+        return str(raised.exception)
+
+    def test_a_check_ignore_that_fails_is_named_by_git_s_reason_never_as_an_unignored_folder(self) -> None:
+        # git check-ignore exits 1 for a path no rule ignores and 128 when git itself could not answer.
+        for stderr, reason in (
+            (
+                "fatal: bad config line 1 in file .git/config\nhint: fix it\n",
+                "fatal: bad config line 1 in file .git/config hint: fix it",
+            ),
+            ("", "git check-ignore failed with exit code 128"),
+        ):
+            with self.subTest(reason=reason):
+                message = self.answered("check-ignore", git_client.GitResult(128, "", stderr))
+                self.assertTrue(message.endswith(f": {reason}"), message)
+                self.assertNotIn("must be ignored", message)
+
+    def test_a_worktree_add_that_fails_is_named_on_one_line_by_git_s_reason_or_its_exit_code(self) -> None:
+        for stderr, reason in (
+            ("fatal: invalid reference: main\nhint: fetch it\n", "fatal: invalid reference: main hint: fetch it"),
+            ("", "git worktree failed with exit code 128"),
+        ):
+            with self.subTest(reason=reason):
+                self.assertEqual(reason, self.answered("worktree", git_client.GitResult(128, "", stderr)))
+
     def test_new_accepts_every_title_type_and_inv_as_the_kind(self) -> None:
         # The kinds pinned as literals, independently of the constant new reads.
         for kind in ("feat", "fix", "docs", "test", "refactor", "chore", "ci", "build", "inv"):

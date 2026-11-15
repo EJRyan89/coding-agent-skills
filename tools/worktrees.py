@@ -36,7 +36,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "ejryan8
 import file_presence
 import git_worktrees
 from console import run_main
-from git_client import GitClient, GitError, GitResult, output_line, output_lines
+from flat_text import flat_text
+from git_client import GitClient, GitError, GitResult, failure_message, output_line, output_lines
 
 from deployer import platform_support
 
@@ -209,11 +210,18 @@ def new(kind: str, name: str) -> int:
         raise UsageError(f"Branch {branch} already exists.")
     if file_presence.is_occupied(path):
         raise UsageError(f"{platform_support.normalize(path)} already exists.")
-    if git(hub, "check-ignore", "-q", "--no-index", str(path)).returncode != 0:
+    ignored = ["check-ignore", "-q", "--no-index", str(path)]
+    checked = git(hub, *ignored)
+    # check-ignore exits 1 for a path no rule ignores, and 128 when git itself could not answer.
+    if checked.returncode == 1:
         raise UsageError(f"{WORKTREES.as_posix()}/ must be ignored in the hub's .gitignore before it holds worktrees.")
-    result = git(hub, "worktree", "add", "--no-track", "-b", branch, str(path), MAIN, timeout=None)
+    if checked.returncode != 0:
+        reason = flat_text(failure_message(ignored, checked))
+        raise UsageError(f"git could not tell whether {WORKTREES.as_posix()}/ is ignored: {reason}")
+    adding = ["worktree", "add", "--no-track", "-b", branch, str(path), MAIN]
+    result = git(hub, *adding, timeout=None)
     if result.returncode != 0:
-        raise UsageError(result.stderr.strip() or "git worktree add failed.")
+        raise UsageError(flat_text(failure_message(adding, result)))
     print(f"Created {platform_support.normalize(path)} on {branch} from {MAIN}.")
     print("Enter it before editing (Claude Code: EnterWorktree with this path).")
     return 0

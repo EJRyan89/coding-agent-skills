@@ -653,6 +653,23 @@ class CheckTests(FixtureRepository):
         self.assertNotIn("has no ## v0.2.0 section", errors)
 
 
+class GitOutputTests(unittest.TestCase):
+    """A git command that fails is named by git's reason on the error's one line, or by its exit code when it printed
+    nothing."""
+
+    def test_a_failed_git_is_named_by_its_reason_on_one_line_or_its_exit_code(self) -> None:
+        for stderr, reason in (
+            ("fatal: bad revision 'x'\nhint: fetch it\n", "fatal: bad revision 'x' hint: fetch it"),
+            ("", "exit code 128"),
+            (" \n", "exit code 128"),
+        ):
+            failed = git_client.GitResult(128, "", stderr)
+            with self.subTest(reason=reason), mock.patch.object(release_notes, "git", return_value=failed):
+                with self.assertRaises(release_notes.ReleaseNotesError) as raised:
+                    release_notes.git_output(Path("checkout"), "log", "x")
+                self.assertEqual(f"git log x failed: {reason}", str(raised.exception))
+
+
 class InsertSectionTests(unittest.TestCase):
     def test_a_file_with_no_version_gets_the_section_at_its_end(self) -> None:
         self.assertEqual(f"{INTRO}\n## v0.1.0\n", release_notes.insert_section(INTRO, "v0.1.0", "## v0.1.0\n"))
