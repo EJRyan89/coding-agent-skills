@@ -878,7 +878,7 @@ def main_worktree(repo: Path) -> Path | None:
     value = configured.rstrip("\r\n")
     if not value:
         raise GitError(f"git config gave core.worktree in {common / 'config'} an empty value")
-    return (common / value).resolve()
+    return resolved_path(common / value)
 
 
 def repository_root(directory: Path) -> Path | None:
@@ -1058,7 +1058,7 @@ def locate(
             return unresolved([*notes, str(exc)])
         if root is None:
             # Claude Code uses the project's own folder for a project in no Git repository.
-            root = repo.resolve()
+            root = resolved_path(repo)
             source = f"derived from the folder ({root}), which is in no Git repository"
         else:
             source = f"derived from the repository's main worktree ({root})"
@@ -1319,7 +1319,7 @@ def resolve_command(args: argparse.Namespace) -> tuple[int, list[str]]:
         if repo is None and args.repo is None:
             return 1, ["FAILED not inside a Git repository; pass --repo"]
         # A folder in no Git repository is a project of its own.
-        repo = repo or args.repo.resolve()
+        repo = repo or resolved_path(args.repo)
         if holds_line_break(str(repo)):
             return 1, [f"FAILED {flat_text(f'the repository path holds a line break: {str(repo)!r}')}"]
         return 0, resolve_lines(repo, resolve(repo, args.home, dict(os.environ), managed_settings_path()))

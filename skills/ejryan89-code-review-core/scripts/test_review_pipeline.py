@@ -63,6 +63,7 @@ from review_records import Coverage, ReviewRecord
 from review_runtime import RuntimeContractError, RuntimeContractFieldError, validate_adapter_manifest
 from review_state import load_state
 from test_job_tree import SHORT_LIMIT_SECONDS, SignalledTree, ended
+from test_path_containment import resolving_as_python_312
 from test_private_folder import judged_folder_calls, recording_temporary_folders
 from test_review_archive import unstatable
 from test_review_documents import (
@@ -1220,6 +1221,18 @@ class SymbolicLinkTests(PipelineFixture):
         head = git(self.checkout, "rev-parse", "HEAD")
         self.github.pulls[12] = rest_pull(12, head, self.base)
         return head
+
+    @unittest.skipIf(sys.platform == "win32", "a symbolic link needs a privilege on Windows")
+    def test_finalize_of_a_run_that_is_a_symbolic_link_loop_fails_naming_it_on_every_python_version(self) -> None:
+        # Python 3.12's Path.resolve raised RuntimeError for the loop, which ended the run FAILED RuntimeError.
+        loop = self.root / "loop"
+        loop.symlink_to(loop)
+        for version, resolving in (("this Python", contextlib.nullcontext), ("Python 3.12", resolving_as_python_312)):
+            with self.subTest(version), resolving():
+                code, out, err = self.run_main("finalize", "--run", str(loop))
+            self.assertEqual((1, ""), (code, err))
+            self.assertTrue(out.startswith(f"FAILED {loop} [Errno {errno.ELOOP}] "), out)
+            self.assertEqual(1, len(out.splitlines()), out)
 
     def test_a_pull_request_that_adds_a_link_is_reviewed_and_the_link_named(self) -> None:
         self.add_link()

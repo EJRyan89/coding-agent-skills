@@ -1240,6 +1240,8 @@ class SkillScriptsFixtures(unittest.TestCase):
                         "    tempfile.mkstemp(dir=run / 'inner')\n"
                         "    tempfile.mkdtemp(dir=held if flag else private_folder.temporary_directory())\n"
                         "    tempfile.NamedTemporaryFile(dir=Path(held).resolve())\n"
+                        "    tempfile.mkdtemp(dir=path_containment.resolved_path(held))\n"
+                        "    tempfile.mkstemp(dir=path_containment.strictly_resolved_path(held))\n"
                         "    checked = private_folder.temporary_directory()\n"
                         "    tempfile.TemporaryDirectory(dir=checked)\n"
                         "    tempfile.mkstemp(dir=held.parent)\n"
@@ -2201,6 +2203,11 @@ class SkillScriptsFixtures(unittest.TestCase):
                 "skills/alpha/scripts/located.py": "from bounded_process import run_bounded\n"
                 "from executable_locator import located_command\n\n"
                 'run_bounded(located_command(["swift", "--version"]), 5)\n',
+                # path_containment's resolutions name the program the path they resolve names.
+                "skills/alpha/scripts/resolved.py": "import subprocess\n\n"
+                "from path_containment import resolved_path, strictly_resolved_path\n\n"
+                'subprocess.run([str(resolved_path("zig")), "version"])\n'
+                'subprocess.run([strictly_resolved_path("ocaml"), "-version"])\n',
                 # Neither a string that reads like a call nor a list of other words is a command.
                 "skills/alpha/scripts/quiet.py": 'TEXT = "subprocess.run([\\"zsh\\"])"\nLABELS = ["zip", "unzip"]\n'
                 'print(["python", "-B"])\n',
@@ -2214,7 +2221,7 @@ class SkillScriptsFixtures(unittest.TestCase):
                     "skill alpha runs gh without declaring it in tools",
                     *(
                         f"skill alpha runs {name}, which a standard install lacks; see {doc}"
-                        for name in ("jq", "lua", "node", "perl", "rg", "ruby", "swift", "tcl", "yq")
+                        for name in ("jq", "lua", "node", "ocaml", "perl", "rg", "ruby", "swift", "tcl", "yq", "zig")
                     ),
                 ],
                 skill_command_problems(root, {"copilot", "dotnet-format", "gh"}, {"git", "python"}),

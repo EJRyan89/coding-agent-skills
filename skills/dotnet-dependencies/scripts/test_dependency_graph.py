@@ -29,6 +29,7 @@ import dependency_graph
 import dotnet_solution
 import file_presence
 import msbuild_reader
+import path_containment
 from dependency_graph import main
 from dotnet_solution import same_path
 from flat_text import flat_text
@@ -3063,7 +3064,8 @@ NETWORK_SLASHES = "//example.invalid/share/Other/Other.csproj"
 DEVICE_REFERENCE = "\\\\?\\C:\\Device\\Device.csproj"
 SHARE_REASON = "the path names a network share, which the reader does not open, so no host is contacted"
 DEVICE_REASON = "the path names a device, which the reader does not open"
-# The Path methods that reach the file system, which no refused path may meet.
+# The Path methods that reach the file system, which no refused path may meet, and the script's own resolution of a
+# path, path_containment's resolved_path, which reaches it too.
 FILE_SYSTEM_METHODS = ("stat", "exists", "is_file", "is_dir", "open", "resolve", "iterdir", "read_bytes", "read_text")
 # A checkout marker no folder above the temporary directory holds, so a stray one there cannot widen the tree.
 TEST_MARKER = ".dotnet-dependencies-test-checkout"
@@ -3088,7 +3090,7 @@ def referencing(*paths: str) -> str:
 
 
 def recording(method: Callable[..., object], touched: list[str]) -> Callable[..., object]:
-    """`method`, a Path method, recording in `touched` each path it is called on."""
+    """`method`, a Path method or a function given a path first, recording in `touched` each path it is called on."""
 
     def spy(path: Path, *args: object, **kwargs: object) -> object:
         touched.append(str(path).replace("\\", "/"))
@@ -3112,11 +3114,14 @@ class PathBoundTests(Fixture):
         self.addCleanup(marker.stop)
 
     def touching(self, *arguments: str) -> tuple[int, list[list[str]], list[str]]:
-        """Run the script, recording every path a Path method reached the file system with."""
+        """Run the script, recording every path a Path method, or the script's resolved_path, reached the file system
+        with."""
         touched: list[str] = []
         with contextlib.ExitStack() as stack:
             for name in FILE_SYSTEM_METHODS:
                 stack.enter_context(mock.patch.object(Path, name, recording(getattr(Path, name), touched)))
+            resolving = recording(path_containment.resolved_path, touched)
+            stack.enter_context(mock.patch("dependency_graph.resolved_path", resolving))
             code, rows = self.run_main(*arguments)
         return code, rows, touched
 

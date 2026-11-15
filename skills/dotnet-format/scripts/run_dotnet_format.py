@@ -79,6 +79,7 @@ from dotnet_format_targets import (
 )
 from executable_locator import find_program, located_command
 from flat_text import fact_line, flat_text
+from path_containment import resolved_path
 from seconds_option import positive_seconds
 
 # dotnet-format's MSBuildIssueFormatter: "<file>(<line>,<column>): <severity> <id>: <message> [<project>]".
@@ -224,7 +225,7 @@ def display_path(path: str, root: Path) -> str:
     if not candidate.is_absolute():
         return candidate.as_posix()
     try:
-        return candidate.resolve().relative_to(root.resolve()).as_posix()
+        return resolved_path(candidate).relative_to(resolved_path(root)).as_posix()
     except ValueError:
         return candidate.as_posix()
 

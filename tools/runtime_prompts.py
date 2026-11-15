@@ -247,7 +247,7 @@ def normalized(text: str, directory: Path) -> str:
     text = PLACEHOLDER_PATH.sub(lambda match: match.group(1) + match.group(2).replace("\\", "/"), text)
     # A command a prompt hands the reviewer names Python by the platform's command; a sample names it as Windows does.
     text = text.replace(f'{PYTHON} -B "', 'python -B "')
-    temporary = Path(tempfile.gettempdir()).resolve()
+    temporary = path_containment.resolved_path(tempfile.gettempdir())
     for left in (str(temporary), temporary.as_posix()):
         if left.casefold() in text.casefold():
             raise RenderError(f"a rendered prompt still names {left}")
@@ -258,7 +258,9 @@ def rendered(renderers: Renderers) -> dict[Path, str]:
     """Every sample, by its path relative to the repository root."""
     samples: dict[Path, str] = {}
     for skill, render in sorted(renderers.items()):
-        directory = Path(tempfile.mkdtemp(prefix="runtime-prompt-", dir=private_folder.temporary_directory())).resolve()
+        directory = path_containment.resolved_path(
+            tempfile.mkdtemp(prefix="runtime-prompt-", dir=private_folder.temporary_directory())
+        )
         try:
             try:
                 prompts = render(directory)

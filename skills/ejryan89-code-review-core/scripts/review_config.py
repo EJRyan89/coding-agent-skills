@@ -31,7 +31,7 @@ from executable_locator import absolute_home
 from flat_text import LINE_UNSAFE, flat_text, single_line
 from git_client import GitClient, GitError, Runner, output_line, subprocess_runner
 from github_logins import LOGIN, is_login
-from path_containment import within
+from path_containment import resolved_path, within
 from path_keys import path_key
 from review_io import CONTENT_ERRORS, PersistenceError, atomic_write_json, read_json
 from review_vocabularies import SEVERITIES, Severity
@@ -624,15 +624,15 @@ def _enclosing_common_dirs(folder: Path, client: GitClient) -> Iterable[Path]:
             return
         common, git_dir = paths
         yield common
-        if within(directory, git_dir.resolve()):
-            outside = git_dir.resolve().parent
+        if within(directory, resolved_path(git_dir)):
+            outside = resolved_path(git_dir).parent
         else:
             top = client.rev_parse_path("--show-toplevel", directory=directory)
             if top is None:
                 raise GitError(f"git named no top folder for {directory}, inside a repository's working tree")
-            if not within(directory, top.resolve()):
+            if not within(directory, resolved_path(top)):
                 raise GitError(f"git named the top folder {top} for {directory}, which does not hold it")
-            outside = top.resolve().parent
+            outside = resolved_path(top).parent
         if not within(directory, outside, strict=True):  # the file system's root holds the last repository
             return
         directory = outside
@@ -649,7 +649,7 @@ def check_local_manifest(manifest: Path, checkout: Path, runner: Runner = subpro
 
     Raises ConfigurationError naming the manifest and the checkout for a manifest inside, or when git or the file
     system cannot tell."""
-    folder, tree = manifest.parent.resolve(), checkout.resolve()
+    folder, tree = resolved_path(manifest.parent), resolved_path(checkout)
     if within(folder, tree):
         raise ConfigurationError(
             f"manifest {manifest} lies inside checkout_path {checkout}; keep it outside the repository"

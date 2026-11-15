@@ -167,7 +167,7 @@ from file_presence import is_present
 from flat_text import flat_text
 from git_client import GitClient, GitError, output_line
 from link_probe import is_plain_directory
-from path_containment import within
+from path_containment import resolved_path, within
 from release_tags import last_release
 from seconds_option import positive_seconds
 from skill_roots import sibling_scripts
@@ -1422,7 +1422,7 @@ def create_home() -> Path:
             home.mkdir(platform_support.SANDBOX_READABLE_DIRECTORY_MODE)
         except FileExistsError:
             continue
-        return home.resolve()
+        return resolved_path(home)
     raise FileExistsError(f"no unused name for a canary home under {parent}")
 
 
@@ -1474,8 +1474,8 @@ def remove_home(directory: str) -> int:
     """Delete a home the canary made, a HOME_PREFIX directory directly in the temporary directory that holds the
     marker naming it, and nothing else."""
     home = Path(directory)
-    temporary = Path(tempfile.gettempdir()).resolve()
-    resolved = home.resolve()
+    temporary = resolved_path(tempfile.gettempdir())
+    resolved = resolved_path(home)
     if (
         not is_plain_directory(home)
         or not resolved.is_dir()

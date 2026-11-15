@@ -21,6 +21,7 @@ from skill_roots import sibling_scripts
 sys.path.insert(0, str(sibling_scripts("ejryan89-code-review-core")))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+from path_containment import resolved_path
 from pr_change import CHANGED, UNCHANGED, ChangeDetector, ComparisonError, Query
 from review_config import (
     COMPUTED_DASHBOARD_STATES,
@@ -408,7 +409,7 @@ def replacement(path: Path, writer: str = "the update") -> tuple[Path, int]:
     refused, since a replacement would
     leave that name with the old content, and so is a read-only file, which ejryan89-skill-core's `atomic_file` would
     refuse only once GitHub had been asked; the refusal names `writer`, the command that would replace it."""
-    target = path.resolve()
+    target = resolved_path(path)
     try:
         status = target.stat()
     except FileNotFoundError:

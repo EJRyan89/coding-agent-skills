@@ -194,7 +194,7 @@ from markdown_sections import (
     prose_code_spans,
 )
 from module_assignments import assigned_names, sole_assignment
-from path_containment import within
+from path_containment import resolved_path, within
 from path_keys import path_key
 from powershell_startup import POWERSHELL_PROGRAMS, StartupCommand, startup_command
 from python_names import import_aliases, qualified_name
@@ -1292,14 +1292,14 @@ def inside_references(root: Path, source: Path, lines: list[str]) -> list[tuple[
     for number, line in enumerate(lines, start=1):
         for match in INSIDE_REFERENCE.finditer(line):
             base = root if match.group(1) else source.parent
-            found.append((number, match.group(0), (base / match.group(2)).resolve()))
+            found.append((number, match.group(0), resolved_path(base / match.group(2))))
     return found
 
 
 def nested_flags(directory: Path, texts: dict[str, tuple[str, str]]) -> list[str]:
     """Reference files reached only through another reference file; published guidance links each from SKILL.md."""
-    root = directory.resolve()
-    docs = {(directory / relative).resolve() for relative, (kind, _) in texts.items() if kind == "doc"}
+    root = resolved_path(directory)
+    docs = {resolved_path(directory / relative) for relative, (kind, _) in texts.items() if kind == "doc"}
     linked: set[Path] = set()
     for relative, (kind, text) in texts.items():
         if kind == "main":
@@ -1311,7 +1311,7 @@ def nested_flags(directory: Path, texts: dict[str, tuple[str, str]]) -> list[str
     for relative, (kind, text) in texts.items():
         if kind != "doc":
             continue
-        source = (directory / relative).resolve()
+        source = resolved_path(directory / relative)
         for number, reference, target in inside_references(root, source, text_lines(text)):
             if target != source and target in docs and target not in linked:
                 flags.append(f"NESTED_REFERENCE {relative}:{number} {reference}")
@@ -1320,7 +1320,7 @@ def nested_flags(directory: Path, texts: dict[str, tuple[str, str]]) -> list[str
 
 def outside_lines(directory: Path, texts: dict[str, tuple[str, str]]) -> list[str]:
     """Markdown the skill's own Markdown points to outside its folder: a read, and its cost, on every run."""
-    root = directory.resolve()
+    root = resolved_path(directory)
     lines: list[str] = []
     counted: dict[str, tuple[int, int]] = {}
     unreadable: dict[str, str] = {}
@@ -1333,7 +1333,7 @@ def outside_lines(directory: Path, texts: dict[str, tuple[str, str]]) -> list[st
             for match in OUTSIDE_REFERENCE.finditer(body[number]):
                 reference = match.group(0)
                 base = directory if match.group(1) else (directory / relative).parent
-                target = (base / match.group(2)).resolve()
+                target = resolved_path(base / match.group(2))
                 if within(target, root):
                     continue
                 where = f"{relative}:{number + 1}"
@@ -1951,7 +1951,7 @@ def skill_folder(path: Path) -> Path | None:
     """The skill folder a scanned file belongs to: the nearest folder above it that holds SKILL.md, named as the
     file is, so a relative path stays relative."""
     for folder in path.parents:
-        folder = folder if folder.name else folder.resolve()
+        folder = folder if folder.name else resolved_path(folder)
         if any(is_skill_file(child) and is_listed_file(child) for child in folder.iterdir()):
             return folder
     return None
@@ -2193,7 +2193,7 @@ def repository_root(folder: Path) -> Path | None:
     """The nearest folder above a skill that holds a .git entry, where its commands run tools from, or None; a .git
     that is a link to nothing is none, since git reads nothing through it, and a .git entry it cannot look at raises
     the stat's OSError rather than passing to the folder above."""
-    return next((parent for parent in folder.resolve().parents if is_there(parent / ".git")), None)
+    return next((parent for parent in resolved_path(folder).parents if is_there(parent / ".git")), None)
 
 
 def folder_scripts(folder: Path) -> list[Path]:
@@ -2201,7 +2201,7 @@ def folder_scripts(folder: Path) -> list[Path]:
     if not is_directory(folder):
         return []
     return [
-        path.resolve()
+        resolved_path(path)
         for path in sorted(folder.iterdir())
         if path.suffix.casefold() in STATUS_SCRIPT_SUFFIXES and not is_suite_name(path.name) and is_listed_file(path)
     ]
@@ -2244,7 +2244,7 @@ def command_scripts(
                 else:
                     continue
                 if script_is_present(script):
-                    found.append(script.resolve())
+                    found.append(resolved_path(script))
                 # A bare name from the repository root, such as a value a span gives, names no tool's path.
                 elif text.startswith(SKILL_DIR_PREFIX) or "/" in text:
                     missing.append(f"SCRIPT_MISSING {posix(path)} {line} {text}")
@@ -2260,7 +2260,7 @@ CONTAINMENT_ALLOWED = {
 def shown_path(folder: Path, path: Path) -> str:
     """A script's path under the skill folder as it was given, or its resolved path outside it."""
     try:
-        return posix(folder / path.relative_to(folder.resolve()))
+        return posix(folder / path.relative_to(resolved_path(folder)))
     except ValueError:
         return posix(path)
 
@@ -2328,11 +2328,11 @@ def status_lines(folder: Path) -> list[str]:
     ]
     reading = [*own, *commands, *(path for command in commands for path in folder_scripts(command.parent))]
     reading += [path for core in cores for path in folder_scripts(core)]
-    skills_roots = {folder.resolve().parent, *((root / "skills", root / ".claude" / "skills") if root else ())}
+    skills_roots = {resolved_path(folder).parent, *((root / "skills", root / ".claude" / "skills") if root else ())}
     runs = [
         path
         for path in commands
-        if within(path, folder.resolve(), strict=True)
+        if within(path, resolved_path(folder), strict=True)
         or not any(within(path, skills, strict=True) for skills in skills_roots)
     ]
     facts = ScriptFacts()
@@ -2873,7 +2873,9 @@ def needs_evidence(folder: Path, granted: list[str], user_only: bool, tools: lis
     for script in folder_scripts(folder / "scripts"):
         for subcommand in sorted(script_git_subcommands(script)):
             needs = runtime_support.frontmatter_needs([], False, git_subcommands=frozenset({subcommand}))
-            evidence += [(need, f"git {subcommand} {posix(script.relative_to(folder.resolve()))}") for need in needs]
+            evidence += [
+                (need, f"git {subcommand} {posix(script.relative_to(resolved_path(folder)))}") for need in needs
+            ]
     return list(dict.fromkeys(evidence))
 
 

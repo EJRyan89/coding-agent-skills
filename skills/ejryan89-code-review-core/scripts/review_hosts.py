@@ -29,7 +29,7 @@ from executable_locator import find_executables, find_program
 from flat_text import flat_text
 from git_client import GitClient, GitError
 from job_tree import JobRefused, process_tree
-from path_containment import within
+from path_containment import resolved_path, strictly_resolved_path, within
 from path_keys import name_key, opens_as
 from process_identity import ProcessStatus, read_pid
 from review_config import REVIEWER_EFFORTS
@@ -359,7 +359,7 @@ def copilot_settings(added_roots: Sequence[Path]) -> dict[str, Any]:
     resolves to. No setting excludes an added root's agents, which `require_no_added_configuration` refuses."""
     ignored: list[str] = []
     for root in added_roots:
-        for spelling in (str(root), str(root.resolve(strict=True))):
+        for spelling in (str(root), str(strictly_resolved_path(root))):
             if spelling not in ignored:
                 ignored.append(spelling)
     return {**COPILOT_SETTINGS, "ignoredSkillsLocations": ignored}
@@ -426,7 +426,7 @@ def materialized_reviewer_entrypoint(materialized_root: Path) -> Path:
     READ.hex_digest(metadata["source_commit"], "materialization.source_commit", 40, 64)
     relative_value = _safe_relative_path(metadata["entrypoint"], "materialization.entrypoint")
     relative = PurePosixPath(relative_value)
-    materialized_resolved = materialized_root.resolve(strict=True)
+    materialized_resolved = strictly_resolved_path(materialized_root)
     source_hashes = READ.json_object(metadata["source_hashes"], "materialization.source_hashes")
     if relative_value not in source_hashes:
         raise RuntimeContractError("Reviewer materialization source hashes are invalid")
@@ -441,7 +441,7 @@ def materialized_reviewer_entrypoint(materialized_root: Path) -> Path:
         _require_safe_snapshot_path(materialized_root, target)
         invalid = f"Reviewer materialization file is invalid: {declared_path}"
         file_presence.require(target, RuntimeContractError, invalid, f"Reviewer materialization file {declared_path}")
-        if not within(target.resolve(strict=True), materialized_resolved):
+        if not within(strictly_resolved_path(target), materialized_resolved):
             raise RuntimeContractError(invalid)
         actual_hash = hashlib.sha256(target.read_bytes()).hexdigest()
         if actual_hash != expected_hash:
@@ -450,7 +450,7 @@ def materialized_reviewer_entrypoint(materialized_root: Path) -> Path:
     actual_files = _snapshot_files(materialized_root)
     if actual_files != expected_files:
         raise RuntimeContractError("Reviewer materialization file set does not match its hashes")
-    return materialized_root.joinpath(*relative.parts).resolve(strict=True)
+    return strictly_resolved_path(materialized_root.joinpath(*relative.parts))
 
 
 def copilot_added_roots(run_directory: Path) -> list[Path]:
@@ -503,10 +503,10 @@ def copilot_command(
         file_presence.require(folder, RuntimeContractError, refused, f"Copilot {label} {folder}", folder=True)
     if not result_path.is_absolute():
         raise RuntimeContractError("Copilot result path must be absolute")
-    run_directory_resolved = run_directory.resolve(strict=True)
-    if not within(materialized_root.resolve(strict=True), run_directory_resolved, strict=True):
+    run_directory_resolved = strictly_resolved_path(run_directory)
+    if not within(strictly_resolved_path(materialized_root), run_directory_resolved, strict=True):
         raise RuntimeContractError("Copilot materialized root must be inside the run directory")
-    result_path_resolved = result_path.resolve(strict=False)
+    result_path_resolved = resolved_path(result_path)
     if not within(result_path_resolved, run_directory_resolved):
         raise RuntimeContractError("Copilot result path must be inside the run directory")
     added = copilot_added_roots(run_directory)
@@ -620,7 +620,7 @@ def _copilot_reviewer(
         if not path.is_absolute():
             raise RuntimeContractError(refused)
         file_presence.require(path, RuntimeContractError, refused, f"Copilot {label} {path}", folder=folder)
-    materialized_resolved = materialized_root.resolve(strict=True)
+    materialized_resolved = strictly_resolved_path(materialized_root)
     entrypoint_resolved = materialized_reviewer_entrypoint(materialized_root)
     for path, label in ((result_path, "result"), (staging_path, "staging"), (diagnostic_path, "diagnostic")):
         if not path.is_absolute():
@@ -659,10 +659,10 @@ def _read_copilot_request(request_path: Path) -> _CopilotRequest:
 def _verified_copilot_source(run_directory: Path, request: _CopilotRequest, stamp: str | None) -> Path:
     """The resolved source snapshot root, once the diff and the snapshot are inside the run directory and the snapshot
     verifies against the request's repository and head, and against `stamp` as far as it still holds."""
-    run_resolved = run_directory.resolve(strict=True)
+    run_resolved = strictly_resolved_path(run_directory)
     try:
-        source_resolved = request.source_root.resolve(strict=True)
-        diff_resolved = request.diff_path.resolve(strict=True)
+        source_resolved = strictly_resolved_path(request.source_root)
+        diff_resolved = strictly_resolved_path(request.diff_path)
     except OSError as exc:
         raise RuntimeContractError(f"Copilot request artifacts are invalid: {exc}") from exc
     refused = "Copilot request diff must be a file inside the run directory"

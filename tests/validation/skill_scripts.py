@@ -558,11 +558,14 @@ COMMAND_LOOKUP = "shutil.which"
 LOOKUP_NAMES = frozenset({"which", "path_programs", "find_executable", "find_executables", "find_program"})
 LOOKUP_KEYWORDS = frozenset({"cmd", "name"})
 # Calls whose result names the program their first argument does: a path or text conversion, a copy into a list or a
-# tuple, a split or a join of a command, and ejryan89-skill-core's located_command, which names a command's program by
-# the path the locator finds for it; and the path methods that do the same for the path they are called on.
+# tuple, a split or a join of a command, ejryan89-skill-core's located_command, which names a command's program by the
+# path the locator finds for it, and path_containment's resolutions of a path; and the path methods that do the same for
+# the path they are called on.
 PROGRAM_CONVERSIONS = frozenset(
     {
         "executable_locator.located_command",
+        "path_containment.resolved_path",
+        "path_containment.strictly_resolved_path",
         "str",
         "list",
         "tuple",
@@ -2371,8 +2374,19 @@ TEMPORARY_MAKERS = {
     "tempfile.NamedTemporaryFile": 6,
 }
 TEMPORARY_FOLDER = "private_folder.temporary_directory()"
-# The calls whose one argument and result name the same folder, as a later call's `dir`.
-FOLDER_KEEPING_CALLS = frozenset({"pathlib.Path", "os.fspath", "str", "os.path.realpath", "os.path.abspath"})
+# The calls whose one argument and result name the same folder, as a later call's `dir`, path_containment's resolutions
+# of a path among them.
+FOLDER_KEEPING_CALLS = frozenset(
+    {
+        "pathlib.Path",
+        "os.fspath",
+        "str",
+        "os.path.realpath",
+        "os.path.abspath",
+        "path_containment.resolved_path",
+        "path_containment.strictly_resolved_path",
+    }
+)
 # The path methods whose result names the folder their receiver names.
 FOLDER_KEEPING_METHODS = frozenset({"resolve", "absolute"})
 # What names the temporary directory as tempfile finds it, unjudged: its lookup, its cached value, and, read from any

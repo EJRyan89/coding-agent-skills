@@ -16,6 +16,7 @@ import file_presence
 import private_folder
 from flat_text import flat_text
 from git_client import output_lines
+from path_containment import resolved_path
 from review_config import (
     ConfigurationError,
     check_local_manifest,
@@ -332,7 +333,7 @@ def _repository_reviewer(
 ) -> tuple[Path, str, dict[str, Any], Path, str]:
     """The configuration file, the repository's identity, its configured entry, its checkout, and the configured
     runtime, once the entry names a repository reviewer and the checkout's origin is the repository."""
-    config_path = (config_path or default_config_path()).resolve()
+    config_path = resolved_path(config_path or default_config_path())
     config = load_config(config_path)
     repository = validate_repository_identity(repository)
     entry = config["repositories"].get(repository)
@@ -411,7 +412,7 @@ def _unmatched_patterns(manifest: dict[str, Any], files: set[str]) -> list[str]:
 def run_source_example() -> Path:
     """A path as long as the source folder of a run prepare creates, which tempfile names with RUN_PREFIX and eight
     random characters, so a measurement leaves each path the room prepare's snapshot will."""
-    return Path(tempfile.gettempdir()).resolve() / f"{RUN_PREFIX}{'x' * 8}" / "source"
+    return resolved_path(tempfile.gettempdir()) / f"{RUN_PREFIX}{'x' * 8}" / "source"
 
 
 def _excluded_reviewer_files(manifest: dict[str, Any], exclude: Sequence[str]) -> list[str]:
