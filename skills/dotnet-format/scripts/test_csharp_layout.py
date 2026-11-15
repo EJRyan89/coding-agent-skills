@@ -1044,8 +1044,8 @@ class ConfigTests(unittest.TestCase):
             (Completed(0, b'{"Items": {"PackageReference": [{"Identity": {"name": "x"}}]}}'), "not text"),
         )
         reasons = (
-            "MSBuild could not evaluate src/App/App.csproj: it exited with code 1: error MSB4019: The imported project was"
-            " not found.",
+            "MSBuild could not evaluate src/App/App.csproj: it exited with code 1: error MSB4019: The imported project"
+            " was not found.",
             "MSBuild did not evaluate src/App/App.csproj within 120 seconds",
             "MSBuild's evaluation of src/App/App.csproj is not the items it was asked for",
             "MSBuild's evaluation of src/App/App.csproj is not the items it was asked for",
@@ -1071,7 +1071,10 @@ class ConfigTests(unittest.TestCase):
         error = "/work/src/App/App.csproj(3,1): error MSB4025: The project file could not be loaded."
         cases = (
             # MSBuild writes its error lines to stdout among others; the error lines alone are the reason.
-            (b"Determining projects to restore...\n" + error.encode() + b"\r\n\x1b[31mdone\x1b[0m\n", f"{prefix}: {error}"),
+            (
+                b"Determining projects to restore...\n" + error.encode() + b"\r\n\x1b[31mdone\x1b[0m\n",
+                f"{prefix}: {error}",
+            ),
             # Output with no error line is the reason itself, flattened to one line.
             (b"Something\n\twent wrong\n", f"{prefix}: Something went wrong"),
             # An evaluation that printed nothing is named by its exit code alone.

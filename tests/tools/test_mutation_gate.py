@@ -1031,12 +1031,21 @@ class CoverageReachFixtures(unittest.TestCase):
         cases = (
             (b"", b"", "failed unmutated with exit code 3"),
             (b" \r\n", b"\t\n", "failed unmutated with exit code 3"),
-            (b"collected 2 items\n\n1 failed in 0.1s\n", b"", "failed unmutated with exit code 3: `collected 2 items 1 failed in 0.1s`"),
-            (b"head " + tail.encode(), b"", f"failed unmutated with exit code 3: `{tail[-mutation_gate.STEP_OUTPUT_CHARACTERS:]}`"),
+            (
+                b"collected 2 items\n\n1 failed in 0.1s\n",
+                b"",
+                "failed unmutated with exit code 3: `collected 2 items 1 failed in 0.1s`",
+            ),
+            (
+                b"head " + tail.encode(),
+                b"",
+                f"failed unmutated with exit code 3: `{tail[-mutation_gate.STEP_OUTPUT_CHARACTERS :]}`",
+            ),
         )
         for stdout, stderr, expected in cases:
-            with self.subTest(stdout=stdout, stderr=stderr), mock.patch.object(
-                mutation_gate, "run_bounded", return_value=Finished(3, stdout, stderr)
+            with (
+                self.subTest(stdout=stdout, stderr=stderr),
+                mock.patch.object(mutation_gate, "run_bounded", return_value=Finished(3, stdout, stderr)),
             ):
                 self.assertEqual(expected, self.reach({}))
 

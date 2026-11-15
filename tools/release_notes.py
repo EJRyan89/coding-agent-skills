@@ -58,6 +58,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "ejryan89-skill-core" / "scripts"))
 
 from console import run_main
+from flat_text import flat_text
 from git_client import GitClient, GitError, GitResult, output_lines
 from markdown_sections import HTML_COMMENT, MARKDOWN_SPACE, find_fences, list_item, markdown_section
 from release_levels import RELEASING_DOC, VERSION, largest_level, versioning_levels
@@ -222,7 +223,8 @@ def git_output(root: Path, *arguments: str) -> str:
     run or exits nonzero."""
     completed = git(root, *arguments)
     if completed.returncode != 0:
-        raise ReleaseNotesError(f"git {' '.join(arguments)} failed: {completed.stderr.strip()}")
+        reason = flat_text(completed.stderr) or f"exit code {completed.returncode}"
+        raise ReleaseNotesError(f"git {' '.join(arguments)} failed: {reason}")
     return completed.stdout
 
 
