@@ -113,6 +113,12 @@ def test_an_invoked_skill_is_the_first_word_of_a_code_span_on_a_line_that_says_i
     assert runtime_support.invoked_skills(text, names) == {"review-prs", "flag-review-finding", "review-insights"}
 
 
+@pytest.mark.parametrize("separator", ["\x0c", "\x85", "\u2028", "\u2029"])
+def test_a_line_ends_where_commonmark_ends_one_so_a_separator_keeps_the_span_on_the_invoke_line(separator: str) -> None:
+    assert runtime_support.invoked_skills(f"Then invoke{separator}`review-prs`\n", {"review-prs"}) == {"review-prs"}
+    assert runtime_support.invoked_skills("Then invoke\r`review-prs`\n", {"review-prs"}) == set()
+
+
 def test_an_invoked_skill_carries_its_needs_and_its_own_invoked_skills_but_not_user_only_start() -> None:
     own = {
         "dashboard": {"sandbox-network"},

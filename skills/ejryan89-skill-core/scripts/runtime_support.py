@@ -19,6 +19,7 @@ from dataclasses import dataclass, field
 
 import git_client
 import python_reader
+from text_lines import text_lines
 
 RUNTIMES = ("claude-code", "codex", "copilot-cli")
 RUNTIME_TITLES = {"claude-code": "Claude Code", "codex": "Codex CLI", "copilot-cli": "Copilot CLI"}
@@ -209,12 +210,13 @@ def python_git_subcommands(source: str) -> set[str]:
 
 def invoked_skills(text: str, names: Collection[str]) -> set[str]:
     """The skills a SKILL.md's text invokes: each of `names` that is the first word of a code span on a line that
-    says "invoke", such as `review-prs` in "invoke `review-prs --re-review`".
+    says "invoke", such as `review-prs` in "invoke `review-prs --re-review`". A line ends where CommonMark ends one,
+    at CR, LF, or CRLF, so a line separator before the span keeps it on the line that says "invoke".
     tests/ai-config/test_cross_skill_contracts.py holds that no invoked skill is user-only."""
     span = re.compile(r"`([^`]+)`")
     return {
         words[0]
-        for line in text.splitlines()
+        for line in text_lines(text)
         if "invoke" in line
         for found in span.findall(line)
         if (words := found.split()) and words[0] in names

@@ -403,7 +403,9 @@ def _compares_git_name(
 ) -> bool:
     """A name compared with `.git` by hand, which misses a `.GIT` a folding file system takes for `.git` when the test
     is exact, or takes it on a case-sensitive one too after a str.casefold. name_key asks the folder's file system, so
-    `.GIT` is the Git directory only where the folder folds case, and a comparison of its result is never refused.
+    `.GIT` is the Git directory only where the folder folds case, and a comparison of its result is never refused;
+    path_keys' opens_as, which asks the folder for the entry it gives under `.git`, as folder_walk's
+    `is_checkout_marker` does, compares nothing and is never refused either.
 
     `.git` is the literal, a module-level name the module binds once to it, such as `GIT = ".git"`, or an attribute
     a module-level class binds once to it in its body, such as `Names.GIT`. The forms refused: `==` or `!=` between
@@ -414,8 +416,7 @@ def _compares_git_name(
     `case ".git" | ".hg":`, `case [*_, ".git"]:`, or `case Names.GIT:` do. A bare name in a case captures the subject
     rather than comparing it, so a held name reaches a case only through a class's attribute. A comparison or a
     membership test joined by `and` to a name_key comparison with `.git` only narrows what the folder is asked about,
-    as folder_walk's `is_checkout_marker` does, and is not refused; a startswith or endswith call, and a case whose
-    guard asks name_key, are refused even there.
+    and is not refused; a startswith or endswith call, and a case whose guard asks name_key, are refused even there.
 
     The limit: membership in a collection held under a module-level name, such as a walk's skip list
     `frozenset({".git", "node_modules"})`, is not read, since the collection's other names are matched exactly by
