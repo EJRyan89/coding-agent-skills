@@ -151,14 +151,32 @@ def codex_sandbox_command(codex: str) -> list[str]:
     return [codex, *CODEX_SANDBOX_PROBE]
 
 
-def codex_sandbox_mode(codex: str) -> str | None:
-    """The sandbox mode the Codex CLI at this path would run a skill's scripts in, or None when it names none.
+@dataclass(frozen=True)
+class CodexSandbox:
+    """What the sandbox probe read: the mode Codex CLI would run a skill's scripts in, or None with why it named
+    none."""
+
+    mode: str | None
+    unread: str = ""
+
+
+def codex_sandbox_mode(codex: str) -> CodexSandbox:
+    """The sandbox mode the Codex CLI at this path would run a skill's scripts in, or why it names none: a probe
+    that exits nonzero is named by its exit code and what Codex printed on one line, such as a configuration it cannot
+    load, and one that exits 0 by naming no mode.
 
     A probe that does not finish raises ToolTimedOut, which stops `check` as every other tool's deadline does.
     """
-    result = platform_support.run_tool(codex_sandbox_command(codex))
-    found = CODEX_SANDBOX_MODE.search(result.output) if result.returncode == 0 else None
-    return None if found is None else found.group(1)
+    command = codex_sandbox_command(codex)
+    result = platform_support.run_tool(command)
+    probe = " ".join(["codex", *CODEX_SANDBOX_PROBE[:2]])
+    if result.returncode != 0:
+        printed = reason_line(result.output)
+        return CodexSandbox(
+            None, f"{probe} failed with exit code {result.returncode}" + (f": {printed}" if printed else "")
+        )
+    found = CODEX_SANDBOX_MODE.search(result.output)
+    return CodexSandbox(found.group(1)) if found else CodexSandbox(None, f"{probe} named no sandbox mode")
 
 
 # Tools a skill may declare in its deploy-meta "tools" list. Python is a deployment requirement already, and Git,

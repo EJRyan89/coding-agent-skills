@@ -381,6 +381,24 @@ class ShellCheckBatchTests(unittest.TestCase):
             raised.exception.lines,
         )
 
+    def test_a_batch_that_fails_printing_nothing_is_named_by_its_exit_code(self) -> None:
+        units = [render.ShellUnit(Path("C:/work/files/run.sh"), "s/scripts/run.sh", False)]
+        for output in ("", " \r\n\t\n"):
+            with (
+                self.subTest(output=output),
+                mock.patch.object(platform_support, "run_tool", return_value=platform_support.ToolResult(3, output)),
+                self.assertRaises(DeployError) as raised,
+            ):
+                render._run_shellcheck(units, "shellcheck")
+            self.assertEqual(
+                (
+                    "ERROR: ShellCheck failed for rendered content",
+                    "ShellCheck exited with code 3 and printed nothing",
+                    render.SHELLCHECK_FAILED_REMEDY,
+                ),
+                raised.exception.lines,
+            )
+
     def test_a_failure_naming_no_unit_ends_with_the_step_to_check_shellcheck_itself(self) -> None:
         units = [render.ShellUnit(Path("C:/work/files/run.sh"), "s/scripts/run.sh", False)]
         output = "shellcheck: internal error\n"
@@ -431,6 +449,24 @@ class RenderedRefusalStepTests(unittest.TestCase):
             ),
             raised.exception.lines,
         )
+
+    def test_a_bash_syntax_check_that_fails_printing_nothing_is_named_by_its_exit_code(self) -> None:
+        units = [render.ShellUnit(Path("C:/work/files/run.sh"), "s/scripts/run.sh", False)]
+        for output in ("", " \r\n\t\n"):
+            with (
+                self.subTest(output=output),
+                mock.patch.object(render, "run_bash_syntax_check", return_value=platform_support.ToolResult(2, output)),
+                self.assertRaises(DeployError) as raised,
+            ):
+                render._check_bash_syntax(units, "bash")
+            self.assertEqual(
+                (
+                    "ERROR: Rendered Bash syntax validation failed: s/scripts/run.sh",
+                    "bash exited with code 2 and printed nothing",
+                    render.RENDERED_CHECK_REMEDY,
+                ),
+                raised.exception.lines,
+            )
 
     def test_a_powershell_parse_failure_reports_the_parser_then_the_step(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

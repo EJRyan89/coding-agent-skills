@@ -217,9 +217,12 @@ removed fails validation until its pattern follows it.
   `skills/audit-ai-config/scripts/test_audit_ai_config.py::UnexaminedPathTests::test_an_unreadable_artifact_is_named_by_its_error_on_one_line_or_by_its_kind_when_the_error_says_nothing`,
   `skills/ejryan89-skill-core/scripts/test_powershell_commands.py::test_a_pwsh_that_lists_no_commands_is_named_by_its_errors_on_one_line_or_its_exit_code`,
   `tests/deployer/test_check.py::CheckCommandTests::test_a_floored_tool_whose_version_cannot_be_read_is_unusable_never_found`,
-  `skills/dotnet-dependencies/scripts/test_sdk_why.py::test_a_run_that_fails_after_part_of_an_answer_is_named_by_the_end_of_what_it_printed_on_one_line`,
+  `skills/dotnet-dependencies/scripts/test_sdk_why.py::test_a_run_that_fails_after_part_of_an_answer_is_named_by_what_it_printed_after_it_on_one_line`,
   `tests/deployer/test_deploy_at.py::DeployAtTests::test_an_export_git_fails_is_named_by_git_s_reason_on_one_line_or_by_its_exit_code`,
-  `tests/deployer/test_render_contexts.py::RenderedRefusalStepTests::test_a_powershell_parse_that_fails_printing_nothing_is_named_by_its_exit_code`
+  `tests/deployer/test_render_contexts.py::RenderedRefusalStepTests::test_a_powershell_parse_that_fails_printing_nothing_is_named_by_its_exit_code`,
+  `tests/deployer/test_render_contexts.py::RenderedRefusalStepTests::test_a_bash_syntax_check_that_fails_printing_nothing_is_named_by_its_exit_code`,
+  `tests/deployer/test_check.py::CodexSandboxProbeTests::test_a_failed_or_silent_probe_names_no_mode_and_says_why_on_one_line_or_by_its_exit_code`,
+  `skills/ejryan89-skill-core/scripts/test_pdf_tool.py::PdfPolicyTests::test_a_probe_that_fails_is_named_by_its_status_before_its_output_is_decoded_or_read_as_a_banner`
 - **Search for:** `rg -nU "except (OSError|ValueError|UnicodeDecodeError)[^\n]*:\n\s+(print\([^\n]*\)\n\s+)?return 1\b"`,
   a handler that ends every failure in one code; two probes under one `except` that print one message; an `except`
   around a `git` or `gh` call that drops the exception's text; `FAILED KeyError`, `FAILED TypeError`, or

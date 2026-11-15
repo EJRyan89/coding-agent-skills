@@ -312,15 +312,23 @@ class CheckCommandTests(DeployerTestCase):
                 self.assertNotIn("pwsh command", self.check(machine).output)
 
     def test_a_sandbox_mode_codex_does_not_name_is_unusable_and_no_python_command_is_missing(self) -> None:
-        for status, output in ((0, "no permissions here\n"), (1, prompt_input("workspace-write"))):
-            with self.subTest(status=status):
+        for status, output, unread in (
+            (0, "no permissions here\n", "codex debug prompt-input named no sandbox mode"),
+            (1, "", "codex debug prompt-input failed with exit code 1"),
+            (
+                1,
+                "Error loading config.toml:\n  invalid type\n",
+                "codex debug prompt-input failed with exit code 1: Error loading config.toml: invalid type",
+            ),
+        ):
+            with self.subTest(status=status, output=output):
                 groups = self.report_groups(
                     self.check(Machine(settings=True, python_command=None, codex_probe=(status, output))).output,
                     "CHECK",
                 )
                 self.assertIn(
-                    "codex sandbox (codex debug prompt-input named no sandbox mode; set [features] prefer_mxc or "
-                    '[windows] sandbox in ~/.codex/config.toml; see "Windows sandbox mode" in docs/codex-support.md)',
+                    f"codex sandbox ({unread}; set [features] prefer_mxc or [windows] sandbox in ~/.codex/config.toml; "
+                    'see "Windows sandbox mode" in docs/codex-support.md)',
                     [" ".join(line.split()) for line in groups["UNUSABLE"]],
                 )
                 self.assertIn(
@@ -1100,7 +1108,7 @@ class StandardCommandTests(unittest.TestCase):
 class CodexSandboxProbeTests(unittest.TestCase):
     """The sandbox mode Codex CLI would use, read from the documented probe that starts no model."""
 
-    def mode(self, result: platform_support.ToolResult | Exception) -> tuple[str | None, list[list[str]]]:
+    def mode(self, result: platform_support.ToolResult | Exception) -> tuple[tools.CodexSandbox, list[list[str]]]:
         calls: list[list[str]] = []
 
         def run(arguments: list[str], environment: dict[str, str] | None = None) -> platform_support.ToolResult:
@@ -1116,18 +1124,27 @@ class CodexSandboxProbeTests(unittest.TestCase):
         for mode in ("workspace-write", "read-only", "danger-full-access"):
             with self.subTest(mode=mode):
                 found, calls = self.mode(platform_support.ToolResult(0, prompt_input(mode)))
-                self.assertEqual(mode, found)
+                self.assertEqual(tools.CodexSandbox(mode), found)
                 self.assertEqual(
                     [["C:/tools/codex.exe", "debug", "prompt-input", "-c", "sandbox_mode=workspace-write"]], calls
                 )
 
-    def test_a_failed_or_silent_probe_names_no_mode(self) -> None:
-        for result in (
-            platform_support.ToolResult(1, prompt_input("workspace-write")),
-            platform_support.ToolResult(0, "error: unknown subcommand 'debug'\n"),
+    def test_a_failed_or_silent_probe_names_no_mode_and_says_why_on_one_line_or_by_its_exit_code(self) -> None:
+        failed = "codex debug prompt-input failed with exit code"
+        for result, unread in (
+            (
+                platform_support.ToolResult(1, "Error loading config.toml:\r\n  unknown variant `bogus`\n"),
+                f"{failed} 1: Error loading config.toml: unknown variant `bogus`",
+            ),
+            (platform_support.ToolResult(1, ""), f"{failed} 1"),
+            (platform_support.ToolResult(2, " \r\n"), f"{failed} 2"),
+            (
+                platform_support.ToolResult(0, "error: unknown subcommand 'debug'\n"),
+                "codex debug prompt-input named no sandbox mode",
+            ),
         ):
             with self.subTest(result=result):
-                self.assertIsNone(self.mode(result)[0])
+                self.assertEqual(tools.CodexSandbox(None, unread), self.mode(result)[0])
 
     def test_an_unfinished_probe_stops_with_the_deadline_rather_than_naming_no_mode(self) -> None:
         timed_out = platform_support.ToolTimedOut("C:/tools/codex.exe", 600)

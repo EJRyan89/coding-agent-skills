@@ -165,18 +165,15 @@ def _pwsh_command_line(program: str) -> ReportLine:
 
 def _codex_sandbox_line(codex: str) -> ReportLine:
     label = "codex sandbox"
-    mode = tools.codex_sandbox_mode(codex)
+    probe = tools.codex_sandbox_mode(codex)
+    mode = probe.mode
     if mode == tools.CODEX_WRITABLE_SANDBOX:
         # The configured mode only: running a command in the sandbox could start the elevated sandbox's setup, which
         # asks for an administrator's approval, so the section gives that model-free command to run by hand.
         return ReportLine(
             label, "FOUND", f"{mode} configured; confirm its sandbox starts a command as {CODEX_SANDBOX_SECTION} shows"
         )
-    found = (
-        f"{mode}, so Codex CLI blocks every skill script"
-        if mode is not None
-        else "codex debug prompt-input named no sandbox mode"
-    )
+    found = f"{mode}, so Codex CLI blocks every skill script" if mode is not None else probe.unread
     return ReportLine(
         label,
         "UNUSABLE",
