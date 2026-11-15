@@ -599,8 +599,9 @@ RUN_METHODS = frozenset(
         "removesuffix",
     }
 )
-# The str methods that strip the characters given first, so a marker among them strips a run of any length, as
-# `line.lstrip("`") != line` tests whether a line starts with one.
+# The str methods that strip the characters given first, so a marker among them strips a run of any length, which
+# reads a line's run where the result is compared with the line, as `line.lstrip("`") != line` tests whether a line
+# starts with one, or measured against it, as `len(line) - len(line.lstrip("`"))` counts the run.
 STRIP_METHODS = frozenset({"strip", "lstrip", "rstrip"})
 
 
@@ -612,9 +613,14 @@ def _reads_fence_run(
     or end, given first to a str method that finds, counts, splits at, or takes off a run, as `text.split("```")` or
     `line.find("~~~")` does, given first to an re function as its pattern, however re or the function is imported, or
     compared with `in`, `not in`, `==`, or `!=`, as `"```" in line` or `line[:3] == "~~~"` test a line; or a marker
-    given to str.strip, lstrip, or rstrip, which strips a run of any length. Such a reader misses a fence a blockquote
-    or a list item holds and takes any line that starts with a run, an info string's included, as the fence's close. A
-    run built at runtime, such as from a marker by `*`, is not read."""
+    given to str.strip, lstrip, or rstrip, which strips a run of any length, whose result is compared with what it
+    stripped or its length taken from that one's, as `line.lstrip("`") != line` or
+    `len(line) - len(line.lstrip("`"))` reads a line's run, where a strip of a cell or a name, as
+    `cell.strip("`")`, reads none. Such a reader misses a fence a blockquote or a list item holds and takes any line
+    that starts with a run, an info string's included, as the fence's close. Stated limits: a run built at runtime,
+    such as from a marker by `*`, a run given by keyword, as `text.split(sep="```")`, or to a str method called
+    unbound, as `str.find(line, "```")`, and a run as a `case` pattern, as `case "```":` of `match line[:3]:`, are not
+    read."""
     if isinstance(node, ast.Compare):
         operands = [node.left, *node.comparators]
         tests = any(isinstance(operator, RUN_TESTS) for operator in node.ops)
@@ -623,9 +629,30 @@ def _reads_fence_run(
         return False
     if _called_name(node) in AFFIX_TESTS | RUN_METHODS or resolver.name(node.func) in PATTERN_CALLS:
         return _is_fence_run(node.args[0], resolver)
-    if _called_name(node) in STRIP_METHODS:
-        return _is_fence_run(node.args[0], resolver, _holds_marker)
+    if _called_name(node) in STRIP_METHODS and _is_fence_run(node.args[0], resolver, _holds_marker):
+        return _measures_stripped_run(node, resolver)
     return False
+
+
+def _measures_stripped_run(node: ast.Call, resolver: CallableResolver) -> bool:
+    """Whether a strip's result is compared with what it stripped, as `line.lstrip("`") != line`, or its length taken
+    from that one's, as `len(line) - len(line.lstrip("`"))`, each of which reads the run it took off."""
+    assert isinstance(node.func, ast.Attribute)
+    stripped = ast.dump(node.func.value)
+    parents = _module_parents(resolver)
+    parent = parents.get(id(node))
+    if isinstance(parent, ast.Compare):
+        return any(ast.dump(operand) == stripped for operand in [parent.left, *parent.comparators])
+    measured = parents.get(id(parent)) if isinstance(parent, ast.Call) and resolver.name(parent.func) == "len" else None
+    if not (isinstance(measured, ast.BinOp) and isinstance(measured.op, ast.Sub)):
+        return False
+    whole = measured.left if measured.right is parent else measured.right
+    return (
+        isinstance(whole, ast.Call)
+        and resolver.name(whole.func) == "len"
+        and bool(whole.args)
+        and ast.dump(whole.args[0]) == stripped
+    )
 
 
 def _holds_marker(value: object) -> bool:

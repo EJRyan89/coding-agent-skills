@@ -791,7 +791,8 @@ def link_test_problems(root: Path, files: list[Path]) -> list[str]:
 # every name its scope binds to any of them, where a name its scope also binds to an empty value is, when true, true
 # under the tests that guard its other bindings. A reading that finds no path, as a search that found none, or more than
 # one, refuses, names no path as missing. A refusal is a branch that raises an error of its own, or that returns or
-# yields a message of more than one word, the yield anywhere in a statement's expressions, as `print((yield msg))`, or
+# yields a message of more than one word, the yield anywhere in a simple statement's expressions, as
+# `print((yield msg))`, or
 # records one, as a call's argument, the call a statement of its own, awaited as one or as any assignment's value or a
 # return's, or, unless it builds a value, a built-in's, a str method's, a path's, or a class's by a capitalized name,
 # assigned or returned as it is, by an augmented assignment, or by a store into an attribute or into an item keyed by
@@ -842,11 +843,15 @@ def link_test_problems(root: Path, files: list[Path]) -> list[str]:
 # field's, as `cfg["title"] = "Untitled document"` does; an error callback that calls anything, which may raise; a
 # handler's exceptions named through a name the module does not bind to one literal tuple; a returned name bound to an
 # empty value inside the try; a suppress held in an attribute, returned by a function, imported from another module,
-# or unpacked from anything but a literal tuple or list of the same length, and one entered on an ExitStack that a
-# `with` in another scope holds; a message nested in a call that builds a value, assigned or returned, which reads as
-# that value; a `case None:`, read as taking every false answer, as it takes a search that found nothing, though it
-# never matches a False; and a match on a tuple holding a starred item, on a name bound to a tuple more than once, or
-# a case whose pattern is an `|` of sequence patterns, which reads no item's truth. The link tests are no presence
+# bound through `nonlocal`, or unpacked from anything but a literal tuple or list of the same length, one entered on an
+# ExitStack that a `with` in another scope holds, one given to enter_context or push by keyword, and a stat after the
+# statement that enters it in a loop's else or in a try's handler or finally; a message nested in a call that builds a
+# value, assigned or returned, which reads as that value, a method of any receiver whose name is a built-in's, a str
+# method's, or a path's among them, as `parser.exit(2, msg)`, and the built-ins that record, `exit`, `quit`, and
+# `input`, assigned or returned; a yield in a compound statement's test, as `if (yield msg):`; a `case None:`, read as
+# taking every false answer, as it takes a search that found nothing, though it never matches a False; and a match on
+# a tuple holding a starred item, on a name bound to a tuple more than once or at the module's top level, or a case
+# whose pattern is an `|` of sequence patterns, which reads no item's truth. The link tests are no presence
 # predicates here: LINK_TESTS refuses each outside link_probe however its answer is used, and link_probe lets a failed
 # stat through.
 PRESENCE_PREDICATES = frozenset(
@@ -1560,7 +1565,7 @@ def _yields_message(statement: ast.stmt) -> bool:
 
 def _records(statement: ast.stmt) -> bool:
     """Whether a statement returns or records a message as it is, as `_gives_message` reads one: a return or a yield of
-    one, as `return None, "not found here"` is, the yield anywhere in a statement's expressions, as
+    one, as `return None, "not found here"` is, the yield anywhere in a simple statement's expressions, as
     `sent = yield f"{p} is missing"` or `print((yield f"{p} is missing"))` is, a call given one as an argument, a
     statement of its own, or awaited as one, as an assignment's value, or as a return's, as
     `problems.append(f"{p} is missing")`, `problems.extend([...])`, `print(...)`, `await fail(...)`,

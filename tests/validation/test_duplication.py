@@ -595,6 +595,8 @@ class SharedFactPolicy(unittest.TestCase):
                 for marker in ("`", "~", " `")
             ),
             ('MARKER = "`"\n\n\ndef fenced(line):\n    return line.lstrip(MARKER) != line\n', 5),
+            ('def run(line):\n    return len(line) - len(line.lstrip("~"))\n', 2),
+            ('def fenced(line):\n    return line.strip() == line.strip().strip("`")\n', 2),
         ):
             with self.subTest(reader=reader):
                 self.assertEqual(
@@ -616,6 +618,16 @@ class SharedFactPolicy(unittest.TestCase):
             'def cells(line):\n    return line.strip("|").split("|")\n',
             'def tail(text):\n    return text.partition("``")[2].count("#")\n',
             "def word(text):\n    return text.strip()\n",
+            # A strip of a cell, a name, or a path reads no line's run.
+            'def cell(text):\n    return text.strip().strip("`")\n',
+            'def name(text):\n    return text.rstrip("~")\n',
+            'def home(path):\n    return path.lstrip("~/")\n',
+            'def width(a, b):\n    return len(a) - len(b.lstrip("`"))\n',
+            # Stated limits: a run given by keyword, to a method called unbound, or as a case pattern.
+            'def blocks(text):\n    return text.split(sep="```")\n',
+            'def fenced(line):\n    return str.find(line, "```") == 0\n',
+            'def fenced(line):\n    return str.startswith(line, "```")\n',
+            'def fenced(line):\n    match line[:3]:\n        case "```":\n            return True\n    return False\n',
             'MARKER = "`"\n\n\ndef quoted(name):\n    return name.startswith(MARKER)\n',
         ):
             with self.subTest(passing=passing):

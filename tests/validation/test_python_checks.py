@@ -6685,6 +6685,50 @@ PRESENCE_PASSED = {
         "    if q:\n        pair = (q, q)\n    match pair:\n        case (False, _):\n"
         "            raise OSError(f'{p} is missing')\n    return 1\n"
     ),
+    "limit: a stat in a loop's else after the suppress an ExitStack enters": (
+        "from contextlib import ExitStack, suppress\n\n\ndef f(p, qs):\n    with ExitStack() as stack:\n"
+        "        for q in qs:\n            stack.enter_context(suppress(OSError))\n        else:\n"
+        "            return p.stat()\n"
+    ),
+    "limit: a stat in a try's handler after the suppress an ExitStack enters": (
+        "from contextlib import ExitStack, suppress\n\n\ndef f(p, q):\n    with ExitStack() as stack:\n"
+        "        try:\n            stack.enter_context(suppress(OSError))\n            q()\n"
+        "        except ValueError:\n            return p.stat()\n"
+    ),
+    "limit: a stat in a try's finally after the suppress an ExitStack enters": (
+        "from contextlib import ExitStack, suppress\n\n\ndef f(p):\n    with ExitStack() as stack:\n"
+        "        try:\n            stack.enter_context(suppress(OSError))\n        finally:\n"
+        "            p.stat()\n"
+    ),
+    "limit: a suppress given to enter_context by keyword": (
+        "from contextlib import ExitStack, suppress\n\n\ndef f(p):\n    with ExitStack() as stack:\n"
+        "        stack.enter_context(cm=suppress(OSError))\n        return p.stat()\n"
+    ),
+    "limit: a suppress bound through nonlocal": (
+        "from contextlib import suppress\n\n\ndef f(p):\n    quiet = None\n\n    def setup():\n"
+        "        nonlocal quiet\n        quiet = suppress(OSError)\n\n    setup()\n    with quiet:\n"
+        "        return p.stat()\n"
+    ),
+    "limit: a method named as a built-in, returned with a message": (
+        "import file_presence\n\n\ndef f(p, parser):\n    if not file_presence.is_present(p, other_is_absent=True):\n"
+        "        return parser.exit(2, f'{p} is missing')\n    return 1\n"
+    ),
+    "limit: a built-in that records, assigned with a message": (
+        "import file_presence\n\n\ndef f(p):\n    if not file_presence.is_present(p, other_is_absent=True):\n"
+        "        answer = input(f'{p} is missing; go on?')\n    return 1\n"
+    ),
+    "limit: a yield of a message in an if's test": (
+        "import file_presence\n\n\ndef f(p):\n    if not file_presence.is_present(p, other_is_absent=True):\n"
+        "        if (yield f'{p} is missing'):\n            return\n"
+    ),
+    "limit: a yield of a message in an assert's test": (
+        "import file_presence\n\n\ndef f(p):\n    if not file_presence.is_present(p, other_is_absent=True):\n"
+        "        assert (yield f'{p} is missing')\n"
+    ),
+    "limit: a module-level match on a name the module binds to a tuple": (
+        "import file_presence\n\nPAIR = (file_presence.is_present('p', other_is_absent=True), 1)\nmatch PAIR:\n"
+        "    case (False, _):\n        raise OSError('the file is missing')\n"
+    ),
     # The forms beside each widened reading that still pass.
     "a path built from words, assigned on a test's False": (
         "import os\nimport file_presence\n\n\ndef f(p):\n"
