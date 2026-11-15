@@ -20,7 +20,8 @@ process substitution, and of each one in an unquoted here-document's body, is ke
 subshell Bash runs it in.
 
 Nothing here runs or judges anything. Text Bash itself would refuse, or that this grammar does not cover, raises
-BashSyntaxError; the guard refuses such a command while a guarded hub is in view.
+BashSyntaxError; the guard does not read such a command, which it allows with a note, as "The guard's contract" in
+docs/parallel-sessions.md states.
 
 tests/tools/test_bash_syntax.py holds the reader to Bash's own syntax check, `bash -n`, on every fixture, as the hub
 guard's suite does on every Bash command it reads and the deployer's rendering suite on every rendered fragment it

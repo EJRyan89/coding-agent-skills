@@ -21,9 +21,9 @@ from option_reader import MACOS_ENV_LETTERS, OptionTable, option_refusal, option
 # options, after the assignments env takes, and after the duration timeout takes. A long option is placed only spelled
 # in full, and a word the table does not settle, an abbreviation or an option the table does not list, leaves the
 # program unread (UNREAD_PROGRAM) rather than taken for the program. command -v and -V only look a program up. Each
-# program's table beyond the shell's builtins is its getopt table, as the hub guard's option catalogue records it, and
+# program's table beyond the shell's builtins is its getopt table, as the repository's option catalogues record it, and
 # a coreutils program's every option GNU's build or the Rust coreutils' lists, as env's -f and --file, -a and --argv0,
-# and the -h and -V of the Rust coreutils' runners (tests/tools/test_prefix_programs.py holds each row to the
+# and the -h and -V of the Rust coreutils' runners (tests/tools/test_command_wrapper_catalogues.py holds each row to the
 # catalogues); sudo also takes assignments, and chrt, taskset, and
 # chroot take one operand, a priority, a CPU mask, or a new root, before the program. Every reader of a command's
 # program reads these, so a reader that needs another wrapper adds it here.

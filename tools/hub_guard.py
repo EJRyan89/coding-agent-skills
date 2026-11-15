@@ -39,6 +39,7 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "ejryan89-skill-core" / "scripts"))
 
+import command_wrappers
 import executable_locator
 import file_presence
 import hook_decision
@@ -66,6 +67,7 @@ from git_client import GLOBAL_VALUE_OPTIONS as GIT_OPTIONS_WITH_VALUE
 from job_tree import process_tree
 from option_reader import Word
 from path_keys import name_key
+from powershell_startup import POWERSHELL_PROGRAMS
 from text_lines import text_lines
 
 from deployer import platform_support
@@ -3269,28 +3271,65 @@ class BashReader:
         name, arguments = values[0], values[1:]
         if name is None:
             return certain(UNKNOWN)
-        if "/" not in name and "\\" not in name:
-            if folded(name) in self.start.functions:
-                return certain(UNKNOWN)
-            if name == "command" and arguments[:1] in (["-v"], ["-V"]):
-                return certain(directory)  # prints what a name is, and runs nothing
-            if name in BUILTINS_NOT_FOLLOWED:
-                return certain(UNKNOWN)
-            if name in {"cd", "pushd"}:
-                return self.read_cd(arguments, directory, push=name == "pushd")
-            if name == "popd":
-                if arguments:
-                    return certain(Directory(None, directory.stack[1:]))
-                if not directory.stack:
-                    return certain(directory)
-                return certain(Directory(directory.stack[0], directory.stack[1:]))
-        program = command_name(name)
+        program = command_name(name) or ""
+        bare = "/" not in name and "\\" not in name
+        if bare and folded(name) in self.start.functions:
+            return certain(UNKNOWN)
+        wrapper = command_wrappers.wrapper_name(program)
+        if wrapper in command_wrappers.COMMAND_WRAPPERS and (bare or wrapper not in SHELL_WRAPPERS):
+            return self.read_wrapped(wrapper, arguments, directory, prefixes or [])
+        if bare and name in {*BUILTINS_NOT_FOLLOWED, "cd", "pushd", "popd"}:
+            return self.read_builtin(name, arguments, directory)
+        self.read_program(program, arguments, directory, prefixes or [])
+        return certain(directory)
+
+    def read_builtin(self, name: str, arguments: list[Word], directory: Directory) -> Outcome:
+        """A builtin that moves the shell: cd, pushd, and popd, followed, and one BUILTINS_NOT_FOLLOWED names, which
+        leaves where the shell is unknown."""
+        if name in {"cd", "pushd"}:
+            return self.read_cd(arguments, directory, push=name == "pushd")
+        if name != "popd":
+            return certain(UNKNOWN)
+        if arguments:
+            return certain(Directory(None, directory.stack[1:]))
+        if not directory.stack:
+            return certain(directory)
+        return certain(Directory(directory.stack[0], directory.stack[1:]))
+
+    def read_program(
+        self, program: str, arguments: list[Word], directory: Directory, prefixes: list[tuple[str, Word]]
+    ) -> None:
+        """A program the command starts: git and a gh checkout read as git calls, and a literal bash -c or pwsh
+        -Command script by its shell's reader, in a shell of its own, so what it changes dies with it. Any other
+        program is one the guard does not read."""
         if program in GIT_NAMES:
-            self.read_git_prefixes(prefixes or [])
+            self.read_git_prefixes(prefixes)
             read_git(arguments, directory.cwd, self.reading)
         elif program == "gh":
             read_gh(arguments, directory, self.reading)
-        return certain(directory)
+        elif program in command_wrappers.SCRIPT_SHELLS:
+            script = shell_script(arguments)
+            if script is not None:
+                self.nested().read_text(script, directory)
+        elif program in POWERSHELL_PROGRAMS:
+            script = pwsh_script(arguments)
+            if script is not None and self.depth < NESTING_LIMIT:
+                read_powershell(script, directory.cwd, self.reading, self.depth + 1)
+
+    def read_wrapped(
+        self, wrapper: str, arguments: list[Word], directory: Directory, prefixes: list[tuple[str, Word]]
+    ) -> Outcome:
+        """A wrapper COMMAND_WRAPPERS names, read as the command it runs, its assignments judged as ones before that
+        command; one whose words do not settle its program is not read. Only `command` and `builtin` run their
+        command in the shell itself, so only a cd they run moves it."""
+        wrapped = wrapped_command(wrapper, arguments)
+        if wrapped is None:
+            return certain(UNKNOWN if wrapper in SHELL_WRAPPERS else directory)
+        if not wrapped.words:
+            return certain(directory)
+        start = Directory(None, directory.stack) if wrapped.moved else directory
+        outcome = self.read_command_words(wrapped.words, start, [*prefixes, *wrapped.assignments])
+        return outcome if wrapper in SHELL_WRAPPERS else certain(directory)
 
     def read_cd(self, arguments: list[Word], directory: Directory, push: bool) -> Outcome:
         """cd or pushd to a directory: a literal one settles where the shell goes; one the text does not settle, cd -,
@@ -3318,6 +3357,90 @@ class BashReader:
                 return certain(Directory(None, stack))
             path = directory.cwd / path
         return moved_to(directory, path, stack)
+
+
+# A word the text does not settle, handed to command_wrappers, which reads words as text: no word Bash makes holds NUL.
+UNSETTLED_TEXT = "\0"
+# Each wrapper's options that move the command it runs to another directory: env's -C and sudo's -D, and both
+# --chdir; the git call such a command makes is placed where the text does not settle.
+CHDIR_LETTERS = {"env": "C", "sudo": "D"}
+CHDIR_LONG = "--chdir"
+# The wrappers that run their command in the shell itself, so a cd there moves it, rather than in a process of their
+# own; exec replaces the shell, so nothing after it runs.
+SHELL_WRAPPERS = frozenset({"command", "builtin"})
+# The wrappers that add words from their input to the command they run.
+INPUT_WRAPPERS = frozenset({"xargs"})
+# pwsh's options before -Command that change nothing the guard reads.
+PWSH_QUIET = frozenset({"-noprofile", "-noninteractive", "-nologo"})
+PWSH_COMMAND = frozenset({"-command", "-c"})
+
+
+@dataclass(frozen=True)
+class Wrapped:
+    """The command a wrapper runs (command_wrappers.unwrapped): its words, None for one the text does not settle; the
+    assignments the wrapper hands it, as env's NAME=VALUE; and whether the wrapper moves it to another directory."""
+
+    words: list[Word]
+    assignments: list[tuple[str, Word]]
+    moved: bool
+
+
+def wrapped_command(wrapper: str, arguments: list[Word]) -> Wrapped | None:
+    """The command a wrapper COMMAND_WRAPPERS names runs, read by the shared reader of every wrapper; None where the
+    wrapper's words do not settle which program it runs, which is a program the guard does not read. An empty command
+    is one that names none, or `command -v`, which only looks one up."""
+    handed = [UNSETTLED_TEXT if word is None else word for word in arguments]
+    words = command_wrappers.unwrapped([wrapper, *handed])
+    if words and (words[0] == UNSETTLED_TEXT or words[0].startswith(command_wrappers.UNREAD_PROGRAM)):
+        return None
+    consumed = handed[: len(handed) - len(words)]
+    assignments: list[tuple[str, Word]] = []
+    for word in consumed:
+        matched = command_wrappers.ASSIGNMENT.match(word)
+        if matched is not None and UNSETTLED_TEXT not in word:
+            name = word[: matched.end()].rstrip("+=").partition("[")[0]
+            value = None if matched.group(1) else word[matched.end() :]
+            assignments.append((name, value))
+        elif matched is not None:
+            assignments.append((word[: matched.end()].rstrip("+=").partition("[")[0], None))
+    letter = CHDIR_LETTERS.get(wrapper)
+    moved = any(
+        word == CHDIR_LONG
+        or word.startswith(f"{CHDIR_LONG}=")
+        or (letter is not None and word.startswith("-") and not word.startswith("--") and letter in word[1:])
+        for word in consumed
+    )
+    command = [None if word == UNSETTLED_TEXT else word for word in words]
+    if command and wrapper in INPUT_WRAPPERS:
+        command.append(None)  # the words its input adds, which the text does not settle
+    return Wrapped(command, assignments, moved)
+
+
+def pwsh_script(arguments: list[Word]) -> str | None:
+    """The literal script pwsh's -Command or -c runs, after the options that change nothing the guard reads; None for
+    any other start, one whose script the text does not settle among them."""
+    words = iter(arguments)
+    for word in words:
+        if word is None:
+            return None
+        lowered = word.lower()
+        if lowered in PWSH_COMMAND:
+            rest = list(words)
+            return None if not rest or None in rest else " ".join(str(each) for each in rest)
+        if lowered not in PWSH_QUIET:
+            return None
+    return None
+
+
+def shell_script(arguments: list[Word]) -> str | None:
+    """The literal script a shell's -c runs (command_wrappers.shell_script_index); None for a shell started without
+    one, or one whose script or options the text does not settle."""
+    if None in arguments[:1] or any(word is None for word in arguments if word is not None and word.startswith("-")):
+        return None
+    index = command_wrappers.shell_script_index([UNSETTLED_TEXT if word is None else word for word in arguments])
+    if index is None or any(word is None for word in arguments[:index]):
+        return None
+    return arguments[index]
 
 
 REDIRECTION = "The command redirects its output into"
@@ -3503,7 +3626,6 @@ def read_powershell(command: str, cwd: Path | None, reading: Reading, depth: int
     where every node of its tree is one POWERSHELL_UNDERSTOOD names in a form it follows (read_forms). Where any other
     stands in it, only its git calls and its redirections are read, each placed where the text does not settle once
     any command in it may move the location."""
-    del depth  # PowerShell nests nothing the guard reads
     output = powershell_events(command, reading)
     if output is None:
         return
@@ -3511,7 +3633,7 @@ def read_powershell(command: str, cwd: Path | None, reading: Reading, depth: int
     if not isinstance(nodes, list) or not isinstance(commands, list):
         reading.notes.append("pwsh answered without the nodes and commands the reader lists")
         return
-    reader = PowerShellReader(reading, commands)
+    reader = PowerShellReader(reading, commands, depth)
     followed = all(node in POWERSHELL_UNDERSTOOD for node in nodes) and not reader.read_forms(output)
     if not followed or not isinstance(statements, list):
         moves = any(reader.may_move(command) for command in commands)
@@ -3528,9 +3650,10 @@ def read_powershell(command: str, cwd: Path | None, reading: Reading, depth: int
 class PowerShellReader:
     """Reads the statements of a PowerShell command, as BashReader reads Bash's."""
 
-    def __init__(self, reading: Reading, commands: list[Any]) -> None:
+    def __init__(self, reading: Reading, commands: list[Any], depth: int = 0) -> None:
         self.reading = reading
         self.commands = commands
+        self.depth = depth
         self.redirections_read = 0
 
     def read_forms(self, output: Mapping[str, Any]) -> list[str]:
@@ -3610,8 +3733,8 @@ class PowerShellReader:
         if isinstance(command, dict):
             self.read_redirections(command, directory)
         words = self.words(command)
-        if words[0] is not None and command_name(words[0]) in GIT_NAMES:
-            read_git(words[1:], directory.cwd, self.reading)
+        if words[0] is not None and not powershell_command(words[0]):
+            self.read_native(words, directory)
 
     def read_statement(self, statement: Any, directory: Directory) -> Directory:
         pipelines = statement.get("pipelines") if isinstance(statement, dict) else None
@@ -3691,14 +3814,40 @@ class PowerShellReader:
             return self.read_cmdlet(cmdlet, arguments, directory)
         if powershell_command(name):
             return certain(UNKNOWN)
-        program = command_name(name)
+        self.read_native([name, *arguments], directory)
+        return certain(directory)
+
+    def read_native(self, words: list[Word], directory: Directory) -> None:
+        """A native program a command starts, read as the Bash reader reads one: git and a gh checkout as git calls, a
+        wrapper as the command it runs, and a literal bash -c or pwsh -Command script by its shell's reader, each from
+        a directory of its own, since a native program never moves the session's location."""
+        program = command_name(words[0]) or ""
+        arguments = words[1:]
+        wrapper = command_wrappers.wrapper_name(program)
         if program in GIT_NAMES:
             # A native program is handed ~ as written; whether pwsh expands it first differs by release.
             handed = [None if word is not None and word.startswith("~") else word for word in arguments]
             read_git(handed, directory.cwd, self.reading)
         elif program == "gh":
             read_gh(arguments, directory, self.reading)
-        return certain(directory)
+        elif wrapper in command_wrappers.COMMAND_WRAPPERS and wrapper not in SHELL_WRAPPERS:
+            wrapped = wrapped_command(wrapper, arguments)
+            if wrapped is not None and wrapped.words and wrapped.words[0] is not None:
+                if wrapped.assignments and command_name(wrapped.words[0]) in GIT_NAMES:
+                    names = ", ".join(name for name, _ in wrapped.assignments if git_reads(name))
+                    if names:
+                        self.reading.cannot_read(f"an assignment before git, {names}, which git reads")
+                self.read_native(wrapped.words, Directory(None) if wrapped.moved else directory)
+        elif self.depth >= NESTING_LIMIT:
+            return
+        elif program in command_wrappers.SCRIPT_SHELLS:
+            script = shell_script(arguments)
+            if script is not None:
+                read_bash(script, directory.cwd, self.reading, self.depth + 1)
+        elif program in POWERSHELL_PROGRAMS:
+            script = pwsh_script(arguments)
+            if script is not None:
+                read_powershell(script, directory.cwd, self.reading, self.depth + 1)
 
     def read_cmdlet(self, cmdlet: str, arguments: list[Word], directory: Directory) -> Outcome:
         """A command POWERSHELL_COMMANDS names: one that moves the location is followed, and any other moves

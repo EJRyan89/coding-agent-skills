@@ -52,10 +52,9 @@ branch's pull request is the only reliable record.
 ## Retiring a worktree
 
 After a task's pull request merges, run the `repo-cleanup` skill on the hub (by repository name, or by the hub's
-absolute path). In a clone that guards its hub, run it from a session in a folder outside the clone, which loads none
-of the clone's hooks, or from a terminal, as `update-coding-agent-skills` runs: its sweep names the folder that holds
-the hub, which [the guard](#the-guards-contract) refuses. Retiring by hand from the hub, `git worktree remove <path>`
-and `git branch -D <kind>/<name>`, still works there. In one pass it does the following:
+absolute path), from a session in the hub or outside the clone, never one inside the worktree it retires. Retiring
+by hand from the hub, `git worktree remove <path>` and `git branch -D <kind>/<name>`, works too. In one pass it does
+the following:
 
 - **Updates the hub.** It fetches with prune and fast-forwards `main`.
 - **Removes finished worktrees.** A clean worktree is removed when its branch's pull request merged, whether or
@@ -177,8 +176,10 @@ git config coding-agent-skills.hubGuard true
 
 The setting lives in the shared `.git/config`, so one command covers the hub and all of its worktrees. Because
 the setting is not tracked, someone who clones the repository and works in a single checkout is never blocked.
-While a hub is guarded the guard refuses every `git config` that may write a setting, so the guard is turned off
-from a terminal, never from a guarded session.
+While a hub is guarded the guard refuses every `git config` that may write a setting, one a wrapper or a literal
+shell script runs included, so the guard is turned off from a terminal. A program the guard does not read can still write the
+configuration file by its own words, as `tee -a <hub>/.git/config` does; the guard is no sandbox, and the check
+names what such a write leaves in the hub's work tree.
 
 The hook command reads the setting itself, in Bash, and exits before starting Python when the clone has not opted
 in: when git reports the setting unset or false, it exits in silence, and when git cannot read it at all, as with a
@@ -294,8 +295,8 @@ With the guard enabled:
   allowed, a hub tool that rewrites hub files among them, as `python tools/skill_reference.py --write` does.
 - **The check.** What the guard does not read, the check finds afterwards: ejryan89-skill-core's `hub_state.py`
   names each way the hub differs from a clean checkout of `main` at `origin/main`, and the `shepherd-pull-requests`
-  tick prints each as a `HUB_DIFFERS` line, and `repo-cleanup`'s report as a `MAIN_DIFFERS` line, from the hub or from
-  a worktree alike.
+  tick prints each as a `HUB_DIFFERS` line, but behind, which its `HUB` line covers, and `repo-cleanup`'s report each
+  as a `MAIN_DIFFERS` line, from the hub or from a worktree alike.
 
 ### Other runtimes
 
@@ -474,8 +475,13 @@ commit `origin/main` lacks.
   escapes and line continuations, comments, and here-documents, and the command tree of lists, `&&` and `||`,
   pipelines, `( )` subshells, `{ }` groups, `if`, `case`, `while`, `until`, `for`, `select`, `!`, and `time` with
   its `-p` and `--`. The guard reads each simple command whose name is literal once quotes are removed, wherever the
-  tree holds it: git as a git call, `gh`'s checkouts as one, and `cd`, `pushd`, and `popd` as moves of the shell. Any
-  other command is a program the guard does not read. A word is read as literal text or `~`; an expansion, a glob, or
+  tree holds it: git as a git call, `gh`'s checkouts as one, and `cd`, `pushd`, and `popd` as moves of the shell. A
+  wrapper ejryan89-skill-core's `command_wrappers.COMMAND_WRAPPERS` names, as `env`, `timeout`, `command`, `exec`,
+  `nohup`, `sudo`, or `xargs`, is read as the command it runs, past its options by `command_wrappers.unwrapped`, its
+  assignments judged as ones before that command, and a literal `bash -c` or `pwsh -Command` script is read by its
+  shell's reader, so git either runs is judged by the same rows as a bare git call; a wrapper whose words do not settle
+  its program, and a script the text does not settle, are not read. Any other command is a program the guard does not
+  read. A word is read as literal text or `~`; an expansion, a glob, or
   a brace expansion leaves its word one the text does not settle. Such a word may stand among a git call's words
   after its subcommand, where a refused subcommand given one is refused in the hub, since it may be any option. Each
   command or process substitution is read as the commands it runs, to a depth of four, and so is one in an unquoted
@@ -608,12 +614,18 @@ Claude Code so the hook runs with the new `PATH`.
 #### What it does not see
 
 The hook sees the command text, and the guard reads git's words in it: it does not see any program other than git,
-run by its own words, which it allows whatever those words are, so what a script, a runner, a nested shell, `eval`, a
-function, or `gh` but for its checkouts writes or runs, the git it starts included, and a variable a command sets for
-a later git call, by `export`, `env`, or a PowerShell assignment, reach a hub unseen, and the check names what they
+run by its own words, which it allows whatever those words are, so what a script file, `eval`, a function, a program
+that is no wrapper, or `gh` but for its checkouts writes or runs, the git it starts included, and a variable a command
+sets for a later git call, by `export` or a PowerShell assignment, reach a hub unseen, and the check names what they
 changed there.
 
-Within git's own words, it judges only what the text shows, so these too are left to the check:
+Within what it reads, it judges only what the text shows, so these too are left to the check:
+
+- an assignment to `HOME`, `CDPATH`, `PWD`, or `OLDPWD` a command makes, alone or before `cd`, which moves a later
+  `cd`, and the git call after it, where the guard does not follow;
+- a git call before a part of the command Bash refuses, or that `tools/bash_syntax.py` does not cover, such as
+  `coproc`: the whole command is not read, though Bash runs the lines before a syntax error;
+- a PowerShell file redirection the reader's statements do not reach, which is allowed with a note;
 
 - a program git starts that the environment or the configuration names rather than the command's words: the program
   an inherited `GIT_EXTERNAL_DIFF`, `GIT_PAGER`, `PAGER`, `GIT_SSH_COMMAND`, `GIT_SSH`, `GIT_ASKPASS`, `SSH_ASKPASS`,

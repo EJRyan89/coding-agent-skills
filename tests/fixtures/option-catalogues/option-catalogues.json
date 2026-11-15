@@ -1,0 +1,337 @@
+{
+  "env": {
+    "source": "GNU coreutils 8.32, its --help",
+    "abbreviates": true,
+    "options": [
+      {"short": "-i", "long": "--ignore-environment", "value": "none"},
+      {"short": "-0", "long": "--null", "value": "none"},
+      {"short": "-u", "long": "--unset", "value": "value"},
+      {"short": "-C", "long": "--chdir", "value": "value"},
+      {"short": "-S", "long": "--split-string", "value": "value"},
+      {"short": null, "long": "--block-signal", "value": "optional"},
+      {"short": null, "long": "--default-signal", "value": "optional"},
+      {"short": null, "long": "--ignore-signal", "value": "optional"},
+      {"short": null, "long": "--list-signal-handling", "value": "none"},
+      {"short": "-v", "long": "--debug", "value": "none"},
+      {"short": null, "long": "--help", "value": "none"},
+      {"short": null, "long": "--version", "value": "none"}
+    ]
+  },
+  "xargs": {
+    "source": "GNU findutils 4.11.0, its --help",
+    "abbreviates": true,
+    "options": [
+      {"short": "-0", "long": "--null", "value": "none"},
+      {"short": "-a", "long": "--arg-file", "value": "value"},
+      {"short": "-d", "long": "--delimiter", "value": "value"},
+      {"short": "-E", "long": null, "value": "value"},
+      {"short": "-e", "long": "--eof", "value": "optional"},
+      {"short": "-I", "long": null, "value": "value"},
+      {"short": "-i", "long": "--replace", "value": "optional"},
+      {"short": "-L", "long": "--max-lines", "value": "value"},
+      {"short": "-l", "long": null, "value": "optional"},
+      {"short": "-n", "long": "--max-args", "value": "value"},
+      {"short": "-o", "long": "--open-tty", "value": "none"},
+      {"short": "-P", "long": "--max-procs", "value": "value"},
+      {"short": "-p", "long": "--interactive", "value": "none"},
+      {"short": null, "long": "--process-slot-var", "value": "value"},
+      {"short": "-r", "long": "--no-run-if-empty", "value": "none"},
+      {"short": "-s", "long": "--max-chars", "value": "value"},
+      {"short": null, "long": "--show-limits", "value": "none"},
+      {"short": "-t", "long": "--verbose", "value": "none"},
+      {"short": "-x", "long": "--exit", "value": "none"},
+      {"short": null, "long": "--help", "value": "none"},
+      {"short": null, "long": "--version", "value": "none"}
+    ]
+  },
+  "timeout": {
+    "source": "GNU coreutils 8.32, its --help",
+    "abbreviates": true,
+    "options": [
+      {"short": null, "long": "--preserve-status", "value": "none"},
+      {"short": null, "long": "--foreground", "value": "none"},
+      {"short": "-k", "long": "--kill-after", "value": "value"},
+      {"short": "-s", "long": "--signal", "value": "value"},
+      {"short": "-v", "long": "--verbose", "value": "none"},
+      {"short": null, "long": "--help", "value": "none"},
+      {"short": null, "long": "--version", "value": "none"}
+    ]
+  },
+  "nice": {
+    "source": "GNU coreutils 8.32, its --help",
+    "abbreviates": true,
+    "options": [
+      {"short": "-n", "long": "--adjustment", "value": "value"},
+      {"short": null, "long": "--help", "value": "none"},
+      {"short": null, "long": "--version", "value": "none"}
+    ]
+  },
+  "nohup": {
+    "source": "GNU coreutils 8.32, its --help",
+    "abbreviates": true,
+    "options": [
+      {"short": null, "long": "--help", "value": "none"},
+      {"short": null, "long": "--version", "value": "none"}
+    ]
+  },
+  "stdbuf": {
+    "source": "GNU coreutils 8.32, its --help",
+    "abbreviates": true,
+    "options": [
+      {"short": "-i", "long": "--input", "value": "value"},
+      {"short": "-o", "long": "--output", "value": "value"},
+      {"short": "-e", "long": "--error", "value": "value"},
+      {"short": null, "long": "--help", "value": "none"},
+      {"short": null, "long": "--version", "value": "none"}
+    ]
+  },
+  "chroot": {
+    "source": "GNU coreutils 8.32, its --help",
+    "abbreviates": true,
+    "options": [
+      {"short": null, "long": "--groups", "value": "value"},
+      {"short": null, "long": "--userspec", "value": "value"},
+      {"short": null, "long": "--skip-chdir", "value": "none"},
+      {"short": null, "long": "--help", "value": "none"},
+      {"short": null, "long": "--version", "value": "none"}
+    ]
+  },
+  "ionice": {
+    "source": "util-linux ionice, its getopt table",
+    "abbreviates": true,
+    "options": [
+      {"short": "-c", "long": "--class", "value": "value"},
+      {"short": "-n", "long": "--classdata", "value": "value"},
+      {"short": "-p", "long": "--pid", "value": "value"},
+      {"short": "-P", "long": "--pgid", "value": "value"},
+      {"short": "-t", "long": "--ignore", "value": "none"},
+      {"short": "-u", "long": "--uid", "value": "value"},
+      {"short": "-h", "long": "--help", "value": "none"},
+      {"short": "-V", "long": "--version", "value": "none"}
+    ]
+  },
+  "chrt": {
+    "source": "util-linux chrt, its getopt table",
+    "abbreviates": true,
+    "options": [
+      {"short": "-a", "long": "--all-tasks", "value": "none"},
+      {"short": "-b", "long": "--batch", "value": "none"},
+      {"short": "-d", "long": "--deadline", "value": "none"},
+      {"short": "-e", "long": "--ext", "value": "none"},
+      {"short": "-f", "long": "--fifo", "value": "none"},
+      {"short": "-i", "long": "--idle", "value": "none"},
+      {"short": "-m", "long": "--max", "value": "none"},
+      {"short": "-o", "long": "--other", "value": "none"},
+      {"short": "-p", "long": "--pid", "value": "none"},
+      {"short": "-r", "long": "--rr", "value": "none"},
+      {"short": "-R", "long": "--reset-on-fork", "value": "none"},
+      {"short": "-T", "long": "--sched-runtime", "value": "value"},
+      {"short": "-P", "long": "--sched-period", "value": "value"},
+      {"short": "-D", "long": "--sched-deadline", "value": "value"},
+      {"short": "-v", "long": "--verbose", "value": "none"},
+      {"short": "-h", "long": "--help", "value": "none"},
+      {"short": "-V", "long": "--version", "value": "none"}
+    ]
+  },
+  "taskset": {
+    "source": "util-linux taskset, its getopt table",
+    "abbreviates": true,
+    "options": [
+      {"short": "-a", "long": "--all-tasks", "value": "none"},
+      {"short": "-c", "long": "--cpu-list", "value": "none"},
+      {"short": "-p", "long": "--pid", "value": "none"},
+      {"short": "-h", "long": "--help", "value": "none"},
+      {"short": "-V", "long": "--version", "value": "none"}
+    ]
+  },
+  "setsid": {
+    "source": "util-linux setsid, its getopt table",
+    "abbreviates": true,
+    "options": [
+      {"short": "-c", "long": "--ctty", "value": "none"},
+      {"short": "-f", "long": "--fork", "value": "none"},
+      {"short": "-w", "long": "--wait", "value": "none"},
+      {"short": "-h", "long": "--help", "value": "none"},
+      {"short": "-V", "long": "--version", "value": "none"}
+    ]
+  },
+  "unbuffer": {
+    "source": "expect's unbuffer, the options its script reads",
+    "abbreviates": false,
+    "options": [
+      {"short": "-p", "long": null, "value": "none"}
+    ]
+  },
+  "chronic": {
+    "source": "moreutils chronic, its Getopt::Std table",
+    "abbreviates": false,
+    "options": [
+      {"short": "-e", "long": null, "value": "none"},
+      {"short": "-v", "long": null, "value": "none"}
+    ]
+  },
+  "strace": {
+    "source": "strace 6, its getopt table",
+    "abbreviates": true,
+    "options": [
+      {"short": "-A", "long": "--output-append-mode", "value": "none"},
+      {"short": "-a", "long": "--columns", "value": "value"},
+      {"short": "-b", "long": "--detach-on", "value": "value"},
+      {"short": "-C", "long": "--summary", "value": "none"},
+      {"short": "-c", "long": "--summary-only", "value": "none"},
+      {"short": "-D", "long": null, "value": "none"},
+      {"short": null, "long": "--daemonize", "value": "optional"},
+      {"short": "-d", "long": "--debug", "value": "none"},
+      {"short": "-E", "long": "--env", "value": "value"},
+      {"short": "-e", "long": null, "value": "value"},
+      {"short": "-F", "long": null, "value": "none"},
+      {"short": "-f", "long": "--follow-forks", "value": "none"},
+      {"short": null, "long": "--output-separately", "value": "none"},
+      {"short": "-h", "long": "--help", "value": "none"},
+      {"short": "-I", "long": "--interruptible", "value": "value"},
+      {"short": "-i", "long": "--instruction-pointer", "value": "none"},
+      {"short": "-k", "long": "--stack-trace", "value": "none"},
+      {"short": "-n", "long": "--syscall-number", "value": "none"},
+      {"short": "-o", "long": "--output", "value": "value"},
+      {"short": "-O", "long": "--summary-syscall-overhead", "value": "value"},
+      {"short": "-P", "long": "--trace-path", "value": "value"},
+      {"short": "-p", "long": "--attach", "value": "value"},
+      {"short": "-q", "long": null, "value": "none"},
+      {"short": null, "long": "--quiet", "value": "optional"},
+      {"short": "-r", "long": null, "value": "none"},
+      {"short": null, "long": "--relative-timestamps", "value": "optional"},
+      {"short": "-S", "long": "--summary-sort-by", "value": "value"},
+      {"short": "-s", "long": "--string-limit", "value": "value"},
+      {"short": "-t", "long": null, "value": "none"},
+      {"short": null, "long": "--absolute-timestamps", "value": "optional"},
+      {"short": "-T", "long": null, "value": "none"},
+      {"short": null, "long": "--syscall-times", "value": "optional"},
+      {"short": "-U", "long": "--summary-columns", "value": "value"},
+      {"short": "-u", "long": "--user", "value": "value"},
+      {"short": "-V", "long": "--version", "value": "none"},
+      {"short": "-v", "long": null, "value": "none"},
+      {"short": null, "long": "--no-abbrev", "value": "optional"},
+      {"short": "-w", "long": "--summary-wall-clock", "value": "none"},
+      {"short": "-X", "long": "--const-print-style", "value": "value"},
+      {"short": "-x", "long": null, "value": "none"},
+      {"short": null, "long": "--strings-in-hex", "value": "optional"},
+      {"short": "-y", "long": null, "value": "none"},
+      {"short": null, "long": "--decode-fds", "value": "optional"},
+      {"short": "-Y", "long": null, "value": "none"},
+      {"short": null, "long": "--decode-pids", "value": "optional"},
+      {"short": "-z", "long": "--successful-only", "value": "none"},
+      {"short": "-Z", "long": "--failed-only", "value": "none"},
+      {"short": null, "long": "--trace", "value": "value"},
+      {"short": null, "long": "--signal", "value": "value"},
+      {"short": null, "long": "--status", "value": "value"},
+      {"short": null, "long": "--inject", "value": "value"},
+      {"short": null, "long": "--fault", "value": "value"},
+      {"short": null, "long": "--abbrev", "value": "value"},
+      {"short": null, "long": "--verbose", "value": "value"},
+      {"short": null, "long": "--raw", "value": "value"},
+      {"short": null, "long": "--read", "value": "value"},
+      {"short": null, "long": "--write", "value": "value"},
+      {"short": null, "long": "--kvm", "value": "value"},
+      {"short": null, "long": "--secontext", "value": "optional"},
+      {"short": null, "long": "--seccomp-bpf", "value": "none"},
+      {"short": null, "long": "--kill-on-exit", "value": "none"},
+      {"short": null, "long": "--tips", "value": "optional"}
+    ]
+  },
+  "ltrace": {
+    "source": "ltrace 0.7, its getopt table",
+    "abbreviates": true,
+    "options": [
+      {"short": "-a", "long": "--align", "value": "value"},
+      {"short": "-A", "long": null, "value": "value"},
+      {"short": "-b", "long": "--no-signals", "value": "none"},
+      {"short": "-c", "long": null, "value": "none"},
+      {"short": "-C", "long": "--demangle", "value": "none"},
+      {"short": "-D", "long": "--debug", "value": "value"},
+      {"short": "-e", "long": null, "value": "value"},
+      {"short": "-f", "long": null, "value": "none"},
+      {"short": "-F", "long": "--config", "value": "value"},
+      {"short": "-h", "long": "--help", "value": "none"},
+      {"short": "-i", "long": null, "value": "none"},
+      {"short": "-l", "long": "--library", "value": "value"},
+      {"short": "-L", "long": null, "value": "none"},
+      {"short": "-n", "long": "--indent", "value": "value"},
+      {"short": "-o", "long": "--output", "value": "value"},
+      {"short": "-p", "long": null, "value": "value"},
+      {"short": "-r", "long": null, "value": "none"},
+      {"short": "-s", "long": null, "value": "value"},
+      {"short": "-S", "long": null, "value": "none"},
+      {"short": "-t", "long": null, "value": "none"},
+      {"short": "-T", "long": null, "value": "none"},
+      {"short": "-u", "long": null, "value": "value"},
+      {"short": "-V", "long": "--version", "value": "none"},
+      {"short": "-w", "long": "--where", "value": "value"},
+      {"short": "-x", "long": null, "value": "value"}
+    ]
+  },
+  "time": {
+    "source": "GNU time 1.9, its getopt table",
+    "abbreviates": true,
+    "options": [
+      {"short": "-a", "long": "--append", "value": "none"},
+      {"short": "-f", "long": "--format", "value": "value"},
+      {"short": "-o", "long": "--output", "value": "value"},
+      {"short": "-p", "long": "--portability", "value": "none"},
+      {"short": "-q", "long": "--quiet", "value": "none"},
+      {"short": "-v", "long": "--verbose", "value": "none"},
+      {"short": null, "long": "--help", "value": "none"},
+      {"short": "-V", "long": "--version", "value": "none"}
+    ]
+  },
+  "sudo": {
+    "source": "sudo 1.9, its getopt table",
+    "abbreviates": true,
+    "options": [
+      {"short": "-A", "long": "--askpass", "value": "none"},
+      {"short": "-a", "long": "--auth-type", "value": "value"},
+      {"short": "-B", "long": "--bell", "value": "none"},
+      {"short": "-b", "long": "--background", "value": "none"},
+      {"short": "-C", "long": "--close-from", "value": "value"},
+      {"short": "-c", "long": "--login-class", "value": "value"},
+      {"short": "-D", "long": "--chdir", "value": "value"},
+      {"short": "-E", "long": null, "value": "none"},
+      {"short": null, "long": "--preserve-env", "value": "optional"},
+      {"short": "-e", "long": "--edit", "value": "none"},
+      {"short": "-g", "long": "--group", "value": "value"},
+      {"short": "-H", "long": "--set-home", "value": "none"},
+      {"short": "-h", "long": null, "value": "optional"},
+      {"short": null, "long": "--help", "value": "none"},
+      {"short": null, "long": "--host", "value": "value"},
+      {"short": "-i", "long": "--login", "value": "none"},
+      {"short": "-K", "long": "--remove-timestamp", "value": "none"},
+      {"short": "-k", "long": "--reset-timestamp", "value": "none"},
+      {"short": "-l", "long": "--list", "value": "none"},
+      {"short": "-N", "long": "--no-update", "value": "none"},
+      {"short": "-n", "long": "--non-interactive", "value": "none"},
+      {"short": "-P", "long": "--preserve-groups", "value": "none"},
+      {"short": "-p", "long": "--prompt", "value": "value"},
+      {"short": "-R", "long": "--chroot", "value": "value"},
+      {"short": "-r", "long": "--role", "value": "value"},
+      {"short": "-S", "long": "--stdin", "value": "none"},
+      {"short": "-s", "long": "--shell", "value": "none"},
+      {"short": "-T", "long": "--command-timeout", "value": "value"},
+      {"short": "-t", "long": "--type", "value": "value"},
+      {"short": "-U", "long": "--other-user", "value": "value"},
+      {"short": "-u", "long": "--user", "value": "value"},
+      {"short": "-V", "long": "--version", "value": "none"},
+      {"short": "-v", "long": "--validate", "value": "none"}
+    ]
+  },
+  "doas": {
+    "source": "OpenBSD doas, its getopt table",
+    "abbreviates": false,
+    "options": [
+      {"short": "-a", "long": null, "value": "value"},
+      {"short": "-C", "long": null, "value": "value"},
+      {"short": "-L", "long": null, "value": "none"},
+      {"short": "-n", "long": null, "value": "none"},
+      {"short": "-s", "long": null, "value": "none"},
+      {"short": "-u", "long": null, "value": "value"}
+    ]
+  }
+}

@@ -569,13 +569,12 @@ removed fails validation until its pattern follows it.
   and compares text with .NET's ordinal comparison ignoring case; a POSIX `shlex` lexer over shell text whose
   words are compared with an operator or keyword, which reads a quoted `';'` or an escaped `\;` as the separator it
   spells, rather than `ShellLexer` in `tests/validation/skill_scripts.py`, or a function name read from such a word
-  rather than from its syntax, which is None for a quoted or escaped name Bash refuses; in `tools/hub_guard.py`, a construct a
-  table neither understands nor lists in `NOT_READ`, a table whose test types its rows rather than taking them from the shell's own
-  catalogue, a word settled from what an earlier command assigns rather than the assignment refused, a program added
-  to `RUNNERS` with no row, a program that runs a command its words name left out of it, a program name compared
-  with a table as the command spells it rather than by `built_name`, so `gtimeout` or `gsort` goes unread, a runner allowed around a command that may be git, a cmdlet added to
-  `POWERSHELL_COMMANDS` that starts a command its words name, and a refusal that waits
-  for the command to name git; a `re.compile(` in `tools/runtime_*.py` or `deployer/discovery.py` with no sample
+  rather than from its syntax, which is None for a quoted or escaped name Bash refuses; in `tools/hub_guard.py`, a
+  wrapper's command read other than through `command_wrappers.unwrapped`, so a wrapper `COMMAND_WRAPPERS` names, or
+  one under a build prefix such as `gtimeout`, hides the git it runs, a literal `bash -c` or `pwsh -Command` script left
+  unread rather than read by its shell's reader, a builtin or a cmdlet that may move the shell placed as one that does
+  not, as `BUILTINS_NOT_FOLLOWED` and `POWERSHELL_COMMANDS` decide, and a git call's word settled from what an earlier
+  command assigns; a `re.compile(` in `tools/runtime_*.py` or `deployer/discovery.py` with no sample
   under `tests/fixtures/captured-output/`; a test whose sample output was typed rather than captured; a refusal of an
   empty or absent member of another program's entries, such as `reported(..., empty=False)`, whose fixture rows give
   every kind of entry the member typed in, never read from what the program lists for each kind it reports, as gh

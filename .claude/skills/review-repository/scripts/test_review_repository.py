@@ -39,7 +39,8 @@ UNTESTED = f"{SKILL}/scripts/untested_functions.py"
 SKILL_CORE = "skills/ejryan89-skill-core/scripts"
 SCENARIOS = REPOSITORY / "tests" / "fixtures" / "skill-evals" / "review-repository"
 FIXTURES = "tests/fixtures/"
-# The fixtures that state what the hub guard admits rather than sample input, which the snapshot keeps.
+# The fixtures that state what each wrapper program takes rather than sample input, which the snapshot keeps.
+CATALOGUE_FIXTURES = "tests/fixtures/option-catalogues/"
 MANIFEST = validate_adapter_manifest(json.loads((REPOSITORY / MANIFEST_PATH).read_text(encoding="utf-8")))
 PIPELINE_SCRIPTS = "skills/ejryan89-code-review-core/scripts"
 INSIGHTS_SCRIPTS = "skills/review-insights/scripts"
@@ -121,6 +122,7 @@ TRUST_BOUNDARY_SCRIPTS = (
     "tests/tools/test_hub_guard.py",
     "tests/tools/test_hub_guard_git_options.py",
     "tests/tools/test_hub_guard_pwsh.py",
+    "tests/tools/test_command_wrapper_catalogues.py",
     # The check that reports a hub the guard let a write reach, which the shepherd and repo-cleanup run.
     f"{SKILL_CORE}/hub_state.py",
     f"{SKILL_CORE}/test_hub_state.py",
@@ -129,6 +131,7 @@ TRUST_BOUNDARY_SCRIPTS = (
     ".claude/skills/shepherd-pull-requests/scripts/test_shepherd_pull_requests.py",
     f"{SKILL_CORE}/analyzer_config.py",
     f"{SKILL_CORE}/bounded_process.py",
+    f"{SKILL_CORE}/command_wrappers.py",
     f"{SKILL_CORE}/device_names.py",
     f"{SKILL_CORE}/diff_paths.py",
     f"{SKILL_CORE}/dotnet_solution.py",
@@ -1566,9 +1569,12 @@ class RecommendedConfigurationTests(unittest.TestCase):
         self.assertEqual(MANIFEST["id"], reviewer["id"])
         self.assertEqual("repository", reviewer["scope"])
 
-    def test_the_exclusion_leaves_out_every_fixture_but_the_hub_guard_s_and_no_file_the_reviewer_declares(self) -> None:
-        # The fixtures are sample input, planted defects among them, except the hub guard's, which state what the guard
-        # admits and reach its reviewers. A fixture folder added later is left out only once the list names it.
+    def test_the_exclusion_leaves_out_every_fixture_but_the_option_catalogues_and_no_file_the_reviewer_declares(
+        self,
+    ) -> None:
+        # The fixtures are sample input, planted defects among them, except the option catalogues, which state what
+        # each wrapper program takes and reach the reviewers command_wrappers.py reaches. A fixture folder added later
+        # is left out only once the list names it.
         patterns = self.entry()["snapshot_exclude"]
         self.assertEqual(
             [
@@ -1582,8 +1588,9 @@ class RecommendedConfigurationTests(unittest.TestCase):
         )
         matches = configured_exclusion(patterns)
         files = tracked_files()
-        fixtures = [path for path in files if path.startswith(FIXTURES)]
+        fixtures = [path for path in files if path.startswith(FIXTURES) and not path.startswith(CATALOGUE_FIXTURES)]
         self.assertTrue(fixtures)
+        self.assertTrue([path for path in files if path.startswith(CATALOGUE_FIXTURES)])
         self.assertEqual(fixtures, [path for path in files if matches(path)])
         self.assertEqual([], [path for path in declared_reviewer_files(MANIFEST) if matches(path)])
 

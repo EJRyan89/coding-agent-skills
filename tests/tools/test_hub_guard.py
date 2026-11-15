@@ -1801,12 +1801,12 @@ class CommandGuardTests(GuardTestCase):
         other = self.other_repository() / ".git"
         for command, cwd, expected in (
             # git uses the other repository's HEAD and index and writes the directory it starts in. An assignment
-            # before git is a part of the git call the guard does not settle, refused while a hub is in view; export
-            # is not read, so the reset is placed in the hub; and git that env runs is a program's own words, which
-            # the guard does not read.
+            # before git, or one env hands it, is a part of the git call the guard does not settle, refused while a
+            # hub is in view; export is not read, so the reset is placed in the hub.
             (f'GIT_DIR="{other}" git reset --hard', self.hub, "deny"),
             (f'export GIT_DIR="{other}"; git reset --hard', self.hub, "deny"),
-            (f'env GIT_DIR="{other}" git reset --hard', self.hub, None),
+            (f'env GIT_DIR="{other}" git reset --hard', self.hub, "deny"),
+            (f'env GIT_DIR="{other}" git reset --hard', self.tree, "deny"),
             (f'GIT_DIR="{other}" git reset --hard', self.tree, "deny"),
         ):
             with self.subTest(command=command, cwd=cwd):
@@ -1902,13 +1902,18 @@ class CommandGuardTests(GuardTestCase):
         self.assertIn("could not tell where the index of `git add` lies", self.stderr)
 
     def test_an_index_file_the_text_does_not_settle_is_refused_while_a_hub_is_guarded(self) -> None:
-        # An assignment before git is a part of the git call the guard does not settle. A variable a command sets
-        # for a later git call, by export, env, or PowerShell's $env:, is not read, which the contract states.
-        for command in ('GIT_INDEX_FILE="$x" git add .', "GIT_INDEX_FILE=/x git add ."):
+        # An assignment before git, or one env hands it, is a part of the git call the guard does not settle. A
+        # variable a command sets for a later git call, by export or PowerShell's $env:, is not read, which the
+        # contract states.
+        for command in (
+            'GIT_INDEX_FILE="$x" git add .',
+            "GIT_INDEX_FILE=/x git add .",
+            "env GIT_INDEX_FILE=/x git add .",
+        ):
             with self.subTest(command=command):
                 self.assertEqual("deny", self.bash(command, self.tree))
                 self.assertIn(UNREAD, self.reason)
-        for command in ("export GIT_INDEX_FILE=/x; git add .", "env GIT_INDEX_FILE=/x git add ."):
+        for command in ("export GIT_INDEX_FILE=/x; git add .",):
             with self.subTest(command=command):
                 self.assertIsNone(self.bash(command, self.tree))
         for command in ("$env:GIT_INDEX_FILE = '/x'; git add .", "$env:GIT_INDEX_FILE = $x; git add ."):
@@ -2896,8 +2901,8 @@ class WriteGuardTests(GuardTestCase):
             "python -B tools/runtime_prompts.py --write --role deployer",
             "cp notes.txt README.md",
             "sed -i s/hub/x/ README.md",
-            "bash -c 'git checkout -b x'",
-            "env GIT_DIR=.git git commit -m x",
+            "bash -c 'ls -la'",
+            "env PYTHONUTF8=1 python x.py",
             "$GIT checkout main",
             "eval 'git checkout main'",
         ):
@@ -3213,8 +3218,8 @@ class UnderstoodSetTests(GuardTestCase):
             (f'cd "{missing}" && git commit -m x', self.hub, None),
             ("cd .claude/worktrees/feat-demo && git commit -m x", self.hub, None),
             ("cd ../../.. && git commit -m x", self.tree, "deny"),
-            # git another program starts is that program's words, which the guard does not read.
-            (f'timeout 60 git -C "{self.hub}" commit -m x', self.tree, None),
+            # git a wrapper runs is read past the wrapper's options (command_wrappers).
+            (f'timeout 60 git -C "{self.hub}" commit -m x', self.tree, "deny"),
             (f'timeout -k 5 60 git -C "{self.tree}" commit -m x', self.hub, None),
         ):
             with self.subTest(command=command, cwd=cwd.name):
@@ -3403,12 +3408,51 @@ class UnderstoodSetTests(GuardTestCase):
                 with self.subTest(command=command, cwd=cwd.name):
                     self.assertIsNone(self.bash(command, cwd))
 
+    def test_git_a_wrapper_or_a_literal_shell_script_runs_is_judged_as_a_bare_git_call(self) -> None:
+        hub = self.hub
+        for command, cwd in (
+            ("env git config coding-agent-skills.hubGuard false", self.hub),
+            ("env git config coding-agent-skills.hubGuard false", self.tree),
+            ("command git config coding-agent-skills.hubGuard false", self.tree),
+            ("bash -c 'git config coding-agent-skills.hubGuard false'", self.tree),
+            (f'env git -C "{hub}" checkout -b x', self.tree),
+            (f'timeout 60 git -C "{hub}" checkout -b x', self.tree),
+            (f'command git -C "{hub}" checkout -b x', self.tree),
+            (f'exec git -C "{hub}" checkout -b x', self.tree),
+            (f'nohup git -C "{hub}" checkout -b x', self.tree),
+            (f'sudo git -C "{hub}" checkout -b x', self.tree),
+            (f'xargs git -C "{hub}" checkout < /dev/null', self.tree),
+            (f'gtimeout 5 env -i git -C "{hub}" checkout -b x', self.tree),
+            (f"bash -c \"git -C '{hub}' checkout -b x\"", self.tree),
+            ("bash -lc 'git checkout -b x'", self.hub),
+            ("env GIT_EDITOR=true git rebase --continue", self.hub),
+            (f'env -C "{hub}" git commit -m x', self.tree),
+            ("command cd .. && git commit -m x", self.tree),
+            ("bash -c 'echo x > README.md'", self.hub),
+        ):
+            with self.subTest(command=command, cwd=cwd.name):
+                self.assertEqual("deny", self.bash(command, cwd))
+        for command in (f"env git -C '{hub}' checkout -b x", f"bash -c \"git -C '{hub}' checkout -b x\""):
+            with self.subTest(command=command):
+                self.assertEqual("deny", self.powershell(command, self.tree))
+        # What the wrapper's words do not settle, and git that only reads, stay allowed.
+        for command, cwd in (
+            ('timeout "$T" git commit -m x', self.tree),
+            ('bash -c "$SCRIPT"', self.hub),
+            ("env git status", self.hub),
+            ("bash -c 'git log -1'", self.hub),
+            ("command -v git", self.hub),
+            ("timeout 60 git commit -m x", self.tree),
+        ):
+            with self.subTest(command=command, cwd=cwd.name):
+                self.assertIsNone(self.bash(command, cwd))
+
     def test_a_builtin_or_a_function_the_guard_does_not_follow_leaves_the_directory_unknown(self) -> None:
         for command in (
             f"eval 'cd {self.hub}'; git commit -m x",
             "source env.sh; git commit -m x",
             ". env.sh; git commit -m x",
-            "command git status; git commit -m x",
+            'command "$TOOL" status; git commit -m x',
             f"f() {{ cd {self.hub}; }}; git commit -m x",
             f"if true; then eval 'cd {self.hub}'; fi; git commit -m x",
             f"{{ f() {{ cd {self.hub}; }}; }}; git commit -m x",

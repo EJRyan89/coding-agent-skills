@@ -43,7 +43,7 @@ The configuration stays on each machine and never in the repository. Add this en
 }
 ```
 
-`snapshot_exclude` leaves out the evaluation, canary, and captured-output fixtures, whose planted defects and own `README.md` and `docs/design.md` `source-search` would return beside the repository's. A pull request that changes one is therefore `INCOMPLETE`: its fixtures are reviewed from the diff, and `evaluate-skill` exercises them. The snapshot also leaves out every path under `.claude/` as an agent instruction, whatever the configuration says, so `untested-changes` gives its reviewer each changed repository-skill script, and `documentation-drift` each agent instruction document it could not search, as an `EXCLUDED` entry to judge from the diff.
+`snapshot_exclude` leaves out the evaluation, canary, and captured-output fixtures, whose planted defects and own `README.md` and `docs/design.md` `source-search` would return beside the repository's. A pull request that changes one is therefore `INCOMPLETE`: its fixtures are reviewed from the diff, and `evaluate-skill` exercises them. It leaves in `tests/fixtures/option-catalogues/`, the wrapper programs' option catalogues, which the `trust-boundary` reviewer holds. The snapshot also leaves out every path under `.claude/` as an agent instruction, whatever the configuration says, so `untested-changes` gives its reviewer each changed repository-skill script, and `documentation-drift` each agent instruction document it could not search, as an `EXCLUDED` entry to judge from the diff.
 
 ## 2. Check
 
