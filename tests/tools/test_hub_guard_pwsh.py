@@ -242,6 +242,30 @@ class RedirectionReachTests(unittest.TestCase):
 
 
 class CommandNameTests(unittest.TestCase):
+    def test_every_parameter_and_alias_a_writing_cmdlet_lists_is_one_the_guard_binds(self) -> None:
+        # A prefix binds a parameter only where it names one alone, so a parameter or alias the table leaves out may
+        # make the guard read a prefix pwsh binds to it as one that binds another.
+        cmdlets = sorted(set(hub_guard.POWERSHELL_CMDLET_PARAMETERS) - {"mkdir"})
+        script = (
+            "$out = @{}; foreach ($name in @(" + ", ".join(f"'{name}'" for name in cmdlets) + ")) { "
+            "$out[$name] = @((Get-Command $name).Parameters.Values | ForEach-Object { @($_.Name) + @($_.Aliases) }) }; "
+            "ConvertTo-Json -Depth 3 -Compress $out"
+        )
+        listed = json.loads(pwsh(script))
+        common = {
+            spelling
+            for name, aliases in hub_guard.POWERSHELL_COMMON_PARAMETERS.items()
+            for spelling in (name, *aliases)
+        }
+        for cmdlet in cmdlets:
+            own = {
+                spelling
+                for name, aliases in hub_guard.POWERSHELL_CMDLET_PARAMETERS[cmdlet].items()
+                for spelling in (name, *aliases)
+            }
+            with self.subTest(cmdlet=cmdlet):
+                self.assertEqual(set(), {spelling.lower() for spelling in listed[cmdlet]} - own - common)
+
     def test_every_alias_function_and_verb_powershell_lists_is_one_the_guard_keeps_for_its_own_commands(self) -> None:
         script = (
             "ConvertTo-Json -Compress -InputObject @("

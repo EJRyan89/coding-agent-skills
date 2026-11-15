@@ -3078,7 +3078,7 @@ class WriteGuardTests(GuardTestCase):
             with self.subTest(command=command):
                 self.assertEqual("deny", self.powershell(command, self.tree))
                 self.assertIn(f"writes {readme}, a file of a guarded hub.", self.reason)
-        for spelling in ("-Ty", "-Typ"):
+        for spelling in ("-Ty", "-Typ", "-T", "-I", "-It"):
             command = f"New-Item {spelling} SymbolicLink -Path '{self.root / 'lnk'}' -Value '{self.hub}'"
             with self.subTest(command=command):
                 self.assertEqual("deny", self.powershell(command, self.tree))
@@ -3113,6 +3113,21 @@ class WriteGuardTests(GuardTestCase):
             with self.subTest(command=command):
                 self.assertEqual("deny", self.bash(command, self.tree))
                 self.assertIn(part, self.reason)
+        # A bracket expression holding the delimiter, which GNU sed reads as the pattern's end and BSD sed as a member,
+        # and text that ends in an escaped backslash, after which the next line is a command, are read as sed does.
+        for command, cwd in (
+            ("sed -n 's/[/]/w/w README.md' notes.txt", self.hub),
+            (f"sed -n 's/[/]/w/w {readme}' notes.txt", self.tree),
+            ("sed -n '\\,[,],w README.md' notes.txt", self.hub),
+        ):
+            with self.subTest(command=command):
+                self.assertEqual("deny", self.bash(command, cwd))
+                self.assertIn("sed is given options or a script the guard cannot follow", self.reason)
+        for text in ("1a\\\nfoo\\\\\nw README.md", "1i\\\nfoo\\\\\nw README.md"):
+            command = f"sed '{text}' notes.txt"
+            with self.subTest(command=command):
+                self.assertEqual("deny", self.bash(command, self.hub))
+                self.assertIn(f"`sed` writes {readme}, a file of a guarded hub.", self.reason)
         # BSD sed reads -l as a flag, so `-li ''` rewrites the file in place.
         for command in (f"sed -li '' s/hub/x/ \"{readme}\"", f"sed -nli '' s/hub/x/ \"{readme}\""):
             with self.subTest(command=command):
@@ -3125,6 +3140,8 @@ class WriteGuardTests(GuardTestCase):
             ("sed -n 'w /dev/stdout' notes.txt", self.tree),
             ("sed '1a hello world' notes.txt", self.tree),
             ("sed -E 's/(a|b)+/x/' notes.txt", self.tree),
+            ("sed 's/[a-z]/x/;s/[[:alpha:]]/y/;s/[]x]/z/' notes.txt", self.tree),
+            ("sed '1a\\\nfoo\\\nw README.md' notes.txt", self.hub),
             ("sed -i s/a/b/ notes.txt", self.tree),
         ):
             with self.subTest(command=command):
@@ -3176,6 +3193,20 @@ class WriteGuardTests(GuardTestCase):
                         self.assertEqual("deny", self.edit(notes, self.tree, tool))
                         self.assertIn(f"The {tool} tool writes {notes}, and the guard", self.reason)
                         self.assertIn(part, self.reason)
+
+    def test_a_tls_key_log_assigned_before_a_command_is_refused(self) -> None:
+        # An assignment before a command hands the variable to every https call that command makes, as the inherited
+        # one does.
+        log = self.hub / "keys.log"
+        for command in (
+            f'SSLKEYLOGFILE="{log}" gh pr view',
+            f'SSLKEYLOGFILE="{log}" ls',
+            f'env SSLKEYLOGFILE="{log}" gh pr view',
+            f'SSLKEYLOGFILE="{self.root / "keys.log"}" curl -s https://example.com',
+        ):
+            with self.subTest(command=command):
+                self.assertEqual("deny", self.bash(command, self.tree))
+                self.assertIn("SSLKEYLOGFILE before a command, which Bash or git reads", self.reason)
 
     def test_a_cookie_jar_set_on_the_command_line_the_session_inherits_is_refused(self) -> None:
         readme = (self.hub / "README.md").as_posix()
@@ -4925,36 +4956,46 @@ def test_a_link_option_is_read_where_a_bundle_or_a_long_name_gives_it(
 
 
 @pytest.mark.parametrize(
-    ("word", "expected"),
+    ("cmdlet", "word", "expected"),
     [
-        ("-Path", ("path", "path")),
-        ("-pa", ("path", "path")),
-        ("-P", ("path", "path")),
-        ("-LiteralPath:", ("path", "literalpath")),
-        ("-PSPath", ("path", "literalpath")),
-        ("-LP", ("path", "literalpath")),
-        ("-Destination", ("path", "destination")),
-        ("-D", ("path", "destination")),
-        ("-Name", ("path", "name")),
-        ("-Value", ("data", "value")),
-        ("-Va", ("data", "value")),
-        ("-Type", ("data", "itemtype")),
-        ("-It", ("data", "itemtype")),
-        ("-ea", ("data", "common")),
-        ("-E", ("switch", "e")),
-        ("-Ty", ("data", "itemtype")),
-        ("-PS", ("path", "literalpath")),
-        ("-PSP", ("path", "literalpath")),
-        ("-Force", ("switch", "force")),
-        ("-Stream", ("data", "stream")),
-        ("-Unknown", ("switch", "unknown")),
-        ("-", ("switch", "")),
+        ("set-content", "-Path", ("path", "path")),
+        ("set-content", "-pa", ("path", "path")),
+        # Path and PassThru: pwsh refuses the prefix, which is read as the path.
+        ("set-content", "-P", ("path", "path")),
+        ("set-content", "-LiteralPath:", ("path", "literalpath")),
+        ("set-content", "-PSPath", ("path", "literalpath")),
+        ("set-content", "-LP", ("path", "literalpath")),
+        ("set-content", "-PS", ("path", "literalpath")),
+        ("set-content", "-PSP", ("path", "literalpath")),
+        ("set-content", "-Value", ("data", "value")),
+        ("set-content", "-Va", ("data", "value")),
+        ("set-content", "-E", ("switch", "e")),
+        ("set-content", "-Enc", ("data", "encoding")),
+        ("set-content", "-Force", ("switch", "force")),
+        ("set-content", "-ea", ("data", "erroraction")),
+        ("set-content", "-Unknown", ("switch", "unknown")),
+        ("set-content", "-", ("switch", "")),
+        ("copy-item", "-Destination", ("path", "destination")),
+        ("copy-item", "-D", ("path", "destination")),
+        ("copy-item", "-T", ("data", "tosession")),
+        ("new-item", "-Name", ("path", "name")),
+        ("new-item", "-Type", ("data", "itemtype")),
+        ("new-item", "-It", ("data", "itemtype")),
+        ("new-item", "-Ty", ("data", "itemtype")),
+        # ItemType alone among New-Item's own, before InformationAction and InformationVariable.
+        ("new-item", "-I", ("data", "itemtype")),
+        # Type and Target, Value's alias: pwsh refuses the prefix, which is read as the item type.
+        ("new-item", "-T", ("data", "itemtype")),
+        ("new-item", "-Ta", ("data", "value")),
+        ("out-file", "-Path", ("path", "filepath")),
+        ("out-file", "-Pa", ("path", "filepath")),
+        ("out-file", "-NoOverwrite", ("switch", "noclobber")),
     ],
 )
 def test_a_writing_cmdlet_s_parameter_is_bound_as_powershell_binds_its_prefix(
-    word: str, expected: tuple[str, str]
+    cmdlet: str, word: str, expected: tuple[str, str]
 ) -> None:
-    assert expected == hub_guard.powershell_parameter(word)
+    assert expected == hub_guard.powershell_parameter(word, cmdlet)
 
 
 @pytest.mark.parametrize(

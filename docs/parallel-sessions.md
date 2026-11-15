@@ -472,8 +472,8 @@ a row decides it.
 - **Assignments.** A bare assignment is understood to a free name: one `BASH_VARIABLES` gives no reason, git does not
   read, and the environment does not hold. Before a command, an assignment is understood to a name git does not read to
   choose a file or a program, that is, no `GIT_` name, none `GIT_READ_NAMES` names (`HOME`, `XDG_CONFIG_HOME`,
-  `XDG_CACHE_HOME`, `USERPROFILE`, `HOMEDRIVE`, `HOMEPATH`, `TMPDIR`, `TEMP`, `TMP`, `PAGER`, `EDITOR`, `VISUAL`, and
-  `SSH_ASKPASS`), and none the dynamic loader reads as git starts (`LOADER_PREFIXES`: `LD_` and `DYLD_`), that
+  `XDG_CACHE_HOME`, `USERPROFILE`, `HOMEDRIVE`, `HOMEPATH`, `TMPDIR`, `TEMP`, `TMP`, `PAGER`, `EDITOR`, `VISUAL`,
+  `SSH_ASKPASS`, and `SSLKEYLOGFILE`, the file libcurl writes each TLS session's keys to), and none the dynamic loader reads as git starts (`LOADER_PREFIXES`: `LD_` and `DYLD_`), that
   `BASH_VARIABLES` also gives no reason, and before git only to a name `GIT_PREFIXES` lists, with a value it allows,
   such as `GIT_EDITOR=true`, or to such a name of Bash's own, such as `LC_ALL`.
 - **Shell options.** `set` and `shopt` are understood for the options `SET_OPTIONS` and `SHOPT_OPTIONS` decide change
@@ -514,8 +514,10 @@ a row decides it.
   given in place given `-i`, `-I`, a prefix of `--in-place`, or a letter it does not know, BSD's flag `-l` ending no
   bundle; and its script, read as each build reads its options (`SED_BUILDS`: GNU's, which read a long option and an
   option after an operand, and BSD's) and as GNU sed reads a script, whose commands hold BSD's, writes the file each
-  `w` or `W` command, or `s` command's `w` flag, names to the end of its line, which is judged as any target is. A
-  script that runs a command, by an `e` command or an `s` command's `e` flag, a script file, a script the text does
+  `w` or `W` command, or `s` command's `w` flag, names to the end of its line, which is judged as any target is. Text
+  an `a`, `i`, or `c` command adds goes on past a line ending in an odd run of backslashes only, and a bracket
+  expression in a pattern is read whole, one that holds the pattern's delimiter, which GNU sed reads as the pattern's
+  end and BSD sed as a member, being a script the guard cannot follow. A script that runs a command, by an `e` command or an `s` command's `e` flag, a script file, a script the text does
   not settle, and options or a script no build reads are refused while a hub is guarded. A Bash word whose unquoted
   text holds a
   wildcard, and a PowerShell path given to `-Path` or by position, or a native program's word, that holds one, is
@@ -525,8 +527,11 @@ a row decides it.
   from its input, which may name any file, so it is refused while a hub is guarded, and so is every word of one that
   `chroot` starts, inside another tree. Of the cmdlets the PowerShell bullet below reads, `Set-Content`,
   `Add-Content`, `Out-File`, `New-Item`, `Copy-Item`, `Move-Item`, `Remove-Item`, and `mkdir` write: each value bound
-  to a parameter that takes a path (`POWERSHELL_PATH_PARAMETERS`), by its name or an alias, or a prefix of either, a
-  prefix of several read as the one that takes a wildcard, and each
+  to a parameter that takes a path (`POWERSHELL_PATH_PARAMETERS`), bound as pwsh binds it from the cmdlet's own
+  parameters and aliases and the common ones (`POWERSHELL_CMDLET_PARAMETERS`, held to `Get-Command`): by its name or
+  an alias, or by a prefix that names one of the cmdlet's own alone, or, naming none of them, one common parameter
+  alone; a prefix of several, which pwsh refuses as ambiguous, is read as the path among them, one that takes a
+  wildcard first, or else as `New-Item`'s item type, held to the types that make no link; and each
   value given by position that `POWERSHELL_POSITIONS` does not bind to a parameter taking no path, as `Set-Content`'s
   second, its `-Value`, is judged so, `New-Item`'s `-Name` joined to each path it is given, and `Copy-Item` and
   `Move-Item` given no destination write into the current location; a parameter the tables do

@@ -871,6 +871,7 @@ GIT_READ_NAMES: dict[str, str] = {
     "PAGER": "names the pager git runs when no setting or GIT_PAGER names one",
     **dict.fromkeys(("EDITOR", "VISUAL"), "names the editor git runs when no setting or GIT_EDITOR names one"),
     "SSH_ASKPASS": "names the program git runs to ask for a credential when GIT_ASKPASS is unset",
+    KEY_LOG_VARIABLE: "names the file libcurl, which git's https transport runs, writes each TLS session's keys to",
 }
 # The prefixes of the names the dynamic loader reads as any program starts, git among them, which may load code into it.
 LOADER_PREFIXES = ("LD_", "DYLD_")
@@ -1155,17 +1156,64 @@ POWERSHELL_POSITIONS: dict[str, tuple[str, ...]] = {
     **dict.fromkeys(("copy-item", "move-item"), ("path", "destination")),
     **dict.fromkeys(("new-item", "mkdir", "remove-item"), ("path",)),
 }
-# Their parameters whose value is a path they write, read, or create, by name: PowerShell binds a parameter written as
-# any prefix of its name that no other of the cmdlet's parameters starts with, and an alias written in full. New-Item's
-# -Name is joined to each path it is given. The ones that bind "path" are POWERSHELL_PATH_BINDING, the literal ones,
-# whose value is no wildcard pattern, POWERSHELL_LITERAL_PATHS.
+# Their own parameters, each with its aliases, held to Get-Command, and the common parameters every cmdlet takes:
+# PowerShell binds a parameter written as its name or an alias, or as a prefix that names one of the cmdlet's own
+# parameters alone, or, where it names none of them, one common parameter alone (powershell_parameter).
+POWERSHELL_COMMON_PARAMETERS: dict[str, tuple[str, ...]] = {
+    "verbose": ("vb",),
+    "debug": ("db",),
+    "erroraction": ("ea",),
+    "warningaction": ("wa",),
+    "informationaction": ("infa",),
+    "progressaction": ("proga",),
+    "errorvariable": ("ev",),
+    "warningvariable": ("wv",),
+    "informationvariable": ("iv",),
+    "outvariable": ("ov",),
+    "outbuffer": ("ob",),
+    "pipelinevariable": ("pv",),
+    "whatif": ("wi",),
+    "confirm": ("cf",),
+}
+_CONTENT_PARAMETERS: dict[str, tuple[str, ...]] = {
+    **dict.fromkeys(("value", "passthru", "path", "filter", "include", "exclude", "force", "credential"), ()),
+    **dict.fromkeys(("nonewline", "encoding", "asbytestream"), ()),
+    "literalpath": ("pspath", "lp"),
+}
+_ITEM_PARAMETERS: dict[str, tuple[str, ...]] = {
+    **dict.fromkeys(("path", "filter", "include", "exclude", "force", "credential"), ()),
+    "literalpath": ("pspath", "lp"),
+}
+POWERSHELL_CMDLET_PARAMETERS: dict[str, dict[str, tuple[str, ...]]] = {
+    "set-content": _CONTENT_PARAMETERS,
+    "add-content": _CONTENT_PARAMETERS,
+    "copy-item": {
+        **_ITEM_PARAMETERS,
+        **dict.fromkeys(("destination", "container", "recurse", "passthru", "fromsession", "tosession"), ()),
+    },
+    "move-item": {**_ITEM_PARAMETERS, **dict.fromkeys(("destination", "passthru"), ())},
+    "remove-item": {**_ITEM_PARAMETERS, "recurse": ()},
+    "new-item": {
+        **dict.fromkeys(("path", "name", "force", "credential"), ()),
+        "itemtype": ("type",),
+        "value": ("target",),
+    },
+    "mkdir": dict.fromkeys(("path", "name", "value", "force", "credential"), ()),
+    "out-file": {
+        "filepath": ("path",),
+        "literalpath": ("pspath", "lp"),
+        **dict.fromkeys(("encoding", "append", "force", "width", "nonewline", "inputobject"), ()),
+        "noclobber": ("nooverwrite",),
+    },
+}
+# Of those, the parameters whose value is a path they write, read, or create; New-Item's -Name is joined to each path
+# it is given. The ones that bind "path" are POWERSHELL_PATH_BINDING, the literal ones, whose value is no wildcard
+# pattern, POWERSHELL_LITERAL_PATHS.
 POWERSHELL_PATH_PARAMETERS = frozenset({"path", "literalpath", "filepath", "destination", "name"})
-POWERSHELL_PATH_ALIASES = {"pspath": "literalpath", "lp": "literalpath"}
 POWERSHELL_PATH_BINDING = frozenset({"path", "literalpath", "filepath"})
 POWERSHELL_LITERAL_PATHS = frozenset({"literalpath"})
-# Their parameters and the common ones that take a value which is no path, by name and by alias, and those that take
-# none. A parameter none of these tables names, or a prefix of more than one name and of no path's, is read as taking
-# no value, so the value after it is read as one given by position, a path.
+# Their parameters that take a value which is no path, and those that take none; a parameter neither names is read
+# as taking no value, so the value after it is read as one given by position, a path.
 POWERSHELL_DATA_PARAMETERS = frozenset(
     {
         *("value", "encoding", "itemtype", "filter", "include", "exclude", "credential", "stream", "width"),
@@ -1174,10 +1222,10 @@ POWERSHELL_DATA_PARAMETERS = frozenset(
         "progressaction",
     }
 )
-POWERSHELL_DATA_ALIASES = {
-    "type": "itemtype",
-    **dict.fromkeys(("ea", "wa", "infa", "ev", "wv", "iv", "ov", "ob", "pv", "proga"), "common"),
-}
+# The common parameters that take a value, which is no path.
+POWERSHELL_COMMON_DATA = frozenset(
+    name for name in POWERSHELL_COMMON_PARAMETERS if name not in {"verbose", "debug", "whatif", "confirm"}
+)
 POWERSHELL_SWITCHES = frozenset(
     {
         *("force", "recurse", "passthru", "nonewline", "append", "noclobber", "whatif", "confirm", "asbytestream"),
@@ -4557,8 +4605,10 @@ class SedScript:
         while self.index < len(self.text) and self.text[self.index] in " \t":
             self.index += 1
 
-    def delimited(self, start: int) -> int | None:
-        """The index after the part a delimiter at start opens and the same delimiter closes, escapes skipped."""
+    def delimited(self, start: int, pattern: bool = False) -> int | None:
+        """The index after the part a delimiter at start opens and the same delimiter closes, escapes skipped; None
+        where it does not close on its line. In a pattern, a bracket expression is read whole (bracket_end), since BSD
+        sed reads a delimiter inside one as a member and GNU sed as the pattern's end."""
         text = self.text
         if start >= len(text) or text[start] in "\n\\":
             return None
@@ -4566,7 +4616,35 @@ class SedScript:
         while position < len(text) and text[position] != delimiter:
             if text[position] == "\n":
                 return None
+            if pattern and text[position] == "[":
+                closed = self.bracket_end(position, delimiter)
+                if closed is None:
+                    return None
+                position = closed
+                continue
             position += 2 if text[position] == "\\" else 1
+        return position + 1 if position < len(text) else None
+
+    def bracket_end(self, start: int, delimiter: str) -> int | None:
+        """The index after a bracket expression opening at start, read as POSIX reads one: a leading ^ and then a ]
+        are members, and [: :], [= =], and [. .] hold the name between them. None where it does not close on its line
+        or holds the delimiter, which the builds read apart, so the guard cannot tell where the pattern ends."""
+        text = self.text
+        position = start + 1
+        if position < len(text) and text[position] == "^":
+            position += 1
+        if position < len(text) and text[position] == "]":
+            position += 1
+        while position < len(text) and text[position] != "]":
+            if text[position] in ("\n", delimiter):
+                return None
+            if text[position] == "[" and text[position + 1 : position + 2] in (":", "=", "."):
+                close = text.find(text[position + 1] + "]", position + 2)
+                if close < 0 or "\n" in text[position:close] or delimiter in text[position:close]:
+                    return None
+                position = close + 2
+                continue
+            position += 1
         return position + 1 if position < len(text) else None
 
     def address(self) -> bool:
@@ -4580,7 +4658,7 @@ class SedScript:
                 self.index += 1
             return True
         if self.index < len(text) and text[self.index] in "/\\":
-            closed = self.delimited(self.index + 1 if text[self.index] == "\\" else self.index)
+            closed = self.delimited(self.index + 1 if text[self.index] == "\\" else self.index, pattern=True)
             if closed is None:
                 self.refused = True
                 return False
@@ -4589,6 +4667,13 @@ class SedScript:
                 self.index += 1
             return True
         return False
+
+    def backslashes_before(self, end: int) -> int:
+        """The length of the run of backslashes that ends just before end."""
+        count = 0
+        while end - count > 0 and self.text[end - count - 1] == "\\":
+            count += 1
+        return count
 
     def file_name(self, start: int) -> None:
         """A w command's or flag's file, the rest of the line."""
@@ -4601,7 +4686,7 @@ class SedScript:
 
     def substitute(self, command: str) -> None:
         """An s or y command's two parts, and an s command's flags."""
-        first = self.delimited(self.index)
+        first = self.delimited(self.index, pattern=command == "s")
         second = None if first is None else self.delimited(first - 1)
         if second is None:
             self.refused = True
@@ -4631,8 +4716,10 @@ class SedScript:
             while self.index < len(text) and text[self.index] not in ";\n":
                 self.index += 1
         elif command in SED_TEXT_COMMANDS:
+            # The text goes on past a line that ends in an odd run of backslashes, the last escaping the newline; an
+            # even run is escaped backslashes, and the next line is a command.
             self.index = self.line_end(self.index)
-            while 0 < self.index < len(text) and text[self.index - 1] == "\\":
+            while 0 < self.index < len(text) and self.backslashes_before(self.index) % 2:
                 self.index = self.line_end(self.index + 1)
         elif command in "sy":
             self.substitute(command)
@@ -4684,29 +4771,33 @@ def provider_refusal(name: str, cmdlet: str, values: list[Word]) -> str | None:
     return None
 
 
-def powershell_parameter(word: str) -> tuple[str, str]:
-    """A writing cmdlet's parameter, as PowerShell binds it, by its kind, "path", "data", or "switch", and its name: an
-    alias written in full, or a name written as any prefix of it. A prefix of a path's name is read as that path, one of
-    exactly one name that takes another value as that one, and any other, a prefix of several or of none, as taking no
-    value, so the value after it is read as one given by position."""
+def powershell_parameter(word: str, cmdlet: str) -> tuple[str, str]:
+    """A writing cmdlet's parameter, as PowerShell binds it (POWERSHELL_CMDLET_PARAMETERS), by its kind, "path", "data",
+    or "switch", and its name: the parameter its name or an alias names, or else the one a prefix names alone among the
+    cmdlet's own, or, where it names none of them, among the common ones. A prefix of several, which pwsh refuses as
+    ambiguous and another release may bind, is read as the path among them, one that takes a wildcard first, or else
+    as the item type, which is held to the types that make no link, and else as taking no value, so the value after
+    it is read as one given by position; and so is a prefix of none, which may be a parameter a provider adds."""
     written = word.lstrip("-").rstrip(":").lower()
-    kinds: dict[str, tuple[str, str]] = {
-        **{name: ("path", name) for name in POWERSHELL_PATH_PARAMETERS},
-        **{name: ("data", name) for name in POWERSHELL_DATA_PARAMETERS},
-        **{name: ("switch", name) for name in POWERSHELL_SWITCHES},
-        **{alias: ("path", name) for alias, name in POWERSHELL_PATH_ALIASES.items()},
-        **{alias: ("data", name) for alias, name in POWERSHELL_DATA_ALIASES.items()},
+    own = {
+        spelling: name
+        for name, aliases in POWERSHELL_CMDLET_PARAMETERS.get(cmdlet, {}).items()
+        for spelling in (name, *aliases)
     }
-    if written in kinds:
-        return kinds[written]
-    matches = {kinds[name] for name in kinds if written and name.startswith(written)}
-    # A prefix of several paths' names, which pwsh refuses as ambiguous, is read as one that takes a wildcard.
-    paths = [match for match in matches if match[0] == "path"]
-    path = min(paths, key=lambda match: (match[1] in POWERSHELL_LITERAL_PATHS, match[1]), default=None)
-    if path is not None:
-        return path
-    if len(matches) == 1 and next(iter(matches))[0] == "data":
-        return next(iter(matches))
+    common = {spelling: name for name, aliases in POWERSHELL_COMMON_PARAMETERS.items() for spelling in (name, *aliases)}
+    if written in own or written in common:
+        matches = {own.get(written) or common[written]}
+    else:
+        matches = {name for spelling, name in own.items() if written and spelling.startswith(written)}
+        matches = matches or {name for spelling, name in common.items() if written and spelling.startswith(written)}
+    paths = sorted(matches & POWERSHELL_PATH_PARAMETERS, key=lambda name: (name in POWERSHELL_LITERAL_PATHS, name))
+    if paths:
+        return "path", paths[0]
+    if "itemtype" in matches:
+        return "data", "itemtype"
+    if len(matches) == 1:
+        name = next(iter(matches))
+        return ("data" if name in POWERSHELL_DATA_PARAMETERS | POWERSHELL_COMMON_DATA else "switch"), name
     return "switch", written
 
 
@@ -5198,7 +5289,7 @@ class PowerShellReader:
             return certain(Directory(directory.stack[0], directory.stack[1:]))
         return certain(directory)
 
-    def cmdlet_parameters(self, command: Any) -> tuple[list[tuple[str, list[Word]]], list[Word]]:
+    def cmdlet_parameters(self, command: Any, cmdlet: str) -> tuple[list[tuple[str, list[Word]]], list[Word]]:
         """The values a cmdlet is given, each parameter that takes one with its name (powershell_parameter) and the
         values bound to it, attached by a colon or the element after it, and the values given by position."""
         elements = command.get("elements") if isinstance(command, dict) else None
@@ -5207,7 +5298,7 @@ class PowerShellReader:
         pending = False
         for element in (elements if isinstance(elements, list) else [])[1:]:
             if isinstance(element, dict) and element.get("kind") == "parameter":
-                kind, parameter = powershell_parameter(str(element.get("text")))
+                kind, parameter = powershell_parameter(str(element.get("text")), cmdlet)
                 pending = False
                 if kind == "switch":
                     continue
@@ -5229,7 +5320,7 @@ class PowerShellReader:
         parameter that takes no path. A cmdlet after the first of a pipeline given no path, but Copy-Item, whose path
         is what it copies, binds the one it writes from its input, and New-Item given an item type that may make a
         link makes one (LINK_PROGRAMS): each is a part the guard does not read."""
-        named, positional = self.cmdlet_parameters(command)
+        named, positional = self.cmdlet_parameters(command, cmdlet)
         bound = {"path" if parameter in POWERSHELL_PATH_BINDING else parameter for parameter, _ in named}
         slots = [slot for slot in POWERSHELL_POSITIONS[cmdlet] if slot not in bound]
         paths: list[tuple[Word, bool]] = []
