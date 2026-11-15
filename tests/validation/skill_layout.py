@@ -22,7 +22,7 @@ from markdown_sections import EXECUTABLE_FENCES, markdown_section
 from path_containment import within
 from skill_menu import PLUGIN_HOOKS, PLUGIN_MANIFEST
 from skill_roots import SKILL_CORE
-from skill_scripts import powershell_script_commands
+from skill_scripts import WORKING_FILES_DOC, powershell_script_commands
 from suite_names import is_suite_name
 from validation_support import (
     CODE_SPAN,
@@ -494,7 +494,6 @@ def _line_path_problems(
 # An option that names where a script writes, given a placeholder for the agent to fill in: "--output <file>",
 # "--plans=<dir>". Placeholders for paths a command printed, such as "--run <run directory>", name no output option.
 OUTPUT_PLACEHOLDER = re.compile(r"""(--(?:output(?:-[a-z]+)*|out(?:-dir)?|plans))(?:\s+|=)["']?<[^>]*>""")
-WORKING_FILES_DOC = '"Working files" in docs/adding-a-skill.md'
 
 
 def output_placeholder_problems(root: Path, tree: str = "skills") -> list[str]:

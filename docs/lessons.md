@@ -172,8 +172,8 @@ removed fails validation until its pattern follows it.
   codes takes the wrong branch.
 - **Use:** `console:run_main`, `console:failed_line`, `skill_roots:MissingSibling`, `git_client:GitError.origin_failed`,
   which tells a remote's failure from one of the local repository or of a git that never ran;
-  `path_containment:resolved_path`, which follows a path taken from input or the environment as `Path.resolve` does
-  from Python 3.13 on, leaving a symbolic link loop to the caller's own refusal where Python 3.12's raises
+  `path_containment:resolved_path`, which follows a path taken from input or the environment as Python 3.13's path
+  resolution does, leaving a symbolic link loop to the caller's own refusal where Python 3.12's raises
   RuntimeError; an entry point states its codes in its docstring's exit table, in the form "Script results" in the
   skill contract settles.
 - **Guard:** `tests/malformed_input/test_malformed_input.py::test_failure_names_a_write_before_a_refusal_an_escape_and_an_undocumented_acceptance`,
@@ -678,7 +678,7 @@ removed fails validation until its pattern follows it.
   run is refused, naming the folder, before anything is made in one that fails.
 - **Why:** Owner only says nothing about the folders above, and whoever can rename one may put a tree of their own in
   its place between a write and a read, as a `TMPDIR` set by hand below a shared folder that is not sticky allows.
-- **Use:** `private_folder:temporary_directory`, the `dir` every temporary folder or named file a skill's script
+- **Use:** `private_folder:temporary_directory`, the folder every temporary folder or named file a skill's script
   makes is given; `private_folder:ensure` for a folder of fixed name kept across runs; `private_folder:ancestry_refusal`,
   the one judgment of the folders above.
 - **Guard:** `tests/validation/skill_scripts.py::SkillScriptsPolicies::test_skill_scripts_name_the_folder_of_each_temporary_folder_or_file`,
