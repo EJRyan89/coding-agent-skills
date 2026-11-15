@@ -22,7 +22,8 @@ that replaces the link itself, such as a rename, never one that follows it.
 list, where `Path.glob` matches nothing in it from Python 3.15 on, so a reader takes no unreadable folder for an empty
 one, and for a pattern it cannot read relative to its folder on every platform, such as one naming a drive, so a
 reader takes no pattern it never looked for as matching nothing. It matches the names a listing gives, so a Windows
-short alias, or a device name a glob class spells, matches no name.
+short alias matches no name, and a class that can spell a device name matches only listed names, never a device
+Windows opens.
 
 A stat it cannot make is a fourth answer, that it could not tell, and reaches the caller as the `OSError` the stat
 raised: `Path.is_file`, `os.path.exists`, and `os.path.lexists` return False on every `OSError` from Python 3.14 on,
