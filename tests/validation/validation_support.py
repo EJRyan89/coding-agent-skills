@@ -1577,11 +1577,13 @@ def skill_script_directories(root: Path = REPOSITORY_ROOT) -> list[Path]:
     ]
 
 
-def write_fixture_tree(root: Path, files: Mapping[str, str]) -> None:
-    """Write each relative path's literal text under root, creating its folders."""
+def write_fixture_tree(root: Path, files: Mapping[str, str], newline: str | None = None) -> None:
+    """Write each relative path's literal text under root, creating its folders. Each "\\n" is written as the
+    platform ends a line unless `newline` names the end, as "\\n" keeps a fixture LF-ended, as a checkout holds every
+    file .gitattributes ends at LF, for a reader of its bytes."""
     for relative_path, text in files.items():
         (root / relative_path).parent.mkdir(parents=True, exist_ok=True)
-        (root / relative_path).write_text(text, encoding="utf-8")
+        (root / relative_path).write_text(text, encoding="utf-8", newline=newline)
 
 
 def module_allowance(tree: ast.Module, name: str) -> dict[str, str] | None:

@@ -2105,6 +2105,8 @@ class SkillScriptsFixtures(unittest.TestCase):
                     # A repository skill's script is a skill script too.
                     ".claude/skills/beta/scripts/tool.sh": "gh api repos/o/r --jq .name\n",
                 },
+                # LF-ended as a checkout holds them, since the policy reads the scripts' bytes, where Bash ends a line.
+                newline="\n",
             )
             # In the order the paths' text sorts in on every platform, where Windows would sort Zeta after alpha.
             self.assertEqual(

@@ -18,7 +18,9 @@ from validation_support import write_fixture_tree
 def test_a_bash_script_s_exit_is_numbered_where_bash_ends_its_line(tmp_path: Path) -> None:
     # Bash ends a line at LF alone, so a line separator inside a quoted word leaves the exit on line 2.
     write_fixture_tree(
-        tmp_path, {"skills/alpha/SKILL.md": "# alpha\n", "skills/alpha/scripts/tool.sh": "echo 'a\u2028b'\nexit 3\n"}
+        tmp_path,
+        {"skills/alpha/SKILL.md": "# alpha\n", "skills/alpha/scripts/tool.sh": "echo 'a\u2028b'\nexit 3\n"},
+        newline="\n",
     )
     doc = '"Script results" in docs/adding-a-skill.md'
     assert script_contract_problems(tmp_path) == [
@@ -54,6 +56,8 @@ def test_a_bash_script_s_lone_cr_ends_no_line(tmp_path: Path) -> None:
             "skills/alpha/scripts/tool.sh": "#!/usr/bin/env bash\n# a note\rexit 3\nexit 0\n",
             "skills/alpha/scripts/query.sh": "gh pr list \\\r\n  --jq .x\n",
         },
+        # Written as each byte stands, as a checkout holds an LF-ended script, so each CR is the test's own.
+        newline="\n",
     )
     assert script_contract_problems(tmp_path) == []
     assert gh_filter_problems(tmp_path) == []
