@@ -702,7 +702,11 @@ def _answered(content: bytes, *, markdown: bool = False) -> bytes:
 
 
 def _without_hooks(text: str) -> tuple[str, str]:
-    """An agent definition without its frontmatter's top-level hooks key, and that key's lines, on one line each."""
+    """An agent definition without its frontmatter's top-level hooks key, and that key's lines, on one line each.
+
+    Limit: the delimiters are found by exact match on lines split at LF, so an agent whose `---` lines carry trailing
+    spaces or tabs, or whose lines end in CRLF, is compared with its hooks kept; no agent the repository holds is
+    written so."""
     lines = text.split("\n")
     closing = lines.index("---", 1) if lines[:1] == ["---"] and "---" in lines[1:] else 0
     start = next((index for index in range(1, closing) if lines[index].startswith("hooks:")), None)

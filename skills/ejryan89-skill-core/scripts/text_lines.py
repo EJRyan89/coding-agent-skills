@@ -8,9 +8,11 @@ YAML 1.1 broke at; CommonMark ends a line of Markdown, such as a CLAUDE.md, an A
 three; and .NET's `TextReader.ReadLine`, through which MSBuild reads a solution file, breaks at the same three.
 `str.splitlines` also breaks at the vertical tab, the form feed, the file, group, and record separators, and those
 three, so a reader splitting with it would read a key, an import, or a project line the program never reads. A reader
-of a file an author writes splits it with `text_lines`, never `str.splitlines`. An analyzer config is the exception,
-since the C# compiler breaks it at more (`analyzer_config.py`), and a program's output is split where that program
-ends a line (`git_client.output_lines`).
+of a file an author writes splits it with `text_lines`, never `str.splitlines`. The exceptions are the files whose
+program breaks a line elsewhere: an analyzer config, which the C# compiler breaks at more (`analyzer_config.py`), and a
+Bash script and a `.shellcheckrc`, which Bash and ShellCheck break at LF alone, reading a CR as part of the line
+(audit-skill's `skill_inventory.shell_lines`, ejryan89-code-review-core's `review_analyzers._shellcheckrc`). A
+program's output is split where that program ends a line (`git_client.output_lines`).
 """
 
 from __future__ import annotations

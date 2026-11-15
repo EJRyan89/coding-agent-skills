@@ -84,14 +84,19 @@ class PdfPolicyTests(unittest.TestCase):
         running.read.assert_called_once_with(pdf_tool.MAX_PROBE_BYTES + 1)
 
     def test_probe_refuses_timeout_start_failure_flood_and_invalid_utf8_without_echoing_output(self) -> None:
-        for failure in (OSError("private path"), subprocess.TimeoutExpired("private command", 5)):
-            with (
-                self.subTest(failure=failure),
-                mock.patch.object(pdf_tool, "streaming", side_effect=failure),
-                self.assertRaises(pdf_tool.PdfToolRefused) as raised,
-            ):
-                pdf_tool.probe_pdftotext("checked path")
-            self.assertNotIn("private", str(raised.exception))
+        with (
+            mock.patch.object(pdf_tool, "streaming", side_effect=subprocess.TimeoutExpired("private command", 5)),
+            self.assertRaises(pdf_tool.PdfToolRefused) as raised,
+        ):
+            pdf_tool.probe_pdftotext("checked path")
+        self.assertNotIn("private", str(raised.exception))
+        # A start failure is named by the error the start gave, on one line.
+        with (
+            mock.patch.object(pdf_tool, "streaming", side_effect=OSError(8, "Exec format\nerror")),
+            self.assertRaises(pdf_tool.PdfToolRefused) as raised,
+        ):
+            pdf_tool.probe_pdftotext("checked path")
+        self.assertEqual("version probe could not be started: [Errno 8] Exec format error", str(raised.exception))
         for output in (b"x" * (pdf_tool.MAX_PROBE_BYTES + 1), b"\xff"):
             running = mock.Mock()
             running.read.return_value = output
@@ -119,7 +124,7 @@ class SelectPdftotextTests(unittest.TestCase):
         def probe(path: str) -> pdf_tool.PdfIdentity:
             probed.append(path)
             if path not in by_resolved:
-                raise pdf_tool.PdfToolRefused("version probe could not be started")
+                raise pdf_tool.PdfToolRefused("version probe could not be started: [Errno 13] Permission denied")
             return pdf_tool.parse_banner(*by_resolved[path])
 
         return pdf_tool.select_pdftotext(found, probe), probed
@@ -170,7 +175,8 @@ class SelectPdftotextTests(unittest.TestCase):
             self.select([GIT_BUNDLED, SUPPORTED], {GIT_BUNDLED: ("pdftotext version 26.10.0\n", 0)})
         self.assertEqual(
             r"no supported pdftotext: skipped C:\Program Files\Git\mingw64\bin\pdftotext.exe (provider/version is "
-            r"unidentifiable), C:\Tools\Xpdf\pdftotext.exe (version probe could not be started); "
+            r"unidentifiable), C:\Tools\Xpdf\pdftotext.exe (version probe could not be started: [Errno 13] Permission "
+            "denied); "
             f"{INSTALL}",
             str(raised.exception),
         )
@@ -178,12 +184,13 @@ class SelectPdftotextTests(unittest.TestCase):
 
     def test_a_path_that_cannot_be_resolved_is_skipped_unprobed(self) -> None:
         with (
-            mock.patch.object(Path, "resolve", side_effect=OSError("private")),
+            mock.patch.object(Path, "resolve", side_effect=OSError(13, "Permission\ndenied")),
             self.assertRaises(pdf_tool.PdfToolRefused) as raised,
         ):
             pdf_tool.select_pdftotext([SUPPORTED], mock.Mock(side_effect=AssertionError("probed")))
         self.assertEqual(
-            r"no supported pdftotext: skipped C:\Tools\Xpdf\pdftotext.exe (could not be accessed); "
+            r"no supported pdftotext: skipped C:\Tools\Xpdf\pdftotext.exe (could not be accessed: [Errno 13] "
+            "Permission denied); "
             f"{INSTALL}",
             str(raised.exception),
         )
@@ -317,3 +324,18 @@ def test_a_poppler_month_is_held_to_twelve_from_its_year_numbered_releases_on(ve
 def test_each_provider_the_probe_accepts_has_a_floor() -> None:
     assert get_args(pdf_tool.PdfProvider) == ("Xpdf", "Poppler")
     assert tuple(pdf_tool.MINIMUMS) == ("Xpdf", "Poppler")
+
+
+def test_a_pdftotext_that_cannot_start_is_skipped_naming_the_error_its_start_gave(tmp_path: Path) -> None:
+    # A file of junk the locator would find: the operating system refuses to start it, so the probe's own start fails.
+    junk = tmp_path.resolve() / ("pdftotext.exe" if sys.platform == "win32" else "pdftotext")
+    junk.write_bytes(b"not a program\n")
+    junk.chmod(0o755)
+    with pytest.raises(pdf_tool.PdfToolRefused) as raised:
+        pdf_tool.select_pdftotext([str(junk)])
+    if sys.platform == "win32":
+        expected = f"skipped {junk} (version probe could not be started: [WinError 193] "
+        assert str(raised.value).startswith(f"no supported pdftotext: {expected}")
+    else:
+        expected = f"skipped {junk} (version probe could not be started: [Errno 8] Exec format error: '{junk}'); "
+        assert str(raised.value).startswith(f"no supported pdftotext: {expected}")

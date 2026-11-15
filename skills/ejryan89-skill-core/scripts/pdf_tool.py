@@ -20,6 +20,7 @@ from typing import Literal, assert_never
 
 import versions
 from bounded_process import streaming
+from flat_text import flat_text
 
 # The vendors whose pdftotext the probe accepts.
 PdfProvider = Literal["Xpdf", "Poppler"]
@@ -155,7 +156,7 @@ def probe_pdftotext(path: str) -> PdfIdentity:
     except subprocess.TimeoutExpired as exc:
         raise PdfToolRefused(f"version probe did not finish within {PROBE_SECONDS:g} seconds") from exc
     except OSError as exc:
-        raise PdfToolRefused("version probe could not be started") from exc
+        raise PdfToolRefused(f"version probe could not be started: {flat_text(str(exc))}") from exc
     try:
         text = output.decode("utf-8")
     except UnicodeDecodeError as exc:
@@ -197,8 +198,8 @@ def select_pdftotext(found: Iterable[str], probe: Callable[[str], PdfIdentity] =
     for candidate in found:
         try:
             resolved = str(Path(candidate).resolve())
-        except OSError:
-            skipped.append(Skipped(candidate, "could not be accessed"))
+        except OSError as exc:
+            skipped.append(Skipped(candidate, f"could not be accessed: {flat_text(str(exc))}"))
             continue
         try:
             return PdfSelection(resolved, probe(resolved), tuple(skipped))

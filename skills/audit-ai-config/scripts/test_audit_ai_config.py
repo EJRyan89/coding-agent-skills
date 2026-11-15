@@ -7859,3 +7859,28 @@ def test_an_instruction_files_length_counts_the_lines_commonmark_reads(separator
         "1001 lines, over the about 1,000 lines GitHub advises for one instruction file Copilot code review reads; "
         "beyond it the quality of its reviews may deteriorate"
     ]
+
+
+@pytest.mark.parametrize(
+    ("opener", "closer", "expected"),
+    [
+        pytest.param("--- \t", "---  ", [], id="yaml-whitespace-after-each"),
+        pytest.param("---\u2028", "---", [(None, "Missing YAML frontmatter")], id="a-separator-yaml-reads-as-text"),
+        pytest.param("---", "---\u2028", [(None, "Unterminated YAML frontmatter")], id="no-closing-delimiter"),
+        pytest.param(
+            "---\x0c",
+            "---",
+            [(None, "Invalid YAML frontmatter: frontmatter delimiter on line 1 holds U+000C, which YAML forbids")],
+            id="a-character-yaml-forbids",
+        ),
+    ],
+)
+def test_a_frontmatter_delimiter_is_judged_as_yaml_judges_a_document_marker(
+    opener: str, closer: str, expected: list[tuple[int | None, str]], tmp_path: Path
+) -> None:
+    skill = tmp_path / ".github" / "skills" / "demo" / "SKILL.md"
+    skill.parent.mkdir(parents=True)
+    skill.write_bytes(f"{opener}\nname: demo\ndescription: Demo.\n{closer}\nBody.\n".encode())
+    values, found = audit._frontmatter(tmp_path, skill)
+    assert [(finding.line, finding.message) for finding in found] == expected
+    assert values == ({} if expected else {"name": "demo", "description": "Demo."})
