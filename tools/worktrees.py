@@ -131,7 +131,7 @@ def checkout_of(path: Path, timeout: float = GUARD_GIT_TIMEOUT_SECONDS) -> Check
     )
     lines = output_lines(result.stdout)
     if result.returncode != 0 and below_a_checkout(directory):
-        said = " ".join(result.stderr.split()) or f"git rev-parse exited with {result.returncode}"
+        said = flat_text(result.stderr) or f"git rev-parse exited with {result.returncode}"
         raise GitError(f"git could not read the checkout at {directory}: {said}", returncode=result.returncode)
     if result.returncode != 0:
         return None
@@ -280,7 +280,8 @@ def list_worktrees() -> int:
 
 
 def main(arguments: list[str]) -> int:
-    parser = argparse.ArgumentParser(prog="worktrees.py", description=__doc__.splitlines()[0])
+    # The docstring's summary line ends at its first LF, the only break this file's own text holds.
+    parser = argparse.ArgumentParser(prog="worktrees.py", description=__doc__.partition("\n")[0])
     commands = parser.add_subparsers(dest="command", required=True)
     create = commands.add_parser("new", help="create a worktree for a task under .claude/worktrees")
     create.add_argument("kind", help=f"branch prefix: {', '.join(KINDS)}")

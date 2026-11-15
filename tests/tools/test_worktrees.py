@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import io
 import json
 import os
 import subprocess
@@ -309,12 +310,31 @@ class CheckoutTests(WorktreesTestCase):
                 self.assertEqual(worktrees.Checkout(checkout, checkout), worktrees.checkout_of(checkout))
 
 
+class HelpTests(unittest.TestCase):
+    def test_help_describes_the_tool_by_its_docstring_s_summary_line_alone(self) -> None:
+        # A line separator in the summary would end it under str.splitlines; the summary ends at its LF alone.
+        summary = "Coordinate\N{LINE SEPARATOR}parallel sessions."
+        with (
+            mock.patch.object(worktrees, "__doc__", f"{summary}\n\nUsage: the rest.\n"),
+            mock.patch("sys.stdout", new_callable=io.StringIO) as printed,
+            self.assertRaises(SystemExit),
+        ):
+            worktrees.main(["--help"])
+        text = printed.getvalue()
+        self.assertIn(summary, text)
+        self.assertNotIn("Usage: the rest.", text)
+
+
 class CheckoutFailureTests(unittest.TestCase):
     def test_a_checkout_git_fails_on_names_git_s_message_or_its_exit_code(self) -> None:
         with tempfile.TemporaryDirectory() as folder:
             checkout = Path(folder) / "checkout"
             (checkout / ".git").mkdir(parents=True)
-            for stderr, said in (("fatal: one\n  two\n", "fatal: one two"), ("", "git rev-parse exited with 128")):
+            for stderr, said in (
+                ("fatal: one\n  two\n", "fatal: one two"),
+                ("fatal: \x1b[31mred\x1b[0m\n", "fatal: [31mred [0m"),
+                ("", "git rev-parse exited with 128"),
+            ):
                 with (
                     self.subTest(stderr=stderr),
                     mock.patch.object(worktrees, "git", return_value=git_client.GitResult(128, "", stderr)),
