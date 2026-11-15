@@ -3163,6 +3163,346 @@ class WriteGuardTests(GuardTestCase):
         self.assertEqual("deny", self.bash(f'gln -s "{readme}" "{link}" && printf x >> "{link}"', self.tree))
         self.assertIn("ln makes a symbolic or a hard link", self.reason)
 
+    def test_a_program_that_compresses_renames_or_changes_the_attributes_of_a_file_its_words_name_is_read(
+        self,
+    ) -> None:
+        readme = self.hub / "README.md"
+        for command, writer in (
+            (f'gzip "{readme}"', "gzip"),
+            (f'gunzip -k "{readme}"', "gunzip"),
+            (f'bzip2 -9 "{readme}"', "bzip2"),
+            (f'xz -T0 "{readme}"', "xz"),
+            (f'zstd --rm "{readme}"', "zstd"),
+            (f'lz4 notes.txt "{readme}"', "lz4"),
+            (f'echo x | sponge "{readme}"', "sponge"),
+            (f'uniq notes.txt "{readme}"', "uniq"),
+            (f'uniq - "{readme}" < notes.txt', "uniq"),
+            (f'shuf -o "{readme}" notes.txt', "shuf"),
+            (f'shuf -o"{readme}" notes.txt', "shuf"),
+            (f'split notes.txt "{self.hub}/part"', "split"),
+            (f'csplit -f "{self.hub}/part" notes.txt 1', "csplit"),
+            (f'rename .md .txt "{readme}"', "rename"),
+            (f'mkfile 1m "{readme}"', "mkfile"),
+            (f'plutil -convert xml1 "{readme}"', "plutil"),
+            (f'ditto notes.txt "{readme}"', "ditto"),
+            (f'xattr -w name value "{readme}"', "xattr"),
+            (f'chattr +i "{readme}"', "chattr"),
+            (f'setfacl -m u:nobody:r "{readme}"', "setfacl"),
+            (f'setfattr -n user.x -v 1 "{readme}"', "setfattr"),
+            (f"perl -pi -e 's/a/b/' \"{readme}\"", "perl"),
+            (f"perl -i.bak -pe 's/a/b/' \"{readme}\"", "perl"),
+            (f"ruby -pi -e 'x' \"{readme}\"", "ruby"),
+            (f"gawk -i inplace '{{print}}' \"{readme}\"", "gawk"),
+            (f"awk -i inplace '{{print}}' \"{readme}\"", "awk"),
+            (f'gawk \'@include "inplace"; {{print}}\' "{readme}"', "gawk"),
+            (f'coreutils cp notes.txt "{readme}"', "cp"),
+            (f'coreutils --coreutils-prog=cp notes.txt "{readme}"', "cp"),
+            (f'toybox cp notes.txt "{readme}"', "cp"),
+            (f'gsplit notes.txt "{self.hub}/part"', "split"),
+        ):
+            with self.subTest(command=command):
+                self.assertEqual("deny", self.bash(command, self.tree))
+                self.assertIn(f"`{writer}` writes ", self.reason)
+                self.assertIn(", a file of a guarded hub.", self.reason)
+        # perl and ruby without -i, and awk without its inplace extension, only read the files they are given; a
+        # compressor or uniq writes nothing in the hub here.
+        for command, cwd in (
+            (f"perl -ne 'print' \"{readme}\"", self.tree),
+            (f"perl -Mstrict -e 'print 1' \"{readme}\"", self.tree),
+            (f"ruby -ne 'print' \"{readme}\"", self.tree),
+            (f"awk '{{print $1}}' \"{readme}\"", self.tree),
+            ("awk -F, '{print $1}' README.md", self.hub),
+            ("gzip -c notes.txt > notes.gz", self.tree),
+            ("uniq notes.txt", self.tree),
+            ("uniq -c README.md", self.hub),
+            ("sort notes.txt | uniq -c", self.tree),
+        ):
+            with self.subTest(command=command):
+                self.assertIsNone(self.bash(command, cwd))
+        self.assertEqual("hub\n", readme.read_text(encoding="utf-8"))
+
+    def test_powershell_reads_the_new_writers_and_the_multicall_programs_alike(self) -> None:
+        readme = self.hub / "README.md"
+        for command, writer in (
+            (f"gzip '{readme}'", "gzip"),
+            (f"perl -pi -e 's/a/b/' '{readme}'", "perl"),
+            (f"coreutils cp notes.txt '{readme}'", "cp"),
+            (f"tar -cf '{readme}' notes.txt", "tar"),
+            (f"timeout 5 tar -cf '{readme}' notes.txt", "tar"),
+        ):
+            with self.subTest(command=command):
+                self.assertEqual("deny", self.powershell(command, self.tree))
+                self.assertIn(f"`{writer}` writes {readme}, a file of a guarded hub.", self.reason)
+
+    def test_an_option_that_writes_a_file_no_word_names_or_runs_a_command_is_refused(self) -> None:
+        for command, part in (
+            (
+                "split --filter='git commit -m x' notes.txt",
+                "split is given an option that runs a command for each part",
+            ),
+            ("split --fil='git commit -m x' notes.txt", "split is given an option that runs a command for each part"),
+            ("ditto -x -k notes.zip out", "ditto is given an option that writes the files an archive names"),
+            ("ditto -vx notes.cpio out", "ditto is given an option that writes the files an archive names"),
+            ("setfacl --restore=acls.txt", "setfacl is given an option that changes the access lists of the files"),
+            ("setfattr --restore=attrs.txt", "setfattr is given an option that changes the attributes of the files"),
+            ("gawk -o '{print}' notes.txt", "gawk is given an option that writes its variables, program, or profile"),
+            ("gawk --profile '{print}' notes.txt", "gawk is given an option that writes its variables, program"),
+            ("awk -d '{print}' notes.txt", "awk is given an option that writes its variables, program, or profile"),
+        ):
+            with self.subTest(command=command):
+                self.assertEqual("deny", self.bash(command, self.tree))
+                self.assertIn(part, self.reason)
+        # util-linux rename's -s renames the target a link names.
+        for command in ("rename -s old new lnk", "rename -vs old new lnk", "rename --symlink old new lnk"):
+            with self.subTest(command=command):
+                self.assertEqual("deny", self.bash(command, self.tree))
+                self.assertIn("rename is given an option that makes a link", self.reason)
+        # A multicall program whose utility the text does not settle, or that is given an option first, may run any.
+        for command in ('coreutils "$x" a b', "coreutils --help", 'toybox "$x"'):
+            with self.subTest(command=command):
+                self.assertEqual("deny", self.bash(command, self.tree))
+                self.assertIn("runs a utility the text does not settle, which may be any command", self.reason)
+        # One behind a runner may run another runner, so it is refused as one is; a runner behind it is read.
+        self.assertEqual("deny", self.bash("timeout 5 coreutils ls", self.tree))
+        self.assertIn("coreutils names git or another runner, which may run git", self.reason)
+        self.assertEqual("deny", self.bash("coreutils timeout 5 git commit -m x", self.hub))
+        self.assertIn("runs timeout:", self.reason)
+        for command in ("coreutils ls -la", "split -l 10 notes.txt part", "ditto notes.txt copy.txt"):
+            with self.subTest(command=command):
+                self.assertIsNone(self.bash(command, self.tree))
+
+    def test_tar_s_archive_is_judged_where_its_mode_writes_it(self) -> None:
+        readme = self.hub / "README.md"
+        for command in (
+            f'tar -cf "{readme}" notes.txt',
+            f'tar -czf "{readme}" notes.txt',
+            f'tar -rf "{readme}" notes.txt',
+            f'tar -uf "{readme}" notes.txt',
+            f'tar -Af "{readme}" other.tar',
+            f'tar cf "{readme}" notes.txt',
+            f'tar --create --file="{readme}" notes.txt',
+            f'tar --create --file "{readme}" notes.txt',
+            f'tar --delete -f "{readme}" notes.txt',
+            f'tar -c -f"{readme}" notes.txt',
+            f'bsdtar -cf "{readme}" notes.txt',
+            f'gnutar -cf "{readme}" notes.txt',
+            f'gtar -cf "{readme}" notes.txt',
+            f'timeout 5 tar -cf "{readme}" notes.txt',
+        ):
+            with self.subTest(command=command):
+                self.assertEqual("deny", self.bash(command, self.tree))
+                self.assertIn(f"`tar` writes {readme}, a file of a guarded hub.", self.reason)
+        self.assertEqual("deny", self.bash("tar -cf archive.tar notes.txt", self.hub))
+        self.assertIn(f"`tar` writes {self.hub / 'archive.tar'}, a file of a guarded hub.", self.reason)
+        # Listing or comparing reads the archive, and `-` is standard output.
+        for command, cwd in (
+            (f'tar -tf "{readme}"', self.tree),
+            (f'tar -tvf "{readme}"', self.tree),
+            (f'tar -df "{readme}" notes.txt', self.tree),
+            ("tar -cf - notes.txt > /dev/null", self.tree),
+            ("tar -cf - README.md | wc -c", self.hub),
+            ("tar -czf out.tgz notes.txt", self.tree),
+            ("tar tf archive.tar", self.hub),
+        ):
+            with self.subTest(command=command):
+                self.assertIsNone(self.bash(command, cwd))
+
+    def test_a_program_whose_writes_the_guard_does_not_read_is_refused_while_a_hub_is_guarded(self) -> None:
+        readme = self.hub / "README.md"
+        # Pinned against literals: what each refusal says the program writes.
+        archive = "writes the files an archive names, which the text does not show"
+        for command, program, does in (
+            (f'curl -o "{readme}" https://example.com', "curl", None),
+            ("curl -s https://example.com", "curl", None),
+            (f'wget -O "{readme}" https://example.com', "wget", None),
+            (f'rsync -a notes.txt "{readme}"', "rsync", None),
+            (f'scp notes.txt "{readme}"', "scp", None),
+            ("patch -p1 < fix.patch", "patch", "writes the files a patch names, which the text does not show"),
+            (f'unzip -d "{self.hub}" notes.zip', "unzip", archive),
+            (f'7z x -o"{self.hub}" notes.7z', "7z", archive),
+            (f'cpio -p "{self.hub}" < list.txt', "cpio", archive),
+            ("pax -r < notes.pax", "pax", archive),
+            (f'xcopy notes.txt "{readme}"', "xcopy", None),
+            (f'robocopy . "{self.hub}" notes.txt', "robocopy", None),
+            (f'certutil -decode notes.b64 "{readme}"', "certutil", None),
+            (f'gpatch -o "{readme}" < fix.patch', "patch", None),
+            (f'timeout 5 curl -o "{readme}" https://example.com', "curl", None),
+        ):
+            with self.subTest(command=command):
+                self.assertEqual("deny", self.bash(command, self.tree))
+                self.assertIn(f"{program} {hub_guard.UNREAD_PROGRAMS[program]}", self.reason)
+                if does is not None:
+                    self.assertIn(f"{program} {does}", self.reason)
+        self.assertEqual(
+            "curl writes the files its options or its configuration file name, which the guard does not read",
+            f"curl {hub_guard.UNREAD_PROGRAMS['curl']}",
+        )
+        for command in (f"xcopy notes.txt '{readme}'", f"robocopy . '{self.hub}' notes.txt", "curl.exe -s x"):
+            with self.subTest(command=command):
+                self.assertEqual("deny", self.powershell(command, self.tree))
+        # With no guarded hub in view each is allowed with a note.
+        outside, unshared = self.outside()
+        self.assertIsNone(self.bash("curl -s https://example.com", outside, unshared))
+        self.assertIn("curl writes the files its options or its configuration file name", self.stderr)
+
+    def test_a_cookie_jar_a_repository_s_own_configuration_names_in_a_hub_refuses_a_git_call_there(self) -> None:
+        readme = (self.hub / "README.md").as_posix()
+        other = self.root / "other"
+        run_git(self.root, self.environment, "init", "-q", str(other)).check_returncode()
+        config = other / ".git" / "config"
+        original = config.read_text(encoding="utf-8")
+        for label, text, setting in (
+            ("cookie", f'[http]\n\tcookieFile = "{readme}"\n\tsaveCookies = true\n', "http.cookiefile"),
+            ("socket", f'[fsmonitor]\n\tsocketDir = "{(self.hub / "docs").as_posix()}"\n', "fsmonitor.socketdir"),
+        ):
+            config.write_text(original + text, encoding="utf-8")
+            for shell, command in (
+                (self.bash, f'git -C "{other}" ls-remote https://example.com/x'),
+                (self.bash, f'cd "{other}" && git fetch'),
+                (self.powershell, f"git -C '{other}' ls-remote https://example.com/x"),
+            ):
+                with self.subTest(case=label, command=command):
+                    self.assertEqual("deny", shell(command, self.tree))
+                    self.assertIn(
+                        f"The local git configuration a git call in {other} reads sets {setting} to", self.reason
+                    )
+                    self.assertIn(", into a file of a guarded hub, so the command is refused.", self.reason)
+            # A command with no git call there reads none of it.
+            self.assertIsNone(self.bash("git status", self.tree))
+            self.assertIsNone(self.bash(f'ls "{other}"', self.tree))
+        config.write_text(original, encoding="utf-8")
+        self.assertIsNone(self.bash(f'git -C "{other}" status', self.tree))
+
+    def test_a_cookie_jar_a_conditional_include_sets_only_for_another_checkout_is_refused_there(self) -> None:
+        readme = (self.hub / "README.md").as_posix()
+        other = self.root / "other"
+        run_git(self.root, self.environment, "init", "-q", str(other)).check_returncode()
+        jar = self.root / "configuration" / "jar.gitconfig"
+        jar.parent.mkdir(exist_ok=True)
+        jar.write_text(f'[http]\n\tcookieFile = "{readme}"\n\tsaveCookies = true\n', encoding="utf-8")
+        configured = self.configuration_file(
+            f'[includeIf "gitdir:{other.as_posix()}/"]\n\tpath = "{jar.as_posix()}"\n', "elsewhere.gitconfig"
+        )
+        environment = {**self.environment, "GIT_CONFIG_GLOBAL": str(configured)}
+        self.assertEqual("deny", self.bash(f'git -C "{other}" fetch', self.tree, environment))
+        self.assertIn(f"The global git configuration a git call in {other} reads sets http.cookiefile to", self.reason)
+        self.assertIsNone(self.bash("git status", self.tree, environment))
+
+    def test_a_command_that_writes_a_repository_s_configuration_and_runs_git_outside_the_hubs_is_refused(
+        self,
+    ) -> None:
+        readme = (self.hub / "README.md").as_posix()
+        other = self.root / "other"
+        cookie = f"[http]\\n\\tcookieFile = {readme}\\n\\tsaveCookies = true\\n"
+        written = "which may be a repository's own git configuration, and runs git outside every guarded hub"
+        for shell, command in (
+            (
+                self.bash,
+                f'git init -q "{other}" && printf "{cookie}" >> "{other}/.git/config" && '
+                f'git -C "{other}" ls-remote https://example.com/x',
+            ),
+            (self.bash, f'cp notes.txt "{other}/.git/config" && git -C "{other}" fetch'),
+            (self.bash, f'printf x > "{other}/.GIT/Config" && git -C "{other}" fetch'),
+            (self.bash, f'cp -R notes "{other}/.git" && git -C "{other}" fetch'),
+            (self.bash, f'printf x > "{other}/config" && git --git-dir="{other}" fetch'),
+            (
+                self.bash,
+                f'git -C "{other}" config --file "{other}/.git/config" http.cookieFile x && git -C "{other}" fetch',
+            ),
+            (self.powershell, f"Set-Content '{other}/.git/config' x; git -C '{other}' fetch"),
+        ):
+            with self.subTest(command=command):
+                self.assertEqual("deny", shell(command, self.tree))
+                self.assertIn(written, self.reason)
+        # A configuration written in a command of its own is read by the next command's judgement; a config file the
+        # session's own checkout reads lies in the hub, which is refused as any hub file is.
+        run_git(self.root, self.environment, "init", "-q", str(other)).check_returncode()
+        for command in (
+            f'git -C "{other}" config --file "{other}/.git/config" http.cookieFile x',
+            f'printf x > "{self.root}/config" && git status',
+            f'git init -q "{self.root}/fresh" && git -C "{self.root}/fresh" status',
+        ):
+            with self.subTest(command=command):
+                self.assertIsNone(self.bash(command, self.tree))
+
+    def test_a_command_that_writes_a_file_an_include_of_a_git_call_s_configuration_names_is_refused(self) -> None:
+        other = self.root / "other"
+        run_git(self.root, self.environment, "init", "-q", str(other)).check_returncode()
+        included = self.root / "includes" / "included.gitconfig"
+        included.parent.mkdir()
+        included.write_text("", encoding="utf-8")
+        relative = other / ".git" / "relative.gitconfig"
+        relative.write_text("", encoding="utf-8")
+        with (other / ".git" / "config").open("a", encoding="utf-8") as config:
+            config.write(f'[include]\n\tpath = "{included.as_posix()}"\n\tpath = relative.gitconfig\n')
+        for shell, command, written in (
+            (self.bash, f'printf x > "{included}" && git -C "{other}" fetch', included),
+            (self.bash, f'printf x > "{relative}" && git -C "{other}" fetch', relative),
+            (self.powershell, f"Set-Content '{included}' x; git -C '{other}' fetch", included),
+            (self.bash, f'cp notes.txt "{included.parent}/" && git -C "{other}" fetch', included),
+        ):
+            with self.subTest(command=command):
+                self.assertEqual("deny", shell(command, self.tree))
+                self.assertIn(
+                    f"The command writes {os.path.realpath(written)}, a file the git configuration", self.reason
+                )
+                self.assertIn(f"`git fetch` reads in {other} includes", self.reason)
+        self.assertIsNone(self.bash(f'printf x > "{self.root}/elsewhere.txt" && git -C "{other}" fetch', self.tree))
+
+    def test_a_git_call_s_configuration_git_cannot_read_is_refused_while_a_hub_is_guarded(self) -> None:
+        other = self.root / "other"
+        run_git(self.root, self.environment, "init", "-q", str(other)).check_returncode()
+        failure = git_client.GitError("bad config line 1", returncode=128)
+        with mock.patch.object(hub_guard, "repository_configuration", side_effect=failure):
+            self.assertEqual("deny", self.bash(f'git -C "{other}" fetch', self.tree))
+            self.assertIn(f"The guard could not read the git configuration `git fetch` reads in {other}", self.reason)
+            outside, unshared = self.outside()
+            self.assertIsNone(self.bash(f'git -C "{other}" fetch', outside, unshared))
+            self.assertIn("could not read the git configuration `git fetch` reads", self.stderr)
+
+    def test_a_runner_or_a_program_whose_options_the_guard_reads_is_read_under_a_prefix(self) -> None:
+        for command, runner in (
+            ("gtimeout 5 git commit -m x", "timeout"),
+            ("utimeout 5 git commit -m x", "timeout"),
+            ("genv git commit -m x", "env"),
+            ("uenv git commit -m x", "env"),
+            ("gnice git commit -m x", "nice"),
+            ("gnohup git commit -m x", "nohup"),
+            ("gstdbuf -oL git commit -m x", "stdbuf"),
+            ("gtime git commit -m x", "time"),
+            ("gchroot / git commit -m x", "chroot"),
+            ("gxargs git commit -m x < /dev/null", "xargs"),
+            ("timeout 5 gtimeout 5 git status", "timeout"),
+        ):
+            for shell in (self.bash, self.powershell):
+                if shell == self.powershell and "<" in command:
+                    continue
+                with self.subTest(command=command, shell=shell.__name__):
+                    self.assertEqual("deny", shell(command, self.hub))
+                    self.assertIn(f"runs {runner}: ", self.reason)
+        readme = self.hub / "README.md"
+        for command, part in (
+            (f'gsort -o "{readme}" notes.txt', "sort is given -o, not one of its options the guard knows to be safe"),
+            (f'usort --output="{readme}" notes.txt', "sort is given --output="),
+            (f'gfind . -fprint "{readme}"', "find is given -fprint, not one of its options the guard knows to be safe"),
+            (
+                f'gtar -xf notes.tar -C "{self.hub}"',
+                "tar is given -xf, not one of its options the guard knows to be safe",
+            ),
+            (f'timeout 5 gsort -o "{readme}" notes.txt', "sort is given -o, not one of its options"),
+        ):
+            with self.subTest(command=command):
+                self.assertEqual("deny", self.bash(command, self.tree))
+                self.assertIn(part, self.reason)
+        for command in ("gtimeout 5 ls -la", "gsort -u notes.txt", "gfind . -name x", "gtar -tf notes.tar"):
+            with self.subTest(command=command):
+                self.assertIsNone(self.bash(command, self.tree))
+        # A prefixed build is never Windows' own sort.exe, whose -u the guard cannot tell from a slash switch.
+        with mock.patch.object(platform_support, "SYSTEM_PROGRAMS_TAKE_SLASH_OPTIONS", True):
+            self.assertEqual("deny", self.bash("sort -u notes.txt", self.tree))
+            self.assertIsNone(self.bash("gsort -u notes.txt", self.tree))
+            self.assertIsNone(self.bash("timeout 5 gsort -u notes.txt", self.tree))
+
     def test_fsutil_and_a_powershell_runner_s_writer_are_read(self) -> None:
         readme = self.hub / "README.md"
         command = f"fsutil hardlink create '{self.root / 'lnk'}' '{readme}'"
@@ -4380,10 +4720,46 @@ class ContractListTests(unittest.TestCase):
             {
                 *("chcon", "chflags", "chgrp", "chmod", "chown", "cp", "dd", "install", "mkdir", "mkfifo", "mknod"),
                 *("mktemp", "mv", "rm", "rmdir", "sed", "shred", "tee", "touch", "truncate", "unlink"),
+                *("gzip", "gunzip", "bzip2", "bunzip2", "xz", "unxz", "lzma", "unlzma", "zstd", "unzstd", "lz4"),
+                *("lzip", "compress", "uncompress", "pigz", "unpigz", "sponge", "uniq", "shuf", "split", "csplit"),
+                *("rename", "mkfile", "plutil", "ditto", "xattr", "chattr", "setfacl", "setfattr", "perl", "ruby"),
+                *("awk", "gawk"),
             },
             set(hub_guard.WRITING_PROGRAMS),
         )
         self.assertEqual({"ln", "link", "fsutil"}, set(hub_guard.LINK_PROGRAMS))
+        self.assertEqual({"cp", "install", "rename"}, set(hub_guard.LINK_OPTIONS))
+
+    def test_the_programs_and_options_the_guard_does_not_read_are_the_ones_its_contract_names(self) -> None:
+        unread = contract_names("`UNREAD_PROGRAMS`:", ", are refused while a hub is guarded whatever their words")
+        self.assertEqual(sorted(hub_guard.UNREAD_PROGRAMS), sorted(unread))
+        # Pinned against literals: the programs whose writes no reading of their words settles.
+        self.assertEqual(
+            {
+                *("curl", "wget", "rsync", "scp", "patch", "unzip", "7z", "7za", "7zr", "7zz", "cpio", "bsdcpio"),
+                *("pax", "unar", "jar", "xcopy", "robocopy", "certutil"),
+            },
+            set(hub_guard.UNREAD_PROGRAMS),
+        )
+        options = contract_names("`UNREAD_OPTIONS`:", ", are refused while a hub is guarded in every spelling")
+        self.assertEqual(sorted(hub_guard.UNREAD_OPTIONS), sorted(set(options) & set(hub_guard.UNREAD_OPTIONS)))
+        self.assertEqual(
+            {
+                "split": ("", ("filter",)),
+                "ditto": ("x", ()),
+                "setfacl": ("", ("restore",)),
+                "setfattr": ("", ("restore",)),
+                "awk": ("dop", ("dump-variables", "pretty-print", "profile")),
+                "gawk": ("dop", ("dump-variables", "pretty-print", "profile")),
+            },
+            {name: (letters, names) for name, (letters, names, _) in hub_guard.UNREAD_OPTIONS.items()},
+        )
+        multicall = contract_names("as `coreutils cp` or `toybox cp` does (", ")")
+        self.assertEqual(["MULTICALL_PROGRAMS"], multicall)
+        self.assertEqual({"coreutils", "toybox"}, set(hub_guard.MULTICALL_PROGRAMS))
+        self.assertEqual("--coreutils-prog=", hub_guard.MULTICALL_OPTION)
+        self.assertEqual({"bsdtar": "tar", "gnutar": "tar"}, hub_guard.BUILD_NAMES)
+        self.assertEqual(("g", "u"), hub_guard.BUILD_PREFIXES)
 
     def test_the_git_options_that_write_or_run_and_the_settings_understood_are_the_ones_its_contract_names(
         self,
@@ -4937,6 +5313,22 @@ class GitDirectoryNameTests(unittest.TestCase):
         ("sed", ["-n", "--", "-i"], []),
         ("sed", ["-k", "a"], ["a"]),
         ("sed", [None, "a"], [None, "a"]),
+        ("uniq", ["in", "out"], ["out"]),
+        ("uniq", ["-c", "in"], []),
+        ("uniq", ["-", "out"], ["out"]),
+        ("uniq", ["-f", "1", "in", "out"], ["in", "out"]),
+        ("uniq", [None, "out"], [None, "out"]),
+        ("perl", ["-ne", "print", "a"], []),
+        ("perl", ["-Mlib", "-e", "1", "a"], []),
+        ("perl", ["-pi.bak", "-e", "s/a/b/", "a"], [".bak", "s/a/b/", "a"]),
+        ("perl", ["-i", "--", "a"], ["a"]),
+        ("perl", ["-e", "1", "--", "-i"], []),
+        ("ruby", ["-Ci", "-ne", "x", "a"], []),
+        ("ruby", ["-pi", "-e", "x", "a"], ["x", "a"]),
+        ("gawk", ["{print}", "a"], []),
+        ("gawk", ["-i", "inplace", "{print}", "a"], ["inplace", "{print}", "a"]),
+        ("awk", [None, "a"], [None, "a"]),
+        ("gzip", ["-9", "-S", ".z", "a"], [".z", "a"]),
     ],
 )
 def test_the_words_a_writing_program_may_write_are_its_operands_and_option_values(
@@ -5056,10 +5448,60 @@ def test_a_native_program_s_word_from_powershell_is_read_with_its_pattern(
         ("gpg", None),
         ("u", None),
         ("", None),
+        ("gzip", "gzip"),
+        ("gunzip", "gunzip"),
+        ("uniq", "uniq"),
+        ("gawk", "gawk"),
+        ("gsplit", "split"),
+        ("gtimeout", None),
     ],
 )
 def test_a_build_s_prefixed_name_is_read_as_the_program(program: str, expected: str | None) -> None:
     assert expected == hub_guard.writer_name(program)
+
+
+@pytest.mark.parametrize(
+    ("program", "expected"),
+    [
+        ("timeout", "timeout"),
+        ("gtimeout", "timeout"),
+        ("utimeout", "timeout"),
+        ("genv", "env"),
+        ("gsort", "sort"),
+        ("gfind", "find"),
+        ("gtar", "tar"),
+        ("bsdtar", "tar"),
+        ("gnutar", "tar"),
+        ("gpatch", "patch"),
+        ("gcp", "cp"),
+        ("gh", "gh"),
+        ("ggh", "ggh"),
+        ("ugit", "ugit"),
+        ("uname", "uname"),
+        ("grep", "grep"),
+        ("", ""),
+    ],
+)
+def test_every_table_reads_a_build_under_its_prefixed_or_other_name(program: str, expected: str) -> None:
+    assert expected == hub_guard.built_name(program)
+
+
+@pytest.mark.parametrize(
+    ("program", "arguments", "expected"),
+    [
+        ("coreutils", ["cp", "a", "b"], ("cp", ["a", "b"])),
+        ("coreutils", ["--coreutils-prog=gcp", "a"], ("cp", ["a"])),
+        ("toybox", ["coreutils", "/bin/rm", "x"], ("rm", ["x"])),
+        ("coreutils", [None, "a"], (None, [None, "a"])),
+        ("coreutils", ["--help"], (None, ["--help"])),
+        ("coreutils", [], (None, [])),
+        ("cp", ["a", "b"], ("cp", ["a", "b"])),
+    ],
+)
+def test_a_multicall_program_is_read_as_the_utility_it_runs(
+    program: str, arguments: list[str | None], expected: tuple[str | None, list[str | None]]
+) -> None:
+    assert expected == hub_guard.multicall(program, arguments)
 
 
 @pytest.mark.parametrize(

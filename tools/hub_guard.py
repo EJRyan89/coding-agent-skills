@@ -40,6 +40,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "ejryan89-skill-core" / "scripts"))
 
 import executable_locator
+import file_presence
 import hook_decision
 import json_reader
 import json_writer
@@ -63,6 +64,7 @@ from git_client import GLOBAL_VALUE_OPTIONS as GIT_OPTIONS_WITH_VALUE
 from job_tree import process_tree
 from option_reader import (
     MACOS_ENV_LETTERS,
+    NO_VALUE,
     OptionReading,
     OptionTable,
     Word,
@@ -71,6 +73,7 @@ from option_reader import (
     option_table,
     slash_kind,
 )
+from path_keys import name_key
 
 from deployer import platform_support
 from tools import bash_syntax, worktrees
@@ -684,6 +687,38 @@ WRITING_PROGRAMS: dict[str, str | None] = {
     "shred": "fuvxz",
     "dd": None,
     "sed": "abnrsuzE",
+    # The compressors, each of which replaces an operand with its compressed or decompressed file, or, given -c,
+    # writes it to standard output; each operand is judged either way, as a copy's source is.
+    **dict.fromkeys(
+        (
+            *("gzip", "gunzip", "bzip2", "bunzip2", "xz", "unxz", "lzma", "unlzma", "zstd", "unzstd", "lz4"),
+            *("lzip", "compress", "uncompress", "pigz", "unpigz"),
+        ),
+        "cdfhkqtvV0123456789",
+    ),
+    # moreutils' sponge writes the file it is given; uniq writes its second operand, shuf its -o, split and csplit the
+    # files their prefix names.
+    "sponge": "a",
+    "uniq": "cdDiuz",
+    "shuf": "erz",
+    "split": "deux",
+    "csplit": "kqsz",
+    # util-linux's rename and Perl's rename each rename the files they are given.
+    "rename": "ailnovV",
+    # macOS's mkfile makes the files it is given, plutil rewrites one in place or writes the file -o names, ditto copies
+    # into its last operand, and xattr, like Linux's chattr, setfacl, and setfattr, changes a file's attributes.
+    "mkfile": "nv",
+    "plutil": None,
+    "ditto": "chjkvVXz",
+    "xattr": "cdlprsvwx",
+    "chattr": "RVf",
+    "setfacl": "bdkLnPRt",
+    "setfattr": "h",
+    # perl and ruby rewrite the files they are given in place with -i, and gawk with its inplace extension (in_place).
+    "perl": "acnpsStTuUvwWXh",
+    "ruby": "acdlnpsSvwyh",
+    "awk": None,
+    "gawk": None,
 }
 # The programs that make a link, through which a write later in the same command reaches a place the guard placed
 # before the link existed, by what each makes. While a hub is guarded each is refused, and so are cp's and install's
@@ -698,7 +733,60 @@ LINK_PROGRAMS = {
 LINK_OPTIONS: dict[str, tuple[str, tuple[str, ...]]] = {
     "cp": ("ls", ("link", "symbolic-link")),
     "install": ("l", ()),
+    # util-linux rename's -s renames the target a symbolic link names, so the link leads somewhere else.
+    "rename": ("s", ("symlink",)),
 }
+# The options of a WRITING_PROGRAMS program that write or change files no word of it names, or run a command, by their
+# letters and long names, with what each does: split's --filter, which runs a command for each part; ditto's -x, which
+# writes the files an archive names; setfacl's and setfattr's --restore, which change the files a file it reads names;
+# and gawk's -d, -o, and -p, which write the variables, the program, or a profile to the file they name, or to one
+# in the directory gawk runs in. While a hub is guarded each is refused.
+UNREAD_OPTIONS: dict[str, tuple[str, tuple[str, ...], str]] = {
+    "split": ("", ("filter",), "runs a command for each part it writes"),
+    "ditto": ("x", (), "writes the files an archive names"),
+    "setfacl": ("", ("restore",), "changes the access lists of the files a file it reads names"),
+    "setfattr": ("", ("restore",), "changes the attributes of the files a file it reads names"),
+    **dict.fromkeys(
+        ("awk", "gawk"),
+        ("dop", ("dump-variables", "pretty-print", "profile"), "writes its variables, program, or profile to a file"),
+    ),
+}
+# The option letters of perl and ruby that take a value, which ends a bundle, so a letter after one is no -i
+# (in_place).
+IN_PLACE_VALUED = {"perl": "eEIl0CdDFmMx", "ruby": "CEFIKrTWx0e"}
+# The programs whose words name files they write that the guard does not read, by what it does not read in them, each
+# refused while a hub is guarded whatever its words: a program whose written files an archive, a patch, or a server
+# names, or whose own configuration file may name one (curl's .curlrc and wget's .wgetrc, which a command may write
+# before it runs them), or whose options are many and run a command, as rsync's -e does, which reading would need a
+# catalogue of every option of every build, as PROGRAM_OPTIONS holds, and Windows' copy and certificate tools, which
+# take options the guard does not read. A command that only reads uses another program: gh for the network, git apply
+# for a patch, and tar's listing for an archive.
+UNREAD_PROGRAMS: dict[str, str] = {
+    **dict.fromkeys(
+        ("curl", "wget"), "writes the files its options or its configuration file name, which the guard does not read"
+    ),
+    **dict.fromkeys(
+        ("rsync", "scp"),
+        "copies into the files it is given and runs a remote shell its options or its operands name, which the guard "
+        "does not read",
+    ),
+    "patch": "writes the files a patch names, which the text does not show",
+    **dict.fromkeys(
+        ("unzip", "7z", "7za", "7zr", "7zz", "cpio", "bsdcpio", "pax", "unar", "jar"),
+        "writes the files an archive names, which the text does not show",
+    ),
+    **dict.fromkeys(
+        ("xcopy", "robocopy"), "copies into the files its operands and its options name, which the guard does not read"
+    ),
+    "certutil": "writes the files its verbs and options name, which the guard does not read",
+}
+# The multicall programs that run the utility their first word names, as the Rust coreutils' `coreutils cp` does and
+# toybox's does: each is read as that utility, with the words after it (multicall). `--coreutils-prog=<name>` names the
+# utility too.
+MULTICALL_PROGRAMS = frozenset({"coreutils", "toybox"})
+MULTICALL_OPTION = "--coreutils-prog="
+# The names another build of a program the guard reads is installed under beside its own: macOS's bsdtar and gnutar.
+BUILD_NAMES = {"bsdtar": "tar", "gnutar": "tar"}
 # sed rewrites each file it is given in place with -i, or BSD sed's -I, and with GNU sed's --in-place; the letters that
 # take a value in every build end a bundle, and a letter neither flag nor one of these is read as -i. GNU sed's -l takes
 # a value and BSD sed's is a flag, so it ends no bundle: BSD's `-li ''` rewrites in place.
@@ -729,8 +817,9 @@ SED_TEXT_COMMANDS = frozenset("aic")
 # The flags an s command takes besides w, which writes the file the rest of the line names, and e, which runs the
 # pattern space as a command.
 SED_SUBSTITUTE_FLAGS = frozenset("gpiImM0123456789 \t")
-# The prefixes a package manager installs a build of these programs under beside the system's own: Homebrew's GNU
-# coreutils and sed take a g, as gcp and gsed, and its uutils coreutils a u, as ucp.
+# The prefixes a package manager installs a build of these programs, the runners, and the ones PROGRAM_OPTIONS names,
+# under beside the system's own: Homebrew's GNU coreutils, findutils, tar, and sed take a g, as gcp, gtimeout, gfind,
+# gtar, and gsed, and its uutils coreutils a u, as ucp (built_name).
 BUILD_PREFIXES = ("g", "u")
 # pwsh's options that change nothing the guard reads before -Command.
 PWSH_QUIET = frozenset({"-noprofile", "-noninteractive", "-nologo"})
@@ -2964,17 +3053,29 @@ def configured_written_targets(
         # Each setting is its scope, then its name and value on two lines, each ended by a NUL.
         found = (output or "").split("\0")
         fields.extend(field for pair in zip(found[0::2], found[1::2], strict=False) for field in pair)
+    entries = list(zip(fields[0::2], fields[1::2], strict=False))
+    return targets + settings_targets(entries, overridden, start, "The session's {scope} git configuration")
+
+
+def settings_targets(
+    entries: Iterable[tuple[str, str]], overridden: Iterable[str], start: Path | None, holder: str
+) -> list[WrittenTarget]:
+    """The files the settings a git configuration listing gives, each its scope and its entry, name for git to write
+    to (configured_written_targets): each trace2 target of the system or global scope, but for one whose variable
+    overridden names, each cookie jar while a saveCookies setting is on, and the folder fsmonitor.socketDir names.
+    holder names what sets them, its {scope} the setting's scope, as a refusal says it."""
+    targets: list[WrittenTarget] = []
     cookie_jars: list[WrittenTarget] = []
     saving = False
     unplaced = "a path git reads from where each git starts, or expands for itself, which may lie in a guarded hub"
     # A setting with no value has no second line; one every checkout reads is judged once.
     seen: set[tuple[str, str]] = set()
-    for scope, entry in zip(fields[0::2], fields[1::2], strict=False):
+    for scope, entry in entries:
         if (scope, entry) in seen:
             continue
         seen.add((scope, entry))
         setting, has_value, value = entry.partition("\n")
-        named = f"The session's {scope} git configuration sets {setting} to {value}"
+        named = f"{holder.format(scope=scope)} sets {setting} to {value}"
         if SAVE_COOKIES.fullmatch(setting):
             saving = saving or not has_value or value.strip().lower() not in FALSE_SETTINGS
         elif COOKIE_FILE.fullmatch(setting) and value and value not in DEVICE_FILES:
@@ -2997,6 +3098,62 @@ def configured_written_targets(
             targets.append(WrittenTarget(setting, named, remedy, placed_file(value)))
     # git writes a cookie jar back only while a saveCookies setting is on, which may be one for a URL of its own.
     return targets + (cookie_jars if saving else [])
+
+
+@dataclass(frozen=True)
+class RepositoryConfiguration:
+    """What the configuration a git call reads where it runs holds for the guard (repository_configuration): the
+    files its settings name for git to write to, and each file an include.path or includeIf.<condition>.path in it
+    names, None for one the guard cannot place."""
+
+    targets: list[WrittenTarget]
+    includes: list[Path | None]
+
+
+def repository_configuration(lookup: AliasLookup, start: Path | None) -> RepositoryConfiguration:
+    """The configuration a git call reads at a place (alias_lookups), from every scope, its repository's own and a
+    conditional include that holds only there among them, as git lists it with includes followed: the cookie jar and
+    the socket folder its settings name (settings_targets), and the files its includes name, a relative one read from
+    the directory of the file holding it, which a relative origin git lists names from the top of the work tree or the
+    git directory it runs in, the nearest of lookup's directory and its parents that holds it, start being the home a
+    leading ~/ names.
+
+    Raises GitError where git cannot read the configuration, and OSError where the guard cannot look for an origin."""
+    repository = () if lookup.repository is None else ("--git-dir", str(lookup.repository))
+    arguments = [*repository, "config", "--includes", "--show-scope", "--show-origin", "--null", "--list"]
+    output = CLIENT.quiet_output(arguments, directory=lookup.directory, timeout=lookup_timeout())
+    fields = (output or "").split("\0")
+    entries: list[tuple[str, str]] = []
+    includes: list[Path | None] = []
+    # Each setting is its scope, its origin, then its name and value on two lines, each ended by a NUL.
+    for scope, origin, entry in zip(fields[0::3], fields[1::3], fields[2::3], strict=False):
+        setting, has_value, value = entry.partition("\n")
+        if re.fullmatch(CONFIGURED_WRITES, setting):
+            entries.append((scope, entry))
+        if has_value and INCLUDE_SETTING.fullmatch(setting):
+            source = origin_file(origin, lookup.directory)
+            includes.append(included_file(value, source, start))
+    holder = f"The {{scope}} git configuration a git call in {lookup.directory} reads"
+    return RepositoryConfiguration(settings_targets(entries, (), start, holder), includes)
+
+
+def origin_file(origin: str, directory: Path) -> Path | None:
+    """The file an origin git lists names, with every symbolic link followed: an absolute one as it is, and a relative
+    one from the nearest of directory and its parents that holds it, where git read it from the top of the work tree
+    or the git directory it moved to; None for an origin that is no file, as the command line, or that none holds.
+
+    Raises OSError where a place on the way cannot be looked at, which may hold it."""
+    if not origin.startswith("file:"):
+        return None
+    name = origin.removeprefix("file:")
+    placed = placed_file(name)
+    if placed is not None:
+        return placed
+    relative = Path(platform_support.from_shell_path(name))
+    for each in (directory, *directory.parents):
+        if file_presence.is_present(each / relative, other_is_absent=True):
+            return Path(os.path.realpath(each / relative))
+    return None
 
 
 def included_file(value: str, source: Path | None, start: Path | None) -> Path | None:
@@ -3065,6 +3222,27 @@ def shared_store_hub(place: Place) -> tuple[Path | None, bool]:
         return None, True  # a repository git cannot read may share a guarded hub's store
 
 
+# The names of the files a repository's own git configuration is read from: its git directory's config, and a linked
+# worktree's config.worktree.
+REPOSITORY_CONFIGURATION_NAMES = frozenset({"config", "config.worktree"})
+
+
+def configuration_file_writes(calls: Iterable[GitCall]) -> list[Path]:
+    """The files the git config calls among calls write by --file, a relative one read from where git starts: a
+    configuration a later git call may read, as a write by a redirection is."""
+    paths: list[Path] = []
+    for call in calls:
+        if call.program != "git" or call.subcommand != "config":
+            continue
+        reads, file = config_reads(call.arguments)
+        if reads or file is None:
+            continue
+        path = Path(platform_support.from_shell_path(file))
+        if path.is_absolute() or call.place.start is not None:
+            paths.append(path if path.is_absolute() else (call.place.start or Path()) / path)
+    return paths
+
+
 @dataclass
 class Judge:
     """Judges a reading's calls against the guarded hubs in view of the session."""
@@ -3094,6 +3272,108 @@ class Judge:
             reason = self.judge(call, depth)
             if reason is not None:
                 return reason
+        return self.repository_refusal(reading)
+
+    def repository_refusal(self, reading: Reading) -> str | None:
+        """Why a command is refused for the configuration its git calls read where they run (repository_configuration),
+        which the session's own places do not show: a cookie jar or a socket folder it names in a guarded hub, which
+        a git call there writes, or, while a hub is guarded, one the guard cannot place or a configuration git cannot
+        read. The guard reads each configuration as it stands when the command starts, so while a hub is guarded it
+        also refuses a command that writes a file an include in one names, and one that runs git outside every guarded
+        hub, where the guard does not know which repository's configuration the command makes or writes, and writes a
+        file named config or config.worktree, or one in a folder named .git, as a repository's own configuration is."""
+        if not reading.calls:
+            return None
+        written = [write.path for write in reading.writes] + configuration_file_writes(reading.calls)
+        session = [Path(__file__).resolve().parent, *reading.places, *self.hubs]
+        seen: list[AliasLookup] = []
+        foreign = False
+        for call in reading.calls:
+            start = call.place.start or call.place.tree
+            places = [start, call.place.repository] if call.place.repository_named else [start]
+            # A git config that writes reads no setting that has git write a file; its --file is among the writes.
+            outside = any(place is None or not any(within(place, hub) for hub in self.hubs) for place in places)
+            foreign = foreign or (outside and not configuration_file_writes([call]))
+            try:
+                lookups = alias_lookups(call.place)
+            except GitError as exc:
+                lookups = []
+                if self.hubs:
+                    return f"The guard could not read where {call_named(call)} runs ({exc}), so it is refused."
+                self.notes.append(f"could not read where {call_named(call)} runs")
+            for lookup in lookups:
+                if lookup in seen:
+                    continue
+                seen.append(lookup)
+                reason = self.lookup_refusal(call, lookup, session, written)
+                if reason is not None:
+                    return reason
+        if not (foreign and self.hubs):
+            return None
+        for path in written:
+            # A file system that folds case reads Config or .GIT as git's own.
+            parts = {name_key(part) for part in path.parts}
+            if name_key(path.name) in REPOSITORY_CONFIGURATION_NAMES or name_key(".git") in parts:
+                return (
+                    f"The command writes {path}, which may be a repository's own git configuration, and runs git "
+                    "outside every guarded hub, where a setting written there, such as a cookie jar in a hub, reaches "
+                    "the git the rest of the command starts, though the guard read the configuration before the "
+                    "command ran, so it is refused while a hub is guarded. Write the configuration in a command of its "
+                    "own."
+                )
+        return None
+
+    def lookup_refusal(
+        self, call: GitCall, lookup: AliasLookup, session: Sequence[Path], written: Sequence[Path]
+    ) -> str | None:
+        """Why a command is refused for the configuration one git call reads at one place (repository_refusal): a target
+        it names, judged where the session's places did not already judge it, as session_written_refusal judges one;
+        and an include whose file, or a folder holding it, the command writes, or that the guard cannot place while the
+        command writes any."""
+        judged = lookup.repository is None and any(same_path(lookup.directory, place) for place in session)
+        if judged and not (written and self.hubs):
+            return None
+        try:
+            configuration = repository_configuration(lookup, home(self.environment))
+        except (GitError, OSError) as exc:
+            if self.hubs:
+                return (
+                    f"The guard could not read the git configuration {call_named(call)} reads in {lookup.directory} "
+                    f"({exc}), which may name a file git writes in a guarded hub, so it is refused while a hub is "
+                    f"guarded. {UNREAD_CONFIGURATION_IT}"
+                )
+            self.notes.append(f"could not read the git configuration {call_named(call)} reads")
+            return None
+        for target in [] if judged else configuration.targets:
+            if target.path is None:
+                if self.hubs:
+                    return (
+                        f"{target.named}, {target.unplaced}, and {target.writer} would write there, so the command is "
+                        f"refused while a hub is guarded. {target.remedy}"
+                    )
+                self.notes.append(f"could not tell where {target.source} has git write")
+            elif hub_protected(target.path):
+                return (
+                    f"{target.named}, and {target.writer} writes there, into a file of a guarded hub, so the command "
+                    f"is refused. {target.remedy}"
+                )
+        if not (written and self.hubs):
+            return None
+        for include in configuration.includes:
+            if include is None:
+                return (
+                    f"The git configuration {call_named(call)} reads in {lookup.directory} includes a file the guard "
+                    "cannot place, which the command may write, so it is refused while a hub is guarded. "
+                    f"{UNREAD_CONFIGURATION_IT}"
+                )
+            # A folder a write names holds what a copy into it, a move, or a removal reaches.
+            if any(within(include, Path(os.path.realpath(path))) for path in written):
+                return (
+                    f"The command writes {include}, a file the git configuration {call_named(call)} reads in "
+                    f"{lookup.directory} includes, and a setting written there, such as a cookie jar in a hub, reaches "
+                    "that git though the guard read the configuration before the command ran, so it is refused while "
+                    "a hub is guarded. Write the configuration in a command of its own."
+                )
         return None
 
     def judge(self, call: GitCall, depth: int) -> str | None:
@@ -3871,7 +4151,29 @@ class BashReader:
             if name in BUILTINS_UNDERSTOOD:
                 self.read_prefixes(prefixes, git=False)
                 return self.read_builtin(name, arguments, directory)
-        program = command_name(name) or ""
+        called = command_name(name) or ""
+        program, rest = multicall(built_name(called), arguments)
+        if program is None:
+            self.reading.cannot_read(f"{called} runs a utility the text does not settle, which may be any command")
+            return certain(UNKNOWN)
+        if arguments_written is not None:
+            arguments_written = arguments_written[len(arguments) - len(rest) :]
+        # A build a package manager installs under a prefix, as gsort, is never the platform's own (system_program).
+        windows_build = False if program != called else None
+        return self.read_program(program, rest, directory, prefixes, arguments_written, windows_build)
+
+    def read_program(
+        self,
+        program: str,
+        arguments: list[Word],
+        directory: Directory,
+        prefixes: list[tuple[str, Word]],
+        arguments_written: list[bash_syntax.Word] | None,
+        windows_build: bool | None,
+    ) -> Outcome:
+        """A program a command starts, by the name a table keeps for it (built_name): a runner, git, gh, a program whose
+        options the guard reads, one it does not read, or one that writes the files its words name; any other is
+        understood."""
         if program in RUNNERS:
             # A runner is transparent: its assignments reach the command it starts, judged against that command.
             return self.read_runner(program, arguments, directory, prefixes)
@@ -3882,17 +4184,22 @@ class BashReader:
             read_gh(arguments, directory, self.reading)
         elif program in PROGRAM_OPTIONS:
             variables = {name for name, _ in prefixes} | set(self.reading.environment)
-            reason = program_refusal(program, arguments, variables)
+            reason = program_refusal(program, arguments, variables, windows_build)
             if reason is not None:
                 self.reading.cannot_read(reason)
                 return certain(UNKNOWN)
+            for value in program_writes(program, arguments):
+                read_written(value, directory, self.reading, program_writer(program))
+        elif program in UNREAD_PROGRAMS:
+            self.reading.cannot_read(f"{program} {UNREAD_PROGRAMS[program]}")
+            return certain(UNKNOWN)
         elif writer_name(program) is not None:
             written = (
                 [(value, False) for value in arguments]
                 if arguments_written is None
                 else [self.written_value(word) for word in arguments_written]
             )
-            read_program_writes(writer_name(program) or program, written, directory, self.reading)
+            read_program_writes(program, written, directory, self.reading)
         return certain(directory)
 
     def read_runner(
@@ -4093,7 +4400,8 @@ def runner_refusal(program: str, arguments: list[Word]) -> str | None:
     """Why a runner is refused: one RUNNERS_ALWAYS_REFUSED names; an option RUNNER_OPTIONS does not know to be safe,
     in any spelling (option_refusal); or a word that is or may be git: one that names git or another runner, or one
     the text does not settle, which may be either. None for a runner around any other command, and for bash and pwsh,
-    whose scripts script_refusal reads."""
+    whose scripts script_refusal reads. A word names a runner by its built_name, as gtimeout names timeout, and a
+    multicall program counts as one, since the utility it runs may be one (MULTICALL_PROGRAMS)."""
     if program in RUNNERS_ALWAYS_REFUSED:
         return RUNNERS[program]
     if program in RUNNER_OPTIONS:
@@ -4111,8 +4419,8 @@ def runner_refusal(program: str, arguments: list[Word]) -> str | None:
     for word in arguments:
         if word is None:
             return f"{RUNNERS[program]}, and a word the text does not settle may be git"
-        name = command_name(word)
-        if program not in {"bash", "pwsh"} and (name in GIT_NAMES or name in RUNNERS):
+        name = built_name(command_name(word) or "")
+        if program not in {"bash", "pwsh"} and name in GIT_NAMES | RUNNERS.keys() | MULTICALL_PROGRAMS:
             return f"{RUNNERS[program]}, and {word} names git or another runner, which may run git"
     return None
 
@@ -4159,7 +4467,19 @@ def read_runner_words(
     if program in RUNNER_OPTIONS:
         # The runner's command is where its option reading stopped, so an option's value is never taken for gh.
         stop = option_refusal(RUNNER_OPTIONS[program], arguments).stop
-        command = command_name(arguments[stop] or "") if stop < len(arguments) else None
+        called = command_name(arguments[stop] or "") if stop < len(arguments) else None
+        command = built_name(called) if called is not None else None
+        if command in UNREAD_PROGRAMS:
+            reading.cannot_read(f"runs {program}: {command} {UNREAD_PROGRAMS[command]}")
+            return certain(UNKNOWN)
+        # chroot runs its command inside another tree, where no path the text names is the one it writes; pwsh
+        # hands a native program its words as native_written reads them.
+        read = native_written if native else (lambda word: (word, False))
+        if command in PROGRAM_OPTIONS:
+            # Its options passed its allow-list (runner_command_refusal); the files they name are judged.
+            for value in program_writes(command, arguments[stop + 1 :]):
+                target, pattern = (None, False) if program == "chroot" else read(value)
+                read_written(target, directory, reading, program_writer(command), pattern)
         writer = writer_name(command or "")
         if writer is not None:
             if program in INPUT_RUNNERS:
@@ -4168,9 +4488,6 @@ def read_runner_words(
                     f"runs {program}: {program} hands {command} words from its input, which may name a file"
                 )
                 return certain(UNKNOWN)
-            # chroot runs its command inside another tree, where no path the text names is the one it writes; pwsh
-            # hands a native program its words as native_written reads them.
-            read = native_written if native else (lambda word: (word, False))
             written = [(None, False) if program == "chroot" else read(word) for word in arguments[stop + 1 :]]
             read_program_writes(writer, written, directory, reading)
         start = stop if stop < len(arguments) and command == "gh" else None
@@ -4211,7 +4528,8 @@ def runner_command_refusal(program: str, arguments: list[Word], variables: Itera
     if program not in RUNNER_OPTIONS:
         return None
     start = option_refusal(RUNNER_OPTIONS[program], arguments).stop
-    command = command_name(arguments[start] or "") if start < len(arguments) else None
+    called = command_name(arguments[start] or "") if start < len(arguments) else None
+    command = built_name(called) if called is not None else None
     if command not in PROGRAM_OPTIONS:
         return None
     rest = arguments[start + 1 :]
@@ -4222,7 +4540,8 @@ def runner_command_refusal(program: str, arguments: list[Word], variables: Itera
         table = PROGRAM_OPTIONS[command]
         if stop >= len(rest) or rest[stop] != "--" or table.single_dash or system_program(command):
             return f"{program} runs {command} with words from its input, which may be options that run a command"
-    return program_refusal(command, rest, variables)
+    # A build a package manager installs under a prefix, as gsort, is never the platform's own (system_program).
+    return program_refusal(command, rest, variables, False if command != called else None)
 
 
 def program_refusal(
@@ -4260,6 +4579,39 @@ def remote_archive(program: str, arguments: list[Word], reading: OptionReading) 
         if option in {"-f", "--file"} and value is not None and ":" in value.partition("/")[0]:
             return f"tar opens {value} through a remote shell, which runs a command; --force-local makes it a file"
     return None
+
+
+# tar's modes that write the archive its -f or --file names: create, append, update, and concatenate, by their letters
+# and long names, and --delete, which has no letter.
+TAR_WRITING_LETTERS = "cruA"
+TAR_WRITING_NAMES = frozenset({"--create", "--append", "--update", "--catenate", "--concatenate", "--delete"})
+
+
+def program_writes(program: str, arguments: list[Word]) -> list[Word]:
+    """The files a program PROGRAM_OPTIONS names writes at a path its words name, its options having passed its
+    allow-list (program_refusal): the archive tar's -f or --file names, but `-` for standard output, where tar is
+    given a mode that writes it (TAR_WRITING_LETTERS, TAR_WRITING_NAMES), a letter read in a bundle, or in the old
+    style first word, before any letter that takes a value; none for any other program, whose allowed options write
+    nothing."""
+    if program != "tar":
+        return []
+    table = PROGRAM_OPTIONS["tar"]
+    reading = option_refusal(table, arguments)
+    writing = any(name in TAR_WRITING_NAMES for name in reading.longs)
+    for index, word in enumerate(arguments):
+        if word is None or word == "--":
+            break
+        old_style = index == 0 and not word.startswith("-")
+        if not (old_style or (word.startswith("-") and not word.startswith("--"))):
+            continue
+        for letter in word if old_style else word[1:]:
+            if letter in TAR_WRITING_LETTERS:
+                writing = True
+            if table.short.get(letter, NO_VALUE) != NO_VALUE and not old_style:
+                break
+    if not writing:
+        return []
+    return [value for option, value in reading.values if option in {"-f", "--file"} and value != "-"]
 
 
 def slash_refusal(table: OptionTable, arguments: list[Word], windows_build: bool) -> str | None:
@@ -4346,7 +4698,9 @@ def written_words(program: str, words: Sequence[tuple[Word, bool]]) -> list[tupl
     pattern: every operand, a word after `--` among them; the value of a long option after its `=`; and in a bundle
     of letters, the rest of the word after its first letter the program's flags do not name, which may be that
     option's value, the next word, when it takes one, being an operand anyway. dd writes only at its `of=` operand,
-    and sed only in place (sed_in_place). A word the text does not settle may be any of these."""
+    sed only in place (sed_in_place), perl, ruby, awk, and gawk only in place (in_place), and uniq only at the operand
+    after its first, its input, which a literal word that is no pattern settles. A word the text does not settle may
+    be any of these."""
     if program == "dd":
         return [
             (None if pattern or word is None else word.partition("=")[2], False)
@@ -4355,12 +4709,20 @@ def written_words(program: str, words: Sequence[tuple[Word, bool]]) -> list[tupl
         ]
     if program == "sed" and not sed_in_place(words):
         return []
+    if program in IN_PLACE_PROGRAMS and not in_place(program, words):
+        return []
     flags = WRITING_PROGRAMS[program]
     found: list[tuple[Word, bool]] = []
     operands = False
+    # uniq reads its first operand, `-` for its input among them; a pattern or a word the text does not settle may be
+    # more than one.
+    input_left = program == "uniq"
     for word, pattern in words:
-        if pattern or word is None or operands or not word.startswith("-"):
-            if pattern or word != "":
+        if input_left and word == "-" and not pattern:
+            input_left = False
+        elif pattern or word is None or operands or not word.startswith("-"):
+            literal, input_left = input_left and not pattern and word is not None, False
+            if not literal and (pattern or word != ""):
                 found.append((word, pattern))
         elif word == "--":
             operands = True
@@ -4401,12 +4763,52 @@ def sed_in_place(words: Sequence[tuple[Word, bool]]) -> bool:
     return False
 
 
+IN_PLACE_PROGRAMS = frozenset({"perl", "ruby", "awk", "gawk"})
+
+
+def in_place(program: str, words: Sequence[tuple[Word, bool]]) -> bool:
+    """Whether perl, ruby, awk, or gawk rewrites the files it is given in place: perl and ruby given -i, alone or in a
+    bundle before any letter that takes a value (IN_PLACE_VALUED), before `--`; gawk, as awk may be, given a word
+    holding `inplace`, which loads or includes its inplace extension, by -i, -l, --include, --load, or the program's
+    own @include or @load. A word the text does not settle may be any of these."""
+    for word, pattern in words:
+        if pattern:
+            continue
+        if word is None:
+            return True
+        if program in {"awk", "gawk"}:
+            if "inplace" in word:
+                return True
+            continue
+        if word == "--":
+            return False
+        if word.startswith("-") and not word.startswith("--"):
+            for letter in word[1:]:
+                if letter == "i":
+                    return True
+                if letter in IN_PLACE_VALUED[program]:
+                    break
+    return False
+
+
 def makes_link(program: str, words: Sequence[tuple[Word, bool]]) -> bool:
-    """Whether a WRITING_PROGRAMS program is given an option LINK_OPTIONS names, before `--`: a letter of a bundle
-    before any letter that takes a value, or a long option that is a prefix of one of its names."""
-    if program not in LINK_OPTIONS:
-        return False
-    letters, names = LINK_OPTIONS[program]
+    """Whether a WRITING_PROGRAMS program is given an option LINK_OPTIONS names (given_option)."""
+    return program in LINK_OPTIONS and given_option(program, words, *LINK_OPTIONS[program])
+
+
+def unread_option(program: str, words: Sequence[tuple[Word, bool]]) -> str | None:
+    """What an option UNREAD_OPTIONS names for a WRITING_PROGRAMS program does, where the program is given one
+    (given_option); None where it is given none."""
+    if program not in UNREAD_OPTIONS:
+        return None
+    letters, names, does = UNREAD_OPTIONS[program]
+    return does if given_option(program, words, letters, names) else None
+
+
+def given_option(program: str, words: Sequence[tuple[Word, bool]], letters: str, names: Sequence[str]) -> bool:
+    """Whether a WRITING_PROGRAMS program is given one of the options letters and names spell, before `--`: a letter of
+    a bundle before any letter its flags do not name, which may take a value, or a long option that is a prefix of one
+    of its names."""
     flags = WRITING_PROGRAMS[program] or ""
     for word, pattern in words:
         if pattern or word is None or not word.startswith("-"):
@@ -4444,6 +4846,10 @@ def read_program_writes(
             "cannot follow"
         )
         return
+    does = unread_option(program, words)
+    if does is not None:
+        reading.cannot_read(f"{program} is given an option that {does}")
+        return
     if program == "sed":
         reason, scripted = sed_writes(words)
         if reason is not None:
@@ -4455,14 +4861,58 @@ def read_program_writes(
         read_written(value, directory, reading, program_writer(program), pattern)
 
 
-def writer_name(program: str) -> str | None:
-    """The name WRITING_PROGRAMS or LINK_PROGRAMS keeps for a program: its own, or, for a build a package manager
-    installs under a prefix BUILD_PREFIXES names, as gcp, gsed, or ucp, the name after the prefix; None for any
-    other."""
-    names = WRITING_PROGRAMS.keys() | LINK_PROGRAMS.keys()
+def read_names() -> frozenset[str]:
+    """The program names a table of the guard keeps: the runners, the programs whose options it reads, the ones that
+    write the files their words name or make a link, the ones it does not read, and the multicall programs."""
+    return frozenset(
+        {
+            *RUNNERS,
+            *PROGRAM_OPTIONS,
+            *WRITING_PROGRAMS,
+            *LINK_PROGRAMS,
+            *UNREAD_PROGRAMS,
+            *MULTICALL_PROGRAMS,
+            *GIT_NAMES,
+            "gh",
+        }
+    )
+
+
+def built_name(program: str) -> str:
+    """The name a table of the guard keeps for a program (read_names): its own; the one BUILD_NAMES names for another
+    build of it, as bsdtar; or, for a build a package manager installs under a prefix BUILD_PREFIXES names, as gcp,
+    gtimeout, gsort, or ucp, the name after the prefix. Any other name is returned as it is."""
+    names = read_names()
     if program in names:
         return program
-    return next((program[1:] for prefix in BUILD_PREFIXES if program[:1] == prefix and program[1:] in names), None)
+    if program in BUILD_NAMES:
+        return BUILD_NAMES[program]
+    unprefixed = program[1:]
+    if program[:1] in BUILD_PREFIXES and unprefixed in names and unprefixed not in GIT_NAMES | {"gh"}:
+        return unprefixed
+    return program
+
+
+def writer_name(program: str) -> str | None:
+    """The name WRITING_PROGRAMS or LINK_PROGRAMS keeps for a program (built_name); None for any other."""
+    name = built_name(program)
+    return name if name in WRITING_PROGRAMS.keys() | LINK_PROGRAMS.keys() else None
+
+
+def multicall(program: str, arguments: list[Word]) -> tuple[str | None, list[Word]]:
+    """The utility a multicall program MULTICALL_PROGRAMS names runs, by its built_name, with its words: the one its
+    first word names, or its `--coreutils-prog=<name>`, read again where it is one too; None where the text does not
+    settle it, or the program is given an option before it. Any other program is returned with its words."""
+    while program in MULTICALL_PROGRAMS:
+        if not arguments or arguments[0] is None:
+            return None, arguments
+        first = arguments[0]
+        if first.startswith(MULTICALL_OPTION):
+            first = first.removeprefix(MULTICALL_OPTION)
+        elif first.startswith("-"):
+            return None, arguments
+        program, arguments = built_name(command_name(first) or ""), arguments[1:]
+    return program, arguments
 
 
 @dataclass
@@ -5219,26 +5669,43 @@ class PowerShellReader:
                 self.reading.cannot_read("ForEach-Object given a member's name runs that member, which may run code")
                 return certain(UNKNOWN)
             return self.read_cmdlet(name, words[1:], directory, self.values(command), command, piped)
-        if program in GIT_NAMES:
-            # A native program is handed ~ as written; whether pwsh expands it first differs by release.
-            arguments = [None if word is not None and word.startswith("~") else word for word in words[1:]]
-            read_git(arguments, directory.cwd, self.reading)
-        elif program == "gh":
-            read_gh(words[1:], directory, self.reading)
-        elif powershell_command(name) and not unaliased:
+        if powershell_command(name) and not unaliased:
             self.reading.cannot_read(f"runs {name}, a PowerShell command the guard does not read, which may run git")
             return certain(UNKNOWN)
+        called = program
+        built, arguments = multicall(built_name(called), words[1:])
+        if built is None:
+            self.reading.cannot_read(f"{called} runs a utility the text does not settle, which may be any command")
+            return certain(UNKNOWN)
+        return self.read_program(built, arguments, directory, False if built != called else None)
+
+    def read_program(
+        self, program: str, arguments: list[Word], directory: Directory, windows_build: bool | None
+    ) -> Outcome:
+        """A native program a command starts, by the name a table keeps for it (built_name), read as the Bash reader's
+        read_program reads one."""
+        if program in GIT_NAMES:
+            # A native program is handed ~ as written; whether pwsh expands it first differs by release.
+            handed = [None if word is not None and word.startswith("~") else word for word in arguments]
+            read_git(handed, directory.cwd, self.reading)
+        elif program == "gh":
+            read_gh(arguments, directory, self.reading)
         elif program in RUNNERS:
             # The guard reads a bash or pwsh script only from Bash, so from PowerShell each is refused whatever it runs.
-            return read_runner_words(program, words[1:], directory, self.reading, lambda: RUNNERS[program], native=True)
+            return read_runner_words(program, arguments, directory, self.reading, lambda: RUNNERS[program], native=True)
         elif program in PROGRAM_OPTIONS:
-            reason = program_refusal(program, words[1:], self.reading.environment)
+            reason = program_refusal(program, arguments, self.reading.environment, windows_build)
             if reason is not None:
                 self.reading.cannot_read(reason)
                 return certain(UNKNOWN)
+            for value, pattern in map(native_written, program_writes(program, arguments)):
+                read_written(value, directory, self.reading, program_writer(program), pattern)
+        elif program in UNREAD_PROGRAMS:
+            self.reading.cannot_read(f"{program} {UNREAD_PROGRAMS[program]}")
+            return certain(UNKNOWN)
         elif writer_name(program) is not None:
-            written = [native_written(word) for word in words[1:]]
-            read_program_writes(writer_name(program) or program, written, directory, self.reading)
+            written = [native_written(word) for word in arguments]
+            read_program_writes(program, written, directory, self.reading)
         return certain(directory)
 
     def read_cmdlet(

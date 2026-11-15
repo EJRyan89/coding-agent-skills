@@ -491,7 +491,9 @@ removed fails validation until its pattern follows it.
   The hub guard's modelling reader closed one spelling per fix and every review found the next, until it was rebuilt
   to refuse what it does not understand.
 - **Use:** `tools.hub_guard:read_powershell`, `tools.hub_guard:runner_refusal`, `option_reader:option_refusal`,
-  `tools.hub_guard:expansion_form`, `git_subcommands:CommandStarts`, which says where Bash starts a command, and
+  `tools.hub_guard:expansion_form`, `tools.hub_guard:built_name`, the name every table of the guard keeps for a
+  program a package manager installs under a prefix or another name, `tools.hub_guard:multicall`, the utility a
+  multicall program runs, `git_subcommands:CommandStarts`, which says where Bash starts a command, and
   `command_wrappers:bash_program`, the program a Bash command's word names by its file name, `text_lines:text_lines`,
   the lines of a file an author writes, broken only where YAML, CommonMark, and .NET break them, and
   `markdown_sections:code_block_lines`, the fenced and indented code blocks CommonMark reads
@@ -526,6 +528,8 @@ removed fails validation until its pattern follows it.
   which refuses the Rust coreutils' env options that read variables from a file and name what a multicall program
   runs as,
   `tests/tools/test_hub_guard.py::UnderstoodSetTests::test_each_class_of_construct_the_guard_does_not_read_is_refused_while_a_hub_is_in_view`,
+  `tests/tools/test_hub_guard.py::WriteGuardTests::test_a_runner_or_a_program_whose_options_the_guard_reads_is_read_under_a_prefix`,
+  which holds every table to a build installed under a prefix,
   `tests/tools/test_hub_guard.py::ReadOnlyFormTests::test_a_dash_word_after_a_valued_option_written_alone_is_refused`,
   which refuses a dash word git would take as a lone valued option's value,
   `tests/tools/test_hub_guard.py::UnderstoodSetTests::test_a_gh_flag_before_its_subcommand_is_not_read_past`, which
@@ -557,7 +561,8 @@ removed fails validation until its pattern follows it.
   rather than from its syntax, which is None for a quoted or escaped name Bash refuses; in `tools/hub_guard.py`, a construct a
   table neither understands nor lists in `NOT_READ`, a table whose test types its rows rather than taking them from the shell's own
   catalogue, a word settled from what an earlier command assigns rather than the assignment refused, a program added
-  to `RUNNERS` with no row, a program that runs a command its words name left out of it, a runner allowed around a command that may be git, a cmdlet added to
+  to `RUNNERS` with no row, a program that runs a command its words name left out of it, a program name compared
+  with a table as the command spells it rather than by `built_name`, so `gtimeout` or `gsort` goes unread, a runner allowed around a command that may be git, a cmdlet added to
   `POWERSHELL_COMMANDS` that starts a command its words name, and a refusal that waits
   for the command to name git; a `re.compile(` in `tools/runtime_*.py` or `deployer/discovery.py` with no sample
   under `tests/fixtures/captured-output/`; a test whose sample output was typed rather than captured; a refusal of an
@@ -585,7 +590,7 @@ removed fails validation until its pattern follows it.
   worktrees writes the refs the hub's store holds.
 - **Examples:** #1412, #1429, #1430, #1592, #1606, #1843, #1851, #1865, #2032, #2088, #2089, #2134, #2135, #2136,
   #2137, #2138, #2139, #2140, #2188, #2225, #2232, #2233, #2234, #2251, #2262, #2274, #2276, #2316, #2411,
-  #2418, #2203, #2450, #2476, #2481, #2478, #2555, #2474, #2616, #2776, #2792, #2725, #2753
+  #2418, #2203, #2450, #2476, #2481, #2478, #2555, #2474, #2616, #2776, #2792, #2725, #2753, #2811, #2812, #2820
 
 ### A recursive parser of input has a depth bound
 
