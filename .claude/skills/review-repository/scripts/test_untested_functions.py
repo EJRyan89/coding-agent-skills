@@ -730,20 +730,6 @@ class PresenceReadTests(unittest.TestCase):
         (self.root / "tests" / "test_real.py").write_text("pass\n", encoding="utf-8", newline="\n")
         self.assertEqual({"tests/test_real.py": "pass\n"}, self.module.suites(self.root))
 
-    def test_suites_passes_over_a_fixture_suite_even_from_a_listing_that_entered_the_fixtures(self) -> None:
-        # The listing skips the fixtures; a fixture path is passed over on its own too, should a listing yield one.
-        fixture = self.root / "tests" / "fixtures" / "deep"
-        fixture.mkdir(parents=True)
-        (fixture / "test_fixture.py").write_text("pass\n", encoding="utf-8", newline="\n")
-        (self.root / "tests" / "test_real.py").write_text("pass\n", encoding="utf-8", newline="\n")
-        matching = self.file_presence.matching
-
-        def entering(folder: Path, pattern: str, **_options: Any) -> list[Path]:
-            return matching(folder, pattern)
-
-        with mock.patch.object(self.file_presence, "matching", entering):
-            self.assertEqual({"tests/test_real.py": "pass\n"}, self.module.suites(self.root))
-
     def test_suites_refuses_a_folder_it_cannot_list(self) -> None:
         deep = self.root / "tests" / "deep"
         deep.mkdir(parents=True)

@@ -2606,20 +2606,36 @@ def is_run_file(name: str) -> bool:
 
 
 def run_files(folder: Path) -> dict[str, Path]:
-    """The files a run's steps wrote, by name, in `folder` or in a folder directly inside it, as `gh run download`
-    puts each artifact in a folder of its own; a name found twice stops it, since either could be the run's."""
+    """The files a run's steps wrote, by name, in `folder` or in a folder directly inside it whose name is no run
+    file's, as `gh run download` puts each artifact in a folder of its own, named after the artifact; a name found
+    twice stops it, since either could be the run's. Something of another kind under a run file's name, or one a stat
+    cannot examine, stops it too, named as file_presence.refusal_reason words it, so it never reads as a file the job
+    never wrote; a link to nothing is nothing there."""
     found: dict[str, Path] = {}
     places = (
-        [folder, *sorted(path for path in folder.iterdir() if file_presence.is_directory(path, other_is_absent=True))]
+        [
+            folder,
+            *sorted(
+                path
+                for path in folder.iterdir()
+                if not is_run_file(path.name) and file_presence.is_directory(path, other_is_absent=True)
+            ),
+        ]
         if file_presence.is_directory(folder)
         else []
     )
     for place in places:
         for path in sorted(place.iterdir()):
-            if is_run_file(path.name) and file_presence.is_present(path, other_is_absent=True):
-                if path.name in found:
-                    raise RuntimeError(f"{folder} holds {path.name} twice, at {found[path.name]} and {path}")
-                found[path.name] = path
+            if not is_run_file(path.name):
+                continue
+            reason = file_presence.refusal_reason(path)
+            if reason == file_presence.MISSING:
+                continue
+            if reason is not None:
+                raise RuntimeError(f"{path} {reason}, so it is no record the run wrote")
+            if path.name in found:
+                raise RuntimeError(f"{folder} holds {path.name} twice, at {found[path.name]} and {path}")
+            found[path.name] = path
     return found
 
 
