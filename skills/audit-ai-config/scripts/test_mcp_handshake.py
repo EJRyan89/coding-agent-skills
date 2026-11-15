@@ -24,6 +24,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-cor
 import audit_ai_config
 import bounded_process
 import mcp_handshake
+import nesting_depth
 
 # The launcher test's --timeout, and how far past --timeout and the stop allowance a loaded machine may end the run.
 LAUNCHER_TIMEOUT_SECONDS = 2.0
@@ -603,7 +604,8 @@ class HandshakeTests(unittest.TestCase):
         )
 
     def test_a_definition_nested_too_deep_to_compare_is_a_config_problem_while_the_others_run(self) -> None:
-        # A reader on a recent Python takes nesting json.dumps then cannot write, so the server is grouped from it.
+        # json.dumps stops this with a RecursionError on one Python version and writes it on another, so the depth is
+        # judged before the key is written, the same on every version.
         deep: list[object] = []
         for _ in range(100_000):
             deep = [deep]
@@ -616,6 +618,23 @@ class HandshakeTests(unittest.TestCase):
         # The reason is the one the usage documents for such a server.
         usage = " ".join((mcp_handshake.__doc__ or "").split())
         self.assertIn(f"(Server '<name>': {mcp_handshake.TOO_DEEP})", usage)
+
+    def test_a_definition_is_too_deep_one_level_past_the_shared_limit_and_grouped_at_it(self) -> None:
+        # The connection is level one and its args level two, so args nested limit - 1 deep reach the limit.
+        def args(levels: int) -> list[object]:
+            value: list[object] = []
+            for _ in range(levels - 1):
+                value = [value]
+            return value
+
+        limit = nesting_depth.DEPTH_LIMIT
+        at_limit = {"command": sys.executable, "args": args(limit - 1)}
+        past = {"command": sys.executable, "args": args(limit)}
+        declared = [("at", ".mcp.json", at_limit), ("past", ".codex/config.toml", past)]
+        with mock.patch.object(mcp_handshake, "declared_servers", return_value=(declared, [])):
+            groups, problems = mcp_handshake.group_servers(self.root, None)
+        self.assertEqual([("at", [".mcp.json"], at_limit)], groups)
+        self.assertEqual([("ERROR", ".codex/config.toml", f"Server 'past': {mcp_handshake.TOO_DEEP}")], problems)
 
     def test_codex_servers_are_read_as_the_audit_reads_them(self) -> None:
         (self.root / ".codex").mkdir()

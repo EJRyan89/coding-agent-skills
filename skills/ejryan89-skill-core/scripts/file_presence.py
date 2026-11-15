@@ -21,7 +21,8 @@ that replaces the link itself, such as a rename, never one that follows it.
 `matching` lists what a glob pattern matches below a folder, as `Path.glob` does, but raises for a folder it cannot
 list, where `Path.glob` matches nothing in it from Python 3.15 on, so a reader takes no unreadable folder for an empty
 one, and for a pattern it cannot read relative to its folder on every platform, such as one naming a drive, so a
-reader takes no pattern it never looked for as matching nothing.
+reader takes no pattern it never looked for as matching nothing. It matches the names a listing gives, so a Windows
+short alias, or a device name a glob class spells, matches no name.
 
 A stat it cannot make is a fourth answer, that it could not tell, and reaches the caller as the `OSError` the stat
 raised: `Path.is_file`, `os.path.exists`, and `os.path.lexists` return False on every `OSError` from Python 3.14 on,
@@ -187,7 +188,14 @@ def matching(folder: Path, pattern: str, *, skip: Callable[[Path], bool] = _neve
 
     Each path is kept once by its spelling as the listing gave it, never by `Path` equality, which on Windows lowers
     each name with `str.lower` and so takes two names the file system keeps apart, such as the Kelvin sign and K, for
-    one."""
+    one.
+
+    A part matches the names the folder's listing gives, never a name Windows opens that no listing gives: an 8.3
+    short alias, such as `PROGRA~1` for `Program Files`, matches nothing, and a part a glob class or a wildcard can
+    read as a device name, such as `[Nn][Uu][Ll]` or `co?`, matches only the names listed, which on Windows are never
+    a device. So `[]` means no listed name matches, not that nothing opens by that name. The form refuses a device name
+    a part spells out; no form tells an alias or a class that can spell a device from an ordinary pattern, and no
+    caller writes one."""
     parts = _pattern_parts(pattern)
     if not is_directory(folder):
         return []
@@ -213,8 +221,8 @@ def _pattern_parts(pattern: str) -> tuple[str, ...]:
     or network share is read; and each part is a name Windows reads as one name in its folder, as `_is_one_name`
     holds, so no drive or file stream is read, on any Python version, and no part is `..`, which climbs out of the
     folder. The last part is not `**`, whose matches differ between Python versions. Such a pattern names the same
-    names below its folder on every platform, apart from the short alias Windows may also answer to for a long name,
-    such as `PROGRA~1`, which no form shows."""
+    listed names below its folder on every platform; a short alias or a device name it can also spell is read as
+    `matching` states, by the names a listing gives."""
     parts = tuple(pattern.split("/"))
     if PureWindowsPath(pattern).parts != parts or not all(map(_is_one_name, parts)) or parts[-1] == "**":
         raise ValueError(f"{pattern!r} is no relative glob pattern this reads")
