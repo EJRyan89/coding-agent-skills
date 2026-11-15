@@ -399,8 +399,8 @@ removed fails validation until its pattern follows it.
   tested at a line's start or end, given to a str method that finds, counts, splits at, or takes it off, as split,
   find, partition, or count, compared with a line by in or ==, or given as the pattern of an re function, however re
   is imported, or its marker given to a strip whose result is compared with the line or measured against it; a run
-  given by keyword, to a str method called unbound, or as a `case` pattern, and a strip bound to a name before it is
-  measured or compared, one whose length is compared, or one compared with an empty string or tested by `not`, are
+  given by keyword, to a str method called unbound, or as a case pattern, and a strip bound to a name before it is
+  measured or compared, one whose length is compared, or one compared with an empty string or tested by not, are
   stated limits
 - **Search for:** a module-level `frozenset({` or tuple of strings whose members another module also spells; a
   document's list of names, flags, or modules that a module's constant holds; a `print(` of a status line no
