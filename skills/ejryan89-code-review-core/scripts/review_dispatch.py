@@ -171,8 +171,10 @@ def count_reads(run: Path, state: RunState, roles: Sequence[str]) -> bool:
     `searches`, since its earlier searches are unknown. A role without a log is not counted: no guard ran for it, and on
     Claude Code `unguarded_roles` refuses its result. A run prepared before reads were counted has no `reads` and
     counts nothing. The snapshot's own manifest is not a file of the snapshot, as `review.snapshot.files` leaves it
-    out, so reading it counts for nothing. A logged path where nothing is, or a folder, which a search names, is not a
-    file read and counts for nothing; one it cannot stat raises the stat's OSError before any log is counted or
+    out, so reading it counts for nothing. A folder where a role's log should be is no log, as `claimed` reads it: the
+    claim never makes one, so it shows no guard held the role, and the role is not counted, so `unguarded_roles` refuses
+    its result on Claude Code. A logged path where nothing is, or a folder, which a search names, is not a file read and
+    counts for nothing; a log or a logged path it cannot stat raises the stat's OSError before any log is counted or
     deleted, so the step fails naming it and a rerun counts every log whole, never a count short of a file the reviewer
     read."""
     if "reads" not in state:
@@ -180,7 +182,7 @@ def count_reads(run: Path, state: RunState, roles: Sequence[str]) -> bool:
     read = [
         (role, log, *_read_log(log, run / "source"))
         for role in roles
-        if file_presence.is_present(log := read_log(run, role))
+        if file_presence.is_present(log := read_log(run, role), other_is_absent=True)
     ]
     for role, log, sizes, searches in read:
         total: ReadCount = state["reads"].get(role, {"files": 0, "bytes": 0, "searches": 0})
