@@ -178,7 +178,9 @@ removed fails validation until its pattern follows it.
 - **Why:** A failure reported as another one sends its reader to fix the wrong thing, and a caller that reads exit
   codes takes the wrong branch.
 - **Use:** `console:run_main`, `console:failed_line`, `skill_roots:MissingSibling`, `git_client:GitError.origin_failed`,
-  which tells a remote's failure from one of the local repository or of a git that never ran;
+  which tells a remote's failure from one of the local repository or of a git that never ran, given the git directory
+  `git_client:GitClient.common_git_directory` names, so a fault git names only by a path inside a git directory of
+  any name is the local repository's;
   `path_containment:resolved_path`, which follows a path taken from input or the environment as Python 3.13's path
   resolution does, leaving a symbolic link loop to the caller's own refusal where Python 3.12's raises
   RuntimeError, and `path_containment:strictly_resolved_path`, its strict counterpart, which raises OSError on a loop
@@ -201,6 +203,8 @@ removed fails validation until its pattern follows it.
   `tests/tools/test_runtime_changelogs.py::MainTests::test_a_summary_that_cannot_be_appended_to_fails_by_name_after_the_findings`,
   `skills/ejryan89-skill-core/scripts/test_git_client.py::test_a_fetch_that_failed_in_the_local_repository_is_not_the_remote_s_failure`,
   `skills/update-coding-agent-skills/scripts/test_remote_refs.py::test_a_fetch_that_fails_in_the_clone_is_a_failed_line_never_origins_failure`,
+  `skills/update-coding-agent-skills/scripts/test_remote_refs.py::test_a_fetch_that_fails_in_a_separate_git_directory_is_a_failed_line`,
+  `skills/ejryan89-skill-core/scripts/test_git_client.py::test_a_fault_named_inside_the_git_directory_the_caller_names_is_local`,
   `skills/dotnet-format/scripts/test_dotnet_format_targets.py::ResolveTests::test_a_git_that_could_not_fetch_fails_by_name_never_as_a_failed_fetch`,
   `skills/dotnet-format/scripts/test_dotnet_format_targets.py::ResolveTests::test_a_failed_git_command_fails_with_the_reason_git_gave`,
   `skills/audit-skill/scripts/test_skill_inventory.py::InventoryTests::test_markdown_the_skill_loads_that_is_not_utf8_is_unreadable_and_fails_the_inventory`,
@@ -234,7 +238,8 @@ removed fails validation until its pattern follows it.
   a `write_text(` or `.open("a"` of a results or summary file after an entry point printed its verdict lines, outside
   any handler, so its failure ends in `run_main`'s generic line after them rather than one its docstring names;
   `rg -n "kind (in|==) .*\"git\"|except GitError" -g '*.py'` beside a fetch or `ls-remote` whose failure is reported
-  as the remote's, where `GitError.origin_failed` is meant;
+  as the remote's, where `GitError.origin_failed` is meant; a classifier that tells a local path by the name of the
+  folder it lies in, such as `.git/`, where the caller can ask git for its git directory;
   `rg -nU "returncode != 0[^\n]*:\n\s+(raise \w+\(|return )f?\"[^\"\n]*\"" -g '*.py'`, a failed command raised or
   returned by its name or exit code alone, dropping the stderr or output that says why; an `except` that returns or
   raises fixed text in place of the exception's; a measurement printed for a file beside the line that says it could
@@ -243,7 +248,7 @@ removed fails validation until its pattern follows it.
   `OSError` alone, whose RuntimeError on Python 3.12 for a symbolic link loop ends the run in `FAILED RuntimeError`,
   outside the modules the resolve policy reads, such as a test suite's helper.
 - **Examples:** #1511, #1840, #1855, #1910, #2022, #2181, #2207, #2209, #2477, #2548, #2596, #2697, #2738, #2763,
-  #2766, #2794, #2805, #2824
+  #2766, #2794, #2805, #2824, #2754
 
 ### A refusal ends with the step to take
 
@@ -523,6 +528,8 @@ removed fails validation until its pattern follows it.
 - **Guard:** `tests/tools/test_bash_syntax.py::ArrayAssignmentTests::test_an_array_assignment_to_a_subscript_is_read_where_bash_reads_an_array`,
   `skills/ejryan89-skill-core/scripts/test_git_subcommands.py::test_a_git_command_is_read_wherever_bash_starts_a_command`,
   `skills/ejryan89-skill-core/scripts/test_git_subcommands.py::test_git_or_a_shell_named_by_a_path_or_with_exe_is_read_as_bash_runs_it`,
+  `skills/ejryan89-skill-core/scripts/test_git_subcommands.py::test_a_here_document_s_body_is_read_as_data`,
+  `skills/ejryan89-skill-core/scripts/test_git_subcommands.py::test_a_bash_line_ends_at_lf_alone`,
   `tests/validation/test_shell_readers.py::test_both_readers_read_the_git_command_a_case_item_or_a_function_body_runs`,
   which holds the git subcommand reader and validation's shell command reader to the same command starts,
   `tests/tools/test_captured_samples.py::test_every_sample_is_named_by_a_suite_that_reads_it`, which fails a captured
@@ -608,14 +615,16 @@ removed fails validation until its pattern follows it.
   commands a Bash script runs that starts one only at a line's start, an operator, or a substitution, and not after a
   case pattern's `)`, a `;&` or `;;&`, or a function's `()`, or that compares a command's first word, such as
   `head == "git"` or `head in SCRIPT_SHELLS`, with a program's name rather than the file name
-  `command_wrappers.bash_program` reads, so `/usr/bin/git` and `git.exe` go unread; in `tools/hub_guard.py`, an
+  `command_wrappers.bash_program` reads, so `/usr/bin/git` and `git.exe` go unread, or that reads a here-document's
+  body as commands or splits the script with `str.splitlines()` rather than at LF alone; in `tools/hub_guard.py`, an
   environment variable git reads to choose where it writes, as `GIT_TRACE`, `GIT_OBJECT_DIRECTORY`, or `GIT_COMMON_DIR`
   does, or a setting it reads from the system or global configuration, as `trace2.eventTarget`, that no judgement of a
   call or of the whole command reads, or one judged only for a call that acts on a hub when a call in one of its
   worktrees writes the refs the hub's store holds.
 - **Examples:** #1412, #1429, #1430, #1592, #1606, #1843, #1851, #1865, #2032, #2088, #2089, #2134, #2135, #2136,
   #2137, #2138, #2139, #2140, #2188, #2225, #2232, #2233, #2234, #2251, #2262, #2274, #2276, #2316, #2411,
-  #2418, #2203, #2450, #2476, #2481, #2478, #2555, #2474, #2616, #2776, #2792, #2725, #2753, #2811, #2812, #2820
+  #2418, #2203, #2450, #2476, #2481, #2478, #2555, #2474, #2616, #2776, #2792, #2725, #2753, #2811, #2812, #2820,
+  #2511
 
 ### A recursive parser of input has a depth bound
 
@@ -1115,8 +1124,10 @@ removed fails validation until its pattern follows it.
   `tests/validation/python_checks.py::PythonChecksPolicies::test_every_process_starts_without_git_repository_variables`,
   `tests/tools/test_mutation_gate.py::test_a_mutant_on_a_continuation_line_runs_against_the_suite_that_executed_its_statement`,
   `.claude/skills/audit-repository/scripts/test_audit_repository.py::ReleaseTests::test_every_brief_carries_the_kinds_of_drift_and_the_report_template`,
-  `.claude/skills/review-repository/scripts/test_review_repository.py::ManifestTests::test_every_file_the_design_trust_model_names_reaches_the_trust_boundary_reviewer`
-- **Search for:** a policy fix that adds one more spelling of a lookup, a binding, or an unpacking to a reader, where
+  `.claude/skills/review-repository/scripts/test_review_repository.py::ManifestTests::test_every_file_the_design_trust_model_names_reaches_the_trust_boundary_reviewer`,
+  `skills/ejryan89-skill-core/scripts/test_runtime_support.py::test_a_python_git_call_names_its_subcommand`
+- **Search for:** a reader that records a placeholder for a value it cannot read and then drops it by the word's
+  truth, as `if subcommand := ...` drops an empty one; a policy fix that adds one more spelling of a lookup, a binding, or an unpacking to a reader, where
   an indirection policy could refuse the construct instead; a `*_ALLOWED` entry in `INDIRECTION_ALLOWED`,
   `OWNER_ONLY_ALLOWED`, or `POLICED_CALL_ALLOWED` whose site a direct form could replace;
   a review route whose `include` patterns name files by hand where a document owns the list, such as
@@ -1129,7 +1140,7 @@ removed fails validation until its pattern follows it.
   past; an audit brief that asks only for drift; a `scope_problems` call whose modules are filtered by the roots it
   is held to, which compares a list with itself.
 - **Examples:** #1366, #1598, #1678, #1722, #2260, #2352, #1884, which adds the check that holds a policy's scope
-  to its rule, #2315, whose resolver spellings the indirection policies refuse at the source, and #2388
+  to its rule, #2315, whose resolver spellings the indirection policies refuse at the source, #2388, and #2730
 
 ### A check pins the form it accepts when the forms it refuses are open
 

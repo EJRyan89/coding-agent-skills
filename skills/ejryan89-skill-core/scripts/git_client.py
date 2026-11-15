@@ -558,16 +558,17 @@ class GitError(RuntimeError):
         missing, could not start, or did not finish in time, which says nothing of it."""
         return self.kind not in {"prerequisite", "execution", "timeout"}
 
-    @property
-    def origin_failed(self) -> bool:
+    def origin_failed(self, git_directory: str | Path | None) -> bool:
         """For a command that reaches a remote, such as a fetch or ls-remote: whether the remote is what failed. It did
         when the command did not finish in time, or when git ran and failed and none of its own lines names a fault
         in the local repository (`local_failure`). A git that is missing, could not start, could not end what it
         started, or found no repository, and a ref it could not lock or an object it could not write, say nothing of
-        the remote."""
+        the remote. `git_directory` is the local repository's git directory, as GitClient.common_git_directory names
+        it, so a fault git names only by a path inside it is local whatever the directory is called; a caller that
+        reads no answered failure, or cannot learn the directory, passes None."""
         if self.kind == "timeout":
             return True
-        return self.kind == "git" and not local_failure(str(self))
+        return self.kind == "git" and not local_failure(str(self), git_directory)
 
 
 @dataclass(frozen=True)
@@ -714,22 +715,28 @@ def transient_failure(result: GitResult) -> bool:
     return any(marker in line for line in own for marker in TRANSIENT_MARKERS)
 
 
-def local_failure(stderr: str) -> bool:
+def local_failure(stderr: str, git_directory: str | Path | None) -> bool:
     """Whether a failed command's stderr names a fault of the local repository rather than of a remote.
 
     It does when git gives no verdict that the remote failed (`REMOTE_VERDICTS`) and one of git's own `fatal:` or
-    `error:` lines names a path inside a `.git` folder, a URL it quotes left out, reports a write that failed and
-    names neither the remote nor a connection fault (`LOCAL_WRITE_FAILURE`), or holds a `LOCAL_FAILURE_MARKERS`
-    marker. A `remote:` line is never git's own. What a remote cannot be kept from is a transfer it breaks after
-    writing local-looking lines of its own, with none of git's verdicts after them: that failure reads as local, and
-    either reading stops the caller.
+    `error:` lines, a URL it quotes left out, names a path inside a `.git` folder or inside `git_directory`, the
+    local repository's git directory as git names it, which lets a separate or bare git directory of any name be
+    read; reports a write that failed and names neither the remote nor a connection fault (`LOCAL_WRITE_FAILURE`); or
+    holds a `LOCAL_FAILURE_MARKERS` marker. A path is compared in any case and with either slash. A `remote:` line is
+    never git's own. What a remote cannot be kept from is a transfer it breaks after writing local-looking lines of
+    its own, with none of git's verdicts after them: that failure reads as local, and either reading stops the
+    caller. Given no `git_directory`, a git directory not called `.git` is read only by the markers, and so is a file
+    git names relative to the folder it runs in when that folder is the git directory, as it names `'FETCH_HEAD'` in a
+    bare repository it runs at the top of, since a relative word such as `'origin'` names no path there.
     """
     lowered = stderr.casefold()
     if REMOTE_VERDICTS.search(lowered):
         return False
+    inside = None if git_directory is None else str(git_directory).replace("\\", "/").rstrip("/").casefold()
     own = [line.lstrip() for line in lowered.splitlines() if line.lstrip().startswith(("fatal:", "error:"))]
     return any(
         LOCAL_GIT_PATH.search(QUOTED_URL.sub("", line))
+        or (bool(inside) and f"{inside}/" in QUOTED_URL.sub("", line).replace("\\", "/"))
         or (LOCAL_WRITE_FAILURE.match(line) is not None and not any(fault in line for fault in CONNECTION_FAULTS))
         or any(marker in line for marker in LOCAL_FAILURE_MARKERS)
         for line in own
@@ -1220,6 +1227,15 @@ class GitClient:
         """The absolute path `git rev-parse <option>` names for `directory`; see `rev_parse_paths`."""
         paths = self.rev_parse_paths([option], directory=directory)
         return None if paths is None else paths[0]
+
+    def common_git_directory(self, *, directory: str | Path) -> Path | None:
+        """The git directory every worktree of `directory`'s repository shares, which holds each worktree's own, as
+        git names it in its own lines, every link resolved: what GitError.origin_failed reads a local fault by. None
+        when git names none or fails, so a second failure, read while a first is classified, never hides the first."""
+        try:
+            return self.rev_parse_path("--git-common-dir", directory=directory)
+        except GitError:
+            return None
 
     def quiet_output(
         self,

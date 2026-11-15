@@ -318,3 +318,27 @@ def test_a_remote_that_prints_a_local_looking_failure_of_its_own_is_origins(
     code, output = run(capsys, "fetch", clone)
     assert code == 1
     assert output.startswith("ORIGIN_FAILED fatal: unable to write .git/FETCH_HEAD"), output
+
+
+def separate_git_directory(origin: str, tmp_path: Path) -> tuple[Path, Path]:
+    clone, git_directory = tmp_path / "separate clone", tmp_path / "clone git"
+    git("clone", "-q", f"--separate-git-dir={git_directory}", origin, clone)
+    return clone, git_directory
+
+
+def test_a_fetch_that_fails_in_a_separate_git_directory_is_a_failed_line(
+    capsys: pytest.CaptureFixture[str], clone: Path, tmp_path: Path
+) -> None:
+    # git names an unwritable FETCH_HEAD only by its path, inside a git directory not called .git here, so only the
+    # directory the script asks git for tells the clone's fault from origin's.
+    other, git_directory = separate_git_directory(git("-C", clone, "remote", "get-url", "origin").strip(), tmp_path)
+    fetch_head = git_directory / "FETCH_HEAD"
+    fetch_head.touch()
+    fetch_head.chmod(stat.S_IREAD)
+    try:
+        code, output = run(capsys, "fetch", other)
+    finally:
+        fetch_head.chmod(stat.S_IREAD | stat.S_IWRITE)
+    assert code == 1
+    assert output.startswith("FAILED error: "), output
+    assert "FETCH_HEAD" in output, output

@@ -747,6 +747,8 @@ class SkillLayoutFixtures(unittest.TestCase):
                         "if ! OUTPUT=$(git -c core.quotepath=off ls-remote --tags \\\n  origin 2>&1); then exit 1; fi\n"
                     ),
                     "skills/reads-git-locally/scripts/status.sh": 'git -C "$CLONE" status --porcelain  # fetch later\n',
+                    # Bash ends a line at LF alone, so a lone CR keeps the fetch inside the comment.
+                    "skills/reads-git-locally/scripts/notes.sh": "# notes\rgit fetch origin\n",
                     "skills/reads-git-locally/scripts/test_status.sh": 'git -C "$CLONE" fetch origin\n',
                     "skills/reads-git-locally/scripts/test_status.py": 'git(root, "fetch", "origin")\n',
                     "skills/fetches-from-python/scripts/update.py": 'services.git.run(["fetch", "origin"])\n',

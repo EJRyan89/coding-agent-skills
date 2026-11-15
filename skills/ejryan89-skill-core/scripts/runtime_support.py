@@ -19,6 +19,7 @@ from dataclasses import dataclass, field
 
 import git_client
 import python_reader
+from powershell_commands import UNREAD_WORD
 from text_lines import text_lines
 
 RUNTIMES = ("claude-code", "codex", "copilot-cli")
@@ -187,9 +188,25 @@ def python_git_subcommands(source: str) -> set[str]:
 
     A git call is one `names_git` reads as one, a function whose dotted name has a part with the word git in it. Its
     words are the string literals among its positional arguments and among the items of a list or tuple literal there,
-    in order, any other value after the first literal standing as a placeholder, and
-    git_client.subcommand reads past git's own options to the subcommand. A script that does not parse, or nests past
-    the parser's limits, raises python_reader's PythonRefused.
+    in order, and git_client.subcommand reads past git's own options to the subcommand. Any other value stands as a
+    placeholder, powershell_commands' UNREAD_WORD, wherever it is an item of a list or tuple literal, among the other
+    arguments after the first literal, and wherever it is starred, since a starred value carries git's words, as
+    `*fetch` in `git_in(checkout, git, *fetch)` does. So a subcommand no literal names, as in
+    `git.output(["-C", directory, verb])`, is recorded as that word, which may be any subcommand and which
+    reaches_remote reads as one that may reach a remote. A value that is not starred among the arguments before the
+    first literal is the function's own, such as its client and its folder in `git(services, root, "fetch")`, and
+    stands for no word.
+
+    Beyond what it reads: a call that holds neither a literal word, a list or tuple literal, nor a starred value, such
+    as a wrapper's `services.git.run(arguments)` or GitClient's `commit_of(ref)`, whose method names its own
+    subcommand, records nothing, so a wrapper's subcommands are read only at its callers' calls that name git; a value
+    that is not starred before the first literal among the arguments, as `verb` in
+    `git_in(checkout, runner, verb, "origin")`, is taken as the function's own; and what a variable holds, such as the
+    subcommand in `sizing = ("cat-file", "-s", blob)`, is not followed. A starred value of git's own options, as
+    `*SHOW_UNTRACKED` before `"worktree"`, is read as the subcommand. A function whose name has the word git in it but
+    runs no git, given a list or tuple literal or a starred value, as git_subcommands' `command_git_subcommands([...])`
+    is, records a git call all the same. A script that does not parse, or nests past the parser's limits, raises
+    python_reader's PythonRefused.
     """
     tree = python_reader.parse(source)
     found: set[str] = set()
@@ -198,12 +215,14 @@ def python_git_subcommands(source: str) -> set[str]:
             continue
         words: list[str] = []
         for argument in node.args:
-            for item in argument.elts if isinstance(argument, (ast.List, ast.Tuple)) else [argument]:
+            listed = argument.elts if isinstance(argument, (ast.List, ast.Tuple)) else None
+            for item in [argument] if listed is None else listed:
                 if isinstance(item, ast.Constant) and isinstance(item.value, str):
                     words.append(item.value)
-                elif words:
-                    words.append("")
-        if subcommand := git_client.subcommand(words):
+                elif listed is not None or words or isinstance(item, ast.Starred):
+                    words.append(UNREAD_WORD)
+        subcommand = git_client.subcommand(words)
+        if subcommand is not None:
             found.add(subcommand)
     return found
 
