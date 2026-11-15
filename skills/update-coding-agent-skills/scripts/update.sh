@@ -125,8 +125,8 @@ case "${OSTYPE:-}" in
       exit 1
     fi
     if ! JUDGED=$("$PYTHON" -B "$PRIVATE_FOLDER" temporary-directory "$TEMPORARY" 2>&1); then
-      JUDGED=$(one_line "$JUDGED")
-      echo "FAILED cannot make update.sh's temporary files: ${JUDGED#FAILED }"
+      REFUSAL=$(one_line "$JUDGED")
+      echo "FAILED cannot make update.sh's temporary files: ${REFUSAL#FAILED }"
       exit 1
     fi
     case "$JUDGED" in

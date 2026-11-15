@@ -1394,6 +1394,10 @@ class SkillScriptsFixtures(unittest.TestCase):
                 "names the temporary directory unjudged; make the file in the folder `python private_folder.py "
                 f"temporary-directory` prints; see {doc}"
             )
+            bash = (
+                "names the temporary directory unjudged; work in the folder `python private_folder.py "
+                f"temporary-directory` prints, as update-coding-agent-skills' update.sh does; see {doc}"
+            )
             forms = "skills/example/scripts/forms.py"
             params = "skills/example/scripts/params.py"
             make = "skills/example/scripts/make.sh"
@@ -1417,8 +1421,14 @@ class SkillScriptsFixtures(unittest.TestCase):
                     *(f"{values}:{line}: open {unjudged}" for line in (25, 27, 29)),
                     f"tools/tool.py:2: tempfile.TemporaryDirectory {left}",
                     f"skills/example/scripts/commented.sh:3: {mktemp}",
+                    f"skills/example/scripts/commented.sh:3: $T {bash}",
                     f"skills/example/scripts/echoed.sh:3: {mktemp}",
-                    *(f"{make}:{line}: {mktemp}" for line in (7, 8, 9, 10, 11, 14, 15, 17)),
+                    f"{make}:7: {mktemp}",
+                    f"{make}:7: ${{TMPDIR {bash}",
+                    *(f"{make}:{line}: {mktemp}" for line in (8, 9, 10)),
+                    f"{make}:10: /tmp {bash}",
+                    *(f"{make}:{line}: {mktemp}" for line in (11, 14, 15, 17)),
+                    f"{make}:17: $PLAIN {bash}",
                     "skills/other/scripts/latin.sh holds a byte that is not UTF-8 at offset 14; save it as UTF-8",
                     f"skills/other/scripts/unjudged.sh:2: {mktemp}",
                     *(
@@ -1590,11 +1600,119 @@ class SkillScriptsFixtures(unittest.TestCase):
                     *(f"{spellings}.py:{line}: open {unjudged}" for line in (17, 18)),
                     f"tools/a.py:2: tempfile.mkdtemp {left}",
                     f"tools/a/b.py:2: tempfile.mkdtemp {left}",
-                    *(f"{spellings}.sh:{line}: {mktemp}" for line in (8, 9, 10, 12, 14, 16, 17)),
+                    *(f"{spellings}.sh:{line}: {mktemp}" for line in (8, 9)),
+                    f"{spellings}.sh:9: $TMPDIR names the temporary directory unjudged; work in the folder `python "
+                    "private_folder.py temporary-directory` prints, as update-coding-agent-skills' update.sh does; see "
+                    f"{doc}",
+                    *(f"{spellings}.sh:{line}: {mktemp}" for line in (10, 12, 14, 16, 17)),
                     *(f"{spellings}.ps1:{line}: env:TEMP {powershell}" for line in (4, 5)),
                 ],
                 skill_scripts.temporary_folder_problems(mark_skills(root)),
             )
+
+    def test_a_write_or_a_judged_variable_that_reaches_the_temporary_directory_unjudged_is_refused(self) -> None:
+        # Each refused script wrote in the temporary directory, or made its file from a variable that no longer held
+        # the judged folder, yet passed the policy while it read only mktemp in Bash, only the variables' literal names
+        # in PowerShell, and in Python only a write traced to tempfile's lookup or a variable of the environment.
+        judge = "python3 private_folder.py temporary-directory"
+        refused = {
+            "mkdir.sh": ('mkdir -p "${TMPDIR:-/tmp}/work"', ["2: ${TMPDIR"]),
+            "redirection.sh": ("echo x > /tmp/out", ["2: /tmp"]),
+            "appended.sh": ("echo x >>/var/tmp/out", ["2: /var/tmp"]),
+            "private.sh": ('cp a "/private/tmp/b"', ["2: /private/tmp"]),
+            "held.sh": ('D="${TMPDIR:-/tmp}"\ntouch "$D/x"', ["3: $D"]),
+            "fallback.sh": (
+                f'JUDGED="$({judge} || echo /tmp)"\nX=$(mktemp "$JUDGED/x.XXXXXX")',
+                ["2: /tmp", "3: mktemp"],
+            ),
+            "list.sh": (f'JUDGED=$({judge}; echo x)\nX=$(mktemp "$JUDGED/x.XXXXXX")', ["3: mktemp"]),
+            "default.sh": (f'JUDGED=$({judge})\nX=$(mktemp "${{JUDGED:-/tmp}}/x.XXXXXX")', ["3: mktemp", "3: /tmp"]),
+            "replaced.sh": (f'JUDGED=$({judge})\nX=$(mktemp "${{JUDGED/a/b}}/x.XXXXXX")', ["3: mktemp"]),
+            "length.sh": (f'JUDGED=$({judge})\nX=$(mktemp "${{#JUDGED}}/x.XXXXXX")', ["3: mktemp"]),
+            "reassigned.sh": (
+                f'JUDGED=$({judge})\nJUDGED=/tmp\nX=$(mktemp "$JUDGED/x.XXXXXX")',
+                ["4: mktemp", "4: $JUDGED"],
+            ),
+            "replaced_later.sh": (f'JUDGED=$({judge})\nJUDGED=$(other)\nX=$(mktemp "$JUDGED/x.XXXXXX")', ["4: mktemp"]),
+            "derived_later.sh": (
+                f'JUDGED=$({judge})\nJUDGED=$(other)\nT="$JUDGED/x.XXXXXX"\nX=$(mktemp "$T")',
+                ["5: mktemp"],
+            ),
+            "appends.sh": (f'JUDGED=$({judge})\nJUDGED+=/..\nX=$(mktemp "$JUDGED/x.XXXXXX")', ["4: mktemp"]),
+            "escaped.sh": ('echo "a\\" # " ; X=$(mktemp)', ["2: mktemp"]),
+            # A `#` after an escaped blank continues the word, so Bash runs what follows it.
+            "escaped_blank.sh": ("echo foo\\ #; X=$(mktemp)", ["2: mktemp"]),
+            # A backtick substitution in a value is read as a command, never as the value's own text.
+            "backticked.sh": ("T=`echo /tmp`", ["2: /tmp"]),
+            "literal.ps1": ("New-Item -ItemType Directory /tmp/fixed", ["1: /tmp"]),
+            "held.ps1": ("$n = 'TEMP'; [Environment]::GetEnvironmentVariable($n)", ["1: GetEnvironmentVariable("]),
+            "built.ps1": ("[Environment]::GetEnvironmentVariable('TE' + 'MP')", ["1: GetEnvironmentVariable("]),
+            "joined.ps1": ("(Get-Item (Join-Path Env: TEMP)).Value", ["1: Env:"]),
+            "expanded.ps1": ('Get-Item "Env:\\$n"', ["1: Env:"]),
+            "indexed.ps1": ("[Environment]::GetEnvironmentVariables()[$n]", ["1: GetEnvironmentVariables()["]),
+            "escaped.ps1": ('Write-Output "a`" # $env:TEMP"', ["1: env:TEMP"]),
+            "escaped_blank.ps1": ("Write-Output foo` #; $env:TEMP", ["1: env:TEMP"]),
+            "literal.py": ("open('/tmp/fixed', 'w')", ["1: open"]),
+            "started.py": (
+                "import subprocess, tempfile\nsubprocess.run(['mkdir', tempfile.gettempdir() + '/x'])",
+                ["2: subprocess.run"],
+            ),
+            "started_literal.py": ("import os\nos.execv('/bin/mkdir', ['mkdir', '/tmp/y'])", ["2: os.execv"]),
+            "started_in.py": (
+                "import os, subprocess\nsubprocess.run(['touch', 'x'], cwd=os.environ['TMPDIR'])",
+                ["2: subprocess.run"],
+            ),
+            # An event loop's runner, on any receiver.
+            "looped.py": (
+                "async def run(loop):\n    await loop.subprocess_exec(object, 'mkdir', '/tmp/y')",
+                ["2: <event"],
+            ),
+            # The last positional argument is the environment, and the one before it is the command's.
+            "environment_last.py": ("import os\nos.execle('/bin/mkdir', 'mkdir', '/tmp/y', {})", ["2: os.execle"]),
+        }
+        passing = {
+            "judged.sh": (
+                f'T="${{TMPDIR:-/tmp}}"\nJUDGED=$({judge} "$T" 2>&1)\nT="${{JUDGED#TEMPORARY_DIRECTORY }}"\n'
+                'X=$(mktemp "${T%/}/x.XXXXXX")\necho x > "$X"'
+            ),
+            "nested.sh": (
+                'J=$(python3 "$(dirname "$0")/private_folder.py" temporary-directory)\nX=$(mktemp -d "$J/x.XX")'
+            ),
+            "comment.sh": 'echo "a\\" b" # mktemp /tmp',
+            "elsewhere.sh": 'echo x > "$HOME/tmp/x"\nmkdir ./tmp "$OUT"/tmp "${A}"/tmp',
+            "literal.ps1": "[Environment]::GetEnvironmentVariable('HOME', 'User')\n$env:HOME\nGet-Item Env:PATH",
+            "comment.ps1": "Write-Output 'x' # $env:TEMP /tmp",
+            "relative.py": "open('tmp/x', 'w')",
+            "environment.py": "import subprocess\nsubprocess.run(['echo'], env={'TMPDIR': '/tmp'})",
+            "looped.py": "async def run(loop):\n    await loop.subprocess_exec(object, 'echo', 'hi')",
+            "environment_last.py": "import os\nos.execle('/bin/echo', 'echo', 'hi', {'TMPDIR': '/tmp'})",
+            # A value runs to its word's end, through a quoted blank and an expansion left open, so the path in it only
+            # gives the variable what it holds; a backtick substitution running the judge is judged.
+            "quoted_value.sh": "T='a /tmp/b'\nU=$'a /tmp/b'\nV=${A /tmp",
+            "backticked_judge.sh": f'J=`{judge}`\nX=$(mktemp "$J/x.XXXXXX")',
+            # An escaped blank goes on with the value's word, so the path after it only gives the variable its value.
+            "escaped_value.sh": "T=a\\ /tmp/b",
+            # Limit rows, passing on purpose: the script is read in text order, so what a branch, a loop, or a function
+            # call does at run time is not followed ("Working files" in docs/adding-a-skill.md names each limit).
+            # The judged assignment written last before the mktemp counts, though the branch may not run it.
+            "limit_branch.sh": f'J=/tmp\nif c; then J=$({judge}); fi\nX=$(mktemp "$J/x.XXXXXX")',
+            # The assignment written after the mktemp is not read, though the loop's next pass runs the mktemp after it.
+            "limit_loop.sh": f'J=$({judge})\nfor i in 1 2; do X=$(mktemp "$J/x.XXXXXX"); J=/tmp; done',
+            # A function's body is read where it is written, not where it is called after a later assignment.
+            "limit_function.sh": f'J=$({judge})\nmake() {{ X=$(mktemp "$J/x.XXXXXX"); }}\nJ=/tmp\nmake',
+        }
+        for verdict, rows in (("refused", refused), ("passing", passing)):
+            for file, row in rows.items():
+                source, expected = row if isinstance(row, tuple) else (row, [])
+                with self.subTest(verdict=verdict, file=file), tempfile.TemporaryDirectory() as temporary:
+                    root = Path(temporary)
+                    shebang = "#!/bin/bash\n" if file.endswith(".sh") else ""
+                    write_fixture_tree(root, {f"skills/example/scripts/{file}": f"{shebang}{source}\n"})
+                    found = skill_scripts.temporary_folder_problems(mark_skills(root))
+                    self.assertEqual(
+                        [f"skills/example/scripts/{file}:{line}" for line in expected],
+                        [problem.split(" ", 2)[0] + " " + problem.split(" ", 2)[1] for problem in found],
+                    )
 
     def test_shell_command_extraction_marks_a_program_it_cannot_read(self) -> None:
         self.assertIn(f"{UNREAD_PROGRAM}$tool", shell_commands('xargs "$tool" foo'))
