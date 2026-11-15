@@ -129,7 +129,7 @@ class ToolchainFixtures(unittest.TestCase):
                 "winget install --id koalaman.shellcheck",
                 "  - PowerShell 7 (pwsh): its version could not be read; the floor is 7.0 in "
                 "docs/dependency-updates.md: winget install --id Microsoft.PowerShell --installer-type wix",
-                "  - ruff 0.17.0 is older than the floor 0.17.3 in docs/dependency-updates.md: "
+                "  - ruff 0.17.0 is older than the floor 0.17.4 in docs/dependency-updates.md: "
                 "python -m pip install --require-hashes --only-binary :all: -r requirements-dev.txt",
             ],
             outdated_prerequisites(

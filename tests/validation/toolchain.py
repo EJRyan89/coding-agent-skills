@@ -214,7 +214,7 @@ VALIDATION_FLOORS: dict[str, tuple[int, ...]] = {
     "ShellCheck": (0, 9, 0),
     "PSScriptAnalyzer": (1, 25, 0),
     "PowerShell 7 (pwsh)": (7, 0),
-    "ruff": (0, 17, 3),
+    "ruff": (0, 17, 4),
     "mypy": (2, 4, 1),
     "pytest": (9, 2, 0),
 }
@@ -552,7 +552,7 @@ class ToolchainPolicies(unittest.TestCase):
                 "ShellCheck": (0, 9, 0),
                 "PSScriptAnalyzer": (1, 25, 0),
                 "PowerShell 7 (pwsh)": (7, 0),
-                "ruff": (0, 17, 3),
+                "ruff": (0, 17, 4),
                 "mypy": (2, 4, 1),
                 "pytest": (9, 2, 0),
             },
@@ -565,7 +565,7 @@ class ToolchainPolicies(unittest.TestCase):
             "| ShellCheck | 0.9.0 |",
             "| PSScriptAnalyzer | 1.25.0 |",
             "| PowerShell 7 (`pwsh`) | 7.0 |",
-            "| ruff | 0.17.3 |",
+            "| ruff | 0.17.4 |",
             "| mypy | 2.4.1 |",
             "| pytest | 9.2.0 |",
         ):
@@ -715,7 +715,7 @@ class ToolchainPolicies(unittest.TestCase):
         self.assertIn("python -m mypy --version", workflow)
         requirements = (REPOSITORY_ROOT / DEVELOPMENT_INPUT).read_text(encoding="utf-8")
         self.assertEqual(
-            ["ruff==0.17.3", "mypy==2.4.1", "pytest==9.2.0"],
+            ["ruff==0.17.4", "mypy==2.4.1", "pytest==9.2.0"],
             [line for line in requirements.splitlines() if "==" in line],
         )
         # Every other line is a comment or blank, and the packages are the ones the dependency document lists.
