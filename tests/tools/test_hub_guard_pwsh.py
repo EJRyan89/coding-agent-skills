@@ -242,24 +242,55 @@ class RedirectionReachTests(unittest.TestCase):
 
 
 class CommandNameTests(unittest.TestCase):
+    def test_every_parameter_and_alias_a_writing_cmdlet_lists_is_one_the_guard_binds(self) -> None:
+        # A prefix binds a parameter only where it names one alone, so a parameter or alias the table leaves out may
+        # make the guard read a prefix pwsh binds to it as one that binds another.
+        cmdlets = sorted(set(hub_guard.POWERSHELL_CMDLET_PARAMETERS) - {"mkdir"})
+        script = (
+            "$out = @{}; foreach ($name in @(" + ", ".join(f"'{name}'" for name in cmdlets) + ")) { "
+            "$out[$name] = @((Get-Command $name).Parameters.Values | ForEach-Object { @($_.Name) + @($_.Aliases) }) }; "
+            "ConvertTo-Json -Depth 3 -Compress $out"
+        )
+        listed = json.loads(pwsh(script))
+        common = {
+            spelling
+            for name, aliases in hub_guard.POWERSHELL_COMMON_PARAMETERS.items()
+            for spelling in (name, *aliases)
+        }
+        for cmdlet in cmdlets:
+            own = {
+                spelling
+                for name, aliases in hub_guard.POWERSHELL_CMDLET_PARAMETERS[cmdlet].items()
+                for spelling in (name, *aliases)
+            }
+            with self.subTest(cmdlet=cmdlet):
+                self.assertEqual(set(), {spelling.lower() for spelling in listed[cmdlet]} - own - common)
+
     def test_every_alias_function_and_verb_powershell_lists_is_one_the_guard_keeps_for_its_own_commands(self) -> None:
         script = (
             "ConvertTo-Json -Compress -InputObject @("
             "@(Get-Alias | ForEach-Object Name), "
             "@(Get-Command -CommandType Function | Where-Object { -not $_.ModuleName } | ForEach-Object Name), "
-            "@(Get-Verb | ForEach-Object Verb))"
+            "@(Get-Command -CommandType Cmdlet,Function | Where-Object { $_.Name -like '*-*' } | ForEach-Object Name))"
         )
-        aliases, functions, verbs = json.loads(pwsh(script))
+        aliases, functions, commands = json.loads(pwsh(script))
         self.assertEqual(set(), {name.lower() for name in aliases} - hub_guard.POWERSHELL_ALIASES)
         self.assertEqual(
             set(),
             {name.lower() for name in functions if "-" not in name} - hub_guard.POWERSHELL_FUNCTIONS,
         )
-        self.assertEqual(set(), {name.lower() for name in verbs} - hub_guard.POWERSHELL_VERBS)
-        for name in ("iex", "Invoke-Expression", "Start-Process", "help", "C:", "exec"):
+        # Every cmdlet and function a hyphenated name gives, whatever its verb and whichever modules this machine
+        # holds, as Tee-Object or a Windows module's Backup-BitLockerKeyProtector, is a command the guard reads only
+        # where POWERSHELL_COMMANDS names it.
+        self.assertTrue(commands)
+        self.assertEqual(set(), {name for name in commands if not hub_guard.powershell_command(name)})
+        for name in (
+            *("iex", "Invoke-Expression", "Start-Process", "help", "C:", "exec", "Tee-Object"),
+            *("BackupToAAD-BitLockerKeyProtector", "Delete-DeliveryOptimizationCache", "dotnet-format", "pre-commit"),
+        ):
             with self.subTest(name=name):
                 self.assertTrue(hub_guard.powershell_command(name))
-        for name in ("git", "python", "dotnet-format", "shellcheck"):
+        for name in ("git", "python", "shellcheck", "dotnet-format.exe", "/usr/local/bin/pre-commit", "C:\\x\\a-b"):
             with self.subTest(name=name):
                 self.assertFalse(hub_guard.powershell_command(name))
 

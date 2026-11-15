@@ -427,6 +427,24 @@ TRACE2_SETTINGS = {
     "trace2.eventtarget": "GIT_TRACE2_EVENT",
 }
 TRACE2_SCOPES = frozenset({"system", "global"})
+# The other settings that name a file git writes, which git reads from every scope as a path (git_config_pathname): the
+# cookie jar http.cookieFile or http.<url>.cookieFile names, which an https call writes back while an http.saveCookies
+# or http.<url>.saveCookies setting is on, and the folder fsmonitor.socketDir names, where git's own file-system monitor
+# makes its socket.
+COOKIE_FILE = re.compile(r"http\.(?:.+\.)?cookiefile", re.DOTALL)
+SAVE_COOKIES = re.compile(r"http\.(?:.+\.)?savecookies", re.DOTALL)
+SOCKET_DIRECTORY = "fsmonitor.socketdir"
+# The values git reads a boolean setting as false by; any other, a setting with no value among them, is on.
+FALSE_SETTINGS = frozenset({"false", "no", "off", "0", ""})
+# The setting names configured_written_targets asks git for, as one extended regular expression.
+CONFIGURED_WRITES = (
+    "^("
+    + "|".join(re.escape(setting) for setting in TRACE2_SETTINGS)
+    + r"|http\.(.+\.)?(cookiefile|savecookies)|fsmonitor\.socketdir)$"
+)
+# libcurl, which git's https transport runs, appends the keys of each TLS session to the file this variable names,
+# opening a relative path from where it starts; so do other programs a command may start.
+KEY_LOG_VARIABLE = "SSLKEYLOGFILE"
 # The settings that name a further configuration file git reads, by their name as git lists it (section and name in
 # lower case, a condition as written).
 # The variables that locate the system and global configuration files, each read as a path git opens.
@@ -637,6 +655,83 @@ PROGRAM_VARIABLES: dict[str, frozenset[str]] = {
 PROGRAM_VARIABLE_NAMES = frozenset(name for names in PROGRAM_VARIABLES.values() for name in names)
 # The runners that add words from their input to the command they run, which the text does not settle.
 INPUT_RUNNERS = frozenset({"xargs"})
+# The programs whose words name the files they write, create, remove, or change the mode or owner of, each with the
+# option letters every build of it (GNU coreutils, uutils, BSD, busybox) reads as a flag, or None where no build gives
+# a letter a value. Every word that may name such a file is judged as a redirection's target is (read_program_writes):
+# each operand, a source among them, since telling a source from a target means reading every build's options; each
+# option's value after `=`; and the rest of a bundle after its first letter that is no flag, which may be the value an
+# option takes there, as cp's `-t<folder>`. dd writes only the file its `of=` operand names, and sed only with -i,
+# when it rewrites each file it is given (written_words).
+WRITING_PROGRAMS: dict[str, str | None] = {
+    "cp": "abcdfHilLnNpPRrsTuvxXZ",
+    "mv": "bfhinTuvZ",
+    "install": "bcCdMpsUvZ",
+    "tee": None,
+    "touch": "acfhm",
+    "truncate": "co",
+    "rm": None,
+    "rmdir": None,
+    "unlink": None,
+    "mkdir": "pvZ",
+    "mkfifo": "Z",
+    "mknod": "Z",
+    "mktemp": "dqu",
+    "chmod": None,
+    "chown": None,
+    "chgrp": None,
+    "chflags": None,
+    "chcon": "hHLPRv",
+    "shred": "fuvxz",
+    "dd": None,
+    "sed": "abnrsuzE",
+}
+# The programs that make a link, through which a write later in the same command reaches a place the guard placed
+# before the link existed, by what each makes. While a hub is guarded each is refused, and so are cp's and install's
+# options that make one (LINK_OPTIONS); a link a program makes from inside itself is beyond the text.
+LINK_PROGRAMS = {
+    "ln": "makes a symbolic or a hard link",
+    "link": "makes a hard link",
+    "fsutil": "makes a hard link, or a file, among the actions its words choose",
+}
+# The options of a WRITING_PROGRAMS program that make it write a link where it would write a file: GNU and FreeBSD
+# cp's -l and -s, GNU cp's --link and --symbolic-link, and BSD install's -l, by their letters and long names.
+LINK_OPTIONS: dict[str, tuple[str, tuple[str, ...]]] = {
+    "cp": ("ls", ("link", "symbolic-link")),
+    "install": ("l", ()),
+}
+# sed rewrites each file it is given in place with -i, or BSD sed's -I, and with GNU sed's --in-place; the letters that
+# take a value in every build end a bundle, and a letter neither flag nor one of these is read as -i. GNU sed's -l takes
+# a value and BSD sed's is a flag, so it ends no bundle: BSD's `-li ''` rewrites in place.
+SED_IN_PLACE = ("iI", "ef", "in-place")
+# Each build of sed's options, by how it reads a bundle's letters: those that take no value, those that take one
+# attached or as the next word, and those that take one only attached and may take none, as GNU's -i[SUFFIX]; a letter
+# none of these names is one the build refuses. BSD sed reads no long option and stops at its first operand, GNU sed
+# reads its long options by any prefix that names one alone and reads an option after an operand.
+SED_BUILDS: dict[str, tuple[str, str, str]] = {"gnu": ("nrEsuzb", "efl", "i"), "bsd": ("Eanlru", "efiI", "")}
+SED_LONG_OPTIONS = {
+    **dict.fromkeys(("expression", "file", "line-length"), True),
+    **dict.fromkeys(
+        (
+            *("quiet", "silent", "regexp-extended", "separate", "sandbox", "debug", "posix", "follow-symlinks"),
+            *("unbuffered", "binary", "null-data", "zero-terminated", "help", "version", "in-place"),
+        ),
+        False,
+    ),
+}
+# The sed commands that take nothing after them, those that take an optional count, and those whose argument runs to the
+# end of the line (r and R read the file it names) or to a `;` (a label); a, i, and c take text to the end of the line,
+# its lines joined by a backslash before each newline.
+SED_PLAIN_COMMANDS = frozenset("=dDgGhHnNpPxzF{}")
+SED_COUNTED_COMMANDS = frozenset("qQlL")
+SED_LINE_COMMANDS = frozenset("rR")
+SED_LABEL_COMMANDS = frozenset("btT:v")
+SED_TEXT_COMMANDS = frozenset("aic")
+# The flags an s command takes besides w, which writes the file the rest of the line names, and e, which runs the
+# pattern space as a command.
+SED_SUBSTITUTE_FLAGS = frozenset("gpiImM0123456789 \t")
+# The prefixes a package manager installs a build of these programs under beside the system's own: Homebrew's GNU
+# coreutils and sed take a g, as gcp and gsed, and its uutils coreutils a u, as ucp.
+BUILD_PREFIXES = ("g", "u")
 # pwsh's options that change nothing the guard reads before -Command.
 PWSH_QUIET = frozenset({"-noprofile", "-noninteractive", "-nologo"})
 # The variables an assignment before git may give it, each with the values it may take, or none for any literal
@@ -776,6 +871,7 @@ GIT_READ_NAMES: dict[str, str] = {
     "PAGER": "names the pager git runs when no setting or GIT_PAGER names one",
     **dict.fromkeys(("EDITOR", "VISUAL"), "names the editor git runs when no setting or GIT_EDITOR names one"),
     "SSH_ASKPASS": "names the program git runs to ask for a credential when GIT_ASKPASS is unset",
+    KEY_LOG_VARIABLE: "names the file libcurl, which git's https transport runs, writes each TLS session's keys to",
 }
 # The prefixes of the names the dynamic loader reads as any program starts, git among them, which may load code into it.
 LOADER_PREFIXES = ("LD_", "DYLD_")
@@ -1032,26 +1128,102 @@ POWERSHELL_FUNCTIONS = frozenset(
         *(f"{letter}:" for letter in "ABCDEFGHIJKLMNOPQRSTUVWXYZ"),
     )
 )
-POWERSHELL_VERBS = frozenset(
-    name.lower()
-    for name in (
-        *("Add", "Approve", "Assert", "Backup", "Block", "Build", "Checkpoint", "Clear", "Close", "Compare"),
-        *("Complete", "Compress", "Confirm", "Connect", "Convert", "ConvertFrom", "ConvertTo", "Copy", "Debug", "Deny"),
-        *("Deploy", "Disable", "Disconnect", "Dismount", "Edit", "Enable", "Enter", "Exit", "Expand", "Export"),
-        *("Find", "Format", "Get", "Grant", "Group", "Hide", "Import", "Initialize", "Install", "Invoke", "Join"),
-        *("Limit", "Lock", "Measure", "Merge", "Mount", "Move", "New", "Open", "Optimize", "Out", "Ping", "Pop"),
-        *("Protect", "Publish", "Push", "Read", "Receive", "Redo", "Register", "Remove", "Rename", "Repair"),
-        *("Request", "Reset", "Resize", "Resolve", "Restart", "Restore", "Resume", "Revoke", "Save", "Search"),
-        *("Select", "Send", "Set", "Show", "Skip", "Split", "Start", "Step", "Stop", "Submit", "Suspend", "Switch"),
-        *("Sync", "Test", "Trace", "Unblock", "Undo", "Uninstall", "Unlock", "Unprotect", "Unpublish", "Unregister"),
-        *("Update", "Use", "Wait", "Watch", "Write"),
-    )
-)
 # Of them, those that write or remove what their path names, which on the environment provider sets or removes a
 # variable git reads.
 POWERSHELL_WRITING_COMMANDS = frozenset(
     {"set-content", "add-content", "out-file", "new-item", "copy-item", "move-item", "remove-item", "mkdir"}
 )
+# Of them, the parameters each binds a value given by position to, in order; a value past them is read as a path. The
+# one Copy-Item and Move-Item copy or move from, and the one each other writes, is "path", whichever name binds it.
+POWERSHELL_POSITIONS: dict[str, tuple[str, ...]] = {
+    **dict.fromkeys(("set-content", "add-content"), ("path", "value")),
+    "out-file": ("path", "encoding"),
+    **dict.fromkeys(("copy-item", "move-item"), ("path", "destination")),
+    **dict.fromkeys(("new-item", "mkdir", "remove-item"), ("path",)),
+}
+# Their own parameters, each with its aliases, held to Get-Command, and the common parameters every cmdlet takes:
+# PowerShell binds a parameter written as its name or an alias, or as a prefix that names one of the cmdlet's own
+# parameters alone, or, where it names none of them, one common parameter alone (powershell_parameter).
+POWERSHELL_COMMON_PARAMETERS: dict[str, tuple[str, ...]] = {
+    "verbose": ("vb",),
+    "debug": ("db",),
+    "erroraction": ("ea",),
+    "warningaction": ("wa",),
+    "informationaction": ("infa",),
+    "progressaction": ("proga",),
+    "errorvariable": ("ev",),
+    "warningvariable": ("wv",),
+    "informationvariable": ("iv",),
+    "outvariable": ("ov",),
+    "outbuffer": ("ob",),
+    "pipelinevariable": ("pv",),
+    "whatif": ("wi",),
+    "confirm": ("cf",),
+}
+_CONTENT_PARAMETERS: dict[str, tuple[str, ...]] = {
+    **dict.fromkeys(("value", "passthru", "path", "filter", "include", "exclude", "force", "credential"), ()),
+    # Stream, the file-system provider's on Windows, names an alternate data stream of the path.
+    **dict.fromkeys(("nonewline", "encoding", "asbytestream", "stream"), ()),
+    "literalpath": ("pspath", "lp"),
+}
+_ITEM_PARAMETERS: dict[str, tuple[str, ...]] = {
+    **dict.fromkeys(("path", "filter", "include", "exclude", "force", "credential"), ()),
+    "literalpath": ("pspath", "lp"),
+}
+POWERSHELL_CMDLET_PARAMETERS: dict[str, dict[str, tuple[str, ...]]] = {
+    "set-content": _CONTENT_PARAMETERS,
+    "add-content": _CONTENT_PARAMETERS,
+    "copy-item": {
+        **_ITEM_PARAMETERS,
+        **dict.fromkeys(("destination", "container", "recurse", "passthru", "fromsession", "tosession"), ()),
+    },
+    "move-item": {**_ITEM_PARAMETERS, **dict.fromkeys(("destination", "passthru"), ())},
+    "remove-item": {**_ITEM_PARAMETERS, "recurse": (), "stream": ()},
+    "new-item": {
+        **dict.fromkeys(("path", "name", "force", "credential"), ()),
+        "itemtype": ("type",),
+        "value": ("target",),
+    },
+    "mkdir": dict.fromkeys(("path", "name", "value", "force", "credential"), ()),
+    "out-file": {
+        "filepath": ("path",),
+        "literalpath": ("pspath", "lp"),
+        **dict.fromkeys(("encoding", "append", "force", "width", "nonewline", "inputobject"), ()),
+        "noclobber": ("nooverwrite",),
+    },
+}
+# Of those, the parameters whose value is a path they write, read, or create; New-Item's -Name is joined to each path
+# it is given. The ones that bind "path" are POWERSHELL_PATH_BINDING, the literal ones, whose value is no wildcard
+# pattern, POWERSHELL_LITERAL_PATHS.
+POWERSHELL_PATH_PARAMETERS = frozenset({"path", "literalpath", "filepath", "destination", "name"})
+POWERSHELL_PATH_BINDING = frozenset({"path", "literalpath", "filepath"})
+POWERSHELL_LITERAL_PATHS = frozenset({"literalpath"})
+# Their parameters that take a value which is no path, and those that take none; a parameter neither names is read
+# as taking no value, so the value after it is read as one given by position, a path.
+POWERSHELL_DATA_PARAMETERS = frozenset(
+    {
+        *("value", "encoding", "itemtype", "filter", "include", "exclude", "credential", "stream", "width"),
+        *("inputobject", "tosession", "fromsession", "erroraction", "warningaction", "informationaction"),
+        *("errorvariable", "warningvariable", "informationvariable", "outvariable", "outbuffer", "pipelinevariable"),
+        "progressaction",
+    }
+)
+# The common parameters that take a value, which is no path.
+POWERSHELL_COMMON_DATA = frozenset(
+    name for name in POWERSHELL_COMMON_PARAMETERS if name not in {"verbose", "debug", "whatif", "confirm"}
+)
+POWERSHELL_SWITCHES = frozenset(
+    {
+        *("force", "recurse", "passthru", "nonewline", "append", "noclobber", "whatif", "confirm", "asbytestream"),
+        *("container", "verbose", "debug", "usetransaction"),
+    }
+)
+# The item types New-Item makes that are no link, each of which its file-system provider takes by any prefix of its
+# name; any other, as SymbolicLink, Junction, or HardLink, makes a link (LINK_PROGRAMS).
+POWERSHELL_ITEM_TYPES = ("file", "directory")
+# The characters a PowerShell path given to -Path, or by position, matches as a wildcard pattern, which pwsh off Windows
+# also expands in a native program's word.
+POWERSHELL_WILDCARDS = re.compile(r"[*?\[]")
 # A PowerShell path on a provider other than the file system: a drive whose name is more than one letter, such as
 # env:, alias:, or HKLM:, or a provider-qualified path such as Environment::.
 PROVIDER_PATH = re.compile(r"^(?:(?:[\w.]+\\)?[A-Za-z]\w*::|[A-Za-z][\w-]+:)")
@@ -1191,6 +1363,10 @@ CONFIGURED_TRACE_IT = (
     "No command can change the git configuration here: remove {name} from it from a terminal, or restart the session "
     "from an environment that sets {variable} to 0, which outranks it."
 )
+CONFIGURED_WRITE_IT = (
+    "No command can change the git configuration here: remove {name} from it from a terminal, then run the command "
+    "again."
+)
 UNREAD_CONFIGURATION_IT = "Repair the git configuration from a terminal, then run the command again."
 # The refusal the guard gives when its own reason holds what JSON cannot carry, such as a lone surrogate.
 UNWRITABLE_REASON = f"The guard refused this command for a reason that holds what JSON cannot carry. {DENY_REASON}"
@@ -1322,12 +1498,16 @@ def git_builtins() -> frozenset[str]:
 
 
 def hub_protected(path: Path) -> bool:
-    """Whether path lies in the tracked surface of a guarded hub or anywhere in its git directory (protecting_hub).
+    """Whether path lies in the tracked surface of a guarded hub or anywhere in its git directory (protecting_hub), as
+    written or with every link on the way to it followed, since a write through a link reaches what the link names.
 
     A checkout or git directory git answers with an error for may be a guarded hub's, so it is protected; where git
     did not run or finish, the GitError goes to the hook, which allows the edit with a note."""
     try:
-        return protecting_hub(path) is not None
+        if protecting_hub(path) is not None:
+            return True
+        real = Path(os.path.realpath(path))
+        return real != Path(os.path.normpath(path)) and protecting_hub(real) is not None
     except GitError as exc:
         if not exc.answered:
             raise
@@ -1413,20 +1593,32 @@ class GitCall:
         return self.place.tree
 
 
+@dataclass(frozen=True)
+class Write:
+    """A file a command writes at a path its text names, and what a refusal says writes it, as `The command redirects
+    its output into`; for a pattern, path is the folder every file it matches lies in."""
+
+    path: Path
+    opening: str
+    pattern: bool = False
+
+
 @dataclass
 class Reading:
-    """What the guard read from one command: the git calls it makes, in order, the files its redirections write,
-    the parts of it the guard does not read, which are refused while a guarded hub is in view, the paths it names,
-    and notes on what it passed over."""
+    """What the guard read from one command: the git calls it makes, in order, the files its redirections, programs,
+    and cmdlets write, the parts of it the guard does not read, which are refused while a guarded hub is in view, the
+    paths it names, and notes on what it passed over."""
 
     environment: Mapping[str, str]
     text: str = ""
     calls: list[GitCall] = field(default_factory=list)
-    writes: list[Path] = field(default_factory=list)
+    writes: list[Write] = field(default_factory=list)
     unread: list[str] = field(default_factory=list)
     named: list[str] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
     context_hubs: set[Path] = field(default_factory=set)
+    # The session's own directory and project, where git may read the configuration otherwise than the guard does.
+    places: list[Path] = field(default_factory=list)
     # When the guard's reading time ends, by reading_clock.
     deadline: float = math.inf
 
@@ -2687,6 +2879,14 @@ class WrittenTarget:
     path: Path | None
     # Why a target the guard cannot place may lie in a guarded hub, as a refusal says it.
     unplaced: str = "a file git writes that the guard cannot place, which may lie in a guarded hub"
+    # What writes there, as a refusal names it.
+    writer: str = "every git a command starts, a program's own included,"
+
+
+# What writes a file the session's environment or configuration names beyond git's trace and output files.
+TLS_WRITER = "every https call a command makes, a git call's or another program's,"
+COOKIE_WRITER = "every https git call a command starts, a program's own included,"
+SOCKET_WRITER = "git's file-system monitor, which a git call a command starts may start,"
 
 
 def placed_file(value: str) -> Path | None:
@@ -2699,11 +2899,19 @@ def placed_file(value: str) -> Path | None:
 def written_targets(variables: Mapping[str, str]) -> list[WrittenTarget]:
     """The files the inherited environment names for git to write its trace or its output to, by the name git reads
     (folded): the absolute path a GIT_TRACE variable names (TRACE_VARIABLE), and every value of a REDIRECT_VARIABLES
-    one but those that name no file. A path the guard cannot place is one this platform does not read as absolute, and
-    a relative one git for Windows reads from where it starts."""
+    one but those that name no file; and the file KEY_LOG_VARIABLE names for libcurl, which git's https transport runs,
+    to write its TLS keys to. A path the guard cannot place is one this platform does not read as absolute, and a
+    relative one git for Windows or libcurl reads from where it starts."""
     targets: list[WrittenTarget] = []
     for name, value in sorted(variables.items()):
         if value in DEVICE_FILES:
+            continue
+        if name == KEY_LOG_VARIABLE:
+            if value:
+                named = f"The session's environment holds {name}={value}"
+                remedy = INHERITED_IT.format(name=name)
+                unplaced = "a relative path each program opens from where it starts, which may lie in a guarded hub"
+                targets.append(WrittenTarget(name, named, remedy, placed_file(value), unplaced, TLS_WRITER))
             continue
         if TRACE_VARIABLE.fullmatch(name):
             if not git_writes_trace_at(value):
@@ -2715,16 +2923,19 @@ def written_targets(variables: Mapping[str, str]) -> list[WrittenTarget]:
     return targets
 
 
-def configured_trace_targets(variables: Mapping[str, str]) -> list[WrittenTarget]:
-    """The files the system and global git configuration name for trace2 to write to (TRACE2_SETTINGS), as git reads
-    them with the session's environment, include.path followed, but for a target whose variable holds a value, which
-    outranks the setting. The guard's own git runs with every trace off, so this lookup writes no trace either. A
-    relative path a CONFIGURATION_LOCATIONS variable holds is a target the guard cannot place.
+def configured_written_targets(
+    variables: Mapping[str, str], start: Path | None, places: Iterable[Path] = ()
+) -> list[WrittenTarget]:
+    """The files the git configuration names for git to write to, as git reads them with the session's environment,
+    include.path followed: each trace2 target the system and global configuration name (TRACE2_SETTINGS), but for one
+    whose variable holds a value, which outranks the setting; and, from every scope the guard's own checkout reads, the
+    hub's included, each cookie jar an http cookieFile setting names while an http saveCookies setting is on, and the
+    folder fsmonitor.socketDir names. The guard's own git runs with every trace off, so this lookup writes no trace
+    either. A relative path a CONFIGURATION_LOCATIONS variable holds is a target the guard cannot place, and so is a
+    cookie jar or folder git reads from where it starts, start being the home a leading ~/ names.
 
     Raises GitError where git cannot read the configuration."""
     overridden = {variable for variable in TRACE2_SETTINGS.values() if variables.get(variable)}
-    if len(overridden) == len(TRACE2_SETTINGS):
-        return []
     # A relative path among the variables that locate the system and global configuration is read from wherever each
     # git starts, never from the guard's own directory, so the targets the files there name cannot be placed.
     targets = [
@@ -2739,23 +2950,53 @@ def configured_trace_targets(variables: Mapping[str, str]) -> list[WrittenTarget
         for name in CONFIGURATION_LOCATIONS
         if variables.get(name) and placed_file(variables[name]) is None
     ]
-    pattern = "^(" + "|".join(re.escape(setting) for setting in TRACE2_SETTINGS) + ")$"
-    arguments = ["config", "--includes", "--show-scope", "--null", "--get-regexp", pattern]
-    # Exit 1 with nothing on stderr is git finding no such setting.
-    output = CLIENT.quiet_output(arguments, directory=Path(__file__).resolve().parent, timeout=lookup_timeout())
-    fields = (output or "").split("\0")
-    # Each setting is its scope, then its name and value on two lines, each ended by a NUL.
+    arguments = ["config", "--includes", "--show-scope", "--null", "--get-regexp", CONFIGURED_WRITES]
+    # git reads an includeIf by where it runs, a gitdir or onbranch condition among them, so the settings are asked
+    # from the guard's own checkout and from each place of the session's, its directory, its project, and each hub in
+    # view; exit 1 with nothing on stderr is git finding no such setting.
+    directories: list[Path] = []
+    for directory in (Path(__file__).resolve().parent, *places):
+        if worktrees.is_folder(directory) and not any(same_path(directory, each) for each in directories):
+            directories.append(directory)
+    fields: list[str] = []
+    for directory in directories:
+        output = CLIENT.quiet_output(arguments, directory=directory, timeout=lookup_timeout())
+        # Each setting is its scope, then its name and value on two lines, each ended by a NUL.
+        found = (output or "").split("\0")
+        fields.extend(field for pair in zip(found[0::2], found[1::2], strict=False) for field in pair)
+    cookie_jars: list[WrittenTarget] = []
+    saving = False
+    unplaced = "a path git reads from where each git starts, or expands for itself, which may lie in a guarded hub"
+    # A setting with no value has no second line; one every checkout reads is judged once.
+    seen: set[tuple[str, str]] = set()
     for scope, entry in zip(fields[0::2], fields[1::2], strict=False):
+        if (scope, entry) in seen:
+            continue
+        seen.add((scope, entry))
         setting, has_value, value = entry.partition("\n")
-        variable = TRACE2_SETTINGS.get(setting)
-        if scope not in TRACE2_SCOPES or variable is None or variable in overridden or not has_value:
-            continue
-        if value in DEVICE_FILES or not git_writes_trace_at(value):
-            continue
         named = f"The session's {scope} git configuration sets {setting} to {value}"
-        remedy = CONFIGURED_TRACE_IT.format(name=setting, variable=variable)
-        targets.append(WrittenTarget(setting, named, remedy, placed_file(value)))
-    return targets
+        if SAVE_COOKIES.fullmatch(setting):
+            saving = saving or not has_value or value.strip().lower() not in FALSE_SETTINGS
+        elif COOKIE_FILE.fullmatch(setting) and value and value not in DEVICE_FILES:
+            remedy = CONFIGURED_WRITE_IT.format(name=setting)
+            cookie_jars.append(
+                WrittenTarget(setting, named, remedy, included_file(value, None, start), unplaced, COOKIE_WRITER)
+            )
+        elif setting == SOCKET_DIRECTORY and value:
+            remedy = CONFIGURED_WRITE_IT.format(name=setting)
+            targets.append(
+                WrittenTarget(setting, named, remedy, included_file(value, None, start), unplaced, SOCKET_WRITER)
+            )
+        elif setting in TRACE2_SETTINGS:
+            variable = TRACE2_SETTINGS[setting]
+            if scope not in TRACE2_SCOPES or variable in overridden or not has_value:
+                continue
+            if value in DEVICE_FILES or not git_writes_trace_at(value):
+                continue
+            remedy = CONFIGURED_TRACE_IT.format(name=setting, variable=variable)
+            targets.append(WrittenTarget(setting, named, remedy, placed_file(value)))
+    # git writes a cookie jar back only while a saveCookies setting is on, which may be one for a URL of its own.
+    return targets + (cookie_jars if saving else [])
 
 
 def included_file(value: str, source: Path | None, start: Path | None) -> Path | None:
@@ -2843,11 +3084,9 @@ class Judge:
                     f"hub is guarded. {REWRITE_IT}"
                 )
             self.notes.extend(reading.unread)
-        for path in reading.writes:
+        for write in reading.writes:
             reading.time_left()
-            if hub_protected(path):
-                return f"The command redirects its output into {path}, a file of a guarded hub."
-            reason = self.configuration_write_refusal(path, "The command redirects its output into")
+            reason = self.write_refusal(write)
             if reason is not None:
                 return reason
         for call in reading.calls:
@@ -2915,38 +3154,38 @@ class Judge:
             self.notes.append(f"could not tell where the index of {named} lies")
         return None
 
-    def session_written_refusal(self) -> str | None:
-        """Why every command is refused for a file the session's environment has git write its trace or its output to:
-        one an inherited variable names (written_targets) or the system or global configuration names for trace2
-        (configured_trace_targets). The environment reaches every git the command starts, a program's own and a `gh`
-        subcommand's among them, which the text does not show, and no git call is ever owed a trace in a hub, so a
-        file that lies in a guarded hub refuses the command whatever it holds; one the guard cannot place, or a
-        configuration git cannot read, is refused while a hub is guarded and otherwise noted."""
+    def session_written_refusal(self, places: Iterable[Path] = ()) -> str | None:
+        """Why every command is refused for a file the session's environment or configuration has git write: its
+        trace or its output, or the keys of a TLS session, where an inherited variable names it (written_targets), or
+        a trace2 target, a cookie jar, or the folder of a file-system monitor's socket, where the configuration names
+        it (configured_written_targets). The environment and the configuration reach every git the command starts, a
+        program's own and a `gh` subcommand's among them, which the text does not show, and no git call is ever owed
+        such a file in a hub, so one that lies in a guarded hub refuses the command whatever it holds; one the guard
+        cannot place, or a configuration git cannot read, is refused while a hub is guarded and otherwise noted."""
         variables = {folded(name): value for name, value in self.environment.items()}
         targets = written_targets(variables)
         try:
-            targets += configured_trace_targets(variables)
+            targets += configured_written_targets(variables, home(self.environment), [*places, *sorted(self.hubs)])
         except GitError as exc:
             if self.hubs:
                 return (
-                    f"The guard could not read the trace2 targets the git configuration names ({exc}), and every git "
-                    f"a command starts would write to them, so every command is refused while a hub is guarded. "
-                    f"{UNREAD_CONFIGURATION_IT}"
+                    f"The guard could not read the files the git configuration names for git to write ({exc}), and "
+                    "every git a command starts would write to them, so every command is refused while a hub is "
+                    f"guarded. {UNREAD_CONFIGURATION_IT}"
                 )
-            self.notes.append("could not read the trace2 targets the git configuration names")
+            self.notes.append("could not read the files the git configuration names for git to write")
         for target in targets:
             if target.path is None:
                 if self.hubs:
                     return (
-                        f"{target.named}, {target.unplaced}, and every git a command starts, a program's own "
-                        f"included, would write there, so every command is refused while a hub is guarded. "
-                        f"{target.remedy}"
+                        f"{target.named}, {target.unplaced}, and {target.writer} would write there, so every command "
+                        f"is refused while a hub is guarded. {target.remedy}"
                     )
                 self.notes.append(f"could not tell where {target.source} has git write")
             elif hub_protected(target.path):
                 return (
-                    f"{target.named}, and every git a command starts, a program's own included, writes there, into a "
-                    f"file of a guarded hub, so every command is refused while it does. {target.remedy}"
+                    f"{target.named}, and {target.writer} writes there, into a file of a guarded hub, so every "
+                    f"command is refused while it does. {target.remedy}"
                 )
         return None
 
@@ -3059,12 +3298,29 @@ class Judge:
             return f"`git {call.subcommand}` writes {path}, a file of a guarded hub."
         return self.configuration_write_refusal(path, f"`git {call.subcommand}` writes")
 
+    def write_refusal(self, write: Write) -> str | None:
+        """Why a file a redirection, a program, or a cmdlet writes at a path the text names is refused: one in a guarded
+        hub's tracked files or anywhere in its git directory, a link followed, and, while a hub is guarded, one git
+        reads its system or global configuration from. For a pattern, the folder its matches lie in is judged: one in
+        a guarded hub, one holding a guarded hub in view, and, while a hub is guarded, one holding a file git reads
+        its configuration from."""
+        opening = f"{write.opening} the files a pattern matches in" if write.pattern else write.opening
+        if hub_protected(write.path):
+            what = "a folder" if write.pattern else "a file"
+            return f"{opening} {write.path}, {what} of a guarded hub."
+        # A folder holds what a recursive removal, a move, a mode change, or a copy into it reaches.
+        folder = Path(os.path.realpath(write.path))
+        hub = next((hub for hub in sorted(self.hubs) if within(hub, folder)), None)
+        if hub is not None:
+            return f"{opening} {write.path}, which holds the guarded hub {hub}."
+        return self.configuration_write_refusal(write.path, opening)
+
     def configuration_write_refusal(self, path: Path, writer: str) -> str | None:
         """Why a file a command writes is refused, while a hub is guarded, for being one git reads its system or global
-        configuration from (configuration_files): a trace2 target or another setting written there reaches every git
-        the rest of the command starts, a program's own included, though the guard judged the configuration before the
-        command ran. Where git cannot name those files, or the guard cannot place one, every file a command writes is
-        refused while a hub is guarded."""
+        configuration from (configuration_files), or a folder holding one: a trace2 target or another setting written
+        there reaches every git the rest of the command starts, a program's own included, though the guard judged the
+        configuration before the command ran. Where git cannot name those files, or the guard cannot place one, every
+        file a command writes is refused while a hub is guarded."""
         if not self.hubs:
             return None
         if self.configuration is None:
@@ -3081,7 +3337,14 @@ class Judge:
                 f"from, which may be this one, so it is refused while a hub is guarded. {UNREAD_CONFIGURATION_IT}"
             )
         written = Path(os.path.realpath(path))
-        if any(file is not None and same_path(written, file) for file in self.configuration):
+        files = [file for file in self.configuration if file is not None]
+        if not any(same_path(written, file) for file in files) and any(within(file, written) for file in files):
+            return (
+                f"{writer} {path}, which holds a file git reads its system or global configuration from, and a "
+                "setting written there, such as a trace2 target in a hub, reaches every git the rest of the command "
+                "starts, so it is refused while a hub is guarded. Change the git configuration from a terminal."
+            )
+        if any(same_path(written, file) for file in files):
             return (
                 f"{writer} {path}, a file git reads its system or global configuration from, and a setting written "
                 "there, such as a trace2 target in a hub, reaches every git the rest of the command starts, so it is "
@@ -3211,7 +3474,7 @@ def denied(reading: Reading, hubs: Iterable[Path] = (), depth: int = 0) -> str |
     """Why a reading's calls would write a guarded hub, or None; notes on what was passed over join the reading's."""
     judge = Judge(set(hubs), reading.environment, reading.notes, reading.deadline)
     with lookups_within(reading.deadline):
-        return judge.session_written_refusal() or judge.denied(reading, depth)
+        return judge.session_written_refusal(reading.places) or judge.denied(reading, depth)
 
 
 # ---------------------------------------------------------------------------------------------------------------
@@ -3510,10 +3773,24 @@ class BashReader:
 
     def target_value(self, word: bash_syntax.Word) -> Word:
         """A redirection target the text settles but for the system's temporary folder, named by a variable
-        TEMPORARY_VARIABLES lists that the environment holds; None for any other."""
+        TEMPORARY_VARIABLES lists that the environment holds; None for any other, a pattern among them."""
+        value, pattern = self.written_value(word)
+        return None if pattern else value
+
+    def written_value(self, word: bash_syntax.Word) -> tuple[Word, bool]:
+        """A word a file is written at, read as a redirection target is (target_value), with whether it is a pattern:
+        for a word whose unquoted text holds a wildcard, the folder every file it matches lies in (pattern_folder);
+        (None, False) where the text does not settle it, a brace expansion among them, which may name any path."""
         pieces: list[str] = []
         for part in word.parts:
-            if part.kind == "text" and (part.quoted or not (GLOB.search(part.text) or BRACE.search(part.text))):
+            if part.kind == "text" and not part.quoted:
+                if BRACE.search(part.text):
+                    return None, False
+                wildcard = GLOB.search(part.text)
+                if wildcard is not None:
+                    return pattern_folder("".join(pieces) + part.text[: wildcard.start()]), True
+                pieces.append(part.text)
+            elif part.kind == "text":
                 pieces.append(part.text)
             elif part.kind == "home" and self.start.home is not None:
                 pieces.append(str(self.start.home))
@@ -3524,8 +3801,8 @@ class BashReader:
             ):
                 pieces.append(self.reading.environment[part.text])
             else:
-                return None
-        return "".join(pieces)
+                return None, False
+        return "".join(pieces), False
 
     def read_simple(self, node: bash_syntax.Simple, directory: Directory) -> Outcome:
         words = node.words
@@ -3547,7 +3824,7 @@ class BashReader:
                 prefixes.append((assignment.name, self.word_value(bash_syntax.Word("", assignment.value))))
         if index == len(words):
             return certain(directory)
-        return self.read_command_words(values[index:], directory, prefixes)
+        return self.read_command_words(values[index:], directory, prefixes, words[index + 1 :])
 
     def read_prefixes(self, prefixes: list[tuple[str, Word]], git: bool) -> None:
         """The assignments before a command, which its environment holds while it runs: before git, only those
@@ -3565,8 +3842,14 @@ class BashReader:
                 self.reading.cannot_read(f"assigns {name} before a command, which Bash or git reads")
 
     def read_command_words(
-        self, values: list[Word], directory: Directory, prefixes: list[tuple[str, Word]] | None = None
+        self,
+        values: list[Word],
+        directory: Directory,
+        prefixes: list[tuple[str, Word]] | None = None,
+        arguments_written: list[bash_syntax.Word] | None = None,
     ) -> Outcome:
+        """A command's words, its name first; arguments_written are its arguments as the text writes them, from which
+        a program that writes files is read with each pattern's folder (written_value)."""
         name, arguments = values[0], values[1:]
         prefixes = list(prefixes or [])
         if name is None:
@@ -3603,6 +3886,13 @@ class BashReader:
             if reason is not None:
                 self.reading.cannot_read(reason)
                 return certain(UNKNOWN)
+        elif writer_name(program) is not None:
+            written = (
+                [(value, False) for value in arguments]
+                if arguments_written is None
+                else [self.written_value(word) for word in arguments_written]
+            )
+            read_program_writes(writer_name(program) or program, written, directory, self.reading)
         return certain(directory)
 
     def read_runner(
@@ -3834,6 +4124,7 @@ def read_runner_words(
     reading: Reading,
     script: Callable[[], str | None],
     variables: Iterable[str] = (),
+    native: bool = False,
 ) -> Outcome:
     """A runner, read the same from Bash and PowerShell: refused where runner_refusal or, for bash and pwsh, script
     refuses it, or where the command it starts is a program PROGRAM_OPTIONS names that runner_command_refusal refuses;
@@ -3868,7 +4159,21 @@ def read_runner_words(
     if program in RUNNER_OPTIONS:
         # The runner's command is where its option reading stopped, so an option's value is never taken for gh.
         stop = option_refusal(RUNNER_OPTIONS[program], arguments).stop
-        start = stop if stop < len(arguments) and command_name(arguments[stop] or "") == "gh" else None
+        command = command_name(arguments[stop] or "") if stop < len(arguments) else None
+        writer = writer_name(command or "")
+        if writer is not None:
+            if program in INPUT_RUNNERS:
+                # Words from its input follow the program's own, and may name any file, a hub's among them.
+                reading.cannot_read(
+                    f"runs {program}: {program} hands {command} words from its input, which may name a file"
+                )
+                return certain(UNKNOWN)
+            # chroot runs its command inside another tree, where no path the text names is the one it writes; pwsh
+            # hands a native program its words as native_written reads them.
+            read = native_written if native else (lambda word: (word, False))
+            written = [(None, False) if program == "chroot" else read(word) for word in arguments[stop + 1 :]]
+            read_program_writes(writer, written, directory, reading)
+        start = stop if stop < len(arguments) and command == "gh" else None
         if start is not None and program in INPUT_RUNNERS:
             # Words from its input follow gh's own, and may make any subcommand of it one that checks a branch out.
             reading.cannot_read(f"runs {program}: {program} runs gh with words from its input, which may check out")
@@ -3998,19 +4303,441 @@ def shell_script(program: str, arguments: list[Word]) -> str | None:
     return None
 
 
-def read_written(value: Word, directory: Directory, reading: Reading) -> None:
-    """A file a redirection writes: one the text places in a guarded hub is refused, as a file tool's edit is, and so
-    is one whose path or directory the text does not settle, which may lie in one."""
+REDIRECTION = ("a redirection", "The command redirects its output into")
+
+
+def read_written(
+    value: Word,
+    directory: Directory,
+    reading: Reading,
+    writer: tuple[str, str] = REDIRECTION,
+    pattern: bool = False,
+) -> None:
+    """A file a redirection, a program, or a cmdlet writes, writer naming what writes it in a part the guard does not
+    read and in a refusal: one the text places in a guarded hub is refused, as a file tool's edit is
+    (Judge.write_refusal), and so is one whose path or directory the text does not settle, which may lie in one. For a
+    pattern, value is the folder every file it matches lies in (pattern_folder)."""
+    named, opening = writer
     if value is None:
-        reading.cannot_read("a redirection writes a file the text does not settle, which may lie in a hub")
+        reading.cannot_read(f"{named} writes a file the text does not settle, which may lie in a hub")
         return
     if value in DEVICE_FILES:
         return
     path = Path(platform_support.from_shell_path(value))
     if not path.is_absolute() and directory.cwd is None:
-        reading.cannot_read(f"a redirection writes {value} in a directory the text does not settle")
+        reading.cannot_read(f"{named} writes {value} in a directory the text does not settle")
     else:
-        reading.writes.append(path if path.is_absolute() else (directory.cwd or Path()) / path)
+        reading.writes.append(Write(path if path.is_absolute() else (directory.cwd or Path()) / path, opening, pattern))
+
+
+def pattern_folder(prefix: str) -> str:
+    """The folder every file a pattern matches lies in, given the text before its first wildcard: that text up to its
+    last separator, which a wildcard never matches, or `.`, the directory the command runs in, where it holds none."""
+    cut = max(prefix.rfind("/"), prefix.rfind("\\"))
+    return "." if cut < 0 else prefix[: cut + 1]
+
+
+def program_writer(program: str) -> tuple[str, str]:
+    return f"`{program}`", f"`{program}` writes"
+
+
+def written_words(program: str, words: Sequence[tuple[Word, bool]]) -> list[tuple[Word, bool]]:
+    """The words of a WRITING_PROGRAMS program that may name a file it writes, each with whether it is the folder of a
+    pattern: every operand, a word after `--` among them; the value of a long option after its `=`; and in a bundle
+    of letters, the rest of the word after its first letter the program's flags do not name, which may be that
+    option's value, the next word, when it takes one, being an operand anyway. dd writes only at its `of=` operand,
+    and sed only in place (sed_in_place). A word the text does not settle may be any of these."""
+    if program == "dd":
+        return [
+            (None if pattern or word is None else word.partition("=")[2], False)
+            for word, pattern in words
+            if pattern or word is None or word.partition("=")[0] == "of"
+        ]
+    if program == "sed" and not sed_in_place(words):
+        return []
+    flags = WRITING_PROGRAMS[program]
+    found: list[tuple[Word, bool]] = []
+    operands = False
+    for word, pattern in words:
+        if pattern or word is None or operands or not word.startswith("-"):
+            if pattern or word != "":
+                found.append((word, pattern))
+        elif word == "--":
+            operands = True
+        elif word.startswith("--"):
+            _, assigned, value = word.partition("=")
+            if assigned and value:
+                found.append((value, False))
+        elif flags is not None:
+            position = next((index for index, letter in enumerate(word[1:], 1) if letter not in flags), None)
+            if position is not None and word[position + 1 :]:
+                found.append((word[position + 1 :], False))
+    return found
+
+
+def sed_in_place(words: Sequence[tuple[Word, bool]]) -> bool:
+    """Whether sed rewrites the files it is given (SED_IN_PLACE): an option before `--` that is -i or -I, alone or
+    in a bundle before any letter that takes a value, a letter neither a flag nor one of those, a long option that
+    is a prefix of --in-place, or a word the text does not settle, which may be any of these."""
+    letters, valued, long_name = SED_IN_PLACE
+    flags = WRITING_PROGRAMS["sed"] or ""
+    for word, pattern in words:
+        if pattern:
+            continue
+        if word is None:
+            return True
+        if word == "--":
+            return False
+        if word.startswith("--"):
+            name = word[2:].partition("=")[0]
+            if name and long_name.startswith(name):
+                return True
+        elif word.startswith("-"):
+            for letter in word[1:]:
+                if letter in letters or (letter not in flags and letter not in valued):
+                    return True
+                if letter in valued:
+                    break
+    return False
+
+
+def makes_link(program: str, words: Sequence[tuple[Word, bool]]) -> bool:
+    """Whether a WRITING_PROGRAMS program is given an option LINK_OPTIONS names, before `--`: a letter of a bundle
+    before any letter that takes a value, or a long option that is a prefix of one of its names."""
+    if program not in LINK_OPTIONS:
+        return False
+    letters, names = LINK_OPTIONS[program]
+    flags = WRITING_PROGRAMS[program] or ""
+    for word, pattern in words:
+        if pattern or word is None or not word.startswith("-"):
+            continue
+        if word == "--":
+            return False
+        if word.startswith("--"):
+            name = word[2:].partition("=")[0]
+            if name and any(each.startswith(name) for each in names):
+                return True
+            continue
+        for letter in word[1:]:
+            if letter in letters:
+                return True
+            if letter not in flags:
+                break
+    return False
+
+
+def read_program_writes(
+    program: str, words: Sequence[tuple[Word, bool]], directory: Directory, reading: Reading
+) -> None:
+    """A program WRITING_PROGRAMS or LINK_PROGRAMS names, read the same from Bash and PowerShell, its words each with
+    whether it is the folder of a pattern: one that makes a link is a part the guard does not read, since a write
+    through the link later in the command reaches a place the guard placed before it existed; every other word that
+    may name a file it writes (written_words) is judged as a redirection's target is."""
+    if program in LINK_PROGRAMS:
+        reading.cannot_read(
+            f"{program} {LINK_PROGRAMS[program]}, through which a later write reaches a place the guard cannot follow"
+        )
+        return
+    if makes_link(program, words):
+        reading.cannot_read(
+            f"{program} is given an option that makes a link, through which a later write reaches a place the guard "
+            "cannot follow"
+        )
+        return
+    if program == "sed":
+        reason, scripted = sed_writes(words)
+        if reason is not None:
+            reading.cannot_read(reason)
+            return
+        for name in scripted:
+            read_written(name, directory, reading, program_writer(program))
+    for value, pattern in written_words(program, words):
+        read_written(value, directory, reading, program_writer(program), pattern)
+
+
+def writer_name(program: str) -> str | None:
+    """The name WRITING_PROGRAMS or LINK_PROGRAMS keeps for a program: its own, or, for a build a package manager
+    installs under a prefix BUILD_PREFIXES names, as gcp, gsed, or ucp, the name after the prefix; None for any
+    other."""
+    names = WRITING_PROGRAMS.keys() | LINK_PROGRAMS.keys()
+    if program in names:
+        return program
+    return next((program[1:] for prefix in BUILD_PREFIXES if program[:1] == prefix and program[1:] in names), None)
+
+
+@dataclass
+class SedOptions:
+    """sed's words as one build reads its options (SED_BUILDS): the scripts it runs, a script the text does not settle
+    being None, whether one comes from a script file, and its operands; refused is set where the build refuses them,
+    so sed runs nothing."""
+
+    build: str
+    words: Sequence[tuple[Word, bool]]
+    scripts: list[Word] = field(default_factory=list)
+    script_file: bool = False
+    operands: list[Word] = field(default_factory=list)
+    refused: bool = False
+    index: int = 0
+
+    def next_value(self) -> Word:
+        """The word after an option that takes one; a pattern is not settled, and none at all refuses the options."""
+        if self.index >= len(self.words):
+            self.refused = True
+            return None
+        word, pattern = self.words[self.index]
+        self.index += 1
+        return None if pattern else word
+
+    def take(self, option: str, value: Word) -> None:
+        if option in {"e", "expression"}:
+            self.scripts.append(value)
+        self.script_file = self.script_file or option in {"f", "file"}
+
+    def read_long(self, word: str) -> None:
+        name, assigned, value = word[2:].partition("=")
+        matches = (
+            [name] if name in SED_LONG_OPTIONS else [option for option in SED_LONG_OPTIONS if option.startswith(name)]
+        )
+        if self.build != "gnu" or not name or len(matches) != 1:
+            self.refused = True
+            return
+        if SED_LONG_OPTIONS[matches[0]]:
+            self.take(matches[0], value if assigned else self.next_value())
+
+    def read_bundle(self, word: str) -> None:
+        flags, valued, optional = SED_BUILDS[self.build]
+        for position, letter in enumerate(word[1:], 1):
+            if letter in optional:
+                return
+            if letter in valued:
+                self.take(letter, word[position + 1 :] or self.next_value())
+                return
+            if letter not in flags:
+                self.refused = True
+                return
+
+    def read(self) -> SedOptions:
+        ended = False
+        while self.index < len(self.words) and not self.refused:
+            word, pattern = self.words[self.index]
+            self.index += 1
+            if pattern or ended or word is None or not word.startswith("-") or word == "-":
+                self.operands.append(None if pattern else word)
+                # BSD sed reads no option after its first operand.
+                ended = ended or self.build == "bsd"
+            elif word == "--":
+                ended = True
+            elif word.startswith("--"):
+                self.read_long(word)
+            else:
+                self.read_bundle(word)
+        if not self.scripts and not self.script_file:
+            if self.operands:
+                self.scripts.append(self.operands[0])
+            else:
+                self.refused = True
+        return self
+
+
+def sed_writes(words: Sequence[tuple[Word, bool]]) -> tuple[str | None, list[str]]:
+    """Why sed is a part the guard does not read, or the files its scripts write, read as each build of it reads its
+    options (SedOptions) and its script as GNU sed, whose commands hold BSD sed's (SedScript): a script file, a script
+    the text does not settle, and a script that runs a command are parts the guard does not read; a build that refuses
+    the options or the script runs nothing, and where every build does, the guard cannot tell what sed runs."""
+    written: list[str] = []
+    read = False
+    for build in SED_BUILDS:
+        options = SedOptions(build, words).read()
+        if options.refused:
+            continue
+        if options.script_file:
+            return "sed is given a script file, which the guard does not read and which may write a file", []
+        if None in options.scripts:
+            return "sed is given a script the text does not settle, which may write a file or run a command", []
+        scripts = [SedScript(script or "").read() for script in options.scripts]
+        if any(script.refused for script in scripts):
+            continue
+        if any(script.runs for script in scripts):
+            return "sed's script runs a command, by an e command or an s command's e flag, which may be git", []
+        written.extend(name for script in scripts for name in script.written)
+        read = True
+    if not read:
+        return "sed is given options or a script the guard cannot follow, which may write a file", []
+    # Each build that reads the same script names the same files once.
+    return None, list(dict.fromkeys(written))
+
+
+@dataclass
+class SedScript:
+    """What a sed script does that the guard judges, read as GNU sed reads one: whether it runs a command, by an e
+    command or an s command's e flag, and the files its w and W commands and its s commands' w flag write, each the
+    rest of its line. refused is set for a script the guard cannot follow, a command it does not know among them,
+    which sed refuses too."""
+
+    text: str
+    index: int = 0
+    runs: bool = False
+    written: list[str] = field(default_factory=list)
+    refused: bool = False
+
+    def line_end(self, start: int) -> int:
+        found = self.text.find("\n", start)
+        return len(self.text) if found < 0 else found
+
+    def blanks(self) -> None:
+        while self.index < len(self.text) and self.text[self.index] in " \t":
+            self.index += 1
+
+    def delimited(self, start: int, pattern: bool = False) -> int | None:
+        """The index after the part a delimiter at start opens and the same delimiter closes, escapes skipped; None
+        where it does not close on its line. In a pattern, a bracket expression is read whole (bracket_end), since BSD
+        sed reads a delimiter inside one as a member and GNU sed as the pattern's end."""
+        text = self.text
+        if start >= len(text) or text[start] in "\n\\":
+            return None
+        delimiter, position = text[start], start + 1
+        while position < len(text) and text[position] != delimiter:
+            if text[position] == "\n":
+                return None
+            if pattern and text[position] == "[":
+                closed = self.bracket_end(position, delimiter)
+                if closed is None:
+                    return None
+                position = closed
+                continue
+            position += 2 if text[position] == "\\" else 1
+        return position + 1 if position < len(text) else None
+
+    def bracket_end(self, start: int, delimiter: str) -> int | None:
+        """The index after a bracket expression opening at start, read as POSIX reads one: a leading ^ and then a ]
+        are members, and [: :], [= =], and [. .] hold the name between them. None where it does not close on its line
+        or holds the delimiter, which the builds read apart, so the guard cannot tell where the pattern ends."""
+        text = self.text
+        position = start + 1
+        if position < len(text) and text[position] == "^":
+            position += 1
+        if position < len(text) and text[position] == "]":
+            position += 1
+        while position < len(text) and text[position] != "]":
+            if text[position] in ("\n", delimiter):
+                return None
+            if text[position] == "[" and text[position + 1 : position + 2] in (":", "=", "."):
+                close = text.find(text[position + 1] + "]", position + 2)
+                if close < 0 or "\n" in text[position:close] or delimiter in text[position:close]:
+                    return None
+                position = close + 2
+                continue
+            position += 1
+        return position + 1 if position < len(text) else None
+
+    def address(self) -> bool:
+        """Reads one address, a line, $, a step or an offset, or a pattern between delimiters with its flags; False
+        where none stands here, refused where a pattern is not closed."""
+        text = self.text
+        self.blanks()
+        if self.index < len(text) and (text[self.index].isdigit() or text[self.index] in "$+~"):
+            self.index += 1
+            while self.index < len(text) and (text[self.index].isdigit() or text[self.index] == "~"):
+                self.index += 1
+            return True
+        if self.index < len(text) and text[self.index] in "/\\":
+            closed = self.delimited(self.index + 1 if text[self.index] == "\\" else self.index, pattern=True)
+            if closed is None:
+                self.refused = True
+                return False
+            self.index = closed
+            while self.index < len(text) and text[self.index] in "IM":
+                self.index += 1
+            return True
+        return False
+
+    def backslashes_before(self, end: int) -> int:
+        """The length of the run of backslashes that ends just before end."""
+        count = 0
+        while end - count > 0 and self.text[end - count - 1] == "\\":
+            count += 1
+        return count
+
+    def file_name(self, start: int) -> None:
+        """A w command's or flag's file, the rest of the line."""
+        name = self.text[start : self.line_end(start)].strip()
+        if name:
+            self.written.append(name)
+        else:
+            self.refused = True
+        self.index = self.line_end(start)
+
+    def substitute(self, command: str) -> None:
+        """An s or y command's two parts, and an s command's flags."""
+        first = self.delimited(self.index, pattern=command == "s")
+        second = None if first is None else self.delimited(first - 1)
+        if second is None:
+            self.refused = True
+            return
+        self.index = second
+        while command == "s" and self.index < len(self.text) and self.text[self.index] not in ";\n}":
+            flag = self.text[self.index]
+            if flag == "w":
+                self.file_name(self.index + 1)
+                return
+            self.runs = self.runs or flag == "e"
+            self.refused = self.refused or (flag != "e" and flag not in SED_SUBSTITUTE_FLAGS)
+            self.index += 1
+
+    def command(self, command: str) -> None:
+        text = self.text
+        if command in SED_COUNTED_COMMANDS:
+            self.blanks()
+            while self.index < len(text) and text[self.index].isdigit():
+                self.index += 1
+        elif command in "wW":
+            self.file_name(self.index)
+        elif command == "e" or command in SED_LINE_COMMANDS:
+            self.runs = self.runs or command == "e"
+            self.index = self.line_end(self.index)
+        elif command in SED_LABEL_COMMANDS:
+            while self.index < len(text) and text[self.index] not in ";\n":
+                self.index += 1
+        elif command in SED_TEXT_COMMANDS:
+            # The text goes on past a line that ends in an odd run of backslashes, the last escaping the newline; an
+            # even run is escaped backslashes, and the next line is a command.
+            self.index = self.line_end(self.index)
+            while 0 < self.index < len(text) and self.backslashes_before(self.index) % 2:
+                self.index = self.line_end(self.index + 1)
+        elif command in "sy":
+            self.substitute(command)
+        elif command not in SED_PLAIN_COMMANDS:
+            self.refused = True
+
+    def stopped(self) -> bool:
+        """Whether reading has stopped at a part sed refuses; a method, since each step may set it."""
+        return self.refused
+
+    def read(self) -> SedScript:
+        text = self.text
+        while self.index < len(text) and not self.refused:
+            if text[self.index] in " \t\n;":
+                self.index += 1
+                continue
+            if text[self.index] == "#":
+                self.index = self.line_end(self.index)
+                continue
+            # Up to two addresses, joined by a comma, then `!`.
+            if self.address():
+                self.blanks()
+                if self.index < len(text) and text[self.index] == ",":
+                    self.index += 1
+                    self.address()
+            while self.index < len(text) and text[self.index] in " \t!":
+                self.index += 1
+            # An address that does not close, or one with no command after it, is a script sed refuses.
+            if self.index >= len(text):
+                self.refused = True
+            if self.stopped():
+                break
+            self.index += 1
+            self.command(text[self.index - 1])
+        return self
 
 
 def provider_refusal(name: str, cmdlet: str, values: list[Word]) -> str | None:
@@ -4027,12 +4754,57 @@ def provider_refusal(name: str, cmdlet: str, values: list[Word]) -> str | None:
     return None
 
 
+def powershell_parameter(word: str, cmdlet: str) -> tuple[str, str]:
+    """A writing cmdlet's parameter, as PowerShell binds it (POWERSHELL_CMDLET_PARAMETERS), by its kind, "path", "data",
+    or "switch", and its name: the parameter its name or an alias names, or else the one a prefix names alone among the
+    cmdlet's own, or, where it names none of them, among the common ones. A prefix of several, which pwsh refuses as
+    ambiguous and another release may bind, is read as the path among them, one that takes a wildcard first, or else
+    as the item type, which is held to the types that make no link, and else as taking no value, so the value after
+    it is read as one given by position; and so is a prefix of none, which may be a parameter a provider adds."""
+    written = word.lstrip("-").rstrip(":").lower()
+    own = {
+        spelling: name
+        for name, aliases in POWERSHELL_CMDLET_PARAMETERS.get(cmdlet, {}).items()
+        for spelling in (name, *aliases)
+    }
+    common = {spelling: name for name, aliases in POWERSHELL_COMMON_PARAMETERS.items() for spelling in (name, *aliases)}
+    if written in own or written in common:
+        matches = {own.get(written) or common[written]}
+    else:
+        matches = {name for spelling, name in own.items() if written and spelling.startswith(written)}
+        matches = matches or {name for spelling, name in common.items() if written and spelling.startswith(written)}
+    paths = sorted(matches & POWERSHELL_PATH_PARAMETERS, key=lambda name: (name in POWERSHELL_LITERAL_PATHS, name))
+    if paths:
+        return "path", paths[0]
+    if "itemtype" in matches:
+        return "data", "itemtype"
+    if len(matches) == 1:
+        name = next(iter(matches))
+        return ("data" if name in POWERSHELL_DATA_PARAMETERS | POWERSHELL_COMMON_DATA else "switch"), name
+    return "switch", written
+
+
+def native_written(word: Word) -> tuple[Word, bool]:
+    """A native program's word from PowerShell, as a program WRITING_PROGRAMS names is read: a leading ~, which pwsh
+    hands on as written or expands by release, is not settled, and a wildcard, which pwsh off Windows expands, makes
+    the word a pattern, judged by the folder its matches lie in."""
+    if word is None or word.startswith("~"):
+        return None, False
+    wildcard = POWERSHELL_WILDCARDS.search(word)
+    return (word, False) if wildcard is None else (pattern_folder(word[: wildcard.start()]), True)
+
+
 def powershell_command(name: str) -> bool:
-    """Whether PowerShell finds a name among its own commands before it looks for a program: an alias, a function it
-    defines itself, or a cmdlet's or function's verb-noun name."""
+    """Whether PowerShell may find a name among its own commands before it looks for a program: an alias, a function it
+    defines itself, or any name holding a hyphen and no directory, as a cmdlet's or a function's verb-noun name does.
+    A module PowerShell loads on demand may define a function by such a name whatever its verb, as Windows' own
+    BitLocker, DeliveryOptimization, and EventTracing modules define Backup-, Delete-, and Flush- ones, and which
+    modules a machine holds the text does not show. A program's name written with the extension Windows lets a caller
+    add (platform_support.program_name), as dotnet-format.exe, or as a path names the program alone."""
     lowered = name.lower()
-    verb, dash, _ = lowered.partition("-")
-    return lowered in POWERSHELL_ALIASES or lowered in POWERSHELL_FUNCTIONS or bool(dash and verb in POWERSHELL_VERBS)
+    with_extension = platform_support.program_name(lowered) != lowered
+    bare = "-" in lowered and "/" not in lowered and "\\" not in lowered and not with_extension
+    return lowered in POWERSHELL_ALIASES or lowered in POWERSHELL_FUNCTIONS or bare
 
 
 def read_gh(arguments: list[Word], directory: Directory, reading: Reading) -> None:
@@ -4407,13 +5179,14 @@ class PowerShellReader:
         if len(commands) == 1:
             return self.read_command(commands[0], directory)
         moved = False
-        for command in commands:
+        for index, command in enumerate(commands):
             moved = self.may_move(command) or moved
-            self.read_command(command, directory)
+            self.read_command(command, directory, piped=index > 0)
         # Every command of a PowerShell pipeline runs in the session, so a location one sets outlives it.
         return certain(UNKNOWN if moved else directory)
 
-    def read_command(self, command: Any, directory: Directory) -> Outcome:
+    def read_command(self, command: Any, directory: Directory, piped: bool = False) -> Outcome:
+        """One command of a pipeline; piped says an earlier command of it hands this one its input."""
         self.reading.time_left()
         if not isinstance(command, dict):
             return certain(directory)
@@ -4430,9 +5203,12 @@ class PowerShellReader:
                 "a command name the text does not settle, which may be any command, git among them"
             )
             return certain(UNKNOWN)
-        # A name both a cmdlet's alias and a program PROGRAM_OPTIONS reads, as sort, is the program where pwsh gives it
-        # no alias, off Windows.
-        unaliased = command_name(name) in PROGRAM_OPTIONS and not platform_support.POWERSHELL_ALIASES_SHADOW_PROGRAMS
+        # A name both a cmdlet's alias and a program PROGRAM_OPTIONS reads, as sort, or one WRITING_PROGRAMS names, as
+        # cp, is the program where pwsh gives it no alias, off Windows.
+        program = command_name(name) or ""
+        unaliased = not platform_support.POWERSHELL_ALIASES_SHADOW_PROGRAMS and (
+            program in PROGRAM_OPTIONS or (writer_name(program) is not None and name.lower() in POWERSHELL_ALIASES)
+        )
         if name.lower() in POWERSHELL_COMMANDS and not unaliased:
             elements = command.get("elements") or []
             if POWERSHELL_COMMANDS[name.lower()] == "foreach-object" and any(
@@ -4442,8 +5218,7 @@ class PowerShellReader:
                 # ForEach-Object given a name rather than a script block calls the member by that name.
                 self.reading.cannot_read("ForEach-Object given a member's name runs that member, which may run code")
                 return certain(UNKNOWN)
-            return self.read_cmdlet(name, words[1:], directory, self.values(command))
-        program = command_name(name) or ""
+            return self.read_cmdlet(name, words[1:], directory, self.values(command), command, piped)
         if program in GIT_NAMES:
             # A native program is handed ~ as written; whether pwsh expands it first differs by release.
             arguments = [None if word is not None and word.startswith("~") else word for word in words[1:]]
@@ -4455,22 +5230,36 @@ class PowerShellReader:
             return certain(UNKNOWN)
         elif program in RUNNERS:
             # The guard reads a bash or pwsh script only from Bash, so from PowerShell each is refused whatever it runs.
-            return read_runner_words(program, words[1:], directory, self.reading, lambda: RUNNERS[program])
+            return read_runner_words(program, words[1:], directory, self.reading, lambda: RUNNERS[program], native=True)
         elif program in PROGRAM_OPTIONS:
             reason = program_refusal(program, words[1:], self.reading.environment)
             if reason is not None:
                 self.reading.cannot_read(reason)
                 return certain(UNKNOWN)
+        elif writer_name(program) is not None:
+            written = [native_written(word) for word in words[1:]]
+            read_program_writes(writer_name(program) or program, written, directory, self.reading)
         return certain(directory)
 
-    def read_cmdlet(self, name: str, arguments: list[Word], directory: Directory, values: list[Word]) -> Outcome:
-        """A command POWERSHELL_COMMANDS names: one that moves the location is followed, any other changes nothing the
-        guard reads, unless a path it is given lies on a provider other than the file system (provider_refusal)."""
+    def read_cmdlet(
+        self,
+        name: str,
+        arguments: list[Word],
+        directory: Directory,
+        values: list[Word],
+        command: Any = None,
+        piped: bool = False,
+    ) -> Outcome:
+        """A command POWERSHELL_COMMANDS names: one that moves the location is followed, one that writes has each path
+        it is given judged (read_cmdlet_writes), and any other changes nothing the guard reads, unless a path it is
+        given lies on a provider other than the file system (provider_refusal)."""
         cmdlet = POWERSHELL_COMMANDS[name.lower()]
         reason = provider_refusal(name, cmdlet, values)
         if reason is not None:
             self.reading.cannot_read(reason)
             return certain(UNKNOWN)
+        if cmdlet in POWERSHELL_WRITING_COMMANDS:
+            self.read_cmdlet_writes(name, cmdlet, command, directory, piped)
         if cmdlet == "set-location":
             return self.read_location(arguments, directory, push=False)
         if cmdlet == "push-location":
@@ -4482,6 +5271,91 @@ class PowerShellReader:
                 return certain(directory)
             return certain(Directory(directory.stack[0], directory.stack[1:]))
         return certain(directory)
+
+    def cmdlet_parameters(self, command: Any, cmdlet: str) -> tuple[list[tuple[str, list[Word]]], list[Word]]:
+        """The values a cmdlet is given, each parameter that takes one with its name (powershell_parameter) and the
+        values bound to it, attached by a colon or the element after it, and the values given by position."""
+        elements = command.get("elements") if isinstance(command, dict) else None
+        named: list[tuple[str, list[Word]]] = []
+        positional: list[Word] = []
+        pending = False
+        for element in (elements if isinstance(elements, list) else [])[1:]:
+            if isinstance(element, dict) and element.get("kind") == "parameter":
+                kind, parameter = powershell_parameter(str(element.get("text")), cmdlet)
+                pending = False
+                if kind == "switch":
+                    continue
+                named.append((parameter, self.element(element.get("argument")) if "argument" in element else []))
+                pending = "argument" not in element
+            elif isinstance(element, dict) and element.get("kind") == "block":
+                pending = False
+            elif pending:
+                named[-1][1].extend(self.element(element))
+                pending = False
+            else:
+                positional.extend(self.element(element))
+        return named, positional
+
+    def read_cmdlet_writes(self, name: str, cmdlet: str, command: Any, directory: Directory, piped: bool) -> None:
+        """The paths a cmdlet POWERSHELL_WRITING_COMMANDS names writes, reads, or creates, each judged as a
+        redirection's target is: every value given to a parameter POWERSHELL_PATH_PARAMETERS names, New-Item's -Name
+        joined to each path it is given, and every value given by position but one POWERSHELL_POSITIONS binds to a
+        parameter that takes no path. A cmdlet after the first of a pipeline given no path, but Copy-Item, whose path
+        is what it copies, binds the one it writes from its input, and New-Item given an item type that may make a
+        link makes one (LINK_PROGRAMS): each is a part the guard does not read."""
+        named, positional = self.cmdlet_parameters(command, cmdlet)
+        bound = {"path" if parameter in POWERSHELL_PATH_BINDING else parameter for parameter, _ in named}
+        slots = [slot for slot in POWERSHELL_POSITIONS[cmdlet] if slot not in bound]
+        paths: list[tuple[Word, bool]] = []
+        for index, value in enumerate(positional):
+            slot = slots[index] if index < len(slots) else "path"
+            if slot not in POWERSHELL_DATA_PARAMETERS:
+                paths.append((value, False))
+                bound.add(slot)
+        names: list[Word] = []
+        for parameter, values in named:
+            if parameter == "name":
+                names.extend(values)
+            elif parameter in POWERSHELL_PATH_PARAMETERS:
+                paths.extend((value, parameter in POWERSHELL_LITERAL_PATHS) for value in values)
+            elif parameter == "itemtype":
+                for value in values or [None]:
+                    if value is None or not any(kind.startswith(value.lower()) for kind in POWERSHELL_ITEM_TYPES):
+                        given = "an item type the text does not settle" if value is None else f"the item type {value}"
+                        self.reading.cannot_read(
+                            f"{name} is given {given}, which may make a link, through which a later write reaches a "
+                            "place the guard cannot follow"
+                        )
+                        return
+        if piped and cmdlet != "copy-item" and "path" not in bound:
+            self.reading.cannot_read(f"{name} takes the path it writes from its input, which the text does not settle")
+            return
+        if "destination" in POWERSHELL_POSITIONS[cmdlet] and "destination" not in bound:
+            # With no destination, Copy-Item and Move-Item write into the current location.
+            paths.append((".", True))
+        if names:
+            # -Name names the item New-Item makes inside each path it is given, or the current location.
+            parents = [each for each, _ in paths if each is not None] or ["."]
+            paths = [
+                (None if value is None else str(Path(platform_support.from_shell_path(parent)) / value), True)
+                for value in names
+                for parent in parents
+            ]
+        for value, literal in paths:
+            self.read_cmdlet_path(name, value, literal, directory)
+
+    def read_cmdlet_path(self, name: str, value: Word, literal: bool, directory: Directory) -> None:
+        """One path a writing cmdlet is given: a leading ~ is home, as the file-system provider reads it, and a wildcard
+        in one that is no literal path makes it a pattern, judged by the folder its matches lie in."""
+        writer = program_writer(name)
+        if value is not None and (value == "~" or value.startswith(("~/", "~\\"))):
+            start = home(self.reading.environment)
+            value = None if start is None else str(start / value[2:])
+        wildcard = None if literal or value is None else POWERSHELL_WILDCARDS.search(value)
+        if wildcard is not None and value is not None:
+            read_written(pattern_folder(value[: wildcard.start()]), directory, self.reading, writer, pattern=True)
+        else:
+            read_written(value, directory, self.reading, writer)
 
     def read_location(self, arguments: list[Word], directory: Directory, push: bool) -> Outcome:
         """Set-Location or Push-Location to a literal file-system path, by -Path, -LiteralPath, or position; a leading
@@ -4537,7 +5411,9 @@ def start_reading(command: str, cwd: Path, environment: Mapping[str, str]) -> Re
     # The hubs in view decide whether a command the guard cannot read in time is refused, so their lookups keep
     # GUARD_GIT_TIMEOUT_SECONDS for each git call rather than end with the reading time; the session's own directories
     # bound them, never the command.
-    return Reading(environment, command, context_hubs=hubs_in_view(cwd, environment), deadline=deadline)
+    project = environment.get("CLAUDE_PROJECT_DIR")
+    places = [cwd, *([Path(platform_support.from_shell_path(project))] if project else [])]
+    return Reading(environment, command, context_hubs=hubs_in_view(cwd, environment), places=places, deadline=deadline)
 
 
 def reached_hubs(reading: Reading, found: set[Path] | None = None) -> set[Path]:
@@ -4602,6 +5478,17 @@ def named_hubs(reading: Reading, cwd: Path, found: set[Path]) -> set[Path]:
 # The hook
 
 
+def file_tool_refusal(tool: str, path: Path, cwd: Path, environment: Mapping[str, str]) -> str | None:
+    """Why a file tool's edit outside every guarded hub is refused: while a hub of the session's own directory or
+    project is guarded, an edit of a file git reads its system or global configuration from, as a redirection's write
+    to one is (Judge.configuration_write_refusal), since a setting written there reaches every git a later command
+    starts."""
+    hubs = hubs_in_view(cwd, environment)
+    if not hubs:
+        return None
+    return Judge(hubs, environment, [], math.inf).configuration_write_refusal(path, f"The {tool} tool writes")
+
+
 def guard(stream: str) -> int:
     # The command and the guarded hubs in view, known before the command is read, so that a reader or a judgment that
     # fails leaves a command the guard cannot read; None until then.
@@ -4626,6 +5513,9 @@ def guard(stream: str) -> int:
                 print(f"hub guard skipped: the {tool} event names no file path", file=sys.stderr)
             elif hub_protected(resolve(target, cwd)):
                 refused = DENY_REASON
+            else:
+                reason = file_tool_refusal(tool, resolve(target, cwd), cwd, environment)
+                refused = None if reason is None else f"{reason} {DENY_REASON}"
         elif tool in SHELL_READERS and not isinstance(tool_input.get("command"), str):
             print(f"hub guard skipped: the {tool} event names no command", file=sys.stderr)
         elif tool in SHELL_READERS:
