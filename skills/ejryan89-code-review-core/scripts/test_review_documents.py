@@ -662,8 +662,8 @@ class PdfExtractionTests(unittest.TestCase):
         self.assertEqual((["-q", "-enc", "UTF-8", "-eol", "unix", "-raw"], "-"), (options, output))
         self.assertEqual(PDF.hex(), call["document"], "the bytes are given as a file")
         self.assertEqual(0, call["stdin"], "and nothing on stdin")
-        # The temporary directory as tempfile names it, which may be an 8.3 short form that resolving would expand.
-        # The temporary directory as private_folder judged it, resolved where it judges one.
+        # The temporary directory as private_folder judged it: resolved where it judges one, and on Windows as tempfile
+        # names it, which may be an 8.3 short form that resolving would expand.
         self.assertEqual(private_folder.temporary_directory(), document.parent.parent, document)
         self.assertFalse(document.parent.exists(), "the throwaway folder is removed")
 

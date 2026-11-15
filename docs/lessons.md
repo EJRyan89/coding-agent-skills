@@ -679,17 +679,20 @@ removed fails validation until its pattern follows it.
 - **Why:** Owner only says nothing about the folders above, and whoever can rename one may put a tree of their own in
   its place between a write and a read, as a `TMPDIR` set by hand below a shared folder that is not sticky allows.
 - **Use:** `private_folder:temporary_directory`, the folder every temporary folder or named file a skill's script
-  makes is given; `private_folder:ensure` for a folder of fixed name kept across runs; `private_folder:ancestry_refusal`,
-  the one judgment of the folders above.
+  makes is given; `private_folder:main`, its command, which names that folder to a Bash script before its mktemp;
+  `private_folder:ensure` for a folder of fixed name kept across runs; `private_folder:ancestry_refusal`, the one
+  judgment of the folders above.
 - **Guard:** `tests/validation/skill_scripts.py::SkillScriptsPolicies::test_skill_scripts_name_the_folder_of_each_temporary_folder_or_file`,
   `tests/validation/test_skill_scripts.py::SkillScriptsFixtures::test_a_temporary_folder_or_named_file_left_to_tmpdir_is_refused_and_one_given_its_folder_passes`,
   `skills/ejryan89-skill-core/scripts/test_private_folder.py::TemporaryDirectoryTests`,
+  `skills/ejryan89-skill-core/scripts/test_private_folder.py::TemporaryDirectoryCommandTests`,
   `skills/ejryan89-code-review-core/scripts/test_review_pipeline_prepare.py::InitialReviewTests::test_a_temporary_directory_below_a_shared_folder_that_is_not_sticky_holds_no_run`
 - **Search for:** `tempfile.mkdtemp(`, `tempfile.mkstemp(`, `TemporaryDirectory(`, or `NamedTemporaryFile(` with no
   `dir=` in `deployer/` or `tools/`, which the policy does not read, where a later step reads what it holds;
   `Path(tempfile.gettempdir()) /` joined with a fixed name; a folder an environment variable names, used with no
-  judgment of the folders above it.
-- **Examples:** #2756, #2793, #2796
+  judgment of the folders above it; `mktemp` in a `.sh` file, or `New-TemporaryFile` or `GetTempPath` in a `.ps1` file,
+  whose folder did not come from `private_folder.py temporary-directory`, which no policy reads (#2817).
+- **Examples:** #2756, #2793, #2796, #2817
 
 ### What one step accepts, every later step can read and write
 

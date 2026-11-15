@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import itertools
+import shutil
 import subprocess
 import sys
 import tarfile
@@ -770,6 +771,54 @@ class DeployAtTests(DeployerTestCase):
         )
         run_tool.assert_not_called()
         self.assert_exports_removed(0)
+
+    def shared_temporary_directory(self) -> tuple[Path, Path]:
+        """A temporary directory of the user's own below a folder anyone can write that is not sticky, made the one
+        tempfile names until the test ends, and the shared folder, both resolved."""
+        shared = Path(tempfile.mkdtemp(prefix="deploy shared ")).resolve()
+        self.addCleanup(shutil.rmtree, shared, True)
+        own = shared / "u" / "tmp"
+        own.mkdir(parents=True)
+        shared.chmod(0o777)
+        self.addCleanup(shared.chmod, 0o755)
+        patcher = mock.patch.object(tempfile, "tempdir", str(own))
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        return own, shared
+
+    @unittest.skipIf(sys.platform == "win32", "Windows mode bits say nothing about who may write a folder")
+    def test_an_export_in_a_temporary_directory_another_account_could_rename_is_refused_before_it_is_made(
+        self,
+    ) -> None:
+        # The export is the tree the run deploys, so another account that could swap it would choose what is deployed.
+        own, shared = self.shared_temporary_directory()
+        output = self.deploy_fails(
+            "--all",
+            "--at",
+            "v1.0.0",
+            pattern=r"ERROR: Could not export the commit --at names: a folder made in the temporary directory",
+        ).output
+        self.assertIn(
+            f"a folder made in the temporary directory {own} could be replaced by another account: its ancestor "
+            f"{shared} can be written by users other than its owner and is not sticky (mode 777)",
+            output,
+        )
+        self.assertEqual([], list(own.iterdir()), "no export or attributes index was made there")
+        self.assert_exports_removed(0)
+
+    @unittest.skipIf(sys.platform == "win32", "Windows mode bits say nothing about who may write a folder")
+    def test_the_rendered_script_check_in_a_temporary_directory_another_account_could_rename_is_refused(
+        self,
+    ) -> None:
+        # The check reads the rendered scripts back from its folder, so another account could swap what it passes.
+        own, shared = self.shared_temporary_directory()
+        output = self.deploy_fails("--all", pattern=r"a folder made in the temporary directory").output
+        self.assertIn(
+            f"a folder made in the temporary directory {own} could be replaced by another account: its ancestor "
+            f"{shared} can be written by users other than its owner and is not sticky (mode 777)",
+            output,
+        )
+        self.assertEqual([], list(own.iterdir()), "no rendered script was written there")
 
     def test_an_export_git_refuses_leaves_no_directory_behind(self) -> None:
         patch, made = recorded_temporary_directories()

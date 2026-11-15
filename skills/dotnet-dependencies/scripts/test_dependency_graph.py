@@ -744,6 +744,32 @@ class GraphTests(Fixture):
             self.assertEqual((1, "FAILED [Errno 28] No space left on device"), (code, rows[-1][0]))
             self.assertEqual([], list(temporary.iterdir()))
 
+    @unittest.skipIf(sys.platform == "win32", "Windows mode bits say nothing about who may write a folder")
+    def test_a_graph_in_a_temporary_directory_another_account_could_rename_is_refused_before_it_is_written(
+        self,
+    ) -> None:
+        root = self.mixed_solution()
+        shared = self.root / "shared"
+        own = shared / "u" / "tmp"
+        own.mkdir(parents=True)
+        shared.chmod(0o777)
+        try:
+            with mock.patch.object(tempfile, "tempdir", str(own)):
+                code, rows = self.run_main("graph", "--root", str(root))
+        finally:
+            shared.chmod(0o755)
+        self.assertEqual(
+            (
+                1,
+                f"FAILED a folder made in the temporary directory {own} could be replaced by another account: its "
+                f"ancestor {shared} can be written by users other than its owner and is not sticky (mode 777); set "
+                "TMPDIR to a folder of this user's own below folders no other account can write",
+            ),
+            (code, rows[-1][0]),
+        )
+        self.assertEqual([], self.lines(rows, "WROTE"))
+        self.assertEqual([], list(own.iterdir()), "no graph was written there")
+
     def test_a_graph_file_keeps_its_permissions_and_a_new_one_is_readable_by_everyone(self) -> None:
         root = self.mixed_solution()
         target = self.root / "out" / "graph.mmd"

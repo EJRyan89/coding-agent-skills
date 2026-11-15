@@ -91,6 +91,29 @@ for CHANNEL in main release; do
   expect_not_deployed "directory in place of deploy.py on $CHANNEL"
 done
 
+# A TMPDIR below a shared folder that is not sticky, where another account could rename a folder above the copy of
+# update.sh and swap it between the cp and the exec: refused, naming the folder, before any copy is made. Windows judges
+# no folder's mode, so the case runs where the platform has user ids.
+case "${OSTYPE:-}" in
+  msys* | cygwin*) ;;
+  *)
+    begin_case 'temporary directory another account could rename'
+    new_clone
+    SHARED="$FIXTURE/shared"
+    mkdir -p "$SHARED/u/tmp"
+    chmod 777 "$SHARED"
+    REAL_SHARED=$(cd -- "$SHARED" && pwd -P)
+    for CHANNEL in main release; do
+      TMPDIR="$SHARED/u/tmp" run_subject "$CLONE" "$CHANNEL"
+      expect_failed "FAILED cannot make update.sh's temporary files: a folder made in the temporary directory $REAL_SHARED/u/tmp could be replaced by another account: its ancestor $REAL_SHARED can be written by users other than its owner and is not sticky (mode 777)" \
+        "shared temporary directory on $CHANNEL"
+      expect_nothing_run "shared temporary directory on $CHANNEL"
+      [ -z "$(ls -A -- "$SHARED/u/tmp")" ] || fail "shared temporary directory on $CHANNEL: a file was made in it"
+    done
+    chmod 755 "$SHARED"
+    ;;
+esac
+
 # A clone that is not there.
 begin_case 'missing clone'
 for CHANNEL in main release; do

@@ -41,18 +41,35 @@ A folder a single run makes, such as a review's run folder with its prompts, res
 name, so `tempfile.mkdtemp` makes it, owner only, in the temporary directory. Owner only says nothing about the
 folders above it, so `temporary_directory` judges the temporary directory as `ensure` judges a state folder's parent,
 and every skill script that makes a temporary folder or file passes it, or a folder the script already holds, as the
-`dir`, which validation holds.
+`dir`, which validation holds. A Bash script, which cannot import this, runs it before it makes a temporary file:
+
+Usage:
+  python private_folder.py temporary-directory [<folder>]
+
+It prints `TEMPORARY_DIRECTORY <path>`, the folder `temporary_directory` hands back for `<folder>`, by default the
+temporary directory, for every temporary file the script makes to lie in, or `FAILED <reason>` when it refuses the
+folder, cannot examine it, as when it does not exist, or hands back a path that one line cannot hold as it is. A Bash
+script names the folder its `mktemp` template uses, since Python passes over a `TMPDIR` that does not exist.
+
+Exit status:
+  0  TEMPORARY_DIRECTORY <path>
+  1  a last line FAILED <reason>
+  2  a usage error
 """
 
 from __future__ import annotations
 
+import argparse
 import contextlib
 import os
 import stat
+import sys
 import tempfile
 from pathlib import Path
 
+from console import run_main
 from executable_locator import environment_path
+from flat_text import flat_text, single_line
 from link_probe import is_link_or_junction
 
 # The mode a missing folder is made with: read, write, and search for its owner alone.
@@ -192,7 +209,7 @@ def resolved_place(folder: Path, user: int) -> Path:
     return parent / folder.name
 
 
-def temporary_directory() -> Path:
+def temporary_directory(folder: str | None = None) -> Path:
     """The temporary directory, for a script to make a folder or file in, such as a run's, whose contents a later step
     trusts: passed as the `dir` of `tempfile.mkdtemp`, `mkstemp`, or `TemporaryDirectory`, so nothing is made before
     it passes. Where the platform has user ids, it is resolved through every link and `..` and returned so, and
@@ -200,8 +217,10 @@ def temporary_directory() -> Path:
     folder that is not sticky lets another account rename a folder above it and put a tree of its own in its place,
     the run's folder and all, between a write and a read. Linux's default `/tmp` and macOS's per-user temporary
     directory pass. On Windows the temporary directory is under the user's profile and is returned as given. The
-    refusal is an UnsafeTemporaryDirectoryError, an OSError, and an OSError from a stat is let through."""
-    temporary = Path(tempfile.gettempdir())
+    refusal is an UnsafeTemporaryDirectoryError, an OSError, and an OSError from a stat is let through, as for a
+    `folder` given in place of the temporary directory, as a Bash script names the one its `mktemp` uses, that does not
+    exist."""
+    temporary = Path(tempfile.gettempdir() if folder is None else folder)
     user = user_id()
     if user is None:
         return temporary
@@ -229,3 +248,30 @@ def ensure(folder: Path) -> Path:
     if reason is not None:
         raise UnsafeFolderError(reason)
     return folder
+
+
+def main(argv: list[str]) -> int:
+    parser = argparse.ArgumentParser(
+        description="Print the temporary directory a script may make a temporary folder or file in, judged first."
+    )
+    parser.add_argument("command", choices=("temporary-directory",), help="the folder to print")
+    parser.add_argument("folder", nargs="?", help="the folder to judge in place of the temporary directory")
+    options = parser.parse_args(argv)
+    try:
+        temporary = temporary_directory(options.folder)
+    except UnsafeTemporaryDirectoryError as error:
+        print(f"FAILED {flat_text(str(error))}")
+        return 1
+    except OSError as error:
+        named = tempfile.gettempdir() if options.folder is None else options.folder
+        print(f"FAILED {flat_text(f'the temporary directory {named} cannot be examined: {error.strerror or error}')}")
+        return 1
+    if single_line(str(temporary)) != str(temporary):
+        print(f"FAILED {flat_text(f'the temporary directory {str(temporary)!r} cannot be printed on one line')}")
+        return 1
+    print(single_line(f"TEMPORARY_DIRECTORY {temporary}"))
+    return 0
+
+
+if __name__ == "__main__":
+    run_main(lambda: main(sys.argv[1:]))

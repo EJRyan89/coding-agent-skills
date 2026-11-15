@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import contextlib
+import io
 import os
 import stat
 import sys
@@ -337,6 +339,70 @@ class TemporaryDirectoryTests(unittest.TestCase):
         self.use(given)
         with mock.patch.object(private_folder, "user_id", return_value=None):
             self.assertEqual(given, private_folder.temporary_directory())
+
+
+@unittest.skipIf(sys.platform == "win32", "Windows has no user ids, so no folder above it is judged")
+class TemporaryDirectoryCommandTests(unittest.TestCase):
+    """`private_folder.py temporary-directory <folder>`, which a Bash script such as update.sh runs before mktemp."""
+
+    def setUp(self) -> None:
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name).resolve()
+
+    def run_command(self, *arguments: str) -> tuple[int, str]:
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            code = private_folder.main(["temporary-directory", *arguments])
+        return code, output.getvalue()
+
+    def test_a_folder_of_the_user_s_own_is_printed_resolved(self) -> None:
+        own = self.root / "own"
+        own.mkdir()
+        (self.root / "via").symlink_to(own, target_is_directory=True)
+        self.assertEqual((0, f"TEMPORARY_DIRECTORY {own}\n"), self.run_command(str(self.root / "via")))
+
+    def test_a_folder_below_a_shared_folder_that_is_not_sticky_is_refused_naming_it(self) -> None:
+        shared = self.root / "shared"
+        own = shared / "u" / "tmp"
+        own.mkdir(parents=True)
+        shared.chmod(0o777)
+        self.addCleanup(shared.chmod, 0o755)
+        self.assertEqual(
+            (
+                1,
+                f"FAILED a folder made in the temporary directory {own} could be replaced by another account: its "
+                f"ancestor {shared} can be written by users other than its owner and is not sticky (mode 777); set "
+                "TMPDIR to a folder of this user's own below folders no other account can write\n",
+            ),
+            self.run_command(str(own)),
+        )
+
+    def test_a_folder_that_does_not_exist_or_cannot_be_examined_is_refused_as_given(self) -> None:
+        # Another account that can write the folder's parent could make it first, so a missing one is never accepted.
+        given = f"{self.root}//absent"
+        self.assertEqual(
+            (1, f"FAILED the temporary directory {given} cannot be examined: No such file or directory\n"),
+            self.run_command(given),
+        )
+        own = self.root / "own"
+        own.mkdir()
+        with mock.patch.object(os, "lstat", side_effect=PermissionError(13, "Permission denied")):
+            self.assertEqual(
+                (1, f"FAILED the temporary directory {own} cannot be examined: Permission denied\n"),
+                self.run_command(str(own)),
+            )
+
+    def test_a_folder_one_line_cannot_hold_as_it_is_is_refused(self) -> None:
+        broken = self.root / "line\nbreak"
+        broken.mkdir()
+        code, printed = self.run_command(str(broken))
+        self.assertEqual(1, code)
+        self.assertEqual(f"FAILED the temporary directory {str(broken)!r} cannot be printed on one line\n", printed)
+
+    def test_with_no_folder_the_temporary_directory_is_judged(self) -> None:
+        with mock.patch.object(tempfile, "tempdir", str(self.root)):
+            self.assertEqual((0, f"TEMPORARY_DIRECTORY {self.root}\n"), self.run_command())
 
 
 class EnsureTests(unittest.TestCase):
