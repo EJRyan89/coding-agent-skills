@@ -4799,10 +4799,11 @@ def powershell_command(name: str) -> bool:
     defines itself, or any name holding a hyphen and no directory, as a cmdlet's or a function's verb-noun name does.
     A module PowerShell loads on demand may define a function by such a name whatever its verb, as Windows' own
     BitLocker, DeliveryOptimization, and EventTracing modules define Backup-, Delete-, and Flush- ones, and which
-    modules a machine holds the text does not show. A program's name written with .exe, as dotnet-format.exe, or as a
-    path names the program alone."""
+    modules a machine holds the text does not show. A program's name written with the extension Windows lets a caller
+    add (platform_support.program_name), as dotnet-format.exe, or as a path names the program alone."""
     lowered = name.lower()
-    bare = "-" in lowered and "/" not in lowered and "\\" not in lowered and not lowered.endswith(".exe")
+    with_extension = platform_support.program_name(lowered) != lowered
+    bare = "-" in lowered and "/" not in lowered and "\\" not in lowered and not with_extension
     return lowered in POWERSHELL_ALIASES or lowered in POWERSHELL_FUNCTIONS or bare
 
 
