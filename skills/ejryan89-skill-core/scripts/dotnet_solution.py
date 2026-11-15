@@ -25,6 +25,7 @@ from folder_walk import SKIPPED_FOLDERS
 from ordinal_case import has_suffix
 from path_containment import within
 from path_keys import path_key
+from text_lines import text_lines
 from xml_reader import read_xml
 
 SOLUTION_PROJECT = re.compile(r'^\s*Project\("[^"]*"\)\s*=\s*"[^"]*"\s*,\s*"([^"]+)"')
@@ -136,11 +137,12 @@ def read_listed_projects(solution: Path) -> list[str]:
 
 def listed_projects(text: str, solution: Path) -> list[str]:
     """The project paths the text of `solution` lists, as written, read as `read_listed_projects` reads the file, for
-    a caller that read the text itself."""
+    a caller that read the text itself. A .sln's lines break at CR, LF, and CRLF alone, as .NET's TextReader.ReadLine
+    breaks them, so a project name holding a line separator never starts a line of its own."""
     if has_suffix(solution.name, ".slnx"):
         document = read_xml(text)
         return [path for element in document.iter("Project") if (path := element.get("Path"))]
-    return [match.group(1) for line in text.splitlines() if (match := SOLUTION_PROJECT.match(line))]
+    return [match.group(1) for line in text_lines(text) if (match := SOLUTION_PROJECT.match(line))]
 
 
 def solution_projects(solution: Path) -> set[str]:

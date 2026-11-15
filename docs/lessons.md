@@ -395,8 +395,9 @@ removed fails validation until its pattern follows it.
   `SKILL.md` names; a second `json.loads(`, `os.lstat(`, or other helper beside the one skill-core owns;
   `rg -n "def (_?inside|strictly_inside|_lexically_inside)\b"` and other helpers of one job held in several modules;
   a live step and its recovery, such as a run's finalization and the completion of an interrupted one, each deciding
-  in its own code what becomes of the same state on disk.
-- **Examples:** #1349, #1477, #1495, #1596, #1679, #2219, #2295, #2296, #2718, #2738
+  in its own code what becomes of the same state on disk; a repository walk through `file_presence.matching` or
+  `os.walk` with a skip set of its own, rather than `folder_walk.walk_files`.
+- **Examples:** #1349, #1477, #1495, #1596, #1679, #2219, #2295, #2296, #2718, #2738, #2734
 
 ### A promise in prose is held where its reader reads it
 
@@ -479,7 +480,9 @@ removed fails validation until its pattern follows it.
   to refuse what it does not understand.
 - **Use:** `tools.hub_guard:read_powershell`, `tools.hub_guard:runner_refusal`, `option_reader:option_refusal`,
   `tools.hub_guard:expansion_form`, `git_subcommands:CommandStarts`, which says where Bash starts a command, and
-  `command_wrappers:bash_program`, the program a Bash command's word names by its file name
+  `command_wrappers:bash_program`, the program a Bash command's word names by its file name, `text_lines:text_lines`,
+  the lines of a file an author writes, broken only where YAML, CommonMark, and .NET break them, and
+  `markdown_sections:code_block_lines`, the fenced and indented code blocks CommonMark reads
 - **Guard:** `tests/tools/test_bash_syntax.py::ArrayAssignmentTests::test_an_array_assignment_to_a_subscript_is_read_where_bash_reads_an_array`,
   `skills/ejryan89-skill-core/scripts/test_git_subcommands.py::test_a_git_command_is_read_wherever_bash_starts_a_command`,
   `skills/ejryan89-skill-core/scripts/test_git_subcommands.py::test_git_or_a_shell_named_by_a_path_or_with_exe_is_read_as_bash_runs_it`,
@@ -528,8 +531,12 @@ removed fails validation until its pattern follows it.
   holds the client's reading of a gh api command to gh's flag parser, a letter it does not read counting as a change,
   and
   `.claude/skills/audit-repository/scripts/test_audit_repository.py::TwinTests::test_a_construct_line_holding_backslash_e_is_searched_as_fixed_text`,
-  which holds the twin sweep's fixed-text search to what git grep built with PCRE does with a backslash-E
-- **Search for:** a Python parser or folding, `float(`, `int(` with or without a base, `casefold()`, `lower()`,
+  which holds the twin sweep's fixed-text search to what git grep built with PCRE does with a backslash-E,
+  `skills/ejryan89-skill-core/scripts/test_text_lines.py::test_every_other_character_splitlines_breaks_at_is_kept_in_its_line`,
+  `tests/deployer/test_frontmatter.py::DocumentTests::test_a_line_breaks_only_where_yaml_breaks_one`, and
+  `skills/audit-ai-config/scripts/test_audit_ai_config.py::ClaudeCodeConfigurationTests::test_an_import_inside_an_indented_code_block_is_none_as_markdown_reads_the_block`
+- **Search for:** `str.splitlines()` of a file an author writes, which breaks at characters YAML, CommonMark, and .NET
+  read as text, rather than `text_lines`; a reader of Markdown that skips fenced code but not indented code; a Python parser or folding, `float(`, `int(` with or without a base, `casefold()`, `lower()`,
   `strip()`, or a pattern with `re.IGNORECASE` and no `re.ASCII`, applied to a value another program reads, each
   checked against that program's own reading of it, as MSBuild reads a number with .NET's invariant `Double.TryParse`
   and compares text with .NET's ordinal comparison ignoring case; a POSIX `shlex` lexer over shell text whose
@@ -566,7 +573,7 @@ removed fails validation until its pattern follows it.
   worktrees writes the refs the hub's store holds.
 - **Examples:** #1412, #1429, #1430, #1592, #1606, #1843, #1851, #1865, #2032, #2088, #2089, #2134, #2135, #2136,
   #2137, #2138, #2139, #2140, #2188, #2225, #2232, #2233, #2234, #2251, #2262, #2274, #2276, #2316, #2411,
-  #2418, #2203, #2450, #2476, #2481, #2478, #2555, #2474, #2616, #2776, #2792
+  #2418, #2203, #2450, #2476, #2481, #2478, #2555, #2474, #2616, #2776, #2792, #2725, #2753
 
 ### A recursive parser of input has a depth bound
 
@@ -799,7 +806,8 @@ removed fails validation until its pattern follows it.
   it; `path_keys:path_key`, the one form a path is compared in, which the deployer reaches as
   `deployer.platform_support:path_key`, with `path_keys:name_key`, a name in its directory, and
   `path_keys:same_parts`, a path against a trusted one, asking only the trusted one's directories;
-  `agent_skills:is_skill_file`, a skill's main file as its folder compares names;
+  `path_keys:opens_as`, whether a folder gives an entry when a program opens a fixed name there, which asks the
+  folder's file system rather than any key, and `agent_skills:is_skill_file`, a skill's main file through it;
   `guidance_record:canonical_url`; `deployer.source:any_case` and
   `deployer.source:refuse_other_spellings`, which find a name the deployer reads spelled in any case on every
   platform and refuse one spelled otherwise; `review_config:validate_repository_identity`, the one form a
@@ -821,6 +829,8 @@ removed fails validation until its pattern follows it.
   `skills/ejryan89-skill-core/scripts/test_guidance_record.py::test_the_canonical_form_folds_only_raw_github_s_refs_heads_and_the_scheme_and_host_case`,
   `tests/deployer/test_source_validation.py::MetadataValidationTests::test_a_name_the_deployer_reads_spelled_in_another_case_is_refused_by_name_on_every_platform`,
   `skills/ejryan89-skill-core/scripts/test_agent_skills.py::SkillFileTests::test_skill_md_in_another_case_is_the_main_file_only_where_the_folder_folds_case`,
+  `skills/ejryan89-skill-core/scripts/test_path_keys.py::OpensAsTests::test_a_letter_beyond_ascii_is_folded_as_the_folder_folds_it`,
+  `skills/audit-ai-config/scripts/test_audit_ai_config.py::UnexaminedPathTests::test_a_nested_file_in_another_case_is_audited_only_where_its_folder_folds_case`,
   `tests/validation/skill_layout.py::SkillLayoutPolicies::test_every_skill_file_is_spelled_skill_md`,
   `skills/ejryan89-code-review-core/scripts/test_review_pipeline.py::BatchTests::test_a_state_key_in_another_case_is_that_repository_s_watermark`,
   `skills/ejryan89-code-review-core/scripts/test_review_pipeline.py::BatchTests::test_a_state_holding_one_repository_under_two_spellings_is_refused`
@@ -836,8 +846,9 @@ removed fails validation until its pattern follows it.
   each file's spelling on disk; a dictionary read from a file and keyed by repository identity whose keys pass
   `validate_repository_identity(` but are kept as written, while lookups use the lowercase form it returns; two
   names whose `(st_dev, st_ino)`, `os.path.samestat`, or `samefile` agree taken for one name, which two hard links
-  also give.
-- **Examples:** #1556, #1855, #1867, #1909, #2299, #2590, #2614, #2615, #2620, #2662, #2712
+  also give; `name_key` compared with a fixed name a program opens, such as `SKILL.md` or `AGENTS.md`, which merges
+  names a file system keeps apart and keeps apart ones it folds, rather than `path_keys.opens_as`.
+- **Examples:** #1556, #1855, #1867, #1909, #2299, #2590, #2614, #2615, #2620, #2662, #2712, #2747, #2753
 
 ### A child process starts from an environment built for it
 

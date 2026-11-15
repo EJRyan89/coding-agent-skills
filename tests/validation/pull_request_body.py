@@ -28,6 +28,7 @@ from markdown_sections import (
     INTERRUPTING_LIST_MARKER,
     LIST_MARKER,
     ORDERED_MARKER,
+    THEMATIC_BREAK,
     find_fences,
     indentation,
     is_blank,
@@ -67,8 +68,6 @@ ENDS_PARAGRAPH = re.compile(
 # A line that opens a list item, indented up to three spaces: its marker, and the spaces or tabs after it, or none
 # where the item opens empty.
 LIST_OPENER = re.compile(rf"(?P<indent> {{0,3}})(?P<marker>{LIST_MARKER})(?P<gap>[ \t]*)(?P<text>.*)")
-# A thematic break, which a line of bullets spaced apart is rather than a list item.
-RULE = re.compile(r" {0,3}([-*_])(?:[ \t]*\1){2,}[ \t]*")
 # Past this many columns after its marker, an item's text is an indented code block, and its content starts one
 # column after the marker.
 MAX_ITEM_GAP = 4
@@ -134,7 +133,11 @@ def in_list_items(lines: list[str], inside_fences: set[int]) -> set[int]:
                 continue
             content = None
         opener = LIST_OPENER.fullmatch(line)
-        if opener is not None and not RULE.fullmatch(line) and list_item(line, interrupting=paragraph) is not None:
+        if (
+            opener is not None
+            and not THEMATIC_BREAK.fullmatch(line)
+            and list_item(line, interrupting=paragraph) is not None
+        ):
             content = _content_column(opener)
             paragraph = not is_blank(opener.group("text"))
         elif opener is not None and is_blank(opener.group("gap") + opener.group("text")) and not paragraph:

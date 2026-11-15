@@ -28,7 +28,6 @@ import check_provenance
 import folder_walk
 import link_probe
 import markdown_literal
-import path_keys
 import pytest
 from folder_walk import SKIPPED_FOLDERS
 
@@ -1606,6 +1605,21 @@ class CopilotConfigurationTests(unittest.TestCase):
                 self.assertEqual(description, values["description"])
                 self.assertEqual(expected, [(finding.line, finding.message) for finding in found])
 
+    def test_a_line_breaks_only_where_yaml_breaks_one(self) -> None:
+        # str.splitlines broke the value at a line separator, so it read "one" and called "two" an unreadable entry,
+        # shifting every later line number.
+        skill = self.root / ".github/skills/demo/SKILL.md"
+        skill.parent.mkdir(parents=True)
+        for separator in ("\x85", "\u2028", "\u2029"):
+            with self.subTest(separator=f"U+{ord(separator):04X}"):
+                skill.write_text(f"---\ndescription: one{separator}two\nbad\n---\n", encoding="utf-8")
+                values, found = audit._frontmatter(self.root, skill)
+                self.assertEqual(f"one{separator}two", values["description"])
+                self.assertEqual(
+                    [(3, "Frontmatter must use key: value entries, block scalars, block lists, or nested mappings")],
+                    [(finding.line, finding.message) for finding in found],
+                )
+
     def test_an_empty_block_scalar_description_is_a_missing_description(self) -> None:
         skill = self.root / ".github/skills/demo/SKILL.md"
         skill.parent.mkdir(parents=True)
@@ -1704,18 +1718,16 @@ class CopilotConfigurationTests(unittest.TestCase):
         for skill_dir in (".github/skills", ".claude/skills", ".agents/skills"):
             folder = self.root / skill_dir / "alpha"
             _write_fixture(self.root, {f"{skill_dir}/alpha/skill.md": "---\nname: alpha\ndescription: 'open\n---\n"})
-            for folds in (True, False):
-                with self.subTest(skill_dir=skill_dir, folds=folds):
-                    with mock.patch.dict(path_keys._FOLDS_CASE, {str(folder): folds}):
-                        found = audit.check_copilot_configuration(self.root, {})
-                    paths = {f.path for f in found if f.severity == "ERROR"}
-                    self.assertEqual(folds, f"{skill_dir}/alpha/skill.md" in paths, paths)
+            folds = opens_in_another_case(folder)
+            with self.subTest(skill_dir=skill_dir, folds=folds):
+                found = audit.check_copilot_configuration(self.root, {})
+                paths = {f.path for f in found if f.severity == "ERROR"}
+                self.assertEqual(folds, f"{skill_dir}/alpha/skill.md" in paths, paths)
             (folder / "skill.md").unlink()
 
     def test_a_skill_md_below_a_skill_s_folder_in_another_case_is_never_audited(self) -> None:
         # A runtime opens a skill's SKILL.md in the skill's own folder; a lowercase skill.md deeper, such as a
         # template, is no skill's main file in any folder, so it draws no finding where its folder folds case either.
-        alpha = self.root / ".claude/skills/alpha"
         _write_fixture(
             self.root,
             {
@@ -1723,9 +1735,7 @@ class CopilotConfigurationTests(unittest.TestCase):
                 ".claude/skills/alpha/templates/skill.md": "# A template\n",
             },
         )
-        folds = {str(alpha): True, str(alpha / "templates"): True}
-        with mock.patch.dict(path_keys._FOLDS_CASE, folds):
-            found = audit.check_copilot_configuration(self.root, {})
+        found = audit.check_copilot_configuration(self.root, {})
         self.assertEqual([], [(f.path, f.message) for f in found if "alpha" in (f.path or "")])
 
     @unittest.skipIf(sys.platform == "win32", "Windows makes a file symbolic link only with a privilege tests lack")
@@ -1737,12 +1747,11 @@ class CopilotConfigurationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as outside:
             target = Path(outside) / "Skill.md"
             target.write_text("---\nname: alpha\ndescription: Elsewhere.\n---\n", encoding="utf-8")
+            folds = opens_in_another_case(alpha)
             (alpha / "Skill.md").symlink_to(target)
-            for folds in (False, True):
-                with self.subTest(folds=folds), mock.patch.dict(path_keys._FOLDS_CASE, {str(alpha): folds}):
-                    found = audit.check_copilot_configuration(self.root, {})
-                    linked = [f.path for f in found if f.path == ".claude/skills/alpha/Skill.md"]
-                    self.assertEqual([".claude/skills/alpha/Skill.md"] if folds else [], linked)
+            found = audit.check_copilot_configuration(self.root, {})
+            linked = [f.path for f in found if f.path == ".claude/skills/alpha/Skill.md"]
+            self.assertEqual([".claude/skills/alpha/Skill.md"] if folds else [], linked)
 
     def test_a_projection_in_another_case_is_owned_by_the_skill_md_the_manifest_names(self) -> None:
         # The manifest names a projection as the runtime opens it, SKILL.md, which is this file where the folder folds
@@ -1752,17 +1761,20 @@ class CopilotConfigurationTests(unittest.TestCase):
         folder = self.root / ".github/skills/project-skill"
         manifest = self._manifest()
         manifest["artifacts"].append({"path": ".github/skills/project-skill/SKILL.md"})
-        with mock.patch.dict(path_keys._FOLDS_CASE, {str(folder): True}):
-            owned = audit.check_copilot_configuration(self.root, manifest)
-            unowned = audit.check_copilot_configuration(self.root, self._manifest())
+        folds = opens_in_another_case(folder)
+        owned = audit.check_copilot_configuration(self.root, manifest)
+        unowned = audit.check_copilot_configuration(self.root, self._manifest())
         self.assertEqual([], [f for f in owned if f.check == "provenance"])
+        # Where the folder keeps case, skill.md is no skill's main file, so no check reads it as a projection.
         self.assertEqual(
             [
                 (
                     ".github/skills/project-skill/skill.md",
                     "Generated Copilot skill projection is not owned by the manifest",
                 )
-            ],
+            ]
+            if folds
+            else [],
             [(f.path, f.message) for f in unowned if f.check == "provenance"],
         )
 
@@ -2632,10 +2644,9 @@ class LimitationTests(unittest.TestCase):
             ".github/skills/demo/skill.md",
             "Generated Copilot projection is provenance-checked only, not reconstructed",
         )
-        for folds in (True, False):
-            with self.subTest(folds=folds), mock.patch.dict(path_keys._FOLDS_CASE, {str(folder): folds}):
-                rows = [(f.path, f.message) for f in audit.check_limitations(self.root, manifest)]
-                self.assertEqual(folds, note in rows, rows)
+        folds = opens_in_another_case(folder)
+        rows = [(f.path, f.message) for f in audit.check_limitations(self.root, manifest)]
+        self.assertEqual(folds, note in rows, rows)
 
     def test_limitations_never_change_the_exit_code(self) -> None:
         self.assertEqual(0, audit.audit(self.root).exit_code)
@@ -3757,6 +3768,18 @@ PARITY_EXPECTED: dict[str, list[tuple[str, str, str | None, str]]] = {
     "shims_without_a_reconstructable_canonical": [],
     "no_artifacts": [],
 }
+
+
+def opens_in_another_case(folder: Path) -> bool:
+    """Whether `folder`'s file system finds an entry by its name in another case, measured apart from the audit, which
+    asks the folder for the entry a runtime opens: a CI leg on Windows, which folds case, and one on Linux, which keeps
+    it, each take one branch of a test that reads this."""
+    probe = folder / "Case-Probe"
+    probe.write_bytes(b"")
+    try:
+        return os.path.lexists(folder / "cASE-pROBE")
+    finally:
+        probe.unlink()
 
 
 def _write_fixture(root: Path, files: dict[str, str | bytes]) -> None:
@@ -5302,6 +5325,20 @@ class ClaudeCodeConfigurationTests(unittest.TestCase):
                     claude_code_rows({name: "line\n" * 201}),
                 )
 
+    def test_a_line_is_counted_where_commonmark_ends_one(self) -> None:
+        # 200 lines that each hold a separator str.splitlines also breaks at are 200 lines, not 400, and a CR alone
+        # ends one.
+        for separator in ("\x0c", "\x85", "\u2028", "\u2029"):
+            with self.subTest(separator=f"U+{ord(separator):04X}"):
+                self.assertEqual([], claude_code_rows({"CLAUDE.md": f"one{separator}two\n" * 200}))
+        self.assertEqual(
+            [
+                "201 lines, over the 200 lines Claude Code's memory page targets; longer files consume more "
+                "context and reduce adherence"
+            ],
+            [row[3] for row in claude_code_rows({"CLAUDE.md": "line\r" * 201})],
+        )
+
     def test_imports_outside_code_are_named_and_a_missing_one_is_a_warning(self) -> None:
         text = (
             "See @docs/guide.md and @docs/present.md, mail a@example.com, ask @maintainer,\n"
@@ -5346,6 +5383,40 @@ class ClaudeCodeConfigurationTests(unittest.TestCase):
         for text, expected in cases.items():
             with self.subTest(text=text):
                 self.assertEqual(expected, audit.claude_imports(text))
+
+    def test_an_import_inside_an_indented_code_block_is_none_as_markdown_reads_the_block(self) -> None:
+        # An indented code block is code, which Claude Code skips as it skips a fence; a line indented after a
+        # paragraph's text continues the paragraph, and a list item's content is indented as far as its text.
+        cases = {
+            "Text.\n\n    @indented.md\n": [],
+            "    @first.md\nText @after.md\n": ["after.md"],
+            "# Heading\n    @under_heading.md\n": [],
+            "Text\n    @continued.md\n": ["continued.md"],
+            "- item\n\n    @item_text.md\n\n      @item_code.md\n": ["item_text.md"],
+            "1.  item\n\n        @item_code.md\n": [],
+            ">     @quoted.md\n": [],
+            "\t@tabbed.md\n": [],
+            "    @a.md\n\n    @b.md\n\nText @c.md\n": ["c.md"],
+            "Keep ``@two `ticks`` literal and @kept.md.\n": ["kept.md"],
+            # A thematic break ends a paragraph as a heading does, and is no list item even spelled with bullets.
+            "***\n    @after_rule.md\n": [],
+            "* * *\n    @spaced_rule.md\n": [],
+            "- - -\n    @dashed_rule.md\n": [],
+            "Text\n___\n    @rule_after_text.md\n": [],
+            # A marker followed by five or more columns of space opens its item with indented code.
+            "-     @item_opens_code.md\n": [],
+            "1.      @ordered_opens_code.md\n       @still_code.md\n      @item_text.md\n": ["item_text.md"],
+            "-    @four_spaces_is_text.md\n": ["four_spaces_is_text.md"],
+            "    ***\n": [],
+        }
+        for text, expected in cases.items():
+            with self.subTest(text=text):
+                self.assertEqual(expected, audit.claude_imports(text))
+
+    def test_an_import_after_a_separator_python_breaks_at_stays_on_its_line(self) -> None:
+        # CommonMark ends a line only at CR, LF, or CRLF, so a span opened before a line separator still holds it.
+        self.assertEqual([], audit.claude_imports("Run `cat\u2028@inside.md` here.\n"))
+        self.assertEqual(["after.md"], audit.claude_imports("Run `cat`\r@after.md\n"))
 
     def test_an_import_resolves_from_the_file_that_holds_it(self) -> None:
         self.assertEqual(
@@ -6533,6 +6604,26 @@ class UnexaminedPathTests(unittest.TestCase):
         rows = _finding_rows(audit.check_inventory(self.root))
         self.assertEqual(["docs/AGENTS.md"], [row[2] for row in rows if row[0] == "ERROR"])
         self.assertIn(("INFO", "inventory", "docs/AGENTS.override.md", "Found docs/AGENTS.override.md"), rows)
+
+    def test_a_nested_file_in_another_case_is_audited_only_where_its_folder_folds_case(self) -> None:
+        # Codex opens AGENTS.md in each folder it reads, which is docs/agents.md where docs folds case; the walk matched
+        # the exact spelling, so it was never inventoried, read, or checked.
+        _write_fixture(
+            self.root,
+            {"docs/agents.md": b"\xff\xfe\x00bad", "docs/Agents.Override.md": "x", "pkg/.MCP.json": "{}"},
+        )
+        folds = opens_in_another_case(self.root / "docs")
+        rows = _finding_rows(audit.check_inventory(self.root))
+        self.assertEqual(["docs/agents.md"] if folds else [], [row[2] for row in rows if row[0] == "ERROR"])
+        found = {("INFO", "inventory", rel, f"Found {rel}") for rel in ("docs/agents.md", "docs/Agents.Override.md")}
+        self.assertEqual(found if folds else set(), found & set(rows))
+        nested = [path.relative_to(self.root).as_posix() for path in audit._nested_files(self.root, ".mcp.json")]
+        self.assertEqual(["pkg/.MCP.json"] if folds else [], nested)
+
+    def test_the_roots_own_instruction_file_in_another_case_is_never_a_nested_one(self) -> None:
+        _write_fixture(self.root, {"agents.md": "# Root\n", "docs/AGENTS.md": "# Docs\n"})
+        nested = [path.relative_to(self.root).as_posix() for path in audit._nested_files(self.root, "AGENTS.md")]
+        self.assertEqual(["docs/AGENTS.md"], nested)
 
     def test_the_scope_of_a_repositorys_files_takes_a_path_it_cannot_examine_for_no_find(self) -> None:
         # Each path alone shows its runtime or surface, so an earlier one never answers for it.

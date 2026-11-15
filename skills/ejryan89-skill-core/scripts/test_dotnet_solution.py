@@ -110,6 +110,18 @@ class SolutionReaderTests(unittest.TestCase):
         with self.assertRaises(XmlRefused):
             listed_projects("<!DOCTYPE x>" + SLNX, self.root / "Harbor.slnx")
 
+    def test_a_sln_line_breaks_only_where_dotnet_reads_one(self) -> None:
+        # Text after a separator str.splitlines breaks at stays on its line for .NET's TextReader.ReadLine, so a project
+        # line written after one on a line of another kind is no project line.
+        for separator in ("\x0c", "\x85", "\u2028", "\u2029"):
+            with self.subTest(separator=f"U+{ord(separator):04X}"):
+                text = (
+                    f"# note{separator}"
+                    'Project("{F}") = "Fake", "fake\\Fake.csproj", "{9}"\r\n'
+                    'Project("{F}") = "Real", "real\\Real.csproj", "{1}"\r\nEndProject\r\n'
+                )
+                self.assertEqual(["real\\Real.csproj"], listed_projects(text, self.root / "Harbor.sln"))
+
     def test_slnx_lists_each_project_element_path_in_any_folder(self) -> None:
         solution = self.root / "Harbor.slnx"
         solution.write_text(SLNX, encoding="utf-8")

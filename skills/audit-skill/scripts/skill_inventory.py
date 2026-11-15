@@ -199,6 +199,7 @@ from path_keys import path_key
 from powershell_startup import POWERSHELL_PROGRAMS, StartupCommand, startup_command
 from python_names import import_aliases, qualified_name
 from suite_names import is_suite_name
+from text_lines import text_lines
 
 # Where Claude Code keeps the plugins it installs, under the home: each under its marketplace and version, so a plugin
 # root lies PLUGIN_DEPTH folders down, as deep as locate searches any plugin folder.
@@ -1626,7 +1627,7 @@ def affirmed(pattern: re.Pattern[str], line: str) -> bool:
 
 def tools(path: Path) -> list[str]:
     require_kind(path, "skill file", str(path), folder=False)
-    lines = require_text(path).splitlines()
+    lines = text_lines(require_text(path))
     try:
         found = frontmatter.split(lines)
         document = frontmatter.Frontmatter(found[0] if found else [])
@@ -2774,7 +2775,7 @@ def data_settings(folders: list[Path]) -> list[tuple[str, Path, int, str]]:
 
 def markdown_settings(path: Path, text: str) -> list[tuple[str, Path, int, str]]:
     """The model and effort a Markdown file's frontmatter sets, such as a reviewer profile's."""
-    lines = text.splitlines()
+    lines = text_lines(text)
     try:
         found = frontmatter.split(lines)
         document = frontmatter.Frontmatter(found[0] if found else [])
