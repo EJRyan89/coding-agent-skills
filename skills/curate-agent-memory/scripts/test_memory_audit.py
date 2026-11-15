@@ -2983,8 +2983,10 @@ def test_the_destination_walk_skips_the_folder_walks_folders_and_every_nested_ch
     # workspace's packages hold their own CLAUDE.md.
     top = write(tmp_path / "CLAUDE.md", "rules\n")
     workspace = write(tmp_path / "packages" / "app" / "CLAUDE.md", "rules\n")
+    # Each at the top, which the walk searches though it holds .git, so no folder is passed over as a nested checkout
+    # rather than by its name.
     for folder in WALK_SKIPPED:
-        write(tmp_path / "src" / folder / "CLAUDE.md", "rules\n")
+        write(tmp_path / folder / "CLAUDE.md", "rules\n")
     write(tmp_path / "vendor" / "clone" / ".git" / "HEAD", "ref: refs/heads/main\n")
     write(tmp_path / "vendor" / "clone" / "CLAUDE.md", "rules\n")
     write(tmp_path / "vendor" / "clone" / "docs" / "AGENTS.md", "rules\n")

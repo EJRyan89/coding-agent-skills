@@ -5325,6 +5325,20 @@ class ClaudeCodeConfigurationTests(unittest.TestCase):
                     claude_code_rows({name: "line\n" * 201}),
                 )
 
+    def test_a_line_is_counted_where_commonmark_ends_one(self) -> None:
+        # 200 lines that each hold a separator str.splitlines also breaks at are 200 lines, not 400, and a CR alone
+        # ends one.
+        for separator in ("\x0c", "\x85", "\u2028", "\u2029"):
+            with self.subTest(separator=f"U+{ord(separator):04X}"):
+                self.assertEqual([], claude_code_rows({"CLAUDE.md": f"one{separator}two\n" * 200}))
+        self.assertEqual(
+            [
+                "201 lines, over the 200 lines Claude Code's memory page targets; longer files consume more "
+                "context and reduce adherence"
+            ],
+            [row[3] for row in claude_code_rows({"CLAUDE.md": "line\r" * 201})],
+        )
+
     def test_imports_outside_code_are_named_and_a_missing_one_is_a_warning(self) -> None:
         text = (
             "See @docs/guide.md and @docs/present.md, mail a@example.com, ask @maintainer,\n"
@@ -5384,6 +5398,16 @@ class ClaudeCodeConfigurationTests(unittest.TestCase):
             "\t@tabbed.md\n": [],
             "    @a.md\n\n    @b.md\n\nText @c.md\n": ["c.md"],
             "Keep ``@two `ticks`` literal and @kept.md.\n": ["kept.md"],
+            # A thematic break ends a paragraph as a heading does, and is no list item even spelled with bullets.
+            "***\n    @after_rule.md\n": [],
+            "* * *\n    @spaced_rule.md\n": [],
+            "- - -\n    @dashed_rule.md\n": [],
+            "Text\n___\n    @rule_after_text.md\n": [],
+            # A marker followed by five or more columns of space opens its item with indented code.
+            "-     @item_opens_code.md\n": [],
+            "1.      @ordered_opens_code.md\n       @still_code.md\n      @item_text.md\n": ["item_text.md"],
+            "-    @four_spaces_is_text.md\n": ["four_spaces_is_text.md"],
+            "    ***\n": [],
         }
         for text, expected in cases.items():
             with self.subTest(text=text):

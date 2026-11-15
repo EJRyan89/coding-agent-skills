@@ -66,6 +66,17 @@ class SkillFileTests(unittest.TestCase):
                 (folder / name).write_bytes(b"")
                 self.assertFalse(agent_skills.is_skill_file(folder / name), name)
 
+    def test_skill_md_spelled_with_a_letter_beyond_ascii_is_the_main_file_where_the_folder_gives_it(self) -> None:
+        # APFS folds the long s onto s and compares the Kelvin sign as K; NTFS and ext4 keep the Kelvin sign apart. The
+        # folder's own lookup of SKILL.md is the answer, which a key gave the other way for each.
+        with tempfile.TemporaryDirectory() as temp:
+            folder = Path(temp)
+            for name in ("\u017fKILL.md", "S\u212aILL.md"):
+                with self.subTest(name=ascii(name)):
+                    (folder / name).write_bytes(b"")
+                    self.assertEqual((folder / "SKILL.md").exists(), agent_skills.is_skill_file(folder / name))
+                    (folder / name).unlink()
+
     def test_a_name_that_is_skill_md_in_no_case_never_asks_its_folder(self) -> None:
         with mock.patch.object(path_keys, "_one_entry", side_effect=AssertionError("asked")):
             self.assertFalse(agent_skills.is_skill_file(Path("alpha") / "README.md"))

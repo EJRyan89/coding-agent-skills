@@ -21,7 +21,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
 import check_provenance
-import path_keys
 import powershell_commands
 import skill_inventory
 from file_presence import NotAFile
@@ -554,6 +553,17 @@ class ToolsTests(TemporaryTestCase):
             with self.subTest(frontmatter=frontmatter):
                 lines = self.tools(f"---\n{frontmatter}\n---\nBody.\n")
                 self.assertEqual(expected, [line for line in lines if line.startswith(("MODEL", "ALLOWED", "NO_"))])
+
+    def test_a_line_separator_inside_a_value_is_no_line_break(self) -> None:
+        # YAML 1.2 breaks a line only at CR and LF, so text after U+0085, U+2028, or U+2029 is the quoted value's, not
+        # a model key no runtime reads.
+        for separator in ("\x85", "\u2028", "\u2029"):
+            with self.subTest(separator=f"U+{ord(separator):04X}"):
+                lines = self.tools(f'---\ndescription: "Audit.{separator}model: opus"\n---\nBody.\n')
+                self.assertEqual(["MODEL none"], [line for line in lines if line.startswith("MODEL")])
+                profile = self.root / "profile.md"
+                text = f'---\ndescription: "Review.{separator}model: opus"\n---\n'
+                self.assertEqual([], skill_inventory.markdown_settings(profile, text))
 
     def test_only_tool_use_contexts_count_as_references(self) -> None:
         lines = self.tools(
@@ -2396,20 +2406,36 @@ class AgentTests(SourceTreeTestCase):
 
     def test_a_definition_s_values_print_as_one_field_of_one_line_whatever_they_hold(self) -> None:
         skill = self.skill("Start one fresh subagent of type `guarded` for each role.\n", {"agent_deps": ["guarded"]})
-        forged = GUARDED_AGENT.replace("model: inherit", "model: in\x1bherit\x7f").replace(
-            "timeout: 30", "timeout: 3\x1b0"
+        # Separators YAML reads as text inside a value; a control character YAML forbids makes the definition
+        # unreadable instead, as the next test shows.
+        forged = GUARDED_AGENT.replace("model: inherit", "model: in\u2028herit\x85").replace(
+            "timeout: 30", "timeout: 3\u20290"
         )
-        definition = self.agent("guarded", forged.replace("tools: Read, Grep", "tools: Read\x1b[31m, Grep"))
+        definition = self.agent("guarded", forged.replace("tools: Read, Grep", "tools: Read\u2028[31m, Grep"))
         code, lines, error = run("scan", str(skill.parent))
         self.assertEqual(0, code, error)
         self.assertEqual(
             [
                 f"AGENT guarded {definition.as_posix()}",
-                "AGENT_TOOLS guarded Read[31m,Grep",
+                "AGENT_TOOLS guarded Read,[31m,Grep",
                 "AGENT_MODEL guarded inherit",
                 "AGENT_CLAUDE_MD guarded omitted",
                 "AGENT_HOOK guarded PreToolUse Read|Grep python timeout=30 on_failure=block",
                 "AGENT_HOOK guarded Stop * node timeout=default on_failure=default",
+            ],
+            [line for line in lines if line.startswith("AGENT")],
+        )
+        self.assertEqual([], [line for line in lines if LINE_UNSAFE.search(line)])
+
+    def test_a_definition_holding_a_control_character_yaml_forbids_is_unreadable_on_one_line(self) -> None:
+        # YAML 1.2 allows ESC nowhere in a stream, so the reader refuses the definition rather than read its grants.
+        skill = self.skill("Start one fresh subagent of type `guarded` for each role.\n", {"agent_deps": ["guarded"]})
+        definition = self.agent("guarded", GUARDED_AGENT.replace("tools: Read, Grep", "tools: Read\x1b[31m, Grep"))
+        code, lines, error = run("scan", str(skill.parent))
+        self.assertEqual(0, code, error)
+        self.assertEqual(
+            [
+                f"AGENT_UNREADABLE {definition.as_posix()} frontmatter line 3 holds U+001B, which YAML forbids",
             ],
             [line for line in lines if line.startswith("AGENT")],
         )
@@ -2856,16 +2882,16 @@ class RuntimeSupportTests(SourceTreeTestCase):
         skill = self.root / "skills" / "alpha" / "SKILL.md"
         lowered = skill.with_name("skill.md")
         skill.rename(lowered)
-        # The main file in another case, which only a folder that folds case takes for SKILL.md.
-        with mock.patch.dict(path_keys._FOLDS_CASE, {str(lowered.parent): True}):
-            self.assertEqual(
-                [
-                    "RUNTIME claude-code full needs=none",
-                    "RUNTIME codex full needs=none",
-                    "RUNTIME copilot-cli full needs=none",
-                ],
-                self.runtime(lowered),
-            )
+        # The main file in another case, which only a folder that folds case takes for SKILL.md; either way it is
+        # audited on its own, invoking nothing.
+        self.assertEqual(
+            [
+                "RUNTIME claude-code full needs=none",
+                "RUNTIME codex full needs=none",
+                "RUNTIME copilot-cli full needs=none",
+            ],
+            self.runtime(lowered),
+        )
 
     def test_an_invoked_skill_with_a_lowercase_skill_md_carries_its_needs_only_where_its_folder_folds_case(
         self,
@@ -2876,12 +2902,11 @@ class RuntimeSupportTests(SourceTreeTestCase):
         self.skill("Body.\n", {"tools": ["gh"]}, name="beta")
         beta = self.root / "skills" / "beta"
         (beta / "SKILL.md").rename(beta / "skill.md")
-        for folds in (True, False):
-            with self.subTest(folds=folds), mock.patch.dict(path_keys._FOLDS_CASE, {str(beta): folds}):
-                self.assertEqual(
-                    ["RUNTIME_NEEDS sandbox-network skill beta"] if folds else [],
-                    [line for line in self.runtime(skill) if line.startswith("RUNTIME_NEEDS")],
-                )
+        folds = (beta / "SKILL.md").exists()  # the folder's own lookup, which asks its file system
+        self.assertEqual(
+            ["RUNTIME_NEEDS sandbox-network skill beta"] if folds else [],
+            [line for line in self.runtime(skill) if line.startswith("RUNTIME_NEEDS")],
+        )
 
     def test_a_missing_or_malformed_declaration_and_a_skill_outside_a_source_tree(self) -> None:
         self.assertEqual(["RUNTIME_UNDECLARED"], self.runtime(self.skill("Body.\n")))
@@ -3762,22 +3787,21 @@ class MainFileCaseTests(TemporaryTestCase):
 
     def test_skill_md_in_another_case_is_the_main_file_only_where_the_folder_folds_case(self) -> None:
         folder = self.folder("skill.md")
-        for folds in (True, False):
-            with self.subTest(folds=folds), mock.patch.dict(path_keys._FOLDS_CASE, {str(folder): folds}):
-                self.assertEqual([folder / "skill.md"] if folds else [], skill_inventory.main_files(folder))
-                self.assertEqual("main" if folds else "doc", skill_inventory.category(Path("skill.md"), folder))
-                self.assertEqual(folder if folds else None, skill_inventory.skill_folder(folder / "notes.md"))
+        folds = (folder / "SKILL.md").exists()  # the folder's own lookup, which asks its file system
+        self.assertEqual([folder / "skill.md"] if folds else [], skill_inventory.main_files(folder))
+        self.assertEqual("main" if folds else "doc", skill_inventory.category(Path("skill.md"), folder))
+        self.assertEqual(folder if folds else None, skill_inventory.skill_folder(folder / "notes.md"))
 
     def test_scan_and_inventory_take_a_lowercase_skill_md_as_main_only_where_the_folder_folds_case(self) -> None:
         # scanned_files, inventory, and data_settings pass the skill folder to category, which asks it.
         folder = self.folder("skill.md")
         lowered = folder / "skill.md"
-        with mock.patch.dict(path_keys._FOLDS_CASE, {str(folder): True}):
+        if (folder / "SKILL.md").exists():  # the folder's own lookup, which asks its file system
             self.assertEqual([lowered, folder / "notes.md"], skill_inventory.scanned_files(folder))
             lines = skill_inventory.inventory(folder)
             self.assertIn("FILE main", next(line for line in lines if line.endswith(" skill.md")))
             self.assertNotIn("NO_MAIN", lines)
-        with mock.patch.dict(path_keys._FOLDS_CASE, {str(folder): False}):
+        else:
             with self.assertRaisesRegex(skill_inventory.InputError, f"^no SKILL.md in {folder.as_posix()}$"):
                 skill_inventory.scanned_files(folder)
             lines = skill_inventory.inventory(folder)
@@ -3786,21 +3810,18 @@ class MainFileCaseTests(TemporaryTestCase):
 
     def test_exactly_skill_md_is_the_main_file_either_way(self) -> None:
         folder = self.folder("SKILL.md")
-        for folds in (True, False):
-            with self.subTest(folds=folds), mock.patch.dict(path_keys._FOLDS_CASE, {str(folder): folds}):
-                self.assertEqual([folder / "SKILL.md"], skill_inventory.main_files(folder))
-                self.assertEqual("main", skill_inventory.category(Path("SKILL.md"), folder))
-                self.assertEqual(folder, skill_inventory.skill_folder(folder / "notes.md"))
+        self.assertEqual([folder / "SKILL.md"], skill_inventory.main_files(folder))
+        self.assertEqual("main", skill_inventory.category(Path("SKILL.md"), folder))
+        self.assertEqual(folder, skill_inventory.skill_folder(folder / "notes.md"))
 
     def test_a_skill_with_a_lowercase_skill_md_is_located_only_where_its_folder_folds_case(self) -> None:
         home = self.root / "home"
         folder = home / ".claude" / "skills" / "alpha"
         skill = write(folder / "skill.md", "x")
-        for folds in (True, False):
-            with self.subTest(folds=folds), mock.patch.dict(path_keys._FOLDS_CASE, {str(folder): folds}):
-                code, lines, _ = run("locate", "alpha", "--home", str(home))
-                expected = (0, f"SKILL_FILE {skill.as_posix()}") if folds else (1, "NOT_FOUND alpha")
-                self.assertEqual(expected, (code, lines[1]))
+        folds = (folder / "SKILL.md").exists()  # the folder's own lookup, which asks its file system
+        code, lines, _ = run("locate", "alpha", "--home", str(home))
+        expected = (0, f"SKILL_FILE {skill.as_posix()}") if folds else (1, "NOT_FOUND alpha")
+        self.assertEqual(expected, (code, lines[1]))
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="a symbolic link to a file needs a privilege on Windows")

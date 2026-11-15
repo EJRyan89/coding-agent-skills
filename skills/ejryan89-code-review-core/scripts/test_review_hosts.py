@@ -680,6 +680,22 @@ class AddedRootTests(unittest.TestCase):
         else:
             require_no_added_configuration(run, "run directory")  # Copilot CLI finds no .github folder there
 
+    def test_a_folder_the_file_system_opens_as_a_configuration_folder_is_refused_by_the_folder_s_answer(self) -> None:
+        # APFS folds the long s onto s, so this opens as .agents there, while name_key keeps the two apart; NTFS and
+        # Linux's file systems keep it apart too, where Copilot CLI finds no .agents folder.
+        run = self.root / "run"
+        (run / ".agent\u017f" / "skills").mkdir(parents=True)
+        if (run / ".agents").exists():
+            with self.assertRaises(RuntimeContractError) as raised:
+                require_no_added_configuration(run, "run directory")
+            self.assertEqual(
+                f"Copilot run directory {run} holds .agent\u017f, whose skills and agents Copilot CLI would load from "
+                "an added directory as trusted configuration",
+                str(raised.exception),
+            )
+        else:
+            require_no_added_configuration(run, "run directory")
+
     def test_a_run_directory_that_cannot_be_listed_is_refused(self) -> None:
         with (
             mock.patch.object(Path, "iterdir", side_effect=PermissionError(13, "Permission denied")),
