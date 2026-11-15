@@ -163,6 +163,7 @@ TRUST_BOUNDARY_SCRIPTS = (
     f"{SKILL_CORE}/search_boundary.py",
     f"{SKILL_CORE}/test_search_boundary.py",
     f"{SKILL_CORE}/skill_menu.py",
+    f"{SKILL_CORE}/text_lines.py",
     f"{SKILL_CORE}/typed_fields.py",
     f"{SKILL_CORE}/versions.py",
     f"{SKILL_CORE}/whole_number.py",

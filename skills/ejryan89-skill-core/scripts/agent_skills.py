@@ -14,7 +14,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from path_keys import name_key
+from path_keys import opens_as
 
 DUPLICATION_ALLOWED = {
     "NAME_PATTERN": (
@@ -35,9 +35,8 @@ SKILL_FILE = "SKILL.md"
 
 
 def is_skill_file(path: Path) -> bool:
-    """Whether `path` is named as its folder's SKILL.md, as the folder's file system compares names: SKILL.md in any
-    case where the folder folds case, and exactly SKILL.md where it does not, as the runtime that opens it finds it.
-    Only a name that is SKILL.md in some case asks the folder."""
-    return path.name.casefold() == SKILL_FILE.casefold() and name_key(path.name, path.parent) == name_key(
-        SKILL_FILE, path.parent
-    )
+    """Whether `path` is its folder's SKILL.md, the entry the folder gives when a runtime opens SKILL.md there, as
+    `path_keys.opens_as` asks the folder's file system: exactly SKILL.md where it keeps case, and any spelling it folds
+    onto SKILL.md where it does not, such as `skill.md`, or SKILL.md spelled with the long s (U+017F) on APFS, which
+    folds it onto `s`."""
+    return opens_as(path, SKILL_FILE)

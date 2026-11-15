@@ -30,7 +30,7 @@ from flat_text import flat_text
 from git_client import GitClient, GitError
 from job_tree import JobRefused, process_tree
 from path_containment import within
-from path_keys import name_key
+from path_keys import name_key, opens_as
 from process_identity import ProcessStatus, read_pid
 from review_config import REVIEWER_EFFORTS
 from review_io import (
@@ -376,14 +376,24 @@ def bounded_workspace(workspace: Path) -> None:
         ) from exc
 
 
+def _configuration_folder(path: Path) -> bool:
+    """Whether Copilot CLI may open `path` as one of COPILOT_CONFIGURATION_FOLDERS: where its folder gives that entry
+    for the name (`path_keys.opens_as`), as APFS gives a `.agents` spelled with the long s, or where the name's key is
+    one, which merges more names than any file system does, so the refusal holds where the folder cannot be asked."""
+    return name_key(path.name, path.parent) in COPILOT_CONFIGURATION_FOLDERS or any(
+        opens_as(path, folder) for folder in sorted(COPILOT_CONFIGURATION_FOLDERS)
+    )
+
+
 def require_no_added_configuration(root: Path, label: str) -> None:
-    """Refuse an added root whose top holds a folder of COPILOT_CONFIGURATION_FOLDERS, by the name its file system
-    compares, or that cannot be listed: Copilot CLI would load the skills and agents in it as trusted configuration."""
+    """Refuse an added root whose top holds a folder of COPILOT_CONFIGURATION_FOLDERS, by any name Copilot CLI may
+    open as one there (`_configuration_folder`), or that cannot be listed: Copilot CLI would load the skills and agents
+    in it as trusted configuration."""
     try:
         names = sorted(entry.name for entry in root.iterdir())
     except OSError as exc:
         raise RuntimeContractError(f"Copilot {label} {root} cannot be listed: {exc.strerror or exc}") from exc
-    found = [name for name in names if name_key(name, root) in COPILOT_CONFIGURATION_FOLDERS]
+    found = [name for name in names if _configuration_folder(root / name)]
     if found:
         raise RuntimeContractError(
             f"Copilot {label} {root} holds {', '.join(found)}, whose skills and agents Copilot CLI would load from an "

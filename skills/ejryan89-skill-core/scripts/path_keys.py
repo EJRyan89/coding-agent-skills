@@ -44,6 +44,12 @@ ASCII letters by itself, which the probe in `folds_case` has shown the directory
 case of any other letter, as they differ in normalization form, are one only where the trusted directory finds one
 entry under both, so no table of this module's own decides that a spelling names an admitted folder. The deployer
 reaches these through `platform_support`, its platform seam, and skill scripts and `tools/` import them here.
+
+A key refuses more names as one than any file system does, so it serves a collision check, never a recognizer of a
+fixed name a program opens. `opens_as` is that recognizer: whether a folder gives an entry when a program opens a
+fixed name there, such as `SKILL.md`, `AGENTS.md`, or `.git`, which only the folder's file system can answer, since
+each folds its own letters: APFS folds the long s (U+017F) onto `s`, which a key keeps apart, while NTFS and ext4 keep
+the Kelvin sign apart from `K`, which a key merges, as APFS, comparing names in a decomposed form, does.
 """
 
 from __future__ import annotations
@@ -131,6 +137,19 @@ def name_key(name: str, directory: str | os.PathLike[str] | None = None) -> str:
     return unicodedata.normalize("NFC", unicodedata.normalize("NFD", name).casefold())
 
 
+def opens_as(path: Path, name: str) -> bool:
+    """Whether the folder holding `path` gives `path`'s own entry when a program opens `name` there, as the program
+    finds the file. `path` spelled `name` is that entry on every file system. Another spelling is only where the folder,
+    asked, finds `path`'s entry under `name`, does not list `name` as an entry of its own, and the file has no second
+    link, so two hard links never pass for one name; where a lookup fails, it is not. The folder is asked only about a
+    spelling that is `name` in some case or Unicode form, so a walk asks no folder that holds none."""
+    if path.name == name:
+        return True
+    if _loose(path.name) != _loose(name):
+        return False
+    return _one_entry(os.fspath(path.parent), path.name, name, folds=False)
+
+
 def part_folds(parts: Sequence[str]) -> tuple[bool, ...]:
     """For each of an absolute path's `parts`, its anchor first, whether the directory holding it folds case: the
     anchor folds; each name takes the answer of the directory before it, asked while the walk reaches it from the
@@ -211,6 +230,13 @@ def _folded(character: str) -> str:
     upper = simple_uppercase(character) or character
     lower = upper.lower()
     return lower if len(lower) == 1 and simple_uppercase(lower) == upper else upper
+
+
+def _loose(name: str) -> str:
+    """`name` in a form any two spellings a file system may take for one name share: case-folded fully and decomposed
+    to compatibility form, so the long s, the Kelvin sign, and a composed accent each meet their letter. It only spares
+    `opens_as` asking a folder about a name that cannot be the one it looks for."""
+    return unicodedata.normalize("NFKD", unicodedata.normalize("NFKD", name).casefold())
 
 
 def _cased(name: str, folds: bool) -> str:

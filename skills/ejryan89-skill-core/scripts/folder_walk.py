@@ -11,15 +11,15 @@ with the reason, so each caller decides what a folder it could not search costs 
   NuGet's `packages` (`dotnet_solution.SEARCH_SKIPPED_FOLDERS`).
 - Nested checkouts: a folder below `top` holding a `.git` folder or file, a clone, a submodule, or a worktree, is
   another repository's, so its files are not given; it is reported as `NESTED_CHECKOUT`. `top` itself is searched.
-  The `.git` entry is recognized as the folder holding it compares names, so `.GIT` marks a checkout only where that
-  folder folds case.
+  The `.git` entry is the one the folder gives for `.git`, as `path_keys.opens_as` asks it, so `.GIT` marks a checkout
+  only where that folder folds case.
 - Links: an entry that is a symbolic link, a Windows junction, or another reparse point, as `link_probe` judges one,
   and that leads to a folder or to nothing, is not entered, since it may lead out of the tree or back into it,
   and is reported as `LINKED`, unless the caller's `follow` accepts its path. Even then a link that leads
   back into a folder the walk is inside is reported as `LOOP` and not entered, so the walk always ends. `top` is
   searched as given, link or not; a link to a file or a device is an entry the caller judges.
 - Failures: a folder that cannot be listed is reported as `UNLISTABLE`, and an entry that cannot be examined as
-  `UNEXAMINED`, each by path with the reason, and the walk goes on; an error never ends it.
+  `UNEXAMINED`, each by path with the reason and the error, and the walk goes on; an error never ends it.
 - Bounds: none by depth or count. No caller bounds its search, and the walk enters no folder twice along one path.
 """
 
@@ -33,7 +33,7 @@ from pathlib import Path
 from typing import Final, Literal
 
 from link_probe import is_link_or_junction
-from path_keys import name_key
+from path_keys import opens_as
 
 SKIPPED_FOLDERS = frozenset(
     {".git", ".hg", ".svn", "node_modules", ".venv", "venv", ".tox", ".nox", "__pycache__", "bin", "obj", ".vs"}
@@ -64,11 +64,14 @@ PRESENCE_ALLOWED = {
 
 @dataclass(frozen=True)
 class NotEntered:
-    """A folder or entry the walk did not search: its path, one of the kinds above, and why, as a phrase."""
+    """A folder or entry the walk did not search: its path, one of the kinds above, and why, as a phrase. A folder it
+    could not list and an entry it could not examine carry the error too, never compared, so a caller that must fail
+    rather than pass one by raises it as it was."""
 
     path: Path
     kind: NotEnteredKind
     reason: str
+    error: OSError | None = field(default=None, compare=False)
 
 
 @dataclass
@@ -99,7 +102,7 @@ def folder_identity(path: Path) -> tuple[int, int]:
 
 
 def unlistable(path: Path, error: OSError) -> NotEntered:
-    return NotEntered(path, UNLISTABLE, f"the folder cannot be listed: {error.strerror or error}")
+    return NotEntered(path, UNLISTABLE, f"the folder cannot be listed: {error.strerror or error}", error)
 
 
 Identities = frozenset[tuple[int, int]]
@@ -154,9 +157,9 @@ def enter(
 
 
 def is_checkout_marker(name: str, folder: Path) -> bool:
-    """Whether `name` in `folder` is its `.git` entry as the folder compares names. The folder is asked only about a
-    name that is `.git` in some case, so the walk asks no folder that holds none."""
-    return name.casefold() == CHECKOUT_MARKER and name_key(name, folder) == CHECKOUT_MARKER
+    """Whether `name` in `folder` is the entry git finds there as `.git`, as `path_keys.opens_as` asks the folder. The
+    folder is asked only about a name that is `.git` in some case or form, so the walk asks no folder holding none."""
+    return opens_as(folder / name, CHECKOUT_MARKER)
 
 
 def search_folder(
@@ -187,6 +190,6 @@ def search_folder(
                 walk.files.append(path)
         except OSError as error:
             walk.not_entered.append(
-                NotEntered(path, UNEXAMINED, f"the entry cannot be examined: {error.strerror or error}")
+                NotEntered(path, UNEXAMINED, f"the entry cannot be examined: {error.strerror or error}", error)
             )
     return subfolders
