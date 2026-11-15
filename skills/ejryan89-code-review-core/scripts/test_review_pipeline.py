@@ -63,6 +63,7 @@ from review_records import Coverage, ReviewRecord
 from review_runtime import RuntimeContractError, RuntimeContractFieldError, validate_adapter_manifest
 from review_state import load_state
 from test_job_tree import SHORT_LIMIT_SECONDS, SignalledTree, ended
+from test_private_folder import judged_folder_calls, recording_temporary_folders
 from test_review_archive import unstatable
 from test_review_documents import (
     NOT_INSTALLED,
@@ -5014,6 +5015,15 @@ class ValidateReviewerSequenceTests(PipelineFixture):
             self.validate(pulls=[12]),
         )
 
+    def test_the_scratch_folder_lies_in_the_temporary_directory_private_folder_judged(self) -> None:
+        # The diffs validate writes and reads back lie only where no other account can swap them.
+        self.use()
+        with recording_temporary_folders() as calls:
+            self.assertEqual("VALID", self.validate(pulls=[12])[0][-1])
+        judged = judged_folder_calls(calls, "code-review-validate-")
+        self.assertTrue(judged, "no scratch folder was made")
+        self.assertTrue(all(judged), calls)
+
     def test_a_ref_is_ignored_when_pull_requests_are_named(self) -> None:
         self.use()
         lines, events, _reads = self.validate(pulls=[12], ref="refs/heads/feature")
@@ -5132,6 +5142,36 @@ class CanaryTests(PipelineFixture):
         self.assertEqual(self.temporary, canary_root.parent)
         self.assertEqual(2, sum(line.startswith("SHA256 ") for line in out.splitlines()))
         self.assertIsNotNone(latest_record(canary_root, REPOSITORY, 12))
+        self.assertFalse(self.archive.exists())
+
+    @unittest.skipIf(sys.platform == "win32", "Windows mode bits say nothing about who may write a folder")
+    def test_a_canary_root_in_a_temporary_directory_another_account_could_rename_is_refused_and_the_run_kept(
+        self,
+    ) -> None:
+        # Another account that could swap the canary root would choose the record a canary reports.
+        ready = self.prepare(canary=True)
+        self.write_role_result(ready["roles"][0])
+        shared = self.temporary / "shared"
+        own = shared / "u" / "tmp"
+        own.mkdir(parents=True)
+        shared.chmod(0o777)
+        try:
+            with mock.patch.object(tempfile, "tempdir", str(own)):
+                code, out, err = self.run_main("finalize", "--run", str(ready["run"]))
+        finally:
+            shared.chmod(0o755)
+        self.assertEqual(
+            (
+                1,
+                f"FAILED {ready['run']} a folder made in the temporary directory {own} could be replaced by another "
+                f"account: its ancestor {shared} can be written by users other than its owner and is not sticky "
+                "(mode 777); set TMPDIR to a folder of this user's own below folders no other account can write\n",
+                "",
+            ),
+            (code, out, err),
+        )
+        self.assertTrue(Path(ready["run"]).exists(), "a failed run is kept for inspection")
+        self.assertEqual([], list(own.iterdir()), "no canary root was made there")
         self.assertFalse(self.archive.exists())
 
     def test_several_canaries_each_get_their_own_root_and_fail_alone(self) -> None:

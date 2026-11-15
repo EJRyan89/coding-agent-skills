@@ -72,6 +72,7 @@ sys.path.insert(0, str(sibling_scripts("ejryan89-code-review-core")))
 import file_presence
 import json_reader
 import json_writer
+import private_folder
 from console import run_main
 from flat_text import flat_text, single_line
 from git_client import GitClient, GitError, output_line
@@ -521,7 +522,7 @@ def output_root(directory: Path | None) -> Iterator[Path]:
     if directory is not None:
         yield directory
         return
-    root = Path(tempfile.mkdtemp(prefix="review-document-")).resolve()
+    root = Path(tempfile.mkdtemp(prefix="review-document-", dir=private_folder.temporary_directory())).resolve()
     try:
         refuse_unquotable(root)
         yield root

@@ -176,22 +176,30 @@ class FsopsPlatformFixtures(unittest.TestCase):
                 "import tempfile\n"
                 "from pathlib import Path\n"
                 "\n"
+                "import private_folder\n"
+                "\n"
                 "\n"
             )
             files = {
+                # The temporary directory private_folder judges is the system temporary directory, by its one call.
                 "deployer/kept.py": allowance + "def run():\n"
                 '    work = Path(tempfile.mkdtemp(prefix="run-"))\n'
                 "    with tempfile.TemporaryFile() as captured:\n"
                 "        captured.write(b'x')\n"
-                "    shutil.rmtree(work, ignore_errors=True)\n",
+                "    shutil.rmtree(work, ignore_errors=True)\n"
+                "    checked = Path(tempfile.mkdtemp(dir=private_folder.temporary_directory()))\n"
+                "    shutil.rmtree(checked)\n",
                 "deployer/strayed.py": allowance + "def run(target):\n"
-                '    work = tempfile.mkdtemp(dir="C:/managed")\n'  # 12: dir names another directory
-                '    tempfile.TemporaryFile("w+b")\n'  # 13: a positional argument may reach dir
-                "    shutil.rmtree(target)\n"  # 14: a parameter, not a directory mkdtemp made
-                "    shutil.rmtree(work)\n"  # 15: bound to a call whose dir is elsewhere
+                '    work = tempfile.mkdtemp(dir="C:/managed")\n'  # 14: dir names another directory
+                '    tempfile.TemporaryFile("w+b")\n'  # 15: a positional argument may reach dir
+                "    shutil.rmtree(target)\n"  # 16: a parameter, not a directory mkdtemp made
+                "    shutil.rmtree(work)\n"  # 17: bound to a call whose dir is elsewhere
                 '    other = Path("C:/managed")\n'
                 "    other = Path(tempfile.mkdtemp())\n"
-                "    shutil.rmtree(other)\n",  # 18: bound to something else as well
+                "    shutil.rmtree(other)\n"  # 20: bound to something else as well
+                "    tempfile.mkdtemp(dir=private_folder.temporary_directory(target))\n"  # 21: given an argument
+                "    tempfile.mkdtemp(dir=private_folder.base())\n"  # 22: another of its folders
+                "    tempfile.mkdtemp(dir=temporary_directory())\n",  # 23: a name the module never imports
             }
             write_fixture_tree(root, files)
             message = (
@@ -199,11 +207,12 @@ class FsopsPlatformFixtures(unittest.TestCase):
             )
             self.assertEqual(
                 [
-                    "deployer/strayed.py:12 " + message.format("tempfile.mkdtemp"),
-                    "deployer/strayed.py:13 " + message.format("tempfile.TemporaryFile"),
-                    "deployer/strayed.py:14 " + message.format("shutil.rmtree"),
-                    "deployer/strayed.py:15 " + message.format("shutil.rmtree"),
-                    "deployer/strayed.py:18 " + message.format("shutil.rmtree"),
+                    "deployer/strayed.py:14 " + message.format("tempfile.mkdtemp"),
+                    "deployer/strayed.py:15 " + message.format("tempfile.TemporaryFile"),
+                    "deployer/strayed.py:16 " + message.format("shutil.rmtree"),
+                    "deployer/strayed.py:17 " + message.format("shutil.rmtree"),
+                    "deployer/strayed.py:20 " + message.format("shutil.rmtree"),
+                    *(f"deployer/strayed.py:{line} " + message.format("tempfile.mkdtemp") for line in (21, 22, 23)),
                 ],
                 filesystem_write_problems(root),
             )

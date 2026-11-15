@@ -77,7 +77,6 @@ Exit status:
 from __future__ import annotations
 
 import argparse
-import os
 import shutil
 import stat
 import sys
@@ -92,6 +91,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-cor
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import file_presence
+import private_folder
 from atomic_file import replace_text
 from console import run_main
 from dotnet_solution import SEARCH_SKIPPED_FOLDERS, is_solution, lexical_absolute, project_path, refusal, same_path
@@ -120,6 +120,7 @@ from msbuild_reader import (
     read_solution,
 )
 from ordinal_case import ordinal_fold
+from path_containment import resolved_path
 from sdk_why import DEFAULT_TIMEOUT_SECONDS, SdkPath, Services, run_why
 from skill_roots import skills_directory_holding
 
@@ -273,13 +274,6 @@ def unexaminable(path: Path, error: OSError | Unreadable) -> Failed:
     the operating system's reason, else the error's text, in the words `file_presence.refusal_reason` gives."""
     reason = error.reason if isinstance(error, Unreadable) else error.strerror or str(error)
     return Failed(f"{path} cannot be examined: {reason}")
-
-
-def resolved_path(path: Path) -> Path:
-    """`path` made absolute with every link followed, as `Path.resolve` answers from Python 3.13 on: a symbolic link
-    loop is left unresolved, where Python 3.12's `Path.resolve` raises RuntimeError, so the stat that follows refuses
-    the loop naming the path, on every version."""
-    return Path(os.path.realpath(path))
 
 
 def checkout_tree(base: Path) -> Path:
@@ -1178,7 +1172,7 @@ def write_graph(text: str, requested: Path | None, fmt: str) -> Path:
             raise unexaminable(requested, error) from None
         replace_text(requested, text, mode=mode)
         return requested
-    folder = Path(tempfile.mkdtemp(prefix="dotnet-dependencies-"))
+    folder = Path(tempfile.mkdtemp(prefix="dotnet-dependencies-", dir=private_folder.temporary_directory()))
     target = folder / ("graph.dot" if fmt == "dot" else "graph.mmd")
     try:
         target.write_text(text, encoding="utf-8", newline="\n")

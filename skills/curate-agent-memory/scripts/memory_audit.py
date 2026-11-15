@@ -115,6 +115,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-cor
 import file_presence
 import json_reader
 import json_writer
+import private_folder
 from atomic_file import is_read_only, replace_text
 from console import run_main
 from executable_locator import RelativeEnvironmentPath, absolute_home, environment_path, required_environment_path
@@ -123,7 +124,7 @@ from flat_text import flat_text, single_line
 from git_client import GitClient, GitError
 from link_probe import is_link_or_junction, is_plain_file
 from markdown_sections import CODE_SPAN
-from path_containment import within
+from path_containment import resolved_path, within
 from path_keys import name_key, path_key
 from skill_roots import skills_directory_holding
 
@@ -1104,9 +1105,9 @@ def output_refusal(explicit: Path, memory_dir: Path, projects: Path) -> str | No
         return (
             f"{explicit} already exists, and audit never replaces a file; omit --output to write a new temporary file"
         )
-    target = explicit.resolve()
+    target = resolved_path(explicit)
     for kind, store in (("the memory directory", memory_dir), ("Claude Code's projects folder", projects)):
-        if within(target, store.resolve()):
+        if within(target, resolved_path(store)):
             return f"{explicit} is inside {kind} {store}; omit --output to write a new temporary file"
     return None
 
@@ -1274,7 +1275,12 @@ def audit_lines(args: argparse.Namespace) -> tuple[int, list[str]]:
         except OSError as exc:
             return 1, [f"FAILED cannot write {args.output}: {reason(exc)}"]
         return 0, [f"REPORT {args.output}"]
-    descriptor, name = tempfile.mkstemp(prefix="memory-audit-", suffix=".json")
+    try:
+        descriptor, name = tempfile.mkstemp(
+            prefix="memory-audit-", suffix=".json", dir=private_folder.temporary_directory()
+        )
+    except OSError as exc:
+        return 1, [f"FAILED the audit report cannot be written: {reason(exc)}"]
     with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
         handle.write(report)
     return 0, [f"REPORT {name}"]

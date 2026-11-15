@@ -64,6 +64,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-cor
 
 import json_reader
 import msbuild_xml
+import private_folder
 from atomic_file import is_read_only
 from console import run_main
 from dotnet_solution import (
@@ -157,7 +158,9 @@ def write_file_list(names: list[str]) -> str:
                 f"the changed file {name!r} has a name that is not UTF-8, which FILE_LIST cannot hold"
             ) from None
     data = b"".join(encoded)
-    descriptor, list_path = tempfile.mkstemp(prefix="dotnet-format-files-", suffix=".txt")
+    descriptor, list_path = tempfile.mkstemp(
+        prefix="dotnet-format-files-", suffix=".txt", dir=private_folder.temporary_directory()
+    )
     with os.fdopen(descriptor, "wb") as handle:
         handle.write(data)
     return list_path

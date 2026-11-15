@@ -52,6 +52,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-cor
 
 import file_presence
 import json_writer
+import private_folder
 import whole_number
 from console import run_main
 from flat_text import single_line
@@ -657,7 +658,11 @@ def _prepare_run(
         )
     runtime = services.resolve_runtime(config["runtime"], host)
     created = run_directory is None
-    run = (Path(tempfile.mkdtemp(prefix=RUN_PREFIX)) if run_directory is None else run_directory).resolve()
+    run = (
+        Path(tempfile.mkdtemp(prefix=RUN_PREFIX, dir=private_folder.temporary_directory()))
+        if run_directory is None
+        else run_directory
+    ).resolve()
     if file_presence.is_directory(run) and any(run.iterdir()):
         raise PipelineError(f"Run directory must be empty: {run}")
     try:
@@ -905,7 +910,11 @@ def finalize(run: Path, services: Services | None = None) -> dict[str, Any]:
         reads=state.get("reads"),  # absent from runs prepared before reads were counted
     )
     config = load_config(Path(state["config_path"]))
-    canary_root = Path(tempfile.mkdtemp(prefix="code-review-canary-")).resolve() if state["canary"] else None
+    canary_root = (
+        Path(tempfile.mkdtemp(prefix="code-review-canary-", dir=private_folder.temporary_directory())).resolve()
+        if state["canary"]
+        else None
+    )
     prior_record = (state.get("fixture") or {}).get("prior_record")  # absent from runs prepared before fixtures
     if canary_root is not None and prior_record:
         # A fixture re-review's canary root first holds the review it starts from, as a real archive would.

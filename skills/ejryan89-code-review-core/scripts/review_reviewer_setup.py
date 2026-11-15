@@ -13,6 +13,7 @@ from typing import Any, NamedTuple
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
 import file_presence
+import private_folder
 from flat_text import flat_text
 from git_client import output_lines
 from review_config import (
@@ -526,7 +527,9 @@ def validate_reviewer(
     targets = _validation_targets(repository, checkout, reviewer, pulls, ref, config_path, services)
     lines: list[str] = []
     checked: set[str] = set()
-    with tempfile.TemporaryDirectory(prefix="code-review-validate-") as temporary:
+    with tempfile.TemporaryDirectory(
+        prefix="code-review-validate-", dir=private_folder.temporary_directory()
+    ) as temporary:
         scratch = Path(temporary)
         for index, target in enumerate(targets):
             pull = target.pull

@@ -46,6 +46,7 @@ from typing import Any
 import file_presence
 import json_reader
 import json_writer
+import private_folder
 from executable_locator import PYTHON
 from flat_text import flat_text
 from review_config import safe_repository_path
@@ -446,7 +447,7 @@ class Staged:
         input, and `run.json` naming the one role's prompt, result file, and self-check. A pending synthesis only."""
         if self.facts is None:
             return
-        run = Path(tempfile.mkdtemp(prefix=RUN_PREFIX)).resolve()
+        run = Path(tempfile.mkdtemp(prefix=RUN_PREFIX, dir=private_folder.temporary_directory())).resolve()
         self.run = run
         prompt, result = run / PROMPT_NAME, run / RESULT_NAME
         try:

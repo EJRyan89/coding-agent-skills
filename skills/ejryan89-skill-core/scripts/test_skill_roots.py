@@ -18,6 +18,7 @@ import skill_roots
 from executable_locator import RelativeEnvironmentPath
 from module_closure import copy_with_imports
 from skill_roots import MissingSibling, deployed_skill_roots, plugin_name, sibling_scripts, skills_directory_holding
+from test_path_containment import resolving_as_python_312
 
 
 class DeployedSkillRootsTests(unittest.TestCase):
@@ -290,6 +291,23 @@ class SkillsDirectoryHoldingTests(unittest.TestCase):
         for path in (self.root / "elsewhere" / "out.json", self.home / ".claude" / "skills-old" / "x", self.home):
             with self.subTest(path=path):
                 self.assertIsNone(skills_directory_holding(path))
+
+    @unittest.skipIf(sys.platform == "win32", "a symbolic link needs a privilege on Windows")
+    def test_a_symbolic_link_loop_is_compared_as_written_on_every_python_version(self) -> None:
+        # Python 3.12's Path.resolve raises RuntimeError for a loop, which no caller's handler of OSError caught, so
+        # the run ended FAILED RuntimeError rather than in the caller's own refusal of the path.
+        inside = self.source / "some-skill"
+        inside.mkdir(parents=True)
+        elsewhere = self.root / "elsewhere"
+        elsewhere.mkdir()
+        outside, held = elsewhere / "loop", inside / "loop"
+        for loop in (outside, held):
+            loop.symlink_to(loop)
+        for version, resolving in (("this Python", contextlib.nullcontext), ("Python 3.12", resolving_as_python_312)):
+            with self.subTest(version), resolving():
+                self.assertIsNone(skills_directory_holding(outside))
+                self.assertIsNone(skills_directory_holding(outside / "out.json"))
+                self.assertEqual(self.source, skills_directory_holding(held))
 
     @unittest.skipUnless(sys.platform == "win32", "only Windows spells a path with an extended-length prefix")
     def test_an_extended_length_spelling_of_a_path_or_a_root_is_found_alike(self) -> None:

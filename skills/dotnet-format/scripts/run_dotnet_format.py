@@ -64,6 +64,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import private_folder
 from bounded_process import run_bounded
 from console import run_main
 from dotnet_format_targets import (
@@ -373,8 +374,10 @@ def run(
     if not files:
         emit(fact_line("SUMMARY", 0, 0, "-"))
         return refused
+    # The log's folder is judged before the formatter runs, so a refusal leaves every file as it was.
+    temporary = private_folder.temporary_directory()
     runs = run_batches(formatter, mode, root, solution, files, severity, timeout, services)
-    descriptor, log_path = tempfile.mkstemp(prefix=f"dotnet-format-{mode}-", suffix=".log")
+    descriptor, log_path = tempfile.mkstemp(prefix=f"dotnet-format-{mode}-", suffix=".log", dir=temporary)
     with os.fdopen(descriptor, "wb") as handle:
         handle.write(runs.log)
     diagnostics = parse_diagnostics(runs.log.decode("utf-8", errors="replace"), root)

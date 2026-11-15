@@ -10,7 +10,7 @@ import sys
 import tempfile
 import unittest
 from collections.abc import Callable, Iterator, Sequence
-from contextlib import ExitStack, contextmanager, redirect_stderr, redirect_stdout
+from contextlib import ExitStack, contextmanager, nullcontext, redirect_stderr, redirect_stdout
 from pathlib import Path
 from typing import Any
 from unittest import mock
@@ -23,11 +23,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-cor
 import atomic_file
 import memory_audit
 import path_keys
+import private_folder
 import skill_roots
 from executable_locator import RelativeEnvironmentPath
 from file_presence import NotAFile
 from flat_text import flat_text
 from git_client import MISSING_GIT, GitClient, GitError, GitResult
+from test_path_containment import resolving_as_python_312
 
 
 def temporary_store_folds_case() -> bool:
@@ -559,7 +561,9 @@ class MemoryAuditTests(unittest.TestCase):
         for line in (first, second):
             self.assertRegex(line, r"^REPORT \S")
             path = Path(line.removeprefix("REPORT "))
-            self.assertEqual(self.root / "Temporary Files", path.parent)
+            # The report lies in the temporary directory as private_folder judged it, resolved where it judges one.
+            with mock.patch.object(tempfile, "tempdir", str(self.root / "Temporary Files")):
+                self.assertEqual(private_folder.temporary_directory(), path.parent)
             report = json.loads(path.read_text(encoding="utf-8"))
             self.assertEqual(["one.md"], [entry["file"] for entry in report["memories"]])
         self.assertNotEqual(first, second, "a rerun must not overwrite the report the agent is still reading")
@@ -589,6 +593,47 @@ class MemoryAuditTests(unittest.TestCase):
                     self.assertTrue(stdout.startswith(f"FAILED {target} is inside the skills directory "), stdout)
                     self.assertEqual(1, len(stdout.splitlines()), stdout)
                     self.assertFalse(target.exists())
+
+    @unittest.skipIf(sys.platform == "win32", "a symbolic link needs a privilege on Windows")
+    def test_an_output_through_a_symbolic_link_loop_is_a_failed_line_on_every_python_version(self) -> None:
+        # Python 3.12's Path.resolve raised RuntimeError for the loop, which ended the run FAILED RuntimeError.
+        write(self.memory_dir / "MEMORY.md", "")
+        write(self.memory_dir / "one.md", memory("one", "Body."))
+        loop = self.root / "loop"
+        loop.symlink_to(loop)
+        target = loop / "report.json"
+        for version, resolving in (("this Python", nullcontext), ("Python 3.12", resolving_as_python_312)):
+            with self.subTest(version), resolving():
+                code, stdout, stderr = run_main("audit", "--memory-dir", str(self.memory_dir), "--output", str(target))
+            self.assertEqual(
+                (1, f"FAILED cannot write {target}: Too many levels of symbolic links\n", ""), (code, stdout, stderr)
+            )
+
+    @unittest.skipIf(sys.platform == "win32", "Windows mode bits say nothing about who may write a folder")
+    def test_a_default_report_in_a_temporary_directory_another_account_could_rename_is_a_failed_line(self) -> None:
+        write(self.memory_dir / "MEMORY.md", "")
+        write(self.memory_dir / "one.md", memory("one", "Body."))
+        shared = Path(os.path.realpath(self.root)) / "shared"
+        own = shared / "u" / "tmp"
+        own.mkdir(parents=True)
+        shared.chmod(0o777)
+        try:
+            with mock.patch.object(tempfile, "tempdir", str(own)):
+                code, stdout, stderr = run_main("audit", "--memory-dir", str(self.memory_dir))
+        finally:
+            shared.chmod(0o755)
+        self.assertEqual(
+            (
+                1,
+                f"FAILED the audit report cannot be written: a folder made in the temporary directory {own} could be "
+                f"replaced by another account: its ancestor {shared} can be written by users other than its owner and "
+                "is not sticky (mode 777); set TMPDIR to a folder of this user's own below folders no other account "
+                "can write\n",
+                "",
+            ),
+            (code, stdout, stderr),
+        )
+        self.assertEqual([], list(own.iterdir()), "no report was made there")
 
     def test_an_unwritable_output_is_a_failed_line(self) -> None:
         write(self.memory_dir / "MEMORY.md", "")
@@ -1689,7 +1734,10 @@ class MemoryStoreGuardTests(unittest.TestCase):
         write(self.skills_root / "some-skill" / "SKILL.md", "---\nname: some-skill\n---\n")
         audited, reindexed, deleted = self.run_all(directory)
         self.assertEqual((0, ""), (audited[0], audited[2]))
-        self.assertTrue(audited[1].startswith(f"REPORT {self.root / 'reports'}"), audited[1])
+        # The report lies in the temporary directory as private_folder judged it, resolved where it judges one.
+        with mock.patch.object(tempfile, "tempdir", str(self.root / "reports")):
+            reports = private_folder.temporary_directory()
+        self.assertTrue(audited[1].startswith(f"REPORT {reports}"), audited[1])
         self.assertEqual((0, f"INDEX_LINE notes.md\nWROTE {(directory / 'MEMORY.md').as_posix()}\n", ""), reindexed)
         self.assertEqual((1, "FAILED SKILL.md: no such file\n", ""), deleted)
         self.assertEqual(
