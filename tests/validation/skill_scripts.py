@@ -473,8 +473,9 @@ def shell_commands(script: str, commands: list[list[str]] | None = None) -> set[
     substitution, quoted or not. A program a wrapper runs that no literal names is recorded as UNREAD_PROGRAM. Given
     `commands`, it also appends the words of each simple command it reads there, a substitution's included. Beyond
     what it reads: a here-document's body, which git_subcommands reads as data, is read here as commands, so a word
-    of a body may stand as a command Bash never runs, and a quote a body leaves open runs on past it; no skill's Bash
-    script writes a here-document."""
+    of a body may stand as a command Bash never runs, and a quote a body leaves open runs on past it; and a backslash
+    that ends a comment, or that another backslash escapes, is read as continuing the line, so a command on the next
+    line goes unread. No skill's Bash script writes any of these; #2854 retires them through one Bash grammar."""
     tokens = list(ShellLexer(script.replace("\\\n", " ")).words())
     # A function's name is read from its syntax, None for a quoted or escaped word, which Bash refuses as a name and
     # defines no function for, as _function_header in suite_discovery.py reads it.

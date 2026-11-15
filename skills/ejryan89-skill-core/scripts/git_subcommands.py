@@ -147,8 +147,9 @@ def bash_git_subcommands(text: str, read_powershell: PowerShellReader) -> set[st
     Beyond what it reads: a here-document a shell reads as its script, as in `bash <<EOF`, `bash -s <<'EOF'`, or
     `source /dev/stdin <<EOF`, is read as data, so a git command in its body goes unread; and a `<<` that Bash reads
     inside a quote or a parameter expansion, such as one in a single-quoted string spanning lines or in
-    `${x//<<a/b}`, opens a here-document here, so lines up to one equal to its word go unread. No script here writes
-    either."""
+    `${x//<<a/b}`, opens a here-document here, so lines up to one equal to its word go unread; and a line inside a
+    quote spanning lines whose word starts with `#` and that ends in a backslash is read as a comment, so the line
+    after it is read as a command Bash joins as arguments. No script here writes any of these."""
     found: set[str] = set()
     after_pipe = False
     starts = CommandStarts()
