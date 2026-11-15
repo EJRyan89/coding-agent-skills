@@ -36,6 +36,12 @@ or replace it or a folder above it, nor write inside a folder it cannot write, s
 the check and a write. On Windows the temporary directory is under the user's profile, which other accounts cannot
 write, and a folder's mode bits say nothing about who may write it, so only the kind of the folder is checked there,
 and its name is used as given.
+
+A folder a single run makes, such as a review's run folder with its prompts, results, and snapshot, needs no fixed
+name, so `tempfile.mkdtemp` makes it, owner only, in the temporary directory. Owner only says nothing about the
+folders above it, so `temporary_directory` judges the temporary directory as `ensure` judges a state folder's parent,
+and every skill script that makes a temporary folder or file passes it, or a folder the script already holds, as the
+`dir`, which validation holds.
 """
 
 from __future__ import annotations
@@ -65,10 +71,18 @@ PRESENCE_ALLOWED = {
 }
 # The user id of root, who may remove any entry anywhere, so a parent root owns is as safe as one the user owns.
 ROOT = 0
+# The variable naming the temporary directory on platforms with user ids, the first tempfile.gettempdir reads.
+TEMPORARY_VARIABLE = "TMPDIR"
 
 
 class UnsafeFolderError(Exception):
     """The folder is not one only this user owns and can write, so state kept there could be another's."""
+
+
+class UnsafeTemporaryDirectoryError(UnsafeFolderError, OSError):
+    """Another account could rename or replace the temporary directory or a folder above it, so what a run keeps there
+    could be another's. An OSError too, so a caller reports it as it reports the temporary directory failing any other
+    way, such as `mkdtemp` refused."""
 
 
 def user_id() -> int | None:
@@ -176,6 +190,29 @@ def resolved_place(folder: Path, user: int) -> Path:
     if reason is not None:
         raise UnsafeFolderError(f"{folder}: {reason}")
     return parent / folder.name
+
+
+def temporary_directory() -> Path:
+    """The temporary directory, for a script to make a folder or file in, such as a run's, whose contents a later step
+    trusts: passed as the `dir` of `tempfile.mkdtemp`, `mkstemp`, or `TemporaryDirectory`, so nothing is made before
+    it passes. Where the platform has user ids, it is resolved through every link and `..` and returned so, and
+    refused naming it when `ancestry_refusal` refuses it, since a `TMPDIR` set by hand below a shared
+    folder that is not sticky lets another account rename a folder above it and put a tree of its own in its place,
+    the run's folder and all, between a write and a read. Linux's default `/tmp` and macOS's per-user temporary
+    directory pass. On Windows the temporary directory is under the user's profile and is returned as given. The
+    refusal is an UnsafeTemporaryDirectoryError, an OSError, and an OSError from a stat is let through."""
+    temporary = Path(tempfile.gettempdir())
+    user = user_id()
+    if user is None:
+        return temporary
+    temporary = Path(os.path.realpath(temporary))
+    reason = ancestry_refusal(temporary, user)
+    if reason is not None:
+        raise UnsafeTemporaryDirectoryError(
+            f"a folder made in the temporary directory {temporary} could be replaced by another account: {reason}; "
+            f"set {TEMPORARY_VARIABLE} to a folder of this user's own below folders no other account can write"
+        )
+    return temporary
 
 
 def ensure(folder: Path) -> Path:

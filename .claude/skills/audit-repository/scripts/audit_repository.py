@@ -115,6 +115,7 @@ import file_presence
 import guidance_record
 import json_reader
 import json_writer
+import private_folder
 import python_reader
 import versions
 import whole_number
@@ -998,7 +999,7 @@ def brief_names(area: Area, parts: int) -> list[str]:
 def write_briefs(briefs: list[tuple[str, str]]) -> list[str]:
     """Write each named brief to a new temporary directory and return the lines that name them."""
     try:
-        directory = Path(tempfile.mkdtemp(prefix=BRIEFS_PREFIX))
+        directory = Path(tempfile.mkdtemp(prefix=BRIEFS_PREFIX, dir=private_folder.temporary_directory()))
     except OSError as exc:
         raise AuditError(f"cannot create the briefs directory: {exc}") from exc
     marker = directory / BRIEFS_MARKER

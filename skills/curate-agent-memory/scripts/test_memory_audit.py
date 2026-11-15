@@ -559,7 +559,8 @@ class MemoryAuditTests(unittest.TestCase):
         for line in (first, second):
             self.assertRegex(line, r"^REPORT \S")
             path = Path(line.removeprefix("REPORT "))
-            self.assertEqual(self.root / "Temporary Files", path.parent)
+            # The report lies in the temporary directory resolved through its links, as private_folder judged it.
+            self.assertEqual(Path(os.path.realpath(self.root / "Temporary Files")), path.parent)
             report = json.loads(path.read_text(encoding="utf-8"))
             self.assertEqual(["one.md"], [entry["file"] for entry in report["memories"]])
         self.assertNotEqual(first, second, "a rerun must not overwrite the report the agent is still reading")
@@ -1689,7 +1690,9 @@ class MemoryStoreGuardTests(unittest.TestCase):
         write(self.skills_root / "some-skill" / "SKILL.md", "---\nname: some-skill\n---\n")
         audited, reindexed, deleted = self.run_all(directory)
         self.assertEqual((0, ""), (audited[0], audited[2]))
-        self.assertTrue(audited[1].startswith(f"REPORT {self.root / 'reports'}"), audited[1])
+        # The report lies in the temporary directory resolved through its links, as private_folder judged it.
+        reports = Path(os.path.realpath(self.root / "reports"))
+        self.assertTrue(audited[1].startswith(f"REPORT {reports}"), audited[1])
         self.assertEqual((0, f"INDEX_LINE notes.md\nWROTE {(directory / 'MEMORY.md').as_posix()}\n", ""), reindexed)
         self.assertEqual((1, "FAILED SKILL.md: no such file\n", ""), deleted)
         self.assertEqual(

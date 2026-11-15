@@ -1154,6 +1154,57 @@ class SkillScriptsFixtures(unittest.TestCase):
                 [problem.split(" is named", 1)[0] for problem in secret_named_function_problems(mark_skills(root))],
             )
 
+    def test_a_temporary_folder_or_named_file_left_to_tmpdir_is_refused_and_one_given_its_folder_passes(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            write_fixture_tree(
+                root,
+                {
+                    "skills/example/scripts/runs.py": (
+                        "import tempfile\n"
+                        "from tempfile import NamedTemporaryFile as Named, mkdtemp\n"
+                        "import private_folder\n"
+                        "def runs(held):\n"
+                        "    tempfile.mkdtemp(prefix='a-')\n"
+                        "    mkdtemp()\n"
+                        "    tempfile.mkstemp(dir=None)\n"
+                        "    tempfile.TemporaryDirectory(None, 'b-', None)\n"
+                        "    Named('w')\n"
+                        "    tempfile.mktemp()\n"
+                        "    tempfile.mkdtemp(dir=private_folder.temporary_directory())\n"
+                        "    tempfile.mkstemp(None, 'c-', held)\n"
+                        "    tempfile.TemporaryDirectory(dir=held)\n"
+                        "    Named('w', -1, None, None, None, None, held)\n"
+                        "    tempfile.TemporaryFile()\n"
+                        "    tempfile.SpooledTemporaryFile()\n"
+                    ),
+                    "skills/example/scripts/test_runs.py": "import tempfile\ntempfile.mkdtemp()\n",
+                    ".claude/skills/local/SKILL.md": "# local\n",
+                    ".claude/skills/local/scripts/brief.py": "import tempfile\ntempfile.mkdtemp()\n",
+                },
+            )
+            remedy = (
+                "leaves its folder to TMPDIR; pass dir=private_folder.temporary_directory(), or a folder the script "
+                'already holds; see "Working files" in docs/adding-a-skill.md'
+            )
+            self.assertEqual(
+                [
+                    f".claude/skills/local/scripts/brief.py:2: tempfile.mkdtemp {remedy}",
+                    *(
+                        f"skills/example/scripts/runs.py:{line}: tempfile.{called} {remedy}"
+                        for line, called in (
+                            (5, "mkdtemp"),
+                            (6, "mkdtemp"),
+                            (7, "mkstemp"),
+                            (8, "TemporaryDirectory"),
+                            (9, "NamedTemporaryFile"),
+                            (10, "mktemp"),
+                        )
+                    ),
+                ],
+                skill_scripts.temporary_folder_problems(mark_skills(root)),
+            )
+
     def test_shell_command_extraction_marks_a_program_it_cannot_read(self) -> None:
         self.assertIn(f"{UNREAD_PROGRAM}$tool", shell_commands('xargs "$tool" foo'))
 

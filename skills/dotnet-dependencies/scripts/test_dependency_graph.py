@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import ast
 import contextlib
-import errno
 import io
 import json
 import os
@@ -35,6 +34,7 @@ from dotnet_solution import same_path
 from flat_text import flat_text
 from sdk_why import DEFAULT_TIMEOUT_SECONDS, Completed, SdkPath, Services
 from test_msbuild_reader import failing_without_a_file, stat_failing_at
+from test_path_containment import resolving_as_python_312
 
 SCRIPT = Path(__file__).resolve().parent / "dependency_graph.py"
 CSHARP = "{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}"
@@ -3230,25 +3230,6 @@ LIB_CHAIN = ["App/App.csproj", "-", "Lib.Pkg", "graph", "Lib (project) > Lib.Pkg
 LIB_OWN = ["Lib/Lib.csproj", "-", "Lib.Pkg", "graph", "Lib.Pkg (v1.0.0)"]
 
 
-@contextlib.contextmanager
-def resolving_as_python_312() -> Iterator[None]:
-    """`Path.resolve` as Python 3.12 runs it, which stats what it resolved and raises RuntimeError on a symbolic link
-    loop, where later versions answer the path with the loop left unresolved, so a test holds on every version."""
-    real = Path.resolve
-
-    def resolve(path: Path, strict: bool = False) -> Path:
-        resolved = real(path, strict=strict)
-        try:
-            resolved.stat()
-        except OSError as error:
-            if error.errno == errno.ELOOP:
-                raise RuntimeError(f"Symlink loop from {error.filename!r}") from None
-        return resolved
-
-    with mock.patch.object(Path, "resolve", resolve):
-        yield
-
-
 def link_folder(target: Path, link: Path) -> None:
     """A real link to a folder: a junction on Windows, which needs no privilege, else a symbolic link."""
     if sys.platform == "win32":
@@ -3879,6 +3860,26 @@ class PresenceReadTests(Fixture):
                 code, rows = self.run_main("graph", "--output", str(target), "--root", str(root))
             self.assertEqual((1, f"FAILED {target} cannot be examined: Access is denied"), (code, rows[-1][0]))
             self.assertEqual(b"graph LR\n  kept\n", target.read_bytes())
+
+    @unittest.skipIf(sys.platform == "win32", "a symbolic link needs a privilege on Windows")
+    def test_an_output_that_is_a_symbolic_link_loop_is_refused_naming_it_on_every_python_version(self) -> None:
+        # The skills-directory check resolved the output with Path.resolve, whose RuntimeError on Python 3.12 ended the
+        # run FAILED RuntimeError instead of the refusal of a path the run cannot examine.
+        root = self.mixed_solution()
+        loop = self.root / "loop.mmd"
+        loop.symlink_to(loop)
+        versions: tuple[tuple[str, Callable[[], contextlib.AbstractContextManager[None]]], ...] = (
+            ("this Python", contextlib.nullcontext),
+            ("Python 3.12", resolving_as_python_312),
+        )
+        for version, resolving in versions:
+            with self.subTest(version):
+                with resolving():
+                    code, rows = self.run_main("graph", "--output", str(loop), "--root", str(root))
+                self.assertEqual(
+                    (1, f"FAILED {loop} cannot be examined: Too many levels of symbolic links"), (code, rows[-1][0])
+                )
+                self.assertTrue(loop.is_symlink(), "the loop is left as it was")
 
     @unittest.skipIf(sys.platform == "win32", "a symbolic link needs a privilege on Windows")
     def test_a_root_or_project_that_is_a_symbolic_link_loop_is_refused_naming_it(self) -> None:

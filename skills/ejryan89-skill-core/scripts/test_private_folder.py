@@ -270,6 +270,75 @@ class AncestryRefusalTests(unittest.TestCase):
         self.assertEqual(f"its ancestor {via} is a link or junction", ancestry_refusal(via / "inner", self.user))
 
 
+class TemporaryDirectoryTests(unittest.TestCase):
+    """The temporary directory a run's folder is made in, judged before anything is made in it."""
+
+    def setUp(self) -> None:
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name).resolve()
+
+    def use(self, folder: Path) -> None:
+        """Make `folder` the temporary directory tempfile names, as a TMPDIR set by hand would, until the test ends."""
+        patcher = mock.patch.object(tempfile, "tempdir", str(folder))
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    @unittest.skipIf(sys.platform == "win32", "Windows has no user ids, so the directory is returned as given there")
+    def test_the_default_temporary_directory_is_accepted_resolved(self) -> None:
+        # Linux's /tmp, which root owns and is sticky, and macOS's per-user folder, reached through the /var link.
+        self.assertEqual(Path(os.path.realpath(tempfile.gettempdir())), private_folder.temporary_directory())
+
+    @unittest.skipIf(sys.platform == "win32", "Windows mode bits say nothing about who may write a folder")
+    def test_one_below_a_shared_folder_that_is_not_sticky_is_refused_naming_it_before_anything_is_made(self) -> None:
+        # Whoever can rename the shared folder's entry can put a tree of their own, run folder and all, in its place.
+        shared = self.root / "shared"
+        shared.mkdir()
+        own = shared / "u" / "tmp"
+        own.mkdir(parents=True)
+        shared.chmod(0o777)
+        self.addCleanup(shared.chmod, 0o755)
+        self.use(own)
+        with self.assertRaises(private_folder.UnsafeTemporaryDirectoryError) as raised:
+            tempfile.mkdtemp(prefix="run-", dir=private_folder.temporary_directory())
+        self.assertEqual(
+            f"a folder made in the temporary directory {own} could be replaced by another account: its ancestor "
+            f"{shared} can be written by users other than its owner and is not sticky (mode 777); set TMPDIR to a "
+            "folder of this user's own below folders no other account can write",
+            str(raised.exception),
+        )
+        self.assertIsInstance(raised.exception, OSError, "every caller reports it as the temporary directory failing")
+        self.assertIsInstance(raised.exception, UnsafeFolderError)
+        self.assertEqual([], list(own.iterdir()), "nothing was made where another account could swap it")
+        shared.chmod(0o1777)
+        self.assertEqual(own, private_folder.temporary_directory())
+
+    @unittest.skipIf(sys.platform == "win32", "a symbolic link needs a privilege there, and nothing is judged there")
+    def test_one_named_through_a_link_is_judged_and_returned_by_its_resolved_path(self) -> None:
+        # The link's own folder could be another account's to change, so the resolved path is the one used.
+        own = self.root / "own"
+        own.mkdir()
+        via = self.root / "via"
+        via.symlink_to(own, target_is_directory=True)
+        self.use(via)
+        self.assertEqual(own, private_folder.temporary_directory())
+        own.chmod(0o777)
+        self.addCleanup(own.chmod, 0o700)
+        with self.assertRaises(private_folder.UnsafeTemporaryDirectoryError) as raised:
+            private_folder.temporary_directory()
+        self.assertIn(f"its parent {own} can be written by users other than its owner", str(raised.exception))
+
+    def test_where_the_platform_has_no_user_ids_it_is_returned_as_given_and_not_judged(self) -> None:
+        shared = self.root / "shared"
+        shared.mkdir()
+        shared.chmod(0o777)
+        self.addCleanup(shared.chmod, 0o755)
+        given = self.root / "shared" / ".." / "shared"
+        self.use(given)
+        with mock.patch.object(private_folder, "user_id", return_value=None):
+            self.assertEqual(given, private_folder.temporary_directory())
+
+
 class EnsureTests(unittest.TestCase):
     def setUp(self) -> None:
         temporary = tempfile.TemporaryDirectory()

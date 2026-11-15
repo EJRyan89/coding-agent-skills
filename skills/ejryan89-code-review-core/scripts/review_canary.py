@@ -34,6 +34,7 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
 import file_presence
+import private_folder
 from git_client import GitClient, GitError, Runner, command_name, output_line, output_lines
 from github_client import replace_undecodable
 from link_probe import is_link_or_junction
@@ -277,7 +278,9 @@ def fixture_change(directory: Path, runner: Runner, pull: dict[str, Any] | None 
     if pull is None:
         pull = read_fixture_pull(directory)
     # TemporaryDirectory's cleanup also removes the object files git leaves read-only, which Windows will not delete.
-    with tempfile.TemporaryDirectory(prefix="code-review-fixture-", ignore_cleanup_errors=True) as temporary:
+    with tempfile.TemporaryDirectory(
+        prefix="code-review-fixture-", dir=private_folder.temporary_directory(), ignore_cleanup_errors=True
+    ) as temporary:
         # A folder of its own, so prepare can move the repository into the run, where a lazy snapshot's reviewers
         # fetch from it until finalize removes the run.
         repository = Path(temporary).resolve() / "repository"

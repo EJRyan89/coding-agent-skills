@@ -171,8 +171,11 @@ removed fails validation until its pattern follows it.
 - **Why:** A failure reported as another one sends its reader to fix the wrong thing, and a caller that reads exit
   codes takes the wrong branch.
 - **Use:** `console:run_main`, `console:failed_line`, `skill_roots:MissingSibling`, `git_client:GitError.origin_failed`,
-  which tells a remote's failure from one of the local repository or of a git that never ran; an entry point states
-  its codes in its docstring's exit table, in the form "Script results" in the skill contract settles.
+  which tells a remote's failure from one of the local repository or of a git that never ran;
+  `path_containment:resolved_path`, which follows a path taken from input or the environment as `Path.resolve` does
+  from Python 3.13 on, leaving a symbolic link loop to the caller's own refusal where Python 3.12's raises
+  RuntimeError; an entry point states its codes in its docstring's exit table, in the form "Script results" in the
+  skill contract settles.
 - **Guard:** `tests/malformed_input/test_malformed_input.py::test_failure_names_a_write_before_a_refusal_an_escape_and_an_undocumented_acceptance`,
   `tests/validation/skill_grants.py::SkillGrantsPolicies::test_skill_markdown_names_every_status_line_its_scripts_print`,
   `tests/tools/test_mutation_gate.py::CoverageReachFixtures::test_no_data_is_read_as_reaching_nothing_only_from_coverage_json_exiting_1_with_that_message_alone`,
@@ -190,7 +193,9 @@ removed fails validation until its pattern follows it.
   `skills/update-coding-agent-skills/scripts/test_remote_refs.py::test_a_fetch_that_fails_in_the_clone_is_a_failed_line_never_origins_failure`,
   `skills/dotnet-format/scripts/test_dotnet_format_targets.py::ResolveTests::test_a_git_that_could_not_fetch_fails_by_name_never_as_a_failed_fetch`,
   `skills/dotnet-format/scripts/test_dotnet_format_targets.py::ResolveTests::test_a_failed_git_command_fails_with_the_reason_git_gave`,
-  `skills/audit-skill/scripts/test_skill_inventory.py::InventoryTests::test_markdown_the_skill_loads_that_is_not_utf8_is_unreadable_and_fails_the_inventory`
+  `skills/audit-skill/scripts/test_skill_inventory.py::InventoryTests::test_markdown_the_skill_loads_that_is_not_utf8_is_unreadable_and_fails_the_inventory`,
+  `skills/ejryan89-skill-core/scripts/test_skill_roots.py::SkillsDirectoryHoldingTests::test_a_symbolic_link_loop_is_compared_as_written_on_every_python_version`,
+  `skills/dotnet-dependencies/scripts/test_dependency_graph.py::PresenceReadTests::test_an_output_that_is_a_symbolic_link_loop_is_refused_naming_it_on_every_python_version`
 - **Search for:** `rg -nU "except (OSError|ValueError|UnicodeDecodeError)[^\n]*:\n\s+(print\([^\n]*\)\n\s+)?return 1\b"`,
   a handler that ends every failure in one code; two probes under one `except` that print one message; an `except`
   around a `git` or `gh` call that drops the exception's text; `FAILED KeyError`, `FAILED TypeError`, or
@@ -206,8 +211,10 @@ removed fails validation until its pattern follows it.
   `rg -nU "returncode != 0[^\n]*:\n\s+(raise \w+\(|return )f?\"[^\"\n]*\"" -g '*.py'`, a failed command raised or
   returned by its name or exit code alone, dropping the stderr or output that says why; an `except` that returns or
   raises fixed text in place of the exception's; a measurement printed for a file beside the line that says it could
-  not be measured, or a file a reader skips where its docstring says the command fails on one.
-- **Examples:** #1511, #1840, #1855, #1910, #2022, #2181, #2207, #2209, #2477, #2548, #2596, #2697, #2738
+  not be measured, or a file a reader skips where its docstring says the command fails on one;
+  `rg -n "\.resolve\(" -g '*.py'` on a path taken from input or the environment, never `__file__`, under a handler of
+  `OSError` alone, whose RuntimeError on Python 3.12 for a symbolic link loop ends the run in `FAILED RuntimeError`.
+- **Examples:** #1511, #1840, #1855, #1910, #2022, #2181, #2207, #2209, #2477, #2548, #2596, #2697, #2738, #2794
 
 ### A refusal ends with the step to take
 
@@ -663,6 +670,26 @@ removed fails validation until its pattern follows it.
   a check the full run takes, such as the lock a preview never acquires but must still judge; an option a preview
   newly accepts, such as `--take-over-source`, whose run makes a check the preview skips, such as `_claim`'s.
 - **Examples:** #2293, #2313
+
+### A folder whose contents a later step trusts is one no other account can swap
+
+- **Rule:** A folder a script makes and later reads back, such as a run's prompts, results, or snapshot, lies below
+  folders no other account can rename or replace, judged on its path resolved through every link and `..`, and the
+  run is refused, naming the folder, before anything is made in one that fails.
+- **Why:** Owner only says nothing about the folders above, and whoever can rename one may put a tree of their own in
+  its place between a write and a read, as a `TMPDIR` set by hand below a shared folder that is not sticky allows.
+- **Use:** `private_folder:temporary_directory`, the `dir` every temporary folder or named file a skill's script
+  makes is given; `private_folder:ensure` for a folder of fixed name kept across runs; `private_folder:ancestry_refusal`,
+  the one judgment of the folders above.
+- **Guard:** `tests/validation/skill_scripts.py::SkillScriptsPolicies::test_skill_scripts_name_the_folder_of_each_temporary_folder_or_file`,
+  `tests/validation/test_skill_scripts.py::SkillScriptsFixtures::test_a_temporary_folder_or_named_file_left_to_tmpdir_is_refused_and_one_given_its_folder_passes`,
+  `skills/ejryan89-skill-core/scripts/test_private_folder.py::TemporaryDirectoryTests`,
+  `skills/ejryan89-code-review-core/scripts/test_review_pipeline_prepare.py::InitialReviewTests::test_a_temporary_directory_below_a_shared_folder_that_is_not_sticky_holds_no_run`
+- **Search for:** `tempfile.mkdtemp(`, `tempfile.mkstemp(`, `TemporaryDirectory(`, or `NamedTemporaryFile(` with no
+  `dir=` in `deployer/` or `tools/`, which the policy does not read, where a later step reads what it holds;
+  `Path(tempfile.gettempdir()) /` joined with a fixed name; a folder an environment variable names, used with no
+  judgment of the folders above it.
+- **Examples:** #2756, #2793, #2796
 
 ### What one step accepts, every later step can read and write
 

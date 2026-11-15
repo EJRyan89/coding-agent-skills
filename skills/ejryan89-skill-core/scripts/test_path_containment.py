@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import contextlib
 import errno
 import os
 import sys
 import tempfile
 import unittest
+from collections.abc import Iterator
 from pathlib import Path, PurePosixPath
 from unittest import mock
 
@@ -14,7 +16,27 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import path_containment
 import path_keys
-from path_containment import posix_within, refusal, within, written_refusal
+from path_containment import posix_within, refusal, resolved_path, within, written_refusal
+
+
+@contextlib.contextmanager
+def resolving_as_python_312() -> Iterator[None]:
+    """`Path.resolve` as Python 3.12 runs it, which stats what it resolved and raises RuntimeError on a symbolic link
+    loop, where later versions answer the path with the loop left unresolved, so a test of a loop holds on every
+    version, and the suites of other skills import it for theirs."""
+    real = Path.resolve
+
+    def resolve(path: Path, strict: bool = False) -> Path:
+        resolved = real(path, strict=strict)
+        try:
+            resolved.stat()
+        except OSError as error:
+            if error.errno == errno.ELOOP:
+                raise RuntimeError(f"Symlink loop from {error.filename!r}") from None
+        return resolved
+
+    with mock.patch.object(Path, "resolve", resolve):
+        yield
 
 
 def link_folder(target: Path, link: Path) -> None:
@@ -25,6 +47,31 @@ def link_folder(target: Path, link: Path) -> None:
         _winapi.CreateJunction(str(target), str(link))
     else:
         link.symlink_to(target, target_is_directory=True)
+
+
+@unittest.skipIf(sys.platform == "win32", "a symbolic link needs a privilege on Windows")
+class ResolvedPathTests(unittest.TestCase):
+    def setUp(self) -> None:
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(os.path.realpath(temporary.name))
+
+    def test_a_link_and_a_parent_reference_are_followed(self) -> None:
+        target = self.root / "target"
+        target.mkdir()
+        (self.root / "link").symlink_to(target, target_is_directory=True)
+        self.assertEqual(target / "x", resolved_path(self.root / "link" / "inner" / ".." / "x"))
+        self.assertEqual(target, resolved_path(str(self.root / "link")))
+
+    def test_a_symbolic_link_loop_is_left_unresolved_where_python_3_12_s_resolve_raises(self) -> None:
+        loop = self.root / "loop"
+        loop.symlink_to(loop)
+        with resolving_as_python_312():
+            with self.assertRaises(RuntimeError, msg="the stand-in raises as Python 3.12 does"):
+                loop.resolve()
+            self.assertEqual(loop, resolved_path(loop))
+            self.assertEqual(loop / "x", resolved_path(loop / "x"))
+        self.assertEqual(loop, resolved_path(loop))
 
 
 class WithinTests(unittest.TestCase):

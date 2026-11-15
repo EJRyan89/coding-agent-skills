@@ -662,7 +662,8 @@ class PdfExtractionTests(unittest.TestCase):
         self.assertEqual(PDF.hex(), call["document"], "the bytes are given as a file")
         self.assertEqual(0, call["stdin"], "and nothing on stdin")
         # The temporary directory as tempfile names it, which may be an 8.3 short form that resolving would expand.
-        self.assertEqual(Path(tempfile.gettempdir()), document.parent.parent, document)
+        # The temporary directory resolved through its links, as private_folder judged it.
+        self.assertEqual(Path(os.path.realpath(tempfile.gettempdir())), document.parent.parent, document)
         self.assertFalse(document.parent.exists(), "the throwaway folder is removed")
 
     def test_no_control_character_reaches_a_line_of_a_pdf(self) -> None:

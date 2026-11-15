@@ -986,13 +986,31 @@ def _separator_free(value: ast.expr) -> bool:
     return value.value is None
 
 
+# The call that names the system temporary directory, judged first by ejryan89-skill-core so no other account can swap
+# a folder made in it, which a tempfile call may take as its dir.
+CHECKED_TEMPORARY_DIRECTORY = "private_folder.temporary_directory"
+
+
+def _names_the_temporary_directory(keyword: ast.keyword, aliases: dict[str, str]) -> bool:
+    """Whether a tempfile call's keyword is no dir, or a dir that is CHECKED_TEMPORARY_DIRECTORY called with nothing."""
+    if keyword.arg != "dir":
+        return keyword.arg is not None
+    value = keyword.value
+    return (
+        isinstance(value, ast.Call)
+        and not value.args
+        and not value.keywords
+        and qualified_name(value.func, aliases) == CHECKED_TEMPORARY_DIRECTORY
+    )
+
+
 def _in_the_temporary_directory(call: ast.Call, aliases: dict[str, str]) -> bool:
-    """Whether a tempfile call takes keyword arguments only, none of them dir, and a prefix or suffix only as a literal
-    free of path separators, so it writes under the system temporary directory. A positional argument may be dir, so
-    none is accepted."""
+    """Whether a tempfile call takes keyword arguments only, its dir none or the system temporary directory as
+    CHECKED_TEMPORARY_DIRECTORY gives it, and a prefix or suffix only as a literal free of path separators, so it
+    writes under the system temporary directory. A positional argument may be dir, so none is accepted."""
     return qualified_name(call.func, aliases).startswith("tempfile.") and (
         not call.args
-        and all(keyword.arg not in {"dir", None} for keyword in call.keywords)
+        and all(_names_the_temporary_directory(keyword, aliases) for keyword in call.keywords)
         and all(_separator_free(keyword.value) for keyword in call.keywords if keyword.arg in NAME_PARTS)
     )
 

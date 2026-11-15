@@ -67,7 +67,7 @@ import json_reader
 import json_writer
 from console import run_main
 from flat_text import flat_text
-from path_containment import within
+from path_containment import resolved_path, within
 from skill_menu import (
     PLUGIN_FRONTMATTER_VALUES,
     PLUGIN_HOOKS,
@@ -316,8 +316,8 @@ def output_directory(requested: Path | None, source_dir: Path) -> Path:
     must lie outside the source tree and every skills directory and be absent or empty."""
     if requested is None:
         return Path(tempfile.mkdtemp(prefix="coding-agent-skills-plugins-"))
-    target = requested.resolve()
-    if within(target, source_dir.resolve()):
+    target = resolved_path(requested)
+    if within(target, resolved_path(source_dir)):
         raise BuildError(f"--output {requested} lies inside the source tree {source_dir}, which is never written")
     holder = skills_directory_holding(target)
     if holder is not None:
