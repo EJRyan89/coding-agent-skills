@@ -4,7 +4,9 @@ A checkout's origin names its GitHub repository in one of the forms git writes f
 (`https://github.com/<owner>/<repo>`, with a user before the host or not), scp-like SSH
 (`git@github.com:<owner>/<repo>`), or an SSH URL (`ssh://git@github.com/<owner>/<repo>`, with a port or not), each
 with or without `.git` and a trailing `/`. The whole URL must be one of them, so a URL on another host that holds
-`github.com/<owner>/<repo>` in its path is not a GitHub remote.
+`github.com/<owner>/<repo>` in its path is not a GitHub remote. A user before the host holds no `/`, `?`, or `#`,
+since each ends a URL's authority as git and `urllib.parse.urlsplit` read it: in `https://example.com#@github.com/o/r`
+the host is `example.com`, and what follows the `#` is its fragment, never a user and a host.
 """
 
 from __future__ import annotations
@@ -12,7 +14,7 @@ from __future__ import annotations
 import re
 
 GITHUB_REMOTE = re.compile(
-    r"(?:https?://(?:[^@/]+@)?github\.com/|ssh://git@github\.com(?::\d+)?/|git@github\.com:)"
+    r"(?:https?://(?:[^@/?#]+@)?github\.com/|ssh://git@github\.com(?::\d+)?/|git@github\.com:)"
     r"([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+?)(?:\.git)?/?",
     re.IGNORECASE,
 )
