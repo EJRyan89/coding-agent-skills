@@ -426,6 +426,53 @@ class EvaluationTests(unittest.TestCase):
             (["Lantern.dangling", "Lantern.fifo"], []), ([package.id for package in project.packages], project.reports)
         )
 
+    @unittest.skipIf(sys.platform == "win32", "a symbolic link needs a privilege on Windows, which makes no FIFO")
+    def test_an_import_naming_a_link_to_nothing_is_reported_as_unreadable_never_as_not_found(self) -> None:
+        # .NET's File.Exists finds a link to nothing, so MSBuild imports it and its load fails: the reader reports a
+        # file it cannot read, never one that is not found.
+        app = self.root / "src" / "App"
+        app.mkdir(parents=True)
+        link = app / "Local.props"
+        link.symlink_to(app / "nowhere.props")
+        project = self.read(
+            "src/App/App.csproj", '<Project Sdk="Microsoft.NET.Sdk"><Import Project="Local.props" /></Project>'
+        )
+        self.assertEqual(
+            [(link, msbuild_evaluation.LINK_TO_NOTHING)], [(item.file, item.reason) for item in project.reports]
+        )
+
+    def test_an_import_whose_place_cannot_be_examined_is_reported_never_as_not_found(self) -> None:
+        # Nothing a reader meets is there, but whether a link takes the place cannot be told, so the Import is
+        # reported with the stat's reason.
+        target = self.root / "src" / "App" / "Local.props"
+        with failing_without_a_file(msbuild_evaluation, "is_occupied", target):
+            project = self.read(
+                "src/App/App.csproj", '<Project Sdk="Microsoft.NET.Sdk"><Import Project="Local.props" /></Project>'
+            )
+        self.assertEqual([(target, "Access is denied")], [(item.file, item.reason) for item in project.reports])
+
+    @unittest.skipIf(sys.platform == "win32", "a symbolic link needs a privilege on Windows, which makes no FIFO")
+    def test_the_nearest_props_file_stops_at_a_link_to_nothing_or_a_fifo_as_msbuilds_search_does(self) -> None:
+        # MSBuild's search for Directory.Packages.props stops where File.Exists is true, a link to nothing or a FIFO
+        # included, and its load of that file fails, so the central versions above it are never read.
+        self.write("Directory.Packages.props", CENTRAL)
+        app = self.root / "src" / "App"
+        app.mkdir(parents=True)
+        candidate = app / "Directory.Packages.props"
+        text = '<Project Sdk="Microsoft.NET.Sdk"><ItemGroup><PackageReference Include="Lantern.Core" /></ItemGroup>'
+        self.write("src/App/App.csproj", f"{text}</Project>")
+        for kind in ("dangling", "fifo"):
+            with self.subTest(kind):
+                if kind == "dangling":
+                    candidate.symlink_to(app / "nowhere.props")
+                else:
+                    os.mkfifo(candidate)
+                project = self.read("src/App/App.csproj")
+                candidate.unlink()
+                reason = msbuild_evaluation.LINK_TO_NOTHING if kind == "dangling" else "not a file"
+                self.assertEqual([(candidate, reason)], [(item.file, item.reason) for item in project.reports])
+                self.assertNotIn(PackageRef("Lantern.Core", "2.0.0", "central"), project.packages)
+
     def test_a_stat_error_naming_no_file_is_reported_against_the_import_or_the_exists_path(self) -> None:
         text = (
             '<Project Sdk="Microsoft.NET.Sdk"><Import Project="Local.props" />'

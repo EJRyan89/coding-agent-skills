@@ -14,9 +14,9 @@ read there, and nothing can be read through such a link, so `is_present`, `is_di
 `refusal_reason` answer for it as for a missing path: no file, no folder, nothing there, `MISSING`. A writer asks
 whether its write would land on something, and writing to such a link creates its target wherever it points, so
 `is_occupied`, which a writer asks before it creates or moves anything into a place, counts the link as occupying it,
-and a reader never asks it. A caller that reads a path as missing and then
-writes there asks `is_occupied` before the write, or writes through a call that replaces the link itself, such as a
-rename, never one that follows it.
+and a reader asks it only where its question is whether the place is taken, as MSBuild's `Exists()` is, never whether
+something it can read is there. A caller that reads a path as missing and then writes there asks `is_occupied` before
+the write, or writes through a call that replaces the link itself, such as a rename, never one that follows it.
 `matching` lists what a glob pattern matches below a folder, as `Path.glob` does, but raises for a folder it cannot
 list, where `Path.glob` matches nothing in it from Python 3.15 on, so a reader takes no unreadable folder for an empty
 one, and for a pattern it cannot read relative to its folder on every platform, such as one naming a drive, so a

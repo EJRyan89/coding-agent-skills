@@ -35,7 +35,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-cor
 import dotnet_solution
 import json_reader
 from dotnet_solution import FileRefused, decode_text, lexical_absolute, listed_projects, project_path
-from file_presence import is_directory, is_present, is_there, matching
+from file_presence import is_directory, is_occupied, is_there, matching
 from folders_up import folders_up
 from msbuild_xml import local_name
 from ordinal_case import ordinal_fold
@@ -247,14 +247,26 @@ def item_specs(text: str) -> list[str]:
     return [part.strip() for part in text.split(";") if part.strip()]
 
 
+def msbuild_file_exists(path: Path) -> bool:
+    """MSBuild's file system's FileExists: whether anything but a folder, or a link to one, is at `path`, a link to
+    nothing and a FIFO included; the stat's `OSError` when it cannot tell.
+
+    MSBuild answers it with GetFileAttributes on Windows, which does not follow a link, and elsewhere with .NET's
+    File.Exists, which reads the path with lstat, follows a link whose target is there, and is true for anything but a
+    folder. A link to a folder that no longer exists, which Windows marks as a folder itself, is read here as a link to
+    nothing, as File.Exists reads it elsewhere."""
+    return is_occupied(path) and not is_directory(path, other_is_absent=True)
+
+
 def nearest_file(project_dir: Path, name: str) -> Path | None:
     """The nearest file named `name` from the project's directory up to the filesystem's root, as MSBuild searches
-    for Directory.Build.props and Directory.Packages.props; None when there is none, and `Unreadable` naming a
-    candidate whose stat fails, never read as none there."""
+    for Directory.Build.props and Directory.Packages.props: the first where `msbuild_file_exists` is true, so a link to
+    nothing or a FIFO stops the search, as it stops MSBuild's, and its reader reports it as one it cannot read; None
+    when there is none, and `Unreadable` naming a candidate whose stat fails, never read as none there."""
     for directory in folders_up(project_dir):
         candidate = directory / name
         try:
-            if is_present(candidate, other_is_absent=True):
+            if msbuild_file_exists(candidate):
                 return candidate
         except OSError as error:
             raise os_unreadable(error, candidate) from None
