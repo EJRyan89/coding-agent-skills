@@ -474,8 +474,8 @@ EXPORTED_FUNCTION = re.compile(r"^BASH_FUNC_(.+)%%$")
 # The programs that run another command their words name, by the catalogue the guard refuses. While a hub is guarded,
 # each is refused where the command it runs is or may be git, or where it is given an option RUNNER_OPTIONS does not
 # know to be safe (runner_refusal); a runner around any other command is understood. Every other program a literal
-# name starts is understood: what it does inside itself, in its own language (a Python script, an awk program, a test
-# suite), the guard does not see.
+# name starts is read by its words, unless READ_ONLY_PROGRAMS names it (read_unlisted): what it does inside itself, in
+# its own language (a Python script, an awk program, a test suite), the guard does not see.
 RUNNERS: dict[str, str] = {
     "bash": "a shell, whose script is read only as `-c` with a literal script, and refused where it runs git",
     "sh": "Bash in POSIX mode, or dash, either of which keeps an assignment made before a special builtin after it, "
@@ -687,38 +687,6 @@ WRITING_PROGRAMS: dict[str, str | None] = {
     "shred": "fuvxz",
     "dd": None,
     "sed": "abnrsuzE",
-    # The compressors, each of which replaces an operand with its compressed or decompressed file, or, given -c,
-    # writes it to standard output; each operand is judged either way, as a copy's source is.
-    **dict.fromkeys(
-        (
-            *("gzip", "gunzip", "bzip2", "bunzip2", "xz", "unxz", "lzma", "unlzma", "zstd", "unzstd", "lz4"),
-            *("lzip", "compress", "uncompress", "pigz", "unpigz"),
-        ),
-        "cdfhkqtvV0123456789",
-    ),
-    # moreutils' sponge writes the file it is given; uniq writes its second operand, shuf its -o, split and csplit the
-    # files their prefix names.
-    "sponge": "a",
-    "uniq": "cdDiuz",
-    "shuf": "erz",
-    "split": "deux",
-    "csplit": "kqsz",
-    # util-linux's rename and Perl's rename each rename the files they are given.
-    "rename": "ailnovV",
-    # macOS's mkfile makes the files it is given, plutil rewrites one in place or writes the file -o names, ditto copies
-    # into its last operand, and xattr, like Linux's chattr, setfacl, and setfattr, changes a file's attributes.
-    "mkfile": "nv",
-    "plutil": None,
-    "ditto": "chjkvVXz",
-    "xattr": "cdlprsvwx",
-    "chattr": "RVf",
-    "setfacl": "bdkLnPRt",
-    "setfattr": "h",
-    # perl and ruby rewrite the files they are given in place with -i, and gawk with its inplace extension (in_place).
-    "perl": "acnpsStTuUvwWXh",
-    "ruby": "acdlnpsSvwyh",
-    "awk": None,
-    "gawk": None,
 }
 # The programs that make a link, through which a write later in the same command reaches a place the guard placed
 # before the link existed, by what each makes. While a hub is guarded each is refused, and so are cp's and install's
@@ -733,52 +701,6 @@ LINK_PROGRAMS = {
 LINK_OPTIONS: dict[str, tuple[str, tuple[str, ...]]] = {
     "cp": ("ls", ("link", "symbolic-link")),
     "install": ("l", ()),
-    # util-linux rename's -s renames the target a symbolic link names, so the link leads somewhere else.
-    "rename": ("s", ("symlink",)),
-}
-# The options of a WRITING_PROGRAMS program that write or change files no word of it names, or run a command, by their
-# letters and long names, with what each does: split's --filter, which runs a command for each part; ditto's -x, which
-# writes the files an archive names; setfacl's and setfattr's --restore, which change the files a file it reads names;
-# and gawk's -d, -o, and -p, which write the variables, the program, or a profile to the file they name, or to one
-# in the directory gawk runs in. While a hub is guarded each is refused.
-UNREAD_OPTIONS: dict[str, tuple[str, tuple[str, ...], str]] = {
-    "split": ("", ("filter",), "runs a command for each part it writes"),
-    "ditto": ("x", (), "writes the files an archive names"),
-    "setfacl": ("", ("restore",), "changes the access lists of the files a file it reads names"),
-    "setfattr": ("", ("restore",), "changes the attributes of the files a file it reads names"),
-    **dict.fromkeys(
-        ("awk", "gawk"),
-        ("dop", ("dump-variables", "pretty-print", "profile"), "writes its variables, program, or profile to a file"),
-    ),
-}
-# The option letters of perl and ruby that take a value, which ends a bundle, so a letter after one is no -i
-# (in_place).
-IN_PLACE_VALUED = {"perl": "eEIl0CdDFmMx", "ruby": "CEFIKrTWx0e"}
-# The programs whose words name files they write that the guard does not read, by what it does not read in them, each
-# refused while a hub is guarded whatever its words: a program whose written files an archive, a patch, or a server
-# names, or whose own configuration file may name one (curl's .curlrc and wget's .wgetrc, which a command may write
-# before it runs them), or whose options are many and run a command, as rsync's -e does, which reading would need a
-# catalogue of every option of every build, as PROGRAM_OPTIONS holds, and Windows' copy and certificate tools, which
-# take options the guard does not read. A command that only reads uses another program: gh for the network, git apply
-# for a patch, and tar's listing for an archive.
-UNREAD_PROGRAMS: dict[str, str] = {
-    **dict.fromkeys(
-        ("curl", "wget"), "writes the files its options or its configuration file name, which the guard does not read"
-    ),
-    **dict.fromkeys(
-        ("rsync", "scp"),
-        "copies into the files it is given and runs a remote shell its options or its operands name, which the guard "
-        "does not read",
-    ),
-    "patch": "writes the files a patch names, which the text does not show",
-    **dict.fromkeys(
-        ("unzip", "7z", "7za", "7zr", "7zz", "cpio", "bsdcpio", "pax", "unar", "jar"),
-        "writes the files an archive names, which the text does not show",
-    ),
-    **dict.fromkeys(
-        ("xcopy", "robocopy"), "copies into the files its operands and its options name, which the guard does not read"
-    ),
-    "certutil": "writes the files its verbs and options name, which the guard does not read",
 }
 # The multicall programs that run the utility their first word names, as the Rust coreutils' `coreutils cp` does and
 # toybox's does: each is read as that utility, with the words after it (multicall). `--coreutils-prog=<name>` names the
@@ -787,6 +709,55 @@ MULTICALL_PROGRAMS = frozenset({"coreutils", "toybox"})
 MULTICALL_OPTION = "--coreutils-prog="
 # The names another build of a program the guard reads is installed under beside its own: macOS's bsdtar and gnutar.
 BUILD_NAMES = {"bsdtar": "tar", "gnutar": "tar"}
+# The programs known, in every build (GNU, uutils, BSD, busybox, Windows), to write no file their words name and to run
+# no command, each with what it does instead: their words are not judged. While a hub is guarded every other program
+# the tables above do not read is judged by its words (read_unlisted): refused where a word may name a file in a
+# guarded hub or one holding it, or names git or a runner, or is a word the text does not settle. A program with an
+# option that writes a file or runs a command, as `file -C`, `tree -o`, `less -o`, `xxd`'s second operand, or `uniq`'s,
+# is left off, and so is one that reads its words as a program, as `awk` does.
+READ_ONLY_PROGRAMS: dict[str, str] = {
+    **dict.fromkeys(
+        ("cat", "head", "tail", "tac", "grep", "egrep", "fgrep", "findstr", "jq", "strings", "od", "hexdump"),
+        "prints the files it is given, or what it finds in them",
+    ),
+    **dict.fromkeys(
+        ("wc", "cut", "tr", "paste", "fold", "nl", "rev", "expand", "unexpand", "fmt", "column", "comm", "join"),
+        "prints the files or the input it is given, reshaped or counted",
+    ),
+    **dict.fromkeys(("diff", "cmp"), "prints how the files it is given differ"),
+    **dict.fromkeys(
+        ("md5sum", "md5", "sha1sum", "sha256sum", "sha512sum", "shasum", "b2sum", "cksum"),
+        "prints or checks the checksums of the files it is given",
+    ),
+    **dict.fromkeys(
+        ("ls", "stat", "du", "df", "realpath", "readlink", "basename", "dirname", "pwd", "which", "where"),
+        "prints facts about the paths it is given or finds",
+    ),
+    **dict.fromkeys(
+        ("true", "false", "sleep", "seq", "yes", "expr", "date", "uname", "whoami", "id", "printenv", "nproc"),
+        "prints, waits, or answers from its words alone",
+    ),
+}
+# The names Python's interpreter is started by, and the option letters it reads before the script it runs: the flags,
+# and the letters that take a value, attached or as the next word. A script a guarded hub tracks, run by such a name
+# with only these options, is trusted whatever its words (trusted_script): the guard refuses every edit to a file a
+# guarded hub tracks and every git call that writes it, so it holds what the hub's history holds. A script anywhere
+# else is trusted by no path, since a session's own tools may rewrite it.
+PYTHON_NAMES = re.compile(r"python(?:3(?:\.[0-9]+)?)?")
+PYTHON_FLAGS = "bBdEiIOPqsSuvx"
+PYTHON_VALUED = "WX"
+# gh's subcommands that write files into the directory gh runs in, or where their words name: each is judged as a
+# program read_unlisted reads, and refused where it runs in a guarded hub.
+GH_WRITERS = {
+    ("run", "download"),
+    ("release", "download"),
+    ("attestation", "download"),
+    ("repo", "clone"),
+    ("repo", "fork"),
+    ("repo", "create"),
+    ("gist", "clone"),
+    ("codespace", "cp"),
+}
 # sed rewrites each file it is given in place with -i, or BSD sed's -I, and with GNU sed's --in-place; the letters that
 # take a value in every build end a bundle, and a letter neither flag nor one of these is read as -i. GNU sed's -l takes
 # a value and BSD sed's is a flag, so it ends no bundle: BSD's `-li ''` rewrites in place.
@@ -1685,11 +1656,24 @@ class GitCall:
 @dataclass(frozen=True)
 class Write:
     """A file a command writes at a path its text names, and what a refusal says writes it, as `The command redirects
-    its output into`; for a pattern, path is the folder every file it matches lies in."""
+    its output into`; for a pattern, path is the folder every file it matches lies in, and for a folder, as one a
+    download writes into, path is that folder."""
 
     path: Path
     opening: str
     pattern: bool = False
+    folder: bool = False
+
+
+@dataclass(frozen=True)
+class ScriptRun:
+    """A Python script a command runs, at the path its words place, with what the guard reads from its words as from
+    any program read_unlisted reads: the files they may name and the parts it does not read. Both count only where the
+    script is not one a guarded hub tracks (Judge.trusted_script)."""
+
+    script: Path
+    writes: list[Write]
+    unread: list[str]
 
 
 @dataclass
@@ -1703,6 +1687,7 @@ class Reading:
     calls: list[GitCall] = field(default_factory=list)
     writes: list[Write] = field(default_factory=list)
     unread: list[str] = field(default_factory=list)
+    scripts: list[ScriptRun] = field(default_factory=list)
     named: list[str] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
     context_hubs: set[Path] = field(default_factory=set)
@@ -3255,14 +3240,21 @@ class Judge:
     configuration: list[Path | None] | None = None
 
     def denied(self, reading: Reading, depth: int = 0) -> str | None:
-        if reading.unread:
+        unread = list(reading.unread)
+        writes = list(reading.writes)
+        for run in reading.scripts:
+            reading.time_left()
+            if not trusted_script(run.script):
+                unread.extend(what for what in run.unread if what not in unread)
+                writes.extend(run.writes)
+        if unread:
             if self.hubs:
                 return (
-                    f"The guard does not read part of this command ({reading.unread[0]}), so it is refused while a "
+                    f"The guard does not read part of this command ({unread[0]}), so it is refused while a "
                     f"hub is guarded. {REWRITE_IT}"
                 )
-            self.notes.extend(reading.unread)
-        for write in reading.writes:
+            self.notes.extend(unread)
+        for write in writes:
             reading.time_left()
             reason = self.write_refusal(write)
             if reason is not None:
@@ -3272,9 +3264,9 @@ class Judge:
             reason = self.judge(call, depth)
             if reason is not None:
                 return reason
-        return self.repository_refusal(reading)
+        return self.repository_refusal(reading, [write.path for write in writes])
 
-    def repository_refusal(self, reading: Reading) -> str | None:
+    def repository_refusal(self, reading: Reading, written: list[Path]) -> str | None:
         """Why a command is refused for the configuration its git calls read where they run (repository_configuration),
         which the session's own places do not show: a cookie jar or a socket folder it names in a guarded hub, which
         a git call there writes, or, while a hub is guarded, one the guard cannot place or a configuration git cannot
@@ -3284,7 +3276,7 @@ class Judge:
         file named config or config.worktree, or one in a folder named .git, as a repository's own configuration is."""
         if not reading.calls:
             return None
-        written = [write.path for write in reading.writes] + configuration_file_writes(reading.calls)
+        written = written + configuration_file_writes(reading.calls)
         session = [Path(__file__).resolve().parent, *reading.places, *self.hubs]
         seen: list[AliasLookup] = []
         foreign = False
@@ -3584,9 +3576,10 @@ class Judge:
         reads its system or global configuration from. For a pattern, the folder its matches lie in is judged: one in
         a guarded hub, one holding a guarded hub in view, and, while a hub is guarded, one holding a file git reads
         its configuration from."""
-        opening = f"{write.opening} the files a pattern matches in" if write.pattern else write.opening
+        pattern = write.pattern and not write.folder
+        opening = f"{write.opening} the files a pattern matches in" if pattern else write.opening
         if hub_protected(write.path):
-            what = "a folder" if write.pattern else "a file"
+            what = "a folder" if write.pattern or write.folder else "a file"
             return f"{opening} {write.path}, {what} of a guarded hub."
         # A folder holds what a recursive removal, a move, a mode change, or a copy into it reaches.
         folder = Path(os.path.realpath(write.path))
@@ -4190,16 +4183,16 @@ class BashReader:
                 return certain(UNKNOWN)
             for value in program_writes(program, arguments):
                 read_written(value, directory, self.reading, program_writer(program))
-        elif program in UNREAD_PROGRAMS:
-            self.reading.cannot_read(f"{program} {UNREAD_PROGRAMS[program]}")
-            return certain(UNKNOWN)
-        elif writer_name(program) is not None:
+        elif program not in READ_ONLY_PROGRAMS:
             written = (
                 [(value, False) for value in arguments]
                 if arguments_written is None
                 else [self.written_value(word) for word in arguments_written]
             )
-            read_program_writes(program, written, directory, self.reading)
+            if writer_name(program) is not None:
+                read_program_writes(program, written, directory, self.reading)
+            else:
+                read_unlisted(program, written, directory, self.reading, [name for name, _ in prefixes])
         return certain(directory)
 
     def read_runner(
@@ -4467,34 +4460,10 @@ def read_runner_words(
     if program in RUNNER_OPTIONS:
         # The runner's command is where its option reading stopped, so an option's value is never taken for gh.
         stop = option_refusal(RUNNER_OPTIONS[program], arguments).stop
+        if not read_runner_command(program, arguments, stop, directory, reading, variables, native):
+            return certain(UNKNOWN)
         called = command_name(arguments[stop] or "") if stop < len(arguments) else None
-        command = built_name(called) if called is not None else None
-        if command in UNREAD_PROGRAMS:
-            reading.cannot_read(f"runs {program}: {command} {UNREAD_PROGRAMS[command]}")
-            return certain(UNKNOWN)
-        # chroot runs its command inside another tree, where no path the text names is the one it writes; pwsh
-        # hands a native program its words as native_written reads them.
-        read = native_written if native else (lambda word: (word, False))
-        if command in PROGRAM_OPTIONS:
-            # Its options passed its allow-list (runner_command_refusal); the files they name are judged.
-            for value in program_writes(command, arguments[stop + 1 :]):
-                target, pattern = (None, False) if program == "chroot" else read(value)
-                read_written(target, directory, reading, program_writer(command), pattern)
-        writer = writer_name(command or "")
-        if writer is not None:
-            if program in INPUT_RUNNERS:
-                # Words from its input follow the program's own, and may name any file, a hub's among them.
-                reading.cannot_read(
-                    f"runs {program}: {program} hands {command} words from its input, which may name a file"
-                )
-                return certain(UNKNOWN)
-            written = [(None, False) if program == "chroot" else read(word) for word in arguments[stop + 1 :]]
-            read_program_writes(writer, written, directory, reading)
-        start = stop if stop < len(arguments) and command == "gh" else None
-        if start is not None and program in INPUT_RUNNERS:
-            # Words from its input follow gh's own, and may make any subcommand of it one that checks a branch out.
-            reading.cannot_read(f"runs {program}: {program} runs gh with words from its input, which may check out")
-            return certain(UNKNOWN)
+        start = stop if called is not None and built_name(called) == "gh" else None
     else:
         start = next(
             (index for index, word in enumerate(arguments) if word is not None and command_name(word) == "gh"), None
@@ -4503,6 +4472,51 @@ def read_runner_words(
         # chroot runs its command at the root of another tree, which the text does not place.
         read_gh(arguments[start + 1 :], UNKNOWN if program == "chroot" else directory, reading)
     return certain(directory)
+
+
+def read_runner_command(
+    program: str,
+    arguments: list[Word],
+    stop: int,
+    directory: Directory,
+    reading: Reading,
+    variables: Iterable[str],
+    native: bool,
+) -> bool:
+    """The command a runner RUNNER_OPTIONS names starts, at its word stop, where its option reading ended: the files a
+    program PROGRAM_OPTIONS names writes, a writing program's words, and those of a program read_unlisted reads, each
+    judged as they are without the runner, and gh read where xargs, which adds words from its input, does not start
+    it. False where the command is a part the guard does not read, which the reading is then told."""
+    called = command_name(arguments[stop] or "") if stop < len(arguments) else None
+    command = built_name(called) if called is not None else None
+    # chroot runs its command inside another tree, where no path the text names is the one it writes; pwsh hands a
+    # native program its words as native_written reads them.
+    read = native_written if native else (lambda word: (word, False))
+    if command in PROGRAM_OPTIONS:
+        # Its options passed its allow-list (runner_command_refusal); the files they name are judged.
+        for value in program_writes(command, arguments[stop + 1 :]):
+            target, pattern = (None, False) if program == "chroot" else read(value)
+            read_written(target, directory, reading, program_writer(command), pattern)
+    if command is None or command in {*PROGRAM_OPTIONS, *READ_ONLY_PROGRAMS}:
+        return True
+    if command == "gh" and program in INPUT_RUNNERS:
+        # Words from its input follow gh's own, and may make any subcommand of it one that checks a branch out.
+        reading.cannot_read(f"runs {program}: {program} runs gh with words from its input, which may check out")
+        return False
+    if command == "gh":
+        return True
+    if program in INPUT_RUNNERS:
+        # Words from its input follow the program's own, and may name any file, a hub's among them.
+        reading.cannot_read(f"runs {program}: {program} hands {command} words from its input, which may name a file")
+        return False
+    written = [(None, False) if program == "chroot" else read(word) for word in arguments[stop + 1 :]]
+    writer = writer_name(command)
+    if writer is not None:
+        read_program_writes(writer, written, directory, reading)
+    else:
+        assigned = [*variables, *(name for name, _ in runner_assignments(program, arguments))]
+        read_unlisted(command, written, directory, reading, assigned)
+    return True
 
 
 def system_program(program: str) -> bool:
@@ -4698,9 +4712,7 @@ def written_words(program: str, words: Sequence[tuple[Word, bool]]) -> list[tupl
     pattern: every operand, a word after `--` among them; the value of a long option after its `=`; and in a bundle
     of letters, the rest of the word after its first letter the program's flags do not name, which may be that
     option's value, the next word, when it takes one, being an operand anyway. dd writes only at its `of=` operand,
-    sed only in place (sed_in_place), perl, ruby, awk, and gawk only in place (in_place), and uniq only at the operand
-    after its first, its input, which a literal word that is no pattern settles. A word the text does not settle may
-    be any of these."""
+    and sed only in place (sed_in_place). A word the text does not settle may be any of these."""
     if program == "dd":
         return [
             (None if pattern or word is None else word.partition("=")[2], False)
@@ -4709,20 +4721,12 @@ def written_words(program: str, words: Sequence[tuple[Word, bool]]) -> list[tupl
         ]
     if program == "sed" and not sed_in_place(words):
         return []
-    if program in IN_PLACE_PROGRAMS and not in_place(program, words):
-        return []
     flags = WRITING_PROGRAMS[program]
     found: list[tuple[Word, bool]] = []
     operands = False
-    # uniq reads its first operand, `-` for its input among them; a pattern or a word the text does not settle may be
-    # more than one.
-    input_left = program == "uniq"
     for word, pattern in words:
-        if input_left and word == "-" and not pattern:
-            input_left = False
-        elif pattern or word is None or operands or not word.startswith("-"):
-            literal, input_left = input_left and not pattern and word is not None, False
-            if not literal and (pattern or word != ""):
+        if pattern or word is None or operands or not word.startswith("-"):
+            if pattern or word != "":
                 found.append((word, pattern))
         elif word == "--":
             operands = True
@@ -4763,52 +4767,12 @@ def sed_in_place(words: Sequence[tuple[Word, bool]]) -> bool:
     return False
 
 
-IN_PLACE_PROGRAMS = frozenset({"perl", "ruby", "awk", "gawk"})
-
-
-def in_place(program: str, words: Sequence[tuple[Word, bool]]) -> bool:
-    """Whether perl, ruby, awk, or gawk rewrites the files it is given in place: perl and ruby given -i, alone or in a
-    bundle before any letter that takes a value (IN_PLACE_VALUED), before `--`; gawk, as awk may be, given a word
-    holding `inplace`, which loads or includes its inplace extension, by -i, -l, --include, --load, or the program's
-    own @include or @load. A word the text does not settle may be any of these."""
-    for word, pattern in words:
-        if pattern:
-            continue
-        if word is None:
-            return True
-        if program in {"awk", "gawk"}:
-            if "inplace" in word:
-                return True
-            continue
-        if word == "--":
-            return False
-        if word.startswith("-") and not word.startswith("--"):
-            for letter in word[1:]:
-                if letter == "i":
-                    return True
-                if letter in IN_PLACE_VALUED[program]:
-                    break
-    return False
-
-
 def makes_link(program: str, words: Sequence[tuple[Word, bool]]) -> bool:
-    """Whether a WRITING_PROGRAMS program is given an option LINK_OPTIONS names (given_option)."""
-    return program in LINK_OPTIONS and given_option(program, words, *LINK_OPTIONS[program])
-
-
-def unread_option(program: str, words: Sequence[tuple[Word, bool]]) -> str | None:
-    """What an option UNREAD_OPTIONS names for a WRITING_PROGRAMS program does, where the program is given one
-    (given_option); None where it is given none."""
-    if program not in UNREAD_OPTIONS:
-        return None
-    letters, names, does = UNREAD_OPTIONS[program]
-    return does if given_option(program, words, letters, names) else None
-
-
-def given_option(program: str, words: Sequence[tuple[Word, bool]], letters: str, names: Sequence[str]) -> bool:
-    """Whether a WRITING_PROGRAMS program is given one of the options letters and names spell, before `--`: a letter of
-    a bundle before any letter its flags do not name, which may take a value, or a long option that is a prefix of one
-    of its names."""
+    """Whether a WRITING_PROGRAMS program is given an option LINK_OPTIONS names, before `--`: a letter of a bundle
+    before any letter that takes a value, or a long option that is a prefix of one of its names."""
+    if program not in LINK_OPTIONS:
+        return False
+    letters, names = LINK_OPTIONS[program]
     flags = WRITING_PROGRAMS[program] or ""
     for word, pattern in words:
         if pattern or word is None or not word.startswith("-"):
@@ -4846,10 +4810,6 @@ def read_program_writes(
             "cannot follow"
         )
         return
-    does = unread_option(program, words)
-    if does is not None:
-        reading.cannot_read(f"{program} is given an option that {does}")
-        return
     if program == "sed":
         reason, scripted = sed_writes(words)
         if reason is not None:
@@ -4861,16 +4821,148 @@ def read_program_writes(
         read_written(value, directory, reading, program_writer(program), pattern)
 
 
+def read_unlisted(
+    program: str,
+    words: Sequence[tuple[Word, bool]],
+    directory: Directory,
+    reading: Reading,
+    assigned: Iterable[str] = (),
+) -> None:
+    """A program no table of the guard reads and READ_ONLY_PROGRAMS does not name, read the same from Bash and
+    PowerShell and where a runner starts it, its words each with whether it is the folder of a pattern: a word the text
+    does not settle, which may name any file, and one that names git or a runner, which it may run, are parts the
+    guard does not read; each path a word may name (word_paths) is judged as a redirection's target is, and so is a
+    pattern's folder. Python running a script is read the same, but recorded with the script (ScriptRun), whose
+    words count only where a guarded hub does not track it; assigned names the variables assigned before it, and one
+    Python reads, as PYTHONPATH, which chooses the modules the script imports, leaves no script trusted."""
+    script = python_script(program, words, directory)
+    if any(name.upper().startswith("PYTHON") for name in assigned):
+        script = None
+    own = Reading(reading.environment) if script is not None else reading
+    opening = f"`{program}` is given"
+    for word, pattern in words:
+        if word is None:
+            own.cannot_read(f"`{program}` is given a word the text does not settle, which may name a file in a hub")
+            continue
+        for value in (word, word.rpartition("=")[2]):
+            if not pattern and built_name(command_name(value) or "") in GIT_NAMES | RUNNERS.keys() | MULTICALL_PROGRAMS:
+                own.cannot_read(f"`{program}` is given {word}, which names git or a runner, which it may run")
+        for path in [word] if pattern else word_paths(word, directory, reading.environment):
+            if path in DEVICE_FILES:
+                continue
+            if directory.cwd is None and not Path(platform_support.from_shell_path(path)).is_absolute():
+                own.cannot_read(f"`{program}` is given {path} in a directory the text does not settle")
+            else:
+                own.writes.append(Write(resolved(path, directory), opening, pattern))
+    if script is not None:
+        reading.scripts.append(ScriptRun(script, own.writes, own.unread))
+
+
+def resolved(value: str, directory: Directory) -> Path:
+    """A path a word names, read from the directory the command runs in where it is relative."""
+    path = Path(platform_support.from_shell_path(value))
+    return path if path.is_absolute() else (directory.cwd or Path()) / path
+
+
+def word_paths(word: str, directory: Directory, environment: Mapping[str, str]) -> list[str]:
+    """The paths a settled word of a program read_unlisted reads may name: the word itself, but for an option; the
+    rest of a bundle of one dash after each of its letters, which may be an option's value; its value after its first
+    and its last `=`; each quoted part of it and each of its blank-separated parts, as a script or a command line it is
+    handed holds them. Of these, a value counts as a path only where it may be one: an absolute path, one that starts
+    with `~`, read from the home, `.`, `..`, `./`, or `../`, or a relative one whose first name is there in the
+    directory the command runs in, or any relative one where the text does not settle that directory. A bare name of a
+    file that does not exist yet is not one, so a program may make a new file at the top of the directory it runs in."""
+    candidates = [] if word.startswith("-") else [word]
+    if word.startswith("-") and not word.startswith("--"):
+        # The rest after each letter of the bundle, up to the first character that is no option letter.
+        index = 2
+        while index < len(word) and word[index - 1].isalnum():
+            candidates.append(word[index:])
+            index += 1
+    if "=" in word:
+        candidates.extend((word.partition("=")[2], word.rpartition("=")[2]))
+    candidates.extend(QUOTED_PART.findall(word))
+    candidates.extend(part for part in word.split() if not part.startswith("-"))
+    found: list[str] = []
+    for candidate in dict.fromkeys(candidates):
+        path = path_value(candidate, directory, environment)
+        if path is not None and path not in found:
+            found.append(path)
+    return found
+
+
+def path_value(candidate: str, directory: Directory, environment: Mapping[str, str]) -> str | None:
+    """The path a value names where it may name one (word_paths), with a leading `~` read from the home; None where it
+    may not. A relative value whose first name the guard cannot look up counts as one."""
+    if not candidate:
+        return None
+    if candidate == "~" or candidate.startswith(("~/", "~\\")):
+        start = home(environment)
+        return None if start is None else str(start) + candidate[1:]
+    if Path(platform_support.from_shell_path(candidate)).is_absolute():
+        return candidate
+    if candidate in {".", ".."} or candidate.startswith(("./", "../", ".\\", "..\\")):
+        return candidate
+    if directory.cwd is None:
+        return candidate
+    first = re.split(r"[/\\]", candidate, maxsplit=1)[0]
+    try:
+        return candidate if file_presence.is_occupied(directory.cwd / first) else None
+    except OSError:
+        return candidate
+
+
+def python_script(program: str, words: Sequence[tuple[Word, bool]], directory: Directory) -> Path | None:
+    """The script Python runs, where program is one of PYTHON_NAMES and its words before a literal operand are only
+    the options PYTHON_FLAGS and PYTHON_VALUED name, placed from the directory the command runs in; None for any other
+    program or form, as `-c`, `-m`, or a script the text does not settle or place."""
+    if not PYTHON_NAMES.fullmatch(program):
+        return None
+    index = 0
+    while index < len(words):
+        word, pattern = words[index]
+        if pattern or word is None or word == "-":
+            return None
+        if not word.startswith("-"):
+            path = Path(platform_support.from_shell_path(word))
+            if path.is_absolute():
+                return path
+            return None if directory.cwd is None else directory.cwd / path
+        if word.startswith("--"):
+            return None
+        index += 1
+        for position, letter in enumerate(word[1:], 1):
+            if letter in PYTHON_VALUED:
+                index += position == len(word) - 1
+                break
+            if letter not in PYTHON_FLAGS:
+                return None
+    return None
+
+
+def trusted_script(script: Path) -> bool:
+    """Whether a Python script is one a guarded hub tracks, with every link on the way to it followed: the guard refuses
+    every edit to such a file and every git call that writes it, so it runs what the hub's history holds. A file the
+    hub does not track, an ignored one or a new one among them, and any file elsewhere is not."""
+    real = Path(os.path.realpath(script))
+    hub = protecting_hub(real)
+    if hub is None or not file_presence.is_present(real, other_is_absent=True):
+        return False
+    # A literal pathspec matches the file alone, never another a wildcard in its name would match.
+    arguments = ["ls-files", "-z", "--", f":(literal){real}"]
+    return bool(CLIENT.quiet_output(arguments, directory=hub, timeout=lookup_timeout()))
+
+
 def read_names() -> frozenset[str]:
     """The program names a table of the guard keeps: the runners, the programs whose options it reads, the ones that
-    write the files their words name or make a link, the ones it does not read, and the multicall programs."""
+    write the files their words name or make a link, the ones known to write none, and the multicall programs."""
     return frozenset(
         {
             *RUNNERS,
             *PROGRAM_OPTIONS,
             *WRITING_PROGRAMS,
             *LINK_PROGRAMS,
-            *UNREAD_PROGRAMS,
+            *READ_ONLY_PROGRAMS,
             *MULTICALL_PROGRAMS,
             *GIT_NAMES,
             "gh",
@@ -5259,9 +5351,11 @@ def powershell_command(name: str) -> bool:
 
 def read_gh(arguments: list[Word], directory: Directory, reading: Reading) -> None:
     """gh, which runs git itself to check a branch out for the subcommands GH_CHECKOUTS names, in the checkout it
-    runs in. A flag before the words that would name such a subcommand, other than one of GH_VALUED_FLAGS, is not
-    read: cobra takes the word after a flag it does not know as that flag's value, so `gh pr -b x checkout 12` checks
-    a branch out while its first two words are pr and x."""
+    runs in, and writes files into that directory, or where its words name, for those GH_WRITERS names, which are
+    judged as the directory a command writes into and as a program read_unlisted reads. A flag before the words that
+    would name such a subcommand, other than one of GH_VALUED_FLAGS, is not read: cobra takes the word after a flag it
+    does not know as that flag's value, so `gh pr -b x checkout 12` checks a branch out while its first two words are
+    pr and x."""
     named: list[Word] = []
     unknown_flag: str | None = None
     words = iter(arguments)
@@ -5273,24 +5367,32 @@ def read_gh(arguments: list[Word], directory: Directory, reading: Reading) -> No
         elif unknown_flag is None and gh_checkout_prefix(named) and not gh_flag_with_value(word):
             unknown_flag = word
     named = named[:2]
-    if named[:1] == [None] or (named[:1] in (["pr"], ["repo"]) and None in named):
-        reading.cannot_read("a gh subcommand the text does not settle, which may check a branch out")
+    if named[:1] == [None] or (gh_checkout_prefix(named[:1]) and None in named):
+        reading.cannot_read("a gh subcommand the text does not settle, which may check a branch out or write files")
     elif unknown_flag is not None:
         reading.cannot_read(
             f"gh's {unknown_flag} before its subcommand, whose next word gh may take as its value, so the subcommand "
-            "may be one that checks a branch out"
+            "may be one that checks a branch out or writes files"
         )
     elif tuple(named) in GH_CHECKOUTS:
         # gh runs git in its own directory with the environment it was given, so the inherited variables place it.
         values = git_variables(inherited_variables(reading.environment), reading.notes)
         place = GitOptions.initial(directory.cwd, values, opaque=False).place()
         reading.calls.append(GitCall(place, " ".join(str(word) for word in named), [], program="gh"))
+    elif tuple(named) in GH_WRITERS:
+        # It writes into the directory it runs in, as a clone or a download does by default, or where its words name.
+        subcommand = f"`gh {' '.join(str(word) for word in named)}`"
+        if directory.cwd is None:
+            reading.cannot_read(f"{subcommand} writes into a directory the text does not settle")
+        else:
+            reading.writes.append(Write(directory.cwd, f"{subcommand} writes into", folder=True))
+        read_unlisted("gh", [(word, False) for word in arguments], directory, reading)
 
 
 def gh_checkout_prefix(named: Sequence[Word]) -> bool:
-    """Whether the words gh has read so far may still begin a subcommand GH_CHECKOUTS names: none yet, or one of their
-    first words alone."""
-    return not named or (len(named) == 1 and any(named[0] == key[0] for key in GH_CHECKOUTS))
+    """Whether the words gh has read so far may still begin a subcommand GH_CHECKOUTS or GH_WRITERS names: none yet, or
+    one of their first words alone."""
+    return not named or (len(named) == 1 and any(named[0] == key[0] for key in GH_CHECKOUTS | GH_WRITERS))
 
 
 def gh_flag_with_value(word: str) -> bool:
@@ -5700,12 +5802,11 @@ class PowerShellReader:
                 return certain(UNKNOWN)
             for value, pattern in map(native_written, program_writes(program, arguments)):
                 read_written(value, directory, self.reading, program_writer(program), pattern)
-        elif program in UNREAD_PROGRAMS:
-            self.reading.cannot_read(f"{program} {UNREAD_PROGRAMS[program]}")
-            return certain(UNKNOWN)
         elif writer_name(program) is not None:
             written = [native_written(word) for word in arguments]
             read_program_writes(program, written, directory, self.reading)
+        elif program not in READ_ONLY_PROGRAMS:
+            read_unlisted(program, [native_written(word) for word in arguments], directory, self.reading)
         return certain(directory)
 
     def read_cmdlet(
@@ -5992,7 +6093,7 @@ def guard(stream: str) -> int:
             read_into(reading, tool, cwd, environment)
             looking_up = True
             reached_hubs(reading, hubs)
-            if reading.unread and not hubs:
+            if (reading.unread or any(run.unread for run in reading.scripts)) and not hubs:
                 named_hubs(reading, cwd, hubs)
             looking_up = False
             reason = denied(reading, hubs)

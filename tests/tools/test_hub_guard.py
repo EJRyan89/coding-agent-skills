@@ -3163,113 +3163,214 @@ class WriteGuardTests(GuardTestCase):
         self.assertEqual("deny", self.bash(f'gln -s "{readme}" "{link}" && printf x >> "{link}"', self.tree))
         self.assertIn("ln makes a symbolic or a hard link", self.reason)
 
-    def test_a_program_that_compresses_renames_or_changes_the_attributes_of_a_file_its_words_name_is_read(
-        self,
-    ) -> None:
+    def test_a_program_no_table_reads_is_refused_where_a_word_may_name_a_hub_file(self) -> None:
         readme = self.hub / "README.md"
-        for command, writer in (
-            (f'gzip "{readme}"', "gzip"),
-            (f'gunzip -k "{readme}"', "gunzip"),
-            (f'bzip2 -9 "{readme}"', "bzip2"),
-            (f'xz -T0 "{readme}"', "xz"),
-            (f'zstd --rm "{readme}"', "zstd"),
-            (f'lz4 notes.txt "{readme}"', "lz4"),
-            (f'echo x | sponge "{readme}"', "sponge"),
-            (f'uniq notes.txt "{readme}"', "uniq"),
-            (f'uniq - "{readme}" < notes.txt', "uniq"),
-            (f'shuf -o "{readme}" notes.txt', "shuf"),
-            (f'shuf -o"{readme}" notes.txt', "shuf"),
-            (f'split notes.txt "{self.hub}/part"', "split"),
-            (f'csplit -f "{self.hub}/part" notes.txt 1', "csplit"),
-            (f'rename .md .txt "{readme}"', "rename"),
-            (f'mkfile 1m "{readme}"', "mkfile"),
-            (f'plutil -convert xml1 "{readme}"', "plutil"),
-            (f'ditto notes.txt "{readme}"', "ditto"),
-            (f'xattr -w name value "{readme}"', "xattr"),
-            (f'chattr +i "{readme}"', "chattr"),
-            (f'setfacl -m u:nobody:r "{readme}"', "setfacl"),
-            (f'setfattr -n user.x -v 1 "{readme}"', "setfattr"),
-            (f"perl -pi -e 's/a/b/' \"{readme}\"", "perl"),
-            (f"perl -i.bak -pe 's/a/b/' \"{readme}\"", "perl"),
-            (f"ruby -pi -e 'x' \"{readme}\"", "ruby"),
-            (f"gawk -i inplace '{{print}}' \"{readme}\"", "gawk"),
-            (f"awk -i inplace '{{print}}' \"{readme}\"", "awk"),
-            (f'gawk \'@include "inplace"; {{print}}\' "{readme}"', "gawk"),
-            (f'coreutils cp notes.txt "{readme}"', "cp"),
-            (f'coreutils --coreutils-prog=cp notes.txt "{readme}"', "cp"),
-            (f'toybox cp notes.txt "{readme}"', "cp"),
-            (f'gsplit notes.txt "{self.hub}/part"', "split"),
+        database = self.hub / "x.db"
+        # Pinned against literals: what each refusal says the program is given.
+        for command, cwd, program, path in (
+            (f'curl -o "{readme}" https://example.com', self.tree, "curl", readme),
+            (f'curl -o"{readme}" https://example.com', self.tree, "curl", readme),
+            (f'curl --output="{readme}" https://example.com', self.tree, "curl", readme),
+            (f'wget -O "{readme}" https://example.com', self.tree, "wget", readme),
+            (f'rsync -a notes.txt "{readme}"', self.tree, "rsync", readme),
+            (f'gzip "{readme}"', self.tree, "gzip", readme),
+            (f'perl -pi -e s/a/b/ "{readme}"', self.tree, "perl", readme),
+            (f'base64 -o "{readme}" notes.txt', self.tree, "base64", readme),
+            (f'dos2unix "{readme}"', self.tree, "dos2unix", readme),
+            (f'prettier --write "{readme}"', self.tree, "prettier", readme),
+            (f'sqlite3 "{database}" "create table t(a)"', self.tree, "sqlite3", database),
+            (f"python3 -c \"open('{readme}', 'w')\"", self.tree, "python3", readme),
+            (f"""node run.js --command "cp a '{readme}'" """, self.tree, "node", readme),
+            ("gzip README.md", self.hub, "gzip", readme),
+            ("perl -pi -e s/a/b/ ./README.md", self.hub, "perl", self.hub / "README.md"),
+            ("python3 -c \"open('README.md', 'w')\"", self.hub, "python3", readme),
         ):
             with self.subTest(command=command):
-                self.assertEqual("deny", self.bash(command, self.tree))
-                self.assertIn(f"`{writer}` writes ", self.reason)
-                self.assertIn(", a file of a guarded hub.", self.reason)
-        # perl and ruby without -i, and awk without its inplace extension, only read the files they are given; a
-        # compressor or uniq writes nothing in the hub here.
+                self.assertEqual("deny", self.bash(command, cwd))
+                self.assertIn(f"`{program}` is given {path}, a file of a guarded hub.", self.reason)
+        self.assertEqual("deny", self.bash(f'node run.js "{self.root}"', self.tree))
+        self.assertIn(f"`node` is given {self.root}, which holds the guarded hub {self.hub}.", self.reason)
+        # A word that names no path where the program runs, a path outside every hub, or a bare name of a file that is
+        # not there yet, which is the named limit, is no write to a hub.
         for command, cwd in (
-            (f"perl -ne 'print' \"{readme}\"", self.tree),
-            (f"perl -Mstrict -e 'print 1' \"{readme}\"", self.tree),
-            (f"ruby -ne 'print' \"{readme}\"", self.tree),
-            (f"awk '{{print $1}}' \"{readme}\"", self.tree),
-            ("awk -F, '{print $1}' README.md", self.hub),
-            ("gzip -c notes.txt > notes.gz", self.tree),
-            ("uniq notes.txt", self.tree),
-            ("uniq -c README.md", self.hub),
-            ("sort notes.txt | uniq -c", self.tree),
+            ("curl -s https://example.com -o out.html", self.tree),
+            ("gzip notes.txt", self.tree),
+            ('python3 -c "print(1)"', self.tree),
+            ("node build.js --mode=prod", self.tree),
+            ("make test", self.tree),
+            ("make test", self.hub),
+            ('python3 -c "print(1)"', self.hub),
+            ("node x.js new-file.txt", self.hub),
+            (f'curl -o "{self.root / "out.html"}" https://example.com', self.hub),
         ):
             with self.subTest(command=command):
                 self.assertIsNone(self.bash(command, cwd))
         self.assertEqual("hub\n", readme.read_text(encoding="utf-8"))
 
-    def test_powershell_reads_the_new_writers_and_the_multicall_programs_alike(self) -> None:
+    def test_a_program_no_table_reads_is_judged_alike_from_powershell_and_behind_a_runner(self) -> None:
         readme = self.hub / "README.md"
-        for command, writer in (
+        for command, program in (
             (f"gzip '{readme}'", "gzip"),
-            (f"perl -pi -e 's/a/b/' '{readme}'", "perl"),
-            (f"coreutils cp notes.txt '{readme}'", "cp"),
-            (f"tar -cf '{readme}' notes.txt", "tar"),
-            (f"timeout 5 tar -cf '{readme}' notes.txt", "tar"),
+            (f"curl.exe -o '{readme}' https://example.com", "curl"),
+            (f"timeout 5 curl -o '{readme}' https://example.com", "curl"),
         ):
             with self.subTest(command=command):
                 self.assertEqual("deny", self.powershell(command, self.tree))
-                self.assertIn(f"`{writer}` writes {readme}, a file of a guarded hub.", self.reason)
-
-    def test_an_option_that_writes_a_file_no_word_names_or_runs_a_command_is_refused(self) -> None:
-        for command, part in (
-            (
-                "split --filter='git commit -m x' notes.txt",
-                "split is given an option that runs a command for each part",
-            ),
-            ("split --fil='git commit -m x' notes.txt", "split is given an option that runs a command for each part"),
-            ("ditto -x -k notes.zip out", "ditto is given an option that writes the files an archive names"),
-            ("ditto -vx notes.cpio out", "ditto is given an option that writes the files an archive names"),
-            ("setfacl --restore=acls.txt", "setfacl is given an option that changes the access lists of the files"),
-            ("setfattr --restore=attrs.txt", "setfattr is given an option that changes the attributes of the files"),
-            ("gawk -o '{print}' notes.txt", "gawk is given an option that writes its variables, program, or profile"),
-            ("gawk --profile '{print}' notes.txt", "gawk is given an option that writes its variables, program"),
-            ("awk -d '{print}' notes.txt", "awk is given an option that writes its variables, program, or profile"),
+                self.assertIn(f"`{program}` is given {readme}, a file of a guarded hub.", self.reason)
+        for command, program in (
+            (f'timeout 5 curl -o "{readme}" https://example.com', "curl"),
+            (f'env LANG=C gzip "{readme}"', "gzip"),
+            (f'nice -n 5 perl -pi -e x "{readme}"', "perl"),
+            (f'gtimeout 5 gzip "{readme}"', "gzip"),
         ):
             with self.subTest(command=command):
                 self.assertEqual("deny", self.bash(command, self.tree))
+                self.assertIn(f"`{program}` is given {readme}, a file of a guarded hub.", self.reason)
+        self.assertEqual("deny", self.bash("echo notes.txt | xargs gzip", self.tree))
+        self.assertIn("runs xargs: xargs hands gzip words from its input, which may name a file", self.reason)
+        self.assertIsNone(self.bash("timeout 5 make test", self.tree))
+        self.assertIsNone(self.powershell("node build.js --mode=prod", self.tree))
+
+    def test_a_word_of_an_unlisted_program_that_the_text_does_not_settle_or_that_names_git_is_refused(self) -> None:
+        unsettled = "`node` is given a word the text does not settle, which may name a file in a hub"
+        for command, part in (
+            ('node x.js "$x"', unsettled),
+            ('for f in a b; do node x.js "$f"; done', unsettled),
+            ("node x.js *.txt", "`node` is given the files a pattern matches in"),
+            ("make GIT=git", "`make` is given GIT=git, which names git or a runner, which it may run"),
+            ("node run.js git commit -m x", "`node` is given git, which names git or a runner, which it may run"),
+            ("node run.js timeout", "`node` is given timeout, which names git or a runner, which it may run"),
+            ('cd "$x" && node ./*.txt', "`node` is given ./ in a directory the text does not settle"),
+            ('cd "$x" && node x.js prepare', "`node` is given x.js in a directory the text does not settle"),
+        ):
+            with self.subTest(command=command):
+                self.assertEqual("deny", self.bash(command, self.hub if "*" in command else self.tree))
                 self.assertIn(part, self.reason)
-        # util-linux rename's -s renames the target a link names.
-        for command in ("rename -s old new lnk", "rename -vs old new lnk", "rename --symlink old new lnk"):
+        # With no guarded hub in view each is allowed with a note.
+        outside, unshared = self.outside()
+        self.assertIsNone(self.bash('node x.js "$x"', outside, unshared))
+        self.assertIn(unsettled, self.stderr)
+
+    def test_a_read_only_program_reads_a_hub_file(self) -> None:
+        for command in (
+            "cat README.md",
+            "head -n 5 README.md",
+            "ghead -n 5 README.md",
+            "grep -n hub README.md",
+            "wc -l README.md",
+            "diff README.md .gitignore",
+            "shasum -a 256 README.md",
+            "ls -la",
+            "sed -n 1p README.md",
+            'cat "$x"',
+        ):
             with self.subTest(command=command):
-                self.assertEqual("deny", self.bash(command, self.tree))
-                self.assertIn("rename is given an option that makes a link", self.reason)
-        # A multicall program whose utility the text does not settle, or that is given an option first, may run any.
-        for command in ('coreutils "$x" a b', "coreutils --help", 'toybox "$x"'):
+                self.assertIsNone(self.bash(command, self.hub))
+        self.assertIsNone(self.powershell("grep -n hub README.md", self.hub))
+        # Its output is still judged where a redirection writes it.
+        self.assertEqual("deny", self.bash("cat .gitignore > README.md", self.hub))
+        self.assertIn("The command redirects its output into", self.reason)
+
+    def test_a_python_script_the_hub_tracks_runs_from_the_hub_whatever_its_words(self) -> None:
+        readme = self.hub / "README.md"
+        tools = self.hub / "tools"
+        tools.mkdir()
+        (tools / "sync.py").write_text("print(1)\n", encoding="utf-8")
+        self.git(self.hub, "add", "tools/sync.py")
+        self.git(self.hub, "commit", "-q", "-m", "a script")
+        (self.hub / "local.json").write_text("print(1)\n", encoding="utf-8")
+        for command, cwd in (
+            ('python3 -B tools/sync.py README.md "$x" --out=README.md', self.hub),
+            (".venv/bin/python -B -X utf8 tools/sync.py README.md", self.hub),
+            (f'python3 "{tools / "sync.py"}" "{readme}"', self.tree),
+            (f'python3 "{tools / "sync.py"}" "{readme}"', self.hub),
+            ("python3 -E -q tools/sync.py -- README.md -s", self.hub),
+        ):
             with self.subTest(command=command):
-                self.assertEqual("deny", self.bash(command, self.tree))
-                self.assertIn("runs a utility the text does not settle, which may be any command", self.reason)
-        # One behind a runner may run another runner, so it is refused as one is; a runner behind it is read.
-        self.assertEqual("deny", self.bash("timeout 5 coreutils ls", self.tree))
-        self.assertIn("coreutils names git or another runner, which may run git", self.reason)
-        self.assertEqual("deny", self.bash("coreutils timeout 5 git commit -m x", self.hub))
-        self.assertIn("runs timeout:", self.reason)
-        for command in ("coreutils ls -la", "split -l 10 notes.txt part", "ditto notes.txt copy.txt"):
+                self.assertIsNone(self.bash(command, cwd))
+        self.assertIsNone(self.powershell(f"python3 '{tools / 'sync.py'}' '{readme}'", self.tree))
+        # A file the hub ignores, a script elsewhere, Python given -c or -m, and a variable Python reads before it
+        # leave the words judged.
+        for command in (
+            "python3 local.json README.md",
+            f'python3 "{self.root / "other.py"}" README.md',
+            "python3 -c 1 README.md",
+            "python3 -m tools.sync README.md",
+            "env PYTHONPATH=/x python3 tools/sync.py README.md",
+            "PYTHONSTARTUP=/x python3 tools/sync.py README.md",
+        ):
             with self.subTest(command=command):
-                self.assertIsNone(self.bash(command, self.tree))
+                self.assertEqual("deny", self.bash(command, self.hub))
+                self.assertIn("`python3` is given ", self.reason)
+                self.assertIn(", a file of a guarded hub.", self.reason)
+        # A wildcard in a script's name is matched literally, never as the tracked script it would match.
+        (self.hub / "tools" / "s[y]nc.py").write_text("print(1)\n", encoding="utf-8")
+        self.assertEqual("deny", self.bash("python3 'tools/s[y]nc.py' README.md", self.hub))
+        self.assertEqual("deny", self.bash('python3 local.json "$x"', self.hub))
+        self.assertIn("`python3` is given a word the text does not settle", self.reason)
+
+    if not platform_support.WINDOWS:
+        # Windows makes a symbolic link only with a privilege a test cannot count on.
+
+        def test_a_hub_script_that_is_a_link_to_a_file_elsewhere_is_not_trusted(self) -> None:
+            elsewhere = self.root / "elsewhere.py"
+            elsewhere.write_text("print(1)\n", encoding="utf-8")
+            (self.hub / "linked.py").symlink_to(elsewhere)
+            self.git(self.hub, "add", "linked.py")
+            self.git(self.hub, "commit", "-q", "-m", "a link")
+            self.assertEqual("deny", self.bash("python3 linked.py README.md", self.hub))
+            self.assertIn(f"`python3` is given {self.hub / 'linked.py'}, a file of a guarded hub.", self.reason)
+
+    def test_a_gh_subcommand_that_downloads_or_clones_is_refused_in_the_hub(self) -> None:
+        for command in (
+            "gh repo clone owner/repo",
+            "gh release download v1 -p x",
+            "gh run download 12",
+            "gh -R owner/repo release download v1",
+            "gh gist clone 1234",
+        ):
+            subcommand = " ".join(word for word in command.split()[1:3] if not word.startswith("-"))
+            with self.subTest(command=command):
+                self.assertEqual("deny", self.bash(command, self.hub))
+                if "-R" not in command:
+                    self.assertIn(f"`gh {subcommand}` writes into {self.hub}, a folder of a guarded hub.", self.reason)
+        self.assertEqual("deny", self.powershell("gh repo clone owner/repo", self.hub))
+        self.assertEqual("deny", self.bash(f'gh release download v1 -D "{self.hub}"', self.tree))
+        self.assertIn(f"`gh` is given {self.hub}", self.reason)
+        self.assertEqual("deny", self.bash('gh release download "$tag"', self.tree))
+        self.assertIn("`gh` is given a word the text does not settle", self.reason)
+        self.assertEqual("deny", self.bash("gh release -b x download v1", self.tree))
+        self.assertIn("may be one that checks a branch out or writes files", self.reason)
+        for command, cwd in (
+            ("gh repo clone owner/repo", self.tree),
+            ("gh pr view 12 --json state -q .state", self.hub),
+            ("gh pr list --json number --jq '.[].number'", self.hub),
+            ("gh issue list --label bug", self.hub),
+            (f'gh pr create --body-file "{self.root / "body.md"}"', self.hub),
+        ):
+            with self.subTest(command=command):
+                self.assertIsNone(self.bash(command, cwd))
+
+    def test_the_governance_session_s_own_commands_run_from_the_hub(self) -> None:
+        tools = self.hub / "tools"
+        tools.mkdir()
+        (tools / "project_release_sync.py").write_text("print(1)\n", encoding="utf-8")
+        self.git(self.hub, "add", "tools/project_release_sync.py")
+        self.git(self.hub, "commit", "-q", "-m", "a script")
+        deployed = self.root / "home" / ".claude" / "skills" / "review-prs" / "scripts" / "review_pipeline.py"
+        notes = self.root / "notes.md"
+        for command in (
+            f'python3 "{deployed}" prepare --host claude-code --pull owner/repo#12',
+            f"python3 -c \"print(open('{notes}').read())\"",
+            f'sed -n 1,5p "{notes}"',
+            f'printf "x\\n" >> "{notes}"',
+            "gh pr merge 12 --auto --squash",
+            "git pull --ff-only origin main",
+            f'git worktree remove "{self.tree}"',
+            ".venv/bin/python -B tools/project_release_sync.py",
+        ):
+            with self.subTest(command=command):
+                self.assertIsNone(self.bash(command, self.hub))
 
     def test_tar_s_archive_is_judged_where_its_mode_writes_it(self) -> None:
         readme = self.hub / "README.md"
@@ -3306,44 +3407,6 @@ class WriteGuardTests(GuardTestCase):
         ):
             with self.subTest(command=command):
                 self.assertIsNone(self.bash(command, cwd))
-
-    def test_a_program_whose_writes_the_guard_does_not_read_is_refused_while_a_hub_is_guarded(self) -> None:
-        readme = self.hub / "README.md"
-        # Pinned against literals: what each refusal says the program writes.
-        archive = "writes the files an archive names, which the text does not show"
-        for command, program, does in (
-            (f'curl -o "{readme}" https://example.com', "curl", None),
-            ("curl -s https://example.com", "curl", None),
-            (f'wget -O "{readme}" https://example.com', "wget", None),
-            (f'rsync -a notes.txt "{readme}"', "rsync", None),
-            (f'scp notes.txt "{readme}"', "scp", None),
-            ("patch -p1 < fix.patch", "patch", "writes the files a patch names, which the text does not show"),
-            (f'unzip -d "{self.hub}" notes.zip', "unzip", archive),
-            (f'7z x -o"{self.hub}" notes.7z', "7z", archive),
-            (f'cpio -p "{self.hub}" < list.txt', "cpio", archive),
-            ("pax -r < notes.pax", "pax", archive),
-            (f'xcopy notes.txt "{readme}"', "xcopy", None),
-            (f'robocopy . "{self.hub}" notes.txt', "robocopy", None),
-            (f'certutil -decode notes.b64 "{readme}"', "certutil", None),
-            (f'gpatch -o "{readme}" < fix.patch', "patch", None),
-            (f'timeout 5 curl -o "{readme}" https://example.com', "curl", None),
-        ):
-            with self.subTest(command=command):
-                self.assertEqual("deny", self.bash(command, self.tree))
-                self.assertIn(f"{program} {hub_guard.UNREAD_PROGRAMS[program]}", self.reason)
-                if does is not None:
-                    self.assertIn(f"{program} {does}", self.reason)
-        self.assertEqual(
-            "curl writes the files its options or its configuration file name, which the guard does not read",
-            f"curl {hub_guard.UNREAD_PROGRAMS['curl']}",
-        )
-        for command in (f"xcopy notes.txt '{readme}'", f"robocopy . '{self.hub}' notes.txt", "curl.exe -s x"):
-            with self.subTest(command=command):
-                self.assertEqual("deny", self.powershell(command, self.tree))
-        # With no guarded hub in view each is allowed with a note.
-        outside, unshared = self.outside()
-        self.assertIsNone(self.bash("curl -s https://example.com", outside, unshared))
-        self.assertIn("curl writes the files its options or its configuration file name", self.stderr)
 
     def test_a_cookie_jar_a_repository_s_own_configuration_names_in_a_hub_refuses_a_git_call_there(self) -> None:
         readme = (self.hub / "README.md").as_posix()
@@ -3892,11 +3955,11 @@ class UnderstoodSetTests(GuardTestCase):
 
     def test_the_commands_sessions_run_most_are_read(self) -> None:
         for command in (
-            'cd "$(git rev-parse --show-toplevel)" && python -B -m pytest tests/tools/test_x.py -q 2>&1 | tail -20',
+            f'cd "{self.tree}" && python -B -m pytest tests/tools/test_x.py -q 2>&1 | tail -20',
             "grep -n 'def ' tools/hub_guard.py | head -40",
             "sed -n '1,40p' docs/design.md",
             "git diff --stat && git status --short",
-            'for f in a.py b.py; do python -m ruff check "$f"; done',
+            "python -m ruff check a.py b.py",
             "timeout 600 python -B -m pytest tests/tools -q",
             'gh pr view 12 --json title,body --jq ".title"',
             "ls -la; wc -l README.md; cat README.md | tr a-z A-Z",
@@ -3915,6 +3978,22 @@ class UnderstoodSetTests(GuardTestCase):
         ):
             with self.subTest(command=command):
                 self.assertIsNone(self.bash(command, self.tree))
+        # A program the guard does not know to write nothing is judged by its words, so one given a loop's variable,
+        # or relative words in a directory a substitution computes, which may be the hub, is refused; the forms above
+        # write the directory and the words out.
+        for command, part in (
+            (
+                'cd "$(git rev-parse --show-toplevel)" && python -B -m pytest tests/tools/test_x.py -q',
+                "`python` is given pytest in a directory the text does not settle",
+            ),
+            (
+                'for f in a.py b.py; do python -m ruff check "$f"; done',
+                "`python` is given a word the text does not settle, which may name a file in a hub",
+            ),
+        ):
+            with self.subTest(command=command):
+                self.assertEqual("deny", self.bash(command, self.tree))
+                self.assertIn(part, self.reason)
 
     def test_with_no_hub_in_view_a_part_the_guard_does_not_read_is_allowed_unless_a_named_path_reaches_one(
         self,
@@ -4720,40 +4799,52 @@ class ContractListTests(unittest.TestCase):
             {
                 *("chcon", "chflags", "chgrp", "chmod", "chown", "cp", "dd", "install", "mkdir", "mkfifo", "mknod"),
                 *("mktemp", "mv", "rm", "rmdir", "sed", "shred", "tee", "touch", "truncate", "unlink"),
-                *("gzip", "gunzip", "bzip2", "bunzip2", "xz", "unxz", "lzma", "unlzma", "zstd", "unzstd", "lz4"),
-                *("lzip", "compress", "uncompress", "pigz", "unpigz", "sponge", "uniq", "shuf", "split", "csplit"),
-                *("rename", "mkfile", "plutil", "ditto", "xattr", "chattr", "setfacl", "setfattr", "perl", "ruby"),
-                *("awk", "gawk"),
             },
             set(hub_guard.WRITING_PROGRAMS),
         )
         self.assertEqual({"ln", "link", "fsutil"}, set(hub_guard.LINK_PROGRAMS))
-        self.assertEqual({"cp", "install", "rename"}, set(hub_guard.LINK_OPTIONS))
+        self.assertEqual({"cp", "install"}, set(hub_guard.LINK_OPTIONS))
 
-    def test_the_programs_and_options_the_guard_does_not_read_are_the_ones_its_contract_names(self) -> None:
-        unread = contract_names("`UNREAD_PROGRAMS`:", ", are refused while a hub is guarded whatever their words")
-        self.assertEqual(sorted(hub_guard.UNREAD_PROGRAMS), sorted(unread))
-        # Pinned against literals: the programs whose writes no reading of their words settles.
+    def test_the_programs_known_to_write_nothing_and_the_other_readers_are_the_ones_its_contract_names(self) -> None:
+        listed = contract_names("and to run no", ", each under the prefixes above too")
+        self.assertEqual(sorted(hub_guard.READ_ONLY_PROGRAMS), sorted(listed))
+        # Pinned against literals: the programs whose words the guard does not judge.
         self.assertEqual(
             {
-                *("curl", "wget", "rsync", "scp", "patch", "unzip", "7z", "7za", "7zr", "7zz", "cpio", "bsdcpio"),
-                *("pax", "unar", "jar", "xcopy", "robocopy", "certutil"),
+                *("cat", "head", "tail", "tac", "grep", "egrep", "fgrep", "findstr", "jq", "strings", "od", "hexdump"),
+                *("wc", "cut", "tr", "paste", "fold", "nl", "rev", "expand", "unexpand", "fmt", "column", "comm"),
+                *("join", "diff", "cmp", "md5sum", "md5", "sha1sum", "sha256sum", "sha512sum", "shasum", "b2sum"),
+                *("cksum", "ls", "stat", "du", "df", "realpath", "readlink", "basename", "dirname", "pwd", "which"),
+                *("where", "true", "false", "sleep", "seq", "yes", "expr", "date", "uname", "whoami", "id"),
+                *("printenv", "nproc"),
             },
-            set(hub_guard.UNREAD_PROGRAMS),
+            set(hub_guard.READ_ONLY_PROGRAMS),
         )
-        options = contract_names("`UNREAD_OPTIONS`:", ", are refused while a hub is guarded in every spelling")
-        self.assertEqual(sorted(hub_guard.UNREAD_OPTIONS), sorted(set(options) & set(hub_guard.UNREAD_OPTIONS)))
+        # No program a table reads is also known to write nothing, so no table's reading is skipped.
+        tables = {*hub_guard.RUNNERS, *hub_guard.PROGRAM_OPTIONS, *hub_guard.WRITING_PROGRAMS, *hub_guard.LINK_PROGRAMS}
+        self.assertEqual(set(), tables & set(hub_guard.READ_ONLY_PROGRAMS))
+        writers = contract_names("and `gh run download` (", ")")
+        self.assertEqual(["GH_WRITERS"], writers)
+        subcommands = contract_names("or where their words name,", "(`GH_WRITERS`)")
+        self.assertEqual(sorted(f"gh {' '.join(key)}" for key in hub_guard.GH_WRITERS), sorted(subcommands))
         self.assertEqual(
             {
-                "split": ("", ("filter",)),
-                "ditto": ("x", ()),
-                "setfacl": ("", ("restore",)),
-                "setfattr": ("", ("restore",)),
-                "awk": ("dop", ("dump-variables", "pretty-print", "profile")),
-                "gawk": ("dop", ("dump-variables", "pretty-print", "profile")),
+                ("run", "download"),
+                ("release", "download"),
+                ("attestation", "download"),
+                ("repo", "clone"),
+                ("repo", "fork"),
+                ("repo", "create"),
+                ("gist", "clone"),
+                ("codespace", "cp"),
             },
-            {name: (letters, names) for name, (letters, names, _) in hub_guard.UNREAD_OPTIONS.items()},
+            hub_guard.GH_WRITERS,
         )
+        self.assertEqual(("bBdEiIOPqsSuvx", "WX"), (hub_guard.PYTHON_FLAGS, hub_guard.PYTHON_VALUED))
+        for name in ("python", "python3", "python3.12"):
+            self.assertIsNotNone(hub_guard.PYTHON_NAMES.fullmatch(name))
+        for name in ("python2", "pythonw", "py", "ipython", "python3.12-config"):
+            self.assertIsNone(hub_guard.PYTHON_NAMES.fullmatch(name))
         multicall = contract_names("as `coreutils cp` or `toybox cp` does (", ")")
         self.assertEqual(["MULTICALL_PROGRAMS"], multicall)
         self.assertEqual({"coreutils", "toybox"}, set(hub_guard.MULTICALL_PROGRAMS))
@@ -5313,22 +5404,6 @@ class GitDirectoryNameTests(unittest.TestCase):
         ("sed", ["-n", "--", "-i"], []),
         ("sed", ["-k", "a"], ["a"]),
         ("sed", [None, "a"], [None, "a"]),
-        ("uniq", ["in", "out"], ["out"]),
-        ("uniq", ["-c", "in"], []),
-        ("uniq", ["-", "out"], ["out"]),
-        ("uniq", ["-f", "1", "in", "out"], ["in", "out"]),
-        ("uniq", [None, "out"], [None, "out"]),
-        ("perl", ["-ne", "print", "a"], []),
-        ("perl", ["-Mlib", "-e", "1", "a"], []),
-        ("perl", ["-pi.bak", "-e", "s/a/b/", "a"], [".bak", "s/a/b/", "a"]),
-        ("perl", ["-i", "--", "a"], ["a"]),
-        ("perl", ["-e", "1", "--", "-i"], []),
-        ("ruby", ["-Ci", "-ne", "x", "a"], []),
-        ("ruby", ["-pi", "-e", "x", "a"], ["x", "a"]),
-        ("gawk", ["{print}", "a"], []),
-        ("gawk", ["-i", "inplace", "{print}", "a"], ["inplace", "{print}", "a"]),
-        ("awk", [None, "a"], [None, "a"]),
-        ("gzip", ["-9", "-S", ".z", "a"], [".z", "a"]),
     ],
 )
 def test_the_words_a_writing_program_may_write_are_its_operands_and_option_values(
@@ -5448,11 +5523,8 @@ def test_a_native_program_s_word_from_powershell_is_read_with_its_pattern(
         ("gpg", None),
         ("u", None),
         ("", None),
-        ("gzip", "gzip"),
-        ("gunzip", "gunzip"),
-        ("uniq", "uniq"),
-        ("gawk", "gawk"),
-        ("gsplit", "split"),
+        ("gzip", None),
+        ("perl", None),
         ("gtimeout", None),
     ],
 )
@@ -5472,7 +5544,9 @@ def test_a_build_s_prefixed_name_is_read_as_the_program(program: str, expected: 
         ("gtar", "tar"),
         ("bsdtar", "tar"),
         ("gnutar", "tar"),
-        ("gpatch", "patch"),
+        ("gpatch", "gpatch"),
+        ("ghead", "head"),
+        ("gcat", "cat"),
         ("gcp", "cp"),
         ("gh", "gh"),
         ("ggh", "ggh"),
@@ -5484,6 +5558,86 @@ def test_a_build_s_prefixed_name_is_read_as_the_program(program: str, expected: 
 )
 def test_every_table_reads_a_build_under_its_prefixed_or_other_name(program: str, expected: str) -> None:
     assert expected == hub_guard.built_name(program)
+
+
+@pytest.mark.parametrize(
+    ("word", "expected"),
+    [
+        # A word that may be a path: absolute, from the home, `.` or `..`, or relative to a name that is there.
+        ("/srv/x", ["/srv/x"]),
+        ("~/x", ["<home>/x"]),
+        ("~", ["<home>"]),
+        (".", ["."]),
+        ("..", [".."]),
+        ("./new", ["./new"]),
+        ("../x", ["../x"]),
+        ("README.md", ["README.md"]),
+        ("docs/new.md", ["docs/new.md"]),
+        # A bare name or a value that is not there yet, or that starts with a dot but is no path.
+        ("new.txt", []),
+        ("prepare", []),
+        ("owner/repo#12", []),
+        (".state", []),
+        (".[].number", []),
+        ("https://example.com/x", []),
+        ("", []),
+        # An option's value: after `=`, or the rest of a one-dash bundle; a long option's name is no path.
+        ("--output=/srv/x", ["/srv/x"]),
+        ("--output=README.md", ["README.md"]),
+        ("-o/srv/x", ["/srv/x"]),
+        ("-oREADME.md", ["README.md"]),
+        ("--docs", []),
+        ("-v", []),
+        ("--a=b=/srv/x", ["/srv/x"]),
+        # A quoted or blank-separated part, as a script or a command line holds it.
+        ("open('/srv/x', 'w')", ["/srv/x"]),
+        ("cp a /srv/x", ["/srv/x"]),
+        ('print(open("README.md").read())', ["README.md"]),
+    ],
+)
+def test_a_word_may_name_a_path_only_where_it_may_be_one(word: str, expected: list[str], tmp_path: Path) -> None:
+    (tmp_path / "README.md").write_text("x", encoding="utf-8")
+    (tmp_path / "docs").mkdir()
+    home = tmp_path / "home"
+    environment = {"HOME": str(home)}
+    directory = hub_guard.Directory(tmp_path)
+    found = hub_guard.word_paths(word, directory, environment)
+    assert [value.replace(str(home), "<home>") for value in found] == expected
+
+
+def test_every_relative_word_may_name_a_path_where_the_directory_is_not_settled() -> None:
+    assert hub_guard.word_paths("prepare", hub_guard.UNKNOWN, {}) == ["prepare"]
+    assert hub_guard.word_paths("--x=a", hub_guard.UNKNOWN, {}) == ["a"]
+    assert hub_guard.word_paths("/srv/x", hub_guard.UNKNOWN, {}) == ["/srv/x"]
+
+
+@pytest.mark.parametrize(
+    ("words", "expected"),
+    [
+        (["tools/x.py", "a"], "tools/x.py"),
+        (["-B", "tools/x.py"], "tools/x.py"),
+        (["-BIu", "/srv/x.py", "--flag"], "/srv/x.py"),
+        (["-X", "utf8", "tools/x.py"], "tools/x.py"),
+        (["-Xutf8", "-W", "error", "tools/x.py"], "tools/x.py"),
+        (["-c", "print(1)"], None),
+        (["-m", "pytest"], None),
+        (["-Bc", "print(1)"], None),
+        (["--version"], None),
+        (["-"], None),
+        ([None, "tools/x.py"], None),
+        (["-B"], None),
+        ([], None),
+    ],
+)
+def test_python_s_script_is_read_only_after_options_that_take_none(
+    words: list[str | None], expected: str | None, tmp_path: Path
+) -> None:
+    script = hub_guard.python_script("python3", [(word, False) for word in words], hub_guard.Directory(tmp_path))
+    if expected is None:
+        assert script is None
+    else:
+        assert script == tmp_path / expected if not expected.startswith("/") else script == Path(expected)
+    assert hub_guard.python_script("node", [("tools/x.py", False)], hub_guard.Directory(tmp_path)) is None
 
 
 @pytest.mark.parametrize(

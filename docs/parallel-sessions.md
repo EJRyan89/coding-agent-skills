@@ -495,9 +495,9 @@ a row decides it.
 - **gh.** `gh pr checkout`, `gh pr co`, and `gh repo sync` check a branch out in the checkout gh runs in, and are
   judged as a checkout git makes there, a runner's command among them, from Bash and PowerShell alike, read where
   the runner's options end; gh after `xargs`, which adds words from its input to gh's, is refused, since they may make
-  any subcommand one of these. A flag before the words that would name one of these, other than `-R`, `--repo`, and
-  `--hostname`, is a part the guard does not read, since gh takes the word after a flag it does not know as its
-  value, so `gh pr -b x checkout 12` checks a branch out.
+  any subcommand one of these. A flag before the words that would name one of these, or one of the subcommands
+  `GH_WRITERS` names below, other than `-R`, `--repo`, and `--hostname`, is a part the guard does not read, since gh
+  takes the word after a flag it does not know as its value, so `gh pr -b x checkout 12` checks a branch out.
 - **Redirections.** A redirection that writes a file at a path the text settles is refused when the file lies in a
   guarded hub's tracked files or anywhere in its git directory, as a file tool's edit is; a duplication such as
   `2>&1` and a device such as `/dev/null` write none. In PowerShell every command's file redirection is read so,
@@ -507,14 +507,11 @@ a row decides it.
   relative one in a directory it does not settle, may lie in a hub and is refused, but for one under the system's
   temporary folder that `TMP`, `TEMP`, or `TMPDIR` names from the environment, as `> "$TMP/out.txt"` does. Each target
   is judged with every link on the way to it followed, so a link that already leads into a hub leads the write there.
-- **Writes a program or a cmdlet names.** The programs whose words name the files they write, create, remove,
-  compress, rename, or change the mode, owner, or attributes of are `WRITING_PROGRAMS`: `awk`, `bunzip2`, `bzip2`,
-  `chattr`, `chcon`, `chflags`, `chgrp`, `chmod`, `chown`, `compress`, `cp`, `csplit`, `dd`, `ditto`, `gawk`,
-  `gunzip`, `gzip`, `install`, `lz4`, `lzip`, `lzma`, `mkdir`, `mkfifo`, `mkfile`, `mknod`, `mktemp`, `mv`, `perl`,
-  `pigz`, `plutil`, `rename`, `rm`, `rmdir`, `ruby`, `sed`, `setfacl`, `setfattr`, `shred`, `shuf`, `split`,
-  `sponge`, `tee`, `touch`, `truncate`, `uncompress`, `uniq`, `unlink`, `unlzma`, `unpigz`, `unxz`, `unzstd`,
-  `xattr`, `xz`, and `zstd`, each read under its own name and under the `g` or `u` prefix a package manager installs a
-  GNU or uutils build with, as `gcp`, `gsed`, or `ucp` (`BUILD_PREFIXES`), and as the utility a multicall program
+- **Writes a program or a cmdlet names.** The programs whose words name the files they write, create, remove, or
+  change the mode or owner of are `WRITING_PROGRAMS`: `chcon`, `chflags`, `chgrp`, `chmod`, `chown`, `cp`, `dd`,
+  `install`, `mkdir`, `mkfifo`, `mknod`, `mktemp`, `mv`, `rm`, `rmdir`, `sed`, `shred`, `tee`, `touch`, `truncate`,
+  and `unlink`, each read under its own name and under the `g` or `u` prefix a package manager installs a GNU or uutils
+  build with, as `gcp`, `gsed`, or `ucp` (`BUILD_PREFIXES`), and as the utility a multicall program
   runs by its first word or its `--coreutils-prog=`, as `coreutils cp` or `toybox cp` does (`MULTICALL_PROGRAMS`), a
   multicall program whose utility the text does not settle, or that is given an option before it, being refused while
   a hub is guarded. Each word of theirs that may name such a file is judged
@@ -525,15 +522,7 @@ a row decides it.
   be that option's value, as `cp -t<folder>`. A target is also judged by what it holds, since a recursive removal, a
   move, a mode change, or a copy into a folder reaches everything in it: one that holds a guarded hub in view, as
   `rm -rf ..` from the hub does, or, while a hub is guarded, a file git reads its system or global configuration
-  from, as `cp <file> ~` does, is refused. `dd` writes only at its `of=` operand. `perl` and `ruby` rewrite the
-  files they are given only in place, given `-i` alone or in a bundle before a letter that takes a value, and `awk`
-  and `gawk` only given a word holding `inplace`, which loads gawk's inplace extension, so only then are their words
-  judged; what each does inside its program is beyond the guard, as [What it does not see](#what-it-does-not-see)
-  says. The options of these programs that write a file no word names, change the files a file they read names, or
-  run a command, `UNREAD_OPTIONS`: `split`'s `--filter`, `ditto`'s `-x`, which writes the files an archive names,
-  `setfacl`'s and `setfattr`'s `--restore`, and `awk`'s and `gawk`'s `-d`, `-o`, and `-p`, `--dump-variables`,
-  `--pretty-print`, and `--profile`, are refused while a hub is guarded in every spelling `LINK_OPTIONS` below is.
-  `sed` rewrites the files it is
+  from, as `cp <file> ~` does, is refused. `dd` writes only at its `of=` operand. `sed` rewrites the files it is
   given in place given `-i`, `-I`, a prefix of `--in-place`, or a letter it does not know, BSD's flag `-l` ending no
   bundle; and its script, read as each build reads its options (`SED_BUILDS`: GNU's, which read a long option and an
   option after an operand, and BSD's) and as GNU sed reads a script, whose commands hold BSD's, writes the file each
@@ -564,9 +553,8 @@ a row decides it.
   no alias, each is read as the program.
 - **Links.** A link a command makes is followed by no path the guard placed before the command ran, so a write later
   in the same command through it reaches what it names unseen. While a hub is guarded, `fsutil`, `link`, and `ln`
-  (`LINK_PROGRAMS`), under their own names and the prefixes above, are refused, `fsutil` whatever its words choose, and so are `cp`'s `-l`, `-s`, `--link`, and `--symbolic-link`, `install`'s `-l`,
-  and util-linux `rename`'s `-s` and `--symlink`, which renames the target a link names, each as a letter of a bundle
-  before a letter the program's table does not name as a flag, or as a prefix of its long name (`LINK_OPTIONS`), and `New-Item` given an item type other than a prefix of `File` or `Directory`, as `SymbolicLink`,
+  (`LINK_PROGRAMS`), under their own names and the prefixes above, are refused, `fsutil` whatever its words choose, and so are `cp`'s `-l`, `-s`, `--link`, and `--symbolic-link` and `install`'s `-l`
+  (`LINK_OPTIONS`), and `New-Item` given an item type other than a prefix of `File` or `Directory`, as `SymbolicLink`,
   `Junction`, or `HardLink`; with no guarded hub in view each is noted. A link that exists when a command starts is
   followed, as each bullet above says.
 - **Programs.** A command may start any program a literal name names. The programs that run another command their
@@ -619,14 +607,7 @@ a row decides it.
   archive its `-f` or `--file` names, but `-` for standard output, is judged as a file it writes where it is given a
   mode that writes one, `-c`, `-r`, `-u`, or `-A`, as a letter of a bundle or of its first word before a letter that
   takes a value, or `--create`, `--append`, `--update`, `--catenate`, `--concatenate`, or `--delete`
-  (`program_writes`). The programs whose writes the guard does not read, `UNREAD_PROGRAMS`: `7z`, `7za`, `7zr`,
-  `7zz`, `bsdcpio`, `certutil`, `cpio`, `curl`, `jar`, `patch`, `pax`, `robocopy`, `rsync`, `scp`, `unar`, `unzip`,
-  `wget`, and `xcopy`, are refused while a hub is guarded whatever their words, from Bash and PowerShell alike and
-  where a runner starts one: the files they write are named by an archive or a patch the text does not show, by a
-  configuration file a command may write first, as `curl`'s `.curlrc` and `wget`'s `.wgetrc`, or by options too many
-  to read without a catalogue of every build's, among which `rsync`'s `-e` and `--rsync-path` and `scp`'s remote
-  operands run another program. A command that only reads uses another program: `gh` for the network, `git apply`
-  for a patch, and `tar -t` for an archive. `tar`'s
+  (`program_writes`). `tar`'s
   table holds only letters GNU tar and bsdtar, Windows' `tar.exe`, read alike, or that only one of them knows, so
   `-H`, `-W`, and `-s`, which one of them reads with a value and the other without, are refused. On Windows, where no
   name or path settles whether a command reaches GNU `sort` and `find` or Windows' own builds, each is read as both,
@@ -659,6 +640,40 @@ a row decides it.
   GNU or uutils, or on macOS, where it names none, the BSD one, every option its `--help` or, for a BSD build, its
   usage synopsis lists, macOS's `chroot`, `find`, `sort`, and `time` the same way, and macOS's `tar` to bsdtar's
   catalogue by its `--help`. git keeps a judgment of its own, by its subcommands and by what its words write or run.
+- **Every other program, by an allow-list.** While a hub is guarded, a program none of the tables above reads, git,
+  `gh`, the runners, `PROGRAM_OPTIONS`, `WRITING_PROGRAMS`, and `LINK_PROGRAMS`, is judged by its words, unless it is
+  one of `READ_ONLY_PROGRAMS`, the programs known in every build to write no file their words name and to run no
+  command: `b2sum`, `basename`, `cat`, `cksum`, `cmp`, `column`, `comm`, `cut`, `date`, `df`, `diff`, `dirname`, `du`,
+  `egrep`, `expand`, `expr`, `false`, `fgrep`, `findstr`, `fmt`, `fold`, `grep`, `head`, `hexdump`, `id`, `join`,
+  `jq`, `ls`, `md5`, `md5sum`, `nl`, `nproc`, `od`, `paste`, `printenv`, `pwd`, `readlink`, `realpath`, `rev`, `seq`,
+  `sha1sum`, `sha256sum`, `sha512sum`, `shasum`, `sleep`, `stat`, `strings`, `tac`, `tail`, `tr`, `true`, `uname`,
+  `unexpand`, `wc`, `where`, `which`, `whoami`, and `yes`, each under the prefixes above too. Such a program
+  (`read_unlisted`) is refused where a word of it may name a file in a guarded hub, a folder that holds a guarded hub
+  in view, or a file git reads its system or global configuration from, each judged as a redirection's target is;
+  where a word, or its value after its last `=`, names git, a runner, or a multicall program, which it may run; and
+  where a word is one the text does not settle, as a loop's variable, which may name any file. A word counts as a path
+  only where it may be one: an absolute path, one that starts with `~`, read from the home, a `.` or `..` alone or
+  before a separator, or a relative one whose first name is there in the directory the command runs in, any relative
+  one counting where the text does not settle that directory; each is read in the word itself unless it is an
+  option, in the rest of a one-dash bundle after each of its letters, in its value after its first and its last `=`,
+  and in each of its quoted and blank-separated parts, as a script or a command line it is handed holds them, and a
+  pattern by its folder, as above. The rule is the same in the hub and in a worktree, from Bash and PowerShell alike,
+  and where a runner starts the program; after `xargs`, which adds words from its input, such a program is refused,
+  and so is every word of one `chroot` starts. So `python3 -c` given a script that names only files outside the
+  hubs, a deployed skill's script given plain values, and `gh pr merge <number> --auto --squash` run from the hub,
+  while `curl -o <hub file>`, `rsync <file> <hub>`, `gzip <hub file>`, `perl -pi -e <script> <hub file>`, and an
+  unlisted program reading a hub file by a word that names it are refused; `cat`, `grep`, `head`, `sed -n`, and
+  `git show` read a hub file instead. Python run as `python`, `python3`, or `python3.<minor>`, with only options
+  before its script that take none (`PYTHON_FLAGS`, `PYTHON_VALUED`), running a script a guarded hub tracks, with
+  every link on the way to it followed, is trusted whatever its words: the guard refuses every edit to a file a
+  guarded hub tracks and every git call that writes one, so such a script runs what the hub's history holds, as
+  `python -B tools/project_release_sync.py` and `python deploy.py` from the hub do. A script anywhere else, a
+  deployed skill's among them, is trusted by no path, so its words are judged, and so are a hub script's when a
+  variable Python reads, as `PYTHONPATH`, is assigned before it. `gh`'s subcommands that write into the directory
+  they run in, or where their words name, `gh attestation download`, `gh codespace cp`, `gh gist clone`,
+  `gh release download`, `gh repo clone`, `gh repo create`, `gh repo fork`, and `gh run download` (`GH_WRITERS`),
+  are refused where that directory lies in a guarded hub or the text does not settle it, and their words are judged
+  as such a program's.
 - **PowerShell.** A PowerShell command is read by PowerShell's own parser, not by a second hand-written grammar,
   and is understood when every node type in its tree is one `POWERSHELL_UNDERSTOOD` names, in the forms that invoke
   nothing: pipelines of commands joined by `&&` and `||`, with redirections, whose elements are constants, strings,
@@ -707,8 +722,9 @@ refuses:
   definition, `export` and the other declarations, `trap`, `hash`, `enable`, arithmetic of every kind, a subscript,
   an indirection, Bash 5.3's `${ command; }`, a command name the text does not settle, a runner whose command is or
   may be git, one `RUNNERS_ALWAYS_REFUSED` names, and an option of a runner or of a program `PROGRAM_OPTIONS` names
-  that its allow-list does not know to be safe, a program `UNREAD_PROGRAMS` names, an option `UNREAD_OPTIONS` names,
-  a multicall program whose utility the text does not settle, a redirection to a target the text does not settle, a file a
+  that its allow-list does not know to be safe, a word the text does not settle given to a program
+  `READ_ONLY_PROGRAMS` does not name and no table reads, and a word of one that names git or a runner, a multicall
+  program whose utility the text does not settle, a redirection to a target the text does not settle, a file a
   program or a cmdlet that writes is given where the text does not settle it, or that it takes from its input, a link
   a command makes, an
   assignment the rules above do not understand, an option the tables refuse, Bash its grammar cannot read (the lines
@@ -738,17 +754,22 @@ refuses:
   guarded hub;
 - a file a redirection, a program `WRITING_PROGRAMS` names, or a writing cmdlet writes into a guarded hub, a link on
   the way to it followed, and, while a hub is guarded, the files a pattern matches in a folder that holds a guarded hub
-  in view;
+  in view; a path in a guarded hub, or a folder holding one, that a word of a program `READ_ONLY_PROGRAMS` does not
+  name and no table reads may name, but for Python running a script a guarded hub tracks; and a `gh` subcommand
+  `GH_WRITERS` names run in a guarded hub;
 - an alias that cannot be read, nests more than four deep, or runs a part the guard does not read;
 - a command the guard does not finish reading and judging within 15 seconds, `pwsh` included, and the lookups of the
   hubs the places it names reach, each git call of theirs given no more than the time left; a PowerShell command when
   `pwsh` cannot be found or started; and a command either reader fails on with an error of its own.
 
-No script is trusted by its path, the deployed `update-coding-agent-skills` script under the skills directory
-included, though updating and deploying are what the hub is for: a script is a file, and the guard refuses an edit
-only in a hub, so a session's own file tools may rewrite a script under the skills directory, and a path the guard
-allowed would run whatever that file holds, through whatever link or junction stands on the way to it. The guard
-therefore reads `bash <script>` as it reads every script file, a part it does not understand, and
+A script a guarded hub tracks may run from the hub, by Python as [Every other program, by an
+allow-list](#what-it-understands) says, since the guard refuses every edit to a file a guarded hub tracks and every
+git call that writes one in a guarded hub. A script anywhere else is trusted by no path, the deployed
+`update-coding-agent-skills` script under the skills directory included, though updating and deploying are what the
+hub is for: a script is a file, and the guard refuses an edit only in a hub, so a session's own file tools may rewrite
+a script under the skills directory, and a path the guard allowed would run whatever that file holds, through
+whatever link or junction stands on the way to it. The guard therefore reads `bash <script>` as it reads every script
+file, a part it does not understand, judges the words of Python running such a script as any unlisted program's, and
 `update-coding-agent-skills` runs outside a session started in the clone: from a session in a folder outside it,
 which loads none of the clone's hooks, or from a terminal, as its section in [Skills](skills.md#update-coding-agent-skills)
 says.
@@ -794,12 +815,21 @@ The hook sees the command text. It does not see:
   script name, in the hub or in a worktree, an awk program, a sed script but for the files and commands
   [Writes a program or a cmdlet names](#what-it-understands) reads in it, a test suite, a script file, `make`'s recipes, or
   `npm`'s scripts do, and an agent runtime it starts, which runs git under its own guards; the guard reads only the
-  command line, and refuses only the runners above where the command line they are given is or may be git;
-- a file a program writes beyond the words the guard reads, one git reads its configuration from included: a file
-  a program none of `WRITING_PROGRAMS`, `PROGRAM_OPTIONS`, and `UNREAD_PROGRAMS` names writes from its own words, as
-  an editor's script, a formatter's in-place mode, or a converter's output option does, or a script does, or a
-  program writes at a path no word of it names, as `perl`, `ruby`, or `awk` may from inside its program, is read only
-  by the next command's judgement, so a git later in the same command reads a configuration it wrote;
+  command line, refusing a runner whose command is or may be git and judging the words of every other program it
+  does not know to write nothing;
+- a file a program writes beyond the words the guard reads, one git reads its configuration from included: one a
+  program writes at a path no word of it names, as `make` and `npm` do in the directory they run in, `curl` and
+  `wget` where their own configuration files name, an archive extractor or `patch` where the archive or the patch
+  names, and `perl`, `awk`, or a script from inside its program, a hub script trusted whatever its words among them;
+  and one a bare name of a file that does not exist yet names, which is no path to the guard, so a program no table
+  reads may make a new file at the top of the directory it runs in, the hub included, as `python x.py out.txt` from
+  the hub does, a file the hub does not track, which `git status` shows, while every file it tracks stays as it was.
+  Each is read only by the next command's judgement, so a git later in the same command reads a configuration it
+  wrote;
+- code a Python script a guarded hub tracks loads from beyond what the hub tracks: a module or a bytecode cache in a
+  folder the hub ignores, or one a `.pth` file, the user's site folder, or an inherited `PYTHONPATH` adds;
+- a `gh` alias or extension, which runs the command or the program the user's `gh` configuration names: the guard
+  reads `gh`'s words only for the subcommands `GH_CHECKOUTS` and `GH_WRITERS` name;
 - a link a command makes other than by `ln`, `link`, `fsutil`, a link option of `cp` or `install`, or `New-Item`:
   one a program makes from inside itself, or a copy or a checkout carries, as `cp -R` copies a link inside a folder,
   is followed only by the next command's judgement, so a write later in the same command through it reaches what it
