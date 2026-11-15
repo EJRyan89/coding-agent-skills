@@ -716,9 +716,11 @@ removed fails validation until its pattern follows it.
   `skills/ejryan89-code-review-core/scripts/test_review_pipeline_prepare.py::InitialReviewTests::test_a_temporary_directory_below_a_shared_folder_that_is_not_sticky_holds_no_run`,
   `tests/tools/test_mutation_gate.py::JudgedFolderFixtures`
 - **Search for:** a temporary folder made through a call the policy cannot resolve, or handed to a command a function
-  starts later, such as a method of `GitClient`; a Bash variable set by `read`, `for`, or `printf -v`, assigned again
-  by a loop, or read by a function called before its assignment; the table `GetEnvironmentVariables()` returns, kept in
-  a PowerShell variable and read later, each a limit "Working files" in `docs/adding-a-skill.md` names; and a
+  starts later, such as a method of `GitClient`; a Bash variable set by `read`, `mapfile`, `readarray`, `for`,
+  `printf -v`, `getopts`, `eval`, or a nameref, assigned again by a loop, or read by a function called before its
+  assignment; the temporary directory named by `${!name}`, `printenv`, or `getconf`; a PowerShell variable named by a
+  wildcard or a partly literal name, or the table `GetEnvironmentVariables()` returns, kept and read later, each a
+  limit "Working files" in `docs/adding-a-skill.md` names; and a
   converted folder whose own suite does not record the `dir` it is given with
   `test_private_folder:recording_temporary_folders`, since the policy reads the call, not the folder a run makes.
 - **Examples:** #2756, #2793, #2796, #2817, #2833, #2834

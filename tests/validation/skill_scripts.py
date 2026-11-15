@@ -20,7 +20,7 @@ from typing import Literal, TextIO, overload
 import file_presence
 import json_reader
 import whole_number
-from call_tables import EVENT_LOOP, EVENT_LOOP_STARTS, LAST, PROCESS_STARTS, TEXT_OPENERS
+from call_tables import EVENT_LOOP, PROCESS_STARTS, TEXT_OPENERS
 from command_wrappers import (
     ASSIGNMENT,
     PIPES,
@@ -45,7 +45,14 @@ from module_closure import MODULE_LOADERS
 from path_containment import posix_within
 from powershell_commands import COMMANDS_RUN, SOURCES_VARIABLE, UNREAD_WORD, command_words
 from powershell_startup import POWERSHELL_PROGRAMS, UnknownWord, startup_command
-from python_checks import PRINTS, git_client_classes, reaches, sanctioned_problems
+from python_checks import (
+    PRINTS,
+    _environment_argument,
+    _process_start,
+    git_client_classes,
+    reaches,
+    sanctioned_problems,
+)
 from skill_roots import SKILL_CORE
 from toolchain import powershell_json
 from validation_support import (
@@ -2716,39 +2723,36 @@ def _python_temporary_problems(name: str, tree: ast.Module) -> list[str]:
 
 
 def _started_arguments(call: ast.Call, resolver: CallableResolver) -> tuple[str, list[ast.expr]] | None:
-    """The name of the PROCESS_STARTS entry a call names, through the module's imports or, for an event loop's runner,
-    by its method on any receiver, and every argument it is given but the environment, any of which may name where the
-    command it starts writes; None for a call that starts no process."""
-    named = _reached_name(call.func, resolver)
-    if named not in PROCESS_STARTS and isinstance(call.func, ast.Attribute) and call.func.attr in EVENT_LOOP_STARTS:
-        named = f"{EVENT_LOOP}.{call.func.attr}"
-    start = PROCESS_STARTS.get(named)
-    if start is None:
+    """The name of the PROCESS_STARTS entry a call names and every argument it is given but its environment, any of
+    which may name where the command it starts writes, both read as the process-environment policy reads them; None for
+    a call that starts no process."""
+    found = _process_start(call, resolver)
+    if found is None:
         return None
-    position, keyword = start.environment if start.environment is not None else (None, None)
-    environment = len(call.args) - 1 if position == LAST else position
-    return named, [
-        *(argument for index, argument in enumerate(call.args) if index != environment),
-        *(item.value for item in call.keywords if item.arg != keyword),
-    ]
+    named, start = found
+    environment = _environment_argument(call, start)
+    given = [*call.args, *(item.value for item in call.keywords)]
+    return named, [argument for argument in given if argument is not environment]
 
 
 def _without_comment(line: str, escape: str) -> str:
     """A Bash or PowerShell line up to a `#` that starts a word outside quotes, where its comment starts. Outside
     single quotes, `escape`, Bash's backslash or PowerShell's backtick, keeps the character after it from opening or
-    closing a string or starting a comment."""
+    closing a string or starting a comment, and an escaped blank or `;` before a `#` from ending a word there."""
     quote = ""
     index = 0
+    escaped = -1
     while index < len(line):
         character = line[index]
         if character == escape and quote != "'":
+            escaped = index + 1
             index += 2
             continue
         if quote:
             quote = "" if character == quote else quote
         elif character in "'\"":
             quote = character
-        elif character == "#" and (index == 0 or line[index - 1] in " \t;"):
+        elif character == "#" and (index == 0 or (line[index - 1] in " \t;" and escaped != index - 1)):
             return line[:index]
         index += 1
     return line

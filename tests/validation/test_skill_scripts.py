@@ -1640,6 +1640,10 @@ class SkillScriptsFixtures(unittest.TestCase):
             ),
             "appends.sh": (f'JUDGED=$({judge})\nJUDGED+=/..\nX=$(mktemp "$JUDGED/x.XXXXXX")', ["4: mktemp"]),
             "escaped.sh": ('echo "a\\" # " ; X=$(mktemp)', ["2: mktemp"]),
+            # A `#` after an escaped blank continues the word, so Bash runs what follows it.
+            "escaped_blank.sh": ("echo foo\\ #; X=$(mktemp)", ["2: mktemp"]),
+            # A backtick substitution in a value is read as a command, never as the value's own text.
+            "backticked.sh": ("T=`echo /tmp`", ["2: /tmp"]),
             "literal.ps1": ("New-Item -ItemType Directory /tmp/fixed", ["1: /tmp"]),
             "held.ps1": ("$n = 'TEMP'; [Environment]::GetEnvironmentVariable($n)", ["1: GetEnvironmentVariable("]),
             "built.ps1": ("[Environment]::GetEnvironmentVariable('TE' + 'MP')", ["1: GetEnvironmentVariable("]),
@@ -1647,6 +1651,7 @@ class SkillScriptsFixtures(unittest.TestCase):
             "expanded.ps1": ('Get-Item "Env:\\$n"', ["1: Env:"]),
             "indexed.ps1": ("[Environment]::GetEnvironmentVariables()[$n]", ["1: GetEnvironmentVariables()["]),
             "escaped.ps1": ('Write-Output "a`" # $env:TEMP"', ["1: env:TEMP"]),
+            "escaped_blank.ps1": ("Write-Output foo` #; $env:TEMP", ["1: env:TEMP"]),
             "literal.py": ("open('/tmp/fixed', 'w')", ["1: open"]),
             "started.py": (
                 "import subprocess, tempfile\nsubprocess.run(['mkdir', tempfile.gettempdir() + '/x'])",
@@ -1657,6 +1662,13 @@ class SkillScriptsFixtures(unittest.TestCase):
                 "import os, subprocess\nsubprocess.run(['touch', 'x'], cwd=os.environ['TMPDIR'])",
                 ["2: subprocess.run"],
             ),
+            # An event loop's runner, on any receiver.
+            "looped.py": (
+                "async def run(loop):\n    await loop.subprocess_exec(object, 'mkdir', '/tmp/y')",
+                ["2: <event"],
+            ),
+            # The last positional argument is the environment, and the one before it is the command's.
+            "environment_last.py": ("import os\nos.execle('/bin/mkdir', 'mkdir', '/tmp/y', {})", ["2: os.execle"]),
         }
         passing = {
             "judged.sh": (
@@ -1672,6 +1684,12 @@ class SkillScriptsFixtures(unittest.TestCase):
             "comment.ps1": "Write-Output 'x' # $env:TEMP /tmp",
             "relative.py": "open('tmp/x', 'w')",
             "environment.py": "import subprocess\nsubprocess.run(['echo'], env={'TMPDIR': '/tmp'})",
+            "looped.py": "async def run(loop):\n    await loop.subprocess_exec(object, 'echo', 'hi')",
+            "environment_last.py": "import os\nos.execle('/bin/echo', 'echo', 'hi', {'TMPDIR': '/tmp'})",
+            # A value runs to its word's end, through a quoted blank and an expansion left open, so the path in it only
+            # gives the variable what it holds; a backtick substitution running the judge is judged.
+            "quoted_value.sh": "T='a /tmp/b'\nU=$'a /tmp/b'\nV=${A /tmp",
+            "backticked_judge.sh": f'J=`{judge}`\nX=$(mktemp "$J/x.XXXXXX")',
         }
         for verdict, rows in (("refused", refused), ("passing", passing)):
             for file, row in rows.items():
