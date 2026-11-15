@@ -5818,8 +5818,9 @@ def test_python_s_script_is_read_only_after_options_that_take_none(
     else:
         assert found is not None
         script, index = found
-        absolute = Path(platform_support.from_shell_path(expected))
-        assert script == (absolute if expected.startswith("/") else tmp_path / expected)
+        # Joined to the directory the command runs in, as Python resolves it: a rooted path such as /srv/x.py keeps that
+        # directory's drive on Windows, and a relative one is read from it.
+        assert script == tmp_path / expected
         assert words[index] == expected
     assert hub_guard.python_script("node", [("tools/x.py", False)], hub_guard.Directory(tmp_path)) is None
 
