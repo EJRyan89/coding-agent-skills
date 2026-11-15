@@ -755,12 +755,13 @@ PYTHON_NAMES = re.compile(r"python(?:3(?:\.[0-9]+)?)?")
 PYTHON_FLAGS = "bBdEIOPqsSuvx"
 PYTHON_VALUED = "WX"
 # The hub's own tools a session runs from the hub, by their paths in it, each with why it writes no file a hub tracks
-# whatever its words: such a script is trusted whatever its words where a guarded hub tracks it (is_trusted_script),
-# since the guard refuses every edit to a file a guarded hub tracks and every git call that writes it, so it runs what
-# the hub's history holds. Every other script's words are judged as any unlisted program's, a hub tool that writes hub
-# files when its words ask among them, as `tools/skill_reference.py --write` or `tools/new_skill.py <name>` does, and
-# so is a script anywhere else, since a session's own tools may rewrite it. A tool joins only with a reason that holds
-# for every word it reads.
+# whatever its words, but by the one write the guard allows from the hub itself, the fast-forward of main to origin's
+# main, which a tool names in full as refs/remotes/origin/main, so no ref named origin/main redirects it: such a script
+# is trusted whatever its words where a guarded hub tracks it (is_trusted_script), since the guard refuses every edit to
+# a file a guarded hub tracks and every git call that writes it, so it runs what the hub's history holds. Every other
+# script's words are judged as any unlisted program's, a hub tool that writes hub files when its words ask among them,
+# as `tools/skill_reference.py --write` or `tools/new_skill.py <name>` does, and so is a script anywhere else, since a
+# session's own tools may rewrite it. A tool joins only with a reason that holds for every word it reads.
 TRUSTED_SCRIPTS: dict[str, str] = {
     "deploy.py": (
         "deploys into the home, or a throwaway one it holds inside the temporary directory, and writes its "
@@ -772,7 +773,8 @@ TRUSTED_SCRIPTS: dict[str, str] = {
     ),
     "tools/project_release_sync.py": "changes only the GitHub project's fields, through gh",
     ".claude/skills/shepherd-pull-requests/scripts/shepherd_pull_requests.py": (
-        "acts only on the repository's pull requests on GitHub, through gh, and prints what it did"
+        "acts on the repository's pull requests on GitHub, through gh, and in the hub only fetches origin and "
+        "fast-forwards main to refs/remotes/origin/main, named in full, the fast-forward the guard allows from the hub"
     ),
 }
 # The blanks before a # that make a line of the PowerShell reader a comment (powershell_reader): the ones its lines
@@ -1714,7 +1716,7 @@ class Write:
 class ScriptRun:
     """A Python script a command runs, at the path its words place, with what the guard reads from its words as from
     any program read_unlisted reads: the files they may name and the parts it does not read. Both count only where the
-    script is not one a guarded hub tracks (is_trusted_script)."""
+    script is not one TRUSTED_SCRIPTS names that a guarded hub tracks (is_trusted_script)."""
 
     script: Path
     writes: list[Write]

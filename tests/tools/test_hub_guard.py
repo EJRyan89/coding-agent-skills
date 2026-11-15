@@ -3540,6 +3540,23 @@ class WriteGuardTests(GuardTestCase):
             with self.subTest(command=command):
                 self.assertIsNone(self.bash(command, self.hub))
 
+    def test_a_listed_tool_given_a_home_or_a_temporary_directory_by_an_assignment_is_refused(self) -> None:
+        (self.hub / "deploy.py").write_text("print(1)\n", encoding="utf-8")
+        self.git(self.hub, "add", "deploy.py")
+        self.git(self.hub, "commit", "-q", "-m", "a deployer")
+        self.assertIsNone(self.bash("python3 deploy.py --all", self.hub))
+        # An assignment to a name GIT_READ_NAMES names is refused before any command, a listed tool among them, so the
+        # deployer is never handed a home or a temporary directory in the hub, nor anywhere else.
+        for place in (self.hub / "x", self.root / "elsewhere"):
+            for command in (
+                f'HOME="{place}" python3 deploy.py --all',
+                f'USERPROFILE="{place}" python3 deploy.py --all',
+                f'TMPDIR="{place}" python3 deploy.py --all',
+                f'env HOME="{place}" python3 deploy.py --all',
+            ):
+                with self.subTest(command=command):
+                    self.assertEqual("deny", self.bash(command, self.hub))
+
     def test_tar_s_archive_is_judged_where_its_mode_writes_it(self) -> None:
         readme = self.hub / "README.md"
         # A path with a colon before any slash, as a Windows drive path is, names an archive on a remote host to GNU

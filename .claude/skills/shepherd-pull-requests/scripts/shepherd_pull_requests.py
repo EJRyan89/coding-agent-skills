@@ -349,7 +349,9 @@ def fast_forward(git: GitClient, hub: Path, dry_run: bool) -> str:
             else f"would fast-forward {short(before)} to {short(listed[0])}"
         )
     git.output(["fetch", "--prune", REMOTE], directory=hub)
-    merged = git.run(["merge", "--ff-only", f"{REMOTE}/{BASE}"], directory=hub)
+    # The remote-tracking ref is named in full: a branch or tag named origin/main, which a session may make from any
+    # worktree, comes before it in git's reading of the short name, and the hub would follow it instead.
+    merged = git.run(["merge", "--ff-only", f"refs/remotes/{REMOTE}/{BASE}"], directory=hub)
     if merged.returncode != 0:
         reason = flat_text(merged.stderr) or f"git merge --ff-only exited {merged.returncode}"
         return f"not fast-forwarded: {reason}"

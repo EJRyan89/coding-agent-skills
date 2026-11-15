@@ -595,6 +595,28 @@ class HubTest(FixtureTestCase):
         self.assertEqual(["REPOSITORY owner/repo"], [line for line in lines if line.startswith("REPOSITORY")])
         self.assertEqual("REMAINING 0", lines[-1])
 
+    def shadowed_tick(self, kind: str) -> None:
+        """A tick fast-forwards the hub to origin's main though a branch or a tag named origin/main, which comes
+        before refs/remotes/origin/main in git's reading of the short name, points at a commit the hub could
+        fast-forward to."""
+        head = git("rev-parse", "HEAD", directory=self.hub)
+        tree = git("rev-parse", "HEAD^{tree}", directory=self.hub)
+        shadow = git("commit-tree", tree, "-p", head, "-m", "shadow", directory=self.hub)
+        git(kind, "origin/main", shadow, directory=self.hub)
+        after = self.advance_origin()
+        status, lines = self.tick(StubGh())
+        self.assertEqual(0, status)
+        self.assertEqual(after, git("rev-parse", "HEAD", directory=self.hub))
+        self.assertEqual(
+            f'HUB "{self.hub.as_posix()}" fast-forwarded {head[:7]} to {after[:7]}', self.line(lines, "HUB ")
+        )
+
+    def test_a_branch_that_shadows_origin_s_main_never_redirects_the_fast_forward(self) -> None:
+        self.shadowed_tick("branch")
+
+    def test_a_tag_that_shadows_origin_s_main_never_redirects_the_fast_forward(self) -> None:
+        self.shadowed_tick("tag")
+
     def test_a_hub_already_at_origin_is_current(self) -> None:
         head = git("rev-parse", "HEAD", directory=self.hub)
         _, lines = self.tick(StubGh())

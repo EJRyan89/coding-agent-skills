@@ -674,8 +674,10 @@ a row decides it.
   `git show` read a hub file instead. Python run as `python`, `python3`, or `python3.<minor>`, with only the flags
   `PYTHON_FLAGS` names before its script, `-i` not among them, and the options `PYTHON_VALUED` names, `-X` and `-W`,
   whose values are judged as such a program's words are, since `-X pycache_prefix=<folder>` writes there, running a
-  script a guarded hub tracks at a path the list of the hub's own tools that write no file a hub tracks whatever
-  their words names (`TRUSTED_SCRIPTS`: `deploy.py`, `tools/worktrees.py`, `tools/project_release_sync.py`, and
+  script a guarded hub tracks at a path on the list of the hub's own tools that write no file a hub tracks whatever
+  their words, but by the one write the guard allows from the hub itself, the fast-forward of main to origin's main,
+  which a tool names in full as `refs/remotes/origin/main`, so no ref named `origin/main` redirects it
+  (`TRUSTED_SCRIPTS`: `deploy.py`, `tools/worktrees.py`, `tools/project_release_sync.py`, and
   `.claude/skills/shepherd-pull-requests/scripts/shepherd_pull_requests.py`), with every link on the way to it
   followed, is trusted whatever its own words: the guard refuses every edit to a file a guarded hub tracks and every
   git call that writes one, so such a script runs what the hub's history holds, as
@@ -683,9 +685,11 @@ a row decides it.
   judged, the script's own path among them: a hub tool the list does not name, one that writes hub files when its
   words ask among them, as `tools/skill_reference.py --write`, `tools/new_skill.py <name>`, and
   `tools/runtime_changelogs.py --summary=<file>` do, which is refused from the hub, where its path names a hub file,
-  and runs in a worktree; and a script anywhere else, a deployed skill's among them, which is trusted by no path. So
-  are a listed script's words when a variable Python reads, as `PYTHONPATH`, is assigned before it. `gh`'s subcommands that write into the directory
-  they run in, or where their words name, `gh attestation download`, `gh codespace cp`, `gh gist clone`,
+  and runs in a worktree on `origin/main`; and a script anywhere else, a deployed skill's among them, which is
+  trusted by no path. So are a listed script's words when a variable Python reads, as `PYTHONPATH`, is assigned
+  before it, and an assignment of `HOME`, `USERPROFILE`, `TMPDIR`, or another name `GIT_READ_NAMES` names is refused
+  before a listed script as before any command, as Assignments above says.
+  `gh`'s subcommands that write into the directory they run in, or where their words name, `gh attestation download`, `gh codespace cp`, `gh gist clone`,
   `gh release download`, `gh repo clone`, and `gh run download` (`GH_WRITERS`), are refused where that directory lies
   in a guarded hub or the text does not settle it, and their words are judged as such a program's. Those that write
   a git configuration, the repository's, which every worktree shares with its hub, or the global one,
@@ -790,8 +794,9 @@ refuses:
   `pwsh` cannot be found or started; and a command either reader fails on with an error of its own.
 
 A script `TRUSTED_SCRIPTS` names that a guarded hub tracks may run from the hub, by Python as [Every other program,
-by an allow-list](#what-it-understands) says, since each writes no file a hub tracks whatever its words, and the
-guard refuses every edit to a file a guarded hub tracks and every git call that writes one in a guarded hub. Any
+by an allow-list](#what-it-understands) says, since each writes no file a hub tracks whatever its words, but by the
+fast-forward of main to `refs/remotes/origin/main` the guard allows from the hub itself, and the guard refuses every
+edit to a file a guarded hub tracks and every git call that writes one in a guarded hub. Any
 other hub tool's words are judged, so one that writes hub files when its words ask runs in a worktree. A script
 anywhere else is trusted by no path, the deployed
 `update-coding-agent-skills` script under the skills directory included, though updating and deploying are what the
@@ -857,6 +862,9 @@ The hook sees the command text. It does not see:
   every file it tracks stays as it was.
   Each is read only by the next command's judgement, so a git later in the same command reads a configuration it
   wrote;
+- a hub tool Python runs by its module name or from its input, as `python -m tools.skill_reference --write` or
+  `python - < tools/skill_reference.py`, whose words name no hub file: the guard judges `-m` and `-` by their words,
+  and a module name is no path;
 - code a script `TRUSTED_SCRIPTS` names loads from beyond what the hub tracks: a module or a bytecode cache in a
   folder the hub ignores, or one a `.pth` file, the user's site folder, or an inherited `PYTHONPATH` adds;
 - a `gh` alias or extension, which runs the command or the program the user's `gh` configuration names: the guard
