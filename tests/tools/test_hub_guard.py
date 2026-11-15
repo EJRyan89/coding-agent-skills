@@ -277,7 +277,35 @@ class PowerShellReaderStartTests(unittest.TestCase):
                 self.assertEqual(events, hub_guard.powershell_events("Get-Item x", reading))
                 self.assertEqual(notes, reading.notes)
                 if events is None:
-                    self.assertEqual(["pwsh could not read the command ()"], reading.unread)
+                    self.assertEqual(["pwsh could not read the command (exit code 0)"], reading.unread)
+
+    def test_pwsh_whose_output_is_not_the_reader_s_names_its_reason_on_one_line_or_its_exit_code(self) -> None:
+        for finished, reason in (
+            (Finished(1, b"", b"ParserError:\r\n  at line 1\x1b[0m\n"), "ParserError: at line 1 [0m"),
+            # A line separator U+2028 inside pwsh's message is flattened with the rest, never read as its end.
+            (Finished(1, b"", b"first\xe2\x80\xa8second\n"), "first second"),
+            (Finished(1, b"not json", b""), "exit code 1"),
+            # A long message is cut to a bounded reason, as every failed command's is.
+            (Finished(1, b"", b"x" * 600), "x" * 500 + "..."),
+            (Finished(0, b"", b"  \n"), "exit code 0"),
+        ):
+            reading = hub_guard.Reading(isolated_environment(), text="Get-Item x")
+            with (
+                self.subTest(finished=finished),
+                mock.patch.object(platform_support, "find_pwsh", return_value="pwsh"),
+                mock.patch.object(hub_guard, "run_bounded", return_value=finished),
+            ):
+                self.assertIsNone(hub_guard.powershell_events("Get-Item x", reading))
+                self.assertEqual([f"pwsh could not read the command ({reason})"], reading.unread)
+
+    def test_only_a_line_whose_hash_follows_spaces_and_tabs_leaves_the_reader_as_a_comment(self) -> None:
+        reader = Path(self.enterContext(tempfile.TemporaryDirectory())) / "reader.ps1"
+        lines = ["# a comment", " \t# an indented comment", "\f# kept", "\x1c# kept", "$x = 1 # trailing", "$y = 2"]
+        reader.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        hub_guard.powershell_reader.cache_clear()
+        self.addCleanup(hub_guard.powershell_reader.cache_clear)
+        with mock.patch.object(hub_guard, "POWERSHELL_READER", reader):
+            self.assertEqual("\n".join(lines[2:]), hub_guard.powershell_reader())
 
 
 class FileGuardTests(GuardTestCase):
@@ -614,6 +642,15 @@ class EndToEndTests(GuardTestCase):
             f"hub guard skipped: the opt-in of {self.hub} could not be read: git config exited with 3\n",
             stderr.getvalue(),
             "a failure git explains nothing about still names its exit code",
+        )
+        with mock.patch.object(hub_guard, "git", return_value=git_client.GitResult(3, "", "fatal: \x1b[31mbad\r\n")):
+            stderr = io.StringIO()
+            with contextlib.redirect_stderr(stderr):
+                self.assertFalse(hub_guard.guard_enabled(self.hub))
+        self.assertEqual(
+            f"hub guard skipped: the opt-in of {self.hub} could not be read: fatal: [31mbad\n",
+            stderr.getvalue(),
+            "a control character git prints is flattened, never handed on to the terminal",
         )
         self.enable(None)
         self.assertIsNone(self.both(event))
@@ -3283,60 +3320,61 @@ class WriteGuardTests(GuardTestCase):
         self.assertEqual("deny", self.bash("cat .gitignore > README.md", self.hub))
         self.assertIn("The command redirects its output into", self.reason)
 
-    def test_a_python_script_the_hub_tracks_runs_from_the_hub_whatever_its_words(self) -> None:
+    def test_a_python_script_the_hub_lists_and_tracks_runs_from_the_hub_whatever_its_words(self) -> None:
         readme = self.hub / "README.md"
         tools = self.hub / "tools"
         tools.mkdir()
-        (tools / "sync.py").write_text("print(1)\n", encoding="utf-8")
-        self.git(self.hub, "add", "tools/sync.py")
+        # A tool TRUSTED_SCRIPTS names, at its path in the hub.
+        (tools / "project_release_sync.py").write_text("print(1)\n", encoding="utf-8")
+        self.git(self.hub, "add", "tools/project_release_sync.py")
         self.git(self.hub, "commit", "-q", "-m", "a script")
         (self.hub / "local.json").write_text("print(1)\n", encoding="utf-8")
         for command, cwd in (
-            ('python3 -B tools/sync.py README.md "$x" --out=README.md', self.hub),
-            (".venv/bin/python -B -X utf8 tools/sync.py README.md", self.hub),
-            (f'python3 "{tools / "sync.py"}" "{readme}"', self.tree),
-            (f'python3 "{tools / "sync.py"}" "{readme}"', self.hub),
-            ("python3 -E -q tools/sync.py -- README.md -s", self.hub),
+            ('python3 -B tools/project_release_sync.py README.md "$x" --out=README.md', self.hub),
+            (".venv/bin/python -B -X utf8 tools/project_release_sync.py README.md", self.hub),
+            (f'python3 "{tools / "project_release_sync.py"}" "{readme}"', self.tree),
+            (f'python3 "{tools / "project_release_sync.py"}" "{readme}"', self.hub),
+            ("python3 -E -q tools/project_release_sync.py -- README.md -s", self.hub),
         ):
             with self.subTest(command=command):
                 self.assertIsNone(self.bash(command, cwd))
-        self.assertIsNone(self.powershell(f"python3 '{tools / 'sync.py'}' '{readme}'", self.tree))
+        self.assertIsNone(self.powershell(f"python3 '{tools / 'project_release_sync.py'}' '{readme}'", self.tree))
         # A file the hub ignores, a script elsewhere, Python given -c or -m, and a variable Python reads before it
         # leave the words judged.
         for command in (
             "python3 local.json README.md",
             f'python3 "{self.root / "other.py"}" README.md',
             "python3 -c 1 README.md",
-            "python3 -m tools.sync README.md",
-            "env PYTHONPATH=/x python3 tools/sync.py README.md",
-            "PYTHONSTARTUP=/x python3 tools/sync.py README.md",
-            "python3 -i tools/sync.py README.md",
-            "python3 -Bi tools/sync.py README.md",
+            "python3 -m tools.project_release_sync README.md",
+            "env PYTHONPATH=/x python3 tools/project_release_sync.py README.md",
+            "PYTHONSTARTUP=/x python3 tools/project_release_sync.py README.md",
+            "python3 -i tools/project_release_sync.py README.md",
+            "python3 -Bi tools/project_release_sync.py README.md",
         ):
             with self.subTest(command=command):
                 self.assertEqual("deny", self.bash(command, self.hub))
                 self.assertIn("`python3` is given ", self.reason)
                 self.assertIn(", a file of a guarded hub.", self.reason)
         # A wildcard in a script's name is matched literally, never as the tracked script it would match.
-        (self.hub / "tools" / "s[y]nc.py").write_text("print(1)\n", encoding="utf-8")
-        self.assertEqual("deny", self.bash("python3 'tools/s[y]nc.py' README.md", self.hub))
+        (self.hub / "tools" / "project_release_s[y]nc.py").write_text("print(1)\n", encoding="utf-8")
+        self.assertEqual("deny", self.bash("python3 'tools/project_release_s[y]nc.py' README.md", self.hub))
         # The interpreter's own option values are judged though the script is trusted.
         for command in (
-            "python3 -X pycache_prefix=README.md tools/sync.py",
-            "python3 -Xpycache_prefix=README.md tools/sync.py",
-            "python3 -W error -X pycache_prefix=./README.md tools/sync.py",
+            "python3 -X pycache_prefix=README.md tools/project_release_sync.py",
+            "python3 -Xpycache_prefix=README.md tools/project_release_sync.py",
+            "python3 -W error -X pycache_prefix=./README.md tools/project_release_sync.py",
         ):
             with self.subTest(command=command):
                 self.assertEqual("deny", self.bash(command, self.hub))
                 self.assertIn(f"`python3` is given {readme}", self.reason)
-        self.assertIsNone(self.bash("python3 -X utf8 -W error tools/sync.py README.md", self.hub))
+        self.assertIsNone(self.bash("python3 -X utf8 -W error tools/project_release_sync.py README.md", self.hub))
         # A variable assigned earlier in the command reaches Python only when exported: a bare assignment to a name the
         # environment does not hold stays the shell's, one the environment holds, and export, are refused.
-        self.assertIsNone(self.bash("PYTHONPATH=/x; python3 tools/sync.py README.md", self.hub))
+        self.assertIsNone(self.bash("PYTHONPATH=/x; python3 tools/project_release_sync.py README.md", self.hub))
         held = {**self.environment, "PYTHONPATH": "/srv"}
         for command, environment in (
-            ("PYTHONPATH=/x; python3 tools/sync.py README.md", held),
-            ("export PYTHONPATH=/x; python3 tools/sync.py README.md", self.environment),
+            ("PYTHONPATH=/x; python3 tools/project_release_sync.py README.md", held),
+            ("export PYTHONPATH=/x; python3 tools/project_release_sync.py README.md", self.environment),
         ):
             with self.subTest(command=command):
                 self.assertEqual("deny", self.bash(command, self.hub, environment))
@@ -3345,9 +3383,66 @@ class WriteGuardTests(GuardTestCase):
         self.assertEqual("deny", self.bash("python3 tools README.md", self.hub))
         self.assertIn(f"`python3` is given {tools}", self.reason)
         # From PowerShell, an assignment to the environment before Python is refused.
-        self.assertEqual("deny", self.powershell("$env:PYTHONPATH = 'x'; python3 tools/sync.py README.md", self.hub))
+        self.assertEqual(
+            "deny", self.powershell("$env:PYTHONPATH = 'x'; python3 tools/project_release_sync.py README.md", self.hub)
+        )
         self.assertEqual("deny", self.bash('python3 local.json "$x"', self.hub))
         self.assertIn("`python3` is given a word the text does not settle", self.reason)
+
+    def test_a_hub_script_trusted_scripts_does_not_name_is_judged_by_its_words(self) -> None:
+        readme = self.hub / "README.md"
+        tools = self.hub / "tools"
+        tools.mkdir()
+        # The hub's own tools that write hub files when their words ask: each is tracked, and none is listed.
+        names = ("skill_reference", "new_skill", "runtime_changelogs", "runtime_command_lines", "deployable_report")
+        for name in names:
+            (tools / f"{name}.py").write_text("print(1)\n", encoding="utf-8")
+            self.git(self.hub, "add", f"tools/{name}.py")
+        self.git(self.hub, "commit", "-q", "-m", "the tools")
+        for command, cwd, named in (
+            ("python -B tools/skill_reference.py --write", self.hub, tools / "skill_reference.py"),
+            ("python3 tools/new_skill.py demo", self.hub, tools / "new_skill.py"),
+            (f'python3 tools/runtime_changelogs.py --summary="{readme}"', self.hub, tools / "runtime_changelogs.py"),
+            (
+                f'python3 "{tools / "runtime_changelogs.py"}" --summary="{readme}"',
+                self.tree,
+                tools / "runtime_changelogs.py",
+            ),
+            (
+                f'python3 tools/runtime_command_lines.py --results "{readme}"',
+                self.hub,
+                tools / "runtime_command_lines.py",
+            ),
+            (f'python3 tools/deployable_report.py --summary "{readme}"', self.hub, tools / "deployable_report.py"),
+        ):
+            with self.subTest(command=command):
+                self.assertEqual("deny", self.bash(command, cwd))
+                self.assertIn(f"`{command.split()[0]}` is given {named}, a file of a guarded hub.", self.reason)
+        self.assertEqual("deny", self.powershell("python3 tools/skill_reference.py --write", self.hub))
+        # A word naming a hub file is refused for itself, where the script's own path names none: run from a worktree
+        # by a path into the worktree, the same tool's summary into the hub is refused, and its plain words are not.
+        worktree_tools = self.tree / "tools"
+        worktree_tools.mkdir(exist_ok=True)
+        (worktree_tools / "runtime_changelogs.py").write_text("print(1)\n", encoding="utf-8")
+        self.assertEqual("deny", self.bash(f'python3 tools/runtime_changelogs.py --summary="{readme}"', self.tree))
+        self.assertIn(f"`python3` is given {readme}, a file of a guarded hub.", self.reason)
+        self.assertIsNone(self.bash("python3 tools/runtime_changelogs.py --summary=out.md", self.tree))
+
+    def test_the_scripts_the_guard_trusts_are_this_repository_s_tracked_files(self) -> None:
+        # Pinned against literals: a tool joins the list only with a reason that holds for every word it reads.
+        self.assertEqual(
+            {
+                "deploy.py",
+                "tools/worktrees.py",
+                "tools/project_release_sync.py",
+                ".claude/skills/shepherd-pull-requests/scripts/shepherd_pull_requests.py",
+            },
+            set(hub_guard.TRUSTED_SCRIPTS),
+        )
+        for script, reason in hub_guard.TRUSTED_SCRIPTS.items():
+            with self.subTest(script=script):
+                self.assertTrue((REPOSITORY_ROOT / script).is_file())
+                self.assertTrue(reason)
 
     if not platform_support.WINDOWS:
         # Windows makes a symbolic link only with a privilege a test cannot count on.
@@ -3446,6 +3541,23 @@ class WriteGuardTests(GuardTestCase):
         ):
             with self.subTest(command=command):
                 self.assertIsNone(self.bash(command, self.hub))
+
+    def test_a_listed_tool_given_a_home_or_a_temporary_directory_by_an_assignment_is_refused(self) -> None:
+        (self.hub / "deploy.py").write_text("print(1)\n", encoding="utf-8")
+        self.git(self.hub, "add", "deploy.py")
+        self.git(self.hub, "commit", "-q", "-m", "a deployer")
+        self.assertIsNone(self.bash("python3 deploy.py --all", self.hub))
+        # An assignment to a name GIT_READ_NAMES names is refused before any command, a listed tool among them, so the
+        # deployer is never handed a home or a temporary directory in the hub, nor anywhere else.
+        for place in (self.hub / "x", self.root / "elsewhere"):
+            for command in (
+                f'HOME="{place}" python3 deploy.py --all',
+                f'USERPROFILE="{place}" python3 deploy.py --all',
+                f'TMPDIR="{place}" python3 deploy.py --all',
+                f'env HOME="{place}" python3 deploy.py --all',
+            ):
+                with self.subTest(command=command):
+                    self.assertEqual("deny", self.bash(command, self.hub))
 
     def test_tar_s_archive_is_judged_where_its_mode_writes_it(self) -> None:
         readme = self.hub / "README.md"
@@ -4570,6 +4682,22 @@ class GitCallTests(GuardTestCase):
                 self.assertEqual("deny", shell("git hop", other))
                 self.assertIn(WRITES.format("commit"), self.reason)
 
+    def test_an_alias_lookup_git_fails_names_its_reason_on_one_line_or_its_exit_code(self) -> None:
+        real = hub_guard.git
+        for result, reason in (
+            (git_client.GitResult(2, "", ""), "git config failed with exit code 2"),
+            (git_client.GitResult(3, "", "error: bad config line 4\nfatal: \x1b[0munreadable\n"), None),
+        ):
+            failed = result
+
+            def answer(cwd: Path, *arguments: str, failed: git_client.GitResult = failed) -> git_client.GitResult:
+                return failed if "alias.nosuch" in arguments else real(cwd, *arguments)
+
+            expected = reason or "error: bad config line 4 fatal: [0munreadable"
+            with self.subTest(reason=expected), mock.patch.object(hub_guard, "git", side_effect=answer):
+                self.assertEqual("deny", self.bash("git nosuch", self.tree))
+                self.assertIn(f"The alias `git nosuch` could not be read ({expected}), so it is refused.", self.reason)
+
     def test_a_shell_alias_handed_a_word_the_text_does_not_settle_cannot_be_read(self) -> None:
         self.git(self.hub, "config", "alias.peek", "!git status")
         self.assertEqual("deny", self.bash('git peek "$x"', self.tree))
@@ -4940,6 +5068,10 @@ class ContractListTests(unittest.TestCase):
     def test_git_s_options_with_a_value_are_the_ones_the_guard_reads(self) -> None:
         # The guard reads git_client's list, the one home of the options git reads a value after.
         self.assertEqual(sorted(git_client.GLOBAL_VALUE_OPTIONS), sorted(contract_names("or as the next word (", ")")))
+
+    def test_the_scripts_the_guard_trusts_are_the_ones_its_contract_names(self) -> None:
+        named = contract_names("`TRUSTED_SCRIPTS`:", "), with every link on the way to it followed")
+        self.assertEqual(sorted(hub_guard.TRUSTED_SCRIPTS), sorted(named))
 
     def test_the_runners_the_guard_refuses_are_the_ones_its_contract_names(self) -> None:
         named = contract_names("`RUNNERS`:", "While a hub is guarded")
@@ -5378,6 +5510,8 @@ class ReadOnlyFormTests(GuardTestCase):
 
         for stderr, said in (
             ("fatal: cannot\n  read refs\n", "(fatal: cannot read refs)."),
+            # A control character, as a terminal escape, is flattened too, never handed on to the reader's terminal.
+            ("fatal: \x1b[31mred\x1b[0m\n", "(fatal: [31mred [0m)."),
             ("", "(git for-each-ref exited with 128)."),
         ):
             with self.subTest(stderr=stderr), mock.patch.object(hub_guard, "git", failing(stderr)):
