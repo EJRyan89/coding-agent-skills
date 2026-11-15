@@ -1714,11 +1714,20 @@ class GuidanceTests(Fixture):
             audit.supported_runtimes(self.root)
         self.assertIn("cannot read the runtime catalogue", str(raised.exception))
 
-    def test_a_catalogue_value_python_reader_refuses_as_no_literal_fails_as_no_literal(self) -> None:
-        # A run of unary operators short enough for every supported parser, which python_reader.literal refuses as no
-        # literal; a run past the parser's own limits is the unreadable catalogue above, and where that limit falls
-        # differs between Python releases.
+    def test_a_catalogue_the_parser_reads_but_nested_past_the_shared_limit_fails_as_unreadable(self) -> None:
+        # Two hundred unary operators parse on every supported release, but the module, the assignment, each operator,
+        # and the constant nest past nesting_depth's limit, so python_reader refuses the file, not the value.
         deep = "RUNTIMES = " + "-" * 200 + "1\nRUNTIME_TITLES = {}\n"
+        write(self.root, {"skills/ejryan89-skill-core/scripts/runtime_support.py": deep})
+        with self.assertRaises(audit.AuditError) as raised:
+            audit.supported_runtimes(self.root)
+        self.assertIn("cannot read the runtime catalogue", str(raised.exception))
+        self.assertIn("nests deeper than the Python parser can read", str(raised.exception))
+
+    def test_a_catalogue_value_python_reader_refuses_as_no_literal_fails_as_no_literal(self) -> None:
+        # A run of unary operators within nesting_depth's limit, which python_reader.literal refuses as no literal; a
+        # run past that limit, or past the parser's own, is the unreadable catalogue above.
+        deep = "RUNTIMES = " + "-" * 50 + "1\nRUNTIME_TITLES = {}\n"
         write(self.root, {"skills/ejryan89-skill-core/scripts/runtime_support.py": deep})
         with self.assertRaises(audit.AuditError) as raised:
             audit.supported_runtimes(self.root)

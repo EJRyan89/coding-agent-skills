@@ -112,9 +112,10 @@ COMMAND_WRAPPERS: dict[str, OptionTable] = {
 # The prefixes a package manager installs a build of a wrapper under beside the system's own (wrapper_name): Homebrew's
 # GNU coreutils and findutils take a g, as gtimeout, genv, and gxargs, and its uutils coreutils a u, as utimeout, as
 # tools/hub_guard.py's BUILD_PREFIXES reads its runners. A wrapper is read under either prefix whether or not a package
-# builds it, since reading past one reads the command it runs all the same. find, a shell, and every other program a
-# reader names are matched by their own names alone, so a prefixed build of one, as gfind, is read as a program of its
-# own: a stated limit, since no script here names one.
+# builds it. Two stated limits, since no script here names either: a program of its own whose name is a prefix and a
+# wrapper's, as Windows' gsudo or CSCS's uenv, is read as that wrapper, its subcommand taken for the program; and find,
+# a shell, and every other program a reader names are matched by their own names alone, so a prefixed build of one, as
+# gfind, is read as a program of its own.
 BUILD_PREFIXES = ("g", "u")
 # env's options whose value is a command line, split into the words it runs.
 ENV_SPLIT_OPTIONS = frozenset({"-S", "--split-string"})

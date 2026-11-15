@@ -447,6 +447,8 @@ COMMAND_BREAKS = frozenset({";", ";;", "&", "&&", "||", "|", "|&", "(", ")", "{"
 COMPOUND_CLOSERS = {"if": "fi", "while": "done", "until": "done", "for": "done", "select": "done", "case": "esac"}
 COMMAND_LEADERS = frozenset({"if", "then", "elif", "else", "while", "until", "do", "!"})
 COMPOUND_HEADERS = frozenset({"for", "select", "case"})
+# A prefixed grep or head, as `ggrep` or `ghead`, is read as a program of its own, a stated limit, since no suite here
+# names one.
 GREP_PROGRAMS = frozenset({"grep", "egrep", "fgrep"})
 RIPGREP = "rg"
 # Bash's $'...' string, in which a backslash escapes a single quote.
