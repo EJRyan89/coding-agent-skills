@@ -7,8 +7,9 @@ extended-length or device-namespace prefix (`without_extended_prefix`), which `P
 the other. So a `..` that climbs out of the tree, another drive, and a sibling whose name starts
 with the tree's are each outside. A caller that must follow links resolves both paths first and compares the results;
 one that must never follow them compares the paths as written, and `resolved_path` is the one that follows them for a
-path taken from input or the environment. `posix_within` compares a `/`-separated name a listing
-gives, such as a repository path git lists, by text, case and all.
+path taken from input or the environment, and `strictly_resolved_path` the one that also needs each part there.
+`posix_within` compares a `/`-separated name a listing gives, such as a repository path git lists, by text, case and
+all.
 
 `refusal` judges an entry taken from input, such as a repository path a record or a list names, inside the tree it
 must stay in, before anything opens it. It runs three tests in turn and names the first that fails, or gives None:
@@ -60,6 +61,14 @@ def resolved_path(path: StrPath) -> Path:
     handler of OSError catches, so a later stat or write of the path refuses the loop in the caller's own words, the
     same on every supported version."""
     return Path(os.path.realpath(path))
+
+
+def strictly_resolved_path(path: StrPath) -> Path:
+    """`path` made absolute with every link and `..` followed, as `Path.resolve(strict=True)` answers, raising OSError
+    for a part that is not there or cannot be followed, a symbolic link loop included, on every supported version:
+    Python 3.12's `Path.resolve(strict=True)` raises RuntimeError on a loop, which no caller's handler of OSError
+    catches, where `os.path.realpath(strict=True)` raises OSError on each."""
+    return Path(os.path.realpath(path, strict=True))
 
 
 def within(path: StrPath, tree: StrPath, *, strict: bool = False) -> bool:

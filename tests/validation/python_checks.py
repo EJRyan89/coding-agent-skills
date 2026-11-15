@@ -772,6 +772,73 @@ def link_test_problems(root: Path, files: list[Path]) -> list[str]:
     return problems
 
 
+# ejryan89-skill-core's path_containment.resolved_path is the one resolution of a path taken from input or the
+# environment, and strictly_resolved_path the one strict resolution: Python 3.12's Path.resolve raises RuntimeError on
+# a symbolic link loop, strict or not, which no handler of OSError catches, so the run ends in a traceback's place with
+# `FAILED RuntimeError`, where from 3.13 on the loop is left unresolved, or raises OSError when strict. The policy
+# refuses a path's resolve, as a method on any receiver or as pathlib's Path.resolve named, called or not, in a module
+# under RESOLVE_ROOTS, except on a receiver built from `__file__`, which names a script's own file, on self or cls,
+# whose class may define a resolve of its own, and on a name the module imports that is no pathlib class, a module's
+# function such as `source_ref.resolve`. Any other site states why in a module-level RESOLVE_ALLOWED = {scope: reason}.
+#
+# Stated limits, which no reading of a module's syntax tree settles: a resolve looked up by name, as
+# `getattr(p, "resolve")`, and one named through a name bound to it.
+RESOLVE_ROOTS = ("skills", ".claude/skills", "deployer", "tools")
+PATH_CONTAINMENT = "skills/ejryan89-skill-core/scripts/path_containment.py"
+PATH_CLASSES = frozenset({"pathlib.Path", "pathlib.PurePath", "pathlib.PosixPath", "pathlib.WindowsPath"})
+RESOLVE_ALLOWANCE = "RESOLVE_ALLOWED"
+
+
+def _imported_names(tree: ast.Module) -> frozenset[str]:
+    """Each name an import of the module binds, anywhere in it, a relative import's included."""
+    return frozenset(
+        alias.asname or alias.name.split(".")[0]
+        for node in ast.walk(tree)
+        if isinstance(node, (ast.Import, ast.ImportFrom))
+        for alias in node.names
+    )
+
+
+def _resolves_a_path(node: ast.expr, aliases: dict[str, str], imported: frozenset[str]) -> bool:
+    """Whether a node is a path's resolve: pathlib's Path.resolve, called or named, or a resolve method on a receiver
+    that is neither built from `__file__`, nor self or cls, nor a name the module imports as anything but a pathlib
+    class."""
+    if not (isinstance(node, ast.Attribute) and node.attr == "resolve"):
+        return False
+    receiver = node.value
+    if qualified_name(receiver, aliases) in PATH_CLASSES:
+        return True
+    if any(isinstance(part, ast.Name) and part.id == "__file__" for part in ast.walk(receiver)):
+        return False
+    return not (isinstance(receiver, ast.Name) and (receiver.id in ("self", "cls") or receiver.id in imported))
+
+
+def resolve_problems(root: Path, files: list[Path]) -> list[str]:
+    """Each resolve of a path under RESOLVE_ROOTS outside path_containment that no RESOLVE_ALLOWED entry sanctions."""
+    problems: list[str] = []
+    paths = [
+        path
+        for path in claim_files(root, files)
+        if under(path.relative_to(root).as_posix(), RESOLVE_ROOTS)
+        and path.relative_to(root).as_posix() != PATH_CONTAINMENT
+    ]
+    for _, name, tree in python_trees(paths, root, problems):
+        aliases, imported = import_aliases(tree), _imported_names(tree)
+        found = [
+            (
+                node.lineno,
+                scope,
+                "resolves a path with Path.resolve, which raises RuntimeError on a symbolic link loop on Python 3.12, "
+                "past every handler of OSError; call ejryan89-skill-core's path_containment.resolved_path, or "
+                f"strictly_resolved_path for a strict resolve, or state why in {RESOLVE_ALLOWANCE}",
+            )
+            for node, scope in scoped_nodes(tree.body)
+            if isinstance(node, ast.expr) and _resolves_a_path(node, aliases, imported)
+        ]
+        problems += sanctioned_problems(name, tree, RESOLVE_ALLOWANCE, found)
+    return problems
+
+
 # ejryan89-skill-core's file_presence is the one reader of whether a path a reader may find absent is there, and of what
 # a folder holds, and lets a stat or a listing that fails through, where every presence predicate returns False on an
 # OSError from Python 3.14 on and Path.glob matches nothing in a folder it cannot list from 3.15 on. A predicate's False
@@ -6097,6 +6164,9 @@ class PythonChecksPolicies(unittest.TestCase):
 
     def test_every_process_starts_without_git_repository_variables(self) -> None:
         self.assertEqual([], process_environment_problems(REPOSITORY_ROOT, repository_files(REPOSITORY_ROOT)))
+
+    def test_path_containment_is_the_one_resolution_of_a_path(self) -> None:
+        self.assertEqual([], resolve_problems(REPOSITORY_ROOT, repository_files(REPOSITORY_ROOT)))
 
     def test_link_probe_is_the_one_link_test(self) -> None:
         self.assertEqual([], link_test_problems(REPOSITORY_ROOT, repository_files(REPOSITORY_ROOT)))

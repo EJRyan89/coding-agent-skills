@@ -15,12 +15,12 @@ import subprocess
 import sys
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Literal, assert_never
 
 import versions
 from bounded_process import streaming
 from flat_text import flat_text
+from path_containment import resolved_path
 
 # The vendors whose pdftotext the probe accepts.
 PdfProvider = Literal["Xpdf", "Poppler"]
@@ -197,7 +197,7 @@ def select_pdftotext(found: Iterable[str], probe: Callable[[str], PdfIdentity] =
     skipped: list[Skipped] = []
     for candidate in found:
         try:
-            resolved = str(Path(candidate).resolve())
+            resolved = str(resolved_path(candidate))
         except OSError as exc:
             skipped.append(Skipped(candidate, f"could not be accessed: {flat_text(str(exc))}"))
             continue

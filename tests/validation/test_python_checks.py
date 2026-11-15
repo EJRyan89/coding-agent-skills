@@ -1035,6 +1035,65 @@ DOCUMENTED_FORMS: dict[str, tuple[Any, ...]] = {
             ("getattr", "getattr(p, 'is_symlink')()"),
         )
     },
+    # "a path's resolve, as a method on any receiver or as pathlib's Path.resolve named, called or not".
+    **{
+        f"a resolve of {form}": _form(
+            python_checks.resolve_problems,
+            f"import pathlib\nfrom pathlib import Path\n\n\ndef f(p, a):\n    return {call}\n",
+        )
+        for form, call in (
+            ("a path", "p.resolve()"),
+            ("a path, strict", "p.resolve(strict=True)"),
+            ("a path built from text", "Path(a).resolve()"),
+            ("a joined path", "(p / a).resolve()"),
+            ("a path's parent", "p.parent.resolve()"),
+            ("a path, called unbound", "Path.resolve(p)"),
+            ("a path, named uncalled", "list(map(Path.resolve, a))"),
+            ("a path through pathlib", "pathlib.Path.resolve(p)"),
+            ("a path, named by a binding", "(lambda r=Path.resolve: r(p))()"),
+        )
+    },
+    "a resolve in a deployer module": _form(
+        python_checks.resolve_problems, "def f(p):\n    return p.resolve()\n", "deployer/alpha.py"
+    ),
+    "a resolve in a tool": _form(
+        python_checks.resolve_problems, "def f(p):\n    return p.resolve()\n", "tools/alpha.py"
+    ),
+    "a resolve in a repository skill": _form(
+        python_checks.resolve_problems, "def f(p):\n    return p.resolve()\n", ".claude/skills/alpha/scripts/alpha.py"
+    ),
+    # "except on a receiver built from `__file__`, ... on self or cls, ... and on a name the module imports that is no
+    # pathlib class".
+    **{
+        f"a resolve of {form}": _form(
+            python_checks.resolve_problems,
+            "from pathlib import Path\nimport source_ref\nfrom . import pins\n\n\n"
+            f"def f(self, p):\n    return {call}\n",
+            refused=False,
+        )
+        for form, call in (
+            ("the script's own file", "Path(__file__).resolve()"),
+            ("the script's own folder", "Path(__file__).parent.resolve().parent"),
+            ("self, whose class defines it", "self.resolve(p)"),
+            ("an imported module's function", "source_ref.resolve(p, 'v1')"),
+            ("a relatively imported module's function", "pins.resolve(p)"),
+            ("path_containment's resolution", "path_containment.resolved_path(p)"),
+        )
+    },
+    "a resolve outside the roots the policy reads": _form(
+        python_checks.resolve_problems,
+        "def f(p):\n    return p.resolve()\n",
+        "tests/validation/alpha.py",
+        refused=False,
+    ),
+    "a resolve RESOLVE_ALLOWED sanctions": _form(
+        python_checks.resolve_problems,
+        "RESOLVE_ALLOWED = {'f': 'the path is a folder this run made'}\n\n\ndef f(p):\n    return p.resolve()\n",
+        refused=False,
+    ),
+    "limit: a resolve looked up by name": _form(
+        python_checks.resolve_problems, "def f(p):\n    return getattr(p, 'resolve')()\n", refused=False
+    ),
     # A lookup of a link test by a constant name, in any form attribute_lookups reads, and a hasattr of one.
     **{
         f"a link test by {form}": _form(

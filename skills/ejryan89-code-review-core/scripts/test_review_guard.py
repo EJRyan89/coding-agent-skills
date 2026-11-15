@@ -364,7 +364,7 @@ class LocalPathTests(GuardFixture):
         """Fail on any resolve or file test of a path holding `marker`: resolving a path to a host that does not
         answer blocks past the hook's timeout, and Claude Code lets a call through when its hook times out."""
         touched: list[str] = []
-        resolve, is_file = Path.resolve, Path.is_file
+        resolve, is_file = guard.resolved_path, Path.is_file
 
         def spy(real: Any) -> Any:
             def call(path: Path, *args: Any, **kwargs: Any) -> Any:
@@ -374,7 +374,7 @@ class LocalPathTests(GuardFixture):
 
             return call
 
-        with mock.patch.object(Path, "resolve", spy(resolve)), mock.patch.object(Path, "is_file", spy(is_file)):
+        with mock.patch.object(guard, "resolved_path", spy(resolve)), mock.patch.object(Path, "is_file", spy(is_file)):
             yield
         self.assertEqual([], touched, "a path the guard refuses by its text is never resolved or tested")
 

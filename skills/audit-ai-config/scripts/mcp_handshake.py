@@ -87,6 +87,7 @@ from bounded_process import Streaming, streaming
 from console import run_main
 from executable_locator import find_executable
 from flat_text import flat_text, single_line
+from path_containment import resolved_path
 from seconds_option import positive_seconds
 
 # Every server this starts is a command the target repository configures, so the skill leaves this script ungranted
@@ -424,7 +425,7 @@ def main(arguments: list[str] | None = None) -> int:
     if refusal is not None:
         print(single_line(f"FAILED {refusal}"))
         return 1
-    root = args.root.resolve()
+    root = resolved_path(args.root)
     groups, problems = group_servers(root, args.server)
     refused = refuse_outside(root, groups, problems)
     for severity, source, message in problems:

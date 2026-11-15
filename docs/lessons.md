@@ -181,9 +181,11 @@ removed fails validation until its pattern follows it.
   which tells a remote's failure from one of the local repository or of a git that never ran;
   `path_containment:resolved_path`, which follows a path taken from input or the environment as Python 3.13's path
   resolution does, leaving a symbolic link loop to the caller's own refusal where Python 3.12's raises
-  RuntimeError; an entry point states its codes in its docstring's exit table, in the form "Script results" in the
+  RuntimeError, and `path_containment:strictly_resolved_path`, its strict counterpart, which raises OSError on a loop
+  on every version; an entry point states its codes in its docstring's exit table, in the form "Script results" in the
   skill contract settles.
 - **Guard:** `tests/malformed_input/test_malformed_input.py::test_failure_names_a_write_before_a_refusal_an_escape_and_an_undocumented_acceptance`,
+  `tests/validation/python_checks.py::PythonChecksPolicies::test_path_containment_is_the_one_resolution_of_a_path`,
   `tests/validation/skill_grants.py::SkillGrantsPolicies::test_skill_markdown_names_every_status_line_its_scripts_print`,
   `tests/tools/test_mutation_gate.py::CoverageReachFixtures::test_no_data_is_read_as_reaching_nothing_only_from_coverage_json_exiting_1_with_that_message_alone`,
   `skills/repo-cleanup/scripts/test_repo_cleanup.py::SyncTests::test_each_stop_is_returned_as_the_state_it_stopped_in_never_read_back_from_the_lines`,
@@ -222,9 +224,10 @@ removed fails validation until its pattern follows it.
   raises fixed text in place of the exception's; a measurement printed for a file beside the line that says it could
   not be measured, or a file a reader skips where its docstring says the command fails on one;
   `rg -n "\.resolve\(" -g '*.py'` on a path taken from input or the environment, never `__file__`, under a handler of
-  `OSError` alone, whose RuntimeError on Python 3.12 for a symbolic link loop ends the run in `FAILED RuntimeError`.
+  `OSError` alone, whose RuntimeError on Python 3.12 for a symbolic link loop ends the run in `FAILED RuntimeError`,
+  outside the modules the resolve policy reads, such as a test suite's helper.
 - **Examples:** #1511, #1840, #1855, #1910, #2022, #2181, #2207, #2209, #2477, #2548, #2596, #2697, #2738, #2763,
-  #2794
+  #2794, #2805
 
 ### A refusal ends with the step to take
 

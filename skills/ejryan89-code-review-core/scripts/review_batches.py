@@ -11,6 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-cor
 
 import calendar_date
 from github_client import GitHubError
+from path_containment import resolved_path
 from review_archive import ArchiveError
 from review_config import load_config, resolve_repositories, validate_repository_identity
 from review_io import PersistenceError, atomic_write_json, map_in_order, read_json
@@ -362,7 +363,7 @@ def worked_by_subagents(run: Path) -> bool:
     """Whether a run's roles start as subagents, as workflow and wait-reviewers serve them, rather than on the Copilot
     CLI host or inline. A run that cannot be read counts, so the command it was listed for reports it."""
     try:
-        state = load_run(run.resolve())
+        state = load_run(resolved_path(run))
     except EXPECTED_ERRORS:
         return True
     return run_dispatch(state) not in {"inline", "copilot-host"}

@@ -23,7 +23,7 @@ from executable_locator import PYTHON
 from git_client import Runner, subprocess_runner
 from github_client import GitHubError
 from link_probe import is_plain_file
-from path_containment import within
+from path_containment import resolved_path, within
 from path_keys import path_key
 from process_identity import ProcessStatus, process_status
 from review_archive import ArchiveError
@@ -259,7 +259,7 @@ class Services:
 
 def _inside(path: Path, root: Path) -> bool:
     try:
-        return within(path.resolve(), root.resolve())
+        return within(resolved_path(path), resolved_path(root))
     except OSError:
         return False
 

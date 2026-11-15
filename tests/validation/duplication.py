@@ -17,7 +17,7 @@ from pathlib import Path, PurePath
 import file_presence
 import whole_number
 from path_containment import posix_within
-from python_checks import claim_files, formatted_modules, sanctioned_problems
+from python_checks import PATH_CONTAINMENT, claim_files, formatted_modules, sanctioned_problems
 from skill_roots import SKILL_CORE
 from validation_support import (
     COMMON_PATH_FUNCTIONS,
@@ -1151,7 +1151,6 @@ def skill_script_import_problems(root: Path) -> list[str]:
 # path's parents, a prefix test written by hand, a relpath or a relative_to that walks up checked for a parent segment,
 # or a relative_to whose ValueError a handler or a contextlib.suppress turns into an answer, states why in a
 # module-level CONTAINMENT_ALLOWED = {scope: reason}.
-PATH_CONTAINMENT = "skills/ejryan89-skill-core/scripts/path_containment.py"
 CONTAINMENT_ALLOWANCE = "CONTAINMENT_ALLOWED"
 # The exceptions whose handler catches the ValueError relative_to raises, by the names a module reads them under.
 VALUE_ERROR_CATCHERS = frozenset({"ValueError", "Exception", "BaseException"})

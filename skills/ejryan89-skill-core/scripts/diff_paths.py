@@ -18,7 +18,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from path_containment import within, written_refusal
+from path_containment import resolved_path, within, written_refusal
 
 # The bytes git escapes by a letter or by themselves rather than in octal.
 ESCAPED_BYTES = {"a": 0x07, "b": 0x08, "t": 0x09, "n": 0x0A, "v": 0x0B, "f": 0x0C, "r": 0x0D, '"': 0x22, "\\": 0x5C}
@@ -136,8 +136,8 @@ def snapshot_path(root: Path, path: str) -> Path | None:
     if unsafe_snapshot_name(path):
         return None
     try:
-        base = root.resolve()
-        target = base.joinpath(*path.split("/")).resolve()
+        base = resolved_path(root)
+        target = resolved_path(base.joinpath(*path.split("/")))
     except OSError:
         return None
     return target if within(target, base) else None

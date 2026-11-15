@@ -85,7 +85,7 @@ from link_probe import is_link_or_junction
 from markdown_literal import markdown_line
 from markdown_sections import ATX_HEADING, COMMONMARK_CODE_SPAN, code_block_lines, find_fences
 from module_assignments import assigned_names, sole_assignment
-from path_containment import within
+from path_containment import resolved_path, within
 from path_keys import opens_as
 from text_lines import text_lines
 from typed_fields import FieldError, FieldReader
@@ -318,8 +318,8 @@ def leaves_root(root: Path, path: Path) -> bool:
     that leads out of the repository makes it. A path that cannot be resolved counts as outside, so nothing is read
     through it."""
     try:
-        return not within(path.resolve(), root.resolve())
-    except (OSError, RuntimeError, ValueError):
+        return not within(resolved_path(path), resolved_path(root))
+    except (OSError, ValueError):
         return True
 
 
@@ -3891,7 +3891,7 @@ def check_limitations(root: Path, manifest: dict[str, Any]) -> list[Finding]:
 
 def audit(root: Path) -> AuditResult:
     """Run all audit checks and return the result."""
-    root = root.resolve()  # a relative root such as "." has no name of its own
+    root = resolved_path(root)  # a relative root such as "." has no name of its own
     result = AuditResult(repository=root.name)
 
     # Step 1: Inventory
