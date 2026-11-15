@@ -17,6 +17,7 @@ from command_wrappers import (
     shell_script_index,
     split_line,
     unwrapped,
+    wrapper_name,
 )
 from option_reader import option_table
 
@@ -123,6 +124,61 @@ def test_unwrapped_reads_past_a_wrapper_to_the_command_it_runs(words: list[str],
 )
 def test_an_option_the_table_does_not_settle_leaves_the_program_unread(words: list[str], unread: str) -> None:
     assert unwrapped(words) == [f"{UNREAD_PROGRAM}{unread}"]
+
+
+# A wrapper a package manager installs under a g or u prefix, as Homebrew installs GNU's coreutils and findutils and the
+# Rust coreutils, is read as the wrapper it builds, its options and env's split line included.
+@pytest.mark.parametrize(
+    ("words", "program"),
+    [
+        (["gtimeout", "5", "git", "push"], ["git", "push"]),
+        (["utimeout", "--signal", "TERM", "5", "git", "push"], ["git", "push"]),
+        (["genv", "GIT_DIR=x", "git", "status"], ["git", "status"]),
+        (["uenv", "-i", "A=1", "git", "status"], ["git", "status"]),
+        (["genv", "-S", "git push", "x"], ["git", "push", "x"]),
+        (["gnice", "-n", "5", "git"], ["git"]),
+        (["gnohup", "git"], ["git"]),
+        (["gstdbuf", "-o", "L", "git"], ["git"]),
+        (["gxargs", "-n", "1", "git", "push"], ["git", "push"]),
+        (["gtime", "-p", "git"], ["git"]),
+        (["ucommand", "-v", "git"], []),
+    ],
+)
+def test_unwrapped_reads_a_wrapper_under_a_prefix_as_the_wrapper_it_builds(
+    words: list[str], program: list[str]
+) -> None:
+    assert unwrapped(words) == program
+
+
+def test_an_option_a_prefixed_wrapper_does_not_settle_is_named_by_the_wrapper_as_written() -> None:
+    assert unwrapped(["gtimeout", "--sig", "TERM", "5", "git"]) == [f"{UNREAD_PROGRAM}gtimeout --sig"]
+
+
+@pytest.mark.parametrize(
+    ("program", "name"),
+    [
+        ("gtimeout", "timeout"),
+        ("uenv", "env"),
+        ("gxargs", "xargs"),
+        ("timeout", "timeout"),
+        # Only a g or u before a wrapper's whole name builds it.
+        ("xtimeout", "xtimeout"),
+        ("ggtimeout", "ggtimeout"),
+        ("gtimeouts", "gtimeouts"),
+        ("git", "git"),
+        ("g", "g"),
+        ("", ""),
+    ],
+)
+def test_wrapper_name_reads_a_prefix_only_before_a_wrapper(program: str, name: str) -> None:
+    assert wrapper_name(program) == name
+
+
+def test_wrapper_name_reads_a_prefix_before_a_caller_s_own_catalogue() -> None:
+    catalogue = {"run": option_table("u:")}
+    assert wrapper_name("grun", catalogue) == "run"
+    assert wrapper_name("gtimeout", catalogue) == "gtimeout"
+    assert unwrapped(["urun", "-u", "me", "git"], catalogue) == ["git"]
 
 
 def test_a_caller_s_own_catalogue_is_read_the_same_way() -> None:

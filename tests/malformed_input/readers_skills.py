@@ -494,8 +494,9 @@ READERS = [
             "truncated": PYTHON_TEXT,
             "long_line": PYTHON_TEXT,
         },
-        # A unary chain long enough to overflow the parser's own stack, which nests far deeper than a Python walk.
-        nesting=lambda levels: b"x = " + b"-" * (levels * 50) + b"1\n",
+        # A call through an attribute chain the parser reads but a recursive walk over the tree, as qualified_name's
+        # over an attribute, cannot recurse through, which python_reader refuses as nested past DEPTH_LIMIT.
+        nesting=lambda levels: b"import sys\n\nsys" + b".a" * levels + b"()\n",
     ),
     Reader(
         "skill_inventory.stated_codes",

@@ -30,6 +30,7 @@ from command_wrappers import (
     bash_program,
     shell_script_index,
     unwrapped,
+    wrapper_name,
 )
 from dealing import deal
 from job_pool import UNSPLIT_SUITE_WEIGHT, Job, run_process
@@ -509,15 +510,17 @@ def _long_option(word: str, options: frozenset[str]) -> str | None:
 
 def _command_words(words: list[str]) -> list[str]:
     """A command's words from the program it runs: past assignments, and each wrapper of WRAPPERS, whether named
-    by a path or not, such as `env`, `exec`, `timeout`, `command`, `sudo`, or `/usr/bin/env`, as `unwrapped` reads
-    it, env's -S value split into the words it runs, and a wrapper option it cannot place giving UNREAD_PROGRAM.
-    xargs runs its command on no pipe, so it stays. _BashReader has already read past the reserved words that lead a
-    command, so a word here that spells one is a literal, the program Bash runs."""
+    by a path or not, or under a package manager's prefix, such as `env`, `exec`, `timeout`, `command`, `sudo`,
+    `/usr/bin/env`, or `gtimeout`, as `unwrapped` reads it, env's -S value split into the words it runs, and a wrapper
+    option it cannot place giving UNREAD_PROGRAM. xargs runs its command on no pipe, so it stays. _BashReader has
+    already read past the reserved words that lead a command, so a word here that spells one is a literal, the program
+    Bash runs."""
     while words:
         program = bash_program(words[0])
+        wrapper = wrapper_name(program, WRAPPERS)
         if ASSIGNMENT.match(words[0]):
             words = words[1:]
-        elif program != "xargs" and program in WRAPPERS:
+        elif wrapper != "xargs" and wrapper in WRAPPERS:
             words = unwrapped([program, *words[1:]], WRAPPERS)
         else:
             break
