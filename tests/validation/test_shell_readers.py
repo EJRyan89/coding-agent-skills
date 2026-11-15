@@ -238,6 +238,24 @@ def test_shell_command_extraction_finds_no_program_where_nothing_runs(script: st
     assert "rg" not in shell_commands(script)
 
 
+# A wrapper a package manager installs under a g or u prefix, as gtimeout, is a program of its own the command policy
+# holds, and is read past, as the wrapper it builds, to the program it runs.
+@pytest.mark.parametrize(
+    ("script", "programs"),
+    [
+        ("gtimeout 5 jq .", {"gtimeout", "jq"}),
+        ("genv A=1 rg x", {"genv", "rg"}),
+        ("genv -S 'jq .'", {"genv", "jq"}),
+        ("utimeout --signal TERM 5 jq .", {"utimeout", "jq"}),
+        ("gxargs -n 1 rg x", {"gxargs", "rg"}),
+        ("gnohup gstdbuf -o L jq .", {"gnohup", "gstdbuf", "jq"}),
+        ("ucommand -v rg", {"ucommand"}),
+    ],
+)
+def test_shell_command_extraction_reads_past_a_wrapper_under_a_prefix(script: str, programs: set[str]) -> None:
+    assert shell_commands(script) == programs
+
+
 @pytest.mark.parametrize(
     ("script", "spans"),
     [
@@ -460,6 +478,17 @@ WRAPPED_GIT_PUSH_SCRIPTS = (
     "find . -exec env git push {} +",
     "x=$(xargs git push)",
     "bash -c 'xargs git push'",
+    # A wrapper a package manager installs under a g or u prefix is read as the wrapper it builds.
+    "gtimeout 5 git push",
+    "genv GIT_DIR=x git push",
+    "gnice -n 5 git push",
+    "gnohup git push",
+    "gstdbuf -o L git push",
+    "gxargs git push",
+    "utimeout 5 git push",
+    "uenv -i git push",
+    "nohup genv utimeout 5 git push",
+    "find . -exec gtimeout 5 git push {} +",
 )
 
 
@@ -498,6 +527,9 @@ POWERSHELL_WRAPPED_GIT_PUSH_SOURCES = (
     "Start-Process env -ArgumentList 'git', 'push'",
     "env bash -c 'git push'",
     "env pwsh -c 'git push'",
+    "gtimeout 5 git push",
+    "genv GIT_DIR=x git push",
+    "uenv -i git push",
 )
 
 
@@ -540,6 +572,7 @@ POWERSHELL_WRAPPER_PROGRAMS = (
     ("find . -exec gh pr list '{}' +", {"find", "gh"}),
     ("xargs -n $count gh pr list", {"xargs", "gh"}),
     ("nohup env timeout 5 gh pr list", {"nohup", "env", "timeout", "gh"}),
+    ("gtimeout 5 gh pr list", {"gtimeout", "gh"}),
     ("command -v gh", {"command"}),
     ("xargs echo gh", {"xargs", "echo"}),
     ("env", {"env"}),

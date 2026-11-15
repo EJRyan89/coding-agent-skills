@@ -633,6 +633,7 @@ def test_the_pipe_race_policy_finds_the_reader_in_every_shape_and_spelling(
         pytest.param("echo hi # $(printf a | head)", id="a substitution in a comment"),
         pytest.param("printf a | command -v head", id="a lookup"),
         pytest.param("printf a | xargs head -n 1", id="xargs, which reads to the end"),
+        pytest.param("printf a | gxargs head -n 1", id="xargs under a prefix, which reads to the end"),
         pytest.param("printf a '|' head -n 1", id="a single-quoted pipe, a word"),
         pytest.param('printf a "|" head -n 1', id="a double-quoted pipe, a word"),
         pytest.param("printf a \\| head -n 1", id="an escaped pipe, a word"),
@@ -806,6 +807,11 @@ def test_each_gnu_form_the_policy_refuses_fails_under_pipefail_in_bash(script: s
         pytest.param("seq 1 200000 | env --split='head -n 1'", "3 pipes into env --split=head -n 1", id="env --split"),
         pytest.param("seq 1 200000 | timeout --sig TERM 5 head", "3 pipes into timeout --sig", id="timeout --sig"),
         pytest.param("seq 1 200000 | builtin eval 'head -n 1'", "3 pipes into head -n", id="eval behind builtin"),
+        # A wrapper a package manager installs under a prefix, as Homebrew installs GNU's, is the wrapper it builds.
+        pytest.param("seq 1 200000 | gtimeout 5 head -n 1", "3 pipes into head -n", id="gtimeout"),
+        pytest.param("seq 1 200000 | genv -S 'head -n 1'", "3 pipes into head -n", id="genv -S"),
+        pytest.param("seq 1 200000 | ustdbuf -oL head -n 1", "3 pipes into head -n", id="ustdbuf"),
+        pytest.param("seq 1 200000 | gtimeout --sig TERM 5 head", "3 pipes into gtimeout --sig", id="gtimeout --sig"),
         # A race inside a script a shell runs is the suite's too.
         pytest.param("bash -c 'seq 1 200000 | head -n 1'", "3 pipes into head -n", id="a pipe in bash -c"),
         pytest.param("eval 'seq 1 200000 | head -n 1'", "3 pipes into head -n", id="a pipe in eval"),

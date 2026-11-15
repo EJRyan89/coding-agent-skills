@@ -228,7 +228,8 @@ class Module:
 
 
 def is_parser_annotation(annotation: ast.expr | None, aliases: dict[str, str]) -> bool:
-    """Whether an annotation names argparse's parser, as a name or a quoted one."""
+    """Whether an annotation names argparse's parser, as a name or a quoted one. A stated limit: a quoted annotation
+    that does not parse or nests past nesting_depth's DEPTH_LIMIT is read as naming nothing."""
     if isinstance(annotation, ast.Constant) and isinstance(annotation.value, str):
         try:
             annotation = python_reader.parse_expression(annotation.value).body

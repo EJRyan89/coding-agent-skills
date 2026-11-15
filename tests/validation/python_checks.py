@@ -3746,7 +3746,8 @@ def discarded_result_problems(root: Path, files: list[Path]) -> list[str]:
 # returns, awaited or not, in any module the repository's Python reads, what a method so annotated returns on an
 # instance of its class in the module defining it, and a name annotated as one. A read that must stay, such as a status
 # reported with git's reason or one whose failure is refused, states why in a module-level
-# GIT_STATUS_ALLOWED = {scope: reason}.
+# GIT_STATUS_ALLOWED = {scope: reason}. A stated limit: a quoted annotation that does not parse or nests past
+# nesting_depth's DEPTH_LIMIT is read as naming nothing.
 GIT_STATUS_OWNER = "skills/ejryan89-skill-core/scripts/git_client.py"
 GIT_RESULT = "git_client.GitResult"
 GIT_STATUS_ALLOWANCE = "GIT_STATUS_ALLOWED"
@@ -4541,7 +4542,9 @@ def git_separator_problems(root: Path, files: list[Path]) -> list[str]:
 # answer git gave in the wrong shape, such as a rev-parse that printed no object name. Whether git ran and finished is
 # GitError.answered, so a handler of a GitError, or a function given one, reads that, never `returncode is None`,
 # `returncode in (None, ...)`, `not returncode`, or the returncode read as true, directly, through getattr, or through
-# a name bound to it. A read that must stay states why in a module-level GIT_ANSWERED_ALLOWED = {scope: reason}.
+# a name bound to it. A read that must stay states why in a module-level GIT_ANSWERED_ALLOWED = {scope: reason}. A
+# stated limit: a quoted annotation that does not parse or nests past nesting_depth's DEPTH_LIMIT is read as naming
+# nothing.
 GIT_ERROR = "git_client.GitError"
 GIT_ANSWERED_ALLOWANCE = "GIT_ANSWERED_ALLOWED"
 # The typing forms a parameter's annotation may hold a GitError in beside None.

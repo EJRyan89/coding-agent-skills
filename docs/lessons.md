@@ -640,8 +640,9 @@ removed fails validation until its pattern follows it.
   same limit, so a walk over what they return, such as MSBuild's Choose evaluation, needs no bound of its own;
   `csharp_layout:_brace_level` and `msbuild_conditions:Parser.nested`, a hand-written parser's own check; and
   `python_reader:parse`, `python_reader:parse_expression`, and `python_reader:literal`, the one parse of Python source
-  and of a literal, which refuse the parser's overflow, a memory or recursion error, as the
-  `python_reader:PythonRefused` their callers handle. A handler around such a reader alone names its family and no
+  and of a literal, which refuse the parser's overflow, a memory or recursion error, and a tree the parser reads but
+  that nests past the same limit, as the `python_reader:PythonRefused` their callers handle, so a walk over a tree
+  they return, such as `python_names:qualified_name` over an attribute chain, needs no bound of its own. A handler around such a reader alone names its family and no
   RecursionError; one that also guards a parser that recurses, such as tomllib, keeps it and says which call
   raises it. `json_writer:nests_too_deep`, the writer's judgment of a value's depth against the same limit, by
   `nesting_depth:nests_past`'s walk, which `json_writer:dumps` makes before the json module writes and
@@ -654,6 +655,7 @@ removed fails validation until its pattern follows it.
   `skills/ejryan89-skill-core/scripts/test_json_reader.py::RefusalTests::test_a_scalar_is_no_level_so_one_at_the_limit_reads_as_an_empty_container_does`,
   `skills/ejryan89-skill-core/scripts/test_xml_reader.py::DepthTests`,
   `skills/ejryan89-skill-core/scripts/test_python_reader.py::ParseTests`,
+  `skills/ejryan89-skill-core/scripts/test_python_reader.py::ParseTests::test_a_tree_at_the_limit_parses_and_one_level_past_it_is_refused_as_nested`,
   `tests/validation/test_python_checks.py::test_owner_only_policy_refuses_each_reference_outside_its_owners`,
   `skills/dotnet-format/scripts/test_csharp_layout.py::test_braces_nested_past_the_shared_depth_limit_fail_by_name`,
   `skills/dotnet-dependencies/scripts/test_msbuild_conditions.py::ConditionTests::test_negations_and_parentheses_nested_past_the_shared_depth_limit_are_not_settled`,
@@ -667,7 +669,7 @@ removed fails validation until its pattern follows it.
   name `MemoryError` and `RecursionError` beside `SyntaxError`; `json.loads(` outside `json_reader.py`; an
   `except RecursionError` around `json.dumps(`, `pickle.dumps(`, `copy.deepcopy(`, `repr(`, or another call the
   standard library runs in C, whose depth is judged first with `nesting_depth:nests_past` instead.
-- **Examples:** #1613, #1617, #1729, #1886, #1893, #2170, #2190, #2390, #2844
+- **Examples:** #1613, #1617, #1729, #1886, #1893, #2170, #2190, #2390, #2844, #2849
 
 ### A path taken from input is judged inside its tree before anything opens it
 
