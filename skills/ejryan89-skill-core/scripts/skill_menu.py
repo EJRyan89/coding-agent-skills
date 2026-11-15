@@ -20,6 +20,7 @@ source says, and fails on what names no skill or cannot be read at all, a list o
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from collections.abc import Set as AbstractSet
 from dataclasses import dataclass, field
@@ -34,12 +35,48 @@ import json_reader
 # must start Python. The repositories root is the plugin option the user sets at install, which Claude Code
 # substitutes as typed, and repo-cleanup's optional additions are none, as a deployment's are by default. A value
 # missing here has no plugin answer, and a skill that takes one stays out of every plugin.
+# The Python a plugin starts, by the name Windows gives it.
+PLUGIN_PYTHON = "python"
 PLUGIN_VALUES: dict[str, str] = {
-    "PYTHON": "python",
+    "PYTHON": PLUGIN_PYTHON,
     "REPOS_ROOT": "${user_config.repos_root}",
     "REPO_CLEANUP_REGENERABLE": "",
     "REPO_CLEANUP_PROTECTED": "",
 }
+# How a plugin hook starts Python. Claude Code runs a hook's command with sh on macOS and Linux, where an install may
+# name Python python3 alone, and on Windows in Git Bash, or in PowerShell where Git Bash is not installed, where
+# Windows names Python python. Every shell reads the whole command, so each line is one sh and PowerShell both read:
+# sh joins each `set \` to the line after it, so it sets its arguments from the PowerShell lines and then starts
+# python, or python3 where no python is found, while PowerShell sets a variable named `\` at each and runs its lines,
+# which make a missing python a failure, start python, and exit with its status. The arguments are written so both
+# shells read them alike: options of plain characters, then at most one double-quoted string holding no $, backtick,
+# backslash, double quote, or line break, inside which sh's operators are text to both.
+PLUGIN_HOOK_PYTHON = (
+    "set \\\n$ErrorActionPreference = 'Stop'\nset \\\npython {arguments}\nset \\\nexit $LASTEXITCODE\n"
+    'p=$(command -v python); exec "${{p:-python3}}" {arguments}'
+)
+PLUGIN_HOOK_ARGUMENTS = re.compile(r"[A-Za-z0-9_./=:+-]+(?: [A-Za-z0-9_./=:+-]+)*(?: \"[^$`\\\"\r\n]*\")?")
+
+
+def plugin_hook_command(arguments: str) -> str:
+    """The command a plugin hook runs to start Python with `arguments`, or ValueError for arguments sh and PowerShell
+    could read differently."""
+    if not PLUGIN_HOOK_ARGUMENTS.fullmatch(arguments):
+        raise ValueError(
+            "a plugin hook's Python arguments are not options of plain characters and one double-quoted string "
+            "without a $, backtick, backslash, or line break"
+        )
+    return PLUGIN_HOOK_PYTHON.format(arguments=arguments)
+
+
+def plugin_hook_arguments(command: str) -> str | None:
+    """The arguments a command plugin_hook_command made starts Python with, or None for any other command."""
+    arguments = command.rpartition('"${p:-python3}" ')[2]
+    if PLUGIN_HOOK_ARGUMENTS.fullmatch(arguments) and PLUGIN_HOOK_PYTHON.format(arguments=arguments) == command:
+        return arguments
+    return None
+
+
 # Each plugin option a plugin value reads, as the manifest's userConfig of a plugin whose skills take it declares it.
 PLUGIN_OPTIONS: dict[str, dict[str, object]] = {
     "repos_root": {

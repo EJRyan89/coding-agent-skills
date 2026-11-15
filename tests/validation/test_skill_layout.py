@@ -1172,7 +1172,13 @@ PLUGIN_SOURCES = {
         {"name": "fixture", "plugins": [{"name": "suite", "description": "A suite.", "source": "./suite"}]}
     ),
 }
-HELPER_COMMAND = f'python -I -c "import os, runpy; runpy.run_path({PLUGIN_GUARD})"'
+HELPER_ARGUMENTS = f'-I -c "import os, runpy; runpy.run_path({PLUGIN_GUARD})"'
+# The agent's hook as the plugin runs it in every shell: sh starts python, or python3 where it finds no python, and
+# PowerShell starts python and exits with its status.
+HELPER_COMMAND = (
+    f"set \\\n$ErrorActionPreference = 'Stop'\nset \\\npython {HELPER_ARGUMENTS}\nset \\\nexit $LASTEXITCODE\n"
+    f'p=$(command -v python); exec "${{p:-python3}}" {HELPER_ARGUMENTS}'
+)
 HELPER_HANDLER: dict[str, object] = {"type": "command", "command": HELPER_COMMAND, "timeout": 30, "onFailure": "block"}
 PLUGIN_HOOK_FILE = {"hooks": {"PreToolUse": [{"matcher": "Read|Bash", "hooks": [HELPER_HANDLER]}]}}
 
@@ -1277,6 +1283,16 @@ def other_hooks(**changes: object) -> bytes:
         (
             {"hooks/hooks.json": other_hooks(command=HELPER_COMMAND.replace(PLUGIN_GUARD, f"'{GUARD_PATH}'"))},
             "holds command: >- python -I -c",
+        ),
+        # The hook as the plugin ran it before, which blocks every call it matches where Python is python3 alone.
+        (
+            {"hooks/hooks.json": other_hooks(command=f"python {HELPER_ARGUMENTS}")},
+            "starts python by that name alone",
+        ),
+        # The shells starting Python with different arguments.
+        (
+            {"hooks/hooks.json": other_hooks(command=HELPER_COMMAND.replace("-I -c", "-c", 1))},
+            "holds command: >- set",
         ),
     ],
 )
