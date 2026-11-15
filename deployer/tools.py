@@ -8,6 +8,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 import versions
+from flat_text import reason_line
 from pdf_tool import (
     MINIMUMS,
     PdfIdentity,
@@ -150,14 +151,32 @@ def codex_sandbox_command(codex: str) -> list[str]:
     return [codex, *CODEX_SANDBOX_PROBE]
 
 
-def codex_sandbox_mode(codex: str) -> str | None:
-    """The sandbox mode the Codex CLI at this path would run a skill's scripts in, or None when it names none.
+@dataclass(frozen=True)
+class CodexSandbox:
+    """What the sandbox probe read: the mode Codex CLI would run a skill's scripts in, or None with why it named
+    none."""
+
+    mode: str | None
+    unread: str = ""
+
+
+def codex_sandbox_mode(codex: str) -> CodexSandbox:
+    """The sandbox mode the Codex CLI at this path would run a skill's scripts in, or why it names none: a probe
+    that exits nonzero is named by its exit code and what Codex printed on one line, such as a configuration it cannot
+    load, and one that exits 0 by naming no mode.
 
     A probe that does not finish raises ToolTimedOut, which stops `check` as every other tool's deadline does.
     """
-    result = platform_support.run_tool(codex_sandbox_command(codex))
-    found = CODEX_SANDBOX_MODE.search(result.output) if result.returncode == 0 else None
-    return None if found is None else found.group(1)
+    command = codex_sandbox_command(codex)
+    result = platform_support.run_tool(command)
+    probe = " ".join(["codex", *CODEX_SANDBOX_PROBE[:2]])
+    if result.returncode != 0:
+        printed = reason_line(result.output)
+        return CodexSandbox(
+            None, f"{probe} failed with exit code {result.returncode}" + (f": {printed}" if printed else "")
+        )
+    found = CODEX_SANDBOX_MODE.search(result.output)
+    return CodexSandbox(found.group(1)) if found else CodexSandbox(None, f"{probe} named no sandbox mode")
 
 
 # Tools a skill may declare in its deploy-meta "tools" list. Python is a deployment requirement already, and Git,
@@ -247,8 +266,13 @@ def probe(tool: Tool) -> Probe:
     result = platform_support.run_tool([path, *tool.version_arguments])
     version = parse_version(result.output) if result.returncode == 0 else None
     if version is None and tool.minimum:
-        # A version that cannot be read is no evidence the floor is met, so the probe refuses it as pdf_tool's does.
-        found = f"failed with exit status {result.returncode}" if result.returncode != 0 else "printed no version"
+        # A version that cannot be read is no evidence the floor is met, so the probe refuses it as pdf_tool's does,
+        # naming what the tool printed, on one line, or, when it printed nothing, its exit status alone.
+        printed = reason_line(result.output)
+        if result.returncode != 0:
+            found = f"failed with exit status {result.returncode}" + (f": {printed}" if printed else "")
+        else:
+            found = f"printed no version, only: {printed}" if printed else "printed no version"
         refusal = f"version probe {found}; needs {format_version(tool.minimum)} or newer"
         return Probe(tool, path, None, refusal=refusal)
     return Probe(tool, path, version)

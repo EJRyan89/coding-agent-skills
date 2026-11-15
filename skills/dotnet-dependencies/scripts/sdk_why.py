@@ -27,6 +27,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-cor
 
 from bounded_process import non_interactive_environment, run_bounded
 from executable_locator import find_program, located_command
+from flat_text import flat_text, reason_line
 from ordinal_case import ordinal_fold
 
 ANSI = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
@@ -103,10 +104,12 @@ class WhyAnswer:
 
 @dataclass
 class ParsedWhy:
-    """One run's output read back: the chains per heading's project stem, and the stems it answered."""
+    """One run's output read back: the chains per heading's project stem, the stems it answered, and the lines it
+    printed after the last line of its answer, such as an error it states last."""
 
     paths: dict[str, list[SdkPath]] = field(default_factory=dict)
     answered: set[str] = field(default_factory=set)
+    after: list[str] = field(default_factory=list)
 
 
 def why_command(project: Path, package: str) -> list[str]:
@@ -114,13 +117,20 @@ def why_command(project: Path, package: str) -> list[str]:
 
 
 def parse_why(text: str, package: str) -> ParsedWhy:
-    """The chains to `package` in a run's output, per project stem, and the stems the run answered."""
+    """The chains to `package` in a run's output, per project stem, the stems the run answered, and the lines after
+    the answer's last heading, framework, or tree line. A heading the CLI wraps at the console width goes on to the
+    first blank line, so its wrapped part is never taken for a line after the answer. A line printed right after a
+    heading, with no blank line between, is read as the heading's wrapped part, so an error there is not quoted and
+    the failure names the exit code alone."""
     answer = ParsedWhy()
     target = ordinal_fold(package)
     project: str | None = None
     framework = ""
     stack: list[tuple[str, str]] = []
-    for raw in ANSI.sub("", text).splitlines():
+    lines = ANSI.sub("", text).splitlines()
+    end = 0
+    in_heading = False
+    for index, raw in enumerate(lines):
         line = raw.rstrip()
         heading = HEADING.match(line)
         if heading:
@@ -128,21 +138,29 @@ def parse_why(text: str, package: str) -> ParsedWhy:
             answer.answered.add(project)
             answer.paths.setdefault(project, [])
             framework, stack = "", []
+            end, in_heading = index + 1, True
             continue
+        if in_heading and line.strip() and not FRAMEWORK.match(line) and not NODE.match(line):
+            end = index + 1
+            continue
+        in_heading = False
         if project is None:
             continue
         bracket = FRAMEWORK.match(line)
         if bracket:
             framework, stack = bracket.group("framework"), []
+            end = index + 1
             continue
         node = NODE.match(line)
         if not node:
             continue
+        end = index + 1
         depth = max(0, (len(node.group("indent")) - TREE_BASE) // TREE_STEP)
         del stack[depth:]
         stack.append((node.group("name"), node.group("version")))
         if ordinal_fold(node.group("name")) == target:
             answer.paths[project].append(SdkPath(project, framework, tuple(stack)))
+    answer.after = lines[end:] if answer.answered else []
     return answer
 
 
@@ -163,19 +181,21 @@ def run_why(projects: Sequence[Path], package: str, services: Services, timeout:
         try:
             result = services.run(why_command(project, package), timeout)
         except OSError as error:
-            answer.failures[project] = f"dotnet nuget why could not start: {error}"
+            answer.failures[project] = f"dotnet nuget why could not start: {flat_text(str(error))}"
             continue
         part = parse_why(result.text, package)
         if result.timed_out:
             answer.failures[project] = f"dotnet nuget why did not finish within {timeout:g} seconds"
         elif part.answered and result.returncode != 0:
-            answer.failures[project] = (
-                f"dotnet nuget why exited with code {result.returncode} after printing part of an answer"
-            )
+            # The CLI states an error after the part of an answer it printed, so the lines after that part are the
+            # reason it gave; with none, the exit code says all there is.
+            after = reason_line("\n".join(part.after))
+            stated = f"dotnet nuget why exited with code {result.returncode} after printing part of an answer"
+            answer.failures[project] = f"{stated}, then: {after}" if after else stated
         elif NO_ASSETS in result.text and not part.answered:
             answer.failures[project] = "dotnet nuget why answered nothing (no restored assets file)"
         elif not part.answered:
-            first = first_line(result.text)
+            first = reason_line(first_line(result.text))
             unread = f"; the first line it printed, which the script cannot read: {first}" if first else ""
             answer.failures[project] = f"dotnet nuget why answered nothing (exit code {result.returncode}){unread}"
         else:

@@ -473,9 +473,11 @@ def _check_bash_syntax(units: list[ShellUnit], bash: str) -> None:
     for unit, result in zip(units, results, strict=True):
         if result.returncode != 0:
             kind = "block syntax" if unit.is_block else "syntax"
+            # Bash's lines are the reason; a Bash that printed nothing is named by its exit code.
+            reason = result.output.rstrip().splitlines() if result.output.strip() else []
             raise DeployError(
                 f"ERROR: Rendered Bash {kind} validation failed: {unit.origin}",
-                *result.output.rstrip().splitlines(),
+                *(reason or [f"bash exited with code {result.returncode} and printed nothing"]),
                 RENDERED_CHECK_REMEDY,
             )
 
@@ -507,6 +509,10 @@ def _run_shellcheck(units: list[ShellUnit], shellcheck: str) -> None:
         if result.returncode == 0:
             continue
         failed = True
+        if not result.output.strip():
+            # A batch that failed printing nothing is named by its exit code, never by an empty report.
+            unattributed.append(f"ShellCheck exited with code {result.returncode} and printed nothing")
+            continue
         for line in result.output.splitlines():
             path = next((path for path in batch if line.startswith(path + ":")), None)
             if path is None:
@@ -554,7 +560,11 @@ def _parse_powershell(files: dict[str, bytes], workspace: Path, powershell: str)
     )
     if result.returncode != 0:
         lines = result.output.strip().splitlines()
-        failed = origins.get(lines[0].strip(), lines[0].strip()) if lines else "(unknown file)"
+        # A pwsh that names no file, having printed nothing, is named by its exit code.
+        if lines:
+            failed = origins.get(lines[0].strip(), lines[0].strip())
+        else:
+            failed = f"pwsh exited with code {result.returncode} and printed nothing"
         raise DeployError(
             f"ERROR: Rendered PowerShell syntax validation failed: {failed}", *lines[1:], RENDERED_CHECK_REMEDY
         )
