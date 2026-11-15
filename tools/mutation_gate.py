@@ -805,7 +805,8 @@ def reached_otherwise(tree: ast.Module, source: str, names: frozenset[str]) -> b
     """Whether the module may reach a name other than by loading it as a variable: as an attribute, a parameter, a
     keyword, an import alias, a `global` statement, or a string, such as `globals()` or `getattr` would take."""
     loaded = {(node.lineno, node.col_offset) for node in ast.walk(tree) if isinstance(node, ast.Name)}
-    for token in tokenize.generate_tokens(io.StringIO(source).readline):
+    # A lone CR ends a line of Python, so tokenize reads it as the parser does only through universal newlines.
+    for token in tokenize.generate_tokens(io.StringIO(source, newline=None).readline):
         if token.type == tokenize.NAME and token.string in names and token.start not in loaded:
             return True
     words = re.compile(rf"\b(?:{'|'.join(map(re.escape, sorted(names)))})\b")

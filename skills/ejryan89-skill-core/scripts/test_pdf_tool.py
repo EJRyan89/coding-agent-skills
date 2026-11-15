@@ -360,3 +360,9 @@ def test_a_pdftotext_that_cannot_start_is_skipped_naming_the_error_its_start_gav
     else:
         expected = f"skipped {junk} (version probe could not be started: [Errno 8] Exec format error: '{junk}'); "
         assert str(raised.value).startswith(f"no supported pdftotext: {expected}")
+
+
+def test_a_banner_whose_copyright_follows_a_line_separator_is_no_banner() -> None:
+    # The tool ends a line at LF, never at U+2028, so the banner and the copyright are one line, which matches neither.
+    with pytest.raises(pdf_tool.PdfToolRefused):
+        pdf_tool.parse_banner("pdftotext version 26.10.0\u2028Copyright 2005-2026 The Poppler Developers\n", 0)

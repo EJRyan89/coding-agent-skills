@@ -727,6 +727,10 @@ class PresenceReadTests(unittest.TestCase):
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name)
 
+    def test_a_comment_after_a_lone_cr_is_a_comment_as_python_reads_it(self) -> None:
+        # Python ends a line at a lone CR, so the call after `#` is a comment's text, never a call a test makes.
+        self.assertNotIn("f", self.module._code_text("tests/test_x.py", "import x\r# f()\n").split())
+
     def test_suites_keeps_each_suite_file_and_passes_over_a_folder_named_like_one(self) -> None:
         (self.root / "tests" / "deep").mkdir(parents=True)
         (self.root / "tests" / "deep" / "test_real.py").write_text(

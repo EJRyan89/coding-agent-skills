@@ -460,3 +460,9 @@ class ConditionTests(unittest.TestCase):
         (self.root / "docs" / "linked").symlink_to(outside, target_is_directory=True)
         listed = [relative for relative, _ in doc_passages.documents(self.root)]
         self.assertEqual(["docs/guide.md"], listed)
+
+
+def test_a_document_s_passages_end_where_commonmark_ends_a_line() -> None:
+    # A lone CR ends a line as LF does, so each heading is a passage of its own on its own line.
+    units = [(unit.line, unit.text) for unit in doc_passages.units("# One\rtext\r\r# Two\r")]
+    assert units == [(1, "# One"), (2, "text"), (4, "# Two")]

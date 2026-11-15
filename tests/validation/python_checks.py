@@ -4556,11 +4556,12 @@ def git_separator_problems(root: Path, files: list[Path]) -> list[str]:
 # lstrip(), an rstrip(), a removeprefix(), or a removesuffix() between or not, is refused. Text a parameter, an
 # attribute, or any other call gives is not traced to a file, so a split of it at "\n" is not read, nor is a name bound
 # from a traced name through a further assignment, as body = text.strip() binds one; a split at LF alone through
-# io.StringIO(text).readline or readlines(); str.splitlines passed as a value, as map(str.splitlines, texts) or
-# operator.methodcaller("splitlines") pass it; or a re.split on a line-feed pattern. No module of the repository writes
-# those. A program's output keeps its CRs too, and is split where that program ends a line. A split that must stay,
-# as a Bash script's and a .shellcheckrc's at LF alone, states why in a module-level
-# LINE_SPLIT_ALLOWED = {scope: reason}.
+# io.StringIO(text).readline or readlines(), given no newline=None, which the two modules that tokenize decoded
+# Python, mutation_gate and review-repository's untested_functions, pass so a lone CR ends a line there as the parser
+# ends one; str.splitlines passed as a value, as map(str.splitlines, texts) or operator.methodcaller("splitlines") pass
+# it; or a re.split on a line-feed pattern, which no module of the repository writes. A program's output keeps its
+# CRs too, and is split where that program ends a line. A split that must stay, as a Bash script's and a
+# .shellcheckrc's at LF alone, states why in a module-level LINE_SPLIT_ALLOWED = {scope: reason}.
 LINE_SPLIT_OWNER = "skills/ejryan89-skill-core/scripts/text_lines.py"
 LINE_SPLIT_ALLOWANCE = "LINE_SPLIT_ALLOWED"
 # The methods whose result is plainly bytes, and the str methods that keep a text's line ends where they were.
