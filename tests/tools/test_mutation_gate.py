@@ -34,6 +34,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan8
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "tests" / "validation"))
 
 import job_selection
+from bounded_process import Finished
 from fixture_template import FixtureTemplate, repository_shape
 from fsops_platform import PLATFORM_TOKENS
 from git_client import GitClient
@@ -1015,9 +1016,29 @@ class CoverageReachFixtures(unittest.TestCase):
         self.assertEqual({}, dict(result.tests))
         self.assertIn(9, result.lines["tools/calc.py"])
 
-    def test_a_suite_failed_unmutated_is_still_reported_by_its_exit_code(self) -> None:
-        self.assertEqual("failed unmutated with exit code 1", self.reach({}, passes=False))
-        self.assertEqual("failed unmutated with exit code 4", self.reach({}, suite="tests/test_gone.py"))
+    def test_a_suite_failed_unmutated_is_named_by_the_end_of_pytest_s_output_or_its_exit_code(self) -> None:
+        failed = self.reach({}, passes=False)
+        if not isinstance(failed, str):
+            self.fail(f"a failing suite was measured: {failed}")
+        self.assertRegex(failed, r"\Afailed unmutated with exit code 1: `[^`\n]*FAILED tests/test_calc\.py::test_it")
+        self.assertRegex(failed, r"1 failed in [0-9.]+s`\Z")
+        gone = self.reach({}, suite="tests/test_gone.py")
+        if not isinstance(gone, str):
+            self.fail(f"a missing suite was measured: {gone}")
+        self.assertRegex(gone, r"\Afailed unmutated with exit code 4: `[^`\n]*file or directory not found")
+        # Only the end of a long output is kept, where pytest gives its summary.
+        tail = "x" * (mutation_gate.STEP_OUTPUT_CHARACTERS + 50)
+        cases = (
+            (b"", b"", "failed unmutated with exit code 3"),
+            (b" \r\n", b"\t\n", "failed unmutated with exit code 3"),
+            (b"collected 2 items\n\n1 failed in 0.1s\n", b"", "failed unmutated with exit code 3: `collected 2 items 1 failed in 0.1s`"),
+            (b"head " + tail.encode(), b"", f"failed unmutated with exit code 3: `{tail[-mutation_gate.STEP_OUTPUT_CHARACTERS:]}`"),
+        )
+        for stdout, stderr, expected in cases:
+            with self.subTest(stdout=stdout, stderr=stderr), mock.patch.object(
+                mutation_gate, "run_bounded", return_value=Finished(3, stdout, stderr)
+            ):
+                self.assertEqual(expected, self.reach({}))
 
     def test_a_gate_measured_by_coverage_starts_every_coverage_step_unmeasured(self) -> None:
         # The gate's own suite runs under the reach pass, which leaves this variable set, or, from coverage.py's
