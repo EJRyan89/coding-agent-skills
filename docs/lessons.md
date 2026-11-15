@@ -1155,7 +1155,8 @@ removed fails validation until its pattern follows it.
   `skills/ejryan89-skill-core/scripts/test_git_client.py::test_a_fetch_whose_failure_names_nothing_local_is_the_remote_s_failure`,
   `skills/ejryan89-skill-core/scripts/test_git_client.py::test_only_a_timeout_among_the_failures_git_never_answered_is_the_remote_s`,
   `tests/validation/test_python_checks.py::test_presence_policy_refuses_each_empty_answer_form`,
-  `tests/tools/test_hub_guard.py::WriteGuardTests::test_a_program_no_table_reads_is_refused_where_a_word_may_name_a_hub_file`
+  `tests/tools/test_hub_guard.py::WriteGuardTests::test_a_program_no_table_reads_is_refused_where_a_word_may_name_a_hub_file`,
+  `tests/validation/test_workflows.py::DeployablePathFixtures::test_a_job_that_changes_path_after_its_verify_step_fails`
 - **Search for:** a regular expression of alternatives that refuses spellings of one effect, such as
   `re.compile(r"set\s+(?:\+e|`, which the next combined flag walks past; a tuple of message substrings named
   `*_MARKERS` or `*_SPELLINGS` that decides a classification; a fix commit whose diff only adds one more alternative
@@ -1170,7 +1171,8 @@ removed fails validation until its pattern follows it.
   #2285, where each review of the presence policy found one more spelling of a predicate's False until the policy
   refused every presence predicate outside file_presence; #2811, where widening the hub guard's catalogue of writing
   programs found the next writers at once, until every program it does not know to write nothing was judged by its
-  words.
+  words; #2760, where the deployable jobs' tool checks trusted every later step to keep the PATH they checked until
+  validation refused any later step that names PATH or writes the files a step hands the next its environment through.
 
 ### A check reads its subject through its consumer's reader
 
@@ -1468,14 +1470,19 @@ removed fails validation until its pattern follows it.
 
 - **Rule:** A command that starts Python and runs unchanged on more than one platform names it as each platform's
   installers do: `{{PYTHON}}` where the deployer renders it, `sys.executable` from Python, and, in a tracked command
-  nothing renders, `python` when the shell finds it and `python3` when it does not.
+  nothing renders, `python` when the shell finds it and `python3` when it does not, in every shell that runs it: a
+  hook Claude Code runs in PowerShell, as it does on Windows without Git Bash, starts `python`.
 - **Why:** The Windows installers name Python `python`, and Homebrew, the python.org macOS installer, and most Linux
   distributions name it `python3` alone, so a hook that fails closed and names one of them blocks every call it
   matches on a machine with only the other.
-- **Use:** `executable_locator:PYTHON`, the name the deployer gives the interpreter token on each platform.
+- **Use:** `executable_locator:PYTHON`, the name the deployer gives the interpreter token on each platform;
+  `skill_menu:plugin_hook_command`, the command a plugin hook starts Python with in sh and in PowerShell.
 - **Guard:** `tests/tools/test_hub_guard.py::HookCommandTests::test_an_opted_in_clone_with_only_python3_runs_the_guard_with_python3`,
   `tests/tools/test_hub_guard.py::HookCommandTests::test_python_is_run_before_python3_where_both_resolve`,
-  `tests/validation/shell_targets.py::ShellTargetsPolicies::test_shipped_skills_name_python_through_the_interpreter_token`
+  `tests/validation/shell_targets.py::ShellTargetsPolicies::test_shipped_skills_name_python_through_the_interpreter_token`,
+  `tests/tools/test_plugin_build.py::test_the_plugins_hook_starts_python_in_sh_and_bash_by_the_name_the_machine_gives_it`,
+  `tests/tools/test_plugin_build.py::test_the_plugins_hook_starts_python_under_pwsh_and_exits_with_its_status`,
+  `tests/validation/test_skill_layout.py::test_plugin_policy_refuses_what_its_sources_do_not_hold`
 - **Search for:** `python -B` or `python -I` opening a hook's `command` in `.claude/settings.json`, in an agent's
   `hooks` frontmatter, or in a plugin's hooks file; `"python"` as the first item of an argument list a program starts,
   where `sys.executable` belongs; `{{PYTHON}}` answered as `python` in an output built once for every platform.

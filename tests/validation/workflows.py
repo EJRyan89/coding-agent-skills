@@ -970,9 +970,14 @@ MACOS_SHELLCHECK_DIGEST_CHECK = 'echo "$SHELLCHECK_MACOS_SHA256  $archive" | sha
 # The macOS legs' name, shaped as the Linux legs' is, from which tools/record_job_seconds.py reads each macOS leg's
 # shard index and count.
 MACOS_LEG_NAME = "macOS shard ${{ matrix.shard }}, Python ${{ matrix.python-version }}"
-# The lines a macOS leg runs, before validation, to put Homebrew's Bash ahead of the image's /bin/bash, a Bash 3.2
-# older than validation's Bash floor, on PATH. The Linux image's own Bash meets the floor.
-MACOS_BASH_INSTALL = ("brew install bash", 'echo "$(brew --prefix)/bin" >> "$GITHUB_PATH"')
+# The lines a macOS job runs, before validation or the deployer, to put Homebrew's Bash ahead of the image's /bin/bash,
+# a Bash 3.2 older than validation's Bash floor, on PATH, as docs/installation.md tells a Mac to. They put Homebrew's
+# Bash folder alone ahead: the whole of Homebrew's bin also holds Homebrew's python3 and node, which would then run in
+# place of the ones the job set up, and a skill's Python command is python3 on macOS. The Linux image's own Bash meets
+# the floor.
+MACOS_BASH_INSTALL = ("brew install bash", 'echo "$(brew --prefix bash)/bin" >> "$GITHUB_PATH"')
+# The one other folder a POSIX validation job puts ahead on PATH: the pinned ShellCheck's own.
+SHELLCHECK_PATH_ENTRY = 'echo "$shellcheck" >> "$GITHUB_PATH"'
 # validate.yml's jobs that run the whole validation on a POSIX platform, by job: the runner, the legs' name, the check
 # of ShellCheck's release archive against its pinned digest, and the lines that install the Bash validation runs.
 POSIX_VALIDATION_JOBS: dict[str, tuple[str, str, str, tuple[str, ...]]] = {
@@ -988,7 +993,9 @@ def posix_job_problems(workflow: str, legs: int, job: str = "linux") -> list[str
     them, the floor and, on the weekly schedule, the latest stable release beside it, each leg's own read by its name
     and installed by setup-python, with pip's cache keyed on requirements-dev.txt, ShellCheck from the pinned release's
     archive checked against its pinned digest, PSScriptAnalyzer at the workflow's pin, the Bash its platform's image
-    lacks installed in one step before validation runs, and the Windows legs' validation step.
+    lacks installed in one step before validation runs, no folder put ahead on PATH but that Bash's and the pinned
+    ShellCheck's, and the Windows legs' validation step. A PATH written through GITHUB_ENV before the verify step is
+    not read; no POSIX leg writes one.
     `required_check_problems` holds it inside the required check, `tool_cache_problems` its tool caches, and
     `pinned_tool_problems` its verify step."""
     runner, leg_name, digest_check, bash_install = POSIX_VALIDATION_JOBS[job]
@@ -1044,6 +1051,14 @@ def posix_job_problems(workflow: str, legs: int, job: str = "linux") -> list[str
         ]
         if not any(set(bash_install) <= lines for lines in before):
             problems.append(f"no step of the {job} job runs {list(bash_install)} before validation runs")
+    entries = {SHELLCHECK_PATH_ENTRY, *(line for line in bash_install if "GITHUB_PATH" in line)}
+    problems.extend(
+        f"the {job} job puts another folder ahead on PATH, {line!r}, so validation may run a program other than "
+        "the one its job set up"
+        for step in steps
+        for line in _script_lines(step)
+        if "GITHUB_PATH" in line and line not in entries
+    )
     runs = [step for step in steps if "tests/run_validation.py" in str(step.get("run", ""))]
     if len(runs) != 1:
         problems.append(f"the {job} job has {len(runs)} steps that run tests/run_validation.py, not one")
@@ -1428,15 +1443,14 @@ def powershell_package_problems(workflow: str, job: str = "deployable-macos") ->
     return problems
 
 
-# The lines deployable.yml's macOS job runs in its prerequisites step to put Homebrew's Bash ahead of the image's
-# /bin/bash, a Bash 3.2, on PATH, as docs/installation.md tells a Mac to. Unlike MACOS_BASH_INSTALL, they put
-# Homebrew's Bash folder alone ahead, since the whole of Homebrew's bin would also put Homebrew's python3 and node
-# ahead of the ones the job sets up and runs as python3 and node. The Windows and Linux images' own Bash is found.
-DEPLOYABLE_MACOS_BASH_INSTALL = ("brew install bash", 'echo "$(brew --prefix bash)/bin" >> "$GITHUB_PATH"')
 # The environment of a step that installs with Homebrew, as validate.yml's macOS legs set it: no self-update and no
 # cleanup on each run.
 HOMEBREW_STEP_ENV = {"HOMEBREW_NO_AUTO_UPDATE": "1", "HOMEBREW_NO_INSTALL_CLEANUP": "1"}
+# The lines deployable.yml's macOS job runs in its prerequisites step to install the Bash the deployer is to find: the
+# ones validate.yml's macOS legs run, putting Homebrew's Bash folder alone ahead of /bin/bash on PATH.
+DEPLOYABLE_MACOS_BASH_INSTALL = MACOS_BASH_INSTALL
 # Each deployable.yml job, by job: the lines its prerequisites step runs to install the Bash the deployer is to find.
+# The Windows and Linux images' own Bash is found.
 DEPLOYABLE_BASH_INSTALLS: dict[str, tuple[str, ...]] = {
     "deployable": (),
     "deployable-linux": (),
@@ -1524,6 +1538,109 @@ def _bash_step_problems(job: str, settings: dict[str, Node], steps: list[dict[st
     script = deployable_bash_script(job, floor)
     if lines != script:
         problems.append(f"{step_name} runs {lines}, not exactly {script}")
+    return problems
+
+
+# A script line that changes the PATH of its own step or of the steps after it: a write to the files a step hands the
+# next steps their PATH and environment through, Bash's PATH variable by name, PowerShell's env:PATH however its case
+# is written, or the variable named as text to a call that sets it, as [Environment]::SetEnvironmentVariable('Path',
+# ...) is. A PowerShell parameter such as Join-Path's -Path is none of these.
+PATH_CHANGES = re.compile(r"GITHUB_PATH|GITHUB_ENV|(?<![\w-])PATH(?![\w-])|(?i:env:path)(?![\w-])|(?i:['\"]path['\"])")
+
+
+def _path_change_problems(job: str, steps: list[dict[str, Node]], verify_step: str, last_step: str | None) -> list[str]:
+    """How `job` could run a program other than the one its `verify_step` found: a change to PATH from that step to
+    `last_step`, or to the job's end when it is None, as a script line PATH_CHANGES matches after the verify step, a
+    write to GITHUB_PATH or GITHUB_ENV in it, a step's own `env` naming PATH in any case, or an action, which may write
+    GITHUB_PATH, run after the verify step and before a script the window holds. The job's and the workflow's own
+    `env` reach the verify step as they reach the rest."""
+    names = [str(step.get("name")) for step in steps]
+    for name in (verify_step, last_step):
+        if name is not None and names.count(name) != 1:
+            return [f"the {job} job has {names.count(name)} steps named {name!r}"]
+    verify = names.index(verify_step)
+    end = len(steps) if last_step is None else names.index(last_step) + 1
+    if end <= verify:
+        return [f"the {job} job's step {last_step!r} runs before {verify_step!r}"]
+    problems: list[str] = []
+    for index, step in enumerate(steps[verify:end], start=verify):
+        label = f"the {job} job's step {names[index]!r}"
+        # The verify step itself names PATH in its messages, and a change within it ends with it, so there only a write
+        # handing later steps a PATH counts.
+        changes = [
+            line
+            for line in _script_lines(step)
+            if any(index > verify or match.group(0).startswith("GITHUB_") for match in PATH_CHANGES.finditer(line))
+        ]
+        problems.extend(f"{label} changes PATH after the tools are verified: {line!r}" for line in changes)
+        problems.extend(
+            f"{label} sets {name} after the tools are verified"
+            for name in _mapping(step, "env")
+            if index > verify and name.casefold() == "path"
+        )
+        if "uses" in step and any("run" in later for later in steps[index + 1 : end]):
+            problems.append(f"{label} runs an action, which may change PATH, before a later step's script")
+    return problems
+
+
+# The folders each POSIX deployable job puts ahead on PATH before its verify step, as the lines that write them: npm's
+# global folder, where the runtimes install, and on macOS Homebrew's Bash folder alone. The whole of Homebrew's bin
+# would put Homebrew's python3 and node ahead of the ones the job set up, and the verify step finds a python3 either
+# way. The Windows job hands on each folder its installers added, which it does not name ahead of time.
+NPM_PATH_ENTRY = 'echo "$(npm prefix --global)/bin" >> "$GITHUB_PATH"'
+DEPLOYABLE_PATH_ENTRIES: dict[str, tuple[str, ...]] = {
+    "deployable-linux": (NPM_PATH_ENTRY,),
+    "deployable-macos": (DEPLOYABLE_MACOS_BASH_INSTALL[1], NPM_PATH_ENTRY),
+}
+
+
+def deployable_path_problems(workflow: str) -> list[str]:
+    """Report each deployable.yml job that could run a program other than the one its DEPLOYABLE_TOOLS_STEP found and
+    pinned, and DEPLOYABLE_BASH_STEP checked, through a change to PATH from that step to the job's end, as
+    `_path_change_problems` reads one, or, in a POSIX job, a folder put ahead on PATH before it that
+    DEPLOYABLE_PATH_ENTRIES does not give.
+
+    Limit: a program started to change the environment for what it runs, such as `env -i` or a script that a step
+    sources, is not read, and neither are a step's `shell` (a login shell such as `bash -l {0}` reorders PATH), a step
+    `env` naming BASH_ENV or ENV, the deprecated `::add-path::` command, PowerShell's `Env:\\Path` and cmd's `set Path=`
+    spellings, and a PATH the verify step sets for its own checks; no job writes any of them. Before a POSIX job's
+    verify step, a PATH written through GITHUB_ENV, or an action other than the setup actions the job runs, is not
+    read; no job writes either. `validation_path_problems` shares this limit."""
+    tree = read_workflow(workflow)
+    problems: list[str] = []
+    for job in DEPLOYABLE_BASH_STEP_SHELLS:
+        steps = _steps(_mapping(tree, "jobs", job))
+        problems.extend(_path_change_problems(job, steps, DEPLOYABLE_TOOLS_STEP, None))
+        names = [str(step.get("name")) for step in steps]
+        if job not in DEPLOYABLE_PATH_ENTRIES or DEPLOYABLE_TOOLS_STEP not in names:
+            continue
+        problems.extend(
+            f"the {job} job puts another folder ahead on PATH, {line!r}, so it may deploy with a program other than "
+            "the one its job set up"
+            for step in steps[: names.index(DEPLOYABLE_TOOLS_STEP)]
+            for line in _script_lines(step)
+            if "GITHUB_PATH" in line and line not in DEPLOYABLE_PATH_ENTRIES[job]
+        )
+    return problems
+
+
+# validate.yml's jobs that run the whole validation, the step each verifies its pinned tools in, and the step that runs
+# validation on them. A step after that one, such as the scheduled run with the latest ShellCheck, sets its own tools.
+VALIDATION_TOOLS_STEP = "Verify validation tools"
+VALIDATION_RUN_STEP = "Run repository validation"
+VALIDATION_JOBS = ("suite", *POSIX_VALIDATION_JOBS)
+
+
+def validation_path_problems(workflow: str) -> list[str]:
+    """Report each of validate.yml's VALIDATION_JOBS that could run validation on a program other than the one its
+    VALIDATION_TOOLS_STEP verified, through a change to PATH from that step to its VALIDATION_RUN_STEP, as
+    `_path_change_problems` reads one. The limit `deployable_path_problems` states holds here too; no leg writes any
+    of what it names."""
+    tree = read_workflow(workflow)
+    problems: list[str] = []
+    for job in VALIDATION_JOBS:
+        steps = _steps(_mapping(tree, "jobs", job))
+        problems.extend(_path_change_problems(job, steps, VALIDATION_TOOLS_STEP, VALIDATION_RUN_STEP))
     return problems
 
 
@@ -1903,7 +2020,7 @@ MUTATION_LINUX_SHELLCHECK = [
     'mkdir -p "$shellcheck"',
     'tar --extract --xz --file "$archive" --directory "$shellcheck" --strip-components 1 '
     '"shellcheck-v$SHELLCHECK_VERSION/shellcheck"',
-    'echo "$shellcheck" >> "$GITHUB_PATH"',
+    SHELLCHECK_PATH_ENTRY,
 ]
 MUTATION_WINDOWS_SHELLCHECK = [
     "choco install shellcheck --version $env:SHELLCHECK_VERSION --yes --no-progress",
@@ -2070,7 +2187,8 @@ def mutation_job_problems(workflow: str) -> list[str]:
     """Report how mutation.yml departs from the mutation gate: run on a pull request's opening, pushes, and reopening
     but not an edit of its text, as the jobs MUTATION_JOBS gives, in its order, each with its name, none the required
     check's, its dependencies and condition, matrix, runner, time limit, checkout, Python, scripts, step ids, the order
-    of its steps, and its artifact and cache steps, and the select job's outputs listing each leg's shards."""
+    of its steps, and its artifact and cache steps, and the select job's outputs listing each leg's shards. A step's
+    own `env` is not read, so an `env: PATH` on a step after Verify ShellCheck passes; no leg sets one."""
     tree = read_workflow(workflow)
     problems: list[str] = []
     types = _mapping(tree, "on", "pull_request").get("types")
@@ -2155,6 +2273,14 @@ class WorkflowsPolicies(unittest.TestCase):
     def test_every_deployable_job_deploys_on_a_bash_it_proves_meets_validations_bash_floor(self) -> None:
         workflow = (REPOSITORY_ROOT / ".github/workflows/deployable.yml").read_text(encoding="utf-8")
         self.assertEqual([], deployable_bash_problems(workflow, VALIDATION_FLOORS[platform_support.BASH_NAME]))
+
+    def test_every_deployable_job_runs_the_programs_its_verify_step_found_with_no_later_change_to_path(self) -> None:
+        workflow = (REPOSITORY_ROOT / ".github/workflows/deployable.yml").read_text(encoding="utf-8")
+        self.assertEqual([], deployable_path_problems(workflow))
+
+    def test_every_validation_leg_runs_validation_on_the_tools_its_verify_step_found(self) -> None:
+        workflow = (REPOSITORY_ROOT / ".github/workflows/validate.yml").read_text(encoding="utf-8")
+        self.assertEqual([], validation_path_problems(workflow))
 
     def test_no_workflow_installs_a_package_homebrew_removed(self) -> None:
         workflows = file_presence.matching(REPOSITORY_ROOT / WORKFLOWS_DIRECTORY, "*.y*ml")

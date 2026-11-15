@@ -172,3 +172,60 @@ def test_closure_walks_a_chain_longer_than_the_recursion_limit() -> None:
     length = sys.getrecursionlimit() * 2
     chain = skill_menu.closure(["0"], lambda name: [str(int(name) + 1)] if int(name) < length else [])
     assert [str(number) for number in range(length + 1)] == chain
+
+
+GUARD_ARGUMENTS = "-I -B -c \"import runpy; runpy.run_path('guard.py', run_name='__main__')\""
+
+
+def test_a_plugin_hook_starts_python_in_sh_and_powershell_and_reads_back_its_arguments() -> None:
+    # Pinned as written: sh joins each `set -- \` to the next line and runs the last, PowerShell runs each line.
+    command = skill_menu.plugin_hook_command(GUARD_ARGUMENTS)
+    assert command == (
+        f"set -- \\\n$global:LASTEXITCODE = 1\nset -- \\\npython {GUARD_ARGUMENTS}\nset -- \\\nexit $LASTEXITCODE\n"
+        f'p=$(command -v python); exec "${{p:-python3}}" {GUARD_ARGUMENTS}'
+    )
+    assert skill_menu.plugin_hook_arguments(command) == GUARD_ARGUMENTS
+    # A word that does not start with - may hold a dot, as a module's name does.
+    assert skill_menu.plugin_hook_command("-B -m guard.main").endswith('exec "${p:-python3}" -B -m guard.main')
+    assert skill_menu.plugin_hook_command("-B -m guard").endswith('exec "${p:-python3}" -B -m guard')
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        pytest.param("", id="none"),
+        pytest.param("-c \"print('$HOME')\"", id="an expansion"),
+        pytest.param("-c \"print('`date`')\"", id="a command substitution"),
+        pytest.param("-c \"print('\\x41')\"", id="an escape only sh reads"),
+        pytest.param('-c "print(1)\nprint(2)"', id="a line break"),
+        pytest.param("-I; echo -c x", id="a separator outside quotes"),
+        pytest.param('-X "a" -c "b"', id="two quoted strings"),
+        pytest.param("-c 'print(1)'", id="a single-quoted string"),
+        # PowerShell ends a string at a typographic double quote, and splits an option at a dot.
+        *(pytest.param(f'-c "print({quote}x{quote})"', id=f"U+{ord(quote):04X}") for quote in "\u201c\u201d\u201e"),
+        pytest.param('-c "print(\u00e9)"', id="past ASCII"),
+        # Windows PowerShell 5.1 drops an empty argument to a native program, which sh passes.
+        pytest.param('-c ""', id="an empty string"),
+        pytest.param('-X.y -c "x"', id="a dot in an option"),
+        pytest.param('-X=a.b -c "x"', id="a dot in an option's value"),
+    ],
+)
+def test_a_plugin_hook_refuses_arguments_sh_and_powershell_could_read_differently(arguments: str) -> None:
+    with pytest.raises(ValueError, match="Python arguments"):
+        skill_menu.plugin_hook_command(arguments)
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        pytest.param(f"python {GUARD_ARGUMENTS}", id="python alone"),
+        pytest.param(f'p=python; exec "$p" {GUARD_ARGUMENTS}', id="another fallback"),
+        # Each shell starting Python with other arguments.
+        pytest.param(
+            skill_menu.plugin_hook_command(GUARD_ARGUMENTS).replace("-I -B", "-B", 1), id="the shells disagreeing"
+        ),
+        pytest.param(skill_menu.plugin_hook_command(GUARD_ARGUMENTS) + "\necho done", id="a line after"),
+    ],
+)
+def test_a_command_the_plugin_hook_did_not_make_has_no_arguments_read_back(command: str) -> None:
+    assert skill_menu.plugin_hook_arguments(command) is None
