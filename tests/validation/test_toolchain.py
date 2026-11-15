@@ -140,7 +140,7 @@ class ToolchainFixtures(unittest.TestCase):
         self.assertEqual(
             [],
             outdated_prerequisites(
-                {BASH: (5, 2), "ShellCheck": (0, 9, 0), "PowerShell 7 (pwsh)": (7, 5, 3), "ruff": (0, 17, 3)},
+                {BASH: (5, 2), "ShellCheck": (0, 9, 0), "PowerShell 7 (pwsh)": (7, 5, 3), "ruff": (0, 17, 4)},
                 (3, 12, 0),
             ),
         )
