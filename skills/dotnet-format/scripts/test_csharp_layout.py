@@ -1044,7 +1044,8 @@ class ConfigTests(unittest.TestCase):
             (Completed(0, b'{"Items": {"PackageReference": [{"Identity": {"name": "x"}}]}}'), "not text"),
         )
         reasons = (
-            "MSBuild could not evaluate src/App/App.csproj: it exited with code 1",
+            "MSBuild could not evaluate src/App/App.csproj: it exited with code 1: error MSB4019: The imported project"
+            " was not found.",
             "MSBuild did not evaluate src/App/App.csproj within 120 seconds",
             "MSBuild's evaluation of src/App/App.csproj is not the items it was asked for",
             "MSBuild's evaluation of src/App/App.csproj is not the items it was asked for",
@@ -1064,6 +1065,32 @@ class ConfigTests(unittest.TestCase):
             ["unknown", "dotnet is not installed, so MSBuild cannot evaluate the projects"], self.package()
         )
         self.assertEqual([], self.msbuild.calls)
+
+    def test_a_failed_evaluation_is_named_by_msbuild_s_error_lines_on_one_bounded_line_or_its_exit_code(self) -> None:
+        prefix = "MSBuild could not evaluate src/App/App.csproj: it exited with code 1"
+        error = "/work/src/App/App.csproj(3,1): error MSB4025: The project file could not be loaded."
+        cases = (
+            # MSBuild writes its error lines to stdout among others; the error lines alone are the reason.
+            (
+                b"Determining projects to restore...\n" + error.encode() + b"\r\n\x1b[31mdone\x1b[0m\n",
+                f"{prefix}: {error}",
+            ),
+            # Output with no error line is the reason itself, flattened to one line.
+            (b"Something\n\twent wrong\n", f"{prefix}: Something went wrong"),
+            # An evaluation that printed nothing is named by its exit code alone.
+            (b"", prefix),
+            (b" \r\n\t\n", prefix),
+        )
+        for output, reason in cases:
+            with self.subTest(output=output):
+                self.msbuild.result = Completed(1, output)
+                self.assertEqual(["unknown", reason], self.package())
+        self.msbuild.result = Completed(1, ("error MSB1001: " + "x" * 5000 + "\n").encode())
+        state, reason = self.package()
+        self.assertEqual("unknown", state)
+        self.assertTrue(reason.startswith(f"{prefix}: error MSB1001: xxx"), reason)
+        self.assertTrue(reason.endswith("..."), reason)
+        self.assertLess(len(reason), len(prefix) + 600)
 
     def test_a_project_lacking_the_package_is_missing_whatever_another_evaluation_says(self) -> None:
         (self.root / "src" / "Lib").mkdir()

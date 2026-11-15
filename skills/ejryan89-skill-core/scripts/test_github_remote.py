@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import pytest
 
@@ -41,6 +42,9 @@ def test_each_github_com_form_names_its_repository_as_written(url: str, expected
         "ssh://git@example.invalid/github.com/owner/repo.git",
         "https://github.com.example.invalid/owner/repo",
         "https://github.com@example.invalid/owner/repo",
+        "https://example.invalid#@github.com/owner/repo.git",
+        "https://example.invalid?@github.com/owner/repo",
+        "https://user@example.invalid#@github.com/owner/repo",
         "https://example.invalid/?github.com/owner/repo",
         "https://gitlab.com/owner/repo.git",
         "https://github.com/owner/repo/extra",
@@ -52,3 +56,32 @@ def test_each_github_com_form_names_its_repository_as_written(url: str, expected
 )
 def test_a_url_on_another_host_or_in_another_shape_is_refused(url: str) -> None:
     assert github_repository(url) is None
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://example.invalid#@github.com/owner/repo.git",
+        "https://example.invalid?@github.com/owner/repo",
+        "http://example.invalid#x@github.com/owner/repo",
+        "https://user@example.invalid?q=1@github.com/owner/repo/",
+    ],
+)
+def test_a_userinfo_holding_a_fragment_or_query_mark_is_on_the_host_before_it_never_github_com(url: str) -> None:
+    # git reads the host as urlsplit does: a `#` or `?` ends the authority, so what follows it is not the host.
+    assert urlsplit(url).hostname != "github.com"
+    assert github_repository(url) is None
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://github.com/owner/repo.git",
+        "https://user@github.com/owner/repo",
+        "https://user:token@github.com/owner/repo",
+        "ssh://git@github.com:22/owner/repo",
+    ],
+)
+def test_each_accepted_url_is_on_github_com_as_urlsplit_reads_its_host(url: str) -> None:
+    assert urlsplit(url).hostname == "github.com"
+    assert github_repository(url) == "owner/repo"
