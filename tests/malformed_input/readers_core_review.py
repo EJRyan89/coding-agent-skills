@@ -363,17 +363,25 @@ def _read_counts(path: Path) -> object:
 
 
 READ_LOG = b'"README.md"\n{"search": "README"}\n'
-# count_reads passes over a line that is not a path of the snapshot or a search, since the guard alone writes the log,
-# and deletes the log once counted, so every case it can read is one it counts and accepts. A folder in the log's place
-# is no log, as review_guard.claimed reads it, so it counts nothing and finalize refuses the role as unguarded.
+# The cases whose line is JSON but neither a path string nor a search object, which count_reads refuses by its line
+# with PipelineError: no writer of the log writes such a line, so the entries around it are not counted as whole.
+READ_LOG_OTHER_SHAPES = frozenset({"top_level_list", "top_level_null", "missing:search", "wrong_type:search"})
+# Every other case count_reads reads, counts, and deletes the log of. A folder in the log's place is no log, as
+# review_guard.claimed reads it, so it counts nothing and finalize refuses the role as unguarded; a path naming no file
+# of the snapshot, and an empty log, count nothing; and a line that is not UTF-8, or that json_reader refuses, holds no
+# entry, as a write the guard's hook was stopped in leaves, so it is passed over.
 READ_LOG_COUNTED = {
     case.name: (
         "a folder where the log should be is no log, so the role counts nothing and finalize refuses it as unguarded"
         if case.content == corpus.DIRECTORY
-        else "a line that is not a path of the snapshot or a search the guard writes counts nothing"
+        else "a path that names no file of the snapshot counts nothing"
+        if case.name == "top_level_string"
+        else "an empty log is a guarded reviewer that read nothing"
+        if case.name == "empty"
+        else "a line that is not UTF-8, or that json_reader refuses, holds no entry and is passed over"
     )
     for case in corpus.cases("json-lines", READ_LOG)
-    if case.content not in (corpus.LINK, corpus.UNREADABLE)
+    if case.content not in (corpus.LINK, corpus.UNREADABLE) and case.name not in READ_LOG_OTHER_SHAPES
 }
 
 
@@ -674,8 +682,9 @@ READERS = [
         "json-lines",
         READ_LOG,
         _read_counts,
-        # A log it cannot stat or read raises its OSError, which check reports, never read as a role that read nothing.
-        (OSError,),
+        # A log it cannot stat or read raises its OSError, which check reports, never read as a role that read nothing;
+        # a line of another shape raises PipelineError naming it.
+        (OSError, review_run.PipelineError),
         filename=f"run/work/reads-{READ_ROLE}.log",
         accepts=READ_LOG_COUNTED,
         prepare=_read_log_source,

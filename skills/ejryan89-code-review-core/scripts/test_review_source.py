@@ -284,7 +284,7 @@ class LazySnapshotTests(LazySnapshotFixture):
         def wrong(checkout: Path, blobs: Sequence[str]) -> list[bytes]:
             return [b"def helper(value):\n    return 'injected'\n" for _ in blobs]
 
-        with self.assertRaisesRegex(RuntimeContractError, "did not return blob"):
+        with self.assertRaisesRegex(RuntimeContractError, "returned content that does not hash to blob"):
             self.fetch("src/unchanged.py", blob_reader=wrong)
         self.assertFalse((self.source / "src" / "unchanged.py").exists())
 
@@ -320,12 +320,17 @@ class LazySnapshotTests(LazySnapshotFixture):
         def wrong(checkout: Path, blobs: Sequence[str]) -> list[bytes]:
             return [b"def helper(value):\n    return value * 3\n" for _ in blobs]
 
-        with self.assertRaises(RuntimeContractError) as raised:
-            self.fetch("src/unchanged.py", blob_reader=wrong)
-        self.assertEqual(
-            'The checkout did not return blob 2e003f7a6d1fae7c935efcf0adef7cfc4346fb66 of "src/unchanged.py"',
-            str(raised.exception),
-        )
+        def none(checkout: Path, blobs: Sequence[str]) -> list[bytes]:
+            return []
+
+        blob = "2e003f7a6d1fae7c935efcf0adef7cfc4346fb66"
+        for reader, message in (
+            (wrong, f'The checkout returned content that does not hash to blob {blob} of "src/unchanged.py"'),
+            (none, f'The checkout did not return blob {blob} of "src/unchanged.py"'),
+        ):
+            with self.subTest(message), self.assertRaises(RuntimeContractError) as raised:
+                self.fetch("src/unchanged.py", blob_reader=reader)
+            self.assertEqual(message, str(raised.exception))
 
     def test_a_manifest_whose_fetchable_paths_are_malformed_fails_verification(self) -> None:
         path = self.source / "source-snapshot.json"
@@ -723,6 +728,19 @@ class SearchErrorTests(LazySnapshotFixture):
                         self.scripted_search(checkout, root, stream)
             with self.subTest(route="checkout" if checkout else "snapshot", status="no match"):
                 self.assertEqual(([], False), self.scripted_search(checkout, root, ScriptedStream([], 1, "")))
+
+    def test_a_failed_search_names_git_s_stderr_on_one_line_or_its_exit_code(self) -> None:
+        for stream, message in (
+            (
+                ScriptedStream([], 0, "error: one\nerror: two\n"),
+                "git grep could not search every file: error: one error: two",
+            ),
+            (ScriptedStream([], 2, "fatal: one\nfatal: two\n"), "fatal: one fatal: two"),
+            (ScriptedStream([], 2, ""), "git grep failed with exit code 2"),
+        ):
+            with self.subTest(message), self.assertRaises(RuntimeContractError) as raised:
+                self.scripted_search(self.checkout, self.source, stream)
+            self.assertEqual(message, str(raised.exception))
 
     def test_an_error_printed_before_the_match_limit_fails_the_cut_search(self) -> None:
         line = f"{self.head}:src/changed.py\x002\x00helper\n".encode()

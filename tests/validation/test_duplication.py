@@ -552,6 +552,20 @@ class SharedFactPolicy(unittest.TestCase):
             ('def closes(line):\n    return line.rstrip().endswith("~~~")\n', 2),
             ('import re\n\n\ndef block(text):\n    return re.search(r"^```toml\\n(.*?)\\n```$", text, re.M)\n', 5),
             ('import re\n\nFENCE = re.compile(r"^\\s*(`{3,}|~{3,})")\n', 3),
+            # A class of both markers repeated, and the pattern functions that do not find.
+            ('import re\n\nFENCE = re.compile(r"^[`~]{3,}")\n', 3),
+            ('import re\n\n\ndef body(text):\n    return re.sub(r"```[a-z]*\\n", "", text)\n', 5),
+            ('import re\n\n\ndef blocks(text):\n    return re.split(r"^~~~$", text)\n', 5),
+            # An re imported under another name, or its function imported alone.
+            ('import re as regex\n\n\ndef blocks(text):\n    return regex.finditer(r"```", text)\n', 5),
+            ('from re import subn\n\n\ndef strip(text):\n    return subn(r"~{3,}", "", text)\n', 5),
+            # A run held in a name, tested at a line's start or given as a pattern.
+            ('FENCE = "```"\n\n\ndef fenced(line):\n    return line.strip().startswith(FENCE)\n', 5),
+            ('import re\n\nRUN = r"^`{3,}"\nFENCE = re.compile(RUN)\n', 4),
+            # A run compared with a line: held in it, or its start.
+            ('def fenced(line):\n    return "```" in line\n', 2),
+            ('def fenced(line):\n    return line[:3] == "~~~"\n', 2),
+            ('MARKERS = ("```", "~~~")\n\n\ndef fenced(line):\n    return line[:3] in MARKERS\n', 5),
         ):
             with self.subTest(reader=reader):
                 self.assertEqual(
@@ -564,6 +578,10 @@ class SharedFactPolicy(unittest.TestCase):
             'def heading(line):\n    return line.startswith(("#", "|"))\n',
             'def render(text):\n    return "\\n".join(["```text", text, "```"])\n',
             'def fenced(line):\n    return line.startswith("``")\n',
+            # A run written, or a name holding none, is no reader.
+            'FENCE = "```"\n\n\ndef render(text):\n    return f"{FENCE}text\\n{text}\\n{FENCE}"\n',
+            'HEADING = "#"\n\n\ndef heading(line):\n    return line.startswith(HEADING) or line == "~~"\n',
+            'import re\n\nWORDS = re.compile(r"[a-z~]+")\n',
         ):
             with self.subTest(passing=passing):
                 self.assertEqual([], self.problems({guidance: passing}))

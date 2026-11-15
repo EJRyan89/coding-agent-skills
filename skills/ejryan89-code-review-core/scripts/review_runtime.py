@@ -881,10 +881,11 @@ class PrepareGitRunner:
 
 def _run_git(checkout: Path, runner: Runner, *arguments: str) -> str:
     """What git printed on stdout, whole, so a name it lists keeps every character; a one-line answer is read through
-    git_client.output_line."""
+    git_client.output_line. A failure is named by git's stderr on one line, its first stdout line when it printed no
+    stderr, or the subcommand and the exit code when it printed neither."""
     result = git_in(checkout, runner, *arguments)
     if result.returncode != 0:
-        detail = result.stderr.strip() or output_line(result.stdout) or "git command failed"
+        detail = flat_text(result.stderr) or flat_text(output_line(result.stdout)) or git_reason(arguments, result)
         raise RuntimeContractError(output_bytes(detail).decode("utf-8", "replace"))
     return result.stdout
 
@@ -2281,8 +2282,12 @@ def fetch_source_file(
         close = getattr(blobs, "close", None)
         if close is not None:  # a generator reader ends its git process
             close()
-    if content is None or not blob_matches(blob, content):
+    if content is None:
         raise RuntimeContractError(f"The checkout did not return blob {blob} of {json_writer.dumps(relative)}")
+    if not blob_matches(blob, content):
+        raise RuntimeContractError(
+            f"The checkout returned content that does not hash to blob {blob} of {json_writer.dumps(relative)}"
+        )
     if is_binary(content):
         return "binary"
     if held + len(content) > MAX_SOURCE_SNAPSHOT_BYTES:
@@ -2367,7 +2372,7 @@ def search_source(
                 matches.append((path, number.decode("ascii", "replace"), _match_text(found)))
             status = stream.wait()
             if status not in {0, 1}:  # 1 is no match
-                raise RuntimeContractError(stream.stderr().strip() or f"git grep failed with exit code {status}")
+                raise RuntimeContractError(flat_text(stream.stderr()) or f"git grep failed with exit code {status}")
             _require_whole_search(stream)
     except GitError as exc:
         raise RuntimeContractError(str(exc)) from exc
@@ -2379,7 +2384,7 @@ def _require_whole_search(stream: GitStream) -> None:
     on, exiting 0 when another file matched and 1 when none did, so its status alone would report a result over fewer
     files than it was asked to search. Its matches go to stdout, so any line on stderr fails the search, as one the
     search cannot tell from such an error. Checked at the match limit too, for the errors printed by then."""
-    errors = stream.stderr().strip()
+    errors = flat_text(stream.stderr())
     if errors:
         raise RuntimeContractError(f"git grep could not search every file: {errors}")
 

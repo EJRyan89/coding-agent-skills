@@ -1348,7 +1348,8 @@ def custom_candidates(report: dict[str, Any]) -> list[dict[str, Any]]:
 
 def _print_custom_candidates(report: dict[str, Any]) -> None:
     """One summary line for every custom-candidate rule, decided together, then the synthesis's patterns of them, and
-    last the `decide-custom` arguments, before the decision, that name the flags the summary line showed."""
+    last the `decide-custom` arguments, before the decision, that name the rules and the flags the summary line
+    showed."""
     items = custom_candidates(report)
     if not items:
         return

@@ -571,33 +571,73 @@ def _keyed_by_folder(node: ast.AST, resolver: CallableResolver) -> bool:
     return function == "name_key" and module.rpartition(".")[2] in {"path_keys", "platform_support"}
 
 
-# The characters a fence's run repeats three or more times.
+# The characters a fence's run repeats three or more times, and a regular expression's class that repeats one of them
+# three or more times, as in a class of both followed by `{3,}`, built from them so this policy holds no run itself.
 FENCE_MARKERS = ("`", "~")
-PATTERN_CALLS = frozenset(f"re.{name}" for name in ("compile", "match", "fullmatch", "search", "findall", "finditer"))
+FENCE_CLASS_RUN = re.compile(r"\[[^\]]*[" + "".join(FENCE_MARKERS) + r"][^\]]*\]\{3")
+# The re functions that take a pattern first: a fence run in that pattern finds or tests a fence.
+PATTERN_CALLS = frozenset(
+    f"re.{name}" for name in ("compile", "match", "fullmatch", "search", "findall", "finditer", "sub", "subn", "split")
+)
+# The comparisons that test a line against a run: whether it holds it, or is it.
+RUN_TESTS = (ast.In, ast.NotIn, ast.Eq, ast.NotEq)
 
 
 def _reads_fence_run(
     node: ast.AST, _members: frozenset[str], _imports_owner: bool, _name: str, resolver: CallableResolver
 ) -> bool:
-    """A fence read by hand beside markdown_sections.find_fences: a string literal holding a fence's run, alone or in a
-    tuple, given to str.startswith or str.endswith, as a reader tests a line, or a regular expression literal that
-    matches one, as a reader finds a fenced block. Such a reader misses a fence a blockquote or a list item holds and
-    takes any line that starts with a run, an info string's included, as the fence's close."""
+    """A fence read by hand beside markdown_sections.find_fences: a fence's run, as a string literal or a name the
+    module binds to one, alone or in a tuple, given to str.startswith or str.endswith as a reader tests a line's start
+    or end, given first to an re function as its pattern, however re or the function is imported, or compared with `in`,
+    `not in`, `==`, or `!=`, as `"```" in line` or `line[:3] == "~~~"` test a line. Such a reader misses a fence a
+    blockquote or a list item holds and takes any line that starts with a run, an info string's included, as the
+    fence's close. A run built at runtime, such as from a marker by `*`, is not read."""
+    if isinstance(node, ast.Compare):
+        operands = [node.left, *node.comparators]
+        tests = any(isinstance(operator, RUN_TESTS) for operator in node.ops)
+        return tests and any(_is_fence_run(operand, resolver) for operand in operands)
     if not isinstance(node, ast.Call) or not node.args:
         return False
-    if _called_name(node) in AFFIX_TESTS:
-        tested = node.args[0].elts if isinstance(node.args[0], ast.Tuple) else [node.args[0]]
-    elif resolver.name(node.func) in PATTERN_CALLS:
-        tested = [node.args[0]]
-    else:
-        return False
-    return any(isinstance(item, ast.Constant) and _holds_fence_run(item.value) for item in tested)
+    if _called_name(node) in AFFIX_TESTS or resolver.name(node.func) in PATTERN_CALLS:
+        return _is_fence_run(node.args[0], resolver)
+    return False
+
+
+def _is_fence_run(node: ast.AST, resolver: CallableResolver) -> bool:
+    """Whether an expression is a fence's run: a string literal holding one, a tuple, list, or set of literals one of
+    which does, or a name the module binds to either."""
+    if isinstance(node, (ast.Tuple, ast.List, ast.Set)):
+        return any(_is_fence_run(item, resolver) for item in node.elts)
+    if isinstance(node, ast.Name):
+        return node.id in _fence_run_names(resolver)
+    return isinstance(node, ast.Constant) and _holds_fence_run(node.value)
+
+
+@functools.lru_cache(maxsize=1)
+def _fence_run_names(resolver: CallableResolver) -> frozenset[str]:
+    """The names the resolver's module binds, at any level, to a fence's run: a string literal holding one, or a
+    tuple, list, or set of literals one of which does."""
+    names: set[str] = set()
+    for node in ast.walk(resolver.tree):
+        targets = (
+            node.targets if isinstance(node, ast.Assign) else [node.target] if isinstance(node, ast.AnnAssign) else []
+        )
+        value = getattr(node, "value", None)
+        if value is None or not targets:
+            continue
+        literals = value.elts if isinstance(value, (ast.Tuple, ast.List, ast.Set)) else [value]
+        if any(isinstance(item, ast.Constant) and _holds_fence_run(item.value) for item in literals):
+            names |= {target.id for target in targets if isinstance(target, ast.Name)}
+    return frozenset(names)
 
 
 def _holds_fence_run(value: object) -> bool:
-    """Whether a literal holds a fence's run, as text or as a regular expression's repetition of three or more. The
-    run is built from its marker here, so this policy is no fence reader itself."""
-    return isinstance(value, str) and any(marker * 3 in value or f"{marker}{{3" in value for marker in FENCE_MARKERS)
+    """Whether a literal holds a fence's run, as text, as a regular expression's repetition of a marker three or more
+    times, or as a class holding a marker repeated three or more times."""
+    return isinstance(value, str) and (
+        any(marker * 3 in value or f"{marker}{{3" in value for marker in FENCE_MARKERS)
+        or FENCE_CLASS_RUN.search(value) is not None
+    )
 
 
 @dataclass(frozen=True)
