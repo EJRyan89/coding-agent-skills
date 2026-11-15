@@ -1531,7 +1531,7 @@ def _gives_message(node: ast.expr | None) -> bool:
 # `os.path.join`, `", ".join`, and `p.with_name` are. A class, by a capitalized name, as `Path("Program Files")` is,
 # builds one too.
 VALUE_CALLS = frozenset(
-    {name for name in dir(builtins) if not name.startswith("_") and name != "print"}
+    {name for name in BUILTIN_NAMES if not name.startswith("_") and name != "print"}
     | {name for name in dir(str) if not name.startswith("_")}
     | {name for name in dir(PurePosixPath) if not name.startswith("_")}
 )
