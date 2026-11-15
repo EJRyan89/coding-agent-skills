@@ -47,6 +47,7 @@ import file_presence
 import json_reader
 import json_writer
 import path_containment
+import private_folder
 import review_dispatch
 import review_document
 import review_hosts
@@ -257,7 +258,7 @@ def rendered(renderers: Renderers) -> dict[Path, str]:
     """Every sample, by its path relative to the repository root."""
     samples: dict[Path, str] = {}
     for skill, render in sorted(renderers.items()):
-        directory = Path(tempfile.mkdtemp(prefix="runtime-prompt-")).resolve()
+        directory = Path(tempfile.mkdtemp(prefix="runtime-prompt-", dir=private_folder.temporary_directory())).resolve()
         try:
             try:
                 prompts = render(directory)

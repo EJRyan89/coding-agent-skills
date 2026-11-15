@@ -200,6 +200,13 @@ class FsopsPlatformFixtures(unittest.TestCase):
                 "    tempfile.mkdtemp(dir=private_folder.temporary_directory(target))\n"  # 21: given an argument
                 "    tempfile.mkdtemp(dir=private_folder.base())\n"  # 22: another of its folders
                 "    tempfile.mkdtemp(dir=temporary_directory())\n",  # 23: a name the module never imports
+                # The checked call's module, named but never imported, which may be any object of that name.
+                "deployer/unimported.py": 'FSOPS_ALLOWED = {"tempfile.mkdtemp": "a working directory"}\n'
+                "import tempfile\n"
+                "\n"
+                "\n"
+                "def run():\n"
+                "    tempfile.mkdtemp(dir=private_folder.temporary_directory())\n",  # 6
             }
             write_fixture_tree(root, files)
             message = (
@@ -213,6 +220,7 @@ class FsopsPlatformFixtures(unittest.TestCase):
                     "deployer/strayed.py:17 " + message.format("shutil.rmtree"),
                     "deployer/strayed.py:20 " + message.format("shutil.rmtree"),
                     *(f"deployer/strayed.py:{line} " + message.format("tempfile.mkdtemp") for line in (21, 22, 23)),
+                    "deployer/unimported.py:6 " + message.format("tempfile.mkdtemp"),
                 ],
                 filesystem_write_problems(root),
             )

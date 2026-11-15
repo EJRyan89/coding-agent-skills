@@ -197,6 +197,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "ejryan8
 import file_presence
 import json_reader
 import json_writer
+import private_folder
 import python_reader
 import whole_number
 from bounded_process import run_bounded
@@ -893,7 +894,7 @@ def measurement_problem(reach: ReachRunner) -> str | None:
     """Why the reach run cannot be trusted, or None when it measured the canary suite's own process and the process its
     test started, and named each one's line with that test."""
     expected = frozenset({f"{MEASUREMENT_SUITE}::test_canary"})
-    with tempfile.TemporaryDirectory(prefix="mutation-canary-") as temporary:
+    with tempfile.TemporaryDirectory(prefix="mutation-canary-", dir=private_folder.temporary_directory()) as temporary:
         tree = Path(temporary)
         # The texts are ASCII, so their bytes are the same in every encoding a locale could choose.
         (tree / MEASUREMENT_MODULE).write_bytes(MEASUREMENT_SOURCE.encode())
@@ -925,7 +926,7 @@ def run_suite(tree: Path, suite: str, timeout: float, tests: Sequence[str] = ())
     module it failed to collect, an interruption or, when the run named tests, a usage error, timed out past
     `timeout`, and errored on any other exit, which judges nothing and logs pytest's exit and the start of its output.
     The node ids go to pytest in an argument file, which no command line's length limits."""
-    with tempfile.TemporaryDirectory(prefix="mutation-tests-") as temporary:
+    with tempfile.TemporaryDirectory(prefix="mutation-tests-", dir=private_folder.temporary_directory()) as temporary:
         target = suite
         if tests:
             listed = Path(temporary) / "tests.txt"
@@ -1115,7 +1116,7 @@ def coverage_reach(tree: Path, suite: str, modules: Sequence[str], timeout: floa
     """Run a suite unmutated under coverage.py and give the lines of the changed modules it executed and the tests that
     ran each, or why not."""
     python = [sys.executable, "-B", "-m"]
-    with tempfile.TemporaryDirectory(prefix="mutation-reach-") as temporary:
+    with tempfile.TemporaryDirectory(prefix="mutation-reach-", dir=private_folder.temporary_directory()) as temporary:
         folder = Path(temporary)
         settings = folder / "coveragerc"
         settings.write_text(coverage_settings(folder, (tree / module for module in modules)), encoding="utf-8")
@@ -2484,7 +2485,7 @@ class Gate:
                 "suites would judge them at another commit"
             )
         with (
-            tempfile.TemporaryDirectory(prefix="mutation-gate-") as temporary,
+            tempfile.TemporaryDirectory(prefix="mutation-gate-", dir=private_folder.temporary_directory()) as temporary,
             worktrees(self.root, self.workers, Path(temporary), self.git) as trees,
         ):
             ran = self.run_leg(name, trees, modules, started)
@@ -2501,7 +2502,7 @@ class Gate:
             raise RuntimeError(problem)
         started = self.clock()
         with (
-            tempfile.TemporaryDirectory(prefix="mutation-gate-") as temporary,
+            tempfile.TemporaryDirectory(prefix="mutation-gate-", dir=private_folder.temporary_directory()) as temporary,
             worktrees(self.root, self.workers, Path(temporary), self.git) as trees,
         ):
             report = self.mutate(trees, modules, started)
@@ -2566,7 +2567,7 @@ class Gate:
             return leg
         started = self.clock()
         with (
-            tempfile.TemporaryDirectory(prefix="mutation-gate-") as temporary,
+            tempfile.TemporaryDirectory(prefix="mutation-gate-", dir=private_folder.temporary_directory()) as temporary,
             worktrees(self.root, self.workers, Path(temporary), self.git) as trees,
         ):
             for chosen in modules:

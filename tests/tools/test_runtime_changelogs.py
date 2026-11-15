@@ -474,6 +474,8 @@ import os
 from os import environ
 NAME = "FROM_CONSTANT"
 PROXY_VARIABLES = ("HTTPS_PROXY", "lowercase_proxy")
+SETTING_VARIABLES = {"FROM_DICT_COLLECTION": "1"}
+SETTINGS = {"NOT_A_COLLECTION": "1"}
 def f(env, environment, variables, settings):
     os.environ["FROM_SUBSCRIPT"]
     env.get("FROM_GET")
@@ -497,6 +499,7 @@ def test_the_variables_a_module_reads_or_sets_are_its_environment_keys_only() ->
         "FROM_GETENV",
         "FROM_IN",
         "FROM_SPREAD",
+        "FROM_DICT_COLLECTION",
     }
 
 
@@ -522,6 +525,9 @@ class RepositoryTermsTests(unittest.TestCase):
             {"CLAUDE_CONFIG_DIR", "CODEX_HOME", "COPILOT_HOME", "COPILOT_AUTO_UPDATE", "CLAUDE_SKILL_DIR"},
             self.texts("variable"),
         )
+        # The setting the canaries and the skill evaluations start Claude Code with, so no CLAUDE.md above a throwaway
+        # home loads: a release that renames or drops it must reach the watch.
+        self.assertIn("CLAUDE_CODE_DISABLE_CLAUDE_MDS", self.texts("variable"))
         self.assertLessEqual(
             {".claude/skills", ".agents/skills", ".claude/agents", ".copilot/skills", "agents/openai.yaml"},
             self.texts("path"),

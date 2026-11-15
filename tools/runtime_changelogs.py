@@ -16,7 +16,8 @@ term this repository uses, and the terms are read from the code at each run, nev
   variable     each variable of the environment those builders start a command line in, and each environment
                variable a Python module under deployer/, tools/, or a skill's scripts reads or sets:
                a key of `os.environ`, of a mapping named `env`, `environ`, or `environment`, or of a dict literal that
-               spreads one, a name `getenv` takes, or a member of a module-level `*_VARIABLES` collection, each a
+               spreads one, a name `getenv` takes, or a member of a module-level `*_VARIABLES` collection, or a key
+               of one that is a dict, each a
                string literal or a module-level string constant; and each `${NAME}` a skill's or agent's Markdown names
   path         each folder and file the deployer writes under the home, from deployer/paths.py's Paths, and the Codex
                metadata file it writes beside an adapter
@@ -103,6 +104,7 @@ import file_presence
 import frontmatter
 import guidance_record
 import json_reader
+import private_folder
 import python_reader
 import versions
 from agent_skills import CODEX_METADATA
@@ -239,7 +241,9 @@ def command_line_terms(versions: Mapping[str, Sequence[tuple[int, ...]]]) -> lis
     Where GitHub CLI sits beside Node.js, that check cannot hide it and builds no signed-out environment, so the
     variables are the ones the builders set alone."""
     terms: list[Term] = []
-    with tempfile.TemporaryDirectory(prefix="runtime-changelogs-") as directory:
+    with tempfile.TemporaryDirectory(
+        prefix="runtime-changelogs-", dir=private_folder.temporary_directory()
+    ) as directory:
         for runtime, subject in DECLARED_RUNTIME.items():
             root = Path(directory) / runtime
             try:
@@ -322,6 +326,9 @@ def environment_keys(node: ast.AST) -> Iterator[ast.expr]:
         name = terminal_name(target) if isinstance(target, (ast.Name, ast.Attribute)) else None
         if name and VARIABLE_COLLECTION.search(name) and isinstance(node.value, (ast.Tuple, ast.List, ast.Set)):
             yield from node.value.elts
+        elif name and VARIABLE_COLLECTION.search(name) and isinstance(node.value, ast.Dict):
+            # Settings a caller spreads into an environment, as search_boundary's CLAUDE_INSTRUCTIONS_OFF_VARIABLES.
+            yield from (key for key in node.value.keys if key is not None)
 
 
 def module_variables(tree: ast.Module, constants: Mapping[str, str]) -> set[str]:

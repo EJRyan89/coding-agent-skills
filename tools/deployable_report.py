@@ -76,6 +76,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "ejryan8
 import file_presence
 import json_reader
 import json_writer
+import private_folder
 import whole_number
 from console import run_main
 
@@ -164,7 +165,7 @@ def check_runtimes(
     # An empty working directory that is a git repository of its own, as verify's is, so no project skill, in it or
     # in a folder above it, stands in for an adapter. With no runtime installed nothing lists from it, so git, which
     # makes it one, is not needed then.
-    workdir = Path(tempfile.mkdtemp(prefix="deployable-report-"))
+    workdir = Path(tempfile.mkdtemp(prefix="deployable-report-", dir=private_folder.temporary_directory()))
     try:
         if any(executables.values()):
             verify.bound_working_directory(workdir, "the report")
