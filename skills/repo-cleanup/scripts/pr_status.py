@@ -13,7 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-cor
 
 import json_writer
 from flat_text import flat_text
-from git_client import GitClient, GitError, GitResult, output_line
+from git_client import GitClient, GitError, GitResult, failure_message, output_line
 from github_client import GitHubClient, GitHubError, subprocess_runner
 from github_client import Runner as GhRunner
 from pull_carried import InBase, carried
@@ -40,8 +40,8 @@ SameChange = Callable[[str, str], bool]
 
 
 GIT_STATUS_ALLOWED = {
-    "branch_tips": "fails closed: an upstream listing git cannot give raises a QueryError naming git's stderr",
-    "change_match.change": "fails closed: a diff git cannot give raises a QueryError naming git's stderr",
+    "branch_tips": "fails closed: an upstream listing git cannot give raises a QueryError naming git's reason",
+    "change_match.change": "fails closed: a diff git cannot give raises a QueryError naming git's reason",
 }
 
 
@@ -113,11 +113,14 @@ def branch_tips(repository_root: str, branch: str, git: GitClient | None = None)
     if head is None:
         raise QueryError(f"cannot resolve local branch {branch!r}: it names no commit")
     # NUL-separated: a ref name may hold a | or any other printable character, but never NUL.
-    configured = _git_output(
-        git, repository_root, ["for-each-ref", "--format=%(upstream)%00%(upstream:track)", f"refs/heads/{branch}"]
-    )
-    if configured.returncode != 0 or "\0" not in configured.stdout:
-        raise QueryError(f"cannot read the upstream of {branch!r}: {(configured.stderr or '').strip()}")
+    listing = ["for-each-ref", "--format=%(upstream)%00%(upstream:track)", f"refs/heads/{branch}"]
+    configured = _git_output(git, repository_root, listing)
+    if configured.returncode != 0:
+        raise QueryError(f"cannot read the upstream of {branch!r}: {flat_text(failure_message(listing, configured))}")
+    if "\0" not in configured.stdout:
+        answer = flat_text(configured.stdout)
+        found = f"git answered {answer!r}, not an upstream listing" if answer else "git listed no such branch"
+        raise QueryError(f"cannot read the upstream of {branch!r}: {found}")
     upstream_ref, track = output_line(configured.stdout).split("\0", 1)
     if not upstream_ref or track == "[gone]":
         return head, None
@@ -183,9 +186,10 @@ def change_match(repository_root: str, base_ref: str, git: GitClient | None = No
     tips: dict[str, Change | None] = {}
 
     def change(start: str, end: str) -> Change | None:
-        diff = _git_output(client, repository_root, [*CHANGE_ARGUMENTS, start, end])
+        arguments = [*CHANGE_ARGUMENTS, start, end]
+        diff = _git_output(client, repository_root, arguments)
         if diff.returncode != 0:
-            raise QueryError(f"cannot diff {start} {end}: {(diff.stderr or '').strip()}")
+            raise QueryError(f"cannot diff {start} {end}: {flat_text(failure_message(arguments, diff))}")
         return change_identity(diff.output_bytes())
 
     def tip_change(tip: str) -> Change | None:

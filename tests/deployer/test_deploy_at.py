@@ -856,6 +856,25 @@ class DeployAtTests(DeployerTestCase):
         self.assertEqual(1, len(made))
         self.assertFalse(made[0].exists())
 
+    def test_an_export_git_fails_is_named_by_git_s_reason_on_one_line_or_by_its_exit_code(self) -> None:
+        # git killed, or exiting, without printing leaves its exit code as the reason; lines it printed are one line.
+        for result, reason in (
+            (platform_support.ToolResult(128, ""), "exit code 128"),
+            (platform_support.ToolResult(-9, " \r\n"), "exit code -9"),
+            (
+                platform_support.ToolResult(128, "fatal: bad object\r\nerror: \x1b  short read\n"),
+                "fatal: bad object error: short read",
+            ),
+        ):
+            with (
+                self.subTest(result=result),
+                mock.patch.object(source_ref, "refuse_archive_attributes"),
+                mock.patch.object(source_ref, "_git", return_value=result),
+                self.assertRaises(DeployError) as raised,
+            ):
+                source_ref.export(self.source, "0" * 40)
+            self.assertEqual(f"ERROR: git archive could not export {'0' * 40}: {reason}", raised.exception.lines[0])
+
     def commit_attributes(self, branch: str, attributes: str) -> None:
         """Commit, on a new branch, a .gitattributes holding these lines after the fixture's, and a SKILL.md for alpha
         holding an export-subst placeholder, then return to main."""

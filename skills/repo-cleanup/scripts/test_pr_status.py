@@ -632,6 +632,25 @@ class BranchTipListingTests(unittest.TestCase):
             with self.subTest(name), self.assertRaisesRegex(QueryError, "cannot read the upstream of 'topic'"):
                 self.tips(listing)
 
+    def test_a_listing_that_failed_or_holds_no_nul_is_named_by_git_s_reason_on_one_line_or_its_exit_code(self) -> None:
+        prefix = "cannot read the upstream of 'topic': "
+        for listing, reason in (
+            (
+                GitResult(128, "", "fatal: bad object\nerror: \x1b[31m  broken ref\n"),
+                "fatal: bad object error: [31m broken ref",
+            ),
+            (GitResult(128, "", ""), "git for-each-ref failed with exit code 128"),
+            (GitResult(128, "", " \n\t"), "git for-each-ref failed with exit code 128"),
+            (
+                GitResult(0, "refs/remotes/origin/a\n[ahead 1]\n", ""),
+                "git answered 'refs/remotes/origin/a [ahead 1]', not an upstream listing",
+            ),
+            (GitResult(0, "", ""), "git listed no such branch"),
+        ):
+            with self.subTest(listing=listing), self.assertRaises(QueryError) as raised:
+                self.tips(listing)
+            self.assertEqual(prefix + reason, str(raised.exception))
+
 
 class BaseContainsTests(GitFixture):
     def test_reports_whether_a_commit_is_reachable_from_the_base(self) -> None:
@@ -827,6 +846,20 @@ class PatchMatchTests(SquashFixture):
         )
         with self.assertRaisesRegex(QueryError, pattern):
             change_match(str(self.clone), self.BASE_REF, GitClient(run))(self.tip, squash)
+
+    def test_a_diff_that_fails_is_named_by_git_s_reason_on_one_line_or_its_exit_code(self) -> None:
+        squash = self.squash_merge()
+        for failed, reason in (
+            (GitResult(128, "", "fatal: bad object\n  in the pack\n"), "fatal: bad object in the pack"),
+            (GitResult(128, "", ""), "git diff-tree failed with exit code 128"),
+        ):
+
+            def run(command: Sequence[str], timeout: float, failed: GitResult = failed) -> GitResult:
+                return failed if "diff-tree" in command else subprocess_runner(command, timeout)
+
+            with self.subTest(failed=failed), self.assertRaises(QueryError) as raised:
+                change_match(str(self.clone), self.BASE_REF, GitClient(run))(self.tip, squash)
+            self.assertRegex(str(raised.exception), f"^cannot diff [0-9a-f]{{40}} [0-9a-f]{{40}}: {re.escape(reason)}$")
 
     def test_a_merge_base_git_cannot_run_is_named_as_such(self) -> None:
         squash = self.squash_merge()
