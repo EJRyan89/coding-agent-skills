@@ -553,20 +553,15 @@ def unread_part(definition: Definition, unread: dict[str, str]) -> str:
 
 
 def suites(root: Path) -> dict[str, str]:
-    """Each suite the snapshot holds, by its repository path, and its text."""
+    """Each suite the snapshot holds, by its repository path, and its text. The suite roots do not overlap, and the
+    fixtures are never listed, so a folder it cannot list inside them is never met and no fixture suite is kept."""
     found: dict[str, str] = {}
     for suite_root in SUITE_ROOTS:
-        # The fixtures are never listed, so a folder it cannot list inside them is never met.
         for path in file_presence.matching(
             root, f"{suite_root}/**/*", skip=lambda folder: f"{folder.relative_to(root).as_posix()}/" == FIXTURES
         ):
             relative = path.relative_to(root).as_posix()
-            if (
-                relative.startswith(FIXTURES)
-                or relative in found
-                or not is_suite(relative)
-                or not file_presence.is_present(path, other_is_absent=True)
-            ):
+            if not is_suite(relative) or not file_presence.is_present(path, other_is_absent=True):
                 continue
             found[relative] = path.read_bytes().decode("utf-8", errors="replace")
     return dict(sorted(found.items()))
