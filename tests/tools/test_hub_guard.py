@@ -3449,21 +3449,25 @@ class WriteGuardTests(GuardTestCase):
 
     def test_tar_s_archive_is_judged_where_its_mode_writes_it(self) -> None:
         readme = self.hub / "README.md"
+        # A path with a colon before any slash, as a Windows drive path is, names an archive on a remote host to GNU
+        # tar, so a command naming the hub's file there says --force-local, as it must for GNU tar to write the file.
+        local = "--force-local " if ":" in str(readme).partition("/")[0] else ""
         for command in (
-            f'tar -cf "{readme}" notes.txt',
-            f'tar -czf "{readme}" notes.txt',
-            f'tar -rf "{readme}" notes.txt',
-            f'tar -uf "{readme}" notes.txt',
-            f'tar -Af "{readme}" other.tar',
-            f'tar cf "{readme}" notes.txt',
-            f'tar --create --file="{readme}" notes.txt',
-            f'tar --create --file "{readme}" notes.txt',
-            f'tar --delete -f "{readme}" notes.txt',
-            f'tar -c -f"{readme}" notes.txt',
-            f'bsdtar -cf "{readme}" notes.txt',
-            f'gnutar -cf "{readme}" notes.txt',
-            f'gtar -cf "{readme}" notes.txt',
-            f'timeout 5 tar -cf "{readme}" notes.txt',
+            f'tar {local}-cf "{readme}" notes.txt',
+            f'tar {local}-czf "{readme}" notes.txt',
+            f'tar {local}-rf "{readme}" notes.txt',
+            f'tar {local}-uf "{readme}" notes.txt',
+            f'tar {local}-Af "{readme}" other.tar',
+            # The old form's bundle stays the first word, so --force-local follows the archive, as GNU tar reads it.
+            f'tar cf "{readme}" {local}notes.txt',
+            f'tar {local}--create --file="{readme}" notes.txt',
+            f'tar {local}--create --file "{readme}" notes.txt',
+            f'tar {local}--delete -f "{readme}" notes.txt',
+            f'tar {local}-c -f"{readme}" notes.txt',
+            f'bsdtar {local}-cf "{readme}" notes.txt',
+            f'gnutar {local}-cf "{readme}" notes.txt',
+            f'gtar {local}-cf "{readme}" notes.txt',
+            f'timeout 5 tar {local}-cf "{readme}" notes.txt',
         ):
             with self.subTest(command=command):
                 self.assertEqual("deny", self.bash(command, self.tree))
@@ -3472,9 +3476,9 @@ class WriteGuardTests(GuardTestCase):
         self.assertIn(f"`tar` writes {self.hub / 'archive.tar'}, a file of a guarded hub.", self.reason)
         # Listing or comparing reads the archive, and `-` is standard output.
         for command, cwd in (
-            (f'tar -tf "{readme}"', self.tree),
-            (f'tar -tvf "{readme}"', self.tree),
-            (f'tar -df "{readme}" notes.txt', self.tree),
+            (f'tar {local}-tf "{readme}"', self.tree),
+            (f'tar {local}-tvf "{readme}"', self.tree),
+            (f'tar {local}-df "{readme}" notes.txt', self.tree),
             ("tar -cf - notes.txt > /dev/null", self.tree),
             ("tar -cf - README.md | wc -c", self.hub),
             ("tar -czf out.tgz notes.txt", self.tree),
@@ -3482,6 +3486,19 @@ class WriteGuardTests(GuardTestCase):
         ):
             with self.subTest(command=command):
                 self.assertIsNone(self.bash(command, cwd))
+
+    def test_a_drive_path_archive_is_a_remote_one_to_tar_unless_force_local_makes_it_a_file(self) -> None:
+        # GNU tar reads an archive name with a colon before any slash as host:path, which it opens through a remote
+        # shell, a Windows drive path among them, on every platform.
+        for command in (r"tar -cf 'C:\x\y.tar' notes.txt", r"tar -tf 'C:\x\y.tar'", "tar -cf host:y.tar notes.txt"):
+            with self.subTest(command=command):
+                self.assertEqual("deny", self.bash(command, self.tree))
+                self.assertIn(
+                    "through a remote shell, which runs a command; --force-local makes it a file", self.reason
+                )
+        for command in (r"tar --force-local -cf 'C:\x\y.tar' notes.txt", r"tar --force-local -tf 'C:\x\y.tar'"):
+            with self.subTest(command=command):
+                self.assertIsNone(self.bash(command, self.tree))
 
     def test_a_cookie_jar_a_repository_s_own_configuration_names_in_a_hub_refuses_a_git_call_there(self) -> None:
         readme = (self.hub / "README.md").as_posix()
