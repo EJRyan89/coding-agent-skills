@@ -1690,6 +1690,16 @@ class SkillScriptsFixtures(unittest.TestCase):
             # gives the variable what it holds; a backtick substitution running the judge is judged.
             "quoted_value.sh": "T='a /tmp/b'\nU=$'a /tmp/b'\nV=${A /tmp",
             "backticked_judge.sh": f'J=`{judge}`\nX=$(mktemp "$J/x.XXXXXX")',
+            # An escaped blank goes on with the value's word, so the path after it only gives the variable its value.
+            "escaped_value.sh": "T=a\\ /tmp/b",
+            # Limit rows, passing on purpose: the script is read in text order, so what a branch, a loop, or a function
+            # call does at run time is not followed ("Working files" in docs/adding-a-skill.md names each limit).
+            # The judged assignment written last before the mktemp counts, though the branch may not run it.
+            "limit_branch.sh": f'J=/tmp\nif c; then J=$({judge}); fi\nX=$(mktemp "$J/x.XXXXXX")',
+            # The assignment written after the mktemp is not read, though the loop's next pass runs the mktemp after it.
+            "limit_loop.sh": f'J=$({judge})\nfor i in 1 2; do X=$(mktemp "$J/x.XXXXXX"); J=/tmp; done',
+            # A function's body is read where it is written, not where it is called after a later assignment.
+            "limit_function.sh": f'J=$({judge})\nmake() {{ X=$(mktemp "$J/x.XXXXXX"); }}\nJ=/tmp\nmake',
         }
         for verdict, rows in (("refused", refused), ("passing", passing)):
             for file, row in rows.items():
