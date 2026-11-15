@@ -34,6 +34,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan8
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "tests" / "validation"))
 
 import job_selection
+from bounded_process import Finished
 from fixture_template import FixtureTemplate, repository_shape
 from fsops_platform import PLATFORM_TOKENS
 from git_client import GitClient
@@ -915,14 +916,16 @@ class CoverageReachFixtures(unittest.TestCase):
         suite: str = "tests/test_calc.py",
         report: object = None,
         passes: bool = True,
+        test: str | None = None,
     ) -> Reach | str:
         """The reach of `suite` in a tree whose stub coverage.py reports nothing, or, when `recorded`, CONTEXT_REPORT
         for the CONTEXT_SUITE the tree holds, or else `report` when one is given. Unless `recorded`, the suite is one
-        test, which passes or fails as `passes` says."""
+        test, which passes or fails as `passes` says, or whose text is `test` when one is given."""
         with tempfile.TemporaryDirectory() as temporary:
             tree = Path(temporary) / "tree with spaces"
             (tree / "tests").mkdir(parents=True)
-            (tree / "tests" / "test_calc.py").write_text(f"def test_it():\n    assert {passes}\n", encoding="utf-8")
+            text = f"def test_it():\n    assert {passes}\n" if test is None else test
+            (tree / "tests" / "test_calc.py").write_text(text, encoding="utf-8")
             (tree / "coverage.py").write_text(self.STUB, encoding="utf-8")
             (tree / "stub-actions.json").write_text(json.dumps(actions), encoding="utf-8")
             if recorded:
@@ -1015,9 +1018,42 @@ class CoverageReachFixtures(unittest.TestCase):
         self.assertEqual({}, dict(result.tests))
         self.assertIn(9, result.lines["tools/calc.py"])
 
-    def test_a_suite_failed_unmutated_is_still_reported_by_its_exit_code(self) -> None:
-        self.assertEqual("failed unmutated with exit code 1", self.reach({}, passes=False))
-        self.assertEqual("failed unmutated with exit code 4", self.reach({}, suite="tests/test_gone.py"))
+    def test_a_suite_failed_unmutated_is_named_by_the_end_of_pytest_s_output_or_its_exit_code(self) -> None:
+        failed = self.reach({}, passes=False)
+        if not isinstance(failed, str):
+            self.fail(f"a failing suite was measured: {failed}")
+        self.assertRegex(failed, r"\Afailed unmutated with exit code 1: `[^`\n]*FAILED tests/test_calc\.py::test_it")
+        self.assertRegex(failed, r"1 failed in [0-9.]+s`\Z")
+        gone = self.reach({}, suite="tests/test_gone.py")
+        if not isinstance(gone, str):
+            self.fail(f"a missing suite was measured: {gone}")
+        self.assertRegex(gone, r"\Afailed unmutated with exit code 4: `[^`\n]*file or directory not found")
+        # The end of a failure whose output runs past what a run reads back is kept, where pytest gives its summary.
+        long = self.reach({}, test='def test_it():\n    print("x" * 20000)\n    assert False\n')
+        if not isinstance(long, str):
+            self.fail(f"a failing suite was measured: {long}")
+        self.assertGreater(20000, mutation_gate.OUTPUT_LIMIT)
+        self.assertRegex(long, r"FAILED tests/test_calc\.py::test_it - assert False 1 failed in [0-9.]+s`\Z")
+        self.assertNotIn("cut", long)
+        cases = (
+            (b"", b"", "failed unmutated with exit code 3"),
+            (b" \r\n", b"\t\n", "failed unmutated with exit code 3"),
+            (
+                b"collected 2 items\n\n1 failed in 0.1s\n",
+                b"",
+                "failed unmutated with exit code 3: `collected 2 items 1 failed in 0.1s`",
+            ),
+        )
+        for stdout, stderr, expected in cases:
+
+            def printing(
+                *_: object, stdout_bytes: bytes = stdout, stderr_bytes: bytes = stderr, **options: Any
+            ) -> Finished:
+                options["stdout"].write(stdout_bytes + stderr_bytes)
+                return Finished(3, b"", b"")
+
+            with self.subTest(stdout=stdout, stderr=stderr), mock.patch.object(mutation_gate, "run_bounded", printing):
+                self.assertEqual(expected, self.reach({}))
 
     def test_a_gate_measured_by_coverage_starts_every_coverage_step_unmeasured(self) -> None:
         # The gate's own suite runs under the reach pass, which leaves this variable set, or, from coverage.py's
