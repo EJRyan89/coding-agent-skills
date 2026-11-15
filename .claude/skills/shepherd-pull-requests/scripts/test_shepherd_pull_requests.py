@@ -595,6 +595,48 @@ class HubTest(FixtureTestCase):
         self.assertEqual(["REPOSITORY owner/repo"], [line for line in lines if line.startswith("REPOSITORY")])
         self.assertEqual("REMAINING 0", lines[-1])
 
+    def shadowed_tick(self, kind: str) -> None:
+        """A tick fast-forwards the hub to origin's main though a branch or a tag named origin/main, which comes
+        before refs/remotes/origin/main in git's reading of the short name, points at a commit the hub could
+        fast-forward to."""
+        head = git("rev-parse", "HEAD", directory=self.hub)
+        tree = git("rev-parse", "HEAD^{tree}", directory=self.hub)
+        shadow = git("commit-tree", tree, "-p", head, "-m", "shadow", directory=self.hub)
+        git(kind, "origin/main", shadow, directory=self.hub)
+        after = self.advance_origin()
+        status, lines = self.tick(StubGh())
+        self.assertEqual(0, status)
+        self.assertEqual(after, git("rev-parse", "HEAD", directory=self.hub))
+        self.assertEqual(
+            f'HUB "{self.hub.as_posix()}" fast-forwarded {head[:7]} to {after[:7]}', self.line(lines, "HUB ")
+        )
+
+    def test_a_branch_that_shadows_origin_s_main_never_redirects_the_fast_forward(self) -> None:
+        self.shadowed_tick("branch")
+
+    def test_a_tag_that_shadows_origin_s_main_never_redirects_the_fast_forward(self) -> None:
+        self.shadowed_tick("tag")
+
+    def test_a_ref_that_shadows_a_pruned_remote_tracking_ref_never_redirects_the_fast_forward(self) -> None:
+        # With origin's main gone, the fetch prunes refs/remotes/origin/main, and git reads even that full name as the
+        # first of these a session may make from any worktree.
+        head = git("rev-parse", "HEAD", directory=self.hub)
+        tree = git("rev-parse", "HEAD^{tree}", directory=self.hub)
+        shadow = git("commit-tree", tree, "-p", head, "-m", "shadow", directory=self.hub)
+        git("update-ref", "-d", "refs/heads/main", directory=self.origin)
+        for planted in (
+            "refs/refs/remotes/origin/main",
+            "refs/tags/refs/remotes/origin/main",
+            "refs/heads/refs/remotes/origin/main",
+        ):
+            with self.subTest(planted=planted):
+                git("update-ref", planted, shadow, directory=self.hub)
+                status, lines = self.tick(StubGh())
+                self.assertEqual(1, status)
+                self.assertIn("not fast-forwarded: could not read refs/remotes/origin/main (", self.line(lines, "HUB "))
+                self.assertEqual(head, git("rev-parse", "HEAD", directory=self.hub))
+                git("update-ref", "-d", planted, directory=self.hub)
+
     def test_a_hub_already_at_origin_is_current(self) -> None:
         head = git("rev-parse", "HEAD", directory=self.hub)
         _, lines = self.tick(StubGh())

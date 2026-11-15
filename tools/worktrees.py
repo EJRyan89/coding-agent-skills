@@ -36,7 +36,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "ejryan8
 import file_presence
 import git_worktrees
 from console import run_main
-from flat_text import flat_text
+from flat_text import flat_text, reason_line
 from git_client import GitClient, GitError, GitResult, failure_message, output_line, output_lines
 
 from deployer import platform_support
@@ -131,7 +131,7 @@ def checkout_of(path: Path, timeout: float = GUARD_GIT_TIMEOUT_SECONDS) -> Check
     )
     lines = output_lines(result.stdout)
     if result.returncode != 0 and below_a_checkout(directory):
-        said = " ".join(result.stderr.split()) or f"git rev-parse exited with {result.returncode}"
+        said = reason_line(result.stderr) or f"git rev-parse exited with {result.returncode}"
         raise GitError(f"git could not read the checkout at {directory}: {said}", returncode=result.returncode)
     if result.returncode != 0:
         return None
@@ -280,7 +280,8 @@ def list_worktrees() -> int:
 
 
 def main(arguments: list[str]) -> int:
-    parser = argparse.ArgumentParser(prog="worktrees.py", description=__doc__.splitlines()[0])
+    # The docstring's summary line ends at its first LF, the only break this file's own text holds.
+    parser = argparse.ArgumentParser(prog="worktrees.py", description=__doc__.partition("\n")[0])
     commands = parser.add_subparsers(dest="command", required=True)
     create = commands.add_parser("new", help="create a worktree for a task under .claude/worktrees")
     create.add_argument("kind", help=f"branch prefix: {', '.join(KINDS)}")

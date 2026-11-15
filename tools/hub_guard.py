@@ -47,6 +47,7 @@ import json_writer
 import whole_number
 from bounded_process import run_bounded
 from console import run_main
+from flat_text import reason_line
 from git_client import (
     CARRIER_OPTIONS,
     CONFIG_READ_ACTIONS,
@@ -57,6 +58,7 @@ from git_client import (
     GitError,
     GitResult,
     carried_option,
+    failure_message,
     output_line,
     output_lines,
 )
@@ -74,6 +76,7 @@ from option_reader import (
     slash_kind,
 )
 from path_keys import name_key
+from text_lines import text_lines
 
 from deployer import platform_support
 from tools import bash_syntax, worktrees
@@ -743,16 +746,42 @@ READ_ONLY_PROGRAMS: dict[str, str] = {
 }
 # The names Python's interpreter is started by, and the option letters it reads before the script it runs: the flags,
 # and the letters that take a value, attached or as the next word, whose values are judged as any unlisted program's
-# words are, since `-X pycache_prefix=<folder>` writes there. A script a guarded hub tracks, run by such a name with
-# only these options, is trusted whatever its own words (is_trusted_script): the guard refuses every edit to a file a
-# guarded hub tracks and every git call that writes it, so it holds what the hub's history holds. A script anywhere
-# else is trusted by no path, since a session's own tools may rewrite it. `-i`, which runs code from the input after
-# the script, is not among the flags.
+# words are, since `-X pycache_prefix=<folder>` writes there. A script TRUSTED_SCRIPTS names that a guarded hub tracks,
+# run by such a name with only these options, is trusted whatever its own words (is_trusted_script). `-i`, which runs
+# code from the input after the script, is not among the flags.
 # The characters no Windows file name holds (path_value).
 NO_FILE_NAME = re.compile(r'[<>:"|?*\x00-\x1f]')
 PYTHON_NAMES = re.compile(r"python(?:3(?:\.[0-9]+)?)?")
 PYTHON_FLAGS = "bBdEIOPqsSuvx"
 PYTHON_VALUED = "WX"
+# The hub's own tools a session runs from the hub, by their paths in it, each with why it writes no file a hub tracks
+# whatever its words, but by the one write the guard allows from the hub itself, the fast-forward of main to origin's
+# main, which a tool reads from refs/remotes/origin/main alone and merges by its commit id, so no other ref redirects
+# it: such a script is trusted whatever its words where a guarded hub tracks it (is_trusted_script), since the guard
+# refuses every edit to a file a guarded hub tracks and every git call that writes it, so it runs what the hub's history
+# holds. Every other script's words are judged as any unlisted program's, a hub tool that writes hub files when its
+# words ask among them, as `tools/skill_reference.py --write` or `tools/new_skill.py <name>` does, and so is a script
+# anywhere else, since a session's own tools may rewrite it. A tool joins only with a reason that holds for every word
+# it reads.
+TRUSTED_SCRIPTS: dict[str, str] = {
+    "deploy.py": (
+        "deploys into the home, or a throwaway one it holds inside the temporary directory, and writes its "
+        "configuration, manifest, and journal there, never under its source, which the deployer suites' harness "
+        "fails a test for changing"
+    ),
+    "tools/worktrees.py": (
+        "makes a task's worktree and branch under the folder the hub ignores, surveys the worktrees, or runs this guard"
+    ),
+    "tools/project_release_sync.py": "changes only the GitHub project's fields, through gh",
+    ".claude/skills/shepherd-pull-requests/scripts/shepherd_pull_requests.py": (
+        "acts on the repository's pull requests on GitHub, through gh, and in the hub only fetches origin and "
+        "fast-forwards main to the commit it reads from refs/remotes/origin/main alone, by its id, the fast-forward "
+        "the guard allows from the hub"
+    ),
+}
+# The blanks before a # that make a line of the PowerShell reader a comment (powershell_reader): the ones its lines
+# are indented with.
+COMMENT_INDENT = " \t"
 # gh's subcommands that write files into the directory gh runs in, or where their words name: each is judged as a
 # program read_unlisted reads, and refused where it runs in a guarded hub.
 GH_WRITERS = {
@@ -1494,7 +1523,7 @@ def guard_enabled(hub: Path) -> bool:
     look up, allowed with a note rather than read as unguarded unseen."""
     result = git(hub, "config", "--local", "--type=bool", "--get", GUARD_SETTING)
     if result.returncode not in (0, 1):
-        said = " ".join(result.stderr.split()) or f"git config exited with {result.returncode}"
+        said = reason_line(result.stderr) or f"git config exited with {result.returncode}"
         print(f"hub guard skipped: the opt-in of {hub} could not be read: {said}", file=sys.stderr)
     return result.returncode == 0 and output_line(result.stdout) == "true"
 
@@ -1689,7 +1718,7 @@ class Write:
 class ScriptRun:
     """A Python script a command runs, at the path its words place, with what the guard reads from its words as from
     any program read_unlisted reads: the files they may name and the parts it does not read. Both count only where the
-    script is not one a guarded hub tracks (is_trusted_script)."""
+    script is not one TRUSTED_SCRIPTS names that a guarded hub tracks (is_trusted_script)."""
 
     script: Path
     writes: list[Write]
@@ -2576,7 +2605,7 @@ def shadowed_fast_forward(hub: Path) -> str | None:
     refs/remotes/origin/main exists, which git resolves first or reads as ambiguous, or git cannot list them."""
     result = git(hub, "for-each-ref", "--format=%(refname)", *FAST_FORWARD_SHADOWS)
     if result.returncode != 0:
-        said = " ".join(result.stderr.split()) or f"git for-each-ref exited with {result.returncode}"
+        said = reason_line(result.stderr) or f"git for-each-ref exited with {result.returncode}"
         return (
             f"`git merge --ff-only origin/main` is refused: the guard could not list the refs it may follow ({said})."
         )
@@ -3713,7 +3742,8 @@ class Judge:
             if result.returncode == 1:
                 continue
             if result.returncode != 0:
-                return self.unreadable(call, result.stderr.strip())
+                arguments = [*repository, "config", "--get", f"alias.{subcommand}"]
+                return self.unreadable(call, reason_line(failure_message(arguments, result)))
             found = True
             reason = self.expansion_refusal(call, result.stdout.removesuffix("\n"), depth, lookup.top)
             if reason is not None:
@@ -4995,18 +5025,21 @@ def python_script(program: str, words: Sequence[tuple[Word, bool]], directory: D
 
 
 def is_trusted_script(script: Path) -> bool:
-    """Whether a Python script is one a guarded hub tracks, with every link on the way to it followed: the guard refuses
-    every edit to such a file and every git call that writes it, so it runs what the hub's history holds. A file the
-    hub does not track, an ignored one or a new one among them, and any file elsewhere is not."""
+    """Whether a Python script is one TRUSTED_SCRIPTS names that a guarded hub tracks, with every link on the way to it
+    followed: the guard refuses every edit to such a file and every git call that writes it, so it runs what the hub's
+    history holds. A hub file TRUSTED_SCRIPTS does not name, a file the hub does not track, an ignored one or a new
+    one among them, and any file elsewhere is not."""
     real = Path(os.path.realpath(script))
     hub = protecting_hub(real)
     if hub is None or not file_presence.is_present(real, other_is_absent=True):
+        return False
+    relative = Path(os.path.relpath(real, os.path.realpath(hub))).as_posix()
+    if relative not in TRUSTED_SCRIPTS:
         return False
     # A literal pathspec matches no other file a wildcard in its name would match, and the answer must name this file
     # alone, as a folder's pathspec names every file under it.
     arguments = ["ls-files", "-z", "--", f":(literal){real}"]
     answer = CLIENT.quiet_output(arguments, directory=hub, timeout=lookup_timeout()) or ""
-    relative = Path(os.path.relpath(real, os.path.realpath(hub))).as_posix()
     return answer.split("\0") == [relative, ""]
 
 
@@ -5566,9 +5599,13 @@ def read_bash(command: str, cwd: Path | None, reading: Reading, depth: int = 0) 
 def powershell_reader() -> str:
     """The reader as pwsh is handed it on its command line: without its comment lines, which run nothing and would
     otherwise bring it past the 32767 characters a command line Windows starts may hold. The reader holds no
-    here-string, so no line of a string begins with #."""
-    lines = POWERSHELL_READER.read_text(encoding="utf-8").splitlines()
-    return "\n".join(line for line in lines if not line.lstrip().startswith("#"))
+    here-string, so no line of a string begins with #. Its lines break where PowerShell breaks them, at CR, LF, and
+    CRLF alone (text_lines), and a comment line is one whose # follows only the spaces and tabs COMMENT_INDENT names:
+    a line whose # follows a form feed, a file separator, or another character str.lstrip skips is kept, and so is
+    one str.splitlines would end there, since keeping a comment costs only its length and dropping a line that is not
+    one changes what the reader runs."""
+    lines = text_lines(POWERSHELL_READER.read_text(encoding="utf-8"))
+    return "\n".join(line for line in lines if not line.lstrip(COMMENT_INDENT).startswith("#"))
 
 
 def powershell_events(command: str, reading: Reading) -> dict[str, Any] | None:
@@ -5607,8 +5644,8 @@ def powershell_events(command: str, reading: Reading) -> dict[str, Any] | None:
     try:
         output = json_reader.loads(result.stdout.decode("utf-8", "replace"))
     except ValueError:
-        errors = result.stderr.decode("utf-8", "replace").strip().splitlines()
-        reading.cannot_read(f"pwsh could not read the command ({(errors or [''])[0]})")
+        reason = reason_line(result.stderr.decode("utf-8", "replace")) or f"exit code {result.returncode}"
+        reading.cannot_read(f"pwsh could not read the command ({reason})")
         return None
     if not isinstance(output, dict):
         reading.cannot_read("pwsh answered with something other than the reader's object")

@@ -47,7 +47,7 @@ The configuration stays on each machine and never in the repository. Add this en
 
 ## 2. Check
 
-Check the reviewer against each pull request given, or a recent merged one of each route:
+Check the reviewer against each pull request given, or a recent merged one of each route, from a worktree on `origin/main`, never the hub, whose guard refuses this script in a clone that guards it:
 
 ```bash
 python -B skills/ejryan89-code-review-core/scripts/review_pipeline.py validate-reviewer --repository EJRyan89/coding-agent-skills --pull '<number>'
