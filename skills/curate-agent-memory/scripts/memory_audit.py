@@ -307,20 +307,27 @@ def block_scalar(header: re.Match[str], key_indent: int, following: list[str]) -
     return re.sub(r" ?\n ?", "\n", paragraphs).strip(), count
 
 
+def is_delimiter(line: str) -> bool:
+    """Whether a line is the `---` that opens or closes frontmatter, as YAML reads a document marker: `---` followed by
+    nothing but its whitespace, a space or a tab. Any other character after it, such as U+2028, which YAML reads as
+    text, leaves the line no delimiter."""
+    return line.startswith("---") and not line[3:].strip(" \t")
+
+
 # Kept for good instead of ejryan89-skill-core's frontmatter.py, by the decision recorded in
 # https://github.com/EJRyan89/coding-agent-skills/issues/27: memories nest their type in a `metadata:` mapping, which
 # the shared reader does not give, and the audit must read every memory however it is written.
 def parse_frontmatter(text: str) -> tuple[dict[str, str], str]:
     """Parse the simple key: value frontmatter Claude Code writes, tolerating nesting and reading block scalars."""
     lines = text_lines(text)
-    if not lines or lines[0].strip() != "---":
+    if not lines or not is_delimiter(lines[0]):
         return {}, text
     values: dict[str, str] = {}
     index = 1
     while index < len(lines):
         line = lines[index]
         index += 1
-        if line.strip() == "---":
+        if is_delimiter(line):
             return values, "\n".join(lines[index:])
         match = FRONTMATTER_KEY.match(line)
         if not match or not match.group("value"):
@@ -329,7 +336,7 @@ def parse_frontmatter(text: str) -> tuple[dict[str, str], str]:
         header = BLOCK_SCALAR.match(value)
         if header:
             # A block scalar's lines are never read as keys, and the closing --- is never indented past a key.
-            following = list(itertools.takewhile(lambda rest: rest.strip() != "---", lines[index:]))
+            following = list(itertools.takewhile(lambda rest: not is_delimiter(rest), lines[index:]))
             value, spanned = block_scalar(header, indentation(line), following)
             index += spanned
         else:

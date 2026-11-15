@@ -7819,3 +7819,68 @@ def test_a_scope_literal_too_deep_to_evaluate_is_not_a_literal(error: type[Excep
         _write_fixture(root, {"scripts/ai_config.py": 'TARGET_RUNTIMES = ["claude"]\n'})
         with mock.patch.object(ast, "literal_eval", side_effect=error):
             assert audit.derive_generator_scope(root) == (None, "generator-scope-not-literal")
+
+
+# The characters str.splitlines breaks a line at and text_lines, as YAML 1.2 and CommonMark, does not.
+TEXT_SEPARATORS = ("\x0b", "\x0c", "\x1c", "\x1d", "\x1e", "\x85", "\u2028", "\u2029")
+
+
+@pytest.mark.parametrize("separator", TEXT_SEPARATORS)
+def test_a_skill_body_breaks_only_where_yaml_and_commonmark_break_a_line(separator: str) -> None:
+    text = f"---\nname: a\ndescription: d{separator}more\n---\nbody{separator}line\n"
+    assert audit._skill_body(text) == [f"body{separator}line"]
+
+
+@pytest.mark.parametrize("separator", TEXT_SEPARATORS)
+def test_a_section_heading_starts_only_a_line_commonmark_breaks(separator: str) -> None:
+    content = f"## Overview\nText{separator}## Formatting Rules\nmore\n"
+    assert audit._extract_sections(content, ["Formatting Rules"]) == ""
+    assert audit._extract_sections(content, ["Overview"]) == f"## Overview\nText{separator}## Formatting Rules\nmore"
+
+
+@pytest.mark.parametrize("separator", TEXT_SEPARATORS)
+def test_an_expected_shim_reads_the_frontmatter_lines_yaml_reads(separator: str, tmp_path: Path) -> None:
+    skill = tmp_path / ".claude" / "skills" / "demo" / "SKILL.md"
+    skill.parent.mkdir(parents=True)
+    skill.write_bytes(f"---\nname: demo\ndescription: d{separator}name: forged\n---\nBody.\n".encode())
+    shim = audit._expected_skill_shim(tmp_path, "demo")
+    assert shim is not None
+    assert shim.startswith(f"---\nname: demo\ndescription: d{separator}name: forged\n---\n\n")
+
+
+@pytest.mark.parametrize("separator", TEXT_SEPARATORS)
+def test_an_instruction_files_length_counts_the_lines_commonmark_reads(separator: str, tmp_path: Path) -> None:
+    sources = audit.InstructionSources(*([False] * 8))
+    claude_md = tmp_path / "CLAUDE.md"
+    claude_md.write_bytes(f"a{separator}b\n".encode() * 1000)
+    assert audit._code_review_lengths(tmp_path, ["CLAUDE.md"], sources) == []
+    claude_md.write_bytes(f"a{separator}b\n".encode() * 1001)
+    assert [finding.message for finding in audit._code_review_lengths(tmp_path, ["CLAUDE.md"], sources)] == [
+        "1001 lines, over the about 1,000 lines GitHub advises for one instruction file Copilot code review reads; "
+        "beyond it the quality of its reviews may deteriorate"
+    ]
+
+
+@pytest.mark.parametrize(
+    ("opener", "closer", "expected"),
+    [
+        pytest.param("--- \t", "---  ", [], id="yaml-whitespace-after-each"),
+        pytest.param("---\u2028", "---", [(None, "Missing YAML frontmatter")], id="a-separator-yaml-reads-as-text"),
+        pytest.param("---", "---\u2028", [(None, "Unterminated YAML frontmatter")], id="no-closing-delimiter"),
+        pytest.param(
+            "---\x0c",
+            "---",
+            [(None, "Invalid YAML frontmatter: frontmatter delimiter on line 1 holds U+000C, which YAML forbids")],
+            id="a-character-yaml-forbids",
+        ),
+    ],
+)
+def test_a_frontmatter_delimiter_is_judged_as_yaml_judges_a_document_marker(
+    opener: str, closer: str, expected: list[tuple[int | None, str]], tmp_path: Path
+) -> None:
+    skill = tmp_path / ".github" / "skills" / "demo" / "SKILL.md"
+    skill.parent.mkdir(parents=True)
+    skill.write_bytes(f"{opener}\nname: demo\ndescription: Demo.\n{closer}\nBody.\n".encode())
+    values, found = audit._frontmatter(tmp_path, skill)
+    assert [(finding.line, finding.message) for finding in found] == expected
+    assert values == ({} if expected else {"name": "demo", "description": "Demo."})

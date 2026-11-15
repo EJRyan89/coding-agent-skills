@@ -14,6 +14,7 @@ from pathlib import Path
 
 import file_presence
 from markdown_sections import ATX_HEADING
+from text_lines import text_lines
 from validation_support import (
     COMMONMARK_CODE_SPAN,
     OPERATIONS_CONTRACT,
@@ -41,7 +42,7 @@ PRESENCE_ALLOWED = {
 
 def _outside_fences(text: str) -> list[str]:
     """The Markdown's lines, with fenced code blocks blanked so their text is never read as a link or heading."""
-    lines = text.splitlines()
+    lines = text_lines(text)
     return ["" if holder is not None else line for line, holder in zip(lines, fence_holders(lines), strict=True)]
 
 

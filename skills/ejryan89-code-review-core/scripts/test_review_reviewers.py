@@ -580,3 +580,28 @@ class RepositoryTests(unittest.TestCase):
                     ("solo", SKILL, ["docs/rules.md"]),
                     (resolved.manifest["id"], resolved.manifest["entrypoint"], resolved.manifest["resources"]),
                 )
+
+
+# The characters str.splitlines breaks a line at and text_lines, as YAML 1.2 and CommonMark, does not.
+TEXT_SEPARATORS = ("\x0b", "\x0c", "\x1c", "\x1d", "\x1e", "\x85", "\u2028", "\u2029")
+# The characters of them YAML forbids in a stream, which the frontmatter reader refuses.
+YAML_FORBIDDEN = ("\x0b", "\x0c", "\x1c", "\x1d", "\x1e")
+
+
+class SeparatorTests(unittest.TestCase):
+    def test_a_tool_list_is_read_from_the_frontmatter_lines_yaml_reads(self) -> None:
+        for separator in TEXT_SEPARATORS:
+            text = f"---\nname: x{separator}tools: Read\n---\nAsk db-review.\n"
+            with self.subTest(separator=f"U+{ord(separator):04X}"):
+                if separator in YAML_FORBIDDEN:
+                    with self.assertRaisesRegex(RuntimeContractError, f"line 1 holds U\\+{ord(separator):04X}"):
+                        inspect(text)
+                    continue
+                result = inspect(text)
+                self.assertEqual((None, "yes"), (result.tools, result.delegates))
+
+    def test_evidence_is_placed_on_the_body_line_commonmark_breaks(self) -> None:
+        for separator in TEXT_SEPARATORS:
+            with self.subTest(separator=f"U+{ord(separator):04X}"):
+                result = inspect(f"---\nname: x\n---\nIntro{separator}Ask db-review.\n")
+                self.assertEqual([(4, "Intro Ask db-review.")], result.evidence)
