@@ -62,6 +62,7 @@ from review_specialists import (
     parse_unified_diff,
     verify_generic_instructions,
 )
+from text_lines import program_lines
 
 # The record of what prepare wrote under a reviewer root, which lists every other file there.
 MATERIALIZATION_FILE = "materialization.json"
@@ -208,7 +209,7 @@ def _read_log(log: Path, source: Path) -> tuple[dict[str, int], int]:
     sizes: dict[str, int] = {}
     searches = 0
     text = log.read_bytes().decode("utf-8", "surrogateescape")
-    for number, line in enumerate(text.splitlines(), start=1):
+    for number, line in enumerate(program_lines(text), start=1):
         try:
             line.encode("utf-8")  # a byte that is not UTF-8 was decoded to a lone surrogate
             entry = json_reader.loads(line)

@@ -1,4 +1,4 @@
-"""Regression tests for the one splitter of a file an author writes into its lines."""
+"""Regression tests for the one splitter of a file an author writes into its lines, and of a program's output."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from text_lines import text_lines
+from text_lines import program_lines, text_lines
 
 # Every character str.splitlines breaks at besides CR and LF, written out rather than derived from it.
 KEPT = ("\x0b", "\x0c", "\x1c", "\x1d", "\x1e", "\x85", "\u2028", "\u2029")
@@ -43,3 +43,26 @@ def test_every_other_character_splitlines_breaks_at_is_kept_in_its_line(characte
     assert len(text.splitlines()) == 3  # the premise: str.splitlines breaks here
     assert text_lines(text) == [f"description: a{character}disable-model-invocation: true", "name: x"]
     assert text_lines(text, keepends=True) == [f"description: a{character}disable-model-invocation: true\n", "name: x"]
+
+
+class ProgramLinesTests(unittest.TestCase):
+    def test_it_breaks_at_lf_and_takes_off_the_cr_before_it(self) -> None:
+        self.assertEqual(["a", "b", "c"], program_lines("a\r\nb\nc"))
+
+    def test_a_lone_cr_stays_in_its_line(self) -> None:
+        # A progress line a program rewrites in place, or a path holding a CR, is one line.
+        self.assertEqual(["10%\r20%", "done"], program_lines("10%\r20%\ndone\n"))
+        self.assertEqual(["a\r", "b"], program_lines("a\r\r\nb"))
+
+    def test_a_last_break_ends_the_last_line_and_empty_output_has_none(self) -> None:
+        self.assertEqual(["a", ""], program_lines("a\n\n"))
+        self.assertEqual(["a"], program_lines("a\r\n"))
+        self.assertEqual([], program_lines(""))
+        self.assertEqual([""], program_lines("\n"))
+
+
+@pytest.mark.parametrize("character", KEPT, ids=[f"U+{ord(character):04X}" for character in KEPT])
+def test_a_program_line_keeps_every_other_character_splitlines_breaks_at(character: str) -> None:
+    output = f"error: cannot read docs/a{character}b.md\nnext"
+    assert len(output.splitlines()) == 3  # the premise: str.splitlines breaks here
+    assert program_lines(output) == [f"error: cannot read docs/a{character}b.md", "next"]

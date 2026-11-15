@@ -40,6 +40,7 @@ from typing import Any
 
 from bounded_process import KILL_WAIT_SECONDS, run_bounded
 from process_identity import ENDED_STATES, PROC, PS_ENVIRONMENT, PS_SECONDS, open_failure_status, stat_fields
+from text_lines import program_lines
 
 PROCESS_TERMINATE = 0x0001
 PROCESS_SET_QUOTA = 0x0100
@@ -518,7 +519,7 @@ def listed_members(group: int) -> list[int] | None:
     if finished.returncode != 0:
         return None
     running: list[int] = []
-    for line in finished.stdout.decode("ascii", "replace").splitlines():
+    for line in program_lines(finished.stdout.decode("ascii", "replace")):
         fields = line.split()
         if not fields:
             continue

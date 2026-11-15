@@ -230,6 +230,14 @@ DESTINATION_GLOBS = (
 USER_DESTINATION_GLOBS = ("CLAUDE.md", "rules/**/*.md")
 
 
+LINE_SPLIT_ALLOWED = {
+    "holds_line_break": (
+        "asks whether any character str.splitlines breaks at is in the text, which is the question, not a split of "
+        "its lines"
+    ),
+}
+
+
 PRESENCE_ALLOWED = {
     "output_refusal": (
         "a failed stat reads as no file here, but main opens the report with mode x, which never replaces a file "

@@ -12,7 +12,11 @@ of a file an author writes splits it with `text_lines`, never `str.splitlines`. 
 program breaks a line elsewhere: an analyzer config, which the C# compiler breaks at more (`analyzer_config.py`), and a
 Bash script and a `.shellcheckrc`, which Bash and ShellCheck break at LF alone, reading a CR as part of the line
 (audit-skill's `skill_inventory.shell_lines`, ejryan89-code-review-core's `review_analyzers._shellcheckrc`). A
-program's output is split where that program ends a line (`git_client.output_lines`).
+program's output is split where that program ends a line: `program_lines` for a program that ends one with LF, or
+with CRLF as Windows does, and `git_client.output_lines` for git's. A line of a program's output can hold any other
+character, a name or a path it prints among them, U+2028 or a lone CR included. Validation refuses `str.splitlines`
+on anything but plain bytes, which it breaks at CR, LF, and CRLF alone, and a split at LF alone of a file an author
+writes, outside a module-level `LINE_SPLIT_ALLOWED` that states why.
 """
 
 from __future__ import annotations
@@ -35,3 +39,13 @@ def text_lines(text: str, *, keepends: bool = False) -> list[str]:
     if lines[-1] == "":
         lines.pop()
     return lines
+
+
+def program_lines(output: str) -> list[str]:
+    """The lines of a program's output, split at LF alone, each without the CR before its LF that Windows writes. As
+    `text_lines` does, a break that ends the output ends its last line rather than starting an empty one, and empty
+    output has no lines."""
+    lines = output.split("\n")
+    if lines[-1] == "":
+        lines.pop()
+    return [line.removesuffix("\r") for line in lines]

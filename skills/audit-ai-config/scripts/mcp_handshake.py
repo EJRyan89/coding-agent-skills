@@ -89,6 +89,7 @@ from executable_locator import find_executable
 from flat_text import flat_text, single_line
 from path_containment import resolved_path
 from seconds_option import positive_seconds
+from text_lines import program_lines
 
 # Every server this starts is a command the target repository configures, so the skill leaves this script ungranted
 # and the user approves each run.
@@ -227,7 +228,7 @@ class Session:
             self.running.wait()
         except subprocess.TimeoutExpired:
             return None
-        lines = [line.strip() for line in self.running.errors().decode("utf-8", "replace").splitlines()]
+        lines = [line.strip() for line in program_lines(self.running.errors().decode("utf-8", "replace"))]
         last = next((line for line in reversed(lines) if line), "")
         detail = f": {last}" if last else ""
         return f"server exited before responding{detail}"

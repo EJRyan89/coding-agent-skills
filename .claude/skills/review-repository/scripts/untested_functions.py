@@ -105,6 +105,7 @@ from conditions import (
 from console import failed_line, run_main
 from diff_paths import HUNK_HEADER
 from suite_names import SUITE_NAME_PATTERNS
+from text_lines import LINE_BREAK
 
 DUPLICATION_ALLOWED = {
     "EXIT_CONTRACT_EXEMPT": (
@@ -702,7 +703,9 @@ def entries(root: Path, files: list[FileChange], unreadable: dict[str, str] | No
     changes = [change for change in changes if change not in withheld]
     tests = Tests(suites(root), {} if unreadable is None else unreadable)
     for change in changes:
-        text = change.head.read_bytes().decode("utf-8", errors="replace").replace("\r\n", "\n")
+        # Every line end becomes LF, a lone CR included, as Python and PowerShell end a line, so each reader below
+        # splits at LF and numbers a line as the parser does.
+        text = LINE_BREAK.sub("\n", change.head.read_bytes().decode("utf-8", errors="replace"))
         try:
             definitions = _definitions(change.path, text)
         except (SyntaxError, ValueError) as error:

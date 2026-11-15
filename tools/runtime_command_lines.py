@@ -79,6 +79,7 @@ from git_client import GitError
 from runtime_support import RUNTIMES as RUNTIME_NAMES
 from seconds_option import positive_seconds
 from skill_roots import sibling_scripts
+from text_lines import program_lines
 
 sys.path.insert(0, str(sibling_scripts("ejryan89-code-review-core")))
 from review_config import REVIEWER_EFFORTS
@@ -311,7 +312,7 @@ def own_message(completed: Completed) -> str:
     """What the runtime said last, on one line: why it could not start, else its last line of stderr, else of
     stdout, else its status."""
     for stream in (completed.stderr, completed.stdout):
-        lines = [line.strip() for line in stream.splitlines() if line.strip()]
+        lines = [line.strip() for line in program_lines(stream) if line.strip()]
         if lines:
             return completed.error or single_line(lines[-1])
     return completed.error or f"exited with status {completed.returncode} and printed nothing"
@@ -326,11 +327,11 @@ def judge(line: CommandLine, completed: Completed, unlisted: Sequence[str], time
     for pattern in FLAG_REFUSALS:
         found = pattern.search(output)
         if found:
-            message = next(text for text in output.splitlines() if found.group(0) in text)
+            message = next(text for text in program_lines(output) if found.group(0) in text)
             return f"REMOVED {label} {found.group('flag')} {quote(single_line(message.strip()))}"
     refused = ARGUMENT_REFUSALS.search(output)
     if refused:
-        message = output[refused.start() :].splitlines()[0]
+        message = program_lines(output[refused.start() :])[0]
         return f"REFUSED {label} {quote(single_line(message.strip()))}"
     if (completed.returncode == 0 and not completed.timed_out) or SESSION_STARTED[line.runtime].search(output):
         return f"ACCEPTED {label}" + (f" UNLISTED {quote(' '.join(unlisted))}" if unlisted else "")
@@ -462,7 +463,7 @@ def run(
 
 
 def main(arguments: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0] if __doc__ else None)
+    parser = argparse.ArgumentParser(description=__doc__.split("\n", 1)[0] if __doc__ else None)
     parser.add_argument("--runtime", action="append", choices=RUNTIMES, help="check only this runtime; repeatable")
     parser.add_argument("--timeout", type=positive_seconds, default=DEFAULT_TIMEOUT, metavar="SECONDS")
     parser.add_argument("--summary", type=Path, metavar="FILE", help="append a Markdown table of the facts to FILE")

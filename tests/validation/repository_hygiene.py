@@ -7,6 +7,7 @@ import unittest
 from pathlib import Path
 
 import json_reader
+from text_lines import text_lines
 from validation_support import REPOSITORY_ROOT, repository_files
 
 # Every Claude Code tool that can edit a file or run git, each of which the hub guard's hook must see. Monitor runs its
@@ -36,7 +37,7 @@ def private_references(root: Path, files: list[Path]) -> list[str]:
         return [NO_FILES_SCANNED]
     found: list[str] = []
     for path in sorted(files):
-        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+        lines = text_lines(path.read_text(encoding="utf-8", errors="replace"))
         for number, line in enumerate(lines, start=1):
             if PRIVATE_REFERENCE.search(line):
                 found.append(f"{path.relative_to(root).as_posix()}:{number}: {line.strip()}")

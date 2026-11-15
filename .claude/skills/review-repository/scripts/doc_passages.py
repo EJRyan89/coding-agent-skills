@@ -83,6 +83,7 @@ from markdown_sections import (
     is_blank,
     list_item,
 )
+from text_lines import LINE_BREAK
 
 DUPLICATION_ALLOWED = {
     "EXIT_CONTRACT_EXEMPT": (
@@ -278,7 +279,7 @@ def _single_line(line: str) -> bool:
 def units(text: str) -> Iterator[Unit]:
     """A document's passages: each heading, table row, list item, paragraph, and fenced block, with its first line.
     Fences, list items, headings, and blank lines are read through ejryan89-skill-core's markdown_sections."""
-    lines = text.replace("\r\n", "\n").split("\n")
+    lines = LINE_BREAK.split(text)
     fences = {fence.opener: fence for fence in find_fences(lines)}
     block: list[str] = []
     start = 0

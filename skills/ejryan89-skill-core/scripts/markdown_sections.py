@@ -8,6 +8,8 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
+from text_lines import LINE_BREAK
+
 # The whitespace of Markdown's block structure: CommonMark reads only the space and the tab as indentation, as the
 # separator after a list marker, and as what a blank line holds, so every other Unicode space is text. A reader of
 # block structure strips this, never everything `str.strip` takes.
@@ -288,10 +290,11 @@ def markdown_section(text: str, heading: str) -> str | None:
     """The lines under the first exact heading, ignoring its trailing spaces and tabs, up to the next `## ` heading.
 
     A line inside a fenced code block is the block's text, as GitHub renders it, so it is neither the heading nor the
-    section's end: a section whose body holds a fenced `## ` line runs past it. CRLF becomes LF; body whitespace and
-    comments are otherwise preserved. None means the heading is absent.
+    section's end: a section whose body holds a fenced `## ` line runs past it. Its lines end where CommonMark ends
+    one, at CR, LF, or CRLF, and each becomes LF; body whitespace and comments are otherwise preserved. None means
+    the heading is absent.
     """
-    lines = text.replace("\r\n", "\n").split("\n")
+    lines = LINE_BREAK.split(text)
     fenced = {index for fence in find_fences(lines) for index in fence.lines()}
     start = next(
         (index + 1 for index, line in enumerate(lines) if index not in fenced and line.rstrip(LINE_END) == heading),

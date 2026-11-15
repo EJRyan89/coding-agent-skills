@@ -901,6 +901,7 @@ class DocumentationDriftTests(unittest.TestCase):
                 f"{SKILL_CORE}/path_keys.py",
                 f"{SKILL_CORE}/python_reader.py",
                 f"{SKILL_CORE}/suite_names.py",
+                f"{SKILL_CORE}/text_lines.py",
                 f"{SKILL_CORE}/whole_number.py",
             },
             needed,

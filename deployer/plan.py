@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import assert_never
 
 import file_presence
+from text_lines import text_lines
 
 from . import fsops, hashing, journal, platform_support, render, source, state_files
 from .arguments import PROG, usage_error
@@ -96,8 +97,8 @@ def _tree_diff(destination: Path, staged: dict[str, bytes], label: str) -> list[
             continue
         if existing[relative] == staged[relative]:
             continue
-        before = existing[relative].decode("utf-8", "replace").splitlines()
-        after = staged[relative].decode("utf-8", "replace").splitlines()
+        before = text_lines(existing[relative].decode("utf-8", "replace"))
+        after = text_lines(staged[relative].decode("utf-8", "replace"))
         lines += difflib.unified_diff(
             before,
             after,

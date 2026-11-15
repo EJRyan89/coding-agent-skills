@@ -48,6 +48,7 @@ import json_writer
 import whole_number
 from console import run_main
 from github_client import GitHubClient, GitHubError, subprocess_runner
+from text_lines import program_lines
 from typed_fields import FieldError, FieldReader
 
 from deployer import platform_support
@@ -120,7 +121,7 @@ def job_seconds_from_log(log: str) -> dict[str, dict[str, float]]:
     """Each platform's job seconds by name from the legs' lines of `gh run view --log` output, whose lines are
     `<job>\\t<step>\\t<text>`."""
     reported: defaultdict[tuple[str, str], list[float]] = defaultdict(list)
-    for line in log.splitlines():
+    for line in program_lines(log):
         fields = line.split("\t", 2)
         leg = leg_of(fields[0]) if len(fields) == 3 else None
         found = OK_LINE.match(fields[-1]) if leg else None
@@ -138,7 +139,7 @@ def job_seconds_from_log(log: str) -> dict[str, dict[str, float]]:
 
 def legs_seen(log: str) -> set[tuple[str, int, int]]:
     """Each leg a log has a line from, as its platform, its index, and the matrix's count."""
-    return {leg for leg in (leg_of(line.split("\t", 1)[0]) for line in log.splitlines()) if leg}
+    return {leg for leg in (leg_of(line.split("\t", 1)[0]) for line in program_lines(log)) if leg}
 
 
 def leg_problem(log: str) -> str:

@@ -116,6 +116,7 @@ from path_containment import relative_within
 from runtime_support import RUNTIMES as SUBJECTS
 from seconds_option import positive_seconds
 from suite_names import is_suite_name
+from text_lines import text_lines
 
 from deployer.paths import Paths
 from deployer.render import CODEX_USER_ONLY
@@ -473,7 +474,7 @@ def markdown_releases(text: str) -> list[Release]:
         if current is not None:
             releases.append(read_release(current, body))
 
-    for line in text.splitlines():
+    for line in text_lines(text):
         heading = release_heading(line)
         if heading:
             close()
@@ -499,7 +500,7 @@ def github_releases(payload: object, url: str) -> list[Release]:
             continue
         found = re.search(r"(?<![0-9.])([0-9]+(?:\.[0-9]+)+)(?![0-9.]|-)", str(item.get("tag_name", "")))
         if found:
-            releases.append(read_release(release_number(found.group(1)), str(item.get("body") or "").splitlines()))
+            releases.append(read_release(release_number(found.group(1)), text_lines(str(item.get("body") or ""))))
     return releases
 
 
@@ -692,7 +693,7 @@ def summary(lines: Sequence[str]) -> str:
 
 
 def main(arguments: list[str] | None = None, fetcher: Fetcher = fetch, top: Path = REPOSITORY_ROOT) -> int:
-    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0] if __doc__ else None)
+    parser = argparse.ArgumentParser(description=__doc__.split("\n", 1)[0] if __doc__ else None)
     parser.add_argument("--summary", type=Path, metavar="FILE", help="append the findings to FILE as Markdown")
     parser.add_argument("--timeout", type=positive_seconds, default=DEFAULT_TIMEOUT, metavar="SECONDS")
     namespace = parser.parse_args(arguments)

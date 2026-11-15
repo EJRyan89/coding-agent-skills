@@ -58,6 +58,7 @@ from review_guard import ROLE_ID as SLUG
 from review_io import CONTENT_ERRORS, PersistenceError, atomic_write_json, parse_json, read_diff
 from review_records import SUITE_PROFILE_PREFIX, is_suite_profile
 from review_vocabularies import DispatchMode
+from text_lines import LINE_BREAK
 from typed_fields import FieldError, FieldReader
 
 # A repository's condition scripts read a snapshot's recorded exclusions from its manifest.
@@ -2662,7 +2663,7 @@ def body_lines(body: str) -> list[str]:
     """A body as the file holds it: its lines, each split into pieces of at most CLOSING_ISSUE_LINE_CHARACTERS, so
     the body reads whole a line at a time and none of it lies past where a reader cuts a line."""
     pieces: list[str] = []
-    for line in body.replace("\r\n", "\n").split("\n"):
+    for line in LINE_BREAK.split(body):
         pieces.extend(
             [
                 line[start : start + CLOSING_ISSUE_LINE_CHARACTERS]

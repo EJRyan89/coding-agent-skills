@@ -404,6 +404,16 @@ def test_a_documented_install_from_a_requirements_file_is_read_in_each_form_pip_
     ]
 
 
+def test_a_documented_install_is_numbered_where_commonmark_ends_a_line() -> None:
+    # A line separator ends no line, so the fence opens on line 3 and its install is line 4.
+    locks = ("requirements-dev.txt",)
+    document = "Install\u2028them:\n\n```bash\npip install -r requirements-dev.txt\n```\n"
+    assert fence_install_problems(document, locks) == [
+        "line 4 does not install only ['requirements-dev.txt'] with --require-hashes --only-binary :all:: "
+        "'pip install -r requirements-dev.txt'"
+    ]
+
+
 @pytest.mark.parametrize(
     "install",
     [

@@ -49,6 +49,7 @@ from github_client import LIMIT_OPTIONS
 from job_pool import UNSPLIT_SUITE_WEIGHT, Job
 from path_containment import posix_within, relative_within, within
 from runtime_support import names_git
+from text_lines import text_lines
 from toolchain import find_mypy, find_ruff, mypy_job, ruff_job
 from validation_support import (
     BUILTIN_NAMES,
@@ -329,7 +330,7 @@ def docstring_lines(source: str) -> list[tuple[int, str]]:
         first = node.body[0]
         if isinstance(first, ast.Expr) and isinstance(first.value, ast.Constant) and isinstance(first.value.value, str):
             segment = ast.get_source_segment(source, first.value) or ""
-            lines += [(first.lineno + offset, line) for offset, line in enumerate(segment.splitlines())]
+            lines += [(first.lineno + offset, line) for offset, line in enumerate(text_lines(segment))]
     return lines
 
 
@@ -4538,6 +4539,126 @@ def git_separator_problems(root: Path, files: list[Path]) -> list[str]:
     return problems
 
 
+# A file an author writes breaks its lines where the program that loads it does: YAML 1.2, CommonMark, and .NET's
+# TextReader.ReadLine at CR, LF, and CRLF alone, where text_lines.text_lines splits it, and Bash and ShellCheck at LF
+# alone. str.splitlines() also breaks at U+0085, U+2028, U+2029, the vertical tab, the form feed, and the file, group,
+# and record separators, so a reader that splits with it reads a key, a command, or a line its program never reads,
+# and a program's output holds those characters in a name or a path. So no module splits text with splitlines(),
+# bound or unbound as str.splitlines(text): a file an author writes is split with text_lines, and a program's output
+# where that program ends a line, as git_client.output_lines splits git's. Bytes, which splitlines() breaks at CR, LF,
+# and CRLF alone, are split with it where the receiver is plainly bytes: a bytes literal, a read_bytes(), an encode(),
+# or a bytes() call. Nor is text an author writes split at "\n" alone, which misses a lone CR, a line end to each of
+# those programs: a split() or rsplit() at "\n", bound or unbound, of a read_text(), of a replace("\r\n", "\n"), which
+# turns a CRLF into a line feed and leaves a lone CR, or of a name the same scope binds to either, with a strip(), an
+# lstrip(), an rstrip(), a removeprefix(), or a removesuffix() between or not. Text a parameter, an attribute, or any
+# other call gives is not traced to a file, so a split of it at "\n" is not read. A split that must stay, as a Bash
+# script's and a .shellcheckrc's at LF alone, states why in a module-level LINE_SPLIT_ALLOWED = {scope: reason}.
+LINE_SPLIT_OWNER = "skills/ejryan89-skill-core/scripts/text_lines.py"
+LINE_SPLIT_ALLOWANCE = "LINE_SPLIT_ALLOWED"
+# The methods whose result is plainly bytes, and the str methods that keep a text's line ends where they were.
+BYTES_RESULTS = frozenset({"encode", "read_bytes"})
+LINE_KEEPING_METHODS = frozenset({"lstrip", "removeprefix", "removesuffix", "rstrip", "strip"})
+
+
+def _method_receiver(call: ast.Call, method: str) -> tuple[ast.expr, list[ast.expr]] | None:
+    """The receiver of a call of the str or bytes method `method`, bound or unbound as `str.split(text, ...)`, and the
+    arguments after it, or None for any other call."""
+    func = call.func
+    if not (isinstance(func, ast.Attribute) and func.attr == method):
+        return None
+    if isinstance(func.value, ast.Name) and func.value.id in ("str", "bytes"):
+        return (call.args[0], call.args[1:]) if call.args else None
+    return func.value, list(call.args)
+
+
+def _plainly_bytes(receiver: ast.expr) -> bool:
+    """Whether an expression is plainly bytes: a bytes literal, a read_bytes() or an encode(), or a bytes() call."""
+    if isinstance(receiver, ast.Constant):
+        return isinstance(receiver.value, bytes)
+    if not isinstance(receiver, ast.Call):
+        return False
+    func = receiver.func
+    return (isinstance(func, ast.Attribute) and func.attr in BYTES_RESULTS) or (
+        isinstance(func, ast.Name) and func.id == "bytes"
+    )
+
+
+def _authored_text(node: ast.expr, bound: frozenset[str]) -> bool:
+    """Whether an expression is text an author writes as the line-split policy reads it: a read_text(), a
+    replace("\\r\\n", "\\n"), or a name in `bound`, through any line-keeping method."""
+    while (
+        isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr in LINE_KEEPING_METHODS
+    ):
+        node = node.func.value
+    if isinstance(node, ast.Name):
+        return node.id in bound
+    if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)):
+        return False
+    if node.func.attr == "read_text":
+        return True
+    given = [_literal(argument) for argument in node.args]
+    return node.func.attr == "replace" and given[:2] == ["\r\n", "\n"]
+
+
+def _authored_names(tree: ast.Module) -> dict[str, frozenset[str]]:
+    """Each scope's names that an assignment, an annotated assignment, or an assignment expression in it binds to text
+    an author writes."""
+    found: dict[str, set[str]] = {}
+    for node, scope in scoped_nodes(tree.body):
+        if isinstance(node, ast.Assign):
+            targets, value = node.targets, node.value
+        elif isinstance(node, ast.AnnAssign | ast.NamedExpr) and node.value is not None:
+            targets, value = [node.target], node.value
+        else:
+            continue
+        if _authored_text(value, frozenset()):
+            found.setdefault(scope, set()).update(target.id for target in targets if isinstance(target, ast.Name))
+    return {scope: frozenset(names) for scope, names in found.items()}
+
+
+def _line_split(node: ast.Call, bound: frozenset[str]) -> str | None:
+    """The refusal of a splitlines() of anything but plain bytes, or of a split() or rsplit() of text an author writes
+    at "\\n", or None."""
+    lines = _method_receiver(node, "splitlines")
+    if lines is not None and not _plainly_bytes(lines[0]):
+        return (
+            "splits with splitlines(), which also breaks at U+0085, U+2028, U+2029, a vertical tab, a form feed, and "
+            "the file, group, and record separators; split a file an author writes with text_lines.text_lines and a "
+            "program's output where that program ends a line, with text_lines.program_lines or "
+            f"git_client.output_lines, or state why in {LINE_SPLIT_ALLOWANCE}"
+        )
+    split = _method_receiver(node, "split") or _method_receiver(node, "rsplit")
+    if split is None:
+        return None
+    receiver, given = split
+    separator = given[0] if given else next((item.value for item in node.keywords if item.arg == "sep"), None)
+    if separator is None or _literal(separator) != "\n" or not _authored_text(receiver, bound):
+        return None
+    return (
+        'splits text an author writes at "\\n" alone, which misses a lone CR that YAML, CommonMark, and .NET end a '
+        f"line at; split it with text_lines.text_lines, or state why in {LINE_SPLIT_ALLOWANCE}, as for a Bash "
+        "script, which Bash ends at LF alone"
+    )
+
+
+def line_split_problems(root: Path, files: list[Path]) -> list[str]:
+    """Each splitlines() of anything but plain bytes, and each split at "\\n" of text an author writes, outside
+    text_lines.py, that no LINE_SPLIT_ALLOWED entry sanctions."""
+    problems: list[str] = []
+    for _, name, tree in python_trees(claim_files(root, files), root, problems):
+        if name == LINE_SPLIT_OWNER:
+            continue
+        authored = _authored_names(tree)
+        found = [
+            (node.lineno, scope, refusal)
+            for node, scope in scoped_nodes(tree.body)
+            if isinstance(node, ast.Call)
+            and (refusal := _line_split(node, authored.get(scope, frozenset()))) is not None
+        ]
+        problems += sanctioned_problems(name, tree, LINE_SPLIT_ALLOWANCE, found)
+    return problems
+
+
 # A GitError whose returncode is None is not one git could not run: git_client raises it, with no exit code, for an
 # answer git gave in the wrong shape, such as a rev-parse that printed no object name. Whether git ran and finished is
 # GitError.answered, so a handler of a GitError, or a function given one, reads that, never `returncode is None`,
@@ -5264,9 +5385,11 @@ class _ContentEscapes:
         return found
 
 
-# The standard-library calls that recurse once per level of the text or value they are given, so nesting past the
-# interpreter's limit ends them in a RecursionError: the parsers and serializers of nested data, `re`'s compile of a
-# pattern's nested groups, which each function taking a pattern makes, and the formatters of a nested value. A reader
+# The standard-library calls that recurse in Python once per level of the text or value they are given, so nesting
+# past the interpreter's recursion limit ends them in a RecursionError on every version: tomllib's parser, `re`'s
+# compile of a pattern's nested groups, which each function taking a pattern makes, `copy.deepcopy`, `pprint`'s
+# formatters, and `ast`'s walks of a tree; and with them the parser and compiler behind `ast.parse`, `compile`, `eval`,
+# and `exec`, which a reader of Python source guards together with the MemoryError of the parser's own bound. A reader
 # of either core bounds its own nesting and raises its family instead, so a handler naming RecursionError around such
 # a reader alone catches nothing. The list is closed for a call an import resolves: any other such call is read as
 # one that does not recurse, and a scope that holds one that does states it in CONTENT_ERRORS_ALLOWED.
@@ -5280,16 +5403,6 @@ RECURSIVE_CALLS = frozenset(
         "copy.deepcopy",
         "eval",
         "exec",
-        "json.dump",
-        "json.dumps",
-        "json.load",
-        "json.loads",
-        "marshal.dumps",
-        "marshal.loads",
-        "pickle.dump",
-        "pickle.dumps",
-        "pickle.load",
-        "pickle.loads",
         "pprint.pformat",
         "pprint.pprint",
         "re.compile",
@@ -5301,11 +5414,37 @@ RECURSIVE_CALLS = frozenset(
         "re.split",
         "re.sub",
         "re.subn",
-        "repr",
         "tomllib.load",
         "tomllib.loads",
     }
 )
+# The standard-library calls that recurse in C once per level of the value they write or the text they read: the json
+# module's reader and writer, pickle, marshal, and the repr of a container. The interpreter's recursion limit is not
+# what stops them, and from Python 3.14 the stack is, so the depth at which one stops, and with what, varies by
+# version and platform: Python 3.15's json.dumps writes a list nested 100,000 deep that 3.12 refuses. A
+# handler naming RecursionError around one is therefore no bound on its depth, and one whose only call that recurses
+# is such a call is refused unless its function also judges the depth with nesting_depth.nests_past, which measures a
+# value before a writer is given it or after a reader gives it, the same on every version, as
+# json_writer.nests_too_deep and json_reader.loads do.
+C_RECURSIVE_CALLS = frozenset(
+    {
+        "json.dump",
+        "json.dumps",
+        "json.load",
+        "json.loads",
+        "marshal.dump",
+        "marshal.dumps",
+        "marshal.load",
+        "marshal.loads",
+        "pickle.dump",
+        "pickle.dumps",
+        "pickle.load",
+        "pickle.loads",
+        "repr",
+    }
+)
+# The one check of a value's depth that holds on every version, by its qualified name.
+DEPTH_JUDGE = "nesting_depth.nests_past"
 # The methods of text, bytes, a path, a mapping, a list, or a set that never recurse into what they hold. A method
 # called on a receiver no import resolves, such as a parameter or a value a call returned, is read as a callable the
 # policy cannot read unless it names one of these, since the receiver may be a parser.
@@ -5353,35 +5492,51 @@ PLAIN_METHODS = frozenset(
     }
 )
 UNREAD_CALL = "<a call the policy cannot read>"
+C_CALL = "<a call that recurses in C>"
+JUDGED = "<a check of a value's depth>"
+
+
+def _closure(calls: Mapping[str, set[str]], marker: str, excluded: frozenset[str] = frozenset()) -> frozenset[str]:
+    """Each function whose calls hold `marker`, or a function already found, however many calls away, leaving out
+    `excluded`."""
+    found = {qualified for qualified, called in calls.items() if marker in called} - excluded
+    # Each pass that changes the set adds a function, so there are never more passes than functions.
+    for _ in calls:
+        grown = {qualified for qualified, called in calls.items() if called & found} - excluded
+        if grown <= found:
+            break
+        found |= grown
+    return frozenset(found)
 
 
 class _Recursion:
-    """Which repository functions may end in a RecursionError, and each handler naming RecursionError around readers
-    that never raise one. A function may when it calls one of RECURSIVE_CALLS, a callable the policy cannot read, such
-    as a parameter or a method other than PLAIN_METHODS of a value no import resolves, itself, or another function that
-    may; a reader with a family raises that family alone."""
+    """Which repository functions may end in a RecursionError, and each handler naming RecursionError that holds no
+    bound. A function may when it calls one of RECURSIVE_CALLS, a callable the policy cannot read, such as a parameter
+    or a method other than PLAIN_METHODS of a value no import resolves, itself, or another function that may; a reader
+    with a family raises that family alone. A function judges the depth when it calls DEPTH_JUDGE, or a function that
+    does, and one that does neither but calls one of C_RECURSIVE_CALLS, or a function that does, may end in one at a
+    depth that varies by version."""
 
     def __init__(self, model: _ContentModel, escapes: _ContentEscapes) -> None:
         self.model = model
         self.escapes = escapes
-        calls = {
-            qualified: self.calls(body, module)
-            for qualified, (module, _, body) in model.functions.items()
-            if qualified not in model.families
-        }
-        self.recursing = {
-            qualified for qualified, called in calls.items() if UNREAD_CALL in called or qualified in called
-        }
-        # Each pass that changes the set adds a function, so there are never more passes than functions.
-        for _ in calls:
-            grown = {qualified for qualified, called in calls.items() if called & self.recursing}
-            if grown <= self.recursing:
-                break
-            self.recursing |= grown
+        calls = {qualified: self.calls(body, module) for qualified, (module, _, body) in model.functions.items()}
+        unread = {qualified: called for qualified, called in calls.items() if qualified not in model.families}
+        self.recursing = _closure(
+            {
+                qualified: called | ({UNREAD_CALL} if qualified in called else set())
+                for qualified, called in unread.items()
+            },
+            UNREAD_CALL,
+        )
+        self.judging = _closure(calls, JUDGED)
+        # A function that judges the depth before or after its call in C bounds it, so a call of it holds no such call.
+        self.c_recursing = _closure(unread, C_CALL, self.recursing | self.judging)
 
     def calls(self, body: Sequence[ast.AST], module: str) -> set[str]:
         """The repository functions and readers `body` calls outside any nested definition, with UNREAD_CALL for one
-        of RECURSIVE_CALLS or a callable the policy cannot read."""
+        of RECURSIVE_CALLS or a callable the policy cannot read, C_CALL for one of C_RECURSIVE_CALLS, and JUDGED for
+        DEPTH_JUDGE."""
         found: set[str] = set()
         pending = list(body)
         while pending:
@@ -5397,7 +5552,11 @@ class _Recursion:
         qualified = qualified_name(call.func, self.model.aliases[module])
         if qualified in RECURSIVE_CALLS:
             return {UNREAD_CALL}
+        if qualified in C_RECURSIVE_CALLS:
+            return {C_CALL}
         callees = self.model.callees(call, module)
+        if qualified == DEPTH_JUDGE:
+            return {JUDGED, *callees}
         if callees:
             return set(callees)
         func = call.func
@@ -5420,8 +5579,10 @@ class _Recursion:
 
     def dead_handlers(self, function: ast.AST, module: str, scope: str) -> list[tuple[int, str, str]]:
         """Each handler in `function`, outside a nested definition, that names RecursionError around a call of a reader
-        and calls nothing that may raise one."""
+        and calls nothing that may raise one, or around a call that recurses in C and nothing that recurses in Python,
+        in a function that never judges the depth."""
         found: list[tuple[int, str, str]] = []
+        judged: bool | None = None
         pending = list(ast.iter_child_nodes(function))
         while pending:
             node = pending.pop()
@@ -5441,20 +5602,30 @@ class _Recursion:
             else:
                 continue
             lines = [line for line, classes in guarded if self.catches_recursion(classes)]
-            if lines and self.reads_without_recursion(node.body, module):
+            if not lines:
+                continue
+            called = self.calls(node.body, module)
+            if UNREAD_CALL in called or called & self.recursing:
+                continue
+            if C_CALL in called or called & self.c_recursing:
+                if judged is None:
+                    reached = self.calls(list(ast.iter_child_nodes(function)), module)
+                    judged = JUDGED in reached or bool(reached & self.judging)
+                if not judged:
+                    found += [(line, scope, C_RECURSION_REMEDY) for line in lines]
+            elif any(callee in self.model.families or self.escapes.escapes.get(callee) for callee in called):
                 found += [(line, scope, RECURSION_REMEDY) for line in lines]
         return found
-
-    def reads_without_recursion(self, body: Sequence[ast.AST], module: str) -> bool:
-        called = self.calls(body, module)
-        if UNREAD_CALL in called or called & self.recursing:
-            return False
-        return any(callee in self.model.families or self.escapes.escapes.get(callee) for callee in called)
 
 
 RECURSION_REMEDY = (
     "catches RecursionError around readers that refuse nesting as their own family, and calls nothing that recurses; "
     f"remove RecursionError, or state which call raises it in {CONTENT_ERRORS_ALLOWANCE}"
+)
+C_RECURSION_REMEDY = (
+    "catches RecursionError around a call that recurses in C, which stops at a depth that varies by Python version; "
+    f"judge the depth first with {DEPTH_JUDGE}, as json_writer.nests_too_deep does, or state why in "
+    f"{CONTENT_ERRORS_ALLOWANCE}"
 )
 
 
@@ -6235,6 +6406,9 @@ class PythonChecksPolicies(unittest.TestCase):
 
     def test_every_git_listing_and_format_separates_on_nul(self) -> None:
         self.assertEqual([], git_separator_problems(REPOSITORY_ROOT, repository_files(REPOSITORY_ROOT)))
+
+    def test_text_is_split_into_lines_where_its_program_ends_one(self) -> None:
+        self.assertEqual([], line_split_problems(REPOSITORY_ROOT, repository_files(REPOSITORY_ROOT)))
 
     def test_whether_git_answered_is_read_through_git_error_answered(self) -> None:
         self.assertEqual([], git_answered_problems(REPOSITORY_ROOT, repository_files(REPOSITORY_ROOT)))

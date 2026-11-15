@@ -79,6 +79,7 @@ import json_writer
 import private_folder
 import whole_number
 from console import run_main
+from text_lines import program_lines
 
 from deployer import discovery, journal, manifest, platform_support, tools, verify
 from deployer.arguments import PROG, VERIFY_COMMAND_LINE
@@ -284,7 +285,7 @@ def verify_failures(output: str) -> set[str]:
     """The runtimes `deploy.py verify` names on its line saying which it failed for, by the names discovery uses; a
     name it does not know stays as printed."""
     runtimes = {label: runtime for runtime, label in discovery.LABELS.items()}
-    for line in output.splitlines():
+    for line in program_lines(output):
         if line.startswith(verify.FAILED_FOR):
             return {runtimes.get(name, name) for name in line[len(verify.FAILED_FOR) :].rstrip(".").split(" and ")}
     return set()
@@ -534,7 +535,7 @@ def _bash(arguments: argparse.Namespace) -> int:
         print(f"::error::{platform_support.BASH_MISSING}")
         return 1
     code, output = _run_version([path, "--version"])
-    reported = next(iter(output.strip().splitlines()), "")
+    reported = next(iter(program_lines(output.strip())), "")
     print(f"{name}: {path}: {reported}")
     problem = f"exits {code}" if code != 0 else bash_problem(reported, arguments.at_least)
     if problem is not None:

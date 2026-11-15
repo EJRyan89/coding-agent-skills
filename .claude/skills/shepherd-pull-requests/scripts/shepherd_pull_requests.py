@@ -134,6 +134,7 @@ from github_remote import github_repository
 from path_keys import path_key
 from premerge_review import Head, Reader, ReviewUnread, archive_reader, review_lines
 from pull_carried import carried
+from text_lines import program_lines
 
 REMOTE = "origin"
 BASE = "main"
@@ -634,7 +635,7 @@ def holding_path(files: Sequence[str]) -> str | None:
 def log_lines(text: str) -> list[str]:
     """A job log's lines without GitHub's job, step, and timestamp prefixes or terminal escapes."""
     lines = []
-    for raw in text.splitlines():
+    for raw in program_lines(text):
         parts = raw.split("\t", 2)
         line = parts[2] if len(parts) == 3 else raw
         lines.append(ESCAPE.sub("", TIMESTAMP.sub("", line)).rstrip())

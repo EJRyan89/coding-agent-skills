@@ -145,6 +145,21 @@ class RepositoryHygieneFixtures(unittest.TestCase):
                 private_references(root, [root / name for name in samples]),
             )
 
+    def test_a_reference_is_reported_on_the_line_a_reader_numbers(self) -> None:
+        # A line separator or a form feed ends no line, so the reference after one is on the line they sit in.
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            user = "C:\\" + "Users\\someone\\GitHub"
+            (root / "notes.md").write_text(f"one\u2028two {user}\nthree\x0c{user}\rfour {user}\n", "utf-8")
+            self.assertEqual(
+                [
+                    f"notes.md:1: one\u2028two {user}",
+                    f"notes.md:2: three\x0c{user}",
+                    f"notes.md:3: four {user}",
+                ],
+                private_references(root, [root / "notes.md"]),
+            )
+
 
 @pytest.mark.parametrize(
     "attribution",

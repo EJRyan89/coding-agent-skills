@@ -73,6 +73,7 @@ from flat_text import flat_text
 from git_client import GitClient, GitError, command_name, output_line
 from github_client import GitHubClient, GitHubError, subprocess_runner
 from markdown_sections import HTML_COMMENT, LINE_END, LIST_MARKER, MARKDOWN_SPACE
+from text_lines import text_lines
 from typed_text import read_typed
 
 TEMPLATE_NAME = "pull_request_template.md"
@@ -118,8 +119,9 @@ def issue_argument(value: str) -> int:
 
 
 def blank_comments(text: str) -> str:
-    """`text` with every comment's characters but its line breaks made spaces, so each line keeps its number."""
-    return HTML_COMMENT.sub(lambda match: re.sub(r"[^\n]", " ", match.group()), text)
+    """`text` with every comment's characters but its line breaks, CR and LF, made spaces, so each line keeps its
+    number."""
+    return HTML_COMMENT.sub(lambda match: re.sub(r"[^\r\n]", " ", match.group()), text)
 
 
 def find_template(top: Path) -> Path | None:
@@ -146,8 +148,8 @@ def find_template(top: Path) -> Path | None:
 
 def draft_body(template: str, closes: Sequence[int]) -> str:
     """The template with one `Closes #<n>` line per issue in place of its bare closing line, or at the top."""
-    lines = template.splitlines(keepends=True)
-    blanked = blank_comments(template).splitlines()
+    lines = text_lines(template, keepends=True)
+    blanked = text_lines(blank_comments(template))
     closing = [f"Closes #{number}\n" for number in closes]
     bare = [index for index, line in enumerate(blanked) if BARE_CLOSING_LINE.fullmatch(line.strip())]
     if not bare:
@@ -219,7 +221,7 @@ def read_title(text: str) -> tuple[str, list[str]]:
     title = text.strip()
     if not title:
         return "", ["TITLE_EMPTY"]
-    count = len(title.splitlines())
+    count = len(text_lines(title))
     problems = [f"TITLE_LINES {count}"] if count > 1 else []
     if CLOSING_REFERENCE.search(title) or CLOSING_START.search(title):
         problems.append(f"TITLE_CLOSES {flat_text(title)}")

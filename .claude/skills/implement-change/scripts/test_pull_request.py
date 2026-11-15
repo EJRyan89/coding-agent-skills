@@ -90,6 +90,16 @@ class DraftTests(unittest.TestCase):
         self.assertNotRegex(body, r"(?m)^Closes")
         self.assertIn("## Changes\n", body)
 
+    def test_a_comment_holding_a_line_separator_or_a_lone_cr_keeps_the_closes_line_in_its_place(self) -> None:
+        # Markdown ends a line at a lone CR and at no line separator, and the comment's blanked copy keeps both, so
+        # the template and its blanked copy hold the same lines.
+        for inside in ("\u2028", "\r"):
+            with self.subTest(inside=repr(inside)):
+                template = f"<!-- one{inside}two -->\nCloses #\n## Changes\n"
+                self.assertEqual(
+                    f"<!-- one{inside}two -->\nCloses #5\n## Changes\n", pull_request.draft_body(template, [5])
+                )
+
     def test_a_template_with_no_closes_line_gets_them_at_the_top(self) -> None:
         self.assertEqual("Closes #7\n\n## Changes\n", pull_request.draft_body("## Changes\n", [7]))
 
@@ -160,6 +170,11 @@ class TitleCheckTests(unittest.TestCase):
     def test_an_empty_title_and_one_of_several_lines_are_refused(self) -> None:
         self.assertEqual(("", ["TITLE_EMPTY"]), pull_request.read_title(" \n"))
         self.assertEqual(["TITLE_LINES 2"], pull_request.read_title("fix: a\nsecond\n")[1])
+        self.assertEqual(["TITLE_LINES 2"], pull_request.read_title("fix: a\rsecond\n")[1])
+
+    def test_a_title_holding_a_line_separator_is_one_line(self) -> None:
+        # git ends a commit message's line at LF, never at a line separator, so a title holding one is one line.
+        self.assertEqual(("fix: a\u2028b", []), pull_request.read_title("fix: a\u2028b\n"))
 
 
 # The squash commit's title is the pull request's title, and GitHub closes an issue a commit message names, so a

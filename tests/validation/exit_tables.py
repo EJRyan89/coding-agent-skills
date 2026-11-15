@@ -45,6 +45,7 @@ import whole_number
 from exit_calls import EXIT_CALLS, NO_CODE, SYSTEM_EXIT, code_keyword, fixed_code
 from path_containment import within
 from skill_scripts import PARSER_CLASS, RESULTS_DOC, _is_parser, binding, main_blocks
+from text_lines import text_lines
 from validation_support import (
     REPOSITORY_ROOT,
     UnreadablePython,
@@ -143,7 +144,7 @@ class TableUnreadable(ValueError):
 def exit_table(docstring: str | None) -> dict[int, str]:
     """The exit table a module docstring holds, each code with what it means; TableUnreadable when it holds none, more
     than one, or one out of form."""
-    lines = (docstring or "").splitlines()
+    lines = text_lines(docstring or "")
     starts = [index for index, line in enumerate(lines) if line.strip() == TABLE_HEADING]
     if not starts:
         raise TableUnreadable(f"has no `{TABLE_HEADING}` table in its module docstring")

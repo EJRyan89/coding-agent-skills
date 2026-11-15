@@ -54,6 +54,7 @@ from python_checks import (
     sanctioned_problems,
 )
 from skill_roots import SKILL_CORE
+from text_lines import LINE_BREAK, text_lines
 from toolchain import powershell_json
 from validation_support import (
     BASH_CONTINUATION,
@@ -96,6 +97,15 @@ from validation_support import (
 from deployer import platform_support, render
 from tools.hub_guard import TEMPORARY_VARIABLES
 
+LINE_SPLIT_ALLOWED = {
+    "script_contract_problems": (
+        "reads a Bash script, which Bash ends a line of at LF alone, reading a CR as part of it"
+    ),
+    "_one_line_literal": (
+        "reads a literal holding any character str.splitlines breaks at as more than one line, which is stricter "
+        "than a terminal: such a string may break the line it prints on somewhere"
+    ),
+}
 PLATFORM_ALLOWED = {
     "pathlib.PureWindowsPath": "reads a command's program after either path separator on every platform",
     "/proc": "names Linux's per-process descriptor path as one spelling of a standard stream the console-setup policy "
@@ -534,7 +544,7 @@ def _fences(markdown: str, *contexts: str) -> list[str]:
     """The body of each fence that deployer/render.py renders in one of these contexts: shell for a Bash, sh, zsh, or
     console fence, and powershell for a PowerShell, ps1, or pwsh fence. A fence left open runs to the end of what holds
     it, as the renderer reads it, so its commands are held like any other's; unclosed_fence_problems reports it."""
-    lines = markdown.splitlines()
+    lines = text_lines(markdown)
     return [
         "\n".join(fence.text(lines[index]) for index in fence.body())
         for fence in find_fences(lines)
@@ -1495,7 +1505,7 @@ def _references(text: str, python: bool) -> frozenset[str]:
         for line in range(node.lineno, (node.end_lineno or node.lineno) + 1)
     }
     unsanctioned = "".join(
-        line for number, line in enumerate(text.splitlines(keepends=True), 1) if number not in sanctions
+        line for number, line in enumerate(text_lines(text, keepends=True), 1) if number not in sanctions
     )
     return frozenset({name for _, name in NAMED_SCRIPT.findall(unsanctioned)}) | {
         found.module.split(".")[0] for found in module_imports(tree)
@@ -2779,8 +2789,12 @@ def _without_comment(line: str, escape: str) -> str:
 
 def _code_lines(text: str, escape: str = "\\") -> list[tuple[int, str]]:
     """Each line of a Bash or PowerShell script with its number, its comment left out, read with the shell's
-    `escape`."""
-    return [(number, _without_comment(line, escape)) for number, line in enumerate(text.splitlines(), 1)]
+    `escape`. Bash, whose escape is a backslash, ends a line at LF alone and reads a CR as part of it; PowerShell ends
+    one at CR, LF, or CRLF."""
+    lines = text.split("\n") if escape == "\\" else LINE_BREAK.split(text)
+    if lines[-1] == "":
+        lines.pop()
+    return [(number, _without_comment(line, escape)) for number, line in enumerate(lines, 1)]
 
 
 def _shell_words(fragment: str) -> list[list[str]] | None:
@@ -3127,7 +3141,7 @@ def script_contract_problems(root: Path) -> list[str]:
             elif not exemption:
                 problems += [f"{name}:{line} {breach}; see {RESULTS_DOC}" for line, breach in _contract_breaches(tree)]
         elif path.suffix in {".sh", ".bash"}:
-            for number, line in enumerate(text.splitlines(), 1):
+            for number, line in enumerate(text.split("\n"), 1):
                 for code in SHELL_EXIT.findall(line.split("#", 1)[0]):
                     # A code past the digit limit, or in digits other than ASCII, is outside the contract too.
                     if whole_number.parse(code) not in CONTRACT_EXIT_CODES:

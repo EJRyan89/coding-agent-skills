@@ -44,6 +44,7 @@ from review_vocabularies import (
     Severity,
     Verdict,
 )
+from text_lines import text_lines
 from typed_fields import FieldError, FieldReader, describe
 
 RECORD_SCHEMA_VERSION = 2
@@ -1837,7 +1838,7 @@ def _code_cell(text: str) -> str:
 
 def _prose(text: str, *, table: bool = False) -> str:
     """Literal prose with paragraphs and explicit line breaks, also inside a single table cell."""
-    lines = [_literal(line) if line.strip() else "" for line in text.splitlines()]
+    lines = [_literal(line) if line.strip() else "" for line in text_lines(text)]
     if table:
         return "<br>".join(lines)
     return "\n".join(
@@ -1856,7 +1857,7 @@ def _summary(review: Review) -> str:
 
 
 def _quote(text: str) -> list[str]:
-    return [f"> {line}".rstrip() for line in _prose(text).splitlines()]
+    return [f"> {line}".rstrip() for line in text_lines(_prose(text))]
 
 
 def _comment_link(comment: Comment) -> str:
@@ -1865,7 +1866,7 @@ def _comment_link(comment: Comment) -> str:
 
 
 def _evidence(text: str) -> str:
-    return "<br>".join(_code(line) if line else "" for line in text.splitlines())
+    return "<br>".join(_code(line) if line else "" for line in text_lines(text))
 
 
 def _label(value: str) -> str:
@@ -1957,7 +1958,7 @@ def _finding_block(
     status = [
         f"> {part}" + ("  " if part and not part.endswith("<br>") else "")
         for line in status
-        for part in line.splitlines()
+        for part in text_lines(line)
     ]
     if status:
         status[-1] = status[-1].rstrip()
@@ -2277,7 +2278,7 @@ def _findings_section(ledger: _Ledger, re_review: bool) -> list[str]:
                 f"- **{display_id(entry['version'], entry['id'])}.** {_label(entry['severity'])} "
                 f"[{_text(entry['category'])}]{title} {location}. {ledger.judgment(entry)}"
             )
-            lines.extend(part if index == 0 else f"  {part}" for index, part in enumerate(item.splitlines()))
+            lines.extend(part if index == 0 else f"  {part}" for index, part in enumerate(text_lines(item)))
         lines.extend(["", "</details>", ""])
     return lines
 

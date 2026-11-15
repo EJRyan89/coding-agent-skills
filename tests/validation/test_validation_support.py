@@ -884,6 +884,10 @@ def test_each_shell_continues_a_command_by_its_one_mark() -> None:
         pytest.param("a `\nb\n", "\\", [(1, "a `"), (2, "b")], id="a mark not given ends no command"),
         pytest.param("a \\ \nb\n", "\\`", [(1, "a \\ "), (2, "b")], id="a space after the mark ends the command"),
         pytest.param("a \\", "\\`", [(1, "a  ")], id="a mark at the end of the text"),
+        pytest.param("a \\\r\nb\n", "\\", [(1, "a \\\r"), (2, "b")], id="Bash reads a CR as part of its line"),
+        pytest.param("a `\rb\n", "`", [(1, "a  b")], id="PowerShell ends a line at a lone CR"),
+        pytest.param("a\u2028b \\\nc\n", "\\", [(1, "a\u2028b  c")], id="Bash ends no line at a line separator"),
+        pytest.param("a\x0cb `\nc\n", "\\`", [(1, "a\x0cb  c")], id="PowerShell and YAML end no line at a form feed"),
     ],
 )
 def test_a_shell_line_continued_by_its_mark_is_read_with_the_next(

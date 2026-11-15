@@ -1925,6 +1925,25 @@ class WorkflowReaderFixtures(unittest.TestCase):
         )
 
 
+def test_a_workflow_s_lines_end_where_yaml_ends_one() -> None:
+    # YAML 1.2 ends a line at CR, LF, or CRLF, and at no line separator, which stays in its value.
+    expected = {"a": "b\u2028c", "jobs": {"run": {"steps": [{"run": "echo one\necho two\n"}]}}}
+    for end in ("\n", "\r", "\r\n"):
+        text = end.join(
+            [
+                "a: b\u2028c",
+                "jobs:",
+                "  run:",
+                "    steps:",
+                "      - run: |",
+                "          echo one",
+                "          echo two",
+                "",
+            ]
+        )
+        assert read_workflow(text) == expected, repr(end)
+
+
 @pytest.mark.parametrize(
     ("text", "reason"),
     [
@@ -2558,6 +2577,16 @@ def test_the_statements_are_pinned_to_their_words_and_the_row_to_its_opening() -
 
 def test_a_token_job_running_the_pull_requests_code_and_saying_so_passes() -> None:
     assert token_reach_problems(_reach_workflow(), REACH_STEP, REACH_DESIGN) == []
+
+
+@pytest.mark.parametrize("character", ["\x0c", "\u2028"], ids=["form feed", "line separator"])
+def test_a_job_comment_is_read_whole_through_a_character_yaml_ends_no_line_at(character: str) -> None:
+    # The comment's last line holds the character after its `#`; YAML reads it as text, so the comment still sits
+    # directly above the job and says what it must.
+    lines = _reach_workflow().split("\n")
+    above = lines.index("  query:") - 1
+    lines[above] = lines[above].replace("# ", f"#{character}", 1)
+    assert token_reach_problems("\n".join(lines), REACH_STEP, REACH_DESIGN) == []
 
 
 @pytest.mark.parametrize(
