@@ -16,6 +16,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-cor
 
 import json_writer
 from diff_paths import header_text, quote
+from flat_text import flat_text
 from git_client import GitClient, GitError, Runner
 from github_client import GitHubError, replace_undecodable
 from path_keys import path_key
@@ -35,6 +36,7 @@ from review_runtime import (
     RuntimeContractError,
     blob_matches,
     git_in,
+    git_reason,
     glob_matcher,
     held_path,
     materialize_source_snapshot,
@@ -91,9 +93,10 @@ def ensure_local_commit(checkout: Path, commit: str, refspec: str, git: Runner) 
     with _fetch_lock(checkout):
         if _has_commit(checkout, commit, git):  # another pull request's fetch may have brought it
             return
-        result = git_in(checkout, git, "fetch", "--no-tags", "--quiet", "origin", refspec)
+        fetch = ("fetch", "--no-tags", "--quiet", "origin", refspec)
+        result = git_in(checkout, git, *fetch)
     if result.returncode != 0:
-        raise PipelineError(f"Cannot fetch {refspec}: {result.stderr.strip() or 'git fetch failed'}")
+        raise PipelineError(f"Cannot fetch {refspec}: {git_reason(fetch, result)}")
     if not _has_commit(checkout, commit, git):
         raise PipelineError(f"Commit {commit} is not available after fetching {refspec}")
 
@@ -546,8 +549,8 @@ def _extracted_base(form: str, old: str | None, blob: str | None, read_base: Bas
         return extract(form, content).decode("utf-8"), None
     except ExtractionRefused as exc:
         return "", str(exc)
-    except (GitHubError, RuntimeContractError):
-        return "", "it could not be read"
+    except (GitHubError, RuntimeContractError) as exc:
+        return "", f"it could not be read: {flat_text(str(exc))}"
 
 
 def _document_diffs(

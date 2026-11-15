@@ -96,7 +96,7 @@ from file_presence import is_present, require
 from flat_text import fact_line, flat_text
 from folders_up import folders_up
 from path_containment import resolved_path
-from run_dotnet_format import Services
+from run_dotnet_format import Completed, Services
 from text_lines import text_lines
 from xml_reader import XmlRefused
 
@@ -106,6 +106,12 @@ PACKAGE = "Roslynator.Formatting.Analyzers"
 # assembly, which a packages.config project lists in its own file; each with the metadata naming it.
 PACKAGE_ITEMS = (("PackageReference", "Identity"), ("Analyzer", "Filename"))
 MSBUILD_TIMEOUT_SECONDS = 120
+# An error line MSBuild prints, which it writes to stdout among its other lines: `<file>(<line>,<column>): error
+# MSB4025: <message>`, or `error MSB1009: <message>` for a fault of the command itself.
+MSBUILD_ERROR = re.compile(r"\berror [A-Za-z]+[0-9]+ *:")
+# The most of MSBuild's output a failure's reason carries, so a project that fails at length still gives one line a
+# reader takes in: its first error lines, which name the file and the fault.
+MSBUILD_REASON_CHARACTERS = 500
 GLOBAL_CONFIG = ".globalconfig"
 # The permissions of a file the script adds: its owner writes it and everyone reads it, as an editor's new file.
 NEW_FILE_MODE = 0o644
@@ -929,6 +935,21 @@ def listed_projects_inside(root: Path, solution: Path, emit: Callable[[str], Non
     return projects
 
 
+def msbuild_failure(result: Completed) -> str:
+    """Why an MSBuild run that exited nonzero failed, on one line: its exit code, then the error lines it printed, or
+    all it printed when it printed none, flattened and cut to MSBUILD_REASON_CHARACTERS; the exit code alone when it
+    printed nothing."""
+    text = result.output.decode("utf-8", errors="replace")
+    errors = [line for line in text_lines(text) if MSBUILD_ERROR.search(line)]
+    reason = flat_text("\n".join(errors) or text)
+    stated = f"it exited with code {result.returncode}"
+    if not reason:
+        return stated
+    if len(reason) > MSBUILD_REASON_CHARACTERS:
+        reason = reason[:MSBUILD_REASON_CHARACTERS].rstrip() + "..."
+    return f"{stated}: {reason}"
+
+
 def evaluated_reference(root: Path, project: Path, services: Services) -> bool | str:
     """Whether MSBuild's evaluation of the project holds the package, or why it could not tell."""
     name = project.relative_to(root).as_posix()
@@ -938,7 +959,7 @@ def evaluated_reference(root: Path, project: Path, services: Services) -> bool |
     if result.timed_out:
         return f"MSBuild did not evaluate {name} within {MSBUILD_TIMEOUT_SECONDS} seconds"
     if result.returncode != 0:
-        return f"MSBuild could not evaluate {name}: it exited with code {result.returncode}"
+        return f"MSBuild could not evaluate {name}: {msbuild_failure(result)}"
     text = result.output.decode("utf-8", errors="replace")
     unread = f"MSBuild's evaluation of {name} is not the items it was asked for"
     try:

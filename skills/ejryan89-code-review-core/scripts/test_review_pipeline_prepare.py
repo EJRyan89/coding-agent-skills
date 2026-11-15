@@ -1824,7 +1824,12 @@ class LocalCommitTests(PrepareFixture):
         )
 
     def test_a_failed_fetch_names_its_ref_and_git_s_reason(self) -> None:
-        for stderr, reason in (("fatal: no such ref\n", "fatal: no such ref"), ("", "git fetch failed")):
+        for stderr, reason in (
+            ("fatal: no such ref\n", "fatal: no such ref"),
+            # git's lines are kept on the error's one line, and a fetch that printed nothing is named by its exit code.
+            ("fatal: no such ref\r\nhint: \x1b[1mfetch it\n", "fatal: no such ref hint: [1mfetch it"),
+            ("", "git fetch failed with exit code 1"),
+        ):
             with self.subTest(reason=reason):
                 self.git.answers = {self.HEAD_PRESENT: [failed(), failed()], self.FETCH_HEAD: [failed(stderr=stderr)]}
                 self.assertEqual(
@@ -2736,6 +2741,12 @@ class ReviewerFallbackTests(PrepareFixture):
         self.skill("review/late.md")
         for answer, reason in (
             (failed(stderr="fatal: unable to access origin\n"), "fatal: unable to access origin"),
+            # git's lines are kept on the error's one line, and a listing that printed nothing is named by its exit.
+            (
+                failed(stderr="fatal: unable to access origin\r\nhint: \x1b[1msign in\n"),
+                "fatal: unable to access origin hint: [1msign in",
+            ),
+            (failed(), "git ls-remote failed with exit code 1"),
             (GitResult(0, "", ""), "origin names no default branch"),
         ):
             with self.subTest(reason):

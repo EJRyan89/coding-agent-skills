@@ -224,9 +224,11 @@ REACH_SHARE = 0.5
 # that makes a loop endless is killed rather than waited on.
 SUITE_TIME_FACTOR = 3
 MINIMUM_SUITE_SECONDS = 60.0
-# How much of a suite's output is read back: the gate reports a suite's result, never its output.
+# How much of a command's output is read back: the start of a mutant's run and of a coverage step, and the end of an
+# unmutated suite's run, which is written to a file so that a long traceback cannot push its summary past the limit.
 OUTPUT_LIMIT = 4096
-# How much of a failed coverage step's output its reason quotes: the end of it, where coverage.py names its error.
+# How much of a failed coverage step's or unmutated suite's output its reason quotes: the end of it, where coverage.py
+# names its error and pytest gives its summary of the tests that failed.
 STEP_OUTPUT_CHARACTERS = 300
 # What `coverage json` prints, exiting 1, when the combined data holds no line of a file its include list names: the
 # suite ran, measured, and executed no line of the changed modules. `coverage combine`'s "No data to combine" instead
@@ -1112,6 +1114,12 @@ def read_report(path: Path) -> dict[str, Any] | str:
     return recorded
 
 
+def output_end(output: bytes) -> str:
+    """The end of what a failed step printed, on one line and at most STEP_OUTPUT_CHARACTERS long, or "" when it
+    printed nothing."""
+    return flat_text(output.decode("utf-8", "replace"))[-STEP_OUTPUT_CHARACTERS:]
+
+
 def coverage_reach(tree: Path, suite: str, modules: Sequence[str], timeout: float) -> Reach | str:
     """Run a suite unmutated under coverage.py and give the lines of the changed modules it executed and the tests that
     ran each, or why not."""
@@ -1128,19 +1136,26 @@ def coverage_reach(tree: Path, suite: str, modules: Sequence[str], timeout: floa
         measured["COVERAGE_PROCESS_START"] = str(settings)
         started = time.monotonic()
         try:
-            finished = run_bounded(
-                pytest_command(suite, "-q"),
-                timeout,
-                cwd=tree,
-                env=measured,
-                output_limit=OUTPUT_LIMIT,
-                tree=platform_support.process_tree(),
-            )
+            # Both streams go to one file in the order pytest wrote them, and only its end is read back, where pytest
+            # gives its summary however long the output before it.
+            with (folder / "suite-output").open("w+b") as written:
+                finished = run_bounded(
+                    pytest_command(suite, "-q"),
+                    timeout,
+                    stdout=written,
+                    stderr=written,
+                    cwd=tree,
+                    env=measured,
+                    tree=platform_support.process_tree(),
+                )
+                written.seek(max(0, written.seek(0, os.SEEK_END) - OUTPUT_LIMIT))
+                end = written.read()
         except subprocess.TimeoutExpired:
             return "timed out unmutated"
         seconds = time.monotonic() - started
         if finished.returncode != 0:
-            return f"failed unmutated with exit code {finished.returncode}"
+            output = output_end(end)
+            return f"failed unmutated with exit code {finished.returncode}" + (f": {code(output)}" if output else "")
         report = folder / "report.json"
         for command in (["combine", rcfile, "-q"], ["json", rcfile, "-q", "--show-contexts", "-o", str(report)]):
             step = f"coverage {command[0]}"
@@ -1155,7 +1170,7 @@ def coverage_reach(tree: Path, suite: str, modules: Sequence[str], timeout: floa
             except subprocess.TimeoutExpired:
                 return f"timed out in {code(step)}"
             if done.returncode != 0:
-                output = flat_text((done.stderr + done.stdout).decode("utf-8", "replace"))[-STEP_OUTPUT_CHARACTERS:]
+                output = output_end(done.stderr + done.stdout)
                 if command[0] == "json" and done.returncode == 1 and output == NO_DATA_TO_REPORT:
                     return Reach(seconds, {module: frozenset[int]() for module in modules})
                 return f"failed in {code(step)} with exit code {done.returncode}" + (
