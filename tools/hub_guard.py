@@ -713,7 +713,8 @@ BUILD_NAMES = {"bsdtar": "tar", "gnutar": "tar"}
 # no command, each with what it does instead: their words are not judged. While a hub is guarded every other program
 # the tables above do not read is judged by its words (read_unlisted): refused where a word may name a file in a
 # guarded hub or one holding it, or names git or a runner, or is a word the text does not settle. A program with an
-# option that writes a file or runs a command, as `file -C`, `tree -o`, `less -o`, `xxd`'s second operand, or `uniq`'s,
+# option that writes a file or runs a command, as `file -C`, `tree -o`, `less -o`, `xxd`'s second operand, `uniq`'s, or
+# Windows' `expand.exe`'s destination,
 # is left off, and so is one that reads its words as a program, as `awk` does. Each is known by its own name only, never
 # under a prefix BUILD_PREFIXES names (built_name): a program installed as `ugrep` or `gdu` may be another program,
 # as ugrep, whose `--save-config` writes a file, and gdu, whose `-o` does, are.
@@ -723,7 +724,7 @@ READ_ONLY_PROGRAMS: dict[str, str] = {
         "prints the files it is given, or what it finds in them",
     ),
     **dict.fromkeys(
-        ("wc", "cut", "tr", "paste", "fold", "nl", "rev", "expand", "unexpand", "fmt", "column", "comm", "join"),
+        ("wc", "cut", "tr", "paste", "fold", "nl", "rev", "unexpand", "fmt", "column", "comm", "join"),
         "prints the files or the input it is given, reshaped or counted",
     ),
     **dict.fromkeys(("diff", "cmp"), "prints how the files it is given differ"),
@@ -743,10 +744,12 @@ READ_ONLY_PROGRAMS: dict[str, str] = {
 # The names Python's interpreter is started by, and the option letters it reads before the script it runs: the flags,
 # and the letters that take a value, attached or as the next word, whose values are judged as any unlisted program's
 # words are, since `-X pycache_prefix=<folder>` writes there. A script a guarded hub tracks, run by such a name with
-# only these options, is trusted whatever its own words (trusted_script): the guard refuses every edit to a file a
+# only these options, is trusted whatever its own words (is_trusted_script): the guard refuses every edit to a file a
 # guarded hub tracks and every git call that writes it, so it holds what the hub's history holds. A script anywhere
 # else is trusted by no path, since a session's own tools may rewrite it. `-i`, which runs code from the input after
 # the script, is not among the flags.
+# The characters no Windows file name holds (path_value).
+NO_FILE_NAME = re.compile(r'[<>:"|?*\x00-\x1f]')
 PYTHON_NAMES = re.compile(r"python(?:3(?:\.[0-9]+)?)?")
 PYTHON_FLAGS = "bBdEIOPqsSuvx"
 PYTHON_VALUED = "WX"
@@ -762,17 +765,19 @@ GH_WRITERS = {
 }
 # gh's subcommands that write a git configuration: the one of the repository gh runs in, which every worktree shares
 # with its hub, as `repo set-default` does and `repo fork` and `repo create` do when they add a remote, or the global
-# one, as `auth setup-git` and `auth login` do when they set git's credential helper. Each is refused while a hub is
-# guarded, wherever it runs.
+# one, as `auth setup-git` and `auth login` do when they set git's credential helper, and `repo rename`, which rewrites
+# the remote's URL there. Each is refused while a hub is guarded, wherever it runs.
 GH_CONFIGURATION_WRITERS = {
     ("repo", "set-default"),
+    ("repo", "rename"),
     ("repo", "fork"),
     ("repo", "create"),
     ("auth", "setup-git"),
     ("auth", "login"),
 }
-# The other names cobra gives a gh command, by the name the tables above use.
+# The other names cobra gives a gh command or subcommand, by the name the tables above use.
 GH_ALIASES = {"cs": "codespace", "at": "attestation"}
+GH_SUBCOMMAND_ALIASES = {("repo", "new"): ("repo", "create")}
 # sed rewrites each file it is given in place with -i, or BSD sed's -I, and with GNU sed's --in-place; the letters that
 # take a value in every build end a bundle, and a letter neither flag nor one of these is read as -i. GNU sed's -l takes
 # a value and BSD sed's is a flag, so it ends no bundle: BSD's `-li ''` rewrites in place.
@@ -1684,7 +1689,7 @@ class Write:
 class ScriptRun:
     """A Python script a command runs, at the path its words place, with what the guard reads from its words as from
     any program read_unlisted reads: the files they may name and the parts it does not read. Both count only where the
-    script is not one a guarded hub tracks (Judge.trusted_script)."""
+    script is not one a guarded hub tracks (is_trusted_script)."""
 
     script: Path
     writes: list[Write]
@@ -1702,6 +1707,8 @@ class Reading:
     calls: list[GitCall] = field(default_factory=list)
     writes: list[Write] = field(default_factory=list)
     unread: list[str] = field(default_factory=list)
+    # Commands refused while a hub is guarded with a remedy of their own, which no worktree gives (OwnRemedy).
+    refusals: list[str] = field(default_factory=list)
     scripts: list[ScriptRun] = field(default_factory=list)
     named: list[str] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
@@ -1716,10 +1723,20 @@ class Reading:
         if what not in self.unread:
             self.unread.append(what)
 
+    def refuse(self, reason: str) -> None:
+        """A command refused while a guarded hub is in view, with a remedy of its own, wherever it runs."""
+        if reason not in self.refusals:
+            self.refusals.append(reason)
+
     def time_left(self) -> float:
         """The seconds left of the reading time; past it, raises ReadingTimeout, which the hook refuses as a failure
         of the guard's own when the command names git while a guarded hub is in view."""
         return time_left(self.deadline)
+
+
+class OwnRemedy(str):
+    """A refusal that names its own remedy, which the hook gives without DENY_REASON: the command is refused from a
+    worktree too, so creating one is no remedy."""
 
 
 class ReadingTimeout(Exception):
@@ -3255,11 +3272,15 @@ class Judge:
     configuration: list[Path | None] | None = None
 
     def denied(self, reading: Reading, depth: int = 0) -> str | None:
+        if reading.refusals:
+            if self.hubs:
+                return OwnRemedy(reading.refusals[0])
+            self.notes.extend(reading.refusals)
         unread = list(reading.unread)
         writes = list(reading.writes)
         for run in reading.scripts:
             reading.time_left()
-            if not trusted_script(run.script):
+            if not is_trusted_script(run.script):
                 unread.extend(what for what in run.unread if what not in unread)
                 writes.extend(run.writes)
         if unread:
@@ -4919,19 +4940,26 @@ def word_paths(word: str, directory: Directory, environment: Mapping[str, str]) 
 
 def path_value(candidate: str, directory: Directory, environment: Mapping[str, str]) -> str | None:
     """The path a value names where it may name one (word_paths), with a leading `~` read from the home; None where it
-    may not. A relative value whose first name the guard cannot look up counts as one."""
+    may not. A relative value whose first name the guard cannot look up counts as one, but for a first name holding a
+    character no Windows file name holds (NO_FILE_NAME), which names no file."""
     if not candidate:
         return None
     if candidate == "~" or candidate.startswith(("~/", "~\\")):
         start = home(environment)
         return None if start is None else str(start) + candidate[1:]
-    if Path(platform_support.from_shell_path(candidate)).is_absolute():
+    path = Path(platform_support.from_shell_path(candidate))
+    # A drive-relative path, as C:x, names a file in that drive's current directory, which may be a hub.
+    if path.is_absolute() or path.drive:
         return candidate
     if candidate in {".", ".."} or candidate.startswith(("./", "../", ".\\", "..\\")):
         return candidate
     if directory.cwd is None:
         return candidate
     first = re.split(r"[/\\]", candidate, maxsplit=1)[0]
+    # A first name holding a character no Windows file name holds names no file there, where a look-up of it fails
+    # rather than finding nothing, so on every platform it is no path, as `https:` or a script's `open("x")` is.
+    if NO_FILE_NAME.search(first):
+        return None
     try:
         return candidate if file_presence.is_occupied(directory.cwd / first) else None
     except OSError:
@@ -4966,7 +4994,7 @@ def python_script(program: str, words: Sequence[tuple[Word, bool]], directory: D
     return None
 
 
-def trusted_script(script: Path) -> bool:
+def is_trusted_script(script: Path) -> bool:
     """Whether a Python script is one a guarded hub tracks, with every link on the way to it followed: the guard refuses
     every edit to such a file and every git call that writes it, so it runs what the hub's history holds. A file the
     hub does not track, an ignored one or a new one among them, and any file elsewhere is not."""
@@ -4974,9 +5002,12 @@ def trusted_script(script: Path) -> bool:
     hub = protecting_hub(real)
     if hub is None or not file_presence.is_present(real, other_is_absent=True):
         return False
-    # A literal pathspec matches the file alone, never another a wildcard in its name would match.
+    # A literal pathspec matches no other file a wildcard in its name would match, and the answer must name this file
+    # alone, as a folder's pathspec names every file under it.
     arguments = ["ls-files", "-z", "--", f":(literal){real}"]
-    return bool(CLIENT.quiet_output(arguments, directory=hub, timeout=lookup_timeout()))
+    answer = CLIENT.quiet_output(arguments, directory=hub, timeout=lookup_timeout()) or ""
+    relative = Path(os.path.relpath(real, os.path.realpath(hub))).as_posix()
+    return answer.split("\0") == [relative, ""]
 
 
 def read_names() -> frozenset[str]:
@@ -5396,6 +5427,8 @@ def read_gh(arguments: list[Word], directory: Directory, reading: Reading) -> No
     named = named[:2]
     if named[:1] != [None] and named:
         named[0] = GH_ALIASES.get(str(named[0]), named[0])
+    if len(named) == 2 and None not in named:
+        named = list(GH_SUBCOMMAND_ALIASES.get((str(named[0]), str(named[1])), tuple(named)))
     if named[:1] == [None] or (gh_checkout_prefix(named[:1]) and None in named):
         reading.cannot_read("a gh subcommand the text does not settle, which may check a branch out or write files")
     elif unknown_flag is not None:
@@ -5409,9 +5442,10 @@ def read_gh(arguments: list[Word], directory: Directory, reading: Reading) -> No
         place = GitOptions.initial(directory.cwd, values, opaque=False).place()
         reading.calls.append(GitCall(place, " ".join(str(word) for word in named), [], program="gh"))
     elif tuple(named) in GH_CONFIGURATION_WRITERS:
-        reading.cannot_read(
-            f"`gh {' '.join(str(word) for word in named)}` writes a git configuration, its repository's, which a "
-            "worktree shares with its hub, or the global one; run it from a terminal outside the clone"
+        reading.refuse(
+            f"`gh {' '.join(str(word) for word in named)}` writes a git configuration, its repository's, which every "
+            "worktree shares with its hub, or the global one, so it is refused while a hub is guarded, from the hub "
+            "and from a worktree alike. Run it from a terminal outside the clone."
         )
     elif tuple(named) in GH_WRITERS:
         # It writes into the directory it runs in, as a clone or a download does by default, or where its words name.
@@ -6130,11 +6164,12 @@ def guard(stream: str) -> int:
             read_into(reading, tool, cwd, environment)
             looking_up = True
             reached_hubs(reading, hubs)
-            if (reading.unread or any(run.unread for run in reading.scripts)) and not hubs:
+            if (reading.unread or reading.refusals or any(run.unread for run in reading.scripts)) and not hubs:
                 named_hubs(reading, cwd, hubs)
             looking_up = False
             reason = denied(reading, hubs)
-            refused = None if reason is None else f"{reason} {DENY_REASON}"
+            # A refusal with a remedy of its own is no hub edit a worktree would take, so it goes without DENY_REASON.
+            refused = reason if reason is None or isinstance(reason, OwnRemedy) else f"{reason} {DENY_REASON}"
             for note in reading.notes:
                 print(f"hub guard could not judge part of the command: {note}", file=sys.stderr)
     except Exception as exc:  # noqa: BLE001 - a broken guard must not block every tool; the regression suite pins what it refuses

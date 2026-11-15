@@ -111,7 +111,9 @@ class GuardTestCase(HubTestCase):
         output = json.loads(stdout)["hookSpecificOutput"]
         self.assertEqual("PreToolUse", output["hookEventName"])
         self.reason = output["permissionDecisionReason"]
-        self.assertIn("tools/worktrees.py new", self.reason)
+        # Every refusal ends with its step: a worktree for a hub edit, or the remedy of one a worktree refuses too.
+        if not self.reason.endswith("Run it from a terminal outside the clone."):
+            self.assertIn("tools/worktrees.py new", self.reason)
         decision: str = output["permissionDecision"]
         return decision
 
@@ -3271,6 +3273,8 @@ class WriteGuardTests(GuardTestCase):
             ("ugrep --save-config=README.md x", "ugrep"),
             ("gdu -o README.md .", "gdu"),
             ("ghead -n 5 README.md", "ghead"),
+            # Windows' expand.exe writes its destination operand.
+            ("expand README.md out.txt", "expand"),
         ):
             with self.subTest(command=command):
                 self.assertEqual("deny", self.bash(command, self.hub))
@@ -3336,6 +3340,12 @@ class WriteGuardTests(GuardTestCase):
         ):
             with self.subTest(command=command):
                 self.assertEqual("deny", self.bash(command, self.hub, environment))
+        # A folder is no script the hub tracks, though its files are tracked: Python runs its __main__.py.
+        (tools / "__main__.py").write_text("print(1)\n", encoding="utf-8")
+        self.assertEqual("deny", self.bash("python3 tools README.md", self.hub))
+        self.assertIn(f"`python3` is given {tools}", self.reason)
+        # From PowerShell, an assignment to the environment before Python is refused.
+        self.assertEqual("deny", self.powershell("$env:PYTHONPATH = 'x'; python3 tools/sync.py README.md", self.hub))
         self.assertEqual("deny", self.bash('python3 local.json "$x"', self.hub))
         self.assertIn("`python3` is given a word the text does not settle", self.reason)
 
@@ -3377,18 +3387,25 @@ class WriteGuardTests(GuardTestCase):
         self.assertIn("may be one that checks a branch out or writes files", self.reason)
         # A subcommand that writes a git configuration, the repository's, which a worktree shares with its hub, or the
         # global one, is refused wherever it runs.
-        for command in (
-            "gh repo set-default owner/repo",
-            "gh repo fork --remote",
-            "gh repo create x --source=. --remote=up",
-            "gh auth setup-git",
-            "gh auth login",
+        for command, subcommand in (
+            ("gh repo set-default owner/repo", "repo set-default"),
+            ("gh repo fork --remote", "repo fork"),
+            ("gh repo create x --source=. --remote=up", "repo create"),
+            ("gh repo new x --source=. --remote=up", "repo create"),
+            ("gh repo rename newname", "repo rename"),
+            ("gh auth setup-git", "auth setup-git"),
+            ("gh auth login", "auth login"),
         ):
             for cwd in (self.hub, self.tree):
                 with self.subTest(command=command, cwd=cwd):
                     self.assertEqual("deny", self.bash(command, cwd))
-                    self.assertIn("writes a git configuration, its repository's", self.reason)
-                    self.assertIn("or the global one; run it from a terminal outside the clone", self.reason)
+                    # Pinned against a literal: the refusal names its own remedy, and no worktree, which refuses it too.
+                    self.assertEqual(
+                        f"`gh {subcommand}` writes a git configuration, its repository's, which every worktree shares "
+                        "with its hub, or the global one, so it is refused while a hub is guarded, from the hub and "
+                        "from a worktree alike. Run it from a terminal outside the clone.",
+                        self.reason,
+                    )
         self.assertEqual("deny", self.powershell("gh repo set-default owner/repo", self.tree))
         for command, cwd in (
             ("gh repo clone owner/repo", self.tree),
@@ -4948,7 +4965,7 @@ class ContractListTests(unittest.TestCase):
         self.assertEqual(
             {
                 *("cat", "head", "tail", "tac", "grep", "egrep", "fgrep", "findstr", "jq", "strings", "od", "hexdump"),
-                *("wc", "cut", "tr", "paste", "fold", "nl", "rev", "expand", "unexpand", "fmt", "column", "comm"),
+                *("wc", "cut", "tr", "paste", "fold", "nl", "rev", "unexpand", "fmt", "column", "comm"),
                 *("join", "diff", "cmp", "md5sum", "md5", "sha1sum", "sha256sum", "sha512sum", "shasum", "b2sum"),
                 *("cksum", "ls", "stat", "du", "df", "realpath", "readlink", "basename", "dirname", "pwd", "which"),
                 *("where", "true", "false", "sleep", "seq", "yes", "expr", "date", "uname", "whoami", "id"),
@@ -4976,12 +4993,16 @@ class ContractListTests(unittest.TestCase):
         )
         self.assertEqual(("bBdEIOPqsSuvx", "WX"), (hub_guard.PYTHON_FLAGS, hub_guard.PYTHON_VALUED))
         self.assertEqual({"cs": "codespace", "at": "attestation"}, hub_guard.GH_ALIASES)
+        self.assertEqual({("repo", "new"): ("repo", "create")}, hub_guard.GH_SUBCOMMAND_ALIASES)
         configuration = contract_names("or the global one,", "(`GH_CONFIGURATION_WRITERS`)")
         self.assertEqual(
             sorted(f"gh {' '.join(key)}" for key in hub_guard.GH_CONFIGURATION_WRITERS), sorted(configuration)
         )
         self.assertEqual(
-            {("repo", "set-default"), ("repo", "fork"), ("repo", "create"), ("auth", "setup-git"), ("auth", "login")},
+            {
+                *(("repo", "set-default"), ("repo", "rename"), ("repo", "fork"), ("repo", "create")),
+                *(("auth", "setup-git"), ("auth", "login")),
+            },
             hub_guard.GH_CONFIGURATION_WRITERS,
         )
         for name in ("python", "python3", "python3.12"):
@@ -5727,6 +5748,10 @@ def test_every_table_reads_a_build_under_its_prefixed_or_other_name(program: str
         (".state", []),
         (".[].number", []),
         ("https://example.com/x", []),
+        # A first name holding a character no Windows file name holds names no file, on every platform.
+        ("a<b/c", []),
+        ('x"y', []),
+        ("a|b", []),
         ("", []),
         # An option's value: after `=`, or the rest of a one-dash bundle; a long option's name is no path.
         ("--output=/srv/x", ["/srv/x"]),
@@ -5750,6 +5775,13 @@ def test_a_word_may_name_a_path_only_where_it_may_be_one(word: str, expected: li
     directory = hub_guard.Directory(tmp_path)
     found = hub_guard.word_paths(word, directory, environment)
     assert [value.replace(str(home), "<home>") for value in found] == expected
+
+
+def test_a_drive_relative_word_names_a_path_where_the_platform_reads_a_drive(tmp_path: Path) -> None:
+    # Windows reads C:x as x in drive C's current directory, which may be a hub; elsewhere it is one name, holding a
+    # character no Windows file name holds.
+    expected = ["C:x"] if Path("C:x").drive else []
+    assert hub_guard.word_paths("C:x", hub_guard.Directory(tmp_path), {}) == expected
 
 
 def test_every_relative_word_may_name_a_path_where_the_directory_is_not_settled() -> None:
@@ -5786,7 +5818,8 @@ def test_python_s_script_is_read_only_after_options_that_take_none(
     else:
         assert found is not None
         script, index = found
-        assert script == (Path(expected) if expected.startswith("/") else tmp_path / expected)
+        absolute = Path(platform_support.from_shell_path(expected))
+        assert script == (absolute if expected.startswith("/") else tmp_path / expected)
         assert words[index] == expected
     assert hub_guard.python_script("node", [("tools/x.py", False)], hub_guard.Directory(tmp_path)) is None
 

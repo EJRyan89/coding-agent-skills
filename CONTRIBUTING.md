@@ -71,7 +71,7 @@ python3 -m venv ~/.venvs/coding-agent-skills
 ~/.venvs/coding-agent-skills/bin/python -m pip install --require-hashes --only-binary :all: -r requirements-dev.txt
 ```
 
-Then run validation with that environment's interpreter, `~/.venvs/coding-agent-skills/bin/python -B tests/run_validation.py`. In a clone that guards its hub ([The guard](docs/parallel-sessions.md#the-guard)), install and validate from a worktree with the hub's interpreter, as `<hub>/.venv/bin/python -m pip install --require-hashes --only-binary :all: -r requirements-dev.txt`: from the hub the guard refuses it, since `requirements-dev.txt` is a hub file, and so is `python -m pytest` naming the hub's tests.
+Then run validation with that environment's interpreter, `~/.venvs/coding-agent-skills/bin/python -B tests/run_validation.py`. In a clone that guards its hub ([The guard](docs/parallel-sessions.md#the-guard)), install and validate from a worktree with the interpreter this section creates: from the hub the guard refuses the install, since `requirements-dev.txt` is a hub file, and so is `python -m pytest` naming the hub's tests.
 
 ## Working in a worktree
 

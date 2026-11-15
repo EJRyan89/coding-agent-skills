@@ -502,7 +502,7 @@ a row decides it.
   `GH_WRITERS` and `GH_CONFIGURATION_WRITERS` name below, other than `-R`, `--repo`, and `--hostname`, is a part the
   guard does not read, since gh takes the word after a flag it does not know as its value, so `gh pr -b x checkout 12`
   checks a branch out. Each is read by its first word's name or the alias cobra gives it (`GH_ALIASES`), as `gh cs cp`
-  is `gh codespace cp`.
+  is `gh codespace cp`, and by its subcommand's alias (`GH_SUBCOMMAND_ALIASES`), as `gh repo new` is `gh repo create`.
 - **Redirections.** A redirection that writes a file at a path the text settles is refused when the file lies in a
   guarded hub's tracked files or anywhere in its git directory, as a file tool's edit is; a duplication such as
   `2>&1` and a device such as `/dev/null` write none. In PowerShell every command's file redirection is read so,
@@ -649,7 +649,7 @@ a row decides it.
   `gh`, the runners, `PROGRAM_OPTIONS`, `WRITING_PROGRAMS`, and `LINK_PROGRAMS`, is judged by its words, unless it is
   one of `READ_ONLY_PROGRAMS`, the programs known in every build to write no file their words name and to run no
   command: `b2sum`, `basename`, `cat`, `cksum`, `cmp`, `column`, `comm`, `cut`, `date`, `df`, `diff`, `dirname`, `du`,
-  `egrep`, `expand`, `expr`, `false`, `fgrep`, `findstr`, `fmt`, `fold`, `grep`, `head`, `hexdump`, `id`, `join`,
+  `egrep`, `expr`, `false`, `fgrep`, `findstr`, `fmt`, `fold`, `grep`, `head`, `hexdump`, `id`, `join`,
   `jq`, `ls`, `md5`, `md5sum`, `nl`, `nproc`, `od`, `paste`, `printenv`, `pwd`, `readlink`, `realpath`, `rev`, `seq`,
   `sha1sum`, `sha256sum`, `sha512sum`, `shasum`, `sleep`, `stat`, `strings`, `tac`, `tail`, `tr`, `true`, `uname`,
   `unexpand`, `wc`, `where`, `which`, `whoami`, and `yes`, each by its own name only, never under the prefixes above,
@@ -660,7 +660,8 @@ a row decides it.
   where a word, or its value after its last `=`, names git, a runner, or a multicall program, which it may run; and
   where a word is one the text does not settle, as a loop's variable, which may name any file. A word counts as a path
   only where it may be one: an absolute path, one that starts with `~`, read from the home, a `.` or `..` alone or
-  before a separator, or a relative one whose first name is there in the directory the command runs in, any relative
+  before a separator, a drive-relative one on Windows, as `C:x`, or a relative one whose first name is there in the
+  directory the command runs in and holds no character a Windows file name cannot hold (`NO_FILE_NAME`), any relative
   one counting where the text does not settle that directory; each is read in the word itself unless it is an
   option, in the rest of a one-dash bundle after each of its letters, in its value after its first and its last `=`,
   and in each of its quoted and blank-separated parts, as a script or a command line it is handed holds them, and a
@@ -683,8 +684,9 @@ a row decides it.
   `gh release download`, `gh repo clone`, and `gh run download` (`GH_WRITERS`), are refused where that directory lies
   in a guarded hub or the text does not settle it, and their words are judged as such a program's. Those that write
   a git configuration, the repository's, which every worktree shares with its hub, or the global one,
-  `gh auth login`, `gh auth setup-git`, `gh repo create`, `gh repo fork`, and `gh repo set-default`
-  (`GH_CONFIGURATION_WRITERS`), are refused while a hub is guarded wherever they run.
+  `gh auth login`, `gh auth setup-git`, `gh repo create`, `gh repo fork`, `gh repo rename`, which rewrites the
+  remote's URL, and `gh repo set-default` (`GH_CONFIGURATION_WRITERS`), are refused while a hub is guarded wherever
+  they run, with a refusal that names its own remedy, a terminal outside the clone, since a worktree refuses them too.
 - **PowerShell.** A PowerShell command is read by PowerShell's own parser, not by a second hand-written grammar,
   and is understood when every node type in its tree is one `POWERSHELL_UNDERSTOOD` names, in the forms that invoke
   nothing: pipelines of commands joined by `&&` and `||`, with redirections, whose elements are constants, strings,
@@ -852,7 +854,9 @@ The hook sees the command text. It does not see:
   reads `gh`'s words only for the subcommands `GH_CHECKOUTS`, `GH_WRITERS`, and `GH_CONFIGURATION_WRITERS` name;
 - a path an unlisted program's word holds after a `:` or inside a value joined by commas or colons, as `-bl:<file>`,
   `/out:<file>`, `docker -v <hub>:/w`, or `--mount source=<hub>,target=/w`: the guard reads a word's value only after
-  `=`, in a one-dash bundle, and in its quoted and blank-separated parts;
+  `=`, in a one-dash bundle, and in its quoted and blank-separated parts; and a file whose name holds a character
+  no Windows file name holds, `:`, `"`, `<`, `>`, `|`, `?`, or `*`, named by a relative word, which is no path on any
+  platform;
 - a file a URL names, as `file://<hub>/README.md` or SQLite's `file:<hub>/x.db` URI, which no path rule reads as a
   path;
 - a response file, `@<file>`, from which a program reads more words, as compilers and `msbuild` do: the guard judges
