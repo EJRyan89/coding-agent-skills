@@ -478,6 +478,28 @@ class ReadLogTests(GuardFixture):
         self.assertEqual({"csharp-review": {"files": 2, "bytes": size, "searches": 0}}, state["reads"])
         self.assertFalse(log.exists(), "a counted log is removed")
 
+    def test_check_refuses_a_log_line_that_is_json_of_another_shape_by_its_line_and_counts_no_log(self) -> None:
+        # A well-formed line the guard never writes is not a write it was stopped in: counting past it would judge the
+        # log whole when something else wrote to it.
+        counted = guard.read_log(self.run_directory, "csharp-review")
+        counted.write_text(json.dumps("app/Role.cs") + "\n", encoding="utf-8")
+        log = guard.read_log(self.run_directory, "sql-review")
+        # Not a search either: an object with another key, or another value, or more keys.
+        shapes = ("[]", "1", "null", "true", '{"searched": "Grep"}', '{"search": 1}', '{"search": "Grep", "path": "a"}')
+        for shape in shapes:
+            with self.subTest(shape):
+                log.write_text(f'"app/Service.cs"\n{{"search": "Grep"}}\n{shape}\n"app/Role.cs"\n', encoding="utf-8")
+                state: Any = {"reads": {}}
+                with self.assertRaises(review_run.PipelineError) as raised:
+                    review_dispatch.count_reads(self.run_directory, state, ["csharp-review", "sql-review"])
+                self.assertEqual(
+                    f"{log} line 3 is JSON but neither a snapshot path nor a search, the only entries the reviewer "
+                    "guard writes, so its reads cannot be counted",
+                    str(raised.exception),
+                )
+                self.assertEqual({}, state["reads"], "no log is counted")
+                self.assertTrue(log.exists() and counted.exists(), "no log is removed")
+
     def test_a_claim_records_its_run_and_role_and_a_refused_one_leaves_no_claim(self) -> None:
         # A claim the JSON writer refuses fails the guard's evaluation, which the hook turns into a denial, and leaves
         # no empty claim file a later call would read as unreadable.
@@ -547,11 +569,9 @@ class ReadLogTests(GuardFixture):
     def test_check_adds_a_rerun_s_searches_and_keeps_unknown_the_searches_of_a_role_counted_before_them(self) -> None:
         log = guard.read_log(self.run_directory, "csharp-review")
         entries = [guard.search_entry("Grep"), "app/Service.cs", guard.search_entry("source-search")]
-        # Not a search: an object with another key, or another value, or more keys.
-        others: list[object] = [{"search": 1}, {"searched": "Grep"}, {"search": "Grep", "path": "app/Role.cs"}, None]
         for counted in ({"files": 1, "bytes": 5, "searches": 2}, {"files": 1, "bytes": 5}):
             with self.subTest(counted=counted):
-                log.write_text("".join(json.dumps(entry) + "\n" for entry in [*entries, *others]), encoding="utf-8")
+                log.write_text("".join(json.dumps(entry) + "\n" for entry in entries), encoding="utf-8")
                 state: Any = {"reads": {"csharp-review": counted}}
                 self.assertTrue(review_dispatch.count_reads(self.run_directory, state, ["csharp-review"]))
                 size = (self.source / "app" / "Service.cs").stat().st_size

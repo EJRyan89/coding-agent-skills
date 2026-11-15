@@ -1043,6 +1043,18 @@ class CodexSettingsFixtures(unittest.TestCase):
         )
         self.assertEqual([], codex_settings_problems(workflow, CODEX_GUIDE))
 
+    def test_the_guides_toml_fence_is_read_as_find_fences_reads_one(self) -> None:
+        # A longer run, or one with trailing spaces, closes the fence; a closing run with an info string does not.
+        closed = CODEX_GUIDE.replace("prefer_mxc = true\n```\n", "prefer_mxc = true\n````  \n")
+        self.assertEqual([], codex_settings_problems(CODEX_SETTINGS_WORKFLOW, closed))
+        unclosed = CODEX_GUIDE.replace("prefer_mxc = true\n```\n", "prefer_mxc = true\n``` toml\n")
+        self.assertTrue(
+            any(
+                "docs/codex-support.md has no" in problem
+                for problem in codex_settings_problems(CODEX_SETTINGS_WORKFLOW, unclosed)
+            )
+        )
+
     def test_each_departure_from_the_guides_codex_settings_fails(self) -> None:
         for workflow, guide, problem in (
             (CODEX_SETTINGS_WORKFLOW.replace("          prefer_mxc = true\n", ""), CODEX_GUIDE, "but docs/"),

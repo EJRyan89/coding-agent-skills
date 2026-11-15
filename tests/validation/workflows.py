@@ -11,6 +11,7 @@ from collections.abc import Collection, Iterable, Mapping
 from pathlib import Path
 
 import file_presence
+from markdown_sections import find_fences
 from python_checks import MYPY_CACHE_VARIABLE
 from toolchain import VALIDATION_FLOORS, removed_install_problems
 from validation_support import REPOSITORY_ROOT, repository_files
@@ -1565,6 +1566,24 @@ def _toml_problem(text: str | None, where: str) -> tuple[dict[str, object] | Non
         return None, f"{where}'s Codex settings are not TOML: {error}"
 
 
+def _guide_toml(guide: str) -> str | None:
+    """The body of the TOML fence docs/codex-support.md gives one blank line after the paragraph that starts "For MXC
+    with the elevated fallback", read as markdown_sections.find_fences reads fences, or None when it gives none."""
+    lines = guide.split("\n")
+    for start, line in enumerate(lines):
+        if not line.startswith("For MXC with the elevated fallback"):
+            continue
+        for fence in find_fences(lines):
+            if (
+                fence.opener == start + 2
+                and not lines[start + 1]
+                and fence.language == "toml"
+                and fence.closer is not None
+            ):
+                return "\n".join(lines[index] for index in fence.body())
+    return None
+
+
 def codex_settings_problems(workflow: str, guide: str) -> list[str]:
     """Hold the Codex settings deployable.yml's Windows job writes, the `$settings` here-string its Codex step passes
     to Set-Content, to the TOML block docs/codex-support.md gives after "For MXC with the elevated fallback", and its
@@ -1579,9 +1598,6 @@ def codex_settings_problems(workflow: str, guide: str) -> list[str]:
         return [f"the deployable job has {len(steps)} steps named {CODEX_SETTINGS_STEP!r}, expected one"]
     script = str(steps[0].get("run", ""))
     written = re.search(r"^\$settings = @'\n(?P<toml>.*?)\n'@$", script, re.MULTILINE | re.DOTALL)
-    block = re.search(
-        r"^For MXC with the elevated fallback[^\n]*\n\n```toml\n(?P<toml>.*?)\n```$", guide, re.MULTILINE | re.DOTALL
-    )
     problems: list[str] = []
     if not re.search(r"^Set-Content -LiteralPath \$config -Value \$settings ", script, re.MULTILINE):
         problems.append(f"{CODEX_SETTINGS_STEP!r} does not write $settings to $config")
@@ -1589,7 +1605,7 @@ def codex_settings_problems(workflow: str, guide: str) -> list[str]:
         problems.append(f"{CODEX_SETTINGS_STEP!r} does not set $config to .codex/config.toml under $env:USERPROFILE")
     workflow_table, problem = _toml_problem(written.group("toml") if written else None, CODEX_SETTINGS_STEP)
     problems += [problem] if problem else []
-    guide_table, problem = _toml_problem(block.group("toml") if block else None, "docs/codex-support.md")
+    guide_table, problem = _toml_problem(_guide_toml(guide), "docs/codex-support.md")
     problems += [problem] if problem else []
     if workflow_table is not None and guide_table is not None and workflow_table != guide_table:
         problems.append(

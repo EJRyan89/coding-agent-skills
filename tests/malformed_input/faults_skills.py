@@ -1245,7 +1245,7 @@ DRIVERS: list[Driver] = [
     Driver(
         INSIGHTS,
         "decide-custom",
-        ("decide-custom", "--report", INSIGHTS_REPORT, "--flags", "RF-000001", "accepted"),
+        ("decide-custom", "--report", INSIGHTS_REPORT, "--rules", "REC-002", "--flags", "RF-000001", "accepted"),
         prepare=insights_fixture,
         inputs=(INSIGHTS_REPORT, FLAG_STORE),
         outputs=("{root}/summary",),

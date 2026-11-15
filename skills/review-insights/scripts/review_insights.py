@@ -1219,11 +1219,19 @@ def _record_decision(
 
 
 def decide_custom(
-    report_path: Path, flags: list[str], decision: str, *, note: str | None = None, services: Services | None = None
+    report_path: Path,
+    flags: list[str],
+    decision: str,
+    *,
+    rules: list[str],
+    note: str | None = None,
+    services: Services | None = None,
 ) -> tuple[list[str], list[str], int]:
     """Record one decision for every custom-candidate analyzer recommendation together, as the user was asked about
-    them in one question. Returns the flags resolved, those already resolved, and how many were decided. The flags
-    the user was shown, the union of theirs, must still match."""
+    them in one question. Returns the flags resolved, those already resolved, and how many were decided. The rules
+    the user was shown, by their IDs, and the flags, the union of theirs, must still match: a rule a regenerated report
+    added, even one linked only to flags the user was shown, was never asked about, and an ID stays with its subject,
+    so the IDs name exactly the rules the question named."""
     services = services or Services()
     if decision not in DECISIONS:
         raise InsightError(f"Decision must be one of: {', '.join(DECISIONS)}")
@@ -1234,6 +1242,12 @@ def decide_custom(
         items = custom_candidates(report)
         if not items:
             raise InsightError(f"{report_path} has no custom-candidate recommendations")
+        current = sorted(item["id"] for item in items)
+        if current != sorted(set(rules)):
+            raise InsightError(
+                f"The custom-candidate recommendations are now {','.join(current)}, not "
+                f"{','.join(sorted(set(rules))) or 'none'}; run report again and confirm the decision with the user"
+            )
         linked = sorted({flag for item in items for flag in item["linked_flags"]})
         if linked != sorted(set(flags)):
             raise InsightError(
@@ -1340,6 +1354,7 @@ def _print_custom_candidates(report: dict[str, Any]) -> None:
         return
     decisions = {item["decision"] for item in items}
     flags = ",".join(sorted({flag for item in items for flag in item["linked_flags"]})) or "none"
+    rules = ",".join(sorted(item["id"] for item in items))
     print(
         single_line(
             f"CUSTOM_CANDIDATES rules={len(items)} findings={sum(item['finding_count'] for item in items)} "
@@ -1348,7 +1363,7 @@ def _print_custom_candidates(report: dict[str, Any]) -> None:
     )
     for fact in synthesis_stage.custom_pattern_facts(report):
         print(single_line(fact))
-    print(single_line(f'DECIDE_CUSTOM --flags "{flags}"'))
+    print(single_line(f'DECIDE_CUSTOM --rules "{rules}" --flags "{flags}"'))
 
 
 def _print_report(report: dict[str, Any]) -> None:
@@ -1393,7 +1408,10 @@ def _print_report(report: dict[str, Any]) -> None:
 
 def _run_decide_custom(args: argparse.Namespace, services: Services | None) -> int:
     shown = [] if args.flags == "none" else [flag for flag in args.flags.split(",") if flag]
-    resolved, skipped, count = decide_custom(args.report, shown, args.decision, note=args.note, services=services)
+    rules = [rule for rule in args.rules.split(",") if rule]
+    resolved, skipped, count = decide_custom(
+        args.report, shown, args.decision, rules=rules, note=args.note, services=services
+    )
     for flag_id in resolved:
         print(single_line(f"FLAG_RESOLVED {flag_id}"))
     for flag_id in skipped:
@@ -1484,6 +1502,7 @@ def main(arguments: list[str] | None = None, services: Services | None = None) -
     subject.add_argument("--synthesized", metavar="TITLE", help="the title a TITLE line named")
     custom_parser = commands.add_parser("decide-custom")
     custom_parser.add_argument("--report", required=True, type=Path, help="the insights.json a report printed")
+    custom_parser.add_argument("--rules", required=True, help="the DECIDE_CUSTOM line's rule IDs, comma-separated")
     custom_parser.add_argument("--flags", required=True, help="the CUSTOM_CANDIDATES line's flags= value")
     custom_parser.add_argument("decision", choices=DECISIONS)
     custom_parser.add_argument("--note")

@@ -36,11 +36,11 @@ Run the commands below exactly as shown; do not read the archive, the flag store
    ```bash
    {{PYTHON}} -B "${CLAUDE_SKILL_DIR}/scripts/review_insights.py" decide --report "<insights.json>" <id> --category "<category>" --flags "<flags>" accepted
    ```
-   For the custom-candidate question, decide them all at once with the `DECIDE_CUSTOM` line's arguments in place of `--flags "<flags>"`:
+   For the custom-candidate question, decide them all at once with the `DECIDE_CUSTOM` line's arguments in place of `--rules "<ids>" --flags "<flags>"`:
    ```bash
-   {{PYTHON}} -B "${CLAUDE_SKILL_DIR}/scripts/review_insights.py" decide-custom --report "<insights.json>" --flags "<flags>" deferred
+   {{PYTHON}} -B "${CLAUDE_SKILL_DIR}/scripts/review_insights.py" decide-custom --report "<insights.json>" --rules "<ids>" --flags "<flags>" deferred
    ```
-   If the report no longer gives that ID that subject and exactly those flags, it fails without changing anything: run the report again and confirm with the user. If it fails saying the decision is recorded but some flags could not be resolved, run the same command again once to resolve them. Report its `FLAG_RESOLVED`, `FLAG_ALREADY_RESOLVED`, and `DECIDED` lines.
+   If the report no longer gives that ID that subject and exactly those flags, or no longer gives exactly those custom-candidate rules, it fails without changing anything: run the report again and confirm with the user. If it fails saying the decision is recorded but some flags could not be resolved, run the same command again once to resolve them. Report its `FLAG_RESOLVED`, `FLAG_ALREADY_RESOLVED`, and `DECIDED` lines.
 
 Finish by giving the user the Markdown report path and the decisions and flags recorded.
 

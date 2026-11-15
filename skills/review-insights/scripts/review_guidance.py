@@ -41,7 +41,7 @@ from typing import Any
 import file_presence
 from flat_text import flat_text
 from git_client import GitClient, GitError
-from markdown_sections import MARKDOWN_SPACE, list_item
+from markdown_sections import MARKDOWN_SPACE, find_fences, list_item
 from path_containment import refusal
 from review_config import safe_repository_path
 from review_records import is_suite_profile
@@ -355,18 +355,20 @@ def _statements(text: str) -> list[tuple[int, str]]:
     """Each list item and paragraph of Markdown, with the line it starts on; headings, tables, and code are left
     out. Lines are read as markdown_sections reads Markdown's blocks: only spaces and tabs are its whitespace, and a
     list item interrupts a paragraph only where CommonMark lets it, so a line Markdown shows as a paragraph's
-    continuation joins that paragraph. A paragraph inside a list item is continued by any further item."""
+    continuation joins that paragraph. A paragraph inside a list item is continued by any further item. Fences are
+    read through markdown_sections.find_fences, the one fence reader, so a fence a blockquote or a list item holds is
+    code, and only a run that can close it does."""
     found: list[tuple[int, str]] = []
-    continued = fenced = in_item = False
-    for number, raw in enumerate(text.splitlines(), start=1):
+    continued = in_item = False
+    lines = text.splitlines()
+    fenced = {index for fence in find_fences(lines) for index in fence.lines()}
+    for index, raw in enumerate(lines):
         stripped = raw.strip(MARKDOWN_SPACE)
-        if stripped.startswith(("```", "~~~")):
-            fenced = not fenced
         item = list_item(raw, interrupting=continued and not in_item)
-        if fenced or not stripped or stripped.startswith(("```", "~~~", "#", "|")):
+        if index in fenced or not stripped or stripped.startswith(("#", "|")):
             continued = in_item = False
         elif item is not None or not continued:
-            found.append((number, item if item is not None else stripped))
+            found.append((index + 1, item if item is not None else stripped))
             continued, in_item = True, item is not None
         else:
             found[-1] = (found[-1][0], f"{found[-1][1]} {stripped}")

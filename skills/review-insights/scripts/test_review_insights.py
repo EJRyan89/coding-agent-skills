@@ -245,6 +245,11 @@ class InsightFixture(unittest.TestCase):
             env={**os.environ, "CODE_REVIEW_FLAGS": str(self.flags)},
         )
 
+    def custom_rules(self, json_path: Path) -> list[str]:
+        """The `--rules` argument naming every custom-candidate recommendation the report at `json_path` gives."""
+        report = json.loads(json_path.read_text(encoding="utf-8"))
+        return ["--rules", ",".join(item["id"] for item in ri.custom_candidates(report))]
+
     def report(self, *arguments: str, reviewers: bool = False, decide: bool = False) -> tuple[Path, list[str]]:
         """The report's path and its RECOMMENDATION lines, with their REVIEWER lines when `reviewers` is set and their
         DECIDE and DECIDE_CUSTOM lines when `decide` is. The synthesis lines are left out; the synthesis tests read
@@ -1404,9 +1409,12 @@ class AnalyzerTests(InsightFixture):
         second = self.flag("rule", pull=9, finding="F001")
         json_path, lines = self.report(decide=True)
         self.assertIn(f"CUSTOM_CANDIDATES rules=2 findings=3 decision=deferred flags={first},{second}", lines)
-        self.assertEqual(f'DECIDE_CUSTOM --flags "{first},{second}"', lines[-1])
+        rules = [item["id"] for item in ri.custom_candidates(json.loads(json_path.read_text(encoding="utf-8")))]
+        self.assertEqual(2, len(rules))
+        shown = ",".join(sorted(rules))
+        self.assertEqual(f'DECIDE_CUSTOM --rules "{shown}" --flags "{first},{second}"', lines[-1])
         self.assertFailed(
-            self.run_main("decide-custom", "--report", str(json_path), "--flags", first, "accepted"),
+            self.run_main("decide-custom", "--report", str(json_path), "--rules", shown, "--flags", first, "accepted"),
             f"now link flags {first},{second}, not {first}",
         )
         printed = shlex.split(lines[-1].removeprefix("DECIDE_CUSTOM "))
@@ -1433,6 +1441,37 @@ class AnalyzerTests(InsightFixture):
         others = [item for item in report["recommendations"] if item.get("coverage") != "custom-candidate"]
         self.assertTrue(all(item["decision"] == "deferred" for item in others), "only custom-candidates are decided")
         self.assertEqual("resolved", {flag["id"]: flag["status"] for flag in load_store(self.flags)["flags"]}[first])
+
+    def test_custom_candidates_a_regenerated_report_added_are_refused_and_nothing_is_decided(self) -> None:
+        self.commit_covered()
+        first = self.flag("rule", finding="F001")
+        json_path, lines = self.report(decide=True)
+        printed = shlex.split(lines[-1].removeprefix("DECIDE_CUSTOM "))
+        shown = printed[printed.index("--rules") + 1]
+        # A rule the user was never asked about, linked to no flag, so the union of flags is still the one shown.
+        self.commit("owner/repo", 9, [covered("custom-candidate", "Roslyn", "missing-cancellation")])
+        json_path, lines = self.report(decide=True)
+        before = json_path.read_bytes()
+        current = ",".join(
+            sorted(item["id"] for item in ri.custom_candidates(json.loads(json_path.read_text(encoding="utf-8"))))
+        )
+        self.assertEqual(f'DECIDE_CUSTOM --rules "{current}" --flags "{first}"', lines[-1])
+        self.assertFailed(
+            self.run_main("decide-custom", "--report", str(json_path), *printed, "accepted"),
+            f"The custom-candidate recommendations are now {current}, not {shown}; run report again and confirm the "
+            "decision with the user",
+        )
+        self.assertEqual(before, json_path.read_bytes(), "nothing is decided")
+        self.assertEqual("open", {flag["id"]: flag["status"] for flag in load_store(self.flags)["flags"]}[first])
+        for rules in ("", f"{current},REC-999"):
+            with self.subTest(rules=rules):
+                self.assertFailed(
+                    self.run_main(
+                        "decide-custom", "--report", str(json_path), "--rules", rules, "--flags", first, "accepted"
+                    ),
+                    f"The custom-candidate recommendations are now {current}, not",
+                )
+        self.assertEqual(before, json_path.read_bytes(), "nothing is decided")
 
     def test_analyzer_decisions_name_the_rule_and_survive_regeneration(self) -> None:
         self.commit_covered()
@@ -1663,7 +1702,13 @@ class RecordingTests(InsightFixture):
         json_path, _ = self.report()
         with self.competing_resolution(first) as winners:
             code, out, err = self.run_main(
-                "decide-custom", "--report", str(json_path), "--flags", f"{first},{second}", "accepted"
+                "decide-custom",
+                "--report",
+                str(json_path),
+                *self.custom_rules(json_path),
+                "--flags",
+                f"{first},{second}",
+                "accepted",
             )
         self.assertEqual(
             (

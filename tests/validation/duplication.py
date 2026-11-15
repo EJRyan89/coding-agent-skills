@@ -571,6 +571,35 @@ def _keyed_by_folder(node: ast.AST, resolver: CallableResolver) -> bool:
     return function == "name_key" and module.rpartition(".")[2] in {"path_keys", "platform_support"}
 
 
+# The characters a fence's run repeats three or more times.
+FENCE_MARKERS = ("`", "~")
+PATTERN_CALLS = frozenset(f"re.{name}" for name in ("compile", "match", "fullmatch", "search", "findall", "finditer"))
+
+
+def _reads_fence_run(
+    node: ast.AST, _members: frozenset[str], _imports_owner: bool, _name: str, resolver: CallableResolver
+) -> bool:
+    """A fence read by hand beside markdown_sections.find_fences: a string literal holding a fence's run, alone or in a
+    tuple, given to str.startswith or str.endswith, as a reader tests a line, or a regular expression literal that
+    matches one, as a reader finds a fenced block. Such a reader misses a fence a blockquote or a list item holds and
+    takes any line that starts with a run, an info string's included, as the fence's close."""
+    if not isinstance(node, ast.Call) or not node.args:
+        return False
+    if _called_name(node) in AFFIX_TESTS:
+        tested = node.args[0].elts if isinstance(node.args[0], ast.Tuple) else [node.args[0]]
+    elif resolver.name(node.func) in PATTERN_CALLS:
+        tested = [node.args[0]]
+    else:
+        return False
+    return any(isinstance(item, ast.Constant) and _holds_fence_run(item.value) for item in tested)
+
+
+def _holds_fence_run(value: object) -> bool:
+    """Whether a literal holds a fence's run, as text or as a regular expression's repetition of three or more. The
+    run is built from its marker here, so this policy is no fence reader itself."""
+    return isinstance(value, str) and any(marker * 3 in value or f"{marker}{{3" in value for marker in FENCE_MARKERS)
+
+
 @dataclass(frozen=True)
 class SharedFact:
     """One value or function the repository keeps in one module, its owner, under one module-level name, and how
@@ -600,6 +629,7 @@ def _shared_facts() -> tuple[SharedFact, ...]:
         SharedFact(f"{SKILL_CORE_SCRIPTS}/path_keys.py", "path_key", _folds_path_case),
         SharedFact(f"{SKILL_CORE_SCRIPTS}/path_keys.py", "name_key", _compares_git_name),
         SharedFact(f"{SKILL_CORE_SCRIPTS}/exit_calls.py", "EXIT_CALLS", _shares_call_names),
+        SharedFact(f"{SKILL_CORE_SCRIPTS}/markdown_sections.py", "find_fences", _reads_fence_run),
     )
 
 
