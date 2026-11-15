@@ -28,7 +28,7 @@ import whole_number
 from git_client import GitClient, GitError
 from review_archive import ArchiveError, latest_record, list_versions
 from review_io import PersistenceError
-from search_boundary import CLAUDE_INSTRUCTIONS_OFF
+from search_boundary import CLAUDE_INSTRUCTIONS_OFF_VARIABLES
 
 from deployer import tools
 from deployer.platform_support import PYTHON
@@ -258,9 +258,9 @@ def skills_in_stream(output: str) -> list[str]:
 
 def trigger_environment(base: Mapping[str, str], run: Path) -> dict[str, str]:
     """The user's environment, sign-in included, with the run's own temporary directory, and with
-    CLAUDE_INSTRUCTIONS_OFF, so the session reads no CLAUDE.md from a folder above the home, nor any of the user's
-    own."""
-    return {**base, "TMPDIR": str(run / "tmp"), **CLAUDE_INSTRUCTIONS_OFF}
+    CLAUDE_INSTRUCTIONS_OFF_VARIABLES, so the session reads no CLAUDE.md from a folder above the home, nor any of the
+    user's own."""
+    return {**base, "TMPDIR": str(run / "tmp"), **CLAUDE_INSTRUCTIONS_OFF_VARIABLES}
 
 
 def run_environment(base: Mapping[str, str], run: Path, config: Path) -> dict[str, str]:

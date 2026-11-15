@@ -3118,6 +3118,32 @@ class EvaluateTests(unittest.TestCase):
             lines[-1],
         )
 
+    @unittest.skipIf(sys.platform == "win32", "Windows mode bits say nothing about who may write a folder")
+    def test_a_home_in_a_temporary_directory_another_account_could_rename_is_refused_before_it_is_made(self) -> None:
+        # The home holds the deployment each session runs and the records the run judges, so another account that
+        # could rename a folder above it could swap what the evaluation judges.
+        claude = StubClaude(self)
+        shared = self.root / "shared"
+        own = shared / "u" / "tmp"
+        own.mkdir(parents=True)
+        shared.chmod(0o777)
+        self.addCleanup(shared.chmod, 0o755)
+        seams = self.seams(claude, make_home=skill_evals.new_home)
+        with mock.patch.object(tempfile, "tempdir", str(own)):
+            status, lines = self.evaluate(["--jobs", "1"], seams, only=["clean-change"])
+        self.assertEqual(1, status)
+        self.assertEqual([], claude.calls)
+        self.assertEqual(
+            [
+                f'FAILED "cannot make the evaluation home: a folder made in the temporary directory {own.resolve()} '
+                f"could be replaced by another account: its ancestor {shared.resolve()} can be written by users other "
+                "than its owner and is not sticky (mode 777); set TMPDIR to a folder of this user's own below folders "
+                'no other account can write"'
+            ],
+            lines,
+        )
+        self.assertEqual([], list(own.iterdir()), "no home was made there")
+
     def test_a_passing_run_that_samples_nothing_removes_its_home(self) -> None:
         # Without --write nothing is sampled, so a run that passed leaves no transcript to read.
         status, lines = self.evaluate(["--jobs", "1"], self.seams(StubClaude(self)), only=["clean-change"])

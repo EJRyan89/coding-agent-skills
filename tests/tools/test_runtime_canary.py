@@ -30,6 +30,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts"))
 
+import private_folder
 import runtime_support
 import search_boundary
 import whole_number
@@ -3030,3 +3031,25 @@ def test_main_refuses_a_checkout_git_cannot_read_before_making_a_home(
     assert runtime_canary.main(["--discovery-only"]) == 1
     refusal = "cannot read the checkout's branch: fatal: not a git repository"
     assert capsys.readouterr().out.splitlines() == [f"FAILED {runtime_canary.quote(refusal)}"]
+
+
+def test_main_stops_with_failed_when_the_home_cannot_be_made_and_starts_nothing(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A temporary directory another account could rename is refused before the home is made, so nothing is deployed
+    # or run there.
+    reason = "a folder made in the temporary directory /shared/u/tmp could be replaced by another account"
+
+    def refused() -> Path:
+        raise private_folder.UnsafeTemporaryDirectoryError(reason)
+
+    def unreachable(*arguments: object, **options: object) -> int:
+        raise AssertionError("the run went on without a home")
+
+    monkeypatch.setattr(runtime_canary, "create_home", refused)
+    monkeypatch.setattr(runtime_canary, "canary", unreachable)
+    assert runtime_canary.main(["--discovery-only"]) == 1
+    assert capsys.readouterr().out.splitlines() == [
+        'FAILED "cannot make a canary home: a folder made in the temporary directory /shared/u/tmp could be '
+        'replaced by another account"'
+    ]

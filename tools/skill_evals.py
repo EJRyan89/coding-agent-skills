@@ -173,10 +173,10 @@ origin's branch or a local one, is the user's own. A pull request from another a
 is, before its scenarios run; "Skill evaluations" in docs/skill-evaluations.md states the rule.
 
 What still comes from the user's own setup is their sign-in alone, as for the runtime canary: every CLAUDE.md, rules
-file, and auto-memory is switched off (ejryan89-skill-core's `search_boundary.CLAUDE_INSTRUCTIONS_OFF`), since Claude
-Code reads them from each folder above the home, the shared temporary directory included. Each session runs without
---bare, which would skip the home's skills and agents and the sign-in, so a session whose init event lists no skill
-counts for nothing rather than being judged.
+file, and auto-memory is switched off (ejryan89-skill-core's `search_boundary.CLAUDE_INSTRUCTIONS_OFF_VARIABLES`),
+since Claude Code reads them from each folder above the home, the shared temporary directory included. Each session
+runs without --bare, which would skip the home's skills and agents and the sign-in, so a session whose init event lists
+no skill counts for nothing rather than being judged.
 
 Output, one fact per line. With --runs above 1, every line about one run, a TRANSCRIPT, GUARDED, NOT_COUNTED, PASS, or
 FAIL line, names it as ` run=<run>` after its model, and the lines are otherwise as they are for one run:
@@ -219,8 +219,10 @@ FAIL line, names it as ` run=<run>` after its model, and the lines are otherwise
                                                   Claude Code is missing, the checkout follows another
                                                   repository's pull request or its branch cannot be read, or
                                                   --write's existing results file cannot be read or one of its
-                                                  tables cannot be read; or, last, in place of WROTE, after the run
-                                                  was judged and its home kept, the results file cannot be written
+                                                  tables cannot be read, or the home cannot be made, as in a
+                                                  temporary directory another account could rename; or, last, in
+                                                  place of WROTE, after the run was judged and its home kept, the
+                                                  results file cannot be written
 A run then prints, between a `CITATION BEGIN` and a `CITATION END` line, the Markdown a pull request's Validation
 section cites it with: the command, a table with one row per scenario and one column per model, each cell the
 expectations passed of those checked over every run, followed over several runs by `(<passed>/<runs> runs)`, the
@@ -454,7 +456,11 @@ def evaluate(skill: str, scenarios: Sequence[Scenario], options: Options, seams:
     except ScenarioError as exc:
         print(f"FAILED {quote(str(exc))}")
         return 1
-    root = seams.make_home()
+    try:
+        root = seams.make_home()
+    except OSError as exc:
+        print(f"FAILED {quote(f'cannot make the evaluation home: {exc}')}")
+        return 1
     print(f"HOME {quote(runtime_canary.forward(root))}", flush=True)
     homes = {model: root / model for model in models}
     for model, home in homes.items():

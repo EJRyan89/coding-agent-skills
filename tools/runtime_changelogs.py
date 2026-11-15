@@ -16,7 +16,8 @@ term this repository uses, and the terms are read from the code at each run, nev
   variable     each variable of the environment those builders start a command line in, and each environment
                variable a Python module under deployer/, tools/, or a skill's scripts reads or sets:
                a key of `os.environ`, of a mapping named `env`, `environ`, or `environment`, or of a dict literal that
-               spreads one, a name `getenv` takes, or a member of a module-level `*_VARIABLES` collection, each a
+               spreads one, a name `getenv` takes, or a member of a module-level `*_VARIABLES` collection, or a key
+               of one that is a dict, each a
                string literal or a module-level string constant; and each `${NAME}` a skill's or agent's Markdown names
   path         each folder and file the deployer writes under the home, from deployer/paths.py's Paths, and the Codex
                metadata file it writes beside an adapter
@@ -325,6 +326,9 @@ def environment_keys(node: ast.AST) -> Iterator[ast.expr]:
         name = terminal_name(target) if isinstance(target, (ast.Name, ast.Attribute)) else None
         if name and VARIABLE_COLLECTION.search(name) and isinstance(node.value, (ast.Tuple, ast.List, ast.Set)):
             yield from node.value.elts
+        elif name and VARIABLE_COLLECTION.search(name) and isinstance(node.value, ast.Dict):
+            # Settings a caller spreads into an environment, as search_boundary's CLAUDE_INSTRUCTIONS_OFF_VARIABLES.
+            yield from (key for key in node.value.keys if key is not None)
 
 
 def module_variables(tree: ast.Module, constants: Mapping[str, str]) -> set[str]:

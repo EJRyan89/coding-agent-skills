@@ -11,7 +11,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from git_client import GitClient, GitError
-from search_boundary import CLAUDE_INSTRUCTIONS_OFF, bound_search
+from search_boundary import CLAUDE_INSTRUCTIONS_OFF_VARIABLES, bound_search
 
 
 class BoundSearchTests(unittest.TestCase):
@@ -63,7 +63,7 @@ class BoundSearchTests(unittest.TestCase):
     def test_a_claude_code_session_switches_off_every_claude_md(self) -> None:
         # Claude Code read every CLAUDE.md from its working directory up to the file system's root, past the git root
         # bound_search makes, so the setting a session started there runs with is pinned.
-        self.assertEqual({"CLAUDE_CODE_DISABLE_CLAUDE_MDS": "1"}, CLAUDE_INSTRUCTIONS_OFF)
+        self.assertEqual({"CLAUDE_CODE_DISABLE_CLAUDE_MDS": "1"}, CLAUDE_INSTRUCTIONS_OFF_VARIABLES)
 
     def test_a_missing_folder_is_refused(self) -> None:
         with self.assertRaises(GitError):

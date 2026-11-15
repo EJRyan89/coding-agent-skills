@@ -1233,6 +1233,9 @@ class SkillScriptsFixtures(unittest.TestCase):
                         "    tempfile.mkdtemp(dir=private_folder.temporary_directory(name))\n"  # 15
                         "    tempfile.mkstemp(dir=chosen)\n"  # 16: a parameter whose default is None
                         "    open(os.path.join(os.getenv('TMPDIR'), name), 'w')\n"  # 17
+                        "    open(os.path.expandvars('$TMPDIR/x'), 'w')\n"  # 18
+                        "    open(os.environ.copy()['TMPDIR'] + '/x', 'w')\n"  # 19
+                        "    open(Path(tempfile.tempdir) / name, 'w')\n"  # 20
                         "    run = Path(tempfile.mkdtemp(dir=private_folder.temporary_directory()))\n"
                         "    tempfile.mkstemp(dir=run / 'inner')\n"
                         "    tempfile.mkdtemp(dir=held if flag else private_folder.temporary_directory())\n"
@@ -1241,6 +1244,39 @@ class SkillScriptsFixtures(unittest.TestCase):
                         "    tempfile.TemporaryDirectory(dir=checked)\n"
                         "    tempfile.mkstemp(dir=held.parent)\n"
                         "    return Path(tempfile.gettempdir()) == Path(name)\n"
+                    ),
+                    # A parameter is followed into what every call of its function in the module passes it.
+                    "skills/example/scripts/params.py": (
+                        "import tempfile\n"
+                        "from pathlib import Path\n"
+                        "from tempfile import tempdir\n"
+                        "\n"
+                        "import private_folder\n"
+                        "\n"
+                        "\n"
+                        "def make(folder):\n"
+                        "    return tempfile.mkdtemp(dir=folder)\n"  # 9
+                        "\n"
+                        "\n"
+                        "def write(folder):\n"
+                        "    (Path(folder) / 'x').write_text('a')\n"  # 13
+                        "\n"
+                        "\n"
+                        "def held(folder):\n"
+                        "    return tempfile.mkdtemp(dir=folder)\n"
+                        "\n"
+                        "\n"
+                        "class Maker:\n"
+                        "    def create(self, folder):\n"
+                        "        return tempfile.mkstemp(dir=folder)\n"  # 22
+                        "\n"
+                        "\n"
+                        "make(tempfile.gettempdir())\n"
+                        "write(tempfile.gettempdir())\n"
+                        "held(private_folder.temporary_directory())\n"
+                        "held(folder=private_folder.temporary_directory())\n"
+                        "Maker().create(tempfile.gettempdir())\n"
+                        "open(Path(tempdir) / 'y', 'w')\n"  # 30
                     ),
                     # The checked call's module, named but never imported, which may be any object of that name.
                     "skills/example/scripts/unimported.py": (
@@ -1262,18 +1298,38 @@ class SkillScriptsFixtures(unittest.TestCase):
                         "F=$(mktemp /tmp/x.XXXXXX)\n"  # 10
                         'G=$(mktemp "$TEMPLATE" \\\n'  # 11: a template past the line
                         '  "$TEMPLATE")\n'
+                        'H=$(/usr/bin/mktemp "$TEMPLATE")\n'
+                        "I=$(/usr/bin/mktemp)\n"  # 14
+                        "J=$(mktemp.exe)\n"  # 15
+                        "PLAIN=/tmp/x.XXXXXX\n"
+                        'K=$(mktemp "$PLAIN")\n'  # 17: a variable no judge's output reaches
+                        "echo ok # mktemp in a trailing comment is not read\n"
+                    ),
+                    # The judge named in a comment only, which runs nothing.
+                    "skills/example/scripts/commented.sh": (
+                        '#!/bin/bash\nT="${TMPDIR:-/tmp}/x.XXXXXX"\n'
+                        'X=$(mktemp "$T") # private_folder.py temporary-directory\n'
                     ),
                     # A template in a variable, but no run of the judge that would put a judged folder in it.
                     "skills/other/scripts/unjudged.sh": '#!/bin/bash\nX=$(mktemp "$TEMPLATE")\n',
                     "skills/example/scripts/make.ps1": (
                         "# New-TemporaryFile in a comment is not read\n"
-                        "$judged = python private_folder.py temporary-directory $env:TEMP\n"
+                        "$judged = python private_folder.py temporary-directory\n"
                         "$file = New-TemporaryFile\n"  # 3
                         "$folder = [System.IO.Path]::GetTempPath()\n"  # 4
                         "$other = $env:TMPDIR\n"  # 5
+                        "$braced = ${env:TEMP}\n"  # 6
+                        "$read = [Environment]::GetEnvironmentVariable('TEMP')\n"  # 7
+                        "$item = (Get-Item Env:TEMP).Value\n"  # 8
+                        "$f = New-TemporaryFile # temporary-directory\n"  # 9: the judge named in a comment only
+                        "<# GetTempPath in a block comment\n"
+                        "is not read #>\n"
+                        "$named = python private_folder.py temporary-directory $env:TEMP\n"  # 12
                     ),
                 },
             )
+            # A script that is not UTF-8 is named, never read as some other text.
+            (root / "skills/other/scripts/latin.sh").write_bytes(b"#!/bin/bash\nX=\xff\n")
             doc = '"Working files" in docs/adding-a-skill.md'
             left = (
                 "leaves its folder to TMPDIR; pass dir=private_folder.temporary_directory(), or a folder the script "
@@ -1289,32 +1345,48 @@ class SkillScriptsFixtures(unittest.TestCase):
             )
             mktemp = (
                 "mktemp makes a file validation cannot trace to the folder `python private_folder.py "
-                "temporary-directory` prints; give it one template under that folder, held in a variable, as "
+                "temporary-directory` prints; give it one template in a variable assigned from that folder, as "
                 f"update-coding-agent-skills' update.sh does; see {doc}"
             )
             powershell = (
                 "names the temporary directory unjudged; make the file in the folder `python private_folder.py "
                 f"temporary-directory` prints; see {doc}"
             )
+            forms = "skills/example/scripts/forms.py"
+            params = "skills/example/scripts/params.py"
+            make = "skills/example/scripts/make.sh"
             self.assertEqual(
                 [
                     f"deploy.py:2: tempfile.mkstemp {left}",
                     f"deployer/work.py:2: tempfile.mkdtemp {left}",
-                    f"skills/example/scripts/forms.py:9: tempfile.mkdtemp {untraced}",
-                    f"skills/example/scripts/forms.py:10: tempfile.mkdtemp {untraced}",
-                    f"skills/example/scripts/forms.py:11: tempfile.mkdtemp {untraced}",
-                    f"skills/example/scripts/forms.py:15: tempfile.mkdtemp {untraced}",
-                    f"skills/example/scripts/forms.py:16: tempfile.mkstemp {untraced}",
-                    f"skills/example/scripts/forms.py:12: mkdir {unjudged}",
-                    f"skills/example/scripts/forms.py:14: os.makedirs {unjudged}",
-                    f"skills/example/scripts/forms.py:17: open {unjudged}",
+                    *(f"{forms}:{line}: tempfile.mkdtemp {untraced}" for line in (9, 10, 11, 15)),
+                    f"{forms}:16: tempfile.mkstemp {untraced}",
+                    f"{forms}:12: mkdir {unjudged}",
+                    f"{forms}:14: os.makedirs {unjudged}",
+                    *(f"{forms}:{line}: open {unjudged}" for line in (17, 18, 19, 20)),
+                    f"{params}:9: tempfile.mkdtemp {untraced}",
+                    f"{params}:22: tempfile.mkstemp {untraced}",
+                    f"{params}:13: write_text {unjudged}",
+                    f"{params}:30: open {unjudged}",
                     f"skills/example/scripts/unimported.py:2: tempfile.mkdtemp {untraced}",
                     f"tools/tool.py:2: tempfile.TemporaryDirectory {left}",
-                    *(f"skills/example/scripts/make.sh:{line}: {mktemp}" for line in (7, 8, 9, 10, 11)),
+                    f"skills/example/scripts/commented.sh:3: {mktemp}",
+                    *(f"{make}:{line}: {mktemp}" for line in (7, 8, 9, 10, 11, 14, 15, 17)),
+                    "skills/other/scripts/latin.sh holds a byte that is not UTF-8 at offset 14; save it as UTF-8",
                     f"skills/other/scripts/unjudged.sh:2: {mktemp}",
-                    f"skills/example/scripts/make.ps1:3: New-TemporaryFile {powershell}",
-                    f"skills/example/scripts/make.ps1:4: GetTempPath {powershell}",
-                    f"skills/example/scripts/make.ps1:5: $env:TMPDIR {powershell}",
+                    *(
+                        f"skills/example/scripts/make.ps1:{line}: {found} {powershell}"
+                        for line, found in (
+                            (3, "New-TemporaryFile"),
+                            (4, "GetTempPath"),
+                            (5, "env:TMPDIR"),
+                            (6, "env:TEMP"),
+                            (7, "GetEnvironmentVariable('TEMP'"),
+                            (8, "Env:TEMP"),
+                            (9, "New-TemporaryFile"),
+                            (12, "env:TEMP"),
+                        )
+                    ),
                 ],
                 skill_scripts.temporary_folder_problems(mark_skills(root)),
             )

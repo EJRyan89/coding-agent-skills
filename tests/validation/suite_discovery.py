@@ -37,7 +37,7 @@ from module_closure import MODULE_LOADERS
 from option_reader import OptionTable, option_table
 from path_containment import posix_within, within
 from shell_targets import run_bash_suite
-from skill_scripts import ENVIRONMENT_MAPPINGS, STANDARD_STREAMS, ShellLexer, substitution_spans
+from skill_scripts import STANDARD_STREAMS, ShellLexer, substitution_spans
 from toolchain import find_powershell
 from validation_support import (
     COMPUTED_NAME,
@@ -1392,10 +1392,11 @@ ENVIRONMENT_CHANGES = frozenset(
     {"update", "pop", "popitem", "clear", "setdefault", "__setitem__", "__delitem__", "__ior__"}
 )
 # The process environment as text and as bytes, each a view of the one environment a job starts from.
+ENVIRONMENTS = frozenset({"os.environ", "os.environb"})
 ENVIRONMENT_METHODS = frozenset(
-    f"{environment}.{method}" for environment in ENVIRONMENT_MAPPINGS for method in ENVIRONMENT_CHANGES
+    f"{environment}.{method}" for environment in ENVIRONMENTS for method in ENVIRONMENT_CHANGES
 )
-PATCHED_TARGETS = frozenset({*STANDARD_STREAMS, *ENVIRONMENT_MAPPINGS})
+PATCHED_TARGETS = frozenset({*STANDARD_STREAMS, *ENVIRONMENTS})
 MOCK_PATCHES = ("unittest.mock.patch", "mock.patch")
 PATCH_CALLS = frozenset(MOCK_PATCHES)
 PATCH_DICT_CALLS = frozenset(f"{patch}.dict" for patch in MOCK_PATCHES)
@@ -1469,7 +1470,7 @@ def _changed_target(node: ast.expr, resolver: CallableResolver, augmented: bool)
     """
     if isinstance(node, ast.Subscript):
         name = _name(node.value, resolver)
-        if _reaches(name, ENVIRONMENT_MAPPINGS):
+        if _reaches(name, ENVIRONMENTS):
             return name
         # A store into a namespace replaces the attribute it names, as vars(os)["environ"] = {} replaces os.environ.
         name = _name(node, resolver)

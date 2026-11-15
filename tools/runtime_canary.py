@@ -237,11 +237,10 @@ UNBOUNDED = (
 RUNTIME_CANARY_MARKER = "RUNTIME-CANARY-RUN"
 # What each runtime still loads from the user's real configuration once the canary's flags have switched off all
 # they can. Claude Code: checked with a local stand-in for its API under --setting-sources project,local and
-# search_boundary.CLAUDE_INSTRUCTIONS_OFF, with which no CLAUDE.md, rules file, or auto-memory reaches the request,
-# the user's own included. Codex and Copilot: their
-# skill listings, the flags each offers, Codex's AGENTS.md page, under which every run reads the Codex home's
-# AGENTS.override.md or AGENTS.md while --ignore-user-config skips config.toml only, and Copilot's hooks reference,
-# under which user hooks load without admission.
+# search_boundary.CLAUDE_INSTRUCTIONS_OFF_VARIABLES, with which no CLAUDE.md, rules file, or auto-memory reaches the
+# request, the user's own included. Codex and Copilot: their skill listings, the flags each offers, Codex's AGENTS.md
+# page, under which every run reads the Codex home's AGENTS.override.md or AGENTS.md while --ignore-user-config skips
+# config.toml only, and Copilot's hooks reference, under which user hooks load without admission.
 KEPT = {
     "claude": "sign-in only",
     "codex": "global AGENTS.override.md or AGENTS.md in ~/.codex; personal skills in ~/.agents/skills and "
@@ -650,8 +649,9 @@ def unchecked(runtime: str, lines: Sequence[str], discovery_only: bool) -> str:
 def environment(base: Mapping[str, str], script_log: Path, home: Path) -> dict[str, str]:
     """The runtime's own environment, sign-in included, plus the Python and Bash recorders and PINNED_VERSION, without
     git's repository-selecting variables, so the runtime and the skill it runs read the canary home, not the
-    repository a shell's `GIT_DIR` names, and with ejryan89-skill-core's `search_boundary.CLAUDE_INSTRUCTIONS_OFF`, so
-    Claude Code reads no CLAUDE.md from the temporary directory or a folder above it, nor any of the user's own."""
+    repository a shell's `GIT_DIR` names, and with ejryan89-skill-core's
+    `search_boundary.CLAUDE_INSTRUCTIONS_OFF_VARIABLES`, so Claude Code reads no CLAUDE.md from the temporary directory
+    or a folder above it, nor any of the user's own."""
     recorder = home / STATE / "recorder"
     existing = base.get("PYTHONPATH")
     return {
@@ -660,7 +660,7 @@ def environment(base: Mapping[str, str], script_log: Path, home: Path) -> dict[s
         "BASH_ENV": forward(recorder / "bash_env.sh"),
         SCRIPT_LOG: str(script_log),
         **PINNED_VERSION,
-        **search_boundary.CLAUDE_INSTRUCTIONS_OFF,
+        **search_boundary.CLAUDE_INSTRUCTIONS_OFF_VARIABLES,
     }
 
 
