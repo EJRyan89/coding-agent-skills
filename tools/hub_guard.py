@@ -714,7 +714,9 @@ BUILD_NAMES = {"bsdtar": "tar", "gnutar": "tar"}
 # the tables above do not read is judged by its words (read_unlisted): refused where a word may name a file in a
 # guarded hub or one holding it, or names git or a runner, or is a word the text does not settle. A program with an
 # option that writes a file or runs a command, as `file -C`, `tree -o`, `less -o`, `xxd`'s second operand, or `uniq`'s,
-# is left off, and so is one that reads its words as a program, as `awk` does.
+# is left off, and so is one that reads its words as a program, as `awk` does. Each is known by its own name only, never
+# under a prefix BUILD_PREFIXES names (built_name): a program installed as `ugrep` or `gdu` may be another program,
+# as ugrep, whose `--save-config` writes a file, and gdu, whose `-o` does, are.
 READ_ONLY_PROGRAMS: dict[str, str] = {
     **dict.fromkeys(
         ("cat", "head", "tail", "tac", "grep", "egrep", "fgrep", "findstr", "jq", "strings", "od", "hexdump"),
@@ -739,12 +741,14 @@ READ_ONLY_PROGRAMS: dict[str, str] = {
     ),
 }
 # The names Python's interpreter is started by, and the option letters it reads before the script it runs: the flags,
-# and the letters that take a value, attached or as the next word. A script a guarded hub tracks, run by such a name
-# with only these options, is trusted whatever its words (trusted_script): the guard refuses every edit to a file a
+# and the letters that take a value, attached or as the next word, whose values are judged as any unlisted program's
+# words are, since `-X pycache_prefix=<folder>` writes there. A script a guarded hub tracks, run by such a name with
+# only these options, is trusted whatever its own words (trusted_script): the guard refuses every edit to a file a
 # guarded hub tracks and every git call that writes it, so it holds what the hub's history holds. A script anywhere
-# else is trusted by no path, since a session's own tools may rewrite it.
+# else is trusted by no path, since a session's own tools may rewrite it. `-i`, which runs code from the input after
+# the script, is not among the flags.
 PYTHON_NAMES = re.compile(r"python(?:3(?:\.[0-9]+)?)?")
-PYTHON_FLAGS = "bBdEiIOPqsSuvx"
+PYTHON_FLAGS = "bBdEIOPqsSuvx"
 PYTHON_VALUED = "WX"
 # gh's subcommands that write files into the directory gh runs in, or where their words name: each is judged as a
 # program read_unlisted reads, and refused where it runs in a guarded hub.
@@ -753,11 +757,22 @@ GH_WRITERS = {
     ("release", "download"),
     ("attestation", "download"),
     ("repo", "clone"),
-    ("repo", "fork"),
-    ("repo", "create"),
     ("gist", "clone"),
     ("codespace", "cp"),
 }
+# gh's subcommands that write a git configuration: the one of the repository gh runs in, which every worktree shares
+# with its hub, as `repo set-default` does and `repo fork` and `repo create` do when they add a remote, or the global
+# one, as `auth setup-git` and `auth login` do when they set git's credential helper. Each is refused while a hub is
+# guarded, wherever it runs.
+GH_CONFIGURATION_WRITERS = {
+    ("repo", "set-default"),
+    ("repo", "fork"),
+    ("repo", "create"),
+    ("auth", "setup-git"),
+    ("auth", "login"),
+}
+# The other names cobra gives a gh command, by the name the tables above use.
+GH_ALIASES = {"cs": "codespace", "at": "attestation"}
 # sed rewrites each file it is given in place with -i, or BSD sed's -I, and with GNU sed's --in-place; the letters that
 # take a value in every build end a bundle, and a letter neither flag nor one of these is read as -i. GNU sed's -l takes
 # a value and BSD sed's is a flag, so it ends no bundle: BSD's `-li ''` rewrites in place.
@@ -4832,30 +4847,40 @@ def read_unlisted(
     PowerShell and where a runner starts it, its words each with whether it is the folder of a pattern: a word the text
     does not settle, which may name any file, and one that names git or a runner, which it may run, are parts the
     guard does not read; each path a word may name (word_paths) is judged as a redirection's target is, and so is a
-    pattern's folder. Python running a script is read the same, but recorded with the script (ScriptRun), whose
-    words count only where a guarded hub does not track it; assigned names the variables assigned before it, and one
-    Python reads, as PYTHONPATH, which chooses the modules the script imports, leaves no script trusted."""
-    script = python_script(program, words, directory)
+    pattern's folder. Python running a script is read the same, but its words from the script on are recorded with
+    the script (ScriptRun) and count only where a guarded hub does not track it, while the interpreter's own options
+    before it, the values of -X and -W among them, are judged as any; assigned names the variables assigned before
+    it, and one Python reads, as PYTHONPATH, which chooses the modules the script imports, leaves no script trusted."""
+    found = python_script(program, words, directory)
     if any(name.upper().startswith("PYTHON") for name in assigned):
-        script = None
-    own = Reading(reading.environment) if script is not None else reading
+        found = None
+    start = len(words) if found is None else found[1]
+    judge_words(program, words[:start], directory, reading)
+    if found is not None:
+        own = Reading(reading.environment)
+        judge_words(program, words[start:], directory, own)
+        reading.scripts.append(ScriptRun(found[0], own.writes, own.unread))
+
+
+def judge_words(program: str, words: Sequence[tuple[Word, bool]], directory: Directory, reading: Reading) -> None:
+    """The words of a program read_unlisted reads, judged into reading: a word the text does not settle and one that
+    names git or a runner are parts the guard does not read, and each path a word may name, or a pattern's folder, is
+    judged as a redirection's target is."""
     opening = f"`{program}` is given"
     for word, pattern in words:
         if word is None:
-            own.cannot_read(f"`{program}` is given a word the text does not settle, which may name a file in a hub")
+            reading.cannot_read(f"`{program}` is given a word the text does not settle, which may name a file in a hub")
             continue
         for value in (word, word.rpartition("=")[2]):
             if not pattern and built_name(command_name(value) or "") in GIT_NAMES | RUNNERS.keys() | MULTICALL_PROGRAMS:
-                own.cannot_read(f"`{program}` is given {word}, which names git or a runner, which it may run")
+                reading.cannot_read(f"`{program}` is given {word}, which names git or a runner, which it may run")
         for path in [word] if pattern else word_paths(word, directory, reading.environment):
             if path in DEVICE_FILES:
                 continue
             if directory.cwd is None and not Path(platform_support.from_shell_path(path)).is_absolute():
-                own.cannot_read(f"`{program}` is given {path} in a directory the text does not settle")
+                reading.cannot_read(f"`{program}` is given {path} in a directory the text does not settle")
             else:
-                own.writes.append(Write(resolved(path, directory), opening, pattern))
-    if script is not None:
-        reading.scripts.append(ScriptRun(script, own.writes, own.unread))
+                reading.writes.append(Write(resolved(path, directory), opening, pattern))
 
 
 def resolved(value: str, directory: Directory) -> Path:
@@ -4870,8 +4895,9 @@ def word_paths(word: str, directory: Directory, environment: Mapping[str, str]) 
     and its last `=`; each quoted part of it and each of its blank-separated parts, as a script or a command line it is
     handed holds them. Of these, a value counts as a path only where it may be one: an absolute path, one that starts
     with `~`, read from the home, `.`, `..`, `./`, or `../`, or a relative one whose first name is there in the
-    directory the command runs in, or any relative one where the text does not settle that directory. A bare name of a
-    file that does not exist yet is not one, so a program may make a new file at the top of the directory it runs in."""
+    directory the command runs in, or any relative one where the text does not settle that directory. A relative word
+    whose first name does not exist yet, as out.txt or out/report.json, is not one, so a program may make new files and
+    folders under a new name at the top of the directory it runs in."""
     candidates = [] if word.startswith("-") else [word]
     if word.startswith("-") and not word.startswith("--"):
         # The rest after each letter of the bundle, up to the first character that is no option letter.
@@ -4912,10 +4938,10 @@ def path_value(candidate: str, directory: Directory, environment: Mapping[str, s
         return candidate
 
 
-def python_script(program: str, words: Sequence[tuple[Word, bool]], directory: Directory) -> Path | None:
-    """The script Python runs, where program is one of PYTHON_NAMES and its words before a literal operand are only
-    the options PYTHON_FLAGS and PYTHON_VALUED name, placed from the directory the command runs in; None for any other
-    program or form, as `-c`, `-m`, or a script the text does not settle or place."""
+def python_script(program: str, words: Sequence[tuple[Word, bool]], directory: Directory) -> tuple[Path, int] | None:
+    """The script Python runs, placed from the directory the command runs in, with the index of its word, where program
+    is one of PYTHON_NAMES and its words before a literal operand are only the options PYTHON_FLAGS and PYTHON_VALUED
+    name; None for any other program or form, as `-c`, `-m`, `-i`, or a script the text does not settle or place."""
     if not PYTHON_NAMES.fullmatch(program):
         return None
     index = 0
@@ -4926,8 +4952,8 @@ def python_script(program: str, words: Sequence[tuple[Word, bool]], directory: D
         if not word.startswith("-"):
             path = Path(platform_support.from_shell_path(word))
             if path.is_absolute():
-                return path
-            return None if directory.cwd is None else directory.cwd / path
+                return path, index
+            return None if directory.cwd is None else (directory.cwd / path, index)
         if word.startswith("--"):
             return None
         index += 1
@@ -4955,14 +4981,14 @@ def trusted_script(script: Path) -> bool:
 
 def read_names() -> frozenset[str]:
     """The program names a table of the guard keeps: the runners, the programs whose options it reads, the ones that
-    write the files their words name or make a link, the ones known to write none, and the multicall programs."""
+    write the files their words name or make a link, and the multicall programs; never READ_ONLY_PROGRAMS, whose
+    names are known by themselves alone."""
     return frozenset(
         {
             *RUNNERS,
             *PROGRAM_OPTIONS,
             *WRITING_PROGRAMS,
             *LINK_PROGRAMS,
-            *READ_ONLY_PROGRAMS,
             *MULTICALL_PROGRAMS,
             *GIT_NAMES,
             "gh",
@@ -5352,10 +5378,11 @@ def powershell_command(name: str) -> bool:
 def read_gh(arguments: list[Word], directory: Directory, reading: Reading) -> None:
     """gh, which runs git itself to check a branch out for the subcommands GH_CHECKOUTS names, in the checkout it
     runs in, and writes files into that directory, or where its words name, for those GH_WRITERS names, which are
-    judged as the directory a command writes into and as a program read_unlisted reads. A flag before the words that
-    would name such a subcommand, other than one of GH_VALUED_FLAGS, is not read: cobra takes the word after a flag it
-    does not know as that flag's value, so `gh pr -b x checkout 12` checks a branch out while its first two words are
-    pr and x."""
+    judged as the directory a command writes into and as a program read_unlisted reads; one GH_CONFIGURATION_WRITERS
+    names writes a git configuration, so it is not read. A first word is read by its alias too (GH_ALIASES). A flag
+    before the words that would name such a subcommand, other than one of GH_VALUED_FLAGS, is not read: cobra takes the
+    word after a flag it does not know as that flag's value, so `gh pr -b x checkout 12` checks a branch out while its
+    first two words are pr and x."""
     named: list[Word] = []
     unknown_flag: str | None = None
     words = iter(arguments)
@@ -5367,6 +5394,8 @@ def read_gh(arguments: list[Word], directory: Directory, reading: Reading) -> No
         elif unknown_flag is None and gh_checkout_prefix(named) and not gh_flag_with_value(word):
             unknown_flag = word
     named = named[:2]
+    if named[:1] != [None] and named:
+        named[0] = GH_ALIASES.get(str(named[0]), named[0])
     if named[:1] == [None] or (gh_checkout_prefix(named[:1]) and None in named):
         reading.cannot_read("a gh subcommand the text does not settle, which may check a branch out or write files")
     elif unknown_flag is not None:
@@ -5379,6 +5408,11 @@ def read_gh(arguments: list[Word], directory: Directory, reading: Reading) -> No
         values = git_variables(inherited_variables(reading.environment), reading.notes)
         place = GitOptions.initial(directory.cwd, values, opaque=False).place()
         reading.calls.append(GitCall(place, " ".join(str(word) for word in named), [], program="gh"))
+    elif tuple(named) in GH_CONFIGURATION_WRITERS:
+        reading.cannot_read(
+            f"`gh {' '.join(str(word) for word in named)}` writes a git configuration, its repository's, which a "
+            "worktree shares with its hub, or the global one; run it from a terminal outside the clone"
+        )
     elif tuple(named) in GH_WRITERS:
         # It writes into the directory it runs in, as a clone or a download does by default, or where its words name.
         subcommand = f"`gh {' '.join(str(word) for word in named)}`"
@@ -5390,9 +5424,12 @@ def read_gh(arguments: list[Word], directory: Directory, reading: Reading) -> No
 
 
 def gh_checkout_prefix(named: Sequence[Word]) -> bool:
-    """Whether the words gh has read so far may still begin a subcommand GH_CHECKOUTS or GH_WRITERS names: none yet, or
-    one of their first words alone."""
-    return not named or (len(named) == 1 and any(named[0] == key[0] for key in GH_CHECKOUTS | GH_WRITERS))
+    """Whether the words gh has read so far may still begin a subcommand GH_CHECKOUTS, GH_WRITERS, or
+    GH_CONFIGURATION_WRITERS names: none yet, or one of their first words alone, by its name or an alias
+    (GH_ALIASES)."""
+    first = GH_ALIASES.get(str(named[0]), named[0]) if named else None
+    keys = GH_CHECKOUTS | GH_WRITERS | GH_CONFIGURATION_WRITERS
+    return not named or (len(named) == 1 and any(first == key[0] for key in keys))
 
 
 def gh_flag_with_value(word: str) -> bool:
