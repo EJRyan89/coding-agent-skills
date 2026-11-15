@@ -365,21 +365,42 @@ def start_built_hook(
 
 
 def hook_shells() -> list[list[str]]:
-    """Each shell Claude Code may run a plugin hook in on this platform, as it starts one: sh on macOS and Linux, Git
-    Bash on Windows, and Bash wherever it is found."""
+    """Each POSIX shell Claude Code may run a plugin hook in on this platform, as it starts one: Git Bash on Windows;
+    sh on macOS and Linux, beside Bash and dash, which is sh on Debian and Ubuntu, wherever they are found."""
     bash = platform_support.find_bash()
     if bash is None:
         raise AssertionError("Bash was not found; it is required for repository validation.")
-    shells = [[bash, "-c"]]
-    sh = None if platform_support.WINDOWS else executable_locator.find_executable("sh")
-    return shells + ([[sh, "-c"]] if sh else [])
+    if platform_support.WINDOWS:
+        return [[bash, "-c"]]
+    sh = executable_locator.find_executable("sh")
+    if sh is None:
+        raise AssertionError("sh was not found; macOS and Linux both provide it.")
+    dash = executable_locator.find_executable("dash")
+    return [[bash, "-c"], [sh, "-c"], *([[dash, "-c"]] if dash else [])]
 
 
-def pwsh_shell() -> list[str]:
-    pwsh = platform_support.find_pwsh(os.environ.get("PATH", ""))
-    if pwsh is None:
-        raise AssertionError("pwsh was not found; it is required for repository validation.")
-    return [pwsh, "-NoProfile", "-NonInteractive", "-Command"]
+# The two PowerShells Claude Code may run a hook in on Windows without Git Bash: PowerShell 7, which validation needs
+# on every platform, and Windows PowerShell 5.1, which every Windows has and which parses some text 7 reads.
+POWERSHELLS = [
+    pytest.param("pwsh", id="pwsh"),
+    pytest.param(
+        "powershell",
+        id="Windows PowerShell",
+        marks=pytest.mark.skipif(sys.platform != "win32", reason="Windows PowerShell 5.1 exists only on Windows"),
+    ),
+]
+
+
+def powershell(name: str) -> list[str]:
+    """The PowerShell named, started as a hook's shell, from this process's PATH."""
+    found = (
+        platform_support.find_pwsh(os.environ.get("PATH", ""))
+        if name == "pwsh"
+        else executable_locator.find_executable(name)
+    )
+    if found is None:
+        raise AssertionError(f"{name} was not found; validation needs pwsh, and every Windows has powershell.")
+    return [found, "-NoProfile", "-NonInteractive", "-Command"]
 
 
 @pytest.mark.parametrize(
@@ -414,24 +435,28 @@ def test_the_plugins_hook_with_no_python_by_either_name_fails_naming_python3(sou
         assert "python3" in completed.stderr, (shell, completed.stderr)
 
 
+@pytest.mark.parametrize("name", POWERSHELLS)
 @pytest.mark.parametrize("status", [0, 3])
 def test_the_plugins_hook_starts_python_under_powershell_and_exits_with_its_status(
-    source: Source, tmp_path: Path, status: int
+    source: Source, tmp_path: Path, name: str, status: int
 ) -> None:
     # Claude Code runs a hook in PowerShell on Windows where Git Bash is not installed, and Windows names Python python.
-    shell = pwsh_shell()
+    shell = powershell(name)
     completed, recorded = start_built_hook(
         source, tmp_path, shell, ("python", "python3"), status, batch=platform_support.WINDOWS
     )
     assert (completed.returncode, recorded) == (status, {"python": GUARD_ARGUMENTS}), completed.stderr
 
 
+@pytest.mark.parametrize("name", POWERSHELLS)
 def test_the_plugins_hook_under_powershell_with_no_python_fails_rather_than_passing(
-    source: Source, tmp_path: Path
+    source: Source, tmp_path: Path, name: str
 ) -> None:
     # A PowerShell that went on past the missing command would exit with no status of Python's, 0, and the hook would
     # let every call through unguarded.
-    completed, recorded = start_built_hook(source, tmp_path, pwsh_shell(), ("python3",), batch=platform_support.WINDOWS)
+    completed, recorded = start_built_hook(
+        source, tmp_path, powershell(name), ("python3",), batch=platform_support.WINDOWS
+    )
     assert recorded == {}
     assert completed.returncode != 0
 
