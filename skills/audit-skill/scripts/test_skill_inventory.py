@@ -2882,16 +2882,20 @@ class RuntimeSupportTests(SourceTreeTestCase):
         skill = self.root / "skills" / "alpha" / "SKILL.md"
         lowered = skill.with_name("skill.md")
         skill.rename(lowered)
-        # The main file in another case, which only a folder that folds case takes for SKILL.md; either way it is
-        # audited on its own, invoking nothing.
-        self.assertEqual(
-            [
-                "RUNTIME claude-code full needs=none",
-                "RUNTIME codex full needs=none",
-                "RUNTIME copilot-cli full needs=none",
-            ],
-            self.runtime(lowered),
-        )
+        # The main file in another case, which only a folder that folds case takes for SKILL.md: there it is audited
+        # on its own, invoking nothing, and where the folder keeps case the folder has no SKILL.md to audit.
+        if (lowered.parent / "SKILL.md").exists():  # the folder's own lookup, which asks its file system
+            self.assertEqual(
+                [
+                    "RUNTIME claude-code full needs=none",
+                    "RUNTIME codex full needs=none",
+                    "RUNTIME copilot-cli full needs=none",
+                ],
+                self.runtime(lowered),
+            )
+        else:
+            code, lines, _ = run("tools", str(lowered))
+            self.assertEqual((1, [f"FAILED no SKILL.md in {lowered.parent}"]), (code, lines))
 
     def test_an_invoked_skill_with_a_lowercase_skill_md_carries_its_needs_only_where_its_folder_folds_case(
         self,
