@@ -582,6 +582,27 @@ PATTERN_CALLS = frozenset(
 )
 # The comparisons that test a line against a run: whether it holds it, or is it.
 RUN_TESTS = (ast.In, ast.NotIn, ast.Eq, ast.NotEq)
+# The str methods that find, count, split at, or take off a run given first, as `text.split(run)` splits a document at
+# its fences or `line.find(run) == 0` tests where a line's run starts.
+RUN_METHODS = frozenset(
+    {
+        "split",
+        "rsplit",
+        "find",
+        "rfind",
+        "index",
+        "rindex",
+        "partition",
+        "rpartition",
+        "count",
+        "removeprefix",
+        "removesuffix",
+    }
+)
+# The str methods that strip the characters given first, so a marker among them strips a run of any length, which
+# reads a line's run where the result is compared with the line, as `line.lstrip("`") != line` tests whether a line
+# starts with one, or measured against it, as `len(line) - len(line.lstrip("`"))` counts the run.
+STRIP_METHODS = frozenset({"strip", "lstrip", "rstrip"})
 
 
 def _reads_fence_run(
@@ -589,35 +610,74 @@ def _reads_fence_run(
 ) -> bool:
     """A fence read by hand beside markdown_sections.find_fences: a fence's run, as a string literal or a name the
     module binds to one, alone or in a tuple, given to str.startswith or str.endswith as a reader tests a line's start
-    or end, given first to an re function as its pattern, however re or the function is imported, or compared with `in`,
-    `not in`, `==`, or `!=`, as `"```" in line` or `line[:3] == "~~~"` test a line. Such a reader misses a fence a
-    blockquote or a list item holds and takes any line that starts with a run, an info string's included, as the
-    fence's close. A run built at runtime, such as from a marker by `*`, is not read."""
+    or end, given first to a str method that finds, counts, splits at, or takes off a run, as `text.split("```")` or
+    `line.find("~~~")` does, given first to an re function as its pattern, however re or the function is imported, or
+    compared with `in`, `not in`, `==`, or `!=`, as `"```" in line` or `line[:3] == "~~~"` test a line; or a marker
+    given to str.strip, lstrip, or rstrip, which strips a run of any length, whose result is compared with what it
+    stripped or its length taken from that one's, as `line.lstrip("`") != line` or
+    `len(line) - len(line.lstrip("`"))` reads a line's run, where a strip of a cell or a name, as
+    `cell.strip("`")`, reads none. Such a reader misses a fence a blockquote or a list item holds and takes any line
+    that starts with a run, an info string's included, as the fence's close. Stated limits: a run built at runtime,
+    such as from a marker by `*`, a run given by keyword, as `text.split(sep="```")`, or to a str method called
+    unbound, as `str.find(line, "```")`, a run as a `case` pattern, as `case "```":` of `match line[:3]:`, and a strip
+    bound to a name, by an assignment or an assignment expression, before it is measured or compared, as
+    `stripped = line.lstrip("`")` before `stripped != line`, one whose length is compared rather than subtracted, as
+    `len(line.lstrip("`")) < len(line)`, and one compared with an empty string or tested by `not`, as
+    `line.strip().strip("`") == ""`, are not read."""
     if isinstance(node, ast.Compare):
         operands = [node.left, *node.comparators]
         tests = any(isinstance(operator, RUN_TESTS) for operator in node.ops)
         return tests and any(_is_fence_run(operand, resolver) for operand in operands)
     if not isinstance(node, ast.Call) or not node.args:
         return False
-    if _called_name(node) in AFFIX_TESTS or resolver.name(node.func) in PATTERN_CALLS:
+    if _called_name(node) in AFFIX_TESTS | RUN_METHODS or resolver.name(node.func) in PATTERN_CALLS:
         return _is_fence_run(node.args[0], resolver)
+    if _called_name(node) in STRIP_METHODS and _is_fence_run(node.args[0], resolver, _holds_marker):
+        return _measures_stripped_run(node, resolver)
     return False
 
 
-def _is_fence_run(node: ast.AST, resolver: CallableResolver) -> bool:
-    """Whether an expression is a fence's run: a string literal holding one, a tuple, list, or set of literals one of
-    which does, or a name the module binds to either."""
+def _measures_stripped_run(node: ast.Call, resolver: CallableResolver) -> bool:
+    """Whether a strip's result is compared with what it stripped, as `line.lstrip("`") != line`, or its length taken
+    from that one's, as `len(line) - len(line.lstrip("`"))`, each of which reads the run it took off."""
+    assert isinstance(node.func, ast.Attribute)
+    stripped = ast.dump(node.func.value)
+    parents = _module_parents(resolver)
+    parent = parents.get(id(node))
+    if isinstance(parent, ast.Compare):
+        return any(ast.dump(operand) == stripped for operand in [parent.left, *parent.comparators])
+    measured = parents.get(id(parent)) if isinstance(parent, ast.Call) and resolver.name(parent.func) == "len" else None
+    if not (isinstance(measured, ast.BinOp) and isinstance(measured.op, ast.Sub)):
+        return False
+    whole = measured.left if measured.right is parent else measured.right
+    return (
+        isinstance(whole, ast.Call)
+        and resolver.name(whole.func) == "len"
+        and bool(whole.args)
+        and ast.dump(whole.args[0]) == stripped
+    )
+
+
+def _holds_marker(value: object) -> bool:
+    """Whether a literal holds a fence's marker, which str.strip takes off a line however many times it repeats."""
+    return isinstance(value, str) and any(marker in value for marker in FENCE_MARKERS)
+
+
+def _is_fence_run(node: ast.AST, resolver: CallableResolver, holds: Callable[[object], bool] | None = None) -> bool:
+    """Whether an expression is a fence's run, or with `holds` what that test finds in a literal: a string literal
+    holding one, a tuple, list, or set of literals one of which does, or a name the module binds to either."""
+    holds = holds or _holds_fence_run
     if isinstance(node, (ast.Tuple, ast.List, ast.Set)):
-        return any(_is_fence_run(item, resolver) for item in node.elts)
+        return any(_is_fence_run(item, resolver, holds) for item in node.elts)
     if isinstance(node, ast.Name):
-        return node.id in _fence_run_names(resolver)
-    return isinstance(node, ast.Constant) and _holds_fence_run(node.value)
+        return node.id in _fence_run_names(resolver, holds)
+    return isinstance(node, ast.Constant) and holds(node.value)
 
 
-@functools.lru_cache(maxsize=1)
-def _fence_run_names(resolver: CallableResolver) -> frozenset[str]:
-    """The names the resolver's module binds, at any level, to a fence's run: a string literal holding one, or a
-    tuple, list, or set of literals one of which does."""
+@functools.lru_cache(maxsize=2)
+def _fence_run_names(resolver: CallableResolver, holds: Callable[[object], bool]) -> frozenset[str]:
+    """The names the resolver's module binds, at any level, to what `holds` finds in a literal: a string literal
+    holding it, or a tuple, list, or set of literals one of which does."""
     names: set[str] = set()
     for node in ast.walk(resolver.tree):
         targets = (
@@ -627,7 +687,7 @@ def _fence_run_names(resolver: CallableResolver) -> frozenset[str]:
         if value is None or not targets:
             continue
         literals = value.elts if isinstance(value, (ast.Tuple, ast.List, ast.Set)) else [value]
-        if any(isinstance(item, ast.Constant) and _holds_fence_run(item.value) for item in literals):
+        if any(isinstance(item, ast.Constant) and holds(item.value) for item in literals):
             names |= {target.id for target in targets if isinstance(target, ast.Name)}
     return frozenset(names)
 

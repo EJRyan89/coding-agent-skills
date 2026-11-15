@@ -396,8 +396,12 @@ removed fails validation until its pattern follows it.
   `.claude/skills/review-repository/scripts/test_review_repository.py::test_the_trust_boundary_route_matches_its_scripts_and_each_choice_matches_a_file`,
   `tests/validation/test_duplication.py::SharedFactPolicy::test_a_fence_read_by_hand_fails_and_one_read_through_find_fences_passes`,
   which refuses a fence read by hand outside the one fence reader: its run, as a literal or a name bound to one,
-  tested at a line's start or end, compared with a line by in or ==, or given as the pattern of an re function, however
-  re is imported
+  tested at a line's start or end, given to a str method that finds, counts, splits at, or takes it off, as split,
+  find, partition, or count, compared with a line by in or ==, or given as the pattern of an re function, however re
+  is imported, or its marker given to a strip whose result is compared with the line or measured against it; a run
+  given by keyword, to a str method called unbound, or as a case pattern, and a strip bound to a name before it is
+  measured or compared, one whose length is compared, or one compared with an empty string or tested by not, are
+  stated limits
 - **Search for:** a module-level `frozenset({` or tuple of strings whose members another module also spells; a
   document's list of names, flags, or modules that a module's constant holds; a `print(` of a status line no
   `SKILL.md` names; a second `json.loads(`, `os.lstat(`, or other helper beside the one skill-core owns;
@@ -407,7 +411,7 @@ removed fails validation until its pattern follows it.
   a live step and its recovery, such as a run's finalization and the completion of an interrupted one, each deciding
   in its own code what becomes of the same state on disk; a repository walk through `file_presence.matching` or
   `os.walk` with a skip set of its own, rather than `folder_walk.walk_files`.
-- **Examples:** #1349, #1477, #1495, #1596, #1679, #2219, #2295, #2296, #2718, #2734, #2738, #2748
+- **Examples:** #1349, #1477, #1495, #1596, #1679, #2219, #2295, #2296, #2718, #2734, #2738, #2748, #2832
 
 ### A promise in prose is held where its reader reads it
 

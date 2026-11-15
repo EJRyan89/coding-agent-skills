@@ -791,19 +791,24 @@ def link_test_problems(root: Path, files: list[Path]) -> list[str]:
 # every name its scope binds to any of them, where a name its scope also binds to an empty value is, when true, true
 # under the tests that guard its other bindings. A reading that finds no path, as a search that found none, or more than
 # one, refuses, names no path as missing. A refusal is a branch that raises an error of its own, or that returns or
-# yields a message of more than one word, the yield a statement or an assignment's value, or records one, as a call's
-# argument, the call a statement of its own or awaited as one or as any assignment's value, by an augmented assignment,
-# or by a store into an attribute or into an item keyed by anything but a string literal, as `problems.extend([...])`,
-# `await report(...)`, `done = await report(...)`, `problems += [...]`, or `problems[p] = "..."` do, the message given
+# yields a message of more than one word, the yield anywhere in a simple statement's expressions, as
+# `print((yield msg))`, or
+# records one, as a call's argument, the call a statement of its own, awaited as one or as any assignment's value or a
+# return's, or, unless it builds a value, a built-in's, a str method's, a path's, or a class's by a capitalized name,
+# assigned or returned as it is, by an augmented assignment, or by a store into an attribute or into an item keyed by
+# anything but a string literal, as `problems.extend([...])`, `await report(...)`, `done = await report(...)`,
+# `done = report(...)`, `return await report(...)`, `problems += [...]`, or `problems[p] = "..."` do, but
+# `path = Path("Program Files")` does not, the message given
 # as the value itself, an arm of a conditional expression, a value of an `and` or an `or`, a method called on it, a
 # string literal's `join` of messages, or an element, a starred element, a dictionary's key or value, a comprehension's
 # element, key, or value, or what a subscript takes from one, at any depth;
 # taken by an if, its else, a conditional expression, a comprehension's filter, or a match's case that leaves one truth
-# of its subject, or of an item of a tuple or list it matches, when the truths it may match lose those earlier unguarded
-# cases took: True or one, False, None, or zero, `bool(...)` of one, an `|` of them, a capture of one by `as`, or of a
-# tuple item a sequence pattern's item at the same place, counted from the front before a star and from the back
-# after it, and anything after a case that took the other truth, an empty string, which no answer equals, matching
-# neither,
+# of its subject, or of an item of a tuple or list it matches, at any depth, or that a name its scope binds once to
+# one spells, when the truths it may match lose those earlier unguarded cases took: True or one, False, None, or zero,
+# signed or not, `bool(...)` or `int(...)` of one, by any name the imports give it, an `|` of them, a capture of one by
+# `as`, or of a tuple item a sequence pattern's item at the same place, counted from the front before a star and from
+# the back after it, and anything after a case that took the other truth, an empty string, which no answer equals,
+# matching neither,
 # a guard read as an `and` and so as a test of its own; an assert given a message, as a refusal's message is read; a
 # while whose body, or whose else, refuses; an if with no else whose branch leaves, and a match whose every case leaves,
 # whose False goes on, through the rest of its block and any loop or block around it, to such a raise or returned
@@ -820,10 +825,13 @@ def link_test_problems(root: Path, files: list[Path]) -> list[str]:
 # the log it is, or a return of a name whose last binding before the try is an empty value; before a continue or a
 # break, which a binding outlives, only names its function never reads. A suppress takes the errors of the items a
 # `with` enters after it, as `with suppress(OSError), open(p) as h:` does, as well as its body's, and one an ExitStack's
-# enter_context enters or push pushes, those of the rest of the `with` that holds the stack, by its target or as its
-# item; a suppress is read where it is called, its errors given starred included, in either arm of a conditional
-# expression, or through a name any binding of which may give one, in the innermost of its scope and the functions
-# around it that binds the name, or at the module's top level where none does. Any such site outside
+# enter_context enters or push pushes, called on the stack, on a name bound to it, or unbound on the class with the
+# stack first, those of the rest of the `with` that holds the stack, by its target or as its item, and of the whole
+# body of each loop around the call, which its next pass runs; a suppress is read where it is called, its errors given
+# starred included, in either arm of a conditional expression, or through a name any binding of which may give one, an
+# item of a literal tuple or list unpacked and a parameter's default included, in the innermost of its scope and the
+# functions around it that binds the name, an import there binding one of another module, or at the module's level
+# where none does, in a function that declares it global included. Any such site outside
 # file_presence and link_probe states why in a module-level PRESENCE_ALLOWED = {scope: reason}, as where the caller just
 # made the path.
 #
@@ -834,11 +842,19 @@ def link_test_problems(root: Path, files: list[Path]) -> list[str]:
 # arguments, which reads as that call's value, and one stored under a key spelled as a string literal, which reads as a
 # field's, as `cfg["title"] = "Untitled document"` does; an error callback that calls anything, which may raise; a
 # handler's exceptions named through a name the module does not bind to one literal tuple; a returned name bound to an
-# empty value inside the try; a suppress held in an attribute or returned by a function, and one entered on an ExitStack
-# that a `with` in another scope holds; a `case None:`, read as taking every false answer, as it takes a search that
-# found nothing, though it never matches a False; and a match on a tuple holding a starred item, or a case whose
-# pattern is an `|` of sequence patterns, which reads no item's truth. The link tests are no presence predicates here:
-# LINK_TESTS refuses each outside link_probe however its answer is used, and link_probe lets a failed stat through.
+# empty value inside the try; a suppress held in an attribute, returned by a function, imported from another module,
+# bound through `nonlocal`, or unpacked from anything but a literal tuple or list of the same length, one entered on an
+# ExitStack that a `with` in another scope holds, one given to enter_context or push by keyword, and a stat after the
+# statement that enters it in a loop's else or in a try's handler or finally; a message nested in a call that builds a
+# value, assigned or returned, which reads as that value, a method of any receiver whose name is a built-in's, a str
+# method's, or a path's among them, as `parser.exit(2, msg)`, and the built-ins that record, `exit`, `quit`, and
+# `input`, assigned or returned; a yield in an `assert` or in a compound statement's test, as `if (yield msg):` or
+# `assert (yield msg)`; a `case None:`, read as taking every false answer, as it takes a search that found nothing,
+# though it never matches a False; and a match on
+# a tuple holding a starred item, on a name bound to a tuple more than once or at the module's top level, or a case
+# whose pattern is an `|` of sequence patterns, which reads no item's truth. The link tests are no presence
+# predicates here: LINK_TESTS refuses each outside link_probe however its answer is used, and link_probe lets a failed
+# stat through.
 PRESENCE_PREDICATES = frozenset(
     {"exists", "is_file", "is_dir", "is_mount", "is_socket", "is_fifo", "is_block_device", "is_char_device"}
 )
@@ -913,11 +929,13 @@ def _presence_predicate(node: ast.expr, aliases: dict[str, str]) -> str | None:
 @dataclass(frozen=True)
 class _Binding:
     """One binding of a name in its scope: the value it binds, or None for one the policy cannot read, such as a
-    parameter or a loop's target; the tests that guard it, each with the answer it must give; and where it is."""
+    parameter, a loop's target, or an import; the tests that guard it, each with the answer it must give; where it is;
+    and, for a parameter, its default, which a call that passes none binds."""
 
     value: ast.expr | None
     guards: tuple[tuple[ast.expr, bool], ...]
     line: int
+    default: ast.expr | None = None
 
 
 def _guards(node: ast.AST, parents: dict[int, ast.AST]) -> tuple[tuple[ast.expr, bool], ...]:
@@ -933,39 +951,71 @@ def _guards(node: ast.AST, parents: dict[int, ast.AST]) -> tuple[tuple[ast.expr,
     return tuple(guards)
 
 
-def _bound_value(node: ast.AST, parent: ast.AST | None) -> ast.expr | None:
-    """The value a name stored at `node` is bound to by its parent: an assignment's, an annotated assignment's, an
-    augmented assignment's, or an assignment expression's, or None for any other binding."""
-    if isinstance(parent, ast.Assign) and any(node is target for target in parent.targets):
-        return parent.value
-    if isinstance(parent, (ast.AnnAssign, ast.AugAssign, ast.NamedExpr)) and parent.target is node:
-        return parent.value
-    return None
+def _bound_value(node: ast.AST, parent: ast.AST | None, parents: Mapping[int, ast.AST]) -> ast.expr | None:
+    """The value a name stored at `node` is bound to: an assignment's, an annotated assignment's, an augmented
+    assignment's, or an assignment expression's, or for an item of a tuple or list target, as `quiet, other =
+    suppress(OSError), None` binds, the item at the same place of a literal tuple or list of the same length, neither
+    unpacking anything; or None for any other binding."""
+    places: list[int] = []
+    while isinstance(parent, (ast.Tuple, ast.List)) and isinstance(parent.ctx, ast.Store):
+        places.append(next(index for index, item in enumerate(parent.elts) if item is node))
+        node, parent = parent, parents.get(id(parent))
+    value: ast.expr | None = None
+    if (isinstance(parent, ast.Assign) and any(node is target for target in parent.targets)) or (
+        isinstance(parent, (ast.AnnAssign, ast.AugAssign, ast.NamedExpr)) and parent.target is node
+    ):
+        value = parent.value
+    for place in reversed(places):
+        items = value.elts if isinstance(value, (ast.Tuple, ast.List)) else []
+        if any(isinstance(item, ast.Starred) for item in items) or len(items) <= place:
+            return None
+        target = node.elts if isinstance(node, (ast.Tuple, ast.List)) else []
+        if len(items) != len(target) or any(isinstance(item, ast.Starred) for item in target):
+            return None
+        value, node = items[place], target[place]
+    return value
+
+
+def _parameter_default(node: ast.arg, parent: ast.AST | None) -> ast.expr | None:
+    """The default a parameter takes when a call passes none: the default at its place, counted from the end of the
+    positional parameters, or its keyword-only default; None for one with no default."""
+    if not isinstance(parent, ast.arguments):
+        return None
+    positional = [*parent.posonlyargs, *parent.args]
+    if (place := next((index for index, item in enumerate(positional) if item is node), None)) is not None:
+        offset = place - (len(positional) - len(parent.defaults))
+        return parent.defaults[offset] if offset >= 0 else None
+    place = next((index for index, item in enumerate(parent.kwonlyargs) if item is node), None)
+    return None if place is None else parent.kw_defaults[place]
 
 
 def _scope_bindings(tree: ast.Module, parents: dict[int, ast.AST]) -> dict[str, dict[str, list[_Binding]]]:
-    """Each scope's bindings of each name: a store of the name, a parameter, an item stored into it, and a call of a
-    method that adds to it, as `found.append(p)` is, each with the value it binds and its guards."""
+    """Each scope's bindings of each name: a store of the name, a parameter, with its default, an import, which binds
+    a value of another module, an item stored into it, and a call of a method that adds to it, as `found.append(p)`
+    is, each with the value it binds and its guards."""
     found: dict[str, dict[str, list[_Binding]]] = {}
     for node, scope in scoped_nodes(tree.body):
-        name: str | None = None
+        names: list[str] = []
         value: ast.expr | None = None
+        default: ast.expr | None = None
         parent = parents.get(id(node))
         if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store):
-            name, value = node.id, _bound_value(node, parent)
+            names, value = [node.id], _bound_value(node, parent, parents)
         elif isinstance(node, ast.arg):
-            name = node.arg
+            names, default = [node.arg], _parameter_default(node, parent)
+        elif isinstance(node, (ast.Import, ast.ImportFrom)):
+            names = [alias.asname or alias.name.split(".")[0] for alias in node.names]
         elif isinstance(node, ast.Subscript) and isinstance(node.ctx, ast.Store) and isinstance(node.value, ast.Name):
-            name, value = node.value.id, _bound_value(node, parent) or node
+            names, value = [node.value.id], _bound_value(node, parent, parents) or node
         elif (
             isinstance(node, ast.Call)
             and isinstance(node.func, ast.Attribute)
             and node.func.attr in ADDING_METHODS
             and isinstance(node.func.value, ast.Name)
         ):
-            name, value = node.func.value.id, node
-        if name is not None:
-            binding = _Binding(value, _guards(node, parents), getattr(node, "lineno", 0))
+            names, value = [node.func.value.id], node
+        for name in names:
+            binding = _Binding(value, _guards(node, parents), getattr(node, "lineno", 0), default)
             found.setdefault(scope, {}).setdefault(name, []).append(binding)
     return found
 
@@ -1006,6 +1056,8 @@ class _PresenceReader:
     # The matches whose every case leaves, with each truth of the subject, or of an item of a tuple it matches, that
     # goes on past them to a refusal.
     falling: Mapping[int, tuple[tuple[ast.expr, bool], ...]] = field(default_factory=dict)
+    # Each match's subject as its cases test it, as `_match_subjects` reads one.
+    subjects: Mapping[int, ast.expr] = field(default_factory=dict)
 
     def other_is_absent(self, node: ast.expr) -> str | None:
         """The file_presence test a call is when it is given other_is_absent as anything but False, or None."""
@@ -1180,7 +1232,9 @@ class _PresenceReader:
                 return found
         if isinstance(node, ast.Match):
             truths = [
-                (subject, truth) for case, subject, truth in _case_truths(node, self.aliases) if _refuses(case.body)
+                (subject, truth)
+                for case, subject, truth in _case_truths(node, self.aliases, self.subjects)
+                if _refuses(case.body)
             ]
             truths += self.falling.get(id(node), ())
             if found := next((found for subject, truth in truths if (found := self.reading(subject, truth))), None):
@@ -1202,14 +1256,30 @@ class _PresenceReader:
 BOTH = frozenset({True, False})
 
 
+# The classes whose class pattern given one positional pattern matches the subject itself against it, and given none
+# matches every answer, a True and a False being instances of each.
+ANSWER_CLASSES = frozenset({"bool", "int"})
+
+
+def _pattern_number(node: ast.expr) -> object:
+    """The value a value pattern's literal spells, a signed number's included, as `-0` is; None for any other."""
+    if isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.USub, ast.UAdd)):
+        value = _pattern_number(node.operand)
+        if isinstance(value, (int, float, complex)) and not isinstance(value, bool):
+            return -value if isinstance(node.op, ast.USub) else value
+        return None
+    return node.value if isinstance(node, ast.Constant) else None
+
+
 def _pattern_truths(pattern: ast.pattern, aliases: dict[str, str]) -> tuple[frozenset[bool], frozenset[bool]]:
     """The truths of the subjects a case's pattern may match, and the truths it takes every subject of: `True` and a
     value pattern of one, as `case 1:`, which a True answer matches since `True == 1`, match and take the true answer;
-    `False`, `None`, and a value pattern of zero, as `case 0:`, the false one, a `None` read as taking every false
-    answer as it takes a search that found nothing; a value pattern of an empty string or bytes, which no answer
-    equals, matches neither; `bool(...)` given one pattern what that pattern does, and given none, or `_` or a bare
-    capture, every answer; an `|` what any of its options does; a capture by `as` what its pattern does. Any other
-    pattern may match either truth and takes neither."""
+    `False`, `None`, and a value pattern of zero, signed or not, as `case 0:` or `case -0:`, the false one, a `None`
+    read as taking every false answer as it takes a search that found nothing; a value pattern of an empty string or
+    bytes, which no answer equals, matches neither; `bool(...)` or `int(...)`, by any name the module's imports give
+    it, `builtins.bool` included, given one pattern what that pattern does, and given none, or `_` or a bare capture,
+    every answer; an `|` what any of its options does; a capture by `as` what its pattern does. Any other pattern may
+    match either truth and takes neither."""
     if isinstance(pattern, ast.MatchOr):
         options = [_pattern_truths(option, aliases) for option in pattern.patterns]
         matched = frozenset[bool]().union(*(option[0] for option in options))
@@ -1217,8 +1287,8 @@ def _pattern_truths(pattern: ast.pattern, aliases: dict[str, str]) -> tuple[froz
     if isinstance(pattern, ast.MatchSingleton):
         truth = frozenset({pattern.value is True})
         return truth, truth
-    if isinstance(pattern, ast.MatchValue) and isinstance(pattern.value, ast.Constant):
-        value = pattern.value.value
+    if isinstance(pattern, ast.MatchValue):
+        value = _pattern_number(pattern.value)
         if isinstance(value, (str, bytes)) and not value:
             return frozenset(), frozenset()
         if isinstance(value, (int, float, complex)) and value in (0, 1):
@@ -1228,7 +1298,7 @@ def _pattern_truths(pattern: ast.pattern, aliases: dict[str, str]) -> tuple[froz
         return _pattern_truths(pattern.pattern, aliases) if pattern.pattern is not None else (BOTH, BOTH)
     if (
         isinstance(pattern, ast.MatchClass)
-        and qualified_name(pattern.cls, aliases) == "bool"
+        and qualified_name(pattern.cls, aliases).removeprefix("builtins.") in ANSWER_CLASSES
         and not pattern.kwd_patterns
         and len(pattern.patterns) <= 1
     ):
@@ -1236,19 +1306,46 @@ def _pattern_truths(pattern: ast.pattern, aliases: dict[str, str]) -> tuple[froz
     return BOTH, frozenset()
 
 
-def _sequence_subject(node: ast.Match) -> bool:
-    """Whether a match's subject is a tuple or a list it spells, with no starred item, whose items its cases test."""
-    subject = node.subject
+def _spelled_sequence(subject: ast.expr) -> bool:
+    """Whether a subject is a tuple or a list it spells, with no starred item, whose items a match's cases test."""
     return isinstance(subject, (ast.Tuple, ast.List)) and not any(
         isinstance(item, ast.Starred) for item in subject.elts
     )
 
 
-def _subject_items(node: ast.Match) -> list[ast.expr]:
-    """What a match's cases test the truth of: each item of a tuple or list it matches, unless one is starred, or else
-    its subject."""
-    subject = node.subject
-    return list(subject.elts) if isinstance(subject, (ast.Tuple, ast.List)) and _sequence_subject(node) else [subject]
+def _match_subjects(tree: ast.Module, bindings: Mapping[str, Mapping[str, list[_Binding]]]) -> dict[int, ast.expr]:
+    """Each match's subject as its cases test it: a name its scope binds once, to a tuple or a list it spells, as
+    `pair = (P, q)` before `match pair:`, read as that tuple; any other as it is written."""
+    found: dict[int, ast.expr] = {}
+    for node, scope in scoped_nodes(tree.body):
+        if not isinstance(node, ast.Match):
+            continue
+        subject = node.subject
+        if isinstance(subject, ast.Name):
+            held = bindings.get(scope, {}).get(subject.id, [])
+            if len(held) == 1 and held[0].value is not None and _spelled_sequence(held[0].value):
+                subject = held[0].value
+        found[id(node)] = subject
+    return found
+
+
+def _subject_leaves(subject: ast.expr) -> list[ast.expr]:
+    """What a match's cases test the truth of: each item of a tuple or list it matches, unless one is starred, and of
+    each such tuple or list one of them is, at any depth, as `match ((P, q), r):` holds; or else its subject."""
+    if not isinstance(subject, (ast.Tuple, ast.List)) or not _spelled_sequence(subject):
+        return [subject]
+    return [leaf for item in subject.elts for leaf in _subject_leaves(item)]
+
+
+def _leaf_patterns(subject: ast.expr, pattern: ast.pattern) -> list[ast.pattern | None]:
+    """The pattern a case gives each item `_subject_leaves` names, as `_item_patterns` gives it at each depth, or None
+    for each item of a tuple or list the pattern gives no items of its own."""
+    if not isinstance(subject, (ast.Tuple, ast.List)) or not _spelled_sequence(subject):
+        return [pattern]
+    items = _item_patterns(pattern, len(subject.elts))
+    if items is None:
+        return [None] * len(_subject_leaves(subject))
+    return [leaf for item, given in zip(subject.elts, items, strict=True) for leaf in _leaf_patterns(item, given)]
 
 
 def _item_patterns(pattern: ast.pattern, count: int) -> list[ast.pattern] | None:
@@ -1273,22 +1370,18 @@ def _item_patterns(pattern: ast.pattern, count: int) -> list[ast.pattern] | None
 
 
 def _case_items(
-    node: ast.Match, aliases: dict[str, str]
+    node: ast.Match, aliases: dict[str, str], subject: ast.expr
 ) -> Iterator[tuple[ast.match_case, list[tuple[frozenset[bool], frozenset[bool]]]]]:
-    """Each case of a match with what its pattern matches and takes of each item `_subject_items` names; one that
-    gives the items no pattern of their own, as a class pattern of a tuple, matches either truth of each and takes
-    neither."""
-    items = _subject_items(node)
+    """Each case of a match with what its pattern matches and takes of each item `_subject_leaves` names of its
+    subject; one that gives an item no pattern of its own, as a class pattern of a tuple, matches either truth of it
+    and takes neither."""
     for case in node.cases:
-        if not _sequence_subject(node):
-            yield case, [_pattern_truths(case.pattern, aliases)]
-            continue
-        patterns = _item_patterns(case.pattern, len(items))
         yield (
             case,
-            [(BOTH, frozenset())] * len(items)
-            if patterns is None
-            else [_pattern_truths(pattern, aliases) for pattern in patterns],
+            [
+                (BOTH, frozenset()) if pattern is None else _pattern_truths(pattern, aliases)
+                for pattern in _leaf_patterns(subject, case.pattern)
+            ],
         )
 
 
@@ -1300,16 +1393,19 @@ def _taken(truths: list[tuple[frozenset[bool], frozenset[bool]]], index: int) ->
     return frozenset()
 
 
-def _case_truths(node: ast.Match, aliases: dict[str, str]) -> list[tuple[ast.match_case, ast.expr, bool]]:
+def _case_truths(
+    node: ast.Match, aliases: dict[str, str], subjects: Mapping[int, ast.expr]
+) -> list[tuple[ast.match_case, ast.expr, bool]]:
     """Each case of a match that runs on one truth of an item it tests only, with the item and that truth: what the
     case's pattern may match of the item, less what unguarded cases before it took, when that leaves one truth, as
     `case False:`, `case bool(False):`, `case (False, _):` of `match (P, q):`, or `case _:` after a case that took
     the other truth do. A guard narrows a case as an `and` does, so a guarded case still runs on its pattern's truth
     alone, but takes no truth from a later case."""
-    items = _subject_items(node)
+    subject = subjects.get(id(node), node.subject)
+    items = _subject_leaves(subject)
     taken: list[set[bool]] = [set() for _ in items]
     found: list[tuple[ast.match_case, ast.expr, bool]] = []
-    for case, truths in _case_items(node, aliases):
+    for case, truths in _case_items(node, aliases, subject):
         for index, (matched, _) in enumerate(truths):
             if len(left := matched - taken[index]) == 1:
                 found.append((case, items[index], next(iter(left))))
@@ -1330,7 +1426,7 @@ def _leaves(block: list[ast.stmt]) -> bool:
 
 
 def _falling_matches(
-    tree: ast.Module, parents: dict[int, ast.AST], aliases: dict[str, str]
+    tree: ast.Module, parents: dict[int, ast.AST], aliases: dict[str, str], subjects: Mapping[int, ast.expr]
 ) -> dict[int, tuple[tuple[ast.expr, bool], ...]]:
     """Each match whose every case leaves, as an if's branch does in `_raising_ifs`, with each item it tests and each
     truth of the item no unguarded case takes, which goes on past the match, when the statements after it refuse, as
@@ -1341,9 +1437,10 @@ def _falling_matches(
             continue
         if any(case.guard is None and _irrefutable(case.pattern) for case in node.cases):
             continue
-        items = _subject_items(node)
+        subject = subjects.get(id(node), node.subject)
+        items = _subject_leaves(subject)
         taken: list[set[bool]] = [set() for _ in items]
-        for case, truths in _case_items(node, aliases):
+        for case, truths in _case_items(node, aliases, subject):
             if case.guard is None:
                 for index in range(len(items)):
                     taken[index] |= _taken(truths, index)
@@ -1429,29 +1526,68 @@ def _gives_message(node: ast.expr | None) -> bool:
     return False
 
 
+# The calls that build a value of what they are given, so a message given to one, its value assigned or returned, is
+# that value, not a record: a built-in but print, as `str` or `sorted` is, and a str method or a path's, as
+# `os.path.join`, `", ".join`, and `p.with_name` are. A class, by a capitalized name, as `Path("Program Files")` is,
+# builds one too.
+VALUE_CALLS = frozenset(
+    {name for name in BUILTIN_NAMES if not name.startswith("_") and name != "print"}
+    | {name for name in dir(str) if not name.startswith("_")}
+    | {name for name in dir(PurePosixPath) if not name.startswith("_")}
+)
+SIMPLE_STATEMENTS = (ast.Expr, ast.Assign, ast.AnnAssign, ast.AugAssign, ast.Return)
+
+
+def _given_message(call: ast.Call) -> bool:
+    """Whether a call is given a message as an argument, by position or by keyword."""
+    return any(_gives_message(argument) for argument in [*call.args, *(keyword.value for keyword in call.keywords)])
+
+
+def _builds_value(call: ast.Call) -> bool:
+    """Whether a call builds a value of what it is given: one of VALUE_CALLS, by the last part of its name, or a class,
+    by a capitalized name."""
+    called = call.func.attr if isinstance(call.func, ast.Attribute) else getattr(call.func, "id", "")
+    return called in VALUE_CALLS or called[:1].isupper()
+
+
+def _yields_message(statement: ast.stmt) -> bool:
+    """Whether a statement yields a message anywhere in its expressions, outside a lambda, as `print((yield msg))`,
+    `x = await (yield msg)`, or `(sent := (yield msg))` does, which sends the message out as a bare yield does."""
+    pending: list[ast.AST] = list(ast.iter_child_nodes(statement))
+    while pending:
+        node = pending.pop()
+        if isinstance(node, ast.Lambda):
+            continue
+        if isinstance(node, (ast.Yield, ast.YieldFrom)) and _gives_message(node.value):
+            return True
+        pending.extend(ast.iter_child_nodes(node))
+    return False
+
+
 def _records(statement: ast.stmt) -> bool:
     """Whether a statement returns or records a message as it is, as `_gives_message` reads one: a return or a yield of
-    one, as `return None, "not found here"` is, the yield a statement of its own or the value of an assignment, as
-    `sent = yield f"{p} is missing"` is, a call given one as an argument, a statement of its own, or awaited as one or
-    as an assignment's value, as `problems.append(f"{p} is missing")`, `problems.extend([...])`, `print(...)`,
-    `await fail(...)`, `done = await report(...)`, or `total += await report(...)` is, an augmented
+    one, as `return None, "not found here"` is, the yield anywhere in a simple statement's expressions, as
+    `sent = yield f"{p} is missing"` or `print((yield f"{p} is missing"))` is, a call given one as an argument, a
+    statement of its own, or awaited as one, as an assignment's value, or as a return's, as
+    `problems.append(f"{p} is missing")`, `problems.extend([...])`, `print(...)`, `await fail(...)`,
+    `done = await report(...)`, `total += await report(...)`, or `return await report(...)` is, or, unless it builds
+    a value as `_builds_value` reads one, assigned or returned as it is, as `done = report(...)` is, an augmented
     assignment adding one, as `problems += [...]`, or a store of one into an attribute or into an item keyed by
     anything but a string literal, as `problems[p] = "..."`; a store under a literal key, as
     `cfg["title"] = "Untitled document"`, sets a field."""
-    if isinstance(statement, ast.Return):
-        return _gives_message(statement.value)
+    if isinstance(statement, SIMPLE_STATEMENTS) and _yields_message(statement):
+        return True
     value = getattr(statement, "value", None)
-    if isinstance(statement, (ast.Expr, ast.Assign, ast.AnnAssign, ast.AugAssign)) and isinstance(
-        value, (ast.Yield, ast.YieldFrom)
-    ):
-        return _gives_message(value.value)
-    awaited = isinstance(value, ast.Await) and isinstance(
-        statement, (ast.Expr, ast.Assign, ast.AnnAssign, ast.AugAssign)
-    )
+    awaited = isinstance(value, ast.Await) and isinstance(statement, SIMPLE_STATEMENTS)
     if awaited and isinstance(value, ast.Await):
         value = value.value
-    if (isinstance(statement, ast.Expr) or awaited) and isinstance(call := value, ast.Call):
-        return any(_gives_message(argument) for argument in [*call.args, *(keyword.value for keyword in call.keywords)])
+    if isinstance(call := value, ast.Call) and _given_message(call):
+        if isinstance(statement, ast.Expr) or awaited:
+            return True
+        if isinstance(statement, SIMPLE_STATEMENTS) and not _builds_value(call):
+            return True
+    if isinstance(statement, ast.Return):
+        return _gives_message(statement.value)
     if isinstance(statement, ast.AugAssign):
         return _gives_message(statement.value)
     if isinstance(statement, (ast.Assign, ast.AnnAssign)):
@@ -1834,9 +1970,10 @@ class _Handlers:
         self, node: ast.expr, scopes: Sequence[Mapping[str, list[_Binding]]], seen: frozenset[str] = frozenset()
     ) -> bool:
         """Whether an expression may be a contextlib.suppress of an error that takes a failed stat: one called there,
-        either arm of a conditional expression, or a name any binding of which may give one, in the innermost of
-        `scopes`, its own scope then each function around it, that binds it, or at the module's top level where none
-        does, as `quiet = suppress(OSError)` before `with quiet:`, in the function itself or in one around it."""
+        either arm of a conditional expression, or a name any binding of which may give one, a parameter's default
+        included, in the innermost of `scopes`, its own scope then each function around it, that binds it, or at the
+        module's level where none does, as `quiet = suppress(OSError)` before `with quiet:`, in the function itself or
+        in one around it, or in a function that declares it global."""
         if isinstance(node, ast.IfExp):
             return self.suppress(node.body, scopes, seen) or self.suppress(node.orelse, scopes, seen)
         if isinstance(node, ast.Name) and node.id not in seen:
@@ -1844,7 +1981,7 @@ class _Handlers:
             values = (
                 self.module_values.get(node.id, [])
                 if place is None
-                else [binding.value for binding in scopes[place][node.id]]
+                else [binding.value or binding.default for binding in scopes[place][node.id]]
             )
             outer = () if place is None else scopes[place:]
             return any(value is not None and self.suppress(value, outer, seen | {node.id}) for value in values)
@@ -1916,12 +2053,9 @@ def _handled_answer(
     # A suppress an ExitStack enters, or pushes, whose exit is called as the enter_context's is, takes the errors of
     # the rest of the with that holds the stack.
     if (
-        isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Attribute)
-        and node.func.attr in ("enter_context", "push")
-        and node.args
-        and handlers.suppress(node.args[0], [bindings, *enclosing])
-        and (rest := _rest_of_holding_with(node, node.func.value, handlers.parents)) is not None
+        (entered := _stack_entry(node, aliases)) is not None
+        and handlers.suppress(entered[1], [bindings, *enclosing])
+        and (rest := _rest_of_holding_with(node, _stack_spellings(entered[0], bindings), handlers.parents)) is not None
         and (call := _stats_or_lists(rest, aliases))
     ):
         return (
@@ -1931,20 +2065,55 @@ def _handled_answer(
     return None
 
 
-def _rest_of_holding_with(node: ast.AST, stack: ast.expr, parents: Mapping[int, ast.AST]) -> list[ast.stmt] | None:
-    """The statements after the one holding `node`, out through each block around it, up to the end of the `with`
-    that holds `stack`, as its item's target, `with ExitStack() as stack:`, or as its item, `with stack:`, in the
-    same scope; None when no such `with` holds it, as an ExitStack its function closes itself does."""
-    # By its text, so the target a with stores to and the name the call loads read alike.
-    held = ast.unparse(stack)
-    rest: list[ast.stmt] = []
+# The ExitStack classes whose enter_context and push may be called unbound, the stack given first.
+EXIT_STACKS = frozenset({"contextlib.ExitStack", "contextlib.AsyncExitStack"})
+
+
+def _stack_entry(node: ast.AST, aliases: dict[str, str]) -> tuple[ast.expr, ast.expr] | None:
+    """The stack and the context manager a call of an ExitStack's enter_context or push gives it: called on the
+    stack, as `stack.enter_context(cm)`, or unbound on the class, as `ExitStack.enter_context(stack, cm)`; or None."""
+    if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)):
+        return None
+    if node.func.attr not in ("enter_context", "push"):
+        return None
+    if qualified_name(node.func.value, aliases) in EXIT_STACKS:
+        return (node.args[0], node.args[1]) if len(node.args) > 1 else None
+    return (node.func.value, node.args[0]) if node.args else None
+
+
+def _stack_spellings(stack: ast.expr, bindings: Mapping[str, list[_Binding]]) -> frozenset[str]:
+    """The texts a stack goes by in its scope: its own, and each name bound to it or it is bound to, through any chain
+    of such names, as `s = stack` before `s.enter_context(...)`."""
+    spellings = {ast.unparse(stack)}
+    pairs = [
+        {name, binding.value.id}
+        for name, held in bindings.items()
+        for binding in held
+        if isinstance(binding.value, ast.Name)
+    ]
+    while joined := next((pair for pair in pairs if pair & spellings and not pair <= spellings), None):
+        spellings |= joined
+    return frozenset(spellings)
+
+
+def _rest_of_holding_with(
+    node: ast.AST, spellings: frozenset[str], parents: Mapping[int, ast.AST]
+) -> list[ast.AST] | None:
+    """The statements after the one holding `node`, out through each block around it, and the whole body of each loop
+    around it, which its next pass runs, with a while's test, up to the end of the `with` that holds the stack, by one
+    of its `spellings`, as its item's target, `with ExitStack() as stack:`, or as its item, `with stack:`, in the same
+    scope; None when no such `with` holds it, as an ExitStack its function closes itself does."""
+    rest: list[ast.AST] = []
     child: ast.AST = node
     while (parent := parents.get(id(child))) is not None and not isinstance(parent, SCOPE_NODES):
         for block in _statement_blocks(parent):
             if (index := next((place for place, item in enumerate(block) if item is child), None)) is not None:
                 rest += block[index + 1 :]
+        if isinstance(parent, (ast.For, ast.AsyncFor, ast.While)) and any(child is item for item in parent.body):
+            rest += [*parent.body, *([parent.test] if isinstance(parent, ast.While) else [])]
+        # By its text, so the target a with stores to and the name the call loads read alike.
         if isinstance(parent, (ast.With, ast.AsyncWith)) and any(
-            held in (ast.unparse(item.context_expr), ast.unparse(item.optional_vars) if item.optional_vars else "")
+            {ast.unparse(item.context_expr), ast.unparse(item.optional_vars) if item.optional_vars else ""} & spellings
             for item in parent.items
         ):
             return rest
@@ -2053,13 +2222,31 @@ def _declared_names(tree: ast.Module) -> frozenset[str]:
     )
 
 
+def _presence_module_values(
+    tree: ast.Module, parents: Mapping[int, ast.AST], bindings: Mapping[str, Mapping[str, list[_Binding]]]
+) -> dict[str, list[ast.expr | None]]:
+    """Each value the module binds each name to: at its top level, an item of a tuple or list target included, as
+    `_bound_value` reads one, and in a function that declares the name global."""
+    found = {name: list(values) for name, values in _module_values(tree).items()}
+    for node in _module_level_nodes(tree):
+        parent = parents.get(id(node))
+        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store) and isinstance(parent, (ast.Tuple, ast.List)):
+            found.setdefault(node.id, []).append(_bound_value(node, parent, parents))
+    for node, scope in scoped_nodes(tree.body):
+        if isinstance(node, ast.Global):
+            for name in node.names:
+                found.setdefault(name, []).extend(binding.value for binding in bindings.get(scope, {}).get(name, []))
+    return found
+
+
 def _presence_answers(tree: ast.Module, aliases: dict[str, str]) -> Iterator[tuple[ast.AST, str, str]]:
     """Each node where a failed stat, listing, read, or removal is read as nothing there, or a refusal names something
     of another kind as missing, with its scope and its refusal."""
     parents = _parents(tree)
     bindings = _scope_bindings(tree, parents)
     raising = _raising_ifs(tree, parents)
-    falling = _falling_matches(tree, parents, aliases)
+    subjects = _match_subjects(tree, bindings)
+    falling = _falling_matches(tree, parents, aliases, subjects)
     inert = _inert_functions(tree, aliases)
     handlers = _Handlers(
         aliases,
@@ -2069,12 +2256,14 @@ def _presence_answers(tree: ast.Module, aliases: dict[str, str]) -> Iterator[tup
         _returned_names(tree),
         _read_names(tree),
         parents,
-        _module_values(tree),
+        _presence_module_values(tree, parents, bindings),
     )
     readers: dict[str, _PresenceReader] = {}
     classes = {scope for node, scope in scoped_nodes(tree.body) if isinstance(node, ast.ClassDef)}
     for node, scope in scoped_nodes(tree.body):
-        reader = readers.setdefault(scope, _PresenceReader(aliases, bindings.get(scope, {}), raising, falling))
+        reader = readers.setdefault(
+            scope, _PresenceReader(aliases, bindings.get(scope, {}), raising, falling, subjects)
+        )
         if isinstance(node, ast.expr) and (predicate := _presence_predicate(node, aliases)):
             yield (
                 node,
