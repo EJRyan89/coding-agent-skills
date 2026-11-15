@@ -24,7 +24,7 @@ import tomllib
 import unittest
 from collections import Counter
 from collections.abc import Iterator, Mapping, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from pathlib import Path, PurePosixPath
 from typing import Any, NamedTuple
 
@@ -791,15 +791,17 @@ def link_test_problems(root: Path, files: list[Path]) -> list[str]:
 # every name its scope binds to any of them, where a name its scope also binds to an empty value is, when true, true
 # under the tests that guard its other bindings. A reading that finds no path, as a search that found none, or more than
 # one, refuses, names no path as missing. A refusal is a branch that raises an error of its own, or that returns or
-# yields a message of more than one word, as it is or as an item of a tuple, list, or set, or records one so, as a
-# call's argument, by an augmented assignment, or by a store into an attribute or into an item keyed by anything but a
-# string literal, as `problems.extend([...])`, `problems += [...]`, or `problems[p] = "..."` do, taken by an if, its
-# else, a conditional expression, a comprehension's filter, or a match's case of False or None, or of anything after a
-# case of True; an assert given a message; a while whose body, or whose else, raises an error of its own; and an if with
-# no else whose branch leaves and whose False goes on, through the rest of its block and any loop or block around it, to
-# such a raise or returned message, returning no other value but under an if or in a loop of its own. A refusal whose
-# test also needs file_presence.is_occupied or is_there to find something at the same path names another kind there,
-# never nothing, so it passes.
+# yields a message of more than one word, or records one, as a call's argument, by an augmented assignment, or by a
+# store into an attribute or into an item keyed by anything but a string literal, as `problems.extend([...])`,
+# `problems += [...]`, or `problems[p] = "..."` do, the message given as the value itself, an arm of a conditional
+# expression, a value of an `and` or an `or`, a method called on it, or an element, a starred element, a dictionary's
+# value, or a comprehension's element at any depth; taken by an if, its else, a conditional expression, a
+# comprehension's filter, or a match's case of True, of False or None, or of anything after a case of the other truth,
+# a guard read as an `and`; an assert given a message; a while whose body, or whose else, refuses; an if with no else
+# whose branch leaves, and a match whose every case leaves, whose False goes on, through the rest of its block and any
+# loop or block around it, to such a raise or returned message, returning no other value but under an if or in a loop
+# of its own. A refusal whose test also needs file_presence.is_occupied or is_there to find something at the same path
+# names another kind there, never nothing, so it passes.
 #
 # It also refuses a glob, an os.walk or a path's walk that ignores the folders it cannot list, a removal that discards
 # its errors, a walk or removal whose error callback is a lambda that calls nothing, a log named uncalled, as `print` or
@@ -986,6 +988,8 @@ class _PresenceReader:
     bindings: Mapping[str, list[_Binding]]
     # The ifs with no else whose branch leaves and whose False goes on to a raise of a new error or a returned message.
     raising: frozenset[int] = frozenset()
+    # The matches whose every case leaves, with each truth of the subject that goes on past them to a refusal.
+    falling: Mapping[int, tuple[bool, ...]] = field(default_factory=dict)
 
     def other_is_absent(self, node: ast.expr) -> str | None:
         """The file_presence test a call is when it is given other_is_absent as anything but False, or None."""
@@ -1143,7 +1147,8 @@ class _PresenceReader:
         """The test whose False reaches a refusal: an if's branch or else that refuses, as `_refuses` reads one, a
         conditional expression's message, a comprehension that keeps a message for each path its filter finds absent,
         an if in `raising` whose False goes on to a refusal, an assert given a message, a while whose body or else
-        raises an error of its own, or a match's case that takes a false answer and refuses."""
+        refuses, a match's case that takes one truth of its subject and refuses, its guard read as an `and`, or a match
+        in `falling` whose uncaught truth goes on to a refusal."""
         if isinstance(node, ast.If):
             if _refuses(node.body) and (found := self.reading(node.test, True)):
                 return found
@@ -1152,12 +1157,14 @@ class _PresenceReader:
         if isinstance(node, ast.Assert) and node.msg is not None and (found := self.reading(node.test, False)):
             return found
         if isinstance(node, ast.While):
-            if _raises_anew(node.body) and (found := self.reading(node.test, True)):
+            if _refuses(node.body) and (found := self.reading(node.test, True)):
                 return found
-            if _raises_anew(node.orelse) and (found := self.reading(node.test, False)):
+            if _refuses(node.orelse) and (found := self.reading(node.test, False)):
                 return found
-        if isinstance(node, ast.Match) and any(_refuses(case.body) for case in _false_cases(node)):
-            return self.reading(node.subject, False)
+        if isinstance(node, ast.Match):
+            truths = [truth for case, truth in _case_truths(node) if _refuses(case.body)]
+            truths += self.falling.get(id(node), ())
+            return next((found for truth in truths if (found := self.reading(node.subject, truth))), None)
         if isinstance(node, ast.IfExp):
             if _message(node.body) and (found := self.reading(node.test, True)):
                 return found
@@ -1169,26 +1176,59 @@ class _PresenceReader:
         return None
 
 
-def _false_pattern(pattern: ast.pattern) -> bool:
-    """Whether a case's pattern matches only a false answer: `False`, `None`, or an `|` of them."""
+def _pattern_truth(pattern: ast.pattern) -> bool | None:
+    """The truth of the subject a case's pattern matches only: True for `True`, False for `False`, `None`, or an `|`
+    of them, or None for a pattern that matches either or neither."""
     if isinstance(pattern, ast.MatchOr):
-        return all(_false_pattern(option) for option in pattern.patterns)
-    return isinstance(pattern, ast.MatchSingleton) and pattern.value in (False, None)
+        truths = {_pattern_truth(option) for option in pattern.patterns}
+        return truths.pop() if len(truths) == 1 else None
+    if isinstance(pattern, ast.MatchSingleton):
+        return pattern.value is True
+    return None
 
 
-def _false_cases(node: ast.Match) -> list[ast.match_case]:
-    """The cases of a match that run on a false answer: each unguarded case of `False` or `None`, and, after an
-    unguarded `case True:`, a case that matches anything, which then takes only what is not True."""
-    found: list[ast.match_case] = []
-    took_true = False
+def _irrefutable(pattern: ast.pattern) -> bool:
+    """Whether a case's pattern matches anything: `_` or a bare capture."""
+    return isinstance(pattern, ast.MatchAs) and pattern.pattern is None
+
+
+def _case_truths(node: ast.Match) -> list[tuple[ast.match_case, bool]]:
+    """Each case of a match that runs on one truth of its subject only, with that truth: a case of `True`, of
+    `False` or `None`, and a case that matches anything after unguarded cases have taken the other truth. A guard
+    narrows a case as an `and` does, so a guarded case still runs on its pattern's truth alone, but takes no truth from
+    a later case."""
+    found: list[tuple[ast.match_case, bool]] = []
+    taken: set[bool] = set()
     for case in node.cases:
-        pattern = case.pattern
-        if case.guard is None and _false_pattern(pattern):
-            found.append(case)
-        elif case.guard is None and isinstance(pattern, ast.MatchSingleton) and pattern.value is True:
-            took_true = True
-        elif took_true and isinstance(pattern, ast.MatchAs) and pattern.pattern is None:
-            found.append(case)
+        truth = _pattern_truth(case.pattern)
+        if truth is None and _irrefutable(case.pattern) and len(taken) == 1:
+            truth = not next(iter(taken))
+        if truth is not None:
+            found.append((case, truth))
+            if case.guard is None:
+                taken.add(truth)
+    return found
+
+
+def _leaves(block: list[ast.stmt]) -> bool:
+    """Whether a block ends by leaving: a return, a raise, a continue, or a break."""
+    return bool(block) and isinstance(block[-1], (ast.Return, ast.Raise, ast.Continue, ast.Break))
+
+
+def _falling_matches(tree: ast.Module, parents: dict[int, ast.AST]) -> dict[int, tuple[bool, ...]]:
+    """Each match whose every case leaves, as an if's branch does in `_raising_ifs`, with each truth of its subject no
+    unguarded case takes, which goes on past the match, when the statements after it refuse, as `_refusing_rest` reads
+    them: `match P: case True: return p`, then a raise."""
+    found: dict[int, tuple[bool, ...]] = {}
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Match) or not all(_leaves(case.body) for case in node.cases):
+            continue
+        if any(case.guard is None and _irrefutable(case.pattern) for case in node.cases):
+            continue
+        taken = {truth for case, truth in _case_truths(node) if case.guard is None}
+        falling = tuple(truth for truth in (True, False) if truth not in taken)
+        if falling and _refusing_rest(_continuation(node, parents)):
+            found[id(node)] = falling
     return found
 
 
@@ -1229,14 +1269,32 @@ def _message(node: ast.expr | None) -> bool:
 
 
 def _gives_message(node: ast.expr | None) -> bool:
-    """Whether an expression gives a message as it is, or as an item: a message, or a list, set, or tuple holding one
-    as an element, or a dictionary as a value, as `[f"{p} is missing"]` does. A string nested in another call's
+    """Whether an expression gives a message as its value or as an item of it: a message, either arm of a conditional
+    expression, any value of an `and` or an `or`, a method called on a message, as `f"{p} is missing".strip()`, an
+    element of a list, set, or tuple, a starred one, a dictionary's value, or a comprehension's element, at any depth,
+    as `[[p, "the file is missing"]]` or `f"{x} is missing" for x in ps` gives one. A string in another call's
     arguments, as `Path("Program Files")` holds, is that call's value, not a message."""
+    if node is None:
+        return False
+    if _message(node):
+        return True
+    if isinstance(node, ast.IfExp):
+        return _gives_message(node.body) or _gives_message(node.orelse)
+    if isinstance(node, ast.BoolOp):
+        return any(_gives_message(value) for value in node.values)
+    if isinstance(node, (ast.Starred, ast.NamedExpr)):
+        return _gives_message(node.value)
     if isinstance(node, (ast.List, ast.Set, ast.Tuple)):
-        return any(_message(element) for element in node.elts)
+        return any(_gives_message(element) for element in node.elts)
     if isinstance(node, ast.Dict):
-        return any(_message(value) for value in node.values)
-    return _message(node)
+        return any(_gives_message(value) for value in node.values)
+    if isinstance(node, ast.DictComp):
+        return _gives_message(node.value)
+    if isinstance(node, (ast.GeneratorExp, ast.ListComp, ast.SetComp)):
+        return _gives_message(node.elt)
+    if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+        return _gives_message(node.func.value)
+    return False
 
 
 def _records(statement: ast.stmt) -> bool:
@@ -1782,6 +1840,7 @@ def _presence_answers(tree: ast.Module, aliases: dict[str, str]) -> Iterator[tup
     parents = _parents(tree)
     bindings = _scope_bindings(tree, parents)
     raising = _raising_ifs(tree, parents)
+    falling = _falling_matches(tree, parents)
     inert = _inert_functions(tree, aliases)
     handlers = _Handlers(
         aliases,
@@ -1793,7 +1852,7 @@ def _presence_answers(tree: ast.Module, aliases: dict[str, str]) -> Iterator[tup
     )
     readers: dict[str, _PresenceReader] = {}
     for node, scope in scoped_nodes(tree.body):
-        reader = readers.setdefault(scope, _PresenceReader(aliases, bindings.get(scope, {}), raising))
+        reader = readers.setdefault(scope, _PresenceReader(aliases, bindings.get(scope, {}), raising, falling))
         if isinstance(node, ast.expr) and (predicate := _presence_predicate(node, aliases)):
             yield (
                 node,

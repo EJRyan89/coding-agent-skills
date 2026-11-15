@@ -5658,6 +5658,61 @@ PRESENCE_REFUSAL_SHAPES = {
         "def f(p, problems):\n    match {call}:\n        case True:\n            return 1\n        case _:\n"
         "            problems.append(f'{{p}} is missing')\n    return 0\n"
     ),
+    "while not P: return a message": (
+        "def f(p):\n    while not {call}:\n        return f'{{p}} is missing'\n    return None\n"
+    ),
+    "while not P: record a message, break": (
+        "def f(p, problems):\n    while not {call}:\n        problems.append(f'{{p}} is missing')\n        break\n"
+        "    return problems\n"
+    ),
+    "while P: ... else: return a message": (
+        "def f(p, q):\n    while {call}:\n        if q:\n            break\n    else:\n"
+        "        return f'{{p}} is missing'\n    return None\n"
+    ),
+    "match not P: case True: raise": (
+        "def f(p):\n    match not {call}:\n        case True:\n            raise OSError(p)\n    return 1\n"
+    ),
+    "match P: case False if Q: raise": (
+        "def f(p, q):\n    match {call}:\n        case False if q:\n            raise OSError(p)\n    return 1\n"
+    ),
+    "match P: case True: return, then raise": (
+        "def f(p):\n    match {call}:\n        case True:\n            return 1\n"
+        "    raise OSError(f'{{p}} is missing')\n"
+    ),
+    "if not P: return a message in a conditional expression's arm": (
+        "def f(p, q):\n    if not {call}:\n        return f'{{p}} is missing' if q else 'gone from here'\n    return None\n"
+    ),
+    "if not P: record a conditional expression": (
+        "def f(p, q, problems):\n    if not {call}:\n        problems.append(f'{{p}} is missing' if q else p)\n"
+        "    return problems\n"
+    ),
+    "if not P: return Q or a message": (
+        "def f(p, q):\n    if not {call}:\n        return q or f'{{p}} is missing'\n    return None\n"
+    ),
+    "if not P: extend by a generator of messages": (
+        "def f(p, problems):\n    if not {call}:\n        problems.extend(f'{{x}} is missing' for x in [p])\n"
+        "    return problems\n"
+    ),
+    "if not P: record a message nested in lists": (
+        "def f(p, problems):\n    if not {call}:\n        problems.append([[p, 'the file is missing']])\n"
+        "    return problems\n"
+    ),
+    "if not P: return a message nested in dictionaries": (
+        "def f(p):\n    if not {call}:\n        return {{'error': {{'why': 'the file is missing'}}}}\n    return None\n"
+    ),
+    "if not P: return a method of a message": (
+        "def f(p):\n    if not {call}:\n        return f'{{p}} is missing'.strip()\n    return None\n"
+    ),
+    "if not P: return a tuple holding an f-string message": (
+        "def f(p):\n    if not {call}:\n        return None, f'{{p}} is missing'\n    return p, None\n"
+    ),
+    "if not P: record a set holding a message": (
+        "def f(p, problems):\n    if not {call}:\n        problems.update({{f'{{p}} is missing'}})\n    return problems\n"
+    ),
+    "if not P: record a dictionary whose value is a message": (
+        "def f(p, problems):\n    if not {call}:\n        problems.update({{p: 'the file is missing'}})\n"
+        "    return problems\n"
+    ),
     "a message when not P": "def f(p):\n    return '' if {call} else ', which no longer exists'\n",
     "a message for each path not P keeps": "def f(ps):\n    return [f'{{p}} is missing' for p in ps if not {call}]\n",
 }
@@ -6065,6 +6120,26 @@ PRESENCE_PASSED = {
     "a field set from words on a test's False": (
         "import file_presence\n\n\ndef f(p, cfg):\n    if not file_presence.is_present(p, other_is_absent=True):\n"
         "        cfg['title'] = 'Untitled document'\n    return cfg\n"
+    ),
+    "a tuple of values on a test's False": (
+        "import file_presence\n\n\ndef f(p):\n    if not file_presence.is_present(p, other_is_absent=True):\n"
+        "        return None, p.name\n    return p, None\n"
+    ),
+    "a set of values recorded on a test's False": (
+        "import file_presence\n\n\ndef f(p, seen):\n    if not file_presence.is_present(p, other_is_absent=True):\n"
+        "        seen.update({p.name})\n    return seen\n"
+    ),
+    "a dictionary of values recorded on a test's False": (
+        "import file_presence\n\n\ndef f(p, seen):\n    if not file_presence.is_present(p, other_is_absent=True):\n"
+        "        seen.update({p: p.name})\n    return seen\n"
+    ),
+    "a match whose cases do not all leave, then a raise": (
+        "import file_presence\n\n\ndef f(p):\n    match file_presence.is_present(p, other_is_absent=True):\n"
+        "        case True:\n            x = 1\n    raise OSError(f'{p} is missing')\n"
+    ),
+    "a match whose False case leaves, then a raise on True": (
+        "import file_presence\n\n\ndef f(p):\n    match file_presence.is_present(p, other_is_absent=True):\n"
+        "        case False:\n            return None\n    raise OSError(f'{p} is in the way')\n"
     ),
     "an assert with no message": (
         "import file_presence\n\n\ndef f(p):\n    assert file_presence.is_present(p, other_is_absent=True)\n"
