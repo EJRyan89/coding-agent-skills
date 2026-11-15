@@ -60,3 +60,22 @@ class NestsPastTests(unittest.TestCase):
 
     def test_a_value_nested_past_the_recursion_limit_is_measured(self) -> None:
         self.assertTrue(nesting_depth.nests_past(chain(sys.getrecursionlimit() * 10), items))
+
+    def test_a_value_that_holds_itself_is_measured_down_to_the_repeat(self) -> None:
+        # A writer names the cycle itself; the walk neither loops nor reads the repeat as a level past the limit.
+        loop: list[object] = []
+        loop.append(loop)
+        self.assertFalse(nesting_depth.nests_past(loop, items))
+        deep_loop = chain(100)
+        innermost = deep_loop
+        while items(innermost):
+            innermost = items(innermost)[0]
+        assert isinstance(innermost, list)
+        innermost.append(deep_loop)
+        self.assertFalse(nesting_depth.nests_past(deep_loop, items))
+        self.assertTrue(nesting_depth.nests_past([deep_loop], items))
+
+    def test_a_node_reached_twice_without_a_cycle_is_measured_at_each_place(self) -> None:
+        shared = chain(99)
+        self.assertFalse(nesting_depth.nests_past([shared, shared], items))
+        self.assertTrue(nesting_depth.nests_past([shared, [shared]], items))

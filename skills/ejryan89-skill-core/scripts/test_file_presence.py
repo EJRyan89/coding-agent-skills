@@ -587,6 +587,28 @@ class MatchingTests(unittest.TestCase):
             with self.subTest(pattern=pattern), self.assertRaises(ValueError):
                 matching(self.root, pattern)
 
+    def test_a_part_spelling_a_short_alias_matches_only_a_name_the_listing_gives(self) -> None:
+        # Windows may also open a long name by an 8.3 short alias, such as LONGFO~1, where the volume makes them. The
+        # listing gives the long name alone, so the alias matches nothing on every platform, and only a part that
+        # matches the long name finds it.
+        (self.root / "Long folder name").mkdir()
+        for pattern in ("LONGFO~1", "LONGFO~?", "longfo~1", "*~1"):
+            with self.subTest(pattern=pattern):
+                self.assertEqual([], matching(self.root, pattern))
+        self.assertEqual([self.root / "Long folder name"], matching(self.root, "Long*"))
+
+    def test_a_part_a_glob_class_reads_as_a_device_name_matches_only_names_the_listing_gives(self) -> None:
+        # The form refuses a device name spelled out; a class or a wildcard that can also spell one, such as
+        # [Nn][Uu][Ll] or co?, is read, since it matches other names too. Windows lists no device in a folder, so
+        # there it matches only those other names; Linux and macOS list a file of a device's name like any other.
+        (self.root / "cot").write_text("", encoding="utf-8")
+        listed = sys.platform != "win32"
+        if listed:
+            for name in ("con", "nul"):
+                (self.root / name).write_text("", encoding="utf-8")
+        self.assertEqual([self.root / "nul"] if listed else [], matching(self.root, "[Nn][Uu][Ll]"))
+        self.assertEqual([*([self.root / "con"] if listed else []), self.root / "cot"], matching(self.root, "co?"))
+
     def test_a_name_that_only_holds_a_device_name_or_a_dot_is_read(self) -> None:
         # A device name is the whole stem, so a name that holds one, or a dot that does not end it, is a name.
         for name in ("console.py", "nul_x.txt", "a.b.c", ".hidden"):

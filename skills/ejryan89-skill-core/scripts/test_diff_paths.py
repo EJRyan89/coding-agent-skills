@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import contextlib
+import os
 import sys
 import tempfile
 import unittest
@@ -13,6 +15,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import diff_paths
+import file_presence
 import path_containment
 from diff_paths import (
     CONTENT_ERRORS,
@@ -25,6 +28,7 @@ from diff_paths import (
     unquote,
 )
 from git_client import GitClient
+from test_path_containment import resolving_as_python_312
 
 SPACED = "tools/report age.py"
 ACCENTED = "tools/résumé.py"
@@ -238,6 +242,24 @@ class UnresolvableSnapshotPathTests(unittest.TestCase):
         with mock.patch("diff_paths.resolved_path", resolve):
             self.assertIsNone(snapshot_path(root, "tools/unresolvable.py"))
             self.assertEqual(root.resolve() / "tools" / "inside.py", snapshot_path(root, "tools/inside.py"))
+
+
+@unittest.skipIf(sys.platform == "win32", "a symbolic link needs a privilege on Windows")
+class LinkLoopSnapshotPathTests(unittest.TestCase):
+    def test_a_path_through_a_link_loop_lands_inside_unresolved_where_its_read_is_refused(self) -> None:
+        # Python 3.12's Path.resolve raises RuntimeError on a loop, which no OSError handler here catches;
+        # resolved_path leaves the loop unresolved inside the root on every version, where a stat refuses it.
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        root = Path(os.path.realpath(temporary.name))
+        (root / "loop").symlink_to(root / "loop")
+        for version, resolving in (("this Python", contextlib.nullcontext), ("Python 3.12", resolving_as_python_312)):
+            for path in ("loop", "loop/file.py"):
+                with self.subTest(version=version, path=path), resolving():
+                    landed = snapshot_path(root, path)
+                    self.assertEqual(root.joinpath(*path.split("/")), landed)
+                    assert landed is not None
+                    self.assertRegex(file_presence.refusal_reason(landed) or "", "^cannot be examined: ")
 
 
 @pytest.mark.parametrize(
