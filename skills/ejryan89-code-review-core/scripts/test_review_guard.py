@@ -614,6 +614,20 @@ class ReadLogTests(GuardFixture):
             (guard.claimed(self.run_directory, "csharp-review"), guard.claimed(self.run_directory, "sql-review")),
         )
 
+    def test_a_folder_where_the_read_log_is_counts_nothing_and_its_role_is_refused_as_unguarded(self) -> None:
+        # check and finalize read the same evidence one way: a folder is no log, so check counts nothing for its role,
+        # never failing on it, and finalize refuses the role as one no guard held.
+        log = guard.read_log(self.run_directory, "csharp-review")
+        log.mkdir(parents=True)
+        state: Any = {"reads": {}, "runtime": "claude-code", "dispatch": "subagents"}
+        self.assertFalse(review_dispatch.count_reads(self.run_directory, state, ["csharp-review"]))
+        self.assertEqual({"reads": {}, "runtime": "claude-code", "dispatch": "subagents"}, state)
+        self.assertTrue(log.is_dir(), "a folder that is no log is left as it is")
+        self.assertEqual(
+            {"csharp-review": guard.UNGUARDED.format(remedy=review_dispatch.UNGUARDED_REMEDY)},
+            review_dispatch.unguarded_roles(self.run_directory, state, ["csharp-review"]),
+        )
+
     def test_a_read_the_log_cannot_hold_is_allowed_uncounted_and_the_boundary_still_holds(self) -> None:
         # A path holding a lone surrogate, which a file name on Linux may, is a line no UTF-8 log can hold.
         self.claim()

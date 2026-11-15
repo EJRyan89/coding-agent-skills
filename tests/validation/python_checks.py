@@ -778,8 +778,9 @@ def link_test_problems(root: Path, files: list[Path]) -> list[str]:
 # reaches an answer by more spellings than any list holds, so the policy pins the one form it accepts: it refuses every
 # presence predicate outside file_presence and link_probe however its answer is used, as the link-test policy refuses
 # each link test, called or named uncalled, as `map(os.path.exists, ps)` or `check = Path.exists` hands one on, or
-# looked up by a literal name, as `getattr(p, "exists")` is. A presence predicate is a method of that name on any
-# receiver, or a path module's function or os.access through the module's imports.
+# looked up by a literal name, as `getattr(p, "exists")` or `operator.methodcaller("exists")(p)` is. A presence
+# predicate is a method of that name on any receiver, or a path module's function or os.access through the module's
+# imports.
 #
 # file_presence's is_present and is_directory given other_is_absent=True, or given it through a `**` that may hold it,
 # read something of another kind as nothing there, which a reader that passes over other kinds asks for, and a refusal
@@ -789,14 +790,16 @@ def link_test_problems(root: Path, files: list[Path]) -> list[str]:
 # either answer, a comprehension, a filter, `any`, `all`, or `next` of one, a call that keeps a collection's items, and
 # every name its scope binds to any of them, where a name its scope also binds to an empty value is, when true, true
 # under the tests that guard its other bindings. A reading that finds no path, as a search that found none, or more than
-# one, refuses, names no path as missing. A refusal is a branch that raises an error of its own, or that returns a
-# message of more than one word, or records one, in a call's argument, an augmented assignment, or a store into an item
-# or an attribute, as `problems.extend([...])`, `problems += [...]`, or `problems[p] = "..."` do, taken by an if, its
-# else, a conditional expression, or a comprehension's filter, and an if with no else whose branch leaves and whose
-# False goes on, through the rest of its block and any loop or block around it, to such a raise or returned message,
-# returning no other value but under an if or in a loop of its own. A refusal whose test also needs
-# file_presence.is_occupied or is_there to find something at the same path names another kind there, never nothing, so
-# it passes.
+# one, refuses, names no path as missing. A refusal is a branch that raises an error of its own, or that returns or
+# yields a message of more than one word, as it is or as an item of a tuple, list, or set, or records one so, as a
+# call's argument, by an augmented assignment, or by a store into an attribute or into an item keyed by anything but a
+# string literal, as `problems.extend([...])`, `problems += [...]`, or `problems[p] = "..."` do, taken by an if, its
+# else, a conditional expression, a comprehension's filter, or a match's case of False or None, or of anything after a
+# case of True; an assert given a message; a while whose body, or whose else, raises an error of its own; and an if with
+# no else whose branch leaves and whose False goes on, through the rest of its block and any loop or block around it, to
+# such a raise or returned message, returning no other value but under an if or in a loop of its own. A refusal whose
+# test also needs file_presence.is_occupied or is_there to find something at the same path names another kind there,
+# never nothing, so it passes.
 #
 # It also refuses a glob, an os.walk or a path's walk that ignores the folders it cannot list, a removal that discards
 # its errors, a walk or removal whose error callback is a lambda that calls nothing, a log named uncalled, as `print` or
@@ -804,17 +807,21 @@ def link_test_problems(root: Path, files: list[Path]) -> list[str]:
 # its exceptions directly or through a name the module binds to a literal tuple of them, that answers a failed stat,
 # listing, or read with nothing: a branch that only logs, or binds local names, by an assignment, an augmented one, or a
 # tuple or list target, to a value that calls nothing, before its empty answer, a warn imported from warnings read as
-# the log it is, or a return of a name whose last binding before the try is an empty value. Any such site outside
+# the log it is, or a return of a name whose last binding before the try is an empty value; before a continue or a
+# break, which a binding outlives, only names its function never reads. A suppress takes the errors of the items a
+# `with` enters after it, as `with suppress(OSError), open(p) as h:` does, as well as its body's. Any such site outside
 # file_presence and link_probe states why in a module-level PRESENCE_ALLOWED = {scope: reason}, as where the caller just
 # made the path.
 #
 # Stated limits, which no reading of a module's syntax tree settles: a predicate looked up by a name computed at run
-# time, as `getattr(p, name)`; a test's answer held in an attribute or another scope, or returned by a function the
-# refusal calls; a message built in a name before the branch that records it, and a message of one word, which reads as
-# a value; an error callback that calls anything, which may raise; a handler's exceptions named through a name the
-# module does not bind to one literal tuple; and a returned name bound to an empty value inside the try. The link tests
-# are no presence predicates here: LINK_TESTS refuses each outside link_probe however its answer is used, and link_probe
-# lets a failed stat through.
+# time, as `getattr(p, name)`; a test's answer held in an attribute or another scope, as a collection one function keeps
+# by it and its caller refuses on, or returned by a function the refusal calls; a message built in a name before the
+# branch that records it, and a message of one word, which reads as a value; a message nested in another call's
+# arguments, which reads as that call's value, and one stored under a key spelled as a string literal, which reads as a
+# field's, as `cfg["title"] = "Untitled document"` does; an error callback that calls anything, which may raise; a
+# handler's exceptions named through a name the module does not bind to one literal tuple; and a returned name bound to
+# an empty value inside the try. The link tests are no presence predicates here: LINK_TESTS refuses each outside
+# link_probe however its answer is used, and link_probe lets a failed stat through.
 PRESENCE_PREDICATES = frozenset(
     {"exists", "is_file", "is_dir", "is_mount", "is_socket", "is_fifo", "is_block_device", "is_char_device"}
 )
@@ -1135,12 +1142,22 @@ class _PresenceReader:
     def refusal(self, node: ast.AST) -> str | None:
         """The test whose False reaches a refusal: an if's branch or else that refuses, as `_refuses` reads one, a
         conditional expression's message, a comprehension that keeps a message for each path its filter finds absent,
-        or an if in `raising` whose False goes on to a refusal."""
+        an if in `raising` whose False goes on to a refusal, an assert given a message, a while whose body or else
+        raises an error of its own, or a match's case that takes a false answer and refuses."""
         if isinstance(node, ast.If):
             if _refuses(node.body) and (found := self.reading(node.test, True)):
                 return found
             if (_refuses(node.orelse) or id(node) in self.raising) and (found := self.reading(node.test, False)):
                 return found
+        if isinstance(node, ast.Assert) and node.msg is not None and (found := self.reading(node.test, False)):
+            return found
+        if isinstance(node, ast.While):
+            if _raises_anew(node.body) and (found := self.reading(node.test, True)):
+                return found
+            if _raises_anew(node.orelse) and (found := self.reading(node.test, False)):
+                return found
+        if isinstance(node, ast.Match) and any(_refuses(case.body) for case in _false_cases(node)):
+            return self.reading(node.subject, False)
         if isinstance(node, ast.IfExp):
             if _message(node.body) and (found := self.reading(node.test, True)):
                 return found
@@ -1150,6 +1167,29 @@ class _PresenceReader:
             tests = [test for generator in node.generators for test in generator.ifs]
             return next((found for test in tests if (found := self.reading(test, True))), None)
         return None
+
+
+def _false_pattern(pattern: ast.pattern) -> bool:
+    """Whether a case's pattern matches only a false answer: `False`, `None`, or an `|` of them."""
+    if isinstance(pattern, ast.MatchOr):
+        return all(_false_pattern(option) for option in pattern.patterns)
+    return isinstance(pattern, ast.MatchSingleton) and pattern.value in (False, None)
+
+
+def _false_cases(node: ast.Match) -> list[ast.match_case]:
+    """The cases of a match that run on a false answer: each unguarded case of `False` or `None`, and, after an
+    unguarded `case True:`, a case that matches anything, which then takes only what is not True."""
+    found: list[ast.match_case] = []
+    took_true = False
+    for case in node.cases:
+        pattern = case.pattern
+        if case.guard is None and _false_pattern(pattern):
+            found.append(case)
+        elif case.guard is None and isinstance(pattern, ast.MatchSingleton) and pattern.value is True:
+            took_true = True
+        elif took_true and isinstance(pattern, ast.MatchAs) and pattern.pattern is None:
+            found.append(case)
+    return found
 
 
 def _raises_anew(block: list[ast.stmt]) -> bool:
@@ -1188,35 +1228,43 @@ def _message(node: ast.expr | None) -> bool:
     return any(character.isalpha() for character in own) and len(text.split()) > 1
 
 
-def _holds_message(node: ast.expr | None) -> bool:
-    """Whether an expression is a message or holds one, as a list, a dictionary, or a call's argument may, outside a
-    lambda it holds."""
-    pending: list[ast.AST] = [] if node is None else [node]
-    while pending:
-        part = pending.pop()
-        if isinstance(part, ast.Lambda):
-            continue
-        if isinstance(part, ast.expr) and _message(part):
-            return True
-        pending.extend(ast.iter_child_nodes(part))
-    return False
+def _gives_message(node: ast.expr | None) -> bool:
+    """Whether an expression gives a message as it is, or as an item: a message, or a list, set, or tuple holding one
+    as an element, or a dictionary as a value, as `[f"{p} is missing"]` does. A string nested in another call's
+    arguments, as `Path("Program Files")` holds, is that call's value, not a message."""
+    if isinstance(node, (ast.List, ast.Set, ast.Tuple)):
+        return any(_message(element) for element in node.elts)
+    if isinstance(node, ast.Dict):
+        return any(_message(value) for value in node.values)
+    return _message(node)
 
 
 def _records(statement: ast.stmt) -> bool:
-    """Whether a statement returns or records a message: a return of one, a call given one, as
+    """Whether a statement returns or records a message as it is, as `_gives_message` reads one: a return or a yield of
+    one, as `return None, "not found here"` is, a call given one as an argument, as
     `problems.append(f"{p} is missing")`, `problems.extend([...])`, `print(...)`, or `fail(...)` is, an augmented
-    assignment adding one, as `problems += [...]`, or a store of one into an item or an attribute, as
-    `problems[p] = "..."`."""
+    assignment adding one, as `problems += [...]`, or a store of one into an attribute or into an item keyed by
+    anything but a string literal, as `problems[p] = "..."`; a store under a literal key, as
+    `cfg["title"] = "Untitled document"`, sets a field."""
     if isinstance(statement, ast.Return):
-        return _holds_message(statement.value)
+        return _gives_message(statement.value)
+    if isinstance(statement, ast.Expr) and isinstance(statement.value, (ast.Yield, ast.YieldFrom)):
+        return _gives_message(statement.value.value)
     if isinstance(statement, ast.Expr) and isinstance(call := statement.value, ast.Call):
-        return any(_holds_message(argument) for argument in [*call.args, *(keyword.value for keyword in call.keywords)])
+        return any(_gives_message(argument) for argument in [*call.args, *(keyword.value for keyword in call.keywords)])
     if isinstance(statement, ast.AugAssign):
-        return _holds_message(statement.value)
+        return _gives_message(statement.value)
     if isinstance(statement, (ast.Assign, ast.AnnAssign)):
         targets = statement.targets if isinstance(statement, ast.Assign) else [statement.target]
-        stored = any(isinstance(target, (ast.Subscript, ast.Attribute)) for target in targets)
-        return stored and _holds_message(statement.value)
+        stored = any(
+            isinstance(target, ast.Attribute)
+            or (
+                isinstance(target, ast.Subscript)
+                and not (isinstance(target.slice, ast.Constant) and isinstance(target.slice.value, str))
+            )
+            for target in targets
+        )
+        return stored and _gives_message(statement.value)
     return False
 
 
@@ -1298,12 +1346,23 @@ def _inert(statement: ast.stmt, aliases: dict[str, str], declared: frozenset[str
     )
 
 
+def _bound_names(statement: ast.stmt) -> set[str]:
+    """The names a statement stores."""
+    return {node.id for node in ast.walk(statement) if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store)}
+
+
 def _empty_branch(
-    body: list[ast.stmt], aliases: dict[str, str], declared: frozenset[str], empty_names: frozenset[str] = frozenset()
+    body: list[ast.stmt],
+    aliases: dict[str, str],
+    declared: frozenset[str],
+    empty_names: frozenset[str] = frozenset(),
+    read: frozenset[str] | None = None,
 ) -> bool:
     """Whether a branch answers nothing: it ends in a return of an empty value or of a name in `empty_names`, a continue
-    past the item at hand, or a break out of the search, and every statement before that only logs, or, before a
-    return, binds a local name to a value that calls nothing."""
+    past the item at hand, or a break out of the search, and every statement before that only logs, or binds a local
+    name to a value that calls nothing: before a return, any such name, which the return leaves behind; before a
+    continue or a break, which the binding outlives, only a name its function never reads, given as the names `read`
+    holds, as `failed = True` is when nothing reads `failed`."""
     if not body:
         return False
     last = body[-1]
@@ -1311,7 +1370,9 @@ def _empty_branch(
         empty = _empty(last.value) or (isinstance(last.value, ast.Name) and last.value.id in empty_names)
         return empty and all(_inert(statement, aliases, declared) for statement in body[:-1])
     return isinstance(last, (ast.Continue, ast.Break)) and all(
-        _only_logs(statement, aliases) for statement in body[:-1]
+        _only_logs(statement, aliases)
+        or (read is not None and _inert(statement, aliases, declared) and not _bound_names(statement) & read)
+        for statement in body[:-1]
     )
 
 
@@ -1463,9 +1524,9 @@ SWALLOWING_ERRORS = frozenset(
 )
 
 
-def _stats_or_lists(body: list[ast.stmt], aliases: dict[str, str]) -> str | None:
-    """The first call in a block, outside a function it defines, that stats, lists, or reads a path, by its name, or
-    None."""
+def _stats_or_lists(body: Sequence[ast.AST], aliases: dict[str, str]) -> str | None:
+    """The first call in a block, or in the expressions given, outside a function it defines, that stats, lists, or
+    reads a path, by its name, or None."""
     pending: list[ast.AST] = list(body)
     while pending:
         node = pending.pop(0)
@@ -1515,6 +1576,22 @@ def _empty_assignment(body: list[ast.stmt], aliases: dict[str, str]) -> str | No
     return None
 
 
+def _read_names(tree: ast.Module) -> dict[int, frozenset[str]]:
+    """For each try, every name the innermost function holding it reads anywhere in it, a function it defines
+    included; a try outside any function has none, so no binding of its handler is read as unread."""
+    found: dict[int, frozenset[str]] = {}
+    for function in ast.walk(tree):
+        if not isinstance(function, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        read = frozenset(
+            node.id for node in ast.walk(function) if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load)
+        )
+        for node in ast.walk(function):
+            if isinstance(node, (ast.Try, ast.TryStar)):
+                found[id(node)] = read
+    return found
+
+
 def _returned_names(tree: ast.Module) -> dict[int, frozenset[str]]:
     """For each try, the names its function returns as they are, `return name`, outside a function it defines."""
     found: dict[int, frozenset[str]] = {}
@@ -1541,13 +1618,15 @@ def _returned_names(tree: ast.Module) -> dict[int, frozenset[str]]:
 @dataclass(frozen=True)
 class _Handlers:
     """What a module's handlers are read with: its imports, the global names it declares, the module's names bound
-    only to a tuple, the tries whose handler that only logs answers nothing, and the names each function returns."""
+    only to a tuple, the tries whose handler that only logs answers nothing, the names each function returns, and the
+    names each try's function reads."""
 
     aliases: dict[str, str]
     declared: frozenset[str]
     tuples: Mapping[str, ast.Tuple]
     falling: frozenset[int]
     returned: Mapping[int, frozenset[str]]
+    read: Mapping[int, frozenset[str]]
 
 
 def _empty_before(node: ast.AST, bindings: Mapping[str, list[_Binding]]) -> frozenset[str]:
@@ -1579,7 +1658,7 @@ def _handled_answer(node: ast.AST, handlers: _Handlers, bindings: Mapping[str, l
             falls = id(node) in handlers.falling and all(_only_logs(statement, aliases) for statement in handler.body)
             empty = _empty_assignment(handler.body, aliases)
             if (
-                _empty_branch(handler.body, aliases, handlers.declared, empty_names)
+                _empty_branch(handler.body, aliases, handlers.declared, empty_names, handlers.read.get(id(node)))
                 or falls
                 or (empty is not None and empty in handlers.returned.get(id(node), ()))
             ):
@@ -1587,13 +1666,17 @@ def _handled_answer(node: ast.AST, handlers: _Handlers, bindings: Mapping[str, l
                     f"answers nothing from a handler of {call}'s OSError, which reads a path it cannot stat, list, or "
                     "read as nothing there; let the error through, or report the path"
                 )
-    if isinstance(node, (ast.With, ast.AsyncWith)) and (call := _stats_or_lists(node.body, aliases)):
-        for item in node.items:
+    if isinstance(node, (ast.With, ast.AsyncWith)):
+        for index, item in enumerate(node.items):
             context = item.context_expr
+            # A suppress takes the errors of the items entered after it, as `with suppress(OSError), open(p) as h:`
+            # does, as well as its body's.
+            later = [later.context_expr for later in node.items[index + 1 :]]
             if (
                 isinstance(context, ast.Call)
                 and qualified_name(context.func, aliases) == "contextlib.suppress"
                 and any(_swallows(argument, aliases, handlers.tuples) for argument in context.args)
+                and (call := _stats_or_lists([*later, *node.body], aliases))
             ):
                 return (
                     f"suppresses {call}'s OSError, which reads a path it cannot stat, list, or read as nothing there; "
@@ -1701,7 +1784,12 @@ def _presence_answers(tree: ast.Module, aliases: dict[str, str]) -> Iterator[tup
     raising = _raising_ifs(tree, parents)
     inert = _inert_functions(tree, aliases)
     handlers = _Handlers(
-        aliases, _declared_names(tree), _module_tuples(tree), _falling_tries(tree), _returned_names(tree)
+        aliases,
+        _declared_names(tree),
+        _module_tuples(tree),
+        _falling_tries(tree),
+        _returned_names(tree),
+        _read_names(tree),
     )
     readers: dict[str, _PresenceReader] = {}
     for node, scope in scoped_nodes(tree.body):

@@ -364,11 +364,16 @@ def _read_counts(path: Path) -> object:
 
 READ_LOG = b'"README.md"\n{"search": "README"}\n'
 # count_reads passes over a line that is not a path of the snapshot or a search, since the guard alone writes the log,
-# and deletes the log once counted, so every case it can read is one it counts and accepts.
+# and deletes the log once counted, so every case it can read is one it counts and accepts. A folder in the log's place
+# is no log, as review_guard.claimed reads it, so it counts nothing and finalize refuses the role as unguarded.
 READ_LOG_COUNTED = {
-    case.name: "a line that is not a path of the snapshot or a search the guard writes counts nothing"
+    case.name: (
+        "a folder where the log should be is no log, so the role counts nothing and finalize refuses it as unguarded"
+        if case.content == corpus.DIRECTORY
+        else "a line that is not a path of the snapshot or a search the guard writes counts nothing"
+    )
     for case in corpus.cases("json-lines", READ_LOG)
-    if case.content not in (corpus.DIRECTORY, corpus.LINK, corpus.UNREADABLE)
+    if case.content not in (corpus.LINK, corpus.UNREADABLE)
 }
 
 
