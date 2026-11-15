@@ -471,7 +471,10 @@ def shell_commands(script: str, commands: list[list[str]] | None = None) -> set[
     word, each program a wrapper, find's -exec, eval, a shell's -c script, or a PowerShell start-up's script runs, and
     every command of a command
     substitution, quoted or not. A program a wrapper runs that no literal names is recorded as UNREAD_PROGRAM. Given
-    `commands`, it also appends the words of each simple command it reads there, a substitution's included."""
+    `commands`, it also appends the words of each simple command it reads there, a substitution's included. Beyond
+    what it reads: a here-document's body, which git_subcommands reads as data, is read here as commands, so a word
+    of a body may stand as a command Bash never runs, and a quote a body leaves open runs on past it; no skill's Bash
+    script writes a here-document."""
     tokens = list(ShellLexer(script.replace("\\\n", " ")).words())
     # A function's name is read from its syntax, None for a quoted or escaped word, which Bash refuses as a name and
     # defines no function for, as _function_header in suite_discovery.py reads it.

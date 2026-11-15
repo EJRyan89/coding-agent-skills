@@ -187,9 +187,19 @@ def python_git_subcommands(source: str) -> set[str]:
 
     A git call is one `names_git` reads as one, a function whose dotted name has a part with the word git in it. Its
     words are the string literals among its positional arguments and among the items of a list or tuple literal there,
-    in order, any other value after the first literal standing as a placeholder, and
-    git_client.subcommand reads past git's own options to the subcommand. A script that does not parse, or nests past
-    the parser's limits, raises python_reader's PythonRefused.
+    in order, and git_client.subcommand reads past git's own options to the subcommand. Any other value, a name or a
+    starred one included, stands as a placeholder, an empty word, wherever it is an item of a list or tuple literal
+    and among the other arguments after the first literal, so a subcommand no literal names, as in
+    `git.output(["-C", directory, verb])`, is recorded as that empty word, which may be any subcommand and which
+    reaches_remote reads as one that may reach a remote. A value among the arguments before the first literal is the
+    function's own, such as its client and its folder in `git(services, root, "fetch")`, and stands for no word.
+
+    Beyond what it reads: a call that holds neither a literal word nor a list or tuple literal, such as a wrapper's
+    `services.git.run(arguments)` or GitClient's `commit_of(ref)`, whose method names its own subcommand, records
+    nothing, so a wrapper's subcommands are read only at its callers' calls that name git; a value before the first
+    literal among the arguments, as `verb` in `git_in(checkout, runner, verb, "origin")`, is taken as the function's
+    own; and a subcommand held in a variable, as `sizing = ("cat-file", "-s", blob)`, is not followed. A script that
+    does not parse, or nests past the parser's limits, raises python_reader's PythonRefused.
     """
     tree = python_reader.parse(source)
     found: set[str] = set()
@@ -198,12 +208,14 @@ def python_git_subcommands(source: str) -> set[str]:
             continue
         words: list[str] = []
         for argument in node.args:
-            for item in argument.elts if isinstance(argument, (ast.List, ast.Tuple)) else [argument]:
+            listed = argument.elts if isinstance(argument, (ast.List, ast.Tuple)) else None
+            for item in [argument] if listed is None else listed:
                 if isinstance(item, ast.Constant) and isinstance(item.value, str):
                     words.append(item.value)
-                elif words:
+                elif listed is not None or words:
                     words.append("")
-        if subcommand := git_client.subcommand(words):
+        subcommand = git_client.subcommand(words)
+        if subcommand is not None:
             found.add(subcommand)
     return found
 

@@ -17,10 +17,11 @@ Usage:
 printing `ON_ORIGIN <tag>` for each, then `CHECKED`. `fetch` fetches origin's main into `refs/remotes/origin/main`,
 with origin's tags but those two, and prints `FETCHED`. Either prints a last line `ORIGIN_FAILED <reason>` instead
 when origin failed, as `GitError.origin_failed` tells it: git ran and failed with no line of its own naming a fault in
-the clone, or ran out its time limit, git's error or the limit on one line. It prints `FAILED <reason>` for any other
-failure, which `update.sh` must not report as origin's: git missing, unable to start, or leaving programs it started
-that could not be ended, a clone that is no repository, a failure in the clone itself, such as a ref git could not lock
-or an object it could not write, and a failure of this script's own.
+the clone, a path inside its git directory whatever that directory is called among them, or ran out its time limit,
+git's error or the limit on one line. It prints `FAILED <reason>` for any other failure, which `update.sh` must not
+report as origin's: git missing, unable to start, or leaving programs it started that could not be ended, a clone that
+is no repository, a failure in the clone itself, such as a ref git could not lock or an object it could not write, and
+a failure of this script's own.
 `--seconds` is each command's time limit, retries of a transient fault included; it defaults to the client's.
 
 Exit status:
@@ -89,8 +90,9 @@ def main(argv: list[str]) -> int:
             print("FETCHED")
     except GitError as error:
         # Only git's answer about origin, or its silence past the limit, is origin's failure; a git that could not
-        # run, or that failed in the clone, says nothing of origin.
-        if error.origin_failed:
+        # run, or that failed in the clone, says nothing of origin. The clone's git directory is asked for, so a fault
+        # git names only by a path inside it is the clone's whatever that directory is called.
+        if error.origin_failed(git.common_git_directory(directory=options.clone)):
             print(f"ORIGIN_FAILED {flat_text(str(error))}")
         else:
             print(f"FAILED {flat_text(str(error))}")

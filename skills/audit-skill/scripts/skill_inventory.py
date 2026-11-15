@@ -2164,6 +2164,9 @@ def shell_lines(text: str, suffix: str) -> list[str]:
 
 
 def shell_facts(text: str, suffix: str) -> ScriptFacts:
+    """What a shell script prints and exits with, read from each of its lines outside comment lines. Beyond what it
+    reads: a Bash line whose `#` follows a character str.lstrip() removes but Bash does not take for a blank, such as a
+    form feed, is read as a comment, which no script here writes."""
     facts = ScriptFacts()
     for number, line in enumerate(shell_lines(text, suffix), start=1):
         if line.lstrip().startswith("#"):

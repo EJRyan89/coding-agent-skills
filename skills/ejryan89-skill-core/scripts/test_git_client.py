@@ -2184,18 +2184,99 @@ REMOTE_FAILURES = {
 
 @pytest.mark.parametrize("stderr", [pytest.param(stderr, id=name) for name, stderr in LOCAL_FAILURES.items()])
 def test_a_fetch_that_failed_in_the_local_repository_is_not_the_remote_s_failure(stderr: str) -> None:
-    assert git_client.local_failure(stderr)
-    assert not GitError(stderr.strip(), kind=classify_failure(stderr)).origin_failed
+    assert git_client.local_failure(stderr, None)
+    assert not GitError(stderr.strip(), kind=classify_failure(stderr)).origin_failed(None)
 
 
 @pytest.mark.parametrize("stderr", [pytest.param(stderr, id=name) for name, stderr in REMOTE_FAILURES.items()])
 def test_a_fetch_whose_failure_names_nothing_local_is_the_remote_s_failure(stderr: str) -> None:
-    assert not git_client.local_failure(stderr)
-    assert GitError(stderr.strip(), kind=classify_failure(stderr)).origin_failed
+    assert not git_client.local_failure(stderr, None)
+    assert GitError(stderr.strip(), kind=classify_failure(stderr)).origin_failed(None)
+
+
+# A git directory not called .git, as a clone's separate one or a bare repository is, holds a local fault that git
+# names only by its path, so the caller names the directory as git does: a line naming a path inside it is local, in
+# any case and with either slash, and one naming a path that only starts like it, or inside a URL, is not.
+SEPARATE_GIT_DIRECTORY_FAILURES = {
+    "a stale shallow lock": (
+        "fatal: Unable to create '/srv/clone-git/shallow.lock': File exists.\n\nAnother git process seems to be "
+        "running in this repository, or the lock file may be stale\n",
+        "/srv/clone-git",
+        True,
+    ),
+    "a bare repository named with a slash": (
+        "fatal: Unable to create '/srv/repo.git/shallow.lock': File exists.\n",
+        "/srv/repo.git/",
+        True,
+    ),
+    "a Windows path in another case and slash": (
+        "error: cannot open 'D:/Work/Clone Git/FETCH_HEAD': Permission denied\n",
+        "d:\\WORK\\clone git",
+        True,
+    ),
+    "a folder that only starts like it": (
+        "fatal: Unable to create '/srv/clone-git-old/shallow.lock': File exists.\n",
+        "/srv/clone-git",
+        False,
+    ),
+    "a URL holding its path": (
+        "fatal: repository 'https://example.invalid/srv/clone-git/' not found\n",
+        "/srv/clone-git",
+        False,
+    ),
+    "the remote's own line": (
+        "remote: fatal: Unable to create '/srv/clone-git/shallow.lock': File exists.\nfatal: the remote end hung up "
+        "unexpectedly\n",
+        "/srv/clone-git",
+        False,
+    ),
+    "a root, which names no git directory": ("fatal: Unable to create '/x/shallow.lock': File exists.\n", "/", False),
+}
+
+
+@pytest.mark.parametrize(
+    ("stderr", "git_directory", "local"),
+    [pytest.param(*case, id=name) for name, case in SEPARATE_GIT_DIRECTORY_FAILURES.items()],
+)
+def test_a_fault_named_inside_the_git_directory_the_caller_names_is_local(
+    stderr: str, git_directory: str, local: bool
+) -> None:
+    assert git_client.local_failure(stderr, git_directory) is local
+    assert GitError(stderr.strip(), kind=classify_failure(stderr)).origin_failed(git_directory) is not local
+
+
+def test_without_the_git_directory_a_fault_named_only_by_its_path_there_reads_as_the_remote_s() -> None:
+    # The limit a caller that names no git directory keeps: only a .git folder's paths and the markers tell local.
+    stderr = SEPARATE_GIT_DIRECTORY_FAILURES["a stale shallow lock"][0]
+    assert not git_client.local_failure(stderr, None)
+
+
+def test_the_common_git_directory_is_the_one_git_names_in_its_own_lines(tmp_path: Path) -> None:
+    origin, work, separate = tmp_path / "origin", tmp_path / "work", tmp_path / "clone git"
+    subprocess.run(["git", "init", "-q", str(origin)], capture_output=True, check=True)
+    identity = ["-c", "user.name=Test", "-c", "user.email=test@example.invalid"]
+    commit = ["commit", "-q", "--allow-empty", "-m", "first"]
+    subprocess.run(["git", "-C", str(origin), *identity, *commit], capture_output=True, check=True)
+    subprocess.run(
+        ["git", "clone", "-q", f"--separate-git-dir={separate}", str(origin), str(work)],
+        capture_output=True,
+        check=True,
+    )
+    named = GitClient().common_git_directory(directory=work)
+    assert named == separate.resolve()
+    (separate / "shallow.lock").touch()
+    with pytest.raises(GitError) as raised:
+        GitClient().output(["fetch", "--depth=1", "origin"], directory=work)
+    assert not raised.value.origin_failed(named), str(raised.value)
+    assert raised.value.origin_failed(None), str(raised.value)
+
+
+def test_a_folder_in_no_repository_has_no_common_git_directory(tmp_path: Path) -> None:
+    assert GitClient().common_git_directory(directory=tmp_path) is None
 
 
 def test_only_a_timeout_among_the_failures_git_never_answered_is_the_remote_s() -> None:
-    answered = {kind: GitError("git said nothing", kind=kind).origin_failed for kind in get_args(GitErrorKind)}
+    answered = {kind: GitError("git said nothing", kind=kind).origin_failed(None) for kind in get_args(GitErrorKind)}
     assert answered == {
         "git": True,
         "timeout": True,

@@ -84,7 +84,16 @@ def test_a_subcommand_no_literal_names_may_reach_a_remote(subcommand: str, reach
         ('GitClient(runner).output(["-c", "core.quotepath=off", "clone", url])', {"clone"}),
         ('self.client.run(("pull",))', set()),
         ("git_output(services, root, *arguments)", set()),
-        ('services.git.run(["--no-optional-locks", *arguments])', set()),
+        # A value that stands where git reads its subcommand may be any subcommand, so it is recorded as the word no
+        # literal names, which reaches_remote reads as one that may reach a remote.
+        ('services.git.run(["--no-optional-locks", *arguments])', {""}),
+        ('git.output(["-C", directory, verb])', {""}),
+        ('git.output([verb, "origin"])', {""}),
+        ('git.output((*options, "fetch"))', {""}),
+        ("git.output([verb])", {""}),
+        ("services.git.commit_of(ref, directory=root)", set()),
+        ('git(services, root, "-C", path, verb)', {""}),
+        ('git(services, root, *SHOW_UNTRACKED, "worktree", "remove", path)', {"worktree"}),
         ('READ.json_object(value, "pull")', set()),
         ('digits(value, "fetch")', set()),
         ('print("fetch")', set()),

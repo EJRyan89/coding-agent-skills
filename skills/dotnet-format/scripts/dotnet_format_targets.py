@@ -337,7 +337,9 @@ def fetch_failure(services: Services, root: Path) -> str | None:
     try:
         result = services.git.run(["fetch", "origin", "--quiet"], directory=root)
     except GitError as exc:
-        if exc.origin_failed:
+        # run raises no failure git answered, which a FETCH_FAILED line reports with git's stderr below, so no line of
+        # git's is read here and the git directory is not asked for.
+        if exc.origin_failed(None):
             return flat_text(str(exc))
         raise Failed(f"git could not fetch origin: {flat_text(str(exc))}") from exc
     if result.returncode == 0:
