@@ -794,14 +794,15 @@ def link_test_problems(root: Path, files: list[Path]) -> list[str]:
 # yields a message of more than one word, or records one, as a call's argument, by an augmented assignment, or by a
 # store into an attribute or into an item keyed by anything but a string literal, as `problems.extend([...])`,
 # `problems += [...]`, or `problems[p] = "..."` do, the message given as the value itself, an arm of a conditional
-# expression, a value of an `and` or an `or`, a method called on it, or an element, a starred element, a dictionary's
-# value, or a comprehension's element at any depth; taken by an if, its else, a conditional expression, a
-# comprehension's filter, or a match's case of True, of False or None, or of anything after a case of the other truth,
-# a guard read as an `and`; an assert given a message; a while whose body, or whose else, refuses; an if with no else
-# whose branch leaves, and a match whose every case leaves, whose False goes on, through the rest of its block and any
-# loop or block around it, to such a raise or returned message, returning no other value but under an if or in a loop
-# of its own. A refusal whose test also needs file_presence.is_occupied or is_there to find something at the same path
-# names another kind there, never nothing, so it passes.
+# expression, a value of an `and` or an `or`, a method called on it, a string literal's `join` of messages, or an
+# element, a starred element, a dictionary's key or value, a comprehension's element, key, or value, or what a subscript
+# takes from one, at any depth; taken by an if, its else, a conditional expression, a comprehension's filter, or a
+# match's case of True, of False or None, or of anything after a case of the other truth, a pattern captured by `as`
+# included, a guard read as an `and` and so as a test of its own; an assert given a message; a while whose body, or
+# whose else, refuses; an if with no else whose branch leaves, and a match whose every case leaves, whose False goes on,
+# through the rest of its block and any loop or block around it, to such a raise or returned message, returning no other
+# value but under an if or in a loop of its own. A refusal whose test also needs file_presence.is_occupied or is_there
+# to find something at the same path names another kind there, never nothing, so it passes.
 #
 # It also refuses a glob, an os.walk or a path's walk that ignores the folders it cannot list, a removal that discards
 # its errors, a walk or removal whose error callback is a lambda that calls nothing, a log named uncalled, as `print` or
@@ -1164,13 +1165,17 @@ class _PresenceReader:
         if isinstance(node, ast.Match):
             truths = [truth for case, truth in _case_truths(node) if _refuses(case.body)]
             truths += self.falling.get(id(node), ())
-            return next((found for truth in truths if (found := self.reading(node.subject, truth))), None)
+            if found := next((found for truth in truths if (found := self.reading(node.subject, truth))), None):
+                return found
+            # A guard is the `and` of its case, so a refusing case's guard is read as an if's test is.
+            guards = [case.guard for case in node.cases if case.guard is not None and _refuses(case.body)]
+            return next((found for guard in guards if (found := self.reading(guard, True))), None)
         if isinstance(node, ast.IfExp):
-            if _message(node.body) and (found := self.reading(node.test, True)):
+            if _gives_message(node.body) and (found := self.reading(node.test, True)):
                 return found
-            if _message(node.orelse) and (found := self.reading(node.test, False)):
+            if _gives_message(node.orelse) and (found := self.reading(node.test, False)):
                 return found
-        if isinstance(node, COMPREHENSIONS) and _message(node.key if isinstance(node, ast.DictComp) else node.elt):
+        if isinstance(node, COMPREHENSIONS) and _gives_message(node):
             tests = [test for generator in node.generators for test in generator.ifs]
             return next((found for test in tests if (found := self.reading(test, True))), None)
         return None
@@ -1178,12 +1183,14 @@ class _PresenceReader:
 
 def _pattern_truth(pattern: ast.pattern) -> bool | None:
     """The truth of the subject a case's pattern matches only: True for `True`, False for `False`, `None`, or an `|`
-    of them, or None for a pattern that matches either or neither."""
+    of them, either captured by `as`, or None for a pattern that matches either or neither."""
     if isinstance(pattern, ast.MatchOr):
         truths = {_pattern_truth(option) for option in pattern.patterns}
         return truths.pop() if len(truths) == 1 else None
     if isinstance(pattern, ast.MatchSingleton):
         return pattern.value is True
+    if isinstance(pattern, ast.MatchAs) and pattern.pattern is not None:
+        return _pattern_truth(pattern.pattern)
     return None
 
 
@@ -1270,10 +1277,11 @@ def _message(node: ast.expr | None) -> bool:
 
 def _gives_message(node: ast.expr | None) -> bool:
     """Whether an expression gives a message as its value or as an item of it: a message, either arm of a conditional
-    expression, any value of an `and` or an `or`, a method called on a message, as `f"{p} is missing".strip()`, an
-    element of a list, set, or tuple, a starred one, a dictionary's value, or a comprehension's element, at any depth,
-    as `[[p, "the file is missing"]]` or `f"{x} is missing" for x in ps` gives one. A string in another call's
-    arguments, as `Path("Program Files")` holds, is that call's value, not a message."""
+    expression, any value of an `and` or an `or`, a method called on a message, as `f"{p} is missing".strip()`, a
+    string literal's `join` of messages, as `", ".join(f"{x} is missing" for x in ps)`, an element of a list, set, or
+    tuple, a starred one, a dictionary's key or value, a comprehension's element, key, or value, or what a subscript
+    takes from one, at any depth, as `[[p, "the file is missing"]]` gives one. A string in another call's arguments,
+    as `Path("Program Files")` holds, is that call's value, not a message."""
     if node is None:
         return False
     if _message(node):
@@ -1287,13 +1295,21 @@ def _gives_message(node: ast.expr | None) -> bool:
     if isinstance(node, (ast.List, ast.Set, ast.Tuple)):
         return any(_gives_message(element) for element in node.elts)
     if isinstance(node, ast.Dict):
-        return any(_gives_message(value) for value in node.values)
+        return any(_gives_message(item) for item in [*node.keys, *node.values] if item is not None)
     if isinstance(node, ast.DictComp):
-        return _gives_message(node.value)
+        return _gives_message(node.key) or _gives_message(node.value)
     if isinstance(node, (ast.GeneratorExp, ast.ListComp, ast.SetComp)):
         return _gives_message(node.elt)
+    if isinstance(node, ast.Subscript):
+        return _gives_message(node.value)
     if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
-        return _gives_message(node.func.value)
+        joined = (
+            node.func.attr == "join"
+            and isinstance(node.func.value, ast.Constant)
+            and isinstance(node.func.value.value, str)
+            and any(_gives_message(argument) for argument in node.args)
+        )
+        return joined or _gives_message(node.func.value)
     return False
 
 
@@ -1526,7 +1542,7 @@ def _refusing_rest(after: list[ast.stmt]) -> bool:
     if not after:
         return False
     last = after[-1]
-    if not (_raises_anew([last]) or (isinstance(last, ast.Return) and _message(last.value))):
+    if not (_raises_anew([last]) or (isinstance(last, ast.Return) and _gives_message(last.value))):
         return False
     return all(
         not _returns_a_value([item])
