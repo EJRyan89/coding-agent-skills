@@ -236,12 +236,33 @@ class ReaderTests(unittest.TestCase):
             nearest_file(self.root / "src" / "App", "Directory.Packages.props")
         self.assertEqual((nearer, "Access is denied"), (raised.exception.file, raised.exception.reason))
 
+    @unittest.skipIf(sys.platform == "win32", "a symbolic link needs a privilege on Windows, which makes no FIFO")
+    def test_the_nearest_file_stops_where_msbuilds_file_exists_finds_anything_but_a_folder(self) -> None:
+        # MSBuild's GetDirectoryNameOfFileAbove stops at the first folder where its file system's FileExists is true,
+        # .NET's File.Exists, which reads the path with lstat and is true for anything but a folder or a link to one: a
+        # link to nothing and a FIFO among them. So the search stops there, as MSBuild's does, and a link to a folder
+        # is passed over as a folder is.
+        props = self.write("Directory.Packages.props", "<Project />")
+        app = self.root / "src" / "App"
+        (self.root / "folder").mkdir()
+        app.mkdir(parents=True)
+        candidate = app / "Directory.Packages.props"
+        candidate.symlink_to(self.root / "folder", target_is_directory=True)
+        self.assertEqual(props, nearest_file(app, "Directory.Packages.props"))
+        candidate.unlink()
+        candidate.symlink_to(self.root / "nowhere")
+        self.assertEqual(candidate, nearest_file(app, "Directory.Packages.props"))
+        candidate.unlink()
+        if hasattr(os, "mkfifo"):
+            os.mkfifo(candidate)
+            self.assertEqual(candidate, nearest_file(app, "Directory.Packages.props"))
+
     def test_a_stat_error_naming_no_file_is_refused_against_the_candidate_the_search_checked(self) -> None:
         self.write("Directory.Packages.props", "<Project />")
         (self.root / "src" / "App").mkdir(parents=True)
         nearer = self.root / "src" / "Directory.Packages.props"
         with (
-            failing_without_a_file(msbuild_reader, "is_present", nearer),
+            failing_without_a_file(msbuild_reader, "is_occupied", nearer),
             self.assertRaises(msbuild_reader.Unreadable) as raised,
         ):
             nearest_file(self.root / "src" / "App", "Directory.Packages.props")

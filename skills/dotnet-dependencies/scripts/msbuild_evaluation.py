@@ -123,6 +123,9 @@ TARGETS_FILES = frozenset(
 VERSION_NAME = re.compile(r"v\d+(?:\.\d+)*", re.IGNORECASE | re.ASCII)
 # What the reader does instead of applying an item it cannot settle, by the item's operation.
 NOT_APPLIED = {"Include": "it is left out", "Update": "the Update is not applied", "Remove": "it is not removed"}
+# Why an Import of a link to nothing is not read: MSBuild's File.Exists finds the link, so it imports it, and the load
+# fails.
+LINK_TO_NOTHING = "a link to nothing, which MSBuild finds and cannot load"
 
 # Whether an item, or a metadata value, applies: True, False, or the condition that cannot be settled.
 Decision = bool | str
@@ -493,10 +496,16 @@ class Evaluation:
             return
         try:
             present = is_present(path)
+            # .NET's File.Exists finds a link to nothing, so MSBuild imports it and its load fails.
+            dangling = not present and is_occupied(path)
         except OSError as error:
             # A file it cannot stat, or something other than a file, such as a folder, is reported with the stat's
             # reason or as not a file, as import_nearest reports one, never as not found.
             self.reports.append(os_unreadable(error, path))
+            self.state.unsettle()
+            return
+        if dangling:
+            self.reports.append(Unreadable(path, LINK_TO_NOTHING))
             self.state.unsettle()
             return
         if not present:
