@@ -210,7 +210,11 @@ removed fails validation until its pattern follows it.
   `skills/ejryan89-skill-core/scripts/test_skill_roots.py::SkillsDirectoryHoldingTests::test_a_symbolic_link_loop_is_compared_as_written_on_every_python_version`,
   `skills/dotnet-dependencies/scripts/test_dependency_graph.py::PresenceReadTests::test_an_output_that_is_a_symbolic_link_loop_is_refused_naming_it_on_every_python_version`,
   `skills/ejryan89-code-review-core/scripts/test_review_runtime.py::CommittedReadTests::test_a_failed_cat_file_is_named_with_the_reason_git_gave_and_a_wrong_answer_apart_from_it`,
-  `skills/ejryan89-code-review-core/scripts/test_review_runtime.py::BatchFailureTests::test_a_batch_that_answers_and_then_fails_is_named_by_its_stderr_on_one_line_or_its_exit_code`
+  `skills/ejryan89-code-review-core/scripts/test_review_runtime.py::BatchFailureTests::test_a_batch_that_answers_and_then_fails_is_named_by_its_stderr_on_one_line_or_its_exit_code`,
+  `skills/dotnet-format/scripts/test_csharp_layout.py::ConfigTests::test_a_failed_evaluation_is_named_by_msbuild_s_error_lines_on_one_bounded_line_or_its_exit_code`,
+  `tests/tools/test_mutation_gate.py::CoverageReachFixtures::test_a_suite_failed_unmutated_is_named_by_the_end_of_pytest_s_output_or_its_exit_code`,
+  `skills/audit-skill/scripts/test_skill_inventory.py::SubagentSettingTests::test_a_doc_that_is_not_utf8_text_fails_tools_whether_the_skill_or_a_dependency_holds_it`,
+  `tests/tools/test_worktrees.py::NewWorktreeTests::test_a_check_ignore_that_fails_is_named_by_git_s_reason_never_as_an_unignored_folder`
 - **Search for:** `rg -nU "except (OSError|ValueError|UnicodeDecodeError)[^\n]*:\n\s+(print\([^\n]*\)\n\s+)?return 1\b"`,
   a handler that ends every failure in one code; two probes under one `except` that print one message; an `except`
   around a `git` or `gh` call that drops the exception's text; `FAILED KeyError`, `FAILED TypeError`, or
@@ -232,7 +236,7 @@ removed fails validation until its pattern follows it.
   `OSError` alone, whose RuntimeError on Python 3.12 for a symbolic link loop ends the run in `FAILED RuntimeError`,
   outside the modules the resolve policy reads, such as a test suite's helper.
 - **Examples:** #1511, #1840, #1855, #1910, #2022, #2181, #2207, #2209, #2477, #2548, #2596, #2697, #2738, #2763,
-  #2794, #2805, #2754
+  #2766, #2794, #2805, #2824, #2754
 
 ### A refusal ends with the step to take
 
@@ -845,7 +849,9 @@ removed fails validation until its pattern follows it.
   `guidance_record:canonical_url`; `deployer.source:any_case` and
   `deployer.source:refuse_other_spellings`, which find a name the deployer reads spelled in any case on every
   platform and refuse one spelled otherwise; `review_config:validate_repository_identity`, the one form a
-  repository identity is compared in, which `review_state:validate_state` keys the state by.
+  repository identity is compared in, which `review_state:validate_state` keys the state by;
+  `github_remote:github_repository`, the one reader of a GitHub repository from a remote's URL, which reads the host
+  where git does, so a fragment or query mark ends the authority and what follows it is never the user and the host.
 - **Guard:** `tests/validation/duplication.py::DuplicationPolicies::test_repository_copies_only_what_it_sanctions`,
   which fails a version's numbers read by hand outside the version reader, and a path case-folded by hand outside
   the path key, and os.path.normcase of a path or a name anywhere outside the path key's module, and a name compared
@@ -867,7 +873,8 @@ removed fails validation until its pattern follows it.
   `skills/audit-ai-config/scripts/test_audit_ai_config.py::UnexaminedPathTests::test_a_nested_file_in_another_case_is_audited_only_where_its_folder_folds_case`,
   `tests/validation/skill_layout.py::SkillLayoutPolicies::test_every_skill_file_is_spelled_skill_md`,
   `skills/ejryan89-code-review-core/scripts/test_review_pipeline.py::BatchTests::test_a_state_key_in_another_case_is_that_repository_s_watermark`,
-  `skills/ejryan89-code-review-core/scripts/test_review_pipeline.py::BatchTests::test_a_state_holding_one_repository_under_two_spellings_is_refused`
+  `skills/ejryan89-code-review-core/scripts/test_review_pipeline.py::BatchTests::test_a_state_holding_one_repository_under_two_spellings_is_refused`,
+  `skills/ejryan89-skill-core/scripts/test_github_remote.py::test_a_userinfo_holding_a_fragment_or_query_mark_is_on_the_host_before_it_never_github_com`
 - **Search for:** `version in`, `.startswith(version`, `sorted(tags`, or `tags[-1]`; `int(part) for part in` or
   `map(int,` over a `.split(".")`; in a workflow, `grep` or `contains(` on a version; `==` between two paths with no
   normalization, or `os.path.normcase` outside `path_keys.py`, of a whole path or of one name such as `.git`; a
@@ -881,8 +888,10 @@ removed fails validation until its pattern follows it.
   `validate_repository_identity(` but are kept as written, while lookups use the lowercase form it returns; two
   names whose `(st_dev, st_ino)`, `os.path.samestat`, or `samefile` agree taken for one name, which two hard links
   also give; `name_key` compared with a fixed name a program opens, such as `SKILL.md` or `AGENTS.md`, which merges
-  names a file system keeps apart and keeps apart ones it folds, rather than `path_keys.opens_as`.
-- **Examples:** #1556, #1855, #1867, #1909, #2299, #2590, #2614, #2615, #2620, #2662, #2712, #2747, #2753
+  names a file system keeps apart and keeps apart ones it folds, rather than `path_keys.opens_as`; a URL's user or
+  host matched by a character class such as `[^@/]` that lets a `?` or `#` through, which ends the authority where git
+  and `urllib.parse.urlsplit` read it.
+- **Examples:** #1556, #1855, #1867, #1909, #2299, #2590, #2614, #2615, #2620, #2662, #2712, #2729, #2747, #2753
 
 ### A child process starts from an environment built for it
 

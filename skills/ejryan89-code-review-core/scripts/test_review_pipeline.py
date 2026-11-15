@@ -5325,7 +5325,11 @@ class DocumentBaseRefusalTests(PipelineFixture):
             return original(arguments, timeout)
 
         with mock.patch.object(self.services, "git", unreadable_base):
-            self.assert_base_refused("it could not be read")
+            # The reason git gave is kept, on the note's one line.
+            self.assert_base_refused(
+                f"it could not be read: The checkout did not return blob {blob}: fatal: fixture base blob could not be"
+                " read"
+            )
         self.assertEqual([blob], reads)
 
     def test_prepare_notes_an_oversized_base_and_shows_every_head_line_as_added(self) -> None:

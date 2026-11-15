@@ -2635,6 +2635,23 @@ class SubagentSettingTests(SourceTreeTestCase):
                 # RecursionError, so the file reads as one that sets nothing.
                 self.assertEqual([], skill_inventory.json_settings(path, '{"model": "sonnet", "x": ' + text + "}"))
 
+    def test_a_doc_that_is_not_utf8_text_fails_tools_whether_the_skill_or_a_dependency_holds_it(self) -> None:
+        # The module docstring: tools, which reads the text itself, fails on a Markdown file the skill loads that is not
+        # UTF-8 text, never measuring the rest as though it were absent.
+        skill = self.skill("Body.\n", {"skill_deps": ["core"]})
+        self.skill("Core.\n", name="core")
+        # A helper or data file is measured rather than loaded, so one that is not UTF-8 text fails nothing.
+        write(self.root / "skills" / "core" / "scripts" / "tool.ps1", "Write-Output 1\n".encode("utf-16"))
+        write(self.root / "skills" / "core" / "logo.png", b"\x89PNG\0\x01")
+        self.assertEqual(0, run("tools", str(skill))[0])
+        for owner in ("core", "alpha"):
+            legacy = write(self.root / "skills" / owner / "references" / "legacy.md", "caf\xe9\n".encode("cp1252"))
+            with self.subTest(owner=owner):
+                code, lines, error = run("tools", str(skill))
+                self.assertEqual((1, ""), (code, error))
+                self.assertEqual(f"FAILED cannot read {legacy.as_posix()}: not UTF-8 text", lines[-1])
+            legacy.unlink()
+
     def test_a_relayed_line_is_where_a_role_takes_its_model_and_effort(self) -> None:
         skill = self.skill(
             "When a `MODEL` line names that role, start its subagent on that model.\n"  # 4

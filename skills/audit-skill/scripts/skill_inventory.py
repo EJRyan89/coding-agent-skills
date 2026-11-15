@@ -2468,8 +2468,9 @@ def delegates(line: str) -> bool:
 
 
 def skill_markdown(folder: Path) -> list[tuple[Path, list[str]]]:
-    """A skill folder's SKILL.md and every doc file inventory lists, each with its lines."""
-    return [(path, text_lines(text)) for path in scanned_files(folder) if (text := read_text(path)) is not None]
+    """A skill folder's SKILL.md and every doc file inventory lists, each with its lines; one that is not UTF-8 text
+    fails, as the module docstring says tools and scan fail on one."""
+    return [(path, text_lines(require_text(path))) for path in scanned_files(folder)]
 
 
 def prose_lines(lines: list[str]) -> list[int]:
@@ -2769,14 +2770,17 @@ def dependency_folders(folder: Path, markdown: list[tuple[Path, list[str]]]) -> 
 
 def data_settings(folders: list[Path]) -> list[tuple[str, Path, int, str]]:
     """The models and efforts the skill's and its dependencies' files set for a subagent: a reference's frontmatter, as
-    a reviewer profile's, a JSON data file, or a script's literal."""
+    a reviewer profile's, a JSON data file, or a script's literal. A doc file that is not UTF-8 text fails, as the
+    skill loads it; a helper or data file that is not sets nothing, since it is measured rather than loaded."""
     found: list[tuple[str, Path, int, str]] = []
     for folder in folders:
         for path in folder_files(folder):
             relative = path.relative_to(folder)
-            text = read_text(path)
             kind = category(relative, folder)
-            if text is None or kind == "main" or is_suite_name(path.name):
+            if kind == "main" or is_suite_name(path.name):
+                continue
+            text = require_text(path) if kind == "doc" else read_text(path)
+            if text is None:
                 continue
             if kind == "doc":
                 found += markdown_settings(path, text)
