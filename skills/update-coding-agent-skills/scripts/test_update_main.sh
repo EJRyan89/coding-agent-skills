@@ -204,8 +204,16 @@ case "${OSTYPE:-}" in
   msys* | cygwin*) TEST_PYTHON=python ;;
   *) TEST_PYTHON=python3 ;;
 esac
+# The origin binds without HTTPServer's reverse lookup of its address, which can stall on a CI runner, and prints
+# where it is stuck if it has not written its port file within 8 seconds, so the case's failure names the line.
 cat >"$FIXTURE/asking_origin.py" <<'EOF'
-import http.server, os, sys, time
+import faulthandler, sys
+faulthandler.dump_traceback_later(8, file=sys.stderr)
+import http.server, os, socketserver, time
+class Origin(http.server.HTTPServer):
+    def server_bind(self):
+        socketserver.TCPServer.server_bind(self)
+        self.server_name, self.server_port = self.server_address[:2]
 class Unauthorized(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(401)
@@ -214,11 +222,12 @@ class Unauthorized(http.server.BaseHTTPRequestHandler):
         self.end_headers()
     def log_message(self, *args):
         pass
-server = http.server.HTTPServer(("127.0.0.1", 0), Unauthorized)
+server = Origin(("127.0.0.1", 0), Unauthorized)
 server.timeout = 0.2
 with open(sys.argv[1] + ".tmp", "w") as port:
     port.write(str(server.server_address[1]))
 os.replace(sys.argv[1] + ".tmp", sys.argv[1])
+faulthandler.cancel_dump_traceback_later()
 ends = time.monotonic() + 300
 while not os.path.exists(sys.argv[2]) and time.monotonic() < ends:
     server.handle_request()
