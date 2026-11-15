@@ -636,7 +636,10 @@ a row decides it.
   understood when it is a program, judged by the runner rule above, `bash` and `pwsh` refused whatever they
   run since the guard reads their scripts only from Bash, and `sort`, which off Windows pwsh gives no alias, read
   there as the program by its allow-list, but for a name PowerShell keeps for its own commands, an
-  alias, a function of its own, or a verb-noun name (held to `Get-Alias`, `Get-Command`, and `Get-Verb`), which is understood only for one of these cmdlets, by
+  alias or a function of its own (held to `Get-Alias` and `Get-Command`), or any name holding a hyphen and no directory,
+  whatever its verb, since a module PowerShell loads on demand may define a function by it, as Windows' own modules
+  define `Delete-DeliveryOptimizationCache` (a program by such a name is written with `.exe` or as a path), which
+  is understood only for one of these cmdlets, by
   its name or an alias PowerShell gives it: `Set-Location`, `Push-Location`, `Pop-Location`,
   `Get-ChildItem`, `Get-Content`, `Select-String`, `Select-Object`, `Sort-Object`, `Measure-Object`, `Write-Output`,
   `ForEach-Object`, `Where-Object`, `Group-Object`,

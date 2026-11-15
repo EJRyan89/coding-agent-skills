@@ -1128,21 +1128,6 @@ POWERSHELL_FUNCTIONS = frozenset(
         *(f"{letter}:" for letter in "ABCDEFGHIJKLMNOPQRSTUVWXYZ"),
     )
 )
-POWERSHELL_VERBS = frozenset(
-    name.lower()
-    for name in (
-        *("Add", "Approve", "Assert", "Backup", "Block", "Build", "Checkpoint", "Clear", "Close", "Compare"),
-        *("Complete", "Compress", "Confirm", "Connect", "Convert", "ConvertFrom", "ConvertTo", "Copy", "Debug", "Deny"),
-        *("Deploy", "Disable", "Disconnect", "Dismount", "Edit", "Enable", "Enter", "Exit", "Expand", "Export"),
-        *("Find", "Format", "Get", "Grant", "Group", "Hide", "Import", "Initialize", "Install", "Invoke", "Join"),
-        *("Limit", "Lock", "Measure", "Merge", "Mount", "Move", "New", "Open", "Optimize", "Out", "Ping", "Pop"),
-        *("Protect", "Publish", "Push", "Read", "Receive", "Redo", "Register", "Remove", "Rename", "Repair"),
-        *("Request", "Reset", "Resize", "Resolve", "Restart", "Restore", "Resume", "Revoke", "Save", "Search"),
-        *("Select", "Send", "Set", "Show", "Skip", "Split", "Start", "Step", "Stop", "Submit", "Suspend", "Switch"),
-        *("Sync", "Test", "Trace", "Unblock", "Undo", "Uninstall", "Unlock", "Unprotect", "Unpublish", "Unregister"),
-        *("Update", "Use", "Wait", "Watch", "Write"),
-    )
-)
 # Of them, those that write or remove what their path names, which on the environment provider sets or removes a
 # variable git reads.
 POWERSHELL_WRITING_COMMANDS = frozenset(
@@ -1235,9 +1220,6 @@ POWERSHELL_SWITCHES = frozenset(
 # The item types New-Item makes that are no link, each of which its file-system provider takes by any prefix of its
 # name; any other, as SymbolicLink, Junction, or HardLink, makes a link (LINK_PROGRAMS).
 POWERSHELL_ITEM_TYPES = ("file", "directory")
-# The commands PowerShell ships whose names begin with no verb Get-Verb lists, each found as a command before any
-# program, held to Get-Command beside the verbs: every one the guard does not read is refused.
-POWERSHELL_UNAPPROVED_COMMANDS = frozenset({"foreach-object", "sort-object", "tee-object", "where-object"})
 # The characters a PowerShell path given to -Path, or by position, matches as a wildcard pattern, which pwsh off Windows
 # also expands in a native program's word.
 POWERSHELL_WILDCARDS = re.compile(r"[*?\[]")
@@ -4812,16 +4794,15 @@ def native_written(word: Word) -> tuple[Word, bool]:
 
 
 def powershell_command(name: str) -> bool:
-    """Whether PowerShell finds a name among its own commands before it looks for a program: an alias, a function it
-    defines itself, or a cmdlet's or function's verb-noun name."""
+    """Whether PowerShell may find a name among its own commands before it looks for a program: an alias, a function it
+    defines itself, or any name holding a hyphen and no directory, as a cmdlet's or a function's verb-noun name does.
+    A module PowerShell loads on demand may define a function by such a name whatever its verb, as Windows' own
+    BitLocker, DeliveryOptimization, and EventTracing modules define Backup-, Delete-, and Flush- ones, and which
+    modules a machine holds the text does not show. A program's name written with .exe, as dotnet-format.exe, or as a
+    path names the program alone."""
     lowered = name.lower()
-    verb, dash, _ = lowered.partition("-")
-    return (
-        lowered in POWERSHELL_ALIASES
-        or lowered in POWERSHELL_FUNCTIONS
-        or lowered in POWERSHELL_UNAPPROVED_COMMANDS
-        or bool(dash and verb in POWERSHELL_VERBS)
-    )
+    bare = "-" in lowered and "/" not in lowered and "\\" not in lowered and not lowered.endswith(".exe")
+    return lowered in POWERSHELL_ALIASES or lowered in POWERSHELL_FUNCTIONS or bare
 
 
 def read_gh(arguments: list[Word], directory: Directory, reading: Reading) -> None:

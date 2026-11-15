@@ -3243,6 +3243,22 @@ class WriteGuardTests(GuardTestCase):
 
 
 class PowerShellGuardTests(GuardTestCase):
+    def test_a_hyphenated_name_is_a_powershell_command_whatever_its_verb(self) -> None:
+        # A module PowerShell loads on demand may define a function by any hyphenated name, as Windows' own
+        # DeliveryOptimization module defines Delete-DeliveryOptimizationCache, and PowerShell runs it before a program.
+        for command, name in (
+            ("Delete-DeliveryOptimizationCache -Force", "Delete-DeliveryOptimizationCache"),
+            ("BackupToAAD-BitLockerKeyProtector -MountPoint C:", "BackupToAAD-BitLockerKeyProtector"),
+            ("Flush-EtwTraceSession -Name x", "Flush-EtwTraceSession"),
+            ("pre-commit run", "pre-commit"),
+        ):
+            with self.subTest(command=command):
+                self.assertEqual("deny", self.powershell(command, self.tree))
+                self.assertIn(f"runs {name}, a PowerShell command the guard does not read", self.reason)
+        # The program's name with .exe, or a path, names the program alone; Bash has no such commands.
+        self.assertIsNone(self.powershell("dotnet-format.exe --version", self.tree))
+        self.assertIsNone(self.bash("pre-commit run", self.tree))
+
     """End to end through the hook, which starts a real pwsh; the reading is covered by PowerShellUnderstoodSetTests."""
 
     end_to_end = True
@@ -3728,7 +3744,9 @@ class PowerShellUnderstoodSetTests(GuardTestCase):
             ("Get-ChildItem | Where-Object { $_.Length -gt 1 } | Sort-Object { $_.Name }", self.tree, None),
             ("Invoke-Command { git status }", self.tree, "deny"),
             ("iex 'git status'", self.tree, "deny"),
-            ("dotnet-format --verify-no-changes", self.tree, None),
+            # A hyphenated name may be a module's function; the program's name with .exe names it alone.
+            ("dotnet-format --verify-no-changes", self.tree, "deny"),
+            ("dotnet-format.exe --verify-no-changes", self.tree, None),
             ("timeout 5 git status", self.tree, "deny"),
             ("$env:X = 1; git status", self.tree, "deny"),
             ("$PSDefaultParameterValues = @{}", self.tree, "deny"),

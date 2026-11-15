@@ -271,24 +271,26 @@ class CommandNameTests(unittest.TestCase):
             "ConvertTo-Json -Compress -InputObject @("
             "@(Get-Alias | ForEach-Object Name), "
             "@(Get-Command -CommandType Function | Where-Object { -not $_.ModuleName } | ForEach-Object Name), "
-            "@(Get-Verb | ForEach-Object Verb), "
             "@(Get-Command -CommandType Cmdlet,Function | Where-Object { $_.Name -like '*-*' } | ForEach-Object Name))"
         )
-        aliases, functions, verbs, commands = json.loads(pwsh(script))
+        aliases, functions, commands = json.loads(pwsh(script))
         self.assertEqual(set(), {name.lower() for name in aliases} - hub_guard.POWERSHELL_ALIASES)
         self.assertEqual(
             set(),
             {name.lower() for name in functions if "-" not in name} - hub_guard.POWERSHELL_FUNCTIONS,
         )
-        self.assertEqual(set(), {name.lower() for name in verbs} - hub_guard.POWERSHELL_VERBS)
-        # A command whose verb Get-Verb does not list, as Tee-Object, is still found before any program.
-        unapproved = {name.lower() for name in commands if name.split("-")[0].lower() not in hub_guard.POWERSHELL_VERBS}
-        self.assertEqual(set(), unapproved - hub_guard.POWERSHELL_UNAPPROVED_COMMANDS)
-        self.assertIn("tee-object", hub_guard.POWERSHELL_UNAPPROVED_COMMANDS)
-        for name in ("iex", "Invoke-Expression", "Start-Process", "help", "C:", "exec"):
+        # Every cmdlet and function a hyphenated name gives, whatever its verb and whichever modules this machine
+        # holds, as Tee-Object or a Windows module's Backup-BitLockerKeyProtector, is a command the guard reads only
+        # where POWERSHELL_COMMANDS names it.
+        self.assertTrue(commands)
+        self.assertEqual(set(), {name for name in commands if not hub_guard.powershell_command(name)})
+        for name in (
+            *("iex", "Invoke-Expression", "Start-Process", "help", "C:", "exec", "Tee-Object"),
+            *("BackupToAAD-BitLockerKeyProtector", "Delete-DeliveryOptimizationCache", "dotnet-format", "pre-commit"),
+        ):
             with self.subTest(name=name):
                 self.assertTrue(hub_guard.powershell_command(name))
-        for name in ("git", "python", "dotnet-format", "shellcheck"):
+        for name in ("git", "python", "shellcheck", "dotnet-format.exe", "/usr/local/bin/pre-commit", "C:\\x\\a-b"):
             with self.subTest(name=name):
                 self.assertFalse(hub_guard.powershell_command(name))
 
