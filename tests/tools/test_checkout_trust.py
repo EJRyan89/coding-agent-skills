@@ -23,7 +23,7 @@ REPOSITORY = Path(__file__).resolve().parents[2]
 
 # What reaches a canary home: the deployer's option, and the runtime canary's functions that make a home or deploy.
 CANARY_OPTION = "--canary-home"
-CANARY_FUNCTIONS = frozenset({"create_home", "deploy"})
+CANARY_FUNCTIONS = frozenset({"create_home", "start_home", "deploy"})
 CANARY_MODULE = "tools.runtime_canary"
 
 

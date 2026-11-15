@@ -526,6 +526,13 @@ REPOSITORY_SELECTING = (
 
 
 class EnvironmentTests(unittest.TestCase):
+    def test_claude_code_reads_no_claude_md_above_the_home_nor_the_users(self) -> None:
+        # Claude Code read every CLAUDE.md from the home up to the file system's root, git root or not, so another
+        # account's CLAUDE.md in the shared temporary directory loaded as project instructions.
+        home = Path(tempfile.gettempdir()) / "home"
+        environment = runtime_canary.environment({"CLAUDE_CODE_DISABLE_CLAUDE_MDS": "0"}, home / "log", home)
+        self.assertEqual("1", environment["CLAUDE_CODE_DISABLE_CLAUDE_MDS"])
+
     def test_a_runtime_sees_no_repository_selecting_variable_the_shell_exported(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             home = Path(temporary)
@@ -644,6 +651,31 @@ class RemoveHomeTests(unittest.TestCase):
         self.assertEqual(Path(tempfile.gettempdir()).resolve(), home.parent)
         self.assertTrue(home.name.startswith("runtime-canary-"))
         self.assertEqual([], list(home.iterdir()))
+
+    @unittest.skipIf(sys.platform == "win32", "Windows mode bits say nothing about who may write a folder")
+    def test_a_home_in_a_temporary_directory_another_account_could_rename_is_refused_before_it_is_made(self) -> None:
+        # The home holds the deployment each runtime then runs, so another account that could rename a folder above it
+        # could swap in skills of its own for the canary to judge.
+        with tempfile.TemporaryDirectory() as directory:
+            shared = Path(directory).resolve() / "shared"
+            own = shared / "u" / "tmp"
+            own.mkdir(parents=True)
+            shared.chmod(0o777)
+            try:
+                output = io.StringIO()
+                with mock.patch.object(tempfile, "tempdir", str(own)), contextlib.redirect_stdout(output):
+                    home = runtime_canary.start_home()
+            finally:
+                shared.chmod(0o755)
+            self.assertIsNone(home)
+            self.assertEqual(
+                f'FAILED "cannot make a canary home: a folder made in the temporary directory {own} could be replaced '
+                f"by another account: its ancestor {shared} can be written by users other than its owner and is not "
+                "sticky (mode 777); set TMPDIR to a folder of this user's own below folders no other account can "
+                'write"\n',
+                output.getvalue(),
+            )
+            self.assertEqual([], list(own.iterdir()), "no home was made there")
 
     def test_any_other_directory_is_refused_and_kept(self) -> None:
         with tempfile.TemporaryDirectory(prefix="runtime-canary-") as directory:
@@ -2499,7 +2531,7 @@ class KeptTests(unittest.TestCase):
             ("codex", "personal skills in ~/.agents/skills and ~/.codex/skills"),
             ("copilot", "user hooks in ~/.copilot/hooks and the hooks key of ~/.copilot/settings.json"),
             ("copilot", "personal skills in ~/.agents/skills and ~/.copilot/skills"),
-            ("claude", "user CLAUDE.md"),
+            ("claude", "sign-in only"),
         ):
             with self.subTest(runtime=runtime, loaded=loaded):
                 self.assertIn(loaded, runtime_canary.KEPT[runtime].split("; "))

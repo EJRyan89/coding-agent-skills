@@ -36,6 +36,7 @@ from device_names import is_reserved_device_name
 from diff_paths import DRIVE
 from duplication import SKILL_CORE_SCRIPTS
 from exit_calls import EXIT_CALLS, code_keyword
+from fsops_platform import CHECKED_TEMPORARY_DIRECTORY, TEMPORARY_DIRECTORY_CALL, write_destinations, write_nodes
 from gh_shorthands import GH_VALUE_SHORTHANDS, shorthands
 from git_subcommands import powershell_program
 from markdown_sections import SHELL_FENCES
@@ -85,6 +86,7 @@ from validation_support import (
 )
 
 from deployer import platform_support, render
+from tools.hub_guard import TEMPORARY_VARIABLES
 
 PLATFORM_ALLOWED = {
     "pathlib.PureWindowsPath": "reads a command's program after either path separator on every platform",
@@ -2361,41 +2363,269 @@ TEMPORARY_MAKERS = {
     "tempfile.NamedTemporaryFile": 6,
 }
 TEMPORARY_FOLDER = "private_folder.temporary_directory()"
+# The calls whose one argument and result name the same folder, as a later call's `dir`.
+FOLDER_KEEPING_CALLS = frozenset({"pathlib.Path", "os.fspath", "str", "os.path.realpath", "os.path.abspath"})
+# The path methods whose result names the folder their receiver names.
+FOLDER_KEEPING_METHODS = frozenset({"resolve", "absolute"})
+# What names the temporary directory as tempfile finds it, unjudged: its lookup, its cached value, and the variables
+# it reads first.
+TEMPORARY_LOOKUPS = frozenset({"tempfile.gettempdir", "tempfile.gettempdirb"})
+TEMPORARY_VALUE = "tempfile.tempdir"
+# The mappings of the environment, read by a subscript as their getters are by a call.
+ENVIRONMENT_MAPPINGS = frozenset({"os.environ", "os.environb"})
+ENVIRONMENT_GETTERS = frozenset({"os.getenv", "os.getenvb", "os.environ.get", "os.environb.get"})
+# The folders, besides each skill's scripts, whose Python the policy reads: the deployer's and the repository tools'.
+TEMPORARY_FOLDER_ROOTS = ("deployer", "tools")
 WORKING_FILES_DOC = '"Working files" in docs/adding-a-skill.md'
+# The Bash program that makes a temporary file or folder, the options of it that leave where to its template, and
+# the PowerShell words that name the temporary directory unjudged.
+MKTEMP = "mktemp"
+MKTEMP_TEMPLATE_OPTIONS = frozenset({"-d", "-q", "--directory", "--quiet"})
+# The words a Bash or PowerShell script runs ejryan89-skill-core's judge of the temporary directory with.
+TEMPORARY_JUDGE = ("private_folder.py", "temporary-directory")
+TEMPORARY_VARIABLE_WORD = re.compile(r"\$\{?(?:TMPDIR|TEMP|TMP)\b")
+SHELL_VARIABLE_WORD = re.compile(r"\$\{?[A-Za-z_]")
+POWERSHELL_TEMPORARY = re.compile(
+    r"New-TemporaryFile|GetTempPath|GetTempFileName|\$env:(?:TMPDIR|TEMP|TMP)\b", re.IGNORECASE
+)
+REDIRECTION_WORD = re.compile(r"\d*[<>]")
+# A mktemp command word, and where the command it starts ends on its line: a substitution's close, a list's or a
+# pipeline's operator.
+MKTEMP_COMMAND = re.compile(r"(?<![\w./-])mktemp(?![\w.-])")
+COMMAND_END = re.compile(r"[);|]|&&")
 
 
-def _names_its_folder(call: ast.Call, position: int) -> bool:
-    """Whether a tempfile call is given a `dir` that is not None, by keyword or at `position`."""
+def _dir_values(call: ast.Call, position: int) -> list[ast.expr]:
+    """The `dir` a tempfile call is given, by keyword or at `position`, each that is not the constant None."""
     given = [keyword.value for keyword in call.keywords if keyword.arg == "dir"]
     if len(call.args) > position and not any(isinstance(argument, ast.Starred) for argument in call.args[:position]):
         given.append(call.args[position])
-    return any(not (isinstance(value, ast.Constant) and value.value is None) for value in given)
+    return [value for value in given if not (isinstance(value, ast.Constant) and value.value is None)]
+
+
+def _is_parameter(name: ast.Name, resolver: CallableResolver) -> bool:
+    """Whether every binding of a name that is no expression is a parameter given no default, never an import or a
+    binding whose value is unknown, such as a loop's or a with item's target: a caller hands over a folder it holds."""
+    scope = resolver.scopes.get(id(name))
+    owner = scope.owner(name.id) if scope is not None else None
+    if owner is None:
+        return False
+    others = [value for value in owner.bindings[name.id] if not isinstance(value, ast.expr)]
+    return bool(others) and all(
+        isinstance(value, str) and value.startswith("<local>.") and name.id not in owner.imports for value in others
+    )
+
+
+def _bound_root(function: ast.expr, resolver: CallableResolver) -> bool:
+    """Whether the name a dotted callable starts from is one the module binds, as by an import: the resolver reads a
+    name nothing binds as itself, so a module that never imports private_folder would pass by spelling its name."""
+    root = function
+    while isinstance(root, ast.Attribute):
+        root = root.value
+    scope = resolver.scopes.get(id(root))
+    return isinstance(root, ast.Name) and scope is not None and scope.owner(root.id) is not None
+
+
+def _holds_folder(value: ast.expr, resolver: CallableResolver, seen: frozenset[int] = frozenset()) -> bool:
+    """Whether every value an expression may stand for is a folder the script holds: CHECKED_TEMPORARY_DIRECTORY
+    called with nothing, a folder tempfile.mkdtemp made, whose own `dir` is held where it is made, a parameter, or one
+    of these kept by FOLDER_KEEPING_CALLS or FOLDER_KEEPING_METHODS, joined to a name by `/`, chosen between by a
+    conditional, or, for a parameter, its parent. Anything else, such as tempfile.gettempdir(), a variable of the
+    environment, or a literal, is not held."""
+    if id(value) in seen:
+        return False
+    seen = seen | {id(value)}
+    values = bound_values(value, resolver)
+    return bool(values) and all(_held_value(found, resolver, seen) for found in values)
+
+
+def _held_value(value: ast.expr, resolver: CallableResolver, seen: frozenset[int]) -> bool:
+    if isinstance(value, ast.Name):
+        return _is_parameter(value, resolver)
+    if isinstance(value, ast.IfExp):
+        return _holds_folder(value.body, resolver, seen) and _holds_folder(value.orelse, resolver, seen)
+    if isinstance(value, ast.BinOp) and isinstance(value.op, ast.Div):
+        return _holds_folder(value.left, resolver, seen)
+    if isinstance(value, ast.Attribute) and value.attr == "parent":
+        return isinstance(value.value, ast.Name) and _is_parameter(value.value, resolver)
+    if not isinstance(value, ast.Call):
+        return False
+    called = _reached_name(value.func, resolver)
+    if called == CHECKED_TEMPORARY_DIRECTORY:
+        return not value.args and not value.keywords and _bound_root(value.func, resolver)
+    if called == TEMPORARY_DIRECTORY_CALL:
+        return True
+    if called in FOLDER_KEEPING_CALLS:
+        return len(value.args) == 1 and not value.keywords and _holds_folder(value.args[0], resolver, seen)
+    if isinstance(value.func, ast.Attribute) and value.func.attr in FOLDER_KEEPING_METHODS:
+        return not value.args and _holds_folder(value.func.value, resolver, seen)
+    return False
+
+
+def _temporary_variable(node: ast.AST) -> bool:
+    return isinstance(node, ast.Constant) and node.value in TEMPORARY_VARIABLES
+
+
+def _reads_temporary_directory(node: ast.AST, resolver: CallableResolver, seen: set[int] | None = None) -> bool:
+    """Whether an expression, followed through every name it reads to each value it may stand for, names the
+    temporary directory as tempfile finds it, unjudged: TEMPORARY_LOOKUPS called, TEMPORARY_VALUE, or one of
+    TEMPORARY_VARIABLES read from the environment."""
+    seen = set() if seen is None else seen
+    for part in ast.walk(node):
+        if id(part) in seen:
+            continue
+        seen.add(id(part))
+        if isinstance(part, ast.Call):
+            called = _reached_name(part.func, resolver)
+            if called in TEMPORARY_LOOKUPS or (
+                called in ENVIRONMENT_GETTERS and part.args and _temporary_variable(part.args[0])
+            ):
+                return True
+        elif isinstance(part, ast.Attribute) and _reached_name(part, resolver) == TEMPORARY_VALUE:
+            return True
+        elif isinstance(part, ast.Subscript):
+            if _reached_name(part.value, resolver) in ENVIRONMENT_MAPPINGS and _temporary_variable(part.slice):
+                return True
+        elif isinstance(part, ast.Name) and isinstance(part.ctx, ast.Load):
+            if _reached_name(part, resolver) == TEMPORARY_VALUE:
+                return True
+            followed = [value for value in bound_values(part, resolver) if value is not part]
+            if any(_reads_temporary_directory(value, resolver, seen) for value in followed):
+                return True
+    return False
+
+
+def _python_temporary_problems(name: str, tree: ast.Module) -> list[str]:
+    resolver = CallableResolver(tree)
+    problems: list[str] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call) or (called := _reached_name(node.func, resolver)) not in TEMPORARY_MAKERS:
+            continue
+        given = _dir_values(node, TEMPORARY_MAKERS[called])
+        if not given:
+            problems.append(
+                f"{name}:{node.lineno}: {called} leaves its folder to TMPDIR; pass dir={TEMPORARY_FOLDER}, or a "
+                f"folder the script already holds; see {WORKING_FILES_DOC}"
+            )
+        elif not all(_holds_folder(value, resolver) for value in given):
+            problems.append(
+                f"{name}:{node.lineno}: {called} is given a dir validation cannot trace to {TEMPORARY_FOLDER} or a "
+                f"folder the script already holds; pass one of those; see {WORKING_FILES_DOC}"
+            )
+    for node, token in write_nodes(tree, resolver):
+        if not isinstance(node, ast.Call) or token.startswith("tempfile."):
+            continue
+        destinations = write_destinations(node, resolver.aliases(node.func))
+        if any(_reads_temporary_directory(destination, resolver) for destination in destinations):
+            problems.append(
+                f"{name}:{node.lineno}: {token} writes in the temporary directory as tempfile finds it, unjudged; "
+                f"make the folder with tempfile.mkdtemp(dir={TEMPORARY_FOLDER}); see {WORKING_FILES_DOC}"
+            )
+    return problems
+
+
+def _code_lines(text: str) -> list[tuple[int, str]]:
+    """Each line of a Bash or PowerShell script that is not a comment, with its number."""
+    return [(number, line) for number, line in enumerate(text.splitlines(), 1) if not line.lstrip().startswith("#")]
+
+
+def _runs_the_judge(lines: list[tuple[int, str]]) -> bool:
+    return all(any(word in line for _, line in lines) for word in TEMPORARY_JUDGE)
+
+
+def _mktemp_arguments(words: list[str]) -> list[str]:
+    """A mktemp command's arguments, without a redirection the shell reader leaves in them."""
+    arguments = words[1:]
+    for index, word in enumerate(arguments):
+        if REDIRECTION_WORD.fullmatch(word):
+            return arguments[: index - 1 if index and arguments[index - 1].isdigit() else index]
+    return arguments
+
+
+def _mktemp_judged(command: re.Match[str], judged: bool) -> bool:
+    """Whether the mktemp command a line holds from `command` on, up to the end of its command, is given a template
+    _judged_template accepts, in a script that runs the judge. One the shell reader cannot read, such as one whose
+    template goes on past the line, is not."""
+    fragment = COMMAND_END.split(command.string[command.start() :], maxsplit=1)[0]
+    words: list[list[str]] = []
+    try:
+        shell_commands(fragment, words)
+    except ValueError:
+        return False
+    found = [command_words for command_words in words if command_words and command_words[0] == MKTEMP]
+    return judged and bool(found) and _judged_template(_mktemp_arguments(found[0]))
+
+
+def _judged_template(arguments: list[str]) -> bool:
+    """Whether mktemp is given one template, a variable's value other than the temporary directory's own, and only
+    options that leave where it makes the file to that template."""
+    templates = [word for word in arguments if not word.startswith("-")]
+    return (
+        all(word in MKTEMP_TEMPLATE_OPTIONS for word in arguments if word.startswith("-"))
+        and len(templates) == 1
+        and bool(SHELL_VARIABLE_WORD.match(templates[0]))
+        and not TEMPORARY_VARIABLE_WORD.search(templates[0])
+    )
+
+
+def _bash_temporary_problems(name: str, text: str) -> list[str]:
+    lines = _code_lines(text)
+    judged = _runs_the_judge(lines)
+    problems: list[str] = []
+    for number, line in lines:
+        if not any(_mktemp_judged(command, judged) is False for command in MKTEMP_COMMAND.finditer(line)):
+            continue
+        problems.append(
+            f"{name}:{number}: mktemp makes a file validation cannot trace to the folder `python private_folder.py "
+            "temporary-directory` prints; give it one template under that folder, held in a variable, as "
+            f"update-coding-agent-skills' update.sh does; see {WORKING_FILES_DOC}"
+        )
+    return problems
+
+
+def _powershell_temporary_problems(name: str, text: str) -> list[str]:
+    return [
+        f"{name}:{number}: {found.group(0)} names the temporary directory unjudged; make the file in the folder "
+        f"`python private_folder.py temporary-directory` prints; see {WORKING_FILES_DOC}"
+        for number, line in _code_lines(text)
+        if TEMPORARY_JUDGE[1] not in line
+        for found in POWERSHELL_TEMPORARY.finditer(line)
+    ]
 
 
 def temporary_folder_problems(root: Path) -> list[str]:
-    """Each call in a shipped or repository skill's scripts, tests aside, that makes a temporary folder or named file
-    without naming the folder it lies in: left to tempfile, it lies wherever `TMPDIR` points, with no check that no
-    other account can rename a folder above it and swap what a later step reads."""
+    """Each place in a shipped or repository skill's scripts, the deployer, or the repository tools, tests aside, that
+    makes a temporary folder or file where no check ran that no other account can rename a folder above it and swap
+    what a later step reads: a tempfile call left to TMPDIR or given a `dir` that is not the temporary directory
+    `private_folder.temporary_directory()` judges or a folder the script already holds, a write into the temporary
+    directory as tempfile finds it, a Bash mktemp given no template under the folder `private_folder.py
+    temporary-directory` prints, and a PowerShell word that names the temporary directory."""
     problems: list[str] = []
-    paths = sorted(
-        (
-            path
-            for scripts in skill_script_directories(root)
-            for path in file_presence.matching(scripts, "**/*.py")
-            if file_presence.is_present(path, other_is_absent=True) and not is_test_script(path)
-        ),
-        key=lambda path: path.relative_to(root).as_posix(),
-    )
-    for _, name, tree in python_trees(paths, root, problems):
-        resolver = CallableResolver(tree)
-        problems.extend(
-            f"{name}:{node.lineno}: {called} leaves its folder to TMPDIR; pass dir={TEMPORARY_FOLDER}, or a folder "
-            f"the script already holds; see {WORKING_FILES_DOC}"
-            for node in ast.walk(tree)
-            if isinstance(node, ast.Call)
-            and (called := _reached_name(node.func, resolver)) in TEMPORARY_MAKERS
-            and not _names_its_folder(node, TEMPORARY_MAKERS[called])
+    sources = [
+        *(scripts for scripts in skill_script_directories(root)),
+        *(root / folder for folder in TEMPORARY_FOLDER_ROOTS),
+    ]
+
+    def matching(pattern: str) -> list[Path]:
+        found = [path for source in sources for path in file_presence.matching(source, pattern)]
+        if pattern == "**/*.py":
+            found.append(root / "deploy.py")
+        return sorted(
+            (
+                path
+                for path in found
+                if file_presence.is_present(path, other_is_absent=True) and not is_test_script(path)
+            ),
+            key=lambda path: path.relative_to(root).as_posix(),
         )
+
+    for _, name, tree in python_trees(matching("**/*.py"), root, problems):
+        problems.extend(_python_temporary_problems(name, tree))
+    for path in matching("**/*.sh"):
+        problems.extend(_bash_temporary_problems(path.relative_to(root).as_posix(), path.read_text(encoding="utf-8")))
+    for path in matching("**/*.ps1"):
+        text = path.read_text(encoding="utf-8-sig")
+        problems.extend(_powershell_temporary_problems(path.relative_to(root).as_posix(), text))
     return problems
 
 

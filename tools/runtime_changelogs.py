@@ -103,6 +103,7 @@ import file_presence
 import frontmatter
 import guidance_record
 import json_reader
+import private_folder
 import python_reader
 import versions
 from agent_skills import CODEX_METADATA
@@ -239,7 +240,9 @@ def command_line_terms(versions: Mapping[str, Sequence[tuple[int, ...]]]) -> lis
     Where GitHub CLI sits beside Node.js, that check cannot hide it and builds no signed-out environment, so the
     variables are the ones the builders set alone."""
     terms: list[Term] = []
-    with tempfile.TemporaryDirectory(prefix="runtime-changelogs-") as directory:
+    with tempfile.TemporaryDirectory(
+        prefix="runtime-changelogs-", dir=private_folder.temporary_directory()
+    ) as directory:
         for runtime, subject in DECLARED_RUNTIME.items():
             root = Path(directory) / runtime
             try:

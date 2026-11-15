@@ -172,9 +172,11 @@ request's head mirrored under refs/remotes/origin being no branch. A branch with
 origin's branch or a local one, is the user's own. A pull request from another author is read in full, as its code
 is, before its scenarios run; "Skill evaluations" in docs/skill-evaluations.md states the rule.
 
-What still comes from the user's own setup: their sign-in, user CLAUDE.md and auto-memory, as for the runtime
-canary. Each session runs without --bare, which would skip the home's skills and agents and the sign-in, so a session
-whose init event lists no skill counts for nothing rather than being judged.
+What still comes from the user's own setup is their sign-in alone, as for the runtime canary: every CLAUDE.md, rules
+file, and auto-memory is switched off (ejryan89-skill-core's `search_boundary.CLAUDE_INSTRUCTIONS_OFF`), since Claude
+Code reads them from each folder above the home, the shared temporary directory included. Each session runs without
+--bare, which would skip the home's skills and agents and the sign-in, so a session whose init event lists no skill
+counts for nothing rather than being judged.
 
 Output, one fact per line. With --runs above 1, every line about one run, a TRANSCRIPT, GUARDED, NOT_COUNTED, PASS, or
 FAIL line, names it as ` run=<run>` after its model, and the lines are otherwise as they are for one run:
@@ -278,6 +280,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "ejryan89-skill-core" / "scripts"))
 
 import json_writer
+import private_folder
 import whole_number
 from agent_skills import NAME_PATTERN
 from bounded_process import without_repository_variables
@@ -397,7 +400,7 @@ def citation(
 
 
 def new_home() -> Path:
-    return Path(tempfile.mkdtemp(prefix="skill-evals-")).resolve()
+    return Path(tempfile.mkdtemp(prefix="skill-evals-", dir=private_folder.temporary_directory())).resolve()
 
 
 def this_checkout() -> str | None:

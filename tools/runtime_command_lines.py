@@ -71,6 +71,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "ejryan89-skill-core" / "scripts"))
 
+import private_folder
 import search_boundary
 from console import run_main
 from flat_text import flat_text, single_line
@@ -466,7 +467,9 @@ def main(arguments: list[str] | None = None) -> int:
     parser.add_argument("--timeout", type=positive_seconds, default=DEFAULT_TIMEOUT, metavar="SECONDS")
     parser.add_argument("--summary", type=Path, metavar="FILE", help="append a Markdown table of the facts to FILE")
     namespace = parser.parse_args(arguments)
-    with tempfile.TemporaryDirectory(prefix="runtime-command-lines-") as directory:
+    with tempfile.TemporaryDirectory(
+        prefix="runtime-command-lines-", dir=private_folder.temporary_directory()
+    ) as directory:
         lines = run(namespace.runtime or list(RUNTIMES), namespace.timeout, Path(directory))
     if namespace.summary is not None:
         with namespace.summary.open("a", encoding="utf-8") as stream:

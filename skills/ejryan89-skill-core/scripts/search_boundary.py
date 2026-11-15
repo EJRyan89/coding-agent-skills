@@ -8,7 +8,10 @@ caller's: a skill or an agent planted there would load as trusted project config
 one of its name. A folder that is a git repository of its own ends both searches at itself, whatever repository holds
 it. Codex, started outside any repository, reads only its working directory, so it needs nothing here.
 
-It does not end Claude Code's search for `CLAUDE.md`, which continues to the file system's root past any git root.
+It does not end Claude Code's search for instructions: `CLAUDE.md`, `CLAUDE.local.md`, `.claude/CLAUDE.md`, and
+`.claude/rules/` are read from every folder above the working directory up to the file system's root, past any git
+root. A Claude Code session started in such a folder therefore runs with CLAUDE_INSTRUCTIONS_OFF in its environment,
+which switches off every instruction file and auto-memory, the user's own included, wherever it lies.
 
 Nothing commits in such a folder, so a hook the user's own git templates copy into it never runs.
 """
@@ -18,6 +21,12 @@ from __future__ import annotations
 from pathlib import Path
 
 from git_client import GitClient
+
+# The setting that keeps a Claude Code session from reading any CLAUDE.md, CLAUDE.local.md, or rules file as
+# instructions, or its auto-memory, since its search for them does not stop at a git root. Checked against Claude Code
+# with a local stand-in for its API, so no model started: with it, no such file above or in the working directory
+# reached the request; without it, each one in every folder above the git root did.
+CLAUDE_INSTRUCTIONS_OFF = {"CLAUDE_CODE_DISABLE_CLAUDE_MDS": "1"}
 
 
 def bound_search(folder: Path, git: GitClient | None = None) -> None:

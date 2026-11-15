@@ -2370,11 +2370,21 @@ class RunPieceTests(unittest.TestCase):
             {
                 "PATH": "kept",
                 "TMPDIR": str(run / "tmp"),
+                "CLAUDE_CODE_DISABLE_CLAUDE_MDS": "1",
                 "CODE_REVIEW_CONFIG": str(config),
                 "CODE_REVIEW_STATE": str(run / "state.json"),
                 "CODE_REVIEW_FLAGS": str(run / "flags.json"),
             },
-            skill_evals_runs.run_environment({"PATH": "kept"}, run, config),
+            skill_evals_runs.run_environment({"PATH": "kept", "CLAUDE_CODE_DISABLE_CLAUDE_MDS": "0"}, run, config),
+        )
+
+    def test_a_trigger_session_reads_no_claude_md_above_its_home_nor_the_users(self) -> None:
+        # Claude Code read every CLAUDE.md from the home up to the file system's root, git root or not, so another
+        # account's CLAUDE.md in the shared temporary directory loaded as project instructions.
+        run = self.root / "run"
+        self.assertEqual(
+            {"PATH": "kept", "TMPDIR": str(run / "tmp"), "CLAUDE_CODE_DISABLE_CLAUDE_MDS": "1"},
+            skill_evals_runs.trigger_environment({"PATH": "kept", "CLAUDE_CODE_DISABLE_CLAUDE_MDS": "0"}, run),
         )
 
     def test_the_configuration_is_one_the_core_accepts(self) -> None:
@@ -4777,6 +4787,7 @@ class StubTrigger:
         if arguments[1:] == ["--version"]:
             return runtime_canary.Completed(0, "2.1.291 (Claude Code)\n", "")
         self.test.assertTrue(Path(environment["TMPDIR"]).is_relative_to(cwd / skill_evals_runs.STATE))
+        self.test.assertEqual("1", environment.get("CLAUDE_CODE_DISABLE_CLAUDE_MDS"))
         request, model = arguments[2], arguments[arguments.index("--model") + 1]
         skills = [] if self.bare else ["audit-ai-config", *(["audit-skill"] if self.listed else [])]
         content: list[dict[str, Any]] = [{"type": "text", "text": "On it."}]

@@ -415,6 +415,8 @@ def test_the_probe_runs_the_installed_copy_and_records_beside_it(tmp_path: Path)
     def probing(arguments: list[str], cwd: Path, environment: dict[str, str], timeout: float) -> Completed:
         assert ["--plugin-dir", str(installed)] == arguments[arguments.index("--plugin-dir") :][:2]
         assert arguments[2].startswith(f"/runtime-canary:{FIXTURE_SKILL} ")
+        # No CLAUDE.md above the home, as another account's in the shared temporary directory, nor the user's.
+        assert environment["CLAUDE_CODE_DISABLE_CLAUDE_MDS"] == "1"
         state = installed.parent / STATE
         run = (state / RUN_ID).read_text(encoding="utf-8")
         record = {"script": script.as_posix(), "cwd": cwd.as_posix(), "run": run}
@@ -512,6 +514,7 @@ def test_the_guard_session_gives_the_reviewer_a_reviewers_task_naming_the_marker
     def guarded(arguments: list[str], cwd: Path, environment: dict[str, str], timeout: float) -> Completed:
         seen.append(arguments)
         assert "CLAUDE_CONFIG_DIR" not in environment
+        assert environment["CLAUDE_CODE_DISABLE_CLAUDE_MDS"] == "1"
         marker = (tmp_path / "outside.txt").read_text(encoding="utf-8").strip()
         return Completed(
             0, "\n".join([event("user", [result(marker)]), event("user", [result(DENIED, error=True)], "t")]), ""

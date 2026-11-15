@@ -8,17 +8,18 @@ It first refuses, with FAILED "<reason>" before it makes a home, a checkout that
 repository's pull request, as tools/checkout_trust.py reads it and tools/runtime_canary.py refuses it, since the run
 builds and runs the checkout's plugins and fixture signed in as the user.
 
-It makes a fresh home under the temporary directory, as tools/runtime_canary.py does, makes it a git repository of
-its own, as that canary does once it has deployed, so Claude Code reads project skills and agents from the home alone,
-never from the folders above it, and assembles into it, with
-tools/plugin_build.py, this checkout's plugins and the plugin of the fixture source in tests/fixtures/runtime-canary.
-It writes a marketplace beside them and, with CLAUDE_CONFIG_DIR set to a folder of the home, so nothing reaches the
-user's own configuration, validates each plugin, adds the marketplace, installs each plugin, giving each option its
-manifest declares a folder of the home, and reads what Claude Code installed with `claude plugin list --json` and
-`claude plugin details`. None of that starts a model.
+It makes a fresh home in the temporary directory, as tools/runtime_canary.py does, which refuses with FAILED "<reason>"
+a temporary directory another account could rename before anything is made there, makes it a git repository of its own,
+as that canary does once it has deployed, so Claude Code reads project skills and agents from the home alone, never from
+the folders above it, and assembles into it, with tools/plugin_build.py, this checkout's plugins and the plugin of the
+fixture source in tests/fixtures/runtime-canary. It writes a marketplace beside them and, with CLAUDE_CONFIG_DIR set to
+a folder of the home, so nothing reaches the user's own configuration, validates each plugin, adds the marketplace,
+installs each plugin, giving each option its manifest declares a folder of the home, and reads what Claude Code
+installed with `claude plugin list --json` and `claude plugin details`. None of that starts a model.
 
 Unless --discovery-only is given, it then starts Claude Code three times, signed in as the user is, with the installed
-copies loaded through --plugin-dir for that session alone and project settings only, as the runtime canary does:
+copies loaded through --plugin-dir for that session alone, project settings only, and no CLAUDE.md, rules file, or
+auto-memory, which it would read from each folder above the home, as the runtime canary does:
 
 - the fixture's probe, `/runtime-canary:runtime-canary-probe`, which must run the installed copy's script;
 - the plugin's reviewer agent, which the plugin's hooks file must guard though a plugin agent's own hooks are
@@ -122,6 +123,7 @@ from tools.runtime_canary import (
     remove_home,
     run_process,
     runtime_version,
+    start_home,
     unreadable,
 )
 
@@ -613,7 +615,9 @@ def main(arguments: list[str] | None = None) -> int:
     if refused is not None:
         print(f"FAILED {quote(refused)}")
         return 1
-    home = create_home()
+    home = start_home(create_home)
+    if home is None:
+        return 1
     try:
         code = canary(home, discovery_only=options.discovery_only, timeout=options.timeout)
     except (plugin_build.BuildError, OSError, json_writer.JsonWriteRefused) as exc:

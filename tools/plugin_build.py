@@ -65,6 +65,7 @@ import file_presence
 import frontmatter
 import json_reader
 import json_writer
+import private_folder
 from console import run_main
 from flat_text import flat_text
 from path_containment import resolved_path, within
@@ -315,7 +316,7 @@ def output_directory(requested: Path | None, source_dir: Path) -> Path:
     """The folder the plugins are written into: a new one under the temporary directory, or the requested one, which
     must lie outside the source tree and every skills directory and be absent or empty."""
     if requested is None:
-        return Path(tempfile.mkdtemp(prefix="coding-agent-skills-plugins-"))
+        return Path(tempfile.mkdtemp(prefix="coding-agent-skills-plugins-", dir=private_folder.temporary_directory()))
     target = resolved_path(requested)
     if within(target, resolved_path(source_dir)):
         raise BuildError(f"--output {requested} lies inside the source tree {source_dir}, which is never written")
