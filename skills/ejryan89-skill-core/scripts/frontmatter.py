@@ -44,9 +44,9 @@ DOUBLE_QUOTED = re.compile(r'^"((?:[^"\\]|\\.)*)"(?:[ \t]+#.*)?$', re.DOTALL)
 SINGLE_QUOTED = re.compile(r"^'((?:[^']|'')*)'(?:[ \t]+#.*)?$", re.DOTALL)
 FLOW_ITEM = re.compile(r"""[ \t]*(?:"((?:[^"\\]|\\.)*)"|'((?:[^']|'')*)'|([^,\[\]{}"'#][^,\[\]{}]*?))[ \t]*(,|$)""")
 COMMENT = re.compile(r"[ \t]+#.*$")
-# A character YAML 1.2 allows nowhere in a stream: each C0 control but the tab, LF, and CR, DEL, each C1 control but
-# the next line (U+0085), a surrogate, and U+FFFE and U+FFFF.
-NON_PRINTABLE = re.compile("[^\t\n\r\x20-\x7e\x85\xa0-\ud7ff\ue000-\ufffd\U00010000-\U0010ffff]")
+# The code points YAML 1.2 allows in a stream (its c-printable production) beside the tab, LF, and CR, as inclusive
+# ranges: every other is a C0 control, DEL, a C1 control but the next line (U+0085), a surrogate, or U+FFFE or U+FFFF.
+PRINTABLE_RANGES = ((0x20, 0x7E), (0x85, 0x85), (0xA0, 0xD7FF), (0xE000, 0xFFFD), (0x10000, 0x10FFFF))
 # Where a comment starts on a line of a plain value stripped of its indentation.
 COMMENT_START = re.compile(r"(?:^|[ \t])#")
 # A colon YAML reads as a mapping indicator: one followed by whitespace, or ending the value.
@@ -103,10 +103,8 @@ class Frontmatter:
         current: list[str] | None = None
         for number, line in enumerate(lines, start=1):
             line = line.rstrip("\r")
-            if found := NON_PRINTABLE.search(line):
-                raise FrontmatterError(
-                    f"frontmatter line {number} holds U+{ord(found.group()):04X}, which YAML forbids"
-                )
+            if found := non_printable(line):
+                raise FrontmatterError(f"frontmatter line {number} holds U+{ord(found):04X}, which YAML forbids")
             if line.startswith("\t") and line.strip():
                 raise FrontmatterError(f"frontmatter line {number} is indented with a tab, which YAML forbids")
             if not line.strip() or line[0] in " \t" or line.startswith("-"):
@@ -165,6 +163,19 @@ class Frontmatter:
         """Whether a SKILL.md's frontmatter lets only the user start the skill: its disable-model-invocation is true,
         ignoring case, as the deployer writes it into each runtime adapter."""
         return user_only_value(self.string(USER_ONLY_KEY))
+
+
+def non_printable(line: str) -> str | None:
+    """The first character of a frontmatter line that YAML 1.2 allows nowhere in a stream, or None: any but the tab,
+    LF, CR, and the code points PRINTABLE_RANGES holds."""
+    return next(
+        (
+            character
+            for character in line
+            if character not in "\t\n\r" and not any(low <= ord(character) <= high for low, high in PRINTABLE_RANGES)
+        ),
+        None,
+    )
 
 
 def user_only_value(value: object) -> bool:

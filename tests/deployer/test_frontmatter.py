@@ -296,6 +296,18 @@ class DocumentTests(unittest.TestCase):
                     f"frontmatter line 2 holds U+{ord(character):04X}, which YAML forbids", str(raised.exception)
                 )
 
+    def test_each_edge_of_yamls_printable_set_is_read_as_yaml_reads_it(self) -> None:
+        # YAML 1.2's c-printable: the tab, LF, CR, U+0020-U+007E, U+0085, U+00A0-U+D7FF, U+E000-U+FFFD, and
+        # U+10000-U+10FFFF, written out rather than read from the reader's table.
+        allowed = (0x09, 0x20, 0x7E, 0x85, 0xA0, 0xD7FF, 0xE000, 0xFFFD, 0x10000, 0x10FFFF)
+        refused = (0x08, 0x1F, 0x7F, 0x84, 0x86, 0x9F, 0xD800, 0xDFFF, 0xFFFE, 0xFFFF)
+        for point in allowed:
+            with self.subTest(allowed=f"U+{point:04X}"):
+                self.assertIsNone(frontmatter.non_printable(f"a{chr(point)}b"))
+        for point in refused:
+            with self.subTest(refused=f"U+{point:04X}"):
+                self.assertEqual(chr(point), frontmatter.non_printable(f"a{chr(point)}b"))
+
     def test_parse_without_frontmatter_has_no_keys(self) -> None:
         self.assertEqual([], frontmatter.parse("Just a body.\n").keys())
 
