@@ -32,7 +32,7 @@ The tick admits only pull requests whose head branch is in this repository and t
 - `RERUN_SPENT`: a rerun case on a head already rerun once. Read the run's failed log, `gh run view <run> --log-failed`, and decide: when the failure is plainly the runner's or a service's, not the change's, rerun it with `gh run rerun <run> --failed`; otherwise treat it as a defect. A `DEFECT` whose log shows such a failure is the same call. Both `gh run` commands are deliberately ungranted, so the user approves each at its prompt: the script spends a head's one rerun itself, and a further one, or a defect read as the runner's, is a judgment the user sees before it is made.
 - `HOLD #<number> changes <path>`: every other pull request's update waits until that one merges. Say so when you report.
 - `HELD #<number> <branch> "<reason>"`: a `Shepherd-hold: <reason>` line in the pull request's body keeps it unarmed. Say so when you report; deleting the line releases it, as "An orchestrator and a shepherd" in `docs/parallel-sessions.md` says.
-- `HUB "<path>" not fast-forwarded: <reason>` from a tick in the hub: the hub is off `main`, has a tracked change, diverged, or could not fetch. Tell the user the reason; the next tick tries again.
+- `HUB "<path>" not fast-forwarded: <reason>` from a tick in the hub: the hub is off `main`, has a tracked change, diverged, could not fetch, or found no `refs/remotes/origin/main` after the fetch. Tell the user the reason; the next tick tries again.
 - `PR_FAILED`, `MERGED_FAILED`, or a last line `FAILED <reason>`: report the reason; the next tick tries again.
 - `REMAINING 0`: no pull request is open. Stop whatever repeats the tick, such as a scheduled prompt.
 

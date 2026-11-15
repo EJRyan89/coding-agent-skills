@@ -676,7 +676,7 @@ a row decides it.
   whose values are judged as such a program's words are, since `-X pycache_prefix=<folder>` writes there, running a
   script a guarded hub tracks at a path on the list of the hub's own tools that write no file a hub tracks whatever
   their words, but by the one write the guard allows from the hub itself, the fast-forward of main to origin's main,
-  which a tool names in full as `refs/remotes/origin/main`, so no ref named `origin/main` redirects it
+  which a tool reads from `refs/remotes/origin/main` alone and merges by its commit id, so no other ref redirects it
   (`TRUSTED_SCRIPTS`: `deploy.py`, `tools/worktrees.py`, `tools/project_release_sync.py`, and
   `.claude/skills/shepherd-pull-requests/scripts/shepherd_pull_requests.py`), with every link on the way to it
   followed, is trusted whatever its own words: the guard refuses every edit to a file a guarded hub tracks and every

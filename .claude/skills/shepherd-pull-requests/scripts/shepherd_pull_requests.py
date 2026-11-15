@@ -349,9 +349,16 @@ def fast_forward(git: GitClient, hub: Path, dry_run: bool) -> str:
             else f"would fast-forward {short(before)} to {short(listed[0])}"
         )
     git.output(["fetch", "--prune", REMOTE], directory=hub)
-    # The remote-tracking ref is named in full: a branch or tag named origin/main, which a session may make from any
-    # worktree, comes before it in git's reading of the short name, and the hub would follow it instead.
-    merged = git.run(["merge", "--ff-only", f"refs/remotes/{REMOTE}/{BASE}"], directory=hub)
+    # The commit is read from the remote-tracking ref alone, and merged by its id: a branch or tag named origin/main,
+    # which a session may make from any worktree, comes before that ref in git's reading of the short name, and where
+    # the fetch pruned it, git reads even the full name as refs/refs/remotes/origin/main, a tag, or a branch of that
+    # name. show-ref --verify reads the one ref named and nothing else.
+    tracking = f"refs/remotes/{REMOTE}/{BASE}"
+    shown = git.run(["show-ref", "--verify", "--hash", tracking], directory=hub)
+    if shown.returncode != 0:
+        reason = flat_text(shown.stderr) or f"git show-ref exited {shown.returncode}"
+        return f"not fast-forwarded: could not read {tracking} ({reason})"
+    merged = git.run(["merge", "--ff-only", output_line(shown.stdout)], directory=hub)
     if merged.returncode != 0:
         reason = flat_text(merged.stderr) or f"git merge --ff-only exited {merged.returncode}"
         return f"not fast-forwarded: {reason}"
