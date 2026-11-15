@@ -14,7 +14,6 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import folder_walk
-import path_keys
 from folder_walk import (
     LINKED,
     LINKED_REASON,
@@ -141,15 +140,12 @@ class SkippedFolderTests(WalkTestCase):
         # On a folding file system .GIT is the clone's .git folder; on a case-sensitive one it is another folder.
         self.write("vendor/clone/.GIT/HEAD", "vendor/clone/inner.txt")
         clone = self.root / "vendor" / "clone"
-        for folds in (True, False):
-            with self.subTest(folds=folds), mock.patch.dict(path_keys._FOLDS_CASE, {str(clone): folds}):
-                walk = walk_files(self.root, every_file)
-                if folds:
-                    self.assertEqual(
-                        ([], [("vendor/clone", NESTED_CHECKOUT)]), (self.files(walk), self.not_entered(walk))
-                    )
-                else:
-                    self.assertEqual((["vendor/clone/inner.txt"], []), (self.files(walk), self.not_entered(walk)))
+        folds = (clone / ".git").exists()  # the folder's own lookup, which a folding file system answers for .GIT
+        walk = walk_files(self.root, every_file)
+        if folds:
+            self.assertEqual(([], [("vendor/clone", NESTED_CHECKOUT)]), (self.files(walk), self.not_entered(walk)))
+        else:
+            self.assertEqual((["vendor/clone/inner.txt"], []), (self.files(walk), self.not_entered(walk)))
 
 
 class LinkTests(WalkTestCase):

@@ -2956,8 +2956,53 @@ def test_a_destination_named_twice_is_read_once_and_case_counts_where_the_file_s
 def test_a_destination_pattern_match_under_a_skipped_folder_below_the_top_is_passed_over(tmp_path: Path) -> None:
     guide = write(tmp_path / "docs" / "guide.md", "rules\n")
     write(tmp_path / "docs" / "node_modules" / "vendored.md", "rules\n")
-    write(tmp_path / "docs" / "notes" / "packages" / "deep.md", "rules\n")
+    write(tmp_path / "docs" / "notes" / ".tox" / "deep.md", "rules\n")
     assert memory_audit.destination_files(tmp_path, []) == [guide]
+
+
+# Every folder ejryan89-skill-core's folder walk skips by name, written out rather than read from it.
+WALK_SKIPPED = (
+    ".git",
+    ".hg",
+    ".svn",
+    "node_modules",
+    ".venv",
+    "venv",
+    ".tox",
+    ".nox",
+    "__pycache__",
+    "bin",
+    "obj",
+    ".vs",
+)
+
+
+def test_the_destination_walk_skips_the_folder_walks_folders_and_every_nested_checkout(tmp_path: Path) -> None:
+    # The audit walked with its own set, without .hg, .svn, .tox, .nox, and .vs, and entered nested checkouts, so an
+    # overlap could cite another repository's instructions. A packages folder is now searched, as a JavaScript
+    # workspace's packages hold their own CLAUDE.md.
+    top = write(tmp_path / "CLAUDE.md", "rules\n")
+    workspace = write(tmp_path / "packages" / "app" / "CLAUDE.md", "rules\n")
+    # Each at the top, which the walk searches though it holds .git, so no folder is passed over as a nested checkout
+    # rather than by its name.
+    for folder in WALK_SKIPPED:
+        write(tmp_path / folder / "CLAUDE.md", "rules\n")
+    write(tmp_path / "vendor" / "clone" / ".git" / "HEAD", "ref: refs/heads/main\n")
+    write(tmp_path / "vendor" / "clone" / "CLAUDE.md", "rules\n")
+    write(tmp_path / "vendor" / "clone" / "docs" / "AGENTS.md", "rules\n")
+    write(tmp_path / "modules" / "sub" / ".git", "gitdir: ../../.git/modules/sub\n")
+    write(tmp_path / "modules" / "sub" / "AGENTS.md", "rules\n")
+    assert memory_audit.destination_files(tmp_path, []) == [top, workspace]
+
+
+def test_an_instruction_file_is_found_by_the_name_its_folder_gives_it(tmp_path: Path) -> None:
+    # The pattern matched CLAUDE.md as spelled, so where the folder folds case a pkg/claude.md, which Claude Code opens
+    # as pkg/CLAUDE.md, was never measured; where the folder keeps case, it is another file.
+    lower = write(tmp_path / "pkg" / "claude.md", "rules\n")
+    write(tmp_path / "pkg" / "notes" / "Agents.MD", "rules\n")
+    folds = (tmp_path / "pkg" / "CLAUDE.md").exists()
+    expected = [lower, tmp_path / "pkg" / "notes" / "Agents.MD"] if folds else []
+    assert memory_audit.destination_files(tmp_path, []) == expected
 
 
 def test_a_folder_a_destination_pattern_matches_is_passed_over(tmp_path: Path) -> None:
