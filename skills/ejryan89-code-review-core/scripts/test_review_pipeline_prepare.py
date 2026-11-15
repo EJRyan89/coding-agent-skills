@@ -2741,6 +2741,12 @@ class ReviewerFallbackTests(PrepareFixture):
         self.skill("review/late.md")
         for answer, reason in (
             (failed(stderr="fatal: unable to access origin\n"), "fatal: unable to access origin"),
+            # git's lines are kept on the error's one line, and a listing that printed nothing is named by its exit.
+            (
+                failed(stderr="fatal: unable to access origin\r\nhint: \x1b[1msign in\n"),
+                "fatal: unable to access origin hint: [1msign in",
+            ),
+            (failed(), "git ls-remote failed with exit code 1"),
             (GitResult(0, "", ""), "origin names no default branch"),
         ):
             with self.subTest(reason):

@@ -45,6 +45,7 @@ from review_runtime import (
     choose_dispatch,
     declared_reviewer_files,
     git_in,
+    git_reason,
     glob_matcher,
     materialize_reviewer,
     materialize_source_snapshot,
@@ -96,10 +97,10 @@ def _default_branch_tip(checkout: Path, services: Services) -> tuple[str, str]:
 
     The checkout's origin is the configured repository, so its default branch holds only what the repository merged.
     """
-    result = git_in(checkout, services.git, "ls-remote", "--symref", "origin", "HEAD")
+    listing = ("ls-remote", "--symref", "origin", "HEAD")
+    result = git_in(checkout, services.git, *listing)
     if result.returncode != 0:
-        reason = result.stderr.strip() or "git ls-remote failed"
-        raise PipelineError(f"Cannot read origin's default branch: {reason}")
+        raise PipelineError(f"Cannot read origin's default branch: {git_reason(listing, result)}")
     branch, tip = "", ""
     for line in output_lines(result.stdout):
         value, _, ref = line.partition("\t")

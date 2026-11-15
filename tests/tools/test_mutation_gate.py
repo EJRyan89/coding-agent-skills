@@ -916,14 +916,16 @@ class CoverageReachFixtures(unittest.TestCase):
         suite: str = "tests/test_calc.py",
         report: object = None,
         passes: bool = True,
+        test: str | None = None,
     ) -> Reach | str:
         """The reach of `suite` in a tree whose stub coverage.py reports nothing, or, when `recorded`, CONTEXT_REPORT
         for the CONTEXT_SUITE the tree holds, or else `report` when one is given. Unless `recorded`, the suite is one
-        test, which passes or fails as `passes` says."""
+        test, which passes or fails as `passes` says, or whose text is `test` when one is given."""
         with tempfile.TemporaryDirectory() as temporary:
             tree = Path(temporary) / "tree with spaces"
             (tree / "tests").mkdir(parents=True)
-            (tree / "tests" / "test_calc.py").write_text(f"def test_it():\n    assert {passes}\n", encoding="utf-8")
+            text = f"def test_it():\n    assert {passes}\n" if test is None else test
+            (tree / "tests" / "test_calc.py").write_text(text, encoding="utf-8")
             (tree / "coverage.py").write_text(self.STUB, encoding="utf-8")
             (tree / "stub-actions.json").write_text(json.dumps(actions), encoding="utf-8")
             if recorded:
@@ -1026,8 +1028,13 @@ class CoverageReachFixtures(unittest.TestCase):
         if not isinstance(gone, str):
             self.fail(f"a missing suite was measured: {gone}")
         self.assertRegex(gone, r"\Afailed unmutated with exit code 4: `[^`\n]*file or directory not found")
-        # Only the end of a long output is kept, where pytest gives its summary.
-        tail = "x" * (mutation_gate.STEP_OUTPUT_CHARACTERS + 50)
+        # The end of a failure whose output runs past what a run reads back is kept, where pytest gives its summary.
+        long = self.reach({}, test='def test_it():\n    print("x" * 20000)\n    assert False\n')
+        if not isinstance(long, str):
+            self.fail(f"a failing suite was measured: {long}")
+        self.assertGreater(20000, mutation_gate.OUTPUT_LIMIT)
+        self.assertRegex(long, r"FAILED tests/test_calc\.py::test_it - assert False 1 failed in [0-9.]+s`\Z")
+        self.assertNotIn("cut", long)
         cases = (
             (b"", b"", "failed unmutated with exit code 3"),
             (b" \r\n", b"\t\n", "failed unmutated with exit code 3"),
@@ -1036,17 +1043,16 @@ class CoverageReachFixtures(unittest.TestCase):
                 b"",
                 "failed unmutated with exit code 3: `collected 2 items 1 failed in 0.1s`",
             ),
-            (
-                b"head " + tail.encode(),
-                b"",
-                f"failed unmutated with exit code 3: `{tail[-mutation_gate.STEP_OUTPUT_CHARACTERS :]}`",
-            ),
         )
         for stdout, stderr, expected in cases:
-            with (
-                self.subTest(stdout=stdout, stderr=stderr),
-                mock.patch.object(mutation_gate, "run_bounded", return_value=Finished(3, stdout, stderr)),
-            ):
+
+            def printing(
+                *_: object, stdout_bytes: bytes = stdout, stderr_bytes: bytes = stderr, **options: Any
+            ) -> Finished:
+                options["stdout"].write(stdout_bytes + stderr_bytes)
+                return Finished(3, b"", b"")
+
+            with self.subTest(stdout=stdout, stderr=stderr), mock.patch.object(mutation_gate, "run_bounded", printing):
                 self.assertEqual(expected, self.reach({}))
 
     def test_a_gate_measured_by_coverage_starts_every_coverage_step_unmeasured(self) -> None:
