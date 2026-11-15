@@ -5680,7 +5680,8 @@ PRESENCE_REFUSAL_SHAPES = {
         "    raise OSError(f'{{p}} is missing')\n"
     ),
     "if not P: return a message in a conditional expression's arm": (
-        "def f(p, q):\n    if not {call}:\n        return f'{{p}} is missing' if q else 'gone from here'\n    return None\n"
+        "def f(p, q):\n    if not {call}:\n        return f'{{p}} is missing' if q else 'gone from here'\n"
+        "    return None\n"
     ),
     "if not P: record a conditional expression": (
         "def f(p, q, problems):\n    if not {call}:\n        problems.append(f'{{p}} is missing' if q else p)\n"
@@ -5707,7 +5708,8 @@ PRESENCE_REFUSAL_SHAPES = {
         "def f(p):\n    if not {call}:\n        return None, f'{{p}} is missing'\n    return p, None\n"
     ),
     "if not P: record a set holding a message": (
-        "def f(p, problems):\n    if not {call}:\n        problems.update({{f'{{p}} is missing'}})\n    return problems\n"
+        "def f(p, problems):\n    if not {call}:\n        problems.update({{f'{{p}} is missing'}})\n"
+        "    return problems\n"
     ),
     "if not P: record a dictionary whose value is a message": (
         "def f(p, problems):\n    if not {call}:\n        problems.update({{p: 'the file is missing'}})\n"
