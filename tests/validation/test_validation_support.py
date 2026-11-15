@@ -338,7 +338,8 @@ def test_a_lookup_by_a_constant_name_reads_as_the_attribute_on_each_owner(
     assert expected == [(reference.name, reference.attribute) for reference in references]
 
 
-# Each form of the catalogue of lookups by name, as (receiver, name, alone, literal attribute) for each lookup it reads.
+# Each form of the catalogue of lookups by name, as (receiver, name, alone, literal attribute) for each lookup it reads,
+# and whether the lookup calls what it reads, which only a methodcaller's application does.
 @pytest.mark.parametrize(
     ("source", "expected"),
     [
@@ -349,6 +350,16 @@ def test_a_lookup_by_a_constant_name_reads_as_the_attribute_on_each_owner(
         pytest.param('object.__getattribute__(os, "path")', [("os", "'path'", True, "path")], id="object's lookup"),
         pytest.param('os.__getattribute__("path")', [("os", "'path'", True, "path")], id="a bound lookup"),
         pytest.param('operator.attrgetter("path")(os)', [("os", "'path'", True, "path")], id="attrgetter"),
+        # A methodcaller's value is the method's answer, and its arguments after the first are the method's.
+        pytest.param('operator.methodcaller("exists")(p)', [("p", "'exists'", False, "exists")], id="methodcaller"),
+        pytest.param(
+            'operator.methodcaller("replace", "a", "b")(p)',
+            [("p", "'replace'", False, "replace")],
+            id="methodcaller given the method's arguments",
+        ),
+        pytest.param("operator.methodcaller(*names)(p)", [("p", "*names", False, None)], id="a starred method"),
+        pytest.param('operator.methodcaller("exists")(*paths)', [], id="a methodcaller of a starred object"),
+        pytest.param("operator.methodcaller()(p)", [], id="a methodcaller of no method"),
         pytest.param('vars(os)["path"]', [("os", "'path'", True, "path")], id="vars"),
         pytest.param('os.__dict__["path"]', [("os", "'path'", True, "path")], id="__dict__"),
         pytest.param("getattr(os, name)", [("os", "name", True, None)], id="a computed name"),
@@ -383,6 +394,7 @@ def test_attribute_lookups_read_every_form_of_the_catalogue(
         (ast.unparse(lookup.receiver), ast.unparse(lookup.name), lookup.alone, constant_attribute(lookup))
         for lookup in lookups
     ]
+    assert [lookup.called for lookup in lookups] == [source.startswith("operator.methodcaller")] * len(lookups)
 
 
 # What literal_lookups reads, as (receiver, literal, alone) for each lookup, with and without a hasattr test.

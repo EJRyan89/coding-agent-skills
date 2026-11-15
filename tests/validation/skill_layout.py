@@ -1020,7 +1020,9 @@ def skill_tree_problems(root: Path) -> list[str]:
     ):
         shown = directory.relative_to(root).as_posix()
         # A SKILL.md of another kind is named so, never as a folder that holds none, and one a stat cannot examine
-        # raises, as every validation reader's does.
+        # raises. Either way validation fails closed: a validation reader either raises there, as this one does, or
+        # records a problem naming the path as one that cannot be examined, with the reason, as
+        # capability_guide_problems does.
         try:
             present = file_presence.is_present(directory / "SKILL.md")
         except file_presence.NotAFile:

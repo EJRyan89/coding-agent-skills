@@ -939,14 +939,14 @@ def _returned_callee_problems(name: str, tree: ast.Module, resolver: CallableRes
     or operator.methodcaller("unlink")(path), and each call of a callable reached by a lookup it cannot read, as
     _unread_lookup describes: the policy cannot tell what it calls, so it is never guessed. A getter's application,
     as operator.attrgetter("rmtree")(shutil), is a lookup by name rather than a call of what a call returns: a call of
-    what it reads is read where it is called."""
+    what it reads is read where it is called. A methodcaller's application calls the method it looks up, so it is
+    such a call."""
     problems: list[str] = []
     for node in ast.walk(tree):
-        if (
-            not isinstance(node, ast.Call)
-            or id(node) in skipped
-            or attribute_lookups(node, lambda function: _lookup_names(function, resolver))
-        ):
+        if not isinstance(node, ast.Call) or id(node) in skipped:
+            continue
+        lookups = attribute_lookups(node, lambda function: _lookup_names(function, resolver))
+        if lookups and not any(lookup.called for lookup in lookups):
             continue
         if isinstance(node.func, ast.Call):
             if _literal_callee(node.func, resolver) is None:

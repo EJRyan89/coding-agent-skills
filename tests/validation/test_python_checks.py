@@ -1046,6 +1046,14 @@ DOCUMENTED_FORMS: dict[str, tuple[Any, ...]] = {
             ("hasattr", "import builtins", "builtins.hasattr({owner}, '{name}')"),
         )
     },
+    "a link test by operator.methodcaller": _form(
+        link_test_problems, "import operator\n\n\ndef f(p):\n    return operator.methodcaller('is_symlink')(p)\n"
+    ),
+    "a methodcaller of another method": _form(
+        link_test_problems,
+        "import operator\n\n\ndef f(p):\n    return operator.methodcaller('resolve', True)(p)\n",
+        refused=False,
+    ),
     "a lookup of platform_support.is_junction by name": _form(
         link_test_problems,
         "from deployer import platform_support\n\n\ndef f(p):\n    return vars(platform_support)['is_junction'](p)\n",
@@ -5342,6 +5350,12 @@ PRESENCE_PREDICATE_USES = {
     "a path module's predicate reached through getattr": (
         "import os\n\n\ndef f(p):\n    return getattr(os.path, 'isfile')(p)\n"
     ),
+    "a predicate called by operator.methodcaller": (
+        "import operator\n\n\ndef f(ps):\n    return [p for p in ps if operator.methodcaller('is_dir')(p)]\n"
+    ),
+    "a predicate called by an imported methodcaller": (
+        "from operator import methodcaller\n\n\ndef f(p):\n    return 1 if methodcaller('exists')(p) else 2\n"
+    ),
     "posixpath's isfile": "import posixpath\n\n\ndef f(p):\n    return 1 if posixpath.isfile(p) else 2\n",
     "ntpath's isdir by its name": "from ntpath import isdir\n\n\ndef f(p):\n    return 1 if isdir(p) else 2\n",
     "genericpath's exists": "import genericpath\n\n\ndef f(p):\n    return 1 if genericpath.exists(p) else 2\n",
@@ -5459,6 +5473,22 @@ PRESENCE_HANDLED = {
     "suppress of a name the module binds to a tuple with OSError": (
         "import contextlib\n\nERRORS = (OSError,)\n\n\ndef f(p):\n    with contextlib.suppress(ERRORS):\n"
         "        return p.read_bytes()\n    return b''\n"
+    ),
+    "a read in the items a suppress of OSError precedes": (
+        "import contextlib\n\n\ndef f(p):\n    with contextlib.suppress(OSError), open(p) as h:\n"
+        "        return h.read()\n    return None\n"
+    ),
+    "a read in the items of an async with a suppress of OSError precedes": (
+        "from contextlib import suppress\n\n\nasync def f(p, lock):\n"
+        "    async with lock, suppress(OSError), lock, p.open() as h:\n        return h.read()\n    return None\n"
+    ),
+    "a handler that binds a name nothing reads, then continues": (
+        "import os\n\n\ndef f(ps):\n    for p in ps:\n        try:\n            os.stat(p)\n        except OSError:\n"
+        "            failed = True\n            continue\n        print(p)\n"
+    ),
+    "a handler that counts in a name nothing reads, then breaks": (
+        "import os\n\n\ndef f(ps):\n    misses = 0\n    for p in ps:\n        try:\n            os.stat(p)\n"
+        "        except OSError:\n            misses += 1\n            break\n        print(p)\n"
     ),
     "a handler that warns by an imported warn": (
         "from warnings import warn\n\n\ndef f(p):\n    try:\n        return p.stat()\n    except OSError:\n"
@@ -5602,6 +5632,142 @@ PRESENCE_REFUSAL_SHAPES = {
     ),
     "if not P: store a message as an item": (
         "def f(p, problems):\n    if not {call}:\n        problems[p] = 'the folder is missing'\n    return problems\n"
+    ),
+    "if not P: return a list holding a message": (
+        "def f(p):\n    if not {call}:\n        return [f'{{p}} is missing']\n    return []\n"
+    ),
+    "if not P: yield a message": (
+        "def f(ps):\n    for p in ps:\n        if not {call}:\n            yield f'{{p}} is missing'\n"
+    ),
+    "assert P with a message": "def f(p):\n    assert {call}, f'{{p}} is missing'\n    return 1\n",
+    "while not P: raise": (
+        "def f(p):\n    while not {call}:\n        raise OSError(f'{{p}} is missing')\n    return 1\n"
+    ),
+    "while P: ... else: raise": (
+        "def f(p, q):\n    while {call}:\n        if q:\n            break\n    else:\n        raise OSError(p)\n"
+        "    return 1\n"
+    ),
+    "match P: case False: raise": (
+        "def f(p):\n    match {call}:\n        case False:\n            raise OSError(p)\n    return 1\n"
+    ),
+    "match P: case None | False: return a message": (
+        "def f(p):\n    match {call}:\n        case None | False:\n            return f'{{p}} is missing'\n"
+        "    return None\n"
+    ),
+    "match P: case True: ... case _: record a message": (
+        "def f(p, problems):\n    match {call}:\n        case True:\n            return 1\n        case _:\n"
+        "            problems.append(f'{{p}} is missing')\n    return 0\n"
+    ),
+    "while not P: return a message": (
+        "def f(p):\n    while not {call}:\n        return f'{{p}} is missing'\n    return None\n"
+    ),
+    "while not P: record a message, break": (
+        "def f(p, problems):\n    while not {call}:\n        problems.append(f'{{p}} is missing')\n        break\n"
+        "    return problems\n"
+    ),
+    "while P: ... else: return a message": (
+        "def f(p, q):\n    while {call}:\n        if q:\n            break\n    else:\n"
+        "        return f'{{p}} is missing'\n    return None\n"
+    ),
+    "match not P: case True: raise": (
+        "def f(p):\n    match not {call}:\n        case True:\n            raise OSError(p)\n    return 1\n"
+    ),
+    "match P: case False if Q: raise": (
+        "def f(p, q):\n    match {call}:\n        case False if q:\n            raise OSError(p)\n    return 1\n"
+    ),
+    "match P: case True: return, then raise": (
+        "def f(p):\n    match {call}:\n        case True:\n            return 1\n"
+        "    raise OSError(f'{{p}} is missing')\n"
+    ),
+    "if not P: return a message in a conditional expression's arm": (
+        "def f(p, q):\n    if not {call}:\n        return f'{{p}} is missing' if q else 'gone from here'\n"
+        "    return None\n"
+    ),
+    "if not P: record a conditional expression": (
+        "def f(p, q, problems):\n    if not {call}:\n        problems.append(f'{{p}} is missing' if q else p)\n"
+        "    return problems\n"
+    ),
+    "if not P: return Q or a message": (
+        "def f(p, q):\n    if not {call}:\n        return q or f'{{p}} is missing'\n    return None\n"
+    ),
+    "if not P: extend by a generator of messages": (
+        "def f(p, problems):\n    if not {call}:\n        problems.extend(f'{{x}} is missing' for x in [p])\n"
+        "    return problems\n"
+    ),
+    "if not P: record a message nested in lists": (
+        "def f(p, problems):\n    if not {call}:\n        problems.append([[p, 'the file is missing']])\n"
+        "    return problems\n"
+    ),
+    "if not P: return a message nested in dictionaries": (
+        "def f(p):\n    if not {call}:\n        return {{'error': {{'why': 'the file is missing'}}}}\n    return None\n"
+    ),
+    "if not P: return a method of a message": (
+        "def f(p):\n    if not {call}:\n        return f'{{p}} is missing'.strip()\n    return None\n"
+    ),
+    "if not P: return a tuple holding an f-string message": (
+        "def f(p):\n    if not {call}:\n        return None, f'{{p}} is missing'\n    return p, None\n"
+    ),
+    "if not P: record a set holding a message": (
+        "def f(p, problems):\n    if not {call}:\n        problems.update({{f'{{p}} is missing'}})\n"
+        "    return problems\n"
+    ),
+    "if not P: record a dictionary whose value is a message": (
+        "def f(p, problems):\n    if not {call}:\n        problems.update({{p: 'the file is missing'}})\n"
+        "    return problems\n"
+    ),
+    "match X: case V if not P: raise": (
+        "def f(p, x):\n    match x:\n        case 'file' if not {call}:\n            raise OSError(p)\n    return 1\n"
+    ),
+    "match X: case V if not P: record a message": (
+        "def f(p, x, problems):\n    match x:\n        case 'file' if not {call}:\n"
+        "            problems.append(f'{{p}} is missing')\n    return problems\n"
+    ),
+    "match P: case False as V: raise": (
+        "def f(p):\n    match {call}:\n        case False as v:\n            raise OSError(p)\n    return 1\n"
+    ),
+    "match P: case False | None as V: raise": (
+        "def f(p):\n    match {call}:\n        case False | None as v:\n            raise OSError(p)\n    return 1\n"
+    ),
+    "a method of a message when not P": (
+        "def f(p):\n    return 'the file is missing '.strip() if not {call} else None\n"
+    ),
+    "Q or a message when not P": "def f(p, q):\n    return (q or 'the file is missing') if not {call} else None\n",
+    "a nested message for each path not P keeps": (
+        "def f(ps):\n    return [[p, 'the file is missing'] for p in ps if not {call}]\n"
+    ),
+    "a dictionary of messages for each path not P keeps": (
+        "def f(ps):\n    return {{p: 'the file is missing' for p in ps if not {call}}}\n"
+    ),
+    "match P: case True: return, then return a list holding a message": (
+        "def f(p):\n    match {call}:\n        case True:\n            return p\n    return ['the file is missing']\n"
+    ),
+    "if not P: return a dictionary keyed by a message": (
+        "def f(p):\n    if not {call}:\n        return {{'the file is missing': p}}\n    return None\n"
+    ),
+    "if not P: return a comprehension keyed by messages": (
+        "def f(p, ps):\n    if not {call}:\n        return {{f'{{x}} is missing': x for x in ps}}\n    return None\n"
+    ),
+    "if not P: return a subscript of messages": (
+        "def f(p, i):\n    if not {call}:\n        return ['the file is missing', 'gone'][i]\n    return None\n"
+    ),
+    "if not P: return a join of messages": (
+        "def f(p, ps):\n    if not {call}:\n        return ', '.join(f'{{x}} is missing' for x in ps)\n"
+        "    return None\n"
+    ),
+    "if not P: return a starred message": (
+        "def f(p):\n    if not {call}:\n        return [*['the file is missing']]\n    return None\n"
+    ),
+    "if not P: return a message an assignment expression binds": (
+        "def f(p):\n    if not {call}:\n        return (why := f'{{p}} is missing')\n    return None\n"
+    ),
+    "if not P: return a dictionary comprehension of messages": (
+        "def f(p):\n    if not {call}:\n        return {{x: f'{{x}} is missing' for x in [p]}}\n    return None\n"
+    ),
+    "if not P: return a set comprehension of messages": (
+        "def f(p):\n    if not {call}:\n        return {{f'{{x}} is missing' for x in [p]}}\n    return None\n"
+    ),
+    "if not P: yield from messages": (
+        "def f(ps):\n    for p in ps:\n        if not {call}:\n            yield from [f'{{p}} is missing']\n"
     ),
     "a message when not P": "def f(p):\n    return '' if {call} else ', which no longer exists'\n",
     "a message for each path not P keeps": "def f(ps):\n    return [f'{{p}} is missing' for p in ps if not {call}]\n",
@@ -5984,6 +6150,124 @@ PRESENCE_PASSED = {
         "ERRORS = (ValueError, KeyError)\n\n\ndef f(p):\n    try:\n        return p.stat()\n    except ERRORS:\n"
         "        return None\n"
     ),
+    "a read in the items before a suppress of OSError": (
+        "import contextlib\n\n\ndef f(p):\n    with open(p) as h, contextlib.suppress(OSError):\n"
+        "        return h.read()\n"
+    ),
+    "a handler that binds a name its function reads, then continues": (
+        "import os\n\n\ndef f(ps):\n    failed = False\n    for p in ps:\n        try:\n            os.stat(p)\n"
+        "        except OSError:\n            failed = True\n            continue\n        print(p)\n"
+        "    return failed\n"
+    ),
+    "a handler that binds a name a nested function reads, then breaks": (
+        "import os\n\n\ndef f(ps):\n    for p in ps:\n        try:\n            os.stat(p)\n        except OSError:\n"
+        "            failed = p\n            break\n\n    def g():\n        return failed\n\n    return g\n"
+    ),
+    "a handler that binds a name at module level, then continues": (
+        "import os\n\nfor p in []:\n    try:\n        os.stat(p)\n    except OSError:\n        failed = True\n"
+        "        continue\n"
+    ),
+    # A string inside another call's arguments is that call's value, and one stored under a literal key a field's.
+    "a path built from words on a test's False": (
+        "import file_presence\nfrom pathlib import Path\n\n\ndef f(p):\n"
+        "    if not file_presence.is_present(p, other_is_absent=True):\n        return Path('Program Files')\n"
+        "    return p\n"
+    ),
+    "a field set from words on a test's False": (
+        "import file_presence\n\n\ndef f(p, cfg):\n    if not file_presence.is_present(p, other_is_absent=True):\n"
+        "        cfg['title'] = 'Untitled document'\n    return cfg\n"
+    ),
+    "a tuple of values on a test's False": (
+        "import file_presence\n\n\ndef f(p):\n    if not file_presence.is_present(p, other_is_absent=True):\n"
+        "        return None, p.name\n    return p, None\n"
+    ),
+    "a set of values recorded on a test's False": (
+        "import file_presence\n\n\ndef f(p, seen):\n    if not file_presence.is_present(p, other_is_absent=True):\n"
+        "        seen.update({p.name})\n    return seen\n"
+    ),
+    "a dictionary of values recorded on a test's False": (
+        "import file_presence\n\n\ndef f(p, seen):\n    if not file_presence.is_present(p, other_is_absent=True):\n"
+        "        seen.update({p: p.name})\n    return seen\n"
+    ),
+    "a match whose cases do not all leave, then a raise": (
+        "import file_presence\n\n\ndef f(p):\n    match file_presence.is_present(p, other_is_absent=True):\n"
+        "        case True:\n            x = 1\n    raise OSError(f'{p} is missing')\n"
+    ),
+    "a match whose False case leaves, then a raise on True": (
+        "import file_presence\n\n\ndef f(p):\n    match file_presence.is_present(p, other_is_absent=True):\n"
+        "        case False:\n            return None\n    raise OSError(f'{p} is in the way')\n"
+    ),
+    "a starred value on a test's False": (
+        "import file_presence\n\n\ndef f(p, ps, i):\n    if not file_presence.is_present(p, other_is_absent=True):\n"
+        "        return [*[p.name]]\n    return None\n"
+    ),
+    "a value an assignment expression binds on a test's False": (
+        "import file_presence\n\n\ndef f(p, ps, i):\n    if not file_presence.is_present(p, other_is_absent=True):\n"
+        "        return (name := p.name)\n    return None\n"
+    ),
+    "a dictionary comprehension of values on a test's False": (
+        "import file_presence\n\n\ndef f(p, ps, i):\n    if not file_presence.is_present(p, other_is_absent=True):\n"
+        "        return {x: x.name for x in ps}\n    return None\n"
+    ),
+    "a set comprehension of values on a test's False": (
+        "import file_presence\n\n\ndef f(p, ps, i):\n    if not file_presence.is_present(p, other_is_absent=True):\n"
+        "        return {x.name for x in ps}\n    return None\n"
+    ),
+    "a subscript of values on a test's False": (
+        "import file_presence\n\n\ndef f(p, ps, i):\n    if not file_presence.is_present(p, other_is_absent=True):\n"
+        "        return [p.name, p.stem][i]\n    return None\n"
+    ),
+    "a join of values on a test's False": (
+        "import file_presence\n\n\ndef f(p, ps, i):\n    if not file_presence.is_present(p, other_is_absent=True):\n"
+        "        return ', '.join(x.name for x in ps)\n    return None\n"
+    ),
+    "os.path.join of words on a test's False": (
+        "import os\nimport file_presence\n\n\ndef f(p, ps, i):\n"
+        "    if not file_presence.is_present(p, other_is_absent=True):\n"
+        "        return os.path.join('Program Files', p.name)\n    return None\n"
+    ),
+    "a dictionary keyed by values on a test's False": (
+        "import file_presence\n\n\ndef f(p, ps, i):\n    if not file_presence.is_present(p, other_is_absent=True):\n"
+        "        return {p.name: p}\n    return None\n"
+    ),
+    "a yield from values on a test's False": (
+        "import file_presence\n\n\ndef f(ps):\n    for p in ps:\n"
+        "        if not file_presence.is_present(p, other_is_absent=True):\n            yield from [p.name]\n"
+    ),
+    "a match guard that needs P's True": (
+        "import file_presence\n\n\ndef f(p, x):\n    match x:\n"
+        "        case 'file' if file_presence.is_present(p, other_is_absent=True):\n"
+        "            raise OSError(f'{p} is in the way')\n    return 1\n"
+    ),
+    "a match capturing True that raises": (
+        "import file_presence\n\n\ndef f(p):\n    match file_presence.is_present(p, other_is_absent=True):\n"
+        "        case True as v:\n            raise OSError(f'{p} is in the way')\n    return 1\n"
+    ),
+    "an assert with no message": (
+        "import file_presence\n\n\ndef f(p):\n    assert file_presence.is_present(p, other_is_absent=True)\n"
+        "    return 1\n"
+    ),
+    "a while not P that waits": (
+        "import file_presence\nimport time\n\n\ndef f(p):\n"
+        "    while not file_presence.is_present(p, other_is_absent=True):\n        time.sleep(1)\n    return 1\n"
+    ),
+    "a while P that raises": (
+        "import file_presence\n\n\ndef f(p):\n    while file_presence.is_present(p, other_is_absent=True):\n"
+        "        raise OSError(f'{p} is still there')\n    return 1\n"
+    ),
+    "a match whose refusing case takes True": (
+        "import file_presence\n\n\ndef f(p):\n    match file_presence.is_present(p, other_is_absent=True):\n"
+        "        case True:\n            raise OSError(f'{p} is in the way')\n        case _:\n            return 1\n"
+    ),
+    "a match whose case of anything comes before True": (
+        "import file_presence\n\n\ndef f(p, q):\n    match file_presence.is_present(p, other_is_absent=True):\n"
+        "        case _ if q:\n            return 1\n        case True:\n            return 2\n"
+        "        case False:\n            return 0\n    return 3\n"
+    ),
+    "a yield of one word on a test's False": (
+        "import file_presence\n\n\ndef f(ps):\n    for p in ps:\n"
+        "        if not file_presence.is_present(p, other_is_absent=True):\n            yield p.name\n"
+    ),
     "suppress of FileNotFoundError around a stat": (
         "import contextlib\n\n\ndef f(p):\n    with contextlib.suppress(FileNotFoundError):\n"
         "        return p.stat()\n    return None\n"
@@ -5995,6 +6279,9 @@ PRESENCE_PASSED = {
     # A method that is no presence test, and a walk that is a module's function or a class's own method, never a
     # path's.
     "another method": "def f(p):\n    return p.read_text() if p.is_absolute() else None\n",
+    "another method called by operator.methodcaller": (
+        "import operator\n\n\ndef f(p):\n    return operator.methodcaller('read_text', 'utf-8')(p)\n"
+    ),
     "ast.walk": "import ast\n\n\ndef f(tree):\n    return list(ast.walk(tree))\n",
     "a class's own walk": "class Walker:\n    def f(self, tree):\n        return list(self.walk(tree))\n",
     "a path's walk given an on_error": "def f(p, fail):\n    return list(p.walk(on_error=fail))\n",
@@ -6005,6 +6292,12 @@ PRESENCE_PASSED = {
     "limit: an answer returned by a function the refusal calls": (
         "import file_presence\n\n\ndef present(p):\n    return file_presence.is_present(p, other_is_absent=True)\n\n\n"
         "def f(p):\n    if not present(p):\n        raise OSError(f'{p} is missing')\n    return 1\n"
+    ),
+    "limit: a collection one function keeps by an answer, which its caller refuses on": (
+        "import file_presence\n\n\ndef files(folder):\n"
+        "    return {p.name: p for p in folder.iterdir() if file_presence.is_present(p, other_is_absent=True)}\n\n\n"
+        "def f(folder):\n    if 'mutants.json' not in files(folder):\n"
+        "        raise RuntimeError('the select job wrote no mutants.json')\n    return 1\n"
     ),
     "limit: an answer held in an attribute": (
         "import file_presence\n\n\nclass A:\n    def f(self, p):\n"
@@ -6029,6 +6322,15 @@ PRESENCE_PASSED = {
     "limit: a returned name bound to an empty value inside the try": (
         "def f(p):\n    try:\n        result = []\n        result = list(p.iterdir())\n    except OSError:\n"
         "        return result\n    return result\n"
+    ),
+    "limit: a message nested in another call's arguments": (
+        "import file_presence\n\n\ndef f(p, problems, Problem):\n"
+        "    if not file_presence.is_present(p, other_is_absent=True):\n"
+        "        problems.append(Problem(p, 'the file is missing'))\n    return problems\n"
+    ),
+    "limit: a message stored under a literal key": (
+        "import file_presence\n\n\ndef f(p, report):\n    if not file_presence.is_present(p, other_is_absent=True):\n"
+        "        report['error'] = 'the file is missing'\n    return report\n"
     ),
     "limit: a link test, which the link-test policy holds": "def f(p):\n    return p.is_symlink()\n",
 }

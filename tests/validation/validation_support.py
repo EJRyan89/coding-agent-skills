@@ -84,7 +84,8 @@ OPERATIONS_CONTRACT = "docs/code-review-operations-contract.md"
 # reads through attribute_lookups, or literal_lookups for a name spelled as one string literal, and through no
 # catalogue of its own. Its forms: a call given the object and the name, as getattr(os, "environ") reads os.environ
 # (ATTRIBUTE_READERS), the lookup method every object has (LOOKUP_METHOD), a getter built from the name and applied to
-# the object (ATTRIBUTE_GETTERS), and a subscript of the object's namespace (NAMESPACE_READERS, NAMESPACE_ATTRIBUTE).
+# the object (ATTRIBUTE_GETTERS), a caller built from a method's name and applied to the object (METHOD_CALLERS), and a
+# subscript of the object's namespace (NAMESPACE_READERS, NAMESPACE_ATTRIBUTE).
 ATTRIBUTE_READERS = frozenset(
     {
         "getattr",
@@ -100,6 +101,9 @@ ATTRIBUTE_TESTS = frozenset({"hasattr", "builtins.hasattr"})
 # The call that builds a reader of the attribute it names, applied to the object after, as
 # operator.attrgetter("environ")(os) reads os.environ.
 ATTRIBUTE_GETTERS = frozenset({"operator.attrgetter"})
+# The call that builds a caller of the method its first argument names, applied to the object after, as
+# operator.methodcaller("exists")(p) calls p.exists; its other arguments are the method's, not names.
+METHOD_CALLERS = frozenset({"operator.methodcaller"})
 # The method every object has that reads one of its attributes given the name, as os.__getattribute__("environ").
 LOOKUP_METHOD = "__getattribute__"
 # The calls that return an object's namespace, whose subscript by a name reads the attribute, as vars(os)["environ"].
@@ -865,19 +869,22 @@ BUILTINS_PREFIX = "builtins."
 @dataclass(frozen=True)
 class AttributeLookup:
     """One attribute an expression reads by its name: the object it is read on, the expression that gives the name,
-    and whether the expression's value is that attribute itself, which an attrgetter given more than one name is not,
-    since it returns a tuple of them."""
+    whether the expression's value is that attribute itself, which an attrgetter given more than one name is not,
+    since it returns a tuple of them, and whether the expression calls the attribute, as a methodcaller applied to the
+    object does."""
 
     receiver: ast.expr
     name: ast.expr
     alone: bool
+    called: bool = False
 
 
 def attribute_lookups(node: ast.AST, names: Callable[[ast.expr], Iterable[str]]) -> list[AttributeLookup]:
     """Each attribute a node reads by its name, in every form of the one catalogue: a call of an ATTRIBUTE_READERS
     entry given the object and the name, as getattr(os, "environ") or inspect.getattr_static(os, "environ"); the
     object's own LOOKUP_METHOD, as os.__getattribute__("environ"); an ATTRIBUTE_GETTERS getter applied to the object,
-    one lookup for each name it is given; and a subscript of the object's namespace, as vars(os)["environ"] or
+    one lookup for each name it is given; a METHOD_CALLERS caller applied to the object, one lookup of the method its
+    first argument names, which it calls; and a subscript of the object's namespace, as vars(os)["environ"] or
     os.__dict__["environ"]. `names` gives every qualified name an expression may stand for, so each policy resolves a
     callable its own way. Empty for any other node; a form given no object or no name reads nothing."""
     if isinstance(node, ast.Subscript):
@@ -910,6 +917,14 @@ def attribute_lookups(node: ast.AST, names: Callable[[ast.expr], Iterable[str]])
     ):
         alone = len(function.args) == 1 and not isinstance(function.args[0], ast.Starred)
         return [AttributeLookup(node.args[0], attribute, alone=alone) for attribute in function.args]
+    if (
+        isinstance(function, ast.Call)
+        and node.args
+        and not isinstance(node.args[0], ast.Starred)
+        and any(name in METHOD_CALLERS for name in names(function.func))
+        and (method := call_argument(function, 0)) is not None
+    ):
+        return [AttributeLookup(node.args[0], method, alone=False, called=True)]
     return []
 
 

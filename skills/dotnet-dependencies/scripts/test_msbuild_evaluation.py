@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import sys
 import tempfile
 import unittest
@@ -403,6 +404,28 @@ class EvaluationTests(unittest.TestCase):
             (["Lantern.file", "Lantern.folder"], []), ([package.id for package in project.packages], project.reports)
         )
 
+    @unittest.skipIf(sys.platform == "win32", "a symbolic link needs a privilege on Windows, which makes no FIFO")
+    def test_exists_holds_for_anything_at_the_path_as_msbuild_reads_it(self) -> None:
+        # MSBuild's Exists() is FileOrDirectoryExists: GetFileAttributes on Windows, which does not follow a link, and
+        # .NET's File.Exists or Directory.Exists elsewhere, where File.Exists reads the path with lstat and is true for
+        # a FIFO, a device, and a link to nothing. So each is there, never read as nothing.
+        app = self.root / "src" / "App"
+        app.mkdir(parents=True)
+        (app / "marker.dangling").symlink_to(app / "nowhere")
+        kinds = ["dangling"]
+        if hasattr(os, "mkfifo"):
+            os.mkfifo(app / "marker.fifo")
+            kinds.append("fifo")
+        groups = "".join(
+            f"<ItemGroup Condition=\"Exists('marker.{kind}')\">"
+            f'<PackageReference Include="Lantern.{kind}" Version="1.0.0" /></ItemGroup>'
+            for kind in kinds
+        )
+        project = self.read("src/App/App.csproj", f'<Project Sdk="Microsoft.NET.Sdk">{groups}</Project>')
+        self.assertEqual(
+            (["Lantern.dangling", "Lantern.fifo"], []), ([package.id for package in project.packages], project.reports)
+        )
+
     def test_a_stat_error_naming_no_file_is_reported_against_the_import_or_the_exists_path(self) -> None:
         text = (
             '<Project Sdk="Microsoft.NET.Sdk"><Import Project="Local.props" />'
@@ -414,7 +437,8 @@ class EvaluationTests(unittest.TestCase):
         for name in ("Local.props", "extra.marker"):
             target = self.root / "src" / "App" / name
             with self.subTest(name):
-                with failing_without_a_file(msbuild_evaluation, "is_present", target):
+                reader = "is_present" if name == "Local.props" else "is_occupied"
+                with failing_without_a_file(msbuild_evaluation, reader, target):
                     project = self.read("src/App/App.csproj", text)
                 self.assertEqual([(target, "Access is denied")], [(item.file, item.reason) for item in project.reports])
 

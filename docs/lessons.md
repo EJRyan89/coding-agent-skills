@@ -72,6 +72,7 @@ removed fails validation until its pattern follows it.
   `tests/validation/python_checks.py::PythonChecksPolicies::test_link_probe_is_the_one_link_test`,
   `tests/validation/python_checks.py::PythonChecksPolicies::test_no_process_runner_result_is_discarded_unchecked`,
   `tests/tools/test_mutation_gate.py::test_a_failed_or_timed_out_coverage_step_names_the_step_and_its_output`,
+  `tests/tools/test_mutation_gate.py::test_a_run_file_of_another_kind_is_refused_never_read_as_one_the_job_never_wrote`,
   `tests/deployer/test_deploy_at.py::DeployAtTests::test_a_pin_whose_tags_git_cannot_read_is_refused_with_gits_reason`,
   `tests/deployer/test_deploy_at.py::RefValidationTests::test_only_gits_quiet_answer_is_a_ref_that_names_no_commit`,
   `tests/tools/test_hub_guard.py::UnreadableCheckoutFileTests`,
@@ -109,7 +110,10 @@ removed fails validation until its pattern follows it.
   returns False on every `OSError`, and `lexists` on a `ValueError` too; a refusal worded as missing on a search,
   `next((p for p in paths if not P), None)`, or after `if P: return p`, where `P` is such a predicate or a
   `file_presence` test given `other_is_absent=True`, raised or recorded as a report, as
-  `dotnet-dependencies` recorded an Import naming a folder as one whose file is not found; `if not result.stdout`
+  `dotnet-dependencies` recorded an Import naming a folder as one whose file is not found, and its spread form, a
+  collection one function keeps by such a test whose caller refuses a name missing from it, as
+  `tools/mutation_gate.py`'s `run_files` dropped a folder named as a run file and the join then said the job wrote
+  none; `if not result.stdout`
   read as nothing found; `len(lines) != ` beside a successful git answer followed by `return None`; two branches
   that catch the same `GitError` and read its kinds differently; a function given a new `raise GitError` whose
   callers are not each read for where the error goes, one that catches it on one branch and lets it escape on

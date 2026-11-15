@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import ast
 import contextlib
+import errno
 import functools
 import importlib
 import io
@@ -4906,9 +4907,61 @@ def test_a_runs_files_are_only_the_records_its_steps_write() -> None:
             (folder / name).write_text("{}", encoding="utf-8")
         (folder / "verdict").mkdir()
         (folder / "verdict" / "verdict.json").write_text("{}", encoding="utf-8")
-        # A folder named as a record is an artifact's folder, not a record.
-        (folder / "outcomes-windows.json").mkdir()
-        assert sorted(mutation_gate.run_files(folder)) == ["local-linux.json", "mutants.json", "outcomes-linux-1.json"]
+        # A folder whose name is no record's is an artifact's folder: `gh run download` names each after its artifact.
+        (folder / "mutation-linux-1").mkdir()
+        (folder / "mutation-linux-1" / "outcomes-linux-2.json").write_text("{}", encoding="utf-8")
+        assert sorted(mutation_gate.run_files(folder)) == [
+            "local-linux.json",
+            "mutants.json",
+            "outcomes-linux-1.json",
+            "outcomes-linux-2.json",
+        ]
+
+
+@pytest.mark.parametrize(
+    ("place", "name"),
+    [
+        pytest.param("", "mutants.json", id="the selection in the run folder"),
+        pytest.param("mutation-windows-1", "outcomes-windows-1.json", id="a leg's outcomes in an artifact's folder"),
+    ],
+)
+def test_a_run_file_of_another_kind_is_refused_never_read_as_one_the_job_never_wrote(place: str, name: str) -> None:
+    with tempfile.TemporaryDirectory() as temporary:
+        folder = Path(temporary)
+        if place:
+            (folder / "mutants.json").write_text("{}", encoding="utf-8")
+        (folder / place / name).mkdir(parents=True)
+        with pytest.raises(RuntimeError) as raised:
+            mutation_gate.run_files(folder)
+    assert str(raised.value) == f"{folder / place / name} is not a file, so it is no record the run wrote"
+
+
+def test_a_run_file_a_stat_cannot_examine_is_refused_naming_the_reason() -> None:
+    with tempfile.TemporaryDirectory() as temporary:
+        folder = Path(temporary)
+        (folder / "mutants.json").write_text("{}", encoding="utf-8")
+        real = Path.stat
+
+        def stat(path: Path, *, follow_symlinks: bool = True) -> os.stat_result:
+            if path.name == "mutants.json":
+                raise PermissionError(errno.EACCES, "Permission denied", str(path))
+            return real(path, follow_symlinks=follow_symlinks)
+
+        with mock.patch.object(Path, "stat", stat), pytest.raises(RuntimeError) as raised:
+            mutation_gate.run_files(folder)
+    assert str(raised.value) == (
+        f"{folder / 'mutants.json'} cannot be examined: Permission denied, so it is no record the run wrote"
+    )
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="a symbolic link needs a privilege on Windows")
+def test_a_run_file_that_is_a_link_to_nothing_is_one_the_job_never_wrote() -> None:
+    with tempfile.TemporaryDirectory() as temporary:
+        folder = Path(temporary)
+        (folder / "mutants.json").symlink_to(folder / "nowhere.json")
+        assert mutation_gate.run_files(folder) == {}
+        with pytest.raises(RuntimeError, match=r"the select job wrote no mutants\.json"):
+            mutation_gate.read_run(folder)
 
 
 def test_a_local_run_is_read_by_its_own_files_name() -> None:

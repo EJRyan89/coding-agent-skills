@@ -4113,12 +4113,13 @@ class PresenceReadTests(Fixture):
 
     def test_an_import_or_an_exists_condition_it_cannot_stat_is_an_unreadable_row_never_not_found(self) -> None:
         # An Import whose file it cannot stat names the stat's reason, never "not found"; an Exists() condition on a
-        # path it cannot stat is reported and left unsettled, never answered False.
+        # path it cannot stat is reported and left unsettled, never answered False. Exists() reads the path itself, not
+        # through a link, as MSBuild does, so its stat fails for the path, where the Import's fails through links.
         self.write("src/App/App.csproj", EVALUATED_PROJECT)
         self.write("src/App/Local.props", "<Project />")
         self.write("src/App/extra.marker", "")
-        for shown in ("src/App/Local.props", "src/App/extra.marker"):
-            with self.subTest(shown), stat_through_fails(self.root / shown):
+        for shown, failing in (("src/App/Local.props", stat_through_fails), ("src/App/extra.marker", stat_failing_at)):
+            with self.subTest(shown), failing(self.root / shown):
                 code, rows = self.run_main("why", "Quill.Http", "--root", str(self.root))
             self.assertEqual(1, code)
             self.assertEqual([[shown, "Access is denied"]], self.lines(rows, "UNREADABLE"))

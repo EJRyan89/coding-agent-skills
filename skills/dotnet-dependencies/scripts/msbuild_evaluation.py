@@ -58,7 +58,7 @@ from xml.etree.ElementTree import Element
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
 from dotnet_solution import project_path, refusal, same_path
-from file_presence import is_directory, is_present
+from file_presence import is_occupied, is_present
 from msbuild_conditions import EMPTY, UNKNOWN, FileSystem, Value, condition_value, expanded, union
 from msbuild_reader import (
     ASSEMBLY_VERSION,
@@ -332,13 +332,19 @@ class Evaluation:
         return self.state.get(key)
 
     def exists(self, text: str) -> bool | None:
-        """MSBuild's `Exists()`: whether a file or a folder is at the path, following links; None, unsettled, for a path
-        the tree refuses or one whose stat fails, which is reported, never answered as not there."""
+        """MSBuild's `Exists()`: whether anything is at the path, of any kind, a link to nothing included; None,
+        unsettled, for a path the tree refuses or one whose stat fails, which is reported, never answered as not there.
+
+        MSBuild answers it through its file system's FileOrDirectoryExists: on Windows, whether GetFileAttributes finds
+        the path, which does not follow a link; elsewhere, File.Exists or Directory.Exists, where .NET's File.Exists
+        reads the path itself with lstat and is true for anything but a folder, a FIFO, a device, and a link to nothing
+        among them. So the faithful answer is file_presence.is_occupied, which reads the path without following a
+        link, not is_there, which reads a link to nothing as nothing there."""
         path = project_path(self.project.path.parent, text)
         if refusal(path, self.project.sources.tree) is not None:
             return None
         try:
-            return is_present(path, other_is_absent=True) or is_directory(path, other_is_absent=True)
+            return is_occupied(path)
         except OSError as error:
             self.reports.append(os_unreadable(error, path))
             return None
