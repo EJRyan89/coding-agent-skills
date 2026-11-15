@@ -23,6 +23,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-cor
 
 import review_specialists as rs
 from review_runtime import RuntimeContractError
+from test_private_folder import judged_folder_calls, recording_temporary_folders
 from test_review_archive import unstatable
 
 CORE = Path(__file__).resolve().parents[1]
@@ -1130,6 +1131,18 @@ class SpecialistTests(PlanFixture):
         self.diff(*CHANGED)
         self.build(reviewer)
         self.assertEqual(1, self.effects.count(("condition", "tools/window.py")))
+
+    def test_a_condition_writes_its_file_in_the_temporary_directory_private_folder_judged(self) -> None:
+        # The routing reads each condition's output back, so it lies only where no other account can swap it.
+        files = {key: value for key, value in REVIEWER_FILES.items() if key != "agents/cs.md"}
+        reviewer = self.reviewer(manifest(DB, COMPAT), files)
+        self.diff(*CHANGED)
+        with recording_temporary_folders() as calls:
+            self.build(reviewer)
+        self.assertEqual(1, self.effects.count(("condition", "tools/window.py")))
+        judged = judged_folder_calls(calls, "code-review-conditions-")
+        self.assertTrue(judged, "no condition folder was made")
+        self.assertTrue(all(judged), calls)
 
     def test_the_condition_runs_in_the_work_directory_against_the_snapshot(self) -> None:
         script = (

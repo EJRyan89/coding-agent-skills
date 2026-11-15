@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import itertools
+import os
 import shutil
 import subprocess
 import sys
@@ -16,6 +17,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts"))
 
+import private_folder
 from git_client import GitError
 from harness import (
     DEPLOY_COMMAND,
@@ -26,6 +28,7 @@ from harness import (
     git,
     recorded_temporary_directories,
 )
+from test_private_folder import recording_temporary_folders
 
 from deployer import fsops, platform_support, source_ref, tools
 from deployer.errors import DeployError
@@ -785,6 +788,19 @@ class DeployAtTests(DeployerTestCase):
         patcher.start()
         self.addCleanup(patcher.stop)
         return own, shared
+
+    def test_the_export_and_the_attributes_index_each_lie_in_the_temporary_directory_private_folder_judged(
+        self,
+    ) -> None:
+        # Each is held on its own, since a refusal of either stops the run before the other is made.
+        with recording_temporary_folders() as calls:
+            self.deploy_ok("--all", "--at", "v1.0.0")
+        judged = os.fspath(private_folder.temporary_directory())
+        for prefix in ("deploy-at-", "deploy-at-attributes-"):
+            with self.subTest(prefix):
+                folders = [folder for given, folder in calls if given == prefix]
+                self.assertEqual([judged], folders, calls)
+        self.assert_exports_removed()
 
     @unittest.skipIf(sys.platform == "win32", "Windows mode bits say nothing about who may write a folder")
     def test_an_export_in_a_temporary_directory_another_account_could_rename_is_refused_before_it_is_made(

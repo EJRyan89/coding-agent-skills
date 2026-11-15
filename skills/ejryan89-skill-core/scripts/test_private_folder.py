@@ -3,15 +3,17 @@
 from __future__ import annotations
 
 import contextlib
+import inspect
 import io
 import os
 import stat
 import sys
 import tempfile
 import unittest
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from types import SimpleNamespace
-from typing import cast
+from typing import Any, cast
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -26,6 +28,42 @@ DIRECTORY = stat.S_IFDIR
 OTHER_USER = 4242
 # The variable naming the user's runtime directory, as the XDG Base Directory specification names it.
 RUNTIME = "XDG_RUNTIME_DIR"
+
+
+# The tempfile calls a converted caller makes its folder or file with, each recorded by the folder it was given.
+RECORDED_MAKERS = ("mkdtemp", "mkstemp", "TemporaryDirectory")
+
+
+@contextlib.contextmanager
+def recording_temporary_folders() -> Iterator[list[tuple[str, str | None]]]:
+    """Record the prefix and the `dir` of each tempfile.mkdtemp, mkstemp, and TemporaryDirectory call until the block
+    ends, as each was given by keyword or by position, while each still makes its folder or file. The suites of other
+    skills import it to hold that a caller passes the folder `private_folder.temporary_directory` judged: one recorded
+    with the default `dir` None lies wherever TMPDIR points, unjudged."""
+    calls: list[tuple[str, str | None]] = []
+
+    def recorder(real: Callable[..., Any]) -> Callable[..., Any]:
+        signature = inspect.signature(real)
+
+        def call(*arguments: Any, **keywords: Any) -> Any:
+            bound = signature.bind(*arguments, **keywords)
+            given = bound.arguments.get("dir")
+            calls.append((bound.arguments.get("prefix") or "", None if given is None else os.fspath(given)))
+            return real(*arguments, **keywords)
+
+        return call
+
+    with contextlib.ExitStack() as stack:
+        for name in RECORDED_MAKERS:
+            stack.enter_context(mock.patch.object(tempfile, name, recorder(getattr(tempfile, name))))
+        yield calls
+
+
+def judged_folder_calls(calls: list[tuple[str, str | None]], prefix: str) -> list[bool]:
+    """For each recorded call whose prefix starts with `prefix`, whether its `dir` is the folder
+    `private_folder.temporary_directory` hands back."""
+    judged = os.fspath(private_folder.temporary_directory())
+    return [folder == judged for given, folder in calls if given.startswith(prefix)]
 
 
 def metadata(mode: int, owner: int) -> os.stat_result:
@@ -403,6 +441,23 @@ class TemporaryDirectoryCommandTests(unittest.TestCase):
     def test_with_no_folder_the_temporary_directory_is_judged(self) -> None:
         with mock.patch.object(tempfile, "tempdir", str(self.root)):
             self.assertEqual((0, f"TEMPORARY_DIRECTORY {self.root}\n"), self.run_command())
+
+
+class RecordingTests(unittest.TestCase):
+    def test_a_call_given_the_judged_folder_is_told_from_one_given_none_by_keyword_or_position(self) -> None:
+        with recording_temporary_folders() as calls:
+            made = tempfile.mkdtemp(prefix="judged-", dir=private_folder.temporary_directory())
+            descriptor, name = tempfile.mkstemp(None, "unjudged-")
+            os.close(descriptor)
+            with tempfile.TemporaryDirectory(None, "positional-", str(private_folder.temporary_directory())):
+                pass
+        self.addCleanup(os.rmdir, made)
+        self.addCleanup(os.remove, name)
+        self.assertEqual([True], judged_folder_calls(calls, "judged-"))
+        self.assertEqual([False], judged_folder_calls(calls, "unjudged-"))
+        # TemporaryDirectory makes its folder through mkdtemp, which is recorded too.
+        self.assertEqual([True, True], judged_folder_calls(calls, "positional-"))
+        self.assertEqual([], judged_folder_calls(calls, "absent-"))
 
 
 class EnsureTests(unittest.TestCase):

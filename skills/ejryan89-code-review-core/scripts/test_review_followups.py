@@ -39,6 +39,7 @@ from review_records import ReviewRecord
 from review_runtime import RuntimeContractError, RuntimeContractFieldError
 from review_state import StateError
 from skill_roots import sibling_scripts
+from test_private_folder import judged_folder_calls, recording_temporary_folders
 from test_review_archive import unlistable, unstatable
 from test_review_config_validation import native
 
@@ -98,6 +99,16 @@ class GitHubSnapshotTests(unittest.TestCase):
             exclude=exclude,
         )
         return destination, metadata
+
+    def test_the_archive_is_fetched_into_the_temporary_directory_private_folder_judged(self) -> None:
+        # The archive is read back and extracted into the snapshot reviewers trust, so it lies only where no other
+        # account can swap it between the fetch and the extraction.
+        with recording_temporary_folders() as calls:
+            destination, _ = self.snapshot({"src/A.cs": b"class A {}\n"})
+        self.assertEqual(b"class A {}\n", (destination / "src" / "A.cs").read_bytes())
+        judged = judged_folder_calls(calls, "code-review-source-")
+        self.assertTrue(judged, "no archive folder was made")
+        self.assertTrue(all(judged), calls)
 
     def test_tarball_snapshot_leaves_out_configured_paths_and_a_changed_one_is_unavailable(self) -> None:
         destination, metadata = self.snapshot(

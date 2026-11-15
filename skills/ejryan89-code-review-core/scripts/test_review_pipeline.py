@@ -63,6 +63,7 @@ from review_records import Coverage, ReviewRecord
 from review_runtime import RuntimeContractError, RuntimeContractFieldError, validate_adapter_manifest
 from review_state import load_state
 from test_job_tree import SHORT_LIMIT_SECONDS, SignalledTree, ended
+from test_private_folder import judged_folder_calls, recording_temporary_folders
 from test_review_archive import unstatable
 from test_review_documents import (
     NOT_INSTALLED,
@@ -5013,6 +5014,15 @@ class ValidateReviewerSequenceTests(PipelineFixture):
             ),
             self.validate(pulls=[12]),
         )
+
+    def test_the_scratch_folder_lies_in_the_temporary_directory_private_folder_judged(self) -> None:
+        # The diffs validate writes and reads back lie only where no other account can swap them.
+        self.use()
+        with recording_temporary_folders() as calls:
+            self.assertEqual("VALID", self.validate(pulls=[12])[0][-1])
+        judged = judged_folder_calls(calls, "code-review-validate-")
+        self.assertTrue(judged, "no scratch folder was made")
+        self.assertTrue(all(judged), calls)
 
     def test_a_ref_is_ignored_when_pull_requests_are_named(self) -> None:
         self.use()
