@@ -17,7 +17,7 @@ import json_reader
 from console import failed_line, use_utf8_output
 from executable_locator import absolute_home
 from file_presence import MISSING, is_present, refusal_reason
-from path_containment import within
+from path_containment import resolved_path, within
 
 # This skill's own folder name, which every dependent's fixed sys.path line and every check of that line names.
 SKILL_CORE = "ejryan89-skill-core"
@@ -116,10 +116,11 @@ def deployed_skill_roots() -> tuple[Path, ...]:
 
 def skills_directory_holding(path: Path) -> Path | None:
     """The skills directory `path` lies inside, the running skills' own or one the deployer owns, or None. Each is
-    compared resolved, and `within` compares them without an extended-length prefix, so every spelling of a path
-    inside one is found."""
-    target = path.resolve()
+    compared resolved by `resolved_path`, and `within` compares them without an extended-length prefix, so every
+    spelling of a path inside one is found, and a symbolic link loop, which is left unresolved, is compared as written
+    and refused by the caller's own stat or write of it, never ended by Python 3.12's RuntimeError."""
+    target = resolved_path(path)
     return next(
-        (root for root in (SKILLS_ROOT, *deployed_skill_roots()) if within(target, root.resolve())),
+        (root for root in (SKILLS_ROOT, *deployed_skill_roots()) if within(target, resolved_path(root))),
         None,
     )

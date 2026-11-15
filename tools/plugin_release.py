@@ -49,6 +49,7 @@ import json_reader
 import json_writer
 from console import run_main
 from flat_text import flat_text
+from path_containment import resolved_path
 from release_tags import is_release_tag
 
 from deployer import source_ref
@@ -107,7 +108,7 @@ def missing_folders(output: Path | None) -> list[Path]:
     if output is None:
         return []
     missing: list[Path] = []
-    resolved = output.resolve()
+    resolved = resolved_path(output)
     for current in (resolved, *resolved.parents):
         if file_presence.is_occupied(current):
             break

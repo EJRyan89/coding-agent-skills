@@ -29,6 +29,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
+import private_folder
 import review_pipeline as rp
 import review_run
 import review_runtime
@@ -1354,6 +1355,29 @@ class InitialReviewTests(PrepareFixture):
             plan_prompt(GENERIC_INTRO, "generic-review", CHANGED, [], run=run, trusted=NO_GUIDANCE, links=True),
             self.text_file("work/generic-review.prompt.md"),
         )
+
+    @unittest.skipIf(sys.platform == "win32", "Windows mode bits say nothing about who may write a folder")
+    def test_a_temporary_directory_below_a_shared_folder_that_is_not_sticky_holds_no_run(self) -> None:
+        # Another account could rename the shared folder's entry and put its own prompts where a reviewer reads them.
+        shared = self.root / "shared"
+        own = shared / "u" / "tmp"
+        own.mkdir(parents=True)
+        shared.chmod(0o777)
+        self.addCleanup(shared.chmod, 0o755)
+        with mock.patch.object(tempfile, "tempdir", str(own)):
+            error, message, printed = self.refused(run_directory=None)
+        self.assertEqual(
+            (
+                private_folder.UnsafeTemporaryDirectoryError,
+                "a folder made in the temporary directory <root>/shared/u/tmp could be replaced by another account: "
+                "its ancestor <root>/shared can be written by users other than its owner and is not sticky (mode 777); "
+                "set TMPDIR to a folder of this user's own below folders no other account can write",
+                "",
+            ),
+            (error, message, printed),
+        )
+        self.assertEqual([], list(own.iterdir()), "no run folder was made where another account could swap it")
+        self.assertEqual([("get_pull", REPOSITORY, NUMBER)], self.github.calls, "refused before the diff is read")
 
     def test_the_stated_host_and_a_canary_are_recorded_and_a_canary_skips_the_archive(self) -> None:
         self.runtime = "codex"

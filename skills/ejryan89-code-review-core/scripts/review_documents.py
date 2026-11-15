@@ -40,6 +40,7 @@ from xml.parsers import expat
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
+import private_folder
 import whole_number
 from bounded_process import streaming
 from executable_locator import find_executables
@@ -213,7 +214,9 @@ def _pdftotext(content: bytes) -> bytes:
         executable = select_pdftotext(found, probe_pdftotext).path
     except PdfToolRefused as exc:
         raise ExtractionRefused(str(exc)) from exc
-    with tempfile.TemporaryDirectory(prefix="code-review-pdf-", ignore_cleanup_errors=True) as folder:
+    with tempfile.TemporaryDirectory(
+        prefix="code-review-pdf-", dir=private_folder.temporary_directory(), ignore_cleanup_errors=True
+    ) as folder:
         document = Path(folder) / "document.pdf"
         document.write_bytes(content)
         command = [executable, "-q", "-enc", "UTF-8", "-eol", "unix", "-raw", str(document), "-"]

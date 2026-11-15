@@ -63,7 +63,12 @@ new_clone
 INSTALLED_SKILLS="$FIXTURE/installed (no core)/skills"
 install_update "$INSTALLED_SKILLS" "without the core"
 SUBJECT="$INSTALLED_SKILLS/update-coding-agent-skills/scripts/update.sh" run_subject "$CLONE" release
-expect_failed "FAILED no ejryan89-skill-core release_tags.py deployed beside update.sh: " "no core beside the script"
+# Where the platform has user ids, the temporary directory is judged through the core first.
+case "${OSTYPE:-}" in
+  msys* | cygwin*) MISSING_CORE=release_tags.py ;;
+  *) MISSING_CORE=private_folder.py ;;
+esac
+expect_failed "FAILED no ejryan89-skill-core $MISSING_CORE deployed beside update.sh: " "no core beside the script"
 expect_nothing_run "no core beside the script"
 
 # A remote_refs.py that fails on its own, never origin's failure, here an installed copy whose import fails, one that

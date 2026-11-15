@@ -13,6 +13,7 @@ from pathlib import Path, PurePosixPath
 import frontmatter
 import json_reader
 import json_writer
+import private_folder
 from agent_skills import CODEX_METADATA as CODEX_METADATA
 from agent_skills import MAX_DESCRIPTION as MAX_DESCRIPTION
 from markdown_sections import FENCE_LANGUAGES, Fence, find_fences
@@ -560,7 +561,7 @@ def _parse_powershell(files: dict[str, bytes], workspace: Path, powershell: str)
 
 
 def validate_executables(staged: Staged) -> None:
-    with tempfile.TemporaryDirectory(prefix="deploy-render-") as temporary:
+    with tempfile.TemporaryDirectory(prefix="deploy-render-", dir=private_folder.temporary_directory()) as temporary:
         workspace = Path(temporary)
         units = _extract_units(staged, workspace)
         powershell_files = _powershell_files(staged)

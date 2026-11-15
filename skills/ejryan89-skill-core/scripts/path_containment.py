@@ -6,7 +6,8 @@ reaching the file system, then compared part by part as the file system holding 
 extended-length or device-namespace prefix (`without_extended_prefix`), which `Path.resolve` may give one path and not
 the other. So a `..` that climbs out of the tree, another drive, and a sibling whose name starts
 with the tree's are each outside. A caller that must follow links resolves both paths first and compares the results;
-one that must never follow them compares the paths as written. `posix_within` compares a `/`-separated name a listing
+one that must never follow them compares the paths as written, and `resolved_path` is the one that follows them for a
+path taken from input or the environment. `posix_within` compares a `/`-separated name a listing
 gives, such as a repository path git lists, by text, case and all.
 
 `refusal` judges an entry taken from input, such as a repository path a record or a list names, inside the tree it
@@ -51,6 +52,14 @@ def without_extended_prefix(path: Path) -> Path:
     rest = text[len(prefix) :]
     plain = Path("\\\\" + rest[len(UNC_PREFIX) :]) if rest[: len(UNC_PREFIX)].upper() == UNC_PREFIX else Path(rest)
     return plain if plain.drive else path
+
+
+def resolved_path(path: StrPath) -> Path:
+    """`path` made absolute with every link and `..` followed, as `Path.resolve` answers from Python 3.13 on: a
+    symbolic link loop is left unresolved, where Python 3.12's `Path.resolve` raises RuntimeError, which no caller's
+    handler of OSError catches, so a later stat or write of the path refuses the loop in the caller's own words, the
+    same on every supported version."""
+    return Path(os.path.realpath(path))
 
 
 def within(path: StrPath, tree: StrPath, *, strict: bool = False) -> bool:

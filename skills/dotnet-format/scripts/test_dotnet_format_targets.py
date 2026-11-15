@@ -28,6 +28,7 @@ from flat_text import flat_text
 from git_client import GitClient, GitError, GitResult
 from github_client import CommandResult
 from github_client import Runner as GhRunner
+from test_private_folder import judged_folder_calls, recording_temporary_folders
 
 SDK_PROJECT = '<Project Sdk="Microsoft.NET.Sdk"></Project>\n'
 WEB_PROJECT = '<Project Sdk="Microsoft.NET.Sdk.Web"></Project>\n'
@@ -1095,6 +1096,14 @@ class FileListTests(unittest.TestCase):
         self.assertTrue(written.name.startswith("dotnet-format-files-") and written.name.endswith(".txt"), written)
         self.assertEqual("".join(f"{name}\0" for name in names).encode("utf-8"), written.read_bytes())
         self.assertEqual(names, targets.read_file_list(written))
+
+    def test_the_list_is_written_in_the_temporary_directory_private_folder_judged(self) -> None:
+        # The formatter reads the list back as the files it may change, so it lies only where no other account can
+        # swap it.
+        with recording_temporary_folders() as calls:
+            written = Path(targets.write_file_list(["A.cs"]))
+        self.addCleanup(written.unlink)
+        self.assertEqual([True], judged_folder_calls(calls, "dotnet-format-files-"))
 
     def test_no_names_are_refused_before_a_list_is_written(self) -> None:
         with mock.patch.object(tempfile, "mkstemp") as mkstemp, self.assertRaises(targets.Failed) as context:

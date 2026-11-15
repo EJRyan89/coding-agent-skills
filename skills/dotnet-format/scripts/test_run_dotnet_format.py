@@ -941,6 +941,28 @@ class MainTests(unittest.TestCase):
         with mock.patch.object(tempfile, "mkstemp", side_effect=OSError(28, "No space left on device")):
             self.assert_failed(self.run_formatter("check", FakeRunner(0, "")), "[Errno 28] No space left on device")
 
+    @unittest.skipIf(sys.platform == "win32", "Windows mode bits say nothing about who may write a folder")
+    def test_a_temporary_directory_another_account_could_rename_is_refused_before_the_formatter_runs(self) -> None:
+        # The log's folder is judged first, so a refusal leaves every file the formatter would fix as it was.
+        shared = self.root / "shared"
+        own = shared / "u" / "tmp"
+        own.mkdir(parents=True)
+        shared.chmod(0o777)
+        runner = FakeRunner(0, "")
+        try:
+            with mock.patch.object(tempfile, "tempdir", str(own)):
+                status, lines, errors = self.run_formatter("fix", runner)
+        finally:
+            shared.chmod(0o755)
+        reason = (
+            f"FAILED a folder made in the temporary directory {own} could be replaced by another account: its ancestor "
+            f"{shared} can be written by users other than its owner and is not sticky (mode 777); set TMPDIR to a "
+            "folder of this user's own below folders no other account can write"
+        )
+        self.assertEqual((1, "", [[reason]]), (status, errors, lines))
+        self.assertEqual([], runner.calls, "the formatter never ran")
+        self.assertEqual([], list(own.iterdir()), "no log was made there")
+
 
 class ConsoleTests(unittest.TestCase):
     def test_output_a_cp1252_console_cannot_encode_is_written_as_utf_8(self) -> None:

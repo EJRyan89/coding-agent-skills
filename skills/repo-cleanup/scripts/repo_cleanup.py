@@ -2148,7 +2148,7 @@ def print_summary(plan: dict[str, Any]) -> None:
 
 def new_plans_directory() -> Path:
     """A new temporary directory for a sweep's plan files and record."""
-    return Path(tempfile.mkdtemp(prefix="repo-cleanup-plans-"))
+    return Path(tempfile.mkdtemp(prefix="repo-cleanup-plans-", dir=private_folder.temporary_directory()))
 
 
 def recorded_location(directory: str) -> Path:

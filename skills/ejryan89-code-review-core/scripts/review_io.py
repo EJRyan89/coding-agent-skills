@@ -24,6 +24,7 @@ import file_lock
 import file_presence
 import json_reader
 import json_writer
+import private_folder
 from atomic_file import UnfinishedCopyError, replace_bytes
 from process_identity import ProcessStatus, process_status, read_pid
 from review_process import same_process
@@ -84,7 +85,7 @@ def working_path(explicit: Path | None, prefix: str, name: str) -> Path:
     explicit path inside any skills directory is refused before anything is read or written.
     """
     if explicit is None:
-        return Path(tempfile.mkdtemp(prefix=prefix)) / name
+        return Path(tempfile.mkdtemp(prefix=prefix, dir=private_folder.temporary_directory())) / name
     root = skills_directory_holding(explicit)
     if root is not None:
         raise PersistenceError(

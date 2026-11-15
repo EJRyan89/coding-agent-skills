@@ -1332,6 +1332,9 @@ DRIVERS: list[Driver] = [
     ),
 ]
 NOT_RUN: dict[str, str] = {
+    "skills/ejryan89-skill-core/scripts/private_folder.py": "reads no file: it stats the folder it is named and each "
+    "folder above it, and a folder is no input the harness can fault; test_private_folder.py holds its refusals of a "
+    "folder that does not exist, one another account could rename, and a stat that fails",
     f"{CORE}/review_guard.py": "a PreToolUse hook that reads its event only from stdin, which the harness closes, and "
     "whose contract (EXIT_CONTRACT_EXEMPT) answers every call it cannot evaluate with a deny decision and exit 0, "
     "failing closed; test_review_guard.py holds each unreadable event to that deny",

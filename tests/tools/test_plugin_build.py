@@ -20,6 +20,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan8
 import skill_menu
 from presence_denial import denied as stat_denied
 from skill_roots import SKILLS_ROOT, sibling_scripts
+from test_path_containment import resolving_as_python_312
 
 sys.path.insert(0, str(sibling_scripts("audit-skill")))
 
@@ -473,6 +474,20 @@ def test_an_output_it_cannot_examine_or_list_is_refused_never_taken_for_an_empty
     assert str(raised.value).startswith(
         f"--output {target} cannot be examined: [Errno {errno.EACCES}] Access is denied"
     )
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="a symbolic link needs a privilege on Windows")
+@pytest.mark.parametrize("version", ["this Python", "Python 3.12"])
+def test_an_output_that_is_a_symbolic_link_loop_is_refused_naming_it_on_every_python_version(
+    tmp_path: Path, version: str
+) -> None:
+    # Python 3.12's Path.resolve raises RuntimeError for a loop, which ended the build FAILED RuntimeError.
+    loop = tmp_path / "loop"
+    loop.symlink_to(loop)
+    resolving = resolving_as_python_312 if version == "Python 3.12" else contextlib.nullcontext
+    with resolving(), pytest.raises(plugin_build.BuildError) as raised:
+        plugin_build.output_directory(loop, tmp_path / "source")
+    assert str(raised.value).startswith(f"--output {loop} cannot be examined: [Errno {errno.ELOOP}] ")
 
 
 def run(arguments: list[str]) -> tuple[int, list[str]]:
