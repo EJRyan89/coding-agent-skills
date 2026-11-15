@@ -65,9 +65,7 @@ WORD_ENDS = " \t;&|()<>"
 DOUBLE_QUOTED = re.compile(r'"(?:\\.|[^"\\])*"', re.DOTALL)
 # A here-document's delimiter word as written, up to the blank or metacharacter that ends it, its quoted and escaped
 # parts kept: a $'...' string, whose backslashes escape, a '...' one, whose do not, and a "..." or $"..." one.
-DELIMITER_WORD = re.compile(
-    r"(?:\\.|\$'(?:\\.|[^'\\])*'|'[^']*'|\$?\"(?:\\.|[^\"\\])*\"|[^ \t\n|&;()<>'\"\\])+", re.DOTALL
-)
+DELIMITER_WORD = re.compile(r"(?:\\.|\$'(?:\\.|[^'\\])*'|'[^']*'|\$?\"(?:\\.|[^\"\\])*\"|[^ \t\n|&;()<>'\"\\])+")
 # Each part of a delimiter word, by which Bash removes its quotes: an escaped character, a $'...' string, a '...' one,
 # a "..." or $"..." one, or any other character.
 DELIMITER_PART = re.compile(r"\\(.)|\$'((?:\\.|[^'\\])*)'|'([^']*)'|\$?\"((?:\\.|[^\"\\])*)\"|(.)", re.DOTALL)
@@ -178,7 +176,7 @@ def bash_git_subcommands(text: str, read_powershell: PowerShellReader) -> set[st
             if body is None:
                 break
             text_read, index = body
-            for inner in substitutions(text_read):
+            for inner in [] if document.quoted else substitutions(text_read):
                 found |= bash_git_subcommands(inner, read_powershell)
     return found
 
@@ -215,42 +213,54 @@ def read_line(line: str) -> tuple[list[HereDocument], bool]:
     """The here-documents a command line opens, in order, and whether a comment ends it: each `<<` or `<<-` outside
     quotes, escapes, a comment, and arithmetic, `$((...))` or `((...))`, where `<<` shifts, with the delimiter word
     after it and any blanks; a `<<<` here-string opens none, and neither does a `<<` with no word after it, which Bash
-    refuses. A comment is a `#` that starts a word outside quotes and escapes."""
+    refuses. A comment is a `#` that starts a word outside quotes and escapes. The loop binds its place once each
+    step, from line_step, so a reader that follows each binding back, as the JSON-write policy does, reads it in
+    time linear in the step's own bindings."""
     found: list[HereDocument] = []
     index = 0
     word_start = True
     while index < len(line):
-        character = line[index]
-        after = index + 1
-        if character == "\\":
-            after = index + 2
-        elif character == "'":
-            closing = line.find("'", index + 1)
-            after = len(line) if closing < 0 else closing + 1
-        elif character == '"':
-            quoted = DOUBLE_QUOTED.match(line, index)
-            after = len(line) if quoted is None else quoted.end()
-        elif character == "#" and word_start:
+        if line[index] == "#" and word_start:
             return found, True
-        elif line.startswith("((", index) or line.startswith("$((", index):
-            after = closing_parenthesis(line, line.index("(", index) + 1) + 1
-        elif line.startswith("<<<", index):
-            after = index + 3
-        elif line.startswith("<<", index):
-            strip_tabs = line.startswith("<<-", index)
-            position = index + (3 if strip_tabs else 2)
-            while position < len(line) and line[position] in BASH_BLANKS:
-                position += 1
-            word = DELIMITER_WORD.match(line, position)
-            if word is not None:
-                found.append(
-                    HereDocument(delimiter_text(word.group()), strip_tabs, any(c in word.group() for c in "'\"\\"))
-                )
-                position = word.end()
-            after = position
-        word_start = character in WORD_ENDS
-        index = after
+        word_start = line[index] in WORD_ENDS
+        index, document = line_step(line, index)
+        if document is not None:
+            found.append(document)
     return found, False
+
+
+def line_step(line: str, index: int) -> tuple[int, HereDocument | None]:
+    """Where a command line's next character to read stands after the one at `index`, and the here-document a `<<`
+    there opens: past an escape, a quoted string, arithmetic, or a here-document's operator and delimiter word, and
+    otherwise the next character. A `<<<` here-string's operator reads as `<<` followed by a `<`, which no delimiter
+    word starts with, so it opens none."""
+    character = line[index]
+    if character == "\\":
+        return index + 2, None
+    if character == "'":
+        closing = line.find("'", index + 1)
+        return (len(line) if closing < 0 else closing + 1), None
+    if character == '"':
+        quoted = DOUBLE_QUOTED.match(line, index)
+        return (len(line) if quoted is None else quoted.end()), None
+    if line.startswith("((", index):
+        return closing_parenthesis(line, line.index("(", index) + 1) + 1, None
+    if line.startswith("<<", index):
+        return here_document_at(line, index)
+    return index + 1, None
+
+
+def here_document_at(line: str, index: int) -> tuple[int, HereDocument | None]:
+    """The here-document the `<<` or `<<-` at `index` opens, past any blanks to its delimiter word, and where the line
+    goes on after that word; None, and the place after the blanks, when no word follows, which Bash refuses."""
+    strip_tabs = line.startswith("<<-", index)
+    operator_end = index + (3 if strip_tabs else 2)
+    rest = line[operator_end:]
+    word = DELIMITER_WORD.match(line, operator_end + len(rest) - len(rest.lstrip(BASH_BLANKS)))
+    if word is None:
+        return operator_end + len(rest) - len(rest.lstrip(BASH_BLANKS)), None
+    spelled = word.group()
+    return word.end(), HereDocument(delimiter_text(spelled), strip_tabs, any(c in spelled for c in "'\"\\"))
 
 
 def delimiter_text(word: str) -> str:
@@ -270,8 +280,8 @@ def here_document_body(lines: Sequence[str], index: int, document: HereDocument)
     """A here-document's body read from the line at `index`, as the text Bash expands, and the index after its
     delimiter line; None when no line is its delimiter. A line is the delimiter when it is the delimiter text exactly,
     after its leading tabs are removed for `<<-`; an unquoted body first joins each line its backslash continues, as
-    Bash removes that backslash and the LF, so a delimiter after one is body text. A quoted body is never expanded,
-    so its text is empty."""
+    Bash removes that backslash and the LF, so a delimiter after one is body text; a quoted body is never expanded,
+    so the caller reads none of its text."""
     body: list[str] = []
     while index < len(lines):
         if document.quoted:
@@ -280,7 +290,7 @@ def here_document_body(lines: Sequence[str], index: int, document: HereDocument)
             line, index = continued_line(lines, index)
         compared = line.lstrip("\t") if document.strip_tabs else line
         if compared == document.delimiter:
-            return ("" if document.quoted else "\n".join(body)), index
+            return "\n".join(body), index
         body.append(compared)
     return None
 

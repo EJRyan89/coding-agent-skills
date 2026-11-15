@@ -2231,6 +2231,20 @@ SEPARATE_GIT_DIRECTORY_FAILURES = {
         False,
     ),
     "a root, which names no git directory": ("fatal: Unable to create '/x/shallow.lock': File exists.\n", "/", False),
+    # No directory given reads no path, not even one in a folder named as None prints.
+    "no directory given": ("fatal: Unable to create '/srv/none/shallow.lock': File exists.\n", None, False),
+    # Only a trailing slash is taken off the directory, never a letter it ends in.
+    "a directory ending in a letter": (
+        "fatal: Unable to create '/srv/box/shallow.lock': File exists.\n",
+        "/srv/BOX",
+        True,
+    ),
+    # A line git writes with backslashes is compared with either slash too.
+    "a Windows line with backslashes": (
+        "error: cannot open 'd:\\work\\clone git\\FETCH_HEAD': Permission denied\n",
+        "D:/Work/Clone Git",
+        True,
+    ),
 }
 
 
@@ -2239,7 +2253,7 @@ SEPARATE_GIT_DIRECTORY_FAILURES = {
     [pytest.param(*case, id=name) for name, case in SEPARATE_GIT_DIRECTORY_FAILURES.items()],
 )
 def test_a_fault_named_inside_the_git_directory_the_caller_names_is_local(
-    stderr: str, git_directory: str, local: bool
+    stderr: str, git_directory: str | None, local: bool
 ) -> None:
     assert git_client.local_failure(stderr, git_directory) is local
     assert GitError(stderr.strip(), kind=classify_failure(stderr)).origin_failed(git_directory) is not local

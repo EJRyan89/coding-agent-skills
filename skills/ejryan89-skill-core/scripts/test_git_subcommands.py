@@ -210,6 +210,78 @@ def test_a_bash_line_ends_at_lf_alone(script: str, expected: set[str]) -> None:
     assert git_subcommands.bash_git_subcommands(script, no_powershell) == expected
 
 
+# Each step of the line and here-document reader is held where reading one character too far, too short, or not at
+# all changes what Bash runs: a here-document that opens, or does not, and closes on a later line; a substitution's
+# end, after which body text is data; and a continued or commented line.
+@pytest.mark.parametrize(
+    ("script", "expected"),
+    [
+        # A whole-line comment is one only after spaces and tabs, read from the line's start.
+        ("  # note; git push", set()),
+        ("X# note; git push", {"push"}),
+        # A `#` inside a word, and a `<<` inside a quote, after an escape, or in arithmetic, open nothing, so the line
+        # after the body stands as a command.
+        ("echo X#<<EOF\ngit push\nEOF", set()),
+        ('echo "<<EOF"\ngit push\nEOF', {"push"}),
+        ("echo '<<EOF'\ngit push\nEOF", {"push"}),
+        ("echo \\<<EOF\ngit push\nEOF", {"push"}),
+        ("echo $((1 << 2))\ngit push\n2", {"push"}),
+        ("(( x = 1 << 2 ))\ngit push\n2", {"push"}),
+        ("x=(a); echo $((1 << 2))\ngit push\n2", {"push"}),
+        # Each quote, escape, and arithmetic ends where Bash ends it, so a `<<` right after it opens a here-document.
+        ("cat \\a<<EOF\ngit push\nEOF", set()),
+        ("echo 'a' <<EOF 'b'\ngit push\nEOF", set()),
+        ("echo ''<<EOF\ngit push\nEOF", set()),
+        ("echo 'a'<<EOF\ngit push\nEOF", set()),
+        ('echo "a" <<EOF\ngit push\nEOF', set()),
+        ("echo $((1))<<EOF\ngit push\nEOF", set()),
+        ("cat <<<EOF\ngit push\nEOF", {"push"}),
+        ("cat << \ngit push", {"push"}),
+        # The delimiter's quoting and escapes, and `<<-`'s tabs, decide where the body ends and whether it expands.
+        ("cat <<XEOF\n$(git push)\nXEOF", {"push"}),
+        ('cat <<"E\\$F"\ngit push\nE$F\ngit fetch', {"fetch"}),
+        ("cat <<EOF\n\tEOF\ngit push\nEOF", set()),
+        ("cat <<-XEOF\nEOF\ngit push\nXEOF", set()),
+        # A body's substitution ends at its own `)` or backquote, past quotes, escapes, and nested pairs, so the text
+        # after it is data; one never closed runs to the body's end.
+        ("cat <<EOF\n$(echo a); git push\nEOF", set()),
+        ("cat <<EOF\n$(echo \\) ; git push)\nEOF", {"push"}),
+        ("cat <<EOF\n$(echo ')' ; git push)\nEOF", {"push"}),
+        ("cat <<EOF\n$(echo ')'); echo 'x'; git push\nEOF", set()),
+        ('cat <<EOF\n$(echo ")"); git push\nEOF', set()),
+        ("cat <<EOF\n$(); git push; $(git fetch)\nEOF", {"fetch"}),
+        ("cat <<EOF\n$(git push\nEOF", {"push"}),
+        ("cat <<EOF\n\\a$(git push)\nEOF", {"push"}),
+        ("cat <<EOF\n`echo a`; git push\nEOF", set()),
+        ("cat <<EOF\n`ech`; git push\nEOF", set()),
+        ("cat <<EOF\n``; git push; `git fetch`\nEOF", {"fetch"}),
+        ("cat <<EOF\n`echo a`$(git push)\nEOF", {"push"}),
+        ("cat <<EOF\n`echo \\` ; git push`\nEOF", {"push"}),
+        ("cat <<EOF\n`git push\nEOF", {"push"}),
+        # A continued line joins the next one in place of its backslash, and the line after the joined one is read.
+        ("git push \\", {"push"}),
+        ("git fetch\\\n origin", {"fetch"}),
+        ("git push \\\norigin\ngit fetch", {"push", "fetch"}),
+        ("cat <<EOF\n$(git fetch\\\n)\nEOF", {"fetch"}),
+        ("cat <<EOF\na \\\nb\n$(git fetch)\nEOF", {"fetch"}),
+        ("cat <<EOF\nfoo \\", set()),
+        # A line ending in an empty command hands nothing on, so `time` on the next line is still the keyword.
+        ("true;\ntime -p -p git push", set()),
+        # A body's substitutions add to what the script's commands run.
+        ("git fetch\ncat <<EOF\n$(echo a)\nEOF", {"fetch"}),
+    ],
+)
+def test_each_step_of_the_line_reader_ends_where_bash_ends_it(script: str, expected: set[str]) -> None:
+    assert git_subcommands.bash_git_subcommands(script, no_powershell) == expected
+
+
+def test_a_body_s_substitution_reads_a_powershell_start_up_through_the_caller_s_reader() -> None:
+    read: list[str] = []
+    reader = listed({"git push": [["git", "push"]]}, read)
+    assert git_subcommands.bash_git_subcommands("cat <<EOF\n$(pwsh -c 'git push')\nEOF", reader) == {"push"}
+    assert read == ["git push"]
+
+
 # Bash runs the program a path names, and Git Bash the one named with .exe, so git named either way is git, as is a
 # shell whose -c script runs it; a name is matched as written, so Git and GIT.exe are no git in Bash.
 @pytest.mark.parametrize(
