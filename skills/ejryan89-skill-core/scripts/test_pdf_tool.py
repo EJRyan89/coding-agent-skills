@@ -334,7 +334,9 @@ def test_a_pdftotext_that_cannot_start_is_skipped_naming_the_error_its_start_gav
     with pytest.raises(pdf_tool.PdfToolRefused) as raised:
         pdf_tool.select_pdftotext([str(junk)])
     if sys.platform == "win32":
-        expected = f"skipped {junk} (version probe could not be started: [WinError 193] "
+        # Which code Windows gives a file of junk, 193 or 216, depends on the machine, and its text runs long, so only
+        # the error's form and the path the refusal names are held.
+        expected = f"skipped {junk} (version probe could not be started: [WinError "
         assert str(raised.value).startswith(f"no supported pdftotext: {expected}")
     else:
         expected = f"skipped {junk} (version probe could not be started: [Errno 8] Exec format error: '{junk}'); "
