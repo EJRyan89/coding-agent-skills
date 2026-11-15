@@ -886,3 +886,35 @@ class ReportTests(InsightFixture):
         self.assertEqual(
             ("included", CHECKLIST), (files["docs/checklist.md"]["status"], files["docs/checklist.md"]["content"])
         )
+
+
+# The characters str.splitlines breaks a line at and text_lines, as YAML 1.2 and CommonMark, does not.
+TEXT_SEPARATORS = ("\x0b", "\x0c", "\x1c", "\x1d", "\x1e", "\x85", "\u2028", "\u2029")
+
+
+class SeparatorTests(unittest.TestCase):
+    def test_a_statement_runs_on_past_a_separator_commonmark_does_not_break_at(self) -> None:
+        for separator in TEXT_SEPARATORS:
+            with self.subTest(separator=f"U+{ord(separator):04X}"):
+                self.assertEqual(
+                    [(1, f"Keep one queue.{separator}- Retry twice."), (3, "Then stop.")],
+                    rg._statements(f"Keep one queue.{separator}- Retry twice.\n\nThen stop.\n"),
+                )
+
+    def test_an_unsupplied_reference_is_placed_on_the_line_commonmark_breaks(self) -> None:
+        sources = {"security": rg.Source("2026-01-01", None, {"docs/a.md": "h"})}
+        for separator in TEXT_SEPARATORS:
+            with self.subTest(separator=f"U+{ord(separator):04X}"):
+                texts = {("docs/a.md", "h"): f"Intro{separator}See `docs/b.md`.\n"}
+                self.assertEqual(
+                    [
+                        {
+                            "repository": "r",
+                            "reviewer": "security",
+                            "path": "docs/a.md",
+                            "line": 1,
+                            "reference": "docs/b.md",
+                        }
+                    ],
+                    rg.unsupplied("r", texts, sources),
+                )

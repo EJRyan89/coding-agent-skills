@@ -40,6 +40,7 @@ from review_runtime import (
     load_manifest_from_file,
     validate_adapter_manifest,
 )
+from text_lines import text_lines
 
 DELEGATION_TOOLS = {"agent", "task"}
 DELEGATION_TEXT = re.compile(
@@ -91,7 +92,7 @@ def _tool_grant(skill: str, text: str) -> tuple[list[str] | None, int]:
     A list written as text (`Read, Grep` or `Read Grep`) is split into entries, keeping `Bash(git log:*)` whole.
     """
     try:
-        found = frontmatter.split(text.splitlines())
+        found = frontmatter.split(text_lines(text))
         if found is None:
             return None, 1
         document = frontmatter.Frontmatter(found[0])
@@ -149,7 +150,7 @@ def inspect_skill(skill: str, text: str, commit: str, repository_files: set[str]
             agents.setdefault(PurePosixPath(path).stem, []).append(path)
     evidence: list[tuple[int, str]] = []
     references: set[str] = set()
-    for number, line in enumerate(text.splitlines()[body_start - 1 :], start=body_start):
+    for number, line in enumerate(text_lines(text)[body_start - 1 :], start=body_start):
         named = [stem for stem in agents if _names_agent(stem, line)]
         if DELEGATION_TEXT.search(line) or named:
             evidence.append((number, flat_text(line)[:160]))

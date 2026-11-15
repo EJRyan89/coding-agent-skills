@@ -725,6 +725,12 @@ class PdfExtractionTests(unittest.TestCase):
 
         self.assertRefused("pdftotext could not read it (exit status 1)")
 
+    def test_a_pdftotext_that_cannot_be_started_is_refused_naming_the_error_it_gave(self) -> None:
+        StubPdftotext(self, output="Scope\n")
+        error = OSError(8, "Exec format\nerror")
+        with mock.patch.object(documents, "streaming", side_effect=error):
+            self.assertRefused("pdftotext could not be started: [Errno 8] Exec format error")
+
     def test_a_pdf_the_tool_takes_too_long_over_is_refused_at_the_time_limit(self) -> None:
         StubPdftotext(self, output="Scope\n", sleep=30)
         started = time.monotonic()
@@ -1439,3 +1445,18 @@ class GitHubBaseTests(unittest.TestCase):
         with self.assertRaises(RuntimeContractError):
             self.reader(StubGitHub(blob, BASE_DOCUMENT + b"x"))("docs/design.docx", blob[:7])
         self.assertIsNone(self.reader(StubGitHub(blob, None))("docs/design.docx", blob[:7]))
+
+
+# The characters str.splitlines breaks a line at and text_lines does not. Extracted text ends each line in LF alone.
+TEXT_SEPARATORS = ("\x0b", "\x0c", "\x1c", "\x1d", "\x1e", "\x85", "\u2028", "\u2029")
+
+
+class ExtractedLineTests(unittest.TestCase):
+    def test_an_extracted_line_ends_only_at_a_line_break(self) -> None:
+        for separator in TEXT_SEPARATORS:
+            text = f"[P1] a{separator}[P2] b\n"
+            with self.subTest(separator=f"U+{ord(separator):04X}"):
+                self.assertEqual([f"a{separator}[P2] b"], documents.unlabeled(text))
+                self.assertEqual(["paragraph 1"], locations(text))
+                diff = document_diff(["diff --git a/n.docx b/n.docx", "new file mode 100644"], None, "n.docx", "", text)
+                self.assertEqual({1: f"[P1] a{separator}[P2] b"}, parse_unified_diff(diff)["n.docx"]["added"])

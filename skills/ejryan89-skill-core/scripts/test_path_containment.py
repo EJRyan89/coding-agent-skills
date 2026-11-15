@@ -16,18 +16,24 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import path_containment
 import path_keys
-from path_containment import posix_within, refusal, resolved_path, within, written_refusal
+from path_containment import posix_within, refusal, resolved_path, strictly_resolved_path, within, written_refusal
 
 
 @contextlib.contextmanager
 def resolving_as_python_312() -> Iterator[None]:
-    """`Path.resolve` as Python 3.12 runs it, which stats what it resolved and raises RuntimeError on a symbolic link
-    loop, where later versions answer the path with the loop left unresolved, so a test of a loop holds on every
-    version, and the suites of other skills import it for theirs."""
+    """`Path.resolve` as Python 3.12 runs it, which raises RuntimeError on a symbolic link loop: strict, where later
+    versions raise OSError, and not strict, where it stats what it resolved and later versions answer the path with the
+    loop left unresolved, so a test of a loop holds on every version, and the suites of other skills import it for
+    theirs."""
     real = Path.resolve
 
     def resolve(path: Path, strict: bool = False) -> Path:
-        resolved = real(path, strict=strict)
+        try:
+            resolved = real(path, strict=strict)
+        except OSError as error:
+            if error.errno == errno.ELOOP:
+                raise RuntimeError(f"Symlink loop from {error.filename!r}") from None
+            raise
         try:
             resolved.stat()
         except OSError as error:
@@ -72,6 +78,28 @@ class ResolvedPathTests(unittest.TestCase):
             self.assertEqual(loop, resolved_path(loop))
             self.assertEqual(loop / "x", resolved_path(loop / "x"))
         self.assertEqual(loop, resolved_path(loop))
+
+    def test_a_symbolic_link_loop_raises_oserror_strictly_where_python_3_12_s_strict_resolve_raises_runtimeerror(
+        self,
+    ) -> None:
+        loop = self.root / "loop"
+        loop.symlink_to(loop)
+        with resolving_as_python_312():
+            with self.assertRaises(RuntimeError, msg="the stand-in raises as Python 3.12 does"):
+                loop.resolve(strict=True)
+            for path in (loop, loop / "x"):
+                with self.subTest(path=path), self.assertRaises(OSError) as raised:
+                    strictly_resolved_path(path)
+                self.assertEqual(errno.ELOOP, raised.exception.errno)
+
+    def test_a_strictly_resolved_path_follows_links_and_refuses_a_missing_part(self) -> None:
+        target = self.root / "target"
+        target.mkdir()
+        (target / "x").write_text("", encoding="utf-8")
+        (self.root / "link").symlink_to(target, target_is_directory=True)
+        self.assertEqual(target / "x", strictly_resolved_path(self.root / "link" / "x"))
+        with self.assertRaises(FileNotFoundError):
+            strictly_resolved_path(self.root / "link" / "missing")
 
 
 class WithinTests(unittest.TestCase):

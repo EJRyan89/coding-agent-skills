@@ -24,6 +24,7 @@ import dotnet_format_targets as targets
 import dotnet_solution
 import git_client
 import github_client
+import path_containment
 from flat_text import flat_text
 from git_client import GitClient, GitError, GitResult
 from github_client import CommandResult
@@ -1010,14 +1011,14 @@ class ListedRefusalTests(unittest.TestCase):
         self.root = Path(directory.name).resolve()
 
     def test_an_entry_inside_the_root_is_kept_and_a_device_or_share_form_is_refused_unresolved(self) -> None:
-        resolve = Path.resolve
+        resolve = path_containment.resolved_path
         resolved: list[str] = []
 
-        def recording(path: Path, strict: bool = False) -> Path:
+        def recording(path: Path) -> Path:
             resolved.append(str(path))
-            return resolve(path, strict)
+            return resolve(path)
 
-        with mock.patch.object(Path, "resolve", recording):
+        with mock.patch("dotnet_format_targets.resolved_path", recording):
             self.assertIsNone(targets.listed_refusal(self.root, "src/./App/../App/Program.cs"))
             self.assertEqual(2, len(resolved), "the entry and the root")
             for entry, reason in (
@@ -1033,7 +1034,7 @@ class ListedRefusalTests(unittest.TestCase):
         inside = self.root / "inside.cs"
         outside = self.root.parent / "outside.cs"
         absolute = "the entry is an absolute path, and an entry names a file relative to the repository root"
-        with mock.patch.object(Path, "resolve") as resolve:
+        with mock.patch("dotnet_format_targets.resolved_path") as resolve:
             # The form with backslashes is absolute on Linux too once they read as separators.
             for entry in (str(inside), inside.as_posix(), inside.as_posix().replace("/", "\\")):
                 with self.subTest(entry=entry):
@@ -1047,7 +1048,7 @@ class ListedRefusalTests(unittest.TestCase):
 
     def test_an_entry_that_cannot_be_resolved_is_refused(self) -> None:
         denied = PermissionError(13, "Permission denied")
-        with mock.patch.object(Path, "resolve", side_effect=denied):
+        with mock.patch("dotnet_format_targets.resolved_path", side_effect=denied):
             refused = targets.listed_refusal(self.root, "Program.cs")
         self.assertEqual("the path cannot be resolved: Permission denied", refused)
 

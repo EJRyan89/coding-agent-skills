@@ -1035,6 +1035,74 @@ DOCUMENTED_FORMS: dict[str, tuple[Any, ...]] = {
             ("getattr", "getattr(p, 'is_symlink')()"),
         )
     },
+    # "a path's resolve, as a method on any receiver or as pathlib's Path.resolve named, called or not".
+    **{
+        f"a resolve of {form}": _form(
+            python_checks.resolve_problems,
+            f"import pathlib\nfrom pathlib import Path\n\n\ndef f(p, a):\n    return {call}\n",
+        )
+        for form, call in (
+            ("a path", "p.resolve()"),
+            ("a path, strict", "p.resolve(strict=True)"),
+            ("a path built from text", "Path(a).resolve()"),
+            ("a joined path", "(p / a).resolve()"),
+            ("a path's parent", "p.parent.resolve()"),
+            ("a path, called unbound", "Path.resolve(p)"),
+            ("a path, named uncalled", "list(map(Path.resolve, a))"),
+            ("a path through pathlib", "pathlib.Path.resolve(p)"),
+            ("a path, named by a binding", "(lambda r=Path.resolve: r(p))()"),
+            ("a path's method, named to be called through a name", "(lambda r: r())(p.resolve)"),
+        )
+    },
+    "a resolve of a name a from-import binds, which may be a path": _form(
+        python_checks.resolve_problems, "from cfg import ROOT\n\n\ndef f():\n    return ROOT.resolve()\n"
+    ),
+    "a resolve in a deployer module": _form(
+        python_checks.resolve_problems, "def f(p):\n    return p.resolve()\n", "deployer/alpha.py"
+    ),
+    "a resolve in a tool": _form(
+        python_checks.resolve_problems, "def f(p):\n    return p.resolve()\n", "tools/alpha.py"
+    ),
+    "a resolve in a repository skill": _form(
+        python_checks.resolve_problems, "def f(p):\n    return p.resolve()\n", ".claude/skills/alpha/scripts/alpha.py"
+    ),
+    # "except on a receiver built from `__file__`, ... on self or cls, ... and on a name an import binds to a module":
+    # `import x` and `from . import x`; `from package import x` is read in
+    # test_resolve_policy_reads_a_from_import_as_a_module_only_where_the_files_hold_it.
+    **{
+        f"a resolve of {form}": _form(
+            python_checks.resolve_problems,
+            "from pathlib import Path\nimport source_ref\nfrom . import pins\n\n\n"
+            f"def f(self, p):\n    return {call}\n",
+            refused=False,
+        )
+        for form, call in (
+            ("the script's own file", "Path(__file__).resolve()"),
+            ("the script's own folder", "Path(__file__).parent.resolve().parent"),
+            ("self, whose class defines it", "self.resolve(p)"),
+            ("an imported module's function", "source_ref.resolve(p, 'v1')"),
+            ("a relatively imported module's function", "pins.resolve(p)"),
+            ("path_containment's resolution", "path_containment.resolved_path(p)"),
+        )
+    },
+    "a resolve RESOLVE_ALLOWED sanctions": _form(
+        python_checks.resolve_problems,
+        "RESOLVE_ALLOWED = {'f': 'the path is a folder this run made'}\n\n\ndef f(p):\n    return p.resolve()\n",
+        refused=False,
+    ),
+    **{
+        f"limit: a resolve {form}": _form(
+            python_checks.resolve_problems,
+            f"import operator\nimport os\nfrom pathlib import Path\n\n\ndef f(p, name):\n    return {call}\n",
+            refused=False,
+        )
+        for form, call in (
+            ("looked up by name", "getattr(p, 'resolve')()"),
+            ("by operator.methodcaller", "operator.methodcaller('resolve')(p)"),
+            ("of a path joined to the script's folder", "(Path(__file__).parent / name).resolve()"),
+            ("of a path that falls back to the script's file", "Path(os.environ.get('X', __file__)).resolve()"),
+        )
+    },
     # A lookup of a link test by a constant name, in any form attribute_lookups reads, and a hasattr of one.
     **{
         f"a link test by {form}": _form(
@@ -1906,6 +1974,35 @@ def test_each_policy_refuses_every_form_its_documentation_names(
         assert all(problem.startswith(path) for problem in found), found
     else:
         assert found == []
+
+
+def test_resolve_policy_reads_a_from_import_as_a_module_only_where_the_files_hold_it() -> None:
+    # A name `from package import x` binds is a module, whose resolve is a function of its own, only where the files
+    # the policy is given hold the module; otherwise it may be a path, as `from cfg import ROOT` binds.
+    caller = "from deployer import source_ref\n\n\ndef f(p):\n    return source_ref.resolve(p, 'v1')\n"
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        write_fixture_tree(
+            root, {"tools/alpha.py": caller, "deployer/source_ref.py": "def resolve(p, ref):\n    pass\n"}
+        )
+        held = python_checks.resolve_problems(root, sorted(file for file in root.rglob("*") if file.is_file()))
+        (root / "deployer" / "source_ref.py").unlink()
+        unheld = python_checks.resolve_problems(root, sorted(file for file in root.rglob("*") if file.is_file()))
+    assert held == []
+    assert [problem.split(":")[0] for problem in unheld] == ["tools/alpha.py"], unheld
+
+
+def test_resolve_policy_names_a_module_it_cannot_read_and_refuses_a_listing_it_reads_nothing_in() -> None:
+    nothing = ["could not measure: no module under the roots the resolve policy reads was given, so none was read"]
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        assert python_checks.resolve_problems(root, []) == nothing
+        # A module outside the roots is not read, so a listing of it alone reads nothing.
+        write_fixture_tree(root, {"tests/validation/alpha.py": "def f(p):\n    return p.resolve()\n"})
+        assert python_checks.resolve_problems(root, [root / "tests/validation/alpha.py"]) == nothing
+        write_fixture_tree(root, {SCRIPT: "def f(p:\n"})
+        unreadable = python_checks.resolve_problems(root, [root / "tests/validation/alpha.py", root / SCRIPT])
+    assert [problem.split(" ")[0] for problem in unreadable] == [SCRIPT], unreadable
 
 
 def run_claim_policy(
@@ -5558,6 +5655,64 @@ PRESENCE_HANDLED = {
         "def f(p):\n    result = []\n    try:\n        result = list(p.iterdir())\n    except OSError:\n"
         "        return result\n    return result\n"
     ),
+    "a handler that returns a name a tuple unpacking binds to an empty value before the try": (
+        "def f(p):\n    result, why = [], 'unread'\n    try:\n        result = list(p.iterdir())\n"
+        "    except OSError:\n        return result\n    return result\n"
+    ),
+    "a suppress an ExitStack enters through a name bound to it": (
+        "from contextlib import ExitStack, suppress\n\n\ndef f(p):\n    with ExitStack() as stack:\n"
+        "        s = stack\n        s.enter_context(suppress(OSError))\n        return p.stat()\n"
+    ),
+    "a suppress an ExitStack enters through a chain of names bound to it": (
+        "from contextlib import ExitStack, suppress\n\n\ndef f(p):\n    stack = ExitStack()\n    s = stack\n"
+        "    t = s\n    with stack:\n        t.enter_context(suppress(OSError))\n        return p.stat()\n"
+    ),
+    "a suppress an ExitStack enters in a loop after the stat": (
+        "from contextlib import ExitStack, suppress\n\n\ndef f(ps):\n    with ExitStack() as stack:\n"
+        "        for p in ps:\n            p.stat()\n            stack.enter_context(suppress(OSError))\n"
+    ),
+    "a suppress an ExitStack enters in a while loop before its test reads": (
+        "from contextlib import ExitStack, suppress\n\n\ndef f(p):\n    with ExitStack() as stack:\n"
+        "        while p.stat().st_size:\n            stack.enter_context(suppress(OSError))\n"
+    ),
+    "a suppress of OSError beside an unbound enter_context given the stack alone": (
+        "import contextlib\n\n\ndef f(p):\n    with contextlib.ExitStack() as stack:\n"
+        "        contextlib.ExitStack.enter_context(stack)\n        with contextlib.suppress(OSError):\n"
+        "            return p.stat()\n"
+    ),
+    "a suppress ExitStack.enter_context enters, called unbound": (
+        "import contextlib\n\n\ndef f(p):\n    with contextlib.ExitStack() as stack:\n"
+        "        contextlib.ExitStack.enter_context(stack, contextlib.suppress(OSError))\n        return p.stat()\n"
+    ),
+    "a suppress AsyncExitStack.push pushes, called unbound through an import": (
+        "from contextlib import AsyncExitStack, suppress\n\n\nasync def f(p):\n"
+        "    async with AsyncExitStack() as stack:\n        AsyncExitStack.push(stack, suppress(OSError))\n"
+        "        return p.stat()\n"
+    ),
+    "a suppress a tuple unpacking binds": (
+        "from contextlib import suppress\n\n\ndef f(p):\n    quiet, other = suppress(OSError), None\n"
+        "    with quiet:\n        return p.stat()\n    return None\n"
+    ),
+    "a suppress a nested list unpacking binds": (
+        "from contextlib import suppress\n\n\ndef f(p):\n    [a, (b, quiet)] = [1, (2, suppress(OSError))]\n"
+        "    with quiet:\n        return p.stat()\n    return None\n"
+    ),
+    "a suppress the module binds by a tuple unpacking": (
+        "from contextlib import suppress\n\nQUIET, LOUD = suppress(OSError), None\n\n\ndef f(p):\n"
+        "    with QUIET:\n        return p.stat()\n    return None\n"
+    ),
+    "a suppress a parameter's default gives": (
+        "from contextlib import suppress\n\n\ndef f(p, quiet=suppress(OSError)):\n    with quiet:\n"
+        "        return p.stat()\n    return None\n"
+    ),
+    "a suppress a keyword-only parameter's default gives": (
+        "import contextlib\n\n\ndef f(p, *, quiet=contextlib.suppress(PermissionError)):\n    with quiet:\n"
+        "        return list(p.iterdir())\n    return []\n"
+    ),
+    "a suppress another function binds to a name it declares global": (
+        "from contextlib import suppress\n\nQUIET = None\n\n\ndef setup():\n    global QUIET\n"
+        "    QUIET = suppress(OSError)\n\n\ndef f(p):\n    with QUIET:\n        return p.stat()\n    return None\n"
+    ),
 }
 # The listings, walks, and removals the policy refuses, each written as the module's imports may reach it.
 PRESENCE_LISTINGS = {
@@ -5884,6 +6039,65 @@ PRESENCE_REFUSAL_SHAPES = {
     "if not P: yield from messages": (
         "def f(ps):\n    for p in ps:\n        if not {call}:\n            yield from [f'{{p}} is missing']\n"
     ),
+    # A yield of a message nested in another expression sends it out as a bare yield does.
+    "if not P: x = await (yield message)": (
+        "async def f(p):\n    if not {call}:\n        x = await (yield f'{{p}} is missing')\n"
+    ),
+    "if not P: await (yield message)": (
+        "async def f(p):\n    if not {call}:\n        await (yield f'{{p}} is missing')\n"
+    ),
+    "if not P: (sent := (yield message))": (
+        "def f(p):\n    if not {call}:\n        (sent := (yield f'{{p}} is missing'))\n"
+    ),
+    "if not P: print((yield message))": "def f(p):\n    if not {call}:\n        print((yield f'{{p}} is missing'))\n",
+    "if not P: return (yield message)": "def f(p):\n    if not {call}:\n        return (yield f'{{p}} is missing')\n",
+    # A call given a message records it, its value assigned, returned, or awaited.
+    "if not P: done = report(message)": (
+        "def f(p, report):\n    if not {call}:\n        done = report(f'{{p}} is missing')\n    return 1\n"
+    ),
+    "if not P: total += report(message)": (
+        "def f(p, report):\n    total = 0\n    if not {call}:\n        total += report(f'{{p}} is missing')\n"
+        "    return total\n"
+    ),
+    "if not P: return await report(message)": (
+        "async def f(p, report):\n    if not {call}:\n        return await report(f'{{p}} is missing')\n    return 1\n"
+    ),
+    "if not P: return report(message)": (
+        "def f(p, report):\n    if not {call}:\n        return report(f'{{p}} is missing')\n    return 1\n"
+    ),
+    # A pattern of zero spelled signed, or as a class pattern of int or of bool reached through builtins.
+    "match P: case +0: raise": (
+        "def f(p):\n    match {call}:\n        case +0:\n            raise OSError(f'{{p}} is missing')\n    return 1\n"
+    ),
+    "match P: case -0: raise": (
+        "def f(p):\n    match {call}:\n        case -0:\n            raise OSError(f'{{p}} is missing')\n    return 1\n"
+    ),
+    "match P: case int(0): raise": (
+        "def f(p):\n    match {call}:\n        case int(0):\n            raise OSError(p)\n    return 1\n"
+    ),
+    "match P: case builtins.bool(False): raise": (
+        "def f(p):\n    match {call}:\n        case builtins.bool(False):\n            raise OSError(p)\n    return 1\n"
+    ),
+    "match P: case int(1): ... case _: raise": (
+        "def f(p):\n    match {call}:\n        case int(1):\n            return 1\n        case _:\n"
+        "            raise OSError(p)\n"
+    ),
+    # A subject's tuple nested in it, spelled by a name bound to it, or written without parentheses.
+    "match ((P, Q), R): case ((False, _), _): raise": (
+        "def f(p, q, r):\n    match (({call}, q), r):\n        case ((False, _), _):\n            raise OSError(p)\n"
+        "    return 1\n"
+    ),
+    "match (R, [Q, P]): case (_, [_, True]): ... case _: raise": (
+        "def f(p, q, r):\n    match (r, [q, {call}]):\n        case (_, [_, True]):\n            return 1\n"
+        "        case _:\n            raise OSError(p)\n"
+    ),
+    "pair = (P, Q); match pair: case (False, _): raise": (
+        "def f(p, q):\n    pair = ({call}, q)\n    match pair:\n        case (False, _):\n"
+        "            raise OSError(p)\n    return 1\n"
+    ),
+    "match P,: case (False,): raise": (
+        "def f(p):\n    match {call},:\n        case (False,):\n            raise OSError(p)\n    return 1\n"
+    ),
     "a message when not P": "def f(p):\n    return '' if {call} else ', which no longer exists'\n",
     "a message for each path not P keeps": "def f(ps):\n    return [f'{{p}} is missing' for p in ps if not {call}]\n",
 }
@@ -6041,6 +6255,10 @@ PRESENCE_ABSENT_OTHERS = {
     "other_is_absent given a name": "file_presence.is_present(p, other_is_absent=flag)",
     "other_is_absent given through an unpacking": "file_presence.is_present(p, **{'other_is_absent': flag})",
 }
+# The imports and names each refusal shape is read with.
+PRESENCE_REFUSAL_HEADER = (
+    "import builtins\nimport os\nimport file_presence\nfrom file_presence import is_directory\n\nflag = True\n\n\n"
+)
 PRESENCE_REFUSED = {
     **{
         f"{shape} by {predicate}": _presence_form(shape, call, "None")
@@ -6049,18 +6267,12 @@ PRESENCE_REFUSED = {
     },
     **PRESENCE_PREDICATE_USES,
     **{
-        f"{shape} by {predicate}": (
-            "import os\nimport file_presence\nfrom file_presence import is_directory\n\nflag = True\n\n\n"
-            + PRESENCE_REFUSAL_SHAPES[shape].format(call=call)
-        )
+        f"{shape} by {predicate}": (PRESENCE_REFUSAL_HEADER + PRESENCE_REFUSAL_SHAPES[shape].format(call=call))
         for shape in PRESENCE_REFUSAL_SHAPES
         for predicate, call in {**PRESENCE_PREDICATE_CALLS, **PRESENCE_ABSENT_OTHERS}.items()
     },
     **{
-        f"{shape} by {predicate}": (
-            "import os\nimport file_presence\nfrom file_presence import is_directory\n\nflag = True\n\n\n"
-            + PRESENCE_SEARCH_REFUSAL_SHAPES[shape].format(call=call)
-        )
+        f"{shape} by {predicate}": (PRESENCE_REFUSAL_HEADER + PRESENCE_SEARCH_REFUSAL_SHAPES[shape].format(call=call))
         for shape in PRESENCE_SEARCH_REFUSAL_SHAPES
         for predicate, call in {**PRESENCE_PREDICATE_CALLS, **PRESENCE_ABSENT_OTHERS}.items()
     },
@@ -6561,6 +6773,126 @@ PRESENCE_PASSED = {
         "        case (False, 'a') | (False, 'b'):\n            raise OSError(f'{p} is missing')\n    return 1\n"
     ),
     "limit: a link test, which the link-test policy holds": "def f(p):\n    return p.is_symlink()\n",
+    "limit: a suppress a function imports from another module, which shadows the module's own": (
+        "from contextlib import suppress\n\nQUIET = suppress(OSError)\n\n\ndef f(p):\n    from quiet import QUIET\n"
+        "    with QUIET:\n        return p.stat()\n    return None\n"
+    ),
+    "limit: a suppress unpacked from anything but a literal tuple of the same length": (
+        "from contextlib import suppress\n\n\ndef f(p):\n    quiet, *rest = suppress(OSError), None\n"
+        "    with quiet:\n        return p.stat()\n    return None\n"
+    ),
+    "limit: a message given to a call that builds a value, assigned": (
+        "import file_presence\n\n\ndef f(p):\n    if not file_presence.is_present(p, other_is_absent=True):\n"
+        "        text = str(f'{p} is missing')\n    return 1\n"
+    ),
+    "limit: a match on a name bound to a tuple more than once": (
+        "import file_presence\n\n\ndef f(p, q):\n    pair = (file_presence.is_present(p, other_is_absent=True), q)\n"
+        "    if q:\n        pair = (q, q)\n    match pair:\n        case (False, _):\n"
+        "            raise OSError(f'{p} is missing')\n    return 1\n"
+    ),
+    "limit: a stat in a loop's else after the suppress an ExitStack enters": (
+        "from contextlib import ExitStack, suppress\n\n\ndef f(p, qs):\n    with ExitStack() as stack:\n"
+        "        for q in qs:\n            stack.enter_context(suppress(OSError))\n        else:\n"
+        "            return p.stat()\n"
+    ),
+    "limit: a stat in a try's handler after the suppress an ExitStack enters": (
+        "from contextlib import ExitStack, suppress\n\n\ndef f(p, q):\n    with ExitStack() as stack:\n"
+        "        try:\n            stack.enter_context(suppress(OSError))\n            q()\n"
+        "        except ValueError:\n            return p.stat()\n"
+    ),
+    "limit: a stat in a try's finally after the suppress an ExitStack enters": (
+        "from contextlib import ExitStack, suppress\n\n\ndef f(p):\n    with ExitStack() as stack:\n"
+        "        try:\n            stack.enter_context(suppress(OSError))\n        finally:\n"
+        "            p.stat()\n"
+    ),
+    "limit: a suppress given to enter_context by keyword": (
+        "from contextlib import ExitStack, suppress\n\n\ndef f(p):\n    with ExitStack() as stack:\n"
+        "        stack.enter_context(cm=suppress(OSError))\n        return p.stat()\n"
+    ),
+    "limit: a suppress bound through nonlocal": (
+        "from contextlib import suppress\n\n\ndef f(p):\n    quiet = None\n\n    def setup():\n"
+        "        nonlocal quiet\n        quiet = suppress(OSError)\n\n    setup()\n    with quiet:\n"
+        "        return p.stat()\n"
+    ),
+    "limit: a method named as a built-in, returned with a message": (
+        "import file_presence\n\n\ndef f(p, parser):\n    if not file_presence.is_present(p, other_is_absent=True):\n"
+        "        return parser.exit(2, f'{p} is missing')\n    return 1\n"
+    ),
+    "limit: a built-in that records, assigned with a message": (
+        "import file_presence\n\n\ndef f(p):\n    if not file_presence.is_present(p, other_is_absent=True):\n"
+        "        answer = input(f'{p} is missing; go on?')\n    return 1\n"
+    ),
+    "limit: a yield of a message in an if's test": (
+        "import file_presence\n\n\ndef f(p):\n    if not file_presence.is_present(p, other_is_absent=True):\n"
+        "        if (yield f'{p} is missing'):\n            return\n"
+    ),
+    "limit: a yield of a message in an assert's test": (
+        "import file_presence\n\n\ndef f(p):\n    if not file_presence.is_present(p, other_is_absent=True):\n"
+        "        assert (yield f'{p} is missing')\n"
+    ),
+    "limit: a module-level match on a name the module binds to a tuple": (
+        "import file_presence\n\nPAIR = (file_presence.is_present('p', other_is_absent=True), 1)\nmatch PAIR:\n"
+        "    case (False, _):\n        raise OSError('the file is missing')\n"
+    ),
+    # The forms beside each widened reading that still pass.
+    "a path built from words, assigned on a test's False": (
+        "import os\nimport file_presence\n\n\ndef f(p):\n"
+        "    if not file_presence.is_present(p, other_is_absent=True):\n"
+        "        where = os.path.join('Program Files', p.name)\n    return 1\n"
+    ),
+    "a class given words, assigned on a test's False": (
+        "import file_presence\n\n\ndef f(p, Label):\n"
+        "    if not file_presence.is_present(p, other_is_absent=True):\n        label = Label('Program Files')\n"
+        "    return 1\n"
+    ),
+    "a join of messages, assigned on a test's False": (
+        "import file_presence\n\n\ndef f(p, ps):\n"
+        "    if not file_presence.is_present(p, other_is_absent=True):\n"
+        "        text = ', '.join(f'{x} is missing' for x in ps)\n    return 1\n"
+    ),
+    "a call given values, assigned on a test's False": (
+        "import file_presence\n\n\ndef f(p, report):\n"
+        "    if not file_presence.is_present(p, other_is_absent=True):\n        done = report(p.name)\n    return 1\n"
+    ),
+    "a nested yield of one word on a test's False": (
+        "import file_presence\n\n\ndef f(p):\n    if not file_presence.is_present(p, other_is_absent=True):\n"
+        "        print((yield p.name))\n"
+    ),
+    "a yield of a message in a lambda on a test's False": (
+        "import file_presence\n\n\ndef f(p):\n    if not file_presence.is_present(p, other_is_absent=True):\n"
+        "        later = lambda: (yield f'{p} is missing')\n        return later\n    return None\n"
+    ),
+    "a match whose refusing case takes -1, which no answer equals": (
+        "import file_presence\n\n\ndef f(p):\n    match file_presence.is_present(p, other_is_absent=True):\n"
+        "        case -1:\n            raise OSError(f'{p} is missing')\n    return 1\n"
+    ),
+    "a match whose refusing case takes int(1)": (
+        "import file_presence\n\n\ndef f(p):\n    match file_presence.is_present(p, other_is_absent=True):\n"
+        "        case int(1):\n            raise OSError(f'{p} is in the way')\n    return 1\n"
+    ),
+    "a match on a nested tuple whose refusing case takes another item": (
+        "import file_presence\n\n\ndef f(p, q, r):\n"
+        "    match ((file_presence.is_present(p, other_is_absent=True), q), r):\n        case ((_, 'x'), _):\n"
+        "            raise OSError(f'{p} is not the file')\n    return 1\n"
+    ),
+    "a suppress an ExitStack no with holds enters through a name bound to it": (
+        "from contextlib import ExitStack, suppress\n\n\ndef f(p):\n    with ExitStack() as stack:\n"
+        "        other = ExitStack()\n        other.enter_context(suppress(OSError))\n        return p.stat()\n"
+    ),
+    "a suppress an ExitStack enters in a loop after a stat before the loop": (
+        "from contextlib import ExitStack, suppress\n\n\ndef f(p, qs):\n    with ExitStack() as stack:\n"
+        "        st = p.stat()\n        for q in qs:\n            stack.enter_context(suppress(OSError))\n"
+        "        return st\n"
+    ),
+    "a parameter's default that suppresses FileNotFoundError": (
+        "from contextlib import suppress\n\n\ndef f(p, quiet=suppress(FileNotFoundError)):\n    with quiet:\n"
+        "        return p.stat()\n    return None\n"
+    ),
+    "a name declared global and bound to no suppress": (
+        "import contextlib\n\nQUIET = None\n\n\ndef setup():\n    global QUIET\n"
+        "    QUIET = contextlib.nullcontext()\n\n\ndef f(p):\n    with QUIET:\n        return p.stat()\n"
+        "    return None\n"
+    ),
 }
 
 

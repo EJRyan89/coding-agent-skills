@@ -29,6 +29,7 @@ from git_client import GitClient, GitError
 from review_archive import ArchiveError, latest_record, list_versions
 from review_io import PersistenceError
 from search_boundary import CLAUDE_INSTRUCTIONS_OFF_VARIABLES
+from text_lines import text_lines
 
 from deployer import tools
 from deployer.platform_support import PYTHON
@@ -352,7 +353,7 @@ def reviewer_agents(home: Path) -> dict[str, Any]:
     guard. Raise AgentError when the agent has anything the definition would drop or cannot carry."""
     path = home / REVIEWER_AGENT
     try:
-        lines = path.read_text(encoding="utf-8").splitlines()
+        lines = text_lines(path.read_text(encoding="utf-8"))
         found = frontmatter.split(lines)
         if found is None:
             raise AgentError("it has no frontmatter")

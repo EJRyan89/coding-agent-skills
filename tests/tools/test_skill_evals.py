@@ -51,6 +51,7 @@ from review_documents import document_format, extract, locations, split_label
 from review_github import GitHubClient
 from review_records import ReviewRecord, build_record, validate_record
 from review_runtime import validate_adapter_manifest
+from test_private_folder import judged_folder_calls, recording_temporary_folders
 from test_review_documents import StubPdftotext
 
 from conftest import GitHome
@@ -1580,6 +1581,15 @@ class DocumentStagingTests(unittest.TestCase):
         self.assertEqual(["export-retention.md"], [path.name for path in staged.parent.iterdir()])
         self.assertNotEqual(0, self.git.run(["rev-parse", "--show-toplevel"], directory=staged.parent).returncode)
 
+    def test_a_document_with_no_base_is_staged_in_the_temporary_directory_private_folder_judged(self) -> None:
+        # The session reviews the staged document, so another account that could swap its folder would choose it.
+        with (
+            recording_temporary_folders() as calls,
+            skill_evals_scenarios.document_place(self.scenarios["design-gaps"], self.root / "run") as place,
+        ):
+            self.assertTrue(place.is_dir())
+        self.assertEqual([True], judged_folder_calls(calls, "skill-evals-document-"))
+
     def test_an_edit_is_staged_uncommitted_over_its_base_committed_in_a_new_checkout(self) -> None:
         scenario = self.scenarios["committed-edit"]
         staged = skill_evals_scenarios.stage_document(scenario, self.root / "document", self.git)
@@ -1761,6 +1771,13 @@ class ReviewerScenarioTests(unittest.TestCase):
             )
         self.assertEqual([], list(self.copies.iterdir()))
         self.assertEqual(before, tree_bytes(scenario.directory))
+
+    def test_the_copy_is_made_in_the_temporary_directory_private_folder_judged(self) -> None:
+        # The session reviews the copy, so another account that could swap it would choose what is reviewed.
+        (scenario,) = skill_evals_scenarios.load_scenarios("review-repository", ["drifted-guide"])
+        with recording_temporary_folders() as calls, skill_evals_scenarios.reviewed_fixture(scenario):
+            pass
+        self.assertEqual([True], judged_folder_calls(calls, "skill-evals-fixture-"))
 
     def test_the_copy_is_removed_when_the_run_fails(self) -> None:
         (scenario,) = skill_evals_scenarios.load_scenarios("review-repository", ["drifted-guide"])
@@ -2455,6 +2472,17 @@ class RunPieceTests(unittest.TestCase):
 
     def test_a_missing_reviewer_agent_is_a_reason(self) -> None:
         self.assertIn("has no frontmatter line", skill_evals_runs.set_reviewer_model(self.root, "haiku") or "")
+
+    def test_the_agent_prompt_breaks_only_where_markdown_breaks_a_line(self) -> None:
+        fake_deploy(self.root, self.root)
+        self.assertIsNone(skill_evals_runs.set_reviewer_model(self.root, "haiku"))
+        agent = self.root / skill_evals_runs.REVIEWER_AGENT
+        original = agent.read_bytes()
+        for separator in ("\x0b", "\x0c", "\x1c", "\x1d", "\x1e", "\x85", "\u2028", "\u2029"):
+            with self.subTest(separator=f"U+{ord(separator):04X}"):
+                agent.write_bytes(original + f"Tail{separator}end.\n".encode())
+                prompt = skill_evals_runs.reviewer_agents(self.root)["code-review-reviewer"]["prompt"]
+                self.assertTrue(prompt.endswith(f"\nTail{separator}end."), prompt[-40:])
 
     def test_the_session_gets_the_deployed_agent_with_its_hook_on_the_homes_guard(self) -> None:
         fake_deploy(self.root, self.root)

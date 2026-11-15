@@ -44,7 +44,7 @@ from git_client import (
 from github_client import GitHubClient, GitHubError, replace_undecodable
 from github_remote import github_repository
 from link_probe import is_link_or_junction
-from path_containment import posix_within, within
+from path_containment import posix_within, resolved_path, strictly_resolved_path, within
 from review_config import (
     REVIEWER_EFFORTS,
     REVIEWER_MODELS,
@@ -1282,7 +1282,7 @@ def _is_agent_instruction_path(relative: str) -> bool:
 
 
 def _require_safe_snapshot_path(root: Path, target: Path) -> None:
-    resolved_root = root.resolve(strict=True)
+    resolved_root = strictly_resolved_path(root)
     current = target
     while True:
         if is_link_or_junction(current):
@@ -1292,7 +1292,7 @@ def _require_safe_snapshot_path(root: Path, target: Path) -> None:
         if current.parent == current:
             raise RuntimeContractError(f"Source snapshot path escapes its root: {target}")
         current = current.parent
-    resolved = target.resolve(strict=True)
+    resolved = strictly_resolved_path(target)
     if not within(resolved, resolved_root):
         raise RuntimeContractError(f"Source snapshot path escapes its root: {target}")
 
@@ -1302,8 +1302,8 @@ def _require_own_name(root: Path, relative: str) -> None:
     file or folder written before it, in another case, or as its 8.3 short name on Windows, such as `SOURCE~1.JSO` for
     `source-snapshot.json`. Writing it would replace that file, or put the file in that folder, under a name nothing
     lists. The parts not there yet are kept as given."""
-    resolved_root = root.resolve(strict=True)
-    resolved = root.joinpath(*PurePosixPath(relative).parts).resolve()
+    resolved_root = strictly_resolved_path(root)
+    resolved = resolved_path(root.joinpath(*PurePosixPath(relative).parts))
     if not within(resolved, resolved_root):
         raise RuntimeContractError(f"Source snapshot path escapes its root: {relative}")
     actual = resolved.relative_to(resolved_root).as_posix()
@@ -1327,7 +1327,7 @@ def _write_new_file(root: Path, relative: str, content: bytes) -> None:
         with target.open("xb") as stream:
             stream.write(content)
     except FileExistsError:
-        actual = target.resolve().relative_to(root.resolve()).as_posix()
+        actual = resolved_path(target).relative_to(resolved_path(root)).as_posix()
         raise _alias_error(relative, actual) from None
 
 
@@ -1388,12 +1388,12 @@ def _walk_snapshot(root: Path) -> _SnapshotTree:
     ancestor of a file. A folder that cannot be listed fails the walk.
     """
     tree = _SnapshotTree(root)
-    resolved_root = root.resolve(strict=True)
+    resolved_root = strictly_resolved_path(root)
     pending: list[tuple[Path, str]] = [(root, "")]
     while pending:
         folder, prefix = pending.pop()
         try:
-            if prefix and not within(folder.resolve(strict=True), resolved_root):
+            if prefix and not within(strictly_resolved_path(folder), resolved_root):
                 tree.escaping.add(prefix.removesuffix("/"))
                 tree.faults.append(f"Source snapshot path escapes its root: {folder}")
                 continue

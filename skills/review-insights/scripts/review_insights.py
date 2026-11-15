@@ -78,7 +78,7 @@ import whole_number
 from console import run_main
 from flat_text import flat_text, single_line
 from git_client import GitClient, GitError
-from path_containment import within
+from path_containment import resolved_path, within
 from path_keys import name_key
 from review_archive import ArchiveError, every_version, pull_directory, record_files, record_paths
 from review_config import (
@@ -200,10 +200,10 @@ def current_repository(config: dict[str, Any], services: Services) -> str | None
     if common is not None and name_key(common.name, common.parent) == ".git":
         candidates.append(common.parent)
     matches = [
-        (len(str(Path(entry["checkout_path"]).resolve())), identity)
+        (len(str(resolved_path(entry["checkout_path"]))), identity)
         for identity, entry in config["repositories"].items()
         if entry.get("checkout_path")
-        and any(within(item.resolve(), Path(entry["checkout_path"]).resolve()) for item in candidates)
+        and any(within(resolved_path(item), resolved_path(entry["checkout_path"])) for item in candidates)
     ]
     return max(matches)[1] if matches else None
 
@@ -1059,7 +1059,7 @@ def synthesize(
             raise InsightError(f"{report_path} has no synthesis to record; run report again")
         if synthesis["status"] == "complete":
             raise InsightError(f"{report_path} already has a recorded synthesis; it is replaced when its input changes")
-        if result_path.resolve() != Path(synthesis["result"]).resolve():
+        if resolved_path(result_path) != resolved_path(synthesis["result"]):
             raise InsightError(f"The synthesis result must be {synthesis['result']}")
         try:
             context = synthesis_stage.load_context(synthesis)

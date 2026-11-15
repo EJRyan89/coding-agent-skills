@@ -307,20 +307,27 @@ def block_scalar(header: re.Match[str], key_indent: int, following: list[str]) -
     return re.sub(r" ?\n ?", "\n", paragraphs).strip(), count
 
 
+def is_delimiter(line: str) -> bool:
+    """Whether a line is the `---` that opens or closes frontmatter, as YAML reads a document marker: `---` followed by
+    nothing but its whitespace, a space or a tab. Any other character after it, such as U+2028, which YAML reads as
+    text, leaves the line no delimiter."""
+    return line.startswith("---") and not line[3:].strip(" \t")
+
+
 # Kept for good instead of ejryan89-skill-core's frontmatter.py, by the decision recorded in
 # https://github.com/EJRyan89/coding-agent-skills/issues/27: memories nest their type in a `metadata:` mapping, which
 # the shared reader does not give, and the audit must read every memory however it is written.
 def parse_frontmatter(text: str) -> tuple[dict[str, str], str]:
     """Parse the simple key: value frontmatter Claude Code writes, tolerating nesting and reading block scalars."""
     lines = text_lines(text)
-    if not lines or lines[0].strip() != "---":
+    if not lines or not is_delimiter(lines[0]):
         return {}, text
     values: dict[str, str] = {}
     index = 1
     while index < len(lines):
         line = lines[index]
         index += 1
-        if line.strip() == "---":
+        if is_delimiter(line):
             return values, "\n".join(lines[index:])
         match = FRONTMATTER_KEY.match(line)
         if not match or not match.group("value"):
@@ -329,7 +336,7 @@ def parse_frontmatter(text: str) -> tuple[dict[str, str], str]:
         header = BLOCK_SCALAR.match(value)
         if header:
             # A block scalar's lines are never read as keys, and the closing --- is never indented past a key.
-            following = list(itertools.takewhile(lambda rest: rest.strip() != "---", lines[index:]))
+            following = list(itertools.takewhile(lambda rest: not is_delimiter(rest), lines[index:]))
             value, spanned = block_scalar(header, indentation(line), following)
             index += spanned
         else:
@@ -871,7 +878,7 @@ def main_worktree(repo: Path) -> Path | None:
     value = configured.rstrip("\r\n")
     if not value:
         raise GitError(f"git config gave core.worktree in {common / 'config'} an empty value")
-    return (common / value).resolve()
+    return resolved_path(common / value)
 
 
 def repository_root(directory: Path) -> Path | None:
@@ -1051,7 +1058,7 @@ def locate(
             return unresolved([*notes, str(exc)])
         if root is None:
             # Claude Code uses the project's own folder for a project in no Git repository.
-            root = repo.resolve()
+            root = resolved_path(repo)
             source = f"derived from the folder ({root}), which is in no Git repository"
         else:
             source = f"derived from the repository's main worktree ({root})"
@@ -1312,7 +1319,7 @@ def resolve_command(args: argparse.Namespace) -> tuple[int, list[str]]:
         if repo is None and args.repo is None:
             return 1, ["FAILED not inside a Git repository; pass --repo"]
         # A folder in no Git repository is a project of its own.
-        repo = repo or args.repo.resolve()
+        repo = repo or resolved_path(args.repo)
         if holds_line_break(str(repo)):
             return 1, [f"FAILED {flat_text(f'the repository path holds a line break: {str(repo)!r}')}"]
         return 0, resolve_lines(repo, resolve(repo, args.home, dict(os.environ), managed_settings_path()))

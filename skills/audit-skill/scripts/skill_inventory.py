@@ -194,7 +194,7 @@ from markdown_sections import (
     prose_code_spans,
 )
 from module_assignments import assigned_names, sole_assignment
-from path_containment import within
+from path_containment import resolved_path, within
 from path_keys import path_key
 from powershell_startup import POWERSHELL_PROGRAMS, StartupCommand, startup_command
 from python_names import import_aliases, qualified_name
@@ -1195,7 +1195,7 @@ def estimate_tokens(text: str | None, kind: str) -> int:
     if text is None:
         return 0
     if kind in ("main", "doc"):
-        lines = text.splitlines(keepends=True)
+        lines = text_lines(text, keepends=True)
         languages, _ = parse_fences([line.rstrip("\r\n") for line in lines])
         code = sum(len(line) for line, language in zip(lines, languages, strict=True) if language is not None)
         prose = len(text) - code
@@ -1205,7 +1205,7 @@ def estimate_tokens(text: str | None, kind: str) -> int:
 
 
 def normalized_blocks(text: str) -> list[tuple[int, tuple[str, ...]]]:
-    _, blocks = parse_fences(text.splitlines())
+    _, blocks = parse_fences(text_lines(text))
     result = []
     for block in blocks:
         body = tuple(line.strip() for line in block.body if line.strip())
@@ -1270,7 +1270,7 @@ def inventory(directory: Path) -> list[str]:
 
 def structure_flags(kind: str, text: str, relative: str) -> list[str]:
     """A body past the published line limit, or a long reference file without a table of contents."""
-    lines = text.splitlines()
+    lines = text_lines(text)
     if kind == "main":
         body = len(lines) - body_start(lines)
         return [f"BODY_OVER_500_LINES {body}"] if body > BODY_LINE_LIMIT else []
@@ -1292,18 +1292,18 @@ def inside_references(root: Path, source: Path, lines: list[str]) -> list[tuple[
     for number, line in enumerate(lines, start=1):
         for match in INSIDE_REFERENCE.finditer(line):
             base = root if match.group(1) else source.parent
-            found.append((number, match.group(0), (base / match.group(2)).resolve()))
+            found.append((number, match.group(0), resolved_path(base / match.group(2))))
     return found
 
 
 def nested_flags(directory: Path, texts: dict[str, tuple[str, str]]) -> list[str]:
     """Reference files reached only through another reference file; published guidance links each from SKILL.md."""
-    root = directory.resolve()
-    docs = {(directory / relative).resolve() for relative, (kind, _) in texts.items() if kind == "doc"}
+    root = resolved_path(directory)
+    docs = {resolved_path(directory / relative) for relative, (kind, _) in texts.items() if kind == "doc"}
     linked: set[Path] = set()
     for relative, (kind, text) in texts.items():
         if kind == "main":
-            lines = text.splitlines()
+            lines = text_lines(text)
             linked.update(
                 target for _, _, target in inside_references(root, root / relative, lines[body_start(lines) :])
             )
@@ -1311,8 +1311,8 @@ def nested_flags(directory: Path, texts: dict[str, tuple[str, str]]) -> list[str
     for relative, (kind, text) in texts.items():
         if kind != "doc":
             continue
-        source = (directory / relative).resolve()
-        for number, reference, target in inside_references(root, source, text.splitlines()):
+        source = resolved_path(directory / relative)
+        for number, reference, target in inside_references(root, source, text_lines(text)):
             if target != source and target in docs and target not in linked:
                 flags.append(f"NESTED_REFERENCE {relative}:{number} {reference}")
     return flags
@@ -1320,20 +1320,20 @@ def nested_flags(directory: Path, texts: dict[str, tuple[str, str]]) -> list[str
 
 def outside_lines(directory: Path, texts: dict[str, tuple[str, str]]) -> list[str]:
     """Markdown the skill's own Markdown points to outside its folder: a read, and its cost, on every run."""
-    root = directory.resolve()
+    root = resolved_path(directory)
     lines: list[str] = []
     counted: dict[str, tuple[int, int]] = {}
     unreadable: dict[str, str] = {}
     for relative, (kind, text) in texts.items():
         if kind not in ("main", "doc"):
             continue
-        body = text.splitlines()
+        body = text_lines(text)
         start = body_start(body) if kind == "main" else 0
         for number in range(start, len(body)):
             for match in OUTSIDE_REFERENCE.finditer(body[number]):
                 reference = match.group(0)
                 base = directory if match.group(1) else (directory / relative).parent
-                target = (base / match.group(2)).resolve()
+                target = resolved_path(base / match.group(2))
                 if within(target, root):
                     continue
                 where = f"{relative}:{number + 1}"
@@ -1534,7 +1534,7 @@ def duplicate_flags(texts: dict[str, tuple[str, str]]) -> list[str]:
     flags: list[str] = []
     first: dict[tuple[str, ...], str] = {}
     helpers = {
-        path: "\n" + "\n".join(line.strip() for line in text.splitlines() if line.strip()) + "\n"
+        path: "\n" + "\n".join(line.strip() for line in text_lines(text) if line.strip()) + "\n"
         for path, (kind, text) in texts.items()
         if kind == "helper"
     }
@@ -1825,7 +1825,7 @@ def scan(given: list[Path]) -> list[str]:
     output: list[str] = []
     runtime_prompts: list[tuple[Path, int]] = []
     for path, text in zip(paths, texts, strict=True):
-        lines = text.splitlines()
+        lines = text_lines(text)
         if path.suffix.casefold() == ".md":
             start = body_start(lines)
             languages, _ = parse_fences(lines)
@@ -1951,7 +1951,7 @@ def skill_folder(path: Path) -> Path | None:
     """The skill folder a scanned file belongs to: the nearest folder above it that holds SKILL.md, named as the
     file is, so a relative path stays relative."""
     for folder in path.parents:
-        folder = folder if folder.name else folder.resolve()
+        folder = folder if folder.name else resolved_path(folder)
         if any(is_skill_file(child) and is_listed_file(child) for child in folder.iterdir()):
             return folder
     return None
@@ -1989,7 +1989,7 @@ def measure_sample(root: Path, sample: Path) -> list[str]:
             tokens = estimate_tokens(require_text(target), "doc")
             output.append(f"RUNTIME_PROMPT_READ {posix(sample)} {relative} {tokens}")
     output.append(f"REPLY_BOUNDED {posix(sample)} {'yes' if REPLY_BOUND.search(text) else 'no'}")
-    return output + sample_shape_cues(sample, text.splitlines())
+    return output + sample_shape_cues(sample, text_lines(text))
 
 
 def sample_shape_cues(sample: Path, lines: list[str]) -> list[str]:
@@ -2152,9 +2152,20 @@ def python_facts(text: str) -> ScriptFacts:
     return facts
 
 
-def shell_facts(text: str) -> ScriptFacts:
+def shell_lines(text: str, suffix: str) -> list[str]:
+    """A shell script's lines as its shell reads them: PowerShell's tokenizer ends a line at CR, LF, and CRLF, as
+    `text_lines` splits it, and Bash at LF alone, reading a CR as part of the line."""
+    if suffix.casefold() == ".ps1":
+        return text_lines(text)
+    lines = text.split("\n")
+    if lines[-1] == "":
+        lines.pop()
+    return lines
+
+
+def shell_facts(text: str, suffix: str) -> ScriptFacts:
     facts = ScriptFacts()
-    for number, line in enumerate(text.splitlines(), start=1):
+    for number, line in enumerate(shell_lines(text, suffix), start=1):
         if line.lstrip().startswith("#"):
             continue
         facts.words.update(ANY_STATUS_WORD.findall(line))
@@ -2171,7 +2182,7 @@ def script_facts(path: Path) -> ScriptFacts:
     cannot be measured, and reading it as printing nothing would compare the Markdown with less than the skill runs."""
     text = require_text(path)
     if path.suffix.casefold() != ".py":
-        return shell_facts(text)
+        return shell_facts(text, path.suffix)
     try:
         return python_facts(text)
     except python_reader.CONTENT_ERRORS as exc:
@@ -2182,7 +2193,7 @@ def repository_root(folder: Path) -> Path | None:
     """The nearest folder above a skill that holds a .git entry, where its commands run tools from, or None; a .git
     that is a link to nothing is none, since git reads nothing through it, and a .git entry it cannot look at raises
     the stat's OSError rather than passing to the folder above."""
-    return next((parent for parent in folder.resolve().parents if is_there(parent / ".git")), None)
+    return next((parent for parent in resolved_path(folder).parents if is_there(parent / ".git")), None)
 
 
 def folder_scripts(folder: Path) -> list[Path]:
@@ -2190,7 +2201,7 @@ def folder_scripts(folder: Path) -> list[Path]:
     if not is_directory(folder):
         return []
     return [
-        path.resolve()
+        resolved_path(path)
         for path in sorted(folder.iterdir())
         if path.suffix.casefold() in STATUS_SCRIPT_SUFFIXES and not is_suite_name(path.name) and is_listed_file(path)
     ]
@@ -2233,7 +2244,7 @@ def command_scripts(
                 else:
                     continue
                 if script_is_present(script):
-                    found.append(script.resolve())
+                    found.append(resolved_path(script))
                 # A bare name from the repository root, such as a value a span gives, names no tool's path.
                 elif text.startswith(SKILL_DIR_PREFIX) or "/" in text:
                     missing.append(f"SCRIPT_MISSING {posix(path)} {line} {text}")
@@ -2249,7 +2260,7 @@ CONTAINMENT_ALLOWED = {
 def shown_path(folder: Path, path: Path) -> str:
     """A script's path under the skill folder as it was given, or its resolved path outside it."""
     try:
-        return posix(folder / path.relative_to(folder.resolve()))
+        return posix(folder / path.relative_to(resolved_path(folder)))
     except ValueError:
         return posix(path)
 
@@ -2304,7 +2315,7 @@ def status_lines(folder: Path) -> list[str]:
     command naming a script that does not exist. A skill with no script of its own that runs none has nothing else to
     compare.
     """
-    markdown = [(path, require_text(path).splitlines()) for path in scanned_files(folder)]
+    markdown = [(path, text_lines(require_text(path))) for path in scanned_files(folder)]
     root = repository_root(folder)
     bodies = [lines[body_start(lines) :] for _, lines in markdown]
     commands, missing = command_scripts(folder, root, markdown)
@@ -2317,11 +2328,11 @@ def status_lines(folder: Path) -> list[str]:
     ]
     reading = [*own, *commands, *(path for command in commands for path in folder_scripts(command.parent))]
     reading += [path for core in cores for path in folder_scripts(core)]
-    skills_roots = {folder.resolve().parent, *((root / "skills", root / ".claude" / "skills") if root else ())}
+    skills_roots = {resolved_path(folder).parent, *((root / "skills", root / ".claude" / "skills") if root else ())}
     runs = [
         path
         for path in commands
-        if within(path, folder.resolve(), strict=True)
+        if within(path, resolved_path(folder), strict=True)
         or not any(within(path, skills, strict=True) for skills in skills_roots)
     ]
     facts = ScriptFacts()
@@ -2455,7 +2466,7 @@ def delegates(line: str) -> bool:
 
 def skill_markdown(folder: Path) -> list[tuple[Path, list[str]]]:
     """A skill folder's SKILL.md and every doc file inventory lists, each with its lines."""
-    return [(path, text.splitlines()) for path in scanned_files(folder) if (text := read_text(path)) is not None]
+    return [(path, text_lines(text)) for path in scanned_files(folder) if (text := read_text(path)) is not None]
 
 
 def prose_lines(lines: list[str]) -> list[int]:
@@ -2862,7 +2873,9 @@ def needs_evidence(folder: Path, granted: list[str], user_only: bool, tools: lis
     for script in folder_scripts(folder / "scripts"):
         for subcommand in sorted(script_git_subcommands(script)):
             needs = runtime_support.frontmatter_needs([], False, git_subcommands=frozenset({subcommand}))
-            evidence += [(need, f"git {subcommand} {posix(script.relative_to(folder.resolve()))}") for need in needs]
+            evidence += [
+                (need, f"git {subcommand} {posix(script.relative_to(resolved_path(folder)))}") for need in needs
+            ]
     return list(dict.fromkeys(evidence))
 
 

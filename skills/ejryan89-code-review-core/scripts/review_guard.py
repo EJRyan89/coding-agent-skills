@@ -77,7 +77,7 @@ import json_writer
 import private_folder
 from console import run_main
 from executable_locator import PYTHON
-from path_containment import relative_within, within
+from path_containment import relative_within, resolved_path, within
 from path_keys import path_key, same_parts
 from skill_roots import plugin_name
 from typed_fields import FieldError, FieldReader
@@ -148,7 +148,7 @@ PRESENCE_ALLOWED = {
 def _spellings(root: Path) -> tuple[Path, ...]:
     """A trusted local folder as it is given and as it resolves, each in the case the file system compares, so a path
     in either spelling is held to it by its text."""
-    return tuple(Path(path_key(form, textual=True)) for form in (root.absolute(), root.resolve()))
+    return tuple(Path(path_key(form, textual=True)) for form in (root.absolute(), resolved_path(root)))
 
 
 # The folders every path the guard accepts lies under: the temporary directory, where prepare makes every run, and
@@ -223,7 +223,7 @@ def _log_read(tool: str, path: Path, claim: Claim) -> None:
     if not ROLE_ID.fullmatch(role):
         return
     source = run / SOURCE
-    snapshot = source.resolve(strict=False)
+    snapshot = resolved_path(source)
     entry: str | dict[str, str]
     relative = relative_within(path, snapshot)
     if tool != "Glob" and relative is not None and path.is_file():
@@ -264,7 +264,7 @@ def _resolve_local(path: Path) -> Path:
         raise Denied(f"give a local path, not a network or device path; {path} is one")
     if not any(within(path, root) for root in LOCAL_ROOTS):
         raise Denied(f"give an absolute path inside your review run folder; {path} is outside every folder it may use")
-    return Path(os.path.normpath(path.resolve(strict=False)))
+    return Path(os.path.normpath(resolved_path(path)))
 
 
 def _same(first: Path, second: Path) -> bool:
@@ -394,14 +394,14 @@ def _claim(agent: str, path: Path) -> None:
 def _check_in_run(tool: str, path: Path, run: Path, reads: list[str] | None = None) -> None:
     """The path lies in the suite's references or the run; for a role the run withholds a pull-request text from, in
     the references or one of the paths its `reads` names, each of which lies in the run."""
-    if within(path, REFERENCES.resolve(strict=False)):
+    if within(path, resolved_path(REFERENCES)):
         return
     if reads is None:
-        if within(path, run.resolve(strict=False)):
+        if within(path, resolved_path(run)):
             return
         raise Denied(f"{tool} may only look inside your own review run folder; {path} is outside it")
-    allowed = [Path(read).resolve(strict=False) for read in reads]
-    if within(path, run.resolve(strict=False)) and any(within(path, root) for root in allowed):
+    allowed = [resolved_path(read) for read in reads]
+    if within(path, resolved_path(run)) and any(within(path, root) for root in allowed):
         return
     raise Denied(f"{tool} may only look at the inputs your prompt names; {path} is not one of them")
 
@@ -426,7 +426,7 @@ def _check_allowed(tool: str, path: Path, claim: Claim) -> None:
     run, role = claim
     _check_in_run(tool, path, run, role.get("reads"))
     for restricted, roles in _restricted(run).items():
-        target = Path(restricted).resolve(strict=False)
+        target = resolved_path(restricted)
         if role["id"] not in roles and (within(path, target) or within(target, path)):
             raise Denied(f"{tool} may only look at the inputs your prompt names; {path} holds one it does not")
 

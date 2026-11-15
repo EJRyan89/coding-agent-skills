@@ -39,6 +39,10 @@ SHIM = (
 SHIM_PATH = Path(".agents/skills/widget-check/SKILL.md")
 
 
+# The characters str.splitlines breaks a line at and text_lines, as YAML 1.2 and CommonMark, does not.
+TEXT_SEPARATORS = ("\x0b", "\x0c", "\x1c", "\x1d", "\x1e", "\x85", "\u2028", "\u2029")
+
+
 class SkillShimsTestCase(unittest.TestCase):
     def setUp(self) -> None:
         self._temporary = tempfile.TemporaryDirectory(prefix="skill-shims-test.")
@@ -352,3 +356,15 @@ class SkillShimsTestCase(unittest.TestCase):
         self.assertEqual(2, code)
         self.assertIn(f"lies in the skills directory {home / '.claude' / 'skills'}", stderr)
         self.assertEqual(adapter, (home / SHIM_PATH).read_text(encoding="utf-8"))
+
+
+class SeparatorTests(unittest.TestCase):
+    def test_a_shim_copies_the_frontmatter_lines_yaml_reads(self) -> None:
+        for separator in TEXT_SEPARATORS:
+            with self.subTest(separator=f"U+{ord(separator):04X}"):
+                shim = skill_shims.shim_text(
+                    "widget-check", f"---\nname: widget-check\ndescription: d{separator}x\n---\n"
+                )
+                self.assertIsNotNone(shim)
+                assert shim is not None
+                self.assertTrue(shim.startswith(f"---\nname: widget-check\ndescription: d{separator}x\n---\n\n"))

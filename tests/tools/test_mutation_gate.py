@@ -39,6 +39,7 @@ from fsops_platform import PLATFORM_TOKENS
 from git_client import GitClient
 from job_selection import importers, python_imports, reached_suites
 from suite_names import is_suite_name
+from test_private_folder import judged_folder_calls, recording_temporary_folders
 from validation_support import repository_files
 
 from deployer import platform_support
@@ -3566,6 +3567,12 @@ class UnrunFixtures(unittest.TestCase):
             (self.folder / "local-linux.json").write_text(json.dumps(record), encoding="utf-8")
         return completed
 
+    def test_the_local_runs_worktrees_lie_in_the_temporary_directory_private_folder_judged(self) -> None:
+        ci_run(self.root, self.folder, lambda mutants: [Outcome(mutant, NOT_RUN) for mutant in mutants])
+        with recording_temporary_folders() as calls:
+            self.unrun()
+        self.assertEqual([True, True], judged_folder_calls(calls, "mutation-gate-"))
+
     def test_only_the_mutant_the_leg_left_not_run_runs_and_the_kill_the_leg_made_is_kept(self) -> None:
         ci_run(
             self.root,
@@ -4982,3 +4989,48 @@ def test_a_local_run_is_read_by_its_own_files_name() -> None:
         str(strays.value)
         == "local-mac.json, local-windows.json holds a local run of a leg that ran no mutant of this run"
     )
+
+
+class JudgedFolderFixtures(unittest.TestCase):
+    """Each folder the gate makes lies in the temporary directory private_folder judged: the gate runs suites and
+    reads their verdicts and reach from these folders, so another account that could swap one would choose a
+    verdict. A TemporaryDirectory makes its folder with tempfile.mkdtemp, which records the folder a second time."""
+
+    def finished(self) -> Any:
+        """The bounded runner standing in for pytest and coverage.py, each finishing at once."""
+        finished = types.SimpleNamespace(returncode=0, stdout=b"", stderr=b"")
+        return mock.patch.object(mutation_gate, "run_bounded", return_value=finished)
+
+    def test_the_measurement_canary_is_written_in_the_judged_folder(self) -> None:
+        with recording_temporary_folders() as calls:
+            mutation_gate.measurement_problem(lambda tree, suite, modules, timeout: "failed")
+        self.assertEqual([True, True], judged_folder_calls(calls, "mutation-canary-"))
+
+    def test_a_suites_test_list_is_written_in_the_judged_folder(self) -> None:
+        with recording_temporary_folders() as calls, self.finished():
+            self.assertEqual(PASSED, run_suite(Path("tree"), "tests/x.py", 42.0, ["tests/x.py::test_a"]))
+        self.assertEqual([True, True], judged_folder_calls(calls, "mutation-tests-"))
+
+    def test_a_reach_runs_coverage_from_the_judged_folder(self) -> None:
+        with recording_temporary_folders() as calls, self.finished():
+            mutation_gate.coverage_reach(Path("tree"), "tests/x.py", ["tools/calc.py"], 42.0)
+        self.assertEqual([True, True], judged_folder_calls(calls, "mutation-reach-"))
+
+    def test_a_whole_runs_worktrees_lie_in_the_judged_folder(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "repository"
+            FIXTURE.copy(root)
+            with recording_temporary_folders() as calls:
+                Gate(root, "main", 5, 2, GitClient(), stub_generator, stub_reach, measure=measured).report()
+        self.assertEqual([True, True], judged_folder_calls(calls, "mutation-gate-"))
+
+    def test_a_legs_worktrees_lie_in_the_judged_folder(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "repository"
+            FIXTURE.copy(root)
+            gate = Gate(root, "main", 5, 2, GitClient(), stub_generator, stub_reach, measure=measured)
+            with mock.patch.object(platform_support, "PLATFORM_NAME", LINUX_LEG):
+                selected = gate.selection()
+                with recording_temporary_folders() as calls:
+                    gate.leg(selected)
+        self.assertEqual([True, True], judged_folder_calls(calls, "mutation-gate-"))

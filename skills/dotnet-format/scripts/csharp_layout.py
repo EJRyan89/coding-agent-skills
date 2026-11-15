@@ -95,10 +95,11 @@ from dotnet_solution import project_path, read_listed_projects, read_text, refus
 from file_presence import is_present, require
 from flat_text import fact_line, flat_text
 from folders_up import folders_up
+from path_containment import resolved_path
 from run_dotnet_format import Services
+from text_lines import text_lines
 from xml_reader import XmlRefused
 
-LINE = re.compile(r"[^\r\n]*(?:\r\n|\r|\n)|[^\r\n]+\Z")
 DIRECTIVE = re.compile(r"[ \t]*#[ \t]*([A-Za-z]+)")
 PACKAGE = "Roslynator.Formatting.Analyzers"
 # The items of MSBuild's evaluation that show the package: a PackageReference to it, or an Analyzer item of its
@@ -384,7 +385,7 @@ class Violation:
 
 
 def split_lines(text: str) -> list[str]:
-    return LINE.findall(text)
+    return text_lines(text, keepends=True)
 
 
 def body(line: str) -> str:
@@ -1074,7 +1075,7 @@ def main(argv: Sequence[str] | None = None, services: Services | None = None) ->
     config_parser.add_argument("--file-list", required=True, type=Path, help="FILE_LIST from dotnet_format_targets.py")
     config_parser.add_argument("--apply", action="store_true", help="add the settings the changed files lack")
     arguments = parser.parse_args(argv)
-    root = arguments.repo_root.resolve()
+    root = resolved_path(arguments.repo_root)
     try:
         try:
             names = read_file_list(arguments.file_list)

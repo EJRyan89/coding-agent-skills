@@ -49,6 +49,7 @@ import json_writer
 import private_folder
 from executable_locator import PYTHON
 from flat_text import flat_text
+from path_containment import resolved_path
 from review_config import safe_repository_path
 from review_guard import RUN_FILE, RUN_PREFIX, UNGUARDED, claimed
 from review_guidance import Guidance, is_prose
@@ -447,7 +448,7 @@ class Staged:
         input, and `run.json` naming the one role's prompt, result file, and self-check. A pending synthesis only."""
         if self.facts is None:
             return
-        run = Path(tempfile.mkdtemp(prefix=RUN_PREFIX, dir=private_folder.temporary_directory())).resolve()
+        run = resolved_path(tempfile.mkdtemp(prefix=RUN_PREFIX, dir=private_folder.temporary_directory()))
         self.run = run
         prompt, result = run / PROMPT_NAME, run / RESULT_NAME
         try:
@@ -507,7 +508,7 @@ def remove_run(synthesis: dict[str, Any] | None) -> None:
     if not prompt:
         return
     run = Path(prompt).parent
-    if not run.name.startswith(RUN_PREFIX) or run.parent.resolve() != Path(tempfile.gettempdir()).resolve():
+    if not run.name.startswith(RUN_PREFIX) or resolved_path(run.parent) != resolved_path(tempfile.gettempdir()):
         return
     try:
         roles = json_reader.read_file(run / RUN_FILE)["roles"]

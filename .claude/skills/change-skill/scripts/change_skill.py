@@ -68,8 +68,9 @@ from file_presence import NotAFile, is_directory, is_present, matching
 from flat_text import flat_text
 from git_client import GitClient, GitError, output_line
 from markdown_sections import find_fences
-from path_containment import within
+from path_containment import resolved_path, within
 from skill_menu import closure
+from text_lines import text_lines
 
 # The paths and commands validation and the tools also name: this script runs from the checkout without the
 # deployer, which tests/validation and tools/skill_shims.py import.
@@ -181,8 +182,8 @@ def section(lines: list[str], title: str) -> tuple[Heading, list[str]]:
 def document_path(root: Path, relative: str) -> Path:
     """The Markdown file in the checkout `relative` names; StepError for any other path, so the script reads nothing
     outside the checkout it ships in."""
-    top = root.resolve()
-    path = (top / relative).resolve()
+    top = resolved_path(root)
+    path = resolved_path(top / relative)
     refused = f"{flat_text(relative)} is not a Markdown file in this checkout"
     if path.suffix.lower() != ".md" or not within(path, top):
         raise StepError(refused)
@@ -195,14 +196,14 @@ def document_path(root: Path, relative: str) -> Path:
 
 def print_section(root: Path, document: str, title: str) -> int:
     path = document_path(root, document)
-    lines = path.read_text(encoding="utf-8-sig").splitlines()
+    lines = text_lines(path.read_text(encoding="utf-8-sig"))
     try:
         heading, body = section(lines, title)
     except StepError:
         for each in headings(lines):
             print(f"HEADING {each.index + 1} {each.shown()}")
         raise
-    shown = path.relative_to(root.resolve()).as_posix()
+    shown = path.relative_to(resolved_path(root)).as_posix()
     print(f'SECTION "{shown}" {heading.index + 1}-{heading.index + 1 + len(body)} {heading.shown()}')
     for line in body:
         print(line)
@@ -245,9 +246,9 @@ def frontmatter_block(text: str | None) -> list[str] | None:
     if text is None:
         return None
     try:
-        found = frontmatter.split(text.splitlines())
+        found = frontmatter.split(text_lines(text))
     except frontmatter.FrontmatterError:
-        return text.splitlines()
+        return text_lines(text)
     return found[0] if found else []
 
 
@@ -256,7 +257,7 @@ def frontmatter_value(text: str | None, key: str) -> object:
     if text is None:
         return None
     try:
-        found = frontmatter.split(text.splitlines())
+        found = frontmatter.split(text_lines(text))
         return frontmatter.Frontmatter(found[0]).value(key) if found else None
     except frontmatter.FrontmatterError:
         return UNREADABLE

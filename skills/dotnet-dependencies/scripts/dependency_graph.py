@@ -1187,7 +1187,7 @@ def graph_query(graph: Graph, narrowed: Path | None, fmt: str, requested: Path |
     nodes, edges = graph_edges(graph, with_references(graph, selected_projects(graph, narrowed)))
     text = render_dot(nodes, edges) if fmt == "dot" else render_mermaid(nodes, edges)
     target = write_graph(text, requested, fmt)
-    out.line("WROTE", target.resolve().as_posix(), len(nodes), len(edges))
+    out.line("WROTE", resolved_path(target).as_posix(), len(nodes), len(edges))
     out.line("SUMMARY", len(nodes), len(edges))
 
 

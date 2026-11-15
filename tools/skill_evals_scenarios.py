@@ -28,7 +28,7 @@ import json_reader
 import private_folder
 import whole_number
 from git_client import NO_HOOKS, GitClient
-from path_containment import within
+from path_containment import resolved_path, within
 from review_document import specialists_manifest
 from review_records import LEDGER_ID, source_parts
 from review_runtime import (
@@ -375,8 +375,8 @@ def _document(directory: Path, value: object, what: str) -> Path:
         or PureWindowsPath(value).anchor
     ):
         raise ScenarioError(f"{what} must be a relative path, not {quote(str(value))}")
-    root = directory.parents[1].resolve()
-    path = (directory / value).resolve()
+    root = resolved_path(directory.parents[1])
+    path = resolved_path(directory / value)
     if not within(path, root):
         raise ScenarioError(f"{what} {value} is outside the scenarios under {root}")
     _require(path, f"{what} {value} is missing", f"{what} {value}")
@@ -789,7 +789,7 @@ def reviewed_fixture(scenario: Scenario) -> Iterator[Path]:
     if scenario.reviewer is None or scenario.checkout is None:
         yield scenario.directory
         return
-    copy = Path(tempfile.mkdtemp(prefix="skill-evals-fixture-", dir=private_folder.temporary_directory())).resolve()
+    copy = resolved_path(tempfile.mkdtemp(prefix="skill-evals-fixture-", dir=private_folder.temporary_directory()))
     try:
         fixture = copy / scenario.name
         shutil.copytree(scenario.directory, fixture)
@@ -817,7 +817,7 @@ def document_place(scenario: Scenario, run: Path) -> Iterator[Path]:
     if scenario.document is None or scenario.base is not None:
         yield run
         return
-    place = Path(tempfile.mkdtemp(prefix="skill-evals-document-", dir=private_folder.temporary_directory())).resolve()
+    place = resolved_path(tempfile.mkdtemp(prefix="skill-evals-document-", dir=private_folder.temporary_directory()))
     try:
         yield place
     finally:

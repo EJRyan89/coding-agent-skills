@@ -88,6 +88,7 @@ from github_client import GitHubClient, GitHubError, subprocess_runner
 from github_client import Runner as GhRunner
 from link_probe import is_link_or_junction
 from ordinal_case import has_suffix, ordinal_fold
+from path_containment import resolved_path
 from xml_reader import XmlRefused, read_xml
 
 # An ASP.NET project, whose files the dotnet-format global tool is not run on. The skill has skipped them since its
@@ -202,7 +203,7 @@ def listed_refusal(root: Path, name: str) -> str | None:
     if Path(name.replace("\\", "/")).anchor:
         return "the entry is an absolute path, and an entry names a file relative to the repository root"
     try:
-        leaves = refusal(path.resolve(), base.resolve()) is not None
+        leaves = refusal(resolved_path(path), resolved_path(base)) is not None
     except OSError as error:
         return f"the path cannot be resolved: {error.strerror or error}"
     if leaves:
@@ -283,7 +284,7 @@ def repository_root(services: Services, cwd: Path) -> Path:
         raise Failed(flat_text(str(exc))) from exc
     if top is None:
         raise Failed(f"{cwd} is not inside a Git repository")
-    return top.resolve()
+    return resolved_path(top)
 
 
 def ref_exists(services: Services, root: Path, ref: str) -> bool:
@@ -555,7 +556,7 @@ def resolve(cwd: Path, services: Services, emit: Callable[[str], None]) -> None:
     owners = [owning_projects(root, root / name) for name in kept]
     for name in kept:
         emit(fact_line("FILE", name))
-    solution, score = choose_solution(root, cwd.resolve(), owners)
+    solution, score = choose_solution(root, resolved_path(cwd), owners)
     formatter = formatter_for(root, solution)
     skipped = formatter_skips(root, formatter, kept)
     for name, owned in zip(kept, owners, strict=True):

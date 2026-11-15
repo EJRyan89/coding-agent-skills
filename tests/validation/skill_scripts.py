@@ -15,7 +15,7 @@ from collections import defaultdict
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath, PureWindowsPath
-from typing import TextIO, overload
+from typing import Literal, TextIO, overload
 
 import file_presence
 import json_reader
@@ -45,7 +45,14 @@ from module_closure import MODULE_LOADERS
 from path_containment import posix_within
 from powershell_commands import COMMANDS_RUN, SOURCES_VARIABLE, UNREAD_WORD, command_words
 from powershell_startup import POWERSHELL_PROGRAMS, UnknownWord, startup_command
-from python_checks import PRINTS, git_client_classes, reaches, sanctioned_problems
+from python_checks import (
+    PRINTS,
+    _environment_argument,
+    _process_start,
+    git_client_classes,
+    reaches,
+    sanctioned_problems,
+)
 from skill_roots import SKILL_CORE
 from toolchain import powershell_json
 from validation_support import (
@@ -551,11 +558,14 @@ COMMAND_LOOKUP = "shutil.which"
 LOOKUP_NAMES = frozenset({"which", "path_programs", "find_executable", "find_executables", "find_program"})
 LOOKUP_KEYWORDS = frozenset({"cmd", "name"})
 # Calls whose result names the program their first argument does: a path or text conversion, a copy into a list or a
-# tuple, a split or a join of a command, and ejryan89-skill-core's located_command, which names a command's program by
-# the path the locator finds for it; and the path methods that do the same for the path they are called on.
+# tuple, a split or a join of a command, ejryan89-skill-core's located_command, which names a command's program by the
+# path the locator finds for it, and path_containment's resolutions of a path; and the path methods that do the same for
+# the path they are called on.
 PROGRAM_CONVERSIONS = frozenset(
     {
         "executable_locator.located_command",
+        "path_containment.resolved_path",
+        "path_containment.strictly_resolved_path",
         "str",
         "list",
         "tuple",
@@ -2364,8 +2374,19 @@ TEMPORARY_MAKERS = {
     "tempfile.NamedTemporaryFile": 6,
 }
 TEMPORARY_FOLDER = "private_folder.temporary_directory()"
-# The calls whose one argument and result name the same folder, as a later call's `dir`.
-FOLDER_KEEPING_CALLS = frozenset({"pathlib.Path", "os.fspath", "str", "os.path.realpath", "os.path.abspath"})
+# The calls whose one argument and result name the same folder, as a later call's `dir`, path_containment's resolutions
+# of a path among them.
+FOLDER_KEEPING_CALLS = frozenset(
+    {
+        "pathlib.Path",
+        "os.fspath",
+        "str",
+        "os.path.realpath",
+        "os.path.abspath",
+        "path_containment.resolved_path",
+        "path_containment.strictly_resolved_path",
+    }
+)
 # The path methods whose result names the folder their receiver names.
 FOLDER_KEEPING_METHODS = frozenset({"resolve", "absolute"})
 # What names the temporary directory as tempfile finds it, unjudged: its lookup, its cached value, and, read from any
@@ -2386,11 +2407,20 @@ TEMPORARY_JUDGE = ("private_folder.py", "temporary-directory")
 # An interpreter that runs the judge by its name: python, python3, python3.12, or py.
 PYTHON_PROGRAM = re.compile(r"python(?:3(?:\.\d+)?)?|py", re.IGNORECASE)
 TEMPORARY_VARIABLE_WORD = re.compile(r"\$\{?(?:TMPDIR|TEMP|TMP)\b")
+# A path at or below a fixed temporary directory, /tmp or /var/tmp, either also below macOS's /private, where a word, a
+# value, or a string may start it: not inside a name, after a variable, quoted or not, or below another folder.
+TEMPORARY_PATH = re.compile(r"(?<![\w.$/\\})])(?<![\w})]['\"])/(?:private/)?(?:var/)?tmp(?![\w.-])")
 SHELL_VARIABLE_REFERENCE = re.compile(r"\$\{?#?([A-Za-z_]\w*)")
-# A Bash assignment, alone or after a declaration builtin, where a command may start.
+# A Bash variable read for its value, whole or with a prefix or a suffix removed, as `$JUDGED`, `${JUDGED}`, or
+# `${TEMPORARY%/}`: never with a fallback, an alternative, a substitution, a slice, or its length.
+JUDGED_REFERENCE = re.compile(r"\$(?:\{([A-Za-z_]\w*)(?:(?:##?|%%?)[^}]*)?\}|([A-Za-z_]\w*))")
+# A Bash assignment, alone or after a declaration builtin, where a command may start, with `+` when it appends.
 SHELL_ASSIGNMENT = re.compile(
-    r"(?:^|(?<=[\s;&|!(]))(?:(?:export|local|readonly|declare|typeset)\s+(?:-\w+\s+)*)?([A-Za-z_]\w*)="
+    r"(?:^|(?<=[\s;&|!(]))(?:(?:export|local|readonly|declare|typeset)\s+(?:-\w+\s+)*)?([A-Za-z_]\w*)(\+?)="
 )
+# A redirection that duplicates or closes a descriptor, as `2>&1` does, and the `&` of Bash's `&>` and `&>>`, which the
+# shell reader would take for a list's operator.
+DESCRIPTOR_REDIRECTION = re.compile(r"\d*[<>]&(?:\d+|-)|&(?=>)")
 # A mktemp command word, bare, by a path, or with .exe, and where the command it starts ends on its line: a
 # substitution's close, a list's or a pipeline's operator.
 MKTEMP_COMMAND = re.compile(r"(?<![\w./\\-])(?:[^\s\"'`$()=;|&<>]*[/\\])?mktemp(?:\.exe)?(?![\w.-])", re.IGNORECASE)
@@ -2404,6 +2434,18 @@ POWERSHELL_TEMPORARY = re.compile(
     r"|GetEnvironmentVariables\(\)\s*(?:\[\s*['\"]|\.)(?:TMPDIR|TEMP|TMP)\b|%(?:TMPDIR|TEMP|TMP)%",
     re.IGNORECASE,
 )
+# Each PowerShell reading of an environment variable by a name that is no literal, which may be TMPDIR, TEMP, or TMP:
+# the env: drive given no name after it, as `Join-Path Env: TEMP` and "Env:$name" give, and a lookup through the
+# Environment class given anything but one string literal that expands no variable.
+POWERSHELL_UNREAD_VARIABLE = re.compile(
+    r"(?<![\w-])env:(?![\\/]?[A-Za-z_]\w*)"
+    r"|GetEnvironmentVariable\(\s*(?!['\"][^'\"$]*['\"]\s*[,)])"
+    r"|GetEnvironmentVariables\(\)\s*(?:\[|\.(?:get_)?Item\()\s*(?!['\"][^'\"$]*['\"]\s*[\])])",
+    re.IGNORECASE,
+)
+# What a Bash variable holds at a place in its script, read in text order: the judge's folder, the temporary directory
+# unjudged, or anything else.
+ShellValue = Literal["judged", "temporary", "other"]
 FunctionNode = ast.FunctionDef | ast.AsyncFunctionDef
 
 
@@ -2593,7 +2635,8 @@ class _TemporaryReader:
         parameter to what each call in the module passes it or hands on beside it, names the temporary directory as
         tempfile finds it, unjudged: TEMPORARY_LOOKUPS called, TEMPORARY_VALUE, or one of TEMPORARY_VARIABLES read
         from a mapping, by a subscript, ENVIRONMENT_GETTERS, or a LOOKUP_METHODS method, or expanded in a string, as
-        os.path.expandvars does. It follows a worklist, so a long chain of names never deepens the stack."""
+        os.path.expandvars does, or a string holding a TEMPORARY_PATH. It follows a worklist, so a long chain of names
+        never deepens the stack."""
         pending: list[ast.AST] = [node]
         seen: set[int] = set()
         while pending:
@@ -2634,7 +2677,7 @@ class _TemporaryReader:
             return self._temporary_key(part.slice)
         if isinstance(part, ast.Constant) and isinstance(part.value, (str, bytes)):
             text = part.value.decode("utf-8", "replace") if isinstance(part.value, bytes) else part.value
-            return EXPANDED_TEMPORARY_VARIABLE.search(text) is not None
+            return EXPANDED_TEMPORARY_VARIABLE.search(text) is not None or TEMPORARY_PATH.search(text) is not None
         return False
 
 
@@ -2682,25 +2725,57 @@ def _python_temporary_problems(name: str, tree: ast.Module) -> list[str]:
                 f"{name}:{node.lineno}: {token} writes in the temporary directory as tempfile finds it, unjudged; "
                 f"make the folder with tempfile.mkdtemp(dir={TEMPORARY_FOLDER}); see {WORKING_FILES_DOC}"
             )
+    for call in reader.calls:
+        started = _started_arguments(call, reader.resolver)
+        if started is not None and any(reader.reads_temporary_directory(argument) for argument in started[1]):
+            problems.append(
+                f"{name}:{call.lineno}: {started[0]} starts a command given the temporary directory as tempfile finds "
+                f"it, or a path in it, unjudged; give it a folder made with tempfile.mkdtemp(dir={TEMPORARY_FOLDER}); "
+                f"see {WORKING_FILES_DOC}"
+            )
     return problems
 
 
-def _without_comment(line: str) -> str:
-    """A Bash or PowerShell line up to a `#` that starts a word outside quotes, where its comment starts."""
+def _started_arguments(call: ast.Call, resolver: CallableResolver) -> tuple[str, list[ast.expr]] | None:
+    """The name of the PROCESS_STARTS entry a call names and every argument it is given but its environment, any of
+    which may name where the command it starts writes, both read as the process-environment policy reads them; None for
+    a call that starts no process."""
+    found = _process_start(call, resolver)
+    if found is None:
+        return None
+    named, start = found
+    environment = _environment_argument(call, start)
+    given = [*call.args, *(item.value for item in call.keywords)]
+    return named, [argument for argument in given if argument is not environment]
+
+
+def _without_comment(line: str, escape: str) -> str:
+    """A Bash or PowerShell line up to a `#` that starts a word outside quotes, where its comment starts. Outside
+    single quotes, `escape`, Bash's backslash or PowerShell's backtick, keeps the character after it from opening or
+    closing a string or starting a comment, and an escaped blank or `;` before a `#` from ending a word there."""
     quote = ""
-    for index, character in enumerate(line):
+    index = 0
+    escaped = -1
+    while index < len(line):
+        character = line[index]
+        if character == escape and quote != "'":
+            escaped = index + 1
+            index += 2
+            continue
         if quote:
             quote = "" if character == quote else quote
         elif character in "'\"":
             quote = character
-        elif character == "#" and (index == 0 or line[index - 1] in " \t;"):
+        elif character == "#" and (index == 0 or (line[index - 1] in " \t;" and escaped != index - 1)):
             return line[:index]
+        index += 1
     return line
 
 
-def _code_lines(text: str) -> list[tuple[int, str]]:
-    """Each line of a Bash or PowerShell script with its number, its comment left out."""
-    return [(number, _without_comment(line)) for number, line in enumerate(text.splitlines(), 1)]
+def _code_lines(text: str, escape: str = "\\") -> list[tuple[int, str]]:
+    """Each line of a Bash or PowerShell script with its number, its comment left out, read with the shell's
+    `escape`."""
+    return [(number, _without_comment(line, escape)) for number, line in enumerate(text.splitlines(), 1)]
 
 
 def _shell_words(fragment: str) -> list[list[str]] | None:
@@ -2718,50 +2793,170 @@ def _is_program(word: str, program: str) -> bool:
     return platform_support.program_name(PureWindowsPath(word).name).casefold() == program
 
 
-def _judged_variables(lines: list[tuple[int, str]]) -> set[str]:
-    """The variables a Bash script assigns the judge's output, as `JUDGED=$(python private_folder.py
-    temporary-directory)` does, and those it assigns a value naming one of them, followed until none is added."""
-    assignments: dict[str, list[str]] = {}
-    for _, line in lines:
-        for match in SHELL_ASSIGNMENT.finditer(line):
-            assignments.setdefault(match.group(1), []).append(line[match.end() :])
+def _brace_end(line: str, start: int) -> int:
+    """The index of the `}` that closes a `${` expansion whose text begins at `start`, past each one it holds in turn,
+    or the line's length for one left open."""
+    depth = 1
+    for index in range(start, len(line)):
+        depth += {"{": 1, "}": -1}.get(line[index], 0)
+        if not depth:
+            return index
+    return len(line)
 
-    def names_judge(word: str) -> bool:
+
+def _word_end(line: str, start: int) -> int:
+    """The index just past the Bash word that starts at `start`, such as an assignment's value: its quoted strings, its
+    `${...}` expansions, and its substitutions read whole, and a backslash escaping the character after it."""
+    index, quoted = start, False
+    while index < len(line):
+        character = line[index]
+        if character == "\\":
+            index += 2
+        elif line.startswith("$(", index):
+            index = _substitution_end(line, index + 2) + 1
+        elif line.startswith("${", index):
+            index = _brace_end(line, index + 2) + 1
+        elif character == "`":
+            index = _backtick_end(line, index + 1) + 1
+        elif character == '"':
+            quoted, index = not quoted, index + 1
+        elif quoted:
+            index += 1
+        elif character == "'" or line.startswith("$'", index):
+            index = _single_quoted_end(line, index)
+        elif character.isspace() or character in ";&|<>()":
+            return index
+        else:
+            index += 1
+    return min(index, len(line))
+
+
+def _substitution_extent(text: str, start: int, inner: str) -> tuple[int, int]:
+    """Where a substitution substitution_spans finds at `start` lies in `text`: from its `$(` or its backtick to just
+    past its close."""
+    return start - (1 if text[start - 1] == "`" else 2), start + len(inner) + 1
+
+
+def _outside(extent: tuple[int, int], holes: list[tuple[int, int]]) -> list[tuple[int, int]]:
+    """The parts of `extent` that no hole covers."""
+    start, end = extent
+    found: list[tuple[int, int]] = []
+    for hole_start, hole_end in sorted(holes):
+        if hole_end <= start or hole_start >= end:
+            continue
+        if hole_start > start:
+            found.append((start, hole_start))
+        start = max(start, hole_end)
+    return [*found, (start, end)] if start < end else found
+
+
+def _one_command(inner: str) -> list[str] | None:
+    """The words of the one command a substitution's text runs, each substitution it holds in turn read as one word
+    and each DESCRIPTOR_REDIRECTION left out; None for text the shell reader cannot read or that runs more than one
+    command, as a `||` fallback, a `;` list, or a pipeline does."""
+    kept: list[str] = []
+    index = 0
+    for start, text in substitution_spans(inner):
+        opening, end = _substitution_extent(inner, start, text)
+        kept += [inner[index:opening], "_"]
+        index = end
+    commands = _shell_words(DESCRIPTOR_REDIRECTION.sub(" ", "".join([*kept, inner[index:]])))
+    return commands[0] if commands is not None and len(commands) == 1 else None
+
+
+class _BashValues:
+    """What each variable of a Bash script holds at each place, read in text order, so a branch an assignment sits in
+    is not read, nor a loop that runs a later assignment again, nor a function's body anywhere but where it is written:
+    "judged", assigned the output of a substitution that is the whole value and runs the judge as its one command, or
+    a value that starts by reading a variable holding the judged folder, in a JUDGED_REFERENCE form; "temporary",
+    assigned a value whose text outside its substitutions expands TMPDIR, TEMP, or TMP, holds a TEMPORARY_PATH, or
+    reads a variable holding the temporary directory unjudged; or "other", as any other value and every append is."""
+
+    def __init__(self, lines: list[tuple[int, str]]) -> None:
+        self.assigned: dict[str, list[str]] = {}
+        for _, line in lines:
+            for match in SHELL_ASSIGNMENT.finditer(line):
+                self.assigned.setdefault(match.group(1), []).append(line[match.end() :])
+        self.values: dict[str, list[tuple[tuple[int, int], ShellValue]]] = {}
+        for number, line in lines:
+            for match in SHELL_ASSIGNMENT.finditer(line):
+                end = _word_end(line, match.end())
+                value = self._value(line[match.end() : end], bool(match.group(2)), (number, match.start()))
+                self.values.setdefault(match.group(1), []).append(((number, end), value))
+
+    def held(self, name: str, position: tuple[int, int]) -> ShellValue | None:
+        """What a variable holds at a line and a column: its last assignment's value ending before it, or None."""
+        found = [value for at, value in self.values.get(name, []) if at < position]
+        return found[-1] if found else None
+
+    def _names_judge(self, word: str) -> bool:
         if word.endswith(TEMPORARY_JUDGE[0]):
             return True
         named = SHELL_VARIABLE_REFERENCE.match(word)
-        return named is not None and any(TEMPORARY_JUDGE[0] in value for value in assignments.get(named.group(1), []))
+        return named is not None and any(TEMPORARY_JUDGE[0] in value for value in self.assigned.get(named.group(1), []))
 
-    def judge_command(words: list[str]) -> bool:
-        # The judge run as `python [options] private_folder.py temporary-directory`, with the interpreter by its name
-        # or a variable, as update.sh's "$PYTHON", or as the script itself; any other program merely names it.
-        if words and names_judge(words[0]):
+    def runs_judge(self, inner: str) -> bool:
+        """Whether a substitution's text runs only the judge, as `python [options] private_folder.py
+        temporary-directory [folder]`, with the interpreter by its name or a variable, as update.sh's "$PYTHON", or as
+        the script itself, named directly or by a variable assigned a value naming it; any other program merely names
+        it."""
+        words = _one_command(inner)
+        if not words:
+            return False
+        if self._names_judge(words[0]):
             return words[1:2] == [TEMPORARY_JUDGE[1]]
-        if not words or not (
+        if not (
             SHELL_VARIABLE_REFERENCE.fullmatch(words[0])
             or PYTHON_PROGRAM.fullmatch(platform_support.program_name(PureWindowsPath(words[0]).name))
         ):
             return False
         rest = list(itertools.dropwhile(lambda word: word.startswith("-"), words[1:]))
-        return len(rest) > 1 and names_judge(rest[0]) and rest[1] == TEMPORARY_JUDGE[1]
+        return len(rest) > 1 and self._names_judge(rest[0]) and rest[1] == TEMPORARY_JUDGE[1]
 
-    def runs_judge(value: str) -> bool:
-        return any(
-            judge_command(words) for _, inner in substitution_spans(value) for words in _shell_words(inner) or []
-        )
+    def _value(self, value: str, appends: bool, position: tuple[int, int]) -> ShellValue:
+        spans = substitution_spans(value)
+        bare = value[1:-1] if len(value) > 1 and value[0] == value[-1] == '"' else value
+        if (
+            not appends
+            and len(spans) == 1
+            and bare in (f"$({spans[0][1]})", f"`{spans[0][1]}`")
+            and self.runs_judge(spans[0][1])
+        ):
+            return "judged"
+        extents = [_substitution_extent(value, start, inner) for start, inner in spans]
+        outside = " ".join(value[start:end] for start, end in _outside((0, len(value)), extents))
+        if self.temporary_words(outside, position):
+            return "temporary"
+        named = JUDGED_REFERENCE.match(bare)
+        if not appends and named is not None and self.held(named.group(1) or named.group(2), position) == "judged":
+            return "judged"
+        return "other"
 
-    judged = {name for name, values in assignments.items() if any(map(runs_judge, values))}
-    added = True
-    while added:
-        reached = {
-            name
-            for name, values in assignments.items()
-            if name not in judged
-            and any(found in judged for value in values for found in SHELL_VARIABLE_REFERENCE.findall(value))
-        }
-        judged |= reached
-        added = bool(reached)
-    return judged
+    def temporary_words(self, text: str, position: tuple[int, int] | int) -> list[re.Match[str]]:
+        """Each place in a line's text that names the temporary directory unjudged: TMPDIR, TEMP, or TMP expanded, a
+        TEMPORARY_PATH, or a variable holding the temporary directory there, read at `position`, or, given a line's
+        number alone, where each reference stands on it."""
+        found = [*TEMPORARY_VARIABLE_WORD.finditer(text), *TEMPORARY_PATH.finditer(text)]
+        found += [
+            reference
+            for reference in SHELL_VARIABLE_REFERENCE.finditer(text)
+            if self.held(reference.group(1), position if isinstance(position, tuple) else (position, reference.start()))
+            == "temporary"
+        ]
+        return sorted(found, key=lambda found: found.start())
+
+    def unread(self, line: str) -> list[tuple[int, int]]:
+        """Where on a line a word may name the temporary directory unjudged: an assignment's value outside its
+        substitutions, which only gives the variable what it holds, and a substitution that runs the judge."""
+        substitutions = [
+            (_substitution_extent(line, start, inner), self.runs_judge(inner))
+            for start, inner in substitution_spans(line)
+        ]
+        spans = [extent for extent, judge in substitutions if judge]
+        for match in SHELL_ASSIGNMENT.finditer(line):
+            extent = (match.end(), _word_end(line, match.end()))
+            spans += _outside(extent, [extent for extent, _ in substitutions])
+        return spans
 
 
 def _mktemp_arguments(words: list[str]) -> list[str]:
@@ -2773,35 +2968,50 @@ def _mktemp_arguments(words: list[str]) -> list[str]:
     return arguments
 
 
-def _mktemp_judged(command: re.Match[str], judged: set[str]) -> bool:
+def _mktemp_judged(command: re.Match[str], number: int, values: _BashValues) -> bool:
     """Whether the mktemp command a line holds from `command` on, up to the end of its command, is given only options
-    that leave where it makes the file to its one template, a value of a variable in `judged` that names no other
-    temporary directory. One the shell reader cannot read, such as one whose template goes on past the line, is not."""
+    that leave where it makes the file to its one template, which starts by reading, in a JUDGED_REFERENCE form, a
+    variable holding the judged folder there and names no other temporary directory. One the shell reader cannot read,
+    such as one whose template goes on past the line, is not."""
     fragment = COMMAND_END.split(command.string[command.start() :], maxsplit=1)[0]
     found = [words for words in _shell_words(fragment) or [] if words and _is_program(words[0], MKTEMP)]
     if not found:
         return False
     arguments = _mktemp_arguments(found[0])
     templates = [word for word in arguments if not word.startswith("-")]
-    named = SHELL_VARIABLE_REFERENCE.match(templates[0]) if len(templates) == 1 else None
+    named = JUDGED_REFERENCE.match(templates[0]) if len(templates) == 1 else None
     return (
         all(word in MKTEMP_TEMPLATE_OPTIONS for word in arguments if word.startswith("-"))
         and named is not None
-        and named.group(1) in judged
+        and values.held(named.group(1) or named.group(2), (number, command.start())) == "judged"
         and not TEMPORARY_VARIABLE_WORD.search(templates[0])
     )
 
 
 def _bash_temporary_problems(name: str, text: str) -> list[str]:
     lines = _code_lines(text)
-    judged = _judged_variables(lines)
-    return [
-        f"{name}:{number}: mktemp makes a file validation cannot trace to the folder `python private_folder.py "
-        "temporary-directory` prints; give it one template in a variable assigned from that folder, as "
-        f"update-coding-agent-skills' update.sh does; see {WORKING_FILES_DOC}"
-        for number, line in lines
-        if any(not _mktemp_judged(command, judged) for command in MKTEMP_COMMAND.finditer(line))
-    ]
+    values = _BashValues(lines)
+    problems: list[str] = []
+    for number, line in lines:
+        if any(not _mktemp_judged(command, number, values) for command in MKTEMP_COMMAND.finditer(line)):
+            problems.append(
+                f"{name}:{number}: mktemp makes a file validation cannot trace to the folder `python "
+                "private_folder.py temporary-directory` prints; give it one template in a variable assigned from that "
+                f"folder, as update-coding-agent-skills' update.sh does; see {WORKING_FILES_DOC}"
+            )
+        unread = values.unread(line)
+        found = [
+            word.group(0)
+            for word in values.temporary_words(line, number)
+            if not any(start <= word.start() < end for start, end in unread)
+        ]
+        if found:
+            problems.append(
+                f"{name}:{number}: {found[0]} names the temporary directory unjudged; work in the folder `python "
+                "private_folder.py temporary-directory` prints, as update-coding-agent-skills' update.sh does; see "
+                f"{WORKING_FILES_DOC}"
+            )
+    return problems
 
 
 def _without_block_comments(text: str) -> str:
@@ -2818,13 +3028,23 @@ def _without_block_comments(text: str) -> str:
 
 
 def _powershell_temporary_problems(name: str, text: str) -> list[str]:
-    text = _without_block_comments(text)
-    return [
-        f"{name}:{number}: {found.group(0)} names the temporary directory unjudged; make the file in the folder "
-        f"`python private_folder.py temporary-directory` prints; see {WORKING_FILES_DOC}"
-        for number, line in _code_lines(text)
-        for found in POWERSHELL_TEMPORARY.finditer(line)
-    ]
+    judge = (
+        f"make the file in the folder `python private_folder.py temporary-directory` prints; see {WORKING_FILES_DOC}"
+    )
+    problems: list[str] = []
+    for number, line in _code_lines(_without_block_comments(text), "`"):
+        problems += [
+            f"{name}:{number}: {found.group(0)} names the temporary directory unjudged; {judge}"
+            for found in sorted(
+                [*POWERSHELL_TEMPORARY.finditer(line), *TEMPORARY_PATH.finditer(line)], key=lambda found: found.start()
+            )
+        ]
+        problems += [
+            f"{name}:{number}: {found.group(0).strip()} reads an environment variable by a name that is no literal, "
+            f"which may be TMPDIR, TEMP, or TMP; name the variable in a literal, and {judge}"
+            for found in POWERSHELL_UNREAD_VARIABLE.finditer(line)
+        ]
+    return problems
 
 
 def _script_text(path: Path, name: str, problems: list[str]) -> str | None:
@@ -2844,8 +3064,10 @@ def temporary_folder_problems(root: Path) -> list[str]:
     makes a temporary folder or file where no check ran that no other account can rename a folder above it and swap
     what a later step reads: a tempfile call left to TMPDIR or given a `dir` that is not the temporary directory
     `private_folder.temporary_directory()` judges or a folder the script already holds, a write into the temporary
-    directory as tempfile finds it, a Bash mktemp given no template from the folder `private_folder.py
-    temporary-directory` prints, and a PowerShell spelling that names the temporary directory."""
+    directory as tempfile finds it or by a fixed path, or a process started with an argument naming it, a Bash mktemp
+    given no template from a variable holding the folder `private_folder.py temporary-directory` prints, a Bash word
+    naming the temporary directory unjudged, and a PowerShell spelling that names the temporary directory, a fixed
+    path in it, or an environment variable by a name that is no literal."""
     problems: list[str] = []
     sources = [
         *(scripts for scripts in skill_script_directories(root)),

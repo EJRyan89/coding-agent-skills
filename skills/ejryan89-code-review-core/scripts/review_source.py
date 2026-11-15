@@ -40,6 +40,7 @@ import json_writer
 from console import run_main
 from executable_locator import PYTHON
 from flat_text import single_line
+from path_containment import resolved_path
 from review_guard import ROLE_ID, RUN_FILE, RUN_PREFIX, read_log, search_entry
 from review_io import PersistenceError, read_json
 from review_runtime import RuntimeContractError, fetch_source_file, search_source
@@ -82,7 +83,7 @@ def source_commands(run: Path, role: str, *, script: Path | str = SCRIPT) -> tup
 def _run(run: Path, role: str) -> tuple[Path | None, str, str, Path]:
     """The run's source repository, None for a whole snapshot, its request's repository and head, and the role's read
     log, once the run is a prepared review run and the role is one of its roles."""
-    run = run.resolve()
+    run = resolved_path(run)
     if not run.name.startswith(RUN_PREFIX):
         raise SourceError(f"{run} is not a review run")
     # A run.json it cannot stat, or a folder in its place, is named so, never a folder that holds no run.
@@ -132,8 +133,8 @@ def source_file(run: Path, role: str, relative: str) -> list[str]:
     repository, name, head, log = _run(run, role)
     if repository is None:
         raise SourceError("this run's snapshot holds every file already; read it under SOURCE_ROOT")
-    source = run.resolve() / "source"
-    found = fetch_source_file(repository, source, relative, repository=name, commit=head, staging=run.resolve())
+    source = resolved_path(run) / "source"
+    found = fetch_source_file(repository, source, relative, repository=name, commit=head, staging=resolved_path(run))
     if isinstance(found, str):
         return [f"EXCLUDED {json_writer.dumps(relative)} {found}"]
     _count(log, found.relative_to(source).as_posix())
@@ -144,7 +145,7 @@ def source_search(run: Path, role: str, pattern: str) -> list[str]:
     if not pattern or "\n" in pattern or "\r" in pattern:
         raise SourceError("the pattern must be one non-empty line")
     repository, name, head, log = _run(run, role)
-    matches, more = search_source(repository, run.resolve() / "source", pattern, repository=name, commit=head)
+    matches, more = search_source(repository, resolved_path(run) / "source", pattern, repository=name, commit=head)
     _count(log, search_entry("source-search"))
     lines = [f"MATCH {path}:{number}: {text}" for path, number, text in matches]
     return [*lines, f"MATCHES more than {len(lines)}; narrow the pattern" if more else f"MATCHES {len(lines)}"]

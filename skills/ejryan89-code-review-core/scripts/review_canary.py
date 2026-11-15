@@ -38,6 +38,7 @@ import private_folder
 from git_client import GitClient, GitError, Runner, command_name, output_line, output_lines
 from github_client import replace_undecodable
 from link_probe import is_link_or_junction
+from path_containment import resolved_path
 from review_config import ConfigurationError, validate_repository_identity
 from review_io import PersistenceError, read_json
 from review_records import RecordError, ReviewRecord, validate_record
@@ -264,7 +265,7 @@ def _comments(threads: list[dict[str, Any]]) -> list[dict[str, Any]]:
 def read_fixture_pull(directory: Path) -> dict[str, Any]:
     """The fixture directory's pull.json, validated."""
     try:
-        return validate_fixture_pull(read_json(directory.resolve() / PULL_FILE))
+        return validate_fixture_pull(read_json(resolved_path(directory) / PULL_FILE))
     except PersistenceError as exc:
         raise FixtureError(str(exc)) from exc
 
@@ -274,7 +275,7 @@ def fixture_change(directory: Path, runner: Runner, pull: dict[str, Any] | None 
     """The fixture's pull request, its commits in a throwaway repository that exists until the block ends, unless the
     caller moves it elsewhere first. `pull` is the fixture's pull.json as `read_fixture_pull` read it, which is read
     here when not given."""
-    directory = directory.resolve()
+    directory = resolved_path(directory)
     if pull is None:
         pull = read_fixture_pull(directory)
     # TemporaryDirectory's cleanup also removes the object files git leaves read-only, which Windows will not delete.
@@ -283,7 +284,7 @@ def fixture_change(directory: Path, runner: Runner, pull: dict[str, Any] | None 
     ) as temporary:
         # A folder of its own, so prepare can move the repository into the run, where a lazy snapshot's reviewers
         # fetch from it until finalize removes the run.
-        repository = Path(temporary).resolve() / "repository"
+        repository = resolved_path(temporary) / "repository"
         repository.mkdir()
         store = _Repository(repository, runner)
         store.git("init", "--quiet")

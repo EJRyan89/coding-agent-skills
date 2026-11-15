@@ -77,6 +77,7 @@ from frontmatter import (
     USER_ONLY_KEY,
     Frontmatter,
     FrontmatterError,
+    is_delimiter,
     user_only_value,
 )
 from frontmatter import split as split_frontmatter
@@ -84,7 +85,7 @@ from link_probe import is_link_or_junction
 from markdown_literal import markdown_line
 from markdown_sections import ATX_HEADING, COMMONMARK_CODE_SPAN, code_block_lines, find_fences
 from module_assignments import assigned_names, sole_assignment
-from path_containment import within
+from path_containment import resolved_path, within
 from path_keys import opens_as
 from text_lines import text_lines
 from typed_fields import FieldError, FieldReader
@@ -315,10 +316,12 @@ def outside_link(root: Path, path: Path) -> Path | None:
 def leaves_root(root: Path, path: Path) -> bool:
     """Whether `path` lies outside `root` once its links and `..` parts are resolved, as a symbolic link or junction
     that leads out of the repository makes it. A path that cannot be resolved counts as outside, so nothing is read
-    through it."""
+    through it. A symbolic link loop is no such path: `resolved_path` leaves it unresolved on every Python version, so
+    it is judged where it lies, and the read that follows refuses it, naming the loop, rather than a warning reporting
+    it as a link that leads out."""
     try:
-        return not within(path.resolve(), root.resolve())
-    except (OSError, RuntimeError, ValueError):
+        return not within(resolved_path(path), resolved_path(root))
+    except (OSError, ValueError):
         return True
 
 
@@ -957,11 +960,14 @@ def _frontmatter(root: Path, path: Path) -> tuple[dict[str, FrontmatterValue], l
         lines = text_lines(read_text(root, path))
     except (OSError, UnicodeError) as error:
         return {}, [Finding("ERROR", "copilot-config", rel, message=f"Could not read: {error}")]
-    if not lines or lines[0] != "---":
-        return {}, [Finding("ERROR", "copilot-config", rel, message="Missing YAML frontmatter")]
+    # A delimiter is judged as ejryan89-skill-core's reader and YAML judge one: `---` and spaces or tabs alone.
     try:
-        end = lines.index("---", 1)
-    except ValueError:
+        if not lines or not is_delimiter(lines[0], 1):
+            return {}, [Finding("ERROR", "copilot-config", rel, message="Missing YAML frontmatter")]
+        end = next((index for index in range(1, len(lines)) if is_delimiter(lines[index], index + 1)), None)
+    except FrontmatterError as error:
+        return {}, [Finding("ERROR", "copilot-config", rel, message=f"Invalid YAML frontmatter: {error}")]
+    if end is None:
         return {}, [Finding("ERROR", "copilot-config", rel, message="Unterminated YAML frontmatter")]
     values: dict[str, FrontmatterValue] = {}
     findings: list[Finding] = []
@@ -3887,7 +3893,7 @@ def check_limitations(root: Path, manifest: dict[str, Any]) -> list[Finding]:
 
 def audit(root: Path) -> AuditResult:
     """Run all audit checks and return the result."""
-    root = root.resolve()  # a relative root such as "." has no name of its own
+    root = resolved_path(root)  # a relative root such as "." has no name of its own
     result = AuditResult(repository=root.name)
 
     # Step 1: Inventory

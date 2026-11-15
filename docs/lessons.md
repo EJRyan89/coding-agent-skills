@@ -181,9 +181,11 @@ removed fails validation until its pattern follows it.
   which tells a remote's failure from one of the local repository or of a git that never ran;
   `path_containment:resolved_path`, which follows a path taken from input or the environment as Python 3.13's path
   resolution does, leaving a symbolic link loop to the caller's own refusal where Python 3.12's raises
-  RuntimeError; an entry point states its codes in its docstring's exit table, in the form "Script results" in the
+  RuntimeError, and `path_containment:strictly_resolved_path`, its strict counterpart, which raises OSError on a loop
+  on every version; an entry point states its codes in its docstring's exit table, in the form "Script results" in the
   skill contract settles.
 - **Guard:** `tests/malformed_input/test_malformed_input.py::test_failure_names_a_write_before_a_refusal_an_escape_and_an_undocumented_acceptance`,
+  `tests/validation/python_checks.py::PythonChecksPolicies::test_path_containment_is_the_one_resolution_of_a_path`,
   `tests/validation/skill_grants.py::SkillGrantsPolicies::test_skill_markdown_names_every_status_line_its_scripts_print`,
   `tests/tools/test_mutation_gate.py::CoverageReachFixtures::test_no_data_is_read_as_reaching_nothing_only_from_coverage_json_exiting_1_with_that_message_alone`,
   `skills/repo-cleanup/scripts/test_repo_cleanup.py::SyncTests::test_each_stop_is_returned_as_the_state_it_stopped_in_never_read_back_from_the_lines`,
@@ -222,9 +224,10 @@ removed fails validation until its pattern follows it.
   raises fixed text in place of the exception's; a measurement printed for a file beside the line that says it could
   not be measured, or a file a reader skips where its docstring says the command fails on one;
   `rg -n "\.resolve\(" -g '*.py'` on a path taken from input or the environment, never `__file__`, under a handler of
-  `OSError` alone, whose RuntimeError on Python 3.12 for a symbolic link loop ends the run in `FAILED RuntimeError`.
+  `OSError` alone, whose RuntimeError on Python 3.12 for a symbolic link loop ends the run in `FAILED RuntimeError`,
+  outside the modules the resolve policy reads, such as a test suite's helper.
 - **Examples:** #1511, #1840, #1855, #1910, #2022, #2181, #2207, #2209, #2477, #2548, #2596, #2697, #2738, #2763,
-  #2794
+  #2794, #2805
 
 ### A refusal ends with the step to take
 
@@ -396,8 +399,12 @@ removed fails validation until its pattern follows it.
   `.claude/skills/review-repository/scripts/test_review_repository.py::test_the_trust_boundary_route_matches_its_scripts_and_each_choice_matches_a_file`,
   `tests/validation/test_duplication.py::SharedFactPolicy::test_a_fence_read_by_hand_fails_and_one_read_through_find_fences_passes`,
   which refuses a fence read by hand outside the one fence reader: its run, as a literal or a name bound to one,
-  tested at a line's start or end, compared with a line by in or ==, or given as the pattern of an re function, however
-  re is imported
+  tested at a line's start or end, given to a str method that finds, counts, splits at, or takes it off, as split,
+  find, partition, or count, compared with a line by in or ==, or given as the pattern of an re function, however re
+  is imported, or its marker given to a strip whose result is compared with the line or measured against it; a run
+  given by keyword, to a str method called unbound, or as a case pattern, and a strip bound to a name before it is
+  measured or compared, one whose length is compared, or one compared with an empty string or tested by not, are
+  stated limits
 - **Search for:** a module-level `frozenset({` or tuple of strings whose members another module also spells; a
   document's list of names, flags, or modules that a module's constant holds; a `print(` of a status line no
   `SKILL.md` names; a second `json.loads(`, `os.lstat(`, or other helper beside the one skill-core owns;
@@ -407,7 +414,7 @@ removed fails validation until its pattern follows it.
   a live step and its recovery, such as a run's finalization and the completion of an interrupted one, each deciding
   in its own code what becomes of the same state on disk; a repository walk through `file_presence.matching` or
   `os.walk` with a skip set of its own, rather than `folder_walk.walk_files`.
-- **Examples:** #1349, #1477, #1495, #1596, #1679, #2219, #2295, #2296, #2718, #2734, #2738, #2748
+- **Examples:** #1349, #1477, #1495, #1596, #1679, #2219, #2295, #2296, #2718, #2734, #2738, #2748, #2832
 
 ### A promise in prose is held where its reader reads it
 
@@ -549,10 +556,12 @@ removed fails validation until its pattern follows it.
   `.claude/skills/audit-repository/scripts/test_audit_repository.py::TwinTests::test_a_construct_line_holding_backslash_e_is_searched_as_fixed_text`,
   which holds the twin sweep's fixed-text search to what git grep built with PCRE does with a backslash-E,
   `skills/ejryan89-skill-core/scripts/test_text_lines.py::test_every_other_character_splitlines_breaks_at_is_kept_in_its_line`,
-  `tests/deployer/test_frontmatter.py::DocumentTests::test_a_line_breaks_only_where_yaml_breaks_one`, and
+  `tests/deployer/test_frontmatter.py::DocumentTests::test_a_line_breaks_only_where_yaml_breaks_one`,
+  `tests/deployer/test_frontmatter.py::DocumentTests::test_the_delimiter_is_three_hyphens_and_yaml_whitespace_alone`, and
   `skills/audit-ai-config/scripts/test_audit_ai_config.py::ClaudeCodeConfigurationTests::test_an_import_inside_an_indented_code_block_is_none_as_markdown_reads_the_block`
 - **Search for:** `str.splitlines()` of a file an author writes, which breaks at characters YAML, CommonMark, and .NET
-  read as text, rather than `text_lines`; a reader of Markdown that skips fenced code but not indented code; a Python parser or folding, `float(`, `int(` with or without a base, `casefold()`, `lower()`,
+  read as text, rather than `text_lines`; a `---` delimiter judged after `str.strip()` or `str.rstrip()`, which strip
+  characters YAML reads as text or forbids; a reader of Markdown that skips fenced code but not indented code; a Python parser or folding, `float(`, `int(` with or without a base, `casefold()`, `lower()`,
   `strip()`, or a pattern with `re.IGNORECASE` and no `re.ASCII`, applied to a value another program reads, each
   checked against that program's own reading of it, as MSBuild reads a number with .NET's invariant `Double.TryParse`
   and compares text with .NET's ordinal comparison ignoring case; a POSIX `shlex` lexer over shell text whose
@@ -715,15 +724,20 @@ removed fails validation until its pattern follows it.
   judgment of the folders above.
 - **Guard:** `tests/validation/skill_scripts.py::SkillScriptsPolicies::test_skill_scripts_name_the_folder_of_each_temporary_folder_or_file`,
   `tests/validation/test_skill_scripts.py::SkillScriptsFixtures::test_a_temporary_folder_or_named_file_left_to_tmpdir_is_refused_and_one_given_its_folder_passes`,
+  `tests/validation/test_skill_scripts.py::SkillScriptsFixtures::test_a_write_or_a_judged_variable_that_reaches_the_temporary_directory_unjudged_is_refused`,
   `skills/ejryan89-skill-core/scripts/test_private_folder.py::TemporaryDirectoryTests`,
   `skills/ejryan89-skill-core/scripts/test_private_folder.py::TemporaryDirectoryCommandTests`,
-  `skills/ejryan89-code-review-core/scripts/test_review_pipeline_prepare.py::InitialReviewTests::test_a_temporary_directory_below_a_shared_folder_that_is_not_sticky_holds_no_run`
-- **Search for:** `tempfile.mkdtemp(`, `tempfile.mkstemp(`, `TemporaryDirectory(`, or `NamedTemporaryFile(` with no
-  `dir=` in `deployer/` or `tools/`, which the policy does not read, where a later step reads what it holds;
-  `Path(tempfile.gettempdir()) /` joined with a fixed name; a folder an environment variable names, used with no
-  judgment of the folders above it; `mktemp` in a `.sh` file, or `New-TemporaryFile` or `GetTempPath` in a `.ps1` file,
-  whose folder did not come from `private_folder.py temporary-directory`, which no policy reads (#2817).
-- **Examples:** #2756, #2793, #2796, #2817
+  `skills/ejryan89-code-review-core/scripts/test_review_pipeline_prepare.py::InitialReviewTests::test_a_temporary_directory_below_a_shared_folder_that_is_not_sticky_holds_no_run`,
+  `tests/tools/test_mutation_gate.py::JudgedFolderFixtures`
+- **Search for:** a temporary folder made through a call the policy cannot resolve, or handed to a command a function
+  starts later, such as a method of `GitClient`; a Bash variable set by `read`, `mapfile`, `readarray`, `for`,
+  `printf -v`, `getopts`, `eval`, or a nameref, assigned again by a loop, or read by a function called before its
+  assignment; the temporary directory named by `${!name}`, `printenv`, or `getconf`; a PowerShell variable named by a
+  wildcard or a partly literal name, or the table `GetEnvironmentVariables()` returns, kept and read later, each a
+  limit "Working files" in `docs/adding-a-skill.md` names; and a
+  converted folder whose own suite does not record the `dir` it is given with
+  `test_private_folder:recording_temporary_folders`, since the policy reads the call, not the folder a run makes.
+- **Examples:** #2756, #2793, #2796, #2817, #2833, #2834
 
 ### What one step accepts, every later step can read and write
 

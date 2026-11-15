@@ -16,6 +16,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts"))
 
+from frontmatter import FrontmatterError
 from skill_grants import (
     GRANTS_DOC,
     REPOSITORY_TOOL_COMMAND,
@@ -770,3 +771,27 @@ def test_repository_code_declarations_refuse_imports_lookups_and_shadowed_calls_
     assert [
         f"{name}: declares RUNS_REPOSITORY_CODE but starts no process; remove the declaration"
     ] == repository_code_declaration_problems(tmp_path)
+
+
+# The characters str.splitlines breaks a line at and text_lines, as YAML 1.2 and CommonMark, does not.
+TEXT_SEPARATORS = ("\x0b", "\x0c", "\x1c", "\x1d", "\x1e", "\x85", "\u2028", "\u2029")
+# The characters of them YAML forbids in a stream, which the frontmatter reader refuses.
+YAML_FORBIDDEN = ("\x0b", "\x0c", "\x1c", "\x1d", "\x1e")
+
+
+@pytest.mark.parametrize("separator", TEXT_SEPARATORS)
+def test_a_grant_is_read_from_the_frontmatter_lines_yaml_reads(separator: str, tmp_path: Path) -> None:
+    parser = 'import argparse\nparser = argparse.ArgumentParser()\nparser.add_argument("--root")\n'
+    grant = json.dumps(["Bash(python tools/open.py *)"])
+    write_fixture_tree(
+        tmp_path,
+        {
+            "tools/open.py": parser,
+            ".claude/skills/star/SKILL.md": f"---\nname: star{separator}allowed-tools: {grant}\n---\n",
+        },
+    )
+    if separator in YAML_FORBIDDEN:
+        with pytest.raises(FrontmatterError, match=f"line 1 holds U\\+{ord(separator):04X}"):
+            root_option_problems(tmp_path, repository_skill_files(tmp_path))
+    else:
+        assert root_option_problems(tmp_path, repository_skill_files(tmp_path)) == []
