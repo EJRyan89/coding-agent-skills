@@ -369,7 +369,8 @@ def _folds_path_case(
     by the platform's name, never the file system's, so a name such as a folder's against `.git` is refused too and
     compared through path_keys' name_key, which asks the folder's file system; or a path made absolute, normalized, or
     resolved, then case-folded through str.casefold or str.lower, which fold case even where the file system keeps
-    it. A function is named through the module's imports, so an alias of normcase is normcase and a local function
+    it, path_containment's `resolved_path` and `strictly_resolved_path` among the resolutions. A function is named
+    through the module's imports, so an alias of normcase is normcase and a local function
     that shares its name is not; a method is named by its name, since its receiver's type is unknown. str.casefold and
     str.lower of other text are left alone, since most such text is no path, and a name folded that way folds on every
     file system, which merges names rather than telling one file system from another."""
@@ -379,7 +380,7 @@ def _folds_path_case(
         f"{module}.{name}"
         for module in ("os.path", "posixpath", "ntpath")
         for name in ("normpath", "abspath", "realpath")
-    }
+    } | {f"path_containment.{name}" for name in ("resolved_path", "strictly_resolved_path")}
     if not isinstance(node, ast.Call):
         return False
     called = resolver.name(node.func)

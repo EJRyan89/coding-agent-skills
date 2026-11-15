@@ -13,6 +13,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import diff_paths
+import path_containment
 from diff_paths import (
     CONTENT_ERRORS,
     HUNK_HEADER,
@@ -227,14 +228,14 @@ class UnresolvableSnapshotPathTests(unittest.TestCase):
         self.addCleanup(temporary.cleanup)
         root = Path(temporary.name) / "snapshot"
         root.mkdir()
-        real_resolve = diff_paths.resolved_path
+        real_resolve = path_containment.resolved_path
 
         def resolve(path: Path) -> Path:
             if path.name == "unresolvable.py":
                 raise OSError(206, "The filename or extension is too long")
             return real_resolve(path)
 
-        with mock.patch.object(diff_paths, "resolved_path", resolve):
+        with mock.patch("diff_paths.resolved_path", resolve):
             self.assertIsNone(snapshot_path(root, "tools/unresolvable.py"))
             self.assertEqual(root.resolve() / "tools" / "inside.py", snapshot_path(root, "tools/inside.py"))
 

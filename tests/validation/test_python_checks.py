@@ -1051,8 +1051,12 @@ DOCUMENTED_FORMS: dict[str, tuple[Any, ...]] = {
             ("a path, named uncalled", "list(map(Path.resolve, a))"),
             ("a path through pathlib", "pathlib.Path.resolve(p)"),
             ("a path, named by a binding", "(lambda r=Path.resolve: r(p))()"),
+            ("a path's method, named to be called through a name", "(lambda r: r())(p.resolve)"),
         )
     },
+    "a resolve of a name a from-import binds, which may be a path": _form(
+        python_checks.resolve_problems, "from cfg import ROOT\n\n\ndef f():\n    return ROOT.resolve()\n"
+    ),
     "a resolve in a deployer module": _form(
         python_checks.resolve_problems, "def f(p):\n    return p.resolve()\n", "deployer/alpha.py"
     ),
@@ -1062,8 +1066,9 @@ DOCUMENTED_FORMS: dict[str, tuple[Any, ...]] = {
     "a resolve in a repository skill": _form(
         python_checks.resolve_problems, "def f(p):\n    return p.resolve()\n", ".claude/skills/alpha/scripts/alpha.py"
     ),
-    # "except on a receiver built from `__file__`, ... on self or cls, ... and on a name the module imports that is no
-    # pathlib class".
+    # "except on a receiver built from `__file__`, ... on self or cls, ... and on a name an import binds to a module":
+    # `import x` and `from . import x`; `from package import x` is read in
+    # test_resolve_policy_reads_a_from_import_as_a_module_only_where_the_files_hold_it.
     **{
         f"a resolve of {form}": _form(
             python_checks.resolve_problems,
@@ -1080,20 +1085,24 @@ DOCUMENTED_FORMS: dict[str, tuple[Any, ...]] = {
             ("path_containment's resolution", "path_containment.resolved_path(p)"),
         )
     },
-    "a resolve outside the roots the policy reads": _form(
-        python_checks.resolve_problems,
-        "def f(p):\n    return p.resolve()\n",
-        "tests/validation/alpha.py",
-        refused=False,
-    ),
     "a resolve RESOLVE_ALLOWED sanctions": _form(
         python_checks.resolve_problems,
         "RESOLVE_ALLOWED = {'f': 'the path is a folder this run made'}\n\n\ndef f(p):\n    return p.resolve()\n",
         refused=False,
     ),
-    "limit: a resolve looked up by name": _form(
-        python_checks.resolve_problems, "def f(p):\n    return getattr(p, 'resolve')()\n", refused=False
-    ),
+    **{
+        f"limit: a resolve {form}": _form(
+            python_checks.resolve_problems,
+            f"import operator\nimport os\nfrom pathlib import Path\n\n\ndef f(p, name):\n    return {call}\n",
+            refused=False,
+        )
+        for form, call in (
+            ("looked up by name", "getattr(p, 'resolve')()"),
+            ("by operator.methodcaller", "operator.methodcaller('resolve')(p)"),
+            ("of a path joined to the script's folder", "(Path(__file__).parent / name).resolve()"),
+            ("of a path that falls back to the script's file", "Path(os.environ.get('X', __file__)).resolve()"),
+        )
+    },
     # A lookup of a link test by a constant name, in any form attribute_lookups reads, and a hasattr of one.
     **{
         f"a link test by {form}": _form(
@@ -1965,6 +1974,35 @@ def test_each_policy_refuses_every_form_its_documentation_names(
         assert all(problem.startswith(path) for problem in found), found
     else:
         assert found == []
+
+
+def test_resolve_policy_reads_a_from_import_as_a_module_only_where_the_files_hold_it() -> None:
+    # A name `from package import x` binds is a module, whose resolve is a function of its own, only where the files
+    # the policy is given hold the module; otherwise it may be a path, as `from cfg import ROOT` binds.
+    caller = "from deployer import source_ref\n\n\ndef f(p):\n    return source_ref.resolve(p, 'v1')\n"
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        write_fixture_tree(
+            root, {"tools/alpha.py": caller, "deployer/source_ref.py": "def resolve(p, ref):\n    pass\n"}
+        )
+        held = python_checks.resolve_problems(root, sorted(file for file in root.rglob("*") if file.is_file()))
+        (root / "deployer" / "source_ref.py").unlink()
+        unheld = python_checks.resolve_problems(root, sorted(file for file in root.rglob("*") if file.is_file()))
+    assert held == []
+    assert [problem.split(":")[0] for problem in unheld] == ["tools/alpha.py"], unheld
+
+
+def test_resolve_policy_names_a_module_it_cannot_read_and_refuses_a_listing_it_reads_nothing_in() -> None:
+    nothing = ["could not measure: no module under the roots the resolve policy reads was given, so none was read"]
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        assert python_checks.resolve_problems(root, []) == nothing
+        # A module outside the roots is not read, so a listing of it alone reads nothing.
+        write_fixture_tree(root, {"tests/validation/alpha.py": "def f(p):\n    return p.resolve()\n"})
+        assert python_checks.resolve_problems(root, [root / "tests/validation/alpha.py"]) == nothing
+        write_fixture_tree(root, {SCRIPT: "def f(p:\n"})
+        unreadable = python_checks.resolve_problems(root, [root / "tests/validation/alpha.py", root / SCRIPT])
+    assert [problem.split(" ")[0] for problem in unreadable] == [SCRIPT], unreadable
 
 
 def run_claim_policy(

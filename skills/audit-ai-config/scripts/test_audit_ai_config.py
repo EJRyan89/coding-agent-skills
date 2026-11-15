@@ -30,6 +30,7 @@ import link_probe
 import markdown_literal
 import pytest
 from folder_walk import SKIPPED_FOLDERS
+from test_path_containment import resolving_as_python_312
 
 OWNERSHIP = audit.OWNERSHIP_MARKER
 
@@ -7219,6 +7220,17 @@ class OutsideLinkTests(unittest.TestCase):
         self.assertTrue(audit.leaves_root(self.root, self.root / ".." / "outside"))
         self.assertFalse(audit.leaves_root(self.root, self.root / ".github" / ".." / "CLAUDE.md"))
         self.assertFalse(audit.leaves_root(self.root, self.root))
+
+    @unittest.skipIf(sys.platform == "win32", "a symbolic link needs a privilege on Windows")
+    def test_a_symbolic_link_loop_inside_the_root_stays_inside_on_every_python_version(self) -> None:
+        # Python 3.12's Path.resolve raised RuntimeError for the loop, which leaves_root read as a path that cannot be
+        # resolved, so the audit warned that the loop leads out of the repository; from 3.13 on it stayed inside.
+        loop = self.root / "loop.md"
+        loop.symlink_to(loop)
+        for version, resolving in (("this Python", contextlib.nullcontext), ("Python 3.12", resolving_as_python_312)):
+            with self.subTest(version), resolving():
+                self.assertFalse(audit.leaves_root(self.root, loop))
+                self.assertFalse(audit.leaves_root(self.root, loop / "inner.md"))
 
 
 class UnreadInputTests(unittest.TestCase):

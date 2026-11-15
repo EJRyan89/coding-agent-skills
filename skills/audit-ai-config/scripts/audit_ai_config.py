@@ -316,7 +316,9 @@ def outside_link(root: Path, path: Path) -> Path | None:
 def leaves_root(root: Path, path: Path) -> bool:
     """Whether `path` lies outside `root` once its links and `..` parts are resolved, as a symbolic link or junction
     that leads out of the repository makes it. A path that cannot be resolved counts as outside, so nothing is read
-    through it."""
+    through it. A symbolic link loop is no such path: `resolved_path` leaves it unresolved on every Python version, so
+    it is judged where it lies, and the read that follows refuses it, naming the loop, rather than a warning reporting
+    it as a link that leads out."""
     try:
         return not within(resolved_path(path), resolved_path(root))
     except (OSError, ValueError):

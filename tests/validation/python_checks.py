@@ -778,31 +778,52 @@ def link_test_problems(root: Path, files: list[Path]) -> list[str]:
 # `FAILED RuntimeError`, where from 3.13 on the loop is left unresolved, or raises OSError when strict. The policy
 # refuses a path's resolve, as a method on any receiver or as pathlib's Path.resolve named, called or not, in a module
 # under RESOLVE_ROOTS, except on a receiver built from `__file__`, which names a script's own file, on self or cls,
-# whose class may define a resolve of its own, and on a name the module imports that is no pathlib class, a module's
-# function such as `source_ref.resolve`. Any other site states why in a module-level RESOLVE_ALLOWED = {scope: reason}.
+# whose class may define a resolve of its own, and on a name an import binds to a module, a module's function such as
+# `source_ref.resolve`: a name `import x` binds, one `from . import x` binds, and one `from package import x` binds
+# where the files the policy is given hold that module, as `deployer/source_ref.py` is for
+# `from deployer import source_ref`. A name any other from-import binds, as `from cfg import ROOT` does, may be a path,
+# so its resolve is refused. A listing that holds no module under RESOLVE_ROOTS is refused too, since a policy that
+# read nothing checked nothing. Any other site states why in a module-level RESOLVE_ALLOWED = {scope: reason}.
+#
+# A resolve named to be called through a name, as `r = p.resolve` or `(lambda r=Path.resolve: r(p))()`, is refused
+# where it is named.
 #
 # Stated limits, which no reading of a module's syntax tree settles: a resolve looked up by name, as
-# `getattr(p, "resolve")`, and one named through a name bound to it.
+# `getattr(p, "resolve")` or `operator.methodcaller("resolve")`, and a receiver that merely contains `__file__`, as
+# `(Path(__file__).parent / name).resolve()` or `Path(os.environ.get("X", __file__)).resolve()`, which is read as the
+# script's own file.
 RESOLVE_ROOTS = ("skills", ".claude/skills", "deployer", "tools")
 PATH_CONTAINMENT = "skills/ejryan89-skill-core/scripts/path_containment.py"
 PATH_CLASSES = frozenset({"pathlib.Path", "pathlib.PurePath", "pathlib.PosixPath", "pathlib.WindowsPath"})
 RESOLVE_ALLOWANCE = "RESOLVE_ALLOWED"
 
 
-def _imported_names(tree: ast.Module) -> frozenset[str]:
-    """Each name an import of the module binds, anywhere in it, a relative import's included."""
-    return frozenset(
-        alias.asname or alias.name.split(".")[0]
-        for node in ast.walk(tree)
-        if isinstance(node, (ast.Import, ast.ImportFrom))
-        for alias in node.names
-    )
+def _names_bound_to_modules(tree: ast.Module, path: Path, root: Path, held: frozenset[str]) -> frozenset[str]:
+    """Each name an import of the module binds to a module, anywhere in it: every name `import x` binds, every name
+    `from . import x` binds, and a name `from package import x` binds where `held`, the files the policy is given
+    relative to `root`, holds `x` as a module of that package, from the repository's root or the module's own folder
+    for an absolute import, or from the package a relative one names."""
+    found: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            found.update(alias.asname or alias.name.split(".")[0] for alias in node.names)
+        elif isinstance(node, ast.ImportFrom):
+            if node.level and node.module is None:
+                found.update(alias.asname or alias.name for alias in node.names)
+                continue
+            bases = [path.parents[node.level - 1]] if node.level else [root, path.parent]
+            package = (node.module or "").replace(".", "/")
+            for alias in node.names:
+                folders = [(base / package / alias.name).relative_to(root).as_posix() for base in bases]
+                if any(f"{folder}.py" in held or f"{folder}/__init__.py" in held for folder in folders):
+                    found.add(alias.asname or alias.name)
+    return frozenset(found)
 
 
 def _resolves_a_path(node: ast.expr, aliases: dict[str, str], imported: frozenset[str]) -> bool:
     """Whether a node is a path's resolve: pathlib's Path.resolve, called or named, or a resolve method on a receiver
-    that is neither built from `__file__`, nor self or cls, nor a name the module imports as anything but a pathlib
-    class."""
+    that is neither built from `__file__`, nor self or cls, nor a name an import binds to a module other than a
+    pathlib class, a module's function, which `_names_bound_to_modules` reads."""
     if not (isinstance(node, ast.Attribute) and node.attr == "resolve"):
         return False
     receiver = node.value
@@ -822,8 +843,12 @@ def resolve_problems(root: Path, files: list[Path]) -> list[str]:
         if under(path.relative_to(root).as_posix(), RESOLVE_ROOTS)
         and path.relative_to(root).as_posix() != PATH_CONTAINMENT
     ]
-    for _, name, tree in python_trees(paths, root, problems):
-        aliases, imported = import_aliases(tree), _imported_names(tree)
+    if not paths:
+        # No module read is no evidence that none resolves a path outside path_containment.
+        return ["could not measure: no module under the roots the resolve policy reads was given, so none was read"]
+    held = frozenset(path.relative_to(root).as_posix() for path in files)
+    for path, name, tree in python_trees(paths, root, problems):
+        aliases, imported = import_aliases(tree), _names_bound_to_modules(tree, path, root, held)
         found = [
             (
                 node.lineno,
