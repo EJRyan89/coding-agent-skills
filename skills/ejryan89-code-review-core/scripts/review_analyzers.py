@@ -207,9 +207,13 @@ def _msbuild(found: _Inventory, path: str, text: str) -> None:
                 found.tool(PurePosixPath(package.replace("\\", "/")).stem, path)
             elif package and (ANALYZER_PACKAGE.search(package) or package.casefold() in OTHER_ANALYZER_PACKAGES):
                 found.tool(package, path)
-        elif name in MSBUILD_PROPERTIES or name.startswith(MSBUILD_PROPERTY_PREFIXES):
-            if element.text and element.text.strip() and not len(element):
-                found.setting(path, f"<{name}>{element.text.strip()}</{name}>")
+        elif (
+            (name in MSBUILD_PROPERTIES or name.startswith(MSBUILD_PROPERTY_PREFIXES))
+            and element.text
+            and element.text.strip()
+            and not len(element)
+        ):
+            found.setting(path, f"<{name}>{element.text.strip()}</{name}>")
 
 
 def _editorconfig(found: _Inventory, path: str, text: str) -> None:
