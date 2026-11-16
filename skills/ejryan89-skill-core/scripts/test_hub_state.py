@@ -289,6 +289,16 @@ class ConfigurationTests(ConfigurationCase):
         )
         self.assertEqual([], self.tick(), "the record was written, so the change is named once")
 
+    def test_a_name_given_alone_rewritten_with_an_empty_value_is_changed(self) -> None:
+        self.append_configuration(b"[core]\n\tfsmonitor\n")
+        self.tick()
+        self.configure("core.fsmonitor", "")
+        self.assertEqual(
+            [Difference("configured", "its git configuration changed since the previous tick: core.fsmonitor changed")],
+            self.tick(),
+            "git reads a name alone as true and an empty value as false",
+        )
+
     def test_a_name_that_is_not_utf_8_is_recorded_and_named_by_its_bytes(self) -> None:
         self.tick()
         self.append_configuration(b'[remote "caf\xe9"]\n\turl = elsewhere\n[remote "caf\\\\xe9"]\n\turl = other\n')

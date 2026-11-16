@@ -45,8 +45,6 @@ only reads it. Its limits:
   file is not read.
 - A branch's own settings, other than the hub's own branch's, its `remote`, `pushRemote`, and `merge` among them, are
   not read, so a worktree branch whose pushes were sent elsewhere is not named.
-- A setting rewritten from a name alone to the name with an empty value is not named: `git config --list` lists the
-  two alike, though git reads the first as true and the second as false.
 - Deleting the record forgets the clone's opting in, which is how a clone that turned the guard off on purpose stops
   `lapsed`.
 """
@@ -212,10 +210,11 @@ def configuration(git: GitClient, checkout: Path, branch: str) -> Configuration:
     values: dict[str, list[str]] = {}
     for entry in git.names(["config", "--local", "--list"], directory=checkout):
         # With -z git ends a setting's name with a newline, which no name holds, and prints no newline for a name
-        # given without a value.
-        key, _, value = entry.partition("\n")
+        # given without a value, which git reads as true where an empty value reads as false: the newline is
+        # digested with the value, so rewriting one as the other is a change.
+        key, separator, value = entry.partition("\n")
         if is_watched(key, branch):
-            values.setdefault(setting_key(key), []).append(value)
+            values.setdefault(setting_key(key), []).append(separator + value)
     settings = {key: hashlib.sha256(raw_bytes("\0".join(listed))).hexdigest() for key, listed in values.items()}
     return Configuration(guarded(git, checkout), settings)
 

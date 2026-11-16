@@ -340,7 +340,8 @@ the shared file at a worktree branch's first `push -u` and drops with the branch
 neither. `repo-cleanup` names a hub whose guard is off while the record says a tick saw it on. The record is the
 clone's only record of opting in, since a lapse removes the setting itself, so a clone no tick recorded is never named.
 A record that cannot be read is named, and the tick writes its new record with the clone opted in, since whether the
-clone was is unknown. Only a `shepherd-pull-requests` tick writes the record; `repo-cleanup` only reads it.
+clone was is unknown, so `repo-cleanup` names `lapsed` for a clone that never opted in until `.git/hub-state.json`
+is deleted. Only a `shepherd-pull-requests` tick writes the record; `repo-cleanup` only reads it.
 
 The configuration's limits:
 
@@ -350,8 +351,6 @@ The configuration's limits:
   read.
 - A branch's own settings, other than `main`'s, its `remote`, `pushRemote`, and `merge` among them, are not read, so a
   worktree branch whose pushes were sent elsewhere is not named.
-- A setting rewritten from a name alone to the name with an empty value is not named: `git config --list` lists the
-  two alike, though git reads the first as true and the second as false.
 
 #### What it understands
 
