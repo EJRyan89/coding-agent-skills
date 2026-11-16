@@ -220,6 +220,7 @@ def script_subcommands(source: str) -> set[str]:
         ('from git_client import GitError\nraise GitError("git could not read the HEAD commit")', set()),
         ('from git_client import GitError as Failed\nraise Failed("git fetch failed")', set()),
         ('import git_client\nraise git_client.GitError("git fetch failed")', set()),
+        ('import git_client as gc\nraise gc.GitError("git fetch failed")', set()),
         ('import git_client\ngit_client.isolated_git_environment(["fetch"])', set()),
     ],
 )

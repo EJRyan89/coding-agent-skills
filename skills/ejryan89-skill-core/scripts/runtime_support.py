@@ -245,8 +245,10 @@ def script_callables(tree: ast.Module) -> ScriptCallables:
     reads one, or another of the script's own that starts git. Every other one is quiet, a helper that only words
     git's failure, as `git_failure` does, and two that only call each other, as a reader's recursion does, among
     them. Beyond what it reads: a callable the script imports from any module but git_client is read by its name
-    alone, so a definition whose only git runs through such an import, under a name with no git in it, is read as
-    quiet.
+    alone, so a definition whose only git runs through such an import, or through a callable it is given, as
+    `runner(["git", *arguments], timeout)`, under a name with no git in it, is read as quiet. A call on a receiver that
+    is not an import, named like one of the script's own definitions that starts no git, as `store.git("push")`
+    beside a `def git(message)`, is read as that definition and records nothing.
     """
     imported: set[str] = set()
     quiet: set[str] = set()
@@ -305,8 +307,11 @@ def python_git_subcommands(source: str) -> set[str]:
     the subcommand in `sizing = ("cat-file", "-s", blob)`, is not followed. A starred value of git's own options, as
     `*SHOW_UNTRACKED` before `"worktree"`, is read as the subcommand. A callable named for git that runs no git,
     imported from a module other than git_client and given a list or tuple literal or a starred value, records a git
-    call all the same, since script_callables reads only the script's own definitions. A script that does not parse, or
-    nests past the parser's limits, raises python_reader's PythonRefused.
+    call all the same, since script_callables reads only the script's own definitions. A call on a receiver that is
+    not an import, named like one of the script's own definitions that starts no git, as `store.git("push")` beside a
+    `def git(message)`, is read as that definition and records nothing. A call of what another call returns, as
+    `make_git(root)("fetch")`, is not read. A script that does not parse, or nests past the parser's limits, raises
+    python_reader's PythonRefused.
     """
     tree = python_reader.parse(source)
     script = script_callables(tree)
