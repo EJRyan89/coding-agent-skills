@@ -437,9 +437,9 @@ class ShellUnit:
 
 
 def _shell_blocks(logical: str, lines: list[str]) -> list[str]:
-    """The body of each fence among `lines` substituted as shell, in order, each line ending at LF and read as CommonMark
-    gives it to the fence's content, without the indentation of the fence and of the list items that hold it, so an
-    indented fence's here-document closes at its delimiter, as it does for a model given the fence."""
+    """The body of each fence among `lines` substituted as shell, in order, each line ending at LF and read as
+    CommonMark gives it to the fence's content, without the indentation of the fence and of the list items that hold
+    it, so an indented fence's here-document closes at its delimiter, as it does for a model given the fence."""
     blocks: list[str] = []
     for fence in find_fences(lines):
         if fence_context(fence) != "shell":

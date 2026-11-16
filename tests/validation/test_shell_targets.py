@@ -360,6 +360,61 @@ class ShellTargetsFixtures(unittest.TestCase):
                 shell_token_problems(root),
             )
 
+    def test_a_bash_token_is_quoted_where_bash_keeps_its_rendered_value_whole(self) -> None:
+        # Each form is read through the grammar, then rendered with a spaced value and run by Bash, which prints the
+        # value in angle brackets whole only where the reader calls it quoted: inside a substitution's own quotes,
+        # not the quotes around the substitution, and in a here-document's body, which Bash never splits.
+        forms = {
+            "printf '<%s>' \"{{X}}\"": True,
+            "printf '<%s>' {{X}}": False,
+            "printf '<%s>' \\{{X}}": False,
+            "printf '<%s>' \"a\"{{X}}": False,
+            'printf \'<%s>\' "$(printf %s "{{X}}")"': True,
+            "printf '<%s>' \"$(printf %s {{X}})\"": False,
+            "printf '<%s>' \"${UNSET_NAME:-{{X}}}\"": True,
+            "cat <<EOF\n<{{X}}>\nEOF": True,
+            "cat <<'EOF'\n<{{X}}> \"\nEOF": True,
+        }
+        bash = platform_support.find_bash()
+        assert bash is not None
+        for form, quoted in forms.items():
+            with self.subTest(form=form):
+                self.assertEqual(
+                    [(form.count("\n", 0, form.index("{{")), "X", quoted)], shell_targets._bash_tokens(form)
+                )
+                result = run_bounded([bash, "-c", form.replace("{{X}}", "a b")], timeout=30)
+                self.assertEqual(quoted, "<a b>" in result.stdout.decode())
+
+    def test_a_bash_token_validation_cannot_place_or_bash_it_cannot_read_fails_closed(self) -> None:
+        # A comment holds no token; where the grammar keeps no text of the token's own, validation cannot say
+        # whether Bash quotes it, so it names the token rather than passing it.
+        self.assertEqual([], shell_targets._bash_tokens("echo x  # {{X}}\n# {{Y}}"))
+        for form in ("a=({{X}})", "echo $(( {{X}} ))", "echo $'\\n{{X}}'", 'echo ${Y:-"{{X}}"}', "echo $Y{{X}}"):
+            with self.subTest(form=form):
+                self.assertEqual([(0, "X", None)], shell_targets._bash_tokens(form))
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            write_fixture_tree(
+                root,
+                {
+                    "skills/alpha/SKILL.md": '```bash\na=("{{X}}")\n```\n\n```bash\necho "{{Y}}" )\n```\n',
+                    "skills/alpha/scripts/run.sh": 'echo TEMPLATE_TOKEN_0_ "{{Z}}"\n',
+                },
+                newline="\n",
+            )
+            problems = shell_token_problems(root)
+        self.assertEqual(
+            [
+                "skills/alpha/SKILL.md:2 has {{X}} where validation cannot read whether Bash quotes it; write it in "
+                "a quoted word of a command",
+                "skills/alpha/SKILL.md:6 holds Bash validation cannot read (a `)` or `;;` closes nothing), so its "
+                "tokens cannot be judged; write it as Bash reads it",
+                "skills/alpha/scripts/run.sh:1 holds Bash validation cannot read (it holds text of the form "
+                "validation marks each token with), so its tokens cannot be judged; write it as Bash reads it",
+            ],
+            problems[:3],
+        )
+
     def test_script_analyzer_names_each_file_fence_and_rule_it_finds(self) -> None:
         unused = "function Get-Answer {\n    $unused = 1\n    'answer'\n}\n"
         with tempfile.TemporaryDirectory() as directory:

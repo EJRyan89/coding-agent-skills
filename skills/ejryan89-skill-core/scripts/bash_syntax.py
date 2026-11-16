@@ -406,29 +406,8 @@ class Lexer:
             elif self.text.startswith("((", self.index) and (self.reserved or self.after_for) and self.double_paren():
                 pass
             elif character in METACHARACTERS:
-                operator = next(item for item in OPERATORS if self.text.startswith(item, self.index))
-                pattern = self.case_operator(operator)
-                if self.nested and operator == ")" and self.depth == 0 and not pattern:
+                if self.operator():
                     return self.tokens
-                if not pattern:
-                    self.depth += {"(": 1, ")": -1}.get(operator, 0)
-                line = self.descriptor_line if self.descriptor else self.lines[self.index]
-                self.index += len(operator)
-                self.tokens.append(Operator(operator, self.descriptor, line))
-                self.descriptor = ""
-                if operator in REDIRECTIONS:
-                    self.redirecting = operator not in HERE_DOCUMENTS
-                    self.command_start = self.command_start and self.redirections_only
-                    self.reserved = False
-                else:
-                    self.command_start = self.reserved = operator not in CASE_ENDS
-                    self.redirections_only = True
-                    piped = len(self.tokens) > 1 and self.tokens[-2] in (Operator("|"), Operator("|&"))
-                    self.after_pipe = operator in ("|", "|&") or (operator == "\n" and piped)
-                if operator == "\n":
-                    self.read_here_documents()
-                elif operator in HERE_DOCUMENTS:
-                    self.open_here_document(operator)
             else:
                 word = self.word(subscripts=self.command_start and not self.redirecting)
                 if self.peek() and self.peek() in "<>" and DESCRIPTOR.fullmatch(word.raw):
@@ -441,6 +420,33 @@ class Lexer:
             raise BashSyntaxError("a command substitution is not closed")
         self.read_here_documents()
         return self.tokens
+
+    def operator(self) -> bool:
+        """Reads the operator at the index; True, reading nothing, for the `)` that closes a nested `$( )` body."""
+        operator = next(item for item in OPERATORS if self.text.startswith(item, self.index))
+        pattern = self.case_operator(operator)
+        if self.nested and operator == ")" and self.depth == 0 and not pattern:
+            return True
+        if not pattern:
+            self.depth += {"(": 1, ")": -1}.get(operator, 0)
+        line = self.descriptor_line if self.descriptor else self.lines[self.index]
+        self.index += len(operator)
+        self.tokens.append(Operator(operator, self.descriptor, line))
+        self.descriptor = ""
+        if operator in REDIRECTIONS:
+            self.redirecting = operator not in HERE_DOCUMENTS
+            self.command_start = self.command_start and self.redirections_only
+            self.reserved = False
+        else:
+            self.command_start = self.reserved = operator not in CASE_ENDS
+            self.redirections_only = True
+            piped = len(self.tokens) > 1 and self.tokens[-2] in (Operator("|"), Operator("|&"))
+            self.after_pipe = operator in ("|", "|&") or (operator == "\n" and piped)
+        if operator == "\n":
+            self.read_here_documents()
+        elif operator in HERE_DOCUMENTS:
+            self.open_here_document(operator)
+        return False
 
     def open_case(self) -> OpenCase | None:
         """The innermost case open at the parenthesis depth being read, or None."""
