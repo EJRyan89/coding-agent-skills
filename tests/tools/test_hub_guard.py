@@ -3314,6 +3314,9 @@ class UnderstoodSetTests(GuardTestCase):
             "cat <<-EOF\n\t$(case x in a) $(git push) #;; esac)\n\tEOF",
             "cat <<EOF\n${x:-$(case x in a) $(git push) #;; esac)}\nEOF",
             "x=$(cat <<EOF\n$(case x in a) $(git push) #;; esac)\nEOF\n)",
+            # The pattern is held in a substitution inside one the grammar refuses, so only the inner one held it.
+            "echo $(echo $(case x in [)]) $(git push) #;; esac))",
+            "x=$(echo $(case x in a) $(git push) #;; esac))\n;; esac)",
         ):
             with self.subTest(command=command):
                 self.assertEqual("deny", self.bash(command, self.hub))
@@ -3335,6 +3338,10 @@ class UnderstoodSetTests(GuardTestCase):
         ):
             with self.subTest(command=command):
                 self.assertEqual("deny", self.bash(command, outside))
+        # A pattern held in a substitution nested inside one the grammar then refuses, which Bash 3.2 closes early.
+        command = f"cat <<EOF\n$(cat <(case x in x) ; git -C '{hub}' push #;; esac))\n)\nEOF"
+        with self.subTest(command=command):
+            self.assertEqual("deny", self.bash(command, outside))
         # Neither reading reaches a hub here, and a pattern a `(` opens is read alike, so these stay allowed.
         for command in (
             "cd /tmp && echo $(case x in a) $(git push) #;; esac)",

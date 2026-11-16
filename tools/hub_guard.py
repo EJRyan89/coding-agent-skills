@@ -3118,7 +3118,9 @@ class BashReader:
         try:
             tree = bash_syntax.parse(text, bash_3_2=self.bash_3_2)
         except bash_syntax.BashSyntaxError as exc:
-            if exc.bare_case:
+            # A substitution at any depth that held such a pattern before the text was refused, which Bash 3.2 may
+            # have closed early and run past.
+            if exc.bare_case or exc.holds_bare_case:
                 self.reading.cannot_read(BARE_CASE)
             self.reading.notes.append(f"Bash would not read it as written, or the guard cannot ({exc})")
             return UNKNOWN
@@ -3202,7 +3204,7 @@ class BashReader:
         for redirect in redirects:
             here = redirect.here
             if here is not None:
-                if here.bare_case:
+                if here.bare_case or here.holds_bare_case:
                     self.reading.cannot_read(BARE_CASE)
                 if here.unclosed:
                     self.reading.cannot_read(UNCLOSED_BODY)

@@ -100,6 +100,17 @@ class WordTests(unittest.TestCase):
         other = bash_syntax.here_documents(first_simple('cat <<EOF\n$(echo "a)\nEOF'))[0]
         self.assertEqual((True, False), (other.unclosed, other.bare_case))
 
+    def test_a_refusal_and_a_body_say_when_a_substitution_at_any_depth_held_a_bare_case_pattern(self) -> None:
+        # The inner substitution reads, its pattern's `)` no `(` opened, and the one around it is then refused.
+        with self.assertRaises(BashSyntaxError) as raised:
+            parse("echo $(echo $(case x in [)]) $(git push) #;; esac))")
+        self.assertTrue(raised.exception.holds_bare_case)
+        with self.assertRaises(BashSyntaxError) as raised:
+            parse("echo $(echo $(case x in (a) :;; esac) #)")
+        self.assertFalse(raised.exception.holds_bare_case)
+        body = bash_syntax.here_documents(first_simple("cat <<EOF\n$(cat <(case x in x) ; :  #;; esac))\n)\nEOF"))[0]
+        self.assertTrue(body.holds_bare_case)
+
     def test_parse_reads_a_case_pattern_s_paren_in_a_substitution_as_bash_3_2_does_when_asked(self) -> None:
         # Bash 3.2 ends the substitution at `a)`, so the git call after it stands in the command around it.
         text = "echo $(case x in a) $(git push) #;; esac)"

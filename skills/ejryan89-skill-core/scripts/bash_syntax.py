@@ -23,7 +23,8 @@ subshell Bash runs it in. A `$( )` body is read as a command list, as Bash 4 and
 `)` inside it closes the pattern, not the substitution. Bash 3.2, macOS's /bin/bash, ends the substitution at a
 pattern's `)` that no `(` opened and runs the rest of the line in the shell around it, as when a `#` after it comments
 out the rest, so such a substitution's text says so, `bare_case`, as does a refusal raised in one and a here-document
-whose body holds one, for a reader to refuse what the two Bashes run differently, and `parse` given `bash_3_2` reads
+whose body holds one, and `holds_bare_case` says one stood at any depth of a refused text or a body, for a reader to
+refuse what the two Bashes run differently, and `parse` given `bash_3_2` reads
 as Bash 3.2 does, for a reader that judges both readings. Each substitution's text keeps the form that opened it.
 
 Every word, operator, and simple command keeps the line it starts on, counted from 1 at each LF alone, as Bash counts
@@ -138,6 +139,8 @@ class BashSyntaxError(ValueError):
     pattern whose `)` no `(` opened, which Bash 3.2 takes for the substitution's end and so may run as written."""
 
     bare_case = False
+    # Whether any substitution the text holds, at any depth, held such a pattern, read or not before the refusal.
+    holds_bare_case = False
 
 
 class Source(str):
@@ -243,6 +246,8 @@ class HereDocument:
     # pattern whose `)` no `(` opened, as a substitution's text says by its bare_case.
     unclosed: bool = False
     bare_case: bool = False
+    # Whether any substitution the body holds, at any depth, holds a case pattern whose `)` no `(` opened.
+    holds_bare_case: bool = False
 
 
 @dataclass(frozen=True)
@@ -417,8 +422,10 @@ class Lexer:
         # here, innermost last.
         self.depth = 0
         self.cases: list[OpenCase] = []
-        # Whether a `$( )` body holds a case pattern whose `)` no `(` opened, which Bash 3.2 takes for the body's end.
+        # Whether a `$( )` body holds a case pattern whose `)` no `(` opened, which Bash 3.2 takes for the body's end,
+        # and whether this text or any substitution in it, at any depth, does.
         self.bare_case = False
+        self.holds_bare_case = False
 
     def peek(self, offset: int = 0) -> str:
         position = self.index + offset
@@ -494,6 +501,7 @@ class Lexer:
         if case.state == "pattern" and (operator == ")" or (operator == "(" and not case.begun)):
             # Bash 3.2 ends a `$( )` at a pattern's `)` that no `(` opened, so the two Bashes read the body apart.
             self.bare_case = self.bare_case or (operator == ")" and self.nested and not case.opened)
+            self.holds_bare_case = self.holds_bare_case or self.bare_case
             case.opened = operator == "("
             case.state, case.begun = ("commands", False) if operator == ")" else ("pattern", True)
             return True
@@ -592,8 +600,10 @@ class Lexer:
                 numbers += places[len(line) - len(compared) :]
             document.body = Source("\n".join(body), numbers if body else [self.lines[self.index]])
             if not document.quoted:
-                substitutions, assigns, parts, unclosed = expansions(document.body, self.bash_3_2)
+                substitutions, assigns, parts, unclosed, holds = expansions(document.body, self.bash_3_2)
                 document.unclosed, document.bare_case = unclosed is not None, bool(unclosed and unclosed.bare_case)
+                document.holds_bare_case = holds
+                self.holds_bare_case = self.holds_bare_case or holds
                 document.substitutions, document.assigns = tuple(substitutions), tuple(assigns)
                 document.expansions = tuple(part for part in parts if part.kind == "dynamic")
         self.pending = []
@@ -830,7 +840,10 @@ class Lexer:
             inner.run()
         except BashSyntaxError as error:
             error.bare_case = error.bare_case or inner.bare_case
+            error.holds_bare_case = error.holds_bare_case or inner.holds_bare_case
             raise
+        finally:
+            self.holds_bare_case = self.holds_bare_case or inner.holds_bare_case
         self.index = inner.index + 1
         source = Source(self.text[start : inner.index], self.lines[start : inner.index + 1], form)
         source.bare_case = inner.bare_case
@@ -972,12 +985,15 @@ def add_text(parts: list[Part], text: str, quoted: bool) -> None:
         parts.append(Part("text", text, quoted))
 
 
-def expansions(text: str, bash_3_2: bool = False) -> tuple[list[str], list[str], list[Part], BashSyntaxError | None]:
+def expansions(
+    text: str, bash_3_2: bool = False
+) -> tuple[list[str], list[str], list[Part], BashSyntaxError | None, bool]:
     """The command substitutions in text that expands as a double-quoted string does, such as an unquoted
     here-document's body, where a double quote is an ordinary character but quotes inside a `$( )` or a `${ }`, as
     Bash reads it there, the variables its expansions assign, as a word's assigns holds them, the parts its
-    expansions make, as a word's parts hold them, and the refusal of an expansion whose end it never reaches, or None.
-    Each substitution keeps its script line, from text's when it is a Source. bash_3_2 reads as parse says."""
+    expansions make, as a word's parts hold them, the refusal of an expansion whose end it never reaches, or None, and
+    whether any substitution in it, at any depth, holds a case pattern whose `)` no `(` opened. Each substitution keeps
+    its script line, from text's when it is a Source. bash_3_2 reads as parse says."""
     lexer = Lexer(text, lines=source_lines(text), bash_3_2=bash_3_2)
     found: list[str] = []
     parts: list[Part] = []
@@ -996,8 +1012,9 @@ def expansions(text: str, bash_3_2: bool = False) -> tuple[list[str], list[str],
         except BashSyntaxError as error:
             # An expansion whose end the body never reaches, as `$(echo "a)` is, runs to the body's end, as Bash
             # reads it, so no expansion stands after it.
-            return found, lexer.assigned, parts, error
-    return found, lexer.assigned, parts, None
+            error.holds_bare_case = error.holds_bare_case or lexer.holds_bare_case
+            return found, lexer.assigned, parts, error, error.holds_bare_case
+    return found, lexer.assigned, parts, None, lexer.holds_bare_case
 
 
 # ---------------------------------------------------------------------------------------------------------------
@@ -1322,14 +1339,18 @@ def parse(text: str, bash_3_2: bool = False) -> CommandList:
     """The command tree of text, read by Bash's grammar; raises BashSyntaxError where it cannot be read. Its lines
     are counted from 1, or, for a Source, are the script's lines it keeps. With bash_3_2 set, a case pattern's `)`
     inside a `$( )` ends the substitution, as Bash 3.2 reads it, for a reader that must judge both readings."""
+    lexer = Lexer(text, lines=source_lines(text), bash_3_2=bash_3_2)
     try:
-        parser = Parser(Lexer(text, lines=source_lines(text), bash_3_2=bash_3_2).run())
+        parser = Parser(lexer.run())
         result = parser.command_list()
+        if parser.peek() is not None:
+            raise BashSyntaxError("a `)` or `;;` closes nothing")
+    except BashSyntaxError as error:
+        error.holds_bare_case = error.holds_bare_case or lexer.holds_bare_case
+        raise
     except RecursionError:
         # The reader follows nesting by recursion, so nesting deeper than Python's limit is text it cannot read.
         raise BashSyntaxError("it nests deeper than the reader follows") from None
-    if parser.peek() is not None:
-        raise BashSyntaxError("a `)` or `;;` closes nothing")
     return result
 
 
