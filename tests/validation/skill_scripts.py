@@ -62,6 +62,7 @@ from validation_support import (
     POWERSHELL_CONTINUATION,
     REPOSITORY_ROOT,
     REPOSITORY_SKILLS,
+    VALIDATION_DOC,
     AttributeLookup,
     CallableResolver,
     UnreadablePython,
@@ -1533,9 +1534,10 @@ def skill_command_problems(root: Path, known: set[str], standard: set[str]) -> l
                 except UnreadablePython as error:
                     problems.append(f"{name} {error}")
         read = {path: _file_commands(path, known, powershell, clients) for path in own + dependency_scripts}
+        # Ordered by each file's path as written, so every platform reports them alike, whatever order it lists them.
         problems += [
-            refused_bash_problem(f"skill {skill}: {path.relative_to(root).as_posix()}", name, COMMANDS_DOC)
-            for path, commands in read.items()
+            refused_bash_problem(f"skill {skill}: {shown}", name, COMMANDS_DOC)
+            for shown, commands in sorted((path.relative_to(root).as_posix(), names) for path, names in read.items())
             for name in sorted(commands)
             if name.startswith(UNREAD_BASH)
         ]
@@ -3316,21 +3318,18 @@ def _readable_command_problems(reader: CommandReader, name: str) -> list[str]:
     ]
 
 
-CHECKER_DOC = '"Validation" in docs/adding-a-skill.md'
-
-
 def _checker_start_problems(reader: CommandReader, name: str) -> list[str]:
     problems: list[str] = []
     for call in reader.calls:
         scope = reader.scope_names.get(id(call), MODULE_SCOPE)
         for checker in sorted(started_checkers(reader, call)):
             if checker.startswith(UNREAD_BASH):
-                problems.append(refused_bash_problem(f"{name}:{call.lineno}", checker, CHECKER_DOC))
+                problems.append(refused_bash_problem(f"{name}:{call.lineno}", checker, VALIDATION_DOC))
             elif (name, scope) not in CHECKER_RUNNERS[checker]:
                 runners = " or ".join(f"{file}:{function}" for file, function in sorted(CHECKER_RUNNERS[checker]))
                 problems.append(
                     f"{name}:{call.lineno} starts {checker} outside its runner; call {runners}, which keeps settings "
-                    f"outside the repository from turning its findings off; see {CHECKER_DOC}"
+                    f"outside the repository from turning its findings off; see {VALIDATION_DOC}"
                 )
     return problems
 

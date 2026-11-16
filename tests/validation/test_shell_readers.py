@@ -29,7 +29,7 @@ import skill_scripts
 import toolchain
 from command_wrappers import UNREAD_PROGRAM
 from skill_scripts import CommandReader, PowerShellReading, shell_commands
-from validation_support import write_fixture_tree
+from validation_support import VALIDATION_DOC, write_fixture_tree
 
 
 def shell_git_subcommands(script: str) -> set[str]:
@@ -263,7 +263,19 @@ def test_shell_command_extraction_marks_bash_the_grammar_refuses(script: str, re
     assert {f"{skill_scripts.UNREAD_BASH}{reason}"} <= shell_commands(script)
 
 
-def test_the_command_policy_fails_a_file_holding_bash_the_grammar_refuses_naming_it() -> None:
+# Windows lists a skill's files by a case-folded key, so run.py comes before SKILL.md there; the policy reports in the
+# order of the paths as written on every platform.
+@pytest.mark.parametrize("listing", ["as listed", "case-folded"])
+def test_the_command_policy_fails_a_file_holding_bash_the_grammar_refuses_naming_it(
+    listing: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    if listing == "case-folded":
+        listed = skill_scripts._skill_files
+        monkeypatch.setattr(
+            skill_scripts,
+            "_skill_files",
+            lambda directory: sorted(listed(directory), key=lambda path: str(path).casefold()),
+        )
     files = {
         "deploy-meta/alpha.json": '{"tools": []}',
         "skills/alpha/SKILL.md": "# alpha\n\n```bash\nif true; then echo a\n```\n",
@@ -346,7 +358,7 @@ def test_the_checker_policy_fails_bash_the_grammar_refuses_where_a_script_hands_
         write_fixture_tree(root, {"tools/x.py": source})
         problems = skill_scripts.checker_command_problems(root, [root / "tools" / "x.py"])
     expected = skill_scripts.refused_bash_problem(
-        "tools/x.py:3", f"{skill_scripts.UNREAD_BASH}expected `fi`", skill_scripts.CHECKER_DOC
+        "tools/x.py:3", f"{skill_scripts.UNREAD_BASH}expected `fi`", VALIDATION_DOC
     )
     assert problems == ([expected] if problem else [])
 
