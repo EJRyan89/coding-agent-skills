@@ -51,8 +51,8 @@ NOT_READERS: dict[str, str] = {
     "tools.skill_evals_runs._nested": "reads a hook value of the reviewer agent this run deployed from agents/",
     "tools.skill_evals_runs.reviewer_agents": "reads the reviewer agent this run deployed from agents/ into its "
     "throwaway home",
-    "deployer.render._substitute_markdown": "splits a template's frontmatter only to quote each line for its "
-    "context; an opening rule never closed renders as Markdown",
+    "deployer.render._line_contexts": "splits a template's frontmatter only to quote each line for its context; an "
+    "opening rule never closed renders as Markdown",
     "deployer.render.render_file": "re-reads only the JSON it has just rendered, to refuse a substitution that broke "
     "it; a template it cannot decode is copied as it is",
     "deployer.state_files.parse_json": "the deployer's one JSON parse of a state file's text, called by each state "

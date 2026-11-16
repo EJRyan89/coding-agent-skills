@@ -411,9 +411,24 @@ class RefusalStepTests(RemedyTestCase):
     def test_a_config_line_with_crlf_says_to_convert_its_line_endings(self) -> None:
         self.fixture()
         self.config_file().write_bytes(f"_source_id=test/skills\r\nREPOS_ROOT={forward(self.repos)}\n".encode())
-        result = self.deploy_fails("--all", pattern="contains CRLF")
+        result = self.deploy_fails("--all", pattern="contains a carriage return")
         self.assert_lines(
-            result.output, "ERROR: Config line 1 contains CRLF.", "Convert the file's line endings to LF.", RESET
+            result.output,
+            "ERROR: Config line 1 contains a carriage return.",
+            "Convert the file's line endings to LF.",
+            RESET,
+        )
+
+    def test_a_config_line_with_a_lone_cr_is_refused_on_the_line_it_ends(self) -> None:
+        # A lone CR stays in the line it ends, so the line an editor shows ending with it is refused, before the next.
+        self.fixture()
+        self.config_file().write_bytes(f"_source_id=test/skills\rREPOS_ROOT={forward(self.repos)}\n".encode())
+        result = self.deploy_fails("--all", pattern="contains a carriage return")
+        self.assert_lines(
+            result.output,
+            "ERROR: Config line 1 contains a carriage return.",
+            "Convert the file's line endings to LF.",
+            RESET,
         )
 
     def test_a_configure_answer_the_configuration_refuses_says_to_answer_again(self) -> None:

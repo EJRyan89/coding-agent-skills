@@ -10,6 +10,9 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "ejryan89-skill-core" / "scripts"))
+
+from text_lines import LINE_BREAK
 
 from tools.skill_evals_judging import Outcome, counts
 from tools.skill_evals_records import JUDGMENT, REVIEWER_EFFORT, Index, RoutePin
@@ -113,7 +116,7 @@ def _table(text: str, markers: tuple[str, str], header_lines: tuple[str, str], w
     """The line indexes of one table's markers in docs/skill-evaluations.md and its rows between them, each as
     written. Raise ScenarioError when the markers are not there once each and in order, or when anything between them
     is not the header, its separator, and then rows of the header's columns, each naming a skill."""
-    lines = text.split("\n")
+    lines = LINE_BREAK.split(text)
     opening, closing = markers
     if lines.count(opening) != 1 or lines.count(closing) != 1:
         raise ScenarioError(f"the results file needs one {opening} line and one {closing} line")
@@ -164,7 +167,7 @@ def replace_results(text: str, skill: str, rows: Sequence[str], keep: Sequence[s
     """The results file with the skill's rows replaced by these, except that each model in keep keeps its committed
     row in place of its new one, and every other skill's rows kept as written, sorted by skill; raise ScenarioError
     when results_table cannot read its table."""
-    lines = text.split("\n")
+    lines = LINE_BREAK.split(text)
     begin, end, existing = results_table(text)
     kept = [row for row in existing if _row_skill(row) != skill]
     committed = {_row_model(row): row for row in existing if _row_skill(row) == skill}
@@ -214,7 +217,7 @@ def replace_sample(text: str, skill: str, sample: tuple[str, str, Index], today:
     """The results file with the skill's samples row replaced by one naming this run, its transcript unread, and every
     other skill's row kept as written, sorted by skill; raise ScenarioError when samples_table cannot read its
     table."""
-    lines = text.split("\n")
+    lines = LINE_BREAK.split(text)
     begin, end, existing = samples_table(text)
     scenario, model, index = sample
     cells = [skill, scenario, model, str(index or 1), today.isoformat(), "unread"]
@@ -227,7 +230,7 @@ def read_sample(text: str, skill: str, reading: str) -> str:
     """The results file with the skill's unread samples row marked with the reader's reading: `agrees` when the
     transcript shows what the script's verdict on each expectation says, and `disagrees` otherwise. Raise
     ScenarioError when samples_table cannot read its table, or the skill has no unread row."""
-    lines = text.split("\n")
+    lines = LINE_BREAK.split(text)
     begin, _, existing = samples_table(text)
     for number, row in enumerate(existing):
         cells = _cells(row) or []

@@ -73,7 +73,7 @@ from flat_text import flat_text
 from git_client import GitClient, GitError, command_name, output_line
 from github_client import GitHubClient, GitHubError, subprocess_runner
 from markdown_sections import HTML_COMMENT, LINE_END, LIST_MARKER, MARKDOWN_SPACE
-from text_lines import text_lines
+from text_lines import LINE_BREAK, text_lines
 from typed_text import read_typed
 
 TEMPLATE_NAME = "pull_request_template.md"
@@ -88,7 +88,7 @@ BARE_CLOSING_LINE = re.compile(rf"(?i){CLOSING_KEYWORDS}\b:?\s+#")
 CLOSES_ONE = re.compile(r"Closes #([1-9][0-9]*)")
 # A list item with no text: its marker, as markdown_sections reads one, alone between spaces and tabs.
 EMPTY_LIST_ITEM = re.compile(rf"[{MARKDOWN_SPACE}]*{LIST_MARKER}[{LINE_END}]*")
-HEADING = re.compile(r"^ {0,3}(#{1,6})[ \t]+(.+?)(?:[ \t]+#+)?[ \t]*$", re.MULTILINE)
+HEADING = re.compile(r" {0,3}(#{1,6})[ \t]+(.+?)(?:[ \t]+#+)?[ \t]*")
 
 
 class PullRequestError(Exception):
@@ -176,17 +176,20 @@ def blank_template_comments(body: str, template: str) -> str:
     """`body` with each comment copied from `template` blanked as blank_comments blanks one, and every other comment
     kept, since the squash commit carries the comments the author wrote."""
     for comment in {match.group() for match in HTML_COMMENT.finditer(template)}:
-        body = body.replace(comment, re.sub(r"[^\n]", " ", comment))
+        body = body.replace(comment, re.sub(r"[^\r\n]", " ", comment))
     return body
 
 
 def headings(text: str) -> list[str]:
     """Each heading outside comments, as its hashes, a space, and its text."""
-    return [f"{match.group(1)} {match.group(2)}" for match in HEADING.finditer(blank_comments(text))]
+    # Each line is read whole where CommonMark ends one, at CR, LF, and CRLF.
+    lines = text_lines(blank_comments(text))
+    return [f"{match.group(1)} {match.group(2)}" for line in lines if (match := HEADING.fullmatch(line))]
 
 
 def line_of(text: str, index: int) -> int:
-    return text.count("\n", 0, index) + 1
+    """The number of the line `index` is on, its lines ending where CommonMark ends one, at CR, LF, and CRLF."""
+    return len(LINE_BREAK.findall(text, 0, index)) + 1
 
 
 def body_problems(body: str, template: str) -> list[str]:
@@ -198,9 +201,10 @@ def body_problems(body: str, template: str) -> list[str]:
             number = line_of(body, start)
             problems.append((number, f"PLACEHOLDER {number} a template comment"))
             start = body.find(comment, start + len(comment))
-    # Both views blank characters but never a line feed, so split at line feeds they hold the same lines.
-    read = blank_template_comments(body, template).split("\n")
-    for number, (line, written) in enumerate(zip(blank_comments(body).split("\n"), read, strict=True), start=1):
+    # Both views blank characters but never a CR or an LF, so split where CommonMark ends a line they hold the same
+    # lines.
+    read = text_lines(blank_template_comments(body, template))
+    for number, (line, written) in enumerate(zip(text_lines(blank_comments(body)), read, strict=True), start=1):
         text = line.strip()
         if BARE_CLOSING_LINE.fullmatch(text):
             problems.append((number, f"PLACEHOLDER {number} a Closes line with no issue"))

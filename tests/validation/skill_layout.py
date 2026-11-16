@@ -24,7 +24,7 @@ from skill_menu import PLUGIN_HOOKS, PLUGIN_MANIFEST
 from skill_roots import SKILL_CORE
 from skill_scripts import WORKING_FILES_DOC, powershell_script_commands
 from suite_names import is_suite_name
-from text_lines import text_lines
+from text_lines import lines_and_breaks, text_lines
 from validation_support import (
     CODE_SPAN,
     EXECUTABLE_SCRIPT_EXTENSIONS,
@@ -654,7 +654,8 @@ PLUGIN_ANSWERS = {
 }
 # Claude Code substitutes a plugin option only below a file's frontmatter, so a skill's frontmatter names it in words.
 PLUGIN_FRONTMATTER_ANSWERS = {b"{{REPOS_ROOT}}": b"your repositories root"}
-PLUGIN_FRONTMATTER = re.compile(rb"\A---[ \t\r]*\n.*?^---[ \t\r]*$", re.DOTALL | re.MULTILINE)
+# A Markdown file's frontmatter as YAML delimits it, each line ending at CR, LF, or CRLF.
+PLUGIN_FRONTMATTER = re.compile(rb"\A---[ \t]*(?:\r\n|\r|\n)(?:.*?(?:\r\n|\r|\n))??---[ \t]*(?=[\r\n]|\Z)", re.DOTALL)
 # The plugin option a skill carrying its placeholder needs its plugin's manifest to declare.
 PLUGIN_OPTION_PLACEHOLDERS = {"repos_root": b"${user_config.repos_root}"}
 PLUGIN_HOOK_PATHS = {
@@ -715,16 +716,17 @@ def _answered(content: bytes, *, markdown: bool = False) -> bytes:
 def _without_hooks(text: str) -> tuple[str, str]:
     """An agent definition without its frontmatter's top-level hooks key, and that key's lines, on one line each.
 
-    Limit: the delimiters are found by exact match on lines split at LF, so an agent whose `---` lines carry trailing
-    spaces or tabs, or whose lines end in CRLF, is compared with its hooks kept; no agent the repository holds is
-    written so."""
-    lines = text.split("\n")
+    Lines end where YAML ends one, at CR, LF, and CRLF, and each kept line keeps the break it was written with, as
+    the plugin build keeps it. Limit: the delimiters are found by exact match, so an agent whose `---` lines carry
+    trailing spaces or tabs is compared with its hooks kept; no agent the repository holds is written so."""
+    lines, breaks = lines_and_breaks(text)
     closing = lines.index("---", 1) if lines[:1] == ["---"] and "---" in lines[1:] else 0
     start = next((index for index in range(1, closing) if lines[index].startswith("hooks:")), None)
     if start is None:
         return text, ""
     end = next((index for index in range(start + 1, closing) if lines[index][:1] not in ("", " ")), closing)
-    return "\n".join(lines[:start] + lines[end:]), " ".join(" ".join(lines[start:end]).split())
+    kept = [*range(start), *range(end, len(lines))]
+    return "".join(lines[index] + breaks[index] for index in kept), " ".join(" ".join(lines[start:end]).split())
 
 
 def _hook_problems(name: str, hooks: bytes, declared: str) -> list[str]:
