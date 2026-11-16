@@ -461,7 +461,8 @@ class RenderedExecutableTests(DeployerTestCase):
 
     def test_a_bash_fence_only_a_line_feed_reading_finds_is_checked(self) -> None:
         # CommonMark closes the fence at the lone CR, but a reader ending lines at LF alone reads the next line as code,
-        # so that reading's block is checked too: Bash refuses the backticks the CR leaves open, before ShellCheck.
+        # so that reading's blocks reach Bash and ShellCheck like any other; here Bash refuses the backticks the CR
+        # leaves open.
         self.make_source_json()
         self.make_skill("alpha", "Fixture\n\n```bash\necho hi\r```\necho done\n```")
         self.make_config()
