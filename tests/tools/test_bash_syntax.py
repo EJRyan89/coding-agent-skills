@@ -65,7 +65,7 @@ class WordTests(unittest.TestCase):
         self.assertEqual([">&", ">", ">"], [redirect.operator for redirect in command.redirects])
 
     def test_each_substitution_keeps_the_form_that_opened_it(self) -> None:
-        command = first_simple("echo $(a) `b` <(c) >(d) \"$(e)\"")
+        command = first_simple('echo $(a) `b` <(c) >(d) "$(e)"')
         forms = [getattr(text, "form", None) for word in command.words for text in word.substitutions]
         self.assertEqual(["$(", "`", "<(", ">(", "$("], forms)
 
