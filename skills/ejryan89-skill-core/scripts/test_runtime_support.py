@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import ast
+import inspect
 import sys
+import textwrap
 from pathlib import Path
 
 import pytest
@@ -12,6 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import python_reader
 import runtime_support
+from git_client import GitClient
 from powershell_commands import UNREAD_WORD
 
 PARTIAL = {"level": "partial", "needs": ["sandbox-network"], "reason": "Its gh calls need the network."}
@@ -184,9 +187,117 @@ def test_a_codex_reason_for_lacking_the_network_points_to_the_codex_guide() -> N
         ("self.github.run(x)", False),
         ("digit(x)", False),
         ("legit(x)", False),
+        # A method of what a call gives back is that value's: only a GitClient constructed in place is a client.
+        ("git_output(x).split(y)", False),
+        ("git.output(x).split(y)", False),
+        ("_read_git_file(x).decode(y)", False),
+        ("make(git).output(y)", False),
     ],
 )
 def test_a_call_names_git_by_a_word_of_its_name_github_not_counting(call: str, named: bool) -> None:
     expression = ast.parse(call, mode="eval").body
     assert isinstance(expression, ast.Call)
     assert runtime_support.names_git(expression.func) is named
+
+
+def script_subcommands(source: str) -> set[str]:
+    return runtime_support.python_git_subcommands(textwrap.dedent(source))
+
+
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    [
+        # A separator given to a method of a git call's output is no subcommand.
+        ('git_output(services, root, "ls-files", "-v", "-z").split("\\x00")', {"ls-files"}),
+        ('git_client.output_line(git_output(services, root, "rev-list", "--count")).split("\\t")', {"rev-list"}),
+        ('git.output(["ls-remote", "--heads", "origin"], directory=top).split("\\n")', {"ls-remote"}),
+        ('_read_git_file(checkout, commit, skill, runner).decode("utf-8-sig")', set()),
+        # A GitClient method that names its own subcommand takes no word of git's.
+        ('git.commit_of("HEAD", directory=checkout)', set()),
+        ('services.git.rev_parse_path("--show-toplevel", directory=cwd)', set()),
+        ('GitClient(runner).file_at("HEAD", "a b")', set()),
+        # git_client's own callables start no git, however a script imports them.
+        ('from git_client import GitError\nraise GitError("git could not read the HEAD commit")', set()),
+        ('from git_client import GitError as Failed\nraise Failed("git fetch failed")', set()),
+        ('import git_client\nraise git_client.GitError("git fetch failed")', set()),
+        ('import git_client as gc\nraise gc.GitError("git fetch failed")', set()),
+        ('import git_client\ngit_client.isolated_git_environment(["fetch"])', set()),
+    ],
+)
+def test_only_a_call_that_starts_git_names_a_subcommand(source: str, expected: set[str]) -> None:
+    assert script_subcommands(source) == expected
+
+
+def test_a_helper_of_the_script_named_for_git_that_starts_none_names_no_subcommand() -> None:
+    source = """
+        class GitUnavailable(Exception):
+            pass
+
+        def git_failure(root, command, exc):
+            if not exc.answered:
+                return GitUnavailable(f"could not run git: {exc}")
+            return CleanupError(f"{command} failed in {root}")
+
+        def git_blob_id(algorithm, size, chunks):
+            return hashlib.new(algorithm, b"".join(chunks)).hexdigest()
+
+        raise git_failure(root, "git rev-parse", exc)
+        git_blob_id("sha1", 3, [*chunks])
+    """
+    assert script_subcommands(source) == set()
+
+
+def test_helpers_named_for_git_that_only_call_each_other_name_no_subcommand() -> None:
+    # A reader's recursion, as git_subcommands' command_git_subcommands and bash_git_subcommands make, starts no git.
+    source = """
+        def command_git_subcommands(words):
+            return bash_git_subcommands(" ".join(words)) if words else set()
+
+        def bash_git_subcommands(text):
+            return command_git_subcommands(["bash", "-c", *text.split()])
+    """
+    assert script_subcommands(source) == set()
+
+
+@pytest.mark.parametrize(
+    "wrapper",
+    [
+        # Through a git client's method, through another wrapper, through a client whose name says nothing of git,
+        # and through a module's wrapper.
+        "def git(services, root, *arguments):\n    return services.git.run(arguments, directory=root)",
+        "def git(services, root, *arguments):\n    return run_git(services, root, *arguments)\n"
+        "def run_git(services, root, *arguments):\n    return GitClient(services.runner).output(arguments)",
+        "class Store:\n    def git(self, *arguments):\n        return self.client.output(arguments, directory=here)",
+        "import worktrees\ndef git(cwd, *arguments):\n    return worktrees.git(cwd, *arguments)",
+    ],
+)
+def test_a_wrapper_of_the_script_that_starts_git_keeps_its_callers_subcommands(wrapper: str) -> None:
+    # The wrapper's own call passes its words on, starred, so it names the word no literal does; its callers name
+    # theirs.
+    source = f"{wrapper}\ngit(services, root, 'fetch', 'origin')\nstore.git('push', 'origin')\n"
+    assert script_subcommands(source) - {UNREAD_WORD} == {"fetch", "push"}
+
+
+def test_a_script_s_own_quiet_helper_never_stands_for_a_modules_git() -> None:
+    source = """
+        import worktrees
+
+        def git(message):
+            return message
+
+        worktrees.git(hub, "fetch", "origin")
+        git("push")
+    """
+    assert script_subcommands(source) == {"fetch"}
+
+
+def test_the_methods_that_take_gits_words_are_the_clients_that_take_arguments_first() -> None:
+    # Read from the client itself, so a method added there that takes git's words is read too.
+    taking = {
+        name
+        for name, member in GitClient.__dict__.items()
+        if inspect.isfunction(member)
+        and not name.startswith("_")
+        and list(inspect.signature(member).parameters)[1:2] == ["arguments"]
+    }
+    assert taking == runtime_support.GIT_ARGUMENT_METHODS

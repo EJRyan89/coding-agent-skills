@@ -501,9 +501,18 @@ READERS = [
     Reader(
         "hub_state.read_record",
         "json",
-        _json({"version": 1, "guarded": True, "opted_in": True, "settings": {"alias.st": "0" * 64}}),
+        _json(
+            {
+                "version": 1,
+                "guarded": True,
+                "opted_in": True,
+                "settings": {"alias.st": "0" * 64},
+                "files": {"hooks/pre-commit": "0" * 64},
+            }
+        ),
         hub_state.read_record,
         (hub_state.RecordError,),
+        accepts={"missing:files": "a record written before files were read holds none"},
     ),
     Reader(
         "review_analyzers.inventory:package.json",

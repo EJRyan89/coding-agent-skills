@@ -90,9 +90,13 @@ def main(argv: list[str]) -> int:
             print("FETCHED")
     except GitError as error:
         # Only git's answer about origin, or its silence past the limit, is origin's failure; a git that could not
-        # run, or that failed in the clone, says nothing of origin. The clone's git directory is asked for, so a fault
-        # git names only by a path inside it is the clone's whatever that directory is called.
-        if error.origin_failed(git.common_git_directory(directory=options.clone)):
+        # run, or that failed in the clone, says nothing of origin. For an answered failure alone, whose lines may
+        # name a fault in the clone, the clone's git directory is asked for, within the same limit, so a fault git
+        # names only by a path inside it is the clone's whatever that directory is called; no other failure has such
+        # a line, so none starts another git.
+        answered = error.kind == "git"
+        git_directory = git.common_git_directory(directory=options.clone, timeout=options.seconds) if answered else None
+        if error.origin_failed(git_directory):
             print(f"ORIGIN_FAILED {flat_text(str(error))}")
         else:
             print(f"FAILED {flat_text(str(error))}")

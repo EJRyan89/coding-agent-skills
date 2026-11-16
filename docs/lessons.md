@@ -519,7 +519,8 @@ removed fails validation until its pattern follows it.
 - **Use:** `tools.hub_guard:read_powershell`, `option_reader:option_refusal`, `git_subcommands:CommandStarts`, which says where Bash starts a command, and
   `command_wrappers:bash_program`, the program a Bash command's word names by its file name, `text_lines:text_lines`,
   the lines of a file an author writes, broken only where YAML, CommonMark, and .NET break them, and
-  `markdown_sections:code_block_lines`, the fenced and indented code blocks CommonMark reads
+  `markdown_sections:code_block_lines`, the fenced and indented code blocks CommonMark reads, and
+  `runtime_support:starts_git`, which reads a Python call as git's only when the function it calls starts git
 - **Guard:** `tests/tools/test_bash_syntax.py::ArrayAssignmentTests::test_an_array_assignment_to_a_subscript_is_read_where_bash_reads_an_array`,
   `skills/ejryan89-skill-core/scripts/test_git_subcommands.py::test_a_git_command_is_read_wherever_bash_starts_a_command`,
   `skills/ejryan89-skill-core/scripts/test_git_subcommands.py::test_git_or_a_shell_named_by_a_path_or_with_exe_is_read_as_bash_runs_it`,
@@ -558,7 +559,9 @@ removed fails validation until its pattern follows it.
   a stated reason,
   `tests/deployer/test_frontmatter.py::DocumentTests::test_a_line_breaks_only_where_yaml_breaks_one`,
   `tests/deployer/test_frontmatter.py::DocumentTests::test_the_delimiter_is_three_hyphens_and_yaml_whitespace_alone`, and
-  `skills/audit-ai-config/scripts/test_audit_ai_config.py::ClaudeCodeConfigurationTests::test_an_import_inside_an_indented_code_block_is_none_as_markdown_reads_the_block`
+  `skills/audit-ai-config/scripts/test_audit_ai_config.py::ClaudeCodeConfigurationTests::test_an_import_inside_an_indented_code_block_is_none_as_markdown_reads_the_block`,
+  `skills/ejryan89-skill-core/scripts/test_runtime_support.py::test_only_a_call_that_starts_git_names_a_subcommand`,
+  and `skills/ejryan89-skill-core/scripts/test_runtime_support.py::test_a_helper_of_the_script_named_for_git_that_starts_none_names_no_subcommand`
 - **Search for:** `str.splitlines()` of a file an author writes, which breaks at characters YAML, CommonMark, and .NET
   read as text, rather than `text_lines`; `.replace("\r\n", "\n").split("\n")` or a `split("\n")` of a parameter
   holding such a file, which misses a lone CR, a line end to each of them, and which the policy does not trace to a
@@ -598,11 +601,14 @@ removed fails validation until its pattern follows it.
   environment variable git reads to choose where it writes, as `GIT_TRACE`, `GIT_OBJECT_DIRECTORY`, or `GIT_COMMON_DIR`
   does, or a setting it reads from the system or global configuration, as `trace2.eventTarget`, that no judgement of a
   call or of the whole command reads, or one judged only for a call that acts on a hub when a call in one of its
-  worktrees writes the refs the hub's store holds.
+  worktrees writes the refs the hub's store holds; a reader of Python calls that takes a call's function through a
+  call in its receiver, so `git_output(...).split(...)` reads as `git_output`'s call, or by a word of its name alone,
+  so an exception class or a helper named for git that starts none counts as a git call, rather than through
+  `runtime_support.starts_git`.
 - **Examples:** #1412, #1429, #1430, #1592, #1606, #1843, #1851, #1865, #2032, #2088, #2089, #2134, #2135, #2136,
   #2137, #2138, #2139, #2140, #2188, #2225, #2232, #2233, #2234, #2251, #2262, #2274, #2276, #2316, #2411,
   #2418, #2203, #2450, #2476, #2481, #2478, #2555, #2474, #2616, #2776, #2792, #2725, #2753, #2811, #2812, #2820,
-  #2511
+  #2511, #2855
 
 ### A recursive parser of input has a depth bound
 
@@ -1067,7 +1073,10 @@ removed fails validation until its pattern follows it.
   `tests/tools/test_hub_guard.py::PlaceLookupTests::test_a_lookup_git_call_the_reading_time_cuts_short_refuses_a_command_naming_git`,
   `tests/deployer/test_verify.py::ConverseTests::test_a_program_whose_kill_is_never_reported_ends_in_a_listing_error_within_the_waits_bounds`,
   `skills/ejryan89-skill-core/scripts/test_bounded_process.py::StreamingTests::test_closing_kills_a_command_that_never_reads_while_another_thread_is_blocked_writing`,
-  and `skills/audit-ai-config/scripts/test_mcp_handshake.py::test_a_request_the_server_never_reads_fails_within_the_timeout_and_the_server_is_stopped`
+  `skills/audit-ai-config/scripts/test_mcp_handshake.py::test_a_request_the_server_never_reads_fails_within_the_timeout_and_the_server_is_stopped`,
+  and `skills/update-coding-agent-skills/scripts/test_remote_refs.py::test_the_git_directory_lookup_after_an_answered_failure_keeps_the_callers_time_limit`
+  with `skills/update-coding-agent-skills/scripts/test_remote_refs.py::test_a_failure_git_did_not_answer_makes_no_further_git_call`,
+  which hold the lookup made while a failure is classified to the caller's limit, and to the failures it can change
 - **Search for:** `deadline` or `time_left` in a module whose functions start a process with a fixed `timeout=`, such
   as `GUARD_GIT_TIMEOUT_SECONDS`, while a caller holds a deadline; a loop that looks at the clock once per item while
   each item's work starts processes; a deadline set after work it promises to bound has begun; a loop that gathers
@@ -1076,8 +1085,10 @@ removed fails validation until its pattern follows it.
   the time left raises when the deadline ends inside it; a test that moves the clock only between steps, never
   inside one; a `.kill()` followed by a `.wait()` with no `timeout=`, which waits for as long as the kill goes
   unreported; a write to, flush of, or close of a child's stdin outside the limit its reads keep, since a child that
-  stops reading holds a blocking write, and a buffered pipe's close waits for a write another thread has under way.
-- **Examples:** #2031, #2087, #2092, #2132, #2184, #2462
+  stops reading holds a blocking write, and a buffered pipe's close waits for a write another thread has under way;
+  a lookup made while a failure is classified, such as `common_git_directory` in an `except GitError` handler, given
+  no `timeout=` while the failed call had one, or run for a failure whose class it cannot change, such as a timeout.
+- **Examples:** #2031, #2087, #2092, #2132, #2184, #2462, #2853
 
 ### A test's time-out is injected, never raced
 

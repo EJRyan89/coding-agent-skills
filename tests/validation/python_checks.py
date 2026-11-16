@@ -4132,8 +4132,9 @@ def gh_limit_problems(root: Path, files: list[Path]) -> list[str]:
 # counts for a call whose first element, the arguments read in order with each list among them read as its items,
 # is the literal "git" or a name that says git, as subprocess.run(["git", ...]) or run_tool([git, "--exec-path"]), or
 # whose function's name says git, one whose subcommand its arguments name only at
-# run time included, whatever their shape. A listing, a format, a split, or a trim that must stay states why in a
-# module-level GIT_SEPARATOR_ALLOWED = {scope: reason}.
+# run time included, whatever their shape. A method of a git call's result other than its stdout or output, as
+# git.run([...]).output_bytes().decode().splitlines(), is not read as git's output. A listing, a format, a split, or a
+# trim that must stay states why in a module-level GIT_SEPARATOR_ALLOWED = {scope: reason}.
 GIT_SEPARATOR_OWNER = "skills/ejryan89-skill-core/scripts/git_client.py"
 GIT_SEPARATOR_ALLOWANCE = "GIT_SEPARATOR_ALLOWED"
 # The options that make a diff, or a log or a show of a commit's changes, list the paths it touches.
