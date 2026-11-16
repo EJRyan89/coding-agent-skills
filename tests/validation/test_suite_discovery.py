@@ -943,6 +943,59 @@ def test_the_pipe_race_policy_reads_a_function_again_from_a_shallower_call(tmp_p
     assert races_in(tmp_path, script) == ["3 pipes into head -n"]
 
 
+# Each table of functions and each script is its own. The reader keeps every function a shell's script defines in
+# the table its commands are read under, so a call of `f` before the script redefines it reads the script's `f`: here
+# its grep -q, found before the head after it. A table lost, or a read kept across tables, reads the outer `f`, which
+# reads to the end, and finds the head instead.
+@pytest.mark.parametrize(
+    ("script", "race"),
+    [
+        pytest.param(
+            "f() { cat; }; printf a | bash -c 'f; head -n 1; f() { grep -q x; }'",
+            "3 pipes into grep -q",
+            id="a function a shell's script defines",
+        ),
+        pytest.param(
+            "f() { cat; }; h() { f; bash -c 'f; head -n 1; f() { grep -q x; }'; }; printf a | h",
+            "3 pipes into grep -q",
+            id="a name read in two tables",
+        ),
+        pytest.param(
+            "f() { cat; }; h() { bash -c f; bash -c 'bash -c f; head -n 1; f() { grep -q x; }'; }; printf a | h",
+            "3 pipes into grep -q",
+            id="one script under two tables",
+        ),
+        # A shell's script read at the depth limit is read, not taken as read before.
+        pytest.param(
+            " ".join(f"f{index}() {{ f{index + 1}; }};" for index in range(1, 15))
+            + " f15() { bash -c 'head -n 1'; }; printf a | f1",
+            "3 pipes into head -n",
+            id="a shell's script at the nesting limit",
+        ),
+    ],
+)
+def test_the_pipe_race_policy_reads_each_table_of_functions_and_each_script_apart(
+    tmp_path: Path, script: str, race: str
+) -> None:
+    assert races_in(tmp_path, script) == [race]
+
+
+def test_the_pipe_race_policy_reads_a_script_once_at_a_depth_and_again_only_shallower(tmp_path: Path) -> None:
+    # g's two runs of the same script are at one depth, so the second is not read; f's run of it is shallower than
+    # the one g reached first, so it is read again. An unreadable script runs nothing the reader can see.
+    reads: list[str] = []
+    program = suite_discovery._early_exit_program
+
+    def counted(words: list[str]) -> str:
+        reads.append(" ".join(words))
+        return program(words)
+
+    script = 'g() { bash -c cat; bash -c cat; }; f() { g; bash -c cat; }; printf a | { f; bash -c "echo \'x"; }'
+    with mock.patch.object(suite_discovery, "_early_exit_program", counted):
+        assert races_in(tmp_path, script) == []
+    assert reads == ["f", "g", "bash -c cat", "cat", "bash -c cat", "bash -c cat", "cat", "bash -c echo 'x"]
+
+
 class SkillSuiteFixtures(unittest.TestCase):
     FILES: ClassVar[dict[str, str]] = {
         "tests/test_top.py": "",
