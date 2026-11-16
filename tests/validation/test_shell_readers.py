@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import ast
 import functools
+import json
 import sys
 import tempfile
 import unittest
@@ -282,6 +283,64 @@ def test_the_command_policy_fails_a_file_holding_bash_the_grammar_refuses_naming
         f"see {skill_scripts.COMMANDS_DOC}"
         for path, reason in sorted(reasons.items())
     ]
+
+
+def test_the_command_policy_fails_a_dependency_script_holding_bash_the_grammar_refuses_for_the_skill_reaching_it() -> (
+    None
+):
+    # A dependency's script is the skill's own when the skill imports it, so Bash the grammar refuses there fails the
+    # skill that reaches it, by the script's path, and not one that reaches only a conforming script.
+    files = {
+        "deploy-meta/alpha.json": json.dumps({"tools": [], "skill_deps": ["core"]}),
+        "deploy-meta/beta.json": json.dumps({"tools": [], "skill_deps": ["core"]}),
+        "skills/alpha/SKILL.md": "# alpha\n",
+        "skills/alpha/scripts/tool.py": "import refused\n",
+        "skills/beta/SKILL.md": "# beta\n",
+        "skills/beta/scripts/tool.py": "import conforming\n",
+        "skills/core/SKILL.md": "# core\n",
+        "skills/core/scripts/refused.py": 'import subprocess\nsubprocess.run(["bash", "-c", "case x in"])\n',
+        "skills/core/scripts/conforming.py": 'import subprocess\nsubprocess.run(["bash", "-c", "echo a"])\n',
+    }
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        write_fixture_tree(root, files)
+        problems = skill_scripts.skill_command_problems(root, set(), {"bash", "echo"})
+    assert problems == [
+        "skill alpha: skills/core/scripts/refused.py runs Bash the grammar does not read (a case pattern is not "
+        f"closed), so the programs it runs cannot be read; see {skill_scripts.COMMANDS_DOC}"
+    ]
+
+
+# A fragment the temporary-folder policy reads is unreadable as a whole when the grammar refuses any of it, an eval's or
+# a shell's -c script inside it included, never read as the commands before the refusal.
+@pytest.mark.parametrize("fragment", ["if true; then rg foo", "eval 'rg \"'", "mktemp \"$T\" 2>`bash -c 'case x in'`"])
+def test_a_fragment_the_grammar_refuses_has_no_words(fragment: str) -> None:
+    assert skill_scripts._shell_words(fragment) is None
+
+
+def test_a_fragment_the_grammar_reads_has_each_command_s_words() -> None:
+    assert skill_scripts._shell_words('mktemp "$T" 2>`echo a`') == [["mktemp", "$T"], ["echo", "a"]]
+
+
+def test_a_substitution_whose_one_command_runs_a_script_the_grammar_refuses_runs_no_command_read() -> None:
+    assert skill_scripts._one_command("eval 'python private_folder.py temporary-directory \"'") is None
+    assert skill_scripts._one_command("python private_folder.py temporary-directory") == [
+        "python",
+        "private_folder.py",
+        "temporary-directory",
+    ]
+
+
+@pytest.mark.parametrize(("redirection", "judged"), [("2>/dev/null", True), ("2>`bash -c 'case x in'`", False)])
+def test_a_mktemp_command_holding_bash_the_grammar_refuses_is_not_judged(redirection: str, judged: bool) -> None:
+    text = (
+        'JUDGED=$(python private_folder.py temporary-directory "${TMPDIR:-/tmp}")\n'
+        'TEMPLATE="${JUDGED#TEMPORARY_DIRECTORY }/x.XXXXXX"\n'
+        f'A=$(mktemp "$TEMPLATE" {redirection})\n'
+    )
+    problems = skill_scripts._bash_temporary_problems("make.sh", text)
+    assert (problems == []) is judged
+    assert all(problem.startswith("make.sh:3: mktemp makes a file") for problem in problems)
 
 
 def test_the_shell_lexer_gives_each_word_beside_its_syntax() -> None:
