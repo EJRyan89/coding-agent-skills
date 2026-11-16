@@ -98,6 +98,25 @@ def test_a_called_parameter_given_the_same_argument_from_another_scope_is_read_a
     )
 
 
+@pytest.mark.parametrize(
+    "leaf",
+    [
+        pytest.param("    return p\n", id="a returned parameter"),
+        pytest.param("    q = p\n    return q\n", id="a local bound to a parameter"),
+    ],
+)
+def test_a_function_called_twice_with_the_same_argument_from_different_scopes_is_read_twice(leaf: str) -> None:
+    # Both calls of mid give leaf the same `x`, read in a scope given 3 and in one given 4. A reader that knew a
+    # scope only by its arguments' expressions read leaf, and q, once, and never added exit 4.
+    body = (
+        f"def leaf(p):\n{leaf}def mid(x):\n    return leaf(x)\n"
+        "def main(c):\n    argparse.ArgumentParser().parse_args()\n    return mid(3) if c else mid(4)\n"
+        'if __name__ == "__main__":\n    run_main(main)\n'
+    )
+    table = "Exit status:\n  1  a\n  2  a usage error\n  3  three\n  4  four\n"
+    assert problems({"tools/tool.py": script(f"A tool.\n\n{table}", body)}) == []
+
+
 def test_an_entry_point_without_a_table_fails_and_a_module_that_runs_no_runner_is_none() -> None:
     found = problems({"tools/tool.py": script("A tool.\n"), "tools/library.py": '"""A library."""\nVALUE = 1\n'})
     assert len(found) == 1

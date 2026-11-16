@@ -351,18 +351,23 @@ class Scope:
         return dict(self.given).get(name)
 
 
-# A scope as a key: its module, its function, and each argument it is given with the key of the scope it was given in.
-ScopeKey = tuple[int, int, tuple[tuple[str, int, "ScopeKey"], ...]]
+# A scope as a key: its module, its function, and each argument it is given with the key of the scope it was given in,
+# or RECURSION for an argument the chain has already passed, as a recursive call passes its own parameter on.
+ScopeKey = tuple[int, int, tuple[tuple[str, int, "ScopeKey | str"], ...]]
+RECURSION = "recursion"
 
 
-def _scope_key(scope: Scope) -> ScopeKey:
+def _scope_key(scope: Scope, passed: frozenset[tuple[int, str, int]] = frozenset()) -> ScopeKey:
     """A key for a scope that tells apart two scopes whose arguments are the same expressions given in different
-    scopes. Each argument's scope was made before the scope it is given to, so the key is finite."""
-    return (
-        id(scope.module),
-        id(scope.function),
-        tuple((name, id(value), _scope_key(given)) for name, (value, given) in scope.given),
-    )
+    scopes, as `mid(3)` and `mid(4)` give `leaf(x)` the same `x`. Down the chain of scopes the arguments were given
+    in, an argument already passed to the same parameter of the same function stands for the rest of its chain, so
+    a recursive call, which gives each call a deeper scope, meets a key it has had before and ends: a stated limit,
+    two recursions that differ only below such a repeat share a key, and the second is not read again."""
+    found: list[tuple[str, int, ScopeKey | str]] = []
+    for name, (value, given) in scope.given:
+        step = (id(scope.function), name, id(value))
+        found.append((name, id(value), RECURSION if step in passed else _scope_key(given, passed | {step})))
+    return (id(scope.module), id(scope.function), tuple(found))
 
 
 def _own_nodes(function: Function) -> Iterator[ast.AST]:
@@ -442,9 +447,9 @@ class CodeReader:
         self.folders = [entry.parent, root / SKILL_CORE_SCRIPTS, root]
         self.modules: dict[Path, Module] = {}
         self.reading = Reading()
-        self.returned: set[tuple[int, int | None, tuple[tuple[str, int], ...]]] = set()
+        self.returned: set[tuple[int, int | None, ScopeKey]] = set()
         # Each value a local name is bound to that the reader has read, by the same key: see assigned.
-        self.assigned_read: set[tuple[int, int | None, tuple[tuple[str, int], ...]]] = set()
+        self.assigned_read: set[tuple[int, int | None, ScopeKey]] = set()
         self.reached: set[int] = set()
         # Whether a return reads an error's exit_code, and each code a reached call passes as exit_code.
         self.reads_error_code = False
@@ -587,7 +592,7 @@ class CodeReader:
 
     def returns(self, module: Module, function: Function, scope: Scope, element: int | None = None) -> None:
         """Add the codes a function returns, or the item at `element` of the tuples it returns, to the reading."""
-        key = (id(function), element, tuple(sorted((name, id(value)) for name, (value, _) in scope.given)))
+        key = (id(function), element, _scope_key(scope))
         if key in self.returned:
             return
         self.returned.add(key)
@@ -631,11 +636,11 @@ class CodeReader:
     def assigned(self, node: ast.Name, scope: Scope, element: int | None) -> None:
         """Add the codes each value the function binds to a local name can be.
 
-        Each value is read once for each element and each set of arguments the scope is given: a value that reads its
-        own name, as `code = code if flag else 2`, leads back to itself, and adds no code its first read has not, since
+        Each value is read once for each element and each scope, as _scope_key tells scopes apart: a value that reads
+        its own name, as `code = code if flag else 2`, leads back to itself, and adds no code its first read has not, since
         the codes are their union."""
         assert scope.function is not None
-        given = tuple(sorted((name, id(value)) for name, (value, _) in scope.given))
+        given = _scope_key(scope)
         for value, position in _assigned(scope.function, node.id):
             if position is not None and element is not None:
                 self._unread(node, scope)
