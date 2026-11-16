@@ -1971,7 +1971,7 @@ def shell_file_commands(path: Path, text: str, lines: list[str], start: int) -> 
 
 
 def first_word_file_command_lines(fence: Fence, lines: list[str]) -> set[int]:
-    """The indices of the body lines of a FIRST_WORD_FENCES fence whose first word names one of SHELL_FILE_COMMANDS,
+    r"""The indices of the body lines of a FIRST_WORD_FENCES fence whose first word names one of SHELL_FILE_COMMANDS,
     each line as CommonMark gives it to the fence's content. A SESSION_FENCES fence that holds a line starting with a
     `$ ` prompt, after its blanks, runs only those lines and their continuations: a line after one that ends in a
     backslash, with or without the `> ` prompt Bash shows there, as Pygments' console lexer reads it, and a `> ` line
@@ -1980,8 +1980,11 @@ def first_word_file_command_lines(fence: Fence, lines: list[str]) -> set[int]:
     may hold commands alone, which a model runs, so a line of output is a candidate the audit vets. A `> ` line of
     output right after a command line, as diff prints one, reads as a continuation, and so does a line after a
     backslash that ends a quoted string's line, which only running the session would settle. A here-document's body,
-    which Bash also prompts for with `> `, reads as a command too. The other labels name a script, each line of which
-    runs. A first word is matched in any case in an ANY_CASE_FENCES fence, and as written otherwise."""
+    which Bash also prompts for with `> `, reads as a command too. A backslash that ends a comment, as in
+    `$ echo a # note \`, continues nothing in Bash, yet the line after it reads as a continuation. A continuation
+    line's first word is read as a command name though it may be an argument of the command it continues, as `  head`
+    after `$ git log --author \`. The other labels name a script, each line of which runs. A first word is matched in
+    any case in an ANY_CASE_FENCES fence, and as written otherwise."""
     contents = [(index, fence.content(lines[index])) for index in fence.body()]
     label = fence.language.casefold()
     if label in SESSION_FENCES and any(SESSION_PROMPT.match(text) for _, text in contents):

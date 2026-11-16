@@ -4183,9 +4183,11 @@ def test_a_console_fence_with_a_prompt_reads_its_prompted_and_continuation_lines
         "  > cat y\n"  # 17: a `> ` prompt after blanks
         "output ends in C:\\\n"  # a backslash ending output continues no command
         "cat w\n"
+        "$ echo \\\\\\\n"  # 20: an escaped backslash, then one that continues the command
+        "cat v\n"  # 21
         "```\n",
     )
-    assert cued_lines(skill_inventory.scan([skill]), "shell-file-command") == [6, 7, 11, 12, 17]
+    assert cued_lines(skill_inventory.scan([skill]), "shell-file-command") == [6, 7, 11, 12, 17, 21]
 
 
 def test_a_console_fence_without_a_prompt_reads_every_line_and_each_shell_matches_as_it_finds_a_program(
