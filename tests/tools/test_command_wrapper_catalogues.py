@@ -75,8 +75,11 @@ for name in "$@"; do
   "$path" -@ < /dev/null > "usage.$name" 2>&1 || :
 done"""
 # A usage synopsis's options: a bracket that opens on one option, or on options joined by |, each a long option, one
-# letter, or several letters that take no value, and the value word that follows it, when it takes one.
-USAGE_OPTION = re.compile(r"\[\s*(--?[A-Za-z0-9][\w-]*(?:\s*\|\s*--?[A-Za-z0-9][\w-]*)*)(\s+[^\s\[\]|-][^\s\[\]|]*)?")
+# letter, or several letters that take no value, and the value word that follows it, when it takes one. An option may
+# name its own value word, as timeout's [-k time | --kill-after time] does, or share the last one, as env's
+# [-L|-U user[/class]].
+USAGE_ALTERNATIVE = r"--?[A-Za-z0-9][\w-]*(?:\s+[^\s\[\]|-][^\s\[\]|]*)?"
+USAGE_OPTION = re.compile(rf"\[\s*({USAGE_ALTERNATIVE}(?:\s*\|\s*{USAGE_ALTERNATIVE})*)")
 # A synopsis's placeholder for a value, capitals and a number, as sort's POS1.
 PLACEHOLDER = re.compile(r"[A-Z]{2,}\d+")
 WORKSPACE = tempfile.TemporaryDirectory(prefix="wrapper-catalogues.")
@@ -142,8 +145,10 @@ def usage_options(text: str, program: str) -> tuple[Option, ...]:
     synopsis += itertools.takewhile(lambda line: line[:1].isspace(), lines[start + 1 :])
     found: list[Option] = []
     for match in USAGE_OPTION.finditer(" ".join(synopsis)):
-        for word in match.group(1).split("|"):
-            found += synopsis_word(word.strip(), match.group(2) is not None)
+        alternatives = [each.split() for each in match.group(1).split("|")]
+        shared = len(alternatives[-1]) > 1
+        for words in alternatives:
+            found += synopsis_word(words[0], shared or len(words) > 1)
     return tuple(dict.fromkeys(found))
 
 
@@ -277,8 +282,32 @@ class CatalogueTests(unittest.TestCase):
                     self.assertTrue(str(entry["source"]).strip())
         self.assertEqual(["chroot", "env", "nice", "nohup", "stdbuf", "timeout"], sorted(catalogue(RUST_CATALOGUES)))
         self.assertEqual(
-            ["chroot", "env", "nice", "nohup", "stdbuf", "time", "xargs"], sorted(catalogue(BSD_CATALOGUES))
+            ["chroot", "env", "nice", "nohup", "stdbuf", "time", "timeout", "xargs"], sorted(catalogue(BSD_CATALOGUES))
         )
+
+    def test_each_wrapper_row_reads_every_option_a_macos_build_lists_that_it_reads_as_that_build_takes_it(
+        self,
+    ) -> None:
+        # A row may leave a macOS build's option out, since a word it does not settle leaves the program unread, but an
+        # option both read must take its value alike, or the row places the program a word away from where that build
+        # runs it. Each getopt_long build takes a long option's value attached by `=` or as the next word, as a row's
+        # value-taking long option is read.
+        kinds = {"value": option_reader.VALUE, "none": option_reader.NO_VALUE, "optional": option_reader.OPTIONAL_VALUE}
+        for name in catalogue(BSD_CATALOGUES):
+            with self.subTest(program=name):
+                table = COMMAND_WRAPPERS[name]
+                row = {f"-{letter}": kind for letter, kind in table.short.items()} | dict(table.long)
+                for option in listed_options(BSD_CATALOGUES, name):
+                    for each in (option.short, option.long):
+                        if each in row:
+                            self.assertEqual(kinds[option.value], row[each], each)
+        # The row reads every option macOS's timeout takes, and that build takes every option the row reads but -V and
+        # --version, which it refuses, running nothing.
+        table = COMMAND_WRAPPERS["timeout"]
+        row_names = {f"-{letter}" for letter in table.short} | set(table.long)
+        timeout = names(listed_options(BSD_CATALOGUES, "timeout"))
+        self.assertEqual(set(), timeout - row_names)
+        self.assertEqual({"-V", "--version"}, row_names - timeout)
 
     def test_every_row_reads_dash_words_as_each_macos_build_that_takes_dash_as_a_letter(self) -> None:
         # A build whose getopt lists `-` reads every long option word as a bundle of its letters, so each row of a
@@ -458,6 +487,32 @@ class ReaderTests(unittest.TestCase):
         self.assertEqual(
             (Option("-L", None, "value"), Option("-U", None, "value"), Option("-P", None, "value")),
             usage_options("usage: env [-L|-U user[/class]] [-P utilpath]\n", "env"),
+        )
+
+    def test_reads_options_joined_by_a_bar_each_naming_its_own_value(self) -> None:
+        # macOS's timeout prints its synopsis with a capital U, each long option beside its letter.
+        timeout = (
+            "timeout: invalid option -- @\n"
+            "Usage: timeout [-f | --foreground] [-k time | --kill-after time] [-p | --preserve-status] "
+            "[-s signal | --signal signal]  [-v | --verbose] <duration> <command> [arg ...]\n"
+        )
+        self.assertEqual(
+            (
+                Option("-f", None, "none"),
+                Option(None, "--foreground", "none"),
+                Option("-k", None, "value"),
+                Option(None, "--kill-after", "value"),
+                Option("-p", None, "none"),
+                Option(None, "--preserve-status", "none"),
+                Option("-s", None, "value"),
+                Option(None, "--signal", "value"),
+                Option("-v", None, "none"),
+                Option(None, "--verbose", "none"),
+            ),
+            usage_options(timeout, "timeout"),
+        )
+        self.assertLessEqual(
+            names(list(usage_options(timeout, "timeout"))), names(listed_options(BSD_CATALOGUES, "timeout"))
         )
 
     def test_reads_nothing_but_the_program_s_own_synopsis(self) -> None:

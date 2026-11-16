@@ -66,6 +66,19 @@
       {"short": "-p", "long": null, "value": "none"}
     ]
   },
+  "timeout": {
+    "source": "Apple shell_cmds-336.40.1 (macOS 27), FreeBSD's timeout, its getopt_long options",
+    "how": "Apple has not published shell_cmds-336.40.1, and shell_cmds-329, its latest published tag, holds no timeout, so the options of the build macOS installs as /usr/bin/timeout are read from that build itself on macOS 27.2: its manual page (man timeout, /usr/share/man/man1/timeout.1), whose synopsis and option list give -f, --foreground; -k time, --kill-after time; -p, --preserve-status; -s signal, --signal signal; and -v, --verbose; the usage it prints for -h, for --help, and for an option it does not take, which gives the same synopsis; and the binary's strings (strings /usr/bin/timeout, PROJECT:shell_cmds-336.40.1), which hold the getopt_long optstr +fhk:ps:v and the long names foreground, help, kill-after, preserve-status, signal, and verbose. Run on that build, each value-taking option takes its value attached (-k1, --kill-after=1) or as the next word, --foreground=x and --help=x are refused, -V and --version are refused, and getopt_long abbreviates a long name to any prefix no other long name shares (--kill, --pres).",
+    "abbreviates": true,
+    "options": [
+      {"short": "-f", "long": "--foreground", "value": "none"},
+      {"short": "-h", "long": "--help", "value": "none"},
+      {"short": "-k", "long": "--kill-after", "value": "value"},
+      {"short": "-p", "long": "--preserve-status", "value": "none"},
+      {"short": "-s", "long": "--signal", "value": "value"},
+      {"short": "-v", "long": "--verbose", "value": "none"}
+    ]
+  },
   "xargs": {
     "source": "Apple shell_cmds-329, FreeBSD's xargs, its getopt_long options",
     "how": "Read from xargs/xargs.c at apple-oss-distributions/shell_cmds tag shell_cmds-329 (gh api 'repos/apple-oss-distributions/shell_cmds/contents/xargs/xargs.c?ref=shell_cmds-329'): optstr +0E:I:J:L:n:oP:pR:S:s:rtx, each letter followed by a colon taking a value, paired with the long name long_options gives it; getopt_long abbreviates a long name to any prefix no other long name shares.",

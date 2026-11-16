@@ -68,6 +68,14 @@ def test_the_catalogue_names_each_wrapper_and_find_s_actions() -> None:
         (["nice", "-h", "git"], ["git"]),
         (["timeout", "-V", "5", "git"], ["git"]),
         (["timeout", "--signal", "TERM", "5", "git"], ["git"]),
+        # macOS's timeout, FreeBSD's, takes each value attached or as the next word, and its letters bundled, as GNU's.
+        (["timeout", "-k1", "-sTERM", "5", "git"], ["git"]),
+        (["timeout", "-k", "1", "-s", "TERM", "5", "git"], ["git"]),
+        (["timeout", "--kill-after=1", "--signal=TERM", "5", "git"], ["git"]),
+        (["timeout", "--kill-after", "1", "--foreground", "5", "git"], ["git"]),
+        (["timeout", "-fpv", "--preserve-status", "--verbose", "5", "git"], ["git"]),
+        (["timeout", "-fk", "1", "5", "git"], ["git"]),
+        (["timeout", "--", "5", "git"], ["git"]),
         (["nice", "-5", "git"], ["git"]),
         (["nice", "-n", "5", "git"], ["git"]),
         (["stdbuf", "-o", "L", "git"], ["git"]),
@@ -112,6 +120,11 @@ def test_unwrapped_reads_past_a_wrapper_to_the_command_it_runs(words: list[str],
     ("words", "unread"),
     [
         (["timeout", "--sig", "TERM", "5", "git"], "timeout --sig"),
+        # macOS's timeout abbreviates a long name too, so --kill and --pres stay unread.
+        (["timeout", "--kill", "1", "5", "git"], "timeout --kill"),
+        (["timeout", "--pres", "5", "git"], "timeout --pres"),
+        # Its --foreground takes no value and refuses one, running nothing.
+        (["timeout", "--foreground=x", "5", "git"], "timeout --foreground=x"),
         (["xargs", "--max-a", "1", "git"], "xargs --max-a"),
         (["env", "-W", "git"], "env -W"),
         # macOS's env reads --unset as `-` and -u with nset attached, and git as its program.

@@ -14,11 +14,9 @@ from option_reader import NO_VALUE, OPTIONAL_VALUE, VALUE, Word, option_refusal,
 
 
 def test_a_table_is_built_from_getopt_s_spelling() -> None:
-    table = option_table("ab:c::", "flag name= maybe=?", slash="L O=")
+    table = option_table("ab:c::", "flag name= maybe=?")
     assert dict(table.short) == {"a": NO_VALUE, "b": VALUE, "c": OPTIONAL_VALUE}
     assert dict(table.long) == {"--flag": NO_VALUE, "--name": VALUE, "--maybe": OPTIONAL_VALUE}
-    assert table.slash == {"L": NO_VALUE, "O": VALUE}
-    assert dict(option_table("", "name", single_dash=True).long) == {"-name": NO_VALUE}
 
 
 XARGS = option_table("0n:", "max-args= null")
@@ -61,7 +59,7 @@ def test_operands_assignments_and_numbered_options_stand_before_the_command() ->
     timeout = option_refusal(option_table("s:", "signal=", operands=1), ["-s", "TERM", "5", "git"])
     assert (timeout.stop, timeout.values) == (3, [("-s", "TERM")])
     env = option_refusal(option_table("u:", assignments=True), ["A=1", "-u", "B", "-", "git"])
-    assert (env.stop, env.assigned) == (4, [("A", "1")])
+    assert (env.stop, env.values) == (4, [("-u", "B")])
     nice = option_refusal(option_table(numbered=re.compile(r"-[+-]?[0-9]+")), ["-5", "git"])
     assert nice.stop == 1
 
@@ -74,21 +72,6 @@ def test_a_value_taking_option_at_the_end_takes_an_empty_value() -> None:
 
 def test_a_word_the_text_does_not_settle_ends_the_reading() -> None:
     assert (option_refusal(XARGS, ["-0", None, "git"]).refused, option_refusal(XARGS, ["-0", None]).stop) == (None, 1)
-
-
-def test_a_permuting_program_is_read_to_its_end_or_its_double_dash() -> None:
-    table = option_table("u", "unique", permutes=True)
-    assert option_refusal(table, ["a", "-u", "b"]).stop == 3
-    assert option_refusal(table, ["a", "--", "-x"]).stop == 1
-    assert option_refusal(table, ["a", "-x"]).refused == "-x"
-
-
-def test_a_windows_build_reads_its_slash_options_in_any_case() -> None:
-    table = option_table("r", slash="R O=")
-    assert option_refusal(table, ["/r", "/o", "x", "in"], windows_build=True).refused is None
-    assert option_refusal(table, ["/T"], windows_build=True).refused == "/T"
-    long_s = "/" + chr(0x17F)  # Python's case folding reads it as `S`
-    assert option_refusal(table, [long_s], windows_build=True).refused == long_s
 
 
 @pytest.mark.parametrize(
@@ -115,9 +98,3 @@ def test_a_dash_word_is_held_to_another_build_that_reads_dash_as_a_letter(
     # Without that build, the table's own reading stands.
     plain = option_refusal(option_table("an:c", "name= flag cmd"), arguments)
     assert plain.refused is None
-
-
-def test_tar_s_old_style_first_word_takes_its_values_in_order() -> None:
-    table = option_table("tf:C:", first_letters=True, permutes=True)
-    assert option_refusal(table, ["tf", "a.tar"]).values == [("-f", "a.tar")]
-    assert option_refusal(table, ["xf", "a.tar"]).refused == "xf"
