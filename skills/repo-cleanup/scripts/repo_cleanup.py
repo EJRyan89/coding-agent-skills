@@ -12,8 +12,9 @@
                   the user confirmed
     report        print, from the directory a sweep printed and recorded its repositories in, each repository's
                   current summary, how its main worktree now differs from a clean checkout of its default branch at
-                  origin's (hub_state.py in ejryan89-skill-core), and the closing count of the repositories processed
-                  and skipped, naming the dirty repositories the user aborted
+                  origin's (hub_state.py in ejryan89-skill-core), and whether a hub guard it opted in to is off, and
+                  the closing count of the repositories processed and skipped, naming the dirty repositories the user
+                  aborted
 
 Every command reads a plan or sweep record only when its bytes match the seal this script wrote when it last saved
 one at that path, and refuses a plan with a field missing or not of the kind a sweep writes. delete-local,
@@ -27,7 +28,8 @@ stays.
 Exit status:
   0  every repository was cleaned, or every confirmed deletion ran, was done already by the plan, or was preserved
      because what it named changed since the plan: it moved, or its commit left the default and remote branches;
-     or report printed its summaries and closing count
+     or report printed its summaries, its MAIN_DIFFERS lines, a hub guard off in a clone that opted in among them,
+     and its closing count
   1  something needs the agent: a repository that stopped (DIRTY_MAIN, FETCH_FAILED) or was skipped with an ERROR
      line, a branch or path confirmed that the plan never offered, a deletion or removal Git refused, a confirmed
      worktree removal that did not happen because what the worktree holds kept it, a directory whose deletion
@@ -2399,12 +2401,15 @@ def aborted_entries(entries: list[dict[str, Any]], aborted: list[str]) -> list[d
 def main_differences(plan: dict[str, Any], services: Services) -> list[str]:
     """How a planned repository's main worktree now differs from a clean checkout of its default branch at the commit
     origin's holds, each a sentence hub_state.py gives, or one naming git's reason where git could not read it: a write
-    a session made there by mistake, such as a hub change no guard saw, shows here."""
+    a session made there by mistake, such as a hub change no guard saw, shows here; then a hub guard turned off in a
+    clone a shepherd tick recorded opting in to it (hub_state.lapse)."""
+    root = Path(plan["repo_root"])
     try:
-        found = hub_state.differences(services.git, Path(plan["repo_root"]), plan["default"]["name"])
+        found = hub_state.differences(services.git, root, plan["default"]["name"])
+        lapsed = hub_state.lapse(services.git, root)
     except git_client.GitError as exc:
         return [f"it could not be read: {exc}"]
-    return [difference.text for difference in found]
+    return [difference.text for difference in [*found, *([] if lapsed is None else [lapsed])]]
 
 
 def report(directory: Path, aborted: list[str], services: Services | None = None) -> int:

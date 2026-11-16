@@ -65,6 +65,7 @@ from git_client import (
     output_lines,
 )
 from git_client import GLOBAL_VALUE_OPTIONS as GIT_OPTIONS_WITH_VALUE
+from hub_state import GUARD_SETTING
 from job_tree import process_tree
 from option_reader import Word
 from path_keys import name_key
@@ -75,7 +76,6 @@ from deployer import platform_support
 from tools import bash_syntax, worktrees
 from tools.worktrees import CLIENT, GUARD_GIT_TIMEOUT_SECONDS, MAIN, Checkout, same_path
 
-GUARD_SETTING = "coding-agent-skills.hubGuard"
 FILE_TOOLS = {"Edit", "NotebookEdit", "Write"}
 # The options of git's subcommands that write a file at a path they are given, read in every spelling git's option
 # parser takes: a long option exactly, with its value after = or as the next word, or abbreviated to any prefix of its
