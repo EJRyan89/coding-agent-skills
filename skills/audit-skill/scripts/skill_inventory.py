@@ -149,7 +149,9 @@ a script that does not exist, so nothing it would print is compared.
 Runtime needs: in a skill source tree, tools derives what the skill needs through ejryan89-skill-core's
 runtime_support, as repository validation does, and prints RUNTIME_NEEDS <capability> <evidence> for each: grant
 <tool>, user-only, agent <name>, tool <name>, git <subcommand> <script>, or skill <name> for a skill it invokes that
-needs it, without that skill's user-only start.
+needs it, without that skill's user-only start. It reads a Bash script through ejryan89-skill-core's Bash grammar, and
+fails on one the grammar refuses, as on a Python script that does not parse, since the git commands of a script Bash
+would refuse cannot be read.
 """
 
 from __future__ import annotations
@@ -179,6 +181,7 @@ import runtime_support
 import skill_menu
 import whole_number
 from agent_skills import is_skill_file
+from bash_syntax import BashSyntaxError
 from console import run_main
 from executable_locator import RelativeEnvironmentPath, absolute_home
 from file_presence import NotADirectory, NotAFile, is_directory, is_present, is_there, matching
@@ -2851,11 +2854,15 @@ def script_git_subcommands(script: Path) -> set[str]:
     """The subcommand of each git command a Bash or PowerShell script runs, by ejryan89-skill-core's git_subcommands,
     the reader repository validation shares, or of each git call a Python script makes, by the shared derivation; any
     other script runs none this reads. A Python script that does not parse fails, as script_facts fails it, and so
-    does a PowerShell script, or a script a Bash script starts PowerShell on, that pwsh cannot read."""
+    does a Bash script the Bash grammar refuses, the script its eval or a shell's -c runs included, and a PowerShell
+    script, or a script a Bash script starts PowerShell on, that pwsh cannot read."""
     text = require_text(script)
     suffix = script.suffix.casefold()
     if suffix in (".sh", ".bash"):
-        return git_subcommands.bash_git_subcommands(text, powershell_script_commands)
+        try:
+            return git_subcommands.bash_git_subcommands(text, powershell_script_commands)
+        except BashSyntaxError as exc:
+            raise InputError(f"cannot read {posix(script)}: not Bash the grammar reads ({exc})") from exc
     if suffix == ".ps1":
         return git_subcommands.powershell_git_subcommands(powershell_script_commands(text), powershell_script_commands)
     if suffix != ".py":

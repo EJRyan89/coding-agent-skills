@@ -1,9 +1,10 @@
-"""Bash command text read by Bash's own grammar, for the hub guard in tools/hub_guard.py.
+"""Bash command text read by Bash's own grammar: the repository's one Bash grammar, which the hub guard in
+tools/hub_guard.py reads a command through and git_subcommands a skill's script.
 
 `parse` splits a command into words and operators by Bash's quoting rules (single and double quotes, `$'...'`,
 backslash escapes and line continuations, comments, and here-documents, whose bodies are data and never commands)
 and builds the tree Bash runs: lists, `&&` and `||`, pipelines, subshells, groups, `if`, `while`, `until`, `for`,
-`select`, `case`, `[[ ]]`, function definitions, and simple commands with the assignments before their name and
+`select`, `case`, `[[ ]]`, `(( ))`, function definitions, and simple commands with the assignments before their name and
 their redirections, each of which may stand before the name, among those assignments, or after it: a command read
 with a redirection first, such as `2>/dev/null git status`, is the one read with it last. Every assignment Bash
 reads before a name is one: NAME=value and NAME+=value, an element's, NAME[SUBSCRIPT]=value and
@@ -19,9 +20,14 @@ process substitution, arithmetic, a special parameter, a glob, or a brace expans
 process substitution, and of each one in an unquoted here-document's body, is kept for a reader to read as the
 subshell Bash runs it in.
 
+`simple_commands` lists every simple command Bash may run for a text, each substitution's included, read as the
+subshell Bash runs it in, and `command_words` gives one's words from its program's name, for a reader that judges
+what a script runs.
+
 Nothing here runs or judges anything. Text Bash itself would refuse, or that this grammar does not cover, raises
-BashSyntaxError; the guard does not read such a command, which it allows with a note, as "The guard's contract" in
-docs/parallel-sessions.md states.
+BashSyntaxError, and each reader fails closed on it as its own contract says: the guard does not read such a command,
+which it allows with a note, as "The guard's contract" in docs/parallel-sessions.md states, and git_subcommands
+raises it for its caller to fail.
 
 tests/tools/test_bash_syntax.py holds the reader to Bash's own syntax check, `bash -n`, on every fixture, as the hub
 guard's suite does on every Bash command it reads and the deployer's rendering suite on every rendered fragment it
@@ -30,12 +36,15 @@ checks for quoting. Where they differ is a limit stated here and pinned there:
   Bash runs none of a command it refuses.
 - Text nested deeper than Python's recursion limit, such as a few hundred `$( )` one inside another, which Bash reads,
   raises BashSyntaxError.
+- A CR outside quotes is read as a blank, where Bash reads it as a character of the word it stands in, so
+  `git push<CR>` is read as git's push and `a<CR>b` as two words; a here-document's delimiter line is compared whole,
+  a CR included, as Bash compares it.
 """
 
 from __future__ import annotations
 
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 
 # Characters that end an unquoted word.
@@ -139,6 +148,9 @@ class Word:
     # The variables its expansions assign, ${NAME:=word} and ${NAME=word}, each as NAME or NAME[SUBSCRIPT], or as
     # !NAME for ${!NAME:=word}, which assigns the variable NAME's value names.
     assigns: tuple[str, ...] = ()
+    # Whether the word is the whole of an arithmetic command's (( )), or an arithmetic for's header, whose `((` Bash
+    # reads where a reserved word may stand; its one part is the "dynamic" `((`.
+    arithmetic: bool = False
 
     @property
     def literal(self) -> str | None:
@@ -232,12 +244,20 @@ class Case:
 
 
 @dataclass
+class Arithmetic:
+    """An arithmetic command, (( )), whose expression is one word: Bash expands its substitutions and runs them."""
+
+    expression: Word
+    redirects: list[Redirect] = field(default_factory=list)
+
+
+@dataclass
 class FunctionDefinition:
     name: str
     body: Command
 
 
-Command = Simple | Subshell | Group | If | Loop | Case | FunctionDefinition
+Command = Simple | Subshell | Group | If | Loop | Case | Arithmetic | FunctionDefinition
 
 
 @dataclass
@@ -279,6 +299,11 @@ class Lexer:
         self.redirections_only = True
         self.redirecting = False
         self.naming_function = False
+        # Whether the last word read is the `for` keyword, after which `((` opens an arithmetic for's header.
+        self.after_for = False
+        # Whether the last operator read is a pipe, or the one newline right after a pipe, after which `time` is the
+        # time program rather than Bash's keyword, as Bash reads it.
+        self.after_pipe = False
         # The descriptor word before the redirection being read, kept for its Operator token.
         self.descriptor = ""
         # The variables the expansions read since the word being read began assign.
@@ -301,6 +326,8 @@ class Lexer:
                     self.index += 1
             elif character in "<>" and self.peek(1) == "(":
                 self.tokens.append(self.word())
+            elif self.text.startswith("((", self.index) and (self.reserved or self.after_for) and self.double_paren():
+                pass
             elif character in METACHARACTERS:
                 operator = next(item for item in OPERATORS if self.text.startswith(item, self.index))
                 if self.nested and operator == ")" and depth == 0:
@@ -316,6 +343,8 @@ class Lexer:
                 else:
                     self.command_start = self.reserved = operator not in CASE_ENDS
                     self.redirections_only = True
+                    piped = len(self.tokens) > 1 and self.tokens[-2] in (Operator("|"), Operator("|&"))
+                    self.after_pipe = operator in ("|", "|&") or (operator == "\n" and piped)
                 if operator == "\n":
                     self.read_here_documents()
                 elif operator in HERE_DOCUMENTS:
@@ -341,11 +370,32 @@ class Lexer:
             return
         previous = self.tokens[-1] if self.tokens else None
         follows = TIME_OPTIONS.get(word.literal or "", ())
-        opens = word.literal in COMMAND_OPENERS or (isinstance(previous, Word) and previous.literal in follows)
+        keyword = word.literal in COMMAND_OPENERS and not (word.literal == "time" and self.after_pipe)
+        opens = keyword or (isinstance(previous, Word) and previous.literal in follows)
+        self.after_pipe = False
         started, reserved, naming = self.command_start, self.reserved, self.naming_function
+        self.after_for = reserved and word.literal == "for"
         self.reserved = self.redirections_only = naming or (reserved and opens)
         self.command_start = self.reserved or (started and word.assignment is not None)
         self.naming_function = reserved and not naming and word.literal == "function"
+
+    def double_paren(self) -> bool:
+        """Reads the `(( ))` at the index, where Bash reads a reserved word or right after `for`, as the one word Bash
+        reads it as, an arithmetic command or a for's header, whose text holds no operator, so a `<<` in it shifts;
+        False, reading nothing, where its `((` closes with a `)` that another does not follow at once, which Bash
+        reads as two subshells' parentheses."""
+        start = self.index
+        try:
+            found = self.arithmetic(start + 2)
+        except BashSyntaxError:
+            self.index = start
+            return False
+        text = self.text[start : self.index]
+        assigns = tuple(match.group(1) + match.group(2) for match in ASSIGNING.finditer(text))
+        word = Word(text, (Part("dynamic", "(("),), tuple(found), assigns=assigns, arithmetic=True)
+        self.follow_word(word)
+        self.tokens.append(word)
+        return True
 
     def open_here_document(self, operator: str) -> None:
         while self.peek() in (" ", "\t"):
@@ -363,16 +413,16 @@ class Lexer:
 
     def read_here_documents(self) -> None:
         """Reads each pending body, line by line up to its delimiter; one the text never closes runs to its end, as
-        Bash reads it."""
+        Bash reads it. An unquoted body joins each line its backslash continues to the next, as Bash removes that
+        backslash and the LF before it compares a line with the delimiter, so a delimiter after one is body text."""
         for document in self.pending:
             lines: list[str] = []
             while self.index < len(self.text):
-                end = self.text.find("\n", self.index)
-                end = len(self.text) if end < 0 else end
-                line = self.text[self.index : end]
-                self.index = min(end + 1, len(self.text))
+                line = self.next_line()
+                while not document.quoted and escapes_its_end(line) and self.index < len(self.text):
+                    line = line[:-1] + self.next_line()
                 compared = line.lstrip("\t") if document.strip_tabs else line
-                if compared.rstrip("\r") == document.delimiter:
+                if compared == document.delimiter:
                     break
                 lines.append(compared)
             document.body = "\n".join(lines)
@@ -381,6 +431,14 @@ class Lexer:
                 document.substitutions, document.assigns = tuple(substitutions), tuple(assigns)
                 document.expansions = tuple(part for part in parts if part.kind == "dynamic")
         self.pending = []
+
+    def next_line(self) -> str:
+        """The text up to the next LF, or to the text's end, read past that LF."""
+        end = self.text.find("\n", self.index)
+        end = len(self.text) if end < 0 else end
+        line = self.text[self.index : end]
+        self.index = min(end + 1, len(self.text))
+        return line
 
     def word(self, subscripts: bool = False) -> Word:
         """One word; with subscripts set it stands where Bash reads an assignment, so a subscript after a name at its
@@ -693,6 +751,11 @@ class Lexer:
         raise BashSyntaxError("a backquote is not closed")
 
 
+def escapes_its_end(line: str) -> bool:
+    """Whether a line ends in an odd count of backslashes, the last of which escapes the LF after it."""
+    return (len(line) - len(line.rstrip("\\"))) % 2 == 1
+
+
 def add_text(parts: list[Part], text: str, quoted: bool) -> None:
     """Appends literal text, joining it to the part before when that is literal text quoted the same way."""
     if parts and parts[-1].kind == "text" and parts[-1].quoted == quoted:
@@ -703,9 +766,10 @@ def add_text(parts: list[Part], text: str, quoted: bool) -> None:
 
 def expansions(text: str) -> tuple[list[str], list[str], list[Part]]:
     """The command substitutions in text that expands as a double-quoted string does, such as an unquoted
-    here-document's body, where a double quote is an ordinary character, the variables its expansions assign, as a
-    word's assigns holds them, and the parts its expansions make, as a word's parts hold them."""
-    lexer = Lexer(text.replace('"', " "))
+    here-document's body, where a double quote is an ordinary character but quotes inside a `$( )` or a `${ }`, as
+    Bash reads it there, the variables its expansions assign, as a word's assigns holds them, and the parts its
+    expansions make, as a word's parts hold them."""
+    lexer = Lexer(text)
     found: list[str] = []
     parts: list[Part] = []
     while lexer.index < len(lexer.text):
@@ -813,8 +877,12 @@ class Parser:
         result = Pipeline([self.command()], negated)
         while self.at_operator("|", "|&"):
             self.index += 1
+            start = self.index
             self.skip_newlines()
-            result.commands.append(self.command())
+            # Bash reads `time` as its keyword only where a pipeline may start, so after a pipe, or the one newline
+            # right after one, it is the time program; after more newlines it is the keyword, which Bash refuses there.
+            piped = self.at_reserved("time") and self.index - start <= 1
+            result.commands.append(self.simple() if piped else self.command())
         return result
 
     def command(self) -> Command:
@@ -832,6 +900,9 @@ class Parser:
                 raise BashSyntaxError("a subshell is not closed")
             self.index += 1
             return Subshell(body, self.redirects())
+        if isinstance(token, Word) and token.arithmetic:
+            self.index += 1
+            return Arithmetic(token, self.redirects())
         compound = COMPOUND_READERS.get(token.literal or "") if isinstance(token, Word) else None
         if compound is not None:
             self.index += 1
@@ -948,22 +1019,12 @@ class Parser:
         return Loop(kind, condition, None, None, self.do_group(), self.redirects())
 
     def for_clause(self, kind: str) -> Command:
-        if self.at_operator("("):
-            # for (( ...; ...; ... )): the header's words are expanded before the first pass, so their substitutions
-            # run and their assigning expansions assign; the arithmetic itself assigns no word the guard reads.
-            depth = 0
-            header: list[Word] = []
-            while True:
-                token = self.advance() if self.peek() is not None else None
-                if token is None:
-                    raise BashSyntaxError("an arithmetic for is not closed")
-                if isinstance(token, Word):
-                    header.append(token)
-                if isinstance(token, Operator) and token.text in "()":
-                    depth += 1 if token.text == "(" else -1
-                    if depth == 0:
-                        break
-            return Loop(kind, None, None, None, self.do_group(), self.redirects(), header)
+        token = self.peek()
+        if kind == "for" and isinstance(token, Word) and token.arithmetic:
+            # for (( ...; ...; ... )): the header is expanded before the first pass, so its substitutions run and its
+            # assigning expansions assign; the arithmetic itself assigns no word the guard reads.
+            self.index += 1
+            return Loop(kind, None, None, None, self.do_group(), self.redirects(), [token])
         name = self.advance()
         if not isinstance(name, Word) or not name.literal or not NAME.fullmatch(name.literal):
             raise BashSyntaxError(f"{kind} names no variable")
@@ -1042,3 +1103,84 @@ def parse(text: str) -> CommandList:
     if parser.peek() is not None:
         raise BashSyntaxError("a `)` or `;;` closes nothing")
     return result
+
+
+# ---------------------------------------------------------------------------------------------------------------
+# What a script runs
+
+
+def simple_commands(text: str) -> list[Simple]:
+    """Each simple command Bash may run for text: every one in its lists, pipelines, and compound commands, a
+    function's body included, and every one of each command and process substitution, which Bash runs in a subshell,
+    read from wherever it stands: a word, an assignment's value, a redirection's target, an unquoted here-document's
+    body, a case word or pattern, or a loop's words. A case word, a pattern, a function's name, and a quoted
+    here-document's body run nothing of their own. Raises BashSyntaxError where text, or a substitution in it, cannot
+    be read, since Bash runs none of a command it refuses."""
+    tree = parse(text)
+    try:
+        return list(_tree_commands(tree))
+    except RecursionError:
+        # The walk follows each substitution by recursion too, so nesting deeper than Python's limit is text it
+        # cannot read.
+        raise BashSyntaxError("it nests deeper than the reader follows") from None
+
+
+def _tree_commands(node: CommandList | Command) -> Iterator[Simple]:
+    if isinstance(node, CommandList):
+        for and_or, _ in node.items:
+            for pipeline in [and_or.first, *(pipeline for _, pipeline in and_or.rest)]:
+                for command in pipeline.commands:
+                    yield from _tree_commands(command)
+        return
+    if isinstance(node, FunctionDefinition):
+        yield from _tree_commands(node.body)
+        return
+    if isinstance(node, Simple):
+        yield node
+        words: list[Word] = list(node.words)
+    elif isinstance(node, Case):
+        words = [node.word, *node.patterns]
+    elif isinstance(node, Loop):
+        words = [*(node.words or []), *node.header]
+    elif isinstance(node, Arithmetic):
+        words = [node.expression]
+    else:
+        words = []
+    substitutions = [text for word in words for text in word.substitutions]
+    for redirect in node.redirects:
+        substitutions += redirect.target.substitutions if redirect.target is not None else ()
+        substitutions += redirect.here.substitutions if redirect.here is not None else ()
+    for text in substitutions:
+        yield from _tree_commands(parse(text))
+    for body in _command_bodies(node):
+        yield from _tree_commands(body)
+
+
+def _command_bodies(node: Command) -> list[CommandList]:
+    """The command lists a compound command runs, in the order the text holds them."""
+    if isinstance(node, (Subshell, Group)):
+        return [node.body]
+    if isinstance(node, If):
+        return [part for clause in node.clauses for part in clause] + ([node.otherwise] if node.otherwise else [])
+    if isinstance(node, Loop):
+        return [node.condition, node.body] if node.condition is not None else [node.body]
+    if isinstance(node, Case):
+        return node.branches
+    return []
+
+
+def word_text(word: Word) -> str:
+    """A word's text after Bash's quote removal, each expansion in it left in the form that names it: `$NAME` for a
+    parameter, `~` for a leading tilde, and a dynamic part's own text, such as `$(` for a command substitution or the
+    whole of a `${ }` expansion, which no literal of a program's or a subcommand's name matches."""
+    texts = {"parameter": "$", "home": "~"}
+    return "".join(texts.get(part.kind, "") + part.text for part in word.parts)
+
+
+def command_words(command: Simple) -> list[str]:
+    """The words of a simple command from its program's name, each as word_text gives it: past the assignments Bash
+    reads before the name, which run nothing; empty for a command of assignments and redirections alone."""
+    words = list(command.words)
+    while words and words[0].assignment is not None:
+        words.pop(0)
+    return [word_text(word) for word in words]

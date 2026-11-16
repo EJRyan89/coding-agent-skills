@@ -2775,7 +2775,10 @@ class RuntimeSupportTests(SourceTreeTestCase):
         write(skill.parent / "scripts" / "update.sh", '# git fetch here is a comment\ngit -C "$CLONE" status\n')
         write(skill.parent / "scripts" / "test_update.sh", "git fetch origin\n")
         self.assertEqual([], [line for line in self.runtime(skill) if line.startswith("RUNTIME_OVERCLAIMED")])
-        write(skill.parent / "scripts" / "update.sh", 'if ! OUT=$(git -C "$CLONE" fetch --tags origin 2>&1); then\n')
+        write(
+            skill.parent / "scripts" / "update.sh",
+            'if ! OUT=$(git -C "$CLONE" fetch --tags origin 2>&1); then\n  exit 1\nfi\n',
+        )
         self.assertEqual(
             ["RUNTIME_NEEDS sandbox-network git fetch scripts/update.sh", "RUNTIME_OVERCLAIMED codex sandbox-network"],
             [line for line in self.runtime(skill) if line.startswith(("RUNTIME_NEEDS", "RUNTIME_OVERCLAIMED"))],
@@ -2866,6 +2869,20 @@ class RuntimeSupportTests(SourceTreeTestCase):
         write(skill.parent / "scripts" / "update.py", "git(\n")
         with self.assertRaisesRegex(skill_inventory.InputError, "update.py: not valid Python"):
             skill_inventory.own_needs(skill.parent)
+
+    def test_a_bash_script_the_grammar_refuses_fails_the_runtime_derivation(self) -> None:
+        # Bash runs none of a script it refuses, so its git commands cannot be read, and reading none would pass a
+        # skill whose script reaches a remote.
+        for text in ("git fetch\nif true; then\n", "eval 'git push \"'\n"):
+            with self.subTest(text=text):
+                skill = self.skill("Body.\n", self.full())
+                script = write(skill.parent / "scripts" / "update.sh", text)
+                with self.assertRaises(skill_inventory.InputError) as raised:
+                    skill_inventory.own_needs(skill.parent)
+                self.assertRegex(
+                    str(raised.exception),
+                    rf"^cannot read {re.escape(script.as_posix())}: not Bash the grammar reads \(",
+                )
 
     def test_a_partial_declaration_naming_the_lack_is_not_overclaimed(self) -> None:
         partial = {"level": "partial", "needs": ["sandbox-network"], "reason": "Its gh calls need the network."}

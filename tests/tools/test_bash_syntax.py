@@ -1,10 +1,11 @@
-"""Regression suite for tools/bash_syntax.py: Bash command text read by Bash's own grammar."""
+"""Regression suite for ejryan89-skill-core's bash_syntax.py: Bash command text read by Bash's own grammar."""
 
 from __future__ import annotations
 
 import sys
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import pytest
 
@@ -12,9 +13,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts"))
 
 import bash_agreement
+import bash_syntax
+from bash_syntax import BashSyntaxError
 
-from tools import bash_syntax
-from tools.bash_syntax import BashSyntaxError
+from deployer import platform_support
 
 
 def parse(text: str) -> bash_syntax.CommandList:
@@ -257,6 +259,10 @@ def test_a_documented_limit_inside_double_brackets_text_bash_refuses_is_read(tex
     bash_syntax.parse(text)
 
 
+def test_a_documented_limit_a_cr_outside_quotes_is_read_as_a_blank() -> None:
+    assert simple_commands(parse("git push\r\na\rb")) == [["git", "push"], ["a", "b"]]
+
+
 # Deeper than the reader follows under Python's default recursion limit, and shallow enough for the Bash that checks
 # every fixture, which reads each text through `eval` and overflows its own stack a little deeper.
 DEPTH = 300
@@ -352,6 +358,31 @@ class HereDocumentTests(unittest.TestCase):
         tree = parse("cat <<EOF\ngit commit -m x")
         self.assertEqual([["cat"]], simple_commands(tree))
 
+    def test_an_unquoted_body_joins_a_line_its_backslash_continues_before_it_looks_for_the_delimiter(self) -> None:
+        # An odd count of backslashes escapes the LF, so the delimiter after it is body text; an even count, or a quoted
+        # delimiter, leaves the line as it is.
+        tree = parse("cat <<EOF\nfoo \\\nEOF\ngit commit\nEOF\ngit status")
+        self.assertEqual([["cat"], ["git", "status"]], simple_commands(tree))
+        here = first_simple("cat <<EOF\nfoo \\\nEOF\ngit commit\nEOF").redirects[0].here
+        self.assertEqual("foo EOF\ngit commit", here.body if here is not None else None)
+        for text in ("cat <<EOF\nfoo \\\\\nEOF\ngit status", "cat <<'EOF'\nfoo \\\nEOF\ngit status"):
+            with self.subTest(text=text):
+                self.assertEqual([["cat"], ["git", "status"]], simple_commands(parse(text)))
+
+    def test_a_quote_inside_a_body_s_substitution_or_expansion_quotes_as_bash_reads_it(self) -> None:
+        here = first_simple('cat <<EOF\n"$(echo ")"; git am)" ${x:-"a}"}\nEOF').redirects[0].here
+        self.assertEqual(('echo ")"; git am',), here.substitutions if here is not None else None)
+        self.assertEqual(["$(", '${x:-"a}"}'], [part.text for part in here.expansions] if here is not None else None)
+
+    def test_a_body_ends_only_at_a_line_that_is_its_delimiter_exactly_as_bash_compares_it(self) -> None:
+        # A CR after the delimiter is part of that line, so the line is body text and the body runs to the next one;
+        # Bash itself counts the body's lines.
+        text = "cat <<EOF | wc -l\nbody\nEOF\r\ngit commit\nEOF\n"
+        here = first_simple(text).redirects[0].here
+        self.assertEqual("body\nEOF\r\ngit commit", here.body if here is not None else None)
+        result = platform_support.run_tool([bash_agreement.find_bash(), "-c", text])
+        self.assertEqual((0, "3"), (result.returncode, result.output.strip()))
+
 
 class AssigningExpansionTests(unittest.TestCase):
     """A word, and an unquoted here-document's body, record each variable an expansion in it assigns."""
@@ -428,6 +459,13 @@ class TreeTests(unittest.TestCase):
         ("time -- -p git commit", [["-p", "git", "commit"]]),
         ("time -p -p git commit", [["-p", "git", "commit"]]),
         ("time -p -- -- git commit", [["--", "git", "commit"]]),
+        # Bash reads `time` as its keyword only where a pipeline starts, so after a pipe, or the one newline right after
+        # one, it is the time program, which takes -p and -- as its own options, and a subscript after it is no
+        # assignment's.
+        ("echo a | time -p -p git commit", [["echo", "a"], ["time", "-p", "-p", "git", "commit"]]),
+        ("echo a |& time git commit", [["echo", "a"], ["time", "git", "commit"]]),
+        ("echo a |\n time -- git commit", [["echo", "a"], ["time", "--", "git", "commit"]]),
+        ("echo a | # note\n time -p a[x y]=v", [["echo", "a"], ["time", "-p", "a[x", "y]=v"]]),
         ('time "--" git commit', [['"--"', "git", "commit"]]),
         ("time -p '--' git commit", [["'--'", "git", "commit"]]),
         ("! -p git commit", [["-p", "git", "commit"]]),
@@ -439,6 +477,13 @@ class TreeTests(unittest.TestCase):
 )
 def test_reserved_words_and_prefixes_start_compound_commands_not_programs(text: str, expected: list[list[str]]) -> None:
     assert expected == simple_commands(parse(text))
+
+
+@pytest.mark.parametrize("text", ["echo a |\n\n time git commit", "echo a |\n\n time -p git commit"])
+def test_time_after_a_pipe_and_more_than_one_newline_is_the_keyword_bash_refuses_there(text: str) -> None:
+    assert not bash_agreement.bash_verdicts([text])[text][0]
+    with pytest.raises(BashSyntaxError, match=r"^`time` where a command should start$"):
+        parse(text)
 
 
 @pytest.mark.parametrize(
@@ -483,3 +528,84 @@ def test_reserved_words_and_prefixes_start_compound_commands_not_programs(text: 
 def test_text_bash_would_refuse_is_an_error(text: str) -> None:
     with pytest.raises(BashSyntaxError):
         parse(text)
+
+
+class ArithmeticCommandTests(unittest.TestCase):
+    """`(( ))` where Bash reads a reserved word, or right after `for`, is one arithmetic word, whose `<<` shifts."""
+
+    def test_an_arithmetic_command_is_one_word_whose_shift_opens_no_here_document(self) -> None:
+        tree = parse("(( x = 1 << 2 )) > out\ngit status\n2")
+        command = tree.items[0][0].first.commands[0]
+        assert isinstance(command, bash_syntax.Arithmetic)
+        self.assertEqual("(( x = 1 << 2 ))", command.expression.raw)
+        self.assertEqual([">"], [redirect.operator for redirect in command.redirects])
+        self.assertEqual([["git", "status"], ["2"]], simple_commands(tree))
+
+    def test_an_arithmetic_command_keeps_its_substitutions_and_assigning_expansions(self) -> None:
+        command = parse("(( $(git am) + `git log` + ${n:=1} ))").items[0][0].first.commands[0]
+        assert isinstance(command, bash_syntax.Arithmetic)
+        self.assertEqual(("git am", "git log"), command.expression.substitutions)
+        self.assertEqual(("n",), command.expression.assigns)
+
+    def test_only_double_parentheses_make_an_arithmetic_word(self) -> None:
+        word = first_simple("x=${y:=1} git status").words[0]
+        self.assertEqual((("y",), False), (word.assigns, word.arithmetic))
+        self.assertEqual([["x=${y:=1}", "git", "status"]], simple_commands(parse("x=${y:=1} git status")))
+
+    def test_double_parentheses_that_close_apart_are_two_subshells(self) -> None:
+        self.assertEqual([["cd", "x"]], simple_commands(parse("((cd x) )")))
+
+    def test_an_arithmetic_for_s_header_is_one_word_whose_shift_opens_no_here_document(self) -> None:
+        loop = parse("for ((i = 1 << 2; i < 9; i++)); do echo; done\ngit status").items[0][0].first.commands[0]
+        assert isinstance(loop, bash_syntax.Loop)
+        self.assertEqual(["((i = 1 << 2; i < 9; i++))"], [word.raw for word in loop.header])
+
+    def test_double_parentheses_after_a_word_are_no_arithmetic_command(self) -> None:
+        for text in ("echo ((1))", "x=1 ((1))"):
+            with self.subTest(text=text):
+                bash_agreement.assert_reader_agrees([text])
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        # Every command Bash may run, a substitution's anywhere included, from its program's name.
+        ("A=1 B=$(git am) env C=2 git push", [["env", "C=2", "git", "push"], ["git", "am"]]),
+        ('cat > "$(git out)" <<EOF\n$(git body)\nEOF', [["cat"], ["git", "out"], ["git", "body"]]),
+        ("cat <<'EOF'\n$(git body)\nEOF", [["cat"]]),
+        ("case $(git a) in $(git b)) git c;; esac", [["git", "a"], ["git", "b"], ["git", "c"]]),
+        ("for i in $(git l); do git y; done", [["git", "l"], ["git", "y"]]),
+        ("for ((i = $(git h); i < 2; i++)); do :; done", [["git", "h"], [":"]]),
+        ("(( $(git x) ))", [["git", "x"]]),
+        ("f() { git push; }", [["git", "push"]]),
+        ("if a; then b; elif c; then d; else e; fi", [["a"], ["b"], ["c"], ["d"], ["e"]]),
+        (
+            "echo <(git d) ${x:-$(git e)} $(( $(git f) ))",
+            [["echo", "<(", "${x:-$(git e)}", "$(("], ["git", "d"], ["git", "e"], ["git", "f"]],
+        ),
+        ("x=1", [[]]),
+        # A word's quotes are removed and each expansion kept in the form that names it.
+        ("git \"$sub\" ${t} ~/x 'a b' $'c'", [["git", "$sub", "$t", "~/x", "a b", "c"]]),
+    ],
+)
+def test_simple_commands_read_every_command_bash_may_run_from_its_program(text: str, expected: list[list[str]]) -> None:
+    bash_agreement.assert_reader_agrees([text])
+    found = [bash_syntax.command_words(command) for command in bash_syntax.simple_commands(text)]
+    assert found == expected
+
+
+@pytest.mark.parametrize("text", ["echo $(if)", "echo `fi`", "cat <<EOF\n$(git am\nEOF"])
+def test_simple_commands_raise_where_a_substitution_cannot_be_read(text: str) -> None:
+    with pytest.raises(BashSyntaxError):
+        bash_syntax.simple_commands(text)
+
+
+def test_simple_commands_raise_where_nesting_runs_past_the_recursion_limit() -> None:
+    with pytest.raises(BashSyntaxError, match=r"^it nests deeper than the reader follows$"):
+        bash_syntax.simple_commands("echo $(" * DEPTH + "git am" + ")" * DEPTH)
+    # The walk into each substitution recurses too, past where parse read the text whole.
+    with (
+        mock.patch.object(bash_syntax, "_tree_commands", side_effect=RecursionError("maximum recursion depth")),
+        pytest.raises(BashSyntaxError, match=r"^it nests deeper than the reader follows$"),
+    ):
+        bash_syntax.simple_commands("git am")

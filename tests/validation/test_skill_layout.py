@@ -21,6 +21,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan8
 
 import file_presence
 import runtime_support
+from bash_syntax import BashSyntaxError
 from skill_layout import (
     MAXIMUM_INLINE_EXECUTABLE_LINES,
     REPOSITORY_SKILL_SHIMS,
@@ -841,6 +842,23 @@ class SkillLayoutFixtures(unittest.TestCase):
                 root = Path(temporary)
                 write_fixture_tree(root, files)
                 self.assertEqual([unmeasured], capability_guide_problems(root))
+
+    def test_runtime_support_policy_fails_on_a_bash_script_the_grammar_refuses(self) -> None:
+        # Bash runs none of a script it refuses, so the git commands it would run cannot be read, and reading none
+        # would pass a skill whose script reaches a remote.
+        full = {"claude-code": "full", "codex": "full", "copilot-cli": "full"}
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            write_fixture_tree(
+                root,
+                {
+                    "deploy-meta/broken.json": json.dumps({"runtime_support": full}),
+                    "skills/broken/SKILL.md": "---\nname: broken\ndescription: d\n---\n",
+                    "skills/broken/scripts/update.sh": "git fetch origin\nif true; then\n",
+                },
+            )
+            with pytest.raises(BashSyntaxError, match=r"^expected `fi`$"):
+                runtime_support_problems(root)
 
     def test_runtime_page_policy_holds_each_support_statement_to_the_metadata(self) -> None:
         partial = {"level": "partial", "needs": ["fail-closed-agent-hooks"], "reason": "No guard."}

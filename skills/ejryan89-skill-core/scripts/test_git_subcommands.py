@@ -12,6 +12,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import bash_syntax
 import git_subcommands
 import powershell_commands
 from powershell_commands import UNREAD_WORD
@@ -36,7 +37,7 @@ def listed(scripts: dict[str, list[list[str]]], read: list[str]) -> git_subcomma
     [
         ('git -C "$CLONE" fetch --tags origin', {"fetch"}),
         ("OUT=$(git ls-remote --tags origin) && git push", {"ls-remote", "push"}),
-        ("if git rev-parse --git-dir; then", {"rev-parse"}),
+        ("if git rev-parse --git-dir; then :; fi", {"rev-parse"}),
         ('echo "run git fetch first"', set()),
         ("  # git pull later", set()),
         ("legit fetch", set()),
@@ -59,7 +60,6 @@ def listed(scripts: dict[str, list[list[str]]], read: list[str]) -> git_subcomma
         ('echo "now $(git rev-parse HEAD)"', {"rev-parse"}),
         ("{ git push; }", {"push"}),
         ("git \\\n  fetch", {"fetch"}),
-        ("x=1 git push 'unclosed", {"push"}),
         # A subcommand no literal names is read as its word.
         ('git "$sub"', {"$sub"}),
         # Bash's time keyword takes -p and then --, each optional, before the pipeline it times; a second -p, or one
@@ -175,9 +175,10 @@ def test_a_git_command_is_read_wherever_bash_starts_a_command(script: str, expec
         ("echo hi # <<EOF\ngit push", {"push"}),
         ("echo $((1 << 2))\ngit push", {"push"}),
         ("(( x = 1 << 2 ))\ngit push", {"push"}),
-        # A body the text never closes is read as commands, so a delimiter this misreads hides no command.
-        ("cat <<EOF\ngit push", {"push"}),
-        ("cat <<EOF\ngit push\nEOF\r\ngit fetch", {"push", "fetch"}),
+        # A body the text never closes runs to the text's end, as Bash reads it, and a line holding the delimiter and a
+        # CR is body text, as Bash compares the whole line.
+        ("cat <<EOF\ngit push", set()),
+        ("cat <<EOF\ngit push\nEOF\r\ngit fetch", set()),
     ],
 )
 def test_a_here_document_s_body_is_read_as_data(script: str, expected: set[str]) -> None:
@@ -210,8 +211,8 @@ def test_a_bash_line_ends_at_lf_alone(script: str, expected: set[str]) -> None:
     assert git_subcommands.bash_git_subcommands(script, no_powershell) == expected
 
 
-# Each step of the line and here-document reader is held where reading one character too far, too short, or not at
-# all changes what Bash runs: a here-document that opens, or does not, and closes on a later line; a substitution's
+# Each step of the grammar is held where reading one character too far, too short, or not at all changes what Bash
+# runs: a here-document that opens, or does not, and closes on a later line; a substitution's
 # end, after which body text is data; and a continued or commented line.
 @pytest.mark.parametrize(
     ("script", "expected"),
@@ -238,7 +239,6 @@ def test_a_bash_line_ends_at_lf_alone(script: str, expected: set[str]) -> None:
         # `$((` is one step from its `$`, so the `#` right after its `))` goes on the word and starts no comment.
         ("echo $((1))#x <<EOF\ngit push\nEOF", set()),
         ("cat <<<EOF\ngit push\nEOF", {"push"}),
-        ("cat << \ngit push", {"push"}),
         # The delimiter's quoting and escapes, and `<<-`'s tabs, decide where the body ends and whether it expands.
         ("cat <<XEOF\n$(git push)\nXEOF", {"push"}),
         ('cat <<"E\\$F"\ngit push\nE$F\ngit fetch', {"fetch"}),
@@ -252,14 +252,11 @@ def test_a_bash_line_ends_at_lf_alone(script: str, expected: set[str]) -> None:
         ("cat <<EOF\n$(echo ')'); echo 'x'; git push\nEOF", set()),
         ('cat <<EOF\n$(echo ")"); git push\nEOF', set()),
         ("cat <<EOF\n$(); git push; $(git fetch)\nEOF", {"fetch"}),
-        ("cat <<EOF\n$(git push\nEOF", {"push"}),
         ("cat <<EOF\n\\a$(git push)\nEOF", {"push"}),
         ("cat <<EOF\n`echo a`; git push\nEOF", set()),
         ("cat <<EOF\n`ech`; git push\nEOF", set()),
         ("cat <<EOF\n``; git push; `git fetch`\nEOF", {"fetch"}),
         ("cat <<EOF\n`echo a`$(git push)\nEOF", {"push"}),
-        ("cat <<EOF\n`echo \\` ; git push`\nEOF", {"push"}),
-        ("cat <<EOF\n`git push\nEOF", {"push"}),
         # A continued line joins the next one in place of its backslash, and the line after the joined one is read.
         ("git push \\", {"push"}),
         ("git fetch\\\n origin", {"fetch"}),
@@ -273,8 +270,29 @@ def test_a_bash_line_ends_at_lf_alone(script: str, expected: set[str]) -> None:
         ("git fetch\ncat <<EOF\n$(echo a)\nEOF", {"fetch"}),
     ],
 )
-def test_each_step_of_the_line_reader_ends_where_bash_ends_it(script: str, expected: set[str]) -> None:
+def test_each_step_of_the_grammar_ends_where_bash_ends_it(script: str, expected: set[str]) -> None:
     assert git_subcommands.bash_git_subcommands(script, no_powershell) == expected
+
+
+# Bash runs none of a script it refuses, nor a command whose here-document holds a substitution it cannot read when it
+# expands the body, so a reader that guessed at either could miss a git command; the grammar refuses each, and so
+# does the reader, for its caller to fail.
+@pytest.mark.parametrize(
+    "script",
+    [
+        "if git rev-parse --git-dir; then",
+        "x=1 git push 'unclosed",
+        "cat << \ngit push",
+        "cat <<EOF\n$(git push\nEOF",
+        "cat <<EOF\n`echo \\` ; git push`\nEOF",
+        "cat <<EOF\n`git push\nEOF",
+        "eval 'git push \"'",
+        "bash -c 'if git push; then'",
+    ],
+)
+def test_a_script_the_grammar_refuses_raises_its_error(script: str) -> None:
+    with pytest.raises(bash_syntax.BashSyntaxError):
+        git_subcommands.bash_git_subcommands(script, no_powershell)
 
 
 def test_a_body_s_substitution_reads_a_powershell_start_up_through_the_caller_s_reader() -> None:

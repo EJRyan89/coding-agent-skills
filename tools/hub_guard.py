@@ -4,13 +4,13 @@ Usage:
   python tools/hub_guard.py   reads one PreToolUse event on stdin and prints a deny decision, or nothing
 
 The guard catches the accidents a session makes in the hub, and is no sandbox: while a hub is guarded it refuses an
-Edit, Write, or NotebookEdit whose target lies in the hub, a git call that acts on the hub in any form but the
-read-only ones READ_ONLY_FORMS declares, and a redirection whose target lies in the hub, whether the command runs
-through the Bash tool, the PowerShell tool, or the Monitor tool, whose command runs in Bash. It reads a command for its
-git calls, where each acts, and its redirections, Bash by tools/bash_syntax.py's grammar and PowerShell by PowerShell's
-own parser (tools/hub_guard-powershell.ps1); every other part is a program the guard does not read, which it allows,
-and ejryan89-skill-core's hub_state.py check, which the shepherd and repo-cleanup run, reports a hub a missed write
-left changed.
+Edit, Write, or NotebookEdit whose target lies in the hub, a git call that acts on the hub in any form but the read-only
+ones READ_ONLY_FORMS declares, and a redirection whose target lies in the hub, whether the command runs through the Bash
+tool, the PowerShell tool, or the Monitor tool, whose command runs in Bash. It reads a command for its git calls, where
+each acts, and its redirections, Bash by ejryan89-skill-core's bash_syntax.py grammar and PowerShell by PowerShell's own
+parser (tools/hub_guard-powershell.ps1); every other part is a program the guard does not read, which it allows, and
+ejryan89-skill-core's hub_state.py check, which the shepherd and repo-cleanup run, reports a hub a missed write left
+changed.
 docs/parallel-sessions.md ("The guard's contract") states the contract. Every decision is made here. It finds the
 checkout that holds a path, and runs git, through tools/worktrees.py, which owns the hub and its worktrees. It is inert
 unless `git config coding-agent-skills.hubGuard true` was set in this clone.
@@ -40,6 +40,7 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "ejryan89-skill-core" / "scripts"))
 
+import bash_syntax
 import command_wrappers
 import executable_locator
 import file_presence
@@ -73,7 +74,7 @@ from powershell_startup import POWERSHELL_PROGRAMS, UnknownWord, startup_command
 from text_lines import text_lines
 
 from deployer import platform_support
-from tools import bash_syntax, worktrees
+from tools import worktrees
 from tools.worktrees import CLIENT, GUARD_GIT_TIMEOUT_SECONDS, MAIN, Checkout, same_path
 
 FILE_TOOLS = {"Edit", "NotebookEdit", "Write"}
@@ -3148,6 +3149,8 @@ class BashReader:
             self.read_words(node.words or [], directory)
         if isinstance(node, bash_syntax.Case):
             self.read_words([node.word, *node.patterns], directory)
+        if isinstance(node, bash_syntax.Arithmetic):
+            self.read_words([node.expression], directory)
         for body in command_bodies(node):
             self.read_list(body, inside)
         if moves and not isinstance(node, bash_syntax.Subshell):

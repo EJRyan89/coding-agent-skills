@@ -25,6 +25,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan89-skill-core" / "scripts"))
 
 import bash_agreement
+import bash_syntax
 import executable_locator
 import git_client
 import git_worktrees
@@ -36,7 +37,7 @@ from resident_pwsh import resident_reads
 from worktree_fixture import GUARD_SCRIPT, HUB, REPOSITORY_ROOT, TREE, HubTestCase, isolated_environment, run_git
 
 from deployer import platform_support
-from tools import bash_syntax, hub_guard, worktrees
+from tools import hub_guard, worktrees
 
 
 def guard_in_process(stdin: str, cwd: Path, environment: Mapping[str, str]) -> tuple[int, str, str]:
