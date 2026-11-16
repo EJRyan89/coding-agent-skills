@@ -188,8 +188,8 @@ class SuiteDiscoveryFixtures(unittest.TestCase):
                     f"{alpha}:18 pipes into head --lines {race}",
                     f"{alpha}:19 pipes into head {race}",
                     f"{alpha}:20 pipes into head -n {race}",
-                    "tests/test_unread.sh cannot be read as Bash to find a pipe into a reader that ends early: No "
-                    "closing quotation",
+                    "tests/test_unread.sh cannot be read as Bash to find a pipe into a reader that ends early: a "
+                    "single quote is not closed",
                 ],
                 pipe_race_problems(root),
             )
@@ -703,6 +703,9 @@ BASH_RACES = [
     pytest.param("function g() ( head -n 1 ); seq 1 200000 | g", "head -n", id="a subshell function"),
     pytest.param("f() { g; }; g() { head -n 1; }; seq 1 200000 | f", "head -n", id="a function calling one"),
     pytest.param("f() { head -n 1; }; seq 1 200000 | { f; }", "head -n", id="a function in a group"),
+    pytest.param("f() if true; then head -n 1; fi; seq 1 200000 | f", "head -n", id="a function whose body is an if"),
+    pytest.param("f() for x in a; do head -n 1; done; seq 1 200000 | f", "head -n", id="a function whose body loops"),
+    pytest.param("seq 1 200000 | { head -n 1 & wait; }", "head -n", id="a reader in the background"),
     pytest.param("seq 1 200000 | bash -c 'head -n 1'", "head -n", id="bash -c"),
     pytest.param("seq 1 200000 | sh -c 'head -n 1'", "head -n", id="sh -c"),
     pytest.param("seq 1 200000 | bash -ec 'head -n 1'", "head -n", id="bash -c in a cluster"),
@@ -724,6 +727,7 @@ BASH_RACES = [
     pytest.param('seq 1 200000 | echo "$(head -n 1)"', "head -n", id="a quoted substitution in a fed command"),
     pytest.param('seq 1 200000 | echo "`head -n 1`"', "head -n", id="quoted backticks in a fed command"),
     pytest.param("seq 1 200000 | x=$(head -n 1)", "head -n", id="a fed assignment"),
+    pytest.param("seq 1 200000 | cat <(head -n 1)", "head -n", id="a process substitution in a fed command"),
     pytest.param("seq 1 200000 | { x=$(head -n 1); }", "head -n", id="an assignment in a fed group"),
     pytest.param("seq 1 200000 | printf '%s' a \"$(head -n 1)\"", "head -n", id="a later argument"),
     pytest.param("seq 1 200000 | echo $(true; head -n 1)", "head -n", id="a later command of the substitution"),
@@ -893,6 +897,8 @@ def test_a_suite_that_never_turns_pipefail_on_is_not_examined(tmp_path: Path) ->
         ),
         # A substitution reads the standard input of its own command, which no pipe feeds here.
         pytest.param("printf a | cat; echo $(head -n 1 file)", id="a substitution after the pipeline"),
+        # A >( ) substitution reads what its command writes into it, never the pipe.
+        pytest.param("printf a | tee >(head -n 1 >/dev/null)", id="a >( ) substitution in a fed command"),
         pytest.param("echo $(head -n 1 file) | cat", id="a substitution in the writer"),
         pytest.param("printf a | cat && x=$(head -n 1 file)", id="a substitution after &&"),
         pytest.param('printf a | { cat; }; echo "`head -n 1 file`"', id="quoted backticks after a fed group"),
@@ -902,14 +908,27 @@ def test_a_suite_that_never_turns_pipefail_on_is_not_examined(tmp_path: Path) ->
         pytest.param("f() { :; }; g() { echo $(head -n 1 file); }; printf a | f", id="another function's substitution"),
         pytest.param("bash -c 'echo $(head -n 1 file)'; printf a | cat", id="a shell no pipe feeds"),
         pytest.param("printf a | eval 'cat; echo' ; eval 'echo $(head -n 1 file)'", id="an eval no pipe feeds"),
-        # A substitution shlex cannot read, in a suite it can, runs nothing the reader can see, fed or not.
+    ],
+)
+def test_the_pipe_race_policy_passes_each_bash_form_that_reads_to_the_end(tmp_path: Path, script: str) -> None:
+    assert races_in(tmp_path, script) == []
+
+
+# A substitution the grammar cannot read leaves the suite unread, since Bash runs the lines before a syntax error: Bash
+# refuses the first and the last as a file, and the backquoted one when it runs it.
+@pytest.mark.parametrize(
+    "script",
+    [
         pytest.param('seq 1 200000 | echo "$(head -n \'x)"', id="an unreadable substitution"),
         pytest.param('seq 1 200000 | echo "`head -n \'x`"', id="unreadable backticks"),
         pytest.param('f() { echo "$(head -n \'x)"; }; seq 1 200000 | f', id="an unreadable one in a function"),
     ],
 )
-def test_the_pipe_race_policy_passes_each_bash_form_that_reads_to_the_end(tmp_path: Path, script: str) -> None:
-    assert races_in(tmp_path, script) == []
+def test_the_pipe_race_policy_names_a_suite_whose_substitution_bash_cannot_read(tmp_path: Path, script: str) -> None:
+    assert races_in(tmp_path, script) == [
+        "tests/test_race.sh cannot be read as Bash to find a pipe into a reader that ends early: a single quote is not "
+        "closed"
+    ]
 
 
 def test_the_pipe_race_policy_reads_each_function_of_ones_that_call_each_other_once(tmp_path: Path) -> None:

@@ -133,13 +133,16 @@ class BashSyntaxError(ValueError):
 class Source(str):
     """Text the reader takes from a script, a substitution's or a here-document's body, which keeps the script line
     each of its characters stands on, and one more for its end: `lines[index]` is the line of `self[index]`, and
-    `lines[len(self)]` the line its end stands on. It compares and hashes as the plain text it holds."""
+    `lines[len(self)]` the line its end stands on, and, for a substitution's text, the `form` that opened it: `$(`,
+    `` ` ``, `<(`, or `>(`. It compares and hashes as the plain text it holds."""
 
     lines: tuple[int, ...]
+    form: str
 
-    def __new__(cls, text: str, lines: Sequence[int]) -> Source:
+    def __new__(cls, text: str, lines: Sequence[int], form: str = "") -> Source:
         source = super().__new__(cls, text)
         source.lines = tuple(lines)
+        source.form = form
         return source
 
 
@@ -599,7 +602,7 @@ class Lexer:
                 array = True
             elif character in "<>" and self.peek(1) == "(":
                 parts.append(Part("dynamic", character + "("))
-                substitutions.append(self.balanced(self.index + 2))
+                substitutions.append(self.balanced(self.index + 2, character + "("))
             elif character in METACHARACTERS:
                 break
             elif character == "\\":
@@ -785,12 +788,13 @@ class Lexer:
             add_text(parts, "$", quoted=quoted)
             self.index += 1
 
-    def balanced(self, start: int) -> Source:
-        """The body of a `$( )`, `<( )`, or `>( )` that opens before start, read as commands up to its close."""
+    def balanced(self, start: int, form: str = "$(") -> Source:
+        """The body of a `$( )`, `<( )`, or `>( )`, the form that opens before start, read as commands up to its
+        close."""
         inner = Lexer(self.text, start, nested=True, lines=self.lines)
         inner.run()
         self.index = inner.index + 1
-        return Source(self.text[start : inner.index], self.lines[start : inner.index + 1])
+        return Source(self.text[start : inner.index], self.lines[start : inner.index + 1], form)
 
     def arithmetic(self, start: int, quotes: bool = False) -> list[str]:
         """The substitutions in arithmetic from start to the `))` that closes it, read past; with quotes set, as Bash
@@ -907,7 +911,7 @@ class Lexer:
                 index += 2
             elif character == "`":
                 self.index = index + 1
-                return Source("".join(body), [*numbers, self.lines[index]])
+                return Source("".join(body), [*numbers, self.lines[index]], "`")
             else:
                 body.append(character)
                 numbers.append(self.lines[index])

@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import ast
 import functools
-import io
 import itertools
 import re
 import sys
@@ -20,11 +19,22 @@ from pathlib import Path
 from typing import TypeGuard
 
 import file_presence
+from bash_syntax import (
+    BashSyntaxError,
+    Command,
+    CommandList,
+    FunctionDefinition,
+    Simple,
+    Source,
+    command_bodies,
+    command_words,
+    expanded_words,
+    here_documents,
+    parse,
+)
 from command_wrappers import (
     ASSIGNMENT,
-    CASE_ITEM_ENDS,
     COMMAND_WRAPPERS,
-    PIPES,
     SCRIPT_SHELLS,
     UNREAD_PROGRAM,
     bash_program,
@@ -38,7 +48,7 @@ from module_closure import MODULE_LOADERS
 from option_reader import OptionTable, option_table
 from path_containment import posix_within, within
 from shell_targets import run_bash_suite
-from skill_scripts import STANDARD_STREAMS, ShellLexer, substitution_spans
+from skill_scripts import STANDARD_STREAMS
 from toolchain import find_powershell
 from validation_support import (
     COMPUTED_NAME,
@@ -439,20 +449,10 @@ def suite_shape_problems(root: Path) -> list[str]:
     return problems
 
 
-# What ends a simple command in a Bash suite. A redirection's < and > stay in the command they belong to.
-COMMAND_BREAKS = frozenset({";", ";;", "&", "&&", "||", "|", "|&", "(", ")", "{", "}", "\n"})
-# Bash's compound commands, each by the keyword that opens it and the one that closes it; every command of one a pipe
-# feeds reads that pipe, as a group's do. The reserved words that may stand before a command's program in one, and a
-# header whose words are no command: `for name in words`, `select name in words`, `case word in`.
-COMPOUND_CLOSERS = {"if": "fi", "while": "done", "until": "done", "for": "done", "select": "done", "case": "esac"}
-COMMAND_LEADERS = frozenset({"if", "then", "elif", "else", "while", "until", "do", "!"})
-COMPOUND_HEADERS = frozenset({"for", "select", "case"})
 # A prefixed grep or head, as `ggrep` or `ghead`, is read as a program of its own, a stated limit, since no suite here
 # names one.
 GREP_PROGRAMS = frozenset({"grep", "egrep", "fgrep"})
 RIPGREP = "rg"
-# Bash's $'...' string, in which a backslash escapes a single quote.
-ANSI_C_STRING = re.compile(r"\$'(?:[^'\\]|\\.)*'", re.DOTALL)
 # grep's options that end it before what writes into it may have written everything: at a match (-q, -m), or at its
 # file's first match (-l, -L), as GNU grep documents "Scanning each input file stops upon first match".
 EARLY_EXIT_LETTERS = frozenset("qmlL")
@@ -514,7 +514,7 @@ def _command_words(words: list[str]) -> list[str]:
     """A command's words from the program it runs: past assignments, and each wrapper of WRAPPERS, whether named
     by a path or not, or under a package manager's prefix, such as `env`, `exec`, `timeout`, `command`, `sudo`,
     `/usr/bin/env`, or `gtimeout`, as `unwrapped` reads it, env's -S value split into the words it runs, and a wrapper
-    option it cannot place giving UNREAD_PROGRAM. xargs runs its command on no pipe, so it stays. _BashReader has
+    option it cannot place giving UNREAD_PROGRAM. xargs runs its command on no pipe, so it stays. _read_bash has
     already read past the reserved words that lead a command, so a word here that spells one is a literal, the program
     Bash runs."""
     while words:
@@ -626,7 +626,7 @@ class _ReaderWalk:
                 commands, inner = _read_bash(script)
             except ValueError:
                 return ""
-            body = [command for _, _, command in commands + _substituted_commands(script)]
+            body = [command for _, _, command in commands]
             functions = self._table({**functions, **inner})
         for command in body or []:
             if reader := self.reader(command, functions, depth + 1):
@@ -693,275 +693,94 @@ def _early_exit_grep(
     return ""
 
 
-class _ShellText(io.StringIO):
-    """A script shlex reads, whose comments leave their newline to be read, so a comment still ends its command."""
-
-    # typeshed gives StringIO both _TextIOBase.readline, returning str, and _IOBase.readline, returning bytes, and no
-    # override can match both.
-    def readline(self, size: int = -1, /) -> str:  # type: ignore[override]  # StringIO's bases disagree on the return
-        start = self.tell()
-        line = super().readline(size)
-        if line.endswith("\n"):
-            self.seek(start + len(line) - 1)
-            return line[:-1]
-        return line
+# A command Bash may run for a script, as (whether a pipe feeds its standard input, its line, its words from its
+# program), and the functions a script defines, by name, with the words of each command their bodies run.
+BashCommand = tuple[bool, int, list[str]]
 
 
-class _Frame:
-    """A group or compound command open where a Bash script is read: the word that closes it, whether a pipe feeds
-    it, the function whose body it is, if any, with the offset its body opens at, and, for a case, whether its
-    patterns are being read."""
+class _BashReading:
+    """The commands and functions of a Bash script, read from the tree of ejryan89-skill-core's bash_syntax, the
+    repository's one Bash grammar, as _read_bash describes them."""
 
-    def __init__(self, closer: str, fed: bool, function: str | None = None, start: int = 0) -> None:
-        self.closer, self.fed, self.function, self.start = closer, fed, function, start
-        self.patterns = False
-        self.case_word = closer == "esac"
-
-
-def _function_header(syntax: list[str | None]) -> str | None:
-    """The function a command's words define, as `name ()`, `function name`, or `function name ()`, or None, read from
-    each word's syntax, None for a literal, so a quoted `()` or `function` defines none."""
-    if len(syntax) == 2 and syntax[1] == "()" and syntax[0] != "function":
-        return syntax[0]
-    if syntax[:1] == ["function"] and len(syntax) in (2, 3) and syntax[2:] in ([], ["()"]):
-        return syntax[1]
-    return None
-
-
-class _BashReader:
-    """The commands and functions of a Bash script, read one shell part at a time, as _read_bash describes them."""
-
-    def __init__(self, script: str, stream: io.StringIO) -> None:
-        self.script, self.stream = script, stream
-        self.substitutions = [(start, start + len(text)) for start, text in substitution_spans(script)]
-        self.commands: list[tuple[str, int, list[str]]] = []
+    def __init__(self) -> None:
+        self.commands: list[BashCommand] = []
         self.functions: dict[str, list[list[str]]] = {}
-        self.before, self.line, self.offset = "\n", 0, 0
-        # The command read so far: each word beside its syntax, as ShellLexer gives them, None for a literal.
-        self.words: list[tuple[str, str | None]] = []
-        # Each group and compound command open here, innermost last. A parenthesis after a word, as in an unquoted
-        # `$(`, opens one too, fed when the one around it is, so each closing one has its own to close.
-        self.frames: list[_Frame] = []
-        # Whether a pipe feeds the command read so far, set at its first word, and the offset of each substitution in
-        # the script whose command a pipe feeds, since a substitution reads its command's standard input.
-        self.command_fed = False
-        self.unplaced = [start for start, _ in self.substitutions]
-        self.fed_substitutions: set[int] = set()
-        # Each function body closed so far, as its function and the offsets it opens and closes at.
-        self.bodies: list[tuple[str, int, int]] = []
+        # The body of each function definition being read, innermost last, which each command read is added to.
+        self.bodies: list[list[list[str]]] = []
 
-    def fed(self) -> bool:
-        return bool(self.frames) and self.frames[-1].fed
+    def read_list(self, node: CommandList, fed: bool) -> None:
+        """Read a list: a command after the first of its pipeline reads the pipe, and the first reads what the list
+        reads, in the background too, where Bash 5 keeps the standard input a pipe gives it, as Bash 3.2 does not."""
+        for and_or, _ in node.items:
+            for pipeline in [and_or.first, *(pipeline for _, pipeline in and_or.rest)]:
+                for place, command in enumerate(pipeline.commands):
+                    self.read_command(command, place > 0 or fed)
 
-    def place_substitutions(self) -> None:
-        """Mark each substitution the stream has reached as fed when a pipe feeds the command that holds it: the
-        command read so far, or, before its first word, the one that word begins."""
-        fed = self.command_fed if self.words else self.before in PIPES or self.fed()
-        reached = self.stream.tell()
-        while self.unplaced and self.unplaced[0] <= reached:
-            start = self.unplaced.pop(0)
-            if fed:
-                self.fed_substitutions.add(start)
-
-    def syntax(self) -> list[str | None]:
-        return [keyword for _, keyword in self.words]
-
-    def body_substitutions(self) -> None:
-        """Add to each function's body the commands of every substitution its body holds, at any depth, since each
-        reads the standard input of the command that holds it, which is the function's when nothing in the body pipes
-        into it; a substitution belongs to the innermost body around it."""
-        for start, end in self.substitutions:
-            around = [body for body in self.bodies if body[1] <= start and end <= body[2]]
-            if around:
-                function = max(around, key=lambda body: body[1])[0]
-                self.functions[function] += _commands_within(self.script[start:end])
-
-    def emit(self) -> None:
-        """Record the command read so far from its program, past the unquoted reserved words that lead it, unless it is
-        a compound command's header, whose words are no command, or stands inside a substitution, whose own reading
-        records it."""
-        leaders = len(list(itertools.takewhile(lambda keyword: keyword in COMMAND_LEADERS, self.syntax())))
-        words = self.words[leaders:]
-        if not words or words[0][1] in COMPOUND_HEADERS:
+    def read_command(self, node: Command, fed: bool) -> None:
+        """Read a command and every command it runs: a compound command's bodies read what it reads, and so does
+        each command or `<( )` substitution its words, its redirections, and an unquoted here-document's body hold,
+        since each reads its command's standard input; a `>( )` substitution reads what the command writes into it.
+        A function's definition runs nothing where it stands; its body is read as a command no pipe feeds, and kept
+        under its name for each command that calls it."""
+        if isinstance(node, FunctionDefinition):
+            self.bodies.append([])
+            self.read_command(node.body, False)
+            body = self.bodies.pop()
+            if node.name is not None:
+                self.functions[node.name] = body
             return
-        if not any(start <= self.offset <= end for start, end in self.substitutions):
-            command = [word for word, _ in words]
-            self.commands.append(("|" if self.fed() else self.before, self.line, command))
-            function = next((frame.function for frame in reversed(self.frames) if frame.function), None)
-            if function is not None:
-                self.functions[function].append(command)
-
-    def close(self, closer: str) -> None:
-        """End the innermost frame the word closes, and every frame left open inside it."""
-        index = next((i for i in range(len(self.frames) - 1, -1, -1) if self.frames[i].closer == closer), None)
-        if index is not None:
-            self.bodies += [
-                (frame.function, frame.start, self.stream.tell()) for frame in self.frames[index:] if frame.function
-            ]
-            del self.frames[index:]
-
-    def case_part(self, keyword: str | None) -> bool:
-        """Read a part of a case's word or patterns, which are no commands, and where `|` separates patterns, by its
-        syntax, None for a literal; False when no case is reading them."""
-        case = self.frames[-1] if self.frames and self.frames[-1].closer == "esac" else None
-        if case is None or not (case.patterns or case.case_word):
-            return False
-        if case.case_word and keyword == "in":
-            case.case_word, case.patterns, self.words = False, True, []
-        elif case.patterns and keyword == "esac":
-            self.close("esac")
-        elif case.patterns and keyword == ")":
-            case.patterns, self.before = False, "\n"
-        return True
-
-    def word(self, part: str, keyword: str | None, at_command: bool) -> None:
-        """Read a word beside its syntax: the first of a command sets its line, and an unquoted reserved word opens or
-        closes a compound."""
-        if not self.words:
-            self.offset = max(self.stream.tell() - 1, 0)
-            self.line = self.script.count("\n", 0, self.offset) + 1
-            self.command_fed = self.before in PIPES or self.fed()
-        if at_command and keyword in COMPOUND_CLOSERS:
-            self.frames.append(_Frame(COMPOUND_CLOSERS[keyword], self.before in PIPES or self.fed()))
-        elif not self.words and keyword is not None and keyword in COMPOUND_CLOSERS.values():
-            self.close(keyword)
-        self.words.append((part, keyword))
-
-    def ends_case_item(self, part: str) -> bool:
-        """Read `;;`, `;&`, or `;;&` in a case's commands, after which its patterns follow; False for any other part."""
-        case = self.frames[-1] if self.frames and self.frames[-1].closer == "esac" else None
-        if case is None or not (
-            part in CASE_ITEM_ENDS or (part == "&" and not self.words and self.before in {";", ";;"})
-        ):
-            return False
-        self.emit()
-        self.before, self.words, case.patterns = part, [], True
-        return True
-
-    def operator(self, part: str, at_command: bool) -> None:
-        """Read an operator: it ends the command before it, and opens or closes a group, or a function's body."""
-        function = _function_header(self.syntax())
-        opens = part == "(" or (part == "{" and (at_command or function is not None))
-        closes = part == ")" or (part == "}" and not self.words)
-        feeds = (at_command and self.before in PIPES) or self.fed()
-        if function is not None and opens:
-            self.functions[function], self.words = [], []
-        if self.words:
-            self.emit()
-            self.before, self.words = part, []
-        elif part != "\n":
-            self.before = part
-        if opens:
-            self.frames.append(
-                _Frame(")" if part == "(" else "}", feeds and function is None, function, self.stream.tell())
-            )
-        elif closes:
-            self.close(part)
-
-    def part(self, part: str, keyword: str | None) -> None:
-        """Read a part as ShellLexer gives it, beside its syntax: a literal's, quoted or escaped, is None, and reads as
-        a word that breaks, opens, closes, and leads nothing."""
-        self.place_substitutions()
-        if self.case_part(keyword):
-            return
-        syntax = self.syntax()
-        at_command = all(word in COMMAND_LEADERS for word in syntax)
-        if keyword is None or keyword not in COMMAND_BREAKS or (keyword == "&" and syntax[-1:] in (["<"], [">"])):
-            self.word(part, keyword, at_command)
-        elif not self.ends_case_item(part):
-            self.operator(part, at_command)
+        if isinstance(node, Simple) and (words := command_words(node)):
+            self.commands.append((fed, node.line, words))
+            if self.bodies:
+                self.bodies[-1].append(words)
+        for source in [text for word in expanded_words(node) for text in word.substitutions]:
+            self.read_list(parse(source), fed and not (isinstance(source, Source) and source.form == ">("))
+        for document in here_documents(node):
+            for source in document.substitutions:
+                try:
+                    tree = parse(source)
+                except BashSyntaxError:
+                    continue  # a body's substitution Bash cannot read runs nothing, as bash_syntax reads it
+                self.read_list(tree, fed)
+        for body in command_bodies(node):
+            self.read_list(body, fed)
 
 
-def _bash_reading(script: str) -> _BashReader:
-    """A Bash script read to its end, as _read_bash describes it, with the substitutions whose command a pipe feeds.
-    Raises ValueError for a script shlex cannot read."""
-    # A line continuation becomes two spaces, and an ANSI-C string, whose \' shlex would read as its end, a word and a
-    # plain single-quoted string of the same length and lines, so each offset still names its line as written.
-    plain = ANSI_C_STRING.sub(lambda match: "x'" + re.sub(r"[^\n]", "x", match[0][2:-1]) + "'", script)
-    stream = _ShellText(plain.replace("\\\n", "  "))
-    reader = _BashReader(script, stream)
-    for part, keyword in ShellLexer(stream).words():
-        reader.part(part, keyword)
-    reader.place_substitutions()
-    reader.emit()
-    reader.body_substitutions()
-    return reader
-
-
-def _read_bash(script: str) -> tuple[list[tuple[str, int, list[str]]], dict[str, list[list[str]]]]:
-    """Each simple command a Bash script runs, outside quotes and comments, as (the break before it, its line, its
-    words), and each function it defines with a brace or subshell body, by name, with its body's commands. A pipe or a
-    list operator at the end of a line carries over to the command on the next. Every command of a group or a compound
-    command (`if`, `while`, `until`, `for`, `select`, `case`) a pipe feeds, and of one inside it, reads that pipe, so
-    its break is given as `|`; a case's patterns are read as patterns, never as commands or pipes. A command whose
-    first word stands inside a command substitution is left to the reading of that substitution. Raises ValueError
-    for a script shlex cannot read."""
-    reader = _bash_reading(script)
-    return reader.commands, reader.functions
-
-
-def _bash_commands(script: str) -> list[tuple[str, int, list[str]]]:
-    """Each simple command a Bash script runs, as _read_bash reads them. Raises ValueError for a script shlex cannot
-    read."""
-    return _read_bash(script)[0]
-
-
-def _commands_and_fed_substitutions(script: str) -> tuple[list[tuple[str, int, list[str]]], set[int]]:
-    """A script's commands, as _read_bash reads them, and the offset of each substitution in it whose command a pipe
-    feeds, as _BashReader places them; neither for a script shlex cannot read."""
+def _read_bash(script: str) -> tuple[list[BashCommand], dict[str, list[list[str]]]]:
+    """Each simple command a Bash script may run, as (whether a pipe feeds it, its line, its words from its program),
+    and each function it defines, by name, with the words of each command its body runs, read through
+    ejryan89-skill-core's bash_syntax, the repository's one Bash grammar: a command wherever Bash starts one, in a
+    list, a pipeline, a compound command, a function's body, and each command or process substitution, and never in a
+    comment, a here-document's body, or a case's word or patterns. Every command of a group or a compound command a
+    pipe feeds, and of one inside it, reads that pipe, and so does each command of a substitution a fed command holds.
+    Raises BashSyntaxError, a ValueError, for a script the grammar refuses, or one of whose substitutions it refuses:
+    Bash runs the lines before a syntax error, so none of its pipes can be trusted as read."""
+    reading = _BashReading()
     try:
-        reader = _bash_reading(script)
-    except ValueError:
-        return [], set()
-    return reader.commands, reader.fed_substitutions
+        reading.read_list(parse(script), False)
+    except RecursionError:
+        raise BashSyntaxError("it nests deeper than the reader follows") from None
+    return reading.commands, reading.functions
 
 
-def _commands_within(script: str) -> list[list[str]]:
-    """The words of every command a script runs, its own and those of each substitution it holds, at any depth, for a
-    script whose commands all read one standard input; none for a script shlex cannot read."""
-    commands, _ = _commands_and_fed_substitutions(script)
-    return [words for _, _, words in commands + _substituted_commands(script)]
-
-
-def _substituted_commands(script: str) -> list[tuple[str, int, list[str]]]:
-    """The commands each command substitution in a script runs, `$(...)` or backticks, quoted or not, as
-    skill_scripts.substitution_spans finds them, at their own lines, and the commands of the substitutions they hold
-    in turn; one shlex cannot read runs nothing this reader can see. A substitution reads the standard input of the
-    command that holds it, so each command of one whose command a pipe feeds, and of each substitution it holds in
-    turn, reads that pipe, and its break is given as `|`."""
-    found: list[tuple[str, int, list[str]]] = []
-    _, fed = _commands_and_fed_substitutions(script)
-    pending = [(script.count("\n", 0, offset), text, offset in fed) for offset, text in substitution_spans(script)]
-    while pending:
-        lines_before, text, piped = pending.pop()
-        inner, fed = _commands_and_fed_substitutions(text)
-        found += [("|" if piped else before, lines_before + line, words) for before, line, words in inner]
-        pending += [
-            (lines_before + text.count("\n", 0, offset), nested, piped or offset in fed)
-            for offset, nested in substitution_spans(text)
-        ]
-    return found
-
-
-def _shell_scripts_run(commands: list[tuple[str, int, list[str]]], depth: int = 0) -> list[tuple[str, int, list[str]]]:
-    """The commands each shell -c script and each eval among these commands runs, its substitutions' as
-    _substituted_commands reads them included, at the line of the command that runs it, and those of the scripts they
-    run in turn; one shlex cannot read runs nothing this reader can see."""
-    found: list[tuple[str, int, list[str]]] = []
+def _shell_scripts_run(commands: list[BashCommand], depth: int = 0) -> list[BashCommand]:
+    """The commands each shell -c script and each eval among these commands runs, as _read_bash reads them, at the
+    line of the command that runs it, and those of the scripts they run in turn; one the grammar refuses runs nothing
+    this reader can see."""
+    found: list[BashCommand] = []
     for _, line, words in commands:
         script = _shell_script(_command_words(words))
         if script is None or depth > NESTING_LIMIT:
             continue
         try:
-            inner = _bash_commands(script)
+            inner = [(fed, line, inner_words) for fed, _, inner_words in _read_bash(script)[0]]
         except ValueError:
             continue
-        inner = [(before, line, inner_words) for before, _, inner_words in inner + _substituted_commands(script)]
         found += inner + _shell_scripts_run(inner, depth + 1)
     return found
 
 
-def _sets_pipefail(script: str, commands: list[tuple[str, int, list[str]]]) -> bool:
+def _sets_pipefail(script: str, commands: list[BashCommand]) -> bool:
     """Whether a script turns pipefail on: by set or shopt naming it, as `set -o pipefail`, `set -euo pipefail`,
     `shopt -so pipefail`, or `builtin set -o pipefail` write it, in the script or in a script it runs through a shell or
     eval; by a shell started with `-o pipefail`; or by SHELLOPTS naming it, which a shell started under it takes."""
@@ -980,21 +799,24 @@ def pipe_race_problems(root: Path) -> list[str]:
 
     grep -q, -m, -l, or -L, ripgrep's -q, -m, or -l, and head can exit before the command writing into them has
     written everything; the writer then dies of SIGPIPE, and pipefail fails the pipeline though the check held, so it
-    fails at random. The reader is found in any shape around it: right after the pipe; in a brace or subshell group or
-    a compound command (`if`, `while`, `until`, `for`, `select`, `case`) the pipe feeds; in the body of a function
-    the pipe runs; in the script a shell's -c or eval runs; in a `$(...)` or backtick substitution, quoted or not,
-    whether the pipe stands inside it or feeds the command, function body, or -c or eval script that holds it, whose
-    standard input it reads; named by a path; or behind an assignment, a reserved word, or a wrapper such as `env`
+    fails at random. The suite is read through ejryan89-skill-core's bash_syntax, the repository's one Bash grammar,
+    and one it refuses, or one of whose substitutions it refuses, is reported as unread. The reader is found in any
+    shape around it: right after the pipe; in a brace or subshell group or a compound command (`if`, `while`, `until`,
+    `for`, `select`, `case`) the pipe feeds; in the body of a function the pipe runs, whatever compound command the
+    body is; in the script a shell's -c or eval runs; in a `$(...)`, backtick, or `<(...)` substitution, quoted or
+    not, whether the pipe stands inside it or feeds the command, function body, or -c or eval script that holds it,
+    whose standard input it reads; in the background in a group the pipe feeds, whose standard input Bash 5 keeps;
+    named by a path; or behind an assignment, a reserved word, or a wrapper such as `env`
     (its -S line included), `exec`, `timeout`, `command`, `builtin`, or `sudo`, each named by a path or not; head is
     judged by the last count it is given. A suite turns pipefail on by set or shopt, in any spelling Bash takes, in the
     suite or in a script it runs through a shell or eval, by a shell started with `-o pipefail`, or by SHELLOPTS naming
     it. Each race is reported once.
 
     What it does not see: another reader that ends early, such as `read`, `sed q`, `awk` with `exit`, a loop that
-    breaks, or a command that reads nothing; a reader in a process substitution such as `>(head)`, in a script a file
-    holds, as `bash script.sh` or `source` runs it, in a function whose body is a compound command, or behind a
+    breaks, or a command that reads nothing; a reader in a `>(...)` substitution, which reads what its command
+    writes rather than the pipe, in a script a file holds, as `bash script.sh` or `source` runs it, or behind a
     wrapper not named here, such as `coproc`; `head --help` or `--version`; and pipefail turned off again. A command
-    in a fed group whose input is redirected from a file is refused all the same.
+    in a fed group whose input is redirected from a file or a here-document is refused all the same.
     """
     problems: list[str] = []
     for suite in regression_suites(root):
@@ -1007,14 +829,11 @@ def pipe_race_problems(root: Path) -> list[str]:
         except ValueError as error:
             problems.append(f"{name} cannot be read as Bash to find a pipe into a reader that ends early: {error}")
             continue
-        commands += _substituted_commands(text)
         commands += _shell_scripts_run(commands)
         if not _sets_pipefail(text, commands):
             continue
         races = {
-            (line, reader)
-            for before, line, words in commands
-            if before in PIPES and (reader := _early_exit_reader(words, functions))
+            (line, reader) for fed, line, words in commands if fed and (reader := _early_exit_reader(words, functions))
         }
         problems += [
             f"{name}:{line} pipes into {reader} under pipefail, which fails the check when the writer dies "
