@@ -637,8 +637,8 @@ class CodeReader:
         """Add the codes each value the function binds to a local name can be.
 
         Each value is read once for each element and each scope, as _scope_key tells scopes apart: a value that reads
-        its own name, as `code = code if flag else 2`, leads back to itself, and adds no code its first read has not, since
-        the codes are their union."""
+        its own name, as `code = code if flag else 2`, leads back to itself, and adds no code its first read has not,
+        since the codes are their union."""
         assert scope.function is not None
         given = _scope_key(scope)
         for value, position in _assigned(scope.function, node.id):
