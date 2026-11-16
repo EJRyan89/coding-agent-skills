@@ -64,6 +64,11 @@ class WordTests(unittest.TestCase):
         self.assertEqual(["git", "switch", "main"], [word.raw for word in command.words])
         self.assertEqual([">&", ">", ">"], [redirect.operator for redirect in command.redirects])
 
+    def test_each_substitution_keeps_the_form_that_opened_it(self) -> None:
+        command = first_simple("echo $(a) `b` <(c) >(d) \"$(e)\"")
+        forms = [getattr(text, "form", None) for word in command.words for text in word.substitutions]
+        self.assertEqual(["$(", "`", "<(", ">(", "$("], forms)
+
     def test_an_array_assignment_is_one_word_whose_value_only_running_settles_and_whose_substitutions_run(
         self,
     ) -> None:

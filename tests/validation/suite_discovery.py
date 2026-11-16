@@ -742,8 +742,8 @@ class _BashReading:
                 except BashSyntaxError:
                     continue  # a body's substitution Bash cannot read runs nothing, as bash_syntax reads it
                 self.read_list(tree, fed)
-        for body in command_bodies(node):
-            self.read_list(body, fed)
+        for listed in command_bodies(node):
+            self.read_list(listed, fed)
 
 
 def _read_bash(script: str) -> tuple[list[BashCommand], dict[str, list[list[str]]]]:

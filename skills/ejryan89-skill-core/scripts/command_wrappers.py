@@ -130,11 +130,6 @@ SHELL_ARGUMENT_LETTERS = frozenset("oO")
 BASH_LONG_OPTIONS_WITH_VALUE = frozenset({"--rcfile", "--init-file"})
 # A shell variable's assignment, which may stand before a command's program, as `A=1` or `a[0]+=x`.
 ASSIGNMENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*(\[[^\]]*\])?\+?=")
-# A pipe hands the next command what the one before it writes; `time` after one is the time program, not Bash's
-# keyword.
-PIPES = frozenset({"|", "|&"})
-# The operators that end a case item's commands, after which the next item's patterns stand.
-CASE_ITEM_ENDS = frozenset({";;", ";&", ";;&"})
 # What a reader records for a program a wrapper runs but that no literal names, such as `xargs "$tool"`, so the command
 # policy refuses it rather than passing it unseen; it never names a program.
 UNREAD_PROGRAM = "<unread> "

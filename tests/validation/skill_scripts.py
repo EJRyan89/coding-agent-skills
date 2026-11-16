@@ -32,7 +32,9 @@ from bash_syntax import (
     every_command,
     expanded_words,
     here_documents,
+    line_numbers,
     parse,
+    source_lines,
     unsettled_part,
     word_text,
 )
@@ -2762,22 +2764,26 @@ class _TemporaryBash:
                 self.read_substitutions(word.substitutions)
             self.place += 1
         for document in here_documents(node):
-            body = document.body.replace("$", LITERAL_DOLLAR) if document.quoted else document.body
-            self.name(body, document.body.lines)
+            text = document.body.replace("$", LITERAL_DOLLAR) if document.quoted else document.body
+            self.name(text, source_lines(document.body) or line_numbers(document.body))
             for source in document.substitutions:
-                with contextlib.suppress(BashSyntaxError):
-                    # A body's substitution Bash cannot read runs nothing, as bash_syntax reads it.
-                    self.read_substitutions((source,), parse(source))
+                try:
+                    tree = parse(source)
+                except BashSyntaxError:
+                    continue  # a body's substitution Bash cannot read runs nothing, as bash_syntax reads it
+                if not self.runs_judge(source):
+                    self.read_list(tree)
             self.place += 1
         if isinstance(node, Simple):
             self.judge_mktemp(node)
-        for body in command_bodies(node):
-            self.read_list(body)
+        for listed in command_bodies(node):
+            self.read_list(listed)
 
-    def read_substitutions(self, sources: Sequence[str], tree: CommandList | None = None) -> None:
+    def read_substitutions(self, sources: Sequence[str]) -> None:
+        """Read the commands each substitution runs, unless it runs the judge."""
         for source in sources:
             if not self.runs_judge(source):
-                self.read_list(parse(source) if tree is None else tree)
+                self.read_list(parse(source))
 
     def assign(self, word: Word) -> None:
         """Give the variable a word assigns the value it holds from here on."""

@@ -144,9 +144,9 @@ def _bash_tokens(text: str) -> list[tuple[int, str, bool | None]]:
     placed: dict[int, tuple[int, bool | None]] = {}
     for command in every_command(marked):
         for word in expanded_words(command):
-            for index, rank, quoted in _word_markers(word):
+            for index, rank, verdict in _word_markers(word):
                 if placed.get(index, (3, False))[0] > rank:
-                    placed[index] = (rank, quoted)
+                    placed[index] = (rank, verdict)
         for document in here_documents(command):
             for marker in TOKEN_MARKER.finditer(document.body):
                 placed.setdefault(int(marker.group(1)), (2, True))

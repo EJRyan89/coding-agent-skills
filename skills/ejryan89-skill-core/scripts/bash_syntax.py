@@ -1,5 +1,6 @@
 """Bash command text read by Bash's own grammar: the repository's one Bash grammar, which the hub guard in
-tools/hub_guard.py reads a command through and git_subcommands a skill's script.
+tools/hub_guard.py reads a command through, git_subcommands and audit-skill a skill's script, and validation's
+policies every script, fence, and template they read Bash in.
 
 `parse` splits a command into words and operators by Bash's quoting rules (single and double quotes, `$'...'`,
 backslash escapes and line continuations, comments, and here-documents, whose bodies are data and never commands)
@@ -18,7 +19,9 @@ redirection. A word keeps its parts apart, so a reader
 can tell literal text from a `$NAME` it must look up and from what only running the command settles: a command or
 process substitution, arithmetic, a special parameter, a glob, or a brace expansion. The text of every command and
 process substitution, and of each one in an unquoted here-document's body, is kept for a reader to read as the
-subshell Bash runs it in.
+subshell Bash runs it in. A `$( )` body is read as a command list, as Bash 4 and later read it, so a case pattern's
+`)` inside it closes the pattern, not the substitution, where Bash 3.2 ends the substitution and refuses the rest; each
+substitution's text keeps the form that opened it.
 
 Every word, operator, and simple command keeps the line it starts on, counted from 1 at each LF alone, as Bash counts
 its lines, so a reader can place what it finds on the script's own line. The text of a substitution or of a
