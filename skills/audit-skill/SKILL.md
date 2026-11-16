@@ -56,6 +56,8 @@ It scans the main file and every `doc` file, then compares the status lines they
 
 Each `CUE <file> <line> <cue> <text>` is a candidate, not a finding. Read it in context and keep only real findings, anchored as `file:line`. Frontmatter is skipped, and only `wide-glob`, `generated-code`, and `shell-file-command` apply inside fenced blocks.
 
+`shell-file-command` reads a `bash`, `sh`, `shell`, `zsh`, `ksh`, or `dash` fence whole, as Bash reads it, on the line each command starts. `BASH_UNREADABLE <file> <line> <reason>` is such a fence, opened at that line, that Bash would refuse as written, so none of its commands were read → SUGGESTION: recommend Bash that runs as written, such as a placeholder quoted as `'<file>'`.
+
 | Pattern | Cue | Severity | Recommendation |
 |---|---|---|---|
 | Multiple shell steps described sequentially with no data dependency | — | SUGGESTION | "Issue these in a single assistant turn as parallel tool calls" |

@@ -1283,8 +1283,8 @@ class ScanTests(TemporaryTestCase):
 
     def test_a_fenced_file_command_is_read_past_keywords_assignments_and_wrappers(self) -> None:
         for command in (
-            "then cat notes.txt",
-            "if grep -q x file; then",
+            "if true; then cat notes.txt; fi",
+            "if grep -q x file; then :; fi",
             "A=1 grep x file",
             "time ls",
             "env LC_ALL=C sort < x | xargs wc -l",
@@ -4053,7 +4053,9 @@ def test_a_powershell_comment_runs_to_the_line_its_tokenizer_breaks(separator: s
 
 def test_a_bash_comment_runs_to_the_line_feed_alone() -> None:
     assert skill_inventory.shell_facts("# note\rexit 4\n", ".sh").codes == {0}
-    assert skill_inventory.shell_facts("echo DONE\rexit 4\n", ".bash").codes == {0, 4}
+    # Bash reads a CR as part of its line, so `exit` after it is one of echo's words: `printf 'echo DONE\rexit 4\n' |
+    # bash` exits 0.
+    assert skill_inventory.shell_facts("echo DONE\rexit 4\n", ".bash").codes == {0}
 
 
 @SEPARATOR
@@ -4071,3 +4073,100 @@ def test_a_status_line_is_placed_on_the_line_commonmark_breaks(separator: str, t
 def test_a_skills_markdown_is_read_in_the_lines_commonmark_breaks(separator: str, tmp_path: Path) -> None:
     main = write(tmp_path / "SKILL.md", f"---\nname: alpha\n---\nIntro{separator}more\n")
     assert skill_inventory.skill_markdown(tmp_path) == [(main, ["---", "name: alpha", "---", f"Intro{separator}more"])]
+
+
+def cued_lines(lines: list[str], cue: str) -> list[int]:
+    return [int(line.split()[2]) for line in lines if line.startswith("CUE ") and line.split()[3] == cue]
+
+
+def test_a_bash_fence_is_read_whole_with_each_command_on_the_line_it_starts(tmp_path: Path) -> None:
+    skill = write(
+        tmp_path / "SKILL.md",
+        "```bash\n"
+        "echo start \\\n"
+        "  | grep x\n"  # 3: a continued command's pipe
+        "cat <<EOF\n"  # 4
+        "head is data\n"  # 5: a here-document's body runs nothing
+        "EOF\n"
+        "printf '%s\\n' \"a\n"
+        'b" | sort | tail -n 1\n'  # 8: after a quoted string that spans lines
+        'case "$(echo x | sed -n 1p)" in x) : ;; esac\n'  # 9: a case word's substitution runs
+        "# cat in a comment\n"
+        'echo "cat quoted"\n'
+        "```\n",
+    )
+    assert cued_lines(skill_inventory.scan([skill]), "shell-file-command") == [3, 4, 8, 9]
+
+
+def test_a_bash_fence_bash_refuses_is_named_unread_and_other_fences_hold_no_bash(tmp_path: Path) -> None:
+    skill = write(
+        tmp_path / "SKILL.md",
+        "Intro.\n"
+        "```sh\n"  # 2
+        "if grep -q x file; then\n"
+        "```\n"
+        "```\n"
+        "cat untagged\n"
+        "```\n"
+        "```console\n"
+        "$ cat x\n"
+        "```\n"
+        "```powershell\n"
+        "cat x\n"
+        "```\n",
+    )
+    lines = skill_inventory.scan([skill])
+    assert f"BASH_UNREADABLE {skill.as_posix()} 2 expected `fi`" in lines
+    assert cued_lines(lines, "shell-file-command") == []
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        # Bash ends a line at LF alone, and scan numbers a file's lines where text_lines breaks them, CR included.
+        ("echo a\r\ncat x\n", [2]),
+        ("echo a\rcat x\nhead y\n", [3]),
+    ],
+)
+def test_a_bash_script_given_to_scan_is_read_whole_on_the_lines_scan_numbers(
+    text: str, expected: list[int], tmp_path: Path
+) -> None:
+    script = write(tmp_path / "tool.sh", text)
+    assert cued_lines(skill_inventory.scan([script]), "shell-file-command") == expected
+
+
+def test_a_bash_script_bash_refuses_given_to_scan_is_named_unread_on_its_first_line(tmp_path: Path) -> None:
+    script = write(tmp_path / "tool.sh", "if true; then\ncat x\n")
+    lines = skill_inventory.scan([script])
+    assert f"BASH_UNREADABLE {script.as_posix()} 1 expected `fi`" in lines
+    assert cued_lines(lines, "shell-file-command") == []
+
+
+def test_a_bash_script_s_facts_are_read_as_bash_runs_it() -> None:
+    script = (
+        "\f# READY\n"  # Bash runs the program $'\\f#', so this is no comment
+        "echo DONE # NOTE\n"
+        'log "echo QUOTED"\n'
+        'eval "echo GONE"\n'  # 4
+        "cat <<EOF\n"
+        "echo BODY\n"
+        "exit 3\n"
+        "EOF\n"
+        "echo \\\n"
+        "  STARTED\n"  # printed by the command on line 9
+        "trap 'exit 5' HUP\n"
+        "exit 4\n"
+    )
+    facts = skill_inventory.shell_facts(script, ".sh")
+    assert facts.lines == {"DONE": 2, "GONE": 4, "STARTED": 9}
+    assert facts.codes == {0, 4}
+    assert facts.words == {"READY", "DONE", "QUOTED", "GONE", "EOF", "BODY", "STARTED", "HUP"}
+
+
+def test_a_bash_script_bash_refuses_stops_the_status_comparison(tmp_path: Path) -> None:
+    folder = tmp_path / "alpha"
+    write(folder / "SKILL.md", "---\nname: alpha\n---\nRun it.\n")
+    script = write(folder / "scripts" / "tool.sh", "if true; then\necho DONE\n")
+    with pytest.raises(skill_inventory.InputError, match=r"not Bash the grammar reads \(expected `fi`\)$") as raised:
+        skill_inventory.status_lines(folder)
+    assert str(raised.value) == f"cannot read {script.as_posix()}: not Bash the grammar reads (expected `fi`)"

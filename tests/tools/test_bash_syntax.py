@@ -755,3 +755,121 @@ def test_a_documented_limit_a_quoted_parenthesis_in_these_arithmetic_forms_which
     assert bash_agreement.bash_verdicts([text])[text][0]
     with pytest.raises(BashSyntaxError):
         bash_syntax.parse(text)
+
+
+# A script whose every command is `:` with a tag, each on the line the comment beside it names, and the line the
+# reader places each on: the line its first word stands on.
+TRACED_SCRIPT = (
+    "PS4='+$LINENO '; set -x\n"
+    ": one\n"  # 2
+    ": two \\\n"  # 3, continued on 4
+    "  continued\n"
+    "cat >/dev/null <<EOF; : after-body\n"  # 5
+    "body $(: in-body) `: in-backquote`\n"  # 6, the body's line
+    "EOF\n"
+    ": three; : four\n"  # 8
+    "if : cond\n"  # 9
+    "then : then-branch\n"  # 10
+    "fi\n"
+    "f() {\n"
+    "  : in-function\n"  # 13
+    "}\n"
+    "f\n"
+    "x=$(\n"  # 16
+    ": in-substitution\n"  # 17
+    ")\n"
+    "2>/dev/null : redirected\n"  # 19
+    "while : loop; do break; done\n"  # 20
+    "case x in\n"
+    "  x) : in-case ;;\n"  # 22
+    "esac\n"
+    "{ : in-group; }\n"  # 24
+    "( : in-subshell )\n"  # 25
+    "\\\n"
+    ": after-continuation\n"  # 27
+)
+TRACED_LINES = {
+    "one": 2,
+    "two": 3,
+    "after-body": 5,
+    "in-body": 6,
+    "in-backquote": 6,
+    "three": 8,
+    "four": 8,
+    "cond": 9,
+    "then-branch": 10,
+    "in-function": 13,
+    "in-substitution": 17,
+    "redirected": 19,
+    "loop": 20,
+    "in-case": 22,
+    "in-group": 24,
+    "in-subshell": 25,
+    "after-continuation": 27,
+}
+# The commands whose line Bash's $LINENO gives otherwise: one in a substitution or in an unquoted here-document's
+# body, which Bash 3.2 and 5.3 trace on the line the command holding it starts or ends on. The reader gives the line
+# the command's own text stands on, where an author finds it.
+SUBSTITUTED = frozenset({"in-body", "in-backquote", "in-substitution"})
+
+
+def tagged_lines(text: str) -> dict[str, int]:
+    return {
+        words[1]: command.line
+        for command in bash_syntax.simple_commands(text)
+        if (words := bash_syntax.command_words(command))[:1] == [":"] and len(words) > 1
+    }
+
+
+def test_each_command_keeps_the_line_its_first_word_stands_on_as_bash_traces_it(tmp_path: Path) -> None:
+    script = tmp_path / "traced.sh"
+    script.write_bytes(TRACED_SCRIPT.encode("utf-8"))
+    result = platform_support.run_tool([bash_agreement.find_bash(), platform_support.normalize(script)])
+    traced = {
+        words[2]: int(words[0].lstrip("+"))
+        for words in (line.split() for line in result.output.splitlines())
+        if len(words) > 2 and words[0].startswith("+") and words[1] == ":"
+    }
+    assert result.returncode == 0, result.output
+    assert tagged_lines(TRACED_SCRIPT) == TRACED_LINES
+    assert {tag: line for tag, line in traced.items() if tag not in SUBSTITUTED} == {
+        tag: line for tag, line in TRACED_LINES.items() if tag not in SUBSTITUTED
+    }
+    # Bash traces these on another line, which the reader does not take.
+    assert all(traced[tag] != TRACED_LINES[tag] for tag in SUBSTITUTED)
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        # Bash ends a line at LF alone, so a CR is part of the line, CRLF or alone.
+        (": a\r\n: b\r\n", {"a": 1, "b": 2}),
+        (": a\r: b\n: c\n", {"a": 1, "c": 2}),
+        # A substitution in an unquoted body after a line its backslash continues, and in a body whose tabs `<<-`
+        # strips, keeps its own line.
+        ("cat <<EOF\na \\\nb $(: x)\nEOF\n: after\n", {"x": 3, "after": 5}),
+        ("cat <<-EOF\n\t\t$(: x)\n\t$(\n: y\n)\n\tEOF\n", {"x": 2, "y": 4}),
+        # A backquote's escaped backquote, which the reader removes, leaves the line of the text after it.
+        ("echo `echo \\`: x\\`\n: y`\n", {"x": 1, "y": 2}),
+        # A substitution in an arithmetic command, a redirection's target, and a nested substitution.
+        ("((\n$(: x)\n))\n: y >$(\n: z\n)\n", {"x": 2, "y": 4, "z": 5}),
+        ("echo $(echo $(\n\n: x))\n", {"x": 3}),
+    ],
+)
+def test_a_command_keeps_its_script_line_wherever_it_stands(text: str, expected: dict[str, int]) -> None:
+    bash_agreement.assert_reader_agrees([text])
+    assert tagged_lines(text) == expected
+
+
+def test_a_substitution_and_a_body_keep_the_script_line_of_each_character() -> None:
+    word = first_simple("echo x$(\n: a)`: b`").words[1]
+    found = [(text, bash_syntax.source_lines(text)) for text in word.substitutions]
+    assert found == [("\n: a", (1, 2, 2, 2, 2)), (": b", (2, 2, 2, 2))]
+    redirect = first_simple("cat <<EOF\na\n\nb\nEOF\n").redirects[0]
+    assert redirect.here is not None
+    assert isinstance(redirect.here.body, bash_syntax.Source)
+    assert redirect.here.body.lines == (2, 2, 3, 4, 4)
+    empty = first_simple("cat <<EOF\nEOF\n").redirects[0].here
+    assert empty is not None
+    assert isinstance(empty.body, bash_syntax.Source)
+    assert empty.body.lines == (3,)

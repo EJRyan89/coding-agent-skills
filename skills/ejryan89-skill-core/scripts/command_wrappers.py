@@ -134,8 +134,6 @@ ASSIGNMENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*(\[[^\]]*\])?\+?=")
 PIPES = frozenset({"|", "|&"})
 # The operators that end a case item's commands, after which the next item's patterns stand.
 CASE_ITEM_ENDS = frozenset({";;", ";&", ";;&"})
-# The words Bash's time keyword takes before the pipeline it times, each unquoted, each optional, and in this order.
-TIME_KEYWORD_OPTIONS: tuple[str, ...] = ("-p", "--")
 # What a reader records for a program a wrapper runs but that no literal names, such as `xargs "$tool"`, so the command
 # policy refuses it rather than passing it unseen; it never names a program.
 UNREAD_PROGRAM = "<unread> "

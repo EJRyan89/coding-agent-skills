@@ -248,7 +248,7 @@ def test_a_helper_of_the_script_named_for_git_that_starts_none_names_no_subcomma
 
 
 def test_helpers_named_for_git_that_only_call_each_other_name_no_subcommand() -> None:
-    # A reader's recursion, as git_subcommands' command_git_subcommands and bash_git_subcommands make, starts no git.
+    # A reader's recursion, as git_subcommands' program_git_subcommands and bash_git_subcommands make, starts no git.
     source = """
         def command_git_subcommands(words):
             return bash_git_subcommands(" ".join(words)) if words else set()

@@ -45,8 +45,8 @@ including the fence lines, are code and the rest is prose. A helper script or da
 counts 0, since it is measured rather than loaded. A Markdown file the skill loads, its own or one it reads from
 outside its folder, that is not UTF-8 text prints UNREADABLE <path> <reason> instead of a cost, the path relative to
 the skill folder, and inventory exits 1 after it; tools and scan, which read the text itself, fail on one. scan fails
-too on a script whose status lines it compares that is not UTF-8 text or not valid Python, whose output it cannot
-measure.
+too on a script whose status lines it compares that is not UTF-8 text, not valid Python, or Bash the one Bash grammar
+refuses, whose output it cannot measure.
 The estimate is a relative signal, not the active model's tokenizer.
 
 Structure: BODY_OVER_500_LINES <lines> counts SKILL.md lines after the frontmatter. DOC_NO_TOC <lines> <path> is
@@ -124,6 +124,12 @@ untrusted-after-contract at each line after the contract starts that marks data 
 holding an emphatic word in capitals, such as MUST or NOT, but not a status value such as MUST_FIX. A skill with no
 sample prints RUNTIME_PROMPT_UNSAMPLED <file> <line> <reason> for each runtime prompt instead.
 
+Bash: scan reads a fence BASH_FENCES labels whole through ejryan89-skill-core's Bash grammar, as Bash reads it, and
+places the shell-file-command cue on the line each command that runs a file command starts on, so a here-document's
+body, a comment, and a quoted string run nothing, and a command after a continuation is placed on its own line; a
+Bash script given to scan is read whole the same way. BASH_UNREADABLE <file> <line> <reason> is such a fence, opened
+at that line, or a script, at its first, that the grammar refuses, as Bash would, none of whose commands are read.
+
 Deterministic prose: besides the cost cues, scan names prose a script should replace, each a CUE line:
 assembled-arguments (a flag chosen per printed line or value), parsed-output (output split, grouped, or renamed by a
 fixed rule, or a printed value taken apart), carried-state (a count, summary, or last-seen value carried between
@@ -137,9 +143,13 @@ three or more characters, such as SKILL_FILE. A script prints every status word 
 and the FAILED line ejryan89-skill-core's run_main adds; it prints a line starting with a word when the word leads an
 f-string, a string a print, write, append, insert, extend, emit, or echo call takes, a listed string, or a string of a
 word, a space, and more. It exits 0, a literal an int-returning function returns or an exit call takes, 1 and 130 with
-run_main, and 2 with argparse. UNPRINTED <file> <line> <word> is a word that leads a code span on a prose line about
-output (one that says print, line, output, report, ends with, or exit) that no script prints, unless "such as" brings
-it in as an example. EXIT_MISMATCH <file> <line> <code> is an exit code the prose states that no script uses.
+run_main, and 2 with argparse. A Bash script, read through the Bash grammar, holds the status words of its commands'
+words, its functions' names, and its here-documents' bodies, but none of a comment's; prints a line starting with
+the word an echo or printf command's first word after its options starts with; and exits with each code an exit
+command names. A PowerShell script is read line by line, outside comment lines. UNPRINTED <file> <line> <word> is a
+word that leads a code span on a prose line about output (one that says print, line, output, report, ends with, or
+exit) that no script prints, unless "such as" brings it in as an example. EXIT_MISMATCH <file> <line> <code> is an exit
+code the prose states that no script uses.
 UNEXPLAINED <script> <line> <word> is a line a script the Markdown runs starts with a word the Markdown never names,
 for a script in the skill's folder or outside every skills folder, such as a repository tool; a sibling skill's script
 is that skill's to explain. A skill with no script of its own that runs none prints none of these.
@@ -169,6 +179,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
+import bash_syntax
 import check_provenance
 import command_wrappers
 import exit_calls
@@ -181,7 +192,7 @@ import runtime_support
 import skill_menu
 import whole_number
 from agent_skills import is_skill_file
-from bash_syntax import BashSyntaxError
+from bash_syntax import BashSyntaxError, Simple
 from console import run_main
 from executable_locator import RelativeEnvironmentPath, absolute_home
 from file_presence import NotADirectory, NotAFile, is_directory, is_present, is_there, matching
@@ -190,6 +201,7 @@ from git_client import GitClient, GitError
 from markdown_sections import (
     ATX_HEADING,
     CODE_SPAN,
+    FENCE_LANGUAGES,
     LIST_MARKER,
     POWERSHELL_FENCES,
     SHELL_FENCES,
@@ -333,6 +345,11 @@ SCRIPT_SWITCH = re.compile(r"-[BEIOPRS]+")
 SUBCOMMAND_PROGRAMS = frozenset({"git", "gh"})
 # The programs that read or list files, which a skill's own tools do instead.
 SHELL_FILE_COMMANDS = ("cat", "head", "tail", "find", "grep", "rg", "sed", "awk", "wc", "ls")
+# The fence labels scan reads as Bash, through the one Bash grammar: the POSIX shells', but not `console`, whose
+# fence is a session's prompts and the output between them rather than a script.
+BASH_FENCES = FENCE_LANGUAGES["shell"] - {"console"}
+# The suffixes of a script read as Bash, which scan reads when it is given one, as the status reader reads one.
+BASH_SUFFIXES = frozenset({".sh", ".bash"})
 SHELL_FILE_COMMAND = rf"(?:{'|'.join(SHELL_FILE_COMMANDS)})"
 # Word edges that also treat hyphens as part of a word, so "rev-parse" is not "parse".
 WORD_START = r"(?<![\w-])"
@@ -489,6 +506,7 @@ CHECK_LINES = frozenset(
         "AGENT_HOOK",
         "AGENT_UNDECLARED",
         "AGENT_UNDEFINED",
+        "BASH_UNREADABLE",
         "BODY_OVER_500_LINES",
         "DESCRIPTION",
         "DOC_NO_TOC",
@@ -549,6 +567,11 @@ SHELL_PRINT = re.compile(
     rf"\b(?:echo|printf|Write-Output|Write-Host)\s+(?:-\w+\s+)*[\"']?({STATUS_WORD})(?=[\s\"'=]|$)"
 )
 SHELL_EXIT = re.compile(r"\bexit\s+(\d+)\b")
+# The Bash builtins that print their words, and the option words each may take first, as `-n` or `-e`.
+BASH_PRINTS = frozenset({"echo", "printf"})
+PRINT_OPTION = re.compile(r"-\w+")
+# A status word a printed word starts with, followed by a blank, a quote, `=`, or the word's end.
+PRINTED_STATUS = re.compile(rf"({STATUS_WORD})(?=[\s\"'=]|$)")
 STATUS_SCRIPT_SUFFIXES = frozenset({".py", ".sh", ".bash", ".ps1"})
 SKILL_DIR_PREFIX = "${CLAUDE_SKILL_DIR}/"
 # The calls that print a line or add one to the lines a command prints. Those that exit with a code are
@@ -1834,8 +1857,11 @@ def scan(given: list[Path]) -> list[str]:
             languages, _ = parse_fences(lines)
         else:
             start, languages = 0, [path.suffix.casefold().lstrip(".") or "text"] * len(lines)
+        file_commands, unread = bash_file_commands(path, text, lines, start)
         for index in range(start, len(lines)):
             line, language = lines[index], languages[index]
+            if index in unread:
+                output.append(f"BASH_UNREADABLE {posix(path)} {index + 1} {unread[index]}")
             text = line.strip()
             if not text:
                 continue
@@ -1852,7 +1878,7 @@ def scan(given: list[Path]) -> list[str]:
             if language is not None:
                 cues = [cue for cue in cues if cue in CODE_CUES]
             shell = (
-                runs_file_command(line)
+                index in file_commands
                 if language is not None
                 else any(SPAN_SHELL_COMMAND.match(span.strip()) for span in CODE_SPAN.findall(line))
             )
@@ -1876,43 +1902,76 @@ def scan(given: list[Path]) -> list[str]:
     )
 
 
-def runs_file_command(line: str) -> bool:
-    """Whether a fenced line runs one of SHELL_FILE_COMMANDS where Bash starts a command, read as git_subcommands reads
-    a command: at the line's start, after an operator, in a group, a subshell, or a substitution, past its leading
-    keywords and assignments, each read only unquoted, and Bash's time keyword, through each wrapper of
-    command_wrappers' catalogue, and into the script eval or a shell's -c runs, so `then cat x`, `A=1 grep x`, and
-    `xargs wc -l` each run one, and `'then' cat x` runs the program `then`. Unlike git_subcommands, a fenced line in a
-    here-document's body is read as commands."""
-    starts = git_subcommands.CommandStarts()
-    for match in git_subcommands.SHELL_COMMAND.finditer(line):
-        start, command = match.groups()
-        if not starts.runs(start, command):
+def bash_file_commands(path: Path, text: str, lines: list[str], start: int) -> tuple[set[int], dict[int, str]]:
+    """The indices of the lines on which a command of the file's Bash that runs one of SHELL_FILE_COMMANDS starts, and
+    the reason the grammar gives for each Bash fence it refuses, by the index of the fence's opening line. A Markdown
+    file's Bash is each fence below its frontmatter that BASH_FENCES labels, read whole, as a model running it reads
+    it; a Bash script is its whole text, on the lines `lines` splits it into. Any other file holds no Bash."""
+    if path.suffix.casefold() != ".md":
+        if path.suffix.casefold() not in BASH_SUFFIXES:
+            return set(), {}
+        try:
+            numbers = file_command_lines(text)
+        except BashSyntaxError as exc:
+            return set(), {0: str(exc)} if lines else {}
+        # Bash counts a script's lines at LF alone, and scan places a line where text_lines breaks it.
+        starts = [0, *(match.end() for match in re.finditer("\n", text))]
+        return {len(text_lines(text[: starts[number - 1]], keepends=True)) for number in numbers}, {}
+    found: set[int] = set()
+    unread: dict[int, str] = {}
+    for fence in find_fences(lines):
+        if fence.opener < start or fence.language.casefold() not in BASH_FENCES:
             continue
-        spelled = git_subcommands.spelled_words(command)
-        words, spellings = [word for word, _ in spelled], [spelling for _, spelling in spelled]
-        if command_runs_file_command(words, spellings, reserved=start not in command_wrappers.PIPES):
-            return True
-    return False
+        body = list(fence.body())
+        try:
+            numbers = file_command_lines("\n".join(fence.text(lines[index]) for index in body))
+        except BashSyntaxError as exc:
+            unread[fence.opener] = str(exc)
+            continue
+        found.update(body[number - 1] for number in numbers)
+    return found, unread
 
 
-def command_runs_file_command(words: list[str], spellings: list[str], reserved: bool) -> bool:
-    """Whether a simple command, given its words and each word as written, runs one of SHELL_FILE_COMMANDS, read past
-    what `runs_file_command` names; a wrapper whose program no literal names runs none this can see."""
-    words = words[git_subcommands.program_start(spellings, reserved) :]
+def file_command_lines(text: str) -> set[int]:
+    """The line each command Bash runs for a text that runs one of SHELL_FILE_COMMANDS starts on, counted from 1. Raises
+    BashSyntaxError where the grammar refuses the text, or the script eval or a shell's -c runs in it."""
+    return {
+        line for line, words in bash_programs(text) if command_wrappers.bash_program(words[0]) in SHELL_FILE_COMMANDS
+    }
+
+
+def bash_programs(text: str) -> list[tuple[int, list[str]]]:
+    """Each program a Bash text runs, as the one Bash grammar reads it, with the line its command starts on, counted
+    from 1, and its words from the program's name, each part only running settles as git_subcommands' UNREAD_PART:
+    every simple command's, wherever Bash starts one, past its assignments, and the program each wrapper of
+    command_wrappers' catalogue runs, and each the script eval or a shell's -c runs, on the line of the command that
+    runs it. Raises BashSyntaxError where the grammar refuses the text, or such a script."""
+    return [
+        found
+        for command in bash_syntax.simple_commands(text)
+        for found in command_programs(command, bash_syntax.command_words(command, git_subcommands.UNREAD_PART))
+    ]
+
+
+def command_programs(command: Simple, words: list[str]) -> list[tuple[int, list[str]]]:
+    """Each program a simple command runs, given its words from its program's name, as `bash_programs` reads it; a
+    wrapper whose program no literal names, and a -c script that is UNREAD_PART alone, run none this can see."""
+    found: list[tuple[int, list[str]]] = []
     while words:
+        found.append((command.line, words))
         head, rest = words[0], words[1:]
         name = command_wrappers.bash_program(head)
-        if name in SHELL_FILE_COMMANDS:
-            return True
         if head == "eval":
-            return runs_file_command(" ".join(rest))
+            return found + [(command.line, inner) for _, inner in bash_programs(" ".join(rest))]
         if name in command_wrappers.SCRIPT_SHELLS:
             index = command_wrappers.shell_script_index(rest)
-            return index is not None and runs_file_command(rest[index])
+            if index is None or rest[index] == git_subcommands.UNREAD_PART:
+                return found
+            return found + [(command.line, inner) for _, inner in bash_programs(rest[index])]
         words = command_wrappers.unwrapped([name, *rest])
         if words and words[0].startswith(command_wrappers.UNREAD_PROGRAM):
-            return False
-    return False
+            break
+    return found
 
 
 def delegation_lines(
@@ -2156,23 +2215,14 @@ def python_facts(text: str) -> ScriptFacts:
     return facts
 
 
-def shell_lines(text: str, suffix: str) -> list[str]:
-    """A shell script's lines as its shell reads them: PowerShell's tokenizer ends a line at CR, LF, and CRLF, as
-    `text_lines` splits it, and Bash at LF alone, reading a CR as part of the line."""
-    if suffix.casefold() == ".ps1":
-        return text_lines(text)
-    lines = text.split("\n")
-    if lines[-1] == "":
-        lines.pop()
-    return lines
-
-
 def shell_facts(text: str, suffix: str) -> ScriptFacts:
-    """What a shell script prints and exits with, read from each of its lines outside comment lines. Beyond what it
-    reads: a Bash line whose `#` follows a character str.lstrip() removes but Bash does not take for a blank, such as a
-    form feed, is read as a comment, which no script here writes."""
+    """What a shell script prints and exits with: a Bash script's as `bash_facts` reads it, and a PowerShell script's
+    from each of its lines outside comment lines, which its tokenizer ends at CR, LF, and CRLF, as `text_lines` splits
+    them."""
+    if suffix.casefold() != ".ps1":
+        return bash_facts(text)
     facts = ScriptFacts()
-    for number, line in enumerate(shell_lines(text, suffix), start=1):
+    for number, line in enumerate(text_lines(text), start=1):
         if line.lstrip().startswith("#"):
             continue
         facts.words.update(ANY_STATUS_WORD.findall(line))
@@ -2184,12 +2234,42 @@ def shell_facts(text: str, suffix: str) -> ScriptFacts:
     return facts
 
 
+def bash_facts(text: str) -> ScriptFacts:
+    """What a Bash script prints and exits with, read through the one Bash grammar, so a comment holds nothing and a
+    line ends at LF alone: the status words of every word each command expands, a function's name, and each
+    here-document's body; the status word each echo or printf starts its first word after its options with, on the
+    line its command starts on; and the code each exit command names, each wherever a command runs, in a substitution,
+    past a wrapper, and in the script eval or a shell's -c runs. Raises BashSyntaxError where the grammar refuses the
+    script."""
+    facts = ScriptFacts()
+    for command in bash_syntax.every_command(text):
+        if isinstance(command, bash_syntax.FunctionDefinition):
+            facts.words.update(ANY_STATUS_WORD.findall(command.name or ""))
+            continue
+        for word in bash_syntax.expanded_words(command):
+            facts.words.update(ANY_STATUS_WORD.findall(bash_syntax.word_text(word)))
+        for document in bash_syntax.here_documents(command):
+            facts.words.update(ANY_STATUS_WORD.findall(document.body))
+    for line, words in bash_programs(text):
+        if command_wrappers.bash_program(words[0]) in BASH_PRINTS:
+            printed = [PRINTED_STATUS.match(word) for word in dropwhile(PRINT_OPTION.fullmatch, words[1:])][:1]
+            if printed and printed[0]:
+                facts.lines.setdefault(printed[0].group(1), line)
+        # A code past the digit limit, or in digits other than ASCII, is no code a shell exits with.
+        elif words[0] == "exit" and len(words) > 1 and (code := whole_number.parse(words[1])) is not None:
+            facts.codes.add(code)
+    return facts
+
+
 def script_facts(path: Path) -> ScriptFacts:
     """What a script prints and exits with. One that is not UTF-8 text or not valid Python fails: what it prints
     cannot be measured, and reading it as printing nothing would compare the Markdown with less than the skill runs."""
     text = require_text(path)
     if path.suffix.casefold() != ".py":
-        return shell_facts(text, path.suffix)
+        try:
+            return shell_facts(text, path.suffix)
+        except BashSyntaxError as exc:
+            raise InputError(f"cannot read {posix(path)}: not Bash the grammar reads ({exc})") from exc
     try:
         return python_facts(text)
     except python_reader.CONTENT_ERRORS as exc:

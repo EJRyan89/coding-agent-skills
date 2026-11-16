@@ -12,7 +12,7 @@ of a file an author writes splits it with `text_lines`, never `str.splitlines`, 
 rejoins the lines it keeps or finds where one starts in the text. The exceptions are the files whose
 program breaks a line elsewhere: an analyzer config, which the C# compiler breaks at more (`analyzer_config.py`), and a
 Bash script and a `.shellcheckrc`, which Bash and ShellCheck break at LF alone, reading a CR as part of the line
-(audit-skill's `skill_inventory.shell_lines`, ejryan89-code-review-core's `review_analyzers._shellcheckrc`). A
+(the Bash grammar's `bash_syntax.line_numbers`, ejryan89-code-review-core's `review_analyzers._shellcheckrc`). A
 program's output is split where that program ends a line: `program_lines` for a program that ends one with LF, or
 with CRLF as Windows does, and `git_client.output_lines` for git's. A line of a program's output can hold any other
 character, a name or a path it prints among them, U+2028 or a lone CR included. Validation refuses `str.splitlines`
