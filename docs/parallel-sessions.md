@@ -323,8 +323,9 @@ The guard is Claude Code's. For Codex and Copilot CLI the `CLAUDE.md` rules are 
 The hook is given the text of a command, not what runs under it. The guard catches the accidents a session makes in
 the hub, and is no sandbox: it reads a command for its git calls and where each acts, and for the files its
 redirections write, and a file tool's event for the file it edits. What it reads it judges; a part of a git call's own
-words it does not settle is refused while a guarded hub is in view; and every other part of a command is a program
-the guard does not read, which it allows. A write such a program makes in the hub is the check's to find: ejryan89-skill-core's
+words it does not settle, a command substitution Bash 3.2 and Bash 4 and later read apart, and a here-document whose
+unquoted body holds an expansion it never closes are refused while a guarded hub is in view, with or without a git
+call; and every other part of a command is a program the guard does not read, which it allows. A write such a program makes in the hub is the check's to find: ejryan89-skill-core's
 `hub_state.py`, which the `shepherd-pull-requests` tick and `repo-cleanup` run, names each way the hub differs from a
 clean checkout of `main` at `origin/main`, a change or an untracked file, another branch or a detached `HEAD`, or a
 commit `origin/main` lacks.
@@ -717,6 +718,25 @@ Within what it reads, it judges only what the text shows, so these too are left 
   a worktree: refs live in the store every worktree shares, and the guard judges a call by the checkout whose `HEAD`,
   index, and tree it writes; a worktree call given another store or view of objects is refused, as the bullet on what
   the environment has git write says.
+
+The guard reads Bash 4 and later's grammar, with one exception it reads both ways and refuses. A command substitution,
+or one in an unquoted here-document's body, holding a `case` whose pattern's `)` no `(` opens is read two ways: Bash 4
+and later read that `)` as the pattern's close, while Bash 3.2, macOS's `/bin/bash`, reads it as the substitution's
+end. Bash 3.2 then runs the rest of the line in the shell around the substitution, as when a `#` after it comments out
+the close. The guard marks such a pattern wherever its lexer reads one, in a substitution it reads and in one held
+inside text it refuses, at any depth, and refuses the command while a hub is guarded, as it refuses a part of a git
+call it does not settle. It then reads the command a second time as Bash 3.2 does and judges the git calls and places
+of that reading too, so a `cd` into the hub before it is followed either way when Bash 3.2 reads the whole command. A
+here-document whose unquoted body holds an expansion it never closes is refused while a hub is guarded the same way,
+with or without a git call, since what the body runs after it is not read. What it does not reach:
+
+- from outside the hub, a git call Bash 3.2 runs before a line it refuses, inside a substitution a case pattern's `)`
+  ended early, since the second reading, like the first, reads none of a command it refuses;
+- a backquote's body inside text the grammar refuses, which it never reads, so a case pattern in it is not marked;
+- a here-document inside `$( )` whose body holds a `)` no `(` opens, as `x=$(cat <<'EOF'` with `) ; git push` on its
+  next line, which Bash 3.2 reads as the substitution's end;
+- a git call in a substitution that is the whole command inside a group, subshell, `if`, or loop, as
+  `cd <hub> && { $(git push); }`, which is placed in a directory the text does not settle.
 
 `.claude/settings.json` is tracked and reaches every developer's sessions. It may therefore name its `$schema`,
 declare hooks, and set `attribution`, which turns off Claude Code's commit trailers, pull request footer, and session

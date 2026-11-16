@@ -28,16 +28,23 @@ def test_a_bash_script_s_exit_is_numbered_where_bash_ends_its_line(tmp_path: Pat
     ]
 
 
-def test_a_script_s_code_lines_end_where_its_shell_ends_one() -> None:
-    # Bash ends a line at LF alone, reading a CR as part of it; PowerShell at CR, LF, or CRLF; neither at U+2028.
-    assert skill_scripts._code_lines("a\u2028b\nc\r\nd\n") == [(1, "a\u2028b"), (2, "c\r"), (3, "d")]
-    assert skill_scripts._code_lines("a\u2028b\rc\r\nd\n", "`") == [(1, "a\u2028b"), (2, "c"), (3, "d")]
+def test_a_script_s_lines_end_where_its_shell_ends_one() -> None:
+    # Bash ends a line at LF alone, as the grammar counts it; PowerShell at CR, LF, or CRLF; neither at U+2028.
+    problems = skill_scripts._bash_temporary_problems("make.sh", "echo 'a\u2028b\rc'\r\nD=$(mktemp)\n")
+    assert [problem.partition(" ")[0] for problem in problems] == ["make.sh:2:"]
+    assert skill_scripts._code_lines("a\u2028b\rc\r\nd\n") == [(1, "a\u2028b"), (2, "c"), (3, "d")]
 
 
 def test_a_fence_is_found_where_commonmark_ends_a_line() -> None:
     # A line separator ends no line, so the text before it and the opener after it are one line of prose.
     assert skill_scripts._fences("intro\u2028```bash\necho no\n", "shell") == []
     assert skill_scripts._fences("intro\r```bash\recho yes\r```\r", "shell") == ["echo yes"]
+
+
+def test_a_fence_s_lines_are_its_content_as_commonmark_gives_it() -> None:
+    # A list item's fence loses the item's indentation, so its here-document closes at its delimiter.
+    markdown = "1. Run:\n\n   ```bash\n   cat <<EOF\n     body\n   EOF\n   git push\n   ```\n"
+    assert skill_scripts._fences(markdown, "shell") == ["cat <<EOF\n  body\nEOF\ngit push"]
 
 
 def test_a_sanction_s_lines_are_numbered_as_python_numbers_them() -> None:

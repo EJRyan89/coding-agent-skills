@@ -533,6 +533,11 @@ removed fails validation until its pattern follows it.
   `tests/validation/test_shell_readers.py::test_shell_command_extraction_reads_bash_as_the_grammar_reads_it`, which
   holds validation's shell command reader to the grammar's reading of a here-document's body, a comment, arithmetic,
   and a function's arguments,
+  `tests/validation/test_shell_targets.py::ShellTargetsFixtures::test_a_bash_token_is_quoted_where_bash_keeps_its_rendered_value_whole`,
+  which renders each template form with a spaced value and runs it in Bash, so a token is quoted only where Bash keeps
+  the value whole,
+  `tests/validation/test_suite_discovery.py::test_each_bash_form_the_policy_refuses_fails_under_pipefail_in_bash`,
+  which runs each form the pipe-race policy refuses in Bash under pipefail, where each exits 141,
   `tests/tools/test_bash_syntax.py::test_each_command_keeps_the_line_its_first_word_stands_on_as_bash_traces_it`,
   which holds the grammar's line for each command to the line Bash's own trace gives it,
   `tests/tools/test_captured_samples.py::test_every_sample_is_named_by_a_suite_that_reads_it`, which fails a captured
@@ -581,7 +586,7 @@ removed fails validation until its pattern follows it.
   checked against that program's own reading of it, as MSBuild reads a number with .NET's invariant `Double.TryParse`
   and compares text with .NET's ordinal comparison ignoring case; a POSIX `shlex` lexer over shell text whose
   words are compared with an operator or keyword, which reads a quoted `';'` or an escaped `\;` as the separator it
-  spells, rather than `ShellLexer` in `tests/validation/skill_scripts.py`, or a function name read from such a word
+  spells, rather than the one Bash grammar, `bash_syntax.parse`, or a function name read from such a word
   rather than from its syntax, which is None for a quoted or escaped name Bash refuses; in `tools/hub_guard.py`, a
   wrapper's command read other than through `command_wrappers.unwrapped`, so a wrapper `COMMAND_WRAPPERS` names, or
   one under a build prefix such as `gtimeout`, hides the git it runs, a literal `bash -c` or `pwsh -Command` script left

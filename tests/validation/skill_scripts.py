@@ -9,25 +9,32 @@ import contextlib
 import functools
 import itertools
 import re
-import shlex
 import unittest
 from collections import defaultdict
-from collections.abc import Callable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath, PureWindowsPath
-from typing import Literal, TextIO, overload
+from typing import Literal
 
 import file_presence
 import json_reader
 import whole_number
 from bash_syntax import (
     BashSyntaxError,
+    Command,
+    CommandList,
     FunctionDefinition,
     Part,
     Simple,
     Word,
+    command_bodies,
     command_words,
     every_command,
+    expanded_words,
+    here_documents,
+    line_numbers,
+    parse,
+    source_lines,
     unsettled_part,
     word_text,
 )
@@ -121,7 +128,6 @@ PLATFORM_ALLOWED = {
     "/proc": "names Linux's per-process descriptor path as one spelling of a standard stream the console-setup policy "
     "refuses on every platform; it opens nothing",
 }
-SHELL_OPERATORS = ("&&", "||", ";;", "|&", "()", "(", ")", ";", "&", "|", "<", ">", "\n")
 SHELL_BUILTINS = {
     "alias",
     "break",
@@ -176,149 +182,6 @@ def refused_bash_problem(where: str, marker: str, doc: str) -> str:
         f"{where} runs Bash the grammar does not read ({marker.removeprefix(UNREAD_BASH)}); Bash runs the lines "
         f"before a syntax error, so none of its programs can be trusted as read; see {doc}"
     )
-
-
-def split_operators(token: str) -> list[str]:
-    """Split a run of shell punctuation, which shlex returns as one token, into its operators."""
-    if not token or any(char not in ";&|()<>\n" for char in token):
-        return [token]
-    parts: list[str] = []
-    while token:
-        operator = next(op for op in SHELL_OPERATORS if token.startswith(op))
-        parts.append(operator)
-        token = token[len(operator) :]
-    return parts
-
-
-class _ShellLexerState:
-    """ShellLexer's shlex state, watched as shlex sets it. Besides a word's (a), an operator's (c), and between words
-    ( ), shlex's states are the quote or escape character it is inside, so a word that enters one is a literal."""
-
-    @overload
-    def __get__(self, lexer: None, owner: type[ShellLexer]) -> _ShellLexerState: ...
-    @overload
-    def __get__(self, lexer: ShellLexer, owner: type[ShellLexer]) -> str | None: ...
-    def __get__(self, lexer: ShellLexer | None, owner: type[ShellLexer]) -> str | _ShellLexerState | None:
-        return self if lexer is None else lexer.lexer_state
-
-    def __set__(self, lexer: ShellLexer, value: str | None) -> None:
-        lexer.literal = lexer.literal or value not in {" ", "a", "c", None}
-        lexer.lexer_state = value
-
-
-class ShellLexer(shlex.shlex):
-    """shlex's POSIX lexer over a Bash script, or a stream of one, which drops each word's quoting, noting whether the
-    word it last read was quoted or escaped anywhere: such a word is a literal, never an operator or a keyword, as Bash
-    reads it."""
-
-    state = _ShellLexerState()
-
-    def __init__(self, script: str | TextIO) -> None:
-        self.literal = False
-        self.lexer_state: str | None = None
-        super().__init__(script, posix=True, punctuation_chars=";&|()<>\n")
-        self.whitespace = " \t\r"
-        self.whitespace_split = True
-
-    def read_token(self) -> str | None:
-        self.literal = False
-        return super().read_token()
-
-    def words(self) -> Iterator[tuple[str, str | None]]:
-        """Each word the script holds, a run of operators split into its operators, beside the word as syntax: itself,
-        or None for a literal, which no operator or keyword compares equal to. Each is read as it is asked for, so the
-        stream stands just past it."""
-        while (token := self.get_token()) is not None:
-            if self.literal:
-                yield token, None
-            else:
-                yield from ((part, part) for part in split_operators(token))
-
-
-def _backtick_end(script: str, start: int) -> int:
-    """The index of the backtick that closes a substitution whose text begins at `start`, past each backslash-escaped
-    character, or the script's length for one left open."""
-    index = start
-    while index < len(script) and script[index] != "`":
-        index += 2 if script[index] == "\\" else 1
-    return min(index, len(script))
-
-
-def _single_quoted_end(script: str, index: int) -> int:
-    """The index just past a single-quoted string that starts at `index`, at its `'` or at the `$` of Bash's `$'...'`,
-    in which a backslash escapes a quote; the script's length for one left open."""
-    if script.startswith("$'", index):
-        index += 2
-        while index < len(script) and script[index] != "'":
-            index += 2 if script[index] == "\\" else 1
-        return min(index + 1, len(script))
-    return script.find("'", index + 1) + 1 or len(script)
-
-
-def _comment_starts(script: str, index: int) -> bool:
-    return script[index] == "#" and (index == 0 or script[index - 1] in " \t\n;&|(")
-
-
-def _substitution_end(script: str, start: int) -> int:
-    """The index of the `)` that closes a `$(` substitution whose text begins at `start`, or the script's length for one
-    left open. A parenthesis in a quoted string, an escaped one, one in a comment, and those of a nested substitution,
-    in double quotes or not, neither open nor close it."""
-    depth, index, quoted = 1, start, False
-    while index < len(script):
-        character = script[index]
-        if character == "\\":
-            index += 2
-        elif script.startswith("$(", index):
-            index = _substitution_end(script, index + 2) + 1
-        elif character == "`":
-            index = _backtick_end(script, index + 1) + 1
-        elif character == '"':
-            quoted, index = not quoted, index + 1
-        elif quoted:
-            index += 1
-        elif character == "'" or script.startswith("$'", index):
-            index = _single_quoted_end(script, index)
-        elif _comment_starts(script, index):
-            index = script.find("\n", index) + 1 or len(script)
-        else:
-            depth += {"(": 1, ")": -1}.get(character, 0)
-            if not depth:
-                return index
-            index += 1
-    return len(script)
-
-
-def substitution_spans(script: str) -> list[tuple[int, str]]:
-    """Each command substitution a Bash script holds, `$(...)` or backticks, quoted or not, outside single quotes,
-    comments, and arithmetic `$((...))`, as the offset its text begins at and the text; the substitutions it holds in
-    turn are its text's. One left open holds the rest of the script."""
-    found: list[tuple[int, str]] = []
-    index, quoted = 0, False
-    while index < len(script):
-        character = script[index]
-        if character == "\\":
-            index += 2
-            continue
-        if (character == "'" or script.startswith("$'", index)) and not quoted:
-            index = _single_quoted_end(script, index)
-            continue
-        if not quoted and _comment_starts(script, index):
-            index = script.find("\n", index) + 1 or len(script)
-            continue
-        if character == '"':
-            quoted = not quoted
-        if script.startswith("$(", index) and not script.startswith("$((", index):
-            end = _substitution_end(script, index + 2)
-            found.append((index + 2, script[index + 2 : end]))
-            index = end + 1
-            continue
-        if character == "`":
-            end = _backtick_end(script, index + 1)
-            found.append((index + 1, script[index + 1 : end]))
-            index = end + 1
-            continue
-        index += 1
-    return found
 
 
 def _program_word(word: str) -> set[str]:
@@ -541,10 +404,12 @@ COMMAND_SHELL_CONTEXTS = frozenset(render.FENCE_CONTEXT[label] for label in SHEL
 def _fences(markdown: str, *contexts: str) -> list[str]:
     """The body of each fence that deployer/render.py renders in one of these contexts: shell for a Bash, sh, zsh, or
     console fence, and powershell for a PowerShell, ps1, or pwsh fence. A fence left open runs to the end of what holds
-    it, as the renderer reads it, so its commands are held like any other's; unclosed_fence_problems reports it."""
+    it, as the renderer reads it, so its commands are held like any other's; unclosed_fence_problems reports it. Each
+    line is read as CommonMark gives it to the fence's content, without the indentation of the fence and of the list
+    items that hold it, so an indented fence's here-document closes at its delimiter."""
     lines = text_lines(markdown)
     return [
-        "\n".join(fence.text(lines[index]) for index in fence.body())
+        "\n".join(fence.content(lines[index]) for index in fence.body())
         for fence in find_fences(lines)
         if render.fence_context(fence) in contexts
     ]
@@ -2445,18 +2310,14 @@ SHELL_VARIABLE_REFERENCE = re.compile(r"\$\{?#?([A-Za-z_]\w*)")
 # A Bash variable read for its value, whole or with a prefix or a suffix removed, as `$JUDGED`, `${JUDGED}`, or
 # `${TEMPORARY%/}`: never with a fallback, an alternative, a substitution, a slice, or its length.
 JUDGED_REFERENCE = re.compile(r"\$(?:\{([A-Za-z_]\w*)(?:(?:##?|%%?)[^}]*)?\}|([A-Za-z_]\w*))")
-# A Bash assignment, alone or after a declaration builtin, where a command may start, with `+` when it appends.
-SHELL_ASSIGNMENT = re.compile(
-    r"(?:^|(?<=[\s;&|!(]))(?:(?:export|local|readonly|declare|typeset)\s+(?:-\w+\s+)*)?([A-Za-z_]\w*)(\+?)="
-)
-# A redirection that duplicates or closes a descriptor, as `2>&1` does, and the `&` of Bash's `&>` and `&>>`, which the
-# shell reader would take for a list's operator.
-DESCRIPTOR_REDIRECTION = re.compile(r"\d*[<>]&(?:\d+|-)|&(?=>)")
-# A mktemp command word, bare, by a path, or with .exe, and where the command it starts ends on its line: a
-# substitution's close, a list's or a pipeline's operator.
-MKTEMP_COMMAND = re.compile(r"(?<![\w./\\-])(?:[^\s\"'`$()=;|&<>]*[/\\])?mktemp(?:\.exe)?(?![\w.-])", re.IGNORECASE)
-COMMAND_END = re.compile(r"[);|]|&&")
-REDIRECTION_WORD = re.compile(r"\d*[<>]")
+# The builtins whose arguments assign variables, as an assignment before a command's program does.
+DECLARING = frozenset({"export", "local", "readonly", "declare", "typeset"})
+# The dynamic parts of a Bash word whose own text the grammar does not keep: a `$'...'` string holding an escape,
+# arithmetic, and an array's value; the policy reads such a word as written.
+RAW_PARTS = frozenset({"$'", "$((", "((", "("})
+# What a literal `$`, quoted, escaped, or in a quoted here-document's body, is read as, so it expands no variable: a
+# character none of the policy's patterns reads as one, which no word or path holds before a `/` either.
+LITERAL_DOLLAR = "\\"
 # Each PowerShell spelling that names the temporary directory unjudged: its .NET and cmdlet lookups, and the variables
 # it reads, through the env: drive in any spelling or the Environment class.
 POWERSHELL_TEMPORARY = re.compile(
@@ -2786,16 +2647,16 @@ def _started_arguments(call: ast.Call, resolver: CallableResolver) -> tuple[str,
     return named, [argument for argument in given if argument is not environment]
 
 
-def _without_comment(line: str, escape: str) -> str:
-    """A Bash or PowerShell line up to a `#` that starts a word outside quotes, where its comment starts. Outside
-    single quotes, `escape`, Bash's backslash or PowerShell's backtick, keeps the character after it from opening or
-    closing a string or starting a comment, and an escaped blank or `;` before a `#` from ending a word there."""
+def _without_comment(line: str) -> str:
+    """A PowerShell line up to a `#` that starts a word outside quotes, where its comment starts. Outside single
+    quotes, a backtick keeps the character after it from opening or closing a string or starting a comment, and an
+    escaped blank or `;` before a `#` from ending a word there."""
     quote = ""
     index = 0
     escaped = -1
     while index < len(line):
         character = line[index]
-        if character == escape and quote != "'":
+        if character == "`" and quote != "'":
             escaped = index + 1
             index += 2
             continue
@@ -2809,23 +2670,13 @@ def _without_comment(line: str, escape: str) -> str:
     return line
 
 
-def _code_lines(text: str, escape: str = "\\") -> list[tuple[int, str]]:
-    """Each line of a Bash or PowerShell script with its number, its comment left out, read with the shell's
-    `escape`. Bash, whose escape is a backslash, ends a line at LF alone and reads a CR as part of it; PowerShell ends
-    one at CR, LF, or CRLF."""
-    lines = text.split("\n") if escape == "\\" else LINE_BREAK.split(text)
+def _code_lines(text: str) -> list[tuple[int, str]]:
+    """Each line of a PowerShell script with its number, its comment left out; PowerShell ends a line at CR, LF, or
+    CRLF."""
+    lines = LINE_BREAK.split(text)
     if lines[-1] == "":
         lines.pop()
-    return [(number, _without_comment(line, escape)) for number, line in enumerate(lines, 1)]
-
-
-def _shell_words(fragment: str) -> list[list[str]] | None:
-    """The words of each command a Bash fragment holds, as shell_commands reads them, or None when the grammar refuses
-    it."""
-    words: list[list[str]] = []
-    if any(name.startswith(UNREAD_BASH) for name in shell_commands(fragment, words)):
-        return None
-    return words
+    return [(number, _without_comment(line)) for number, line in enumerate(lines, 1)]
 
 
 def _is_program(word: str, program: str) -> bool:
@@ -2833,100 +2684,126 @@ def _is_program(word: str, program: str) -> bool:
     return platform_support.program_name(PureWindowsPath(word).name).casefold() == program
 
 
-def _brace_end(line: str, start: int) -> int:
-    """The index of the `}` that closes a `${` expansion whose text begins at `start`, past each one it holds in turn,
-    or the line's length for one left open."""
-    depth = 1
-    for index in range(start, len(line)):
-        depth += {"{": 1, "}": -1}.get(line[index], 0)
-        if not depth:
-            return index
-    return len(line)
+def _assigned_words(command: Simple) -> list[Word]:
+    """The words of a simple command that assign a whole variable, as Bash reads them: those before its program, and
+    the arguments of a DECLARING builtin after it that are assignments. An element's assignment, NAME[SUBSCRIPT]=,
+    assigns part of one, so it is read as a word."""
+    prefix = list(itertools.takewhile(lambda word: word.assignment is not None, command.words))
+    rest = command.words[len(prefix) :]
+    if rest and rest[0].literal in DECLARING:
+        prefix += [word for word in rest[1:] if word.assignment is not None]
+    return [word for word in prefix if word.assignment is not None and not word.assignment.element]
 
 
-def _word_end(line: str, start: int) -> int:
-    """The index just past the Bash word that starts at `start`, such as an assignment's value: its quoted strings, its
-    `${...}` expansions, and its substitutions read whole, and a backslash escaping the character after it."""
-    index, quoted = start, False
-    while index < len(line):
-        character = line[index]
-        if character == "\\":
-            index += 2
-        elif line.startswith("$(", index):
-            index = _substitution_end(line, index + 2) + 1
-        elif line.startswith("${", index):
-            index = _brace_end(line, index + 2) + 1
-        elif character == "`":
-            index = _backtick_end(line, index + 1) + 1
-        elif character == '"':
-            quoted, index = not quoted, index + 1
-        elif quoted:
-            index += 1
-        elif character == "'" or line.startswith("$'", index):
-            index = _single_quoted_end(line, index)
-        elif character.isspace() or character in ";&|<>()":
-            return index
-        else:
-            index += 1
-    return min(index, len(line))
+def _word_text(word: Word, parts: tuple[Part, ...] | None = None) -> str:
+    """The text of a word, or of an assignment's value, as the policy reads it for what it names: word_text's, each
+    expansion by the text that names it, each command or process substitution by its form alone, since its own
+    commands are read where they stand, and each literal `$`, quoted or escaped, as LITERAL_DOLLAR, so it expands
+    nothing; or, where the grammar keeps no text of a part of its own, an array's value, arithmetic, or a `$'...'`
+    string holding an escape, the text as written."""
+    parts = word.parts if parts is None else parts
+    if word.array or word.arithmetic or any(part.kind == "dynamic" and part.text in RAW_PARTS for part in parts):
+        return word.raw if parts is word.parts else word.raw.partition("=")[2]
+    literal = tuple(
+        Part("text", part.text.replace("$", LITERAL_DOLLAR), part.quoted) if part.kind == "text" else part
+        for part in parts
+    )
+    return word_text(Word(word.raw, literal))
 
 
-def _substitution_extent(text: str, start: int, inner: str) -> tuple[int, int]:
-    """Where a substitution substitution_spans finds at `start` lies in `text`: from its `$(` or its backtick to just
-    past its close."""
-    return start - (1 if text[start - 1] == "`" else 2), start + len(inner) + 1
+class _TemporaryBash:
+    """Where a Bash script names the temporary directory unjudged, read through ejryan89-skill-core's bash_syntax, the
+    repository's one Bash grammar, in text order: each command in the order the script writes it, wherever Bash runs
+    one, in a list, a compound command, a function's body, and a command or process substitution, and each word a
+    command expands, a redirection's target included, and each here-document's body. What each variable holds at
+    each place, ShellValue, is the value of the assignment to it written last before that place, whatever branch it
+    sits in: "judged", a value that is one command substitution running the judge as its one command, or that starts
+    by reading a variable holding the judged folder, in a JUDGED_REFERENCE form; "temporary", a value whose text
+    outside its substitutions expands TMPDIR, TEMP, or TMP, holds a TEMPORARY_PATH, or reads a variable holding the
+    temporary directory unjudged; or "other", as any other value and every append is. Raises BashSyntaxError for a
+    script the grammar refuses, or a substitution in it that it refuses, one in a here-document's body included."""
 
-
-def _outside(extent: tuple[int, int], holes: list[tuple[int, int]]) -> list[tuple[int, int]]:
-    """The parts of `extent` that no hole covers."""
-    start, end = extent
-    found: list[tuple[int, int]] = []
-    for hole_start, hole_end in sorted(holes):
-        if hole_end <= start or hole_start >= end:
-            continue
-        if hole_start > start:
-            found.append((start, hole_start))
-        start = max(start, hole_end)
-    return [*found, (start, end)] if start < end else found
-
-
-def _one_command(inner: str) -> list[str] | None:
-    """The words of the one command a substitution's text runs, each substitution it holds in turn read as one word
-    and each DESCRIPTOR_REDIRECTION left out; None for text the shell reader cannot read or that runs more than one
-    command, as a `||` fallback, a `;` list, or a pipeline does."""
-    kept: list[str] = []
-    index = 0
-    for start, text in substitution_spans(inner):
-        opening, end = _substitution_extent(inner, start, text)
-        kept += [inner[index:opening], "_"]
-        index = end
-    commands = _shell_words(DESCRIPTOR_REDIRECTION.sub(" ", "".join([*kept, inner[index:]])))
-    return commands[0] if commands is not None and len(commands) == 1 else None
-
-
-class _BashValues:
-    """What each variable of a Bash script holds at each place, read in text order, so a branch an assignment sits in
-    is not read, nor a loop that runs a later assignment again, nor a function's body anywhere but where it is written:
-    "judged", assigned the output of a substitution that is the whole value and runs the judge as its one command, or
-    a value that starts by reading a variable holding the judged folder, in a JUDGED_REFERENCE form; "temporary",
-    assigned a value whose text outside its substitutions expands TMPDIR, TEMP, or TMP, holds a TEMPORARY_PATH, or
-    reads a variable holding the temporary directory unjudged; or "other", as any other value and every append is."""
-
-    def __init__(self, lines: list[tuple[int, str]]) -> None:
+    def __init__(self, text: str) -> None:
+        # Every value written for each variable, wherever it stands, by which a variable may name the judge's script.
         self.assigned: dict[str, list[str]] = {}
-        for _, line in lines:
-            for match in SHELL_ASSIGNMENT.finditer(line):
-                self.assigned.setdefault(match.group(1), []).append(line[match.end() :])
-        self.values: dict[str, list[tuple[tuple[int, int], ShellValue]]] = {}
-        for number, line in lines:
-            for match in SHELL_ASSIGNMENT.finditer(line):
-                end = _word_end(line, match.end())
-                value = self._value(line[match.end() : end], bool(match.group(2)), (number, match.start()))
-                self.values.setdefault(match.group(1), []).append(((number, end), value))
+        for command in every_command(text):
+            if isinstance(command, Simple):
+                for word in _assigned_words(command):
+                    assert word.assignment is not None
+                    value = _word_text(word, word.assignment.value)
+                    self.assigned.setdefault(word.assignment.name, []).append(value)
+        self.values: dict[str, list[tuple[int, ShellValue]]] = {}
+        # The place each word and each here-document's body stands at, counted in text order.
+        self.place = 0
+        # The line of each mktemp command not judged, and the first text on each line that names the temporary
+        # directory unjudged.
+        self.unjudged: set[int] = set()
+        self.named: dict[int, str] = {}
+        self.read_list(parse(text))
 
-    def held(self, name: str, position: tuple[int, int]) -> ShellValue | None:
-        """What a variable holds at a line and a column: its last assignment's value ending before it, or None."""
-        found = [value for at, value in self.values.get(name, []) if at < position]
+    def read_list(self, node: CommandList) -> None:
+        for and_or, _ in node.items:
+            for pipeline in [and_or.first, *(pipeline for _, pipeline in and_or.rest)]:
+                for command in pipeline.commands:
+                    self.read_command(command)
+
+    def read_command(self, node: Command) -> None:
+        """Read a command where the script writes it: each word, its substitutions read as the commands they run,
+        unless one runs the judge, which may name the temporary directory, as `update.sh` hands its judge
+        `"${TMPDIR:-/tmp}"`; an assignment's value, which only gives the variable what it holds; and each mktemp."""
+        if isinstance(node, FunctionDefinition):
+            self.read_command(node.body)
+            return
+        assigning = _assigned_words(node) if isinstance(node, Simple) else []
+        for word in expanded_words(node):
+            if any(word is assigned for assigned in assigning):
+                self.read_substitutions(word.substitutions)
+                self.assign(word)
+            else:
+                self.name(_word_text(word), word.line)
+                self.read_substitutions(word.substitutions)
+            self.place += 1
+        for document in here_documents(node):
+            text = document.body.replace("$", LITERAL_DOLLAR) if document.quoted else document.body
+            self.name(text, source_lines(document.body) or line_numbers(document.body))
+            # A body's substitution the grammar cannot read is refused with the script, as every other one is,
+            # rather than read as running nothing, so a mktemp in it is never passed unjudged.
+            if document.unclosed:
+                raise BashSyntaxError("a here-document's body holds an expansion it never closes")
+            self.read_substitutions(document.substitutions)
+            self.place += 1
+        if isinstance(node, Simple):
+            self.judge_mktemp(node)
+        for listed in command_bodies(node):
+            self.read_list(listed)
+
+    def read_substitutions(self, sources: Sequence[str]) -> None:
+        """Read the commands each substitution runs, unless it runs the judge."""
+        for source in sources:
+            if not self.runs_judge(source):
+                self.read_list(parse(source))
+
+    def assign(self, word: Word) -> None:
+        """Give the variable a word assigns the value it holds from here on."""
+        assignment = word.assignment
+        assert assignment is not None
+        value = _word_text(word, assignment.value)
+        parts = [part for part in assignment.value if part.text or part.kind != "text"]
+        substitution = len(parts) == 1 and parts[0].kind == "dynamic" and parts[0].text in ("$(", "`")
+        if not assignment.appends and substitution and len(word.substitutions) == 1:
+            held: ShellValue = "judged" if self.runs_judge(word.substitutions[0]) else "other"
+        else:
+            held = "other"
+        if held != "judged" and self.temporary_words(value):
+            held = "temporary"
+        named = JUDGED_REFERENCE.match(value)
+        if held == "other" and not assignment.appends and named and self.held(named[1] or named[2]) == "judged":
+            held = "judged"
+        self.values.setdefault(assignment.name, []).append((self.place, held))
+
+    def held(self, name: str) -> ShellValue | None:
+        """What a variable holds here: its last assignment's value written before this place, or None."""
+        found = [value for at, value in self.values.get(name, []) if at < self.place]
         return found[-1] if found else None
 
     def _names_judge(self, word: str) -> bool:
@@ -2935,12 +2812,17 @@ class _BashValues:
         named = SHELL_VARIABLE_REFERENCE.match(word)
         return named is not None and any(TEMPORARY_JUDGE[0] in value for value in self.assigned.get(named.group(1), []))
 
-    def runs_judge(self, inner: str) -> bool:
+    def runs_judge(self, source: str) -> bool:
         """Whether a substitution's text runs only the judge, as `python [options] private_folder.py
-        temporary-directory [folder]`, with the interpreter by its name or a variable, as update.sh's "$PYTHON", or as
-        the script itself, named directly or by a variable assigned a value naming it; any other program merely names
-        it."""
-        words = _one_command(inner)
+        temporary-directory [folder]`, its one command, with the interpreter by its name or a variable, as update.sh's
+        "$PYTHON", or as the script itself, named directly or by a variable assigned a value naming it; any other
+        program merely names it, and a list, a pipeline, or a compound command runs more than the judge."""
+        items = parse(source).items
+        and_or = items[0][0] if len(items) == 1 and not items[0][1] else None
+        if and_or is None or and_or.rest or and_or.first.negated or len(and_or.first.commands) != 1:
+            return False
+        command = and_or.first.commands[0]
+        words = command_words(command, "_") if isinstance(command, Simple) else []
         if not words:
             return False
         if self._names_judge(words[0]):
@@ -2953,103 +2835,68 @@ class _BashValues:
         rest = list(itertools.dropwhile(lambda word: word.startswith("-"), words[1:]))
         return len(rest) > 1 and self._names_judge(rest[0]) and rest[1] == TEMPORARY_JUDGE[1]
 
-    def _value(self, value: str, appends: bool, position: tuple[int, int]) -> ShellValue:
-        spans = substitution_spans(value)
-        bare = value[1:-1] if len(value) > 1 and value[0] == value[-1] == '"' else value
-        if (
-            not appends
-            and len(spans) == 1
-            and bare in (f"$({spans[0][1]})", f"`{spans[0][1]}`")
-            and self.runs_judge(spans[0][1])
-        ):
-            return "judged"
-        extents = [_substitution_extent(value, start, inner) for start, inner in spans]
-        outside = " ".join(value[start:end] for start, end in _outside((0, len(value)), extents))
-        if self.temporary_words(outside, position):
-            return "temporary"
-        named = JUDGED_REFERENCE.match(bare)
-        if not appends and named is not None and self.held(named.group(1) or named.group(2), position) == "judged":
-            return "judged"
-        return "other"
-
-    def temporary_words(self, text: str, position: tuple[int, int] | int) -> list[re.Match[str]]:
-        """Each place in a line's text that names the temporary directory unjudged: TMPDIR, TEMP, or TMP expanded, a
-        TEMPORARY_PATH, or a variable holding the temporary directory there, read at `position`, or, given a line's
-        number alone, where each reference stands on it."""
+    def temporary_words(self, text: str) -> list[re.Match[str]]:
+        """Each place in a text that names the temporary directory unjudged here: TMPDIR, TEMP, or TMP expanded, a
+        TEMPORARY_PATH, or a variable holding the temporary directory."""
         found = [*TEMPORARY_VARIABLE_WORD.finditer(text), *TEMPORARY_PATH.finditer(text)]
         found += [
             reference
             for reference in SHELL_VARIABLE_REFERENCE.finditer(text)
-            if self.held(reference.group(1), position if isinstance(position, tuple) else (position, reference.start()))
-            == "temporary"
+            if self.held(reference.group(1)) == "temporary"
         ]
         return sorted(found, key=lambda found: found.start())
 
-    def unread(self, line: str) -> list[tuple[int, int]]:
-        """Where on a line a word may name the temporary directory unjudged: an assignment's value outside its
-        substitutions, which only gives the variable what it holds, and a substitution that runs the judge."""
-        substitutions = [
-            (_substitution_extent(line, start, inner), self.runs_judge(inner))
-            for start, inner in substitution_spans(line)
-        ]
-        spans = [extent for extent, judge in substitutions if judge]
-        for match in SHELL_ASSIGNMENT.finditer(line):
-            extent = (match.end(), _word_end(line, match.end()))
-            spans += _outside(extent, [extent for extent, _ in substitutions])
-        return spans
+    def name(self, text: str, line: int | Sequence[int]) -> None:
+        """Note the first text naming the temporary directory unjudged on each line a text holds, which starts on
+        `line`, or whose characters stand on `line`'s lines."""
+        for found in self.temporary_words(text):
+            at = line[found.start()] if isinstance(line, Sequence) else line + text.count("\n", 0, found.start())
+            self.named.setdefault(at, found.group(0))
 
-
-def _mktemp_arguments(words: list[str]) -> list[str]:
-    """A mktemp command's arguments, without a redirection the shell reader leaves in them."""
-    arguments = words[1:]
-    for index, word in enumerate(arguments):
-        if REDIRECTION_WORD.fullmatch(word):
-            return arguments[: index - 1 if index and arguments[index - 1].isdigit() else index]
-    return arguments
-
-
-def _mktemp_judged(command: re.Match[str], number: int, values: _BashValues) -> bool:
-    """Whether the mktemp command a line holds from `command` on, up to the end of its command, is given only options
-    that leave where it makes the file to its one template, which starts by reading, in a JUDGED_REFERENCE form, a
-    variable holding the judged folder there and names no other temporary directory. One the shell reader cannot read,
-    such as one whose template goes on past the line, is not."""
-    fragment = COMMAND_END.split(command.string[command.start() :], maxsplit=1)[0]
-    found = [words for words in _shell_words(fragment) or [] if words and _is_program(words[0], MKTEMP)]
-    if not found:
-        return False
-    arguments = _mktemp_arguments(found[0])
-    templates = [word for word in arguments if not word.startswith("-")]
-    named = JUDGED_REFERENCE.match(templates[0]) if len(templates) == 1 else None
-    return (
-        all(word in MKTEMP_TEMPLATE_OPTIONS for word in arguments if word.startswith("-"))
-        and named is not None
-        and values.held(named.group(1) or named.group(2), (number, command.start())) == "judged"
-        and not TEMPORARY_VARIABLE_WORD.search(templates[0])
-    )
+    def judge_mktemp(self, command: Simple) -> None:
+        """Note a command that runs mktemp, bare, by a path, or with .exe, itself or through a wrapper, eval, or a
+        shell's -c script, as shell_commands reads them, unless the words after it give it only options that leave
+        where it makes the file to its one template, which starts by reading, in a JUDGED_REFERENCE form, a variable
+        holding the judged folder here and names no other temporary directory."""
+        words = command_words(command)
+        runs: list[list[str]] = [words]
+        _wrapped_programs(words, runs)
+        for run in runs:
+            if not run or not _is_program(run[0], MKTEMP):
+                continue
+            arguments = run[1:]
+            templates = [argument for argument in arguments if not argument.startswith("-")]
+            named = JUDGED_REFERENCE.match(templates[0]) if len(templates) == 1 else None
+            if not (
+                all(argument in MKTEMP_TEMPLATE_OPTIONS for argument in arguments if argument.startswith("-"))
+                and named is not None
+                and self.held(named[1] or named[2]) == "judged"
+                and not TEMPORARY_VARIABLE_WORD.search(templates[0])
+            ):
+                self.unjudged.add(command.line)
 
 
 def _bash_temporary_problems(name: str, text: str) -> list[str]:
-    lines = _code_lines(text)
-    values = _BashValues(lines)
+    try:
+        reading = _TemporaryBash(text)
+    except BashSyntaxError as error:
+        return [
+            f"{name}:1: validation cannot read the script as Bash ({error}), so where it makes its temporary files is "
+            f"unjudged; write it as Bash reads it; see {WORKING_FILES_DOC}"
+        ]
     problems: list[str] = []
-    for number, line in lines:
-        if any(not _mktemp_judged(command, number, values) for command in MKTEMP_COMMAND.finditer(line)):
+    for number in sorted(reading.unjudged | set(reading.named)):
+        if number in reading.unjudged:
             problems.append(
                 f"{name}:{number}: mktemp makes a file validation cannot trace to the folder `python "
                 "private_folder.py temporary-directory` prints; give it one template in a variable assigned from that "
                 f"folder, as update-coding-agent-skills' update.sh does; see {WORKING_FILES_DOC}"
             )
-        unread = values.unread(line)
-        found = [
-            word.group(0)
-            for word in values.temporary_words(line, number)
-            if not any(start <= word.start() < end for start, end in unread)
-        ]
-        if found:
+        if number in reading.named:
             problems.append(
-                f"{name}:{number}: {found[0]} names the temporary directory unjudged; work in the folder `python "
-                "private_folder.py temporary-directory` prints, as update-coding-agent-skills' update.sh does; see "
-                f"{WORKING_FILES_DOC}"
+                f"{name}:{number}: {reading.named[number]} names the temporary directory unjudged; work in the folder "
+                "`python private_folder.py temporary-directory` prints, as update-coding-agent-skills' update.sh "
+                f"does; see {WORKING_FILES_DOC}"
             )
     return problems
 
@@ -3072,7 +2919,7 @@ def _powershell_temporary_problems(name: str, text: str) -> list[str]:
         f"make the file in the folder `python private_folder.py temporary-directory` prints; see {WORKING_FILES_DOC}"
     )
     problems: list[str] = []
-    for number, line in _code_lines(_without_block_comments(text), "`"):
+    for number, line in _code_lines(_without_block_comments(text)):
         problems += [
             f"{name}:{number}: {found.group(0)} names the temporary directory unjudged; {judge}"
             for found in sorted(

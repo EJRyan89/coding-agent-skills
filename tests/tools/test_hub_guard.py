@@ -3278,6 +3278,8 @@ class UnderstoodSetTests(GuardTestCase):
             (f'echo "$(git -C "{self.hub}" switch feat/demo)"', self.tree, "deny"),
             (f"cat <<'EOF'\ngit -C '{self.hub}' switch feat/demo\nEOF", self.tree, None),
             (f"cat <<EOF\n$(git -C '{self.hub}' switch feat/demo)\nEOF", self.tree, "deny"),
+            # A case pattern's `)` closes the pattern, not the substitution, as Bash 4 and later read it.
+            (f"os=$(case \"$(uname)\" in Darwin) git -C '{self.hub}' switch feat/demo;; esac)", self.tree, "deny"),
             ("git commit -F - <<'EOF'\nfix(tools): a message\nEOF", self.tree, None),
             ("cat <<< 'git commit -m x'", self.hub, None),
             (f"diff <(git -C '{self.hub}' show HEAD) <(echo x)", self.tree, None),
@@ -3285,6 +3287,83 @@ class UnderstoodSetTests(GuardTestCase):
         ):
             with self.subTest(command=command):
                 self.assertEqual(expected, self.bash(command, cwd))
+
+    def test_a_case_pattern_no_paren_opens_in_a_substitution_is_refused_while_a_hub_is_guarded(self) -> None:
+        # Bash 3.2, macOS's /bin/bash, ends the substitution at the pattern's `)`, so with a `#` after it the git call
+        # runs in the shell around the substitution, and with a newline it runs before the next line is refused; Bash 4
+        # and later run it inside. Where it acts depends on the Bash, so the command is refused while a hub is in view.
+        for command in (
+            "x=$(case x in a) ; git commit -m y #;; esac)",
+            "echo $(case x in a) && git push # ;; esac)",
+            "echo $(case x in a) $(git checkout main) #;; esac)",
+            f"x=$(cd '{self.tree}'; case a in a) git switch feat/demo\nesac)",
+        ):
+            with self.subTest(command=command):
+                self.assertEqual("deny", self.bash(command, self.hub))
+                self.assertIn("Bash 3.2", self.reason)
+        # A pattern a `(` opens is read alike by both, so the switch in the tree is allowed.
+        self.assertIsNone(self.bash(f"x=$(cd '{self.tree}'; case a in (a) git switch feat/demo;; esac)", self.hub))
+
+    def test_a_bare_case_pattern_in_a_here_document_s_body_is_refused_while_a_hub_is_guarded(self) -> None:
+        # Bash 3.2 runs the git call after the pattern in each, where Bash 4 and later refuse the body's expansion; the
+        # body's expansion is left unclosed, so what it runs is not read, and the command is refused in the hub.
+        for command in (
+            "cat <<EOF\n$(case x in a) $(git push) #;; esac)\nEOF",
+            "cat <<EOF\n$(case x in a)\n$(git push)\nEOF",
+            "cat <<EOF\n$(case x in a) `git push` #;; esac)\nEOF",
+            "cat <<-EOF\n\t$(case x in a) $(git push) #;; esac)\n\tEOF",
+            "cat <<EOF\n${x:-$(case x in a) $(git push) #;; esac)}\nEOF",
+            "x=$(cat <<EOF\n$(case x in a) $(git push) #;; esac)\nEOF\n)",
+            # The pattern is held in a substitution inside one the grammar refuses, so only the inner one held it.
+            "echo $(echo $(case x in [)]) $(git push) #;; esac))",
+            "x=$(echo $(case x in a) $(git push) #;; esac))\n;; esac)",
+        ):
+            with self.subTest(command=command):
+                self.assertEqual("deny", self.bash(command, self.hub))
+
+    def test_a_here_document_body_s_unclosed_expansion_is_refused_only_while_a_hub_is_in_view(self) -> None:
+        # No case pattern here: an unquoted body's expansion that never closes runs to the body's end, so what it runs
+        # is not read, and the guard refuses the command while a guarded hub is in view, with or without a git call.
+        for command in ("cat <<EOF\n$(git push; echo a\nEOF", "cat <<EOF\n$(git am; echo a\nEOF"):
+            with self.subTest(command=command):
+                self.assertEqual("deny", self.bash(command, self.hub))
+                self.assertIn(hub_guard.UNCLOSED_BODY, self.reason)
+        # The same body closed is read, and runs nothing that writes the hub.
+        self.assertIsNone(self.bash("cat <<EOF\n$(echo a)\nEOF", self.hub))
+        # With no hub in view, as "The guard's contract" says, the part it does not read is allowed with a note.
+        outside = self.root / "outside"
+        outside.mkdir(exist_ok=True)
+        self.assertIsNone(self.bash("cat <<EOF\n$(git push; echo a\nEOF", outside))
+        self.assertIn(hub_guard.UNCLOSED_BODY, self.stderr)
+
+    def test_a_bare_case_pattern_is_also_read_as_bash_3_2_reads_it_from_outside_the_hub(self) -> None:
+        # From outside every checkout of the hub, nothing the Bash 4 reading reads reaches the hub, but Bash 3.2 ends
+        # the substitution at the pattern's `)` and runs the git call in the hub, so the guard reads that way too.
+        outside = self.root / "outside"
+        outside.mkdir(exist_ok=True)
+        hub = self.hub.as_posix()
+        for command in (
+            f"cd '{hub}' && echo $(case x in a) $(git push) #;; esac)",
+            f"cd '{hub}'; echo $(case x in a) $(git push) #;; esac)",
+            f"cd '{hub}'\necho $(case x in a) $(git push) #;; esac)",
+            f"echo $(case x in a) $(git -C '{hub}' push) #;; esac)",
+            f"cd '{hub}' && x=$(case x in a) ; git commit -m y #;; esac)",
+            f"cd '{hub}' && echo $(case x in a) && git push # ;; esac)",
+            f"cd '{hub}' && cat <<EOF\n$(case x in a) $(git push) #;; esac)\nEOF",
+        ):
+            with self.subTest(command=command):
+                self.assertEqual("deny", self.bash(command, outside))
+        # A pattern held in a substitution nested inside one the grammar then refuses, which Bash 3.2 closes early.
+        command = f"cat <<EOF\n$(cat <(case x in x) ; git -C '{hub}' push #;; esac))\n)\nEOF"
+        with self.subTest(command=command):
+            self.assertEqual("deny", self.bash(command, outside))
+        # Neither reading reaches a hub here, and a pattern a `(` opens is read alike, so these stay allowed.
+        for command in (
+            "cd /tmp && echo $(case x in a) $(git push) #;; esac)",
+            f"cd '{hub}' && echo $(case x in (a) git status;; esac)",
+        ):
+            with self.subTest(command=command):
+                self.assertIsNone(self.bash(command, outside))
 
     def test_git_in_arithmetic_a_for_header_or_after_an_arithmetic_function_is_read(self) -> None:
         switch = f'git -C "{self.hub}" switch feat/demo'

@@ -64,6 +64,69 @@ class WordTests(unittest.TestCase):
         self.assertEqual(["git", "switch", "main"], [word.raw for word in command.words])
         self.assertEqual([">&", ">", ">"], [redirect.operator for redirect in command.redirects])
 
+    def test_a_substitution_says_when_a_case_pattern_no_paren_opened_closes_in_it(self) -> None:
+        # Bash 3.2 ends the substitution at such a pattern's `)`, so a reader can tell the Bashes apart there; a
+        # pattern opened with `(`, a backquote, which Bash 3.2 reads as Bash 4 does, and a case outside any
+        # substitution are no such text.
+        texts = {
+            "x=$(case a in a) b;; esac)": True,
+            "x=$( (case a in b|a) c;; esac) )": True,
+            "x=$(echo $(case a in a) b;; esac))": False,
+            "x=$(case a in (a) b;; (c) d;; esac)": False,
+            "x=`case a in a) b;; esac`": False,
+            "case a in a) x=$(b);; esac": False,
+        }
+        for text, bare in texts.items():
+            with self.subTest(text=text):
+                word = first_simple(text).words[0] if not text.startswith("case") else None
+                sources = list(word.substitutions) if word is not None else []
+                self.assertEqual(bare, any(getattr(source, "bare_case", False) for source in sources))
+        inner = first_simple("x=$(echo $(case a in a) b;; esac))").words[0].substitutions[0]
+        self.assertTrue(getattr(first_simple(inner).words[1].substitutions[0], "bare_case", False))
+
+    def test_a_refusal_says_when_a_case_pattern_no_paren_opened_ended_the_substitution_for_bash_3_2(self) -> None:
+        # Bash 4 and later refuse this, the `#` taking the substitution's close; Bash 3.2 ends the substitution at `a)`
+        # and runs the git call.
+        with self.assertRaises(BashSyntaxError) as raised:
+            parse("x=$(case x in a) ; git commit -m y #;; esac)")
+        self.assertTrue(raised.exception.bare_case)
+        with self.assertRaises(BashSyntaxError) as raised:
+            parse("x=$(echo ')")
+        self.assertFalse(raised.exception.bare_case)
+
+    def test_a_here_document_s_unclosed_expansion_says_when_its_pattern_no_paren_opened(self) -> None:
+        bare = bash_syntax.here_documents(first_simple("cat <<EOF\n$(case x in a) $(git push) #;; esac)\nEOF"))[0]
+        self.assertEqual((True, True), (bare.unclosed, bare.bare_case))
+        other = bash_syntax.here_documents(first_simple('cat <<EOF\n$(echo "a)\nEOF'))[0]
+        self.assertEqual((True, False), (other.unclosed, other.bare_case))
+
+    def test_a_refusal_and_a_body_say_when_a_substitution_at_any_depth_held_a_bare_case_pattern(self) -> None:
+        # The inner substitution reads, its pattern's `)` no `(` opened, and the one around it is then refused.
+        with self.assertRaises(BashSyntaxError) as raised:
+            parse("echo $(echo $(case x in [)]) $(git push) #;; esac))")
+        self.assertTrue(raised.exception.holds_bare_case)
+        with self.assertRaises(BashSyntaxError) as raised:
+            parse("echo $(echo $(case x in (a) :;; esac) #)")
+        self.assertFalse(raised.exception.holds_bare_case)
+        body = bash_syntax.here_documents(first_simple("cat <<EOF\n$(cat <(case x in x) ; :  #;; esac))\n)\nEOF"))[0]
+        self.assertTrue(body.holds_bare_case)
+
+    def test_parse_reads_a_case_pattern_s_paren_in_a_substitution_as_bash_3_2_does_when_asked(self) -> None:
+        # Bash 3.2 ends the substitution at `a)`, so the git call after it stands in the command around it.
+        text = "echo $(case x in a) $(git push) #;; esac)"
+        with self.assertRaises(BashSyntaxError):
+            bash_syntax.parse(text)
+        command = bash_syntax.parse(text, bash_3_2=True).items[0][0].first.commands[0]
+        assert isinstance(command, bash_syntax.Simple)
+        self.assertEqual(
+            ("case x in a", "git push"), tuple(text for word in command.words for text in word.substitutions)
+        )
+
+    def test_each_substitution_keeps_the_form_that_opened_it(self) -> None:
+        command = first_simple('echo $(a) `b` <(c) >(d) "$(e)"')
+        forms = [getattr(text, "form", None) for word in command.words for text in word.substitutions]
+        self.assertEqual(["$(", "`", "<(", ">(", "$("], forms)
+
     def test_an_array_assignment_is_one_word_whose_value_only_running_settles_and_whose_substitutions_run(
         self,
     ) -> None:
@@ -340,6 +403,12 @@ def test_a_batch_whose_every_reading_ends_still_holds_the_reader_to_bash(monkeyp
 
 
 class HereDocumentTests(unittest.TestCase):
+    def test_a_body_whose_expansion_never_closes_says_so(self) -> None:
+        unclosed = bash_syntax.here_documents(first_simple('cat <<EOF\n$(git am) $(echo "a)\nEOF'))[0]
+        self.assertEqual((True, ("git am",)), (unclosed.unclosed, unclosed.substitutions))
+        closed = bash_syntax.here_documents(first_simple("cat <<EOF\n$(git am)\nEOF"))[0]
+        self.assertFalse(closed.unclosed)
+
     def test_a_here_document_body_is_data_never_commands(self) -> None:
         tree = parse("cat > run.sh <<EOF\ncd '/wt'\ngit status\nEOF\ngit add run.sh")
         self.assertEqual([["cat"], ["git", "add", "run.sh"]], simple_commands(tree))
@@ -540,6 +609,12 @@ def test_time_after_a_pipe_and_more_than_one_newline_is_the_keyword_bash_refuses
         # A function's name is never an assignment, and the function keyword names one.
         "a=b () { :; }",
         "function",
+        # `case` is a reserved word only where a command starts, so this `)` closes the substitution.
+        "x=$(echo case a in a) :;; esac)",
+        # A compound command that the text, or a substitution, ends before its word.
+        "echo; case",
+        "for",
+        "select",
     ],
 )
 def test_text_bash_would_refuse_is_an_error(text: str) -> None:
@@ -695,6 +770,24 @@ def test_a_function_name_bash_refuses_defines_nothing_when_bash_runs_it(definiti
             [["echo", "<(", "${x:-$(git e)}", "$(("], ["git", "d"], ["git", "e"], ["git", "f"]],
         ),
         ("x=1", [[]]),
+        # A case pattern's `)` inside a substitution closes the pattern, not the substitution, as Bash 4 and later
+        # read it, a pattern opened with `(` or not, in a subshell, a nested case, or a backquote. Bash 3.2, macOS's
+        # /bin/bash, ends the substitution at the pattern's `)`, so its syntax check refuses the first six. It does not
+        # refuse them before running them: where the rest of the line parses, as when a newline ends the pattern's
+        # commands, it runs `x= b` in the shell around the substitution and refuses only the next line. It reads the
+        # empty case and the backquoted one as these do. The grammar keeps the one reading of Bash 4 and later and
+        # marks such a substitution, bare_case, which the hub guard refuses while a hub is guarded.
+        (
+            'os=$(case "$(uname)" in Darwin) echo mac;; *) echo linux;; esac)',
+            [[], ["uname"], ["echo", "mac"], ["echo", "linux"]],
+        ),
+        ("x=$( (case a in a) echo;; esac) )", [[], ["echo"]]),
+        ("x=$(case a in (a) b;; c|d) (e);; esac; f)", [[], ["b"], ["e"], ["f"]]),
+        ("x=$(case in in in) b;; esac)", [[], ["b"]]),
+        ("x=$(case a in a) b\nesac)", [[], ["b"]]),
+        ("x=$(case a in a) case b in b) c;; esac;; esac)", [[], ["c"]]),
+        ("x=$(case a in esac); b", [[], ["b"]]),
+        ("x=`case a in a) b;; esac`", [[], ["b"]]),
         # A word's quotes are removed and each expansion kept in the form that names it.
         ("git \"$sub\" ${t} ~/x 'a b' $'c'", [["git", "$sub", "$t", "~/x", "a b", "c"]]),
     ],
@@ -724,7 +817,8 @@ def test_command_words_mark_only_a_word_whose_part_names_its_form_alone_as_unset
     assert found == ["git", "$@", "${x:-y}", "$t", "x?", "?", "?", "?", "?", "q", "(", "(("]
 
 
-@pytest.mark.parametrize("text", ["echo $(if)", "echo `fi`"])
+# A substitution that ends where its compound command's word should stand, as `$(case)`, is refused, not an IndexError.
+@pytest.mark.parametrize("text", ["echo $(if)", "echo `fi`", "x=$(case)", "x=$(for)"])
 def test_simple_commands_raise_where_a_substitution_cannot_be_read(text: str) -> None:
     with pytest.raises(BashSyntaxError):
         bash_syntax.simple_commands(text)

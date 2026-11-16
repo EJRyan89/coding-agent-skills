@@ -389,41 +389,25 @@ def test_a_wrapped_program_only_running_settles_inside_a_started_script_is_an_un
     assert programs == {f"{UNREAD_PROGRAM}{powershell_commands.UNREAD_WORD}"}
 
 
-# A fragment the temporary-folder policy reads is unreadable as a whole when the grammar refuses any of it, an eval's or
-# a shell's -c script inside it included, never read as the commands before the refusal.
-@pytest.mark.parametrize("fragment", ["if true; then rg foo", "eval 'rg \"'", "mktemp \"$T\" 2>`bash -c 'case x in'`"])
-def test_a_fragment_the_grammar_refuses_has_no_words(fragment: str) -> None:
-    assert skill_scripts._shell_words(fragment) is None
-
-
-def test_a_fragment_the_grammar_reads_has_each_command_s_words() -> None:
-    assert skill_scripts._shell_words('mktemp "$T" 2>`echo a`') == [["mktemp", "$T"], ["echo", "a"]]
-
-
-def test_a_substitution_whose_one_command_runs_a_script_the_grammar_refuses_runs_no_command_read() -> None:
-    assert skill_scripts._one_command("eval 'python private_folder.py temporary-directory \"'") is None
-    assert skill_scripts._one_command("python private_folder.py temporary-directory") == [
-        "python",
-        "private_folder.py",
-        "temporary-directory",
-    ]
-
-
-@pytest.mark.parametrize(("redirection", "judged"), [("2>/dev/null", True), ("2>`bash -c 'case x in'`", False)])
-def test_a_mktemp_command_holding_bash_the_grammar_refuses_is_not_judged(redirection: str, judged: bool) -> None:
+# The temporary-folder policy reads a mktemp command whole, its redirections' substitutions as the commands they run,
+# which leave where mktemp makes its file to its template; a script the grammar refuses, or one of whose substitutions
+# it refuses, is named as unread, since Bash runs the lines before a syntax error.
+@pytest.mark.parametrize("redirection", ["2>/dev/null", "2>`bash -c 'case x in'`", "\\\n  2>/dev/null"])
+def test_a_mktemp_command_is_judged_whole_wherever_its_words_and_redirections_stand(redirection: str) -> None:
     text = (
         'JUDGED=$(python private_folder.py temporary-directory "${TMPDIR:-/tmp}")\n'
         'TEMPLATE="${JUDGED#TEMPORARY_DIRECTORY }/x.XXXXXX"\n'
         f'A=$(mktemp "$TEMPLATE" {redirection})\n'
     )
-    problems = skill_scripts._bash_temporary_problems("make.sh", text)
-    assert (problems == []) is judged
-    assert all(problem.startswith("make.sh:3: mktemp makes a file") for problem in problems)
+    assert skill_scripts._bash_temporary_problems("make.sh", text) == []
 
 
-def test_the_shell_lexer_gives_each_word_beside_its_syntax() -> None:
-    words = list(skill_scripts.ShellLexer("echo aX'|'b \\; c && d").words())
-    assert words == [("echo", "echo"), ("aX|b", None), (";", None), ("c", "c"), ("&&", "&&"), ("d", "d")]
+@pytest.mark.parametrize("script", ["if true; then mktemp", 'A=$(mktemp "$T" 2>$(if))', "V=${A /tmp"])
+def test_a_script_the_grammar_refuses_is_named_as_unread_by_the_temporary_folder_policy(script: str) -> None:
+    problems = skill_scripts._bash_temporary_problems("make.sh", f"echo first\n{script}\n")
+    assert [problem.partition(" (")[0] for problem in problems] == [
+        "make.sh:1: validation cannot read the script as Bash"
+    ]
 
 
 # A line continuation joins its lines, so the word after it is the git command's subcommand.
@@ -459,25 +443,6 @@ def test_shell_command_extraction_finds_no_program_where_nothing_runs(script: st
 )
 def test_shell_command_extraction_reads_past_a_wrapper_under_a_prefix(script: str, programs: set[str]) -> None:
     assert shell_commands(script) == programs
-
-
-@pytest.mark.parametrize(
-    ("script", "spans"),
-    [
-        pytest.param("a $(b) c", [(4, "b")], id="unquoted"),
-        pytest.param("a \"$(b ')' c)\" d", [(5, "b ')' c")], id="a quoted ) inside"),
-        pytest.param("a $(b $(c) d) e", [(4, "b $(c) d")], id="nested, outermost only"),
-        pytest.param("a `b \\` c` d", [(3, "b \\` c")], id="an escaped backtick inside"),
-        pytest.param("x=$'\\''; $(b)", [(11, "b")], id="after an ANSI-C string"),
-        pytest.param("a '$(b)' # $(c)\n$(d)", [(18, "d")], id="single quotes and a comment"),
-        pytest.param("a $((1 + 2))", [], id="arithmetic"),
-        pytest.param("a $(b ')", [(4, "b ')")], id="left open"),
-    ],
-)
-def test_substitution_spans_name_each_substitution_where_its_text_begins(
-    script: str, spans: list[tuple[int, str]]
-) -> None:
-    assert skill_scripts.substitution_spans(script) == spans
 
 
 @pytest.mark.parametrize(

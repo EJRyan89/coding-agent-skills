@@ -1682,6 +1682,14 @@ def read_only_form(subcommand: str, arguments: Sequence[Word]) -> tuple[str, Rea
     return subcommand, READ_ONLY_FORMS.get(subcommand), arguments
 
 
+# Why a command substitution holding a case pattern whose `)` no `(` opened is refused while a hub is guarded.
+BARE_CASE = (
+    "a command substitution holds a case pattern whose `)` no `(` opens, which Bash 3.2, macOS's /bin/bash, reads as "
+    "the substitution's end, running the rest of the line outside it, where Bash 4 and later run it inside"
+)
+# Why a here-document whose unquoted body holds an expansion it never closes is refused while a hub is guarded: Bash
+# versions part on where such a body's expansions end, and the guard reads none of them after it.
+UNCLOSED_BODY = "a here-document's body holds an expansion it never closes, so what it runs is not read"
 # Why a word the text does not settle, before any `--`, is refused in a hub: it may be any option.
 UNSETTLED_WORD = "is given a word the text does not settle, which may be any of its options."
 
@@ -3089,21 +3097,31 @@ class BashReader:
     directory the text does not settle.
     """
 
-    def __init__(self, reading: Reading, depth: int, start: BashStart) -> None:
+    def __init__(self, reading: Reading, depth: int, start: BashStart, bash_3_2: bool = False) -> None:
         self.reading = reading
         self.depth = depth
         self.start = start
+        # Whether it reads as Bash 3.2 does, where a case pattern's `)` inside a `$( )` ends the substitution.
+        self.bash_3_2 = bash_3_2
 
     def nested(self) -> BashReader:
-        return BashReader(self.reading, self.depth + 1, self.start)
+        return BashReader(self.reading, self.depth + 1, self.start, self.bash_3_2)
 
     def read_text(self, text: str, directory: Directory) -> Directory:
         if self.depth > NESTING_LIMIT:
             self.reading.notes.append(f"substitutions nest more than {NESTING_LIMIT} deep, and the rest is not read")
             return UNKNOWN
+        if isinstance(text, bash_syntax.Source) and text.bare_case:
+            # Bash 3.2 ends the substitution at the pattern's `)` and runs the rest of the line in the shell around it,
+            # where Bash 4 and later run it inside, so where a git call in it acts depends on the Bash.
+            self.reading.cannot_read(BARE_CASE)
         try:
-            tree = bash_syntax.parse(text)
+            tree = bash_syntax.parse(text, bash_3_2=self.bash_3_2)
         except bash_syntax.BashSyntaxError as exc:
+            # A substitution at any depth that held such a pattern before the text was refused, which Bash 3.2 may
+            # have closed early and run past.
+            if exc.bare_case or exc.holds_bare_case:
+                self.reading.cannot_read(BARE_CASE)
             self.reading.notes.append(f"Bash would not read it as written, or the guard cannot ({exc})")
             return UNKNOWN
         return self.read_list(tree, directory)
@@ -3186,6 +3204,10 @@ class BashReader:
         for redirect in redirects:
             here = redirect.here
             if here is not None:
+                if here.bare_case or here.holds_bare_case:
+                    self.reading.cannot_read(BARE_CASE)
+                if here.unclosed:
+                    self.reading.cannot_read(UNCLOSED_BODY)
                 for text in here.substitutions:
                     self.nested().read_text(text, directory)
                 continue
@@ -3542,8 +3564,13 @@ def changes_directory(node: object) -> bool:
 
 
 def read_bash(command: str, cwd: Path | None, reading: Reading, depth: int = 0) -> None:
-    """Reads a Bash command started in cwd with the environment the hook was given."""
-    BashReader(reading, depth, bash_start(reading)).read_text(command, Directory(cwd))
+    """Reads a Bash command started in cwd with the environment the hook was given: as Bash 4 and later read it, and,
+    where it holds a case pattern those and Bash 3.2 read apart (BARE_CASE), as Bash 3.2 reads it too, so the git
+    calls and places of both readings are judged."""
+    start = bash_start(reading)
+    BashReader(reading, depth, start).read_text(command, Directory(cwd))
+    if BARE_CASE in reading.unread:
+        BashReader(reading, depth, start, bash_3_2=True).read_text(command, Directory(cwd))
 
 
 # ---------------------------------------------------------------------------------------------------------------

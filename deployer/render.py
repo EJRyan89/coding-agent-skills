@@ -437,7 +437,9 @@ class ShellUnit:
 
 
 def _shell_blocks(logical: str, lines: list[str]) -> list[str]:
-    """The body of each fence among `lines` substituted as shell, in order, each line ending at LF."""
+    """The body of each fence among `lines` substituted as shell, in order, each line ending at LF and read as
+    CommonMark gives it to the fence's content, without the indentation of the fence and of the list items that hold
+    it, so an indented fence's here-document closes at its delimiter, as it does for a model given the fence."""
     blocks: list[str] = []
     for fence in find_fences(lines):
         if fence_context(fence) != "shell":
@@ -447,7 +449,7 @@ def _shell_blocks(logical: str, lines: list[str]) -> list[str]:
                 f"ERROR: Unclosed Bash code fence in {logical}",
                 "Close the fence with the characters that open it, then retry.",
             )
-        blocks.append("".join(f"{fence.text(lines[index])}\n" for index in fence.body()))
+        blocks.append("".join(f"{fence.content(lines[index])}\n" for index in fence.body()))
     return blocks
 
 

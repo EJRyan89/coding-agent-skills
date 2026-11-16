@@ -158,7 +158,7 @@ def simple_commands(node: object) -> list[bash_syntax.Simple]:
 
 def rendered_fragments(directory: Path) -> list[str]:
     """The Bash a rendered skill holds, as the deployer checks it: each .sh or .bash file, and the body of each
-    Markdown fence it substitutes as shell."""
+    Markdown fence it substitutes as shell, each line as CommonMark gives it to the fence's content."""
     fragments: list[str] = []
     for path in sorted(directory.rglob("*")):
         suffix = path.suffix.casefold()
@@ -167,7 +167,7 @@ def rendered_fragments(directory: Path) -> list[str]:
         elif suffix == ".md":
             lines = path.read_text(encoding="utf-8").split("\n")
             fragments.extend(
-                "".join(f"{fence.text(lines[index])}\n" for index in fence.body())
+                "".join(f"{fence.content(lines[index])}\n" for index in fence.body())
                 for fence in find_fences(lines)
                 if render.fence_context(fence) == "shell"
             )

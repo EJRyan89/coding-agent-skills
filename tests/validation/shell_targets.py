@@ -5,14 +5,18 @@ Bash fences, and PSScriptAnalyzer on .ps1 files and PowerShell fences.
 from __future__ import annotations
 
 import ast
+import itertools
 import re
 import tempfile
 import unittest
+from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 
 import file_presence
 import frontmatter
+import whole_number
+from bash_syntax import BashSyntaxError, CommandList, Word, every_command, expanded_words, here_documents, parse
 from job_pool import refuse_termination, run_process
 from path_containment import posix_within
 from text_lines import LINE_BREAK, program_lines
@@ -41,10 +45,14 @@ from validation_support import (
 from deployer import config, platform_support, render, tools
 
 SHELL_LABELS = {"shell": "Bash", "powershell": "PowerShell"}
-SHELL_ESCAPES = {"shell": "\\", "powershell": "`"}
+POWERSHELL_ESCAPE = "`"
 # The finder whose result runs each context's rendered script, called as a function or a method.
 SHELL_FINDERS = {"find_bash": "shell", "find_pwsh": "powershell", "find_powershell": "powershell"}
 SHELL_WORD_BREAKS = " \t\n;|&()"
+# What _bash_tokens writes in each token's place before the grammar reads the text: plain word characters, as a value
+# that needs no quoting renders, numbered by the token's place among the text's tokens, so each one the grammar gives
+# back is placed where the value would stand.
+TOKEN_MARKER = re.compile(r"TEMPLATE_TOKEN_([0-9]+)_")
 # Python named by hand, as a word of its own, where a shipped skill writes {{PYTHON}} so that the command renders as the
 # platform names it: python on Windows and python3 elsewhere.
 HAND_WRITTEN_INTERPRETER = re.compile(r"(?<![\w./{}-])python3?(?![\w./}-])")
@@ -69,7 +77,9 @@ COMMANDS_ALLOWED = {
 def _shell_units(path: Path) -> list[tuple[str, int, str]]:
     """A shipped file's Bash and PowerShell as (context, first line, text), classified as the deployer renders it. A
     fence left open runs to the end of what holds it, so its commands reach every check; unclosed_fence_problems
-    reports it."""
+    reports it. Each line of a fence is read as CommonMark gives it to the fence's content, without the indentation
+    of the fence and of the list items that hold it, so an indented fence's here-document closes at its delimiter,
+    and a column a check reports counts from the content's start."""
     context = render.SUFFIX_CONTEXT.get(path.suffix.casefold())
     text = path.read_text(encoding="utf-8", errors="replace")
     if context in SHELL_LABELS:
@@ -78,7 +88,11 @@ def _shell_units(path: Path) -> list[tuple[str, int, str]]:
         return []
     lines = LINE_BREAK.split(text)
     return [
-        (render.fence_context(fence), fence.opener + 2, "\n".join(fence.text(lines[index]) for index in fence.body()))
+        (
+            render.fence_context(fence),
+            fence.opener + 2,
+            "\n".join(fence.content(lines[index]) for index in fence.body()),
+        )
         for fence in find_fences(lines)
         if render.fence_context(fence) in SHELL_LABELS
     ]
@@ -104,13 +118,92 @@ def unclosed_fence_problems(root: Path, files: list[Path]) -> list[str]:
     return problems
 
 
-def _shell_tokens(text: str, context: str) -> list[tuple[int, str, bool]]:
-    """Each token outside a comment, as (line offset, name, whether it sits inside quotes).
+def _shell_tokens(text: str, context: str) -> list[tuple[int, str, bool | None]]:
+    """Each token outside a comment, as (line offset, name, whether it sits inside quotes), in the order the text holds
+    them: Bash's as _bash_tokens reads them, and PowerShell's as _powershell_tokens does. Raises BashSyntaxError for
+    Bash the grammar refuses."""
+    return _bash_tokens(text) if context == "shell" else _powershell_tokens(text)
 
-    Heredocs are not parsed, so a token in a heredoc body counts as unquoted.
-    """
-    escape = SHELL_ESCAPES[context]
-    found: list[tuple[int, str, bool]] = []
+
+def _bash_tokens(text: str) -> list[tuple[int, str, bool | None]]:
+    """Each token of a Bash text outside a comment, read through ejryan89-skill-core's bash_syntax, the repository's
+    one Bash grammar, as (line offset, name, whether it sits inside quotes). A token is quoted when every character of
+    it stands inside single or double quotes in its word, wherever Bash reads that word: a command's, an assignment's,
+    a redirection's, a case's or a loop's, in a substitution's command too, and inside a `${ }` expansion when the
+    expansion is quoted; an escape before it quotes only its first character, so it is not. A here-document's body is
+    data that no word splitting reaches, so a token in its text is quoted; one in a substitution the body runs is read
+    in that substitution's command. A token that stands where the grammar keeps no text of its own, in a `$'...'`
+    string that holds an escape, an array assignment's value, arithmetic, or a function's name, or in an unquoted
+    `${ }` expansion, whose own quotes the grammar does not keep, is None, which validation cannot judge. Each token
+    is read where a value that needs no quoting would stand, TOKEN_MARKER, so a token joined to a `$NAME` before it
+    is read as part of the name, as Bash reads the rendered value, and is None too. A stated limit: a token in a `${ }`
+    expansion's parameter name, index, or `!` or `#` prefix, as `"${{{X}}:-a}"`, `"${!{{X}}}"`, `"${#{{X}}}"`, or
+    `"${Y[{{X}}]}"`, is read as quoted, though a value with a space breaks it; no skill writes one. Raises
+    BashSyntaxError for Bash the grammar refuses, and for text that already holds a TOKEN_MARKER."""
+    if TOKEN_MARKER.search(text):
+        raise BashSyntaxError("it holds text of the form validation marks each token with")
+    places = itertools.count()
+    marked = TEMPLATE_TOKEN.sub(lambda _: f"TEMPLATE_TOKEN_{next(places)}_", text)
+    placed: dict[int, tuple[int, bool | None]] = {}
+    for command in every_command(marked):
+        for word in expanded_words(command):
+            for index, rank, verdict in _word_markers(word):
+                if placed.get(index, (3, False))[0] > rank:
+                    placed[index] = (rank, verdict)
+        for document in here_documents(command):
+            for marker in TOKEN_MARKER.finditer(document.body):
+                placed.setdefault(_marker_place(marker), (2, True))
+    tree = parse(marked)
+    found: list[tuple[int, str, bool | None]] = []
+    for index, token in enumerate(TEMPLATE_TOKEN.finditer(text)):
+        if index in placed:
+            quoted: bool | None = placed[index][1]
+        elif _in_comment(marked, f"TEMPLATE_TOKEN_{index}_", tree):
+            continue
+        else:
+            quoted = None
+        found.append((text.count("\n", 0, token.start()), token.group(1), quoted))
+    return found
+
+
+def _in_comment(marked: str, marker: str, tree: CommandList) -> bool:
+    """Whether the grammar reads nothing where a marker stands, so it is in a comment: the text without it reads as the
+    same tree. Text that no longer reads without it, as a function named by the token alone, holds it as code."""
+    try:
+        return parse(marked.replace(marker, "", 1)) == tree
+    except BashSyntaxError:
+        return False
+
+
+def _marker_place(marker: re.Match[str]) -> int:
+    """The place among the text's tokens a TOKEN_MARKER names."""
+    return whole_number.read(marker.group(1), BashSyntaxError("a token marker names no place"))
+
+
+def _word_markers(word: Word) -> Iterator[tuple[int, int, bool | None]]:
+    """Each token marker a Bash word holds, as (its index, how near the word's own text it stands, whether every
+    character of it is quoted): 0 in a run of the word's literal text, which breaks at each expansion, and 1 in a
+    `${ }` expansion's text, whose own substitutions the grammar reads as commands: quoted when the expansion is, and
+    None, which validation cannot judge, when it is not, since the grammar keeps no quotes of the expansion's own."""
+    runs: list[list[tuple[str, bool]]] = [[]]
+    for part in word.parts:
+        if part.kind == "text":
+            runs[-1] += [(character, part.quoted) for character in part.text]
+            continue
+        runs.append([])
+        # A marker in a parameter's name, as `"$Y{{X}}"` gives, is no value of its own once rendered, quoted or not.
+        quoted = True if part.quoted and part.kind != "parameter" else None
+        yield from ((_marker_place(marker), 1, quoted) for marker in TOKEN_MARKER.finditer(part.text))
+    for run in runs:
+        for marker in TOKEN_MARKER.finditer("".join(character for character, _ in run)):
+            yield _marker_place(marker), 0, all(quoted for _, quoted in run[marker.start() : marker.end()])
+
+
+def _powershell_tokens(text: str) -> list[tuple[int, str, bool | None]]:
+    """Each token of a PowerShell text outside a comment, as (line offset, name, whether it sits inside quotes), read
+    one character at a time: a backtick escapes the character after it outside single quotes, and a `#` that starts a
+    word outside quotes starts a comment."""
+    found: list[tuple[int, str, bool | None]] = []
     quote: str | None = None
     line = 0
     word_start = True
@@ -123,7 +216,7 @@ def _shell_tokens(text: str, context: str) -> list[tuple[int, str, bool]]:
             word_start = False
             continue
         char = text[index]
-        if char == escape and quote != "'":
+        if char == POWERSHELL_ESCAPE and quote != "'":
             following = text[index + 1 : index + 2]
             # An escape before a token does not quote the value the token renders to.
             if following and not TEMPLATE_TOKEN.match(text, index + 1):
@@ -263,10 +356,23 @@ def shell_token_problems(root: Path) -> list[str]:
                 f'--name="{{{{{token}}}}}"'
                 for offset, token in _lone_optional_tokens(text)
             ]
-            for offset, token, quoted in _shell_tokens(text, context):
+            try:
+                tokens = _shell_tokens(text, context)
+            except BashSyntaxError as error:
+                unquoted.append(
+                    f"{name}:{start} holds Bash validation cannot read ({error}), so its tokens cannot be judged; "
+                    "write it as Bash reads it"
+                )
+                continue
+            for offset, token, quoted in tokens:
                 line = start + offset
+                if quoted is None:
+                    unquoted.append(
+                        f"{name}:{line} has {{{{{token}}}}} where validation cannot read whether Bash quotes it; "
+                        "write it in a quoted word of a command"
+                    )
                 # An interpreter is a command word from a fixed set, so it renders unquoted, as a command must.
-                if not quoted and token not in config.INTERPRETER_VARIABLES:
+                elif not quoted and token not in config.INTERPRETER_VARIABLES:
                     unquoted.append(f"{name}:{line} has {{{{{token}}}}} outside quotes in {SHELL_LABELS[context]}")
                 first.setdefault((context, token), (name, line))
     executed = _executed_shell_tokens(root, unquoted)

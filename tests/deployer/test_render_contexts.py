@@ -285,6 +285,16 @@ class FenceTests(unittest.TestCase):
             body = units[0].path.read_text(encoding="utf-8").removeprefix(render.SHELLCHECK_HEADER)
         self.assertEqual("echo one\n echo two\n", body)
 
+    def test_an_indented_shell_fence_is_extracted_as_commonmark_gives_its_content(self) -> None:
+        # A list item's fence loses the item's indentation, so its here-document closes at its delimiter and the
+        # command after it is checked as a command, as a model given the fence runs it.
+        markdown = b"1. Run:\n\n   ```bash\n   cat <<EOF\n     body\n   EOF\n   echo after\n   ```\n"
+        with tempfile.TemporaryDirectory() as workspace:
+            staged = render.Staged(skills={"s": {"SKILL.md": markdown}})
+            units = render._extract_units(staged, Path(workspace))
+            bodies = [unit.path.read_text(encoding="utf-8").removeprefix(render.SHELLCHECK_HEADER) for unit in units]
+        self.assertEqual(["cat <<EOF\n  body\nEOF\necho after\n"], bodies)
+
     def test_a_fence_after_a_lone_cr_is_substituted_and_extracted_as_shell(self) -> None:
         # CommonMark ends a line at a lone CR, so the fence opens on its own line and its body takes the shell context.
         with self.assertRaisesRegex(DeployError, r"\(shell context\)"):
