@@ -667,14 +667,20 @@ removed fails validation until its pattern follows it.
 - **Why:** A loop that rebinds a name in several branches, each from the name before it, has exponentially many paths
   through its bindings, so a walk per path makes one ordinary scanner stall a validation shard for minutes.
 - **Use:** `tests.validation.validation_support:bound_values`, the binding reader, which follows each name once per
-  call
-- **Guard:** `tests/validation/test_python_checks.py::test_json_write_policy_reads_each_binding_of_a_rebound_loop_variable_once`
+  call; `tests.validation.validation_support:resolved_references`, which reads each binding's value once per resolver
+  and names nothing through the bindings that lead back to it, so a value read again by another route is the one
+  answer it gave
+- **Guard:** `tests/validation/test_python_checks.py::test_json_write_policy_reads_each_binding_of_a_rebound_loop_variable_once`,
+  `tests/validation/test_validation_support.py::test_resolved_references_read_each_binding_of_a_rebound_loop_variable_once`,
+  `tests/validation/test_shell_readers.py::test_command_reader_follows_each_name_of_a_rebound_loop_variable_once`
 - **Search for:** a method that calls itself on each value `bound_values(` or `resolved_references(` returns, carrying
   `seen | {` or `seen: frozenset[` down the recursion rather than one `set` for the question; a check whose time grows
-  with the branches of a loop that rebinds a name from itself, as `after = index + 1` in each branch of a scanner. A
-  hit in `validation_support.py`'s `_references` is the case #2871 holds, and one in its `_calls_of` is the accepted
-  per-path walk, which carries a partial's arguments along each path.
-- **Examples:** #2859
+  with the branches of a loop that rebinds a name from itself, as `after = index + 1` in each branch of a scanner, or
+  `node = node.parent` in each branch of a tree walk. A hit in `validation_support.py`'s `_calls_of` is the accepted
+  per-path walk, which carries a partial's arguments along each path. A walk whose answer names the path it took, as
+  an attribute chain does, keeps one answer per binding by the strongly connected group it lies in, as
+  `resolved_references` does, since remembering only what it has read leaves its answers depending on the route.
+- **Examples:** #2859, #2871
 
 ### A path taken from input is judged inside its tree before anything opens it
 

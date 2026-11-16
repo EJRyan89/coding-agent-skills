@@ -1118,20 +1118,24 @@ class CommandReader:
             ]
         )
 
-    def _names_a_runner(self, node: ast.expr, seen: frozenset[int] = frozenset()) -> bool:
+    def _names_a_runner(self, node: ast.expr) -> bool:
         """Whether an expression names a COMMAND_RUNNERS call, through the module's imports or any value the module
-        binds the name to, even where a name bound more than once does not resolve."""
-        if self._runner(node):
-            return True
-        scope = self.resolver.scopes.get(id(node))
-        if not isinstance(node, ast.Name) or scope is None or id(node) in seen:
-            return False
-        owner = scope.owner(node.id)
-        values = owner.bindings.get(node.id, []) if owner is not None else []
-        return any(
-            isinstance(value, (ast.Name, ast.Attribute)) and self._names_a_runner(value, seen | {id(node)})
-            for value in values
-        )
+        binds the name to, even where a name bound more than once does not resolve. Each name is followed once per
+        question, since whether a binding leads to a runner does not depend on the route to it."""
+        pending = [node]
+        seen: set[int] = set()
+        while pending:
+            current = pending.pop()
+            if self._runner(current):
+                return True
+            scope = self.resolver.scopes.get(id(current))
+            if not isinstance(current, ast.Name) or scope is None or id(current) in seen:
+                continue
+            seen.add(id(current))
+            owner = scope.owner(current.id)
+            values = owner.bindings[current.id] if owner is not None else []
+            pending += [value for value in values if isinstance(value, (ast.Name, ast.Attribute))]
+        return False
 
     def _takes_a_runner(self, lookup: AttributeLookup) -> bool:
         """Whether a lookup by name may take a runner: one a string literal names on its module, or on a module looked
@@ -2598,7 +2602,12 @@ class _TemporaryReader:
         every call in the module passes such a folder and whose function is never handed on as a value, or one of
         these kept by FOLDER_KEEPING_CALLS or FOLDER_KEEPING_METHODS, joined by `/` to what _joins_below accepts,
         chosen between by a conditional, or, for a held name, its parent. Anything else, such as
-        tempfile.gettempdir(), a variable of the environment, or a literal, is not held."""
+        tempfile.gettempdir(), a variable of the environment, or a literal, is not held.
+
+        A stated limit: a folder rebound from itself, as `folder = folder / "part"`, in a loop or not, is read as not
+        held, since the rebinding reads as leading back to its own binding, so a script that makes a temporary folder
+        or file in such a folder is refused even when the folder it starts from is held; no script here rebinds a
+        folder that way."""
         if id(value) in seen:
             return False
         seen = seen | {id(value)}

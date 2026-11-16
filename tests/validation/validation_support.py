@@ -11,7 +11,6 @@ from __future__ import annotations
 import ast
 import builtins
 import codecs
-import functools
 import re
 import sys
 import unittest
@@ -744,6 +743,7 @@ class CallableResolver:
         self.scopes = _BindingReader(tree, in_place_updates).scopes
         self._aliases: dict[int, dict[str, str]] = {}
         self.shape: _ModuleShape | None = None
+        self.walk: _ReferenceWalk | None = None
 
     def _bound_name(self, name: str, scope: _NameScope, seen: frozenset[tuple[int, str]]) -> str:
         owner = scope.owner(name)
@@ -1088,43 +1088,104 @@ def resolved_references(node: ast.expr, resolver: CallableResolver) -> list[Refe
     """Each thing an expression may name, once bound_values follows it: its qualified name through the module's
     imports, with `builtins.` dropped so `builtins.float` reads as float ("" when it names nothing the imports reach),
     and, for an attribute, a getattr of a constant name, or an operator.attrgetter of one applied to an object, that
-    attribute and the receiver it is looked up on. A binding that reaches back to itself, as `x = x.parent`, is
-    followed once."""
-    return _references(node, resolver, frozenset())
+    attribute and the receiver it is looked up on. Each distinct reference is returned once, in the order the bindings
+    are read.
+
+    Each binding's value is read once. A binding whose value may lead back to itself, as `x = x.parent` in a loop,
+    names nothing through the bindings that lead back to it, whose names would never end: its attribute and receiver
+    are kept with no name. So a loop that rebinds a name from itself in several branches reads as one step from each
+    binding outside the loop, never as one chain for each order the branches may run in. A stated limit: through a
+    group of two or more bindings that lead back to each other, nothing beyond the group is named, so with
+    `y = ctypes` and then `x = y.windll` and `y = x.kernel32` in a loop, `y` names `ctypes` and an unnamed
+    `kernel32`, never `ctypes.windll.kernel32`, which a walk per path would have formed. What a value names depends
+    only on the module, never on the expression asked about, so the walk is kept on the resolver and a later call
+    reads each value it has read again from what it kept."""
+    # A walk an exception left part way through is dropped, not kept with values it never finished.
+    walk = resolver.walk if resolver.walk is not None else _ReferenceWalk(resolver)
+    resolver.walk = None
+    found = walk.references(node)
+    resolver.walk = walk
+    return found
 
 
-def _reference_names(node: ast.expr, resolver: CallableResolver, seen: frozenset[int]) -> list[str]:
-    return [reference.name for reference in _references(node, resolver, seen)]
+# The reference of an expression that names nothing.
+_UNNAMED = Reference("", "", None)
 
 
-def _references(node: ast.expr, resolver: CallableResolver, seen: frozenset[int]) -> list[Reference]:
-    found: list[Reference] = []
-    for value in bound_values(node, resolver):
-        if id(value) in seen:
-            found.append(Reference("", "", None))
-            continue
-        inner = seen | {id(value)}
+class _ReferenceWalk:
+    """The walk resolved_references keeps on a resolver: each binding's value is read once, by Tarjan's walk over the
+    values a value's receiver may stand for, so a value that a strongly connected group of values leads back to reads
+    every member of its group as naming nothing, whatever order the walk enters the group in, and a value outside it as
+    what that value names, read once and kept."""
+
+    def __init__(self, resolver: CallableResolver) -> None:
+        self.resolver = resolver
+        self.order: dict[int, int] = {}
+        self.low: dict[int, int] = {}
+        # The values entered whose group is not finished, and the values being read, innermost last.
+        self.stack: list[int] = []
+        self.reading: list[int] = []
+        self.found: dict[int, list[Reference]] = {}
+        self.finished: set[int] = set()
+
+    def references(self, node: ast.expr) -> list[Reference]:
+        found: list[Reference] = []
+        for value in bound_values(node, self.resolver):
+            found += self._value(value)
+        return list(dict.fromkeys(found))
+
+    def names(self, node: ast.expr) -> list[str]:
+        return list(dict.fromkeys(reference.name for reference in self.references(node)))
+
+    def _value(self, value: ast.expr) -> list[Reference]:
+        key = id(value)
+        if key not in self.order:
+            self._enter(value)
+        if key in self.finished:
+            return self.found[key]
+        # The value is in the group of the value being read: it leads back to it.
+        reader = self.reading[-1]
+        self.low[reader] = min(self.low[reader], self.low[key])
+        return [_UNNAMED]
+
+    def _enter(self, value: ast.expr) -> None:
+        key = id(value)
+        self.order[key] = self.low[key] = len(self.order)
+        # The value's group is the values entered from here on that are still unfinished when it is read.
+        place = len(self.stack)
+        self.stack.append(key)
+        self.reading.append(key)
+        self.found[key] = self._read(value)
+        self.reading.pop()
+        if self.low[key] == self.order[key]:
+            self.finished.update(self.stack[place:])
+            del self.stack[place:]
+
+    def _read(self, value: ast.expr) -> list[Reference]:
         if isinstance(value, ast.Call | ast.Subscript):
-            lookups = attribute_lookups(value, functools.partial(_reference_names, resolver=resolver, seen=inner))
+            lookups = attribute_lookups(value, self.names)
             if len(lookups) == 1 and lookups[0].alone and (attribute := constant_attribute(lookups[0])) is not None:
                 receiver = lookups[0].receiver
-                owners = [reference.name for reference in _references(receiver, resolver, inner)] or [""]
-                found += [Reference(f"{owner}.{attribute}" if owner else "", attribute, receiver) for owner in owners]
-            else:
-                found.append(Reference("", "", None))
-        elif isinstance(value, ast.Attribute):
-            owners = [reference.name for reference in _references(value.value, resolver, inner)] or [""]
-            found += [
-                Reference(
-                    f"{owner}.{value.attr}".removeprefix(BUILTINS_PREFIX) if owner else "", value.attr, value.value
+                owners = self.names(receiver) or [""]
+                return list(
+                    dict.fromkeys(
+                        Reference(f"{owner}.{attribute}" if owner else "", attribute, receiver) for owner in owners
+                    )
                 )
-                for owner in owners
-            ]
-        elif isinstance(value, ast.Name) and id(value) in resolver.scopes:
-            found.append(Reference(resolver.name(value).removeprefix(BUILTINS_PREFIX), "", None))
-        else:
-            found.append(Reference("", "", None))
-    return found
+            return [_UNNAMED]
+        if isinstance(value, ast.Attribute):
+            owners = self.names(value.value) or [""]
+            return list(
+                dict.fromkeys(
+                    Reference(
+                        f"{owner}.{value.attr}".removeprefix(BUILTINS_PREFIX) if owner else "", value.attr, value.value
+                    )
+                    for owner in owners
+                )
+            )
+        if isinstance(value, ast.Name) and id(value) in self.resolver.scopes:
+            return [Reference(self.resolver.name(value).removeprefix(BUILTINS_PREFIX), "", None)]
+        return [_UNNAMED]
 
 
 def _dict_additions(name: ast.Name, resolver: CallableResolver) -> tuple[dict[str, list[ast.expr]], bool]:

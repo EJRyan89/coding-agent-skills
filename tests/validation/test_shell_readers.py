@@ -11,6 +11,7 @@ import functools
 import sys
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import pytest
 
@@ -882,3 +883,44 @@ def test_prime_reads_each_level_of_started_scripts_in_one_pwsh_start(monkeypatch
     counted.calls.clear()
     assert _nested_programs() == primed
     assert counted.calls == [["pwsh -c 'jq .'"], ["jq ."], ["rg x"]]
+
+
+# The finding the command policies report, up to its remedy, for a runner the module hands on as a value.
+HANDED_ON = "cannot read the program `start` runs, which the module hands on as a value"
+
+
+def test_command_reader_finds_a_runner_behind_any_binding_of_a_name() -> None:
+    # The binding read first is a name that leads to no runner; the runner lies behind the other binding, which the
+    # walk still has to read.
+    script = (
+        "import subprocess\nimport threading\ndef rebound(flag):\n    other = len\n    start = subprocess.run\n"
+        "    if flag:\n        start = other\n    return threading.Thread(target=start)\n"
+    )
+    problems = CommandReader(ast.parse(script)).problems("tool.py")
+    assert [problem.partition(";")[0] for problem in problems] == [f"tool.py:8 {HANDED_ON}"]
+
+
+@pytest.mark.parametrize(("first", "expected"), [("len", []), ("subprocess.run", [f"tool.py:24 {HANDED_ON}"])])
+def test_command_reader_follows_each_name_of_a_rebound_loop_variable_once(first: str, expected: list[str]) -> None:
+    # A walk that kept a set of the names it had followed for each path followed `start` once per order the branches
+    # that rebind it from itself can run in: eight branches made hundreds of thousands of reads. Followed once per
+    # question, the reads grow with the bindings, and a runner bound before the loop is still found.
+    arms = "".join(f"        elif choice == {arm}:\n            start = start\n" for arm in range(8))
+    script = (
+        "import subprocess\nimport threading\ndef looped(flag, choice):\n"
+        f"    start = {first}\n    while flag:\n        if not choice:\n            start = start\n{arms}"
+        "    return threading.Thread(target=start)\n"
+    )
+    runner = CommandReader._runner
+    reads = 0
+
+    def counted(reader: CommandReader, node: ast.expr) -> str:
+        nonlocal reads
+        reads += 1
+        if reads > 500:
+            raise AssertionError("the command reader followed a name more than 500 times")
+        return runner(reader, node)
+
+    with mock.patch.object(CommandReader, "_runner", counted):
+        problems = CommandReader(ast.parse(script)).problems("tool.py")
+    assert [problem.partition(";")[0] for problem in problems] == expected

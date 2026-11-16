@@ -23,6 +23,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "ejryan8
 
 import duplication
 import skill_scripts
+import validation_support
 from validation_support import (
     BASH_CONTINUATION,
     CODE_SPAN,
@@ -1079,6 +1080,123 @@ def test_bound_values_read_every_binding_that_may_reach_the_read(source: str, ex
     resolver = CallableResolver(tree)
     read = [node for node in ast.walk(tree) if isinstance(node, ast.Expr) and isinstance(node.value, ast.Name)][-1]
     assert sorted(ast.unparse(value) for value in bound_values(read.value, resolver)) == expected
+
+
+def rebinding_walk(branches: int) -> str:
+    """A loop that rebinds `node` to an attribute of itself in each of `branches` branches and one more, then reads
+    it."""
+    arms = "".join(
+        f'        elif text[index] == "{chr(97 + arm)}":\n            node = node.parent{arm}\n'
+        for arm in range(branches)
+    )
+    return (
+        "def walk(text, path):\n    index = 0\n    node = path\n    while index < len(text):\n        if not text:\n"
+        f"            node = node.parent99\n{arms}        index = index + 1\n    node.write_text(text)\n"
+    )
+
+
+def test_resolved_references_read_each_binding_of_a_rebound_loop_variable_once() -> None:
+    # A walk that kept a set of the values it had read for each path read the bindings of `node` once per order the
+    # branches can run in and named a chain for each: nine branches made millions of reads. Read once per question,
+    # the reads and the references grow with the bindings.
+    tree = ast.parse(rebinding_walk(9))
+    resolver = CallableResolver(tree)
+    read = [node for node in ast.walk(tree) if isinstance(node, ast.Name) and node.id == "node"][-1]
+    reads = 0
+    bound_values = validation_support.bound_values
+
+    def counted(node: ast.expr, resolver: CallableResolver) -> list[ast.expr]:
+        nonlocal reads
+        reads += 1
+        if reads > 100:
+            raise AssertionError("resolved_references read a name's bindings more than 100 times")
+        return bound_values(node, resolver)
+
+    with mock.patch.object(validation_support, "bound_values", counted):
+        references = resolved_references(read, resolver)
+    steps = ["parent99", *(f"parent{arm}" for arm in range(9))]
+    assert [(reference.name, reference.attribute) for reference in references] == [
+        ("<local>.path", ""),
+        *(pair for step in steps for pair in ((f"<local>.path.{step}", step), ("", step))),
+    ]
+
+
+def test_resolved_references_keep_their_walk_on_the_resolver_unless_it_stops() -> None:
+    # What a value names depends only on the module, so a second question reads only the name it is asked about; a
+    # walk an exception stopped part way through is dropped, so the next question reads every value again.
+    tree = ast.parse(rebinding_walk(3))
+    resolver = CallableResolver(tree)
+    read = [node for node in ast.walk(tree) if isinstance(node, ast.Name) and node.id == "node"][-1]
+    expected = resolved_references(read, resolver)
+    # A finished question leaves no value waiting for its group, so the next one starts from an empty stack.
+    assert resolver.walk is not None
+    assert resolver.walk.stack == []
+    calls: list[ast.expr] = []
+    bound_values = validation_support.bound_values
+
+    def counted(node: ast.expr, resolver: CallableResolver) -> list[ast.expr]:
+        calls.append(node)
+        return bound_values(node, resolver)
+
+    with mock.patch.object(validation_support, "bound_values", counted):
+        assert resolved_references(read, resolver) == expected
+    assert calls == [read]
+    tree = ast.parse("import os\nfound = getattr(os, 'sep')\nfound\n")
+    resolver = CallableResolver(tree)
+    with (
+        mock.patch.object(validation_support, "attribute_lookups", side_effect=RuntimeError("stopped")),
+        pytest.raises(RuntimeError, match="stopped"),
+    ):
+        resolved_references(last_expression(tree), resolver)
+    assert resolver.walk is None
+    references = resolved_references(last_expression(tree), resolver)
+    assert [(reference.name, reference.attribute) for reference in references] == [("os.sep", "sep")]
+
+
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    [
+        pytest.param(
+            "owner = os\nif flag:\n    found = owner.path\nelse:\n    found = owner.sep\nfound",
+            [("os.path", "path"), ("os.sep", "sep")],
+            id="a binding two routes reach names on both",
+        ),
+        pytest.param(
+            "found = os\nwhile flag:\n    found = found.path\nfound",
+            [("os", ""), ("os.path", "path"), ("", "path")],
+            id="a binding that leads back to itself names one step",
+        ),
+        pytest.param(
+            "found = os\nwhile flag:\n    if other:\n        found = found.path\n"
+            "    else:\n        found = found.sep\nfound",
+            [("os", ""), ("os.path", "path"), ("", "path"), ("os.sep", "sep"), ("", "sep")],
+            id="bindings that lead back to each other name one step each",
+        ),
+        pytest.param("found = found\nfound.path", [("", "path")], id="a receiver bound to nothing it names"),
+        pytest.param(
+            "found = found\ngetattr(found, 'path')", [("", "path")], id="a lookup's receiver bound to nothing it names"
+        ),
+        pytest.param("from builtins import open as opener\nopener", [("open", "")], id="a name for a builtin"),
+        pytest.param(
+            "import ctypes\ny = ctypes\nwhile flag:\n    x = y.windll\n    y = x.kernel32\ny",
+            [("ctypes", ""), ("", "kernel32")],
+            id="a group of bindings that lead back to each other names nothing beyond itself",
+        ),
+    ],
+)
+def test_resolved_references_name_each_binding_outside_a_loop_that_leads_back(
+    source: str, expected: list[tuple[str, str]]
+) -> None:
+    tree = ast.parse("import os\n" + source)
+    references = resolved_references(last_expression(tree), CallableResolver(tree))
+    assert [(reference.name, reference.attribute) for reference in references] == expected
+
+
+def test_resolved_references_read_a_name_from_outside_the_module_as_naming_nothing() -> None:
+    tree = ast.parse("import os\nos\n")
+    outside = last_expression(ast.parse("os\n"))
+    references = resolved_references(outside, CallableResolver(tree))
+    assert [(reference.name, reference.attribute) for reference in references] == [("", "")]
 
 
 def test_resolved_references_drop_builtins_and_read_a_getattr_of_a_constant_name() -> None:
