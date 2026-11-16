@@ -1175,7 +1175,7 @@ def test_the_temporary_folder_policy_reads_a_folder_rebound_in_many_branches_in_
         f"        if not text:\n            pass\n{arms}        index = index + 1\n    tempfile.mkdtemp(dir=folder)\n"
     )
     reads = 0
-    bound_values = skill_scripts.bound_values
+    bound_values = validation_support.bound_values
 
     def counted(node: ast.expr, resolver: CallableResolver) -> list[ast.expr]:
         nonlocal reads
