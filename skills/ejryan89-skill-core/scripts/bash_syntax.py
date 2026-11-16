@@ -44,6 +44,9 @@ checks for quoting. Where they differ is a limit stated here and pinned there:
   unread, the git call after the real delimiter line included. A delimiter word written before a CR, as in a script with
   CRLF line ends, is read without it, so its `EOF<CR>` line closes the body too, as Bash elsewhere reads it.
 - An arithmetic `for` whose body is a `{ }` group rather than `do ... done`, which Bash reads, raises BashSyntaxError.
+- Inside `(( ))`, a double-quoted `${ }` whose own quotes hold a parenthesis, as `(( x = "${y:-"))"}" ))`, and an
+  arithmetic expansion holding a quoted parenthesis, as `$(( ")" ))`, each of which Bash reads, raise
+  BashSyntaxError.
 """
 
 from __future__ import annotations
@@ -1204,8 +1207,10 @@ def _tree_commands(node: CommandList | Command) -> Iterator[Simple]:
 
 
 def _body_commands(substitutions: tuple[str, ...]) -> Iterator[Simple]:
-    """The commands an unquoted here-document's substitutions run: a substitution Bash cannot read fails alone, as it
-    does when Bash expands the body, so it runs nothing, and those after it are read, rather than refusing the text."""
+    """The commands an unquoted here-document's substitutions run: one the grammar cannot parse runs nothing, and those
+    after it are read, rather than refusing the text. Bash 3.2, and Bash 5.3 at a backquoted one, go on past it as
+    this does; Bash 5.3 stops expanding the body at a `$( )` one, so for it this reads more than it runs, on purpose,
+    since a reader that read less could miss a git command another Bash runs."""
     for text in substitutions:
         try:
             tree = parse(text)
@@ -1235,18 +1240,25 @@ def word_text(word: Word) -> str:
     return "".join(texts.get(part.kind, "") + part.text for part in word.parts)
 
 
+def unsettled_part(part: Part) -> bool:
+    """Whether a part's text names only its form, FORM_ONLY, never the text it stands for."""
+    return part.kind == "dynamic" and part.text in FORM_ONLY
+
+
 def command_words(command: Simple, unsettled: str | None = None) -> list[str]:
     """The words of a simple command from its program's name, each as word_text gives it: past the assignments Bash
     reads before the name, which run nothing; empty for a command of assignments and redirections alone. Given
-    `unsettled`, a word holding a part whose text names only its form, FORM_ONLY, such as a substitution, is that
-    text instead, for a reader that must not read such a word's text as a script; a special parameter or a `${ }`
+    `unsettled`, each part whose text names only its form, FORM_ONLY, such as a substitution, is that text in its
+    word instead, for a reader that must not read the form's own text as a script; a special parameter or a `${ }`
     expansion keeps its text."""
     words = list(command.words)
     while words and words[0].assignment is not None:
         words.pop(0)
+    if unsettled is None:
+        return [word_text(word) for word in words]
     return [
-        unsettled
-        if unsettled is not None and any(part.kind == "dynamic" and part.text in FORM_ONLY for part in word.parts)
-        else word_text(word)
+        word_text(
+            Word(word.raw, tuple(Part("text", unsettled) if unsettled_part(part) else part for part in word.parts))
+        )
         for word in words
     ]

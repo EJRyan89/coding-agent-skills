@@ -651,10 +651,10 @@ def test_a_body_s_substitution_bash_cannot_read_runs_nothing_alone() -> None:
 
 
 def test_command_words_mark_only_a_word_whose_part_names_its_form_alone_as_unsettled() -> None:
-    text = "git \"$@\" ${x:-y} $t x$(a) `b` <(c) $((1)) $'\\n' 'q'"
+    text = 'git "$@" ${x:-y} $t x$(a) `b` <(c) $((1)) $\'\\n\' \'q\' "(" "(("'
     bash_agreement.assert_reader_agrees([text])
     found = bash_syntax.command_words(bash_syntax.simple_commands(text)[0], "?")
-    assert found == ["git", "$@", "${x:-y}", "$t", "?", "?", "?", "?", "?", "q"]
+    assert found == ["git", "$@", "${x:-y}", "$t", "x?", "?", "?", "?", "?", "q", "(", "(("]
 
 
 @pytest.mark.parametrize("text", ["echo $(if)", "echo `fi`"])
@@ -678,4 +678,13 @@ def test_a_documented_limit_an_arithmetic_for_with_a_group_body_which_bash_reads
     text = "for ((i = 0; i < 1; i++)) { echo; }"
     assert bash_agreement.bash_verdicts([text])[text][0]
     with pytest.raises(BashSyntaxError, match=r"^expected `do`$"):
+        bash_syntax.parse(text)
+
+
+@pytest.mark.parametrize("text", ['(( x = "${y:-"))"}" ))', 'echo $(( ")" ))'])
+def test_a_documented_limit_a_quoted_parenthesis_in_these_arithmetic_forms_which_bash_reads_is_an_error(
+    text: str,
+) -> None:
+    assert bash_agreement.bash_verdicts([text])[text][0]
+    with pytest.raises(BashSyntaxError):
         bash_syntax.parse(text)

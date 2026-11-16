@@ -672,9 +672,10 @@ Within what it reads, it judges only what the text shows, so these too are left 
 
 - an assignment to `HOME`, `CDPATH`, `PWD`, or `OLDPWD` a command makes, alone or before `cd`, which moves a later
   `cd`, and the git call after it, where the guard does not follow;
-- a git call before a part of the command Bash refuses, or that ejryan89-skill-core's `bash_syntax.py` does not
-  cover, such as `coproc` or an arithmetic `for` whose body is a `{ }` group: the whole command is not read, though
-  Bash runs the lines before a syntax error;
+- a git call before or after a part of the command Bash refuses, or that ejryan89-skill-core's `bash_syntax.py` does
+  not cover, such as `coproc`, an arithmetic `for` whose body is a `{ }` group, inside `(( ))` a double-quoted `${ }`
+  whose own quotes hold a parenthesis, as `(( x = "${y:-"))"}" ))`, or an arithmetic expansion holding a quoted
+  parenthesis, as `$(( ")" ))`: the whole command is not read, though Bash runs the lines before a syntax error;
 - a PowerShell file redirection the reader's statements do not reach, which is allowed with a note;
 - the words `xargs` adds from its input, which the guard takes as one word after the command it runs, and the string
   its `-I`, `-i`, or `--replace` replaces, which it reads as the literal it is;
@@ -684,7 +685,7 @@ Within what it reads, it judges only what the text shows, so these too are left 
 - in PowerShell, an assignment a wrapper hands git through another wrapper, as `env GIT_DIR=<dir> timeout 5 git ...`;
 - a script a shell reads from its standard input, from a here-document or a pipe, as `bash <<'EOF'` or
   `echo '...' | bash`;
-- where a here-document's delimiter line ends in a CR, the lines after it, which Git Bash runs and Bash elsewhere
+- where a here-document's delimiter line, or its delimiter word, ends in a CR, the lines after it, which Git Bash runs and Bash elsewhere
   reads as the body, are read as commands, and where they do not parse, the whole command goes unread, the git call
   after the real delimiter line included;
 

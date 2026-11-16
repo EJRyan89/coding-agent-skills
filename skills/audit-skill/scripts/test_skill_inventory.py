@@ -2784,6 +2784,16 @@ class RuntimeSupportTests(SourceTreeTestCase):
             [line for line in self.runtime(skill) if line.startswith(("RUNTIME_NEEDS", "RUNTIME_OVERCLAIMED"))],
         )
 
+    def test_eval_reads_the_git_command_around_a_substitution_and_none_in_its_output(self) -> None:
+        # The substitution's output is no script the text settles, so it is one word and the rest is read.
+        skill = self.skill("Body.\n", self.full())
+        text = 'eval "$(ssh-agent -s)"\neval "git push origin $(git branch --show-current)"\n'
+        write(skill.parent / "scripts" / "update.sh", text)
+        self.assertEqual(
+            ["RUNTIME_NEEDS sandbox-network git push scripts/update.sh", "RUNTIME_OVERCLAIMED codex sandbox-network"],
+            [line for line in self.runtime(skill) if line.startswith(("RUNTIME_NEEDS", "RUNTIME_OVERCLAIMED"))],
+        )
+
     def test_full_on_codex_for_a_git_fetch_in_a_bash_suffixed_script_is_overclaimed(self) -> None:
         skill = self.skill("Body.\n", self.full())
         write(skill.parent / "scripts" / "update.BASH", 'git -C "$CLONE" fetch origin\n')

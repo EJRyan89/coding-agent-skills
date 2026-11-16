@@ -342,6 +342,16 @@ def test_a_substitution_in_arithmetic_quoted_or_not_runs(script: str) -> None:
         ('bash -c "$(cat x)"', set()),
         ("bash -c `cat x`", set()),
         ('eval git push "$(date)"', {"push"}),
+        # A substitution stands in the script eval or a shell's -c runs as one word, the literal text around it read.
+        ('eval "git push origin $(git branch --show-current)"', {"push", "branch"}),
+        ('eval "git push origin `git branch --show-current`"', {"push", "branch"}),
+        ('eval "git push $(git rev-parse HEAD)"', {"push", "rev-parse"}),
+        ('eval "git push $((1))"', {"push"}),
+        ('eval "cd $(pwd) && git fetch"', {"fetch"}),
+        ('eval "$(printf x); git fetch"', {"fetch"}),
+        ("eval \"echo '$(date)'; git fetch\"", {"fetch"}),
+        ('bash -c "git push $(date)"', {"push"}),
+        ("bash -c $'git push\\n'", set()),
         ('git "$(echo push)"', {UNREAD_WORD}),
         ("git $((1 + 1))", {UNREAD_WORD}),
         # A special parameter or a `${ }` expansion keeps its text, which no literal subcommand matches either.

@@ -37,6 +37,10 @@ from executable_locator import program_name
 from powershell_commands import UNREAD_WORD
 from powershell_startup import POWERSHELL_PROGRAMS, UnknownWord, startup_command
 
+# A part of a Bash word only running settles, such as a substitution, as it stands in the word: one Bash word, free of
+# quotes and metacharacters, so the script eval or a shell's -c runs keeps it one word wherever it stands, and no
+# subcommand's name, so a git subcommand holding it is read as UNREAD_WORD, one that may be any.
+UNREAD_PART = "%unread%"
 # The words of each external command a PowerShell script runs, its program's name first, as
 # powershell_commands.command_words gives them.
 PowerShellReader = Callable[[str], Sequence[Sequence[str]]]
@@ -115,16 +119,18 @@ def bash_git_subcommands(text: str, read_powershell: PowerShellReader) -> set[st
     neither runs a command, and a line ends at LF alone.
 
     A script the grammar cannot read raises its BashSyntaxError, and so does the script eval or a shell's -c runs:
-    Bash runs none of a script it refuses, and a reader that guessed at one could miss a git command it runs. A word
-    that holds a part only running settles, such as a substitution, is UNREAD_WORD, so a subcommand it names may be
-    any, and a -c script it holds is not read, nor its text in eval's script.
+    Bash runs none of a script it refuses, and a reader that guessed at one could miss a git command it runs. A part
+    of a word only running settles, such as a substitution, is UNREAD_PART where it stands: one word in the script
+    eval or a shell's -c runs, so `eval "git push $(x)"` reads push and `eval "$(ssh-agent -s)"` reads nothing, and a
+    git subcommand holding it is UNREAD_WORD, one that may be any. An ANSI-C `$'...'` string holding an escape is such
+    a part, so `bash -c $'git push\\n'` reads no subcommand.
 
     Beyond what it reads: a here-document a shell reads as its script, as in `bash <<EOF`, `bash -s <<'EOF'`, or
     `source /dev/stdin <<EOF`, is data, so a git command in its body goes unread. No script here writes one."""
     return {
         found
         for command in bash_syntax.simple_commands(text)
-        for found in program_git_subcommands(bash_syntax.command_words(command, UNREAD_WORD), read_powershell)
+        for found in program_git_subcommands(bash_syntax.command_words(command, UNREAD_PART), read_powershell)
     }
 
 
@@ -187,7 +193,7 @@ def program_git_subcommands(words: list[str], read_powershell: PowerShellReader)
         name = bash_program(head)
         if name == "git":
             subcommand = git_client.subcommand(rest)
-            return {subcommand} if subcommand else set()
+            return {UNREAD_WORD if subcommand and UNREAD_PART in subcommand else subcommand} if subcommand else set()
         if head == "eval":
             # A word no literal holds stands in eval's script as one word, never as script text of its own.
             script = " ".join(shlex.quote(word) if word == UNREAD_WORD else word for word in rest)
@@ -199,7 +205,8 @@ def program_git_subcommands(words: list[str], read_powershell: PowerShellReader)
             return bash_git_subcommands(rest[index], read_powershell)
         program = program_name(PureWindowsPath(head).name).casefold()
         if program in POWERSHELL_PROGRAMS:
-            return startup_git_subcommands(program, rest, read_powershell)
+            known = [UNREAD_WORD if UNREAD_PART in word else word for word in rest]
+            return startup_git_subcommands(program, known, read_powershell)
         if name == "find":
             return {
                 found
