@@ -513,33 +513,47 @@ class CodeReader:
             return other, other.functions[name]
         return None
 
-    def callables(self, node: ast.expr, scope: Scope) -> list[tuple[Module, Function]] | None:
-        """The functions a called expression can be, or None when the reader cannot tell."""
+    def callables(
+        self, node: ast.expr, scope: Scope, seen: set[tuple[int, tuple[tuple[str, int], ...]]] | None = None
+    ) -> list[tuple[Module, Function]] | None:
+        """The functions a called expression can be, or None when the reader cannot tell.
+
+        Each expression is read once for the question, in `seen`, by the arguments its scope is given: a local
+        rebound from itself, as `handler = handler.get("a")`, leads back to its own value, which adds no function its
+        first read has not, since the functions are their union, and a value the reader cannot tell already answers
+        None for the whole question."""
+        seen = set() if seen is None else seen
+        key = (id(node), tuple(sorted((name, id(value)) for name, (value, _) in scope.given)))
+        if key in seen:
+            return []
+        seen.add(key)
         named = self.function_named(scope.module, node) if isinstance(node, (ast.Name, ast.Attribute)) else None
         if named is not None:
             return [named]
         if isinstance(node, ast.Name):
             given = scope.argument(node.id)
             if given is not None:
-                return self.callables(*given)
+                return self.callables(*given, seen)
             values = _assigned(scope.function, node.id) if scope.function is not None else []
             if values and all(position is None for _, position in values):
-                return self._all([value for value, _ in values], scope)
+                return self._all([value for value, _ in values], scope, seen)
             if node.id in scope.module.dictionaries:
-                return self._all(list(scope.module.dictionaries[node.id].values), Scope(scope.module, None))
+                return self._all(list(scope.module.dictionaries[node.id].values), Scope(scope.module, None), seen)
             return None
         if isinstance(node, ast.Subscript):
-            return self.callables(node.value, scope)
+            return self.callables(node.value, scope, seen)
         if isinstance(node, ast.Dict):
-            return self._all(list(node.values), scope)
+            return self._all(list(node.values), scope, seen)
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "get":
-            return self.callables(node.func.value, scope)
+            return self.callables(node.func.value, scope, seen)
         return None
 
-    def _all(self, values: list[ast.expr], scope: Scope) -> list[tuple[Module, Function]] | None:
+    def _all(
+        self, values: list[ast.expr], scope: Scope, seen: set[tuple[int, tuple[tuple[str, int], ...]]]
+    ) -> list[tuple[Module, Function]] | None:
         found: list[tuple[Module, Function]] = []
         for value in values:
-            each = self.callables(value, scope)
+            each = self.callables(value, scope, seen)
             if each is None:
                 return None
             found += each

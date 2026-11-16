@@ -500,7 +500,7 @@ WRAPPERS: dict[str, OptionTable] = {**COMMAND_WRAPPERS, **READER_WRAPPERS}
 PIPEFAIL = "pipefail"
 OPTION_SETTERS = frozenset({"set", "shopt"})
 SHELL_OPTIONS_VARIABLE = re.compile(r"\bSHELLOPTS=[^\s;&|]*pipefail")
-# How deep the reader follows a shell's -c script or eval into the scripts it runs in turn.
+# How deep the readers follow a command into the functions and shell scripts it runs.
 NESTING_LIMIT = 16
 
 
@@ -584,11 +584,16 @@ class _ReaderWalk:
     extend kept once for each content, so a script that defines nothing new runs under the table it was given.
     Functions that call each other are read once each, never once for each order of calls, which grows factorially
     with them; a function already read, or being read, adds no reader, since the walk reads its whole body once and
-    stops at the first reader it finds."""
+    stops at the first reader it finds.
+
+    The walk follows a command NESTING_LIMIT functions and scripts deep, as a walk per path did. A function or script
+    is read again only when a path reaches it shallower than every read before, since a read at the limit leaves its
+    deeper calls unread, so each is read at most once for each depth."""
 
     def __init__(self, functions: FunctionTable) -> None:
-        self.read: set[tuple[int, str]] = set()
-        self.scripts: set[tuple[int, str]] = set()
+        # The shallowest depth each function, and each script, has been read at, by its table.
+        self.read: dict[tuple[int, str], int] = {}
+        self.scripts: dict[tuple[int, str], int] = {}
         self.tables: dict[tuple[tuple[str, tuple[tuple[str, ...], ...]], ...], FunctionTable] = {}
         self._table(functions)
 
@@ -597,20 +602,24 @@ class _ReaderWalk:
         content = tuple(sorted((name, tuple(tuple(command) for command in body)) for name, body in functions.items()))
         return self.tables.setdefault(content, functions)
 
-    def reader(self, words: list[str], functions: FunctionTable) -> str:
+    def reader(self, words: list[str], functions: FunctionTable, depth: int = 0) -> str:
+        if depth > NESTING_LIMIT:
+            return ""
         words = _command_words(words) if words else []
         if not words:
             return ""
         if reader := _early_exit_program(words):
             return reader
-        body = functions.get(words[0]) if (id(functions), words[0]) not in self.read else None
+        key = (id(functions), words[0])
+        body = functions.get(words[0]) if depth < self.read.get(key, NESTING_LIMIT + 1) else None
         if body is not None:
-            self.read.add((id(functions), words[0]))
+            self.read[key] = depth
         script = _shell_script(words)
         if body is None and script is not None:
-            if (id(functions), script) in self.scripts:
+            key = (id(functions), script)
+            if depth >= self.scripts.get(key, NESTING_LIMIT + 1):
                 return ""
-            self.scripts.add((id(functions), script))
+            self.scripts[key] = depth
             try:
                 commands, inner = _read_bash(script)
             except ValueError:
@@ -618,7 +627,7 @@ class _ReaderWalk:
             body = [command for _, _, command in commands + _substituted_commands(script)]
             functions = self._table({**functions, **inner})
         for command in body or []:
-            if reader := self.reader(command, functions):
+            if reader := self.reader(command, functions, depth + 1):
                 return reader
         return ""
 

@@ -1055,10 +1055,12 @@ def _reaches(binding: ast.AST, others: list[ast.expr], use: ast.AST, shape: _Mod
     value, as in `options = dict(**options)`, unless a loop holds it and runs it again, as `node = node.parent` in a
     loop reads the binding the last pass made; a while loop's test counts, as it runs again each pass. A stated limit:
     a for loop's iterable and a with item's expression are read as any other statement's part, so the binding they
-    make reaches a read in them."""
+    make reaches a read in them. The rule is for a binding of the name, one of `others`: a change to what the name
+    holds, as `options.update(shell=True)` beside the read in one tuple, is read as before."""
     value = _assigned_value(binding, shape)
     if (
         value is not None
+        and any(other is binding for other in others)
         and _within(use, value, shape)
         and not any(isinstance(statement, LOOPS) for statement in shape.statements(value))
     ):

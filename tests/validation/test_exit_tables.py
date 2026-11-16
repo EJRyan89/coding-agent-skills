@@ -59,6 +59,26 @@ def test_a_local_that_rebinds_itself_from_itself_is_read_once() -> None:
     ]
 
 
+@pytest.mark.parametrize(
+    "rebinding",
+    [
+        pytest.param("handler = {'a': one}\n    handler = handler['a']", id="a subscript of itself"),
+        pytest.param("handler = {'a': one}\n    handler = handler.get('a')", id="a get on itself"),
+        pytest.param("handler = one\n    handler = handler", id="itself"),
+    ],
+)
+def test_a_called_local_that_rebinds_itself_from_itself_is_read_once(rebinding: str) -> None:
+    # The called name reads its own value back, so a reader with no set of the values it had read followed it until
+    # Python's recursion limit. Read once, it names one(), which exits 3.
+    body = (
+        f"def one() -> int:\n    return 3\ndef main() -> int:\n    argparse.ArgumentParser().parse_args()\n"
+        f"    {rebinding}\n    return handler()\n"
+        'if __name__ == "__main__":\n    run_main(main)\n'
+    )
+    table = "Exit status:\n  1  a last line FAILED <reason>\n  2  a usage error\n  3  a third\n"
+    assert problems({"tools/tool.py": script(f"A tool.\n\n{table}", body)}) == []
+
+
 def test_an_entry_point_without_a_table_fails_and_a_module_that_runs_no_runner_is_none() -> None:
     found = problems({"tools/tool.py": script("A tool.\n"), "tools/library.py": '"""A library."""\nVALUE = 1\n'})
     assert len(found) == 1

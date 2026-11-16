@@ -1092,6 +1092,9 @@ def test_bound_values_read_every_binding_that_may_reach_the_read(source: str, ex
         pytest.param("x = a\nif (x := f(x)):\n    pass\n", ["a"], id="an assignment expression"),
         pytest.param("x = a\nfor y in z:\n    x = f(x)\n", ["a", "f(x)"], id="an assignment a loop runs again"),
         pytest.param("x = a\nwhile (x := f(x)):\n    pass\n", ["a", "f(x)"], id="a while loop's test"),
+        # A stated limit: a for loop's iterable and a with item's expression keep the reach any statement's part has.
+        pytest.param("x = a\nfor x in [f(x)]:\n    pass\n", ["a", "f(x)"], id="a for loop's iterable"),
+        pytest.param("x = a\nwith f(x) as x:\n    pass\n", ["a", "f(x)"], id="a with item's expression"),
     ],
 )
 def test_an_assignment_reaches_a_read_in_its_own_value_only_through_a_loop(source: str, expected: list[str]) -> None:
@@ -1104,6 +1107,23 @@ def test_an_assignment_reaches_a_read_in_its_own_value_only_through_a_loop(sourc
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "f"
     ).args[0]
     assert sorted(ast.unparse(value) for value in bound_values(read, resolver)) == expected
+
+
+def test_resolved_calls_read_a_change_beside_the_spread_in_one_tuple() -> None:
+    # The update is no binding of the name, so the rule that an assignment's value does not see its own binding leaves
+    # it alone: it runs before the call beside it, so the call is given shell=True.
+    tree = ast.parse(
+        "import subprocess\n\n\ndef f(cmd):\n    options = {}\n"
+        "    a, b = options.update(shell=True), subprocess.run(cmd, **options)\n"
+    )
+    resolver = CallableResolver(tree)
+    call = next(
+        node for node in ast.walk(tree) if isinstance(node, ast.Call) and ast.unparse(node.func) == "subprocess.run"
+    )
+    assert [
+        {key: [ast.unparse(value) for value in values] for key, values in read.keywords.items()}
+        for read in resolved_calls(call, resolver)
+    ] == [{"shell": ["True"]}]
 
 
 @pytest.mark.parametrize("loop", [False, True], ids=["straight-line code", "a loop"])

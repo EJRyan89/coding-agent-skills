@@ -884,6 +884,13 @@ def test_a_suite_that_never_turns_pipefail_on_is_not_examined(tmp_path: Path) ->
         pytest.param("printf a | env -S 'cat -u'", id="env -S reading to the end"),
         pytest.param("f() { f; }; printf a | f", id="a function calling itself"),
         pytest.param("f() { bash -c 'g() { f; }; g'; }; printf a | f", id="a function a shell's script calls back"),
+        # A stated limit: the reader follows a command NESTING_LIMIT functions deep, so a chain far longer than any
+        # suite writes ends there rather than at Python's recursion limit.
+        pytest.param(
+            " ".join(f"f{index}() {{ f{index + 1}; }};" for index in range(1000))
+            + " f1000() { head -n 1; }; printf a | f0",
+            id="a reader past the nesting limit",
+        ),
         # A substitution reads the standard input of its own command, which no pipe feeds here.
         pytest.param("printf a | cat; echo $(head -n 1 file)", id="a substitution after the pipeline"),
         pytest.param("echo $(head -n 1 file) | cat", id="a substitution in the writer"),
@@ -907,7 +914,8 @@ def test_the_pipe_race_policy_passes_each_bash_form_that_reads_to_the_end(tmp_pa
 
 def test_the_pipe_race_policy_reads_each_function_of_ones_that_call_each_other_once(tmp_path: Path) -> None:
     # A walk that kept the functions it was in for each path read them once per order of calls: nine functions that
-    # each call the rest took 876,809 reads. Read once per question, the reads grow with the calls the bodies hold.
+    # each call the rest took 876,809 reads. Read once per question, and again only from a shallower depth, each
+    # function's calls are read at most once for each depth, so the reads stay below the cube of the functions.
     count = 9
     script = " ".join(
         f"f{index}() {{ {'; '.join(f'f{other}' for other in range(count) if other != index)}; }};"
@@ -919,12 +927,20 @@ def test_the_pipe_race_policy_reads_each_function_of_ones_that_call_each_other_o
     def counted(words: list[str]) -> str:
         nonlocal reads
         reads += 1
-        if reads > count * count:
-            raise AssertionError(f"the pipe-race policy read more than {count * count} commands")
+        if reads > count**3:
+            raise AssertionError(f"the pipe-race policy read more than {count**3} commands")
         return program(words)
 
     with mock.patch.object(suite_discovery, "_early_exit_program", counted):
         assert races_in(tmp_path, f"{script} printf a | f0") == []
+
+
+def test_the_pipe_race_policy_reads_a_function_again_from_a_shallower_call(tmp_path: Path) -> None:
+    # g is first read at the end of a chain as deep as the nesting limit, which leaves its call of h unread; a then
+    # calls g directly, and that shallower read finds the head in h, as a walk per path did.
+    chain = " ".join(f"c{index}() {{ c{index + 1}; }};" for index in range(1, 15))
+    script = f"{chain} c15() {{ g; }}; h() {{ head -n 1; }}; g() {{ h; }}; a() {{ c1; g; }}; seq 1 200000 | a"
+    assert races_in(tmp_path, script) == ["3 pipes into head -n"]
 
 
 class SkillSuiteFixtures(unittest.TestCase):

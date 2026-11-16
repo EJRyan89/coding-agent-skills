@@ -673,13 +673,15 @@ removed fails validation until its pattern follows it.
   `tests.validation.python_checks:_number_types`, which read each dict() call or partial once per question, since a
   union of keywords or types learns nothing from a value read again; and `tests.validation.suite_discovery:_ReaderWalk`,
   which reads each Bash function once per question for each table of functions a shell's -c script extends, the
-  table kept once for each content
+  table kept once for each content, and again only from a shallower depth, since its depth cut leaves a function
+  read at the limit with its calls unread
 - **Guard:** `tests/validation/test_python_checks.py::test_json_write_policy_reads_each_binding_of_a_rebound_loop_variable_once`,
   `tests/validation/test_validation_support.py::test_resolved_references_read_each_binding_of_a_rebound_loop_variable_once`,
   `tests/validation/test_shell_readers.py::test_command_reader_follows_each_name_of_a_rebound_loop_variable_once`,
   `tests/validation/test_validation_support.py::test_resolved_calls_spread_a_dict_call_that_rebuilds_itself_once`,
   `tests/validation/test_python_checks.py::test_int_parse_policy_reads_a_partial_that_rebuilds_itself_once`,
   `tests/validation/test_exit_tables.py::test_a_local_that_rebinds_itself_from_itself_is_read_once`,
+  `tests/validation/test_exit_tables.py::test_a_called_local_that_rebinds_itself_from_itself_is_read_once`,
   `tests/validation/test_suite_discovery.py::test_the_pipe_race_policy_reads_each_function_of_ones_that_call_each_other_once`
 - **Search for:** a method that calls itself on each value `bound_values(` or `resolved_references(` returns, carrying
   `seen | {` or `seen: frozenset[` down the recursion rather than one `set` for the question; a check whose time grows
