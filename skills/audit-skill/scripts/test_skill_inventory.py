@@ -4121,14 +4121,11 @@ def test_a_bash_fence_bash_refuses_is_named_unread_and_other_fences_hold_no_bash
         "```\n"
         "if cat x; then\n"  # 9: one it refuses may be no Bash, so it is neither cued nor named
         "```\n"
-        "```console\n"
-        "$ cat x\n"
-        "```\n"
-        "```powershell\n"
-        "cat notes.txt | Select-String x\n"
-        "```\n"
         "```text\n"
-        "ls -la\n"
+        "ls -la\n"  # 12: a fence of a language that is no shell holds no command
+        "```\n"
+        "```python\n"
+        "cat = 1\n"
         "```\n",
     )
     lines = skill_inventory.scan([skill])
@@ -4136,6 +4133,30 @@ def test_a_bash_fence_bash_refuses_is_named_unread_and_other_fences_hold_no_bash
         f"BASH_UNREADABLE {skill.as_posix()} 2 expected `fi`"
     ]
     assert cued_lines(lines, "shell-file-command") == [6]
+
+
+def test_another_shell_s_fence_runs_the_program_each_line_s_first_word_names(tmp_path: Path) -> None:
+    skill = write(
+        tmp_path / "SKILL.md",
+        "```fish\n"
+        "cat x | head\n"  # 2
+        "```\n"
+        "```cmd\n"
+        '> find /i "x" notes.txt\n'  # 5: after a `> ` prompt
+        "echo cat\n"
+        "```\n"
+        "```powershell\n"
+        "Cat notes.txt | Select-String x\n"  # 9: PowerShell finds a program in any case
+        "Get-Content x\n"
+        "```\n"
+        "```console\n"
+        "$ ls -la\n"  # 13: after a `$ ` prompt
+        "total 0\n"
+        "```\n",
+    )
+    lines = skill_inventory.scan([skill])
+    assert cued_lines(lines, "shell-file-command") == [2, 5, 9, 13]
+    assert not [line for line in lines if line.startswith("BASH_UNREADABLE ")]
 
 
 @pytest.mark.parametrize(
@@ -4249,8 +4270,19 @@ def test_a_fence_that_ends_inside_a_here_document_is_named_unread(tmp_path: Path
 
 
 def test_a_trap_s_action_runs_its_programs_and_exits_with_its_codes(tmp_path: Path) -> None:
-    skill = write(tmp_path / "SKILL.md", "```bash\ntrap 'rm -f x; cat log' EXIT\ntrap - EXIT\n```\n")
-    assert cued_lines(skill_inventory.scan([skill]), "shell-file-command") == [2]
+    skill = write(
+        tmp_path / "SKILL.md",
+        "```bash\n"
+        "trap 'rm -f x; cat log' EXIT\n"  # 2
+        "trap - EXIT\n"
+        'trap "$(cleanup)" EXIT\n'  # an action only running settles runs no program this can see
+        'trap "tail $(log_file)" EXIT\n'  # 5: an action read as eval's is, its unsettled part one word
+        'trap "$(cat x)" EXIT\n'  # 6: the substitution itself runs cat
+        "```\n",
+    )
+    lines = skill_inventory.scan([skill])
+    assert cued_lines(lines, "shell-file-command") == [2, 5, 6]
+    assert not [line for line in lines if line.startswith("BASH_UNREADABLE ")]
     folder = tmp_path / "alpha"
     write(
         folder / "SKILL.md",

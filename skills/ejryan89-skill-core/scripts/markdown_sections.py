@@ -58,8 +58,9 @@ QUOTE_MARKER = re.compile(r"[ \t]*>[ \t]?")
 # Every label a fence of commands or a program may carry, by the language it names: the POSIX shells, fish, and cmd,
 # whose lines the model runs through its Bash or PowerShell tool, PowerShell, and Python, JavaScript, and TypeScript,
 # each under every name Markdown gives it. The renderer substitutes a token by these languages, validation holds every
-# such fence to the five-line and output-placeholder rules, and the audit-skill audit reads the shells' fences
-# as commands.
+# such fence to the five-line and output-placeholder rules, and the audit-skill audit reads the shells' fences as
+# commands: a Bash fence, and an untagged one that is Bash, through the Bash grammar, and each line's first word of any
+# other shell's, console's, fish's, cmd's, and PowerShell's, after a `$ ` or `> ` prompt.
 FENCE_LANGUAGES: dict[str, frozenset[str]] = {
     "shell": frozenset({"bash", "sh", "shell", "console", "zsh", "ksh", "dash"}),
     "fish": frozenset({"fish"}),

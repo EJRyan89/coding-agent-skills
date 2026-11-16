@@ -128,7 +128,9 @@ Bash: scan reads a fence BASH_FENCES labels whole through ejryan89-skill-core's 
 line as CommonMark gives it to the fence's content, and places the shell-file-command cue on the line each command
 that runs a file command starts on, so a here-document's body, a comment, and a quoted string run nothing, and a
 command after a continuation is placed on its own line; an untagged fence is read so when the grammar reads it, and
-holds no Bash otherwise, and a fence of any other language holds none. A Bash script given to scan is read whole the
+holds no Bash otherwise. A fence of any other shell, console, fish, cmd, or PowerShell, places the cue on each line
+whose first word, after any `$ ` or `> ` prompt, names a file command in any case, and a fence of any other language
+holds none. A Bash script given to scan is read whole the
 same way. BASH_UNREADABLE <file> <line> <reason> is such a labelled fence, opened at that line, or a script, at its
 first, that the grammar refuses, as Bash would, or a fence a here-document is still open at the end of, none of whose
 commands are read.
@@ -178,7 +180,7 @@ import re
 import sys
 from dataclasses import dataclass, field
 from itertools import dropwhile, pairwise
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ejryan89-skill-core" / "scripts"))
 
@@ -197,7 +199,7 @@ import whole_number
 from agent_skills import is_skill_file
 from bash_syntax import BashSyntaxError, Simple
 from console import run_main
-from executable_locator import RelativeEnvironmentPath, absolute_home
+from executable_locator import RelativeEnvironmentPath, absolute_home, program_name
 from file_presence import NotADirectory, NotAFile, is_directory, is_present, is_there, matching
 from flat_text import flat_text, single_line
 from git_client import GitClient, GitError
@@ -351,6 +353,13 @@ SHELL_FILE_COMMANDS = ("cat", "head", "tail", "find", "grep", "rg", "sed", "awk"
 # The fence labels scan reads as Bash, through the one Bash grammar: the POSIX shells', but not `console`, whose
 # fence is a session's prompts and the output between them rather than a script.
 BASH_FENCES = FENCE_LANGUAGES["shell"] - {"console"}
+# The labels of every other shell's fence, whose lines a model runs through its Bash or PowerShell tool, where cat,
+# grep, find, and ls, or their aliases, still read files: console's, fish's, cmd's, and PowerShell's. scan reads the
+# first word of each such line, after the blanks and any `$ ` or `> ` prompt that start it, in any case.
+FIRST_WORD_FENCES = (
+    FENCE_LANGUAGES["shell"] | FENCE_LANGUAGES["fish"] | FENCE_LANGUAGES["cmd"] | FENCE_LANGUAGES["powershell"]
+) - BASH_FENCES
+PROMPT = re.compile(r"\A[ \t]*(?:[$>] )?")
 # The suffixes of a script read as Bash, which scan reads when it is given one, as the status reader reads one.
 BASH_SUFFIXES = frozenset({".sh", ".bash"})
 SHELL_FILE_COMMAND = rf"(?:{'|'.join(SHELL_FILE_COMMANDS)})"
@@ -1860,7 +1869,7 @@ def scan(given: list[Path]) -> list[str]:
             languages, _ = parse_fences(lines)
         else:
             start, languages = 0, [path.suffix.casefold().lstrip(".") or "text"] * len(lines)
-        file_commands, unread = bash_file_commands(path, text, lines, start)
+        file_commands, unread = shell_file_commands(path, text, lines, start)
         for index in range(start, len(lines)):
             line, language = lines[index], languages[index]
             if index in unread:
@@ -1905,14 +1914,15 @@ def scan(given: list[Path]) -> list[str]:
     )
 
 
-def bash_file_commands(path: Path, text: str, lines: list[str], start: int) -> tuple[set[int], dict[int, str]]:
-    """The indices of the lines on which a command of the file's Bash that runs one of SHELL_FILE_COMMANDS starts, and
+def shell_file_commands(path: Path, text: str, lines: list[str], start: int) -> tuple[set[int], dict[int, str]]:
+    """The indices of the lines on which a shell command of the file that runs one of SHELL_FILE_COMMANDS starts, and
     the reason for each Bash fence it cannot read, by the index of the fence's opening line: the grammar refuses it,
     or a here-document in it is still open where the fence ends. A Markdown file's Bash is each fence below its
     frontmatter that BASH_FENCES labels, read whole, as a model running it reads it, each line as CommonMark gives it
     to the fence's content; an untagged fence is read the same way when it is Bash the grammar reads, and holds no
-    Bash otherwise, as it may hold none. A Bash script is its whole text, on the lines `lines` splits it into. Any
-    other file holds no Bash."""
+    Bash otherwise, as it may hold none. A fence FIRST_WORD_FENCES labels runs the program each line's first word
+    names. A Bash script is its whole text, on the lines `lines` splits it into. Any other file, and a fence of any
+    other language, holds no shell command."""
     if path.suffix.casefold() != ".md":
         if path.suffix.casefold() not in BASH_SUFFIXES:
             return set(), {}
@@ -1927,6 +1937,8 @@ def bash_file_commands(path: Path, text: str, lines: list[str], start: int) -> t
     unread: dict[int, str] = {}
     for fence in find_fences(lines):
         untagged = fence.language == ""
+        if fence.opener >= start and fence.language.casefold() in FIRST_WORD_FENCES:
+            found.update(index for index in fence.body() if first_word_runs_file_command(fence.content(lines[index])))
         if fence.opener < start or not (untagged or fence.language.casefold() in BASH_FENCES):
             continue
         body = list(fence.body())
@@ -1941,6 +1953,13 @@ def bash_file_commands(path: Path, text: str, lines: list[str], start: int) -> t
             continue
         found.update(body[number - 1] for number in numbers)
     return found, unread
+
+
+def first_word_runs_file_command(line: str) -> bool:
+    """Whether a line of a FIRST_WORD_FENCES fence starts with one of SHELL_FILE_COMMANDS, after its blanks and any
+    `$ ` or `> ` prompt, in any case, as PowerShell and cmd find a program, and by its file name without `.exe`."""
+    words = PROMPT.sub("", line, count=1).split()
+    return bool(words) and program_name(PureWindowsPath(words[0]).name).casefold() in SHELL_FILE_COMMANDS
 
 
 def open_here_document(text: str) -> bool:
@@ -1975,8 +1994,8 @@ def bash_programs(text: str) -> list[tuple[int, list[str]]]:
 
 def command_programs(command: Simple, words: list[str]) -> list[tuple[int, list[str]]]:
     """Each program a simple command runs, given its words from its program's name, as `bash_programs` reads it, and
-    each the action a trap sets runs, read as eval's script is; a wrapper whose program no literal names, a -c script
-    that is UNREAD_PART alone, and a trap's action holding UNREAD_PART run none this can see."""
+    each the action a trap sets runs, read as eval's script is, a part only running settles as one word; a wrapper
+    whose program no literal names, and a -c script that is UNREAD_PART alone, run none this can see."""
     found: list[tuple[int, list[str]]] = []
     while words:
         found.append((command.line, words))
@@ -1986,9 +2005,7 @@ def command_programs(command: Simple, words: list[str]) -> list[tuple[int, list[
             return found + [(command.line, inner) for _, inner in bash_programs(" ".join(rest))]
         if head == "trap":
             action = command_wrappers.trap_action(rest)
-            if action is None or git_subcommands.UNREAD_PART in action:
-                return found
-            return found + [(command.line, inner) for _, inner in bash_programs(action)]
+            return found + ([] if action is None else [(command.line, inner) for _, inner in bash_programs(action)])
         if name in command_wrappers.SCRIPT_SHELLS:
             index = command_wrappers.shell_script_index(rest)
             if index is None or rest[index] == git_subcommands.UNREAD_PART:
