@@ -3321,6 +3321,21 @@ class UnderstoodSetTests(GuardTestCase):
             with self.subTest(command=command):
                 self.assertEqual("deny", self.bash(command, self.hub))
 
+    def test_a_here_document_body_s_unclosed_expansion_is_refused_only_while_a_hub_is_in_view(self) -> None:
+        # No case pattern here: an unquoted body's expansion that never closes runs to the body's end, so what it runs
+        # is not read, and the guard refuses the command while a guarded hub is in view, with or without a git call.
+        for command in ("cat <<EOF\n$(git push; echo a\nEOF", "cat <<EOF\n$(git am; echo a\nEOF"):
+            with self.subTest(command=command):
+                self.assertEqual("deny", self.bash(command, self.hub))
+                self.assertIn(hub_guard.UNCLOSED_BODY, self.reason)
+        # The same body closed is read, and runs nothing that writes the hub.
+        self.assertIsNone(self.bash("cat <<EOF\n$(echo a)\nEOF", self.hub))
+        # With no hub in view, as "The guard's contract" says, the part it does not read is allowed with a note.
+        outside = self.root / "outside"
+        outside.mkdir(exist_ok=True)
+        self.assertIsNone(self.bash("cat <<EOF\n$(git push; echo a\nEOF", outside))
+        self.assertIn(hub_guard.UNCLOSED_BODY, self.stderr)
+
     def test_a_bare_case_pattern_is_also_read_as_bash_3_2_reads_it_from_outside_the_hub(self) -> None:
         # From outside every checkout of the hub, nothing the Bash 4 reading reads reaches the hub, but Bash 3.2 ends
         # the substitution at the pattern's `)` and runs the git call in the hub, so the guard reads that way too.
