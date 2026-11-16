@@ -16,6 +16,7 @@ from pathlib import Path
 
 from git_client import GitError, output_line
 from markdown_sections import HTML_COMMENT
+from text_lines import text_lines
 from validation_support import REPOSITORY_ROOT, PullRequestChecks
 
 from tools.release_notes import CLIENT, RELEASE_BRANCH, SQUASH_TITLE_NUMBER, ReleaseNotesError, git_output
@@ -29,9 +30,9 @@ from tools.release_notes import CLIENT, RELEASE_BRANCH, SQUASH_TITLE_NUMBER, Rel
 COMMITS_BEFORE_MERGE_BASE = 200
 # A declaration, on a line of its own, optionally a list item, anywhere in the body outside an HTML comment:
 # "Reverts `<path>` to its state before <commit>", the commit by seven or more hexadecimal digits of its name.
+# It is matched at the start of each line of the body where CommonMark ends one.
 DECLARATION = re.compile(
-    r"^[ \t]*(?:[-*][ \t]+)?Reverts `(?P<path>[^`\n]+)` to its state before (?P<commit>[0-9a-fA-F]{7,64})\b",
-    re.MULTILINE,
+    r"[ \t]*(?:[-*][ \t]+)?Reverts `(?P<path>[^`]+)` to its state before (?P<commit>[0-9a-fA-F]{7,64})\b"
 )
 DECLARATION_SHAPE = "Reverts `<path>` to its state before <commit>"
 ABSENT = "0" * 40
@@ -163,8 +164,9 @@ def find_reverts(root: Path, head: str = "HEAD", main: str = RELEASE_BRANCH) -> 
 
 def declarations(text: str) -> set[tuple[str, str]]:
     """Each (path, commit prefix) the text declares a revert of, outside HTML comments, the commit in lower case."""
-    visible = HTML_COMMENT.sub("", text.replace("\r\n", "\n"))
-    return {(match["path"], match["commit"].lower()) for match in DECLARATION.finditer(visible)}
+    # CommonMark ends a line at CR, LF, and CRLF, so a declaration after a lone CR is read on a line of its own.
+    lines = text_lines(HTML_COMMENT.sub("", text))
+    return {(match["path"], match["commit"].lower()) for line in lines if (match := DECLARATION.match(line))}
 
 
 def is_declared(revert: Revert, declared: set[tuple[str, str]]) -> bool:

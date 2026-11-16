@@ -313,6 +313,11 @@ class SilentRevertDeclarations(unittest.TestCase):
         )
         self.assertEqual({("a b.txt", "abcdef1"), ("c.txt", "1234567890")}, declarations(body))
 
+    def test_a_declaration_after_a_lone_cr_is_a_line_of_its_own(self) -> None:
+        # Markdown ends a line at a lone CR, so the declaration starts a line.
+        body = "Summary.\rReverts `a/b.py` to its state before abcdef1\r* Reverts `c.py` to its state before 1234567\r"
+        self.assertEqual({("a/b.py", "abcdef1"), ("c.py", "1234567")}, declarations(body))
+
 
 class AuditReplay(unittest.TestCase):
     def test_the_pull_request_that_undid_the_one_before_it_is_named_when_replayed(self) -> None:
