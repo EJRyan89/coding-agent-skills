@@ -199,6 +199,11 @@ class ProtectionProblemsTests(unittest.TestCase):
     def test_an_issue_configuration_that_turns_blank_issues_off_in_capitals_and_crlf_holds(self) -> None:
         self.assertEqual([], problems({**DOCUMENTS, "issue_config": issue_config("blank_issues_enabled: False\r\n")}))
 
+    def test_an_issue_configuration_setting_blank_issues_off_after_a_lone_cr_holds(self) -> None:
+        # YAML ends a line at a lone CR, so the setting is a line of its own.
+        configuration = issue_config("name: x\rblank_issues_enabled: false\n")
+        self.assertEqual([], problems({**DOCUMENTS, "issue_config": configuration}))
+
     def test_a_repository_that_does_not_say_discussions_are_off_is_drift(self) -> None:
         repository = {key: value for key, value in REPOSITORY.items() if key != "has_discussions"}
         found = problems({**DOCUMENTS, "repository": repository})

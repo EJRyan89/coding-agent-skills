@@ -31,6 +31,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "ejryan8
 import json_reader
 from console import run_main
 from github_client import GitHubClient, GitHubError
+from text_lines import text_lines
 
 PROTECTION_ENDPOINT = "repos/{owner}/{repo}/branches/main/protection"
 REPOSITORY_ENDPOINT = "repos/{owner}/{repo}"
@@ -38,7 +39,8 @@ REPORTING_ENDPOINT = "repos/{owner}/{repo}/private-vulnerability-reporting"
 WORKFLOW_ENDPOINT = "repos/{owner}/{repo}/actions/permissions/workflow"
 ISSUE_CONFIG = ".github/ISSUE_TEMPLATE/config.yml"
 ISSUE_CONFIG_ENDPOINT = f"repos/{{owner}}/{{repo}}/contents/{ISSUE_CONFIG}?ref=main"
-BLANK_ISSUES = re.compile(r"^blank_issues_enabled:[ \t]*(\S+)(?:[ \t]+#.*)?[ \t]*$", re.MULTILINE)
+# A line of config.yml setting blank_issues_enabled, matched whole against each line where YAML ends one.
+BLANK_ISSUES = re.compile(r"blank_issues_enabled:[ \t]*(\S+)(?:[ \t]+#.*)?[ \t]*")
 REQUIRED_CHECK = "Validation"
 
 
@@ -85,7 +87,8 @@ def blank_issues_enabled(issue_config: Mapping[str, object]) -> bool:
         configuration = base64.b64decode(content).decode("utf-8")
     except ValueError:
         return True
-    setting = BLANK_ISSUES.search(configuration.replace("\r\n", "\n"))
+    # YAML ends a line at CR, LF, and CRLF, so each is read whole where it does.
+    setting = next((match for line in text_lines(configuration) if (match := BLANK_ISSUES.fullmatch(line))), None)
     return setting is None or setting.group(1).casefold() != "false"
 
 

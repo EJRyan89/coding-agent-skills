@@ -153,7 +153,7 @@ from hub_state import Difference, changes, differences
 from path_keys import path_key
 from premerge_review import Head, Reader, ReviewUnread, archive_reader, review_lines
 from pull_carried import carried
-from text_lines import program_lines
+from text_lines import program_lines, text_lines
 
 REMOTE = "origin"
 BASE = "main"
@@ -182,7 +182,8 @@ PULL_FIELDS = (
     "statusCheckRollup,body,baseRefName"
 )
 # The line in a pull request's body that holds it from arming and merging, with its reason; deleting it releases it.
-HOLD_LINE = re.compile(r"^Shepherd-hold:[ 	]*(.*?)[ 	]*$", re.MULTILINE)
+# It is matched whole against each line of the body where CommonMark ends one.
+HOLD_LINE = re.compile(r"Shepherd-hold:[ 	]*(.*?)[ 	]*")
 RUN_FIELDS = "headSha,attempt,conclusion,status,jobs"
 # GitHub's merge state of a pull request whose merge commit cannot be made cleanly: a conflict with main.
 CONFLICTED = "DIRTY"
@@ -529,7 +530,8 @@ def required_check(rollup: Any) -> Check:
 
 def hold_of(body: str) -> str | None:
     """The reason the first Shepherd-hold line in a pull request's body gives, or None when no line holds it."""
-    match = HOLD_LINE.search(body)
+    # The body is Markdown, which ends a line at CR, LF, and CRLF, so a line after a lone CR holds it too.
+    match = next((found for line in text_lines(body) if (found := HOLD_LINE.fullmatch(line))), None)
     if match is None:
         return None
     return flat_text(match.group(1)) or "no reason given"
