@@ -460,8 +460,9 @@ class Group:
     readers: list[Group] = field(default_factory=list)
     askings: dict[int, Asking] = field(default_factory=dict)
     dropped: bool = False
-    # Whether a group it reads was dropped with it, the groups outside it whose answers its members read, and, for a group of one parameter, that parameter as
-    # read in its scope, and how many of the scope's callers it read: see CodeReader._grow.
+    # Whether a group it reads was dropped with it; the groups outside it whose answers its members read; and, for a
+    # group of one parameter, that parameter as read in its scope and how many of the scope's callers it read: see
+    # CodeReader._grow.
     read_dropped: bool = False
     reads: dict[int, Group] = field(default_factory=dict)
     parameter: tuple[ast.expr, Scope, int] | None = None
