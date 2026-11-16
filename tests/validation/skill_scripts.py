@@ -2721,7 +2721,7 @@ class _TemporaryBash:
     by reading a variable holding the judged folder, in a JUDGED_REFERENCE form; "temporary", a value whose text
     outside its substitutions expands TMPDIR, TEMP, or TMP, holds a TEMPORARY_PATH, or reads a variable holding the
     temporary directory unjudged; or "other", as any other value and every append is. Raises BashSyntaxError for a
-    script the grammar refuses, or a substitution in it that it refuses."""
+    script the grammar refuses, or a substitution in it that it refuses, one in a here-document's body included."""
 
     def __init__(self, text: str) -> None:
         # Every value written for each variable, wherever it stands, by which a variable may name the judge's script.
@@ -2766,13 +2766,11 @@ class _TemporaryBash:
         for document in here_documents(node):
             text = document.body.replace("$", LITERAL_DOLLAR) if document.quoted else document.body
             self.name(text, source_lines(document.body) or line_numbers(document.body))
-            for source in document.substitutions:
-                try:
-                    tree = parse(source)
-                except BashSyntaxError:
-                    continue  # a body's substitution Bash cannot read runs nothing, as bash_syntax reads it
-                if not self.runs_judge(source):
-                    self.read_list(tree)
+            # A body's substitution the grammar cannot read is refused with the script, as every other one is,
+            # rather than read as running nothing, so a mktemp in it is never passed unjudged.
+            if document.unclosed:
+                raise BashSyntaxError("a here-document's body holds an expansion it never closes")
+            self.read_substitutions(document.substitutions)
             self.place += 1
         if isinstance(node, Simple):
             self.judge_mktemp(node)

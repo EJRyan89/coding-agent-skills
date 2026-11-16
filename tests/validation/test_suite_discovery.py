@@ -931,6 +931,27 @@ def test_the_pipe_race_policy_names_a_suite_whose_substitution_bash_cannot_read(
     ]
 
 
+def test_a_here_document_s_substitution_bash_cannot_read_runs_nothing_and_the_rest_of_the_body_is_read(
+    tmp_path: Path,
+) -> None:
+    # The shell expands an unquoted body's substitutions from the fed command's standard input, so a readable one is
+    # a race. One it cannot read runs nothing: Bash 5.3 reports an unexpected end and Bash 3.2 a bad substitution, and
+    # neither starts its head, so it is no reader of the pipe, as bash_syntax reads such a body.
+    assert races_in(tmp_path, "seq 1 200000 | cat <<EOF\n$(head -n x\nEOF") == []
+    assert races_in(tmp_path, "seq 1 200000 | cat <<EOF\n$(head -n 1) $(head -n x\nEOF") == ["4 pipes into head -n"]
+
+
+def test_a_suite_nested_deeper_than_the_reader_follows_is_named_as_unread(tmp_path: Path) -> None:
+    unread = (
+        "tests/test_race.sh cannot be read as Bash to find a pipe into a reader that ends early: it nests deeper than "
+        "the reader follows"
+    )
+    # The grammar refuses nesting past Python's recursion limit, and the walk over its tree does too.
+    assert races_in(tmp_path, "x=" + "$(" * 2000 + ")" * 2000) == [unread]
+    with mock.patch.object(suite_discovery._BashReading, "read_list", side_effect=RecursionError):
+        assert races_in(tmp_path, "printf a | head -n 1") == [unread]
+
+
 def test_the_pipe_race_policy_reads_each_function_of_ones_that_call_each_other_once(tmp_path: Path) -> None:
     # A walk that kept the functions it was in for each path read them once per order of calls: nine functions that
     # each call the rest took 876,809 reads. Read once per question, and again only from a shallower depth, each

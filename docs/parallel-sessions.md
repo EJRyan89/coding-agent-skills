@@ -688,6 +688,10 @@ Within what it reads, it judges only what the text shows, so these too are left 
 - where a here-document's delimiter line, or its delimiter word, ends in a CR, the lines after it, which Git Bash runs and Bash elsewhere
   reads as the body, are read as commands, and where they do not parse, the whole command goes unread, the git call
   after the real delimiter line included;
+- a `case` inside a command substitution whose pattern's `)` is not opened by `(`: the guard reads Bash 4 and later's
+  grammar, where that `)` closes the pattern, and Bash 3.2, macOS's `/bin/bash`, ends the substitution at it and runs
+  the rest of the line in the shell around it, so a `cd` before the `case` in the substitution moves the git call
+  after the pattern for the guard and not for Bash 3.2;
 
 - a program git starts that the environment or the configuration names rather than the command's words: the program
   an inherited `GIT_EXTERNAL_DIFF`, `GIT_PAGER`, `PAGER`, `GIT_SSH_COMMAND`, `GIT_SSH`, `GIT_ASKPASS`, `SSH_ASKPASS`,

@@ -1644,6 +1644,9 @@ class SkillScriptsFixtures(unittest.TestCase):
             "escaped.sh": ('echo "a\\" # " ; X=$(mktemp)', ["2: mktemp"]),
             # An expansion left open is Bash the grammar refuses, so the script is named as unread at its first line.
             "unclosed.sh": ("V=${A /tmp", ["1: validation"]),
+            # A here-document body's substitution the grammar cannot read is refused with the script, never read as
+            # running nothing, so the mktemp in it, which the line reader reported, is not passed unjudged.
+            "unreadable_body.sh": ("cat <<EOF\n$(mktemp /tmp/x\nEOF", ["1: validation"]),
             # A `#` after an escaped blank continues the word, so Bash runs what follows it.
             "escaped_blank.sh": ("echo foo\\ #; X=$(mktemp)", ["2: mktemp"]),
             # A backtick substitution in a value is read as a command, never as the value's own text.

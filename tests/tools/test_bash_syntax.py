@@ -345,6 +345,12 @@ def test_a_batch_whose_every_reading_ends_still_holds_the_reader_to_bash(monkeyp
 
 
 class HereDocumentTests(unittest.TestCase):
+    def test_a_body_whose_expansion_never_closes_says_so(self) -> None:
+        unclosed = bash_syntax.here_documents(first_simple('cat <<EOF\n$(git am) $(echo "a)\nEOF'))[0]
+        self.assertEqual((True, ("git am",)), (unclosed.unclosed, unclosed.substitutions))
+        closed = bash_syntax.here_documents(first_simple("cat <<EOF\n$(git am)\nEOF"))[0]
+        self.assertFalse(closed.unclosed)
+
     def test_a_here_document_body_is_data_never_commands(self) -> None:
         tree = parse("cat > run.sh <<EOF\ncd '/wt'\ngit status\nEOF\ngit add run.sh")
         self.assertEqual([["cat"], ["git", "add", "run.sh"]], simple_commands(tree))
@@ -703,8 +709,12 @@ def test_a_function_name_bash_refuses_defines_nothing_when_bash_runs_it(definiti
         ),
         ("x=1", [[]]),
         # A case pattern's `)` inside a substitution closes the pattern, not the substitution, as Bash 4 and later
-        # read it, a pattern opened with `(` or not, in a subshell, a nested case, or a backquote; Bash 3.2 refuses
-        # each, and reads the `)` as the substitution's end.
+        # read it, a pattern opened with `(` or not, in a subshell, a nested case, or a backquote. Bash 3.2, macOS's
+        # /bin/bash, ends the substitution at the pattern's `)`, so its syntax check refuses the first six. It does not
+        # refuse them before running them: where the rest of the line parses, as when a newline ends the pattern's
+        # commands, it runs `x= b` in the shell around the substitution and refuses only the next line. It reads the
+        # empty case and the backquoted one as these do. The grammar keeps the one reading of Bash 4 and later, a
+        # difference the hub guard's contract states.
         (
             'os=$(case "$(uname)" in Darwin) echo mac;; *) echo linux;; esac)',
             [[], ["uname"], ["echo", "mac"], ["echo", "linux"]],

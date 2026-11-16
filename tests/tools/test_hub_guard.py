@@ -3288,6 +3288,15 @@ class UnderstoodSetTests(GuardTestCase):
             with self.subTest(command=command):
                 self.assertEqual(expected, self.bash(command, cwd))
 
+    def test_a_case_pattern_s_paren_in_a_substitution_is_read_as_bash_4_reads_it_a_stated_difference(self) -> None:
+        # The guard reads Bash 4 and later's grammar, where the pattern's `)` closes the pattern, so the git call after
+        # it runs in the substitution, in the tree its `cd` names. Bash 3.2, macOS's /bin/bash, ends the substitution
+        # at that `)` and runs the git call in the shell around it, the hub here, before refusing the `esac)` line;
+        # "What it does not see" in docs/parallel-sessions.md states the difference.
+        switch = "case a in a) git switch feat/demo\nesac)"
+        self.assertIsNone(self.bash(f"x=$(cd '{self.tree}'; {switch}", self.hub))
+        self.assertEqual("deny", self.bash(f"x=$({switch}", self.hub))
+
     def test_git_in_arithmetic_a_for_header_or_after_an_arithmetic_function_is_read(self) -> None:
         switch = f'git -C "{self.hub}" switch feat/demo'
         for script in (

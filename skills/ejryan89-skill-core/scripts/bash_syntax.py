@@ -228,6 +228,9 @@ class HereDocument:
     expansions: tuple[Part, ...] = ()
     # Whether a delimiter line closed the body, rather than the text's end, which Bash also takes for its end.
     closed: bool = False
+    # Whether an unquoted body holds an expansion whose end it never reaches, as `$(echo "a)`, which runs to the body's
+    # end, so neither it nor anything after it is among the substitutions.
+    unclosed: bool = False
 
 
 @dataclass(frozen=True)
@@ -562,7 +565,7 @@ class Lexer:
                 numbers += places[len(line) - len(compared) :]
             document.body = Source("\n".join(body), numbers if body else [self.lines[self.index]])
             if not document.quoted:
-                substitutions, assigns, parts = expansions(document.body)
+                substitutions, assigns, parts, document.unclosed = expansions(document.body)
                 document.substitutions, document.assigns = tuple(substitutions), tuple(assigns)
                 document.expansions = tuple(part for part in parts if part.kind == "dynamic")
         self.pending = []
@@ -935,12 +938,12 @@ def add_text(parts: list[Part], text: str, quoted: bool) -> None:
         parts.append(Part("text", text, quoted))
 
 
-def expansions(text: str) -> tuple[list[str], list[str], list[Part]]:
+def expansions(text: str) -> tuple[list[str], list[str], list[Part], bool]:
     """The command substitutions in text that expands as a double-quoted string does, such as an unquoted
     here-document's body, where a double quote is an ordinary character but quotes inside a `$( )` or a `${ }`, as
-    Bash reads it there, the variables its expansions assign, as a word's assigns holds them, and the parts its
-    expansions make, as a word's parts hold them. Each substitution keeps its script line, from text's when it is a
-    Source."""
+    Bash reads it there, the variables its expansions assign, as a word's assigns holds them, the parts its
+    expansions make, as a word's parts hold them, and whether it holds an expansion whose end it never reaches. Each
+    substitution keeps its script line, from text's when it is a Source."""
     lexer = Lexer(text, lines=source_lines(text))
     found: list[str] = []
     parts: list[Part] = []
@@ -959,8 +962,8 @@ def expansions(text: str) -> tuple[list[str], list[str], list[Part]]:
         except BashSyntaxError:
             # An expansion whose end the body never reaches, as `$(echo "a)` is, runs to the body's end, as Bash
             # reads it, so no expansion stands after it.
-            break
-    return found, lexer.assigned, parts
+            return found, lexer.assigned, parts, True
+    return found, lexer.assigned, parts, False
 
 
 # ---------------------------------------------------------------------------------------------------------------
