@@ -1968,7 +1968,8 @@ def _has_maintaining_section(root: Path) -> bool:
     if claude_md is None:
         return False
     # markdown_sections reads the heading and the fences a heading-shaped line inside one belongs to, as CommonMark
-    # reads them.
+    # reads them. The text comes through read_text(), whose universal newlines already end a lone CR, so this split is
+    # exact.
     lines = claude_md[1].split("\n")
     fenced = {index for fence in find_fences(lines) for index in fence.lines()}
     return any(

@@ -4549,6 +4549,23 @@ def test_the_samples_rows_are_ordered_by_skill_however_a_kept_row_is_spaced() ->
     ]
 
 
+def test_the_results_file_s_tables_are_read_and_written_where_commonmark_ends_a_line() -> None:
+    # A file saved with lone CRs: each table is found, and each writer gives the file the lines an LF one gets.
+    text = RESULTS_TEXT.replace("\n", "\r")
+    assert skill_evals_results.results_table(text)[2] == skill_evals_results.results_table(RESULTS_TEXT)[2]
+    rows = ["| review-prs | haiku | h | high | none | 1/1 | 1 | a 1/1 | s | 2.1.291 | 2026-10-08 |"]
+    assert skill_evals_results.replace_results(text, "review-prs", rows) == skill_evals_results.replace_results(
+        RESULTS_TEXT, "review-prs", rows
+    )
+    sample = ("two", "haiku", 2)
+    today = datetime.date(2026, 10, 8)
+    written = skill_evals_results.replace_sample(text, "beta", sample, today)
+    assert written == skill_evals_results.replace_sample(RESULTS_TEXT, "beta", sample, today)
+    assert skill_evals_results.read_sample(written.replace("\n", "\r"), "beta", "agrees") == (
+        skill_evals_results.read_sample(written, "beta", "agrees")
+    )
+
+
 def test_a_reading_marks_the_skill_s_unread_row_once() -> None:
     text = samples_text(
         "| alpha | one | opus | 1 | 2026-01-01 | agrees |", "| beta | two | haiku | 2 | 2026-10-08 | unread |"

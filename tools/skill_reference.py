@@ -37,7 +37,7 @@ import runtime_support
 import skill_menu
 from console import run_main
 from markdown_sections import find_fences, markdown_section
-from text_lines import text_lines
+from text_lines import LINE_BREAK, text_lines
 
 from deployer import source as deploy_source
 from deployer.config import CONFIGURED_VARIABLES, OPTIONAL_VARIABLES
@@ -268,7 +268,7 @@ def _replace_block(text: str, block: str, content: str) -> str | None:
 def _split(document: str) -> tuple[str, list[Section]]:
     """The reference's preamble and its skill sections, each cut at a skill's `## ` heading outside every code fence:
     a fenced one is the fence's text, as GitHub renders it, such as an example in a section's hand-written prose."""
-    lines = document.split("\n")
+    lines = LINE_BREAK.split(document)
     fenced = {index for fence in find_fences(lines) for index in fence.lines()}
     headings = [
         (index, match.group(1))

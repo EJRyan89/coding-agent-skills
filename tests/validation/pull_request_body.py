@@ -35,6 +35,7 @@ from markdown_sections import (
     list_item,
 )
 from pull_request_title import TITLE, head_branch
+from text_lines import LINE_BREAK
 from upgrade_notes import PROFILE_DOC
 from validation_support import REPOSITORY_ROOT, PullRequestChecks, markdown_section
 
@@ -99,7 +100,7 @@ def forms_section(body: str) -> str | None:
     """The text under the body's first `## Forms considered` heading, up to the next heading of the first or second
     level, with hidden comments removed; None when the body has no such heading. A heading inside a hidden comment or a
     fenced block is not the section's, and neither ends it."""
-    lines = HIDDEN_COMMENT.sub("", body.replace("\r\n", "\n")).split("\n")
+    lines = LINE_BREAK.split(HIDDEN_COMMENT.sub("", body))
     fences = find_fences(lines)
     fenced = {index for fence in fences for index in fence.lines()}
     # A line inside a list item is the item's, so a heading there neither opens the section nor ends it.

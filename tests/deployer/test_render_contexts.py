@@ -285,6 +285,51 @@ class FenceTests(unittest.TestCase):
             body = units[0].path.read_text(encoding="utf-8").removeprefix(render.SHELLCHECK_HEADER)
         self.assertEqual("echo one\n echo two\n", body)
 
+    def test_a_fence_after_a_lone_cr_is_substituted_and_extracted_as_shell(self) -> None:
+        # CommonMark ends a line at a lone CR, so the fence opens on its own line and its body takes the shell context.
+        with self.assertRaisesRegex(DeployError, r"\(shell context\)"):
+            render.render_file("s/SKILL.md", b"Intro\r```bash\recho {{X}}\r```\r", {"X": "O'Brien"})
+        with tempfile.TemporaryDirectory() as workspace:
+            staged = render.Staged(skills={"s": {"SKILL.md": b"Intro\r```bash\recho one\r```\r"}})
+            units = render._extract_units(staged, Path(workspace))
+            bodies = [unit.path.read_text(encoding="utf-8").removeprefix(render.SHELLCHECK_HEADER) for unit in units]
+        self.assertEqual(["echo one\n"], bodies)
+
+    def test_a_line_a_lone_cr_moves_out_of_a_fence_or_frontmatter_keeps_its_line_feed_reading_s_checks(self) -> None:
+        # A reader that ends a line at LF alone still reads the line after the lone CR as code, so the value is checked
+        # in both contexts, and refused where either refuses it or the two render it differently.
+        for content, value, refusal in (
+            (b"```bash\necho hi\r```\ncd '{{X}}'\n```\n", "/home/o'brien/repos", r"\(shell context\)"),
+            (b"```powershell\nWrite-Output hi\r```\nWrite-Output '{{X}}'\n```\n", "a'b", r"\(powershell context\)"),
+            (b"---\nname: s\r---\rdescription: {{X}}\n---\nBody\n", "a #b", r"\(yaml context\)"),
+            (b'```json\n{}\r```\n{"a": "{{X}}"}\n```\n', 'q"', "the two render it differently"),
+        ):
+            with self.subTest(content=content), self.assertRaisesRegex(DeployError, refusal):
+                render.render_file("s/SKILL.md", content, {"X": value})
+
+    def test_a_value_both_readings_render_alike_is_substituted_once(self) -> None:
+        content = b'```json\n{}\r```\n{"a": "{{X}}"}\n```\n'
+        self.assertEqual(content.replace(b"{{X}}", b"plain"), render.render_file("s/SKILL.md", content, {"X": "plain"}))
+
+    def test_a_shell_fence_either_reading_finds_is_extracted_once(self) -> None:
+        # CommonMark closes the fence at the lone CR; a reader ending lines at LF alone reads on to the next fence line.
+        content = b"```bash\necho hi\r```\necho done\n```\n"
+        with tempfile.TemporaryDirectory() as workspace:
+            staged = render.Staged(skills={"s": {"SKILL.md": content, "T.md": b"```bash\r\necho one\r\n```\r\n"}})
+            units = render._extract_units(staged, Path(workspace))
+            bodies = [unit.path.read_bytes().decode().removeprefix(render.SHELLCHECK_HEADER) for unit in units]
+        self.assertEqual(["s/SKILL.md block 1", "s/SKILL.md block 2", "s/T.md block 1"], [u.origin for u in units])
+        self.assertEqual(["echo hi\n", "echo hi\r```\necho done\n", "echo one\n"], bodies)
+
+    def test_frontmatter_closed_after_a_lone_cr_is_substituted_as_yaml(self) -> None:
+        with self.assertRaisesRegex(DeployError, r"\(yaml context\)"):
+            render.render_file("s/SKILL.md", b"---\rname: {{X}}\r---\rBody\r", {"X": "a#b"})
+
+    def test_each_rendered_line_keeps_the_break_it_was_written_with(self) -> None:
+        source = b"---\r\nname: s\r---\nA {{X}}\r\n```bash\recho {{X}}\n```\rlast {{X}}"
+        rendered = render.render_file("s/SKILL.md", source, {"X": "plain"})
+        self.assertEqual(b"---\r\nname: s\r---\nA plain\r\n```bash\recho plain\n```\rlast plain", rendered)
+
     def test_an_unclosed_tilde_shell_fence_is_refused(self) -> None:
         with tempfile.TemporaryDirectory() as workspace:
             staged = render.Staged(skills={"s": {"SKILL.md": b"~~~bash\necho\n"}})
@@ -432,6 +477,14 @@ class RenderedRefusalStepTests(unittest.TestCase):
             ),
             raised.exception.lines,
         )
+
+    def test_an_unexpanded_token_is_reported_on_the_line_commonmark_ends_it_on(self) -> None:
+        for content in (b"Run it.\rNext.\rUse {{UNDECLARED}} here.\r", b"Run it.\r\nNext.\rUse {{UNDECLARED}} here.\n"):
+            with self.subTest(content=content):
+                staged = render.Staged(skills={"s": {"SKILL.md": content}})
+                with self.assertRaises(DeployError) as raised:
+                    render.reject_unexpanded_tokens(staged)
+                self.assertEqual("s/SKILL.md:3:Use {{UNDECLARED}} here.", raised.exception.lines[1])
 
     def test_a_bash_syntax_failure_reports_bash_then_the_step(self) -> None:
         units = [render.ShellUnit(Path("C:/work/files/run.sh"), "s/scripts/run.sh", False)]

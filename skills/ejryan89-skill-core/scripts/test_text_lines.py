@@ -10,7 +10,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from text_lines import program_lines, text_lines
+from text_lines import lines_and_breaks, program_lines, text_lines
 
 # Every character str.splitlines breaks at besides CR and LF, written out rather than derived from it.
 KEPT = ("\x0b", "\x0c", "\x1c", "\x1d", "\x1e", "\x85", "\u2028", "\u2029")
@@ -35,6 +35,21 @@ class TextLinesTests(unittest.TestCase):
         self.assertEqual(["a\n", "\n"], text_lines("a\n\n", keepends=True))
         self.assertEqual(["\n"], text_lines("\n", keepends=True))
         self.assertEqual([], text_lines("", keepends=True))
+
+
+class LinesAndBreaksTests(unittest.TestCase):
+    def test_each_line_is_beside_the_break_that_ends_it(self) -> None:
+        self.assertEqual((["a", "b", "c", "d"], ["\r\n", "\r", "\n", ""]), lines_and_breaks("a\r\nb\rc\nd"))
+        self.assertEqual((["a", "", "b"], ["\r", "\r\n", ""]), lines_and_breaks("a\r\r\nb"))
+        self.assertEqual((["a", ""], ["\n", "\n"]), lines_and_breaks("a\n\n"))
+        self.assertEqual(([], []), lines_and_breaks(""))
+
+    def test_the_lines_and_breaks_rejoin_to_the_text(self) -> None:
+        for text in ("a\r\nb\rc\nd", "a\r\r\nb\n", "\n\r", f"a{''.join(KEPT)}\rb"):
+            with self.subTest(text=text):
+                lines, breaks = lines_and_breaks(text)
+                self.assertEqual(text, "".join(line + end for line, end in zip(lines, breaks, strict=True)))
+                self.assertEqual(text_lines(text), lines)
 
 
 @pytest.mark.parametrize("character", KEPT, ids=[f"U+{ord(character):04X}" for character in KEPT])

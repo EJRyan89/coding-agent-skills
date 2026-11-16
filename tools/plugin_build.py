@@ -79,6 +79,7 @@ from skill_menu import (
     plugin_plan,
 )
 from skill_roots import skills_directory_holding
+from text_lines import lines_and_breaks, text_lines
 
 from deployer import source as deploy_source
 from deployer.errors import DeployError
@@ -166,14 +167,15 @@ def render(logical: str, content: bytes, variables: list[str]) -> bytes:
     def answered(part: str, values: Mapping[str, str]) -> str:
         return TOKEN.sub(lambda match: values[match.group(1)] if match.group(1) in variables else match.group(0), part)
 
-    lines = text.split("\n")
+    # Lines end where YAML ends one, at CR, LF, and CRLF, so a delimiter after a lone CR closes the frontmatter.
+    lines, breaks = lines_and_breaks(text)
     try:
         head = frontmatter.split(lines) if suffix == ".md" else None
     except frontmatter.FrontmatterError:
         head = None
     if head is None:
         return answered(text, PLUGIN_VALUES).encode("utf-8")
-    end = sum(len(line) + 1 for line in lines[: head[1]])
+    end = sum(map(len, lines[: head[1]])) + sum(map(len, breaks[: head[1]]))
     front = answered(text[:end], {**PLUGIN_VALUES, **PLUGIN_FRONTMATTER_VALUES})
     return (front + answered(text[end:], PLUGIN_VALUES)).encode("utf-8")
 
@@ -202,7 +204,7 @@ def leftover_tokens(files: Mapping[str, bytes]) -> list[str]:
     """Each line of a plugin's files that still holds a template token, as `path:line:text`."""
     found = []
     for path, content in sorted(files.items()):
-        for number, line in enumerate(content.decode("utf-8", "replace").split("\n"), start=1):
+        for number, line in enumerate(text_lines(content.decode("utf-8", "replace")), start=1):
             if TOKEN.search(line):
                 found.append(f"{path}:{number}:{line}")
     return found

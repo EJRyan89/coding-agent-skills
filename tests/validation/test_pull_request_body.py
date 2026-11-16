@@ -284,6 +284,11 @@ def test_a_fix_body_with_a_filled_section_passes(section: str) -> None:
     assert forms_problems(body(section), True, TEMPLATE) == []
 
 
+def test_the_section_is_read_where_commonmark_ends_a_line() -> None:
+    section = forms_section("## Changes\r\r- x\r\r## Forms considered\r\rRead: a.\r\r## Implications\r\rAfter.\r")
+    assert section == "\nRead: a.\n"
+
+
 def test_the_section_ends_at_the_next_heading_and_a_fenced_heading_does_not_end_it() -> None:
     text = body(f"```\n## Inside\n```\n{FILLED}", after="## Implications\n\nAfter.\n")
     section = forms_section(text)
