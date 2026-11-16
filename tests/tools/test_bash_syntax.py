@@ -540,6 +540,8 @@ def test_time_after_a_pipe_and_more_than_one_newline_is_the_keyword_bash_refuses
         # A function's name is never an assignment, and the function keyword names one.
         "a=b () { :; }",
         "function",
+        # `case` is a reserved word only where a command starts, so this `)` closes the substitution.
+        "x=$(echo case a in a) :;; esac)",
     ],
 )
 def test_text_bash_would_refuse_is_an_error(text: str) -> None:
@@ -695,6 +697,20 @@ def test_a_function_name_bash_refuses_defines_nothing_when_bash_runs_it(definiti
             [["echo", "<(", "${x:-$(git e)}", "$(("], ["git", "d"], ["git", "e"], ["git", "f"]],
         ),
         ("x=1", [[]]),
+        # A case pattern's `)` inside a substitution closes the pattern, not the substitution, as Bash 4 and later
+        # read it, a pattern opened with `(` or not, in a subshell, a nested case, or a backquote; Bash 3.2 refuses
+        # each, and reads the `)` as the substitution's end.
+        (
+            'os=$(case "$(uname)" in Darwin) echo mac;; *) echo linux;; esac)',
+            [[], ["uname"], ["echo", "mac"], ["echo", "linux"]],
+        ),
+        ("x=$( (case a in a) echo;; esac) )", [[], ["echo"]]),
+        ("x=$(case a in (a) b;; c|d) (e);; esac; f)", [[], ["b"], ["e"], ["f"]]),
+        ("x=$(case in in in) b;; esac)", [[], ["b"]]),
+        ("x=$(case a in a) b\nesac)", [[], ["b"]]),
+        ("x=$(case a in a) case b in b) c;; esac;; esac)", [[], ["c"]]),
+        ("x=$(case a in esac); b", [[], ["b"]]),
+        ("x=`case a in a) b;; esac`", [[], ["b"]]),
         # A word's quotes are removed and each expansion kept in the form that names it.
         ("git \"$sub\" ${t} ~/x 'a b' $'c'", [["git", "$sub", "$t", "~/x", "a b", "c"]]),
     ],

@@ -339,9 +339,21 @@ class CommandList:
 # Words and operators
 
 
+@dataclass
+class OpenCase:
+    """A `case` the lexer is inside, so a pattern's `)` closes the pattern, not a `$( )` around it, as Bash 4 and
+    later read it: the parenthesis depth it opened at, what it reads next, its "subject" word, then "in", its
+    "pattern" list, or a branch's "commands", and whether the pattern being read has begun."""
+
+    depth: int
+    state: str = "subject"
+    begun: bool = False
+
+
 class Lexer:
-    """Splits text into tokens; with nested set it reads a `$( )` body and stops at its closing parenthesis. `lines`
-    is the script line of each character of text and of its end, as a Source keeps them; by default, text's own."""
+    """Splits text into tokens; with nested set it reads a `$( )` body as a command list and stops at the parenthesis
+    that closes it, which a case pattern's `)` never is. `lines` is the script line of each character of text and of
+    its end, as a Source keeps them; by default, text's own."""
 
     def __init__(self, text: str, start: int = 0, nested: bool = False, lines: Sequence[int] | None = None) -> None:
         self.text = text
@@ -370,13 +382,16 @@ class Lexer:
         self.descriptor_line = 0
         # The variables the expansions read since the word being read began assign.
         self.assigned: list[str] = []
+        # The parentheses open here, which a `)` closes before the one that closes a `$( )` body, and each case open
+        # here, innermost last.
+        self.depth = 0
+        self.cases: list[OpenCase] = []
 
     def peek(self, offset: int = 0) -> str:
         position = self.index + offset
         return self.text[position] if position < len(self.text) else ""
 
     def run(self) -> list[Token]:
-        depth = 0
         while self.index < len(self.text):
             character = self.peek()
             if character == "\\" and self.peek(1) == "\n":
@@ -392,9 +407,11 @@ class Lexer:
                 pass
             elif character in METACHARACTERS:
                 operator = next(item for item in OPERATORS if self.text.startswith(item, self.index))
-                if self.nested and operator == ")" and depth == 0:
+                pattern = self.case_operator(operator)
+                if self.nested and operator == ")" and self.depth == 0 and not pattern:
                     return self.tokens
-                depth += {"(": 1, ")": -1}.get(operator, 0)
+                if not pattern:
+                    self.depth += {"(": 1, ")": -1}.get(operator, 0)
                 line = self.descriptor_line if self.descriptor else self.lines[self.index]
                 self.index += len(operator)
                 self.tokens.append(Operator(operator, self.descriptor, line))
@@ -417,12 +434,47 @@ class Lexer:
                 if self.peek() and self.peek() in "<>" and DESCRIPTOR.fullmatch(word.raw):
                     self.descriptor, self.descriptor_line = word.raw, word.line
                 else:
+                    self.case_word(word)
                     self.follow_word(word)
                     self.tokens.append(word)
         if self.nested:
             raise BashSyntaxError("a command substitution is not closed")
         self.read_here_documents()
         return self.tokens
+
+    def open_case(self) -> OpenCase | None:
+        """The innermost case open at the parenthesis depth being read, or None."""
+        return self.cases[-1] if self.cases and self.cases[-1].depth == self.depth else None
+
+    def case_operator(self, operator: str) -> bool:
+        """Follows a case through an operator; True for a pattern's own parenthesis, the `(` that may open it or the
+        `)` that closes it, which opens or closes no subshell."""
+        case = self.open_case()
+        if case is None:
+            return False
+        if case.state == "pattern" and (operator == ")" or (operator == "(" and not case.begun)):
+            case.state, case.begun = ("commands", False) if operator == ")" else ("pattern", True)
+            return True
+        if case.state == "commands" and operator in CASE_ENDS:
+            case.state = "pattern"
+        return False
+
+    def case_word(self, word: Word) -> None:
+        """Follows a case through a word: `case` where Bash reads a reserved word opens one, and `esac` where a
+        pattern or a command may start closes it."""
+        case = self.open_case()
+        state = case.state if case is not None else ""
+        if case is not None and state in ("subject", "in"):
+            case.state = "in" if state == "subject" or word.literal != "in" else "pattern"
+        elif case is not None and state == "pattern":
+            if not case.begun and word.literal == "esac":
+                self.cases.pop()
+            case.begun = True
+        elif self.reserved and not self.redirecting and word.literal in ("case", "esac"):
+            if word.literal == "case":
+                self.cases.append(OpenCase(self.depth))
+            elif case is not None:
+                self.cases.pop()
 
     def follow_word(self, word: Word) -> None:
         """Whether the word after this one starts a command, after a reserved word that opens one, an option of the

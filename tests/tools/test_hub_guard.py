@@ -3278,6 +3278,8 @@ class UnderstoodSetTests(GuardTestCase):
             (f'echo "$(git -C "{self.hub}" switch feat/demo)"', self.tree, "deny"),
             (f"cat <<'EOF'\ngit -C '{self.hub}' switch feat/demo\nEOF", self.tree, None),
             (f"cat <<EOF\n$(git -C '{self.hub}' switch feat/demo)\nEOF", self.tree, "deny"),
+            # A case pattern's `)` closes the pattern, not the substitution, as Bash 4 and later read it.
+            (f"os=$(case \"$(uname)\" in Darwin) git -C '{self.hub}' switch feat/demo;; esac)", self.tree, "deny"),
             ("git commit -F - <<'EOF'\nfix(tools): a message\nEOF", self.tree, None),
             ("cat <<< 'git commit -m x'", self.hub, None),
             (f"diff <(git -C '{self.hub}' show HEAD) <(echo x)", self.tree, None),
