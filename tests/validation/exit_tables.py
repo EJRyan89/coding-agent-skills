@@ -348,7 +348,7 @@ class Scope:
 
     module: Module
     function: Function | None
-    given: tuple[tuple[str, ast.expr], ...] = ()
+    given: tuple[tuple[str, ast.expr], ...]
 
     def argument(self, name: str) -> ast.expr | None:
         return dict(self.given).get(name)
@@ -448,11 +448,11 @@ class CodeReader:
         # What one pass has read, each once: a function's returns for each element in a scope, a local's value for
         # each element in a scope, and a parameter for each element in a scope; and the scopes a read asked the
         # callers of. A caller that reaches a scope after a read asked its callers makes the pass late: see read.
-        self.returned: set[tuple[int, int | None, int]] = set()
+        self.returned: set[tuple[int | None, int]] = set()
         self.assigned_read: set[tuple[int, int | None, int]] = set()
         self.parameters_read: set[tuple[int, str, int | None]] = set()
         self.asked: set[int] = set()
-        self.late = False
+        self.late: bool
         self.passes = 0
         # The reads waiting their turn, so no read nests inside another on Python's stack: see later.
         self.pending: list[Callable[[], None]] = []
@@ -585,7 +585,7 @@ class CodeReader:
     def callers_of(self, scope: Scope) -> list[Scope]:
         """The scopes that called a scope so far, recording that a read asked."""
         self.asked.add(id(scope))
-        return list(self.callers.get(id(scope), {}).values())
+        return list(self.callers[id(scope)].values())
 
     def _parts(self, node: ast.expr, scope: Scope) -> Parts:
         """What one called expression is made of: the function it names, the values it is read as, or none it can
@@ -690,7 +690,7 @@ class CodeReader:
 
     def returns(self, module: Module, function: Function, scope: Scope, element: int | None = None) -> None:
         """Add the codes a function returns, or the item at `element` of the tuples it returns, to the reading."""
-        key = (id(function), element, id(scope))
+        key = (element, id(scope))
         if key in self.returned:
             return
         self.returned.add(key)

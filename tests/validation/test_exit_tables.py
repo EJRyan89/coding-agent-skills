@@ -31,6 +31,29 @@ MAIN = (
 TABLE = "Exit status:\n  0  done\n  1  a last line FAILED <reason>\n  2  a usage error\n"
 
 
+# The reads a test's reader may queue, the functions it may look up, and the passes it may start, together: past
+# eight times what the deepest fixture here takes, so a reader that loops fails within a second instead of running to
+# the suite's time limit.
+STEP_LIMIT = 50_000
+
+
+@pytest.fixture(autouse=True)
+def bounded_reader(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Fail a test whose exit-table reader queues reads, looks up functions, and starts passes past STEP_LIMIT."""
+    steps = 0
+    for name in ("later", "function_named", "module_scope"):
+        original = getattr(exit_tables.CodeReader, name)
+
+        def step(self: exit_tables.CodeReader, *arguments: Any, original: Any = original) -> Any:
+            nonlocal steps
+            steps += 1
+            if steps > STEP_LIMIT:
+                raise AssertionError(f"the exit-table reader took more than {STEP_LIMIT} steps")
+            return original(self, *arguments)
+
+        monkeypatch.setattr(exit_tables.CodeReader, name, step)
+
+
 def problems(files: dict[str, str]) -> list[str]:
     """The policy's problems for a fixture tree."""
     with tempfile.TemporaryDirectory() as temporary:
@@ -266,44 +289,50 @@ def test_a_recursion_that_passes_its_parameters_round_is_read_in_each_turn() -> 
 
 
 @pytest.mark.parametrize(
-    ("body", "scopes", "codes"),
+    ("body", "scopes", "passes", "codes"),
     [
-        pytest.param(WALK, 7, {0, 1, 2, 3}, id="four recursive call sites"),
+        pytest.param(WALK, 7, 1, {0, 1, 2, 3}, id="four recursive call sites"),
         pytest.param(
             f"{CALLED}{CHAIN}def f20(a0, a1):\n    return a0()\n"
             "def main():\n    argparse.ArgumentParser().parse_args()\n    return f0(two, two)\n",
             24,
+            1,
             {1, 2, 4},
             id="twenty functions passing two parameters on",
         ),
-        pytest.param(PING_PONG, 7, {1, 2, 3}, id="two functions recursing into each other"),
-        pytest.param(ROTATIONS, 9, {1, 3, 4, 5, 6, 10, 11, 12, 13, 14, 15}, id="six calls rotating four parameters"),
-        pytest.param(CALL_EACH_OTHER, 16, {0, 1}, id="four functions calling each other"),
-        pytest.param(LADDER + LADDER_END, 27, {1, 2}, id="a ladder of numbers"),
-        pytest.param(KEYWORD_LADDER + LADDER_END, 27, {1, 2}, id="a ladder of keywords in conditionals"),
+        pytest.param(PING_PONG, 7, 1, {1, 2, 3}, id="two functions recursing into each other"),
+        pytest.param(ROTATIONS, 9, 2, {1, 3, 4, 5, 6, 10, 11, 12, 13, 14, 15}, id="six calls rotating four parameters"),
+        pytest.param(CALL_EACH_OTHER, 16, 1, {0, 1}, id="four functions calling each other"),
+        pytest.param(LADDER + LADDER_END, 27, 2, {1, 2}, id="a ladder of numbers"),
+        pytest.param(KEYWORD_LADDER + LADDER_END, 27, 2, {1, 2}, id="a ladder of keywords in conditionals"),
     ],
 )
 def test_the_reader_keeps_a_scope_for_each_call_site_and_reads_in_two_passes(
-    body: str, scopes: int, codes: set[int]
+    body: str, scopes: int, passes: int, codes: set[int]
 ) -> None:
     # The reader keeps no more scopes than the source holds calls, plus one for each function it runs with no
     # arguments and one for its module's own body, however its calls recurse and whatever values reach them. A key
     # that followed each argument's value and the scope it was given in multiplied each function's keys by the values
     # reaching each parameter, and doubled them at each step of a ladder: 1,953 for the rotations, 45,535 for the four
-    # functions calling each other, both past Python's recursion limit, and 4,096 for each twelve-step ladder.
+    # functions calling each other, both past Python's recursion limit, and 4,096 for each twelve-step ladder. A pass
+    # follows only one in which a caller reached a scope after a read asked its callers, so a shape with no such caller
+    # reads in one. The reader takes at most 619 steps on these, so a reader that loops fails at 1,000.
     tree = ast.parse(f"{HEADER}{body}")
     bound = (
         sum(isinstance(node, ast.Call) for node in ast.walk(tree))
         + sum(isinstance(node, ast.FunctionDef) for node in ast.walk(tree))
         + 1
     )
+    steps = 0
     counted: dict[str, Any] = {}
-    for name in ("returns", "value"):
+    for name in ("returns", "value", "function_named"):
         original = getattr(exit_tables.CodeReader, name)
 
         def step(self: exit_tables.CodeReader, *arguments: object, original: Any = original) -> Any:
-            if len(self.scopes) > bound:
-                raise AssertionError(f"the reader kept {len(self.scopes)} scopes, past {bound}")
+            nonlocal steps
+            steps += 1
+            if len(self.scopes) > bound or steps > 1000:
+                raise AssertionError(f"the reader kept {len(self.scopes)} scopes, past {bound}, or looped")
             return original(self, *arguments)
 
         counted[name] = step
@@ -311,7 +340,7 @@ def test_the_reader_keeps_a_scope_for_each_call_site_and_reads_in_two_passes(
         reader = reader_of(body)
     assert reader.reading.codes == codes
     assert len(reader.scopes) == scopes
-    assert reader.passes <= 2
+    assert reader.passes == passes
 
 
 DEPTH = 1500
@@ -512,6 +541,40 @@ def test_a_function_two_arguments_pass_on_from_one_scope_is_looked_up_there_once
             {1, 3},
             ["h()"],
             id="a function one caller gives and another, read later, hides",
+        ),
+        # An annotated local is read as a local bound by assignment is.
+        pytest.param("def main():\n    code: int = 3\n    return code\n", {1, 3}, [], id="an annotated local"),
+        # A local read both for an item, where it is returned, and whole, inside a tuple, is read each way.
+        pytest.param(
+            "def c():\n    return bool(argparse)\ndef pair():\n    return 3, 4\n"
+            "def f():\n    p = pair()\n    if c():\n        return p\n    return (p, 1)\n"
+            "def main():\n    code, _ = f()\n    return code\n",
+            {1, 3},
+            ["(3, 4)"],
+            id="a local read for an item and whole",
+        ),
+        # A property is read in a scope of its own method, for the item asked of it.
+        pytest.param(
+            "class Tool:\n    @property\n    def pair(self):\n        return 3, 4\n"
+            "def main(flag):\n    a, b = Tool().pair\n    return a if flag else b\n",
+            {1, 3, 4},
+            [],
+            id="a property read for an item",
+        ),
+        pytest.param(
+            "class Tool:\n    @property\n    def status(self):\n        code = 3\n        return code\n"
+            "def main():\n    return Tool().status\n",
+            {1, 3},
+            [],
+            id="a property that returns a local",
+        ),
+        # A raise of a name, met before an exit call in the same function, leaves the exit read.
+        pytest.param(
+            "import sys\ndef helper(flag):\n    if flag:\n        sys.exit(9)\n    raise ValueError\n"
+            "def main():\n    helper(1)\n    return 0\n",
+            {0, 1, 9},
+            [],
+            id="a raise before an exit",
         ),
         # A call of a name nothing binds is unread.
         pytest.param("def main():\n    return unknown()\n", {1}, ["unknown()"], id="a call of a name nothing binds"),
@@ -764,6 +827,22 @@ def test_a_table_of_functions_in_an_imported_module_is_read_in_that_module() -> 
         }
     )
     assert found == []
+
+
+def test_a_run_main_target_that_is_a_call_is_read_as_a_call_not_as_the_function_it_names() -> None:
+    # The lambda returns the function a table's get gives, never calls it, so run_main's code is that function, which
+    # the reader cannot read as a code; the function's own code, 3, is never the exit.
+    source = (
+        "from console import run_main\ndef one():\n    return 3\nTABLE = {'a': one}\n"
+        "if __name__ == '__main__':\n    run_main(lambda: TABLE.get('a'))\n"
+    )
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        path = root / "tool.py"
+        path.write_text(source, encoding="utf-8")
+        reader = exit_tables.read_codes(root, exit_tables.EntryPoint("tool.py", path, ast.parse(source)))
+    assert reader.reading.codes == {1}
+    assert [expression for _, _, expression in reader.reading.unread] == ["TABLE.get('a')"]
 
 
 def test_the_reader_follows_an_import_into_a_module_beside_the_entry_point() -> None:
