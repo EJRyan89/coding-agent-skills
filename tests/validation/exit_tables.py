@@ -553,11 +553,13 @@ class CodeReader:
         returns, or for the whole value, with the scope that called it recorded.
 
         A scope stands for every call that gives its function the same argument expressions, which one call site
-        fixes, read for the same item, as returns reads a function once for each item. So the reader keeps no more
-        scopes than the calls the source holds, each once for each item it is read for, plus one for each function it
-        runs given nothing (what run_main runs, a property, a function an exit is read in) and one for each module's
-        own body, however the calls recurse and whatever values reach them: never a product over a function's
-        parameters of the values reaching each. A parameter is read as the expression it is given, in every scope
+        fixes, read for the same item, as returns reads a function once for each item. A call site that can name
+        several functions, through a table of them or a parameter given several, makes a scope for each. So the reader
+        keeps no more scopes than the call sites the source holds, times the functions each can name, times the items
+        each is read for, plus one for each function it runs given nothing (what run_main runs, a property, a function
+        an exit is read in) and one for each module's own body, however the calls recurse and whatever values reach
+        them: a number polynomial in the source, never a product over a function's parameters of the values reaching
+        each. A parameter is read as the expression it is given, in every scope
         recorded as calling its scope, so two calls of one function given the same expressions in different scopes, as
         `leaf(x)` in `mid(3)`'s scope and in `mid(4)`'s, are both read, and every value the first scope to call it
         gives is read among them. A caller recorded after a read of the pass asked a scope's callers makes the pass
@@ -565,8 +567,10 @@ class CodeReader:
 
         A stated limit: a parameter is read as the values every call with the same expressions gives it, so where one
         argument chooses the function a call runs and another gives that function's value, a value may be read with a
-        function it is never given, and a code read that the program cannot exit with; no repository code passes a
-        function and its value apart like that."""
+        function it is never given, and a code read that the program cannot exit with. The policy then refuses a table
+        that names every code the program can exit with, which main accepted, and the only way through is to name the
+        code it cannot exit with, since EXIT_CODES_ALLOWED excuses only a return the reader cannot follow. No
+        repository code calls a function it is given with a value that function returns as its exit code."""
         key = (id(module), id(function), tuple((name, id(value)) for name, value in given), element)
         made = self.scopes.get(key)
         if made is None:
@@ -814,7 +818,9 @@ class CodeReader:
         function, local, and parameter once for each element and scope. A caller that reaches a scope after a read of
         that pass asked the scope's callers may give it a value that read missed, so the pass is late and another
         follows, with every caller recorded so far; each late pass records a caller no pass had, and the callers are
-        bounded by the scopes, so the passes end."""
+        bounded by the scopes, so the passes end. A stated limit: the passes number the callers found late, each
+        re-reading the whole entry point, so a chain of k relays, each a function handed on to the next through one
+        call, takes k passes."""
         while True:
             self.passes += 1
             self.returned.clear()

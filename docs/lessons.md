@@ -694,8 +694,9 @@ removed fails validation until its pattern follows it.
   `tests.validation.exit_tables:CodeReader.assigned`, and `tests.validation.exit_tables:CodeReader.parameter`, which
   read a function, a local's value, or a parameter once a pass in each scope
   `tests.validation.exit_tables:CodeReader.scope` keeps, one for each function and the argument expressions one call
-  site gives it, so the scopes are bounded by the calls the source holds, with each parameter read in every scope
-  that called its own, and each read waiting its turn on the reader's list rather than nesting on Python's stack; and
+  site gives it, so the scopes are bounded by the call sites the source holds times the functions each can name,
+  never a product over parameters, with each parameter read in every scope that called its own, and each read
+  waiting its turn on the reader's list rather than nesting on Python's stack; and
   `tests.validation.exit_tables:CodeReader.callables`, which reads each called expression once per question in each
   scope, from a stack of its own
 - **Guard:** `tests/validation/test_python_checks.py::test_json_write_policy_reads_each_binding_of_a_rebound_loop_variable_once`,
@@ -709,7 +710,8 @@ removed fails validation until its pattern follows it.
   `tests/validation/test_python_checks.py::test_presence_policy_reads_each_name_of_a_chain_once_per_question`,
   `tests/validation/test_exit_tables.py::test_a_function_given_the_same_expressions_in_different_scopes_is_read_in_each`,
   `tests/validation/test_exit_tables.py::test_a_recursion_that_passes_its_parameters_round_is_read_in_each_turn`,
-  `tests/validation/test_exit_tables.py::test_the_reader_keeps_a_scope_for_each_call_site_and_reads_in_two_passes`,
+  `tests/validation/test_exit_tables.py::test_the_reader_keeps_a_scope_for_each_function_a_call_site_names_and_reads_a_pass_per_late_caller`,
+  `tests/validation/test_exit_tables.py::test_a_call_through_a_table_keeps_a_scope_for_each_function_it_can_name`,
   `tests/validation/test_exit_tables.py::test_the_reader_reads_calls_and_bindings_deeper_than_python_s_recursion_limit`,
   `tests/validation/test_exit_tables.py::test_a_function_two_arguments_pass_on_from_one_scope_is_looked_up_there_once`
 - **Search for:** a method that calls itself on each value `bound_values(` or `resolved_references(` returns, carrying

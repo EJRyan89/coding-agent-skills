@@ -231,6 +231,23 @@ KEYWORD_LADDER = "".join(
     f"def f{index}(p):\n    return f{index + 1}(p=1) if c() else f{index + 1}(p=2)\n" for index in range(12)
 )
 LADDER_END = "def c():\n    return bool(argparse)\ndef f12(p):\n    return p\ndef main():\n    return f0(0)\n"
+# Ten calls through a table of ten functions, each call able to name any of them.
+TABLE_CALLS = (
+    "def c():\n    return bool(argparse)\n"
+    + "".join(f"def h{index}(x):\n    return x if c() else {index + 3}\n" for index in range(10))
+    + "T = {"
+    + ", ".join(f"'{index}': h{index}" for index in range(10))
+    + "}\ndef main():\n    k = input()\n"
+    + "".join(f"    if c():\n        return T[k]({index + 3})\n" for index in range(10))
+    + "    return 0\n"
+)
+# Five relays: R hands each Li on through F, which calls it with v, and Li hands on L(i+1), so each relay's caller is
+# found one pass after the last.
+RELAYS = (
+    "def c():\n    return bool(argparse)\ndef F(h, v):\n    return h(v)\ndef R(h, v):\n    return F(h, v)\n"
+    + "".join(f"def L{index}(v):\n    return R(L{index + 1}, v) if c() else {index + 3}\n" for index in range(1, 5))
+    + "def L5(v):\n    return v\ndef main():\n    return R(L1, 3)\n"
+)
 
 
 def reader_of(body: str) -> exit_tables.CodeReader:
@@ -305,24 +322,25 @@ def test_a_recursion_that_passes_its_parameters_round_is_read_in_each_turn() -> 
         pytest.param(CALL_EACH_OTHER, 16, 1, {0, 1}, id="four functions calling each other"),
         pytest.param(LADDER + LADDER_END, 27, 2, {1, 2}, id="a ladder of numbers"),
         pytest.param(KEYWORD_LADDER + LADDER_END, 27, 2, {1, 2}, id="a ladder of keywords in conditionals"),
+        pytest.param(TABLE_CALLS, 102, 1, {0, 1, *range(3, 13)}, id="ten calls through a table of ten functions"),
+        pytest.param(RELAYS, 13, 5, {1, 3, 4, 5, 6, 7}, id="five relays"),
     ],
 )
-def test_the_reader_keeps_a_scope_for_each_call_site_and_reads_in_two_passes(
+def test_the_reader_keeps_a_scope_for_each_function_a_call_site_names_and_reads_a_pass_per_late_caller(
     body: str, scopes: int, passes: int, codes: set[int]
 ) -> None:
-    # The reader keeps no more scopes than the source holds calls, plus one for each function it runs with no
-    # arguments and one for its module's own body, however its calls recurse and whatever values reach them. A key
+    # The reader keeps no more scopes than the source holds call sites, times the functions each can name, plus one for
+    # each function it runs with no arguments and one for its module's own body (none of these reads a call for an
+    # item), however its calls recurse and whatever values reach them. A key
     # that followed each argument's value and the scope it was given in multiplied each function's keys by the values
     # reaching each parameter, and doubled them at each step of a ladder: 1,953 for the rotations, 45,535 for the four
     # functions calling each other, both past Python's recursion limit, and 4,096 for each twelve-step ladder. A pass
     # follows only one in which a caller reached a scope after a read asked its callers, so a shape with no such caller
-    # reads in one. The reader takes at most 619 steps on these, so a reader that loops fails at 1,000.
+    # reads in one, and each relay found late takes one more. The reader takes at most 619 steps on these, so a reader
+    # that loops fails at 1,000.
     tree = ast.parse(f"{HEADER}{body}")
-    bound = (
-        sum(isinstance(node, ast.Call) for node in ast.walk(tree))
-        + sum(isinstance(node, ast.FunctionDef) for node in ast.walk(tree))
-        + 1
-    )
+    functions = sum(isinstance(node, ast.FunctionDef) for node in ast.walk(tree))
+    bound = sum(isinstance(node, ast.Call) for node in ast.walk(tree)) * functions + functions + 1
     steps = 0
     counted: dict[str, Any] = {}
     for name in ("returns", "value", "function_named"):
@@ -341,6 +359,16 @@ def test_the_reader_keeps_a_scope_for_each_call_site_and_reads_in_two_passes(
     assert reader.reading.codes == codes
     assert len(reader.scopes) == scopes
     assert reader.passes == passes
+
+
+def test_a_call_through_a_table_keeps_a_scope_for_each_function_it_can_name() -> None:
+    # Each of the ten calls through the table can name each of its ten functions, so the reader keeps a scope for each
+    # pair: more than the calls the source holds plus its functions, and no more than the calls times the functions.
+    tree = ast.parse(f"{HEADER}{TABLE_CALLS}")
+    calls = sum(isinstance(node, ast.Call) for node in ast.walk(tree))
+    functions = sum(isinstance(node, ast.FunctionDef) for node in ast.walk(tree))
+    scopes = len(reader_of(TABLE_CALLS).scopes)
+    assert calls + functions + 1 < scopes <= calls * functions + functions + 1
 
 
 DEPTH = 1500
