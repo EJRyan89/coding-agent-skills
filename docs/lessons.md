@@ -681,7 +681,11 @@ removed fails validation until its pattern follows it.
   union of keywords or types learns nothing from a value read again; and `tests.validation.suite_discovery:_ReaderWalk`,
   which reads each Bash function once per question for each table of functions a shell's -c script extends, the
   table kept once for each content, and again only from a shallower depth, since its depth cut leaves a function
-  read at the limit with its calls unread
+  read at the limit with its calls unread; and `tests.validation.python_checks:_PresenceReader.polarities`, which
+  reads each name once per question for each truth and each reading of what it holds,
+  `tests.validation.python_checks:_PresenceReader._there`, once for each truth, and
+  `tests.validation.python_checks:_Handlers.suppress`, once for each depth of scopes, since what a name gives depends
+  only on that state; a name bound to its own negation is read at both truths, which such a loop gives it
 - **Guard:** `tests/validation/test_python_checks.py::test_json_write_policy_reads_each_binding_of_a_rebound_loop_variable_once`,
   `tests/validation/test_validation_support.py::test_resolved_references_read_each_binding_of_a_rebound_loop_variable_once`,
   `tests/validation/test_shell_readers.py::test_command_reader_follows_each_name_of_a_rebound_loop_variable_once`,
@@ -689,7 +693,8 @@ removed fails validation until its pattern follows it.
   `tests/validation/test_python_checks.py::test_int_parse_policy_reads_a_partial_that_rebuilds_itself_once`,
   `tests/validation/test_exit_tables.py::test_a_local_that_rebinds_itself_from_itself_is_read_once`,
   `tests/validation/test_exit_tables.py::test_a_called_local_that_rebinds_itself_from_itself_is_read_once`,
-  `tests/validation/test_suite_discovery.py::test_the_pipe_race_policy_reads_each_function_of_ones_that_call_each_other_once`
+  `tests/validation/test_suite_discovery.py::test_the_pipe_race_policy_reads_each_function_of_ones_that_call_each_other_once`,
+  `tests/validation/test_python_checks.py::test_presence_policy_reads_each_name_of_a_chain_once_per_question`
 - **Search for:** a method that calls itself on each value `bound_values(` or `resolved_references(` returns, carrying
   `seen | {` or `seen: frozenset[` down the recursion rather than one `set` for the question; a check whose time grows
   with the branches of a loop that rebinds a name from itself, as `after = index + 1` in each branch of a scanner, or
@@ -699,7 +704,7 @@ removed fails validation until its pattern follows it.
   per-path walk, which carries a partial's arguments along each path. A walk whose answer names the path it took, as
   an attribute chain does, keeps one answer per binding by the strongly connected group it lies in, as
   `resolved_references` does, since remembering only what it has read leaves its answers depending on the route.
-- **Examples:** #2859, #2871, #2877
+- **Examples:** #2859, #2871, #2877, #2882
 
 ### A path taken from input is judged inside its tree before anything opens it
 

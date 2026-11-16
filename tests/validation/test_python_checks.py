@@ -7181,6 +7181,16 @@ PRESENCE_CYCLES = {
         "    if found:\n        raise OSError(p)\n",
         False,
     ),
+    "a name bound to itself, refusing on its False": (
+        "    found = file_presence.is_present(p, other_is_absent=True)\n    while c:\n        found = found\n"
+        "    if not found:\n        raise OSError(p)\n",
+        True,
+    ),
+    "a name bound to itself, refusing on its truth": (
+        "    found = file_presence.is_present(p, other_is_absent=True)\n    while c:\n        found = found\n"
+        "    if found:\n        raise OSError(p)\n",
+        False,
+    ),
     "two names bound to each other, refusing on their False": (
         "    a = file_presence.is_present(p, other_is_absent=True)\n    while c:\n        b = a\n        a = b\n"
         "    if not a:\n        raise OSError(p)\n",
